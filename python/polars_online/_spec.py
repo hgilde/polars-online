@@ -1710,7 +1710,10 @@ def kalman(
     .. code-block:: text
 
         b_j <- Phi b_j                     Phi = diag(2 ** (-d / r_i))      the reversion
-        P_j <- Phi P_j Phi + Q * d ** 2                                     the drift
+        P_j <- Phi P_j Phi                                                  every row
+        D_j <- D_j + d                     the clock since P_j's last observation
+        P_j <- P_j + Q * D_j ** 2, D_j <- 0                                 the drift, on a row
+                                                                            that observes y_j
         s    = z' P_j z + R_j / w
         k    = P_j z / s
         b_j <- b_j + k (y_j - z' b_j)
@@ -1722,6 +1725,14 @@ def kalman(
     included. Such a row, and a row whose target is null, ages the target's weight
     the same way and learns nothing for it.
 
+    The drift is charged once, on the row that next observes the target, for
+    the whole clock since the last one (``D_j``; under ``share_p`` any target's
+    row). ``Q * D ** 2`` is not additive over a split gap, so charged per row it
+    let a row of weight 0 inside a gap shrink the gap's noise and move every
+    later prediction (0.197 at ``coef_half_life = 20``), and a target seen on
+    one row in 10 forgot 3.6 times slower on the clock than one seen on every
+    row (docs/PLAN.md task 211).
+
     Until a target has a residual variance, each row takes its noise from its own
     innovation, ``R_j = (y_j - z' b_j) ** 2``, computed before the update, so the
     prediction stays out of sample. The process noise from ``coef_half_life``
@@ -1729,37 +1740,60 @@ def kalman(
     prediction. A row whose innovation is exactly 0 says nothing about the size
     of the noise, and changes nothing. Under ``share_p``, until some target has a
     residual variance, the noise is the mean of the squared innovations of the
-    targets the row observes. The prior is sized from the same first noise
-    (``p0`` below), so the filter never sees the target's units: scaling a
+    targets the row observes. The prior is sized from the squared innovations
+    too (``p0`` below), so the filter never sees the target's units: scaling a
     target by ``c`` scales its predictions by ``c``.
 
     .. rubric:: Parameters
 
     ``coef_half_life``
         How fast a coefficient may drift, as a half-life on the clock, on
-        standardized features. A row ``d`` clock units after the last adds the
-        process noise ``sigma^2 * (ln 2 * d / h_i) ** 2``, which matches EW-RLS's
-        steady-state gain at that spacing: the same half-life whether rows come
-        every unit or every hundredth (docs/PLAN.md task 150). A scalar, or one
-        value per slot with the intercept first; ``inf`` pins that coefficient.
-        Required unless ``q`` is given, and refused beside it. Not the spec's
-        ``half_life``, which drives the standardization and the residual
-        variance.
+        standardized features. An observation ``D`` clock units after the
+        target's last adds the process noise ``sigma^2 * (ln 2 * D / h_i) ** 2``,
+        which matches EW-RLS's steady-state gain at that spacing: the same
+        half-life whether rows come every unit or every hundredth (docs/PLAN.md
+        task 150), and whether the target is seen on every row or one in ten
+        (task 211). That is each standardized direction's memory with the
+        others held still. Under correlated features a direction of the design's
+        correlation with eigenvalue ``lambda`` is learned with a memory of about
+        ``h / sqrt(lambda)`` (Ljung and Gunnarsson 1990; measured 37.5 and 160.5
+        clock units at a correlation of 0.9 and ``h = 50``, against 36.3 and
+        158.1), where EW-RLS forgets every direction at ``h``; and with the EW
+        residual variance as ``R``, which a step in the truth inflates, a step
+        is learned about 1.45 times slower than with the true noise. A scalar,
+        or one value per slot with the intercept first; ``inf`` pins that
+        coefficient. Required unless ``q`` is given, and refused beside it. Not
+        the spec's ``half_life``, which drives the standardization and the
+        residual variance.
+
+        Under ``standardize`` the drift is per standard deviation of each
+        feature as the moments stand: a slope's random walk in the caller's
+        units has a variance of ``q_i * D ** 2 / s_i ** 2`` per observation,
+        a drift measured in the feature's current spread.
     ``q``
         The process noise given outright, ``q_i`` per slot, in place of the
-        derivation from ``coef_half_life``; added as ``q_i * d ** 2`` per row.
-        Exactly one of the two is given: the half-life was required, and
-        ignored beside ``q``.
+        derivation from ``coef_half_life``; added as ``q_i * D ** 2`` on each
+        row that observes the target. Exactly one of the two is given: the
+        half-life was required, and ignored beside ``q``.
     ``obs_var``
         A fixed observation noise, in place of the EW residual variance.
     ``p0``
-        The prior variance of each coefficient, as a multiple of the noise:
-        ``P_0 = p0 * R * I``, set on the target's first row with a noise, from
-        that row's noise, before its correction. Until then ``P`` is unsized,
-        and no process noise is added to it. Default 1.0, a prior as uncertain
-        as one observation. With ``obs_var`` given, ``P_0 = p0 * obs_var * I``
-        from the start, and with no process noise the filter is the ridge
-        regression with penalty ``1 / p0``.
+        The prior variance of each coefficient, as a multiple of the noise.
+        Unstandardized, ``P_0 = p0 * R * I``, set on the target's first row with
+        a noise, from that row's noise, before its correction; until then ``P``
+        is unsized, and no process noise is added to it. With ``obs_var``
+        given, ``P_0 = p0 * obs_var * I`` from the start, and with no process
+        noise the filter is the ridge regression with penalty ``1 / p0``.
+        Standardized, each coefficient's prior is ``p0 * R`` on the first row
+        that observes the target on which its feature's scale is usable (the
+        intercept's always is): ``R`` is the mean squared innovation ``sum w e **
+        2 / sum w`` over the target's rows so far, once three rows give it, and
+        with ``obs_var`` it is ``obs_var`` (the intercept then sized from the
+        start). Until then the coefficient is 0 and takes no correction. One
+        squared innovation, as the prior was sized before, falls below 1% of
+        its mean one time in twelve, and with no process noise a prior that
+        small pins the fit for good; a mean of three, seven times in ten
+        thousand. Default 1.0, a prior as uncertain as one observation.
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients
@@ -1770,26 +1804,36 @@ def kalman(
         ``standardize = False``, ``q = 0`` and a fixed ``obs_var`` the filter is
         exactly Bayesian linear regression.
 
-        The moments warm up first: until Kish's count of the rows they have
-        learned, ``(sum w) ** 2 / sum w ** 2`` undecayed, reaches 22, the
-        filter's state is read in their coordinates as they stand. From the row
-        after that, the state follows the moments to their new coordinates on
-        every row that moves them, ``b <- A b`` and ``P <- A P A'``:
+        The filter's state is held in the coordinates of an *anchor*, the
+        moments at its last re-map, and maps the process noise and the priors,
+        defined in the moments as they stand, into them exactly. When the
+        moments drift from the anchor -- a scale by more than twice or less
+        than half, a mean by more than the anchor's scale -- the state follows
+        them to their new coordinates, ``b <- A b`` and ``P <- A P A'``:
 
         .. code-block:: text
 
-            A_00 = 1,    A_0i = (m'_i - m_i) / s_i,    A_ii = s'_i / s_i
+            A_00 = 1,    A_0i = (m_i - m^a_i) / s^a_i,    A_ii = s_i / s^a_i
 
-        with ``m``, ``s`` the moments the row was read at and ``m'``, ``s'``
-        after it. So the moments' moving moves no prediction, no predictive
-        variance and no coefficient in the original units. Read through the
-        moments as they stood, a finite half-life's own wander moved every
-        prediction: at a half-life of 50 and R² 0.99998 the out-of-sample error
-        was 223 noise variances above the noise, where the unstandardized
-        filter paid 0.014 (docs/PLAN.md task 206). A move past what a row of
-        data makes -- a scale by more than 1024 times either way in one row, or
-        a mean by more than 1024 of its scale -- is not followed, and the state
-        is read in the new coordinates as before the warm-up ended.
+        with ``m^a``, ``s^a`` the anchor and ``m``, ``s`` the moments after the
+        row. So the moments' moving moves no prediction, no predictive variance
+        and no coefficient in the original units, from the first row: no row's
+        raw reading of a feature reaches the state, and features scaled by a
+        power of two predict the same to the bit. Read through the moments as
+        they stood, a finite half-life's own wander moved every prediction: at
+        a half-life of 50 and R² 0.99998 the out-of-sample error was 223 noise
+        variances above the noise (docs/PLAN.md task 206). Task 206 re-mapped
+        on every row; the anchor is the same filter to rounding, a fifth
+        cheaper a row at ten features (task 211). A re-map past what a stretch
+        of data makes -- a
+        scale by more than 1024 times either way, or a mean by more than 1024
+        of the anchor's scale -- is not followed, and the state is read in the
+        new coordinates.
+
+        The model before task 206, a coefficient per current standard deviation
+        that moves with the scale, is this one on a column z-scored in the
+        stream, given with ``standardize = False``: the window operators build
+        it (docs/PLAN.md task 212).
     ``revert_half_life``
         A reversion half-life ``r_i`` per slot: between observations the
         coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a coefficient
@@ -1799,10 +1843,12 @@ def kalman(
         and ``[inf, r, r]`` leaves the intercept a random walk. The pull is toward
         zero in the standardized coordinates when ``standardize`` is on: a slope
         toward "no effect", the intercept toward "the target averages zero". A
-        reverting slot settles, at rows ``d`` apart, at the prior variance
-        ``q_i * d ** 2 / (1 - phi_i ** 2)``, a stationary AR(1) instead of an
-        unbounded walk. A prediction
-        propagates the state by the same ``Phi`` over the row's clock gap.
+        reverting slot settles, at observations ``D`` apart, at the prior
+        variance ``q_i * D ** 2 / (1 - phi_i ** 2)``, a stationary AR(1) instead
+        of an unbounded walk. The reversion runs on every row, a row that
+        observes nothing included, being the same over a gap however it is
+        cut. A prediction propagates the state by the same ``Phi`` over the
+        row's clock gap.
     ``share_p``
         Keep one ``P`` for every target, driven by the mean ``sigma^2`` over the
         targets that have one, where by default ``P`` is per target because the
@@ -1814,8 +1860,12 @@ def kalman(
         the targets moves no prediction, and a target beside a copy of itself
         present on the same rows predicts as it would alone. A copy null on
         some of those rows moves nothing until it has a residual variance; from
-        then its variance, learned from fewer rows, enters the mean. Default
-        ``False``.
+        then its variance, learned from fewer rows, enters the mean. With a
+        noise ``sigma^2_j`` of its own, a target's own filter would keep ``P``
+        times ``sigma^2_j`` over the mean, and that is the covariance its
+        ``se_coef`` reads (docs/PLAN.md task 211): read off
+        ``P`` as it stands, two targets of noise 0.01 and 1 had standard errors
+        7.3 times too large and 1.39 times too small. Default ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -1844,6 +1894,18 @@ def kalman(
     ``2 ** (-gap_cap / r_i)`` at most, and the prediction is the intercept
     alone only where ``gap_cap`` spans several of the slopes' reversion
     half-lives and the intercept's is ``inf``.
+
+    ``se_coef`` reads the filter's own covariance ``P`` and ``error_inflation``
+    its prior ``z' P z / R``: both exact *under the model*, which says the
+    coefficients walk at the noise ``coef_half_life`` implies. On a truth that
+    does not move, that walk is variance the coefficients do not have, and the
+    standard errors come out about ``sqrt(2)`` too large (a mean squared error
+    over ``se_coef ** 2`` of 0.47 to 0.50 at ``coef_half_life`` 50 and 200;
+    0.95 to 1.06 on a walk of the implied variance). And with ``R`` the EW
+    variance of the out-of-sample residuals, which already carry the
+    estimation error, ``error_inflation`` counts that error twice: the mean
+    squared error over ``R * error_inflation ** 2`` is 0.96 at
+    ``coef_half_life`` 50.
 
     .. rubric:: Example
 

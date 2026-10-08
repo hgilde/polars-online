@@ -2876,7 +2876,8 @@ its entry of `Φ`. `Q` is the process noise, which `coef_half_life` sets, and
 variance unless `obs_var` is given:
 
 ```
-β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock²   Φ = diag(2^(−Δclock/r_i))
+β_j ← Φβ_j    P_j ← ΦP_jΦ              Φ = diag(2^(−Δclock/r_i)), every row
+P_j ← P_j + Q·D_j²,  D_j ← 0           on a row that observes y_j; D_j the clock since the last
 s   = zᵀP_j z + R_j/w                   K   = P_j z / s
 β_j ← β_j + K(y_j − zᵀβ_j)              P_j ← P_j − K zᵀP_j
 ```
@@ -2892,12 +2893,18 @@ number. The residual variance starts at the target's first prediction. A
 row whose innovation is exactly 0 says nothing about the size of the noise,
 and changes nothing.
 
-**The prior variance comes from the first noise estimate:** the first row
-with a noise sets `P_j = p0·R_j·I` before its correction. So `p0` is a
-multiple of that noise, and the default `p0=1` gives a prior as uncertain
-as one observation. Since both the noise and the prior come from the data,
-the warm-up does not depend on the target's units. With a fixed
-`obs_var=`, the prior is `p0·obs_var·I` from the start.
+**The prior variance comes from the squared innovations:** `p0` times a
+noise estimate, so the default `p0=1` gives a prior as uncertain as one
+observation. Unstandardized, the first row with a noise sets `P_j =
+p0·R_j·I` before its correction. Standardized, each coefficient waits for
+its feature's scale: its prior is set on the first row that observes the
+target once the feature's variance is above 0. The estimate there is the
+mean squared innovation over the target's rows so far, once three rows give
+it. One squared innovation falls below 1% of its mean one time in twelve,
+and with no process noise a prior that small pins the fit for good. Since
+the noise and the prior both come from the data, the warm-up does not
+depend on the target's units. With a fixed `obs_var=`, the noise is known
+from the start.
 
 This code uses `df` from [Example data](#example-data):
 
@@ -2914,14 +2921,29 @@ revert = po.spec.kalman(
 fit = po.ModelBank([revert]).fit_predict(df)
 ```
 
-**By default each coefficient drifts as a random walk: between rows its
-estimate holds and its variance grows.** With `h_i` its `coef_half_life`, a
-row Δ clock units after the one before adds `σ²(ln2 · Δ / h_i)²` to that
-variance on standardized features, matching EW-RLS's steady state at any
-spacing. For a rate per coefficient, give `coef_half_life` a list with the
-intercept's entry leading, and an entry of `inf` pins its coefficient. To
-set the process noise outright, give `q=`, whose `q_i` is added as
-`q_i · Δ²`.
+**By default each coefficient drifts as a random walk: between observations
+its estimate holds and its variance grows.** With `h_i` its
+`coef_half_life`, a row that observes the target `D` clock units after its
+last observation adds `σ²(ln2 · D / h_i)²` to that variance on standardized
+features. That matches EW-RLS's steady state at any spacing. The noise is
+charged once for the whole of `D`, since `D²` does not split into the
+squares of its parts. Charged per row, a row of weight 0 inside a gap moved
+every later prediction, and a target seen on one row in ten forgot 3.6
+times slower on the clock. For a rate per coefficient, give
+`coef_half_life` a list with the intercept's entry leading, and an entry
+of `inf` pins its coefficient. To set the process noise outright, give
+`q=`, whose `q_i` is added as `q_i · D²`.
+
+**`coef_half_life` is each standardized direction's memory, with the other
+directions held still.** Under correlated features, a direction of the
+design's correlation with eigenvalue `λ` is learned with a memory of about
+`h/√λ` (Ljung and Gunnarsson, 1990). At a correlation of 0.9 and `h = 50`
+that measured 37.5 and 160.5 clock units, against 36.3 and 158.1. EW-RLS
+forgets every direction at `h`. The default `R`, the EW residual variance,
+grows at a step in the truth, so a step is learned about 1.45 times slower
+than with the true noise. Under `standardize` the drift is per standard
+deviation: in the caller's units a slope's walk has variance `q_i·D²/s_i²`
+per observation, `s_i` the feature's spread as it stands.
 
 **For a regressor that is active only now and then, give its coefficient a
 finite `revert_half_life`.** The coefficient is then pulled toward zero on
@@ -2930,23 +2952,26 @@ the effect is forgotten between its bursts, and cannot persist through a
 run of null targets. For a regressor that is always active, keep the default
 `inf`: the pull would settle a persistent effect below its true size, the
 more so the shorter the reversion half-life. A reverting coefficient's
-long-run prior variance, at rows `Δclock` apart, is
-`q_i·Δclock²/(1−φ_i²)`, where a random walk's grows without bound.
+long-run prior variance, at observations `D` apart, is `q_i·D²/(1−φ_i²)`,
+where a random walk's grows without bound.
 
 **Under `standardize`, the default, the reversion pulls toward zero in the
 standardized coordinates:** "no effect" for a slope, and "the target
 averages zero" for the intercept. So unless the target averages zero, keep
 the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
 
-**Once the standardization has warmed up, the filter follows it.** Until
-Kish's count of the rows it has learned reaches 22, the state is read in its
-coordinates as they stand. From then on, each row that moves the means and
-scales maps the coefficients and their covariance to the new coordinates,
-`b ← A b` and `P ← A P Aᵀ`. So no prediction moves because the scaler did.
-Read as they stood, the scaler's own wander under a half-life of 50 cost 223
-noise variances of out-of-sample error at R² 0.99998, against 0.014
-unstandardized. A move of more than 1024 times a scale in one row is not
-followed.
+**The filter follows the standardization from its first row.** The
+coefficients and their covariance are held in the coordinates of an
+anchor: the means and scales at the last re-map. The process noise and the
+priors, defined in the means and scales as they stand, are carried into the
+anchor's coordinates exactly. When a scale moves past twice or half the
+anchor's, or a mean by more than the anchor's scale, the state is mapped
+to the new coordinates, `b ← A b` and `P ← A P Aᵀ`. So no prediction moves
+because the scaler did. Read through the scaler as it stood, its own wander
+under a half-life of 50 cost 223 noise variances of out-of-sample error at
+R² 0.99998. A map of more than 1024 times a scale is not followed. The old
+reading, a coefficient per current standard deviation, is this filter on a
+column z-scored in the stream with `standardize=False`.
 
 **`predict` applies the reversion,** by the same `Φ` over the distance
 from the last learned row, capped by `gap_cap`. A slope therefore keeps at
@@ -2955,8 +2980,17 @@ intercept, give a `gap_cap` that spans several reversion half-lives. Under
 `standardize` the intercept is the target's level at the features' means.
 
 With `standardize=False`, `q=0` and a fixed `obs_var=`, the filter is
-exactly Bayesian linear regression: river's `BayesianLinearRegression`
-agrees to 1e-13.
+exactly Bayesian linear regression, the ridge with penalty `1/p0`: river's
+`BayesianLinearRegression` agrees to 1e-13. Standardized, each prior waits
+for its feature's scale, so it is not that ridge.
+
+**`se_coef` and `error_inflation` are exact under the model,** which says
+the coefficients walk at the noise `coef_half_life` implies. On a truth that
+does not move, the standard errors come out about √2 too large. With `R`
+the residual variance, which already carries the estimation error,
+`error_inflation` counts that error twice: the mean squared error is 0.96 of
+`R·error_inflation²` at `coef_half_life=50`. Under `share_p`, each target's
+`se_coef` reads the shared `P` times its own noise over the mean.
 
 #### `huber` / `quantile` — robust regression
 
