@@ -1388,7 +1388,7 @@ each is closer to 0 on the z-scores:
 | `ewridge`, at its default solve cadence | -0.0148 | -0.0096 | -0.0521 | -0.0262 |
 | `ewridge`, solved every row | -0.0647 | -0.0412 | -0.1113 | -0.0474 |
 | `rls` | -0.0644 | -0.0412 | -0.1108 | -0.0475 |
-| `kalman` | -0.0602 | -0.0404 | -0.0608 | -0.0286 |
+| `kalman` | -0.0581 | -0.0395 | -0.0849 | -0.0489 |
 
 **`kalman` fitted this model on its own in 0.13.0.** It standardized each
 feature by the feature's moving moments, and kept its coefficients per
@@ -2971,7 +2971,8 @@ because the scaler did. Read through the scaler as it stood, its own wander
 under a half-life of 50 cost 223 noise variances of out-of-sample error at
 R² 0.99998. A map of more than 1024 times a scale is not followed. The old
 reading, a coefficient per current standard deviation, is this filter on a
-column z-scored in the stream with `standardize=False`.
+column z-scored in the stream with `standardize=False`, as in
+[Features in units of their spread](#features-in-units-of-their-spread).
 
 **`predict` applies the reversion,** by the same `Φ` over the distance
 from the last learned row, capped by `gap_cap`. A slope therefore keeps at

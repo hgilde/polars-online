@@ -1832,8 +1832,10 @@ def kalman(
 
         The model before task 206, a coefficient per current standard deviation
         that moves with the scale, is this one on a column z-scored in the
-        stream, given with ``standardize = False``: the window operators build
-        it (docs/PLAN.md task 212).
+        stream, given with ``standardize = False``: the README's *Features in
+        units of their spread* builds the column with
+        :func:`polars_online.ewm_mean` and :func:`polars_online.ewm_std`
+        (docs/PLAN.md task 212).
     ``revert_half_life``
         A reversion half-life ``r_i`` per slot: between observations the
         coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a coefficient
