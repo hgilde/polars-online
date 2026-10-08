@@ -111,13 +111,15 @@ jobs:
       - run: uv run cargo test --workspace --exclude online-py
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
       # `-m` replaces the `-m 'not soak'` in pyproject's addopts rather than
-      # adding to it, so both go here. `pins` marks the six tests that can
-      # pass only on the versions this repo pins: three assert its own polars
-      # pins (two in test_scaffold.py, and the VALIDATION.md check, whose
-      # header records the polars version), and three measure another
-      # library's behaviour on its locked version (polars' multi-key sort, a
-      # pyarrow cast bug, duckdb's refusal) -- meaningless unpinned, and the
-      # first run of this job was red on exactly one of them.
+      # adding to it, so both go here. `pins` marks the seven tests that can
+      # pass only on the versions this repo pins: four assert its own polars
+      # pins (two in test_scaffold.py, the VALIDATION.md check, whose
+      # header records the polars version, and the floor leg's, which reads
+      # the pin's form that the unpin step above rewrites), and three
+      # measure another library's behaviour on its locked version (polars'
+      # multi-key sort, a pyarrow cast bug, duckdb's refusal) -- meaningless
+      # unpinned, and the first run of this job was red on exactly one of
+      # them, the run of 2026-10-08 on the floor leg's.
       - run: uv run pytest -q -m "not soak and not pins"
 
   next-numpy:

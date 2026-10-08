@@ -147,6 +147,7 @@ def _polars_floor() -> str:
     return m.group(1)
 
 
+@pytest.mark.pins
 def test_the_suite_runs_on_the_declared_polars_floor_before_a_release():
     """The floor, `polars>=1.34.0`, was a declared number no job ran: the
     canary and the release's legs move polars up, and the suite last ran on
@@ -155,7 +156,12 @@ def test_the_suite_runs_on_the_declared_polars_floor_before_a_release():
     runtime package, read from `pyproject.toml` by
     ``scripts/polars_floor.py``, so raising the floor moves the leg with it.
     The canary runs the same leg monthly. Only polars moves, as in the other
-    legs, and the tests that need a newer polars skip there by version."""
+    legs, and the tests that need a newer polars skip there by version.
+
+    Marked `pins`: it asserts the pin's form, `polars>=X.Y.Z,<N`, and the
+    canary's latest-Polars leg rewrites the pin to a bare `polars` before it
+    runs, where this was the one failure among 4,921 on polars 2.0.0 (the
+    canary of 2026-10-08; review round 5, F4b)."""
     job = JOBS["floor-polars"]
     assert "continue-on-error" not in job and "strategy" not in job
     assert "floor-polars" in _transitive_needs("publish")
