@@ -5017,9 +5017,12 @@ docstring gives:
 
 **From 1.0, a state file a 1.x build wrote loads in every later 1.x.**
 Each change to a state's layout ships a loader for the layout before it.
-A saved state of each kind, frozen in the test suite, checks the loaders
-three ways: the file loads, its stream continues to the bit, and it saves
-back byte for byte. The two unstable formats, a window run's state and a
+A saved state of each kind, frozen in the test suite, checks it three
+ways. The current layout's fixtures load, continue to the bit, and save
+back byte for byte. A previous layout's load through the loader, continue
+to the bit, and save back as the current layout's fixture bytes of the
+same case: the loader turns a state into exactly what this build writes
+from the same rows. The two unstable formats, a window run's state and a
 formula target inside a bank's, are outside that promise. Before 1.0 there
 is no such promise: after upgrading across a release, refit a saved state
 from its input ([Saving, loading and serving](#saving-loading-and-serving)).

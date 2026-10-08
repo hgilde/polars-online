@@ -927,11 +927,15 @@ the minor release that renames it, and leaves it at the next major.
 (decision D1). The schema 1.0.0 ships is the floor: `MIN_SCHEMA_VERSION` and
 `MIN_BANK_SCHEMA_VERSION` stay at it for the life of 1.x. Every later
 change of layout ships a loader for the layout before it, and keeps the
-frozen fixtures of that layout. Each fixture is checked three ways: it
-loads, its stream continues to the bit, and it re-saves byte for byte
-(task 198). The two unstable formats, a window run's state and a formula
-target inside a bank's, are outside the promise. Before 1.0, refit a
-saved state from its input after upgrading across a release.
+frozen fixtures of that layout. Each fixture is checked three ways (task
+198; review round 5, D1). The current schema's fixtures load, continue to
+the bit, and re-save byte for byte. A previous schema's load through the
+loader, continue to the bit, and re-save as the current schema's fixture
+bytes of the same case: the loader turns a state into exactly what this
+build writes from the same rows. The two unstable formats, a window run's
+state and a formula target inside a bank's, are outside the promise.
+Before 1.0, refit a saved state from its input after upgrading across a
+release.
 
 **From 1.0, raising the Polars floor is a minor release, capping the range
 below a broken Polars a patch, and dropping a Polars major a major**
