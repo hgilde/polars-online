@@ -10,7 +10,13 @@ ones from `crates/online-core/tests/readiness.rs` and
 `tests/test_readiness.py`. Section 5 is the evidence. Section 6 is what was
 tried and dropped, with the measurement that dropped it, so it is not
 proposed again without new evidence. Section 7 holds the questions the
-design left: seven answered, and three still open, each part of PLAN task 116.
+design left: nine answered, and one still open, §7.1's CUSUM, a task of its
+own. **Task 116 (2026-10-07)** carried the statistics past `ewridge`: the
+noise gate and its row field to `rls`, `kalman` and `lasso` (the field not
+to `lasso`), the data shares to `huber` and `quantile`, the coefficients'
+standard errors as a report (`emit_se_coef`), the support warning held until
+the stream is settled, and a closing line on the command line; every gate it
+added is off unless set (§8).
 **The readiness floors are final for 1.0** (docs/PLAN.md task 198, the
 user's decision D8 of 2026-10-06): `min_settled_frac` stays at 0,
 `max_error_inflation` at `√2` on `ewridge`, and every other model keeps its
@@ -57,7 +63,7 @@ different quantities, and one number cannot serve two of them (§5.3).
 |---|---|---|---|
 | **Warmed up?** Has the decay window filled toward steady state? | `settled_frac` = `1 − 2^(−T/h)`, `T` = decay time elapsed | continuous, 0 → 1 | `min_settled_frac` — the gate the goal asked for; off by default, set by the user who knows the process has regimes (§4.1.1) |
 | **Identified?** How much of each coefficient did the data determine, and how much the ridge? | `support_coef_j = (G_raw·G⁻¹)_jj`, the shrinkage matrix's diagonal (§2.2) | continuous, `[0, 1]` per coefficient | none — a **diagnostic**, not a gate (§5.7); no tolerance to set |
-| **Noise?** Would estimation error swamp *this* prediction? | `error_inflation` = `√(1 + h(x))`, `h = edf/n_Kish` for the stream (free), `h(x) = x'Σ̂⁻¹x / n_Kish` per row (opt-in) — the estimation variance over the noise (§2.1) | continuous, ≥ 1 | `max_error_inflation` — `ewridge`'s gate; `min_weight` stays on every model (§2.1, §5.8) |
+| **Noise?** Would estimation error swamp *this* prediction? | `error_inflation` = `√(1 + h(x))`, `h = edf/n_Kish` for the stream (free), `h(x) = x'Σ̂⁻¹x / n_Kish` per row (opt-in) — the estimation variance over the noise (§2.1) | continuous, ≥ 1 | `max_error_inflation` — `ewridge`'s gate, `sqrt(2)` by default; on `rls`, `kalman` and `lasso` off unless set (task 116); `min_weight` stays on every model (§2.1, §5.8) |
 
 **Convergence** in the goal's sense — the estimate has stopped moving — is
 `settled_frac` for a stationary target: after `k` half-lives the effective
@@ -187,10 +193,11 @@ State either way: one `f64` (`s₂`). Nothing per solve.
 **Limits, stated.** Homoskedastic noise independent of `x`; under
 heteroskedasticity the ratio is approximate, not wrong. A moving target
 adds staleness bias that no variance sees — drift detection's job.
-Only `ewridge` computes `h`. For `lasso`, which is post-selection, `h` on
-the active-set Gram would be the theory-backed approximation (its degrees
-of freedom are the active count, Zou–Hastie–Tibshirani 2007); it is not
-built (PLAN task 116). Elsewhere `emit_error_inflation` is refused, and
+`ewridge`, `rls` and `kalman` compute `h`, `kalman` exactly (its `P` is the
+estimation covariance itself); `lasso`, which is post-selection, gates on
+`df/n_Kish` with its degrees of freedom the active count (Zou–Hastie–
+Tibshirani 2007), the theory's average and no row's own (task 116; §5.8 has
+the table). Elsewhere both settings are refused, each naming why, and
 `min_settled_frac` is the gate of `sgd`, `pa` and `ftrl`, which have no
 linear fit.
 
@@ -249,9 +256,10 @@ them would take away correct output. Duplicate feature *names* are already
 refused at validate time, so what is left for a runtime signal is exactly
 the data-dependent case nothing static can see.
 
-The cut stays at `0.5`, the equal-parts point, with one maturity condition:
-the warning is raised only on a row whose prediction the gates let through
-(`reason == 0`). Without it the *first* solve of any spec fires it — one row
+The cut stays at `0.5`, the equal-parts point, with two maturity
+conditions: the warning is raised only on a row whose prediction the gates
+let through (`reason == 0`), and only once the stream is at least 95%
+settled, the rule the other two notices keep (task 116, G). Without the first, the *first* solve of any spec fires it — one row
 against `k` slopes is under-determined by construction, and the warning
 cannot be retracted. Found verifying the shipped 0.9.0 wheel: an ordinary
 two-feature fit warned at `weight_sum = 1.00` ("0.27 data and 0.73 ridge") and
@@ -259,13 +267,28 @@ read `support_coef = 1.00` from the next row to the end of the stream. A
 user who chose a heavy ridge still hears it once, which is right — their
 coefficient really is mostly prior.
 
-The condition does not silence a true positive on a mature fit.
-`tests/test_window_budget.py`'s spec sets `min_weight = 0`, so it solves at
-one row, where the slope has no variance to read and is entirely the ridge,
-and `half_life = 1e9` leaves no cadence to refit: `pred_y` is one constant
-for all 300 rows, `coef` is `[4.100824, 0.0]`, and `support_coef` reads 0.00
-on every row. The warning names that correctly — the feature finding a
-degenerate spec in this repository's own tests.
+The gates open long before the shares settle, which is what the second
+condition is for (measured 2026-10-07 on 0.13.0's build, task 116, G):
+`ewridge` on two correlated features, `half_life = 200`, `standardize=True`,
+`ridge = 0.7`, settles at `support_coef` 0.51-0.53 and never reads below 0.5
+after row 1,000, yet at row 4, the first row the gates let through, the
+first rows' noisy feature variances read it below 0.5 in 8 seeds of 12 (2
+of 12 unstandardized at `ridge = 0.5`), and the once-only warning fired,
+wrongly. A stream without decay never settles, so never warns: the field,
+the summary's `min_support_coef` and the command line's closing line (§7.9)
+carry what it reads.
+
+The conditions do not silence a true positive on a settled fit: a duplicated
+pair under a ridge of 0.5 reads `a/(2a + 0.5)`, below the cut on every row,
+and is named on the first row 95% settled (`tests/test_readiness_models.py`,
+`crates/online-polars/tests/summary.rs`). (At a ridge of `1e-8` a duplicated
+pair reads 0.5 to rounding, on either side of it, so whether it is named is
+the rounding's.) `tests/test_window_budget.py`'s spec, which this section
+once named as the true positive, no longer is one: it set `min_weight = 0`
+and `half_life = 1e9`, and read `support_coef` 0.00 when the clock cadence
+left it no solve after the first, but the weight-share cadence (task 115
+(b)) refits it as its weight grows, and at 0.13.0 it reads 1.00, with
+`coef` `[0.006, 1.998]`, and nothing warns.
 
 ---
 
@@ -276,8 +299,9 @@ Per row, inside each spec's struct beside `weight_sum`, on by default:
 | field | type | bytes/row (§5.9) | meaning |
 |---|---|---|---|
 | `settled_frac` | Float64 | 8 | progress toward steady state; **null when the spec has no decay** (no steady state to settle toward) |
-| `support_coef` | Float64 × k, on the `coef` schedule | ~0 per row (only on `coef` rows) | share of each coefficient determined by the data rather than the ridge (§2.2); `ewridge` only |
-| `error_inflation_<slot>` (**opt-in**: costs `k²/2` per row, §2.1) | Float64 | 8 | `√(1 + h(x))`: how much this row's estimation variance inflates its expected error over the noise floor; `ewridge` only, refused elsewhere. The gate uses the stream average, which is free; the summary reports it |
+| `support_coef` | Float64 × k, on the `coef` schedule | ~0 per row (only on `coef` rows) | share of each coefficient determined by the data rather than the ridge (§2.2); `ewridge`, and since task 116 `huber` and `quantile` on the system their solve inverts, the band Gram as the loss weighs the rows. Not `lasso` (an L1 penalty has no shrinkage matrix: every active coefficient would read 1) nor `ew_cov` (no coefficients) |
+| `error_inflation_<slot>` (**opt-in**: costs `k²/2` per row, §2.1) | Float64 | 8 | `√(1 + h(x))`: how much this row's estimation variance inflates its expected error over the noise floor; `ewridge`, `rls` and `kalman` (task 116), refused elsewhere. `ewridge`'s and `rls`'s gates use the stream average, which is free, and the summary reports it; `kalman`'s gate reads this value |
+| `se_coef` (**opt-in**, `emit_se_coef`; task 116) | Float64 × k, on the `coef` schedule | ~0 per row | each coefficient's standard error in `coef`'s units, a report (§7.1); `ewridge`, `rls`, `kalman` |
 | `withheld_reason` | Enum | 1.41 | why `pred_*` is null this row: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation`; **null once the row is real**. Never a String (16 B/row even when every value is null, §5.9). |
 
 Per group in `summary()`: `settled_frac`, `weight_sum_settled` (the weight the
@@ -286,11 +310,13 @@ feature it belongs to (`min_support_coef_feature`), and `n_coef`.
 
 Warnings, queued in Rust as notices (`Bank::take_notices`), raised in
 Python as `ReadinessWarning` and printed on stderr by the command line,
-**once per (spec, group)**:
+**once per model instance of each (spec, group)** -- once per (spec, group)
+for one half-life, once per half-life under a grid, each instance judging
+its own stream -- and only once the stream is at least 95% settled:
 
 - **a coefficient more ridge than data** (`support_coef < 0.5`, on a row
-  whose prediction the gates let through, as settled on 2026-09-21, §2.2),
-  naming the feature(s);
+  whose prediction the gates let through, as settled on 2026-09-21, §2.2,
+  of a stream 95% settled, since task 116), naming the feature;
 - **`max_error_inflation` unreachable**: the stream has settled and
   `error_inflation` is still above the ceiling, so output will never appear
   — with the fix in the message: a half-life above the one it names, or
@@ -310,7 +336,11 @@ Python as `ReadinessWarning` and printed on stderr by the command line,
   steady state, `1 + (worst² − 1)·s/(2 − s)`, is still at or above the limit
   (or the weight's ceiling below the floor): read at 95% settled the ratio is
   still falling, and a gate a little above the limit there opened later,
-  after a notice that it never would;
+  after a notice that it never would. Not for `kalman` (task 116): its gate
+  reads each row's own value, which a row nearer the design's centre reads
+  lower, and its `P` settles on `coef_half_life`'s clock, not the spec's
+  decay, so neither a withheld row nor the Kish projection says the gate is
+  shut for good (§7.11);
 - **`min_weight` unreachable** (built in task 198): the stream is 95%
   settled and a target's weight tops out below its `min_weight` -- the
   ceiling `1/(1 − 2^(−d/h))` of §5.1 at the rows' spacing and weight, which
@@ -327,6 +357,12 @@ Python as `ReadinessWarning` and printed on stderr by the command line,
 Only report, never warn, when output appears but is degraded (a user who
 raised `max_error_inflation` asked for it): a short half-life can be
 deliberate.
+
+The command line closes a run (task 116, §7.9) with one line per spec that
+has something to say, after `wrote N rows`: the groups whose last row in the
+run was withheld, counted by `withheld_reason`, and the groups whose
+`min_support_coef` is below 0.5 --
+`spec "m": 3 groups whose last row was withheld (above_max_error_inflation 2, below_min_weight 1); 1 group with min_support_coef < 0.5`.
 
 ---
 
@@ -597,14 +633,15 @@ not `weight_sum`: at k=10, `weight_sum`=3.4 the Kish form predicts 1.65×, the
 one of them so. The exact `h(x)` of §2.1 has none of these approximations;
 per model:
 
-| model | statistic | status (0.9.0) |
+| model | statistic | status |
 |---|---|---|
-| `ewridge` (any ridge) | gate `edf/n_Kish`; per row `h(x) = x'Σ̂⁻¹x / n_Kish` | **built**: the gate within 2% of the observed error down to `n_Kish ≈ 2.3 k_eff`; the per-row form conservative (§2.1) |
-| `rls` | the same, from its own `R` factor | not built: keeps `min_weight` |
-| `marginal`, `ew_cov` and the other scalar EW estimators | `h = 1/n_Kish` | not built: keep `min_weight` |
-| `kalman` | `x'Px / R` — its own posterior | not built: keeps `min_weight` |
-| `lasso`, `ftrl` with L1 | `h` on the active-set Gram | not built (post-selection; df = active count): keep `min_weight` |
-| `sgd`, `pa`, `ftrl` without L1 | none | null; `min_settled_frac` and `min_weight` gate them |
+| `ewridge` (any ridge) | gate `edf/n_Kish`; per row `h(x) = x'Σ̂⁻¹x / n_Kish` | **built** (0.9.0), the gate on by default at `√2`: within 2% of the observed error down to `n_Kish ≈ 2.3 k_eff`; the per-row form conservative (§2.1) |
+| `rls` | gate `k_total/n_Kish` (its `edf` is at most `k_total` under `delta`'s fading prior: conservative); per row `‖R⁻ᵀz‖²·s₂/s₁`, the same in sum form, from its kept factor | **built** (task 116), off unless set; `min_weight` keeps its default. One `f64` of state, `s₂` |
+| `kalman` | per row `z'P⁻z / R`: the prior predictive variance over the noise, `P⁻` after the transition and the row's process noise; exact | **built** (task 116), off unless set; the gate reads each row's own value; the summary its mean field. Under process noise `P⁻` never reaches 0: the average row settles at about `√(1 + k·p)`, `p²/(p+1) = c²`, `c = ln2·d/coef_half_life` (§7.11) |
+| `lasso` | gate `df/n_Kish`, `df` the active count plus the intercept (Zou–Hastie–Tibshirani 2007; at `l1_ratio < 1` the count bounds the elastic net's `df` from above) | **built** (task 116), gate only, off unless set: no factor is kept for a row's own leverage |
+| `marginal`, `ew_cov` and the other scalar EW estimators | `h = 1/n_Kish` | **not built, by decision** (task 116): `1/n_Kish` is a mean's variance, not a standard deviation's or a correlation's, and their `min_weight` of `k + 1` already holds the gate's point; the refusal says so |
+| `huber`, `quantile` | none linear in the targets | refused: an M-estimator's variance is a sandwich; `min_weight` gates them, and `support_coef` reads their band Gram (task 116) |
+| `sgd`, `pa`, `ftrl` | none | refused (no second moment); `min_settled_frac` and `min_weight` gate them |
 
 ### 5.9 Memory of the output fields (10M rows, process growth, fresh process each)
 
@@ -646,20 +683,29 @@ reported 0.00 for String and must not be trusted for it.
 ## 7. Questions the design left: answered, and still open
 
 The design left ten questions, numbered §7.1 to §7.10 as the rest of this
-document cites them. Six were answered while it was built, and §7.8 by task
-198, which also declared §7.2's answer final. Three are open, and all three
-are part of PLAN task 116.
+document cites them. Six were answered while it was built, §7.8 by task
+198, which also declared §7.2's answer final, and §7.7 and §7.9 by task 116,
+which built §7.1's standard errors as a report. One part is open: §7.1's
+CUSUM, a task of its own. Task 116 added §7.11, on `kalman`'s gate.
 
-### Still open, in PLAN task 116
+### Still open
 
-**7.1 Coefficient stability — what theory gives (2026-09-21; proposal,
-not built; PLAN task 116 lists its coefficient standard errors).** All of
+**7.1 Coefficient stability — what theory gives (2026-09-21; the standard
+errors built as a report by task 116, the CUSUM a task of its own).** All of
 it rides on `M = Σ̂⁻¹ / n_Kish`, the coefficient covariance up to `σ²`
 under the same assumption as `h` (§2.1), for the linear-fit family:
 
 - **Coefficient covariance** `Cov(β̂) = σ²M`, so `se_j = σ√M_jj` and
   `t_j = β̂_j/se_j`. `h(x) = x'Mx` is this covariance seen through one
-  row. Emit `se` on the `coef` schedule (`k` floats per solve).
+  row. **Built (task 116)** as `se_coef` under `emit_se_coef`, on the
+  `coef` schedule and in `coef`'s units -- `T·Cov·Tᵀ`'s diagonal, `T` the
+  unstandardizing map, so the intercept's too: `ewridge` `σ̂²M` (it
+  ignores the ridge's sandwich `Σ̂⁻¹Σ̂_rawΣ̂⁻¹ ≤ Σ̂⁻¹`, so errs large),
+  `rls` `σ̂²(s₂/s₁)A⁻¹`, `kalman` its posterior `P`, exact; `σ̂` the slot's
+  EW out-of-sample residual std, the row's `sigma`, which still carries
+  the estimation error in warm-up (`√(1 + h)` large, so conservative).
+  Refused for `lasso` (post-selection), `huber`/`quantile` (a sandwich) and
+  the gradient models (no second moment).
 - **σ² unbiased under stable coefficients.** The one-step error
   `e_t = y_t − x_t'β̂_{t−1}` has variance `σ²(1 + h(x_t))` when β is
   constant (recursive residuals, Brown–Durbin–Evans 1975), so
@@ -670,7 +716,8 @@ under the same assumption as `h` (§2.1), for the linear-fit family:
   null) the `w_t` are iid: that is the null of the CUSUM /
   CUSUM-of-squares tests, and rejecting it *is* "coefficients unstable".
   Today's detector (Page-Hinkley, `drift.rs`) is fed `|e_t|/σ̂_raw`
-  with `σ̂_raw` the slot's EW residual std (`stream.rs` ~3217). That raw
+  with `σ̂_raw` the slot's EW residual std (`stream.rs`, `run_instance`,
+  the drift step). That raw
   scaling already cancels most of the warmup inflation — numerator and
   denominator both carry `√(1 + h)` — so it does *not* simply fire on
   warmup; the std merely lags, averaging past, larger `h`. Minimal step:
@@ -685,19 +732,44 @@ under the same assumption as `h` (§2.1), for the linear-fit family:
   tuned by sweep — ruled out by the standard in §2.1.
 
 Caveats as for `h`: variance only, ridge bias excluded; lasso
-post-selection; nothing for `sgd`/`pa`/`ftrl`. **Open:** whether any of
-this gates (a `min_t` on coefficients is a coefficient-reader's setting,
-not a prediction gate) or only reports.
-
-**7.7 Standardisation (PLAN task 116: the flicker).** `support_coef` and
-`h` live in the space the ridge acts in (standardised under
-`standardize`); the standardiser's own noisy first rows can make the flag
-flicker before it settles.
-
-**7.9 CLI (PLAN task 116)** — one closing line counting groups not
-settled / low support?
+post-selection; nothing for `sgd`/`pa`/`ftrl`. **Decided (task 116): the
+standard errors report and do not gate** (a `min_t` on coefficients is a
+coefficient-reader's setting, not a prediction gate). **Open, a task of its
+own:** the CUSUM and its minimal step, which would change `emit_drift`'s
+output.
 
 ### Answered
+
+**7.7 Standardisation (the flicker)** -- answered by task 116 (G).
+`support_coef` and `h` live in the space the ridge acts in (standardised
+under `standardize`), and the standardiser's own noisy first rows made the
+flag flicker below 0.5 before it settled (§2.2's measurement); the warning
+now waits for a stream 95% settled, the rule the other notices keep, and
+the field and the summary carry what an unsettled or undecayed stream reads.
+
+**7.9 CLI** -- answered by task 116 (H): after `wrote N rows`, one line per
+spec that has something to say, the groups whose last row was withheld by
+reason and the groups with `min_support_coef < 0.5` (§3); nothing for a spec
+with neither. Read from the run's own output and the summary.
+
+**7.11 `kalman`'s gate and the "never met" notice (task 116; stopped,
+for the user).** `kalman`'s noise gate reads each row's own
+`√(1 + z'P⁻z/R)`, exact (docs/PLAN.md task 116). Under process noise `P⁻`
+settles per direction at `p = P⁻/R` with `p²/(p+1) = c²`,
+`c = ln2·d/coef_half_life`, and the average row at about `√(1 + k·p)`:
+measured on standardized, uncorrelated features (`k = 10`, `d = 1`) the
+mean of `h` is 6.0% above `k·p` at `coef_half_life = 50` (1.0715 against
+the formula's 1.0675) and 60% above at 5 (1.84 against 1.58), each row's
+rank-one update narrowing one direction where the mean field spreads it
+over all of them. But the gate is per row, and rows spread around that
+average -- at 50, from 1.022 at the 1st percentile to 1.110 at the 90th --
+so a limit a little below the average floor still lets a share of rows
+through (about two in five at 1.06), and a notice "every prediction is
+withheld for good", tested as `ewridge`'s is (5% above the figure opens
+the gate, 5% below does not), cannot hold for it. The existing notice is
+switched off for `kalman` rather than made to say something false; whether
+it should judge the best row (`√(1 + 1/(P⁻⁻¹)₀₀/R)` with an intercept,
+never with none) or the average one is the user's call.
 
 **7.2 Default of `min_settled_frac`.** Settled at `0` by §4.1.1 on a
 theory argument (the mean-form fit is unbiased from row one under
@@ -793,12 +865,16 @@ reads back as an `Enum` over exactly the three names. `ew_class`'s
   identical under any chunking. Only `coef`, and `support_coef` beside it,
   may follow the chunking (both are emitted on each *group's* last row in
   each chunk, the exception CONTRIBUTING.md and docs/TESTING.md state).
-- **Model applicability:** `support_coef` and `h` exist for `ewridge`
-  only; the rest of the Gram-factorising family (`lasso`, `ew_cov`, the
-  robust models) is PLAN task 116. `rls`/`kalman` track an inverse (a
-  different, arguably better signal — out of scope); the gradient models
-  (`sgd`, `pa`, `ftrl`) have no second moment. The fields are absent where
-  they do not exist. `settled_frac` exists for every decayed model.
+- **Model applicability** (task 116): the noise gate on `ewridge`
+  (default `√2`), `rls`, `kalman` and `lasso` (off unless set); the per-row
+  `error_inflation` on `ewridge`, `rls` and `kalman`; `support_coef` on
+  `ewridge`, `huber` and `quantile`; `se_coef` on `ewridge`, `rls` and
+  `kalman`. Not `ew_cov` and the scalar EW models (`1/n_Kish` is a mean's
+  variance), nor `lasso`'s data shares (no shrinkage matrix for L1), nor
+  the robust models' noise gate or standard errors (a sandwich), nor any of
+  it for the gradient models (`sgd`, `pa`, `ftrl`; no second moment). The
+  fields are absent where they do not exist, and a setting that reads one is
+  refused, naming why. `settled_frac` exists for every decayed model.
 - **`error_inflation`:** `s₂ = Σλ²ⁱwᵢ²` (one `f64`, decay `λ²`, weight
   `w²`, the same capped `d_clock` as the Gram) persisted beside `weight_sum`
   and reset with it; `h(x) = x'Σ̂⁻¹x / n_Kish` per row from the Cholesky
@@ -823,6 +899,23 @@ reads back as an `Enum` over exactly the three names. `ew_class`'s
 | the noise **gate** (`edf/n_Kish`) | — | `O(1)` | +1 `f64` (`s₂`) | `edf` from the pivots, free |
 | `error_inflation` per row (`‖L⁻¹x‖²/n_Kish`), **opt-in** | 8 B | `k²/2`: one triangular solve against the kept factor | the ridged system per (Gram, combo), `k_c²`, persisted so the factor survives the state file (rebuilt on load); the factor itself beside it in memory | — |
 | `support_coef` | `k` floats on `coef` rows only | — | — | `O(k²)` given `G⁻¹`, or `O(k³)` if the inverse is not otherwise formed |
+
+**Task 116's statistics, measured** (2026-10-08, this repository's release
+build against 0.13.0's on the same 100,000-row frame: one group, 10
+features and an intercept, half-life 500, the best of five runs, rounds
+interleaved; the machine shared, its load 4-7 on 14 cores; ns per row):
+
+| statistic | off (base → new) | on | state |
+|---|---|---|---|
+| `rls`'s `s₂` (always kept) | 312-358 → 319-358: within the noise | — | +1 `f64` |
+| `rls` gate, `max_error_inflation = 1.1` | — | +1 (`O(1)`) | — |
+| `rls` row field, `emit_error_inflation` | — | +70 (`O(k²)`, one forward substitution) | — |
+| `kalman` gate (per row) | 212-223 → 211-227: nothing read while off | +115 to +120 (`O(k²)`) | — |
+| `kalman` row field | — | +115 (the same value) | — |
+| `lasso` gate | 244-256 → 252-254 | +15 to +20 (`O(path · k)`) | — |
+| `huber` / `quantile` `support_coef` (on by default, with `coef`) | 205 → 215 / 340 → 354: the last solve's factor held for its read | `coef` on every row: 285-300 → 395-415, an `O(k³)` read a solve | the shares, `k` a target |
+| `se_coef`, `coef` once per chunk (the default) | — | `ewridge` +10, `rls` and `kalman` within the noise | `ewridge` keeps its systems (as `emit_error_inflation` does) |
+| `se_coef`, `coef` on every row | — | `ewridge` 445 → 950, `rls` 440 → 1,315 (`O(k³)` a row), `kalman` 330 → 465 (`O(k²)`) | — |
 
 So out of the box the Gram family's per-row cost does not change: the
 gate is `O(1)` per row. Only a user who opts into the per-row

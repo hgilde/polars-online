@@ -906,7 +906,7 @@ factor.**
 
 A model should not report a number it is not yet informed enough to give.
 Every model with a decay shares two gates that say what "informed enough"
-means, and `ewridge` adds a third
+means, and the linear fits add a third, on by default on `ewridge` alone
 ([docs/WARMUP-AND-CONVERGENCE.md](docs/WARMUP-AND-CONVERGENCE.md)). The
 gates hold back output only: the model learns from every row either way.
 
@@ -914,7 +914,7 @@ gates hold back output only: the model learns from every row either way.
 |---|---|---|---|
 | `min_weight` | by model, below | `weight_sum` is below it | the weight behind the state |
 | `min_settled_frac` | `0`, off | the decay window is less full than this fraction of its steady state | `settled_frac = 1 − 2^(−T / half_life)`, with `T` the decay time the model has seen: `0.5` at one half-life, `0.75` at two, whatever the row rate |
-| `max_error_inflation`, `ewridge` only | `sqrt(2)` | estimation error would inflate the prediction's error over the noise floor by more than this factor | `error_inflation = sqrt(1 + edf / n_kish)`: the effective degrees of freedom the fit used, over Kish's effective sample size behind it |
+| `max_error_inflation` | `sqrt(2)` on `ewridge`; off on `rls`, `kalman` and `lasso` | estimation error would inflate the prediction's error over the noise floor by more than this factor | `error_inflation = sqrt(1 + edf / n_kish)`: the effective degrees of freedom the fit used, over Kish's effective sample size behind it (below) |
 
 **`weight_sum` means the same in every model, so one `min_weight` means
 the same for every spec in a bank.** It is the *weight behind the state*
@@ -949,13 +949,24 @@ shorter history would not represent.
 
 **`max_error_inflation` follows the size of the fit:** add a feature, and
 the gate holds predictions back longer. It reads Kish's count, so one row
-carrying a hundred times the weight of the others counts as barely one.
+carrying a hundred times the weight of the others counts as barely one. Each
+model that has it reads its own estimation variance; the others refuse the
+setting and say why:
+
+| model | `error_inflation` | |
+|---|---|---|
+| `ewridge` | `sqrt(1 + edf / n_kish)` | on by default at `sqrt(2)` |
+| `rls` | `sqrt(1 + k / n_kish)`, `k` the coefficients: its `edf` is at most `k` under the fading prior | off unless set |
+| `lasso` | `sqrt(1 + df / n_kish)` per penalty, `df` the active coefficients and the intercept | off unless set |
+| `kalman` | `sqrt(1 + z' P z / R)` for each row: the prediction's own variance, its coefficients' covariance carried through the row's clock gap, over the noise | off unless set; read per row, so a row far from the design is held back where others pass |
 
 **Each row says how ready its model was.** `summary()` carries the same
 readings per group, with `weight_sum_settled`, the weight the stream settles at,
-and a `ReadinessWarning` names, once, a coefficient more ridge than data,
-or a noise gate or a `min_weight` the settled stream can no longer meet,
-with the half-life or the ceiling that would change that.
+and once the stream is 95% settled a `ReadinessWarning` names, once, a
+coefficient more ridge than data, or a noise gate or a `min_weight` the
+stream can no longer meet, with the half-life or the ceiling that would
+change that. The command line closes a run with one line per spec whose
+groups ended withheld or with a coefficient more ridge than data.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -969,14 +980,15 @@ rows = po.ModelBank([warm]).fit_predict(df).unnest("warm")
 rows.select("pred_y", "settled_frac", "withheld_reason", "error_inflation_y")
 ```
 
-The readiness fields `ewridge` writes:
+The readiness fields:
 
-| field | what it holds |
-|---|---|
-| `settled_frac` | how full the decay window is |
-| `withheld_reason` | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight` or `above_max_error_inflation`, in that order of precedence |
-| `error_inflation_y` | the row's leverage against the fit: high on a row leaning on a direction the data never showed, at one triangular solve a row |
-| `support_coef` | beside `coef`: each coefficient's data share, `1 - ridge * (S^-1)_jj`. A duplicated pair of features reads 0.5 each |
+| field | on | what it holds |
+|---|---|---|
+| `settled_frac` | every model that writes a row | how full the decay window is |
+| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight` or `above_max_error_inflation`, in that order of precedence |
+| `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
+| `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
+| `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
 
 ### Labels that arrive late
 
@@ -1652,6 +1664,10 @@ standardize = true
 ```sh
 online --config bank.toml        # parquet in, parquet out: the numbers the bank gives in Python
 ```
+
+After `wrote N rows`, a run says which specs ended with groups not ready,
+one line each, and nothing for the others:
+`spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
 
 [docs/RUNNER.md](docs/RUNNER.md) has every key and flag.
 

@@ -94,17 +94,24 @@ def test_the_readme_min_weight_table_is_what_the_bank_resolves():
 
 def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
     """The two readiness gates, in the README's table above `min_weight`'s:
-    `min_settled_frac` off, `max_error_inflation` sqrt(2)."""
+    `min_settled_frac` off, `max_error_inflation` sqrt(2) on `ewridge` and
+    off on the other models that have it (docs/PLAN.md task 116)."""
     defaults = {row[0]: row[1] for row in table_after("### Warm-up")}
     assert defaults == {
         "`min_weight`": "by model, below",
         "`min_settled_frac`": "`0`, off",
-        "`max_error_inflation`, `ewridge` only": "`sqrt(2)`",
+        "`max_error_inflation`": "`sqrt(2)` on `ewridge`; off on `rls`, `kalman` and `lasso`",
     }
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)
-    stream = resolved(spec)["stream"]
+    kw = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
+    stream = resolved(po.spec.ewridge("m", **kw))["stream"]
     assert stream["min_settled_frac"] == 0.0
     assert stream["max_error_inflation"] == 2**0.5
+    for spec in (
+        po.spec.rls("m", **kw),
+        po.spec.kalman("m", coef_half_life=50.0, **kw),
+        po.spec.lasso("m", lasso_path=[0.1], **kw),
+    ):
+        assert resolved(spec)["stream"]["max_error_inflation"] == "inf", spec["model"]
 
 
 def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
