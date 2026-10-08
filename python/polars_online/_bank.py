@@ -966,7 +966,9 @@ class ModelBank:
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
             last row (docs/WARMUP-AND-CONVERGENCE.md): how full the decay
-            window is, and the largest noise-gate ratio over its slots --
+            window is -- the fraction the next row's ``settled_frac`` reads,
+            which under ``embargo`` counts the clock the held rows have
+            covered too -- and the largest noise-gate ratio over its slots --
             ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
             ``sqrt(1 + k_total / n_kish)``, ``lasso``'s
             ``sqrt(1 + df / n_kish)``, and for ``kalman``, whose gate reads
@@ -975,10 +977,14 @@ class ModelBank:
             no such reading.
         ``weight_sum_settled``
             The weight the stream settles at, read from where it stands:
-            ``(W - w1 * (1 - settled_frac)) / settled_frac``, ``W`` the
-            accumulated weight a next row would report as ``weight_sum`` and
-            ``w1`` a row's weight (1 without a weight column, the rows' mean
-            with one). On a regular stream -- rows ``d`` apart, of one weight --
+            ``(W - w1 * (1 - s)) / s``, ``W`` the accumulated weight a next
+            row would report as ``weight_sum``, ``w1`` a row's weight (1
+            without a weight column, the rows' mean with one), and ``s`` the
+            fraction the learned rows have settled. That is ``settled_frac``
+            but under ``embargo``, where the held rows' clock is left out:
+            ``W`` has neither decayed by nor accumulated them, and the
+            projection pairs a weight with the clock it has covered.
+            On a regular stream -- rows ``d`` apart, of one weight --
             it is the ceiling ``1 / (1 - 2 ** (-d / half_life))`` times that
             weight exactly, from the second row on. It says, before the stream
             gets there, whether a ``min_weight`` can be met. Null after a

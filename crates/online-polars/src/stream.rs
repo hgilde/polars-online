@@ -2657,9 +2657,17 @@ impl Stream {
     /// first instance, as it stands after the last row.
     pub fn readiness(&self, spec: &Spec) -> Readiness {
         let decay = self.decays.first().copied();
-        let settled = decay.map_or(f64::NAN, |d| {
-            settled_frac(d, self.persisted.decay_time.first().copied().unwrap_or(0.0))
-        });
+        let decay_time = self.persisted.decay_time.first().copied().unwrap_or(0.0);
+        // Two fractions, as a row reads them (§8): the one reported counts
+        // the clock the rows held under `embargo` have covered, as the row's
+        // `settled_frac` does, so the summary reads what the next row would
+        // (review round 5, C4); `weight_sum_settled` divides by the learned
+        // rows' alone, the clock its weight has settled on, or the ceiling
+        // pairs a weight with a fraction it has not reached (review round 5,
+        // C1).
+        let held = self.persisted.pending_clock.first().copied().unwrap_or(0.0);
+        let settled = decay.map_or(f64::NAN, |d| settled_frac(d, decay_time + held));
+        let learned = decay.map_or(f64::NAN, |d| settled_frac(d, decay_time));
         let model = self.models.first().map(|(_, m)| m);
         // The weight a row has: 1 without a weight column, and the rows'
         // mean weight with one, which on the regular stream the estimate is
@@ -2677,7 +2685,7 @@ impl Stream {
             _ => f64::NAN,
         };
         let weight_sum_settled = match model {
-            Some(m) if !windowed => settled_weight(m.n_eff(), row_weight, settled),
+            Some(m) if !windowed => settled_weight(m.n_eff(), row_weight, learned),
             _ => f64::NAN,
         };
         let mut infl = Vec::new();

@@ -873,6 +873,16 @@ reads back as an `Enum` over exactly the three names. `ew_class`'s
   `1 − 2^(−(j+E−1)/h)` at row `R + j`, where zeroing both had read
   `1 − 2^(−j/h)` for the rest of the stream (review round 4, PB1). A clock
   reset drops the held rows, and their clock with them.
+- **Which fraction each reading takes.** Two, which differ only under
+  `embargo`. The held-inclusive one, the clock the learned rows and the
+  held rows have covered: the row's `settled_frac`, the `min_settled_frac`
+  gate, and `summary()`'s `settled_frac`, which stands after the last row
+  and so reads what the next row will (it read the learned rows' alone
+  until review round 5, C4: 0.97632 against the next row's 0.98325 at
+  `h = 10`, `embargo = 5`). The learned rows' alone, the clock the weight
+  has covered: `summary()`'s `weight_sum_settled` and the two "not met"
+  notices, which project a ceiling from that weight and must divide it by
+  the fraction it has settled (review round 5, C1).
 - **`settled_frac`** per decay instance (a half-life grid gives one per
   instance); null when decay is off (`half_life = inf` / `lam = 1`).
 - **`support_coef`** `= diag(G_raw·G⁻¹)` on the solve schedule, from the

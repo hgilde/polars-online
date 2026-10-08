@@ -766,6 +766,32 @@ class TestSettledWeight:
         # stream has covered 9 clock units, none of them learned yet.
         assert field(out, "settled_frac")[10] == pytest.approx(1.0 - 2.0 ** (-9.0 / h))
 
+    @pytest.mark.parametrize("embargo", [None, 5.0])
+    def test_the_summarys_settled_frac_is_the_next_rows(self, embargo):
+        """Review round 5 (C4): the summary stands after the last row, so its
+        ``settled_frac`` is the one the next row reads, to the bit: the clock
+        the rows held under ``embargo`` have covered counts, as the row's
+        field counts it (§8). It read the learned rows' clock alone: 60 rows
+        a clock unit apart at ``half_life = 10`` and ``embargo = 5``, the
+        summary said 0.97632 (``T = 54``) where the next row reads 0.98325
+        (``T = 59``). ``weight_sum_settled`` keeps the learned rows'
+        fraction, the clock its weight has covered, and stays the ceiling
+        ``1 / (1 - 2 ** (-1 / 10))`` with or without the held rows."""
+        h = 10.0
+        df = frame(61)
+        kw = {} if embargo is None else {"embargo": embargo}
+        s = po.spec.ewridge(
+            "m", targets=["y"], features=["x0"], clock="t", gap_cap=1e9, half_life=h, **kw
+        )
+        bank = po.ModelBank([s])
+        _fit_noting(bank, df[:60])
+        summary = bank.summary("m")
+        after = field(_fit_noting(bank, df[60:]).out, "settled_frac")[0]
+        assert summary["settled_frac"][0] == after, (summary["settled_frac"][0], after)
+        assert after == pytest.approx(1.0 - 2.0 ** (-59.0 / h), rel=1e-15)
+        ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / h))
+        assert summary["weight_sum_settled"][0] == pytest.approx(ceiling, rel=1e-12)
+
     @pytest.mark.parametrize(
         ("k", "h", "limit"),
         [
