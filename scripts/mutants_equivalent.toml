@@ -1443,3 +1443,32 @@ line_has = "if !self.can_move() || e.len() != k || !e.iter().all(|x| *x > 0.0 &&
 why = """the scales the mutant lets through leave their row's pivot 0 or \
 negative (a scale of 0 or below) or infinite (`+inf`), which `moved` \
 refuses: `None` either way, as above"""
+
+# Task 218 (docs/PLAN.md): the survivors of run 37834489097 over the lines
+# of the push to 103d721 that no input tells from the original. Every other
+# survivor there got a test.
+
+[[equivalent]]
+file = "crates/online-core/src/clock.rs"
+function = "Decay::factor"
+mutation = "replace match guard d_clock == 1.0 with false"
+line_has = "Decay::Lam(l) if d_clock == 1.0 => l,"
+why = """the mutant hands `d_clock = 1` to the platform's `pow`, which returns \
+`l` itself on every platform this runs on: Apple's libm for every one of \
+100,063,203 values of `l` in (0, 1] (every power of two and every \
+`1 − 2^-k`, `0.5^(1/h)` for `h` to 20,000, the subnormals' edge and 10^8 \
+uniform and random-bit doubles, debug and release, 2026-10-08), and \
+glibc's on CI, where this mutant passed the bit-pinned streams under \
+`Lam` at unit steps (`sgd.rs`'s digests). The guard is the promise no \
+libm makes (review round 5, A4), kept for one that breaks it; no test \
+machine runs one"""
+
+[[equivalent]]
+file = "crates/online-core/src/clock.rs"
+function = "Decay::factor"
+mutation = "replace match guard d_clock == 0.0 with false"
+line_has = "Decay::Lam(_) if d_clock == 0.0 => 1.0,"
+why = """the mutant hands `d_clock = ±0` to `pow`, and `pow(x, ±0)` is 1 for \
+every `x` by C's Annex F (F.10.4.4), which every libm met keeps: 1 for \
+every one of the 100,063,203 values `Decay::factor`'s `d_clock == 1.0` \
+entry names, at `+0` and `-0`"""
