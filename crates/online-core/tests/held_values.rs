@@ -1719,6 +1719,152 @@ fn rls_predicts_as_well_at_every_level_once_the_feature_stops() {
     }
 }
 
+/// Rows after the held feature moves again: 10 half-lives.
+const AFTER: usize = 200;
+
+/// [`stream_of`]'s rows with `held` rows still, then [`AFTER`] rows of the
+/// third feature moving again; with `moving` rows before the hold, or 0 for
+/// a feature constant from the first row.
+fn held_then_moving(level: f64, moving: usize, held: usize) -> Vec<([f64; 3], f64)> {
+    let mut s = 7u64;
+    (0..moving + held + AFTER)
+        .map(|i| {
+            let (x0, x1) = (lcg(&mut s), lcg(&mut s));
+            let still = (moving..moving + held).contains(&i);
+            let u = if still { 0.37 } else { lcg(&mut s) };
+            let y = 1.0 + 2.0 * x0 - x1 + 0.5 * u + 0.3 * lcg(&mut s);
+            ([x0, x1, level + u], y)
+        })
+        .collect()
+}
+
+/// What a model does over [`held_then_moving`]'s stream: the slope on the
+/// held feature over the rows it is still (from row 10 of a feature held
+/// from the first), the half-lives into the hold at which it first passes 1
+/// in size, and the root mean square and the largest of `pred - y` over the
+/// rows after it moves again.
+struct Windup {
+    slope: (f64, f64),
+    passes_one: Option<f64>,
+    rms: f64,
+    worst: f64,
+}
+
+fn windup<M: OnlineModel>(
+    mut m: M,
+    slope: impl Fn(&M) -> f64,
+    level: f64,
+    moving: usize,
+) -> Windup {
+    let held = HELD_HALFLIVES * H as usize;
+    let rows = held_then_moving(level, moving, held);
+    let (still, after) = (moving.max(10)..moving + held, moving + held);
+    let mut out = Windup {
+        slope: (f64::INFINITY, f64::NEG_INFINITY),
+        passes_one: None,
+        rms: 0.0,
+        worst: 0.0,
+    };
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let p = m.step(x, &[Some(*y)], d(i), 1.0).pred[0];
+        let b = slope(&m);
+        if still.contains(&i) {
+            out.slope = (out.slope.0.min(b), out.slope.1.max(b));
+            if out.passes_one.is_none() && (b.abs() > 1.0 || b.is_nan()) {
+                out.passes_one = Some((i - moving) as f64 / H);
+            }
+        }
+        if i >= after {
+            out.rms += (p - y).powi(2) / AFTER as f64;
+            out.worst = out.worst.max((p - y).abs());
+        }
+    }
+    out.rms = out.rms.sqrt();
+    out
+}
+
+/// **`rls` winds up on a feature that holds one value; `ewridge` does not**
+/// (docs/PLAN.md task 217: `rls.rs`, the builder's docstring and the README
+/// give these numbers). `rls` is the sum-form ridge whose prior fades, so a
+/// feature held at a value `c` other than 0 shows it only the sum
+/// `intercept + c·slope`: the information that tells the slope from the
+/// intercept decays by `lam` a row with nothing to renew it, and once it is
+/// under a rounding step of `A` rounding sets the slope. The same from the
+/// first row. Measured, held 150 half-lives after 300 rows of moving, then
+/// moving again 10 half-lives: at 0.87 the slope ranged over ±3e13 from 54
+/// half-lives in, and `pred - y` once it moved was 3.1e11 rms, 4.4e12 at
+/// worst; at 1,000, ±8e9 from 43 in, 8.3e7 rms; at 1e8, ±5e5 from 62 in,
+/// 4.6e3 rms. Constant at 0.37 from the first row: ±3e13 from 50 in, 7.0e11
+/// rms (from 59 and 76 at 1,000 and 1e8). Held at exactly 0 there is no
+/// such direction, and the slope stays 0.41 to 0.53. `ewridge`'s ridge is
+/// on the means, does not fade, and centres the feature: its slope stays 0
+/// to 0.51, resting toward 0, and its error once the feature moves is 0.19
+/// to 0.20 rms (the noise's is 0.17), at every level and from the first row.
+#[test]
+fn rls_winds_up_on_a_held_feature_and_ewridge_does_not() {
+    let rls = || Rls::new(rls_cfg()).unwrap();
+    let rls_slope = |m: &Rls| m.coefficients()[0][3];
+    let ridge_slope = |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]);
+    // Held after moving, at 0.87, 1,000 and 1e8, and constant from the
+    // first row at 0.37, 1,000 and 1e8: `level + 0.37` is the value held.
+    for (level, moving) in [
+        (0.5, MOVING),
+        (1e3, MOVING),
+        (1e8, MOVING),
+        (0.0, 0),
+        (1e3 - 0.37, 0),
+        (1e8 - 0.37, 0),
+    ] {
+        let case = format!("held at {} after {moving} rows moving", level + 0.37);
+        let r = windup(rls(), rls_slope, level, moving);
+        println!(
+            "rls {case}: slope {:.3e}..{:.3e}, passes 1 at {:?} half-lives, then {:.3e} rms, \
+             {:.3e} at worst",
+            r.slope.0, r.slope.1, r.passes_one, r.rms, r.worst
+        );
+        let onset = r.passes_one.unwrap_or(f64::NAN);
+        assert!(
+            (30.0..80.0).contains(&onset),
+            "rls {case}: the slope first passes 1 at {onset} half-lives held"
+        );
+        assert!(
+            r.slope.1 - r.slope.0 > 1e4 && r.rms > 1e3,
+            "rls {case}: the slope over {:?} while held, {} rms once it moves",
+            r.slope,
+            r.rms
+        );
+        let e = windup(
+            EwRidge::new(ridge(false)).unwrap(),
+            ridge_slope,
+            level,
+            moving,
+        );
+        println!(
+            "ewridge {case}: slope {:.3e}..{:.3e}, then {:.4} rms, {:.4} at worst",
+            e.slope.0, e.slope.1, e.rms, e.worst
+        );
+        assert!(
+            e.passes_one.is_none() && e.slope.0 >= 0.0 && e.slope.1 <= 0.52 && e.rms < 0.21,
+            "ewridge {case}: the slope over {:?} while held, {} rms once it moves",
+            e.slope,
+            e.rms
+        );
+    }
+    // Held at exactly 0 the fit sees nothing in that direction, and the
+    // slope stays where it was.
+    let r = windup(rls(), rls_slope, -0.37, MOVING);
+    println!(
+        "rls held at 0: slope {:.3e}..{:.3e}, then {:.4} rms",
+        r.slope.0, r.slope.1, r.rms
+    );
+    assert!(
+        r.passes_one.is_none() && r.slope.0 > 0.4 && r.slope.1 < 0.55 && r.rms < 0.21,
+        "rls held at 0: the slope over {:?}, {} rms once it moves",
+        r.slope,
+        r.rms
+    );
+}
+
 /// **`ftrl` does not standardize, and its fit depends on a feature's
 /// level** (docs/PLAN.md task 209's report raised it; task 215 documents
 /// it): with the stream's third feature at a level `L`, the squared loss's

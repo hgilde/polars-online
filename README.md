@@ -2814,6 +2814,34 @@ rls = po.spec.rls(
 symmetry to rounding by a factor of `1/λ` per row, and one extreme row can
 cancel `P` and freeze a coefficient for good.
 
+**A feature that holds one value for long winds `rls` up, so use `ewridge`
+for a long-running stream whose features can go quiet.** The prior `delta`
+fades with the sums, so nothing holds a coefficient in a direction the data
+stop exciting. A feature held at a value `c` other than 0 shows the fit
+only `intercept + c·slope`. The information that tells the slope from the
+intercept then decays by `λ` a row, with nothing to renew it. Once it is
+under a rounding step, rounding sets the slope, and the slope wanders. A
+feature constant from its first row winds up the same way. Held at exactly
+0, it excites nothing in that direction, and the slope stays where it was.
+`ewridge`'s default `ridge` is a penalty on the means that never fades, and
+it centres each feature, so it does not wind up. Measured with
+`half_life=20` (a row a clock unit), `delta=1` and noise 0.17, on a feature
+held for 150 half-lives after 300 rows of moving, then moving again for 10
+(task 217):
+
+| the run | the slope while held (0.5 in the data) | it first passes 1 | `pred − y` once it moves: rms / worst |
+|---|---|---|---|
+| `rls`, held at 0.87 | −3.1e13 to 3.0e13 | 54 half-lives in | 3.1e11 / 4.4e12 |
+| `rls`, held at 1,000 | −8.3e9 to 8.1e9 | 43 | 8.3e7 / 1.2e9 |
+| `rls`, held at 1e8 | −4.6e5 to 4.5e5 | 62 | 4.6e3 / 6.5e4 |
+| `rls`, constant at 0.37 from the first row | −3.0e13 to 3.1e13 | 50 | 7.0e11 / 9.9e12 |
+| `rls`, held at 0 | 0.41 to 0.53 | never | 0.20 / 0.74 |
+| `ewridge` (`ridge=1e-6`, solved every row), any of these | 0 to 0.51 | never | 0.19 to 0.20 / 0.37 to 0.74 |
+
+The fit held for some 30 half-lives in every case measured. Constant from
+the first row at 1,000 and 1e8, the slope first passed 1 at 59 and 76
+half-lives.
+
 #### `lasso` — lasso path, its penalty chosen as it runs
 
 *API:* [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) — *Rust:* [`lasso.rs`](crates/online-core/src/lasso.rs) — *Outputs:* [fields](docs/OUTPUTS.md#lasso)

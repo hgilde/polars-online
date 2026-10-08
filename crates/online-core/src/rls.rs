@@ -43,6 +43,38 @@
 //! docs/PLAN.md task 195 (N11; review round 4, CA7). Its unit is the
 //! features' squared, summed: `A` is `Σ w z zᵀ`.
 //!
+//! **A feature that holds one value winds the fit up** (docs/PLAN.md task
+//! 217). The prior fades with the sums, so nothing holds a coefficient in a
+//! direction the data stop exciting. A feature held at a value `c` other
+//! than 0 shows the fit only `intercept + c·slope`. The information that
+//! tells the slope from the intercept, `v = (−c, 1)`, then decays by `lam`
+//! a row with nothing to renew it, while each row's rotations add rounding
+//! at the size of the direction the row does excite. Once `vᵀ A v` is under
+//! that rounding, the slope is read from it and wanders. Measured on
+//! `tests/held_values.rs`'s stream (`half_life` 20 rows, `delta` 1, noise
+//! 0.17; a feature that moved for 300 rows, held for 150 half-lives, then
+//! moved again for 10):
+//!
+//! ```text
+//! held at        slope while held     first past 1   pred − y once it moves (rms / worst)
+//! 0.87           −3.1e13 .. 3.0e13    54 half-lives  3.1e11 / 4.4e12
+//! 1,000          −8.3e9  .. 8.1e9     43             8.3e7  / 1.2e9
+//! 1e8            −4.6e5  .. 4.5e5     62             4.6e3  / 6.5e4
+//! 0.37, row 0 on −3.0e13 .. 3.1e13    50             7.0e11 / 9.9e12
+//! 0              0.41    .. 0.53      never          0.20   / 0.74
+//! ```
+//!
+//! A feature constant from its first row winds up as one held after moving
+//! does (at 1,000 and 1e8 from 59 and 76 half-lives). The fit holds for
+//! some 30 half-lives in every case measured. Held at exactly 0, the
+//! feature excites nothing in that direction, both of its sums decay
+//! alike, and the slope stays where it was. [`crate::EwRidge`]'s default
+//! `ridge` is a penalty on the means that never fades, and it centres each
+//! feature: on the same streams its slope stays between 0 and 0.51 and its
+//! error once the feature moves is 0.19 to 0.20 rms, at every level and
+//! from the first row. Use it for a long-running stream whose features can
+//! go quiet.
+//!
 //! Null policy deviation, documented: a row with ANY null target is predict-only
 //! for all targets, because `R` is shared across targets and a per-target
 //! update would desynchronize it.
