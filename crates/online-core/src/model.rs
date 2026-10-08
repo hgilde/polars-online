@@ -260,9 +260,12 @@ impl<T> std::ops::DerefMut for Fit<T> {
 /// Check a state's schema version before dispatching to a model's `restore`.
 ///
 /// Layout migrations do not live here: a model whose layout changed accepts
-/// every version it can convert in its own `Deserialize` (see `rls`), so by
-/// the time a `State` exists the migration has already happened. This gate
-/// only rejects versions no model can convert.
+/// every version it can convert in its own `Deserialize`, so by the time a
+/// `State` exists the migration has already happened. The version is not
+/// visible inside a model's `Deserialize`, so a loader tells the old layout
+/// by its shape, the way `sgd`'s `SgdV3` checks the current one. No
+/// converter is live at the minimum schema (docs/PLAN.md tasks 194-202).
+/// This gate only rejects versions no model can convert.
 pub fn check_schema(state: &State) -> Result<(), StateError> {
     if !(MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&state.schema_version) {
         return Err(StateError::SchemaVersion {
