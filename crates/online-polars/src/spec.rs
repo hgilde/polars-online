@@ -1001,8 +1001,12 @@ pub enum ModelKind {
         #[serde(default)]
         quantile: Option<f64>,
         /// Half-width of the insensitive tube, in units of the target's
-        /// own EW std, the spread of `y` around its EW mean; default 0.1
-        /// (docs/PLAN.md task 202).
+        /// own EW std, the spread of `y` around its EW mean (docs/PLAN.md
+        /// task 202). Default 0.01: errors under 1% of the target's own
+        /// spread do not move the fit. The tube does not shrink as the fit
+        /// improves, so it must sit inside a good fit's errors; at 0.1 a
+        /// fit of a target predicted to within 1% stopped up to 0.1 off its
+        /// slope (task 203).
         #[serde(default)]
         eps: Option<f64>,
         #[serde(default)]
@@ -1057,7 +1061,9 @@ pub enum ModelKind {
         c: Option<Num>,
         /// Insensitive tube, in units of the target's own EW std, the
         /// spread of `y` around its EW mean: rows already this close leave
-        /// the fit alone. Default 0.1 (docs/PLAN.md task 202).
+        /// the fit alone (docs/PLAN.md task 202). Default 0.01: errors under
+        /// 1% of the target's own spread do not move the fit, a tube inside
+        /// a good fit's errors, as `sgd`'s (task 203).
         #[serde(default)]
         eps: Option<f64>,
         /// Bounds and sum on the slopes, as for `sgd` (ENHANCEMENTS E40).

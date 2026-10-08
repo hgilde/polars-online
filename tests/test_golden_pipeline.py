@@ -442,7 +442,11 @@ def switched_signature() -> dict[str, float | str | None]:
 #: docstrings, the standardized PA-I step with that tube (its variance from
 #: the definition) and, for `pa_box`, the box clamped in standardized
 #: coordinates, gives `pa`'s to 1.2e-15 and `pa_box`'s to 5.6e-16 on all 104
-#: rows each predicts; nothing else moved.
+#: rows each predicts; nothing else moved. Task 203 (2026-10-07) moved the
+#: same 12 once more: `pa`'s `eps` defaults to 0.01, not 0.1. That replica at
+#: 0.01 gives `pa`'s to 1.3e-15 and `pa_box`'s to 4.4e-16 on all 104 rows,
+#: with the same nulls, and at 0.1 gives back the old 12 to 3.4e-15; nothing
+#: else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -594,12 +598,12 @@ GOLDEN: dict[str, float | str | None] = {
     "sgd.withheld_reason@25": None,
     "sgd.withheld_reason@60": None,
     "sgd.withheld_reason@119": None,
-    "pa.pred_y0@25": -2.938681829189763,
-    "pa.pred_y0@60": 0.26076667206859616,
-    "pa.pred_y0@119": -0.14024278815240976,
-    "pa.resid_y0@25": -1.9129239950449533,
-    "pa.resid_y0@60": -0.7328078008856741,
-    "pa.resid_y0@119": 0.08954401719418092,
+    "pa.pred_y0@25": -3.2785908646795354,
+    "pa.pred_y0@60": 0.013829714062611576,
+    "pa.pred_y0@119": -0.2540070442584794,
+    "pa.resid_y0@25": -1.5730149595551808,
+    "pa.resid_y0@60": -0.4858708428796895,
+    "pa.resid_y0@119": 0.20330827330025059,
     "pa.weight_sum@25": 7.999488060097996,
     "pa.weight_sum@60": 12.473100285951407,
     "pa.weight_sum@119": 15.110060335371337,
@@ -624,12 +628,12 @@ GOLDEN: dict[str, float | str | None] = {
     "sgd_simplex.withheld_reason@25": None,
     "sgd_simplex.withheld_reason@60": None,
     "sgd_simplex.withheld_reason@119": None,
-    "pa_box.pred_y0@25": -2.8887175526845694,
-    "pa_box.pred_y0@60": 0.6389826867980481,
-    "pa_box.pred_y0@119": -0.21384610945433602,
-    "pa_box.resid_y0@25": -1.9628882715501468,
-    "pa_box.resid_y0@60": -1.111023815615126,
-    "pa_box.resid_y0@119": 0.16314733849610719,
+    "pa_box.pred_y0@25": -2.9977839049458024,
+    "pa_box.pred_y0@60": 0.82600431177703,
+    "pa_box.pred_y0@119": -0.2291221775538278,
+    "pa_box.resid_y0@25": -1.8538219192889138,
+    "pa_box.resid_y0@60": -1.298045440594108,
+    "pa_box.resid_y0@119": 0.17842340659559897,
     "pa_box.weight_sum@25": 7.999488060097996,
     "pa_box.weight_sum@60": 12.473100285951407,
     "pa_box.weight_sum@119": 15.110060335371337,

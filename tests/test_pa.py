@@ -258,6 +258,34 @@ def test_the_band_scales_with_the_target(kind):
         np.testing.assert_array_equal(preds[c], preds[1.0])
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        dict(),
+        dict(loss="epsilon_insensitive", schedule="inv_scaling", learning_rate=0.5),
+    ],
+    ids=["pa", "sgd"],
+)
+def test_a_well_predicted_target_reaches_its_slope_at_the_default_band(kind):
+    """docs/PLAN.md task 203: the band does not shrink as the fit improves,
+    so a fit stops wherever every residual is inside it. Here `y = 2x` plus
+    noise of up to 0.01, with `x` in [-1, 1]: the target's spread is about
+    1.155, and a fit with every residual inside `eps` of it is off by
+    `|b0| + |b1 - 2| <= 1.155 eps - 0.01` at most. At the default of 0.01
+    that is 0.0016, and the fit ends within 0.005 (the scaler still moves
+    the coefficients a little). At the old default of 0.1 it is 0.105, and
+    the fits stopped 0.085 (`pa`) and 0.077 (`sgd`) from the truth. `sgd`
+    runs under `inv_scaling`, as its docstring advises for this loss."""
+    rng = np.random.default_rng(0)
+    x = rng.uniform(-1.0, 1.0, 20_000)
+    df = pl.DataFrame({"x": x, "y": 2.0 * x + 0.01 * rng.uniform(-1.0, 1.0, 20_000)})
+    common = dict(targets=["y"], features=["x"], half_life=float("inf"))
+    spec = po.spec.sgd("m", **kind, **common) if "loss" in kind else po.spec.pa("m", **common)
+    coef = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("coef").drop_nulls()[-1]
+    b0, b1 = coef.to_list()
+    assert abs(b0) + abs(b1 - 2.0) < 0.005, (b0, b1)
+
+
 def test_standardize_is_offered_and_on_by_default():
     """docs/PLAN.md task 195 (U2; review round 4, CC6): `pa` standardizes its
     features against the EW scaler `sgd` uses, so `tau = loss / |z|²` and

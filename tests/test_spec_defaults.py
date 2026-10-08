@@ -109,8 +109,10 @@ def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
 
 def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     """docs/PLAN.md task 195 (U1, U2, U3, U5, N11): the Huber constant is
-    1.345 under one name in both models that take it, `eps` is 0.1 of the
-    residual's spread in both, `sgd` and `pa` standardize, `bocpd`'s `nu`
+    1.345 under one name in both models that take it, `eps` is 0.01 of the
+    target's own spread in both (task 202 moved the unit, task 203 the
+    value: a band that does not shrink must sit inside a good fit's
+    errors), `sgd` and `pa` standardize, `bocpd`'s `nu`
     is the smallest integer giving each emission's variance a mean, and
     `rls`'s prior strength is `delta`."""
     kw = {"targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 50.0}
@@ -119,9 +121,12 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     assert sgd["loss"] == {"huber": {"delta": 1.345}}
     assert sgd["standardize"] is True
     eps = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive"))["model"]["loss"]
-    assert eps == {"epsilon_insensitive": {"eps": 0.1}}
+    assert eps == {"epsilon_insensitive": {"eps": 0.01}}
     pa = resolved(po.spec.pa("m", **kw))["model"]
-    assert (pa["eps"], pa["standardize"]) == (0.1, True)
+    assert (pa["eps"], pa["standardize"]) == (0.01, True)
+    given = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive", eps=0.1))["model"]
+    assert given["loss"] == {"epsilon_insensitive": {"eps": 0.1}}
+    assert resolved(po.spec.pa("m", **kw, eps=0.1))["model"]["eps"] == 0.1
     assert resolved(po.spec.rls("m", **kw))["model"]["delta"] == 1.0
     feats = {"features": kw["features"]}
     for emission, nu in (("diag", 3.0), ("robust", 3.0), ("gaussian", 5.0)):

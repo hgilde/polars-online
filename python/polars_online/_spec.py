@@ -2637,7 +2637,12 @@ def sgd(
         The level for ``loss = "quantile"``; required for it.
     ``eps``
         The half-width of the insensitive tube, in units of ``s_y``, the
-        target's own std. Default 0.1.
+        target's own std. Default 0.01: errors under 1% of the target's own
+        spread do not move the fit. The tube does not shrink as the fit
+        improves, so it must sit inside a good fit's errors. At 0.1, a fit of
+        a target predicted to within 1% of its spread stopped as soon as every
+        error was inside the tube, about 0.08 off the truth in intercept and
+        slope together.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
         ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power`` default 0.5)
@@ -2871,7 +2876,9 @@ def pa(
         ``"pa"``.
     ``eps``
         The margin, in units of ``sigma``: the row is close enough inside it and
-        nothing moves. Default 0.1.
+        nothing moves. Default 0.01: errors under 1% of the target's own spread
+        do not move the fit. The tube does not shrink as the fit improves, so it
+        must sit inside a good fit's errors, as :func:`sgd`'s tube does.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes, exactly as for :func:`sgd`. The projection
         follows each update, so the step does not meet the row's margin exactly:

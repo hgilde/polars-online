@@ -1399,6 +1399,39 @@ mod tests {
         );
     }
 
+    /// The tube does not shrink as the fit improves, so a fit stops wherever
+    /// every residual is inside it, and the builder's default must sit
+    /// inside a good fit's errors (docs/PLAN.md task 203). `y = 2x` plus
+    /// noise of up to 0.01, `x` in `[-1, 1]`, so the target's spread is
+    /// about `2/√3 = 1.155`: a fit with every residual inside `eps` of it
+    /// is off by `|b0| + |b1 − 2| ≤ 1.155·eps − 0.01` at most. At 0.01 that
+    /// is 0.0016, and an annealed rate ends within 0.005 (the scaler still
+    /// moves the coefficients a little); at 0.1 it is 0.105, and the fit
+    /// stopped more than 0.01 off.
+    #[test]
+    fn a_tube_inside_a_good_fits_errors_reaches_the_slope() {
+        let off = |eps: f64| {
+            let mut cf = cfg(1, SgdLoss::EpsilonInsensitive { eps });
+            cf.learning_rate = 0.5;
+            cf.schedule = LearningRate::InvScaling { power: 0.5 };
+            cf.standardize = true;
+            cf.clip_gradient = 1e3;
+            cf.min_weight = 2.0;
+            let mut m = Sgd::new(cf).unwrap();
+            let mut s = 19u64;
+            for i in 0..20_000 {
+                let x = [lcg(&mut s)];
+                let y = 2.0 * x[0] + 0.01 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let b = &m.coefficients()[0];
+            b[0].abs() + (b[1] - 2.0).abs()
+        };
+        let (inside, outside) = (off(0.01), off(0.1));
+        assert!(inside < 0.005, "eps 0.01: {inside}");
+        assert!(outside > 0.01, "eps 0.1: {outside}");
+    }
+
     /// A residual inside the tube, `eps` of the target's own std wide,
     /// leaves the fit alone, and one outside it steps: the "insensitive" of
     /// the name. The first two rows, 1 and 3, have no spread to draw a tube

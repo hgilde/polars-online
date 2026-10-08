@@ -145,6 +145,32 @@ fn average_eta_is_one_and_the_sgd_clip_a_thousand() {
     assert_eq!(r["model"]["clip_gradient"], 5.0);
 }
 
+/// `pa`'s and `sgd`'s insensitivity band defaults to 0.01 of the target's
+/// own spread, as their docs state: errors under 1% of the spread do not
+/// move the fit. A band that does not shrink must sit inside a good fit's
+/// errors, and at 0.1 a fit of a target predicted to within 1% stopped up
+/// to 0.1 off its slope (docs/PLAN.md task 203). A given `eps` is taken.
+#[test]
+fn the_insensitivity_band_is_a_hundredth_of_the_targets_spread() {
+    let r = resolved_with("", "type = \"pa\"");
+    assert_eq!(r["model"]["eps"], 0.01);
+    let r = resolved_with("", "type = \"pa\"\neps = 0.1");
+    assert_eq!(r["model"]["eps"], 0.1);
+    let r = resolved_with("", "type = \"sgd\"\nloss = \"epsilon_insensitive\"");
+    assert_eq!(
+        r["model"]["loss"],
+        json!({"epsilon_insensitive": {"eps": 0.01}})
+    );
+    let r = resolved_with(
+        "",
+        "type = \"sgd\"\nloss = \"epsilon_insensitive\"\neps = 0.1",
+    );
+    assert_eq!(
+        r["model"]["loss"],
+        json!({"epsilon_insensitive": {"eps": 0.1}})
+    );
+}
+
 /// The diagnostics' defaults as `Spec`'s fields document them, the readiness
 /// gates as the README's *Warm-up* table does, and each given value taken.
 #[test]

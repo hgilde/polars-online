@@ -2965,7 +2965,7 @@ The loss sets the link and the gradient:
 | `squared` | identity | `p − y` | |
 | `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is |
 | `quantile` | identity | `1{y < p} − τ` | `τ` is `quantile=`, the level, between 0 and 1 |
-| `epsilon_insensitive` | identity | 0 within `eps·s_y` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.1 by default, in units of `s_y` |
+| `epsilon_insensitive` | identity | 0 within `eps·s_y` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.01 by default, in units of `s_y` |
 | `poisson` | log, for count targets | `p − y` | |
 | `logistic` | sigmoid, for 0/1 targets | `p − clamp(y, 0, 1)` | `strict_binary=True` refuses a chunk with a label not 0 or 1 |
 
@@ -2986,6 +2986,12 @@ cut the gradient is clipped, not zero, so a cut those residuals widen still
 lets every row teach. Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
+
+**The tube's default, 0.01, keeps errors under 1% of the target's own
+spread from moving the fit.** The tube does not shrink as the fit improves,
+so it must sit inside a good fit's errors. At 0.1, a fit of a target
+predicted to within 1% of its spread stopped as soon as every error was
+inside the tube, about 0.08 off the truth in intercept and slope together.
 
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient
@@ -3045,8 +3051,10 @@ row, and the model never learned it. In the residuals' spread, a fit from
 zero on a target at 1,000 drew a tube about 100 wide from its first
 residuals, and without decay stopped learning: R² −52. `σ` reads `y` alone,
 so until the target has two weighted rows of different values the tube has
-no width. `pa` standardizes its features by
-default, with `sgd`'s scaler, so `s` and `c` are not in the features'
+no width. `eps` is 0.01 by default, so errors under 1% of the target's own
+spread do not move the fit: the tube does not shrink as the fit improves,
+and must sit inside a good fit's errors, as `sgd`'s does. `pa` standardizes
+its features by default, with `sgd`'s scaler, so `s` and `c` are not in the features'
 units either. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:
 

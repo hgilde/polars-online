@@ -867,8 +867,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 "quantile" => SgdLoss::Quantile {
                     tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
                 },
+                // 1% of the target's own spread: a band that does not
+                // shrink must sit inside a good fit's errors (task 203).
                 "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
-                    eps: eps.unwrap_or(0.1),
+                    eps: eps.unwrap_or(0.01),
                 },
                 "poisson" => SgdLoss::Poisson,
                 "logistic" => SgdLoss::Logistic,
@@ -922,7 +924,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 mode,
                 c: c.map_or(1.0, |n| n.0),
-                eps: eps.unwrap_or(0.1),
+                // As `sgd`'s tube: 1% of the target's own spread (task 203).
+                eps: eps.unwrap_or(0.01),
                 min_weight: spec.min_periods_or_default(),
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
                 standardize: *standardize,
