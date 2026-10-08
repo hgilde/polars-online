@@ -749,6 +749,24 @@ impl Acc {
                         }
                     }
                 }
+                // And a target with no spread in the window has no
+                // covariance with any slot there, by the same inequality.
+                // Its variance is 0 where the subtraction cannot resolve it
+                // (`TargetMoments::truncated`, `crate::truncated`'s bound),
+                // and the cross-moments' remainder then is the target's mean
+                // rounded at its level: with two rows of weight 1e100 at one
+                // target value inside the window, slopes of 6.6e-4 at a
+                // level of 1e8 where the rows give 1e-95 (docs/PLAN.md task
+                // 217). The rows' slopes are at most the target's spread
+                // over the feature's, so 0 moves a prediction by less than
+                // the spread the window cannot resolve.
+                if let Some(tm) = tm.as_ref() {
+                    for (j, p) in per.iter().enumerate() {
+                        if p.is_some() && tm.vars()[j] == 0.0 {
+                            cross.c[j].iter_mut().for_each(|c| *c = 0.0);
+                        }
+                    }
+                }
                 AccView {
                     grams,
                     wj,

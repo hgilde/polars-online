@@ -848,6 +848,13 @@ impl Marginal {
     /// centred moment or a difference of two means, so a pair against a
     /// price-level column keeps its precision; going back through the raw
     /// moment `s + ma·mb` did not (review 2026-09-12, C17).
+    ///
+    /// Last, whether the second moment is above the subtraction's rounding,
+    /// by `crate::truncated`'s bound: `64 ε` of the terms subtracted and of
+    /// the means' rounding at their level, `ratio·g·|d|·(|m| + |m_u|)` for a
+    /// variance. A variance no larger carries no digit of the window's
+    /// spread (docs/PLAN.md task 217: with a row of weight `1e100` leaving
+    /// the window, `var_y` read `6.1e82` where the rows inside give `4e-4`).
     fn cut(
         w: f64,
         w_old: f64,
@@ -856,7 +863,7 @@ impl Marginal {
         (ma_old, mb_old): (f64, f64),
         s: f64,
         s_old: f64,
-    ) -> Option<(f64, f64, f64, f64)> {
+    ) -> Option<(f64, f64, f64, f64, bool)> {
         let wo = f * w_old;
         let wn = w - wo;
         // A remainder at rounding size is an empty window, not a tiny one
@@ -868,7 +875,14 @@ impl Marginal {
         let (da, db) = (ma_old - ma, mb_old - mb);
         let a = ma - ratio * da;
         let b = mb - ratio * db;
-        Some((wn, a, b, g * s - ratio * s_old - ratio * g * da * db))
+        let cut = g * s - ratio * s_old - ratio * g * da * db;
+        let terms = g * s.abs() + ratio * s_old.abs();
+        let level = 0.5
+            * ratio
+            * g
+            * (da.abs() * (mb.abs() + mb_old.abs()) + db.abs() * (ma.abs() + ma_old.abs()));
+        let resolved = cut.abs() > 64.0 * f64::EPSILON * (terms + level);
+        Some((wn, a, b, cut, resolved))
     }
 
     /// The accumulated weight the pairs are read from: under a `window`, the
@@ -942,7 +956,11 @@ impl Marginal {
                         old.sxy[i],
                     ),
                 ) {
-                    (Some((w, mx, _, sxx)), Some((_, my, _, syy)), Some((_, _, _, sxy))) => {
+                    (
+                        Some((w, mx, _, sxx, x_spread)),
+                        Some((_, my, _, syy, y_spread)),
+                        Some((_, _, _, sxy, _)),
+                    ) => {
                         // Kish's size from `Q_R = Q − f²·Q_u`, a remainder
                         // that keeps no digit once the window's squared
                         // weights are within a rounding of the history's:
@@ -960,6 +978,16 @@ impl Marginal {
                         };
                         let (mut mx, mut my, mut sxx, mut syy, mut sxy) =
                             (mx, my, sxx.max(0.0), syy.max(0.0), sxy);
+                        // A variance no larger than the subtraction's
+                        // rounding is no spread ([`Self::cut`]), and a side
+                        // with none has no covariance (Cauchy-Schwarz), as
+                        // `crate::truncated` zeroes a slot's row (task 217).
+                        if !x_spread {
+                            (sxx, sxy) = (0.0, 0.0);
+                        }
+                        if !y_spread {
+                            (syy, sxy) = (0.0, 0.0);
+                        }
                         // A slot that held one value over every row inside
                         // the window has no spread there, and the subtraction
                         // cannot say so; its run can, when it started at or

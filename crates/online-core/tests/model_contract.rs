@@ -4067,6 +4067,162 @@ mod generated {
         }
     }
 
+    /// **A windowed `marginal` pair is the moments of the rows inside the
+    /// window, or none** (docs/PLAN.md task 217). Its truncation had no
+    /// bound at all (`crate::truncated` has G5's and the level's): on
+    /// [`dominant_row_leaving`]'s stream, once the row of weight `1e100` has
+    /// left, the window's spreads are about `1e-106` (the feature) and
+    /// `4e-4` against a history of `9e97` (the target), and the pair read the
+    /// subtraction's rounding as moments. On the base, at level 0, `var_y`
+    /// was `6.1e82` where the rows give `4.0e-4`, and `beta` `-1.9e50` where
+    /// they give `8.8e50`, `corr` -1 where they give 1; at 1,000, `var_x`
+    /// was 6.8e-15 and `beta` -9.6e49; at 1e8 `var_x` 1.3e-9 and `beta`
+    /// 2.6e49. Each of `var_x`, `var_y` and `cov`, at every level and row,
+    /// is now the fit's of the rows inside the window, read from a pair fed
+    /// them alone, to 1e-6, or 0, and every level reads level 0's pair to
+    /// the bit once the row has left.
+    #[test]
+    fn a_windowed_marginal_pair_is_the_rows_inside_or_none() {
+        let cfg = |window: Option<f64>| MarginalCfg {
+            n_targets: 1,
+            min_weight: vec![0.0],
+            lags: vec![],
+            window,
+            ..marginal_cfg()
+        };
+        let feed = |m: &mut Marginal, rows: &[GenRow]| {
+            for (i, r) in rows.iter().enumerate() {
+                let d = if i == 0 { 0.0 } else { r.d };
+                m.step(&r.x, &r.y, d, r.w);
+            }
+        };
+        let mut at0 = Vec::new();
+        for level in [0.0, 1e3, -1e3, 1e8, -1e8] {
+            let rows = dominant_row_leaving(level);
+            let mut got = Vec::new();
+            for (upto, first) in [(8, 1), (9, 2), (10, 4), (11, 5)] {
+                let mut win = Marginal::new(cfg(Some(7.0))).unwrap();
+                feed(&mut win, &rows[..=upto]);
+                let mut inside = Marginal::new(cfg(None)).unwrap();
+                feed(&mut inside, &rows[first..=upto]);
+                for j in 0..K {
+                    let (p, q) = (win.pair(0, j), inside.pair(0, j));
+                    for (what, u, v) in [
+                        ("var_x", p.var_x, q.var_x),
+                        ("var_y", p.var_y, q.var_y),
+                        ("cov", p.cov, q.cov),
+                    ] {
+                        assert!(
+                            u == 0.0 || (u - v).abs() <= 1e-6 * v.abs(),
+                            "level {level}, row {upto}, x{j}: {what} {u:e} where the rows inside \
+                             the window give {v:e}"
+                        );
+                        if upto > 8 {
+                            got.push(u.to_bits());
+                        }
+                    }
+                }
+            }
+            if level == 0.0 {
+                at0 = got;
+            } else {
+                assert_eq!(got, at0, "level {level} against level 0, rows 9 to 11");
+            }
+        }
+    }
+
+    /// Two rows of weight `1e100` inside a window of 7, their features apart
+    /// and their targets equal, after a third has left: the feature has a
+    /// spread in the window, the target none the subtraction can resolve.
+    fn equal_targets_inside(level: f64) -> Vec<GenRow> {
+        let s = level - 1000.0;
+        let row = |x0: f64, x1: f64, y0: Option<f64>, d: f64, w: f64| GenRow {
+            x: vec![x0 + s, x1 + s],
+            y: vec![y0.map(|v| v + s)],
+            d,
+            w,
+        };
+        vec![
+            row(1000.3, 999.8, Some(1001.0), 1.0, 1.0),
+            row(1000.12, 1000.44, Some(1000.5), 1.0, 1e100),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, None, 0.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.5, 1000.0, Some(1000.25), 1.0, 1e100),
+            row(999.5, 1000.3, Some(1000.25), 1.0, 1e100),
+            row(1000.0, 1000.0, Some(1003.0), 1.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.3, None, 1.0, 1.0),
+        ]
+    }
+
+    /// **A target with no spread in the window has no covariance with a
+    /// feature there** (Cauchy-Schwarz; docs/PLAN.md task 217): its
+    /// cross-moments are 0 where the window's target variance is, as a
+    /// feature's are where its variance in the Gram is. On
+    /// [`equal_targets_inside`]'s stream the rows give slopes of about
+    /// `1e-95`; on the base the cross-moments' remainder, the target's mean
+    /// rounded at the level, set them at -4.8e-14 and -1.6e-13 at level 0,
+    /// -1.4e-9 and -4.6e-9 at 1,000, and 2.0e-4 and 6.6e-4 at 1e8, where the
+    /// intercept stood 85,704 from the target's mean. Now the slopes after
+    /// the row has left (rows 9 to 11) are 0 at every level, for `ewridge`
+    /// and `lasso`, and the intercept is the target's mean.
+    #[test]
+    fn a_target_with_no_spread_in_a_window_has_no_slope_there() {
+        let two = |rows: &[GenRow]| -> Vec<GenRow> {
+            rows.iter()
+                .map(|r| GenRow {
+                    y: vec![r.y[0], r.y[0]],
+                    ..r.clone()
+                })
+                .collect()
+        };
+        for level in [0.0, 1e3, -1e3, 1e8, -1e8] {
+            let rows = equal_targets_inside(level);
+            let mut l = {
+                let mut c = lasso_cfg();
+                c.window = Some(7.0);
+                c.min_weight = 0.0;
+                Lasso::new(c).unwrap()
+            };
+            let mut e = {
+                let mut c = ewridge_cfg();
+                c.window = Some(7.0);
+                c.min_weight = 0.0;
+                EwRidge::new(c).unwrap()
+            };
+            for (i, (r, r2)) in rows.iter().zip(two(&rows)).enumerate() {
+                let d = if i == 0 { 0.0 } else { r.d };
+                l.step(&r.x, &r.y, d, r.w);
+                e.step(&r2.x, &r2.y, d, r2.w);
+                if i < 9 {
+                    continue;
+                }
+                let mean = level + 0.25;
+                for (name, c) in [
+                    ("lasso", l.coefficients().unwrap().concat()),
+                    ("ewridge", e.coefficients().unwrap().to_vec()),
+                ] {
+                    for c in c {
+                        assert!(
+                            c[1] == 0.0 && c[2] == 0.0,
+                            "{name} at level {level}, row {i}: slopes {:?}",
+                            &c[1..]
+                        );
+                        assert!(
+                            (c[0] - mean).abs() <= 64.0 * f64::EPSILON * mean.abs().max(1.0),
+                            "{name} at level {level}, row {i}: intercept {} against the \
+                             target's mean {mean}",
+                            c[0]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The case that failed the scheduled mutation pass of 2026-10-04 at its
     /// baseline (run 37194203887, shard 13), as proptest shrank it: on row
     /// 7 a feature at the input bound, standardized against a scale the
