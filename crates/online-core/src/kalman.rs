@@ -69,8 +69,9 @@
 //! noise. At `R = 0` the update would take the row as exact and collapse
 //! `P` along `z`, so such a row corrects nothing. Neither does a row with
 //! no innovation, a null target or a weight of 0. Under `share_p` the noise
-//! is the mean `sigma^2` across targets, and before any has one, the mean of
-//! the squared innovations of the targets the row observes. A given
+//! is the mean `sigma^2` over the targets that have one, and before any has
+//! one, the mean of the squared innovations of the targets the row observes.
+//! A given
 //! `obs_var` is the noise throughout. [`Kalman::pred_var`] keeps NaN for
 //! `R_j` until there is a residual variance: it describes a prediction,
 //! which is made before the row's target is seen.
@@ -92,17 +93,23 @@
 //! through the reversion holds nothing, and is sized again.
 //!
 //! `P` is per target because the Riccati recursion depends on `R_j`. With
-//! `share_p` the filter keeps one `P` driven by the mean `sigma^2` across
-//! targets (docs/PLAN.md §4.4 [validate]), as it stands when the row
-//! arrives, summed in ascending order. `P`'s recursion reads `z`, `R` and
-//! the weight, never `y`, so targets that share `R` would each carry the
-//! same `P`: the shared one is that `P`. Every target observed on the row
-//! takes its gain from `P` as the row finds it, and `P` takes the row once,
-//! after them, if any target updated. So no target's order or count moves
-//! another's prediction: a target beside an exact copy of itself predicts
-//! as it would alone, to the bit. Updating the shared `P` once per target,
-//! as it did, counted each row once per target, as if the targets shared
-//! their coefficients (docs/PLAN.md task 204).
+//! `share_p` the filter keeps one `P` driven by the mean `sigma^2` over the
+//! targets that have one (docs/PLAN.md §4.4 [validate]), as it stands when
+//! the row arrives, summed in ascending order. A target with no residual
+//! variance yet has no estimate of the noise, not a noise of 0: counted in
+//! the mean, a target null for its first rows halved the noise the others
+//! were weighed against, and moved their predictions (review round 5, A1).
+//! `P`'s recursion reads `z`, `R` and the weight, never `y`, so targets
+//! that share `R` would each carry the same `P`: the shared one is that
+//! `P`. Every target observed on the row takes its gain from `P` as the row
+//! finds it, and `P` takes the row once, after them, if any target updated.
+//! So the order of the targets moves no bit of any prediction, and a target
+//! beside an exact copy of itself present on the same rows predicts as it
+//! would alone, to the bit. A copy null on rows its twin is present on is
+//! not that: until it has a residual variance it moves nothing, and from
+//! then its variance, learned from fewer rows, enters the mean. Updating the shared `P` once per target, as it did, counted each row
+//! once per target, as if the targets shared their coefficients
+//! (docs/PLAN.md task 204).
 //!
 //! **Readiness (docs/PLAN.md task 116; docs/WARMUP-AND-CONVERGENCE.md
 //! §2.1).** The filter knows the estimation variance of each prediction
@@ -480,8 +487,7 @@ impl Kalman {
                 }
                 let r = self.cfg.obs_var.unwrap_or_else(|| {
                     let s2 = if self.cfg.share_p {
-                        sum_ascending(&mut Vec::new(), self.sig2.iter().copied())
-                            / self.cfg.n_targets as f64
+                        shared_noise(&mut Vec::new(), &self.sig2)
                     } else {
                         self.sig2[j]
                     };
@@ -691,15 +697,15 @@ impl Kalman {
 
     /// The noise target `j`'s readiness is read against, as the state holds
     /// it before a row (the module doc): `obs_var`, else the residual
-    /// variance -- the targets' mean under `share_p`, summed in ascending
-    /// order as `step` sums it -- and NaN, none, before there is one. Never
-    /// the row's own innovation, which reads its target.
+    /// variance -- under `share_p` the mean over the targets that have one,
+    /// summed in ascending order as `step` sums it -- and NaN, none, before
+    /// there is one. Never the row's own innovation, which reads its target.
     fn readiness_noise(&self, j: usize) -> f64 {
         if let Some(v) = self.cfg.obs_var {
             return v;
         }
         let s2 = if self.cfg.share_p {
-            sum_ascending(&mut Vec::new(), self.sig2.iter().copied()) / self.cfg.n_targets as f64
+            shared_noise(&mut Vec::new(), &self.sig2)
         } else {
             self.sig2[j]
         };
@@ -854,6 +860,22 @@ fn sum_ascending(buf: &mut Vec<f64>, vals: impl Iterator<Item = f64>) -> f64 {
     buf.iter().sum()
 }
 
+/// `share_p`'s noise once a target has a residual variance: the mean `σ²`
+/// over the targets that have one (`σ² > 0`), summed in ascending order
+/// through `buf`; 0, no noise yet, where none has (the module doc). A target
+/// with no residual variance has no estimate of the noise, not a noise of 0:
+/// counted in the mean, a target null so far halved the noise its neighbour
+/// was weighed against (review round 5, A1). `shared_first_noise` averages
+/// over the targets the row observes the same way.
+fn shared_noise(buf: &mut Vec<f64>, sig2: &[f64]) -> f64 {
+    let sum = sum_ascending(buf, sig2.iter().copied().filter(|s2| *s2 > 0.0));
+    if buf.is_empty() {
+        0.0
+    } else {
+        sum / buf.len() as f64
+    }
+}
+
 /// `P <- P - g (P z)ᵀ`, once per pair and written to both halves, so `P`
 /// stays symmetric (see `Rls::step` for why that matters).
 fn take_the_row(p: &mut [f64], gain: &[f64], pz: &[f64]) {
@@ -997,18 +1019,20 @@ impl OnlineModel for Kalman {
         // `share_p`'s noise before the targets have a residual variance, read
         // at most once a row (the module doc, CC4).
         let mut shared_first: Option<f64> = None;
-        // And `share_p`'s noise once they have one: the mean residual
-        // variance as the row arrives, read once, before any target's update
-        // moves its own. Read inside the loop, a target read the variances
-        // the targets before it had already moved on this row, and the order
-        // of `targets` changed every prediction (review round 4, CC3).
-        // Summed in ascending order, so the order of `targets` cannot move a
-        // bit of it (task 204).
+        // And `share_p`'s noise once a target has one: the mean residual
+        // variance over the targets that have one, as the row arrives, read
+        // once, before any target's update moves its own. Read inside the
+        // loop, a target read the variances the targets before it had
+        // already moved on this row, and the order of `targets` changed every
+        // prediction (review round 4, CC3). Summed in ascending order, so the
+        // order of `targets` cannot move a bit of it (task 204); over the
+        // targets with a variance, so one null so far does not halve it
+        // (review round 5, A1).
         let shared_s2 = if self.cfg.share_p {
             let mut buf = std::mem::take(&mut self.sumbuf);
-            let sum = sum_ascending(&mut buf, self.sig2.iter().copied());
+            let s2 = shared_noise(&mut buf, &self.sig2);
             self.sumbuf = buf;
-            sum / m as f64
+            s2
         } else {
             f64::NAN
         };
@@ -2347,8 +2371,9 @@ mod tests {
 
     /// The filter written from the module docs, unstandardized and without
     /// reversion: per target, `R` and the `Q` from `half_life` are both the
-    /// EW residual variance, the mean across targets under `share_p`, read
-    /// once a row before any target's update (review round 4, CC3); before
+    /// EW residual variance, under `share_p` the mean over the targets that
+    /// have one (review round 5, A1), read once a row before any target's
+    /// update (review round 4, CC3); before
     /// there is one, the row's own innovation squared, under `share_p` the
     /// mean of the squares over the targets the row observes, and no noise
     /// (no `Q`, no correction) where there is none (CC4); `P` is unsized, 0,
@@ -2416,9 +2441,16 @@ mod tests {
                     seen.iter().sum::<f64>() / seen.len() as f64
                 };
                 // Under `share_p` every target's noise is the mean residual
-                // variance as the row arrives, read once, before any
-                // target's update moves one (review round 4, CC3).
-                let shared = (sig2[0] + sig2[1]) / 2.0;
+                // variance over the targets that have one, as the row
+                // arrives, read once, before any target's update moves one
+                // (review round 4, CC3; review round 5, A1): target 1 has
+                // none until its second present row, row 3.
+                let have: Vec<f64> = sig2.iter().copied().filter(|v| *v > 0.0).collect();
+                let shared = if have.is_empty() {
+                    0.0
+                } else {
+                    have.iter().sum::<f64>() / have.len() as f64
+                };
                 let mut shared_row: Option<(Vec<f64>, f64)> = None;
                 for j in 0..2 {
                     let pi = if share { 0 } else { j };
@@ -3150,5 +3182,60 @@ mod tests {
         let (fast, _, p5) = settled_readiness(9, 5.0);
         let ratio = fast / (k * p5);
         assert!(ratio > 1.5 && ratio < 1.7, "{ratio}");
+    }
+
+    /// Review round 5, A1: under `share_p` the noise is the mean `σ²` over
+    /// the targets that have a residual variance, so a target that has none
+    /// yet is no noise estimate rather than a noise of 0. A target beside a
+    /// copy of itself that is null for its first 150 rows predicts as it
+    /// would alone, to the bit, through the row after the copy gains a
+    /// residual variance of its own (the noise is read before the row's
+    /// updates), and `pred_var` with it; from there the mean takes the
+    /// copy's variance in. The mean over all the targets halved the noise
+    /// while the copy was null: `pred_var` parted at row 4, 0.181 against
+    /// 0.208 alone, and the probe through the bank moved the target's
+    /// predictions by up to 0.45.
+    #[test]
+    fn share_p_a_copy_null_for_its_first_rows_moves_nothing_until_it_has_a_noise() {
+        let mk = |m: usize| {
+            let mut c = cfg(2, m, vec![50.0]);
+            c.share_p = true;
+            c.min_weight = 3.0;
+            Kalman::new(c).unwrap()
+        };
+        let (mut alone, mut pair) = (mk(1), mk(2));
+        let mut s = 7u64;
+        let mut noised: Option<usize> = None;
+        let mut parted = false;
+        for i in 0..400usize {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.0 - 2.0 * x[0] + x[1] + 0.3 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let probe = [0.2, -0.4];
+            let a = alone.step(&x, &[Some(y)], d, 1.0).pred[0];
+            let b = pair
+                .step(&x, &[Some(y), (i >= 150).then_some(y)], d, 1.0)
+                .pred[0];
+            if noised.is_none_or(|r| i <= r + 1) {
+                assert_eq!(a.to_bits(), b.to_bits(), "row {i}: {a} against {b}");
+            } else if a != b {
+                parted = true;
+            }
+            // `pred_var` reads the state after the row: equal while the
+            // copy has no residual variance in it.
+            if pair.sigma2()[1] == 0.0 {
+                let (va, vb) = (alone.pred_var(&probe)[0], pair.pred_var(&probe)[0]);
+                assert_eq!(
+                    va.to_bits(),
+                    vb.to_bits(),
+                    "row {i}: pred_var {va} against {vb}"
+                );
+            }
+            if noised.is_none() && pair.sigma2()[1] > 0.0 {
+                noised = Some(i);
+            }
+        }
+        assert_eq!(noised, Some(151), "the copy's first residual");
+        assert!(parted, "the copy's own variance enters the mean");
     }
 }

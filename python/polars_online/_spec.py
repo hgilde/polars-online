@@ -1781,14 +1781,18 @@ def kalman(
         unbounded walk. A prediction
         propagates the state by the same ``Phi`` over the row's clock gap.
     ``share_p``
-        Keep one ``P`` for every target, driven by the mean ``sigma^2`` across
-        them, where by default ``P`` is per target because the recursion depends
-        on ``sigma^2_j``. ``P``'s recursion never reads ``y``, so targets that
-        share the noise would each carry the same ``P``: every target observed
-        on a row takes its gain from ``P`` as the row finds it, and ``P`` takes
-        the row once. Neither the order nor the number of targets moves
-        another's prediction: a target beside a copy of itself predicts as it
-        would alone. Default ``False``.
+        Keep one ``P`` for every target, driven by the mean ``sigma^2`` over the
+        targets that have one, where by default ``P`` is per target because the
+        recursion depends on ``sigma^2_j``. A target with no residual variance
+        yet is left out of the mean, not counted as a noise of 0. ``P``'s
+        recursion never reads ``y``, so targets that share the noise would each
+        carry the same ``P``: every target observed on a row takes its gain from
+        ``P`` as the row finds it, and ``P`` takes the row once. The order of
+        the targets moves no prediction, and a target beside a copy of itself
+        present on the same rows predicts as it would alone. A copy null on
+        some of those rows moves nothing until it has a residual variance; from
+        then its variance, learned from fewer rows, enters the mean. Default
+        ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the

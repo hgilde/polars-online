@@ -591,10 +591,11 @@ def kalman_ref(
       such as one after rows of weight 0 have taken the weight under
       ``min_weight`` (N6). That last row aged nothing here until task 177,
       1.75e-3 from the bank on a stream that withholds predictions;
-    - under ``share_p`` the noise is the mean ``sigma2`` across targets as
-      the row arrives, read once before any target's update (review round
-      4, CC3), and every observed target's gain is read from ``P`` as the
-      row found it, ``P`` taking the row once, after them (task 204);
+    - under ``share_p`` the noise is the mean ``sigma2`` over the targets
+      that have one (review round 5, A1) as the row arrives, read once
+      before any target's update (review round 4, CC3), and every observed
+      target's gain is read from ``P`` as the row found it, ``P`` taking the
+      row once, after them (task 204);
     - before a target has a ``sigma2_j`` above 0, its noise (``R`` and the
       ``sigma2`` of ``Q``) is the row's own innovation squared, ``(y_j -
       z' b_j) ** 2`` before the update; under ``share_p``, while the mean
@@ -704,9 +705,11 @@ def kalman_ref(
         e2 = np.where(np.isfinite(e2), e2, np.nan)
         first_shared = float(np.nanmean(e2)) if np.isfinite(e2).any() else 0.0
         # Under ``share_p`` every target's noise is the mean residual
-        # variance as the row arrives, read once, before any target's update
-        # moves its own (review round 4, CC3).
-        shared_s2 = st["sig2"].mean()
+        # variance over the targets that have one, as the row arrives, read
+        # once, before any target's update moves its own (review round 4,
+        # CC3; review round 5, A1).
+        have = st["sig2"][st["sig2"] > 0.0]
+        shared_s2 = float(have.mean()) if have.size else 0.0
         shared_take = None
 
         for j in range(m):
