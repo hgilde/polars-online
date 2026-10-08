@@ -27,13 +27,30 @@
 //! ```
 //!
 //! rewrites every file under `tests/state_fixtures/` from the cases in
-//! `tests/cases/mod.rs`, and a run without the variable checks them. From
-//! 1.0 the minimum stays at 1.0's schema: a layout change keeps the
-//! fixtures of the schema before it (moved to `state_fixtures/v<N>/` and
-//! listed in [`PREVIOUS`]), whose states must load through the loader the
-//! change ships and go on as they did, and regenerates the current set. A
+//! `tests/cases/mod.rs`, and a run without the variable checks them. A
 //! change that moves a number moves a continuation too: regenerate after
 //! confirming the move is intended, as for `tests/golden.rs`.
+//!
+//! **From 1.0** the minimum stays at 1.0's schema, and a layout change
+//! keeps the fixtures of the schema before it (docs/PLAN.md §18 D1; review
+//! round 5, D1 and D2). The first 1.x layout change, from schema 44 to 45,
+//! goes like this:
+//!
+//! 1. copy the current set, every `<case>.rs` and `index.rs`, to
+//!    `tests/state_fixtures/v44/` as it is -- the files are the schema's,
+//!    and `v44/index.rs` lists them as the current index does;
+//! 2. raise `SCHEMA_VERSION` to 45 and write the loader the change needs,
+//!    in the model's `Deserialize` (`check_schema`'s doc);
+//! 3. list the kept schema here: `previous![44]`, which includes
+//!    `v44/index.rs` -- a schema listed without its files does not compile;
+//! 4. regenerate the current set, which is then schema 45's.
+//!
+//! Each kept set is held by `every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes`:
+//! every fixture loads through the loader, goes on to the bit against its
+//! own frozen continuation, and -- loaded, then saved -- writes the current
+//! schema's fixture bytes of the same case, since the two are the same case
+//! over the same rows (the exact-conversion check). A later change repeats
+//! the steps with `v45/`, and `previous![44, 45]`: the loaders of 1.x stay.
 //!
 //! The variant names are the files' tags (the named encoding writes
 //! `{"EwRidge": {...}}`), so they are frozen here too: a renamed variant
@@ -45,15 +62,33 @@ mod cases;
 mod frozen;
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cases::{Case, Fixture, Out, agree, all, hex, load, named, saved, writer};
 use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 
-/// The schemas before the current one whose fixtures are kept, each with a
-/// loader of its own: none before 1.0, where a layout change regenerates
-/// the set instead.
-const PREVIOUS: &[u32] = &[];
+/// The schemas before the current one whose fixtures are kept, each under
+/// `tests/state_fixtures/v<N>/` and loaded by this build: `PREVIOUS` lists
+/// them, and `previous_sets` is each set as its `v<N>/index.rs` lists it.
+/// A schema listed without its files does not compile. None before 1.0,
+/// where a layout change regenerates the set instead (the module doc has
+/// the steps from 1.0).
+macro_rules! previous {
+    ($($schema:literal),* $(,)?) => {
+        const PREVIOUS: &[u32] = &[$($schema),*];
+
+        fn previous_sets() -> Vec<(u32, &'static [&'static Fixture])> {
+            vec![$({
+                mod set {
+                    include!(concat!("state_fixtures/v", $schema, "/index.rs"));
+                }
+                ($schema, set::ALL)
+            }),*]
+        }
+    };
+}
+
+previous![];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -160,10 +195,37 @@ fn every_fixture_saves_its_bytes_again() {
     }
 }
 
+/// The set a kept schema has on disk: `dir/v<schema>/index.rs` and the
+/// fixtures beside it, counted; or why there is none.
+fn set_on_disk(dir: &Path, schema: u32) -> Result<usize, String> {
+    let set = dir.join(format!("v{schema}"));
+    if !set.join("index.rs").is_file() {
+        return Err(format!(
+            "schema {schema} is listed in PREVIOUS and has no set under {}: a kept schema keeps \
+             its fixtures there, with an index.rs listing them",
+            set.display()
+        ));
+    }
+    let fixtures = std::fs::read_dir(&set)
+        .map_err(|e| format!("{}: {e}", set.display()))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs") && !p.ends_with("index.rs"))
+        .count();
+    if fixtures == 0 {
+        return Err(format!(
+            "schema {schema}: {} holds an index and no fixture",
+            set.display()
+        ));
+    }
+    Ok(fixtures)
+}
+
 /// Every schema this build claims to load has its fixtures, and every
 /// fixture is of a schema it loads: so `SCHEMA_VERSION` cannot move without
 /// a set of its own, and `MIN_SCHEMA_VERSION` cannot sit below the oldest
-/// set kept.
+/// set kept. A kept schema's set is on disk, under `v<N>/`, with as many
+/// fixtures as its index lists (review round 5, D2).
 #[test]
 fn the_fixtures_cover_the_schemas_this_build_loads() {
     if regenerating() {
@@ -179,7 +241,7 @@ fn the_fixtures_cover_the_schemas_this_build_loads() {
         "SCHEMA_VERSION is {SCHEMA_VERSION} and the frozen state fixtures are of {}: a layout \
          change ships its fixtures. Before 1.0, regenerate them with `{REGENERATE}` and raise \
          MIN_SCHEMA_VERSION (and the bank's minimum) to the new schema; from 1.0, keep this set \
-         as the previous schema's (PREVIOUS), write its loader, then regenerate",
+         as the previous schema's (the module doc), write its loader, then regenerate",
         frozen::SCHEMA
     );
     let covered: Vec<u32> = PREVIOUS.iter().copied().chain([frozen::SCHEMA]).collect();
@@ -189,6 +251,106 @@ fn the_fixtures_cover_the_schemas_this_build_loads() {
         "this build loads schemas {MIN_SCHEMA_VERSION}..={SCHEMA_VERSION} and fixtures cover \
          {covered:?}: each schema it loads needs a frozen set, held to its loader"
     );
+    let sets = previous_sets();
+    assert_eq!(
+        sets.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        PREVIOUS,
+        "the kept sets are the schemas listed"
+    );
+    for (schema, set) in &sets {
+        let on_disk = set_on_disk(&dir(), *schema).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            on_disk,
+            set.len(),
+            "schema {schema}: v{schema}/ holds {on_disk} fixtures and its index lists {}",
+            set.len()
+        );
+    }
+}
+
+/// The on-disk check behind the coverage test, proven on a directory of
+/// its own while `PREVIOUS` is empty (review round 5, D2): a listed schema
+/// with no set, or an index alone, is refused; a set with fixtures passes
+/// and is counted.
+#[test]
+fn a_kept_schema_without_its_set_on_disk_is_refused() {
+    let root = std::env::temp_dir().join(format!(
+        "polars-online-state-fixture-sets-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let missing = set_on_disk(&root, 44).unwrap_err();
+    assert!(
+        missing.contains("schema 44 is listed") && missing.contains("v44"),
+        "{missing}"
+    );
+    let set = root.join("v44");
+    std::fs::create_dir_all(&set).unwrap();
+    std::fs::write(set.join("index.rs"), "// an index\n").unwrap();
+    let empty = set_on_disk(&root, 44).unwrap_err();
+    assert!(empty.contains("no fixture"), "{empty}");
+    std::fs::write(set.join("ewridge.rs"), "// a fixture\n").unwrap();
+    std::fs::write(set.join("notes.txt"), "not a fixture\n").unwrap();
+    assert_eq!(set_on_disk(&root, 44), Ok(1));
+    std::fs::write(set.join("sgd.rs"), "// a fixture\n").unwrap();
+    assert_eq!(set_on_disk(&root, 44), Ok(2));
+    assert!(set_on_disk(&root, 43).is_err(), "another schema has no set");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Each kept schema's fixtures, held to the loader the change after it
+/// shipped (the module doc; review round 5, D1 and D2): every one loads,
+/// goes on to the bit against its own frozen continuation -- as it did
+/// when written -- and, loaded then saved, writes the current schema's
+/// fixture bytes of the same case: the same case over the same rows, so
+/// the converted state is the one this build writes, field for field (the
+/// exact-conversion check). The sets must share a writer, since a libm
+/// bit in a decayed sum differs by platform. Nothing to run before 1.0,
+/// where `PREVIOUS` is empty.
+#[test]
+fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
+    if regenerating() {
+        return;
+    }
+    for (schema, set) in previous_sets() {
+        assert!(!set.is_empty(), "schema {schema}: an empty set");
+        for f in set {
+            let what = format!("v{schema}/{}", f.name);
+            assert_eq!(f.schema, schema, "{what}: a fixture of schema {}", f.schema);
+            let case = case_of(f);
+            let mut m = load(&case, &f.bytes()).unwrap_or_else(|e| {
+                panic!("{what}: the state does not load through this build's loader: {e}")
+            });
+            let current = frozen::ALL
+                .iter()
+                .find(|c| c.name == f.name)
+                .unwrap_or_else(|| {
+                    panic!("{what}: the current set has no fixture of that case; a kept case stays")
+                });
+            assert_eq!(
+                current.writer, f.writer,
+                "{what}: written on {}, the current set on {}: the sets are written on one \
+                 platform, or their bytes differ in libm's last bit",
+                f.writer, current.writer
+            );
+            assert!(
+                named(&m.state()) == current.bytes(),
+                "{what}: loaded, the state does not save the current schema's fixture bytes of \
+                 the same case: the loader converts it to another state than this build reaches \
+                 from the same rows"
+            );
+            let tol = if f.writer == writer() { 0.0 } else { TOL };
+            for (i, (row, want)) in f.rows().iter().zip(f.outs()).enumerate() {
+                same_out(
+                    &format!("{what}, row {i} after the save"),
+                    &m.step(row),
+                    &want,
+                    tol,
+                );
+            }
+        }
+    }
 }
 
 /// The variant names of [`ModelState`], as serde lists them: the one place
