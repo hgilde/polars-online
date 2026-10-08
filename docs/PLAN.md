@@ -8267,13 +8267,36 @@ tick, and that the series holding it up has a count near 1.
       GOLDEN_PA_BOX and 12 pipeline values re-pinned against `pa_ref` to the
       bit. `eps = 0.1` of the target's spread proved wide on a high-R²
       target: task 203.
-- [ ] 203. **An insensitivity band defaults to 1% of the target's spread** --
+- [x] 203. **An insensitivity band defaults to 1% of the target's spread** --
       found by task 202 (in its new unit, `eps = 0.1` is 10% of the target's
       spread and does not shrink as the fit improves: a good fit's errors fall
       inside it and the fit stops short -- slopes 1.87/1.89 against 2.0 at
       `eps = 0.2`). Decided 2026-10-07 (the user: "Mark the eps decisions for
       review and follow your reco"): the default is 0.01. *Marked for the
-      user's review (2026-10-07), with task 202's unit.*
+      user's review (2026-10-07), with task 202's unit.* *Done 2026-10-07*
+      (`bd13cd9`): `stream.rs` resolves 0.01 for both; docstrings, the spec
+      reference and the README say why; tests at the default on
+      `y = 2x + 0.01·U(-1,1)` (0.1 ended 0.085/0.077 off, 0.01 under 0.005),
+      `spec_defaults.rs`, `test_spec_defaults.py`; the golden pipeline's
+      `pa`/`pa_box` (12 values) re-pinned against task 202's docstring replica
+      (1.3e-15; at 0.1 it gives back the old pins). **Evidence for the
+      review** (the worker's sweep, `y = 2x + N(0, (2r)²)`, excess
+      out-of-sample MSE as a share of the noise variance, 0.1 / 0.01, median
+      of 5 seeds):
+
+  | R² | `pa` (`c = 1`) | `sgd`, constant rate | `sgd`, inv_scaling |
+  |---|---|---|---|
+  | 0.99998 | 2.86 / 0.18 | 51.2 / 0.80 | 19.1 / 0.20 |
+  | 0.9998 | 2.13 / 0.59 | 3.96 / 0.35 | 2.79 / 0.11 |
+  | 0.9975 | 0.18 / 1.00 | 0.045 / 0.12 | 0.015 / 0.041 |
+  | 0.978 | 0.59 / 1.16 | 0.028 / 0.041 | 0.010 / 0.015 |
+  | 0.80 | 0.68 / 0.81 | 0.011 / 0.012 | 0.004 / 0.005 |
+
+  0.01 wins clearly only above R² 0.9998; between 0.97 and 0.998 `pa`
+  loses about a third (task 202's level-1000 case: R² 0.9646 at 0.1,
+  0.9516 at 0.01, best about 0.978) and `sgd` a little; the brief's own
+  shape (noise up to 0.1) favours 0.1. Probes: the session scratchpad's
+  `review4/fix2/task203-eps-default/probe2.py`, `probe3.py`.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

@@ -497,8 +497,13 @@ reinterpreted parameter, an output's dtype or a file to refit.
   `loss="epsilon_insensitive"`, are multiples of the EW standard deviation
   of the target around its EW mean, where they were in the target's units.
   A fit from zero coefficients on a target far from zero no longer stalls:
-  at a level of 1,000 without decay, `pa`'s R² goes from −52.6 to +0.965. A
-  band 0.1 wide on a target with little noise ignores more than it did.
+  at a level of 1,000 without decay, `pa`'s R² goes from −52.6 to +0.965.
+  The default `eps` is 0.01, where it was 0.1 (task 203): the band does not
+  shrink as the fit improves, so it must sit inside a good fit's errors. On
+  a target predicted to within 1% of its spread, 0.1 stopped the fit about
+  0.08 off the truth. On a target predicted less well (R² 0.97 to 0.998),
+  `pa` at `c = 1` fits about a third worse out of sample at 0.01 than at
+  0.1; pass `eps=0.1` there.
 - **`bocpd` sets a left-out prior from its first rows** (task 195; review
   round 4, U4, U5). Without `prior_mean` or `prior_scale`, the first
   `warm_rows` learned rows (default the feature count plus 2) set it from

@@ -607,7 +607,7 @@
     model.c = 1.0
     model.constraint = null
     model.decay.Halflife = 50.0
-    model.eps = 0.1
+    model.eps = 0.01
     model.fit_intercept = true
     model.min_weight = 2.0
     model.mode = "pa1"
@@ -683,7 +683,7 @@
   sgd(features=['x0'], half_life=50.0, loss='huber', targets=['y']), the lines that differ from sgd's:
     model.loss.huber.delta = 1.345
   sgd(features=['x0'], half_life=50.0, loss='epsilon_insensitive', targets=['y']), the lines that differ from sgd's:
-    model.loss.epsilon_insensitive.eps = 0.1
+    model.loss.epsilon_insensitive.eps = 0.01
   sgd(features=['x0'], half_life=50.0, schedule='inv_scaling', targets=['y']), the lines that differ from sgd's:
     model.schedule.inv_scaling.power = 0.5
   ew_cov(features=['x0', 'x1'], half_life=50.0, max_rows_between_pca=10, pca=2), the lines that differ from ew_cov's:
