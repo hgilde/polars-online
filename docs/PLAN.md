@@ -4667,7 +4667,12 @@ decision it needs, with a recommendation where there is one.
       ceiling `1 / (1 − λ^d)` (task 148 corrects the docs' figure); the
       inflation notice's halflife figure; §7.1's coefficient
       standard errors (its CUSUM is task 146's); §7.7's flicker; §7.9's CLI
-      closing count.
+      closing count. *Checked 2026-10-07*: task 198 (`54975d9`, D8) built
+      the summary's `weight_sum_settled`, the warning where `min_weight`
+      can never be met and the inflation notice's half-life figure, and
+      declared the current floors final; task 146 closed without the
+      CUSUM, which nothing owns. The rest is open; the user wants it built
+      before 1.0, scope to follow from a summary (§18, 2026-10-07).
 
 - [ ] 117. **Python versions.** S–L. A 3.15 CI leg when it ships (October;
       recommended); free-threaded builds (non-`abi3` wheels; not yet); a
@@ -8090,7 +8095,8 @@ tick, and that the series holding it up has a count near 1.
       2026-10-07*: all 21, with scikit-learn's and statsmodels' second
       opinions. Moved: identity shrinkage (0.0754 to 0.1051), `nearest` 20
       to 19 iterations, three dtypes. Left: an unnamed relative target scored
-      without `spec=` cannot be told apart (a decision). YB3, probed at the
+      without `spec=` cannot be told apart (a decision; moot since task 201
+      removed relative targets). YB3, probed at the
       merge: no documented flow runs `embargo` over this package's own plan
       forms, which it warns about though they read twice correctly.
 - [x] 189. **Round-4 test findings** (§18: TA1-TA5 TA9-TA12 TB4 TB5 TB7-TB14
@@ -8306,6 +8312,28 @@ tick, and that the series holding it up has a count near 1.
   0.9516 at 0.01, best about 0.978) and `sgd` a little; the brief's own
   shape (noise up to 0.1) favours 0.1. Probes: the session scratchpad's
   `review4/fix2/task203-eps-default/probe2.py`, `probe3.py`.
+- [x] 204. **`kalman`'s `share_p` takes each row once** -- found 2026-10-07
+      while weighing task 187's leftover ("`share_p` still sequential, so
+      target order matters"); decided by the user the same day ("Your reco
+      all except 116"). The shared `P` took each row once per target, as if
+      the targets shared their coefficients: a target beside an exact copy
+      of itself moved by up to 0.92 on a spread of 1.1, and swapping two
+      targets moved predictions by up to 0.36 (with a `P` per target, both
+      exactly 0). `P`'s recursion never reads `y`, so targets that share `R`
+      would each carry the same `P`: every target observed on a row now
+      takes its gain from `P` as the row finds it, `P` takes the row once if
+      any target updated, and the mean noise is summed in ascending order.
+      *Done 2026-10-07*: `kalman.rs`; tests
+      `share_p_a_target_beside_its_own_copy_predicts_as_it_would_alone` and
+      `share_p_the_order_of_the_targets_moves_no_bit` (both fail on the old
+      code); `the_filter_is_its_recursion` rewritten to the new rule. Under
+      the default half-life-derived `Q` the gain is free of the noise's
+      scale, so on a stationary stream `share_p` now matches a `P` per
+      target (MSE 0.0897 and 4.0085 both ways) at 1/m of `P`'s cost. Moved:
+      `docs/VALIDATION.md` §4's `shared_p` rows only (R² −0.054 to −0.079,
+      +0.003 to −0.006). No layout change; no golden moved. Default stays
+      `False`: its rows still differ from a `P` per target where the
+      targets' noises move apart.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -12427,3 +12455,23 @@ good fit's errors on most targets" (at R² 0.9998 the band is two-thirds of
 the noise std), and `pa`'s docstring and the README carry the trade-off
 with `c=0.1` as the better lever (2.2× / 1.6× / 1.3× the noise at R² 0.978,
 `test_pa.py::test_the_tube_is_pas_only_damping_on_a_target_predicted_less_well`).
+
+**Decided 2026-10-07 (the user: "Your reco all except 116").** On the open
+items after the round:
+- **The next release** (0.14.0) is rehearsed before it is tagged: this
+  commit benchmarked against the cached 0.13.0 wheel, then the release
+  workflow dispatched with publishing off, then the release, each dispatch
+  on the user's word. Five workflows changed (`release.yml`, `ci.yml`,
+  `polars-canary.yml`, `mutants.yml`, and `msrv.yml`, new).
+- **D9**: the canary ran on demand (run 37715703707, on `9a67dd8`) rather
+  than on Monday; on a pass the dev pin and the lock move to polars 2.0.0
+  and the goldens are checked on it, in one gated commit, before 1.0.
+- **`kalman`'s `share_p`**: fixed, task 204.
+- **YB3 closed, not changed.** `embargo` over this package's own plan form
+  reads its input twice, and so runs that fit twice: the warning is true.
+  A `pl.scan_parquet` input does not warn.
+- **Tasks 117, 86, 118 and 127 stay as they are**: 117 waits on 3.15.0 and
+  its wheels; 86 and 118 are parked by the user; 127 waits on a
+  measurement nothing asks for.
+- **Task 116**: the user wants its changes, defaults included, made before
+  1.0; its scope is decided from a summary of it (2026-10-07).

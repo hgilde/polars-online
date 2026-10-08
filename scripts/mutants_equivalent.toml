@@ -1457,14 +1457,6 @@ under no cap, which the spec refuses (`ClockCfg::gap_cap` is finite with a \
 clock column); without one, `total` counts rows, never infinitely many"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
-function = "Kalman::shared_first_noise"
-mutation = "replace > with >="
-line_has = "if n > 0 {"
-why = """with `n = 0` nothing was summed either, and `first_noise(0/0)` -- \
-NaN, which is not finite -- is the 0 the line after the block returns"""
-
-[[equivalent]]
 file = "crates/online-core/src/solve.rs"
 function = "factorize"
 mutation = "delete match arm Ordering::Less"

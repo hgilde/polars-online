@@ -1771,11 +1771,13 @@ class TestAStandardizedKalmanIsFilterpy:
 
 
 class TestASharedCovarianceIsFilterpy:
-    """Review round 4, CC3. Under ``share_p`` the targets keep one ``P`` and
-    each its own coefficients, and a row's observations are sequential scalar
-    updates of that ``P``: ``filterpy``'s ``KalmanFilter.update``, one per
-    observed target in the order of ``targets``, each starting from the ``P``
-    the one before left. Every one of them reads the same noise, ``R = σ²/w``
+    """Review round 4, CC3, and task 204. Under ``share_p`` the targets keep
+    one ``P`` and each its own coefficients. ``P``'s recursion never reads
+    ``y``, so each observed target's update is ``filterpy``'s
+    ``KalmanFilter.update`` from the ``P`` the row found, and ``P`` takes the
+    row once: the ``P`` those updates leave, the same for each. (Task 204:
+    each update started from the ``P`` the one before left, which counted
+    the row once per target.) Every one of them reads the same noise, ``R = σ²/w``
     with ``σ²`` the targets' mean residual variance as the row arrives (before
     there is one, the mean squared innovation over the targets the row
     observes; `kalman.rs`'s module doc, CC4), and the row's process noise
@@ -1828,6 +1830,7 @@ class TestASharedCovarianceIsFilterpy:
                 P = P + np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2
             elif s2 > 0.0:
                 P, sized = np.eye(k1) * s2, True
+            after = None
             for j in range(m):
                 if not seen[j]:
                     wj[j] *= lam
@@ -1836,7 +1839,7 @@ class TestASharedCovarianceIsFilterpy:
                 if s2 > 0.0:
                     kfs[j].P = P
                     kfs[j].update(ys[j][i], R=s2 / w[i], H=z[None, :])
-                    P = kfs[j].P
+                    after = kfs[j].P
                 aged = lam * wsig[j]
                 wsig[j] = aged
                 if not np.isnan(preds[j][i]):
@@ -1844,6 +1847,8 @@ class TestASharedCovarianceIsFilterpy:
                     sig2[j] = (aged * sig2[j] + w[i] * r * r) / (aged + w[i])
                     wsig[j] = aged + w[i]
                 wj[j] = lam * wj[j] + w[i]
+            if after is not None:
+                P = after
         return preds
 
     @pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])

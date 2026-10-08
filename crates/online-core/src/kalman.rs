@@ -94,9 +94,15 @@
 //! `P` is per target because the Riccati recursion depends on `R_j`. With
 //! `share_p` the filter keeps one `P` driven by the mean `sigma^2` across
 //! targets (docs/PLAN.md §4.4 [validate]), as it stands when the row
-//! arrives: every target's update on the row reads the same noise, and
-//! the targets update the shared `P` in turn, each a scalar observation of
-//! its own coefficients.
+//! arrives, summed in ascending order. `P`'s recursion reads `z`, `R` and
+//! the weight, never `y`, so targets that share `R` would each carry the
+//! same `P`: the shared one is that `P`. Every target observed on the row
+//! takes its gain from `P` as the row finds it, and `P` takes the row once,
+//! after them, if any target updated. So no target's order or count moves
+//! another's prediction: a target beside an exact copy of itself predicts
+//! as it would alone, to the bit. Updating the shared `P` once per target,
+//! as it did, counted each row once per target, as if the targets shared
+//! their coefficients (docs/PLAN.md task 204).
 
 use serde::{Deserialize, Serialize};
 
@@ -284,6 +290,9 @@ pub struct Kalman {
     sbuf: Vec<f64>,
     #[serde(skip)]
     qbuf: Vec<f64>,
+    /// `share_p`'s noises, sorted to be summed in ascending order.
+    #[serde(skip)]
+    sumbuf: Vec<f64>,
 }
 
 /// The layout `Kalman` loads, checked on the way in: every vector at the
@@ -339,6 +348,7 @@ impl TryFrom<KalmanV3> for Kalman {
             phi: vec![],
             sbuf: vec![],
             qbuf: vec![],
+            sumbuf: vec![],
         })
     }
 }
@@ -372,6 +382,7 @@ impl Kalman {
             phi: vec![1.0; k],
             sbuf: vec![1.0; k],
             qbuf: vec![0.0; k],
+            sumbuf: Vec::with_capacity(m),
             cfg,
         })
     }
@@ -430,7 +441,8 @@ impl Kalman {
                 }
                 let r = self.cfg.obs_var.unwrap_or_else(|| {
                     let s2 = if self.cfg.share_p {
-                        self.sig2.iter().sum::<f64>() / self.cfg.n_targets as f64
+                        sum_ascending(&mut Vec::new(), self.sig2.iter().copied())
+                            / self.cfg.n_targets as f64
                     } else {
                         self.sig2[j]
                     };
@@ -594,19 +606,14 @@ impl Kalman {
     /// 0 when nothing is left, or every innovation was exactly 0 (CC4).
     fn shared_first_noise(&self, y: &[Option<f64>], weight: f64) -> f64 {
         if weight > 0.0 {
-            let (mut sum, mut n) = (0.0, 0u32);
-            for (yj, zb) in y.iter().zip(&self.zb) {
-                if let Some(v) = yj {
-                    let e = v - zb;
-                    let e2 = e * e;
-                    if e2.is_finite() {
-                        sum += e2;
-                        n += 1;
-                    }
-                }
-            }
-            if n > 0 {
-                return first_noise(sum / f64::from(n));
+            let squares = y.iter().zip(&self.zb).filter_map(|(yj, zb)| {
+                let e = (*yj)? - zb;
+                Some(e * e).filter(|e2| e2.is_finite())
+            });
+            let mut buf = Vec::new();
+            let sum = sum_ascending(&mut buf, squares);
+            if !buf.is_empty() {
+                return first_noise(sum / buf.len() as f64);
             }
         }
         0.0
@@ -661,6 +668,32 @@ fn a_number_or_none(v: f64) -> f64 {
 /// or one whose square underflows to 0, and a square that is not finite.
 fn first_noise(e2: f64) -> f64 {
     if e2.is_finite() { e2 } else { 0.0 }
+}
+
+/// The sum of `vals` in ascending order, through `buf`: the same bits
+/// whatever order the targets come in, as `share_p`'s mean noise must be
+/// (the module doc).
+fn sum_ascending(buf: &mut Vec<f64>, vals: impl Iterator<Item = f64>) -> f64 {
+    buf.clear();
+    buf.extend(vals);
+    buf.sort_unstable_by(f64::total_cmp);
+    buf.iter().sum()
+}
+
+/// `P <- P - g (P z)ᵀ`, once per pair and written to both halves, so `P`
+/// stays symmetric (see `Rls::step` for why that matters).
+fn take_the_row(p: &mut [f64], gain: &[f64], pz: &[f64]) {
+    let k = gain.len();
+    for i in 0..k {
+        let gi = gain[i];
+        for jj in i..k {
+            let v = gi * pz[jj];
+            p[i * k + jj] -= v;
+            if jj != i {
+                p[jj * k + i] -= v;
+            }
+        }
+    }
 }
 
 impl OnlineModel for Kalman {
@@ -741,11 +774,21 @@ impl OnlineModel for Kalman {
         // moves its own. Read inside the loop, a target read the variances
         // the targets before it had already moved on this row, and the order
         // of `targets` changed every prediction (review round 4, CC3).
+        // Summed in ascending order, so the order of `targets` cannot move a
+        // bit of it (task 204).
         let shared_s2 = if self.cfg.share_p {
-            self.sig2.iter().sum::<f64>() / m as f64
+            let mut buf = std::mem::take(&mut self.sumbuf);
+            let sum = sum_ascending(&mut buf, self.sig2.iter().copied());
+            self.sumbuf = buf;
+            sum / m as f64
         } else {
             f64::NAN
         };
+        // Under `share_p`, `P z` is read once, from `P` as the row finds it,
+        // and `P` takes the row once, after every target's update (the
+        // module doc, task 204).
+        let mut shared_pz = false;
+        let mut shared_update = false;
         for j in 0..m {
             let pi = if self.cfg.share_p { 0 } else { j };
             // A null target, or a present one at weight zero -- an observation
@@ -809,7 +852,7 @@ impl OnlineModel for Kalman {
                 continue;
             };
             // pz = P z
-            {
+            if !shared_pz {
                 let p = &self.p[pi];
                 for i in 0..k {
                     let row = i * k;
@@ -819,6 +862,7 @@ impl OnlineModel for Kalman {
                     }
                     self.pz[i] = acc;
                 }
+                shared_pz = self.cfg.share_p;
             }
             let zpz: f64 = self.zs.iter().zip(&self.pz).map(|(z, p)| z * p).sum();
             let s_inn = zpz + sigma2 / weight;
@@ -837,18 +881,10 @@ impl OnlineModel for Kalman {
                 for (b, g) in self.beta[j].iter_mut().zip(&self.gain) {
                     *b += g * err;
                 }
-                // Once per pair, written to both halves, so P stays symmetric
-                // (see `Rls::step` for why that matters).
-                let p = &mut self.p[pi];
-                for i in 0..k {
-                    let gi = self.gain[i];
-                    for jj in i..k {
-                        let v = gi * self.pz[jj];
-                        p[i * k + jj] -= v;
-                        if jj != i {
-                            p[jj * k + i] -= v;
-                        }
-                    }
+                if self.cfg.share_p {
+                    shared_update = true;
+                } else {
+                    take_the_row(&mut self.p[pi], &self.gain, &self.pz);
                 }
             }
             // EW residual variance from the out-of-sample prediction. Its
@@ -871,6 +907,11 @@ impl OnlineModel for Kalman {
                 }
             }
             self.wj[j] = lam * self.wj[j] + weight;
+        }
+        // Every target that updated read the same `P z` and the same noise,
+        // so the same gain: `P` takes the row once.
+        if shared_update {
+            take_the_row(&mut self.p[0], &self.gain, &self.pz);
         }
 
         // Standardization stats update last, so this row's z used the prior stats.
@@ -1189,6 +1230,96 @@ mod tests {
             (pv2[0] - pv2[1]).abs() > 1e-6,
             "unshared targets should differ: {pv2:?}"
         );
+    }
+
+    /// Task 204: `P`'s recursion never reads `y`, so under `share_p` a
+    /// target beside an exact copy of itself predicts as it would alone, and
+    /// as it would without `share_p`, to the bit (the mean of two equal
+    /// noises is exact). Updating the shared `P` once per target, as it did,
+    /// moved such a target's predictions by up to 0.92 on a spread of 1.1.
+    /// Decay, irregular steps, weights other than 1, zero weights and null
+    /// targets.
+    #[test]
+    fn share_p_a_target_beside_its_own_copy_predicts_as_it_would_alone() {
+        let run = |m: usize, share: bool| -> Vec<u64> {
+            let mut c = cfg(2, m, vec![50.0]);
+            c.share_p = share;
+            c.min_weight = 2.0;
+            c.decay = Decay::Halflife(40.0);
+            let mut model = Kalman::new(c).unwrap();
+            let mut s = 211u64;
+            let mut out = Vec::new();
+            for i in 0..400 {
+                let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+                let e = lcg(&mut s);
+                let y = (i % 7 != 3).then(|| 1.0 - 2.0 * x[0] + x[1] + 0.3 * e);
+                let w = if i % 11 == 5 {
+                    0.0
+                } else {
+                    0.5 + lcg(&mut s).abs()
+                };
+                let d = if i == 0 { 0.0 } else { 0.5 + (i % 3) as f64 };
+                let pred = model.step(&x, &vec![y; m], d, w).pred;
+                for p in &pred {
+                    assert_eq!(p.to_bits(), pred[0].to_bits(), "row {i}: the copies part");
+                }
+                out.push(pred[0].to_bits());
+            }
+            out
+        };
+        let alone = run(1, false);
+        let scored = alone
+            .iter()
+            .filter(|b| f64::from_bits(**b).is_finite())
+            .count();
+        assert!(scored > 300, "only {scored} rows predicted");
+        assert_eq!(run(1, true), alone, "share_p, alone");
+        assert_eq!(run(2, true), alone, "share_p, beside a copy");
+    }
+
+    /// Task 204: under `share_p` the order of `targets` moves no bit of any
+    /// target's prediction. Three targets of different noise, each missing
+    /// on rows of its own, so the shared noise sums three terms, in ascending
+    /// order. Before, swapping two targets moved predictions by up to 0.36.
+    #[test]
+    fn share_p_the_order_of_the_targets_moves_no_bit() {
+        let run = |order: [usize; 3]| -> Vec<[u64; 3]> {
+            let mut c = cfg(2, 3, vec![50.0]);
+            c.share_p = true;
+            c.min_weight = 2.0;
+            let mut model = Kalman::new(c).unwrap();
+            let mut s = 223u64;
+            let mut out = Vec::new();
+            for i in 0..400 {
+                let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+                let e = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+                let ys = [
+                    (i % 5 != 1).then(|| 2.0 * x[0] - x[1] + 0.1 * e[0]),
+                    (i % 7 != 2).then(|| -x[0] + 3.0 * x[1] + e[1]),
+                    (i % 3 != 0).then(|| 0.5 + x[0] + 3.0 * e[2]),
+                ];
+                let w = 0.5 + lcg(&mut s).abs();
+                let given: Vec<Option<f64>> = order.iter().map(|&t| ys[t]).collect();
+                let pred = model
+                    .step(&x, &given, if i == 0 { 0.0 } else { 1.0 }, w)
+                    .pred;
+                let mut by_target = [0u64; 3];
+                for (slot, &t) in order.iter().enumerate() {
+                    by_target[t] = pred[slot].to_bits();
+                }
+                out.push(by_target);
+            }
+            out
+        };
+        let base = run([0, 1, 2]);
+        let scored = base
+            .iter()
+            .filter(|r| f64::from_bits(r[2]).is_finite())
+            .count();
+        assert!(scored > 300, "only {scored} rows predicted");
+        for order in [[2, 0, 1], [1, 2, 0], [0, 2, 1]] {
+            assert_eq!(run(order), base, "order {order:?}");
+        }
     }
 
     #[test]
@@ -1996,7 +2127,9 @@ mod tests {
     /// until a row has a noise, which sets it to `p0` times that noise, and
     /// after that takes `Q d²` once a row, before the first target's update;
     /// a target present at a positive weight corrects `b` and `P` by the gain
-    /// `P z / (zᵀ P z + R / w)`; the residual variance is the EW mean of the
+    /// `P z / (zᵀ P z + R / w)`, under `share_p` every target from `P` as the
+    /// row found it and `P` once, after them (task 204); the residual
+    /// variance is the EW mean of the
     /// squared out-of-sample errors, its weight ageing on every row. Two
     /// targets, one present one row in three, weights other than 1, shared
     /// and not (task 158).
@@ -2058,6 +2191,7 @@ mod tests {
                 // variance as the row arrives, read once, before any
                 // target's update moves one (review round 4, CC3).
                 let shared = (sig2[0] + sig2[1]) / 2.0;
+                let mut shared_row: Option<(Vec<f64>, f64)> = None;
                 for j in 0..2 {
                     let pi = if share { 0 } else { j };
                     let s2 = if share { shared } else { sig2[j] };
@@ -2083,14 +2217,22 @@ mod tests {
                         wsig[j] *= lam;
                         continue;
                     };
+                    // Under `share_p` every target reads `P` as the row
+                    // found it: the shared update waits for the loop's end.
                     let pz: Vec<f64> = (0..k).map(|a| dotz(&p[pi][a * k..(a + 1) * k])).collect();
                     let s_inn = dotz(&pz) + sigma2 / w;
                     let err = y - dotz(&b[j]);
                     if sigma2 > 0.0 {
                         for a in 0..k {
                             b[j][a] += pz[a] / s_inn * err;
-                            for bb in 0..k {
-                                p[pi][a * k + bb] -= pz[a] * pz[bb] / s_inn;
+                        }
+                        if share {
+                            shared_row = Some((pz, s_inn));
+                        } else {
+                            for a in 0..k {
+                                for bb in 0..k {
+                                    p[pi][a * k + bb] -= pz[a] * pz[bb] / s_inn;
+                                }
                             }
                         }
                     }
@@ -2102,6 +2244,15 @@ mod tests {
                         wsig[j] = aged + w;
                     }
                     wj[j] = lam * wj[j] + w;
+                }
+                // `P` takes the row once, if any target updated: every one
+                // read the same `P z` and the same noise (task 204).
+                if let Some((pz, s_inn)) = shared_row {
+                    for a in 0..k {
+                        for bb in 0..k {
+                            p[0][a * k + bb] -= pz[a] * pz[bb] / s_inn;
+                        }
+                    }
                 }
             }
         }

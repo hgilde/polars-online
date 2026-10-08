@@ -926,6 +926,18 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`kalman`'s `share_p` takes each row once, so neither the order nor the
+  number of targets moves a prediction** (task 204). The shared `P` took
+  each row once per target, as if the targets shared their coefficients.
+  A target beside an exact copy of itself moved by up to 0.92 on a spread
+  of 1.1, and swapping two targets moved predictions by up to 0.36. Every
+  target observed on a row now takes its gain from `P` as the row finds
+  it, and `P` takes the row once. The mean noise is summed in ascending
+  order. A target beside a copy now predicts as it would alone, to the
+  bit, and every order gives the same bits. On `docs/VALIDATION.md`'s two
+  targets, `share_p`'s R² moves from −0.054 to −0.079 and from +0.003 to
+  −0.006; a `P` per target gives −0.109 and −0.005. `share_p` is off by
+  default, and the state's layout is unchanged.
 - **Every model refuses a value that is not a usable number, as the bank
   always has** (task 183; Rust API only). A feature, target or weight that
   is NaN, infinite or past the input bound of 1e100 reached the core

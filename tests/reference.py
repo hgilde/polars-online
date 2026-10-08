@@ -593,7 +593,8 @@ def kalman_ref(
       1.75e-3 from the bank on a stream that withholds predictions;
     - under ``share_p`` the noise is the mean ``sigma2`` across targets as
       the row arrives, read once before any target's update (review round
-      4, CC3);
+      4, CC3), and every observed target's gain is read from ``P`` as the
+      row found it, ``P`` taking the row once, after them (task 204);
     - before a target has a ``sigma2_j`` above 0, its noise (``R`` and the
       ``sigma2`` of ``Q``) is the row's own innovation squared, ``(y_j -
       z' b_j) ** 2`` before the update; under ``share_p``, while the mean
@@ -706,6 +707,7 @@ def kalman_ref(
         # variance as the row arrives, read once, before any target's update
         # moves its own (review round 4, CC3).
         shared_s2 = st["sig2"].mean()
+        shared_take = None
 
         for j in range(m):
             pi = 0 if share_p else j
@@ -742,7 +744,12 @@ def kalman_ref(
                 gain = pz / s_inn
                 err = Y[i, j] - zs @ st["beta"][j]
                 st["beta"][j] = st["beta"][j] + gain * err
-                st["P"][pi] = st["P"][pi] - np.outer(gain, pz)
+                if share_p:
+                    # Every target reads ``P`` as the row found it; ``P``
+                    # takes the row once, after them (task 204).
+                    shared_take = np.outer(gain, pz)
+                else:
+                    st["P"][pi] = st["P"][pi] - np.outer(gain, pz)
             # sigma2's weight ages on this row whether or not it has a
             # prediction to add a squared residual from (N6, as kalman.rs).
             aged = lam * st["wsig"][j]
@@ -753,6 +760,8 @@ def kalman_ref(
                 st["sig2"][j] = (aged * st["sig2"][j] + w[i] * r * r) / ws_new
                 st["wsig"][j] = ws_new
             st["wj"][j] = lam * st["wj"][j] + w[i]
+        if shared_take is not None:
+            st["P"][0] = st["P"][0] - shared_take
 
         # EW stats update last
         W_new = lam * st["W"] + w[i]

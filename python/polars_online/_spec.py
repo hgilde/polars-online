@@ -1781,7 +1781,12 @@ def kalman(
     ``share_p``
         Keep one ``P`` for every target, driven by the mean ``sigma^2`` across
         them, where by default ``P`` is per target because the recursion depends
-        on ``sigma^2_j``. Default ``False``.
+        on ``sigma^2_j``. ``P``'s recursion never reads ``y``, so targets that
+        share the noise would each carry the same ``P``: every target observed
+        on a row takes its gain from ``P`` as the row finds it, and ``P`` takes
+        the row once. Neither the order nor the number of targets moves
+        another's prediction: a target beside a copy of itself predicts as it
+        would alone. Default ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the

@@ -56,8 +56,8 @@ Two targets (['y0', 'y1']) with very different noise levels, so the shared-P app
 |---|---|---|---|---|---|---|
 | per_target_p | pred_y0 | y0 | 14284 | -0.108616 | -0.149585 | 1.27654e-06 |
 | per_target_p | pred_y1 | y1 | 14284 | -0.00501958 | 0.108429 | 4.9837e-06 |
-| shared_p | pred_y0 | y0 | 14284 | -0.0540979 | -0.129153 | 1.21377e-06 |
-| shared_p | pred_y1 | y1 | 14284 | 0.00298678 | 0.101704 | 4.944e-06 |
+| shared_p | pred_y0 | y0 | 14284 | -0.0787883 | -0.144414 | 1.2422e-06 |
+| shared_p | pred_y1 | y1 | 14284 | -0.00573515 | 0.109248 | 4.98725e-06 |
 
 ## 5. Models at matched settings
 
