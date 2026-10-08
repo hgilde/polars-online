@@ -939,18 +939,35 @@ is breaking, because it changes results silently:
 | a fix that moves no number | patch | patch |
 | a fix to numbers that were wrong against the model's stated definition | minor | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures against the last release ([Compare with the last release](#compare-with-the-last-release-bit-for-bit)) |
 | a new model, parameter, output or function | minor | minor |
-| a stable name renamed | minor: the old name is refused, naming the new one (task 144's rule) | minor: the old name is forwarded to the new one with a `PolarsOnlineDeprecationWarning`, and removed at the next major |
+| a stable name renamed | minor: the old name is refused, naming the new one (task 144's rule) | minor: the old name is forwarded to the new one with a `PolarsOnlineDeprecationWarning` (a spec parameter by the table, anything else by a forwarding of its own, below), and removed at the next major |
 | a default or a meaning changed, or a stable name removed | minor, with a CHANGELOG entry saying what moved and by how much | major, with the same entry |
 | a change to an unstable part | minor | minor, with a CHANGELOG entry |
 
 **From 1.0, a rename is a deprecation, not a refusal** (decision D2).
 `polars_online.PolarsOnlineDeprecationWarning`, a `DeprecationWarning`,
-names the new spelling, and a forwarding table, in Python and in Rust for
-spec keys, carries each old name to its new one (task 198). The table is
+names the new spelling. A forwarding table carries each renamed spec
+parameter to its new one, at any depth of a spec (task 198): in Python a
+spec builder's keyword and a spec dict's key, `with_windows`' `like=` spec
+included (`_DEPRECATED` in `python/polars_online/_warnings.py`), and in
+Rust a TOML key (`DEPRECATED` in `crates/online-polars/src/spec.rs`). The
+table is
 empty at 1.0: every rename made before it stays refused, by
 `_RENAMED` in `python/polars_online/_spec.py` and `RENAMED` in
 `crates/online-polars/src/spec.rs`. A name enters the forwarding table in
 the minor release that renames it, and leaves it at the next major.
+
+**The table forwards spec parameters, and nothing else** (review round 5,
+D4). A keyword of any other function, a function, a word a parameter
+takes, a command-line flag, an environment variable, an output field or a
+frame column renamed after 1.0 does not go through it. Each ships its own
+forwarding in the release that renames it: `forward_deprecated` at the
+top of the function whose keyword moved, a stub that warns and calls the
+new function, an alias for the word, flag or variable, or a second column
+beside the new one. It warns with the same `PolarsOnlineDeprecationWarning`
+and is kept until the next major. Nothing of this kind is built at 1.0,
+since nothing has been renamed after it; `renamed_function` in
+`python/polars_online/_renamed.py` is the refusing stub a pre-1.0 rename
+keeps, not a forwarding one.
 
 **From 1.0, a state file a 1.x build wrote loads in every later 1.x**
 (decision D1). The schema 1.0.0 ships is the floor: `MIN_SCHEMA_VERSION` and

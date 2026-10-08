@@ -40,6 +40,12 @@ class PolarsOnlineDeprecationWarning(DeprecationWarning):
 
     The old name still works -- read as the new one -- until the next major
     version, which refuses it naming the new one; the message names both.
+    A spec parameter goes through a forwarding table, at any depth of a
+    spec. Another function's keyword, a function, a word a parameter takes,
+    a flag, an environment variable, an output field or a frame column
+    renamed after 1.0 ships a forwarding of its own that raises this
+    warning: a check at the function's top, a stub, an alias or a second
+    column.
     A rename made before 1.0 was never forwarded: the old name is refused
     outright (``TypeError`` from a builder, ``ValueError`` from a spec dict),
     so no name warns today. Python shows a ``DeprecationWarning`` raised from

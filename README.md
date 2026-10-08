@@ -5030,9 +5030,19 @@ docstring gives:
 | a fix that moves no number | patch | patch |
 | a fix to numbers that were wrong | minor | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures from the last release |
 | a new model, parameter, output or function | minor | minor |
-| a stable name renamed | minor, and the old name is refused, naming the new one | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one |
+| a stable name renamed | minor, and the old name is refused, naming the new one | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one, as the next paragraph says |
 | a default or a meaning changed, or a stable name removed | minor | major |
 | a change to an unstable part | minor | minor, declared in the CHANGELOG |
+
+**From 1.0, a renamed spec parameter is forwarded by a table, and any
+other renamed name by a forwarding of its own.** The table reads a spec
+builder's old keyword, a spec dict's old key and a TOML file's old key as
+the new one, at any depth of a spec. It does not reach another function's
+keyword, a function, a word a parameter takes, a command-line flag, an
+environment variable, an output field or a frame column. Each of those
+ships its own forwarding in the release that renames it: a check at the
+function's top, a stub, an alias or a second column. Both warn with
+`PolarsOnlineDeprecationWarning`, and both last until the next major.
 
 **From 1.0, a state file a 1.x build wrote loads in every later 1.x.**
 Each change to a state's layout ships a loader for the layout before it.

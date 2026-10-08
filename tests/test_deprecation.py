@@ -17,6 +17,7 @@ import re
 import warnings
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 import polars_online as po
@@ -97,3 +98,22 @@ def test_a_spec_dict_reads_an_old_key_as_the_new_one(renamed):
 def test_without_an_entry_an_unknown_name_is_still_refused():
     with pytest.raises(TypeError, match="unexpected keyword argument 'rigde'"):
         po.spec.ewridge("m", targets=["y"], features=["x"], rigde=0.5)
+
+
+def test_a_like_spec_reads_an_old_key_as_the_new_one(monkeypatch):
+    """``with_windows(like=)`` reads its clock policy from a spec dict, so a
+    spec key renamed after 1.0 is read as its new name there too, with the
+    warning: the policy names it among what the table forwards (review round
+    5, D4)."""
+    monkeypatch.setattr(_warnings, "_DEPRECATED", {"gap_kap": "gap_cap"})
+    df = pl.DataFrame({"t": [0.0, 1.0, 9.0, 10.0], "x": [1.0, 2.0, 3.0, 4.0]})
+    like = {"name": "m", "features": ["x"], "clock": "t", "gap_cap": 2.0}
+    f = po.ewm_mean("x", half_life=2.0)
+    want = po.stream.with_windows(df, f=f, like=like)
+    old = {**{k: v for k, v in like.items() if k != "gap_cap"}, "gap_kap": 2.0}
+    with pytest.warns(po.PolarsOnlineDeprecationWarning, match="gap_kap is deprecated"):
+        got = po.stream.with_windows(df, f=f, like=old)
+    assert got.equals(want)
+    # The cap reached the numbers: without it the 8-unit gap is read whole.
+    wide = po.stream.with_windows(df, f=f, like={**like, "gap_cap": 100.0})
+    assert not got.equals(wide)

@@ -176,7 +176,12 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
   old name, with this warning, until the next major version refuses it. The
   table is empty: every rename before 1.0 stays refused by name. A spec dict,
   a builder's keyword and a TOML file (on the command line's stderr) are
-  forwarded alike.
+  forwarded alike, at any depth. The table carries spec parameters only:
+  another function's keyword, a function, a word a parameter takes, a flag,
+  an environment variable, an output field or a frame column renamed after
+  1.0 ships its own forwarding (a check at the function's top, a stub, an
+  alias or a second column) with the same warning, in the release that
+  renames it (review round 5, D4).
 - **`UnstableWarning`, opt-in with `POLARS_ONLINE_WARN_UNSTABLE=1`** (task
   198; review round 4, D5, N23), as Polars' `POLARS_WARN_UNSTABLE`. It and a
   docstring label mark what 1.0 does not promise: the `with_windows` state
