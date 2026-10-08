@@ -175,8 +175,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// operators carrying `bias`; a file from before it is refit. **49 since
 /// task 211** (the same day): `kalman` keeps an anchor, its clocks since an
 /// observation and its prior's squared innovations in place of its warm-up;
-/// a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 49;
+/// a file from before it is refit. **50 since task 214** (the same day):
+/// `kalman` keeps the first three rows' squared innovations, which its
+/// prior is the median of; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 50;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

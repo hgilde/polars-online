@@ -583,7 +583,12 @@ pub use window::{
 ///   process noise is charged once for it) and the squared innovations its
 ///   standardized prior is sized from. A state from before 49 does not
 ///   decode, and pre-1.0 no loader is written.
-pub const SCHEMA_VERSION: u32 = 49;
+/// - 50 (2026-10-08, task 214): a standardizing `kalman` sizes its prior
+///   from the median of the first three rows' squared innovations, and
+///   keeps those rows' squares and weights where it kept the sums of every
+///   row's. A state from before 50 does not decode, and pre-1.0 no loader is
+///   written.
+pub const SCHEMA_VERSION: u32 = 50;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -607,6 +612,10 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **50 since task 214** (2026-10-08): `kalman`'s noise basis is the first
+/// three rows' squared innovations and weights, its prior their median; a
+/// state from before 50 is refused by its number, and the fixtures are
+/// regenerated at 50.
 /// **49 since task 211** (2026-10-08): `kalman`'s anchor, its clocks since
 /// an observation and its prior's squared innovations, in place of its
 /// warm-up; a state from before 49 is refused by its number, and the
@@ -686,7 +695,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 49;
+pub const MIN_SCHEMA_VERSION: u32 = 50;
 
 #[cfg(test)]
 mod tests {

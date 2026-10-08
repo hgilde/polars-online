@@ -1557,12 +1557,19 @@ const GOLDEN_RLS: &[f64] = &[
 // 2's half-lives of 8. `kalman_ref`, rewritten from the module doc, gives
 // the new ones to 8.4e-16, and the old ones, 0.4810076582323497,
 // 1.2730031757113542 and 0.13848333209268554, under the old charge to 1.8e-15.
+// Both again for task 214's prior: `R` is the weighted median of the first
+// three rows' squared innovations over the median of a χ²₁, where it was
+// the mean over the rows so far. `kalman_ref` with the median gives the new
+// ones to 1.0e-16; they were 0.22526048935963278, 2.2330040098824835 and
+// -0.06612869061558382 (`kalman`), and 0.4810352559516703,
+// 1.1575926629367428 and 0.16244017811259087 (`kalman_revert`).
 const GOLDEN_KALMAN: &[f64] = &[
-    0.22526048935963278,
-    2.2330040098824835,
-    -0.06612869061558382,
+    0.22287716866303497,
+    2.2273943734190746,
+    -0.06712508541180909,
 ];
-const GOLDEN_KALMAN_REVERT: &[f64] = &[0.4810352559516703, 1.1575926629367428, 0.16244017811259087];
+const GOLDEN_KALMAN_REVERT: &[f64] =
+    &[0.46012636674356183, 1.1589140098081587, 0.11903305981915821];
 const GOLDEN_LASSO: &[f64] = &[
     0.25359037757905656,
     2.1511829817060866,

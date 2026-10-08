@@ -1789,14 +1789,19 @@ def kalman(
         noise the filter is the ridge regression with penalty ``1 / p0``.
         Standardized, each coefficient's prior is ``p0 * R`` on the first row
         that observes the target on which its feature's scale is usable (the
-        intercept's always is): ``R`` is the mean squared innovation ``sum w e **
-        2 / sum w`` over the target's rows so far, once three rows give it, and
-        with ``obs_var`` it is ``obs_var`` (the intercept then sized from the
-        start). Until then the coefficient is 0 and takes no correction. One
-        squared innovation, as the prior was sized before, falls below 1% of
-        its mean one time in twelve, and with no process noise a prior that
-        small pins the fit for good; a mean of three, seven times in ten
-        thousand. Default 1.0, a prior as uncertain as one observation.
+        intercept's always is): ``R`` is the weighted median of the first three
+        rows' squared innovations over 0.4549, the median of a chi-squared of
+        one degree, so it reads the noise variance as a mean would; and with
+        ``obs_var`` it is ``obs_var`` (the intercept then sized from the
+        start). Until then the coefficient is 0 and takes no correction. A
+        median, so one wild row among the first three, a target at the input
+        bound, does not size the prior from itself; such a row once left
+        ``P`` with a negative variance and the filter stuck for good. One
+        squared innovation falls below 1% of the noise one time in twelve,
+        and with no process noise a prior that small pins the fit for good;
+        the median of three, about one time in 120. A covariance whose
+        diagonal goes below 0 is sized again from the noise as it stands.
+        Default 1.0, a prior as uncertain as one observation.
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients

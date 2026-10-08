@@ -1388,7 +1388,7 @@ each is closer to 0 on the z-scores:
 | `ewridge`, at its default solve cadence | -0.0148 | -0.0096 | -0.0521 | -0.0262 |
 | `ewridge`, solved every row | -0.0647 | -0.0412 | -0.1113 | -0.0474 |
 | `rls` | -0.0644 | -0.0412 | -0.1108 | -0.0475 |
-| `kalman` | -0.0581 | -0.0395 | -0.0849 | -0.0489 |
+| `kalman` | -0.0592 | -0.0412 | -0.0746 | -0.0585 |
 
 **`kalman` fitted this model on its own in 0.13.0.** It standardized each
 feature by the feature's moving moments, and kept its coefficients per

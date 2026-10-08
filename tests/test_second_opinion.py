@@ -3541,6 +3541,22 @@ def _standardizer_moves(
     return Z, F, remapped, usable
 
 
+def _median_of_three(rows: list[tuple[float, float]]) -> float:
+    """The noise a standardized ``kalman`` prior is sized from (task 214):
+    the weighted median of the first three rows' squared innovations, by
+    ``numpy``'s sort and cumulative weight, over ``scipy``'s median of a
+    chi-squared of one degree; 0 before there are three."""
+    from scipy import stats
+
+    if len(rows) < 3:
+        return 0.0
+    v, w = (np.array(c) for c in zip(*rows, strict=True))
+    order = np.argsort(v, kind="stable")
+    cum = np.cumsum(w[order])
+    median = v[order][np.searchsorted(cum, 0.5 * w.sum())]
+    return float(median / stats.chi2(1).median())
+
+
 def _filterpy_run(
     kalman: Any,
     t: np.ndarray,
@@ -3576,8 +3592,9 @@ def _filterpy_run(
     (``usable`` None) the first row with a noise sizes ``P = p0 * R * I``,
     and ``obs_var`` sizes it before the first row; standardized each slot's
     ``P_ii = p0 * R`` is set on the first observed row its scale is usable
-    (``usable[i]``), ``R`` the mean squared innovation over the observed
-    rows so far once three give it, or ``obs_var``, the intercept's then
+    (``usable[i]``), ``R`` the weighted median of the first three observed
+    rows' squared innovations over the median of a chi-squared of one degree
+    (task 214), or ``obs_var``, the intercept's then
     from the start; an unsized slot takes no noise. The readiness statistic
     is ``sqrt(1 + z' P⁻ z / R)``, ``P⁻`` the prior with the noise of the
     clock since the last observation, this row's included, ``R`` the noise
@@ -3597,7 +3614,9 @@ def _filterpy_run(
         sized[:] = not standardize
         sized[0] |= bool(np.all(Z[:, 0] == 1.0))
         kf.P = np.diag(np.where(sized, p0 * obs_var, 0.0))
-    basis = [0.0, 0.0, 0.0]
+    # The first three observed rows' squared innovations and weights (task
+    # 214).
+    basis: list[tuple[float, float]] = []
     gap = 0.0
     sig2 = wsig = wj = 0.0
     pred = np.full(n, np.nan)
@@ -3638,15 +3657,9 @@ def _filterpy_run(
         if seen:
             gap = 0.0
             if standardize:
-                if obs_var is None and e2 > 0.0:
-                    basis = [basis[0] + w[i] * e2, basis[1] + w[i], basis[2] + 1.0]
-                size = (
-                    obs_var
-                    if obs_var is not None
-                    else basis[0] / basis[1]
-                    if basis[2] >= 3
-                    else 0.0
-                )
+                if obs_var is None and e2 > 0.0 and len(basis) < 3:
+                    basis.append((e2, w[i]))
+                size = obs_var if obs_var is not None else _median_of_three(basis)
                 for a in range(k1):
                     if not sized[a] and usable[i][a] and size > 0.0:
                         kf.P[a, a] = p0 * size

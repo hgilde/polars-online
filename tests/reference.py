@@ -554,6 +554,21 @@ def _kalman_scales(st: dict, kt: int, off: int, standardize: bool) -> np.ndarray
     return scales
 
 
+def _weighted_median_over_chi2(rows: list[tuple[float, float]]) -> float:
+    """The noise a standardized ``kalman`` prior is sized from (task 214):
+    the weighted median of the first three rows' squared innovations -- the
+    value with less than half the weight below it and at least half at or
+    below it -- over the median of a chi-squared of one degree; 0 before
+    there are three."""
+    if len(rows) < 3:
+        return 0.0
+    v = np.array([r[0] for r in rows])
+    w = np.array([r[1] for r in rows])
+    half = 0.5 * w.sum()
+    picks = [x for x in v if w[v < x].sum() < half <= w[v <= x].sum()]
+    return float(min(picks)) / 0.4549364231195728
+
+
 def kalman_ref(
     X: np.ndarray,
     Y: np.ndarray,
@@ -626,11 +641,14 @@ def kalman_ref(
       (CC4);
     - standardized (task 211), each slot's prior ``P_ii = p0 * R`` is set on
       the first row that observes the target on which its scale is usable
-      (the intercept's always is), ``R`` the mean squared innovation ``sum w
-      e**2 / sum w`` over the rows that observed it so far, this one
-      included, once three rows give it (a row counts once whatever the
-      targets it observes); with ``obs_var``, ``R = obs_var`` and the
-      intercept is sized from the start. An unsized slot takes no noise;
+      (the intercept's always is), ``R`` the weighted median of the first
+      three rows' squared innovations that observed it, over the median of a
+      chi-squared of one degree, 0.4549 (task 214; a row counts once, at its
+      mean square over the targets it observes, whatever their number); with
+      ``obs_var``, ``R = obs_var`` and the intercept is sized from the
+      start. An unsized slot takes no noise. A ``P`` whose diagonal leaves
+      the numbers of at least 0 is sized again (task 214), never met on the
+      streams this is held to and not written here;
     - the EW stats update last, so this row's z used the prior stats; and
       after a row of positive weight the coefficients and ``P`` follow the
       stats to their new coordinates, ``b <- A b`` and ``P <- A P A'``, with
@@ -684,7 +702,7 @@ def kalman_ref(
             "P": [np.diag(prior) for _ in range(n_p)],
             "D": np.zeros(n_p),
             # Per covariance: sum w e**2, sum w, rows.
-            "basis": np.zeros((n_p, 3)),
+            "basis": [[] for _ in range(n_p)],
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "wj": np.zeros(m),
@@ -783,8 +801,8 @@ def kalman_ref(
                     for j in range(m)
                     if (share_p or j == pi) and np.isfinite(e2[j]) and e2[j] > 0.0
                 ]
-                if mine:
-                    st["basis"][pi] += [w[i] * sum(mine), w[i] * len(mine), 1.0]
+                if mine and len(st["basis"][pi]) < 3:
+                    st["basis"][pi].append((sum(mine) / len(mine), w[i]))
 
         # The process noise and the priors, per covariance, on a row that
         # observes its target.
@@ -810,11 +828,7 @@ def kalman_ref(
             if standardize:
                 sized = np.diag(P) != 0.0
                 P = P + np.diag(np.where(sized, qv * dd, 0.0))
-                if obs_var is not None:
-                    r = obs_var
-                else:
-                    sw, ww, rows = st["basis"][pi]
-                    r = sw / ww if rows >= 3.0 and ww > 0.0 else 0.0
+                r = obs_var if obs_var is not None else _weighted_median_over_chi2(st["basis"][pi])
                 if p0 * r > 0.0 and np.isfinite(p0 * r):
                     for a in range(kt):
                         if P[a, a] == 0.0 and ok[a]:

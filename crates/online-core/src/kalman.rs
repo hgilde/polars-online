@@ -212,19 +212,34 @@
 //! The intercept's scale is always usable. A feature whose variance becomes
 //! usable later than the others' gets its own prior then. Under
 //! `standardize` the prior of slot `i` is `P_ii = p0 R`, carried into the
-//! anchor's coordinates, with `R` the mean squared innovation, `Σ w e² /
-//! Σ w` over every row that has observed the target so far, this one
-//! included (each `e = y − z' b` before its row's update), once it rests on
-//! at least three rows (`PRIOR_ROWS`); with `obs_var`, `R = obs_var`, and
-//! the intercept's prior is set from the start. Three is the number of rows
-//! a feature's first usable scale rests on in a stream with a target on
-//! every row (two for the moments' variance, and the row itself), so there
-//! the intercept and the features are sized together; and a mean of three
-//! squared innovations falls below 1% of its mean with probability 7e-4,
-//! where one does with probability 0.08. With no process noise a prior
-//! sized too small pins the fit for good, and one squared innovation did:
-//! the review's seed whose sizing innovation was 0.004 on a target of spread
-//! 4.5 read slopes of 0.3 to 1.2 against a truth of 2 after 30,000 rows.
+//! anchor's coordinates, with `R` the weighted median of the first three
+//! rows' squared innovations that observed the target (each `e = y − z' b`
+//! before its row's update; a row counts once, at its mean square over the
+//! targets it observes, at its weight), over 0.4549, the median of a χ²₁:
+//! what a median of Gaussian innovations' squares reads of their variance,
+//! the noise `p0` is defined against. It is set once three rows give it
+//! (`PRIOR_ROWS`) and fixed from then on, so a slot sized later reads the
+//! same `R`. With `obs_var`, `R = obs_var`, and the intercept's prior is set
+//! from the start. Three is the number of rows a feature's first usable
+//! scale rests on in a stream with a target on every row (two for the
+//! moments' variance, and the row itself), so there the intercept and the
+//! features are sized together. With no process noise a prior sized too
+//! small pins the fit for good, and one squared innovation did: the
+//! review's seed whose sizing innovation was 0.004 on a target of spread 4.5
+//! read slopes of 0.3 to 1.2 against a truth of 2 after 30,000 rows. One
+//! square falls below 1% of the noise with probability 0.08, the median of
+//! three as `R` reads it with probability 0.0084, and their mean, which `R`
+//! was until task 214, with 0.0014. **A median and not a mean** (docs/PLAN.md
+//! task 214): a target at the input bound among the first rows, a square of
+//! `1e200`, made the mean `3e199`; `P` began there, the update left a slot's
+//! variance at `-1.6e184`, and the filter never learned again, its slopes at
+//! `1.8e-101` and `1.20` after 30,000 rows against a truth of 1 and -0.5.
+//! The median of three ignores one such row. And a covariance whose
+//! diagonal leaves the numbers of at least 0 -- the sign of a lost
+//! positive-definiteness a row can check in O(k) -- is sized again at the
+//! end of the row, from the noise as it stands (`obs_var`, else the
+//! residual variance), as at the start; with no noise yet it is left
+//! unsized for the next row that observes its target to size.
 //! The state follows the moments from the first row; the 22-row warm-up
 //! `sgd` and `pa` keep ([`crate::Warmup`]) is for their step sizes, and the
 //! filter's `P` carries its own uncertainty through the first rows. On task
@@ -538,50 +553,75 @@ const ANCHOR_DRIFT: f64 = 1.0;
 
 /// How many rows' squared innovations a standardized prior rests on before
 /// it is set (the module doc).
-const PRIOR_ROWS: f64 = 3.0;
+const PRIOR_ROWS: usize = 3;
+
+/// The median of a χ²₁, `0.4549…`: what the median of a Gaussian
+/// innovation's square is, in units of its variance, so the median of the
+/// first rows' squares over it reads the noise variance, as a mean of them
+/// does (the module doc; docs/PLAN.md task 214).
+const CHI2_1_MEDIAN: f64 = 0.454_936_423_119_572_8;
 
 /// The squared innovations a covariance's prior is sized from (the module
-/// doc): over the rows that observed one of its targets, the weighted sum of
-/// the squared innovations, the weight, and the number of rows. Kept under
-/// `standardize` without `obs_var`, and all zero otherwise.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+/// doc): the first [`PRIOR_ROWS`] rows that observed one of its targets,
+/// each row's mean squared innovation over the targets it observed and its
+/// weight. Kept under `standardize` without `obs_var`, and empty otherwise.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct NoiseBasis {
-    e2w: f64,
-    w: f64,
-    rows: f64,
+    e2: Vec<f64>,
+    w: Vec<f64>,
 }
 
 impl NoiseBasis {
     /// A row's `n` squared innovations, summing to `e2`, at weight `w`: one
     /// row, whatever the number of targets it observes, so a target beside
     /// an exact copy of itself under `share_p` sizes its prior on the row it
-    /// would alone.
+    /// would alone. The rows past the first [`PRIOR_ROWS`] are not kept.
     fn add(&mut self, e2: f64, n: f64, w: f64) {
-        // A row whose squares would take the sum past the doubles is left
-        // out, as a square that is not finite is: the sums stay numbers.
-        let (e2w, sw) = (self.e2w + w * e2, self.w + w * n);
-        if e2w.is_finite() && sw.is_finite() {
-            self.e2w = e2w;
-            self.w = sw;
-            self.rows += 1.0;
+        let v = e2 / n;
+        if self.e2.len() < PRIOR_ROWS && v > 0.0 && v.is_finite() && w > 0.0 && w.is_finite() {
+            self.e2.push(v);
+            self.w.push(w);
         }
     }
 
-    /// The mean squared innovation, once it rests on [`PRIOR_ROWS`] rows and
-    /// is a positive number; none before.
+    /// The weighted median of the first rows' squared innovations over
+    /// [`CHI2_1_MEDIAN`], once there are [`PRIOR_ROWS`] of them; none
+    /// before. A median and not a mean (docs/PLAN.md task 214): a target at
+    /// the input bound among the first rows, a square of `1e200`, made the
+    /// mean `3e199`, and the prior sized from it left `P` indefinite for
+    /// good.
     fn noise(&self) -> Option<f64> {
-        if self.rows >= PRIOR_ROWS && self.w > 0.0 {
-            let v = self.e2w / self.w;
-            (v > 0.0 && v.is_finite()).then_some(v)
-        } else {
-            None
+        if self.e2.len() < PRIOR_ROWS {
+            return None;
         }
+        let mut rows: Vec<(f64, f64)> = self
+            .e2
+            .iter()
+            .copied()
+            .zip(self.w.iter().copied())
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let half = 0.5 * self.w.iter().sum::<f64>();
+        let mut seen = 0.0;
+        let median = rows
+            .iter()
+            .find(|(_, w)| {
+                seen += w;
+                seen >= half
+            })
+            .map_or(rows[rows.len() - 1].0, |(v, _)| *v);
+        let v = median / CHI2_1_MEDIAN;
+        (v > 0.0 && v.is_finite()).then_some(v)
     }
 
     fn is_valid(&self) -> bool {
-        [self.e2w, self.w, self.rows]
-            .iter()
-            .all(|v| v.is_finite() && *v >= 0.0)
+        self.e2.len() == self.w.len()
+            && self.e2.len() <= PRIOR_ROWS
+            && self
+                .e2
+                .iter()
+                .chain(&self.w)
+                .all(|v| v.is_finite() && *v > 0.0)
     }
 }
 
@@ -1501,6 +1541,44 @@ impl Kalman {
         }
     }
 
+    /// Whether covariance `pi` has lost its positive-definiteness where it
+    /// shows, on the diagonal: a variance below 0, or not a finite number.
+    /// O(k), which a row can afford where an eigensolve is not.
+    fn lost_definiteness(&self, pi: usize) -> bool {
+        let k = self.cfg.k_total();
+        let p = &self.p[pi];
+        (0..k).any(|i| {
+            let v = p[i * k + i];
+            !(v >= 0.0 && v.is_finite())
+        })
+    }
+
+    /// Covariance `pi` emptied and sized again from the noise as the state
+    /// holds it (`obs_var`, else the residual variance), as at the start:
+    /// `p0` times it on each slot whose scale is usable, carried into the
+    /// anchor's coordinates, or the whole diagonal without `standardize`.
+    /// With no noise yet it stays unsized, and the next row that observes
+    /// its target sizes it as the first did.
+    fn size_again(&mut self, pi: usize) {
+        self.p[pi].fill(0.0);
+        let j = if self.cfg.share_p { 0 } else { pi };
+        let r = self.readiness_noise(j);
+        if r.is_nan() {
+            return;
+        }
+        if self.cfg.standardize {
+            self.size_slots(pi, r);
+            return;
+        }
+        let v = self.cfg.p0 * r;
+        if v > 0.0 && v.is_finite() {
+            let k = self.cfg.k_total();
+            for i in 0..k {
+                self.p[pi][i * k + i] = v;
+            }
+        }
+    }
+
     /// The noise target `j`'s readiness is read against, as the state holds
     /// it before a row (the module doc): `obs_var`, else the residual
     /// variance -- under `share_p` the mean over the targets that have one,
@@ -2140,6 +2218,17 @@ impl OnlineModel for Kalman {
         self.stats.update(&self.zbuf, lam, weight);
         if self.cfg.standardize && weight > 0.0 {
             self.follow_the_moments();
+        }
+
+        // A covariance whose diagonal is no longer a set of numbers of at
+        // least 0 has lost its positive-definiteness, which no later row
+        // repairs: sized again from the noise as it stands, as at the start
+        // (the module doc; docs/PLAN.md task 214). After the row's
+        // prediction, which reads `b` alone, so no prediction reads it.
+        for pi in 0..self.p.len() {
+            if self.lost_definiteness(pi) {
+                self.size_again(pi);
+            }
         }
 
         Step {
@@ -3166,7 +3255,9 @@ mod tests {
             let (mut sig2, mut wsig, mut wj) = ([0.0f64; 2], [0.0f64; 2], [0.0f64; 2]);
             let mut elapsed = vec![0.0f64; n_p];
             // Per covariance: Σ w e², Σ w and the rows.
-            let mut basis = vec![[0.0f64; 3]; n_p];
+            // Per covariance, the first three rows' mean squared
+            // innovation and weight (task 214).
+            let mut basis: Vec<Vec<(f64, f64)>> = vec![Vec::new(); n_p];
             let mut history: Vec<([f64; 2], f64)> = Vec::new();
             // The moments of the history, by their definition: `(m, s,
             // usable)` per feature, `m = 0` through the origin.
@@ -3299,10 +3390,8 @@ mod tests {
                         .filter(|&j| share || j == pi)
                         .filter_map(|j| e2[j].filter(|v| *v > 0.0))
                         .collect();
-                    if !mine.is_empty() {
-                        held[0] += w * mine.iter().sum::<f64>();
-                        held[1] += w * mine.len() as f64;
-                        held[2] += 1.0;
+                    if !mine.is_empty() && held.len() < 3 {
+                        held.push((mine.iter().sum::<f64>() / mine.len() as f64, w));
                     }
                 }
                 for pi in 0..n_p {
@@ -3335,8 +3424,25 @@ mod tests {
                             p[pi][a * k + a] += q * dd;
                         }
                     }
-                    if basis[pi][2] >= 3.0 {
-                        let r = basis[pi][0] / basis[pi][1];
+                    if basis[pi].len() == 3 {
+                        // The weighted median: the value with less than
+                        // half the weight below it and at least half at or
+                        // below it, over the median of a chi-squared of one
+                        // degree, 0.4549364231195728.
+                        let held = &basis[pi];
+                        let total: f64 = held.iter().map(|(_, w)| w).sum();
+                        let below = |v: f64| -> f64 {
+                            held.iter().filter(|(u, _)| *u < v).map(|(_, w)| w).sum()
+                        };
+                        let at_or_below = |v: f64| -> f64 {
+                            held.iter().filter(|(u, _)| *u <= v).map(|(_, w)| w).sum()
+                        };
+                        let median = held
+                            .iter()
+                            .map(|(v, _)| *v)
+                            .filter(|&v| below(v) < 0.5 * total && at_or_below(v) >= 0.5 * total)
+                            .fold(f64::INFINITY, f64::min);
+                        let r = median / 0.4549364231195728;
                         for a in 0..k {
                             let ok = a < off || usable[a - off];
                             if ok && p[pi][a * k + a] == 0.0 {
@@ -3541,6 +3647,129 @@ mod tests {
         assert_eq!(m.p[0][0], p0[0]);
         // And the state is what `coefficients` reports: unstandardized.
         assert_eq!(m.coefficients()[0], m.beta[0]);
+    }
+
+    /// A target at the input bound among the first rows (docs/PLAN.md task
+    /// 214, found by task 211, older than it): its squared innovation,
+    /// `1e200`, made a third of the mean the priors were sized from, `P`
+    /// started near `3e199`, the update left a slot's variance negative,
+    /// and the filter never learned again -- its slopes sat at `1.8e-101`
+    /// and `1.20` after 30,000 rows, against a truth of 1 and -0.5. Here a
+    /// feature at the bound on row 0 and both targets at it on row 1 lead a
+    /// stream of 20,000 ordinary rows: the filter learns the truth, as the
+    /// stream without the two rows does, every variance it reports is at
+    /// least 0 (none before there is a noise), and every prediction is the one `predict` gave
+    /// before the row, which never reads the row's target (hard rule 2).
+    #[test]
+    fn a_target_at_the_input_bound_among_the_first_rows_is_survived() {
+        let mut c = cfg(2, 2, vec![100.0]);
+        c.decay = Decay::Halflife(20.0);
+        c.min_weight = 3.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 20260901u64;
+        let row = |s: &mut u64| -> (Vec<f64>, Vec<Option<f64>>) {
+            let x: Vec<f64> = (0..2).map(|_| lcg(s)).collect();
+            let y = (0..2)
+                .map(|j| Some(0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1]))
+                .collect();
+            (x, y)
+        };
+        let (mut x0, y0) = row(&mut s);
+        x0[0] = crate::INPUT_BOUND;
+        let (x1, mut y1) = row(&mut s);
+        y1.iter_mut().for_each(|v| *v = Some(crate::INPUT_BOUND));
+        let mut rows = vec![(x0, y0), (x1, y1)];
+        rows.extend((0..20_000).map(|_| row(&mut s)));
+        for (i, (x, y)) in rows.iter().enumerate() {
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let served = m.predict(x, d).pred;
+            let got = m.step(x, y, d, 1.0).pred;
+            assert!(
+                served
+                    .iter()
+                    .zip(&got)
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "row {i}: {served:?} before the row, {got:?} from it"
+            );
+            if i % 97 == 0
+                && let Some(crate::CoefVariance::Absolute(v)) = m.coef_variance()
+            {
+                assert!(
+                    v.iter().flatten().all(|v| v.is_nan() || *v >= 0.0),
+                    "row {i}: variances {v:?}"
+                );
+            }
+        }
+        for (j, b) in m.coefficients().iter().enumerate() {
+            let truth = [0.5 * (j as f64 + 1.0), 1.0, -0.5];
+            assert!(
+                b.iter().zip(&truth).all(|(u, v)| (u - v).abs() < 0.02),
+                "target {j}: {b:?} against {truth:?}"
+            );
+        }
+    }
+
+    /// A covariance that has lost its positive-definiteness, a variance
+    /// below 0 on its diagonal, is sized again from the noise as it stands,
+    /// as at the start (docs/PLAN.md task 214): the row it shows on is
+    /// predicted as `predict` predicts it, before the row, and after it
+    /// every variance is a number of at least 0 -- unstandardized, `p0`
+    /// times the residual variance on the whole diagonal -- and the filter
+    /// learns the truth again. Damaged here by hand, a slope's variance at
+    /// `-1e6` against its neighbours'; the median prior keeps the stream
+    /// that did it in task 211 from getting here.
+    #[test]
+    fn a_covariance_that_loses_its_positive_diagonal_is_sized_again() {
+        for standardize in [true, false] {
+            let mut c = cfg(2, 1, vec![100.0]);
+            c.decay = Decay::Halflife(50.0);
+            c.min_weight = 3.0;
+            c.standardize = standardize;
+            let mut m = Kalman::new(c).unwrap();
+            let mut s = 5u64;
+            let mut row = || {
+                let x = [2.0 + lcg(&mut s), lcg(&mut s)];
+                let y = 0.3 + x[0] - 0.5 * x[1] + 0.05 * lcg(&mut s);
+                (x, [Some(y)])
+            };
+            for i in 0..300 {
+                let (x, y) = row();
+                m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let k = 3;
+            m.p[0][k + 1] = -1e6;
+            let variances = |m: &Kalman| match m.coef_variance() {
+                Some(crate::CoefVariance::Absolute(v)) => v[0].clone(),
+                other => panic!("{other:?}"),
+            };
+            assert!(variances(&m)[1] < 0.0, "the damage shows");
+            for i in 0..3000 {
+                let (x, y) = row();
+                let served = m.predict(&x, 1.0).pred;
+                let got = m.step(&x, &y, 1.0, 1.0).pred;
+                assert_eq!(served[0].to_bits(), got[0].to_bits(), "row {i}");
+                let v = variances(&m);
+                assert!(
+                    v.iter().all(|v| v.is_finite() && *v >= 0.0),
+                    "standardize {standardize}, row {i}: {v:?}"
+                );
+                if i == 0 && !standardize {
+                    let want = m.cfg.p0 * m.readiness_noise(0);
+                    assert!(
+                        (0..k).all(|a| m.p[0][a * k + a] == want),
+                        "{:?} against {want}",
+                        m.p[0]
+                    );
+                }
+            }
+            let b = &m.coefficients()[0];
+            assert!(
+                b.iter()
+                    .zip([0.3, 1.0, -0.5])
+                    .all(|(u, v)| (u - v).abs() < 0.02),
+                "standardize {standardize}: {b:?}"
+            );
+        }
     }
 
     /// A reverting slot's process noise for a gap `D` is `q g(D)²`, `g(D) =

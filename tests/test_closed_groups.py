@@ -790,10 +790,13 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 49 since
-    2026-10-08 (task 211: `kalman` keeps an anchor, its clocks since an
-    observation and its prior's squared innovations in place of its warm-up;
-    the bank refuses 48 and older), after 48 the same day (task 212: a
+    """The version a bank file names, held to the library's: 50 since
+    2026-10-08 (task 214: a standardizing `kalman` keeps the first three
+    rows' squared innovations, which its prior is the median of; the bank
+    refuses 49 and older), after 49 the same day (task 211: `kalman` keeps
+    an anchor, its clocks since an observation and its prior's squared
+    innovations in place of its warm-up; the bank refuses 48 and older),
+    after 48 the same day (task 212: a
     windows state is version 9, a variance's queue six wide and each
     operator's `bias`; the bank refuses 47 and older), after 47 the same day
     (task 206: a standardizing `sgd`, `pa` or `kalman` keeps its scaler's
@@ -863,7 +866,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 49
+    assert po.schema_version() == 50
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

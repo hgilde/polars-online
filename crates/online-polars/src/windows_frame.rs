@@ -2468,8 +2468,9 @@ mod tests {
         // notices' waits (task 208) and 47 for task 206's warm-up of a
         // standardizing fit, the windows state unchanged; 48 (task 212)
         // with windows state 9, a variance's queue six wide; 49 for task
-        // 211's `kalman` anchor and clocks, the windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 49));
+        // 211's `kalman` anchor and clocks and 50 for task 214's `kalman`
+        // prior from a median, the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 50));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first
