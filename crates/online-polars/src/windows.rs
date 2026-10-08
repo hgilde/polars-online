@@ -589,6 +589,21 @@ const SUM: usize = 3;
 const ROW_VAR: usize = 8;
 const SUM_VAR: usize = 6;
 
+/// A row's width per operator in a queue's `vals`: [`ROW_VAR`] in a queue
+/// holding a variance (`W`), else [`ROW`]. The queue code is compiled once
+/// for each width, so a queue without a variance runs the code it ran
+/// before there was one.
+#[inline(always)]
+const fn row_w<const W: bool>() -> usize {
+    if W { ROW_VAR } else { ROW }
+}
+
+/// [`row_w`] for the sums: [`SUM_VAR`] or [`SUM`].
+#[inline(always)]
+const fn sum_w<const W: bool>() -> usize {
+    if W { SUM_VAR } else { SUM }
+}
+
 /// Rows with their values and partial sums in flat arenas, so a row costs
 /// no allocation: one value and one accumulator per operator, side by side.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -672,25 +687,25 @@ impl Stack {
     }
 
     #[inline]
-    fn start(&self, i: usize, j: usize) -> f64 {
-        self.vals[(i * self.n + j) * self.row_w()]
+    fn start<const W: bool>(&self, i: usize, j: usize) -> f64 {
+        self.vals[(i * self.n + j) * row_w::<W>()]
     }
 
     #[inline]
-    fn x(&self, i: usize, j: usize) -> f64 {
-        self.vals[(i * self.n + j) * self.row_w() + 1]
+    fn x<const W: bool>(&self, i: usize, j: usize) -> f64 {
+        self.vals[(i * self.n + j) * row_w::<W>() + 1]
     }
 
     #[inline]
-    fn own(&self, i: usize, j: usize) -> Acc {
-        let b = (i * self.n + j) * self.row_w() + 2;
-        Acc::read(&self.vals[b..], self.wide)
+    fn own<const W: bool>(&self, i: usize, j: usize) -> Acc {
+        let b = (i * self.n + j) * row_w::<W>() + 2;
+        Acc::read(&self.vals[b..], W)
     }
 
     #[inline]
-    fn sum(&self, i: usize, j: usize) -> Acc {
-        let b = (i * self.n + j) * self.sum_w();
-        Acc::read(&self.sums[b..], self.wide)
+    fn sum<const W: bool>(&self, i: usize, j: usize) -> Acc {
+        let b = (i * self.n + j) * sum_w::<W>();
+        Acc::read(&self.sums[b..], W)
     }
 
     /// Whether every arena is as long as the rows say, at `n` operators of
@@ -714,9 +729,8 @@ impl Stack {
 
 /// Write `a` into `out`'s slot for operator `j`, at a queue's width.
 #[inline]
-fn put(out: &mut [f64], j: usize, a: Acc, wide: bool) {
-    let w = if wide { SUM_VAR } else { SUM };
-    a.write(&mut out[j * w..], wide);
+fn put<const W: bool>(out: &mut [f64], j: usize, a: Acc) {
+    a.write(&mut out[j * sum_w::<W>()..], W);
 }
 
 /// The two-stack queue. `front` holds the older rows, the oldest on top,
@@ -773,10 +787,9 @@ impl Queue {
         self.front.sum_w()
     }
 
-    /// Push a row: `row` is its `row_w() * n` values, `scratch` a buffer of
-    /// `sum_w() * n` for the sums.
+    /// [`Queue::push`] compiled for this queue's width.
     #[allow(clippy::too_many_arguments)]
-    fn push(
+    fn push_row(
         &mut self,
         k: &KernelDef,
         seq: u64,
@@ -786,42 +799,68 @@ impl Queue {
         row: &[f64],
         scratch: &mut [f64],
     ) {
-        let (n, wide, rw) = (self.n, self.wide(), self.row_w());
+        if self.wide() {
+            self.push::<true>(k, seq, tau, off, end, row, scratch);
+        } else {
+            self.push::<false>(k, seq, tau, off, end, row, scratch);
+        }
+    }
+
+    /// Push a row: `row` is its `row_w() * n` values, `scratch` a buffer of
+    /// `sum_w() * n` for the sums.
+    #[allow(clippy::too_many_arguments)]
+    fn push<const W: bool>(
+        &mut self,
+        k: &KernelDef,
+        seq: u64,
+        tau: f64,
+        off: i64,
+        end: f64,
+        row: &[f64],
+        scratch: &mut [f64],
+    ) {
+        let (n, rw) = (self.n, row_w::<W>());
         // The buffers are sized for the widest kernel; this one's part.
-        let scratch = &mut scratch[..self.sum_w() * n];
-        let own = |j: usize| Acc::read(&row[j * rw + 2..], wide);
+        let scratch = &mut scratch[..sum_w::<W>() * n];
+        let own = |j: usize| Acc::read(&row[j * rw + 2..], W);
         if k.window_size.is_some() {
             let mut at = tau;
             match self.back.len().checked_sub(1) {
                 None => {
                     for j in 0..n {
-                        put(scratch, j, own(j), wide);
+                        put::<W>(scratch, j, own(j));
                     }
                 }
                 Some(last) => {
                     let last_at = self.back.at[last];
                     for j in 0..n {
-                        let (a, a_at) =
-                            then(k, self.back.sum(last, j), last_at, own(j), tau, self.var[j]);
-                        put(scratch, j, a, wide);
+                        let (a, a_at) = then(
+                            k,
+                            self.back.sum::<W>(last, j),
+                            last_at,
+                            own(j),
+                            tau,
+                            W && self.var[j],
+                        );
+                        put::<W>(scratch, j, a);
                         at = a_at;
                     }
                 }
             }
             self.back.push(seq, tau, off, end, row, scratch, at);
         } else if self.total.is_empty() {
-            self.total.resize(self.sum_w() * n, 0.0);
+            self.total.resize(sum_w::<W>() * n, 0.0);
             for j in 0..n {
-                put(&mut self.total, j, own(j), wide);
+                put::<W>(&mut self.total, j, own(j));
             }
             self.total_at = tau;
         } else {
             let mut at = tau;
-            let sw = self.sum_w();
+            let sw = sum_w::<W>();
             for j in 0..n {
-                let t = Acc::read(&self.total[j * sw..], wide);
-                let (a, a_at) = then(k, t, self.total_at, own(j), tau, self.var[j]);
-                put(&mut self.total, j, a, wide);
+                let t = Acc::read(&self.total[j * sw..], W);
+                let (a, a_at) = then(k, t, self.total_at, own(j), tau, W && self.var[j]);
+                put::<W>(&mut self.total, j, a);
                 at = a_at;
             }
             self.total_at = at;
@@ -830,12 +869,12 @@ impl Queue {
 
     /// Turn `back` over into `front` when `front` is empty, so the oldest
     /// row is `front`'s top.
-    fn settle(&mut self, k: &KernelDef, scratch: &mut [f64]) {
+    fn settle<const W: bool>(&mut self, k: &KernelDef, scratch: &mut [f64]) {
         if !self.front.is_empty() {
             return;
         }
-        let (n, wide, rw) = (self.n, self.wide(), self.row_w());
-        let scratch = &mut scratch[..self.sum_w() * n];
+        let (n, rw) = (self.n, row_w::<W>());
+        let scratch = &mut scratch[..sum_w::<W>() * n];
         while let Some(i) = self.back.len().checked_sub(1) {
             let (seq, tau, off, end) = (
                 self.back.seq[i],
@@ -848,7 +887,7 @@ impl Queue {
             match self.front.len().checked_sub(1) {
                 None => {
                     for j in 0..n {
-                        put(scratch, j, self.back.own(i, j), wide);
+                        put::<W>(scratch, j, self.back.own::<W>(i, j));
                     }
                 }
                 Some(newer) => {
@@ -856,13 +895,13 @@ impl Queue {
                     for j in 0..n {
                         let (a, a_at) = then(
                             k,
-                            self.back.own(i, j),
+                            self.back.own::<W>(i, j),
                             tau,
-                            self.front.sum(newer, j),
+                            self.front.sum::<W>(newer, j),
                             newer_at,
-                            self.var[j],
+                            W && self.var[j],
                         );
-                        put(scratch, j, a, wide);
+                        put::<W>(scratch, j, a);
                         at = a_at;
                     }
                 }
@@ -882,9 +921,14 @@ impl Queue {
     }
 
     /// Pop the rows `stale` says have left the window, oldest first.
-    fn evict(&mut self, k: &KernelDef, scratch: &mut [f64], stale: impl Fn(u64, f64, i64) -> bool) {
+    fn evict<const W: bool>(
+        &mut self,
+        k: &KernelDef,
+        scratch: &mut [f64],
+        stale: impl Fn(u64, f64, i64) -> bool,
+    ) {
         loop {
-            self.settle(k, scratch);
+            self.settle::<W>(k, scratch);
             let Some(top) = self.front.len().checked_sub(1) else {
                 return;
             };
@@ -900,28 +944,25 @@ impl Queue {
     }
 
     /// The window's sums for operator `j`, with their anchor.
-    fn sum_op(&self, k: &KernelDef, j: usize) -> Option<(Acc, f64)> {
+    fn sum_op<const W: bool>(&self, k: &KernelDef, j: usize) -> Option<(Acc, f64)> {
         if k.window_size.is_none() {
             if self.total.is_empty() {
                 return None;
             }
-            return Some((
-                Acc::read(&self.total[j * self.sum_w()..], self.wide()),
-                self.total_at,
-            ));
+            return Some((Acc::read(&self.total[j * sum_w::<W>()..], W), self.total_at));
         }
         let f = self
             .front
             .len()
             .checked_sub(1)
-            .map(|t| (self.front.sum(t, j), self.front.at[t]));
+            .map(|t| (self.front.sum::<W>(t, j), self.front.at[t]));
         let b = self
             .back
             .len()
             .checked_sub(1)
-            .map(|l| (self.back.sum(l, j), self.back.at[l]));
+            .map(|l| (self.back.sum::<W>(l, j), self.back.at[l]));
         match (f, b) {
-            (Some((a, a_at)), Some((b, b_at))) => Some(then(k, a, a_at, b, b_at, self.var[j])),
+            (Some((a, a_at)), Some((b, b_at))) => Some(then(k, a, a_at, b, b_at, W && self.var[j])),
             (Some(x), None) | (None, Some(x)) => Some(x),
             (None, None) => None,
         }
@@ -931,21 +972,21 @@ impl Queue {
     /// Where those reach into `back`, whose sums are prefixes, the rest is
     /// summed row by row: rare, as the rows before an operator's oldest
     /// valued one carry nothing of it.
-    fn sum_after_op(&self, k: &KernelDef, p: usize, j: usize) -> Option<(Acc, f64)> {
-        let var = self.var[j];
+    fn sum_after_op<const W: bool>(&self, k: &KernelDef, p: usize, j: usize) -> Option<(Acc, f64)> {
+        let var = W && self.var[j];
         let n = self.front.len();
         if p + 1 < n {
             let i = n - 2 - p;
-            let a = (self.front.sum(i, j), self.front.at[i]);
+            let a = (self.front.sum::<W>(i, j), self.front.at[i]);
             return Some(match self.back.len().checked_sub(1) {
-                Some(l) => then(k, a.0, a.1, self.back.sum(l, j), self.back.at[l], var),
+                Some(l) => then(k, a.0, a.1, self.back.sum::<W>(l, j), self.back.at[l], var),
                 None => a,
             });
         }
         let from = p + 1 - n;
         let mut sum: Option<(Acc, f64)> = None;
         for i in from..self.back.len() {
-            let own = (self.back.own(i, j), self.back.tau[i]);
+            let own = (self.back.own::<W>(i, j), self.back.tau[i]);
             sum = Some(match sum {
                 None => own,
                 Some((a, a_at)) => then(k, a, a_at, own.0, own.1, var),
@@ -1354,6 +1395,14 @@ fn check_op(o: usize, op: &OpDef, k: &KernelDef) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// `$f::<true>(..)` for a queue holding a variance, `$f::<false>(..)`
+/// for any other: the queue code compiled for its width ([`row_w`]).
+macro_rules! by_width {
+    ($wide:expr, $f:ident ( $($arg:expr),* $(,)? )) => {
+        if $wide { $f::<true>($($arg),*) } else { $f::<false>($($arg),*) }
+    };
 }
 
 /// The rows not yet emitted, borrowed apart from the groups.
@@ -1913,38 +1962,43 @@ impl Windows {
                     values: &mut self.held_values,
                     meta: &mut self.held_meta,
                 };
-                close(
-                    k,
-                    &self.ops,
-                    &self.members[ki],
-                    &mut g.queues[ki],
-                    &mut self.scratch_sum,
-                    g.open[ki],
-                    &g.open_x[ki],
-                    &g.open_held[ki],
-                    tau,
-                    t,
-                    End::Complete,
-                    t.tau + w,
-                    form,
-                    held,
+                by_width!(
+                    g.queues[ki].wide(),
+                    close(
+                        k,
+                        &self.ops,
+                        &self.members[ki],
+                        &mut g.queues[ki],
+                        &mut self.scratch_sum,
+                        g.open[ki],
+                        &g.open_x[ki],
+                        &g.open_held[ki],
+                        tau,
+                        t,
+                        End::Complete,
+                        t.tau + w,
+                        form,
+                        held,
+                    )
                 );
             }
             if let Some((oseq, otau, ooff)) = g.open[ki].take() {
                 let m = &self.members[ki];
-                let rw = g.queues[ki].row_w();
-                fill_forward(
-                    k,
-                    &self.ops,
-                    m,
-                    otau,
-                    tau,
-                    &g.open_x[ki],
-                    &g.open_held[ki],
-                    rw,
-                    &mut self.scratch_row,
+                let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
+                by_width!(
+                    wide,
+                    fill_forward(
+                        k,
+                        &self.ops,
+                        m,
+                        otau,
+                        tau,
+                        &g.open_x[ki],
+                        &g.open_held[ki],
+                        &mut self.scratch_row,
+                    )
                 );
-                g.queues[ki].push(
+                g.queues[ki].push_row(
                     k,
                     oseq,
                     otau,
@@ -1977,16 +2031,19 @@ impl Windows {
             }
             let m = &self.members[ki];
             if !k.closed.near(Direction::Backward) && new_stamp {
-                read_backward(
-                    k,
-                    &self.ops,
-                    m,
-                    &mut g.queues[ki],
-                    &mut self.scratch_sum,
-                    tau,
-                    off,
-                    form,
-                    &mut g.stamp_values[ki],
+                by_width!(
+                    g.queues[ki].wide(),
+                    read_backward(
+                        k,
+                        &self.ops,
+                        m,
+                        &mut g.queues[ki],
+                        &mut self.scratch_sum,
+                        tau,
+                        off,
+                        form,
+                        &mut g.stamp_values[ki],
+                    )
                 );
             }
             // A value is held from the operator's last valued row; the first
@@ -2021,7 +2078,7 @@ impl Windows {
                     g.last_valued[o] = tau;
                 }
             }
-            g.queues[ki].push(
+            g.queues[ki].push_row(
                 k,
                 seq,
                 tau,
@@ -2090,16 +2147,19 @@ impl Windows {
                 continue;
             }
             let m = &self.members[ki];
-            read_backward(
-                k,
-                &self.ops,
-                m,
-                &mut g.queues[ki],
-                &mut self.scratch_sum,
-                tau,
-                off,
-                form,
-                &mut g.stamp_values[ki],
+            by_width!(
+                g.queues[ki].wide(),
+                read_backward(
+                    k,
+                    &self.ops,
+                    m,
+                    &mut g.queues[ki],
+                    &mut self.scratch_sum,
+                    tau,
+                    off,
+                    form,
+                    &mut g.stamp_values[ki],
+                )
             );
             let complete = k.window_size.is_none_or(|w| tau >= w);
             for &seq in &pending {
@@ -2187,21 +2247,24 @@ impl Windows {
                     values: &mut self.held_values,
                     meta: &mut self.held_meta,
                 };
-                close(
-                    k,
-                    &self.ops,
-                    &self.members[ki],
-                    &mut g.queues[ki],
-                    &mut self.scratch_sum,
-                    g.open[ki],
-                    &g.open_x[ki],
-                    &g.open_held[ki],
-                    end_tau,
-                    t,
-                    how,
-                    far,
-                    g.form,
-                    held,
+                by_width!(
+                    g.queues[ki].wide(),
+                    close(
+                        k,
+                        &self.ops,
+                        &self.members[ki],
+                        &mut g.queues[ki],
+                        &mut self.scratch_sum,
+                        g.open[ki],
+                        &g.open_x[ki],
+                        &g.open_held[ki],
+                        end_tau,
+                        t,
+                        how,
+                        far,
+                        g.form,
+                        held,
+                    )
                 );
             }
             g.open[ki] = None;
@@ -2331,7 +2394,7 @@ impl Windows {
 /// value over `[tau, end)`, a sum counts the row's own value, and only a
 /// row with its own value counts toward `min_samples`.
 #[allow(clippy::too_many_arguments)]
-fn fill_forward(
+fn fill_forward<const W: bool>(
     k: &KernelDef,
     ops: &[OpDef],
     members: &[usize],
@@ -2339,7 +2402,6 @@ fn fill_forward(
     end: f64,
     x: &[f64],
     held: &[f64],
-    rw: usize,
     row: &mut [f64],
 ) {
     for (j, &o) in members.iter().enumerate() {
@@ -2364,17 +2426,17 @@ fn fill_forward(
                 ..Acc::default()
             },
         };
-        let b = j * rw;
+        let b = j * row_w::<W>();
         row[b] = tau;
         row[b + 1] = h;
-        acc.write(&mut row[b + 2..], rw == ROW_VAR);
+        acc.write(&mut row[b + 2..], W);
     }
 }
 
 /// Each operator's value of a backward window at stamp time `tau`, the
 /// queue evicted to the window first, into `out`; NaN where null.
 #[allow(clippy::too_many_arguments)]
-fn read_backward(
+fn read_backward<const W: bool>(
     k: &KernelDef,
     ops: &[OpDef],
     members: &[usize],
@@ -2391,7 +2453,7 @@ fn read_backward(
         // everywhere, so a row exactly a window old lands on the same side
         // every time.
         let far = k.closed.far(Direction::Backward);
-        q.evict(k, scratch, |_, _, t_off| {
+        q.evict::<W>(k, scratch, |_, _, t_off| {
             let age = gap(form, t_off, off).cmp_window(k);
             if far {
                 age == Ordering::Greater
@@ -2405,7 +2467,7 @@ fn read_backward(
     for (j, &o) in members.iter().enumerate() {
         let op = &ops[o];
         let var = op.stat.is_var();
-        let Some((sum, at)) = q.sum_op(k, j) else {
+        let Some((sum, at)) = q.sum_op::<W>(k, j) else {
             out[j] = f64::NAN;
             continue;
         };
@@ -2416,16 +2478,18 @@ fn read_backward(
         // is its own.
         let cut = match (k.window_size, op.stat.weighs_held()) {
             (Some(_), true) => q
-                .find_oldest(|st, i| !st.x(i, j).is_nan())
-                .filter(|&(_, st, i)| st.start(i, j) < edge)
-                .map(|(p, st, i)| (p, st.start(i, j), st.end[i], st.x(i, j))),
+                .find_oldest(|st, i| !st.x::<W>(i, j).is_nan())
+                .filter(|&(_, st, i)| st.start::<W>(i, j) < edge)
+                .map(|(p, st, i)| (p, st.start::<W>(i, j), st.end[i], st.x::<W>(i, j))),
             _ => None,
         };
         let a = match cut {
             Some((p, start, end, x)) => {
-                let mut a = q.sum_after_op(k, p, j).map_or(Acc::default(), |(r, r_at)| {
-                    r.scaled(k.discount(tau - r_at), var)
-                });
+                let mut a = q
+                    .sum_after_op::<W>(k, p, j)
+                    .map_or(Acc::default(), |(r, r_at)| {
+                        r.scaled(k.discount(tau - r_at), var)
+                    });
                 let m = mass_between(k, tau, start.max(edge), end);
                 a = a.plus(Acc::held(x, m, var), var);
                 a
@@ -2506,7 +2570,7 @@ fn write_backward(
 /// plus the kernel's open row, held from its time until `open_end` and
 /// counted up to the window's far edge.
 #[allow(clippy::too_many_arguments)]
-fn close(
+fn close<const W: bool>(
     k: &KernelDef,
     ops: &[OpDef],
     members: &[usize],
@@ -2529,7 +2593,7 @@ fn close(
     // under "right" and "none" none at the stamp is. Each edge is the exact
     // span from the row (review R2, W1).
     let near_in = k.closed.near(Direction::Forward);
-    q.evict(k, scratch, |_, _, j_off| {
+    q.evict::<W>(k, scratch, |_, _, j_off| {
         let ahead = gap(form, t.off, j_off).cmp_zero();
         if near_in {
             ahead == Ordering::Less
@@ -2578,7 +2642,7 @@ fn close(
         // the window: a mean starts at the first row in the window with a
         // value of its own, since the rows before it hold a value from the
         // row itself or from one its stamp excludes.
-        let seg = q.sum_op(k, j);
+        let seg = q.sum_op::<W>(k, j);
         let scaled = |(a, at): (Acc, f64)| a.scaled(k.discount(at - t.tau), false);
         let mut a = Acc::default();
         let mut any = seg.is_some();
@@ -2586,12 +2650,12 @@ fn close(
         match op.stat {
             Stat::Mean => {
                 first_own = q
-                    .find_oldest(|st, i| st.own(i, j).n > 0.0)
+                    .find_oldest(|st, i| st.own::<W>(i, j).n > 0.0)
                     .map(|(p, _, _)| p);
                 let base = match first_own {
                     None => None,
                     Some(0) => seg,
-                    Some(p) => q.sum_after_op(k, p - 1, j),
+                    Some(p) => q.sum_after_op::<W>(k, p - 1, j),
                 };
                 if let Some(b) = base {
                     a = scaled(b);
