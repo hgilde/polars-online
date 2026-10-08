@@ -4551,7 +4551,7 @@ decision it needs, with a recommendation where there is one.
       the decay waits per target until the next row that teaches it, so
       the sums cannot underflow; held to the decayed form written out, to
       1e-12 across gaps of 1 to 2,000 clock units and weights of 0 to 2
-      (`the_penalty_scale_is_the_longhands_across_gaps`), and to
+      (`the_penalty_scale_is_the_longhands_across_gaps` (renamed `the_fit_is_the_longhands_across_gaps` by task 215, which dropped the scale)), and to
       `ftrl_ref` moved to the same rule (the Python oracles, with nulls and
       zero weights under halflives of 150 and 100). At `inf` the fit is
       river's and VW's as before; the two golden signatures at halflife 40
@@ -8788,6 +8788,53 @@ tick, and that the series holding it up has a count near 1.
       null-target policy (`FTRL_STOPPED.md` in the worker's scratch).
       Raised, pre-existing: a clock-scheduled `lasso` solving on the first
       row after a gap that underflows its decay parts by 4.66.
+- [x] 215. **The obvious fixes from tasks 209 and 214** -- the user,
+      2026-10-08 ("Your reco all"). `ftrl`'s penalty scale `m = W/W*`
+      (task 115(d)) dropped: the lazy decay already keeps predict-only rows
+      frozen, and the scale made the fit depend on whether a gap was
+      filled with zero-weight rows (hard rule 9); the last rule-9 exemption
+      goes; `GOLDEN_FTRL` moves 0.09-0.17%. A clock-scheduled `lasso` after
+      a gap that underflows its decay: subnormal remains forgotten before
+      the solve. `kmeans`/`micro` centres as compensated pairs (D2).
+      `bocpd`'s predictive mean mixes deviations around the most probable
+      run's mean (D3). Docs: `ftrl` does not centre. *Worker
+      `task215-obvious`.* *Done 2026-10-08* (schema 51): the rule-9 contract test
+      has no exemption left; `GOLDEN_FTRL` [1] and [2] and
+      `GOLDEN_FTRL_SQUARED` [1] and [2] re-pinned (-0.093%, +0.032%,
+      -0.17%, +0.18%) and six pipeline keys, each reproduced by `ftrl_ref`
+      rewritten from the docstring (1.2e-15); the cost the scale spared,
+      measured: a constant 5 at half-life 100 is 0.75 / 0.51 / 0.15 of
+      itself after a gap of 1 / 2 / 5 half-lives. `lasso`: a row whose
+      history's share falls below the smallest normal double learns at
+      decay 0. Centres compensated (to the bit at ±1e12); `bocpd`'s mean
+      within one rounding step of the level (1,023 before). `ftrl`'s error
+      at a level, 0.0183·L. **Raised**: a sparse target absent for about
+      1,060 half-lives keeps a subnormal history in `gaps::Acc` (shared with
+      `ewridge`), which never decays to 0; two such returns part by 7.3e-2
+      (own rows) and 1.08 (pairwise).
+- [x] 216. **The measured fixes from task 209** -- the user, 2026-10-08
+      ("Your reco all"). `rls` windup (D1): stabilized forgetting (Kulhavý
+      and Zarrop 1993), `A <- λA + w z zᵀ + (1 - λ)δI`, so `delta` is a
+      floor that does not fade and an unexcited coefficient rests at its
+      prior; measured on the windup repro and on ordinary streams. A
+      windowed `lasso` blowing up when a row of weight 1e100 leaves its
+      window (D4): its sums rebuilt from the kept rows when a removed row
+      dominates. Docs: `pa` on a drifting level (`c` in the target's
+      units). *Worker `task216-measured`.* *Done 2026-10-08 for the docs only; both fixes stopped on
+      their measurements.* **D1**: stabilized forgetting in `rls`'s
+      uncentred coordinates is a ridge whose pull grows as `δ·level²`: the
+      windup is fixed (slope 0.46-0.62 while held, against ±1e13), but
+      ordinary streams move by orders of magnitude (a feature at level 10:
+      0.059 to 0.39 tail rmse; a target at 1,000: 1.0 to 585 noise; G1's
+      half-life-10 cell 0.07 to 211), no `δ` serves every level, and it
+      costs 3-11 times a row. **D4**: a windowed `lasso` keeps snapshots,
+      not rows, so there are none to rebuild from; the cancellation is in
+      the co-moments at a level, which `truncated`'s G5 bound (64ε of the
+      variance) does not see; windowed `ewridge` is as wrong but finite
+      (its slopes -6.6e41 against 4.5e-49 from the kept rows). The
+      coordinator's two designs were reasoned, not measured; the user is
+      offered a level-aware G5 bound for D4 and, for D1, documentation now
+      with a measured research round on level-free floors to follow.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

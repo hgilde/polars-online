@@ -273,7 +273,7 @@ reinterpreted parameter, an output's dtype or a file to refit.
   row** (task 209), as scikit-learn's `PoissonRegressor` does and as
   `strict_binary` refuses a logistic label. A count is never negative, and
   the gradient `p - y` drove the prediction to the link's floor, e^-30.
-- **Every saved bank must be refit.** A bank file now carries schema 50,
+- **Every saved bank must be refit.** A bank file now carries schema 51,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -302,8 +302,9 @@ reinterpreted parameter, an output's dtype or a file to refit.
   state's version 9 (task 212: the variance operators). Schema 49 adds
   `kalman`'s anchor and the clock since each covariance last observed its
   target (task 211). Schema 50 sizes `kalman`'s prior from a median of its
-  first innovations (task 214). It refuses 49 and older, and so do the
-  models' own states.
+  first innovations (task 214). Schema 51 drops `ftrl`'s penalty scale and
+  keeps `kmeans`'s and `micro`'s centres as compensated pairs (task 215).
+  It refuses 50 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -617,6 +618,15 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **Under a half-life `ftrl`'s penalties no longer carry the per-target
+  scale `W/W*`** (task 215; task 115(d)'s scale). A zero-weight row is now
+  clock alone for `ftrl` as for every model (hard rule 9 holds for every
+  model, with no exemption left), predict-only rows still read the fit as
+  the last row that taught it left it, and the row that ends a gap meets
+  the aged sums against the full penalties, as FTRL's objective (a fixed
+  regularizer against losses aged on the clock) implies: a constant 5 at a
+  half-life of 100 is 0.75 of itself after a gap of one half-life.
+  `GOLDEN_FTRL` moves by up to 0.18% where a target is null.
 - **A reverting `kalman` slot's process noise over a gap is bounded**,
   `q·((1 - 2^(-D/r))/θ)²` with `θ = ln2/r` (task 214): it grows as `q·D²`
   for a short gap and saturates for a long one, so the slot's uncertainty
@@ -1063,6 +1073,17 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`kmeans` and `micro` centres are compensated pairs** (task 215): a
+  value held at 1e12 is reached to the bit, where the centres stalled
+  short of it and mis-assigned rows 40-60 half-lives later.
+- **`bocpd`'s predictive mean mixes deviations from the most probable
+  run's mean** (task 215): at a feature level of 1e12 it carried the
+  posterior's rounding times the level (2.3e-13 of it); now within one
+  rounding step of the level.
+- **A `lasso` whose history the decay leaves in the subnormal range
+  forgets it** before the row it meets (task 215), where it read its old
+  fit back from it and parted by up to 4.66 from the stream whose decay
+  underflowed.
 - **`hmm` reads its transition matrix from counts aged by the row's
   clock**, so a zero-weight row is clock alone (hard rule 9); after a gap
   that takes the counts to nothing it reads the prior's mean (task 214).
@@ -1457,6 +1478,13 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- `ftrl` does not centre a feature: its error at a feature level `L` is
+  about 0.018·L, so standardize or z-score the feature upstream (task 215;
+  `ftrl` takes no `standardize`, since its `l1` zeroes a coefficient in the
+  feature's own units). `pa` on a level that moves: a PA-I cap of 1 moves
+  the intercept about one unit a row; raise `c` (10 settled the test
+  stream from row 467 instead of 2,795) or difference the target (task
+  216).
 - **Two tiers of tests** (task 210). The essentials -- a fast test of
   every hard rule, the goldens, the contract, the refusals, each module's
   unit tests -- gate the commits of a task in progress, in 74 s of pytest
