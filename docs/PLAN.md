@@ -8248,7 +8248,8 @@ tick, and that the series holding it up has a count near 1.
       in the canary (D4); the changed-lines mutation job sharded (D10); a
       weekly 1.95 check (D11); SECURITY.md's support line (D12); uncited
       records to `docs/records/` (D13); the `embargo` columns named stable
-      (N24). D9 (the dev pin to polars 2.0.x) when the canary passes.
+      (N24). D9 (the dev pin to polars 2.0.x) when the canary passes: done
+      2026-10-08, after the canary passed on 2.0.0 (the D9 row in §18).
       *Worker `task199-policy`.* *Done 2026-10-07*: on 1.34.0 the suite
       passes with 23 tests skipped by version (`needs_polars`), none failing
       in the package. REVIEW-2026-09-18 and README-ITERATIONS stay in
@@ -12444,7 +12445,7 @@ spec values that size an allocation with no ceiling (CD10, CF2, CE9; 193).
 | D6 | Pins for the stable surface | *not a decision: task 190* |
 | D7 | The stream-state tidy (S6) | *not a decision: task 194* |
 | D8 | Task 116 leaves readiness defaults provisional (DB7) | build the parts that move no default; declare the current floors final |
-| D9 | New users get polars 2.0.0; the goldens and the lock are on 1.44.2 (CI18) | move the dev pin to 2.0.x once the canary has passed on it |
+| D9 | New users get polars 2.0.0; the goldens and the lock are on 1.44.2 (CI18) | move the dev pin to 2.0.x once the canary has passed on it. *Done 2026-10-08*: the canary passed on 2.0.0 (run 37718689527); the lock, `BUILT_AGAINST` and VALIDATION.md are on 2.0.0, the goldens unchanged |
 | D10 | The changed-lines mutation job cannot finish a normal push (CI1) | shard it as the weekly job is |
 | D11 | `rust-version = 1.95` is compiled by no job (CI11) | a weekly `cargo check --locked` on 1.95 |
 | D12 | SECURITY.md's support line after 1.0 (CI15) | the latest minor receives fixes |
@@ -12486,9 +12487,10 @@ its docstring says), S15 and S16 (documentation of the current behaviour).
 
 *Decided 2026-10-06, the user's word ("Your reco all"): every recommendation
 in the table above, and task 183's cost accepted.* Built as tasks 194-199
-once tasks 183-193 merge, since they touch the same files. D9 waits for the
+once tasks 183-193 merge, since they touch the same files. D9 waited for the
 weekly canary to pass on polars 2.0.0: its run of 2026-10-05 failed on the
-unwrapped `ValueError`, fixed in `a7a8f3c`.
+unwrapped `ValueError`, fixed in `a7a8f3c`, and it passed on 2026-10-08
+(below).
 
 **Marked for the user's review (2026-10-07).** Two decisions taken after §18,
 on the user's word, to be looked at again before 1.0: the unit of an
@@ -12529,8 +12531,16 @@ items after the round:
   on the user's word. Five workflows changed (`release.yml`, `ci.yml`,
   `polars-canary.yml`, `mutants.yml`, and `msrv.yml`, new).
 - **D9**: the canary ran on demand (run 37715703707, on `9a67dd8`) rather
-  than on Monday; on a pass the dev pin and the lock move to polars 2.0.0
-  and the goldens are checked on it, in one gated commit, before 1.0.
+  than on Monday, and passed on 2.0.0 final on 2026-10-08 (run 37718689527,
+  on `9b23ae6`: 4,920 passed, 1 failed on the floor-leg workflow test, which
+  reads the pin's form the canary rewrites, since marked `pins`). The dev
+  pin and the lock moved to polars 2.0.0 the same day (worker
+  `d9-polars-2`): `uv.lock` (polars and polars-runtime-32 alone),
+  `BUILT_AGAINST`, `docs/VALIDATION.md` regenerated on it, the README's
+  matrix and RUNNER's pin line; the goldens were checked on it. The Rust
+  crate stays at 0.55.2, crates.io's newest that day, and the range
+  `>=1.34.0,<3` is unchanged. The record is in RELEASE-READINESS, beside
+  the 2.0.0rc1 measurement.
 - **`kalman`'s `share_p`**: fixed, task 204.
 - **YB3 closed, not changed.** `embargo` over this package's own plan form
   reads its input twice, and so runs that fit twice: the warning is true.

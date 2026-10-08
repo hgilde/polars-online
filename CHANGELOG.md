@@ -1387,6 +1387,9 @@ The output names task 144 renamed:
   `ModelBank.load` checks no checksum (task 198, D14); `bocpd`'s `robust`
   emission is not free of the data's units, so centre and scale its
   features (task 202).
+- The development environment is built and tested against polars 2.0.0,
+  where it was 1.44.2; the declared range `>=1.34.0,<3` and the Rust crate
+  pin are unchanged (D9).
 
 ## [0.13.0] — 2026-09-30
 

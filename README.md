@@ -5066,7 +5066,7 @@ what you use:
 
 | py-polars | rust polars | pyo3-polars | pyo3 | Python |
 |---|---|---|---|---|
-| **>= 1.34.0, < 3** (built and tested against 1.44.2) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+| **>= 1.34.0, < 3** (built and tested against 2.0.0) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
 
 | what you use | the lowest py-polars | why |
 |---|---|---|
@@ -5074,14 +5074,15 @@ what you use:
 | `lf.online.fit_predict`, `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and `refresh_time` | 1.34.0 | they read with `LazyFrame.collect_batches`, which py-polars added in 1.34.0 |
 | the examples that stream a DuckDB, ADBC or pyarrow source into a bank | 1.43.0 | for `pl.scan_arrow_c_stream` |
 
-The suite passes on 1.44.2, the pin, at every change. It runs on the
+The suite passes on 2.0.0, the pin, at every change. It runs on the
 floor, 1.34.0, before every release and once a month
 ([How the pin moves](#how-the-pin-moves)), and passed there on 2026-10-07.
 On the floor, 23 tests skip, each naming the newer Polars it needs: most
 check against a Polars function that has changed since, and the rest
 stream a database or a pyarrow reader through `pl.scan_arrow_c_stream`.
-The suite has also passed on 1.38.1, 1.44.1 and 2.0.0-rc.1 with identical
-numbers. `tests/test_scaffold.py` asserts the pin and the range, and
+The suite has also passed on 1.38.1, 1.44.1, 1.44.2 (the pin until
+2026-10-08) and 2.0.0-rc.1 with identical numbers.
+`tests/test_scaffold.py` asserts the pin and the range, and
 [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) has each run with
 its date and what differed.
 

@@ -261,10 +261,11 @@ def test_a_sort_by_several_keys_without_maintain_order_is_warned_about():
 
 @pytest.mark.pins
 def test_the_measurement_behind_the_sort_warning():
-    """Measured on polars 1.44.2: 2,109 of 10,000 rows came out elsewhere than
-    a stable sort puts them when sorted by two keys, none by one. If polars
-    makes the multi-key sort stable, the warning can go; if it makes the
-    single-key one unstable, a single-key sort must warn too."""
+    """Measured on polars 1.44.2, and again on 2.0.0 when the pin moved
+    (2026-10-08, the same count): 2,109 of 10,000 rows came out elsewhere
+    than a stable sort puts them when sorted by two keys, none by one. If
+    polars makes the multi-key sort stable, the warning can go; if it makes
+    the single-key one unstable, a single-key sort must warn too."""
     import numpy as np
 
     n = 10_000

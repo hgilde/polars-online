@@ -13,12 +13,17 @@ def test_native_extension_loads() -> None:
     assert polars_online.native_version() == polars_online.__version__
 
 
-# The version the wheel is built and tested against: Cargo.toml pins rust
-# polars =0.55.2, which is what py-polars 1.44.x is built from. `uv.lock` holds
-# the dev environment to it. Moved 1.44.1 -> 1.44.2 for 0.5.1: every golden
-# file passed on it unmodified, and `docs/VALIDATION.md`, regenerated on it,
+# The version the wheel is built and tested against. Cargo.toml pins rust
+# polars =0.55.2, the newest crate on crates.io (2026-10-08): py-polars 2.0
+# is a Python-side major, and the wheel's own copy never meets the user's
+# (docs/RELEASE-READINESS.md). `uv.lock` holds the dev environment to it.
+# Moved 1.44.1 -> 1.44.2 for 0.5.1: every golden file passed on it
+# unmodified, and `docs/VALIDATION.md`, regenerated on it, changed only in
+# its header and one timing. Moved 1.44.2 -> 2.0.0 on 2026-10-08 (review
+# round 4, D9), once the canary had passed on 2.0.0 final (run 37718689527
+# of 2026-10-08): the goldens passed unmodified again, and VALIDATION.md
 # changed only in its header and one timing.
-BUILT_AGAINST = "1.44.2"
+BUILT_AGAINST = "2.0.0"
 # Measured floor -- see the note in pyproject.toml and the matrix in
 # docs/RELEASE-READINESS.md. `LazyFrame.collect_batches`, which
 # `lf.online.fit_predict` reads with, arrived in 1.34.0.

@@ -8,11 +8,11 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 
 - Data: public intraday (BTCUSDT 1m, Binance public dump, 2024-01-02..2024-01-11, 10 days)
 - Rows: 14336, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
-- Polars 1.44.2, polars-online 0.13.0
+- Polars 2.0.0, polars-online 0.13.0
 
 ## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) [validate]
 
-Solving every `half_life/d` clock units, half_life = 500.0. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
+Solving every `half_life/d` clock units, half_life = 500.0. All schedules share one accumulator, so this is a free experiment (0.06s for 7 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|

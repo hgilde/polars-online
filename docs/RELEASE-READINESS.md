@@ -819,6 +819,31 @@ afterwards. See
 [Raising the ceiling to a new major](#raising-the-ceiling-to-a-new-major),
 above.
 
+#### Polars 2.0.0 final, and the pin moved (2026-10-08)
+
+**The canary passed on 2.0.0 final, and the development environment moved
+to it the same day (review round 4, D9).** The canary run of 2026-10-08
+(run 37718689527, on `9b23ae6`) built the wheel and ran the suite on
+py-polars 2.0.0: 4,920 passed, 1 failed. The failure was the floor-leg
+workflow test, which reads the pin's form that the canary's unpin step
+rewrites; it carries the `pins` marker since. The pin then moved:
+`uv.lock` (polars and polars-runtime-32, 1.44.2 to 2.0.0, no other
+package), `BUILT_AGAINST` in `tests/test_scaffold.py`, the README's matrix
+row, and `docs/VALIDATION.md`, regenerated on 2.0.0 with Python 3.12.13.
+That document changed in its header and one timing, and no number moved.
+The goldens (`tests/test_golden_pipeline.py`,
+`crates/online-core/tests/golden.rs`) passed unchanged, and
+`docs/REGIMES.md`'s sections 1 and 5 to 9 held to their experiments.
+
+**The Rust crate does not move, and the declared range does not either.**
+crates.io's newest `polars` was still 0.55.2 that day (`cargo search`),
+the one `Cargo.toml` pins, with `pyo3-polars` 0.28. py-polars 2.0 is a
+Python-side major, and the wheel's statically linked copy never meets the
+user's ([the pin, and the two copies of
+Polars](#the-polars-pin-and-the-two-copies-of-polars-2026-08-31)). So the
+Rust tests cannot see a py-polars release, and `polars>=1.34.0,<3` admits
+2.0.0 as it stood; the floor leg still runs on 1.34.0.
+
 ### The expression plugin, as recorded
 
 **The expression plugin, `pl.col(..).online.<model>(..)`, was removed in
