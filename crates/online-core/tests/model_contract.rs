@@ -3636,9 +3636,37 @@ mod generated {
         w: f64,
     }
 
+    /// The side of zero a stream's values sit on (docs/PLAN.md task 209
+    /// (a)). A stream of mixed signs was all this drew: it could draw a
+    /// one-sided stream and never did. A one-sided stream reads each value
+    /// `v` as `sign · |v| + offset`, all positive at a level of `1e3` or all
+    /// negative at `-1e3`, and keeps the bound at the bound: `1e100 + 1e3`
+    /// is `1e100`. It catches a NaN, an overflow or a divergence at a level,
+    /// not a wrong fit, which `held_values.rs` holds.
+    #[derive(Debug, Clone, Copy)]
+    enum Sign {
+        Mixed,
+        Positive,
+        Negative,
+    }
+
+    /// The level a one-sided stream sits at.
+    const LEVEL: f64 = 1e3;
+
+    impl Sign {
+        fn apply(self, v: f64) -> f64 {
+            match self {
+                Sign::Mixed => v,
+                Sign::Positive => v.abs() + LEVEL,
+                Sign::Negative => -v.abs() - LEVEL,
+            }
+        }
+    }
+
     /// A value a stream may carry: mostly ordinary, often a repeat that holds
-    /// a column still, sometimes wide, sometimes at the input bound itself.
-    fn value() -> impl Strategy<Value = f64> {
+    /// a column still, sometimes wide, sometimes at the input bound itself;
+    /// on `sign`'s side of zero.
+    fn value(sign: Sign) -> impl Strategy<Value = f64> {
         prop_oneof![
             6 => -3.0..3.0f64,
             2 => Just(0.5),
@@ -3650,14 +3678,18 @@ mod generated {
                 (-1.0..1.0f64).prop_map(|u| u * INPUT_BOUND)
             ],
         ]
+        .prop_map(move |v| sign.apply(v))
     }
 
     /// A row of `targets` targets; `binary` targets are 0 or 1, the label a
-    /// classifier and a logistic loss read.
-    fn row(targets: usize, binary: bool) -> impl Strategy<Value = GenRow> {
+    /// classifier and a logistic loss read. The features sit on `sign`'s
+    /// side of zero, and the targets too unless they are labels, which read
+    /// the side of zero a value drawn of mixed signs fell on.
+    fn row(targets: usize, binary: bool, sign: Sign) -> impl Strategy<Value = GenRow> {
+        let target_sign = if binary { Sign::Mixed } else { sign };
         (
-            prop::collection::vec(value(), K),
-            prop::collection::vec(prop::option::weighted(0.85, value()), targets),
+            prop::collection::vec(value(sign), K),
+            prop::collection::vec(prop::option::weighted(0.85, value(target_sign)), targets),
             prop_oneof![5 => Just(1.0), 1 => Just(0.0), 1 => 0.0..30.0f64],
             // `-0.0` is a weight of 0 too (hard rule 9), and is drawn by
             // name (docs/PLAN.md task 209 (e)).
@@ -3683,8 +3715,17 @@ mod generated {
             })
     }
 
+    /// A stream of 1 to 59 rows, its sign drawn first: a third of the cases
+    /// of mixed signs, a third all positive, a third all negative, so each
+    /// model's 128 cases run about 43 of each (all 128 missing one has odds
+    /// of `3 · (2/3)^128`, about `1e-22`) at the cost of the 128 they ran.
     fn stream(targets: usize, binary: bool) -> impl Strategy<Value = Vec<GenRow>> {
-        prop::collection::vec(row(targets, binary), 1..60)
+        prop_oneof![
+            Just(Sign::Mixed),
+            Just(Sign::Positive),
+            Just(Sign::Negative)
+        ]
+        .prop_flat_map(move |sign| prop::collection::vec(row(targets, binary, sign), 1..60))
     }
 
     fn equal(a: &Step, b: &Step) -> bool {

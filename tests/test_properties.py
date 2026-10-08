@@ -8,11 +8,16 @@ The values reach the input bound (``1e100``, as weights too, beside
 ``1e-100``) and past it (NaN and the infinities, which the bank reads as
 missing); every regression runs under each switch it takes; and the kinds
 that are not regressions run on a stream of their own (review 2026-10-06,
-TA3: none of that was drawn).
+TA3: none of that was drawn). Each property runs on streams of mixed signs
+and on one-sided ones, all positive and all negative, at a level (docs/PLAN.md
+task 209 (a), `SIGNS`).
 
 Hypothesis shrinks a failure to a minimal reproducing frame, which is the point:
 these tests are meant to produce a small counterexample, not just a red mark.
 """
+
+import math
+from collections.abc import Callable
 
 import numpy as np
 import polars as pl
@@ -77,10 +82,73 @@ def _missing(col: str) -> pl.Expr:
     return c.is_null() | ~c.is_finite() | (c.abs() > INPUT_BOUND)
 
 
+#: The side of zero a stream's values sit on, as the generators' ``sign``
+#: and ``offset`` (docs/PLAN.md task 209 (a)). Mixed, the values are drawn as
+#: they are; one-sided, each value ``v`` is read as ``sign * |v| + offset``:
+#: all positive at a level of 1e3, or all negative at -1e3. A null and NaN
+#: stay what they are, an infinity takes the sign, and the bound stays the
+#: bound, since ``1e100 + 1e3`` is ``1e100``. The generators could draw a
+#: one-sided stream and were never made to: an all-negative feature reached 9
+#: of the 21 kinds, an all-negative target 7 of the 12 with one. This catches
+#: a NaN, an overflow or a divergence at a level, not a wrong fit, which
+#: `crates/online-core/tests/held_values.rs` holds.
+SIGNS: dict[str, dict[str, float]] = {
+    "mixed": {},
+    "positive": {"sign": 1.0, "offset": 1e3},
+    "negative": {"sign": -1.0, "offset": -1e3},
+}
+
+#: How many streams of each sign a property draws for a model. Mixed keeps
+#: the 30 it drew before one-sided streams were added; each one-sided sign
+#: draws 10, so a property runs 50 streams a model where tripling would run
+#: 90 (task 210 keeps this file among the essentials run on every commit).
+#: Every stream draws its clocks, groups, nulls, weights and chunks alike,
+#: whatever its sign, so a one-sided stream adds one dimension, the level,
+#: and a third of mixed's draws covers it.
+EXAMPLES = {"mixed": 30, "positive": 10, "negative": 10}
+
+#: The chunk sizes a property cuts a stream into.
+CHUNKS = st.integers(min_value=1, max_value=13)
+
+
+def _signed(v: float | None, sign: float | None, offset: float) -> float | None:
+    """``v`` read as ``sign * |v| + offset``, or as it is without a sign or
+    where it is null or NaN (`SIGNS`)."""
+    if sign is None or v is None or math.isnan(v):
+        return v
+    return sign * abs(v) + offset
+
+
+def _given(sign: str, prop: Callable[..., None], **strategies: st.SearchStrategy) -> None:
+    """Run ``prop`` as a Hypothesis test over ``strategies``, at the number
+    of streams ``sign`` draws (`EXAMPLES`)."""
+    settings(SETTINGS, max_examples=EXAMPLES[sign])(given(**strategies)(prop))()
+
+
+def _signed_columns(model: str) -> tuple[str, ...]:
+    """The columns a one-sided stream signs for ``model``: ``ftrl``'s target
+    is a label, ``y0 > 0``, so it signs its features only, and ``holt`` reads
+    its target alone."""
+    if model == "ftrl":
+        return ("x0", "x1")
+    if model == "holt":
+        return ("y0",)
+    return ("x0", "x1", "y0")
+
+
 @st.composite
-def streams(draw, min_rows=1, max_rows=40, max_groups=3):
+def streams(
+    draw,
+    min_rows=1,
+    max_rows=40,
+    max_groups=3,
+    sign: float | None = None,
+    offset: float = 0.0,
+    columns: tuple[str, ...] = ("x0", "x1", "y0"),
+):
     """An adversarial but *valid* stream: the clock is non-decreasing within
-    each group (mis-ordered input is its own test, T-E4)."""
+    each group (mis-ordered input is its own test, T-E4). With a ``sign``,
+    ``columns`` sit on its side of zero at ``offset`` (`SIGNS`)."""
     n = draw(st.integers(min_value=min_rows, max_value=max_rows))
     n_groups = draw(st.integers(min_value=1, max_value=max_groups))
     groups = draw(st.lists(st.integers(0, n_groups - 1), min_size=n, max_size=n))
@@ -102,8 +170,15 @@ def streams(draw, min_rows=1, max_rows=40, max_groups=3):
         # A session that changes now and then, for the switch that reads it.
         "s": [f"s{k}" for k in np.cumsum(draw(st.lists(st.booleans(), min_size=n, max_size=n)))],
     }
+    for c in columns:
+        cols[c] = [_signed(v, sign, offset) for v in cols[c]]
     floats = ["t", "x0", "x1", "y0", "w"]
     return pl.DataFrame(cols, schema_overrides={c: pl.Float64 for c in floats})
+
+
+def _streams(model: str, sign: str, **kw) -> st.SearchStrategy:
+    """`streams` for ``model`` on ``sign``'s side of zero."""
+    return streams(**kw, **SIGNS[sign], columns=_signed_columns(model))
 
 
 #: The late-row minimum the stepping-back streams are run under: a step back
@@ -112,11 +187,12 @@ MINIMUM = 5.0
 
 
 @st.composite
-def stepping_back_streams(draw, min_rows=2, max_rows=40, max_groups=3):
+def stepping_back_streams(draw, min_rows=2, max_rows=40, max_groups=3, **signs):
     """`streams`, with each group's clock stepping back now and then -- by more
     than `MINIMUM`, so that under `"reset_state"` every step back starts the
-    group over and none is refused (task 120)."""
-    df = draw(streams(min_rows=min_rows, max_rows=max_rows, max_groups=max_groups))
+    group over and none is refused (task 120). ``signs`` are `streams`'s
+    ``sign``, ``offset`` and ``columns``."""
+    df = draw(streams(min_rows=min_rows, max_rows=max_rows, max_groups=max_groups, **signs))
     clocks, last = [], {}
     for g in df["g"].to_list():
         step = draw(st.sampled_from([0.0, 0.5, 1.0, 7.0, 1e4, -(MINIMUM + 2.0), -1e4]))
@@ -134,21 +210,28 @@ WARM_ROWS = 4
 
 
 @st.composite
-def warmed_streams(draw):
+def warmed_streams(
+    draw,
+    sign: float | None = None,
+    offset: float = 0.0,
+    columns: tuple[str, ...] = ("x0", "x1", "y0"),
+):
     """`streams`, behind `WARM_ROWS` rows of group `g0` with finite values at
     weight 1, so every stream has a row the model scored. Drawn at random, too
     few streams had one, and kalman failed Hypothesis's `filter_too_much`
-    health check once in a gate and once in 460 runs (2026-10-07)."""
-    df = draw(streams())
+    health check once in a gate and once in 460 runs (2026-10-07). With a
+    ``sign``, the warm rows' ``columns`` sit on its side of zero too."""
+    df = draw(streams(sign=sign, offset=offset, columns=columns))
     finite = st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False)
     rows = st.lists(finite, min_size=WARM_ROWS, max_size=WARM_ROWS)
+    warm = {c: draw(rows) for c in ("x0", "x1", "y0")}
+    for c in columns:
+        warm[c] = [_signed(v, sign, offset) for v in warm[c]]
     head = pl.DataFrame(
         {
             "g": ["g0"] * WARM_ROWS,
             "t": [float(i) for i in range(WARM_ROWS)],
-            "x0": draw(rows),
-            "x1": draw(rows),
-            "y0": draw(rows),
+            **warm,
             "w": [1.0] * WARM_ROWS,
             "s": ["s0"] * WARM_ROWS,
         },
@@ -194,132 +277,148 @@ def unnested(out):
     return out.select("m").unnest("m").select(keep)
 
 
+@pytest.mark.parametrize("sign", list(SIGNS))
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
 class TestUniversalProperties:
-    @SETTINGS
-    @given(df=streams(), chunk=st.integers(min_value=1, max_value=13))
-    def test_chunking_never_changes_the_output(self, model, extra, df, chunk):
-        df = binarize(df, model)
-        spec = build(model, extra)
-        one = unnested(po.ModelBank([spec]).fit_predict(df))
-        bank = po.ModelBank([spec])
-        parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
-        many = unnested(pl.concat(parts))
-        assert one.equals(many, null_equal=True)
+    """The invariants every regression keeps, each on streams of `sign`: one
+    Hypothesis run of `EXAMPLES[sign]` streams a property, model and sign."""
 
-    @SETTINGS
-    @given(df=stepping_back_streams(), chunk=st.integers(min_value=1, max_value=13))
-    def test_chunking_never_changes_the_output_when_the_clock_steps_back(
-        self, model, extra, df, chunk
-    ):
+    def test_chunking_never_changes_the_output(self, model, extra, sign):
+        def prop(df, chunk):
+            df = binarize(df, model)
+            spec = build(model, extra)
+            one = unnested(po.ModelBank([spec]).fit_predict(df))
+            bank = po.ModelBank([spec])
+            parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
+            many = unnested(pl.concat(parts))
+            assert one.equals(many, null_equal=True)
+
+        _given(sign, prop, df=_streams(model, sign), chunk=CHUNKS)
+
+    def test_chunking_never_changes_the_output_when_the_clock_steps_back(self, model, extra, sign):
         """Hard rule 3 with the clock stepping back: under `"reset_state"` each
         step back past the minimum starts its group over, and where the chunks
         fall cannot move a number."""
-        df = binarize(df, model)
-        spec = build(model, extra, restart_after_step_back=MINIMUM)
-        one = unnested(po.ModelBank([spec]).fit_predict(df))
-        bank = po.ModelBank([spec])
-        parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
-        assert one.equals(unnested(pl.concat(parts)), null_equal=True)
 
-    @SETTINGS
-    @given(df=streams(min_rows=2), chunk=st.integers(min_value=1, max_value=13), data=st.data())
-    def test_a_late_row_is_refused_at_its_input_row_whatever_the_chunking(
-        self, model, extra, df, chunk, data
-    ):
+        def prop(df, chunk):
+            df = binarize(df, model)
+            spec = build(model, extra, restart_after_step_back=MINIMUM)
+            one = unnested(po.ModelBank([spec]).fit_predict(df))
+            bank = po.ModelBank([spec])
+            parts = [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
+            assert one.equals(unnested(pl.concat(parts)), null_equal=True)
+
+        signs = {**SIGNS[sign], "columns": _signed_columns(model)}
+        _given(sign, prop, df=stepping_back_streams(**signs), chunk=CHUNKS)
+
+    def test_a_late_row_is_refused_at_its_input_row_whatever_the_chunking(self, model, extra, sign):
         """A row stepped back by no more than the minimum is a late row: the
         stream is refused there, naming the row's place in the input, whether
         the row before it in its group is in the same chunk or in the state."""
-        groups = df["g"].to_list()
-        later = [i for i in range(1, df.height) if groups[i] in groups[:i]]
-        assume(later)
-        i = data.draw(st.sampled_from(later), label="late row")
-        prev = max(j for j in range(i) if groups[j] == groups[i])
-        t = df["t"].to_list()
-        t[i] = t[prev] - 2.0
-        # Every later row of its group stays after it. The late row and the
-        # one before it are ordinary rows, so the null policy skips neither
-        # and the step back is measured between the two.
-        ordinary = pl.int_range(pl.len()).is_in([prev, i])
-        df = df.with_columns(
-            t=pl.Series(t, dtype=pl.Float64),
-            x0=pl.when(ordinary).then(1.0).otherwise("x0"),
-            x1=pl.when(ordinary).then(1.0).otherwise("x1"),
-            w=pl.when(ordinary).then(1.0).otherwise("w"),
-        )
-        df = binarize(df, model)
-        spec = build(model, extra, restart_after_step_back=MINIMUM)
-        says = f"goes backwards by 2 at row {i}, no more than restart_after_step_back = 5"
-        with pytest.raises(ValueError, match=says):
-            po.ModelBank([spec]).fit_predict(df)
-        chunks = [df.slice(k, chunk) for k in range(0, df.height, chunk)]
-        with pytest.raises(ValueError, match=says):
-            list(po.ModelBank([spec]).fit_predict_batches(iter(chunks)))
 
-    @SETTINGS
-    @given(df=streams(min_rows=2), split=st.integers(min_value=1, max_value=39))
-    def test_save_load_is_transparent(self, model, extra, df, split):
-        assume(split < df.height)
-        df = binarize(df, model)
-        spec = build(model, extra)
-        a = po.ModelBank([spec])
-        a.fit_predict(df.slice(0, split))
-        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
-        rest = df.slice(split, df.height - split)
-        assert unnested(a.fit_predict(rest)).equals(unnested(b.fit_predict(rest)), null_equal=True)
-
-    @SETTINGS
-    @given(df=streams())
-    def test_outputs_are_finite_or_null(self, model, extra, df):
-        df = binarize(df, model)
-        out = po.ModelBank([build(model, extra)]).fit_predict(df)
-        for f in out.schema["m"].fields:
-            # `coef`/`support_coef` are lists; `withheld_reason` is an enum.
-            if f.name.startswith(("coef", "support_coef")) or not f.dtype.is_float():
-                continue
-            vals = np.array(
-                [v for v in out["m"].struct.field(f.name).to_list() if v is not None],
-                dtype=float,
+        def prop(df, chunk, data):
+            groups = df["g"].to_list()
+            later = [i for i in range(1, df.height) if groups[i] in groups[:i]]
+            assume(later)
+            i = data.draw(st.sampled_from(later), label="late row")
+            prev = max(j for j in range(i) if groups[j] == groups[i])
+            t = df["t"].to_list()
+            t[i] = t[prev] - 2.0
+            # Every later row of its group stays after it. The late row and
+            # the one before it are ordinary rows, so the null policy skips
+            # neither and the step back is measured between the two. Their
+            # features sit on the stream's side of zero.
+            ordinary = pl.int_range(pl.len()).is_in([prev, i])
+            one = _signed(1.0, SIGNS[sign].get("sign"), SIGNS[sign].get("offset", 0.0))
+            df = df.with_columns(
+                t=pl.Series(t, dtype=pl.Float64),
+                x0=pl.when(ordinary).then(one).otherwise("x0"),
+                x1=pl.when(ordinary).then(one).otherwise("x1"),
+                w=pl.when(ordinary).then(1.0).otherwise("w"),
             )
-            assert np.isfinite(vals).all(), f"{f.name} produced a non-finite value"
+            df = binarize(df, model)
+            spec = build(model, extra, restart_after_step_back=MINIMUM)
+            says = f"goes backwards by 2 at row {i}, no more than restart_after_step_back = 5"
+            with pytest.raises(ValueError, match=says):
+                po.ModelBank([spec]).fit_predict(df)
+            chunks = [df.slice(k, chunk) for k in range(0, df.height, chunk)]
+            with pytest.raises(ValueError, match=says):
+                list(po.ModelBank([spec]).fit_predict_batches(iter(chunks)))
 
-    @SETTINGS
-    @given(df=streams())
-    def test_feature_or_weight_null_means_all_outputs_null(self, model, extra, df):
+        _given(sign, prop, df=_streams(model, sign, min_rows=2), chunk=CHUNKS, data=st.data())
+
+    def test_save_load_is_transparent(self, model, extra, sign):
+        def prop(df, split):
+            assume(split < df.height)
+            df = binarize(df, model)
+            spec = build(model, extra)
+            a = po.ModelBank([spec])
+            a.fit_predict(df.slice(0, split))
+            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            rest = df.slice(split, df.height - split)
+            got = unnested(b.fit_predict(rest))
+            assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
+
+        splits = st.integers(min_value=1, max_value=39)
+        _given(sign, prop, df=_streams(model, sign, min_rows=2), split=splits)
+
+    def test_outputs_are_finite_or_null(self, model, extra, sign):
+        def prop(df):
+            df = binarize(df, model)
+            out = po.ModelBank([build(model, extra)]).fit_predict(df)
+            for f in out.schema["m"].fields:
+                # `coef`/`support_coef` are lists; `withheld_reason` is an enum.
+                if f.name.startswith(("coef", "support_coef")) or not f.dtype.is_float():
+                    continue
+                vals = np.array(
+                    [v for v in out["m"].struct.field(f.name).to_list() if v is not None],
+                    dtype=float,
+                )
+                assert np.isfinite(vals).all(), f"{f.name} produced a non-finite value"
+
+        _given(sign, prop, df=_streams(model, sign))
+
+    def test_feature_or_weight_null_means_all_outputs_null(self, model, extra, sign):
         """A row with a null feature or weight is skipped, and every field of
         its record is null, not `weight_sum` alone (review 2026-10-05, TA10)."""
-        df = binarize(df, model)
-        spec = build(model, extra)
-        out = po.ModelBank([spec]).fit_predict(df)
-        # Only the columns this spec actually declares can skip a row -- holt
-        # reads no features, so an unused null column must not disturb it. A
-        # value the bank reads as missing skips a row as a null does.
-        cond = _missing("w")
-        for f in spec["features"]:
-            cond = cond | _missing(f)
-        skipped = df.select(cond).to_series().to_list()
-        fields = out.select("m").unnest("m")
-        for i, skip in enumerate(skipped):
-            if skip:
-                present = [c for c in fields.columns if fields[c][i] is not None]
-                assert not present, f"row {i} was skipped but reported {present}"
 
-    @SETTINGS
-    @given(df=streams(max_groups=3))
-    def test_groups_are_independent(self, model, extra, df):
-        df = binarize(df, model)
-        keys = df["g"].unique().to_list()
-        assume(len(keys) > 1)
-        spec = build(model, extra)
-        both = po.ModelBank([spec]).fit_predict(df)
-        for key in keys:
-            solo = po.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == key))
-            a = unnested(both.filter(pl.col("g") == key))
-            b = unnested(solo)
-            assert a.equals(b, null_equal=True), f"group {key} was affected by the others"
+        def prop(df):
+            df = binarize(df, model)
+            spec = build(model, extra)
+            out = po.ModelBank([spec]).fit_predict(df)
+            # Only the columns this spec actually declares can skip a row --
+            # holt reads no features, so an unused null column must not
+            # disturb it. A value the bank reads as missing skips a row as a
+            # null does.
+            cond = _missing("w")
+            for f in spec["features"]:
+                cond = cond | _missing(f)
+            skipped = df.select(cond).to_series().to_list()
+            fields = out.select("m").unnest("m")
+            for i, skip in enumerate(skipped):
+                if skip:
+                    present = [c for c in fields.columns if fields[c][i] is not None]
+                    assert not present, f"row {i} was skipped but reported {present}"
+
+        _given(sign, prop, df=_streams(model, sign))
+
+    def test_groups_are_independent(self, model, extra, sign):
+        def prop(df):
+            df = binarize(df, model)
+            keys = df["g"].unique().to_list()
+            assume(len(keys) > 1)
+            spec = build(model, extra)
+            both = po.ModelBank([spec]).fit_predict(df)
+            for key in keys:
+                solo = po.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == key))
+                a = unnested(both.filter(pl.col("g") == key))
+                b = unnested(solo)
+                assert a.equals(b, null_equal=True), f"group {key} was affected by the others"
+
+        _given(sign, prop, df=_streams(model, sign, max_groups=3))
 
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
-    def test_prediction_never_depends_on_the_current_target(self, model, extra):
+    def test_prediction_never_depends_on_the_current_target(self, model, extra, sign):
         """Out-of-sample by construction (docs/PLAN.md hard rule 2): changing a
         row's target must not change that row's own prediction.
 
@@ -328,7 +427,7 @@ class TestUniversalProperties:
         first row, so a test that perturbed it compared two nulls in every
         stream (review 2026-10-05, TA1). `warmed_streams` gives every stream
         such a row. The count at the end says how many streams compared a
-        prediction that was there.
+        prediction that was there, held to a third of the streams run.
 
         `ewridge`'s error-inflation gate is switched off. On these short,
         mostly-null streams it withholds all but 13 in 100 of them, and the
@@ -338,8 +437,6 @@ class TestUniversalProperties:
         compared = []
         kw = {"max_error_inflation": float("inf")} if model == "ewridge" else {}
 
-        @SETTINGS
-        @given(df=warmed_streams(), data=st.data())
         def check(df, data):
             df = binarize(df, model)
             spec = build(model, extra, **kw)
@@ -373,8 +470,9 @@ class TestUniversalProperties:
             assert a == b, f"row {idx}: changing its own target changed its prediction ({a} -> {b})"
             compared.append(idx)
 
-        check()
-        assert len(compared) >= 10, (
+        streams = warmed_streams(**SIGNS[sign], columns=_signed_columns(model))
+        _given(sign, check, df=streams, data=st.data())
+        assert len(compared) >= EXAMPLES[sign] // 3, (
             f"only {len(compared)} streams compared a prediction that was there"
         )
 
@@ -421,38 +519,43 @@ def test_every_switch_reaches_a_model_and_every_model_a_switch():
     assert {m for m, _ in MODELS} == set(REGRESSIONS)
 
 
+@pytest.mark.parametrize("sign", list(SIGNS))
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
 class TestEverySwitch:
     """The universal properties under each switch a model takes: one chunk
     or many give the same numbers, a save and load at any row is
     transparent, every number is finite or null, and a skipped row reports
-    nothing (review 2026-10-06, TA3)."""
+    nothing (review 2026-10-06, TA3); on streams of each sign."""
 
-    @SETTINGS
-    @given(df=streams(min_rows=2), chunk=st.integers(min_value=1, max_value=13), data=st.data())
-    def test_the_properties_hold_under_each_switch(self, model, extra, df, chunk, data):
-        switch = data.draw(st.sampled_from(SWITCHES_FOR[model]), label="switch")
-        split = data.draw(st.integers(1, df.height - 1), label="split")
-        df = binarize(df, model)
-        spec = build(model, extra, **SWITCHES[switch])
-        one = po.ModelBank([spec]).fit_predict(df)
-        bank = po.ModelBank([spec])
-        many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
-        assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
-        a = po.ModelBank([spec])
-        a.fit_predict(df.slice(0, split))
-        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
-        rest = df.slice(split)
-        assert unnested(a.fit_predict(rest)).equals(unnested(b.fit_predict(rest)), null_equal=True)
-        fields = one.select("m").unnest("m")
-        _finite_or_null(fields)
-        cond = _missing("w")
-        for f in spec["features"]:
-            cond = cond | _missing(f)
-        for i, skip in enumerate(df.select(cond).to_series().to_list()):
-            if skip:
-                present = [c for c in fields.columns if fields[c][i] is not None]
-                assert not present, f"row {i} was skipped but reported {present}"
+    def test_the_properties_hold_under_each_switch(self, model, extra, sign):
+        def prop(df, chunk, data):
+            switch = data.draw(st.sampled_from(SWITCHES_FOR[model]), label="switch")
+            split = data.draw(st.integers(1, df.height - 1), label="split")
+            df = binarize(df, model)
+            spec = build(model, extra, **SWITCHES[switch])
+            one = po.ModelBank([spec]).fit_predict(df)
+            bank = po.ModelBank([spec])
+            many = pl.concat(
+                [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
+            )
+            assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
+            a = po.ModelBank([spec])
+            a.fit_predict(df.slice(0, split))
+            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            rest = df.slice(split)
+            got = unnested(b.fit_predict(rest))
+            assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
+            fields = one.select("m").unnest("m")
+            _finite_or_null(fields)
+            cond = _missing("w")
+            for f in spec["features"]:
+                cond = cond | _missing(f)
+            for i, skip in enumerate(df.select(cond).to_series().to_list()):
+                if skip:
+                    present = [c for c in fields.columns if fields[c][i] is not None]
+                    assert not present, f"row {i} was skipped but reported {present}"
+
+        _given(sign, prop, df=_streams(model, sign, min_rows=2), chunk=CHUNKS, data=st.data())
 
 
 def _finite_or_null(fields: pl.DataFrame) -> None:
@@ -493,20 +596,22 @@ def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
 
 
 @st.composite
-def kind_streams(draw, kind: str, min_rows=2, max_rows=60):
+def kind_streams(
+    draw, kind: str, min_rows=2, max_rows=60, sign: float | None = None, offset: float = 0.0
+):
     """A stream any kind runs on, adversarial as `streams` is: features
     ``x0`` and ``x1`` and a target ``y`` reaching the bound and past it, with
     nulls; a group key ``g`` that only grows, for `rcov`'s monotone close;
     and, for `ew_class`, ``y`` as its label, ``a`` or ``b``, null where the
-    number was missing."""
+    number was missing. With a ``sign``, the numbers sit on its side of zero
+    at ``offset`` (`SIGNS`), but for `ew_class`'s label, which reads the side
+    of zero a number drawn of mixed signs fell on."""
     n = draw(st.integers(min_value=min_rows, max_value=max_rows))
+    cols = {c: draw(st.lists(_values, min_size=n, max_size=n)) for c in ("x0", "x1", "y")}
+    for c in ("x0", "x1") if kind == "ew_class" else ("x0", "x1", "y"):
+        cols[c] = [_signed(v, sign, offset) for v in cols[c]]
     df = pl.DataFrame(
-        {
-            "x0": draw(st.lists(_values, min_size=n, max_size=n)),
-            "x1": draw(st.lists(_values, min_size=n, max_size=n)),
-            "y": draw(st.lists(_values, min_size=n, max_size=n)),
-            "g": np.cumsum(draw(st.lists(st.integers(0, 1), min_size=n, max_size=n))),
-        },
+        {**cols, "g": np.cumsum(draw(st.lists(st.integers(0, 1), min_size=n, max_size=n)))},
         schema_overrides={c: pl.Float64 for c in ("x0", "x1", "y")},
     )
     if kind == "ew_class":
@@ -522,37 +627,42 @@ def kind_streams(draw, kind: str, min_rows=2, max_rows=60):
 class TestEveryOtherKind:
     """The universal properties on the eleven kinds the sweeps above leave
     out, each as `MINIMAL` builds it, which had a fixed-stream chunking test
-    or none (review 2026-10-06, TA3)."""
+    or none (review 2026-10-06, TA3); on streams of each sign."""
 
-    @SETTINGS
-    @given(data=st.data(), chunk=st.integers(min_value=1, max_value=13))
-    def test_the_properties_hold(self, kind, data, chunk):
-        df = data.draw(kind_streams(kind), label="stream")
-        split = data.draw(st.integers(1, df.height - 1), label="split")
-        spec = _kind_spec(kind)
-        whole = po.ModelBank([spec])
-        one = whole.fit_predict(df)
-        bank = po.ModelBank([spec])
-        many = pl.concat([bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)])
-        assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
-        if (state := _state(whole, kind)) is not None:
-            assert state.equals(_state(bank, kind), null_equal=True), "chunking moved the state"
-        a = po.ModelBank([spec])
-        a.fit_predict(df.slice(0, split))
-        b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
-        rest = df.slice(split)
-        assert unnested(a.fit_predict(rest)).equals(unnested(b.fit_predict(rest)), null_equal=True)
-        if (state := _state(a, kind)) is not None:
-            assert state.equals(_state(b, kind), null_equal=True), "a load moved the state"
-        fields = one.select("m").unnest("m")
-        _finite_or_null(fields)
-        cond = pl.lit(False)
-        for f in spec["features"]:
-            cond = cond | _missing(f)
-        for i, skip in enumerate(df.select(cond).to_series().to_list()):
-            if skip:
-                present = [c for c in fields.columns if fields[c][i] is not None]
-                assert not present, f"row {i} was skipped but reported {present}"
+    @pytest.mark.parametrize("sign", list(SIGNS))
+    def test_the_properties_hold(self, kind, sign):
+        def prop(data, chunk):
+            df = data.draw(kind_streams(kind, **SIGNS[sign]), label="stream")
+            split = data.draw(st.integers(1, df.height - 1), label="split")
+            spec = _kind_spec(kind)
+            whole = po.ModelBank([spec])
+            one = whole.fit_predict(df)
+            bank = po.ModelBank([spec])
+            many = pl.concat(
+                [bank.fit_predict(df.slice(i, chunk)) for i in range(0, df.height, chunk)]
+            )
+            assert unnested(one).equals(unnested(many), null_equal=True), "chunking moved a number"
+            if (state := _state(whole, kind)) is not None:
+                assert state.equals(_state(bank, kind), null_equal=True), "chunking moved the state"
+            a = po.ModelBank([spec])
+            a.fit_predict(df.slice(0, split))
+            b = po.ModelBank.load_bytes(a.save_bytes(), specs=[spec])
+            rest = df.slice(split)
+            got = unnested(b.fit_predict(rest))
+            assert unnested(a.fit_predict(rest)).equals(got, null_equal=True)
+            if (state := _state(a, kind)) is not None:
+                assert state.equals(_state(b, kind), null_equal=True), "a load moved the state"
+            fields = one.select("m").unnest("m")
+            _finite_or_null(fields)
+            cond = pl.lit(False)
+            for f in spec["features"]:
+                cond = cond | _missing(f)
+            for i, skip in enumerate(df.select(cond).to_series().to_list()):
+                if skip:
+                    present = [c for c in fields.columns if fields[c][i] is not None]
+                    assert not present, f"row {i} was skipped but reported {present}"
+
+        _given(sign, prop, data=st.data(), chunk=CHUNKS)
 
     def test_a_negative_weight_is_refused_naming_the_row(self, kind):
         """One check refuses a finite negative weight for every kind
