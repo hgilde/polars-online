@@ -903,7 +903,28 @@ impl OnlineModel for Lasso {
         }
         let m = self.cfg.n_targets;
         let np = self.cfg.n_lambdas();
-        let lam_decay = self.cfg.decay.factor(d_clock);
+        // A history the decay leaves in the subnormal range of the row it
+        // meets is forgotten, as one the decay takes to exactly 0 is, from
+        // 1075 half-lives on: its share of the weight after the row,
+        // `lam·W / (lam·W + w)`, below the smallest normal double. One
+        // half-life short of the underflow, `2^-1074` of the history's
+        // weight gave each feature a spread of its own, which the
+        // standardized descent divided by, and the solve on the row read the
+        // old fit back, 4.66 from the stream whose decay underflowed
+        // (docs/PLAN.md task 215). Every Gram's weight and every target's is
+        // at most the all-row weight, so below it each of them is too. A
+        // history of no weight, at the head of a stream, has nothing to
+        // forget, and the row's decay stands (the Grams' prior scale reads
+        // it).
+        let lam_decay = match self.cfg.decay.factor(d_clock) {
+            lam if weight > 0.0
+                && lam * self.acc.cross.w > 0.0
+                && lam * self.acc.cross.w < weight * f64::MIN_POSITIVE =>
+            {
+                0.0
+            }
+            lam => lam,
+        };
         if self.zbuf.len() != self.cfg.k_total() {
             self.zbuf = vec![0.0; self.cfg.k_total()];
         }
@@ -1287,6 +1308,75 @@ mod tests {
             );
         }
         assert!((aged[1][1] + 2.0).abs() < 0.05, "{aged:?}");
+    }
+
+    /// A history the decay leaves in the subnormal range of the row it
+    /// meets is forgotten, as one the decay takes to exactly 0 is
+    /// (docs/PLAN.md task 215). One half-life short of the underflow,
+    /// `2^-1074` of the history's weight gave each feature a spread of its
+    /// own, which the standardized descent divided by, and the solve on the
+    /// first row after the gap read the old fit back from it: 4.66 apart
+    /// from the stream whose decay underflowed (task 214). The gap on a
+    /// zero-weight row and carried by a row of weight 1, solving on the
+    /// clock and on every row; with no `min_weight`, so the rows just after
+    /// the gap are reported, where the every-row solve parts too. Measured
+    /// before the fix, the largest gap over the 40 rows: 1.39 and 2.29 on
+    /// the clock, 0.43 and 0.48 on every row.
+    #[test]
+    fn a_history_aged_below_the_normal_range_is_forgotten() {
+        use crate::OnlineModel;
+        let row = |s: &mut u64| {
+            let x = [3.0 * lcg(s), 3.0 * lcg(s)];
+            let y = 0.5 + x[0] - 0.5 * x[1] + 0.1 * lcg(s);
+            (x, y)
+        };
+        for (solve_every, max_rows) in [(5.0, 10_000), (0.0, 1)] {
+            for gap_weight in [0.0, 1.0] {
+                let run = |half_lives: f64| -> Vec<Vec<f64>> {
+                    let mut c = cfg(2, 1, vec![0.1, 0.0]);
+                    c.decay = Decay::Halflife(20.0);
+                    c.min_weight = 0.0;
+                    c.solve_every = solve_every;
+                    c.max_rows_between_solves = max_rows;
+                    let mut m = Lasso::new(c).unwrap();
+                    let mut s = 215u64;
+                    for i in 0..40 {
+                        let (x, y) = row(&mut s);
+                        m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                    }
+                    let (x, y) = row(&mut s);
+                    m.step(&x, &[Some(y)], 20.0 * half_lives, gap_weight);
+                    (0..40)
+                        .map(|_| {
+                            let (x, y) = row(&mut s);
+                            m.step(&x, &[Some(y)], 1.0, 1.0).pred
+                        })
+                        .collect()
+                };
+                assert_eq!(Decay::Halflife(20.0).factor(20.0 * 1075.0), 0.0);
+                assert!(Decay::Halflife(20.0).factor(20.0 * 1074.0) > 0.0);
+                let (forgot, aged) = (run(1075.0), run(1074.0));
+                // After a zero-weight gap the first row is scored before any
+                // row with weight has met the history: the aged stream holds
+                // `2^-1074` of its weight and reports the fit, the other
+                // holds none and reports nothing, which is the gate reading
+                // a weight, not a solve.
+                let from = usize::from(gap_weight == 0.0);
+                let mut compared = 0;
+                for (i, (u, v)) in aged.iter().zip(&forgot).enumerate().skip(from) {
+                    for (a, b) in u.iter().zip(v) {
+                        assert!(
+                            (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-9 * (1.0 + b.abs()),
+                            "solve_every {solve_every}, the gap at weight {gap_weight}: row {i} \
+                             after it, {a} where the history aged to 2^-1074, {b} where it \
+                             was forgotten"
+                        );
+                        compared += usize::from(b.is_finite());
+                    }
+                }
+                assert!(compared > 70, "{compared} numbers compared");
+            }
+        }
     }
 
     /// A target with no row at a solve has no fit, windowed or not: every

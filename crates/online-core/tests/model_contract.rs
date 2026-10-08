@@ -2429,15 +2429,14 @@ fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
 /// densities NaN for 39 of the next 40 rows, which do not count towards its
 /// `n_eff` either (from about 1025 half-lives; PLAN task 115 (c), measured
 /// 2026-09-28 and raised, not fixed). `hmm` keeps the first check alone.
-/// Nor is it for a `lasso` that solves on the clock ([`lasso_on_a_clock`]):
+/// A `lasso` that solves on the clock is compared as every other model is:
 /// it solves on the first row after the gap, from that row alone, and one
-/// half-life short the history's remains, `2^-1074` of its weight, give
-/// each feature a spread of its own, which the standardized descent divides
-/// by and so reads the old fit back -- 4.66 apart on this stream. A row of
-/// weight 1 carrying the same gap parts the two by as much, with no
-/// zero-weight row anywhere; the zero-weight row's own solve hid it until a
-/// zero-weight row stopped solving (docs/PLAN.md task 214, raised, not
-/// fixed).
+/// half-life short the history's remains, `2^-1074` of its weight, gave
+/// each feature a spread of its own, which the standardized descent divided
+/// by and so read the old fit back -- 4.66 apart on this stream
+/// (docs/PLAN.md task 214, raised there). A history in the subnormal range
+/// of the row it meets is forgotten now, as the decay that underflows
+/// forgets it (task 215).
 fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     build: &impl Fn() -> M,
     targets: usize,
@@ -2487,7 +2486,7 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     if kind == "hmm" {
         return;
     }
-    let exempt = NOT_COMPARED.contains(&kind) || lasso_on_a_clock(&build());
+    let exempt = NOT_COMPARED.contains(&kind);
     for (i, (a, b)) in forgot.iter().zip(&aged).enumerate() {
         let preds = exempt
             || a.pred.len() == b.pred.len()
@@ -2501,16 +2500,6 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
             b.n_eff,
             b.pred
         );
-    }
-}
-
-/// A `lasso` whose solves are scheduled on the clock, which
-/// [`a_zero_weight_row_past_the_underflow_forgets`] does not compare
-/// predictions for.
-fn lasso_on_a_clock<M: OnlineModel>(m: &M) -> bool {
-    match m.state().model {
-        ModelState::Lasso(l) => l.cfg().solve_every > 0.0,
-        _ => false,
     }
 }
 
