@@ -511,6 +511,18 @@ impl SlotMetrics {
         self.joint.n_eff()
     }
 
+    /// Whether a restored slot is shaped as a fresh one -- the joint
+    /// moments over two columns with their vectors sized to match, and
+    /// finite scalars -- which it must be to score the next row: a file
+    /// whose moments were a value short loaded and the next scored row
+    /// indexed past them in the accumulator's update (review round 5, C2).
+    pub fn has_shape(&self) -> bool {
+        self.joint.has_shape(2)
+            && self.mse.is_finite()
+            && self.hits.is_finite()
+            && self.hit_w.is_finite()
+    }
+
     /// Information coefficient: the correlation between prediction and target.
     pub fn ic(&self) -> Option<f64> {
         let d = self.joint.var(0).sqrt() * self.joint.var(1).sqrt();

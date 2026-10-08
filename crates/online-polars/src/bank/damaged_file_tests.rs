@@ -220,6 +220,60 @@ fn a_residual_sketch_of_the_wrong_shape_is_refused() {
     }
 }
 
+/// The stream's `emit_metrics` accumulators were taken on their count
+/// alone, so a file whose joint moments were a value short loaded, and the
+/// next scored row indexed past them in `EwCov::update` (review round 5,
+/// C2). Held to their shape, as the sketches are.
+#[test]
+fn a_metrics_accumulator_of_the_wrong_shape_is_refused() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0,
+            "emit_metrics": true}"#,
+    );
+    let mut bank = Bank::new(vec![s.clone()]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let specs = std::slice::from_ref(&s);
+    assert!(Bank::load_bytes(&bytes, Some(specs)).is_ok(), "as saved");
+    for field in ["m", "c", "m_lo"] {
+        let damaged = reencoded(&bytes, |file| {
+            let m = &mut file.states[0][0].1.persisted.metrics[0][0];
+            let mut v = serde_json::to_value(&*m).unwrap();
+            let short = v["joint"][field].as_array_mut().unwrap();
+            assert!(short.pop().is_some(), "{field} holds a value");
+            *m = serde_json::from_value(v).unwrap();
+        });
+        match Bank::load_bytes(&damaged, Some(specs)) {
+            Err(err) => assert!(err.contains("metrics"), "{field}: {err}"),
+            Ok(mut back) => {
+                let read = back.fit_predict(&frame());
+                panic!("{field}: a metrics accumulator a value short loaded: {read:?}");
+            }
+        }
+    }
+}
+
+/// The decay time is kept per model instance by every file this build
+/// loads; one of the wrong length is damage, and was replaced with zeros,
+/// which restarted `settled_frac` and `weight_sum_settled` from the load
+/// (review round 5, C7). Refused by name, as the held-rows clock is.
+#[test]
+fn a_decay_time_of_the_wrong_length_is_refused() {
+    let mut bank = Bank::new(vec![ridge()]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    for (what, edit) in [
+        ("none", (|c: &mut Vec<f64>| c.clear()) as fn(&mut Vec<f64>)),
+        ("one too many", |c: &mut Vec<f64>| c.push(0.0)),
+    ] {
+        let damaged = reencoded(&bytes, |f| edit(&mut f.states[0][0].1.persisted.decay_time));
+        let err = Bank::load_bytes(&damaged, None).err().expect(what);
+        assert!(err.contains("decay time"), "{what}: {err}");
+    }
+    assert!(Bank::load_bytes(&bytes, None).is_ok());
+}
+
 /// PA8: every per-spec entry of the envelope names a spec the bank has.
 /// One past the specs was dropped in silence (`high_water`,
 /// `clock_dtypes`, `key_dtypes`, `resolvers`) or kept and saved again for

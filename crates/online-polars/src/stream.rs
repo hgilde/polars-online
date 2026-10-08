@@ -3211,11 +3211,18 @@ impl Stream {
         }
         let fresh = &stream.persisted;
         let mut p = saved.persisted.clone();
-        // The decay time and the notices, per instance; a file written
-        // before either existed leaves the fresh zeros, so for such a file
-        // `settled_frac` counts from the load.
+        // The decay time per instance, which every file this build loads
+        // keeps: one of the wrong length is damage, refused as the held-rows
+        // clock is below. Replaced with zeros, as a file written before it
+        // existed once was, it restarted `settled_frac` and
+        // `weight_sum_settled` from the load (review round 5, C7). The
+        // notices are flags, and a wrong length of those starts them over.
         if p.decay_time.len() != fresh.decay_time.len() {
-            p.decay_time = fresh.decay_time.clone();
+            return Err(format!(
+                "saved state's decay time has {} entries where this spec keeps {}",
+                p.decay_time.len(),
+                fresh.decay_time.len()
+            ));
         }
         if p.notified.len() != fresh.notified.len() {
             p.notified = fresh.notified.clone();
@@ -3297,7 +3304,12 @@ impl Stream {
             &fresh.autocorr,
             |s, l| s.same_shape(l),
         )?;
-        take_diag("metrics", &mut p.metrics, &fresh.metrics, |_, _| true)?;
+        // A metrics slot too: its joint moments are indexed by their width
+        // on the next scored row, and one a value short loaded on the
+        // count alone (review round 5, C2).
+        take_diag("metrics", &mut p.metrics, &fresh.metrics, |s, _| {
+            s.has_shape()
+        })?;
         take_diag(
             "conformal intervals",
             &mut p.conformal,
