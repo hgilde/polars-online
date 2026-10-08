@@ -5046,4 +5046,9 @@ mod tests {
         assert_eq!(noised, Some(151), "the copy's first residual");
         assert!(parted, "the copy's own variance enters the mean");
     }
+
+    // Task 218's tests, every readout against the recursion, in a file of
+    // their own: `kalman.rs` stands near the source-size cap
+    // (`tests/test_repo_hygiene.py`).
+    mod readouts;
 }

@@ -1472,3 +1472,113 @@ why = """the mutant hands `d_clock = ±0` to `pow`, and `pow(x, ±0)` is 1 for \
 every `x` by C's Annex F (F.10.4.4), which every libm met keeps: 1 for \
 every one of the 100,063,203 values `Decay::factor`'s `d_clock == 1.0` \
 entry names, at `+0` and `-0`"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "KalmanCfg::gap_noise"
+mutation = "delete -"
+line_has = "let g = -(-(theta * d)).exp_m1() / theta;"
+why = """the outer sign only (column 17; the inner one is caught): `g` is \
+read only as `g * g`, and a negation is exact, so the square is the same \
+double either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "NoiseBasis::add"
+mutation = "replace > with >="
+line_has = "if self.e2.len() < PRIOR_ROWS && v > 0.0 && v.is_finite() && w > 0.0 && w.is_finite() {"
+why = """neither is ever 0 here: `step` hands a row's squares only where \
+it observes a target, at a weight above 0 (`obs`), each square filtered \
+above 0; and under `share_p` the mean of `n` squares, each at least \
+`2^-1074`, is at least `2^-1074` -- their sum, rounded up the way each \
+partial sum is, is at least `n · 2^-1074`, itself a double"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "NoiseBasis::noise"
+mutation = "replace > with >="
+line_has = "(v > 0.0 && v.is_finite()).then_some(v)"
+why = """`v` is a median of squares that `add` and the loader's \
+`is_valid` hold above 0, over `CHI2_1_MEDIAN` < 1: it is never 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "NoiseBasis::noise"
+mutation = "replace && with ||"
+line_has = "(v > 0.0 && v.is_finite()).then_some(v)"
+why = """`v` is above 0 (as `replace > with >=` here), so the mutant differs \
+only at `v = inf`: a loaded basis of squares near `f64::MAX` (a stream's \
+are `y²` of usable targets, at most `1e200`, `b` being 0 while `P` waits \
+for them). Its `Some(inf)` reaches `size_slots`, whose prior `p0 · inf` \
+is not a finite number and sizes nothing -- what `None` does"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::pred_var"
+mutation = "replace > with >="
+line_has = "if own > 0.0 && mean > 0.0 {"
+why = """the second operand only (`mean > 0.0`, column 46; `own > 0.0` is \
+caught): `own` is one of the residual variances `mean` averages, so \
+where `own > 0` holds `mean` is a mean of numbers above 0, at least \
+`2^-1074`, and `> 0`, `>= 0` agree; where it fails the line is false \
+either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::coupling"
+mutation = "replace || with &&"
+line_has = "if !self.cfg.standardize || !self.cfg.fit_intercept || self.cfg.revert_half_life.len() == 1"
+why = """either `&&` lets through only cases whose coupling is 0: without \
+`standardize` or without an intercept every shift `c_i` is 0 (`map_into` \
+writes 0, and `step`'s kept map stays 0 without `standardize`), and with \
+one reversion half-life every `phi_i` is `phi_0`; so each `g_i = c_i \
+(phi_0 − phi_i)` is ±0, `any` stays false and `coupling` returns false, \
+its `g` a scratch no one reads then"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::add_process_noise"
+mutation = "replace * with /"
+line_has = """if i < off {
+                p[i * k + i] += qd;"""
+why = """the branch runs for `i < off`, the intercept's slot `i = 0` alone, \
+where `i * k + i` and `i / k + i` are both 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::add_process_noise"
+mutation = "replace + with *"
+line_has = """if i < off {
+                p[i * k + i] += qd;"""
+why = "as `replace * with /` here: at `i = 0`, `i * k * i` is 0"
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::add_process_noise"
+mutation = "replace + with -"
+line_has = """if i < off {
+                p[i * k + i] += qd;"""
+why = "as `replace * with /` here: at `i = 0`, `i * k - i` is 0"
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::covariance_now"
+mutation = "replace || with &&"
+line_has = "if !self.cfg.standardize || i < off {"
+why = """the mutant sends to the arrowhead below the two cases the original \
+adds on the diagonal, and there the arrowhead is the diagonal: without \
+`standardize` and in the intercept's slot `map_into` gives `a = 1` and \
+`c = 0`, so `v = 0`, the corner and the off-diagonal terms add ±0 to \
+entries that hold a number, and the diagonal takes `qd / (1 · 1)`, the \
+same double"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::prior_quad"
+mutation = "replace && with ||"
+line_has = "if coupled && i > 0 {"
+why = """the mutant adds `g_i z_0` where the original does not -- in every \
+slot when `coupled` is false and in the intercept's when it is true -- \
+and `g_i` is ±0 there: `g` starts at zeros, `coupling` writes `g_0 = 0`, \
+and it returns false before writing or with every `g_i` ±0; `±0 + \
+phi_i z_i` is `phi_i z_i`"""
