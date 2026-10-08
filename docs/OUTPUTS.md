@@ -90,7 +90,7 @@ The optional outputs are left out: the `emit_*` switches, `conformal`,
 | the switch | where the README shows it |
 |---|---|
 | the residual diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, `emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, `conformal` | [Per-row diagnostics](../README.md#per-row-diagnostics), for the models that predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` fit with `loss="poisson"`, whose rate and count have no sign to hit |
-| `emit_error_inflation`, `ewridge`'s | [Warm-up](../README.md#warm-up) |
+| `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up](../README.md#warm-up) |
 | `emit_clocks`, every model's | [Labels that arrive late](../README.md#labels-that-arrive-late), and the table below |
 | `ew_cov`'s extra `stats` | its own [section](../README.md#ew_cov--exponentially-weighted-moments) |
 
@@ -169,6 +169,7 @@ hand: change the generator, then run
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `support_coef` | `list[f64]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
 
 ## `quantile`
 
@@ -180,6 +181,7 @@ hand: change the generator, then run
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `support_coef` | `list[f64]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
 
 ## `sgd`
 

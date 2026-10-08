@@ -188,6 +188,53 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
   decay and under a window. A `ReadinessWarning` says when a `min_weight`
   can never be met, and the noise gate's notice names the half-life that
   would open it. The readiness floors are final for 1.0.
+- **`max_error_inflation` and `emit_error_inflation` work on `rls` and
+  `kalman`, and `max_error_inflation` on `lasso`** (task 116, A;
+  WARMUP-AND-CONVERGENCE §5.8). Each is off unless set, and `ewridge`'s
+  numbers do not move. `rls` reads the gate as `ewridge` does, in sum form:
+  `sqrt(1 + k / n_kish)`, Kish's sample size `s₁² / s₂` from a second weight
+  sum `s₂ = Σ λ^(2i) w_i²` the state now keeps; its row field is
+  `sqrt(1 + ‖R⁻ᵀz‖² s₂ / s₁)` from the factor it keeps. `kalman` reads each
+  row's own `sqrt(1 + z'P⁻z / R)`, exact, `P⁻` the prior covariance after
+  the row's transition and process noise and `R` its `obs_var` or the
+  residual variance it holds; the gate withholds row by row, and the summary
+  reports the mean field. `lasso` reads `sqrt(1 + df / n_kish)` per path
+  point, `df` the active coefficients plus the intercept, which bounds the
+  elastic net's degrees of freedom from above; `emit_error_inflation` stays
+  refused on it, since it keeps no factor. The scalar EW models keep their
+  refusal, which now says why: `1 / n_kish` is a mean's variance, not a
+  standard deviation's or a correlation's, and their `min_weight` of `k + 1`
+  holds the gate's point. Held to filterpy's prior predictive variance,
+  padasip's inverse Gram, and a calibration on data the filter is exact for:
+  the mean of `e² / (R (1 + h))` is 1 within 0.089.
+- **`huber` and `quantile` report `support_coef` beside `coef`** (task 116,
+  B): the share of each coefficient the data determined rather than the
+  ridge, as the loss weighs the rows, `1 − λ (A⁻¹)_jj` on the band system
+  each solve inverts, the formula `ewridge` reads (WARMUP-AND-CONVERGENCE
+  §2.2). A new column in the output struct, on `coef`'s rows, with
+  `min_support_coef` and its feature in `summary()`, and the once-only
+  warning under its rule (*Fixed*). Persisted per target (schema 45). Held
+  to numpy's and faer's inverse: a duplicated pair reads 0.5 under both
+  losses.
+- **`emit_se_coef` writes `se_coef`, each coefficient's standard error in
+  `coef`'s units** (task 116, F), the intercept's included, on `coef`'s rows
+  and laid out like it: `diag(T Cov Tᵀ)`, `T` the map `coef` is read out by.
+  `ewridge`: `Cov = σ̂² M`, `M = Σ̂⁻¹ / n_kish`, which leaves out the
+  ridge's sandwich and so errs large; `rls`: `σ̂² (s₂ / s₁) A⁻¹`, `O(k³)` on
+  the `coef` schedule; `kalman`: `P`, its posterior, exact. `σ̂` is the
+  row's EW out-of-sample residual spread (`sigma`), `sqrt(1 + h)` larger
+  than the noise in warm-up, so the error errs large there; null until a
+  spread exists. A report, not a gate. Refused by name on `lasso`
+  (post-selection), `huber` and `quantile` (an M-estimator's covariance is a
+  sandwich) and the gradient models (no second moment). Unnests as
+  `se_coef_<target>_<term>`. Held to statsmodels' WLS `cov_params()`,
+  filterpy's `P` and padasip.
+- **The command line closes a run with a readiness line per spec** (task
+  116, H; WARMUP-AND-CONVERGENCE §7.9). After `wrote N rows`, one line per
+  spec whose groups ended withheld, counted by `withheld_reason`, or whose
+  `min_support_coef` is below 0.5:
+  `spec "m": 2 groups whose last row was withheld (below_min_weight 2); 1 group with min_support_coef < 0.5`.
+  Nothing for a spec with neither.
 - **The command line takes `--skip-learned`**, and the TOML key
   `skip_learned` (task 196; review round 4, N26, AP22), as Python's
   `ModelBank.skip_learned` does: a resumed run drops the rows each group's
@@ -206,7 +253,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 44,
+- **Every saved bank must be refit.** A bank file now carries schema 45,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -221,14 +268,15 @@ reinterpreted parameter, an output's dtype or a file to refit.
   the stamp of the last solve, PCA refresh and checkpoint (task 180).
   Schema 38 drops a Gram index nothing read from the systems `ewridge` keeps
   for its readiness statistics, and lets a closed `rcov` row's
-  `psd_repaired` be null (task 186). Schema 44, the one a bank file now
-  carries, follows tasks 194 to 202: the stream's state as one value, the
-  clock range as clock values and the key columns' types (194); the
-  residual scales, `pa`'s scaler, `bocpd`'s warm-up and the per-target
-  thresholds (195); the window's edge and the renamed counts (196); an
-  integer clock held as one (200, windows state 8); relative targets
-  removed (201); and the target's own spread (202). It refuses 43 and
-  older, and so do the models' own states.
+  `psd_repaired` be null (task 186). Schema 44 follows tasks 194 to 202:
+  the stream's state as one value, the clock range as clock values and the
+  key columns' types (194); the residual scales, `pa`'s scaler, `bocpd`'s
+  warm-up and the per-target thresholds (195); the window's edge and the
+  renamed counts (196); an integer clock held as one (200, windows state
+  8); relative targets removed (201); and the target's own spread (202).
+  Schema 45, the one a bank file now carries, adds `rls`'s second weight
+  sum `s₂` and the data shares `huber` and `quantile` keep per target
+  (task 116). It refuses 44 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -547,6 +595,15 @@ reinterpreted parameter, an output's dtype or a file to refit.
   them a step later (review 5, E2). `resolved_defaults` renders the clock
   policy as `restart_after_step_back`, the name a spec takes, where it
   rendered the two names task 144 merged (C5).
+- **The noise gate's "cannot be met" notice is off on `kalman`** (task 116;
+  WARMUP-AND-CONVERGENCE §7.11). Its gate reads each row's own
+  `sqrt(1 + z'P⁻z / R)`, and `P` settles on `coef_half_life`'s clock, not
+  the spec's decay, so neither the notice's trigger nor its projection to
+  steady state, which is Kish's, applies to it. At `coef_half_life=50` and
+  ten features the rows spread from 1.02 to 1.11 around an average of 1.07;
+  at a limit of 1.06, below that average, 40% of rows still pass. One
+  withheld row says nothing of the rows after it, and a notice cannot be
+  retracted. The other models' notice is unchanged.
 Numbers move in most of these, each saying by how much; under this
 project's versioning that is carried by the minor version before 1.0.
 
@@ -929,6 +986,16 @@ The output names task 144 renamed:
   3.4e-13 relative. Under a ridge the factor is rebuilt as before, since
   forgetting shifts a ridge off a rank-one step, and `huber` keeps no band
   system.
+- **`huber` and `quantile` pay for `support_coef` by default** (task 116,
+  B): at ten features a `huber` row goes from 205 to 215 ns, about 5%, and a
+  `quantile` row from 340 to 354, about 4%, the last solve's factor held
+  until the shares are read, as `ewridge` holds its systems; an eager copy
+  cost about 10%. The rest of task 116 costs nothing unless set: the
+  `kalman` gate or row field 115-120 ns a row; `rls`'s second weight sum
+  within the noise, its gate 1 ns and its row field 70 ns; `lasso`'s gate
+  15-20 ns; `se_coef` at the default `coef` cadence 10 ns on `ewridge` and
+  within the noise on `rls` and `kalman`, and with `coef` on every row
+  `ewridge` 445 to 950 ns, `rls` 440 to 1,315 and `kalman` 330 to 465.
 
 ### Fixed
 
@@ -960,6 +1027,15 @@ The output names task 144 renamed:
     construction, no longer the platform's `pow(lam, 1)` (A4).
   - `ModelBank.to_json` raises `UnstableWarning` for a formula target's
     written form under `POLARS_ONLINE_WARN_UNSTABLE=1`, as `save` does (D7).
+- **The once-only warning that a coefficient is more ridge than data waits
+  until the stream is 95% settled** (task 116, G), the rule the other two
+  readiness notices keep. It fired on the first row the gates let through,
+  where the first rows' noisy feature variances under a mean-form ridge read
+  a share below 0.5 that later settled above it: `ewridge` on two correlated
+  features with `half_life=200`, `standardize=True` and `ridge=0.7` settles
+  at `support_coef` 0.51-0.53, and 8 seeds of 12 warned at row 4. A stream
+  without decay never settles, so it never warns; `support_coef` and
+  `summary()`'s `min_support_coef` carry what it reads.
 - **`kalman`'s `share_p` takes each row once, so neither the order nor the
   number of targets moves a prediction** (task 204). The shared `P` took
   each row once per target, as if the targets shared their coefficients.

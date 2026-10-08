@@ -439,18 +439,31 @@ fn at<'a>(v: &'a rmpv::Value, path: &[&str]) -> Option<&'a rmpv::Value> {
     })
 }
 
+/// How much of a layout `v` holds: its finite, non-zero numbers, through
+/// any nesting. An empty layout writes an empty vector, a zero (`rls`'s
+/// `s2` before a row) or a NaN (a share no solve has fit).
+fn held(v: &rmpv::Value) -> usize {
+    match v {
+        rmpv::Value::Array(a) => a.iter().map(held).sum(),
+        rmpv::Value::Map(m) => m.iter().map(|(_, v)| held(v)).sum(),
+        v => usize::from(v.as_f64().is_some_and(|f| f.is_finite() && f != 0.0)),
+    }
+}
+
 /// A layout a schema bump moved is written by a fixture that holds it, so
 /// a change to its tags or fields cannot pass the harness unseen (review
 /// round 5, D3): `sgd`'s per-loss state -- the residual scale under the
 /// Huber loss (schema 40), the target's spread under the epsilon-insensitive
-/// one (44) -- `ewridge`'s kept systems (38, under `set_keep_factor`) and
-/// `bocpd`'s warm-up rows (40). Each was empty in every fixture before.
+/// one (44) -- `ewridge`'s kept systems (38, under `set_keep_factor`),
+/// `bocpd`'s warm-up rows (40), `rls`'s second weight sum `s₂` and the
+/// robust models' data shares (45, docs/PLAN.md task 116). Each was empty
+/// in every fixture before.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 5] = [
+    const FORMS: [(&str, &[&str]); 8] = [
         ("sgd_huber", &["model", "Sgd", "sig2"]),
         ("sgd_huber", &["model", "Sgd", "wsig"]),
         ("sgd_eps", &["model", "Sgd", "spread"]),
@@ -459,6 +472,9 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             &["model", "EwRidge", "ready", "systems"],
         ),
         ("bocpd_warming", &["model", "Bocpd", "warm"]),
+        ("rls", &["model", "Rls", "s2"]),
+        ("huber", &["model", "Robust", "support"]),
+        ("quantile", &["model", "Robust", "support"]),
     ];
     for (name, path) in FORMS {
         let f = frozen::ALL
@@ -469,11 +485,8 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
         let Some(field) = at(&v, path) else {
             panic!("{name}: the state has no {}", path.join("."));
         };
-        let held = field
-            .as_array()
-            .map_or(0, |a| a.iter().filter(|e| !e.is_nil()).count());
         assert!(
-            held > 0,
+            held(field) > 0,
             "{name}: {} is empty, so the fixture holds nothing of the layout it is there for",
             path.join(".")
         );

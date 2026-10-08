@@ -4659,7 +4659,7 @@ decision it needs, with a recommendation where there is one.
       **Done 2026-09-29:** every item, (a) to (i) and S30, is decided and
       built.
 
-- [ ] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
+- [x] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
       defaults move, so *the scope is the user's*. A readiness statistic for
       `rls`, `kalman`, `lasso` and the scalar EW models; `support_coef` for
       `lasso`, `ew_cov` and the robust models; `n_eff_settled` in the
@@ -4673,6 +4673,28 @@ decision it needs, with a recommendation where there is one.
       declared the current floors final; task 146 closed without the
       CUSUM, which nothing owns. The rest is open; the user wants it built
       before 1.0, scope to follow from a summary (§18, 2026-10-07).
+      *Done 2026-10-08* (the user, 2026-10-07: "Your reco on 116"; branch
+      `task116-readiness`, integrated after review 5): A `max_error_inflation`
+      and `emit_error_inflation` on `rls` (`s₂` in the state, schema 45; the
+      gate `√(1 + k/n_Kish)`, the row's leverage) and `kalman` (each row's
+      exact `√(1 + z'P⁻z/R)`, the gate per row), the gate on `lasso` (`df` =
+      the active count plus the intercept); B `support_coef` on `huber` and
+      `quantile` (`1 − λ(A⁻¹)_jj` on the band system, persisted); F `se_coef`
+      under `emit_se_coef` on `ewridge`, `rls` and `kalman` (`diag(T Cov Tᵀ)`,
+      a report); G the support warning under the notices' one 95%-settled
+      rule (a bug: 8 seeds of 12 warned falsely at the first row through);
+      H the CLI's closing line. The "cannot be met" notice is off for
+      `kalman`: its gate is per row and `P` settles on `coef_half_life`'s
+      clock, not the spec's decay, so a notice tested at ±5% cannot hold
+      (§19, 116-K; WARMUP §7.11). `tests/test_window_budget.py`'s spec was not
+      §2.2's true positive: on the base it read `support_coef` 1.00 and never
+      warned, so its comment and §2.2 were corrected and no code changed for
+      it. `kalman`'s steady-state floor, measured against the brief's
+      `√(1 + k·p)`: 1.0715 against 1.0675 at `coef_half_life` 50 (`h` 6%
+      above `k·p`), 1.84 against 1.58 at 5 (60% above). Costs a row: `huber`
+      +5% and `quantile` +4% by default (`support_coef`); the `kalman` gate
+      +115-120 ns when set; `rls`'s `s₂` within the noise; `se_coef` +10 ns
+      on `ewridge` at the default cadence.
 
 - [ ] 117. **Python versions.** S–L. A 3.15 CI leg when it ships (October;
       recommended); free-threaded builds (non-`abi3` wheels; not yet); a
@@ -12567,6 +12589,7 @@ mutants and MSRV workflows; the 1.0 policy's tables against each other.
 | F3 (med) | the "cannot be met" notice also fires falsely on a rising row rate (the README's kernel example: 381 of 400 predicted, weight 103 against a projected 7.7) | conditional wording, fire only after the weight stayed below the floor a further half-life past 95% settled, pin the example | as stated |
 | F7, F9 (low) | U7's `stats=[]` exception recorded only in a task note; PERFORMANCE §11 cells rewritten where the rule was a pointer | annotate U7; accept the cells | as stated |
 | D8 (note) | `test_released_state.py` asserts `refused == {}` per release: after 1.0.0 a new kind fails 1.0.0's leg | filter per release on release day | -- |
+| 116-K | the "never met" notice for `kalman`'s per-row gate: `P` settles on `coef_half_life`'s clock and the rows spread 1.02-1.11 around the average 1.07 at `coef_half_life` 50, so a notice tested at ±5% cannot hold (task 116) | judge the best row (`√(1 + 1/(P⁻¹)₀₀/R)` with an intercept), the average row, or stay off; evidence WARMUP §7.11 | stay off until a 1.x user asks |
 
 The coordinator's own correction, recorded here: the eps review of
 2026-10-07 said "nothing else in the eps chain needs reopening"; G3's

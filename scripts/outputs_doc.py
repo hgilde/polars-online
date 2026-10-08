@@ -284,7 +284,7 @@ OPTIONAL: list[tuple[str, str]] = [
         'fit with `loss="poisson"`, whose rate and count have no sign to hit',
     ),
     (
-        "`emit_error_inflation`, `ewridge`'s",
+        "`emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s",
         "[Warm-up](../README.md#warm-up)",
     ),
     (

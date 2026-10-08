@@ -32,7 +32,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 44
+  schema_version = 45
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -50,6 +50,7 @@
   min_settled_frac = None
   max_error_inflation = None
   emit_error_inflation = False
+  emit_se_coef = False
   emit_clocks = False
   coef_every = None
   max_rows_between_coefs = None
@@ -380,7 +381,6 @@
     stream.drift_action = "flag"
     stream.drift_delta = 0.5
     stream.drift_threshold = 20.0
-    stream.max_error_inflation = 1.4142135623730951
     stream.min_settled_frac = 0.0
     stream.resid_autocorr_lag = 1
     stream.window_budget = null
@@ -402,6 +402,7 @@
     model.prune_below = 1e-06
     model.robust_beta = 0.0
     model.warm_rows = null
+    stream.max_error_inflation = "inf"
     stream.min_weight = [1.0]
   corrchange(features=['x0', 'x1'], span_rows=20):
     model.alpha = 0.05
@@ -421,6 +422,7 @@
     model.scalar = false
     model.seed = 0
     model.span_rows = 20
+    stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
   deco(features=['x0', 'x1'], half_life=50.0):
     model.alpha = null
@@ -430,6 +432,7 @@
     model.dynamics = "ew"
     model.min_weight = 3.0
     model.n_features = 2
+    stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
   ew_class(classes=['a', 'b'], features=['x0'], half_life=50.0, label='y', precision_prior=1.0):
     model.covariance = "full"
@@ -440,6 +443,7 @@
     model.precision_prior = 1.0
     model.window = null
     model.window_every = null
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   ew_cov(features=['x0', 'x1'], half_life=50.0):
     model.decay.Halflife = 50.0
@@ -454,6 +458,7 @@
     model.stats = ["mean", "std", "corr"]
     model.window = null
     model.window_every = null
+    stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
   ewridge(features=['x0'], half_life=50.0, targets=['y']):
     model.coef_prior = null
@@ -475,6 +480,7 @@
     model.target_gaps = "own_rows"
     model.window = null
     model.window_every = null
+    stream.max_error_inflation = 1.4142135623730951
     stream.min_weight = [0.0]
   ftrl(features=['x0'], half_life=50.0, targets=['y']):
     model.alpha = 0.1
@@ -488,6 +494,7 @@
     model.n_features = 1
     model.n_targets = 1
     model.strict_binary = false
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   hmm(features=['x0', 'x1'], half_life=50.0, k=2, precision_prior=0.1):
     model.covariance = "full"
@@ -505,6 +512,7 @@
     model.transition_prior = 1.0
     model.tvtp = null
     model.warm_rows = 50
+    stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
   holt(half_life=50.0, targets=['y']):
     model.level_half_life = 50.0
@@ -512,6 +520,7 @@
     model.n_targets = 1
     model.trend = true
     model.trend_half_life = 200.0
+    stream.max_error_inflation = "inf"
     stream.min_weight = [1.0]
   huber(features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
@@ -526,6 +535,7 @@
     model.solve_every = 1.0
     model.solve_share = 0.013862943611198907
     model.standardize = false
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   kalman(coef_half_life=50.0, features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
@@ -540,6 +550,7 @@
     model.revert_half_life = ["inf"]
     model.share_p = false
     model.standardize = true
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   kmeans(features=['x0', 'x1'], half_life=50.0, k=2):
     model.dead_frac = 0.05
@@ -555,6 +566,7 @@
     model.standardize = true
     model.update_every_rows = 1
     model.warm_rows = 500
+    stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
   lasso(features=['x0'], half_life=50.0, lasso_path=[0.1, 0.0], targets=['y']):
     model.decay.Halflife = 50.0
@@ -574,6 +586,7 @@
     model.tol = 1e-10
     model.window = null
     model.window_every = null
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   marginal(features=['x0'], half_life=50.0, targets=['y']):
     model.bins = null
@@ -587,6 +600,7 @@
     model.serial_rule = null
     model.window = null
     model.window_every = null
+    stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
     stream.shards = 1
   micro(eps=0.3, features=['x0', 'x1'], half_life=50.0):
@@ -601,6 +615,7 @@
     model.prune_every = "inf"
     model.scale_floor = 0.1
     model.standardize = true
+    stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
   pa(features=['x0'], half_life=50.0, targets=['y']):
     model.c = 1.0
@@ -613,6 +628,7 @@
     model.n_features = 1
     model.n_targets = 1
     model.standardize = true
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   quantile(features=['x0'], half_life=50.0, quantile=0.5, targets=['y']):
     model.decay.Halflife = 50.0
@@ -627,6 +643,7 @@
     model.solve_every = 1.0
     model.solve_share = 0.013862943611198907
     model.standardize = false
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   rcov(block_rows=100, features=['x0', 'x1'], group='g', group_close='monotone'):
     derived.max_bandwidth = 56
@@ -643,6 +660,7 @@
     model.preavg_rows = null
     model.psd = true
     model.theta = 1.0
+    stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
   rls(features=['x0'], half_life=50.0, targets=['y']):
     model.coef_prior = null
@@ -652,10 +670,12 @@
     model.min_weight = 2.0
     model.n_features = 1
     model.n_targets = 1
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   seqtest(targets=['y']):
     model.min_weight = 0.0
     model.n_targets = 1
+    stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
   sgd(features=['x0'], half_life=50.0, targets=['y']):
     model.clip_gradient = 1000.0
@@ -671,6 +691,7 @@
     model.schedule = "constant"
     model.standardize = true
     model.strict_binary = false
+    stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
   ewridge(features=['x0'], lam=0.99, targets=['y']), the lines that differ from ewridge's:
     model.decay.Lam = 0.99
@@ -1274,6 +1295,7 @@
     settled_frac
     withheld_reason
     coef
+    support_coef
   quantile minimal:
     pred_y
     resid_y
@@ -1281,6 +1303,7 @@
     settled_frac
     withheld_reason
     coef
+    support_coef
   sgd minimal:
     pred_y
     resid_y
@@ -1749,6 +1772,7 @@
     emit_drift
     emit_error_inflation
     emit_metrics
+    emit_se_coef
     emit_selected
     emit_sigma
     emit_zscore

@@ -112,6 +112,15 @@ def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
         po.spec.lasso("m", lasso_path=[0.1], **kw),
     ):
         assert resolved(spec)["stream"]["max_error_inflation"] == "inf", spec["model"]
+    # The two readiness row fields are opt-in on every model that has them
+    # (task 116, F): a builder writes them off, and the bank adds nothing.
+    for build, extra in (
+        (po.spec.ewridge, {}),
+        (po.spec.rls, {}),
+        (po.spec.kalman, {"coef_half_life": 50.0}),
+    ):
+        spec = build("m", **kw, **extra)
+        assert (spec["emit_error_inflation"], spec["emit_se_coef"]) == (False, False), spec["model"]
 
 
 def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
