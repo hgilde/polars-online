@@ -8328,7 +8328,12 @@ tick, and that the series holding it up has a count near 1.
   loses about a third (task 202's level-1000 case: R² 0.9646 at 0.1,
   0.9516 at 0.01, best about 0.978) and `sgd` a little; the brief's own
   shape (noise up to 0.1) favours 0.1. Probes: the session scratchpad's
-  `review4/fix2/task203-eps-default/probe2.py`, `probe3.py`.
+  `review4/fix2/task203-eps-default/probe2.py`, `probe3.py`. *Review 5
+  (G2):* the 0.99998 cell for `pa` at 0.1 is one draw from a lottery. The
+  band is 20 noise stds wide there and the fit freezes wherever it first
+  lands inside it, so over 20 seeds through the bank that cell runs from
+  0.58 to 278 (median 35; seeds 0-4's median is the 2.86 above), where
+  0.01 gives 0.16 to 0.20.
 - [x] 204. **`kalman`'s `share_p` takes each row once** -- found 2026-10-07
       while weighing task 187's leftover ("`share_p` still sequential, so
       target order matters"); decided by the user the same day ("Your reco
@@ -12462,12 +12467,17 @@ kept, two wordings changed).** A third rule was measured beside them, the
 residual's std capped by the target's (`eps·min(σ_resid, σ_y)`), which
 removes task 195's trap and shrinks with the fit: no rule wins across R²
 (`$S/eps/bands.py`; at `c = 1`, excess OOS MSE over the noise variance,
-0.01 of σ_y / 0.1 of σ_y / 0.3 of the cap: 0.18 / 54 / 0.44 at R² 0.99998,
-1.16 / 0.59 / 0.79 at 0.978, 0.81 / 0.68 / 0.59 at 0.80). The tension is
-`pa`'s: at `c = 1` the tube is its only damping against noise. 0.01 stays
-by regret (its worst case 1.2× the noise variance, 0.1's 54×, on the
-near-deterministic target a user has before differencing it); for `sgd`
-0.01 loses nowhere. Changed: "inside a good fit's errors" became "below a
+0.01 of σ_y / 0.1 of σ_y / 0.3 of the cap: 0.18 / a lottery / 0.44 at R²
+0.99998, 1.16 / 0.59 / 0.79 at 0.978, 0.81 / 0.68 / 0.59 at 0.80). The
+lottery (review 5, G2): at 0.1 the band is 20 noise stds wide there, so
+the fit freezes wherever it first lands inside it, and over 20 seeds
+through the bank the excess runs from 0.58 to 278 (median 35). The replica
+drew 54 for its seeds; task 203's table holds the bank's 5-seed median,
+2.86. At 0.01 the same 20 seeds give 0.16 to 0.20. The tension is `pa`'s:
+at `c = 1` the tube is its only damping against noise. 0.01 stays by regret
+(its worst case 1.2× the noise variance, 0.1's between 0.6× and 280×
+wherever its fit freezes, on the near-deterministic target a user has
+before differencing it); for `sgd` 0.01 loses nowhere. Changed: "inside a good fit's errors" became "below a
 good fit's errors on most targets" (at R² 0.9998 the band is two-thirds of
 the noise std), and `pa`'s docstring and the README carry the trade-off
 (2.2× / 1.6× / 1.3× the noise at the default / `eps=0.1` / `c=0.1`, at R²
