@@ -3780,30 +3780,36 @@ fn a_window_that_is_not_a_positive_length_is_refused_by_name() {
 
 /// Standardized, a feature that never moves has no scale and gets no
 /// slope, and when no feature moves the fit is the target's mean: the
-/// intercept alone, with no system kept, so no row leverage either (its
-/// doc: infinite "where no system was kept").
+/// intercept alone. Its system keeps no column, so a row's leverage is the
+/// mean's own `1 / n_kish` and the row reads `sqrt(1 + 1 / n_kish)`, with
+/// `n_kish = (Σ w)² / Σ w²` over the rows' weights (the doc; docs/PLAN.md
+/// task 218). It read infinite, from the factor a live solve keeps none of
+/// for a system with no column, which this test pinned as "no system kept"
+/// though the system was kept; a load factored it, and read the mean's.
 #[test]
-fn with_no_feature_moving_the_fit_is_the_mean_and_keeps_no_system() {
+fn with_no_feature_moving_the_fit_is_the_mean_and_reads_its_own_leverage() {
     let mut c = cfg(2, 1);
     c.standardize = true;
     c.min_weight = 0.0;
     let mut m = EwRidge::new(c).unwrap();
     m.set_keep_factor(true);
     let mut s = 53u64;
-    let (mut ys, mut ws) = (0.0, 0.0);
+    let (mut ys, mut ws, mut wq) = (0.0, 0.0, 0.0);
     for i in 0..30 {
         let y = 5.0 + lcg(&mut s);
         let w = 0.5 + (lcg(&mut s) + 1.0);
         m.step(&[3.0, -2.0], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
         ys += w * y;
         ws += w;
+        wq += w * w;
     }
     let beta = &m.coefficients().unwrap()[0];
     assert!((beta[0] - ys / ws).abs() <= 1e-12 * (ys / ws), "{beta:?}");
     assert_eq!(&beta[1..], &[0.0, 0.0]);
     let mut out = Vec::new();
     m.row_error_inflation_into(&[3.0, -2.0], 1.0, &mut out);
-    assert_eq!(out, vec![f64::INFINITY]);
+    let want = (1.0 + wq / (ws * ws)).sqrt();
+    assert!((out[0] - want).abs() <= 1e-12, "{out:?} against {want}");
 }
 
 /// Under `pairwise` the Gram is over every row, and a target's
@@ -4797,5 +4803,75 @@ fn a_blocked_gram_holds_a_refused_row_as_zeros() {
             );
         }
         assert_eq!(bytes(&refused), bytes(&zero), "{case}: after the merge");
+    }
+}
+
+/// A fit that keeps no column -- every feature of the slot constant, so the
+/// standardiser drops each -- is the intercept alone, the mean of the
+/// target, and reads as one (the docs of `coef_variance` and
+/// `row_error_inflation_into`; docs/PLAN.md task 218): the intercept's
+/// variance over the noise is `1 / n_kish`, every slope's NaN, and a row's
+/// `h` is the mean's own `1 / n_kish`, `sqrt(1 + 1 / n)`, the summary's
+/// `sqrt(1 + edf / n)` at `edf = 1`; through the origin, with every feature
+/// 0, the fit is 0, `h` is 0 and the row reads 1. The live model read NaN
+/// and `inf`, a kept system with no column having no factor until a load
+/// factored its 0×0 matrix, so a resumed stream read `1 / n` and `sqrt(1 +
+/// 1 / n)` where the uninterrupted one read NaN and `inf` until its next
+/// solve. Live and resumed agree to the bit, row by row.
+#[test]
+fn a_fit_with_no_kept_column_reads_as_the_intercept_alone_live_and_resumed() {
+    for fit_intercept in [true, false] {
+        let mut c = cfg(1, 1);
+        c.standardize = true;
+        c.fit_intercept = fit_intercept;
+        c.min_weight = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        m.set_keep_factor(true);
+        let x = [if fit_intercept { 2.0 } else { 0.0 }];
+        let mut s = 218u64;
+        let mut checked = 0;
+        for i in 0..12usize {
+            let y = 1.0 + 0.5 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let n = (i + 1) as f64;
+            let resumed = EwRidge::restore(&m.state()).unwrap();
+            let read = |m: &EwRidge| {
+                let Some(crate::CoefVariance::PerNoise(v)) = m.coef_variance() else {
+                    panic!("ewridge's variances are over the noise");
+                };
+                let mut row = Vec::new();
+                assert!(m.row_error_inflation_into(&x, 1.0, &mut row));
+                (v[0].clone(), row[0])
+            };
+            let ((v, row), (v_back, row_back)) = (read(&m), read(&resumed));
+            if fit_intercept {
+                assert!((v[0] - 1.0 / n).abs() <= 1e-12 / n, "row {i}: {v:?}");
+                assert!(
+                    ((row - (1.0 + 1.0 / n).sqrt()).abs()) <= 1e-12,
+                    "row {i}: {row}"
+                );
+                let mut summary = Vec::new();
+                assert!(OnlineModel::error_inflation_into(&m, &mut summary));
+                assert_eq!(row.to_bits(), summary[0].to_bits(), "row {i}");
+            } else {
+                assert_eq!(row, 1.0, "row {i}");
+            }
+            let slope = usize::from(fit_intercept);
+            assert!(v[slope].is_nan(), "row {i}: the dropped slope: {v:?}");
+            // Resumed, the same numbers to the bit, and the next row too.
+            let bits = |v: &[f64]| v.iter().map(|u| u.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&v), bits(&v_back), "row {i}");
+            assert_eq!(row.to_bits(), row_back.to_bits(), "row {i}");
+            let (mut a, mut b) = (m.clone(), resumed);
+            let y = 1.0 + 0.5 * lcg(&mut { s });
+            let (pa, pb) = (
+                a.step(&x, &[Some(y)], 1.0, 1.0).pred,
+                b.step(&x, &[Some(y)], 1.0, 1.0).pred,
+            );
+            assert_eq!(bits(&pa), bits(&pb), "row {i}");
+            assert_eq!(bits(&read(&a).0), bits(&read(&b).0), "row {i}");
+            checked += 1;
+        }
+        assert_eq!(checked, 12);
     }
 }

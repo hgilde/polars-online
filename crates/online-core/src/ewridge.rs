@@ -1386,6 +1386,25 @@ impl EwRidge {
         );
     }
 
+    /// Output slot `slot`'s kept system and, where it has a column, the
+    /// factor its fit came from; `None` where no system was kept, or one
+    /// with a column has no factor. A system with no column -- a centred
+    /// one whose every feature the standardiser dropped, or one through the
+    /// origin whose every feature is 0 -- is the intercept alone or the zero
+    /// fit: its form is empty, 0, and it needs no factor. A live solve
+    /// keeps none for it and a load factors its 0×0 matrix, so neither is
+    /// read, and a resumed stream reads what the uninterrupted one does
+    /// (docs/PLAN.md task 218).
+    fn kept_system(&self, slot: usize) -> Option<(&System, Option<&SpdFactor>)> {
+        let at = self.ready.system_of[slot];
+        let sys = self.ready.systems.get(at)?.as_ref()?;
+        if sys.z.is_empty() {
+            return Some((sys, None));
+        }
+        let factor = self.factors.0.get(at)?.as_ref()?;
+        Some((sys, Some(factor)))
+    }
+
     /// Kish's effective sample size behind each Gram, as it stands before
     /// the row: the window's where there is one, the live accumulator's
     /// otherwise. `None` for a Gram with no weight, or with no Kish sum.
@@ -1831,11 +1850,14 @@ impl OnlineModel for EwRidge {
     /// factor its fit came from over Kish's sample size: for a centred
     /// system the mean's own `1` plus the centred, scaled row's quadratic
     /// form; for a raw one the row's form alone, scaled back to the
-    /// mean-form Gram's units under `ridge_scale`. Infinite before the first
-    /// solve, and where no system was kept ([`EwRidge::set_keep_factor`]);
-    /// NaN where a feature the system kept is not a number, whose form is
-    /// NaN, not the 0 the form's clamp once made of it (task 181). Read for
-    /// output only: nothing here reaches the state.
+    /// mean-form Gram's units under `ridge_scale`. A system that kept no
+    /// column has an empty form: the intercept alone reads `sqrt(1 + 1 /
+    /// n_kish)`, the summary's value at `edf = 1`, and the zero fit through
+    /// the origin reads 1 (task 218). Infinite before the first solve, and
+    /// where no system was kept ([`EwRidge::set_keep_factor`]); NaN where a
+    /// feature the system kept is not a number, whose form is NaN, not the
+    /// 0 the form's clamp once made of it (task 181). Read for output only:
+    /// nothing here reaches the state.
     fn row_error_inflation_into(&self, x: &[f64], _d_clock: f64, out: &mut Vec<f64>) -> bool {
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
         out.clear();
@@ -1857,26 +1879,20 @@ impl OnlineModel for EwRidge {
             }
             for c in 0..nc {
                 let slot = j * nc + c;
-                let at = self.ready.system_of[slot];
-                let (Some(Some(sys)), Some(Some(factor))) =
-                    (self.ready.systems.get(at), self.factors.0.get(at))
-                else {
+                let Some((sys, factor)) = self.kept_system(slot) else {
                     continue;
                 };
-                let kk = sys.z.len();
-                v.clear();
-                v.extend(
-                    sys.z
-                        .iter()
-                        .zip(&sys.s)
-                        .zip(&sys.mean)
-                        .map(|((&zi, &s), &mu)| (self.z_at(x, zi) - mu) / s),
-                );
-                let q = if kk > 0 {
-                    factor.quad_forms(&v, kk, 1)[0] * sys.scale
-                } else {
-                    0.0
-                };
+                let q = factor.map_or(0.0, |factor| {
+                    v.clear();
+                    v.extend(
+                        sys.z
+                            .iter()
+                            .zip(&sys.s)
+                            .zip(&sys.mean)
+                            .map(|((&zi, &s), &mu)| (self.z_at(x, zi) - mu) / s),
+                    );
+                    factor.quad_forms(&v, sys.z.len(), 1)[0] * sys.scale
+                });
                 let h = (q + if sys.centred { 1.0 } else { 0.0 }) / n;
                 out[slot] = (1.0 + h).sqrt();
             }
@@ -1892,11 +1908,13 @@ impl OnlineModel for EwRidge {
     /// a slope `zᵢ`'s is `M_ii / sᵢ²`; a centred system's intercept,
     /// `β₀ = ȳ − Σ (mᵢ / sᵢ) solᵢ`, adds the mean's own `1 / n_kish` to the
     /// slopes' share through `u = m / s`, `(1 + scale · u' A⁻¹ u) / n_kish`,
-    /// which is `h` at the features' origin. It ignores the ridge's sandwich,
-    /// `A⁻¹ G A⁻¹ ≤ A⁻¹`, so it errs large under a ridge. NaN outside the
-    /// slot's feature set and for a column the standardiser dropped, whose
-    /// coefficient no data estimates. `None` unless the systems are kept
-    /// ([`EwRidge::set_keep_factor`]), and before the first solve.
+    /// which is `h` at the features' origin: `1 / n_kish` where the system
+    /// kept no column, the intercept alone (task 218). It ignores the
+    /// ridge's sandwich, `A⁻¹ G A⁻¹ ≤ A⁻¹`, so it errs large under a ridge.
+    /// NaN outside the slot's feature set and for a column the standardiser
+    /// dropped, whose coefficient no data estimates. `None` unless the
+    /// systems are kept ([`EwRidge::set_keep_factor`]), and before the first
+    /// solve.
     fn coef_variance(&self) -> Option<crate::CoefVariance> {
         if !self.keep_factor {
             return None;
@@ -1917,15 +1935,12 @@ impl OnlineModel for EwRidge {
             }
             for c in 0..nc {
                 let slot = j * nc + c;
-                let at = self.ready.system_of[slot];
-                let (Some(Some(sys)), Some(Some(factor))) =
-                    (self.ready.systems.get(at), self.factors.0.get(at))
-                else {
+                let Some((sys, factor)) = self.kept_system(slot) else {
                     continue;
                 };
                 let kk = sys.z.len();
                 let v = &mut out[slot];
-                if kk > 0 {
+                if let Some(factor) = factor {
                     let inv = factor.inverse_diagonal(kk);
                     for (i2, &zi) in sys.z.iter().enumerate() {
                         v[zi] = sys.scale * inv[i2] / (n * sys.s[i2] * sys.s[i2]);
@@ -1933,11 +1948,8 @@ impl OnlineModel for EwRidge {
                 }
                 if sys.centred {
                     let u: Vec<f64> = sys.mean.iter().zip(&sys.s).map(|(mu, s)| mu / s).collect();
-                    let q = if kk > 0 {
-                        factor.quad_forms(&u, kk, 1)[0] * sys.scale
-                    } else {
-                        0.0
-                    };
+                    let q =
+                        factor.map_or(0.0, |factor| factor.quad_forms(&u, kk, 1)[0] * sys.scale);
                     v[0] = (1.0 + q) / n;
                 }
             }

@@ -134,14 +134,6 @@ the line adds or subtracts it: `aj * c` either way, whose sign of zero only \
 an underflow to -0 could reach"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
-function = "<impl OnlineModel for EwRidge>::row_error_inflation_into"
-mutation = "replace > with >="
-line_has = "let q = if kk > 0 {"
-why = """a kept system always has a column: a raw one holds the intercept or a \
-feature, and a centred one with no usable feature keeps no system"""
-
-[[equivalent]]
 file = "crates/online-core/src/lasso.rs"
 function = "Lasso::standardized"
 mutation = "replace > with >="
@@ -1593,25 +1585,6 @@ only for `Q > 0`, the window's `w² / q` only for `w > 0` and `q > 0`, \
 and `Q ≤ W²` for weights of at least 0, so `W²` is no smaller than a \
 `Q` above 0 and `n` is a positive number. The guard is never true, and \
 neither is its mutant"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
-function = "<impl OnlineModel for EwRidge>::coef_variance"
-mutation = "replace > with >="
-line_has = """let v = &mut out[slot];
-                if kk > 0 {"""
-why = """a kept system with no column, `kk = 0`, has a factor only after a \
-load (`refactor` factors its 0×0 matrix); there `inverse_diagonal(0)` is \
-empty, and the loop over `sys.z` writes nothing"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
-function = "<impl OnlineModel for EwRidge>::coef_variance"
-mutation = "replace > with >="
-line_has = "let q = if kk > 0 {"
-why = """at `kk = 0` (a loaded factor of the empty system) the mutant's \
-`quad_forms` of the empty vector is `[0.0]`, times the scale: the `0.0` \
-the original takes"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewridge.rs"

@@ -742,8 +742,8 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file names 179
-equivalent mutants, in 177 entries, each with the reason no input can tell it from the
+`scripts/mutants_equivalent.toml` does not list. That file names 176
+equivalent mutants, in 174 entries, each with the reason no input can tell it from the
 original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
@@ -780,7 +780,7 @@ has the count by file. The triage, newest first:
 
 | scope | date | missed at the start | at the end |
 |---|---|---|---|
-| the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 (docs/PLAN.md task 218) | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent |
+| the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 (docs/PLAN.md task 218) | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent; two of those went with the code that left a fit with no kept column NaN and `inf` live, where a resumed stream read its documented values |
 | `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 (docs/PLAN.md task 113) | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
 | the lines task 112 changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
 | `stats.rs`, on its own | 2026-09-24 | 48 of 285, no timeouts | 5: one caught since, and four equivalent |
