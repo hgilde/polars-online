@@ -1985,42 +1985,85 @@ fn deco_reports_the_same_at_every_level() {
 
 /// `bocpd` with its prior read from its own warm-up rows, so that the prior
 /// sits at the level as the data do (a prior mean given at 0 does not, and
-/// a level then is a surprise by design): the run-length posterior and the
-/// row's log density at each level are those at 0.5, 4.3e-8 at ±1e8 and
-/// 3.6e-4 at 1e12 measured. **The predictive mean of the stopped feature
-/// (slot 5), less the level, is 1,040 rounding steps of the level from
-/// 0.5's**, 2.3e-10 at 1e3, 2.3e-5 at 1e8 and 0.23 at 1e12, late in the
-/// hold, and is held to 2,000. It is `Σ pᵣ mᵣ` over the runs, each `mᵣ` at
-/// the level, and the run posterior sums to 1 only to 2.3e-13 there,
-/// measured: that times the level is the whole of it. `Σ pᵣ (mᵣ − m₀) +
-/// m₀` would keep it at the spread's scale (docs/PLAN.md task 209's report
-/// raises it).
+/// a level then is a surprise by design).
+fn bocpd_at_a_level() -> Bocpd {
+    Bocpd::new(BocpdCfg {
+        n_features: 3,
+        hazard: 50.0,
+        hazard_from_row: false,
+        emission: BocpdEmission::Diag,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: None,
+        prior_scale: None,
+        robust_beta: 0.0,
+        prune_below: 1e-6,
+        max_run: 200,
+        min_weight: 0.0,
+        warm_rows: None,
+        hazard_on_clock: false,
+    })
+    .unwrap()
+}
+
+/// [`bocpd_at_a_level`]'s run-length posterior and the row's log density at
+/// each level are those at 0.5, 4.3e-8 at ±1e8 and 3.6e-4 at 1e12 measured,
+/// and the predictive mean of the stopped feature (slot 5), less the level,
+/// is 0.5's to the harness's hundred rounding steps of the level, at both
+/// signs of 1e12: 0.6 of a step at 1e3, where `Σ pᵣ mᵣ` was 123. The next
+/// test holds that slot closer.
 #[test]
 fn bocpd_reports_the_same_at_every_level() {
-    reports_the_same_at_every_level(
-        "bocpd",
-        || {
-            Bocpd::new(BocpdCfg {
-                n_features: 3,
-                hazard: 50.0,
-                hazard_from_row: false,
-                emission: BocpdEmission::Diag,
-                prior_mean: None,
-                prior_kappa: 1.0,
-                prior_nu: None,
-                prior_scale: None,
-                robust_beta: 0.0,
-                prune_below: 1e-6,
-                max_run: 200,
-                min_weight: 0.0,
-                warm_rows: None,
-                hazard_on_clock: false,
-            })
-            .unwrap()
-        },
-        (&[5], 2e3),
-        &LEVELS,
-    );
+    reports_the_same_at_every_level("bocpd", bocpd_at_a_level, (&[5], 0.0), &BOTH_SIGNS);
+}
+
+/// **`bocpd`'s predictive mean is mixed as deviations from the most
+/// probable run's mean**, `m* + Σ pᵣ (mᵣ − m*)` (docs/PLAN.md task 215, D3),
+/// so the rounding of the run posterior -- it sums to 1 only to 2.3e-13 at
+/// 1e12 -- multiplies the runs' spread and not the level. On every row of
+/// the stream at ±1e12, the mean of the feature held there, less the level,
+/// is the one at 0.5 less 0.5 to two rounding steps of the level
+/// (`|level|·ε`, 2.2e-4): 0.69 measured, at both signs. Read as `Σ pᵣ mᵣ`
+/// it was 1,023 steps off, 0.23, late in the hold (task 209's report).
+#[test]
+fn bocpd_mixes_its_predictive_mean_as_deviations() {
+    let run = |level: f64| -> Vec<f64> {
+        let mut m = bocpd_at_a_level();
+        stream(level)
+            .iter()
+            .enumerate()
+            .map(|(i, (x, _))| m.step(x, &[], d(i), 1.0).pred[5])
+            .collect()
+    };
+    let base = run(0.5);
+    for level in [1e12f64, -1e12] {
+        let step = level.abs() * f64::EPSILON;
+        let (mut worst, mut at, mut compared) = (0.0f64, 0, 0);
+        for (i, (a, b)) in run(level).iter().zip(&base).enumerate() {
+            assert_eq!(
+                a.is_nan(),
+                b.is_nan(),
+                "level {level}, row {i}: {a} against {b}"
+            );
+            if a.is_nan() {
+                continue;
+            }
+            compared += 1;
+            let off = ((a - level) - (b - 0.5)).abs() / step;
+            if off > worst {
+                (worst, at) = (off, i);
+            }
+        }
+        println!(
+            "bocpd at level {level}: {worst:.2} rounding steps at row {at}, over {compared} rows"
+        );
+        assert!(compared > 3000, "{compared} rows compared");
+        assert!(
+            worst <= 2.0,
+            "bocpd at level {level}: the predictive mean, less the level, is {worst:.1} rounding \
+             steps of the level from 0.5's at row {at}"
+        );
+    }
 }
 
 /// A test of a change in correlation reads the rows centred: its statistic

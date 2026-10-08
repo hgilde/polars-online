@@ -1125,13 +1125,21 @@ impl Bocpd {
         // being it as soon as `prune_below` drops a run from the middle or
         // `max_run` folds the tail.
         let run_mean: f64 = pre.iter().zip(&self.runs).map(|(p, run)| p * run.len).sum();
-        let mut pred = vec![0.0; d];
+        // The predictive mean `Σ pᵣ mᵣ`, mixed as deviations from the most
+        // probable run's mean, `m* + Σ pᵣ (mᵣ − m*)`: the posterior sums to
+        // 1 only to its rounding, and that times each `mᵣ` was the level's
+        // share of it, 2.3e-13 of a feature at 1e12 (1,040 of its rounding
+        // steps); against `m*` it is a share of the runs' spread
+        // (docs/PLAN.md task 215, D3).
+        let anchor = self.run_mean_of(&self.runs[mode_at]);
+        let mut mixed = vec![0.0; d];
         for (i, run) in self.runs.iter().enumerate() {
             let m = self.run_mean_of(run);
-            for (o, v) in pred.iter_mut().zip(&m) {
-                *o += pre[i] * v;
+            for ((o, v), a) in mixed.iter_mut().zip(&m).zip(&anchor) {
+                *o += pre[i] * (v - a);
             }
         }
+        let pred: Vec<f64> = anchor.iter().zip(&mixed).map(|(a, o)| a + o).collect();
         // `ln Σ p̃ᵣ πᵣ`, the row's log predictive density.
         let mix: Vec<f64> = (0..r)
             .map(|i| {

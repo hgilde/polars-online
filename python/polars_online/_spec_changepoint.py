@@ -290,7 +290,9 @@ def bocpd(
     ``run_mean``
         The posterior mean run length.
     ``pred_<f>``
-        The pre-row predictive mean of each feature, mixed over runs.
+        The pre-row predictive mean of each feature, mixed over runs as
+        ``m* + sum_r p_r (m_r - m*)``, ``m*`` the most probable run's mean,
+        so a feature at a level keeps the precision of its spread.
     ``loglik``
         The row's log predictive density under that mixture.
     ``weight_sum``
