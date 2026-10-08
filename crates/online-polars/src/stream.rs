@@ -2401,6 +2401,25 @@ const REASON_SETTLED: u8 = 1;
 const REASON_MIN_PERIODS: u8 = 2;
 const REASON_INFLATION: u8 = 3;
 
+/// The settled fraction at which a readiness notice judges a stream
+/// (docs/WARMUP-AND-CONVERGENCE.md §3): the one rule all three notices
+/// share. Before it, the stream's own early rows still move what a notice
+/// would say -- a weight short of its ceiling, a ratio still falling, a
+/// data share read through the first rows' noisy feature variances -- and a
+/// notice cannot be retracted. A stream without decay never settles (its
+/// fraction is NaN), so it is never judged; the fields and the summary carry
+/// what it reads (docs/PLAN.md task 116, G).
+const NOTICE_SETTLED: f64 = 0.95;
+
+/// Whether a stream at `settled` is far enough along for a notice to judge
+/// it ([`NOTICE_SETTLED`]). The fraction a notice passes is the learned
+/// rows' -- the rows held under an embargo left out, as the weight it
+/// judges has them (review round 5, C1); the gate and the row field keep
+/// the held-inclusive one.
+fn settled_enough(settled: f64) -> bool {
+    settled >= NOTICE_SETTLED
+}
+
 /// Where a stream stands on the readiness statistics
 /// (docs/WARMUP-AND-CONVERGENCE.md §3), as `Bank::summary` reports it: NaN
 /// where a statistic does not exist for the model.
@@ -5001,7 +5020,7 @@ fn run_instance(
         // gate's is, with the way out (docs/PLAN.md task 198, D8).
         if let Some((tj, weight)) = short
             && !inst.notified.unreachable
-            && learned >= 0.95
+            && settled_enough(learned)
         {
             let ceiling = settled_weight(weight, w, learned);
             let floor = min_weight.get(tj).copied().unwrap_or(f64::NAN);
@@ -5051,15 +5070,15 @@ fn run_instance(
         let unmet = (reason == REASON_INFLATION
             && !per_row_gate
             && !inst.notified.unreachable
-            && learned >= 0.95)
-            .then(|| Unmet {
-                worst: sc.infl.iter().cloned().fold(0.0, f64::max),
-                max: max_infl,
-                settled: learned,
-                weight: step.n_eff,
-                row_weight: w,
-            })
-            .filter(|u| u.for_good(inst.spec));
+            && settled_enough(learned))
+        .then(|| Unmet {
+            worst: sc.infl.iter().cloned().fold(0.0, f64::max),
+            max: max_infl,
+            settled: learned,
+            weight: step.n_eff,
+            row_weight: w,
+        })
+        .filter(|u| u.for_good(inst.spec));
         if let Some(unmet) = unmet {
             let worst = unmet.worst;
             inst.notified.unreachable = true;
@@ -5369,16 +5388,27 @@ fn run_instance(
             // (§2.2), and a coefficient more ridge than data is named once
             // per instance, here, where the shares are read anyway -- but
             // only on a row whose prediction the gates let through
-            // (`reason == 0`). The first solve of any spec is
-            // under-determined by construction, one row against `k` slopes,
-            // and the warning cannot be retracted; judging a fit the model
-            // is itself withholding as noise made the message false by the
-            // row after it. Found verifying the shipped 0.9.0 wheel: an
-            // ordinary two-feature fit warned at `n_eff = 1.00` and read
-            // `support_coef = 1.00` from the next row to the end of the
-            // stream.
+            // (`reason == 0`) of a stream settled enough to judge
+            // ([`settled_enough`]), the rule the other two notices keep. The
+            // first solve of any spec is under-determined by construction,
+            // one row against `k` slopes, and the warning cannot be
+            // retracted; judging a fit the model is itself withholding as
+            // noise made the message false by the row after it. Found
+            // verifying the shipped 0.9.0 wheel: an ordinary two-feature fit
+            // warned at `n_eff = 1.00` and read `support_coef = 1.00` from
+            // the next row to the end of the stream. And the gates open long
+            // before the shares settle: two correlated features under a
+            // mean-form ridge, standardized, read below 0.5 at the first row
+            // the gates let through in 8 seeds of 12, from the first rows'
+            // noisy feature variances, and settled at 0.51-0.53 (task 116,
+            // G).
             let support = inst.model.get().support_coef();
-            if let (Some(s), false, 0) = (&support, inst.notified.support, reason) {
+            if let (Some(s), false, 0, true) = (
+                &support,
+                inst.notified.support,
+                reason,
+                settled_enough(learned),
+            ) {
                 let k_total = inst.spec.k() + usize::from(inst.spec.fit_intercept);
                 let worst = s
                     .iter()

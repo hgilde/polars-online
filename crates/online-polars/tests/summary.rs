@@ -1167,3 +1167,56 @@ fn weight_sum_settled_is_the_ceiling_and_an_unreachable_min_weight_is_named() {
     );
     assert!(notices(0.99 * ceiling).is_empty());
 }
+
+/// Task 116 (G): a coefficient more ridge than data is named only on a row
+/// the gates let through of a stream at least 95% settled, the rule the
+/// other two notices keep. A duplicated pair under a ridge of 0.5 reads
+/// `a / (2a + 0.5)`, below 0.5, from its first solve (at a ridge of 1e-8 it
+/// reads 0.5 to rounding, on either side of it); at a half-life of 4 rows on a row clock the decay time before row
+/// `i` is `i − 1`, so the stream is 95% settled from row 19, where
+/// `1 − 2^(−18/4) = 0.956`, and row 18 reads 0.943. With no decay the
+/// stream never settles and the warning never comes, while the field and the
+/// summary say what it reads.
+#[test]
+fn the_support_notice_waits_for_a_settled_stream() {
+    let n = 60usize;
+    let x0: Vec<f64> = (0..n).map(|i| ((i * 7) % 11) as f64 - 5.0).collect();
+    let x1: Vec<f64> = (0..n).map(|i| ((i * 5) % 9) as f64 - 4.0).collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| x0[i] - x1[i] + ((i * 3) % 7) as f64 * 0.1)
+        .collect();
+    let df = df!("x0" => &x0, "x1" => &x1, "x2" => &x0, "y" => &y).unwrap();
+    let spec = |half_life: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ewridge", "ridge": 0.5}},
+                "targets": ["y"], "features": ["x0", "x1", "x2"],
+                "half_life": {half_life}, "coef_every": 1}}"#
+        ))
+        .unwrap()
+    };
+    let mut bank = Bank::new(vec![spec("4.0")]).unwrap();
+    bank.fit_predict(&df.slice(0, 19)).unwrap();
+    assert!(bank.take_notices().is_empty(), "not yet 95% settled");
+    bank.fit_predict(&df.slice(19, 1)).unwrap();
+    let got = bank.take_notices();
+    assert!(
+        got.len() == 1 && got[0].contains("support_coef < 0.5"),
+        "{got:?}"
+    );
+    bank.fit_predict(&df.slice(20, 40)).unwrap();
+    assert!(bank.take_notices().is_empty(), "once per instance");
+
+    let mut flat = Bank::new(vec![spec(r#""inf""#)]).unwrap();
+    flat.fit_predict(&df).unwrap();
+    assert!(flat.take_notices().is_empty(), "no decay, never settled");
+    let min = flat
+        .summary(0, None)
+        .unwrap()
+        .column("min_support_coef")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert!(min < 0.5, "{min}");
+}

@@ -396,7 +396,9 @@ class TestRobustSupport:
 
     def test_the_summary_and_the_warning_name_the_feature(self):
         df = frame(300).with_columns(pl.col("x0").alias("x2"))
-        s = robust("huber", features=["x0", "x1", "x2"], ridge=1e-8, half_life=20.0, coef_every=1)
+        # A ridge of 0.5 puts the duplicated pair at a / (2a + 0.5), clearly
+        # below 0.5; at 1e-8 it reads 0.5 to rounding, on either side.
+        s = robust("huber", features=["x0", "x1", "x2"], ridge=0.5, half_life=20.0, coef_every=1)
         bank = po.ModelBank([s])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -470,3 +472,85 @@ class TestSeCoef:
         se = unnest(po.ModelBank([s]).fit_predict(frame(1600)))["se_coef"]
         ratio = np.array(se[1599].to_list()) / np.array(se[399].to_list())
         np.testing.assert_allclose(ratio, 0.5, rtol=0.15)
+
+
+# ---------------------------------------------------------------------------
+# G. The support warning waits for a settled stream
+
+
+def _correlated(seed: int, n: int = 3000) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+    a = rng.normal(size=n) * 5 + 3
+    b = 0.3 * a + rng.normal(size=n) * 2
+    y = 1 + 2 * a - b + rng.normal(size=n) * 0.5
+    return pl.DataFrame({"a": a, "b": b, "y": y})
+
+
+class TestTheSupportWarningWaitsForASettledStream:
+    def test_the_standardiser_s_first_rows_do_not_raise_it(self):
+        """Two correlated features under a mean-form ridge of 0.7,
+        standardized: ``support_coef`` settles at 0.51-0.53 and never reads
+        below 0.5 after row 1000, but at row 4, the first row the gates let
+        through, the first rows' noisy feature variances read it below 0.5,
+        and the once-only warning fired, wrongly, in 8 of 12 seeds (task 116,
+        G). Raised only on a row at least 95% settled, it is not raised."""
+        sp = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["a", "b"],
+            half_life=200.0,
+            standardize=True,
+            ridge=0.7,
+            coef_every=0,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            out = unnest(po.ModelBank([sp]).fit_predict(_correlated(2)))
+        tail = [min(v[1:]) for v in out["support_coef"][1000:].to_list() if v is not None]
+        assert tail and min(tail) > 0.5
+
+    def test_a_true_positive_still_warns_once_settled(self):
+        """A duplicated column reads below 0.5 for good: the warning comes on
+        the first coef row at least 95% settled -- the decay time before row
+        ``i`` is ``i − 1``, so at a half-life of 20 that is row 88, where
+        ``1 − 2^(−87/20) >= 0.95`` -- and not before."""
+        df = frame(300).with_columns(pl.col("x0").alias("x2"))
+        s = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            ridge=0.5,
+            half_life=20.0,
+            coef_every=1,
+        )
+        bank = po.ModelBank([s])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            bank.fit_predict(df[:88])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            bank.fit_predict(df[88:89])
+        got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        assert len(got) == 1 and "support_coef" in got[0], got
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            bank.fit_predict(df[89:])
+
+    def test_a_stream_that_never_settles_never_warns_and_the_field_says_so(self):
+        """Without decay there is no steady state to settle toward, so the
+        warning never comes: the field and the summary carry it."""
+        df = frame(300).with_columns(pl.col("x0").alias("x2"))
+        s = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            ridge=0.5,
+            half_life=math.inf,
+            coef_every=0,
+        )
+        bank = po.ModelBank([s])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            out = unnest(bank.fit_predict(df))
+        assert min(out["support_coef"][-1].to_list()[1:]) < 0.5
+        assert bank.summary("m")["min_support_coef"][0] < 0.5

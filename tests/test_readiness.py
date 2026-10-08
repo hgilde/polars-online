@@ -382,8 +382,12 @@ class TestSummaryAndWarnings:
         assert s["n_coef"][0] == 3
 
     def test_a_coefficient_more_ridge_than_data_is_named_once(self):
+        """Once the stream is 95% settled -- row 88 at a half-life of 20 --
+        and once only (task 116, G: a stream with no decay is never judged,
+        `tests/test_readiness_models.py`). A ridge of 0.5 puts the duplicated
+        pair clearly below 0.5, where 1e-8 reads it 0.5 to rounding."""
         df = frame(200, k=2).with_columns(pl.col("x0").alias("x2"))
-        s = spec(features=["x0", "x1", "x2"], ridge=1e-8, half_life=math.inf)
+        s = spec(features=["x0", "x1", "x2"], ridge=0.5, half_life=20.0, coef_every=1)
         bank = po.ModelBank([s])
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")

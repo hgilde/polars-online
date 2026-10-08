@@ -261,10 +261,15 @@ class ReadinessWarning(UserWarning):
     <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_):
 
     - **A coefficient the ridge determined more than the data did**
-      (``support_coef < 0.5``), named. The design does not determine it: a
-      duplicated or constant column, or a ridge as large as the feature's
-      variance. Predictions are unaffected in sample; the split among such
-      columns is arbitrary and moves the moment the collinearity breaks.
+      (``support_coef < 0.5``), named, on a row the gates let through once
+      the stream is 95% settled -- before that, the first rows' noisy
+      feature variances can read a share below 0.5 that the settled fit does
+      not, and a stream with no decay never settles, so ``support_coef`` and
+      :meth:`ModelBank.summary`'s ``min_support_coef`` carry it there. The
+      design does not determine it: a duplicated or constant column, or a
+      ridge as large as the feature's variance. Predictions are unaffected in
+      sample; the split among such columns is arbitrary and moves the moment
+      the collinearity breaks.
     - **The noise gate cannot be met**: the stream has all but settled and
       ``error_inflation`` is still above ``max_error_inflation``, so every
       prediction is withheld for good. Not for ``kalman``, whose gate reads
