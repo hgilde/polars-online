@@ -887,23 +887,6 @@ why = """at `|raw| = most` both arms give the same double: `most.copysign(raw)` 
 is `raw`"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
-function = "<impl OnlineModel for Robust>::step"
-mutation = "replace && with ||"
-line_has = "if weight.is_finite() && weight > 0.0 {"
-why = """a weight is finite and `>= 0` (`OnlineModel::step`'s contract; the \
-plumbing passes nothing else), so the mutant adds only what the original \
-adds and a weight of 0, which leaves the sum where it was"""
-
-[[equivalent]]
-file = "crates/online-core/src/robust.rs"
-function = "<impl OnlineModel for Robust>::step"
-mutation = "replace > with >="
-line_has = "if weight.is_finite() && weight > 0.0 {"
-why = """a weight of 0 passes `>= 0` and adds 0, which leaves the sum where it \
-was"""
-
-[[equivalent]]
 file = "crates/online-core/src/corrchange.rs"
 function = "<impl crate::OnlineModel for CorrChange>::step"
 mutation = "replace * with +"
@@ -1317,22 +1300,6 @@ mutation = "replace Readiness::has_pending -> bool with true"
 line_has = "self.pending.iter().any(Option::is_some)"
 why = """it only chooses between serializing or comparing the readiness as it is \
 and a settled copy of it; with nothing pending, settling changes nothing"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
-function = "<impl OnlineModel for EwRidge>::step"
-mutation = "replace > with >="
-line_has = "if weight.is_finite() && weight > 0.0 {"
-why = """on the second operand: it adds a weight of 0 to `weight_since_solve`, \
-which leaves it as it was (`weight >= 0` is the trait's contract)"""
-
-[[equivalent]]
-file = "crates/online-core/src/lasso.rs"
-function = "<impl OnlineModel for Lasso>::step"
-mutation = "replace > with >="
-line_has = "if weight.is_finite() && weight > 0.0 {"
-why = """as `EwRidge::step`'s: a weight of 0 added to `weight_since_solve` leaves \
-it as it was"""
 
 [[equivalent]]
 file = "crates/online-core/src/ewcov.rs"

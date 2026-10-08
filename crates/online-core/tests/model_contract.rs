@@ -2425,6 +2425,15 @@ fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
 /// densities NaN for 39 of the next 40 rows, which do not count towards its
 /// `n_eff` either (from about 1025 half-lives; PLAN task 115 (c), measured
 /// 2026-09-28 and raised, not fixed). `hmm` keeps the first check alone.
+/// Nor is it for a `lasso` that solves on the clock ([`lasso_on_a_clock`]):
+/// it solves on the first row after the gap, from that row alone, and one
+/// half-life short the history's remains, `2^-1074` of its weight, give
+/// each feature a spread of its own, which the standardized descent divides
+/// by and so reads the old fit back -- 4.66 apart on this stream. A row of
+/// weight 1 carrying the same gap parts the two by as much, with no
+/// zero-weight row anywhere; the zero-weight row's own solve hid it until a
+/// zero-weight row stopped solving (docs/PLAN.md task 214, raised, not
+/// fixed).
 fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     build: &impl Fn() -> M,
     targets: usize,
@@ -2474,8 +2483,9 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     if kind == "hmm" {
         return;
     }
+    let exempt = NOT_COMPARED.contains(&kind) || lasso_on_a_clock(&build());
     for (i, (a, b)) in forgot.iter().zip(&aged).enumerate() {
-        let preds = NOT_COMPARED.contains(&kind)
+        let preds = exempt
             || a.pred.len() == b.pred.len()
                 && a.pred.iter().zip(&b.pred).all(|(p, q)| close(*p, *q));
         assert!(
@@ -2490,36 +2500,30 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     }
 }
 
-/// The models whose fitted function a zero-weight row inside a gap moves,
-/// found when [`zero_weight_rows_only_advance_the_clock`] began comparing
-/// the numbers (docs/PLAN.md task 211) and raised there, not fixed: each is a
-/// design of its own, not a slip. Measured on that test's stream.
-const PARTS_ON_A_SPLIT_GAP: [(&str, &str); 2] = [
-    (
-        "ftrl",
-        "the penalties' scale `W/W*` reads `W*` on a clock that runs only on the rows \
-         that teach the target, each such row aging it by its own delta: a zero-weight row \
-         takes its delta off that clock, and the fit at a fixed row moved by 1.9% \
-         (-0.027757 against -0.027249) on the row after the first one",
-    ),
-    (
-        "hmm",
-        "a row reads its posterior before its own decay, from states whose absolute \
-         precision prior weighs more as their weight ages, and learns from that posterior: \
-         a zero-weight row ages the states before the next row reads them, and the fit at a \
-         fixed row moved by 1.2e-5 (0.997912 against 0.997900) on the row after the first \
-         one",
-    ),
-];
+/// The model whose fitted function a zero-weight row inside a gap moves,
+/// found when [`zero_weight_rows_only_advance_the_clock`] began comparing the
+/// numbers (docs/PLAN.md task 211) and raised there; `hmm` and `ewridge`'s
+/// clock-scheduled solve were fixed in task 214, and this one was left for
+/// the user there. Measured on that test's stream.
+const PARTS_ON_A_SPLIT_GAP: [(&str, &str); 1] = [(
+    "ftrl",
+    "the penalties' scale `W/W*` reads `W*` on a clock that runs only on the rows that \
+     teach the target, each such row aging it by its own delta: a zero-weight row takes \
+     its delta off that clock, and the fit at a fixed row moved by 1.9% (-0.027757 \
+     against -0.027249) on the row after the first one. Task 214 found no `W*` that \
+     keeps both this test and `test_semantics_all_models`' rule that a null target is a \
+     zero weight: with both, a row that teaches nothing is invisible, and the scale's \
+     whole point (task 115 (d)) is that it is not -- aged on every row, `W*` is `W` and \
+     the scale is 1; aged on zero-weight rows alone, a null target is no longer a zero \
+     weight",
+)];
 
-/// A fit solved on a clock schedule (`ewridge`'s `solve_every`), which a
-/// zero-weight row at the clock a solve is due triggers before the next row's
-/// data where the stream without it solves after them: the reported fit
-/// differs until the next solve, by 1.8e-4 on the rows between, though both
-/// hold the same statistics (docs/PLAN.md task 211, raised).
-fn solves_on_a_clock<M: OnlineModel>(m: &M) -> bool {
+/// A `lasso` whose solves are scheduled on the clock, which
+/// [`a_zero_weight_row_past_the_underflow_forgets`] does not compare
+/// predictions for.
+fn lasso_on_a_clock<M: OnlineModel>(m: &M) -> bool {
     match m.state().model {
-        ModelState::EwRidge(e) => e.cfg().solve_every > 0.0,
+        ModelState::Lasso(l) => l.cfg().solve_every > 0.0,
         _ => false,
     }
 }
@@ -2619,10 +2623,10 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
         // the stream with the zero-weight row has aged its moments by that
         // row's delta before predicting, and a fit solved after that, with
         // a penalty that does not age with them, is a fit solved after the
-        // decay; the other ages them inside the row. The models whose fit a
-        // zero-weight row inside a gap moves, each a decision of its own,
-        // are named in `PARTS_ON_A_SPLIT_GAP`.
-        if PARTS_ON_A_SPLIT_GAP.iter().any(|(k, _)| *k == kind) || solves_on_a_clock(&with) {
+        // decay; the other ages them inside the row. A model whose fit a
+        // zero-weight row inside a gap moves, a decision of its own, is
+        // named in `PARTS_ON_A_SPLIT_GAP`.
+        if PARTS_ON_A_SPLIT_GAP.iter().any(|(k, _)| *k == kind) {
             continue;
         }
         let probes: [Vec<f64>; 2] = [vec![0.7; K], (0..K).map(|f| f as f64 - 0.4).collect()];
@@ -2916,6 +2920,12 @@ fn lasso_predict_is_the_step() {
     cfg.lasso_path = vec![1.0, 0.1, 0.01, 0.0];
     cfg.select_half_life = Some(HALFLIFE);
     predict_is_the_step_without_the_step(move || Lasso::new(cfg.clone()).unwrap(), 1, false);
+    // A solve on the clock, which a zero-weight row must not fire (hard rule
+    // 9; docs/PLAN.md task 214: the fit moved 4.2e-2).
+    let mut cfg = lasso_cfg();
+    cfg.solve_every = 5.0;
+    cfg.max_rows_between_solves = 10_000;
+    predict_is_the_step_without_the_step(move || Lasso::new(cfg.clone()).unwrap(), 1, false);
 }
 
 #[test]
@@ -2951,6 +2961,13 @@ fn robust_predict_is_the_step() {
                 false,
             );
         }
+        // A solve on the clock, which a zero-weight row must not fire (hard
+        // rule 9; docs/PLAN.md task 214: the fit moved 8.4e-8 under huber,
+        // 1.0e-7 under quantile).
+        let mut cfg = robust_cfg(loss);
+        cfg.solve_every = 5.0;
+        cfg.max_rows_between_solves = 10_000;
+        predict_is_the_step_without_the_step(move || Robust::new(cfg.clone()).unwrap(), 2, false);
     }
 }
 

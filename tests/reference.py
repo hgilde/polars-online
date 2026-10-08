@@ -410,9 +410,11 @@ def lasso_ref(
     - after the row is learned, a solve runs when the clock since the last one
       has reached ``solve_every`` (the capped step counts, so a gap of at
       least ``solve_every`` forces one). One also runs when
-      ``max_rows_between_solves`` rows have gone by since it (a zero-weight
-      row is a row), or when there has been none yet and the weight has
-      reached ``min_weight``;
+      ``max_rows_between_solves`` rows have gone by since it, or when there
+      has been none yet and the weight has reached ``min_weight``. A
+      zero-weight row is clock alone (hard rule 9): it never solves and is no
+      row of the cap, so a solve due on it waits for the next row with weight
+      (docs/PLAN.md task 214);
     - left out, ``solve_every`` gives way to the weight rule under a finite
       half-life: a solve once the weight learned since the last reaches
       ``ln 2 / 50`` of the weight the fit holds (docs/PLAN.md task 115 (b));
@@ -501,14 +503,19 @@ def lasso_ref(
         w_sum = w_new
 
         # ---- solve, on the schedule ----
+        # A zero-weight row is clock alone (hard rule 9): it never solves and
+        # is no row of the cap, and a solve due on it waits for the next row
+        # with weight (docs/PLAN.md task 214).
         since_clock += d
-        since_rows += 1
+        teaches = w[i] > 0.0
+        since_rows += int(teaches)
         since_w += max(w[i], 0.0)
         if share is not None:
             by_cadence = since_w >= share * w_sum
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
-        if by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_weight):
+        due = by_cadence or since_rows >= max_rows or (fit is None and w_sum >= min_weight)
+        if teaches and due:
             if w_sum <= 0.0 and not fitted:
                 fit = np.full((npath, kt), np.nan)
             else:

@@ -945,7 +945,10 @@ def ewridge(
         longer than the stream still solves, at rows further apart as the
         weight grows. ``half_life = inf`` and ``lam`` solve every row.
         ``max_rows_between_solves`` is off by default. The coefficients are
-        the sums' as of the last solve.
+        the sums' as of the last solve. A row of weight 0 is clock alone: it
+        never solves and is no row of the cap, so a solve that comes due on
+        one waits for the next row with weight, and the solves fall where
+        they would without it.
     ``gram_block_rows``
         Hold that many rows back and bring the ``k x k`` matrix up to date
         once per block, by one matrix product instead of one rank-one update
@@ -4633,15 +4636,19 @@ def hmm(
 
     .. code-block:: text
 
+        A_kl <- decay * A_kl                           the row's decay, before the read
+        Pi_kl = (A_kl + tau_kl) / sum_l (A_kl + tau_kl)   the matrix the row reads
         xi_kl = p_k(t-1) Pi_kl f_l / sum over all pairs
-        A_kl <- decay * A_kl + w * xi_kl
-        Pi_kl = (A_kl + tau_kl) / sum_l (A_kl + tau_kl)
+        A_kl <- A_kl + w * xi_kl
 
     with ``tau`` a Dirichlet pseudo-count per cell, which is what keeps a
     never-visited row of ``Pi`` a distribution. A transition is one row:
     ``Pi`` applies once per row whatever the clock between rows, so a
     weekend is one step. The counts decay on the clock but grow by ``w`` per
-    row, so the staying probability rises with the rows' density.
+    row, so the staying probability rises with the rows' density. A row
+    reads ``Pi`` from the counts its own clock has decayed, so after a gap
+    that takes them to nothing it reads the prior's mean, and a zero-weight
+    row is clock alone, as in every model.
 
     Two limitations worth knowing. A single extreme row can be captured by
     one state, moving its mean far from the data. In mean form a state with

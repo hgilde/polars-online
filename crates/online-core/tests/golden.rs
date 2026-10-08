@@ -1461,7 +1461,17 @@ const GOLDEN_CORRCHANGE: &[f64] = &[0.8103851544234802, 0.764942538158755, 0.662
 // the *update* as well as from the report, so the first rows of this stream
 // (`min_weight = 3`) never reached the filter. It now gates the report
 // alone, as it does in every other model (docs/REVIEW-E54-E64.md H1).
-const GOLDEN_HMM: &[f64] = &[-1.1511065244639265, -2.6218190023816343, -0.875789289803333];
+// Re-pinned 2026-10-08 (docs/PLAN.md task 214): a row reads the transition
+// matrix from counts its clock has aged, `(λA + τ)/Σ`, where it read `(A +
+// τ)/Σ`, so a zero-weight row is clock alone (hard rule 9). A replica written
+// from the module docs gives these to 2.5e-16, and the old ones, under the old
+// reading, to 1.2e-16 (-1.1511065244639265, -2.6218190023816343,
+// -0.875789289803333).
+const GOLDEN_HMM: &[f64] = &[
+    -1.1509510476558056,
+    -2.6217067703865613,
+    -0.8756632595908331,
+];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
 // Re-pinned 2026-10-05 (docs/PLAN.md task 158): the stream runs `preavg_rows
 // = 6` at the default `theta`, and the bias term now reads θ from that window,

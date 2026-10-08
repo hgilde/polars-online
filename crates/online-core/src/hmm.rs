@@ -20,7 +20,16 @@
 //! ```
 //!
 //! `p`, `p̃`, `argmax p̃` and `loglik` are all read from the state *before*
-//! the row is learned from, so they are safe as features for that same row.
+//! the row is learned from, so they are safe as features for that same row,
+//! and *after* its clock: the transition counts `A` below decay over the
+//! row's clock before `Π` is read from them. So a zero-weight row ages them
+//! as the gap it sits in would, and the next row reads what it would were
+//! that row not there (hard rule 9). The row read `Π` before its own decay,
+//! and a zero-weight row's decay before the next one; against the
+//! pseudo-count `τ`, which does not decay, that moved the fit (docs/PLAN.md
+//! task 214). After a gap that takes the counts to nothing, `Π` is the
+//! prior's mean. The states need no such step: a row that adds no weight
+//! moves no mean, co-moment or prior scale, which are all a density reads.
 //! The densities go through the same `quad_forms_logdet` and softmax path
 //! `ew_class` uses, with the same decaying `precision_prior` ridge -- which
 //! is **required** here as it is there: a state's centred co-moments start
@@ -36,9 +45,10 @@
 //! consecutive states**:
 //!
 //! ```text
+//! Aₖₗ ← λ·Aₖₗ                                       the row's decay, before the read
+//! Πₖₗ = (Aₖₗ + τ) / Σₗ(Aₖₗ + τ)                     the matrix the row reads
 //! ξₖₗ = pₖ(t−1)·Πₖₗ·fₗ / Σ_{k'l'} p_{k'}(t−1)·Π_{k'l'}·f_{l'}
-//! Aₖₗ ← decay·Aₖₗ + w·ξₖₗ
-//! Πₖₗ = (Aₖₗ + τ) / Σₗ(Aₖₗ + τ)
+//! Aₖₗ ← Aₖₗ + w·ξₖₗ
 //! ```
 //!
 //! with `τ` a Dirichlet pseudo-count per cell, which is what keeps a
@@ -382,13 +392,24 @@ impl Hmm {
 
     /// The transition matrix in force, `K*K` row-major: the counts plus the
     /// Dirichlet prior, normalised. Under `tvtp` this is the count-based
-    /// one, which that mode does not use.
+    /// one, which that mode does not use. The counts as the last row left
+    /// them: the next row reads them aged by its clock first
+    /// ([`Self::transition_aged`]).
     pub fn transition(&self) -> Vec<f64> {
+        self.transition_aged(1.0)
+    }
+
+    /// The transition matrix with the counts aged by `lam` -- the one a row
+    /// whose clock decays by `lam` reads (docs/PLAN.md task 214): the step
+    /// ages the counts and reads them at `1`, and `predict` reads them at the
+    /// row's `lam` without ageing them, by the same product, so the two agree
+    /// to the bit. `1` reads the counts as they stand.
+    fn transition_aged(&self, lam: f64) -> Vec<f64> {
         let k = self.cfg.k;
         let mut out = vec![0.0; k * k];
         for r in 0..k {
             let row: Vec<f64> = (0..k)
-                .map(|c| self.a[r * k + c] + self.prior(r, c))
+                .map(|c| lam * self.a[r * k + c] + self.prior(r, c))
                 .collect();
             let z: f64 = row.iter().sum();
             for (c, v) in row.iter().enumerate() {
@@ -417,11 +438,12 @@ impl Hmm {
             .and_then(|_| y.first().copied().flatten())
     }
 
-    /// `Π(t)` from the exogenous value, when `tvtp` is configured.
-    fn transition_at(&self, exog: Option<f64>) -> Vec<f64> {
+    /// `Π(t)` from the exogenous value, when `tvtp` is configured; else the
+    /// counts' matrix with the counts aged by `lam` ([`Self::transition_aged`]).
+    fn transition_at(&self, exog: Option<f64>, lam: f64) -> Vec<f64> {
         let k = self.cfg.k;
         let Some((a, b)) = &self.cfg.tvtp else {
-            return self.transition();
+            return self.transition_aged(lam);
         };
         let z = exog.filter(|v| v.is_finite()).unwrap_or(0.0);
         let mut out = vec![0.0; k * k];
@@ -547,14 +569,16 @@ impl Hmm {
     }
 
     /// The row's outputs, and the pieces the update needs: the filtered
-    /// posterior after this row and the per-state log densities.
-    fn read(&self, x: &[f64], exog: Option<f64>) -> (Vec<f64>, Option<Update>) {
+    /// posterior after this row and the per-state log densities. `lam` ages
+    /// the transition counts as they are read: `1` from the step, which has
+    /// aged them already, and the row's decay from `predict`, which may not.
+    fn read(&self, x: &[f64], exog: Option<f64>, lam: f64) -> (Vec<f64>, Option<Update>) {
         let k = self.cfg.k;
         let nan = vec![f64::NAN; Self::n_outputs_for(k)];
         if !self.seeded {
             return (nan, None);
         }
-        let pi = self.transition_at(exog);
+        let pi = self.transition_at(exog, lam);
         // `p̃ₗ = Σₖ pₖ Πₖₗ`.
         let mut pred = vec![0.0; k];
         for (kk, &pk) in self.p.iter().enumerate() {
@@ -637,6 +661,17 @@ impl Hmm {
         self.factors.clear();
     }
 
+    /// The factor a row of clock `d_clock` ages the transition counts by
+    /// before reading them: its decay where the counts are learned, and `1`
+    /// where they are not, which never ages them.
+    fn counts_lam(&self, d_clock: f64) -> f64 {
+        if self.cfg.learn {
+            self.cfg.decay.factor(d_clock)
+        } else {
+            1.0
+        }
+    }
+
     /// Age every state over a row it does not learn: a zero-weight update,
     /// which moves no mean and no co-moment and ages the weights by `lam`.
     /// Every feature here is usable: the update forms `0 · d` in each
@@ -660,13 +695,26 @@ impl crate::OnlineModel for Hmm {
             return refused;
         }
         self.ensure_factors();
-        let (pred, extra) = self.read(x, self.exog_of(y));
+        let lam = self.cfg.decay.factor(d_clock);
+        // The chain as the row's clock leaves it: the counts decay over the
+        // clock since the last row before `Π` is read, on every row, so a
+        // zero-weight row ages them as the gap it sits in would and the next
+        // row reads what it would were that row not there (hard rule 9).
+        // The row read them before its own decay, and a zero-weight row's
+        // decay before the next one: against the Dirichlet pseudo-count,
+        // which does not decay, that moved the fit 1.2e-5 in the contract
+        // test (docs/PLAN.md task 214). The states need no such step: their
+        // means, co-moments and prior scale, all a density reads, do not
+        // move on a row that adds no weight.
+        if self.cfg.learn {
+            self.a.iter_mut().for_each(|v| *v *= lam);
+        }
+        let (pred, extra) = self.read(x, self.exog_of(y), 1.0);
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
             extra: None,
         };
-        let lam = self.cfg.decay.factor(d_clock);
         // The warm-up rows age as `n_eff` does, so the states the replay seeds
         // weigh what `n_eff` does; replayed at their raw weights, a state
         // began heavier than its rows' age warranted and its ridge weaker
@@ -676,14 +724,13 @@ impl crate::OnlineModel for Hmm {
             *w *= lam;
         }
         if weight <= 0.0 {
-            // Advance the clock and learn nothing: the counts age with the
-            // accumulators, `n_eff` decays with them -- hard rule 8, the
-            // same recursion in every model, which is what makes
-            // `min_weight` mean the same number of rows across a bank
-            // (docs/REVIEW-E54-E64.md H3) -- and `p` does not move.
+            // Advance the clock and learn nothing: the counts have aged
+            // above, the accumulators age with them, `n_eff` decays with
+            // them -- hard rule 8, the same recursion in every model, which
+            // is what makes `min_weight` mean the same number of rows across
+            // a bank (docs/REVIEW-E54-E64.md H3) -- and `p` does not move.
             self.n_eff *= lam;
             if self.cfg.learn {
-                self.a.iter_mut().for_each(|v| *v *= lam);
                 self.age_states(x, lam);
                 self.factors.clear();
             }
@@ -713,7 +760,6 @@ impl crate::OnlineModel for Hmm {
             self.solve_failures += 1;
             self.n_eff = lam * before;
             if self.cfg.learn {
-                self.a.iter_mut().for_each(|v| *v *= lam);
                 self.age_states(x, lam);
                 self.factors.clear();
             }
@@ -722,8 +768,8 @@ impl crate::OnlineModel for Hmm {
         if self.cfg.learn {
             let k = self.cfg.k;
             // The filtered joint of consecutive states, from the *pre-row*
-            // `p` and `Π`; the counts decay on the clock like every
-            // accumulator here.
+            // `p` and the `Π` the row read; the counts have decayed on the
+            // clock above, like every accumulator here.
             if self.cfg.tvtp.is_none() {
                 let pi = self.transition();
                 // About the largest density, not `logf[0]`: a state whose
@@ -742,7 +788,7 @@ impl crate::OnlineModel for Hmm {
                     }
                 }
                 for (a, j) in self.a.iter_mut().zip(&joint) {
-                    *a = lam * *a + if z > 0.0 { weight * j / z } else { 0.0 };
+                    *a += if z > 0.0 { weight * j / z } else { 0.0 };
                 }
             }
             for (s, cov) in self.states.iter_mut().enumerate() {
@@ -760,7 +806,7 @@ impl crate::OnlineModel for Hmm {
         }
         let exog = self.cfg.tvtp.as_ref().map(|_| 0.0);
         crate::Step {
-            pred: self.read(x, exog).0,
+            pred: self.read(x, exog, self.counts_lam(d_clock)).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -775,7 +821,7 @@ impl crate::OnlineModel for Hmm {
             return refused;
         }
         crate::Step {
-            pred: self.read(x, self.exog_of(y)).0,
+            pred: self.read(x, self.exog_of(y), self.counts_lam(d_clock)).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -1235,6 +1281,138 @@ mod tests {
         assert_eq!(m.a, a);
     }
 
+    /// Hard rule 9: a zero-weight row is clock alone, so a stream with one
+    /// inside a gap and the same stream without it, its clock carried into
+    /// the next row, report the same numbers after every row (docs/PLAN.md
+    /// task 214). The row read the transition matrix from counts its own
+    /// decay had not reached, `(A + τ)/Σ`, so a zero-weight row that aged the
+    /// counts first left the next row reading `(λA + τ)/Σ`: the contract
+    /// test's fit moved 1.2e-5. Without the Dirichlet pseudo-count (`τ = 0`)
+    /// the two agreed to rounding, the states' precision prior included,
+    /// which ages on the clock alone. Every shape, with and without a given
+    /// `Π₀`, seeding through the warm-up and from given states.
+    #[test]
+    fn a_zero_weight_row_is_clock_alone() {
+        for covariance in [Covariance::Full, Covariance::Diagonal, Covariance::Shared] {
+            for given in [false, true] {
+                let c = HmmCfg {
+                    decay: Decay::Halflife(15.0),
+                    covariance,
+                    transition: given.then(|| vec![0.85, 0.15, 0.3, 0.7]),
+                    means: given.then(|| vec![-2.0, -2.0, 2.0, 2.0]),
+                    covs: given.then(|| vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]),
+                    ..cfg(2, 2)
+                };
+                let case = format!("{covariance:?}, given {given}");
+                let (mut with, mut without) = (Hmm::new(c.clone()).unwrap(), Hmm::new(c).unwrap());
+                let mut carried = 0.0;
+                let mut compared = 0;
+                for (i, (x, _)) in stream(240, 23, 9).into_iter().enumerate() {
+                    let d = match i {
+                        0 => 0.0,
+                        _ if i % 11 == 4 => 4.0,
+                        _ => 1.0,
+                    };
+                    if i > 2 && matches!(i % 13, 5 | 6) {
+                        with.step(&x, &[], d, 0.0);
+                        carried += d;
+                        continue;
+                    }
+                    let a = with.step(&x, &[], d, 1.0);
+                    let b = without.step(&x, &[], d + carried, 1.0);
+                    carried = 0.0;
+                    let close = |u: &[f64], v: &[f64]| {
+                        u.len() == v.len()
+                            && u.iter().zip(v).all(|(p, q)| {
+                                (p.is_nan() && q.is_nan())
+                                    || (p - q).abs() <= 1e-12 * (1.0 + q.abs())
+                            })
+                    };
+                    assert!(
+                        close(&a.pred, &b.pred),
+                        "{case}, row {i}: {:?} against {:?}",
+                        a.pred,
+                        b.pred
+                    );
+                    assert!(
+                        close(&with.transition(), &without.transition()),
+                        "{case}, row {i}: the transition {:?} against {:?}",
+                        with.transition(),
+                        without.transition()
+                    );
+                    assert!(
+                        close(with.filtered(), without.filtered()),
+                        "{case}, row {i}"
+                    );
+                    compared += usize::from(a.pred.iter().all(|v| v.is_finite()));
+                }
+                assert!(compared > 150, "{case}: {compared} rows reported");
+            }
+        }
+    }
+
+    /// The row reads the chain as its clock leaves it: the transition counts
+    /// decay over the row's clock before `Π` is read, so `p̃ = p·Π` with
+    /// `Π = (λA + τ)/Σ`, and after a gap that takes the counts to nothing the
+    /// predicted state is `p·Π₀`, the prior's mean (docs/PLAN.md task 214).
+    /// The counts the row then adds are those decayed counts plus its joint.
+    #[test]
+    fn a_row_reads_the_chain_after_its_decay() {
+        let pi0 = [0.85, 0.15, 0.3, 0.7];
+        let c = HmmCfg {
+            decay: Decay::Halflife(15.0),
+            transition: Some(pi0.to_vec()),
+            ..cfg(2, 2)
+        };
+        let tau = c.transition_prior;
+        let mut m = Hmm::new(c.clone()).unwrap();
+        let rows = stream(200, 29, 12);
+        for (i, (x, _)) in rows.iter().enumerate() {
+            m.step(x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.a.iter().all(|v| *v > 1.0), "{:?}", m.a);
+        for gap in [3.0, 1e5] {
+            let mut m = m.clone();
+            let lam = c.decay.factor(gap);
+            let p = m.filtered().to_vec();
+            let pi: Vec<f64> = (0..2)
+                .flat_map(|r| {
+                    let row: Vec<f64> = (0..2)
+                        .map(|col| lam * m.a[r * 2 + col] + tau * 2.0 * pi0[r * 2 + col])
+                        .collect();
+                    let z: f64 = row.iter().sum();
+                    row.into_iter().map(move |v| v / z)
+                })
+                .collect();
+            if gap > 1e4 {
+                assert_eq!(lam, 0.0);
+                assert!(
+                    pi.iter().zip(&pi0).all(|(u, v)| (u - v).abs() < 1e-15),
+                    "{pi:?}"
+                );
+            }
+            let want: Vec<f64> = (0..2)
+                .map(|l| (0..2).map(|k| p[k] * pi[k * 2 + l]).sum())
+                .collect();
+            let x = &rows[5].0;
+            let served = m.predict(x, gap).pred;
+            let step = m.step(x, &[], gap, 1.0);
+            for l in 0..2 {
+                assert!(
+                    (step.pred[2 + l] - want[l]).abs() <= 1e-14,
+                    "gap {gap}: predicted_{l} {} against {}",
+                    step.pred[2 + l],
+                    want[l]
+                );
+                assert_eq!(
+                    served[2 + l].to_bits(),
+                    step.pred[2 + l].to_bits(),
+                    "gap {gap}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn nothing_is_reported_before_the_states_are_seeded() {
         let mut m = Hmm::new(HmmCfg {
@@ -1268,9 +1446,9 @@ mod tests {
         })
         .unwrap();
         // z = 0: both rows uniform. z = 1: row 0 leans hard to state 1.
-        let flat = m.transition_at(Some(0.0));
+        let flat = m.transition_at(Some(0.0), 1.0);
         assert!((flat[0] - 0.5).abs() < 1e-12 && (flat[1] - 0.5).abs() < 1e-12);
-        let leaning = m.transition_at(Some(1.0));
+        let leaning = m.transition_at(Some(1.0), 1.0);
         assert!(leaning[1] > 0.99, "{leaning:?}");
         assert!((leaning[2] - 0.5).abs() < 1e-12, "row 1 does not move");
     }
@@ -1689,7 +1867,7 @@ mod tests {
             ..cfg(2, 2)
         }))
         .unwrap();
-        let pi = m.transition_at(Some(0.0));
+        let pi = m.transition_at(Some(0.0), 1.0);
         let e = (-1.0f64).exp();
         assert!((pi[0] - 1.0 / (1.0 + e)).abs() < 1e-15, "{pi:?}");
         assert!((pi[1] - e / (1.0 + e)).abs() < 1e-15, "{pi:?}");

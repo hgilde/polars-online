@@ -124,8 +124,11 @@ pub struct EwRidgeCfg {
     /// Solve cadence in clock units; <= 0 solves every row. Measured from
     /// the last solve on the rows' stamps, the decayed clock held exactly,
     /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
+    /// A row of weight 0 never solves: a solve due on one waits for the next
+    /// row with weight (hard rule 9, docs/PLAN.md task 214).
     pub solve_every: f64,
-    /// Row cap between solves; 1 solves every row.
+    /// Row cap between solves, counted on the rows with weight; 1 solves
+    /// every such row.
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
@@ -2023,10 +2026,23 @@ impl OnlineModel for EwRidge {
         // ---- solve schedule ----
         // The clock since the last solve, on the row's stamp (task 180).
         self.since_solve.step(d_clock);
-        self.rows_since_solve += 1;
-        if weight.is_finite() && weight > 0.0 {
-            self.weight_since_solve += weight;
+        // A zero-weight row is clock alone (hard rule 9): it is no row of
+        // the row cap, and it never solves. A solve the clock or the weight's
+        // share brings due on it is due on the next row with weight too --
+        // the clock since the last solve only grows, and that row's weight
+        // and `n_eff` are the stream's without the zero-weight row -- so it
+        // waits for that row, and the solves fall on the rows they fall on
+        // without it. A clock-due solve fired on the zero-weight row, before
+        // the next row's data, where the stream without it solved after
+        // them, and the fit read until the next solve moved (docs/PLAN.md
+        // task 214).
+        if weight <= 0.0 {
+            return out;
         }
+        // A weight here is usable, finite and `>= 0` (`OnlineModel::step`;
+        // `refused_step` steps a row whose weight is not as a row of 0).
+        self.rows_since_solve += 1;
+        self.weight_since_solve += weight;
         let by_cadence = match self.cfg.solve_share {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
             None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),

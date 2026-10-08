@@ -85,7 +85,10 @@ pub struct LassoCfg {
     /// Solve cadence in clock units; <= 0 solves every row. Measured from
     /// the last solve on the rows' stamps, the decayed clock held exactly,
     /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
+    /// A row of weight 0 never solves: a solve due on one waits for the next
+    /// row with weight (hard rule 9, docs/PLAN.md task 214).
     pub solve_every: f64,
+    /// Row cap between solves, counted on the rows with weight.
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
@@ -1001,10 +1004,20 @@ impl OnlineModel for Lasso {
 
         // The clock since the last solve, on the row's stamp (task 180).
         self.since_solve.step(d_clock);
-        self.rows_since_solve += 1;
-        if weight.is_finite() && weight > 0.0 {
-            self.weight_since_solve += weight;
+        // A zero-weight row is clock alone (hard rule 9): no row of the row
+        // cap, and never a solve. One the clock or the weight's share brings
+        // due on it is due on the next row with weight too, so it waits for
+        // that row, and the solves fall where they fall without it
+        // (`ewridge`'s rule, docs/PLAN.md task 214: a clock-due solve fired
+        // on the zero-weight row, before the next row's data, and the fit
+        // read until the next solve moved 4.2e-2).
+        if weight <= 0.0 {
+            return out;
         }
+        // A weight here is usable, finite and `>= 0` (`OnlineModel::step`;
+        // `refused_step` steps a row whose weight is not as a row of 0).
+        self.rows_since_solve += 1;
+        self.weight_since_solve += weight;
         let by_cadence = match self.cfg.solve_share {
             Some(share) => self.weight_since_solve >= share * self.n_eff(),
             None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
@@ -2333,8 +2346,10 @@ mod tests {
             m.step(x, &y[..1], if i == 0 { 0.0 } else { 1.0 }, *w);
         }
         // A zero-weight row after a gap longer than the window: nothing is in
-        // the window, and the fit says so.
+        // the window, and the fit says so at the next solve. The row is clock
+        // alone and does not solve (task 214), so the solve is called here.
         m.step(&rows[30].0, &[None], 50.0, 0.0);
+        m.solve();
         let emptied = m.coefficients().unwrap()[0][0].clone();
         assert!(
             emptied.iter().any(|v| v.is_nan()),
@@ -2625,9 +2640,9 @@ mod tests {
     /// Under `solve_share` a solve is due once the weight learned since the
     /// last one reaches that share of `n_eff` (the row's own included), and
     /// at the first row that meets `min_weight`; only a positive, finite
-    /// weight counts toward it. Held to that rule kept beside the model,
-    /// at weights that move and with a decay (`max_rows_between_solves` out
-    /// of reach).
+    /// weight counts toward it, and a row of weight 0 never solves (task
+    /// 214). Held to that rule kept beside the model, at weights that move
+    /// and with a decay (`max_rows_between_solves` out of reach).
     #[test]
     fn solve_share_solves_when_the_weight_since_reaches_its_share() {
         use crate::OnlineModel;
@@ -2650,8 +2665,8 @@ mod tests {
             m.step(&x, &[Some(x[0] - x[1])], d, w);
             w_sum = 0.5f64.powf(d / 20.0) * w_sum + w;
             since += w;
-            let due = since >= 0.3 * w_sum || first;
-            assert_eq!(m.rows_since_solve == 0, due, "row {i}");
+            let due = w > 0.0 && (since >= 0.3 * w_sum || first);
+            assert_eq!(w > 0.0 && m.rows_since_solve == 0, due, "row {i}");
             if due {
                 (since, first, solves) = (0.0, false, solves + 1);
             }

@@ -468,7 +468,14 @@ def switched_signature() -> dict[str, float | str | None]:
 #: the wins went to ``b``. ``tests/reference.py``'s ``kalman_ref``, rewritten
 #: from the new docstring with the state re-mapped on every row, gives
 #: ``kalman``'s and ``kalman_revert``'s every row, 104 each, to 8.4e-15 and
-#: 1.4e-15, with the same nulls; nothing else moved.
+#: 1.4e-15, with the same nulls; nothing else moved. Task 214 (2026-10-08)
+#: moved the 15 of ``hmm``: a row reads the transition matrix from counts its
+#: own clock has decayed, ``(lam A + tau) / sum``, so that a zero-weight row is
+#: clock alone (hard rule 9). A replica written from the docstrings -- each
+#: group's clock capped at ``gap_cap`` with a null feature's clock carried,
+#: Hamilton's filter, the states in mean form under the decaying prior --
+#: gives the 15 to 4.8e-16, and under the old reading the old 15 to 2.2e-16;
+#: nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -848,24 +855,24 @@ GOLDEN: dict[str, float | str | None] = {
     "corrchange.stat#1": 0.9841580801406815,
     "corrchange.stat#2": 0.8994078028569636,
     "corrchange.stat#3": 0.7926014051597302,
-    "hmm.filtered_0@25": 0.0019837560822976905,
-    "hmm.filtered_0@60": 0.706545048537925,
-    "hmm.filtered_0@119": 3.684331614556573e-07,
-    "hmm.filtered_1@25": 0.9980162439177024,
-    "hmm.filtered_1@60": 0.29345495146207495,
-    "hmm.filtered_1@119": 0.9999996315668386,
-    "hmm.predicted_0@25": 0.29240113431229137,
-    "hmm.predicted_0@60": 0.5116753621005756,
-    "hmm.predicted_0@119": 0.2119510684647354,
-    "hmm.predicted_1@25": 0.7075988656877088,
-    "hmm.predicted_1@60": 0.48832463789942426,
-    "hmm.predicted_1@119": 0.7880489315352648,
+    "hmm.filtered_0@25": 0.0019483393849081434,
+    "hmm.filtered_0@60": 0.7254094252352653,
+    "hmm.filtered_0@119": 5.212548614325314e-07,
+    "hmm.filtered_1@25": 0.998051660615092,
+    "hmm.filtered_1@60": 0.27459057476473464,
+    "hmm.filtered_1@119": 0.9999994787451386,
+    "hmm.predicted_0@25": 0.2903686385954784,
+    "hmm.predicted_0@60": 0.5296723733406385,
+    "hmm.predicted_0@119": 0.21239138327086757,
+    "hmm.predicted_1@25": 0.7096313614045219,
+    "hmm.predicted_1@60": 0.47032762665936134,
+    "hmm.predicted_1@119": 0.7876086167291326,
     "hmm.state@25": 1,
     "hmm.state@60": 0,
     "hmm.state@119": 1,
-    "hmm.loglik@25": -4.532665819206047,
-    "hmm.loglik@60": -5.8850767257311,
-    "hmm.loglik@119": -3.0867786940606114,
+    "hmm.loglik@25": -4.530186553195626,
+    "hmm.loglik@60": -5.874552868677731,
+    "hmm.loglik@119": -3.0788260908693825,
     "hmm.weight_sum@25": 7.999488060097996,
     "hmm.weight_sum@60": 12.473100285951407,
     "hmm.weight_sum@119": 15.110060335371337,

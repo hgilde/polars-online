@@ -1999,14 +1999,16 @@ fn a_blocked_fit_is_the_per_row_fit_to_rounding() {
 }
 
 /// A solve reads the matrix, so it merges the block first: after every
-/// solve nothing is pending, whichever of the two schedules fired it.
+/// solve nothing is pending, whichever of the two schedules fired it. A
+/// zero-weight row never solves, nor counts toward the row cap (task 214),
+/// so the count after it is the solve's 0 with the row held.
 #[test]
 fn a_solve_merges_the_block_first() {
     let mut m = EwRidge::new(blocked_cfg(3, 64)).unwrap();
     let mut solves = 0;
     for (x, y, d, w) in ridge_rows(400, 3, 4) {
         m.step(&x, &[y], d, w);
-        if m.rows_since_solve == 0 {
+        if w > 0.0 && m.rows_since_solve == 0 {
             solves += 1;
             assert!(!m.gram(0).has_pending(), "a solve left rows pending");
         }
@@ -4348,6 +4350,9 @@ fn a_late_target_with_a_prior_reports_the_prior() {
 /// `support_coef` of the row after a gap was the row before's, bit for bit
 /// (review round 4, CA1; the combo skipped for no weight is CA6's). A gap
 /// of 101 past a window of 10, on a row of weight 0, leaves nothing in it.
+/// That row does not solve -- a zero-weight row is clock alone, and the
+/// fit stays the last solve's, as it would were the row not there (task
+/// 214) -- so the solve on the empty window is called here.
 #[test]
 fn an_empty_window_reports_no_shares() {
     let mut c = cfg(1, 1);
@@ -4368,8 +4373,15 @@ fn an_empty_window_reports_no_shares() {
         "the case needs a share: {before:?}"
     );
     let x = [lcg(&mut s)];
+    let fit = m.coefficients().unwrap().to_vec();
     m.step(&x, &[Some(2.0 * x[0])], 101.0, 0.0);
     assert_eq!(m.n_eff(), 0.0, "the window is empty");
+    assert_eq!(
+        m.coefficients().unwrap(),
+        &fit[..],
+        "the zero-weight row solved"
+    );
+    m.solve();
     let beta = m.coefficients().unwrap();
     assert!(beta[0].iter().all(|v| v.is_nan()), "{beta:?}");
     let shares = m.support_coef().unwrap();
@@ -4456,9 +4468,9 @@ fn the_solve_share_is_the_one_set() {
 /// Under `solve_share` a solve is due once the weight learned since the
 /// last one reaches that share of `n_eff` (the row's own included), and
 /// at the first row that meets `min_weight`; only a positive, finite
-/// weight counts toward it. Held to that rule kept beside the model,
-/// at weights that move and with a decay (`max_rows_between_solves` out
-/// of reach).
+/// weight counts toward it, and a row of weight 0 never solves (task 214).
+/// Held to that rule kept beside the model, at weights that move and with
+/// a decay (`max_rows_between_solves` out of reach).
 #[test]
 fn solve_share_solves_when_the_weight_since_reaches_its_share() {
     let mut c = cfg(2, 1);
@@ -4480,8 +4492,8 @@ fn solve_share_solves_when_the_weight_since_reaches_its_share() {
         m.step(&x, &[Some(x[0] - x[1])], d, w);
         w_sum = 0.5f64.powf(d / 20.0) * w_sum + w;
         since += w;
-        let due = since >= 0.3 * w_sum || first;
-        assert_eq!(m.rows_since_solve == 0, due, "row {i}");
+        let due = w > 0.0 && (since >= 0.3 * w_sum || first);
+        assert_eq!(w > 0.0 && m.rows_since_solve == 0, due, "row {i}");
         if due {
             (since, first, solves) = (0.0, false, solves + 1);
         }
@@ -4615,6 +4627,88 @@ fn the_window_shadow_follows_the_ring() {
         over += usize::from(m.window_over_budget().is_some());
     }
     assert!(over > 0, "the ring went past its budget");
+}
+
+/// Hard rule 9 on a solve schedule (docs/PLAN.md task 214): a zero-weight
+/// row is clock alone, so it never solves and is no row of the row cap. A
+/// solve the clock brings due on one waits for the next row with weight,
+/// which the clock has brought it due on too, and the solves fall on the
+/// rows they fall on without it: the fit read after every row, and every
+/// prediction, are the stream's without the zero-weight rows, their clock
+/// carried into the next row. A clock-due solve fired on the zero-weight
+/// row, before the next row's data, where the stream without it solved
+/// after them: the contract test's fit moved until the next solve. Under a
+/// row cap the zero-weight rows brought each solve a row early. By the
+/// clock, by the row cap, and by the weight's share, the default.
+#[test]
+fn a_zero_weight_row_never_solves() {
+    let base = {
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(12.0);
+        c.min_weight = 3.0;
+        c
+    };
+    let by_clock = EwRidgeCfg {
+        solve_every: 3.0,
+        max_rows_between_solves: 10_000,
+        ..base.clone()
+    };
+    let by_rows = EwRidgeCfg {
+        solve_every: 1e9,
+        max_rows_between_solves: 4,
+        ..base.clone()
+    };
+    let by_share = EwRidgeCfg {
+        solve_every: 1e9,
+        max_rows_between_solves: 10_000,
+        solve_share: Some(0.2),
+        ..base
+    };
+    for (what, c) in [("clock", by_clock), ("rows", by_rows), ("share", by_share)] {
+        let (mut with, mut without) = (EwRidge::new(c.clone()).unwrap(), EwRidge::new(c).unwrap());
+        let mut s = 214u64;
+        let mut carried = 0.0;
+        let mut compared = 0;
+        for i in 0..160usize {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = [
+                Some(0.3 + x[0] - 0.5 * x[1] + 0.05 * lcg(&mut s)),
+                Some(2.0 * x[1]),
+            ];
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            if i > 4 && matches!(i % 9, 2 | 3) {
+                with.step(&x, &y, d, 0.0);
+                carried += d;
+                continue;
+            }
+            let a = with.step(&x, &y, d, 1.0);
+            let b = without.step(&x, &y, d + carried, 1.0);
+            carried = 0.0;
+            let close = |u: &[f64], v: &[f64]| {
+                u.iter().zip(v).all(|(p, q)| {
+                    (p.is_nan() && q.is_nan()) || (p - q).abs() <= 1e-12 * (1.0 + q.abs())
+                })
+            };
+            assert!(
+                close(&a.pred, &b.pred),
+                "{what}, row {i}: {a:?} against {b:?}"
+            );
+            let (u, v) = (with.coefficients(), without.coefficients());
+            assert_eq!(u.is_some(), v.is_some(), "{what}, row {i}");
+            for (p, q) in u.unwrap_or(&[]).iter().zip(v.unwrap_or(&[])) {
+                assert!(
+                    close(p, q),
+                    "{what}, row {i}: coefficients {p:?} against {q:?}"
+                );
+            }
+            assert_eq!(
+                with.rows_since_solve, without.rows_since_solve,
+                "{what}, row {i}"
+            );
+            compared += usize::from(a.pred.iter().all(|p| p.is_finite()));
+        }
+        assert!(compared > 100, "{what}: {compared}");
+    }
 }
 
 /// Task 180: `solve_every` reads the stamps its caller hands. On 1 ms rows

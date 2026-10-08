@@ -18,7 +18,10 @@ the stream's own clock:
 - the window holds the rows from the boundary on, each at its exponential
   weight, so a windowed mean is their weighted mean and a windowed ridge is
   scikit-learn's ``Ridge`` on them (``alpha = ridge * the weight``, as
-  ``TestEwRidgeIsSklearnsRidge`` maps it).
+  ``TestEwRidgeIsSklearnsRidge`` maps it);
+- a ridge solves after every row with weight, and a row of weight 0 never
+  solves (hard rule 9; docs/PLAN.md task 214), so a row after one reads the
+  fit the last row with weight left, on its window.
 """
 
 from __future__ import annotations
@@ -227,9 +230,17 @@ class TestTheWindowIsTheDefinitions:
             b = boundary(clock, snaps, t)
             a = inside(clock, w, t, b)
             assert got_w[t] == pytest.approx(a.sum(), rel=1e-9, abs=1e-12), t
-            if t % 5 or (a > 0).sum() < 10:
+            # The fit row `t` reads is the last solve's, and a row of weight 0
+            # never solves (hard rule 9; docs/PLAN.md task 214): it is the one
+            # the last row with weight before `t` left, on its window.
+            s = t
+            while s > 1 and w[s - 1] <= 0.0:
+                s -= 1
+            b_s = boundary(clock, snaps, s)
+            a_s = inside(clock, w, s, b_s)
+            if t % 5 or (a_s > 0).sum() < 10:
                 continue
-            fit = Ridge(alpha=RIDGE * a.sum()).fit(x[b:t], y[b:t], sample_weight=a)
+            fit = Ridge(alpha=RIDGE * a_s.sum()).fit(x[b_s:s], y[b_s:s], sample_weight=a_s)
             want = fit.predict(x[t : t + 1])[0]
             assert got_p[t] == pytest.approx(want, rel=1e-8, abs=1e-8), (t, got_p[t], want)
             checked += 1

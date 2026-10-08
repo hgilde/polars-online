@@ -14,7 +14,9 @@
 //! Every oracle here is the definition, computed in the test from the raw
 //! integer nanoseconds or the raw numbers, never from `ClockState`: after a
 //! model's first event, each next one is at the first row whose clock is at
-//! least the cadence past the last event's. A regression's first solve and
+//! least the cadence past the last event's -- for a regression's solve, the
+//! first such row with weight, a row of weight 0 being clock alone (hard
+//! rule 9, docs/PLAN.md task 214). A regression's first solve and
 //! `ew_cov`'s first refresh are forced by `min_weight`, so they are read
 //! from the output; `micro` has none, and its clock runs from the first row.
 //!
@@ -388,6 +390,58 @@ fn a_number_clock_of_tenths_fires_by_one_subtraction_of_its_raw_values() {
                 let gaps: std::collections::BTreeSet<usize> =
                     want.windows(2).map(|w| w[1] - w[0]).collect();
                 assert_eq!(gaps, [3, 4].into(), "{name}: the case needs both");
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Hard rule 9 on a solve schedule (docs/PLAN.md task 214): a row of weight
+/// 0 is clock alone, so a regression never solves on one, and each next
+/// solve is at the first row *with weight* whose clock is at least the
+/// cadence past the last solve's -- the row the stream without the
+/// zero-weight rows solves at. On 1 ms rows under `"2s"`, with every
+/// seventh row of weight 0 and so each row the cadence reaches -- 2,000,
+/// 4,001 and 6,002 (a seventh row) -- the solves fall a row after those,
+/// and the same in chunks of 1, 7 and 600 as in one (hard rule 3). A solve
+/// fired on such a row, before the next row's data, and the fit it reported
+/// until the next solve differed from the stream without the row.
+#[test]
+fn a_solve_due_on_a_row_of_weight_zero_waits_for_the_next_row_with_weight() {
+    let n = 6_100;
+    let (t, ns) = millisecond_rows(n, TimeUnit::Microseconds);
+    let w: Vec<f64> = (0..n)
+        .map(|i| {
+            if i % 7 == 3 || i == 2_000 || i == 4_001 {
+                0.0
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let mut df = frame(t, 21);
+    df.with_column(Column::new("w".into(), w.clone())).unwrap();
+    let mut failures = Vec::new();
+    for name in ["ewridge", "lasso", "huber", "quantile"] {
+        let (spec, event) = spec(name, r#""2s""#, true);
+        let mut spec = serde_json::to_value(&spec).unwrap();
+        spec["weight"] = serde_json::json!("w");
+        let spec: Spec = serde_json::from_value(spec).unwrap();
+        let whole = run(&spec, &df, 0);
+        let got = events(&whole, event);
+        let want = oracle(n, event, first_event(&got, event), |i, last| {
+            w[i] > 0.0 && i128::from(ns[i]) - i128::from(ns[last]) >= 2_000_000_000
+        });
+        if got != want {
+            failures.push(format!("{name}: fired {got:?}, the clock says {want:?}"));
+        }
+        // The case is the claim: the cadence reaches rows 2,000, 4,001 and
+        // 6,002, each of weight 0, and the solves wait a row for each.
+        assert_eq!(want, [0, 2_001, 4_002, 6_003], "{name}");
+        for size in [1, 7, 600] {
+            let parts = run(&spec, &df, size);
+            if !parts.equals_missing(&whole) {
+                failures.push(format!("{name}: chunks of {size}"));
             }
         }
     }

@@ -148,7 +148,10 @@ pub struct RobustCfg {
     /// Solve cadence in clock units; <= 0 solves every row. Measured from
     /// the last solve on the rows' stamps, the decayed clock held exactly,
     /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
+    /// A row of weight 0 never solves: a solve due on one waits for the next
+    /// row with weight (hard rule 9, docs/PLAN.md task 214).
     pub solve_every: f64,
+    /// Row cap between solves, counted on the rows with weight.
     pub max_rows_between_solves: u32,
     /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
     /// learned since the last solve reaches this share of the weight the fit
@@ -1240,24 +1243,39 @@ impl OnlineModel for Robust {
         self.w_raw = lam * self.w_raw + weight;
         // The clock since the last solve, on the row's stamp (task 180).
         self.since_solve.step(d_clock);
-        self.rows_since_solve += 1;
-        if weight.is_finite() && weight > 0.0 {
+        // A zero-weight row is clock alone (hard rule 9): no row of the row
+        // cap, and never a solve. One the clock or the weight's share brings
+        // due on it is due on the next row with weight too, so it waits for
+        // that row, and the solves fall where they fall without it
+        // (`ewridge`'s rule, docs/PLAN.md task 214: a clock-due solve fired
+        // on the zero-weight row, and the fit read until the next solve
+        // moved 8.4e-8 under `huber`, 1.0e-7 under `quantile`). Such a row
+        // takes no band step either: it moves no target's Gram.
+        // A weight here is usable, finite and `>= 0` (`OnlineModel::step`;
+        // `refused_step` steps a row whose weight is not as a row of 0).
+        let teaches = weight > 0.0;
+        if teaches {
+            self.rows_since_solve += 1;
             self.weight_since_solve += weight;
         }
-        let by_cadence = match self.cfg.solve_share {
-            Some(share) => self.weight_since_solve >= share * self.w_raw,
-            None => self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every),
-        };
+        let by_cadence = teaches
+            && match self.cfg.solve_share {
+                Some(share) => self.weight_since_solve >= share * self.w_raw,
+                None => {
+                    self.cfg.solve_every <= 0.0 || self.since_solve.reached(self.cfg.solve_every)
+                }
+            };
         // A fresh model's first solve fires on the row its weight reaches
         // `min_weight`; so does a target's own, on the row its own weight
         // first reaches its own, where no solve has fit it -- a target that
         // joins after the first solve. It waited for the cadence's next
         // solve, null until then: under `solve_every = 1000` all 56 of its
         // rows of 80 (review round 4, CC1; docs/PLAN.md task 195, S9b).
-        let due = by_cadence
-            || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight)
-            || (0..m).any(|j| self.own_first_solve(j, y[j].is_some(), lam, weight));
+        let due = teaches
+            && (by_cadence
+                || self.rows_since_solve >= self.cfg.max_rows_between_solves
+                || (self.beta.is_none() && self.w_raw >= self.cfg.min_weight)
+                || (0..m).any(|j| self.own_first_solve(j, y[j].is_some(), lam, weight)));
 
         // ---- update: Huber reweights the row, the quantile linearises it ----
         for j in 0..m {

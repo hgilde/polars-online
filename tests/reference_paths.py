@@ -301,8 +301,12 @@ def lasso_paths_ref(
         t_last = t_now
 
         # ---- solve, on the schedule ----
+        # A zero-weight row is clock alone (hard rule 9): it never solves and
+        # is no row of the cap, and a solve due on it waits for the next row
+        # with weight (docs/PLAN.md task 214).
         since_clock += d
-        since_rows += 1
+        teaches = float(w[i]) > 0.0
+        since_rows += int(teaches)
         since_w += max(float(w[i]), 0.0)
         if share is not None:
             ages = t_now - np.asarray(T)
@@ -310,8 +314,8 @@ def lasso_paths_ref(
             by_cadence = since_w >= share * held
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
-        cadence = by_cadence or since_rows >= max_rows
-        if not cadence and fit is None:
+        cadence = teaches and (by_cadence or since_rows >= max_rows)
+        if teaches and not cadence and fit is None:
             ages = t_now - np.asarray(T)
             weight = (np.asarray(Wr) * decay(ages, half_life))[within(ages)].sum()
             if weight >= float(np.min(mp)):
@@ -605,16 +609,20 @@ def ewridge_paths_ref(
         Yr.append(Y[i].copy())
 
         # ---- solve, on the schedule ----
+        # A zero-weight row is clock alone (hard rule 9): it never solves and
+        # is no row of the cap, and a solve due on it waits for the next row
+        # with weight (docs/PLAN.md task 214).
         since_clock += d
-        since_rows += 1
+        teaches = float(w[i]) > 0.0
+        since_rows += int(teaches)
         since_w += max(float(w[i]), 0.0)
         inside = within(t_last - np.asarray(T))
         if share is not None:
             by_cadence = since_w >= share * float(np.asarray(fast)[inside].sum())
         else:
             by_cadence = solve_every <= 0.0 or since_clock >= solve_every
-        due = by_cadence or since_rows >= max_rows
-        if not due and fit is None:
+        due = teaches and (by_cadence or since_rows >= max_rows)
+        if teaches and not due and fit is None:
             due = float(np.asarray(fast)[inside].sum()) >= floor
         if due:
             fit = solve()
