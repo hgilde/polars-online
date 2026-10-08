@@ -8356,6 +8356,16 @@ tick, and that the series holding it up has a count near 1.
       +0.003 to −0.006). No layout change; no golden moved. Default stays
       `False`: its rows still differ from a `P` per target where the
       targets' noises move apart.
+- [x] 205. **Review round 5: the changes since round 4** -- the user,
+      2026-10-08 ("Review recent changes both the code and the theory";
+      "Fix obvious problems that do not need me"). Seven read-only reviewers
+      over `8e28c1f..9b23ae6` (tasks 183-204), each with a code lens and a
+      theory lens; 42 findings, three high, every one with a probe (§19).
+      *Done 2026-10-08* for the findings with a plain fix, in three worker
+      branches merged as `integ6` (31 findings: C1 C2 C3 C6 C7 A4 B2 E1 E2
+      C5 E7 D7 E3 E4 F4b; B1 D3 D2 D1 D5 D6; F1 F2 E5 A3 G4 A2 A5 A6 B4 E6
+      F5 F6 F8 G2, G1's sentence) plus CLAUDE.md rule 5. The decisions (G1
+      G3 G5 A1 B3 C4 D4 F3 F7 F9) are the user's, in §19.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -12508,3 +12518,57 @@ items after the round:
   measurement nothing asks for.
 - **Task 116**: the user wants its changes, defaults included, made before
   1.0; its scope is decided from a summary of it (2026-10-07).
+
+## 19. Review round 5 (2026-10-08): tasks 183-204, code and theory
+
+Round 4 read the code at `8e28c1f`; its decisions produced 33 commits
+(tasks 183-204, `8e28c1f..9b23ae6`) that no one but their authors had read.
+Seven read-only reviewers read them at `9b23ae6`, each with a code lens and
+a theory lens (A models, B clocks and windows, C bank/stream/spec, D state,
+E Python and tests, F docs/CI/policy, G the theory of the decisions alone);
+briefs, findings and probes in the session scratchpad `review5/`
+(`CONSOLIDATED.md` is the table). Every finding is a probe output or a code
+path; the coordinator re-ran the three high ones through the bank before
+the fixes were briefed.
+
+What held: hard rules 2, 3, 8 and 9 over 17 specs and 159 fields,
+bit-identical at 1/7/600 chunks with unusable values on the chunk
+boundaries; every re-pinned golden reproduced from its docstring replica;
+every rename refused with a test; task 189's oracles fail on a 1e-7 nudge;
+the share_p filterpy oracle fails on the old rule; the release, CI, canary,
+mutants and MSRV workflows; the 1.0 policy's tables against each other.
+
+**Fixed in task 205** (each test failing on `9b23ae6` first):
+
+| id | sev | finding | fix |
+|---|---|---|---|
+| C1 | high | under an embargo the "cannot be met" notices paired the held-inclusive `settled` with a weight that had not seen the held rows: "tops out near −0.0462, withheld for good", then 374 of 400 rows predicted | both notices read the learned rows' settled fraction (trigger, ceiling, projection); the gate and the row field keep the held-inclusive one |
+| C2 | high | a damaged `emit_metrics` state loaded and the next row panicked (`ewcov.rs:838`) | `SlotMetrics::has_shape()` at load |
+| C3 | med | `--skip-learned` dropped a NaN-clock row in silence | `Some(Less \| Equal)`; the bank refuses the row |
+| B2 | med | `embargo` wrapped at an integer clock's top: the learn copy first in the stream | widen before the add, strict cast back: polars raises |
+| E1 | med | `po.eval(spec=)` gave a Poisson fit `hit_rate` 1.0 | null, as the bank |
+| E2, C5, E7 | med | the snapshot pinned refused `closed` words, pre-144 clock names, and unstable names unlabelled | a two-word `ModelClosed`, `taken_words` requires acceptance, `restart_after_step_back` rendered, `# unstable` labels |
+| B1, D3 | med | no fixture held an integer clock, `sgd`'s per-loss state, `ewridge`'s kept systems or `bocpd`'s warm rows | cases added, a decoding test holds each form non-empty; existing fixtures byte for byte |
+| D2 | med | the from-1.0 half of the harness was unbuilt | `previous![..]`, `v<N>/` includes, the convert-to-current check, coverage proven on a temp dir |
+| D1 | med | the promise's "re-save byte for byte" cannot hold for a loaded previous schema | stated as conversion to the current schema's bytes (README, RR, rule 5) |
+| F1, F2, G2, A2, A5, A6, B4, E6, F5, F6, F8, D5, D6, C6, C7, A4, D7, E3, E4, F4b | low-med | wording, counts, a NaN cfg through the Rust API, `pow(lam, 1)`, `to_json`'s label, the property's draw, the floor test's mark | as the CHANGELOG says |
+
+**Decisions, the user's (open 2026-10-08):**
+
+| id | finding | options | reco |
+|---|---|---|---|
+| G1 (high) | `standardize=True` (sgd, pa since U2; kalman always) holds coefficients in standardized coordinates and reads rows and coefficients off the moving EW moments: at half-life 10 and R² 0.978 `sgd` is 190× worse than unstandardized and its `coef` reads [0.83, 3.03] for [0, 2]; at half-life 50 and R² 0.99998 pa/sgd/kalman are 33/237/213× worse; `ewridge` re-solves and is immune; every U2/203 measurement was at no decay | (a) keep the fit in the caller's units and use the scaler for the step only, mapping β (and kalman's P) through the affine change when the moments move; (b) revert U2's default, document kalman | (a) before 1.0 |
+| G3 (med) | the eps regret argument compared values inside the σ_y rule only, and "the band must sit below a good fit's errors" is wrong for PA at c = 1: a band of 0.5 σ_y (3.3 noise stds) gives excess 0.07 at R² 0.978 against 1.16 at 0.01 -- the tail rows pull the fit to within band − 3σ_noise; the best band is about three noise stds, which no σ_y rule gives across R², and under no decay a residual σ keeps the start-up | a task: the band in noise units with a start-up cap, swept under decay, levels, c and mode, `eps·min(σ_resid, σ_y)` at 0.5 the candidate (worst case 0.61 vs 1.16); or keep the shipped rule with honest docs | the task, before 1.0 |
+| G5 (med) | `c` is in the target's units, so "the tube is pa's only damping" holds at spread 2 only | `c` as a multiple of σ_y as `eps` is; or document spread 2 | σ_y-relative |
+| A1 (med) | share_p's mean noise averages over all m targets, zeros included, so a target with no residual variance yet counts as noise 0; task 204's "number of targets" claim holds for targets on the same rows | (a) average over targets with σ² > 0 in `step` and `pred_var`, as `shared_first_noise` does; (b) keep, narrow the docstring | (a) |
+| B3 (med) | an `Int128` column is "integer" to the docs and a double to the code (`po.increment` loses steps near 2^63) | refuse as a clock by name; read it in `po.increment` | both |
+| C4 (med) | `summary().settled_frac` leaves the held rows' clock out; the row field adds it | (a) summary held-inclusive, `weight_sum_settled` on the learned fraction; (b) document | (a) |
+| D4 (med) | the policy promises forwarding for every renamed stable name; the mechanism forwards parameters and keys | (i) narrow the promise, a forwarding stub when a function or word is first renamed; (ii) build now | (i) |
+| F3 (med) | the "cannot be met" notice also fires falsely on a rising row rate (the README's kernel example: 381 of 400 predicted, weight 103 against a projected 7.7) | conditional wording, fire only after the weight stayed below the floor a further half-life past 95% settled, pin the example | as stated |
+| F7, F9 (low) | U7's `stats=[]` exception recorded only in a task note; PERFORMANCE §11 cells rewritten where the rule was a pointer | annotate U7; accept the cells | as stated |
+| D8 (note) | `test_released_state.py` asserts `refused == {}` per release: after 1.0.0 a new kind fails 1.0.0's leg | filter per release on release day | -- |
+
+The coordinator's own correction, recorded here: the eps review of
+2026-10-07 said "nothing else in the eps chain needs reopening"; G3's
+measurements and the 0.5-band probe (`review5/verify/bands_h.py`) show the
+theory the docs state is wrong for PA at `c = 1`, and the chain is open.

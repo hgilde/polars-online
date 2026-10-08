@@ -542,6 +542,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- The windowed models' `closed` is a two-word type: `left` and `none` are
+  refused with their reason as the spec is read, where `validate` refused
+  them a step later (review 5, E2). `resolved_defaults` renders the clock
+  policy as `restart_after_step_back`, the name a spec takes, where it
+  rendered the two names task 144 merged (C5).
 Numbers move in most of these, each saying by how much; under this
 project's versioning that is carried by the minor version before 1.0.
 
@@ -927,6 +932,34 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **Review round 5 (2026-10-08): the changes since round 4, read by seven
+  reviewers** (PLAN §19). The fixes with a plain shape:
+  - Under `embargo` the two "cannot be met" readiness notices read how far
+    the rows the model has learned from have settled, as `weight_sum_settled`
+    does. Paired with the row's held-inclusive `settled_frac`, the ceiling
+    read negative before anything was learned, and a floor the stream then
+    met was called unreachable (C1).
+  - A state file whose `emit_metrics` accumulators are a value short is
+    refused at load, naming them, where it loaded and the next scored row
+    panicked (C2). A `decay_time` of the wrong length is refused rather
+    than replaced with zeros, which restarted `settled_frac` and
+    `weight_sum_settled` from the load (C7).
+  - `--skip-learned` keeps a row whose clock is NaN for the bank to refuse
+    by row, as `ModelBank.skip_learned` does, instead of dropping it in
+    silence (C3).
+  - `po.stream.embargo` on an integer clock within `delay` of its dtype's
+    top raises `InvalidOperationError` when the plan runs, where Polars'
+    wrapping add put the learn copy before the stream, a silent look-ahead
+    (B2).
+  - `po.eval.metrics`, `window_metrics` and `sums` null a Poisson `sgd`
+    fit's `hit_rate` when `spec=` names the loss, as the bank does (E1).
+  - `sgd`, `holt` and `ew_cov` refuse a NaN or negative `min_weight`, and
+    `ewridge`, `lasso`, `huber` and `quantile` a NaN `solve_every`, through
+    the Rust API and a state file, as the spec layer does (C6).
+  - A `lam` decay factor at a step of one clock unit is `lam` by
+    construction, no longer the platform's `pow(lam, 1)` (A4).
+  - `ModelBank.to_json` raises `UnstableWarning` for a formula target's
+    written form under `POLARS_ONLINE_WARN_UNSTABLE=1`, as `save` does (D7).
 - **`kalman`'s `share_p` takes each row once, so neither the order nor the
   number of targets moves a prediction** (task 204). The shared `P` took
   each row once per target, as if the targets shared their coefficients.
@@ -1219,6 +1252,32 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- Review round 5 (PLAN §19): the frozen state fixtures hold every layout
+  the pre-1.0 bumps moved -- `sgd`'s per-loss state, `ewridge`'s kept
+  systems, `bocpd`'s warm-up rows, and the integer clock's forms in a bank
+  file, a `with_windows` state and a `refresh_time` state -- each held
+  non-empty by a test that decodes the file, and the cross-OS hand-off
+  carries the same specs (B1, D3). The fixture harnesses run the from-1.0
+  loop: each kept schema's set is included from `state_fixtures/v<N>/`,
+  loaded through its loader, continued to the bit and held to convert into
+  the current schema's fixture bytes, with the coverage check proven on a
+  temporary directory while the list is empty (D2); the state promise
+  states that third check so, in README, RELEASE-READINESS and CLAUDE.md
+  (D1). The API snapshot pins the words a parameter accepts, each probed
+  to be taken, and labels unstable names (`sim`, `corr`, `ArrowStruct`,
+  `fit_predict_arrow`, `predict_arrow`) (E2, E7). The rule-2 property
+  perturbs a target the bank reads (E3). The floor-leg workflow test is
+  marked `pins`, since the canary unpins the line it reads (F4b). `pa`'s
+  documented eps/c trade-off is stated at the R² it was measured, 0.98,
+  with the regime above about R² 0.99 where the wider tube loses less than
+  `c=0.1` (F2, E5, A3, G4); the eps review's worst case for `eps=0.1` is a
+  range, 0.6× to 280× over 20 seeds with a median of 35×, not 54× (G2); the
+  `sgd` docstring and the README no longer claim the same slopes at
+  half-life 10 and 10,000, false under `standardize=True` (G1's sentence).
+  `bocpd`'s docstring says the warm-up prior is set once from `warm_rows`
+  rows and kept, and that a break accepted a row or two late shows as a
+  fall in `run_mode` (A5, A6). Stale counts, names and readings corrected
+  in the records (F1, F5, F6, F8, D5, D6, E6, B4, A2).
 - The 23 survivors and one timeout of the mutation run over tasks 168-182
   are each killed by a test or listed with the reason no test can (task 184).
 - Library oracles for `kalman` (filterpy), `sgd` (scikit-learn), `hmm`
