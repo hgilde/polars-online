@@ -1553,8 +1553,10 @@ class ModelBank:
         msgpack must match the state's byte for byte. One that does not raises
         ``ValueError`` naming the problem, instead of returning a file that is quietly
         wrong. ``RuntimeError`` while a ``fit_predict`` is in flight on another
-        thread, as :meth:`save` does.
+        thread, as :meth:`save` does. A formula target's written form is
+        unstable, as :meth:`save` says, and the export carries the same tree.
         """
+        self._warn_formula_form()
         return str(self._native.save_json_string(pretty))
 
     def save_json(self, path: str | Path, *, pretty: bool = True) -> None:

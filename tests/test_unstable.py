@@ -90,6 +90,7 @@ def unstable_calls(tmp_path) -> dict[str, Callable[[], object]]:
         "with_windows state": windows_state,
         "save a formula target": save_formula,
         "save_bytes a formula target": held.save_bytes,
+        "to_json a formula target": held.to_json,
         "load a formula target": load_formula,
         "fit_predict_arrow": lambda: po.ModelBank([ridge()]).fit_predict_arrow(df),
         "predict_arrow": lambda: po.ModelBank([ridge()]).predict_arrow(df),
@@ -111,6 +112,7 @@ SURFACES = [
     "with_windows state",
     "save a formula target",
     "save_bytes a formula target",
+    "to_json a formula target",
     "load a formula target",
     "fit_predict_arrow",
     "predict_arrow",
@@ -155,6 +157,7 @@ def test_a_promised_surface_never_warns(monkeypatch, tmp_path):
         out = bank.fit_predict(df)
         bank.save(tmp_path / "plain.state")
         po.ModelBank.load(tmp_path / "plain.state")
+        bank.to_json()
         po.stream.with_windows(
             df, level=po.ewm_mean("mid", half_life=5.0, window_size=10.0), clock="t", gap_cap=50.0
         )
