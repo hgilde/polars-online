@@ -8390,13 +8390,35 @@ tick, and that the series holding it up has a count near 1.
       F5 F6 F8 G2, G1's sentence) plus CLAUDE.md rule 5. The decisions (G1
       G3 G5 A1 B3 C4 D4 F3 F7 F9) are the user's, in §19.
 
-- [ ] 206. **A standardized fit is held in the caller's units; the scaler
-      shapes the step only** (§19 G1, decided 2026-10-08). `sgd`, `pa` and
-      `kalman` persist their coefficients (and `kalman` its `P`) in the
-      caller's units; the step is taken in standardized coordinates and
-      mapped back through the row's affine map, so a prediction never moves
-      because the scaler did. Schema 46. With A1 (`share_p`'s noise over the
-      targets that have one). *Worker `task206-raw-fit`.*
+- [ ] 206. **A standardized fit is held in the caller's units after a
+      warm-up; the scaler shapes the step** (§19 G1, decided 2026-10-08,
+      revised the same day). *First build stopped* (worker
+      `task206-raw-fit`): holding the fit in the caller's units from row 0
+      fixed G1's cells but wrecked short histories (`sgd` R² 0.433 to
+      -206.7 at rows 25-50 of 200-row groups, `pa` 0.712 to -20,206): a step
+      taken against a scale read from two rows was kept at that scale for
+      good. And `kalman`'s covariance in raw units overflowed at the input
+      bound and lost precision as (m/s)²·ε. A1 was built there and moved to
+      task 208. *Measured before deciding again* (scratchpad
+      `review5/g1b/TABLES.md`; replicas bit-identical to the shipped models):
+      of today's design, reverting `standardize`, a scaler on its own slower
+      clock, a frozen map, normalized online learning (vowpalwabbit's
+      `--normalized`, Ross, Mineiro and Langford 2013) and (a) from row 0,
+      only **(e2)** passes G1's cells, short histories, a feature level of
+      1e8, a ×10 scale change and mixed scales: today's design for the first
+      **N = 22** rows the scaler has learned (undecayed; with weights the
+      undecayed Kish count), then the coefficients read out once and held
+      in the caller's units, each step formed in standardized coordinates
+      and mapped back with its row's scaling. G1's worst cell 1,736 / 248
+      (half-life 10 / 50) becomes 0.010 / 0.010; short histories 0.43 /
+      0.71 / 0.68 (`sgd`/`pa`/`kalman`) become 0.45 / 0.71 / 0.69. N = 22 is
+      `2/ρ²` at a 30% relative standard error of a variance: a step four
+      times too large has probability 2e-4 per feature. `kalman` takes the
+      same warm-up, then keeps β and P in the current standardized
+      coordinates, re-mapped exactly each row (`β' = Aβ`, `P' = A P Aᵀ`),
+      +78% per row at k = 10 (120 to 213 ns); a cheaper re-anchoring is
+      measured in the task. The user, 2026-10-08: "Go". Schema bump. *Worker
+      `task206b`.*
 - [ ] 207. **The insensitivity band and `c` in noise units, measured**
       (§19 G3 and G5, decided 2026-10-08). On task 206's code: sweep the
       band rules (the target's spread, the residual's capped by the target's,
@@ -8421,7 +8443,132 @@ tick, and that the series holding it up has a count near 1.
       memory, so a save and load restarts it (persist it in schema 46); a
       `UInt128` column panics in Polars' frame conversion (refuse by name);
       a never-present target's notice names a negative ceiling (say it has
-      no values).
+      no values). *Part 2 done 2026-10-08* (worker `task208b`, merged
+      with a coordinator's fix): A1; the wait persisted, schema 46; a
+      `UInt128` column refused by name on ten surfaces; the never-present
+      target named without a figure; and a projection that is not a
+      positive weight (a target present on one row in 50, a heavy row where
+      the notice comes: "-0.0000", a ninety-digit negative) given no figure
+      and no advice to lower the floor, every figure printed in significant
+      figures outside 0.001 to 1,000,000.
+- [ ] 209. **Every model is tested on positive, negative and mixed values,
+      and on a level that crosses zero** -- the user, 2026-10-08 ("Do the
+      tests for every model include both positive and negative and mixed
+      values?"; then "Add the plan for testing negative values"). An audit
+      the same day (a read-only agent over every test that feeds a model)
+      found every model tested on mixed signs -- the property generators
+      draw from [-1e3, 1e3] plus 0, -0.0, ±1e8 and ±1e100, and the contract
+      test's `bounded_script` puts ±1e100 in every position -- but one-sided
+      streams patchy: an all-negative feature reaches 9 of the 21 kinds, an
+      all-negative target 7 of the 12 with a target, and a level that
+      crosses zero mid-stream only `holt` and `seqtest`. A Hypothesis
+      generator that can draw a one-sided stream but is not made to does
+      not count. **Build after task 206 settles**, since G1's fix changes
+      `sgd`, `pa` and `kalman`, the models with the largest gaps.
+  - **(a) Every invariant on one-sided streams, every kind.** A `sign` and
+    `offset` parameter in `tests/test_properties.py`'s `streams`,
+    `warmed_streams` and `kind_streams`, and in `model_contract.rs`'s
+    `value()`: a value `v` becomes `sign·|v| + offset`, the null, NaN and
+    bound values kept. Every property (chunking, save/load, finite or null,
+    the null policy, rule 2) runs on P (positive, offset 1e3), N (negative,
+    offset -1e3) and M streams for all 21 kinds. `ftrl` and `ew_class` sign
+    their features only (their labels come from `y > 0`); `holt` its target
+    only. This catches a NaN, an overflow or a divergence at a level, not a
+    wrong fit.
+  - **(b) Accuracy at a level, each sign.** `crates/online-core/tests/held_values.rs`
+    already holds a feature or the target at 0.5, -0.37 (then exactly 0),
+    1e3, 1e8, -1e8 and 1e12 for 9 models: add `quantile`, `pa`, `rls`,
+    `ftrl`, `kmeans`, `micro`, `deco`, `bocpd` and `corrchange` to its
+    harnesses, and -1e8 to the level lists of `no_weight_moves_nothing`
+    ([1e3, 1e8, 1e12]) and of the unsupervised harness ([0.5, 1e3, 1e8]).
+    Add a negative value to the existing reference parametrizations (a
+    one-token change that reuses each test's oracle):
+    `tests/test_second_opinion.py` (the cases at ~61, ~100, ~1151, ~1240,
+    ~1518, ~2518), `tests/test_robust.py` (~305 `huber`, ~343 `quantile`),
+    `tests/test_pa.py` (~210: the level test at -1000), and
+    `tests/test_edge_cases.py` (~616).
+  - **(c) The gaps most likely to hide a defect, each with its own test.**
+    `quantile` at τ 0.25 and 0.75 on an all-positive and an all-negative
+    target (both sides of the check function, its scale `s`, the rows the
+    least-squares fallback serves); `kalman`'s accuracy at a target level
+    of ±1,000 (the intercept travels from a prior at 0, with `obs_var`
+    learned); `sgd`'s accuracy at a negative level under every loss (its
+    only negative-target test today compares σ to its own residuals);
+    `pa` at -1,000 (task 202's trap was found and fixed at +1,000 only);
+    `ftrl` at feature levels of each sign (it does not standardize).
+  - **(d) A level that crosses zero.** For each regression, a target (and
+    a feature) whose level drifts from +1,000 to -1,000 across the stream:
+    accuracy against the model's oracle once it has re-settled, and
+    `hit_rate`, the sign test about 0, right on both sides of the crossing.
+  - **(e) The edges the audit found.** A negative weight is refused for
+    every kind by one check (`bank.rs` ~615) but tested for the 10
+    regressions only: add the other 11 kinds. A weight of -0.0 is never
+    drawn (`_weights` has 0.0 only): draw it. **A Poisson `sgd` fit takes a
+    negative target**: the gradient `p - y` drives the prediction to its
+    clamp. Decision for the user: refuse a negative count by name as
+    scikit-learn's `PoissonRegressor` does (recommended), or clamp it at 0
+    as S4 does for a logistic label, with `strict_binary`'s analogue.
+  - Keep the platform's libm off any bit-pinned stream (Decay::Lam at unit
+    steps, or tolerances against the oracle).
+- [ ] 210. **Two tiers of tests: essentials on every commit's gate, the
+      rest before every push, in CI and before a release** -- the user,
+      2026-10-08 ("a plan item to split tests into essentials that can run
+      quickly with a gate and extended that run before a release and from
+      ci"); then: "We will always run the full tests before a push, the
+      idea of the essential tests is to improve the speed of iteration
+      while developing many steps". So the essentials are for the many
+      commits of a task in progress; **the full suite runs before every
+      push, always**, whatever the essentials said. **Measured 2026-10-08
+      on `ed76944`** (load 3.4-4.7 on 14 cores,
+      `-j 2`): the gate takes 4.5 to 9 minutes a commit (8-9 when Rust
+      changed: clippy, the test build and the release extension compile);
+      pytest runs 5,019 tests in 199 s, of which 22 tests of a second or
+      more take 99 s and two take 59 s (`test_ffi_memory.py`'s
+      `test_output_outliving_its_input`, 36.5 s; `test_regimes_doc.py`'s
+      section 9, 22 s); `cargo test` runs 1,889 tests in 163 s, 144 s of it
+      running, led by online-core's unit tests (1,325 tests, 40 s),
+      `model_contract.rs` (24 s), `summary.rs` (10 tests, 22 s),
+      `chunk_plan.rs` (7 tests, 18 s) and `bank.rs` (12 s). Scratchpad
+      `t210/` has the per-test and per-binary logs.
+  - **The rule for a tier, stated before any test is moved.** *Essentials*
+    hold, in their fastest form that can still fail: a test of every hard
+    rule (2 out of sample, 3 chunk invariance, 5 the frozen fixtures, 8
+    `n_eff`, 9 a zero weight), every golden, the contract tests, the
+    refusals and renames, the API snapshot and the document-structure
+    tests, and each module's own unit tests. *Extended* holds a test that
+    takes a second or more, needs the network or downloaded data, re-runs a
+    document's experiments (REGIMES, VALIDATION), measures memory or
+    threads, sweeps a grid, or runs a third-party oracle over a long
+    stream -- unless it is the only test of a hard rule, in which case a
+    reduced form (fewer rows, fewer cases) stays in essentials and the full
+    form moves. `soak` stays opt-in as it is.
+  - **Budget.** Essentials: pytest under 90 s and `cargo test`'s run under
+    60 s at this machine's usual load, so the gate falls to about 3-4
+    minutes when Rust changed. Measured again after the split, and the
+    numbers recorded here.
+  - **Mechanism.** Python: an `extended` marker (a module's `pytestmark`
+    or a test's own), each with its reason; Hypothesis profiles
+    (`essential` at fewer examples, `extended` at today's 30 or more)
+    chosen by an environment variable the gate sets. Rust:
+    `#[ignore = "extended: <reason>"]` on a slow test, run with
+    `cargo test -- --include-ignored`; proptest's case count from
+    `PROPTEST_CASES` (fewer in essentials). `scripts/gate.sh` runs the
+    essentials by default and everything under `--extended`; the default
+    `uv run pytest` and `cargo test` stay *everything*, so no one skips
+    the extended tier by accident.
+  - **Where each tier runs.** Every commit while a task is in progress:
+    the essentials gate. **Before every push, always: the full gate**
+    (`scripts/gate.sh --extended`), so what reaches GitHub has passed
+    everything locally; a push never rides on the essentials. CI on every push and pull
+    request: extended, on all three OSes (it runs everything today; it
+    keeps doing so). `release.yml`: extended, before any tag. The weekly
+    mutation run and the canary are unchanged.
+  - **Guards.** A test that every test module and Rust test file declares
+    its tier (no unclassified test), that every hard rule names at least
+    one essentials test, and that every `extended` mark carries a reason;
+    CI reports the essentials' duration, so a slow test that creeps into
+    the tier is seen. `CLAUDE.md`'s Commands, `docs/TESTING.md` and the
+    gate's own header say which tier runs where.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -12636,7 +12783,10 @@ mutants and MSRV workflows; the 1.0 policy's tables against each other.
 **Decided 2026-10-08 (the user: "Your reco all").** Every row above as
 recommended:
 - **G1** (option a): the fit is held in the caller's units and the scaler
-  shapes the step only -- task 206 (schema 46).
+  shapes the step only -- task 206. *Revised the same day* when the first
+  build broke short histories: option (e2), today's design for a warm-up
+  of 22 rows, then (a); measured on both regimes before the user's "Go"
+  (task 206's entry).
 - **G3 and G5**: a measured task -- the band in noise units with a start-up
   cap, swept under decay, levels, `c` and `mode`, `eps·min(σ_resid, σ_y)`
   at 0.5 the candidate; `c` a multiple of the target's spread -- task 207,

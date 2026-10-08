@@ -260,7 +260,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 45,
+- **Every saved bank must be refit.** A bank file now carries schema 46,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -281,9 +281,10 @@ reinterpreted parameter, an output's dtype or a file to refit.
   warm-up and the per-target thresholds (195); the window's edge and the
   renamed counts (196); an integer clock held as one (200, windows state
   8); relative targets removed (201); and the target's own spread (202).
-  Schema 45, the one a bank file now carries, adds `rls`'s second weight
-  sum `s₂` and the data shares `huber` and `quantile` keep per target
-  (task 116). It refuses 44 and older, and so do the models' own states.
+  Schema 45 adds `rls`'s second weight sum `s₂` and the data shares
+  `huber` and `quantile` keep per target (task 116). Schema 46, the one a
+  bank file now carries, keeps the readiness notices' wait (task 208). It
+  refuses 45 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -1006,6 +1007,25 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **Under `share_p`, `kalman`'s shared noise is the mean residual variance
+  over the targets that have one** (task 208, A1). A target with none yet
+  counted as a noise of 0: a copy null for its first 300 rows moved its
+  twin's predictions by up to 0.45. The order of the targets moves no bit,
+  and a copy present on the same rows moves nothing.
+- **The "has not been met" notices' wait is kept in the state file**
+  (task 208; schema 46). A stream saved and loaded inside the wait gives
+  its notice on the row an unbroken stream would; one saved and loaded
+  each day with a long half-life never gave it.
+- **A frame with a `UInt128` column is refused by name**, whether a spec
+  reads it or not, on every surface a frame crosses to the extension on,
+  with a cast to make (task 208). It panicked inside Polars' conversion.
+- **A `min_weight` notice gives no projected ceiling it cannot stand
+  behind** (task 208). A target no row has given a value with a positive
+  weight is named as such; a projection that is not a positive weight --
+  a target present on one row in 50, a heavy row where the notice comes --
+  is said to be unprojectable, where they read "tops out near -0.0256 ...
+  Lower min_weight below -0.0256" or a ninety-digit negative. A figure
+  prints with four significant figures outside 0.001 to 1,000,000.
 - **The `min_weight` and noise-gate `ReadinessWarning`s no longer tell a
   stream whose rows then come faster that its floor "cannot be met ... for
   good"** (task 208; review round 5, F3). The README's own kernel example
