@@ -3082,10 +3082,21 @@ the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
 
 **The tube's default, 0.01, keeps errors under 1% of the target's own
-spread from moving the fit.** The tube does not shrink as the fit improves,
-so it must sit below a good fit's errors on most targets. At 0.1, a fit of a target
-predicted to within 1% of its spread stopped as soon as every error was
-inside the tube, about 0.08 off the truth in intercept and slope together.
+spread from moving the fit.** In units of the noise the tube is
+`eps/√(1 − R²)` wide, `R²` the fit's: 0.067 noise standard deviations at
+R² 0.978, and 2.2 at 0.99998. Inside it the gradient is zero, so a tube
+many noise standard deviations wide holds the fit wherever it first lands.
+Measured with one feature and no decay, as the out-of-sample error above
+the noise in noise variances (task 207):
+
+| R² | `inv_scaling` at 0.5, `eps=0.01` | `eps=0.1` | `constant` at 0.01, `eps=0.01` | `eps=0.1` |
+|---|---|---|---|---|
+| 0.978 | 0.015 | 0.010 | 0.042 | 0.027 |
+| 0.99998 | 0.20 | 24 (0.7 to 214) | 0.81 | 17 (3.4 to 30) |
+
+The sign-valued step moves the fit's level by the rate on each row of
+weight 1, so at the default rate of 0.01 a target at a level of 1,000 is
+100,000 rows away.
 
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient
@@ -3145,17 +3156,31 @@ row, and the model never learned it. In the residuals' spread, a fit from
 zero on a target at 1,000 drew a tube about 100 wide from its first
 residuals, and without decay stopped learning: R² −52. `σ` reads `y` alone,
 so until the target has two weighted rows of different values the tube has
-no width. `eps` is 0.01 by default, so errors under 1% of the target's own
-spread do not move the fit: the tube does not shrink as the fit improves,
-and must sit below a good fit's errors on most targets, as `sgd`'s does. The
-tube is also `pa`'s only damping against noise, since at `c = 1` every row
-outside it is fitted in full: on a target predicted to R² 0.98 the
-out-of-sample error is 2.2 times the noise at the default, 1.6 at `eps=0.1`
-and 1.3 at `c=0.1`. `c=0.1` damps best where the noise is that large. Above
-about R² 0.99 the wider tube is the smaller loss (at R² 0.9975: 2.0, 1.2
-and 1.7). `pa` standardizes
-its features by default, with `sgd`'s scaler, so `s` and `c` are not in the features'
-units either. Past the scaler's warm-up its coefficients are held in the
+no width. `eps` is 0.01 and `c` is 1 by default.
+
+**`c` is in the target's units.** `pa1`'s cap of 1 caps every step of a
+target in thousands and none of a target in thousandths, so the figures
+below are for a target of spread about 2. `pa2`'s `c` sits beside `s` and
+is free of the target's units: under `"pa"` and `"pa2"` a target scaled by
+`k` fits as the unscaled one, scaled by `k`.
+
+**In units of the noise the tube is `eps/√(1 − R²)` wide**, `R²` the
+fit's. A tube well inside the noise damps nothing, so only a cap that binds
+damps. A wider tube damps too, while the cap does not bind: the fit moves
+only on the rows in the noise's tails. A tube many noise standard
+deviations wide holds the fit wherever it first lands. Measured with `pa1`,
+one feature, a target of spread about 2 and no decay, as the out-of-sample
+error above the noise in noise variances (task 207):
+
+| R² | the tube at 0.01 | the defaults | `c=0.1` | `eps=0.1` | `eps=0.5` |
+|---|---|---|---|---|---|
+| 0.978 | 0.067 noise stds | 1.15 | 0.33 | 0.57 | 0.06 |
+| 0.99998 | 2.2 noise stds | 0.14 | 0.14 | 65 (25 to 347) | 1,496 |
+
+The default tube had the smallest worst regret over 108 streams and all
+three modes. `pa` standardizes its features by default, with `sgd`'s
+scaler, so `s` and `c` are not in the features' units either. Past the
+scaler's warm-up its coefficients are held in the
 caller's units, as `sgd`'s are, and an uncapped step still puts the row on
 its tube's edge. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:

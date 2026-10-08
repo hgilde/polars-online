@@ -2685,9 +2685,34 @@ def sgd(
     ``eps``
         The half-width of the insensitive tube, in units of ``s_y``, the
         target's own std. Default 0.01: errors under 1% of the target's own
-        spread do not move the fit. The tube does not shrink as the fit
-        improves, so it must sit below a good fit's errors on most targets.
-        At 0.1, a fit of a target predicted to within 1% of its spread stopped
+        spread do not move the fit. In units of the noise, on a target a fit
+        predicts to R², the tube is ``eps / sqrt(1 - R²)`` noise standard
+        deviations wide: at 0.01, 0.067 of them at R² 0.978 and 2.2 at
+        0.99998. Inside it the gradient is zero, so a tube many noise standard
+        deviations wide holds the fit wherever it first lands inside it.
+        Measured (one feature, no decay; the out-of-sample error above the
+        noise, in noise variances, median over seeds; docs/PLAN.md task 207):
+
+        .. list-table::
+           :header-rows: 1
+
+           * - R²
+             - ``inv_scaling`` at 0.5, ``eps`` 0.01
+             - at 0.1
+             - ``constant`` at 0.01, ``eps`` 0.01
+             - at 0.1
+           * - 0.978
+             - 0.015
+             - 0.010
+             - 0.042
+             - 0.027
+           * - 0.99998
+             - 0.20
+             - 24 (0.7 to 214)
+             - 0.81
+             - 17 (3.4 to 30)
+
+        At 0.1 a fit of a target predicted to within 1% of its spread stopped
         as soon as every error was inside the tube, about 0.08 off the truth
         in intercept and slope together.
     ``learning_rate``, ``schedule``, ``power``
@@ -2698,14 +2723,17 @@ def sgd(
         units over the gradient's -- one over the feature squared for the squared
         and Huber losses, and the target over the feature squared for the
         sign-valued quantile and epsilon-insensitive ones -- in standardized
-        units under ``standardize``. AdaGrad's sum of squared gradients and
-        ``weight_sum`` both decay on the model's clock, so an annealed or adapted
-        rate opens up again after a long gap instead of staying frozen. The
-        coefficients themselves do not decay: every row's step moves them, so
-        under ``"constant"`` their memory is in rows, about ``1 / (lr *
-        E[z**2])`` of them, whatever the clock between rows. ``half-life``
-        reaches ``weight_sum`` and ``min_weight``, the scaler and AdaGrad's sum,
-        not the coefficients.
+        units under ``standardize``. A sign-valued step moves the fit's level by
+        the rate times the row's weight, so at the default 0.01 a target at a
+        level of 1,000 is 100,000 unit-weight rows away; under ``"inv_scaling"``
+        at 0.5, without decay, about 1,000,000. AdaGrad's sum of squared
+        gradients and ``weight_sum`` both decay on the model's clock, so an
+        annealed or adapted rate opens up again after a long gap instead of
+        staying frozen. The coefficients themselves do not decay: every row's
+        step moves them, so under ``"constant"`` their memory is in rows, about
+        ``1 / (lr * E[z**2])`` of them, whatever the clock between rows.
+        ``half-life`` reaches ``weight_sum`` and ``min_weight``, the scaler and
+        AdaGrad's sum, not the coefficients.
     ``l2``
         A ridge on every step, on the slopes only: the intercept is not
         penalised. Under ``standardize`` it is on the slope in the row's
@@ -2932,8 +2960,41 @@ def pa(
     0, two weighted rows of different values, the tube has no width and every
     row teaches. In the target's own units a tube of 0.1 held a target in
     hundredths on every row: passive for ever, every prediction 0.0 and R² -0.05
-    where the same target unscaled scored 0.96. Under ``"pa"`` a target scaled
-    by ``k`` fits as the unscaled one, scaled by ``k``.
+    where the same target unscaled scored 0.96.
+
+    **c is in the target's units.** ``pa1``'s ``tau`` is in the target's units
+    over ``s``'s, so a cap of 1 caps every step of a target in thousands and
+    none of a target in thousandths, and the figures below are for a target of
+    spread about 2. ``pa2``'s ``c`` is added to ``s`` as ``1 / (2c)``, in
+    ``s``'s units, so it is free of the target's. Under ``"pa"`` and ``"pa2"`` a
+    target scaled by ``k`` fits as the unscaled one, scaled by ``k``; under
+    ``"pa1"`` only while the cap does not bind.
+
+    In units of the noise, on a target a fit predicts to R², ``sigma`` is the
+    noise's standard deviation over ``sqrt(1 - R²)``, so the tube is ``eps /
+    sqrt(1 - R²)`` noise standard deviations wide. At the default 0.01:
+
+    .. list-table::
+       :header-rows: 1
+
+       * - R²
+         - 0.5
+         - 0.978
+         - 0.9975
+         - 0.9998
+         - 0.99998
+       * - the tube, in noise standard deviations
+         - 0.014
+         - 0.067
+         - 0.20
+         - 0.71
+         - 2.2
+
+    A tube well inside the noise damps nothing: every row outside it is
+    projected onto its edge, and only a cap that binds damps then. A wider tube
+    damps too, while the cap does not bind: the fit moves only on the rows in
+    the noise's tails, and they keep pulling it back. But a tube many noise
+    standard deviations wide holds the fit wherever it first lands inside it.
 
     ``sigma`` is not the residual's std, as :func:`huber`'s cut is. The fit
     starts from zero coefficients, so its first residuals are the target's
@@ -2954,23 +3015,50 @@ def pa(
         when outliers are possible: plain ``"pa"`` moves the fit as far as it
         takes to satisfy a single bad row.
     ``c``
-        The cap (``pa1``) or damping (``pa2``) on ``tau``, which is in the
-        target's units over ``s``'s: the features' squared, or standardized ones
-        under ``standardize``, so ``c`` is in the target's units alone there.
-        Default 1.0; ``inf`` caps nothing, so either bounded mode is then
-        ``"pa"``.
+        Under ``pa1``, the cap on ``tau``, in the target's units over ``s``'s:
+        the features' squared, or standardized ones under ``standardize``, so
+        ``c`` is in the target's units alone there, and what it does depends on
+        the target's scale. Under ``pa2``, the damping ``1 / (2c)`` beside
+        ``s``, in ``s``'s units and free of the target's. Default 1.0; ``inf``
+        caps nothing, so either bounded mode is then ``"pa"``.
     ``eps``
         The margin, in units of ``sigma``: the row is close enough inside it and
         nothing moves. Default 0.01: errors under 1% of the target's own spread
-        do not move the fit. The tube does not shrink as the fit improves, so it
-        must sit below a good fit's errors on most targets, as :func:`sgd`'s
-        tube does. The tube is also this model's only damping against noise:
-        at ``c = 1`` every row outside it is fitted in full. On a target
-        predicted to R² 0.98 the out-of-sample error is 2.2 times the noise
-        at the default, 1.6 times at ``eps=0.1`` and 1.3 times at ``c=0.1``.
-        ``c=0.1`` damps best where the noise is that large. Above about R²
-        0.99 the wider tube is the smaller loss: at R² 0.9975 the three are
-        2.0, 1.2 and 1.7 times the noise.
+        do not move the fit. Measured (``pa1``, one feature, a target of spread
+        about 2, no decay; the out-of-sample error above the noise, in noise
+        variances, median over seeds; docs/PLAN.md task 207):
+
+        .. list-table::
+           :header-rows: 1
+
+           * - R²
+             - the defaults
+             - ``c = 0.1``
+             - ``eps = 0.1``
+             - ``eps = 0.5``
+           * - 0.978
+             - 1.15
+             - 0.33
+             - 0.57
+             - 0.06
+           * - 0.99998
+             - 0.14
+             - 0.14
+             - 65 (25 to 347)
+             - 1,496
+
+        At R² 0.978 the default tube, 0.067 noise standard deviations, damps
+        nothing, and a cap of 1 binds on few rows of a target of spread 2: a
+        cap of 0.1 or a wider tube damps more. At R² 0.99998 the default tube
+        is 2.2 noise standard deviations and no cap binds, and a tube of 0.1
+        (22 of them) or 0.5 holds the fit wherever it first lands, from 25 to
+        347 noise variances over 20 seeds at 0.1. The default had the smallest
+        worst regret over 108 streams (R² from 0.5 to 0.99998, a level of 0 or
+        plus or minus 1,000, a half-life of 50, 500 or none, one feature or
+        five) and the three modes, against a tube in the residual's spread
+        capped by the target's: without decay its start-up residuals stayed in
+        it for ever, and under ``pa2`` it left a target at a level of 1,000 at
+        R² 0.76 to 0.80.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes, exactly as for :func:`sgd`. The projection
         follows each update, so the step does not meet the row's margin exactly:

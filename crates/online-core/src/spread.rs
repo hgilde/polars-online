@@ -33,7 +33,13 @@
 //! against +0.954 at 500. The target's own spread does not read the fit.
 //! `huber_delta` stays on the residual's spread (`sgd`, `huber`): outside
 //! its cut a Huber gradient is clipped, not zero, so the fit keeps
-//! learning, where inside a band the gradient is zero.
+//! learning, where inside a band the gradient is zero. Task 207 measured
+//! the residual's spread capped by the target's beside it: on a target far
+//! from zero without decay the cap was all it ever read, the start-up
+//! residuals staying in the residual's spread for ever, and the target's
+//! spread at 0.01 had the smaller worst regret. In units of the noise a band is `eps / √(1 − R²)`
+//! noise standard deviations wide, `R²` the fit's; `pa`'s and `sgd`'s
+//! module docs give it per `R²`, with what it costs.
 
 use serde::{Deserialize, Serialize};
 

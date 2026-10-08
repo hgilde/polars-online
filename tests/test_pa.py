@@ -287,30 +287,143 @@ def test_a_well_predicted_target_reaches_its_slope_at_the_default_band(kind):
     assert abs(b0) + abs(b1 - 2.0) < 0.005, (b0, b1)
 
 
-def test_the_tube_is_pas_only_damping_on_a_target_predicted_less_well():
-    """docs/PLAN.md task 203, the trade-off the `pa` docstring states: at
-    `c = 1` every row outside the tube is fitted in full, so on a target
-    predicted to R² 0.978 (`y = 2x + N(0, 0.3²)`, `x ~ N(0, 1)`) the
-    out-of-sample MSE over rows 10k-30k is about 2.2 times the noise
-    variance at the default `eps`, 1.6 at `eps=0.1`, and 1.3 at `c=0.1`
-    (measured 1.15 / 0.59 / 0.33 above the noise over three seeds and two
-    lengths). The order is what is held, with room."""
+def _excess_over_the_noise(r2, **kw):
+    """`y = 2x + e`, `x ~ N(0, 1)`, `e` of the variance that makes R² `r2`;
+    `pa` without decay; the out-of-sample MSE over rows 10k-30k above the
+    noise's, as a share of it (task 207's sweep, one seed)."""
     rng = np.random.default_rng(0)
     x = rng.standard_normal(30_000)
-    e = 0.3 * rng.standard_normal(30_000)
+    e = np.sqrt(4.0 * (1.0 - r2) / r2) * rng.standard_normal(30_000)
     df = pl.DataFrame({"x": x, "y": 2.0 * x + e})
-    common = dict(targets=["y"], features=["x"], half_life=float("inf"))
+    spec = po.spec.pa("m", targets=["y"], features=["x"], half_life=float("inf"), **kw)
+    p = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+    p = p.astype(float)[10_000:]
+    noise = np.mean(e[10_000:] ** 2)
+    return (np.mean((df["y"].to_numpy()[10_000:] - p) ** 2) - noise) / noise
 
-    def excess(**kw):
-        p = po.ModelBank([po.spec.pa("m", **common, **kw)]).fit_predict(df)
-        p = p["m"].struct.field("pred_y").to_numpy().astype(float)[10_000:]
-        noise = np.mean(e[10_000:] ** 2)
-        return (np.mean((df["y"].to_numpy()[10_000:] - p) ** 2) - noise) / noise
 
-    default, wide, damped = excess(), excess(eps=0.1), excess(c=0.1)
-    assert 1.0 < default < 1.4, default
-    assert 0.5 < wide < 0.7, wide
-    assert 0.25 < damped < 0.45, damped
+def test_the_trade_off_the_docstring_states():
+    """docs/PLAN.md task 207 (review round 5, G3), the trade-off the `pa`
+    docstring states at the shipped defaults (`eps = 0.01`, `c = 1` in the
+    target's units), on its two targets, each of spread about 2. At R² 0.978
+    the band of 0.01 of the target's spread is 0.067 noise stds wide and
+    damps nothing, and a cap of 1 binds on few rows: the out-of-sample MSE
+    above the noise is about 1.15 of the noise variance at the defaults,
+    0.33 at `c = 0.1` and 0.57 at `eps = 0.1`, whose band is 0.67 noise
+    stds. At R² 0.99998 the default's band is 2.2 noise stds and no cap
+    binds: 0.14 at the defaults and at `c = 0.1` alike, where `eps = 0.1`'s
+    band, 22 noise stds, holds the fit wherever it first lands inside it
+    (task 207: a median of 65, from 25 to 347 over 20 seeds). The values are
+    held with room."""
+    default = _excess_over_the_noise(0.978)
+    capped = _excess_over_the_noise(0.978, c=0.1)
+    wide = _excess_over_the_noise(0.978, eps=0.1)
+    assert 1.0 < default < 1.3, default
+    assert 0.25 < capped < 0.45, capped
+    assert 0.45 < wide < 0.7, wide
+    near = _excess_over_the_noise(0.99998)
+    assert 0.1 < near < 0.2, near
+    assert _excess_over_the_noise(0.99998, c=0.1) == pytest.approx(near, abs=0.02)
+    assert _excess_over_the_noise(0.99998, eps=0.1) > 2.0
+
+
+def test_pa2s_c_is_free_of_the_targets_units():
+    """docs/PLAN.md task 207 (review round 5, G5): `pa2`'s `c` enters as
+    `1 / (2c)` beside `‖z‖²`, so it is free of the target's units, and a
+    target scaled by 2**7 or 2**-7 fits as the unscaled one, scaled, to the
+    bit, at the default `c` and at 0.1, and one scaled by 100 or 0.01 to the
+    rounding of the scaled values. `pa1`'s `c` is in the target's units and
+    has no such property. The stream is review round 4's CC4 at a level of
+    1,000."""
+    df = _cc4().with_columns(pl.col("y") + 1000.0)
+    for c in (None, 0.1):
+        kw = {} if c is None else {"c": c}
+
+        def fit(scale, kw=kw):
+            p = _oos(df.with_columns(pl.col("y") * scale), mode="pa2", **kw)[1]
+            return p / scale
+
+        base = fit(1.0)
+        for scale in (2.0**7, 2.0**-7):
+            np.testing.assert_array_equal(fit(scale), base, err_msg=f"c={c} x{scale}")
+        for scale in (100.0, 0.01):
+            np.testing.assert_allclose(fit(scale), base, rtol=1e-12, err_msg=f"x{scale}")
+
+
+@pytest.mark.parametrize("schedule", ["constant", "inv_scaling"])
+def test_sgds_band_holds_no_target_far_from_zero(schedule):
+    """docs/PLAN.md task 207: the trap the band's unit exists to keep out
+    (task 202), for `sgd` under `epsilon_insensitive` at the default band:
+    a target at a level of 1,000 in a spread of about 2 fits rows 10,000 to
+    20,000 as the same target at 0 does, without decay. The sign-valued
+    gradient's rate is in the target's units, so it is one that travels
+    1,000 (`inv_scaling` at 20 covers about `40 sqrt(n)`; a constant 0.2
+    covers `0.2 n`): at the default 0.01, or 0.5 under `inv_scaling`, the fit
+    never gets there whatever the band, R² -1.9e5 (task 207's report)."""
+    lr = {"constant": 0.2, "inv_scaling": 20.0}[schedule]
+    r2 = {}
+    for level in (0.0, 1000.0):
+        df = _cc4(n=20_000).with_columns(pl.col("y") + level)
+        spec = po.spec.sgd(
+            "m",
+            targets=["y"],
+            features=["x"],
+            half_life=1e9,
+            loss="epsilon_insensitive",
+            schedule=schedule,
+            learning_rate=lr,
+        )
+        p = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
+        r2[level] = _r2_from(p, df["y"].to_numpy(), 10_000)
+    assert r2[1000.0] > 0.9, r2
+    assert abs(r2[1000.0] - r2[0.0]) < 0.01, r2
+
+
+def test_pa1_keeps_the_hard_rules_where_its_cap_binds():
+    """docs/PLAN.md task 207: `pa1` at the defaults, on a target at a level
+    of 1,000 whose first row has weight 0 and whose half-life is 50, where
+    the cap binds (`c = inf` predicts otherwise): one chunk, 7 and 600 give
+    the same numbers (hard rule 3); a row's prediction does not move when
+    its own target does (rule 2); `weight_sum` is the decayed weight before
+    the row (rule 8); and the zero-weight first row advances the clock and
+    teaches nothing, so the rows after it predict as the stream without it
+    does (rule 9)."""
+    df = _cc4(n=1200).with_columns(pl.col("y") + 1000.0)
+    w = np.r_[0.0, np.ones(df.height - 1)]
+    df = df.with_columns(pl.Series("w", w))
+    spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=50.0, weight="w")
+
+    def run(frame, chunks=1, **kw):
+        bank = po.ModelBank([{**spec, **kw}] if kw else [spec])
+        size = -(-frame.height // chunks)
+        parts = [bank.fit_predict(frame.slice(i, size)) for i in range(0, frame.height, size)]
+        return pl.concat(parts)["p"].struct.unnest().select("pred_y", "weight_sum")
+
+    one = run(df)
+    for chunks in (7, 600):
+        assert one.equals(run(df, chunks), null_equal=True), chunks
+    uncapped = po.spec.pa("p", targets=["y"], features=["x"], half_life=50.0, weight="w", c=1e9)
+    other = po.ModelBank([uncapped]).fit_predict(df)["p"].struct.field("pred_y")
+    assert not one["pred_y"].equals(other, null_equal=True), "the cap binds"
+    np.testing.assert_allclose(
+        one["weight_sum"].to_numpy(), _decayed_sums(w, 0.5 ** (1 / 50)), rtol=1e-12
+    )
+    i = 700
+    row = pl.int_range(pl.len())
+    moved = df.with_columns(pl.when(row == i).then(-5e3).otherwise(pl.col("y")).alias("y"))
+    assert run(moved)["pred_y"][: i + 1].equals(one["pred_y"][: i + 1])
+    assert not run(moved)["pred_y"][i + 1 :].equals(one["pred_y"][i + 1 :])
+    rest = run(df.slice(1))["pred_y"]
+    np.testing.assert_array_equal(one["pred_y"].to_numpy()[1:], rest.to_numpy())
+
+
+def _decayed_sums(w, lam):
+    """`weight_sum` on each row: `sum_{j < i} lam**(i - j) * w_j`, before
+    the row's own update and its decay (hard rule 8)."""
+    out = np.zeros(len(w))
+    for i in range(1, len(w)):
+        out[i] = lam * out[i - 1] + w[i - 1]
+    return out
 
 
 def test_standardize_is_offered_and_on_by_default():

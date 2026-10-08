@@ -147,9 +147,9 @@ fn average_eta_is_one_and_the_sgd_clip_a_thousand() {
 
 /// `pa`'s and `sgd`'s insensitivity band defaults to 0.01 of the target's
 /// own spread, as their docs state: errors under 1% of the spread do not
-/// move the fit. A band that does not shrink must sit inside a good fit's
-/// errors, and at 0.1 a fit of a target predicted to within 1% stopped up
-/// to 0.1 off its slope (docs/PLAN.md task 203). A given `eps` is taken.
+/// move the fit (docs/PLAN.md task 203; task 207 measured the band against
+/// the residual's spread capped by the target's, and kept it). A given
+/// `eps` is taken.
 #[test]
 fn the_insensitivity_band_is_a_hundredth_of_the_targets_spread() {
     let r = resolved_with("", "type = \"pa\"");
@@ -169,6 +169,16 @@ fn the_insensitivity_band_is_a_hundredth_of_the_targets_spread() {
         r["model"]["loss"],
         json!({"epsilon_insensitive": {"eps": 0.1}})
     );
+}
+
+/// `pa`'s `c` defaults to 1, in the target's units under PA-I, as its docs
+/// state (review round 5, G5). A given `c` is taken.
+#[test]
+fn pas_c_is_one() {
+    let r = resolved_with("", "type = \"pa\"");
+    assert_eq!(r["model"]["c"], 1.0);
+    let r = resolved_with("", "type = \"pa\"\nc = 0.1");
+    assert_eq!(r["model"]["c"], 0.1);
 }
 
 /// The diagnostics' defaults as `Spec`'s fields document them, the readiness

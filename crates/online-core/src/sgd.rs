@@ -105,6 +105,22 @@
 //! and without decay never narrowed, so the fit stopped where it stood
 //! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
+//! **The tube in units of the noise** (docs/PLAN.md task 207). On a target
+//! a fit predicts to `R²`, `s_y = σ_noise / √(1 − R²)`, so the tube is
+//! `eps / √(1 − R²)` noise standard deviations wide: at the default 0.01,
+//! 0.067 of them at R² 0.978 and 2.2 at 0.99998. Inside it the gradient is
+//! zero, so a tube many noise standard deviations wide holds the fit
+//! wherever it first lands inside it. Task 207's sweep (one feature, no
+//! decay; the out-of-sample error above the noise, in noise variances,
+//! median over seeds), `inv_scaling` at 0.5 and the constant 0.01: at R²
+//! 0.978, 0.015 and 0.042 at `eps = 0.01`, 0.010 and 0.027 at 0.1; at R²
+//! 0.99998, 0.20 and 0.81 at 0.01, 24 and 17 at 0.1 (0.7 to 214 and 3.4 to
+//! 30 over 20 seeds). The sign-valued step moves the fit's level by the
+//! rate times the row's weight -- its prediction at the features' running
+//! means under `standardize`, at 0 without -- so at the constant 0.01 a
+//! target at a level of 1,000 is 100,000 unit-weight rows away whatever the
+//! tube.
+//!
 //! **A logistic label outside {0, 1}** is clamped into `[0, 1]`, as `ftrl`
 //! clamps it; `strict_binary` instead learns nothing from it, and the bank
 //! refuses the chunk naming the row. `p − y` with `y = 5` pushed the linear
@@ -1712,16 +1728,17 @@ mod tests {
     }
 
     /// The tube does not shrink as the fit improves, so a fit stops wherever
-    /// every residual is inside it, and the builder's default must sit
-    /// inside a good fit's errors (docs/PLAN.md task 203). `y = 2x` plus
+    /// every residual is inside it (docs/PLAN.md task 203). `y = 2x` plus
     /// noise of up to 0.01, `x` in `[-1, 1]`, so the target's spread is
-    /// about `2/√3 = 1.155`: a fit with every residual inside `eps` of it
+    /// about `2/√3 = 1.155` and the noise's standard deviation `0.01/√3 =
+    /// 0.0058` -- a tube of 0.1 is 20 noise standard deviations wide, one
+    /// of 0.01 two (task 207): a fit with every residual inside `eps` of it
     /// is off by `|b0| + |b1 − 2| ≤ 1.155·eps − 0.01` at most. At 0.01 that
     /// is 0.0016, and an annealed rate ends within 0.005 (the scaler still
     /// moves the coefficients a little); at 0.1 it is 0.105, and the fit
     /// stopped more than 0.01 off.
     #[test]
-    fn a_tube_inside_a_good_fits_errors_reaches_the_slope() {
+    fn a_tube_two_noise_stds_wide_reaches_the_slope() {
         let off = |eps: f64| {
             let mut cf = cfg(1, SgdLoss::EpsilonInsensitive { eps });
             cf.learning_rate = 0.5;

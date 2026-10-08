@@ -37,6 +37,34 @@
 //! and without decay never narrowed it, R² −52 at a half-life of 1e9
 //! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
+//! **`C` is in the target's units** (review round 5, G5). Under PA-I it caps
+//! `tau`, in the target's units over `s`'s, so the same `C` binds on every
+//! row of a target in thousands and on none of one in thousandths, and the
+//! figures below are for a target of spread about 2. Under PA-II `C` enters
+//! as `1/(2C)` beside `s`, in `s`'s units, so it is free of the target's:
+//! under PA and PA-II a target scaled by `k` fits as the unscaled one,
+//! scaled by `k`, and under PA-I only while the cap does not bind.
+//!
+//! **In units of the noise**, on a target a fit predicts to `R²`, `σ_y =
+//! σ_noise / √(1 − R²)`: the tube is `eps / √(1 − R²)` noise standard
+//! deviations wide, at `eps = 0.01` 0.014 of them at R² 0.5, 0.067 at
+//! 0.978, 0.2 at 0.9975, 0.71 at 0.9998 and 2.2 at 0.99998. A tube well
+//! inside the noise damps nothing, since every row outside it is projected
+//! onto its edge; only a cap that binds damps then. A wider tube damps too
+//! while the cap does not bind: the fit moves only on the rows in the
+//! noise's tails, and they keep pulling it back. A tube many noise standard
+//! deviations wide holds the fit wherever it first lands inside it. Task
+//! 207's sweep (PA-I, one feature, a target of spread about 2, no decay;
+//! the out-of-sample error above the noise, in noise variances, median over
+//! seeds): at R² 0.978 the defaults (`eps = 0.01`, `C = 1`) leave 1.15,
+//! `C = 0.1` 0.33, `eps = 0.1` 0.57 and `eps = 0.5` 0.06; at R² 0.99998 the
+//! defaults and `C = 0.1` leave 0.14, `eps = 0.1` 65 (25 to 347 over 20
+//! seeds) and `eps = 0.5` 1,496. The sweep kept `eps = 0.01` by the
+//! smallest worst regret over 108 streams and the three modes. The
+//! residual's spread capped by the target's, measured beside `σ_y`, kept a
+//! start-up residual in its spread for ever without decay, and under PA-II
+//! left a target at a level of 1,000 at R² 0.76 to 0.80.
+//!
 //! **`standardize`** reads `z` as the features standardized against their
 //! EW moments with the row admitted, `sgd`'s scaler, its rule and its
 //! warm-up ([`crate::Sgd`], [`crate::SgdCfg::standardize`],
@@ -125,14 +153,16 @@ pub struct PaCfg {
     pub fit_intercept: bool,
     pub decay: Decay,
     pub mode: PaMode,
-    /// Aggressiveness, a cap on `tau`, which is in the target's units over
-    /// `||z||²`'s: the features' own, or standardized ones under
-    /// `standardize`. Ignored by [`PaMode::Pa`]; `inf` caps nothing, so
-    /// either bounded mode is [`PaMode::Pa`] exactly.
+    /// Aggressiveness. Under [`PaMode::Pa1`] a cap on `tau`, which is in the
+    /// target's units over `||z||²`'s: the features' own, or standardized
+    /// ones under `standardize`. Under [`PaMode::Pa2`] the damping `1/(2c)`
+    /// beside `||z||²`, in its units and free of the target's (the module
+    /// docs). Ignored by [`PaMode::Pa`]; `inf` caps nothing, so either
+    /// bounded mode is [`PaMode::Pa`] exactly.
     pub c: f64,
     /// Half-width of the insensitive tube, in units of the target's own EW
-    /// standard deviation: rows already this close are passive (the module
-    /// docs).
+    /// standard deviation: rows already this close are passive. The module
+    /// docs give its width in units of the noise.
     pub eps: f64,
     pub min_weight: f64,
     /// Box and/or sum constraint on the slopes, imposed by Euclidean
@@ -1287,17 +1317,23 @@ mod tests {
     /// `eps` is in units of the target's own EW standard deviation, and
     /// that unit scales with the target: a target scaled by a power of two
     /// fits as the unscaled one does, scaled by it, to the bit, under the
-    /// unbounded step, whose `tau = loss / |z|²` scales with the target (a
-    /// finite `c` caps it in the target's units). The stream sits at a level
-    /// of 1,000 in a spread of 2, with and without the scaler. In the
-    /// target's units a target in thousandths sat inside the tube on every
-    /// row, passive for ever, and one in thousands never did (review round
-    /// 4, CC4; docs/PLAN.md task 195, U1, and task 202).
+    /// unbounded step, whose `tau = loss / |z|²` scales with the target, and
+    /// under PA-II, whose `c` sits beside `|z|²` in its units (a finite `c`
+    /// caps PA-I's step in the target's units; review round 5, G5). The
+    /// stream sits at a level of 1,000 in a spread of 2, with and without
+    /// the scaler. In the target's units a target in thousandths sat inside
+    /// the tube on every row, passive for ever, and one in thousands never
+    /// did (review round 4, CC4; docs/PLAN.md task 195, U1, and task 202).
     #[test]
     fn the_band_scales_with_the_target() {
-        for standardize in [false, true] {
+        let modes = [(PaMode::Pa, 1.0), (PaMode::Pa2, 1.0), (PaMode::Pa2, 0.05)];
+        for (standardize, (mode, cap)) in [false, true]
+            .into_iter()
+            .flat_map(|s| modes.map(|m| (s, m)))
+        {
             let run = |c: f64| -> Vec<u64> {
-                let mut cf = cfg(2, PaMode::Pa);
+                let mut cf = cfg(2, mode);
+                cf.c = cap;
                 cf.eps = 0.1;
                 cf.min_weight = 0.0;
                 cf.standardize = standardize;
@@ -1323,7 +1359,8 @@ mod tests {
                 let differ = scaled.iter().zip(&one).filter(|(a, b)| a != b).count();
                 assert_eq!(
                     differ, 0,
-                    "standardize {standardize}, at scale {c}: {differ} of 400 rows differ"
+                    "{mode:?}, c {cap}, standardize {standardize}, at scale {c}: \
+                     {differ} of 400 rows differ"
                 );
             }
         }
@@ -1399,16 +1436,17 @@ mod tests {
     }
 
     /// The band does not shrink as the fit improves, so a fit stops wherever
-    /// every residual is inside it, and the builder's default must sit
-    /// inside a good fit's errors (docs/PLAN.md task 203). `y = 2x` plus
+    /// every residual is inside it (docs/PLAN.md task 203). `y = 2x` plus
     /// noise of up to 0.01, `x` in `[-1, 1]`, so the target's spread is
-    /// about `2/√3 = 1.155`: a fit with every residual inside `eps` of it
-    /// is off by `|b0| + |b1 − 2| ≤ 1.155·eps − 0.01` at most. At 0.01 that
-    /// is 0.0016, and the fit ends within 0.005 (the scaler still moves the
+    /// about `2/√3 = 1.155` and the noise's standard deviation `0.01/√3 =
+    /// 0.0058` -- a band of 0.1 is 20 noise standard deviations wide, one of
+    /// 0.01 two (task 207): a fit with every residual inside `eps` of it is
+    /// off by `|b0| + |b1 − 2| ≤ 1.155·eps − 0.01` at most. At 0.01 that is
+    /// 0.0016, and the fit ends within 0.005 (the scaler still moves the
     /// coefficients a little); at 0.1 it is 0.105, and the fit stopped more
     /// than 0.01 off.
     #[test]
-    fn a_band_inside_a_good_fits_errors_reaches_the_slope() {
+    fn a_band_two_noise_stds_wide_reaches_the_slope() {
         let off = |eps: f64| {
             let mut cf = cfg(1, PaMode::Pa1);
             cf.eps = eps;

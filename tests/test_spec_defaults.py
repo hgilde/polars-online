@@ -127,8 +127,9 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     """docs/PLAN.md task 195 (U1, U2, U3, U5, N11): the Huber constant is
     1.345 under one name in both models that take it, `eps` is 0.01 of the
     target's own spread in both (task 202 moved the unit, task 203 the
-    value: a band that does not shrink must sit inside a good fit's
-    errors), `sgd` and `pa` standardize, `bocpd`'s `nu`
+    value, task 207 measured it against a residual-scaled band and kept
+    it), `pa`'s `c` is 1 in the target's units, `sgd` and `pa`
+    standardize, `bocpd`'s `nu`
     is the smallest integer giving each emission's variance a mean, and
     `rls`'s prior strength is `delta`."""
     kw = {"targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 50.0}
@@ -139,7 +140,8 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     eps = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive"))["model"]["loss"]
     assert eps == {"epsilon_insensitive": {"eps": 0.01}}
     pa = resolved(po.spec.pa("m", **kw))["model"]
-    assert (pa["eps"], pa["standardize"]) == (0.01, True)
+    assert (pa["eps"], pa["c"], pa["standardize"]) == (0.01, 1.0, True)
+    assert resolved(po.spec.pa("m", **kw, c=0.1))["model"]["c"] == 0.1
     given = resolved(po.spec.sgd("m", **kw, loss="epsilon_insensitive", eps=0.1))["model"]
     assert given["loss"] == {"epsilon_insensitive": {"eps": 0.1}}
     assert resolved(po.spec.pa("m", **kw, eps=0.1))["model"]["eps"] == 0.1

@@ -1041,10 +1041,12 @@ pub enum ModelKind {
         /// Half-width of the insensitive tube, in units of the target's
         /// own EW std, the spread of `y` around its EW mean (docs/PLAN.md
         /// task 202). Default 0.01: errors under 1% of the target's own
-        /// spread do not move the fit. The tube does not shrink as the fit
-        /// improves, so it must sit below a good fit's errors; at 0.1 a
-        /// fit of a target predicted to within 1% stopped up to 0.1 off its
-        /// slope (task 203).
+        /// spread do not move the fit. In units of the noise the tube is
+        /// `eps / √(1 − R²)` wide, `R²` the fit's: 0.067 noise stds at R²
+        /// 0.978, 2.2 at 0.99998, where a tube of 0.1, 22 noise stds, held
+        /// the fit wherever it first landed inside it (out-of-sample error
+        /// 24 noise variances above the noise against 0.20, `inv_scaling`;
+        /// 0.010 against 0.015 at R² 0.978). Task 207 kept 0.01.
         #[serde(default)]
         eps: Option<f64>,
         #[serde(default)]
@@ -1093,15 +1095,25 @@ pub enum ModelKind {
         /// "pa1" (default), "pa" (unbounded) or "pa2" (damped).
         #[serde(default)]
         mode: Option<String>,
-        /// Aggressiveness cap. Ignored by "pa"; `"inf"` caps nothing, so
-        /// either bounded mode is "pa".
+        /// Aggressiveness: under "pa1" a cap on the step, in the target's
+        /// units over `‖z‖²`'s, so the same `c` binds by the target's scale
+        /// (review round 5, G5); under "pa2" the damping `1/(2c)` beside
+        /// `‖z‖²`, free of the target's units. Default 1. Ignored by "pa";
+        /// `"inf"` caps nothing, so either bounded mode is "pa".
         #[serde(default)]
         c: Option<Num>,
         /// Insensitive tube, in units of the target's own EW std, the
         /// spread of `y` around its EW mean: rows already this close leave
         /// the fit alone (docs/PLAN.md task 202). Default 0.01: errors under
-        /// 1% of the target's own spread do not move the fit, a tube inside
-        /// a good fit's errors, as `sgd`'s (task 203).
+        /// 1% of the target's own spread do not move the fit. In units of
+        /// the noise it is `eps / √(1 − R²)` wide, `R²` the fit's: 0.067
+        /// noise stds at R² 0.978, where a binding cap damps and a wider
+        /// tube would too (out-of-sample error 1.15 noise variances above
+        /// the noise at the defaults, 0.33 at `c = 0.1`, 0.57 at `eps =
+        /// 0.1`, on a target of spread about 2); 2.2 at 0.99998, where a
+        /// tube of 0.1, 22 noise stds, holds the fit wherever it first lands
+        /// inside it (0.14 at the defaults, 65 at `eps = 0.1`). Task 207
+        /// kept 0.01.
         #[serde(default)]
         eps: Option<f64>,
         /// Bounds and sum on the slopes, as for `sgd` (ENHANCEMENTS E40).
