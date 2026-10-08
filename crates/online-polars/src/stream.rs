@@ -2350,6 +2350,67 @@ pub struct Notified {
     /// Raised and not yet drained; not state.
     #[serde(skip)]
     pub pending: Vec<String>,
+    /// Per target, the decay time at the first row of the run of rows the
+    /// `min_weight` floor has withheld since the stream was 95% settled
+    /// ([`settled_enough`]); `None` where the floor let the last row
+    /// through. Not state: schema 45 does not carry it, so a stream saved
+    /// and loaded inside a wait starts it again at the load, and says its
+    /// notice later than an unbroken one would, never sooner (review round
+    /// 5, F3).
+    #[serde(skip)]
+    pub floor_since: Vec<Option<f64>>,
+    /// The same for the noise gate, over the instance's slots.
+    #[serde(skip)]
+    pub gate_since: Option<f64>,
+}
+
+impl Notified {
+    /// How long target `tj`'s floor has withheld every row: the decay time
+    /// `now` less where the run began, NaN outside a run that began once the
+    /// stream was `judged` settled enough ([`withheld_for`]).
+    fn floor_withheld_for(&mut self, tj: usize, withheld: bool, judged: bool, now: f64) -> f64 {
+        if self.floor_since.len() <= tj {
+            self.floor_since.resize(tj + 1, None);
+        }
+        withheld_for(&mut self.floor_since[tj], withheld, judged, now)
+    }
+
+    /// A reset restarts the decay time the waits are read on.
+    fn restart_waits(&mut self) {
+        self.floor_since.clear();
+        self.gate_since = None;
+    }
+}
+
+/// How long a gate has withheld every row, on the learned rows' clock: the
+/// decay time `now` less the decay time at the run's first row, NaN outside
+/// a run. A run begins at a withheld row of a stream `judged` 95% settled
+/// ([`settled_enough`]), and a row the gate lets through ends it. The two
+/// "not met" notices wait for a half-life of it ([`half_life_of`]): read at
+/// the first withheld row past 95% settled, the steady state they project
+/// from the spacing so far was wrong wherever the rows then came faster --
+/// a sorted feature used as the clock, dense at its mode, met a floor of 10
+/// on 381 of 400 rows after a notice that it never would (review round 5,
+/// F3).
+fn withheld_for(since: &mut Option<f64>, withheld: bool, judged: bool, now: f64) -> f64 {
+    if !withheld {
+        *since = None;
+        return f64::NAN;
+    }
+    if judged && since.is_none() {
+        *since = Some(now);
+    }
+    since.map_or(f64::NAN, |s| now - s)
+}
+
+/// One half-life of `decay`, in the clock units its decay time counts:
+/// infinite where nothing decays.
+fn half_life_of(decay: Decay) -> f64 {
+    match decay {
+        Decay::Halflife(h) => h,
+        Decay::Lam(l) if l < 1.0 => -1.0 / l.log2(),
+        Decay::Lam(_) => f64::INFINITY,
+    }
 }
 
 /// How far the decay window has filled toward steady state after `t`
@@ -2451,15 +2512,16 @@ struct Unmet {
 }
 
 impl Unmet {
-    /// Whether the gate stays shut at steady state, which the notice says:
-    /// the ratio's projection there -- `1 + (worst² − 1)·s/(2 − s)`, Kish's
-    /// size growing from `s/(2 − s)` of its ceiling to all of it -- at or
-    /// above the limit, or, where the model has not solved, its weight's
-    /// ceiling below the floor it needs. The notice said so of the ratio
-    /// read at 95% settled, which is still falling there: a gate a little
-    /// above the limit then opened later, after a notice that it never
-    /// would (docs/PLAN.md task 198, found by its half-life figure's test).
-    fn for_good(&self, spec: &Spec) -> bool {
+    /// Whether the gate stays shut at steady state at the rows' spacing so
+    /// far, which the notice says: the ratio's projection there -- `1 +
+    /// (worst² − 1)·s/(2 − s)`, Kish's size growing from `s/(2 − s)` of its
+    /// ceiling to all of it -- at or above the limit, or, where the model
+    /// has not solved, its weight's ceiling below the floor it needs. The
+    /// notice said so of the ratio read at 95% settled, which is still
+    /// falling there: a gate a little above the limit then opened later,
+    /// after a notice that it never would (docs/PLAN.md task 198, found by
+    /// its half-life figure's test).
+    fn stays_shut(&self, spec: &Spec) -> bool {
         if self.worst.is_finite() {
             let s = self.settled;
             1.0 + (self.worst * self.worst - 1.0) * s / (2.0 - s) >= self.max * self.max
@@ -2500,10 +2562,7 @@ fn solve_floor(spec: &Spec) -> f64 {
 /// "Above", since the gate withholds at equality. In the spec's own terms: a
 /// duration on a temporal clock, `lam` where the spec gives one.
 fn half_life_figure(spec: &Spec, decay: Decay, at: &Unmet) -> String {
-    let h = match decay {
-        Decay::Halflife(h) => h,
-        Decay::Lam(l) => -1.0 / l.log2(),
-    };
+    let h = half_life_of(decay);
     let (max, s, w) = (at.max, at.settled, at.row_weight);
     let need = if at.worst.is_finite() {
         h * (at.worst * at.worst - 1.0) / (max * max - 1.0) * s / (2.0 - s)
@@ -4788,6 +4847,7 @@ impl Instance<'_> {
         // the rest of the stream (review round 4, PB1). A clock reset drops
         // the rows, and the held clock with them (`run_instance`).
         *self.decay_time = 0.0;
+        self.notified.restart_waits();
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
                 .expect("spec was already validated")
@@ -4938,7 +4998,7 @@ fn run_instance(
         // `kalman`'s is `O(k²)` a row, paid only where it is used.
         let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
         let settled = settled_frac(inst.decay, *inst.decay_time + held);
-        // The two "cannot be met" notices below read the learned rows'
+        // The two "not met" notices below read the learned rows'
         // clock alone, as `Stream::readiness` does: the weight they
         // project a ceiling from has neither decayed by nor accumulated
         // the held rows, so paired with the row's fraction it read as
@@ -4997,49 +5057,67 @@ fn run_instance(
             step.pred.fill(f64::NAN);
             reason = REASON_SETTLED;
         }
-        // The first target the floor withholds, and the weight it read.
-        let mut short: Option<(usize, f64)> = None;
+        // Whether a "not met" notice may judge the stream yet, and the wait
+        // each asks for: a half-life of the learned rows' clock during which
+        // its gate withholds every row, past 95% settled ([`withheld_for`]).
+        let now = *inst.decay_time;
+        let judged = !inst.notified.unreachable && settled_enough(learned);
+        let half = if judged {
+            half_life_of(inst.decay)
+        } else {
+            f64::NAN
+        };
+        // The first target whose floor has withheld every row for that long,
+        // and the ceiling its weight tops out at.
+        let mut unmet_floor: Option<(usize, f64)> = None;
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
             let weight = match sc.tn.get(tj) {
                 Some(&w) if own_weights => w,
                 _ => step.n_eff,
             };
-            if step_n_eff_below(weight, min_weight, tj) {
+            let below = step_n_eff_below(weight, min_weight, tj);
+            if below {
                 group.fill(f64::NAN);
-                short.get_or_insert((tj, weight));
                 if reason == 0 {
                     reason = REASON_MIN_PERIODS;
                 }
             }
-        }
-        // The floor cannot be met: the stream has all but settled, and the
-        // weight the target reads tops out below it -- the ceiling
-        // `1/(1 − λ^d)` at the rows' spacing and weight
-        // (docs/WARMUP-AND-CONVERGENCE.md §5.1), which with a clock column
-        // no spec can say in advance. Said once per instance, as the noise
-        // gate's is, with the way out (docs/PLAN.md task 198, D8).
-        if let Some((tj, weight)) = short
-            && !inst.notified.unreachable
-            && settled_enough(learned)
-        {
-            let ceiling = settled_weight(weight, w, learned);
-            let floor = min_weight.get(tj).copied().unwrap_or(f64::NAN);
-            if ceiling < floor {
-                inst.notified.unreachable = true;
-                let target = inst
-                    .spec
-                    .targets
-                    .get(tj)
-                    .map_or_else(String::new, |t| format!(" for target {t:?}"));
-                inst.notified.pending.push(format!(
-                    "min_weight = {floor} cannot be met{target}: the stream is {:.0}% settled and \
-                     the weight it reads tops out near {ceiling:.4}, the ceiling 1/(1 - lam^d) \
-                     at its rows' spacing d and weight, so every prediction is withheld for \
-                     good. Lower min_weight below {ceiling:.4}, or raise the half_life \
-                     (docs/WARMUP-AND-CONVERGENCE.md).",
-                    100.0 * learned
-                ));
+            if !inst.notified.unreachable
+                && inst.notified.floor_withheld_for(tj, below, judged, now) >= half
+                && unmet_floor.is_none()
+            {
+                let ceiling = settled_weight(weight, w, learned);
+                if ceiling < min_weight[tj] {
+                    unmet_floor = Some((tj, ceiling));
+                }
             }
+        }
+        // The floor has not been met: the stream has all but settled, the
+        // floor has withheld every row for a further half-life, and the
+        // weight the target reads tops out below it at the rows' spacing and
+        // weight so far -- the ceiling `1/(1 − λ^d)`
+        // (docs/WARMUP-AND-CONVERGENCE.md §5.1), which with a clock column
+        // no spec can say in advance, and which rows that come faster than
+        // so far can still pass: the notice projects, it does not promise
+        // (review round 5, F3). Said once per instance, as the noise gate's
+        // is, with the way out (docs/PLAN.md task 198, D8).
+        if let Some((tj, ceiling)) = unmet_floor {
+            inst.notified.unreachable = true;
+            let floor = min_weight[tj];
+            let target = inst
+                .spec
+                .targets
+                .get(tj)
+                .map_or_else(String::new, |t| format!(" for target {t:?}"));
+            inst.notified.pending.push(format!(
+                "min_weight = {floor} has not been met{target} on any row for a half-life \
+                 since the stream settled (it is {:.0}% settled), and at the row rate seen so \
+                 far the weight it reads tops out near {ceiling:.4}, the ceiling \
+                 1/(1 - lam^d) at its rows' spacing d and weight, so predictions stay \
+                 withheld unless the rows come faster or carry more weight. Lower min_weight \
+                 below {ceiling:.4}, or raise the half_life (docs/WARMUP-AND-CONVERGENCE.md).",
+                100.0 * learned
+            ));
         }
         // At or above the ratio: at equality the estimation variance is the
         // noise, and one observation's mean -- `edf = n_kish = 1`, exactly
@@ -5047,19 +5125,24 @@ fn run_instance(
         // did, the ridge keeping `edf` a hair under it.
         // `inf` is off: an infinite ratio -- the model unsolved -- is then
         // the model's own null, not this gate's.
+        let mut gate_withheld = false;
         if has_infl && max_infl.is_finite() {
             for (slot, p) in step.pred.iter_mut().enumerate() {
                 if sc.infl.get(slot).is_some_and(|&r| r >= max_infl) {
                     *p = f64::NAN;
+                    gate_withheld = true;
                     if reason == 0 {
                         reason = REASON_INFLATION;
                     }
                 }
             }
         }
-        // The noise gate cannot be met: the stream has all but settled and
-        // the ratio is still above the threshold, so nothing will change
-        // it. Said once per instance, with the way out (§3). Not for
+        // The noise gate has not been met: the stream has all but settled,
+        // the gate has withheld every row for a further half-life, and the
+        // ratio's projection to steady state at the rows' spacing so far is
+        // still above the threshold -- a projection that rows coming faster
+        // can still beat (review round 5, F3). Said once per instance, with
+        // the way out (§3). Not for
         // `kalman`, whose gate reads each row's own value: its `P` settles
         // on `coef_half_life`'s clock, not the spec's decay, and a row
         // nearer the design's centre reads below the average, so one
@@ -5067,18 +5150,21 @@ fn run_instance(
         // and the projection to steady state here is Kish's, which `P`
         // does not follow (docs/PLAN.md task 116).
         let per_row_gate = matches!(inst.spec.model, ModelKind::Kalman { .. });
-        let unmet = (reason == REASON_INFLATION
-            && !per_row_gate
-            && !inst.notified.unreachable
-            && settled_enough(learned))
-        .then(|| Unmet {
-            worst: sc.infl.iter().cloned().fold(0.0, f64::max),
-            max: max_infl,
-            settled: learned,
-            weight: step.n_eff,
-            row_weight: w,
-        })
-        .filter(|u| u.for_good(inst.spec));
+        let waited = if per_row_gate || inst.notified.unreachable {
+            f64::NAN
+        } else {
+            withheld_for(&mut inst.notified.gate_since, gate_withheld, judged, now)
+        };
+        let unmet =
+            (reason == REASON_INFLATION && !inst.notified.unreachable && judged && waited >= half)
+                .then(|| Unmet {
+                    worst: sc.infl.iter().cloned().fold(0.0, f64::max),
+                    max: max_infl,
+                    settled: learned,
+                    weight: step.n_eff,
+                    row_weight: w,
+                })
+                .filter(|u| u.stays_shut(inst.spec));
         if let Some(unmet) = unmet {
             let worst = unmet.worst;
             inst.notified.unreachable = true;
@@ -5086,23 +5172,26 @@ fn run_instance(
             let k = inst.spec.k() + usize::from(inst.spec.fit_intercept);
             inst.notified.pending.push(if worst.is_finite() {
                 format!(
-                    "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
-                     settled and error_inflation is still {worst:.3}, so every prediction is \
-                     withheld for good. Kish's effective sample size tops out near 2.9 \
-                     half_lives of rows; {figure} so it can carry the {k} coefficients, or \
-                     raise max_error_inflation to at least {worst:.3} to accept this much \
-                     estimation noise (docs/WARMUP-AND-CONVERGENCE.md).",
+                    "max_error_inflation = {max_infl:.3} has not been met on any row for a \
+                     half-life since the stream settled (it is {:.0}% settled): \
+                     error_inflation is still {worst:.3}, and at the row rate seen so far it \
+                     stays above the limit, so predictions stay withheld unless the rows come \
+                     faster. Kish's effective sample size tops out near 2.9 half_lives of rows; \
+                     {figure} so it can carry the {k} coefficients, or raise \
+                     max_error_inflation to at least {worst:.3} to accept this much estimation \
+                     noise (docs/WARMUP-AND-CONVERGENCE.md).",
                     100.0 * learned
                 )
             } else {
                 // Infinite: the model has not solved, its weight short of the
                 // floor its first solve needs, which no ratio can loosen.
                 format!(
-                    "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
-                     settled and its weight tops out near {:.4}, below the {} the model needs \
+                    "max_error_inflation = {max_infl:.3} has not been met on any row for a \
+                     half-life since the stream settled (it is {:.0}% settled): at the row rate \
+                     seen so far its weight tops out near {:.4}, below the {} the model needs \
                      before it solves (a row per coefficient, or min_weight), so \
-                     error_inflation stays infinite and every prediction is withheld for good. \
-                     {}{} so it can carry the {k} coefficients \
+                     error_inflation stays infinite and predictions stay withheld unless the \
+                     rows come faster. {}{} so it can carry the {k} coefficients \
                      (docs/WARMUP-AND-CONVERGENCE.md).",
                     100.0 * learned,
                     settled_weight(step.n_eff, w, learned),

@@ -23,7 +23,10 @@ than the data did is named (``support_coef``). Chunking cannot move any of it.
 from __future__ import annotations
 
 import math
+import re
 import warnings
+from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import polars as pl
@@ -64,6 +67,29 @@ def reasons(out: pl.DataFrame) -> list[str | None]:
 def first_present(s: pl.Series) -> int:
     """The row of the first non-null value: where a gate opened."""
     return next(i for i, p in enumerate(s.to_list()) if p is not None)
+
+
+class _Fitted(NamedTuple):
+    out: pl.DataFrame
+    notices: list[str]
+
+
+def _fit_noting(bank: po.ModelBank, df: pl.DataFrame) -> _Fitted:
+    """``bank.fit_predict(df)``, and the readiness notices it raised."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = bank.fit_predict(df)
+    return _Fitted(
+        out, [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+    )
+
+
+def _says_not_met_at_the_rate_so_far(msg: str) -> None:
+    """The two "not met" notices project from the rows seen so far, which a
+    faster stream can outrun, so neither says the floor "cannot be met" nor
+    that predictions are withheld "for good" (review round 5, F3)."""
+    assert "has not been met" in msg and "at the row rate seen so far" in msg, msg
+    assert "cannot be met" not in msg and "for good" not in msg, msg
 
 
 class TestSettledFrac:
@@ -400,19 +426,27 @@ class TestSummaryAndWarnings:
 
     def test_an_unreachable_gate_is_named_with_the_fix(self):
         """Half-life 2 rows tops Kish's ``n`` out near 5.8; with ten features
-        ``sqrt(1 + 11 / 5.8)`` never reaches ``sqrt(2)``."""
+        ``sqrt(1 + 11 / 5.8)`` never reaches ``sqrt(2)``. The notice waits
+        until the gate has withheld every row for a further half-life past
+        95% settled (review round 5, F3): the decay time before row ``i`` is
+        ``i - 1``, 95% settled from row 10 (``1 - 2 ** (-9 / 2) = 0.956``), so
+        it comes at row 12, two rows later than it did, in words that promise
+        nothing about rows the stream has not seen."""
         k = 10
         df = frame(400, k=k)
         s = spec(features=[f"x{j}" for j in range(k)], half_life=2.0)
         bank = po.ModelBank([s])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            out = bank.fit_predict(df)
+        head = _fit_noting(bank, df[:12])
+        assert head.notices == [], head.notices
+        at = _fit_noting(bank, df[12:13])
+        assert len(at.notices) == 1, at.notices
+        tail = _fit_noting(bank, df[13:])
+        assert tail.notices == [], tail.notices
+        out = pl.concat([head.out, at.out, tail.out])
         assert field(out, "pred_y").null_count() == 400
-        got = [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
-        assert len(got) == 1, [str(w.message) for w in caught]
-        msg = str(got[0].message)
+        msg = at.notices[0]
         assert "max_error_inflation" in msg and "half_life" in msg
+        _says_not_met_at_the_rate_so_far(msg)
 
     def test_an_ordinary_spec_does_not_warn_while_the_gates_withhold(self):
         """The first solve of any spec is under-determined by construction --
@@ -584,24 +618,102 @@ class TestSettledWeight:
 
     def test_an_unreachable_min_weight_is_named_with_its_ceiling(self):
         """Half-life 5 rows: every target's weight tops out at
-        ``1 / (1 - 2 ** (-1 / 5)) = 7.73``, so a ``min_weight`` of 20 withholds
-        every prediction for good, and says so once the stream is 95% settled
-        -- once, however many chunks follow."""
+        ``1 / (1 - 2 ** (-1 / 5)) = 7.73``, so a ``min_weight`` of 20 is never
+        met. The notice waits until the floor has withheld every row for a
+        further half-life past 95% settled (review round 5, F3): the decay
+        time before row ``i`` is ``i - 1``, 95% settled from row 23 (``1 - 2
+        ** (-22 / 5) = 0.953``), so it comes at row 28, five rows later than
+        it did -- once, however many chunks follow."""
         ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / 5.0))
         df = frame(200)
         s = po.spec.rls("m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0)
         bank = po.ModelBank([s])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            out = bank.fit_predict(df[:100])
-            bank.fit_predict(df[100:])
+        head = _fit_noting(bank, df[:28])
+        assert head.notices == [], head.notices
+        at = _fit_noting(bank, df[28:29])
+        assert len(at.notices) == 1, at.notices
+        tail = [_fit_noting(bank, df[29:100]), _fit_noting(bank, df[100:])]
+        assert [t.notices for t in tail] == [[], []]
+        out = pl.concat([head.out, at.out, tail[0].out])
         assert field(out, "pred_y").null_count() == 100
-        got = [w for w in caught if issubclass(w.category, po.ReadinessWarning)]
-        assert len(got) == 1, [str(w.message) for w in caught]
-        msg = str(got[0].message)
+        msg = at.notices[0]
         assert "min_weight = 20" in msg and '"y"' in msg and "half_life" in msg, msg
         assert f"{ceiling:.4}" in msg, (ceiling, msg)
+        _says_not_met_at_the_rate_so_far(msg)
         assert bank.summary("m")["weight_sum_settled"][0] == pytest.approx(ceiling, rel=1e-12)
+
+    def test_a_row_that_meets_the_floor_restarts_the_wait(self):
+        """One heavy row at row 25, inside the wait that began at row 23,
+        lifts the weight past a floor of 10 that the stream's ceiling of 7.73
+        never reaches: the floor lets rows through until the burst has
+        decayed, and the wait starts again at the first row it withholds
+        after them, so the notice comes a half-life (five rows) after that
+        row, not at row 28 and not at the first row withheld after the burst."""
+        n, floor = 120, 10.0
+        df = frame(n).with_columns(
+            w=pl.when(pl.int_range(pl.len()) == 25).then(20.0).otherwise(1.0)
+        )
+        s = po.spec.rls(
+            "m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=floor, weight="w"
+        )
+        why = reasons(_fit_noting(po.ModelBank([s]), df).out)
+        met = [i for i in range(23, n) if why[i] is None]
+        # The burst lets rows 26 on through, and they end inside the stream.
+        assert met and met[0] == 26 and met[-1] < n - 10, met
+        again = met[-1] + 1
+        assert why[again] == "below_min_weight"
+        bank = po.ModelBank([s])
+        assert _fit_noting(bank, df[: again + 5]).notices == []
+        at = _fit_noting(bank, df[again + 5 : again + 6])
+        assert len(at.notices) == 1 and "min_weight = 10" in at.notices[0], at.notices
+        _says_not_met_at_the_rate_so_far(at.notices[0])
+
+    def test_a_resumed_stream_waits_again_from_the_load(self):
+        """The wait is held in memory, not in the state file (schema 45 does
+        not carry it), so a stream saved and loaded inside its wait starts
+        it again at the first withheld row after the load: the notice comes
+        later than the unbroken stream's (row 28, above), never sooner.
+        Saved after row 26, the wait restarts at row 26 (``T = 25``) and
+        ends at row 31 (``T = 30``)."""
+        df = frame(200)
+        s = po.spec.rls("m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0)
+        bank = po.ModelBank([s])
+        assert _fit_noting(bank, df[:26]).notices == []
+        bank = po.ModelBank.load_bytes(bank.save_bytes())
+        assert _fit_noting(bank, df[26:31]).notices == []
+        at = _fit_noting(bank, df[31:32])
+        assert len(at.notices) == 1 and "min_weight = 20" in at.notices[0], at.notices
+
+    def test_the_readmes_kernel_example_does_not_warn(self, tmp_path, monkeypatch):
+        """README, *A local fit along any feature*, verbatim, on the README's
+        own ``df``: a sorted feature as the clock is sparse in its tails and
+        dense at its mode, so the rows come faster after the stream settles
+        and the weight climbs from about 7.7 to 103. The notice read the
+        regular-stream projection at the first withheld row past 95% settled
+        and said ``min_weight = 10`` "cannot be met ... withheld for good",
+        then 381 of 400 rows were predicted (review round 5, F3). Waiting a
+        half-life during which the floor withholds every row, the notice
+        never comes: the floor is met inside it."""
+        text = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+
+        def block(heading: str) -> str:
+            start = text.index(f"\n### {heading}\n")
+            section = text[start : text.index("\n### ", start + 1)]
+            found = re.findall(r"```python\n(.*?)\n```", section, flags=re.S)
+            assert len(found) == 1, (heading, len(found))
+            return found[0]
+
+        monkeypatch.chdir(tmp_path)  # Example data writes its parquet files here
+        ns: dict = {}
+        exec(compile(block("Example data"), "README.md: Example data", "exec"), ns)
+        kernel = block("A local fit along any feature")
+        assert 'clock="x0"' in kernel and "min_weight=10.0" in kernel, kernel
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            exec(compile(kernel, "README.md: A local fit along any feature", "exec"), ns)
+        fitted = ns["fitted"]
+        assert fitted["pred_y"].drop_nulls().len() == 381
+        assert fitted["weight_sum"].max() > 100.0
 
     def test_a_min_weight_between_the_settled_weight_and_the_ceiling_does_not_warn(self):
         """At 95% settled the weight is 95% of the ceiling, so a floor between

@@ -1090,8 +1090,9 @@ fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
 /// Task 198 (D8): `weight_sum_settled` is a regular stream's ceiling, `w/(1 −
 /// 2^(−d/h))` (docs/WARMUP-AND-CONVERGENCE.md §5.1), exactly from its second
 /// row and null on its first, under a window and with no decay; and a
-/// `min_weight` above that ceiling is named once the stream is 95% settled,
-/// once, where one below it is not.
+/// `min_weight` above that ceiling is named once it has withheld every row
+/// for a half-life past 95% settled (row 76 of 80 here: `T = (i − 1)/2`,
+/// 95% settled from `T = 30.5`), once, where one below it is not.
 #[test]
 fn weight_sum_settled_is_the_ceiling_and_an_unreachable_min_weight_is_named() {
     let n = 80usize;
@@ -1161,8 +1162,13 @@ fn weight_sum_settled_is_the_ceiling_and_an_unreachable_min_weight_is_named() {
     };
     let unmet = notices(2.0 * ceiling);
     assert_eq!(unmet.len(), 1, "{unmet:?}");
+    // It projects from the rows so far, which faster rows can outrun, so it
+    // promises nothing for good (review round 5, F3).
     assert!(
-        unmet[0].contains("cannot be met") && unmet[0].contains(&format!("{ceiling:.4}")),
+        unmet[0].contains("has not been met")
+            && unmet[0].contains("at the row rate seen so far")
+            && !unmet[0].contains("for good")
+            && unmet[0].contains(&format!("{ceiling:.4}")),
         "{unmet:?}"
     );
     assert!(notices(0.99 * ceiling).is_empty());

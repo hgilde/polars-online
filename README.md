@@ -963,9 +963,11 @@ setting and say why:
 **Each row says how ready its model was.** `summary()` carries the same
 readings per group, with `weight_sum_settled`, the weight the stream settles at,
 and once the stream is 95% settled a `ReadinessWarning` names, once, a
-coefficient more ridge than data, or a noise gate or a `min_weight` the
-stream can no longer meet, with the half-life or the ceiling that would
-change that. The command line closes a run with one line per spec whose
+coefficient more ridge than data. It also names a noise gate or a
+`min_weight` that has withheld every row for a further half-life, and that
+the rows, at their rate so far, would not meet. It gives the half-life or
+the ceiling that would change that, and promises nothing of rows that come
+faster. The command line closes a run with one line per spec whose
 groups ended withheld or with a coefficient more ridge than data.
 This code uses `df` from [Example data](#example-data):
 

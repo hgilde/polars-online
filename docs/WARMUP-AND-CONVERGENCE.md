@@ -317,10 +317,12 @@ its own stream -- and only once the stream is at least 95% settled:
 - **a coefficient more ridge than data** (`support_coef < 0.5`, on a row
   whose prediction the gates let through, as settled on 2026-09-21, §2.2,
   of a stream 95% settled, since task 116), naming the feature;
-- **`max_error_inflation` unreachable**: the stream has settled and
-  `error_inflation` is still above the ceiling, so output will never appear
-  — with the fix in the message: a half-life above the one it names, or
-  `max_error_inflation` raised to at least the settled value. The figure is
+- **`max_error_inflation` not met**: the stream has settled, the gate has
+  withheld every row for a further half-life, and `error_inflation` at the
+  row rate so far stays above the limit, so output will not appear unless
+  the rows come faster — with the fix in the message: a half-life above the
+  one it names, or `max_error_inflation` raised to at least the settled
+  value. The wait and the words are review round 5's (F3), below. The figure is
   the steady state's (built in task 198). Where the ratio is finite the gate
   reads `√(1 + edf/n_Kish)`, `n_Kish` grows in proportion to the half-life,
   and at a settled fraction `s` it is `s/(2 − s)` of its ceiling, so the gate
@@ -341,18 +343,36 @@ its own stream -- and only once the stream is at least 95% settled:
   lower, and its `P` settles on `coef_half_life`'s clock, not the spec's
   decay, so neither a withheld row nor the Kish projection says the gate is
   shut for good (§7.11);
-- **`min_weight` unreachable** (built in task 198): the stream is 95%
-  settled and a target's weight tops out below its `min_weight` -- the
-  ceiling `1/(1 − 2^(−d/h))` of §5.1 at the rows' spacing and weight, which
-  a clock column keeps any spec from knowing in advance -- so the floor
-  withholds every prediction for good. The message names the ceiling
-  (`weight_sum_settled`) and the fix: a lower `min_weight` or a longer
-  half-life. On every model, since every model has the floor. Under
+- **`min_weight` not met** (built in task 198): the stream is 95%
+  settled, the floor has withheld every row for a further half-life, and a
+  target's weight tops out below its `min_weight` at the rows' spacing and
+  weight so far -- the ceiling `1/(1 − 2^(−d/h))` of §5.1, which a clock
+  column keeps any spec from knowing in advance -- so the floor withholds
+  every prediction unless the rows come faster or carry more weight. The
+  message names the ceiling (`weight_sum_settled`) and the fix: a lower
+  `min_weight` or a longer half-life. On every model, since every model has
+  the floor. Under
   `embargo` both notices read how far the rows the model has learned from
   have settled, the clock its weight has covered, as `weight_sum_settled`
   does; paired with the row's fraction, which counts the held rows' clock
   too (§8), the ceiling read negative before anything was learned, and a
   floor the stream then met was called unreachable (review round 5, C1).
+
+Both "not met" notices project the steady state from the spacing so far,
+`(W − w₁(1 − s))/s`, exact on a regular stream only. Read at the first
+withheld row past 95% settled and never retracted, they said "cannot be met
+... withheld for good" of streams whose rows then came faster: the README's
+kernel example (a sorted feature as the clock, sparse in its tails and
+dense at its mode) predicted 381 of 400 rows at `min_weight = 10`, its
+weight reaching 102.66, after a notice that it topped out near 7.7169
+(review round 5, F3). So each notice now waits: it fires only once its
+gate has withheld every row for a further half-life of the learned rows'
+clock past 95% settled, and a row the gate lets through in between starts
+the wait again. Its words say what was seen and what the rate so far
+implies, and promise nothing of faster rows. The wait is held in memory,
+not in the state file, so a stream saved and loaded inside it waits again
+from the load: its notice comes later than an unbroken stream's, never
+sooner.
 
 Only report, never warn, when output appears but is degraded (a user who
 raised `max_error_inflation` asked for it): a short half-life can be

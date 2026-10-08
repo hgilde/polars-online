@@ -270,22 +270,30 @@ class ReadinessWarning(UserWarning):
       ridge as large as the feature's variance. Predictions are unaffected in
       sample; the split among such columns is arbitrary and moves the moment
       the collinearity breaks.
-    - **The noise gate cannot be met**: the stream has all but settled and
-      ``error_inflation`` is still above ``max_error_inflation``, so every
-      prediction is withheld for good. Not for ``kalman``, whose gate reads
-      each row's own value, which a row nearer the design's centre reads
-      lower. The message says how far, and the way
-      out -- a half-life above the one it names, or a looser ratio.
-    - **A** ``min_weight`` **cannot be met**: the stream has all but settled
-      and the weight a target reads tops out below its ``min_weight`` -- the
-      ceiling ``1 / (1 - 2 ** (-d / half_life))`` at the rows' spacing ``d``
-      and weight, which a clock column keeps any spec from knowing in
-      advance. The message names the ceiling (``weight_sum_settled`` in
-      :meth:`ModelBank.summary`), and the way out.
+    - **The noise gate has not been met**: the stream has all but settled,
+      the gate has withheld every row for a further half-life, and at the
+      row rate so far ``error_inflation`` stays above
+      ``max_error_inflation``, so predictions stay withheld unless the rows
+      come faster. Not for ``kalman``, whose gate reads each row's own
+      value, which a row nearer the design's centre reads lower. The message
+      says how far, and the way out -- a half-life above the one it names,
+      or a looser ratio.
+    - **A** ``min_weight`` **has not been met**: the stream has all but
+      settled, the floor has withheld every row for a further half-life, and
+      at the rows' spacing ``d`` and weight so far the weight a target reads
+      tops out below its ``min_weight`` -- the ceiling
+      ``1 / (1 - 2 ** (-d / half_life))``, which a clock column keeps any
+      spec from knowing in advance. The message names the ceiling
+      (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
 
-    Under ``embargo`` both notices read how far the rows the model has
-    learned from have settled, the clock its weight has covered; the row's
-    ``settled_frac`` counts the held rows' clock too.
+    Both wait a half-life during which their gate withholds every row, on
+    the clock the learned rows have covered; a row the gate lets through
+    starts the wait again. Their ceiling is a projection from the rows so
+    far, which rows that come faster can beat, so neither says "for good".
+    The wait is not in the state file: a bank saved and loaded inside it
+    waits again from the load. Under ``embargo`` both notices read how far
+    the rows the model has learned from have settled, the clock its weight
+    has covered; the row's ``settled_frac`` counts the held rows' clock too.
 
     Every row already carries the state (``withheld_reason``, ``settled_frac``,
     ``support_coef``); the warning is the once-only pointer to it. For a spec
