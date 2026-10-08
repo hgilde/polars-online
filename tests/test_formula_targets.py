@@ -952,7 +952,8 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     windows state 9, for a variance's queue (47 refused); 49 since task 211,
     for `kalman`'s anchor and clocks (48 refused); 50 since task 214, for
     `kalman`'s prior from a median (49 refused); and 51 since task 215, for
-    `ftrl` without its penalty scale (50 refused)."""
+    `ftrl` without its penalty scale and the clusters' centres as pairs (50
+    refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()

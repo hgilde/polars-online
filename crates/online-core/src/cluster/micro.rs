@@ -100,7 +100,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, dist, dist2, merged_radius2};
+use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, merged_radius2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
@@ -401,7 +401,7 @@ impl Micro {
                 row.push(m.label as f64);
                 row.push(m.s.n);
                 row.push(m.s.r2.max(0.0).sqrt());
-                row.extend_from_slice(&m.s.c);
+                row.extend(m.s.centre());
                 row
             })
             .collect();
@@ -421,11 +421,11 @@ impl Micro {
             if m.potential != potential {
                 continue;
             }
-            let d = dist2(&m.s.c, z, &self.mw);
+            let d = m.s.dist2(z, &self.mw);
             let closer = match best {
                 None => true,
                 Some((_, bd)) if d.is_finite() || bd.is_finite() => d < bd,
-                Some((bj, _)) => dist(&m.s.c, z, &self.mw) < dist(&self.mc[bj].s.c, z, &self.mw),
+                Some((bj, _)) => m.s.dist(z, &self.mw) < self.mc[bj].s.dist(z, &self.mw),
             };
             if closer {
                 best = Some((j, d));
@@ -435,7 +435,7 @@ impl Micro {
             let d = if d2.is_finite() {
                 d2.sqrt()
             } else {
-                dist(&self.mc[j].s.c, z, &self.mw)
+                self.mc[j].s.dist(z, &self.mw)
             };
             (j, d2, d)
         })
@@ -562,7 +562,7 @@ impl Micro {
             if o == j || !m.potential {
                 continue;
             }
-            let d = dist2(&m.s.c, &self.mc[j].s.c, &self.mw);
+            let d = m.s.dist2_to(&self.mc[j].s, &self.mw);
             if best.is_none_or(|(_, bd)| d < bd) {
                 best = Some((o, d));
             }
@@ -662,7 +662,7 @@ impl Micro {
         let mut d2 = vec![0.0; m * m];
         for a in 0..m {
             for b in (a + 1)..m {
-                let d = dist2(&self.mc[idx[a]].s.c, &self.mc[idx[b]].s.c, &self.mw);
+                let d = self.mc[idx[a]].s.dist2_to(&self.mc[idx[b]].s, &self.mw);
                 d2[a * m + b] = d;
                 d2[b * m + a] = d;
             }
@@ -693,7 +693,7 @@ impl Micro {
         let m = idx.len();
         let (mc, mw) = (&self.mc, &self.mw);
         // The squared distance of the pair `(a, b)`, `a < b`.
-        let d2 = |a: usize, b: usize| dist2(&mc[idx[a]].s.c, &mc[idx[b]].s.c, mw);
+        let d2 = |a: usize, b: usize| mc[idx[a]].s.dist2_to(&mc[idx[b]].s, mw);
         if self.cfg.macro_link.is_none() && m >= 2 {
             let mut nn = vec![f64::INFINITY; m];
             for a in 0..m {
@@ -817,7 +817,7 @@ impl OnlineModel for Micro {
                 let p = m.cfg.n_features;
                 if !m.moments.has_shape(p)
                     || m.mw.len() != p
-                    || m.mc.iter().any(|c| c.s.c.len() != p)
+                    || m.mc.iter().any(|c| !c.s.has_width(p))
                 {
                     return Err(StateError::Invalid(
                         "micro: the state has the wrong shape".into(),
@@ -849,6 +849,7 @@ impl OnlineModel for Micro {
 
 #[cfg(test)]
 mod tests {
+    use super::super::summary::{dist, dist2};
     use super::*;
 
     /// A state whose vectors are not the cfg's is refused, where it loaded

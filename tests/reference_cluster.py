@@ -89,13 +89,57 @@ def dist2(c: list[float], z: list[float], mw: list[float]) -> float:
 
 @dataclass
 class Summary:
+    """`ClusterSummary`: the centre a pair, ``c + c_lo`` (`comp.rs`;
+    docs/PLAN.md task 215, D2), every step added to it exactly and every
+    distance read from it."""
+
     n: float
     c: list[float]
     r2: float
+    c_lo: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.c_lo:
+            self.c_lo = [0.0] * len(self.c)
 
     @staticmethod
     def empty(p: int) -> Summary:
         return Summary(0.0, [0.0] * p, 0.0)
+
+    def centre(self) -> list[float]:
+        return [h + lo for h, lo in zip(self.c, self.c_lo, strict=True)]
+
+    def dev(self, z: list[float], i: int) -> float:
+        return _dev(z[i], self.c[i], self.c_lo[i])
+
+    def dev_of(self, o: Summary, i: int) -> float:
+        return (o.c[i] - self.c[i]) + (o.c_lo[i] - self.c_lo[i])
+
+    def dist2(self, z: list[float], mw: list[float]) -> float:
+        acc = 0.0
+        for i in range(len(self.c)):
+            t = self.dev(z, i)
+            acc += mw[i] * t * t
+        return acc
+
+    def dist2_to(self, o: Summary, mw: list[float]) -> float:
+        acc = 0.0
+        for i in range(len(self.c)):
+            t = self.dev_of(o, i)
+            acc += mw[i] * t * t
+        return acc
+
+    def _step_to(self, z: list[float], b: float) -> None:
+        if b > 0.0:
+            for i in range(len(self.c)):
+                d = self.dev(z, i)
+                self.c[i], self.c_lo[i] = _add(self.c[i], self.c_lo[i], b * d)
+
+    def _step_toward(self, o: Summary, b: float) -> None:
+        if b > 0.0:
+            for i in range(len(self.c)):
+                d = self.dev_of(o, i)
+                self.c[i], self.c_lo[i] = _add(self.c[i], self.c_lo[i], b * d)
 
     def decay(self, lam: float) -> None:
         self.n *= lam
@@ -105,8 +149,7 @@ class Summary:
         if n_new <= 0.0:
             return
         b = w / n_new
-        for i in range(len(self.c)):
-            self.c[i] += b * (z[i] - self.c[i])
+        self._step_to(z, b)
         if math.isfinite(d2):
             self.r2 += b * (d2 - self.r2)
         self.n = n_new
@@ -116,8 +159,7 @@ class Summary:
         if n_new <= 0.0:
             return
         b = o.n / n_new
-        for i in range(len(self.c)):
-            self.c[i] += b * (o.c[i] - self.c[i])
+        self._step_toward(o, b)
         self.r2 += b * (o.r2 - self.r2)
         self.n = n_new
 
@@ -126,9 +168,8 @@ class Summary:
         if n_new <= 0.0:
             return
         a, b = self.n / n_new, w / n_new
-        q = dist2(self.c, z, mw)
-        for i in range(len(self.c)):
-            self.c[i] += b * (z[i] - self.c[i])
+        q = self.dist2(z, mw)
+        self._step_to(z, b)
         if math.isfinite(q):
             self.r2 = a * self.r2 + a * b * q
         self.n = n_new
@@ -138,9 +179,8 @@ class Summary:
         if n_new <= 0.0:
             return
         a, b = self.n / n_new, o.n / n_new
-        q = dist2(self.c, o.c, mw)
-        for i in range(len(self.c)):
-            self.c[i] += b * (o.c[i] - self.c[i])
+        q = self.dist2_to(o, mw)
+        self._step_toward(o, b)
         if math.isfinite(q):
             self.r2 = a * self.r2 + b * o.r2 + a * b * q
         self.n = n_new
@@ -150,6 +190,7 @@ class Summary:
         self.r2 = 0.0
         for i in range(len(self.c)):
             self.c[i] = 0.0
+            self.c_lo[i] = 0.0
 
 
 @dataclass
@@ -435,12 +476,12 @@ class KMeansRef:
         return self.moments.w
 
     def coefficients(self) -> list[list[float]] | None:
-        return [list(c.c) for c in self.clusters] if self.seeded else None
+        return [c.centre() for c in self.clusters] if self.seeded else None
 
     def nearest2(self, z: list[float]) -> tuple[int, float, float]:
         best, best_d, second = 0, math.inf, math.inf
         for j, c in enumerate(self.clusters):
-            d = dist2(c.c, z, self.mw)
+            d = c.dist2(z, self.mw)
             if d < best_d:
                 second = best_d
                 best_d = d
@@ -538,8 +579,8 @@ class KMeansRef:
     def split(self, target: int, source: int) -> None:
         self.clusters[source].n *= 0.5
         n = self.clusters[source].n
-        c = list(self.far[source].c)
-        self.clusters[target] = Summary(n, c, self.r2_typical)
+        far = self.far[source]
+        self.clusters[target] = Summary(n, list(far.c), self.r2_typical, list(far.c_lo))
         self.rows[target] = RADIUS_ROWS
 
     def split_merge_check(self) -> None:
@@ -551,7 +592,7 @@ class KMeansRef:
                     ri = math.sqrt(max(self.clusters[i].r2, 0.0))
                     rj = math.sqrt(max(self.clusters[j].r2, 0.0))
                     den = ri + rj
-                    d = math.sqrt(dist2(self.clusters[i].c, self.clusters[j].c, self.mw))
+                    d = math.sqrt(self.clusters[i].dist2_to(self.clusters[j], self.mw))
                     if d == 0.0:
                         ratio = 0.0
                     elif den > 0.0:
@@ -565,7 +606,8 @@ class KMeansRef:
                 source = self.merge_source(i, j)
                 if source is None:
                     return
-                other = Summary(self.clusters[j].n, list(self.clusters[j].c), self.clusters[j].r2)
+                cj = self.clusters[j]
+                other = Summary(cj.n, list(cj.c), cj.r2, list(cj.c_lo))
                 self.clusters[i].merge_welford(other, self.mw)
                 self.rows[i] += self.rows[j]
                 far_j, self.far[j] = self.far[j], Summary.empty(self.p)
@@ -812,7 +854,7 @@ class MicroRef:
 
     def coefficients(self) -> list[list[float]] | None:
         rows = [
-            [float(m.id), float(m.label), m.s.n, math.sqrt(max(m.s.r2, 0.0)), *m.s.c]
+            [float(m.id), float(m.label), m.s.n, math.sqrt(max(m.s.r2, 0.0)), *m.s.centre()]
             for m in self.mc
             if m.potential
         ]
@@ -823,7 +865,7 @@ class MicroRef:
         for j, m in enumerate(self.mc):
             if m.potential != potential:
                 continue
-            d = dist2(m.s.c, z, self.mw)
+            d = m.s.dist2(z, self.mw)
             if best is None or d < best[1]:
                 best = (j, d)
         return best
@@ -893,7 +935,7 @@ class MicroRef:
         for o, m in enumerate(self.mc):
             if o == j or not m.potential:
                 continue
-            d = dist2(m.s.c, self.mc[j].s.c, self.mw)
+            d = m.s.dist2_to(self.mc[j].s, self.mw)
             if best is None or d < best[1]:
                 best = (o, d)
         if best is not None and self.link2 > 0.0 and best[1] <= self.link2:
@@ -950,7 +992,7 @@ class MicroRef:
         d2 = [[0.0] * n for _ in range(n)]
         for a in range(n):
             for b in range(a + 1, n):
-                d = dist2(self.mc[idx[a]].s.c, self.mc[idx[b]].s.c, self.mw)
+                d = self.mc[idx[a]].s.dist2_to(self.mc[idx[b]].s, self.mw)
                 d2[a][b] = d
                 d2[b][a] = d
         if self.macro_link is None and n >= 2:

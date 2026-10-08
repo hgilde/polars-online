@@ -84,7 +84,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, SplitMix64, dist, dist2};
+use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, SplitMix64, dist2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 
@@ -376,7 +376,7 @@ impl KMeans {
     /// The centres as `k` rows of `p` feature values; `None` before seeding.
     pub fn coefficients(&self) -> Option<Vec<Vec<f64>>> {
         self.seeded()
-            .then(|| self.clusters.iter().map(|c| c.c.clone()).collect())
+            .then(|| self.clusters.iter().map(ClusterSummary::centre).collect())
     }
 
     /// Nearest and runner-up: `(j*, d²_j*, d²_second, j_second)`. First
@@ -390,7 +390,7 @@ impl KMeans {
             if d.is_finite() || bd.is_finite() {
                 d < bd
             } else {
-                dist(&self.clusters[j].c, z, &self.mw) < dist(&self.clusters[bj].c, z, &self.mw)
+                self.clusters[j].dist(z, &self.mw) < self.clusters[bj].dist(z, &self.mw)
             }
         };
         let mut best = 0;
@@ -398,7 +398,7 @@ impl KMeans {
         let mut second = f64::INFINITY;
         let mut second_j = None;
         for (j, c) in self.clusters.iter().enumerate() {
-            let d = dist2(&c.c, z, &self.mw);
+            let d = c.dist2(z, &self.mw);
             if j == 0 || closer(d, j, best_d, best) {
                 second = best_d;
                 second_j = (j > 0).then_some(best);
@@ -423,7 +423,7 @@ impl KMeans {
         if d2.is_finite() || d2.is_nan() {
             d2.sqrt()
         } else {
-            dist(&self.clusters[j].c, z, &self.mw)
+            self.clusters[j].dist(z, &self.mw)
         }
     }
 
@@ -478,9 +478,7 @@ impl KMeans {
     fn checkpoint(&mut self) {
         for (c, b) in self.clusters.iter_mut().zip(&mut self.batch) {
             c.merge_plain(b);
-            b.n = 0.0;
-            b.r2 = 0.0;
-            b.c.iter_mut().for_each(|v| *v = 0.0);
+            b.clear();
         }
         self.since = 0;
         if self.cfg.split_merge > 0.0 {
@@ -493,9 +491,7 @@ impl KMeans {
                 self.window_w = 0.0;
                 self.far_rows.iter_mut().for_each(|r| *r = 0);
                 for f in &mut self.far {
-                    f.n = 0.0;
-                    f.r2 = 0.0;
-                    f.c.iter_mut().for_each(|v| *v = 0.0);
+                    f.clear();
                 }
             }
         }
@@ -581,8 +577,7 @@ impl KMeans {
     fn split(&mut self, target: usize, source: usize) {
         self.clusters[source].n *= 0.5;
         let n = self.clusters[source].n;
-        let c = self.far[source].c.clone();
-        self.clusters[target] = ClusterSummary::at(c, n, self.r2_typical);
+        self.clusters[target] = ClusterSummary::at_centre_of(&self.far[source], n, self.r2_typical);
         self.rows[target] = RADIUS_ROWS;
     }
 
@@ -598,7 +593,9 @@ impl KMeans {
                     let ri = self.clusters[i].r2.max(0.0).sqrt();
                     let rj = self.clusters[j].r2.max(0.0).sqrt();
                     let den = ri + rj;
-                    let d = dist2(&self.clusters[i].c, &self.clusters[j].c, &self.mw).sqrt();
+                    let d = self.clusters[i]
+                        .dist2_to(&self.clusters[j], &self.mw)
+                        .sqrt();
                     // Coincident centres are one cluster whatever their
                     // radii; apart, a pair with no radius is never close.
                     let ratio = if d == 0.0 {
@@ -726,9 +723,7 @@ impl KMeans {
         }
         for (c, b) in self.clusters.iter_mut().zip(&mut self.batch) {
             c.merge_plain(b);
-            b.n = 0.0;
-            b.r2 = 0.0;
-            b.c.iter_mut().for_each(|v| *v = 0.0);
+            b.clear();
         }
         if self.cfg.split_merge > 0.0 {
             self.refresh_far_cut();
@@ -995,7 +990,7 @@ impl OnlineModel for KMeans {
                 let (p, k) = (m.cfg.n_features, m.cfg.k);
                 let count = if m.clusters.is_empty() { 0 } else { k };
                 let sums =
-                    |s: &[ClusterSummary]| s.len() == count && s.iter().all(|c| c.c.len() == p);
+                    |s: &[ClusterSummary]| s.len() == count && s.iter().all(|c| c.has_width(p));
                 if !m.moments.has_shape(p)
                     || m.mw.len() != p
                     || !sums(&m.clusters)
@@ -1036,6 +1031,7 @@ impl OnlineModel for KMeans {
 
 #[cfg(test)]
 mod tests {
+    use super::super::summary::dist;
     use super::*;
 
     /// A state whose vectors are not the cfg's is refused, where it loaded

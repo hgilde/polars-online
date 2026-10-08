@@ -464,7 +464,10 @@ fn held(v: &rmpv::Value) -> usize {
 /// anchor, the squared innovations its prior is sized from and its clock
 /// since an observation (49, docs/PLAN.md task 211): the last written by
 /// `kalman_gap`, saved after a row whose targets are null, where `kalman`'s
-/// clocks are 0, its last row having observed both targets.
+/// clocks are 0, its last row having observed both targets. The clusters'
+/// centres as pairs (51, docs/PLAN.md task 215, D2): each summary in a list
+/// keeps its own low parts, so the check runs through every element, and
+/// some of `kmeans`' centres and of `micro`'s must hold one.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
@@ -514,6 +517,38 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                 "{name}: saved on the wrong side of the switch"
             );
         }
+    }
+    type Listed<'a> = (&'a str, &'a [&'a str], &'a [&'a str]);
+    const LISTED: [Listed; 2] = [
+        ("kmeans", &["model", "KMeans", "clusters"], &["c_lo"]),
+        ("micro", &["model", "Micro", "mc"], &["s", "c_lo"]),
+    ];
+    for (name, list, inner) in LISTED {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let Some(items) = at(&v, list).and_then(rmpv::Value::as_array) else {
+            panic!("{name}: the state has no list {}", list.join("."));
+        };
+        let mut lows = 0;
+        for item in items {
+            let Some(field) = at(item, inner) else {
+                panic!(
+                    "{name}: an element of {} has no {}",
+                    list.join("."),
+                    inner.join(".")
+                );
+            };
+            lows += held(field);
+        }
+        assert!(
+            lows > 0,
+            "{name}: no {} in {} holds a number, so the fixture holds nothing of the layout",
+            inner.join("."),
+            list.join(".")
+        );
     }
 }
 

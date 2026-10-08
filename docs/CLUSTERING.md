@@ -618,9 +618,14 @@ after the stop at any floor (0.756 against 0.999 with the feature dropped): the
 stale spread keeps penalizing every centre the held value is far from until the
 centres and the variance have followed it, which is the model's memory, the
 same lag as a level shift, and not something a floor reaches. The means in the
-moments are pairs (PLAN task 101); the centres stay plain, since with the floor
-a plain centre's rounding gap costs `g_c²/(scale_floor·var^∞)` in a distance,
-1e-9 at a level of 1e8 with unit spread.
+moments are pairs (PLAN task 101), and since task 215 so are the centres, every
+distance read from the pair. A plain centre given one value row after row
+stalled `1/(2b)` rounding steps short of it, 1.8e-3 at a level of 1e12, and
+the floor counts that gap `2^(Q/8)` times more after `Q` halflives of quiet:
+`kmeans` read another cluster than at 0.5 from 60 halflives after a feature
+stopped at 1e12, `micro` from 40 (PLAN task 209's report). As a pair the gap
+closes as exact arithmetic's does, and `held_values.rs` holds both models'
+assignments to the level of 0.5's through 150 halflives at either sign of 1e12.
 
 ### 6.2 `kmeans`: fixed `k`, the recommendation
 

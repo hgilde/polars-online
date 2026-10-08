@@ -1757,16 +1757,16 @@ fn ftrl_at_a_level_of_either_sign_is_the_others_mirror() {
     }
 }
 
-/// What a model with no target reports at every level is what it reports at
-/// 0.5, slot by slot and row by row through `until(level)`: both a number
-/// within `steps_of(level)` (at least 1e-12) of `1 + |at 0.5|`, or both NaN.
-/// A slot in `shifted` reports in the stopped feature's own units, and is
-/// held less the level, to `shifted_steps` rounding steps of the level.
+/// What a model with no target reports at each of `levels` is what it
+/// reports at 0.5, slot by slot and on every row: both a number within
+/// `steps_of(level)` (at least 1e-12) of `1 + |at 0.5|`, or both NaN. A slot
+/// in `shifted` reports in the stopped feature's own units, and is held less
+/// the level, to `shifted_steps` rounding steps of the level.
 fn reports_the_same_at_every_level<M: OnlineModel>(
     name: &str,
     make: impl Fn() -> M,
     (shifted, shifted_steps): (&[usize], f64),
-    until: fn(f64) -> usize,
+    levels: &[f64],
 ) {
     let run = |level: f64| -> Vec<Vec<f64>> {
         let mut m = make();
@@ -1777,13 +1777,13 @@ fn reports_the_same_at_every_level<M: OnlineModel>(
             .collect()
     };
     let base = run(0.5);
-    for level in LEVELS {
+    for &level in levels {
         let out = run(level);
         let tol = steps_of(level).max(1e-12);
         let shifted_tol = (shifted_steps * level.abs() * f64::EPSILON).max(tol);
         let (mut worst, mut at, mut numbers) = (0.0f64, (0, 0), 0usize);
         let mut worst_shifted = 0.0f64;
-        for (i, (got, want)) in out.iter().zip(&base).enumerate().take(until(level)) {
+        for (i, (got, want)) in out.iter().zip(&base).enumerate() {
             for (s, (&a, &b)) in got.iter().zip(want).enumerate() {
                 assert_eq!(
                     a.is_nan(),
@@ -1884,37 +1884,27 @@ fn corrchange_cfg() -> CorrChangeCfg {
     }
 }
 
-/// Every row of the stream.
-fn every_row(_: f64) -> usize {
-    usize::MAX
-}
+/// [`LEVELS`] and the held value's mirror at 1e12, where a centre's rounding
+/// step is largest.
+const BOTH_SIGNS: [f64; 7] = [0.5, -0.37, 1e3, 1e8, -1e8, 1e12, -1e12];
 
-/// **The clusters' centres are plain means** (`ClusterSummary::absorb_plain`),
-/// and at 1e12 a centre stalls short of the held value by up to the
-/// rounding step over its step's share, 1.8e-3, a gap the metric's floor
-/// counts `2^(Q/8)` times more as the feature stays quiet for `Q`
-/// half-lives (`scale_floor`, docs/PLAN.md task 102). In exact arithmetic
-/// the gap closes as `2^-Q`; stalled, it grows into the distances, and
-/// `kmeans` reads a different cluster than at 0.5 from 60 half-lives after
-/// the stop (row 1504), `micro` from 40 (row 1105), on 1315 and 1023 of the
-/// 3000 held rows (docs/PLAN.md task 209's report raises it). At 1e12 the
-/// rows through 30 half-lives after the stop are held, the rest at the
-/// other levels: through 1e8 every row is, 5.7e-8 and 4.0e-8 at most.
-fn before_a_centre_stalls(level: f64) -> usize {
-    if level.abs() >= 1e12 {
-        MOVING + 30 * H as usize
-    } else {
-        usize::MAX
-    }
-}
-
+/// **The clusters' centres are compensated means** (`crate::comp`; docs/PLAN.md
+/// task 215, D2). Plain, a centre at 1e12 stalled short of the held value by
+/// up to the rounding step over its step's share, 1.8e-3, a gap the metric's
+/// floor counts `2^(Q/8)` times more as the feature stays quiet for `Q`
+/// half-lives (`scale_floor`, task 102); in exact arithmetic the gap closes
+/// as `2^-Q`. Stalled, it grew into the distances, and `kmeans` read a
+/// different cluster than at 0.5 from 60 half-lives after the stop (row
+/// 1504), `micro` from 40 (row 1105), on 1315 and 1023 of the 3000 held rows
+/// (task 209's report), so only the rows through 30 half-lives were held.
+/// Now every row of the 150 half-lives is, at both signs of 1e12.
 #[test]
 fn kmeans_assigns_the_same_at_every_level() {
     reports_the_same_at_every_level(
         "kmeans",
         || KMeans::new(kmeans_cfg()).unwrap(),
         (&[], 0.0),
-        before_a_centre_stalls,
+        &BOTH_SIGNS,
     );
 }
 
@@ -1924,8 +1914,50 @@ fn micro_assigns_the_same_at_every_level() {
         "micro",
         || Micro::new(micro_cfg()).unwrap(),
         (&[], 0.0),
-        before_a_centre_stalls,
+        &BOTH_SIGNS,
     );
+}
+
+/// A value held for 100 half-lives is reached: the centre the last row is
+/// assigned to sits on the held value of the stopped feature, to the bit, at
+/// 0.5 and at either sign of 1e12 (docs/PLAN.md task 215, D2). Exact
+/// arithmetic leaves `2^-100` of the gap, under a rounding step of the
+/// level; a plain mean stalled 1.8e-3 short at 1e12, about 15 rounding
+/// steps.
+#[test]
+fn a_centre_reaches_a_value_held_at_a_level() {
+    for level in [0.5, 1e12, -1e12] {
+        let rows = stream_of(level, 100 * H as usize);
+        let held = rows[rows.len() - 1].0[2];
+        assert_eq!(held, level + 0.37);
+        let mut km = KMeans::new(kmeans_cfg()).unwrap();
+        let mut mc = Micro::new(micro_cfg()).unwrap();
+        let (mut cluster, mut micro_id) = (f64::NAN, f64::NAN);
+        for (i, (x, _)) in rows.iter().enumerate() {
+            cluster = km.step(x, &[], d(i), 1.0).pred[0];
+            micro_id = mc.step(x, &[], d(i), 1.0).pred[2];
+        }
+        let centres = km.coefficients().unwrap();
+        let c = centres[cluster as usize][2];
+        assert_eq!(
+            c,
+            held,
+            "kmeans at level {level}: the centre is {:.3e} short of the held value",
+            held - c
+        );
+        let summaries = mc.coefficients().unwrap();
+        let row = summaries
+            .iter()
+            .find(|r| r[0] == micro_id)
+            .unwrap_or_else(|| panic!("micro at level {level}: summary {micro_id} not potential"));
+        let c = row[4 + 2];
+        assert_eq!(
+            c,
+            held,
+            "micro at level {level}: the centre is {:.3e} short of the held value",
+            held - c
+        );
+    }
 }
 
 /// An equicorrelation reads the rows standardized, which a level leaves
@@ -1947,7 +1979,7 @@ fn deco_reports_the_same_at_every_level() {
             .unwrap()
         },
         (&[], 0.0),
-        every_row,
+        &LEVELS,
     );
 }
 
@@ -1987,7 +2019,7 @@ fn bocpd_reports_the_same_at_every_level() {
             .unwrap()
         },
         (&[5], 2e3),
-        every_row,
+        &LEVELS,
     );
 }
 
@@ -2000,6 +2032,6 @@ fn corrchange_tests_the_same_at_every_level() {
         "corrchange",
         || CorrChange::new(corrchange_cfg()).unwrap(),
         (&[], 0.0),
-        every_row,
+        &LEVELS,
     );
 }

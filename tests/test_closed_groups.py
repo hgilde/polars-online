@@ -791,8 +791,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 def test_schema_version_is_current():
     """The version a bank file names, held to the library's: 51 since
-    2026-10-08 (task 215: `ftrl` keeps no penalty scale; the bank refuses 50
-    and older), after 50 the same day (task 214: a standardizing `kalman`
+    2026-10-08 (task 215: `ftrl` keeps no penalty scale, and `kmeans`' and
+    `micro`'s centres are pairs; the bank refuses 50 and older), after 50
+    the same day (task 214: a standardizing `kalman`
     keeps the first three rows' squared innovations, which its prior is the
     median of; the bank refuses 49 and older), after 49 the same day (task 211: `kalman` keeps
     an anchor, its clocks since an observation and its prior's squared

@@ -591,8 +591,9 @@ pub use window::{
 ///   written.
 /// - 51 (2026-10-08, task 215): `ftrl` keeps no penalty scale: its `scale`
 ///   and `w_taught` are gone, the penalties fixed against sums aged on the
-///   clock. A state from before 51 does not decode, and pre-1.0 no loader
-///   is written.
+///   clock. `kmeans`' and `micro`'s centres are pairs, each summary keeping
+///   `c_lo` beside `c`. A state from before 51 does not decode, and pre-1.0
+///   no loader is written.
 pub const SCHEMA_VERSION: u32 = 51;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
@@ -617,9 +618,9 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// **51 since task 215** (2026-10-08): `ftrl` keeps no penalty scale; a
-/// state from before 51 is refused by its number, and the fixtures are
-/// regenerated at 51.
+/// **51 since task 215** (2026-10-08): `ftrl` keeps no penalty scale, and
+/// the clusters' centres are pairs; a state from before 51 is refused by
+/// its number, and the fixtures are regenerated at 51.
 /// **50 since task 214** (2026-10-08): `kalman`'s noise basis is the first
 /// three rows' squared innovations and weights, its prior their median; a
 /// state from before 50 is refused by its number, and the fixtures are

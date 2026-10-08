@@ -1,7 +1,9 @@
 //! The accumulator every clustering model here is built on (docs/CLUSTERING.md
 //! §6.1): a cluster is a weight, a centre and a radius², all in **mean form**,
 //! so no stored number ever exceeds the largest input and a zero-weight update
-//! is a guarded no-op (CLAUDE.md rule 9). The metric is diagonal and read from
+//! is a guarded no-op (CLAUDE.md rule 9). The centre is a compensated pair
+//! (`crate::comp`), as every mean at a level here is (docs/PLAN.md task 215,
+//! D2). The metric is diagonal and read from
 //! the EW feature moments *before* each row (E24's rule, §10: standardize the
 //! metric, never the coordinates), and the generator the seeding rules draw
 //! from is written out here so that a Python reference can be bit-exact.
@@ -16,10 +18,17 @@ use serde::{Deserialize, Serialize};
 /// poisoning an argmin.
 #[inline]
 pub fn dist2(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
+    sq_norm(c.len(), |i| z[i] - c[i], mw)
+}
+
+/// `Σ mw_i t_i²` over the deviations `t(i)`: [`dist2`]'s sum, for a
+/// deviation from a plain centre or from a pair.
+#[inline]
+fn sq_norm(p: usize, t: impl Fn(usize) -> f64, mw: &[f64]) -> f64 {
     let mut acc = 0.0;
-    for i in 0..c.len() {
-        let t = z[i] - c[i];
-        acc += mw[i] * t * t;
+    for (i, &m) in mw[..p].iter().enumerate() {
+        let t = t(i);
+        acc += m * t * t;
     }
     acc
 }
@@ -30,18 +39,25 @@ pub fn dist2(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
 /// `5e199` say, does not (review 2026-09-26, G1). Every scaled deviation is
 /// taken relative to the largest, so the sum of squares stays near 1. Not
 /// the root of `dist2` to the bit, so it is read only where that root is
-/// not finite.
+/// not finite. The models read [`ClusterSummary::dist`], from the pair;
+/// this plain form is the tests'.
+#[cfg(test)]
 pub fn dist(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
+    norm(c.len(), |i| z[i] - c[i], mw)
+}
+
+/// [`dist`]'s overflow-free norm over the deviations `t(i)`.
+fn norm(p: usize, t: impl Fn(usize) -> f64, mw: &[f64]) -> f64 {
     let mut scale = 0.0f64;
-    for i in 0..c.len() {
-        scale = scale.max(((z[i] - c[i]) * mw[i].sqrt()).abs());
+    for (i, m) in mw[..p].iter().enumerate() {
+        scale = scale.max((t(i) * m.sqrt()).abs());
     }
     if !scale.is_finite() || scale == 0.0 {
         return scale;
     }
     let mut acc = 0.0;
-    for i in 0..c.len() {
-        let t = (z[i] - c[i]) * mw[i].sqrt() / scale;
+    for (i, m) in mw[..p].iter().enumerate() {
+        let t = t(i) * m.sqrt() / scale;
         acc += t * t;
     }
     scale * acc.sqrt()
@@ -67,7 +83,7 @@ pub fn merged_radius2(n: f64, r2: f64, q: f64, w: f64) -> f64 {
     a * r2 + a * b * q
 }
 
-/// One cluster: weight `n`, centre `c`, radius² `r2`.
+/// One cluster: weight `n`, centre `c + c_lo`, radius² `r2`.
 ///
 /// `r2` is whatever the model defines it as — `kmeans` keeps the EW mean of
 /// each assigned row's squared distance to the centre *at assignment*
@@ -75,10 +91,22 @@ pub fn merged_radius2(n: f64, r2: f64, q: f64, w: f64) -> f64 {
 /// `micro` keeps Welford's centred radius² ([`ClusterSummary::absorb`] /
 /// [`ClusterSummary::merge_welford`]). The two forms share the weight and
 /// centre arithmetic, which is the mean-form recursion of `ewcov.rs`.
+///
+/// **The centre is a pair** (`crate::comp`; docs/PLAN.md task 215, D2): its
+/// step `b·δ` is added exactly, `δ` the deviation from the pair, and every
+/// distance reads that deviation. Plain, a centre given one value row after
+/// row stalled `1/(2b)` rounding steps short of it, 1.8e-3 at a level of
+/// 1e12, and the metric's floor counts a quiet feature `2^(Q/8)` times more
+/// after `Q` half-lives (task 102), so the stall grew into the distances:
+/// `kmeans` read another cluster than at 0.5 from 60 half-lives on, `micro`
+/// from 40 (task 209's report). As a pair the gap closes as exact
+/// arithmetic's does, `2^-Q`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterSummary {
     pub n: f64,
     pub c: Vec<f64>,
+    /// What `c` leaves out: coordinate `i` of the centre is `c[i] + c_lo[i]`.
+    pub c_lo: Vec<f64>,
     pub r2: f64,
 }
 
@@ -88,13 +116,94 @@ impl ClusterSummary {
         Self {
             n: 0.0,
             c: vec![0.0; p],
+            c_lo: vec![0.0; p],
             r2: 0.0,
         }
     }
 
     /// A summary placed at `c` with the given weight and radius².
     pub fn at(c: Vec<f64>, n: f64, r2: f64) -> Self {
-        Self { n, c, r2 }
+        let c_lo = vec![0.0; c.len()];
+        Self { n, c, c_lo, r2 }
+    }
+
+    /// A summary placed at `other`'s centre, the pair whole, with the given
+    /// weight and radius².
+    pub fn at_centre_of(other: &ClusterSummary, n: f64, r2: f64) -> Self {
+        Self {
+            n,
+            c: other.c.clone(),
+            c_lo: other.c_lo.clone(),
+            r2,
+        }
+    }
+
+    /// Empty again, as [`empty`](Self::empty) at the same width.
+    pub fn clear(&mut self) {
+        self.n = 0.0;
+        self.r2 = 0.0;
+        self.c.iter_mut().for_each(|v| *v = 0.0);
+        self.c_lo.iter_mut().for_each(|v| *v = 0.0);
+    }
+
+    /// The centre as doubles, each pair rounded: what is reported.
+    pub fn centre(&self) -> Vec<f64> {
+        self.c.iter().zip(&self.c_lo).map(|(h, l)| h + l).collect()
+    }
+
+    /// Whether the centre is `p` wide, its low parts with it.
+    pub fn has_width(&self, p: usize) -> bool {
+        self.c.len() == p && self.c_lo.len() == p
+    }
+
+    /// The deviation of `z_i` from coordinate `i` of the centre.
+    #[inline]
+    fn dev(&self, z: &[f64], i: usize) -> f64 {
+        crate::comp::dev(z[i], self.c[i], self.c_lo[i])
+    }
+
+    /// The deviation of `other`'s centre from this one's, coordinate `i`:
+    /// the high parts' difference, exact between centres near each other,
+    /// and the low parts'.
+    #[inline]
+    fn dev_of(&self, other: &ClusterSummary, i: usize) -> f64 {
+        (other.c[i] - self.c[i]) + (other.c_lo[i] - self.c_lo[i])
+    }
+
+    /// [`dist2`] from the row `z` to the centre, read from the pair.
+    pub fn dist2(&self, z: &[f64], mw: &[f64]) -> f64 {
+        sq_norm(self.c.len(), |i| self.dev(z, i), mw)
+    }
+
+    /// [`dist`] from the row `z` to the centre, read from the pair.
+    pub fn dist(&self, z: &[f64], mw: &[f64]) -> f64 {
+        norm(self.c.len(), |i| self.dev(z, i), mw)
+    }
+
+    /// [`dist2`] between two centres, each read from its pair.
+    pub fn dist2_to(&self, other: &ClusterSummary, mw: &[f64]) -> f64 {
+        sq_norm(self.c.len(), |i| self.dev_of(other, i), mw)
+    }
+
+    /// The centre takes `b` of its deviation from `z`, added to the pair:
+    /// none at `b = 0`, which `comp::add` could round afresh.
+    fn step_to(&mut self, z: &[f64], b: f64) {
+        if b > 0.0 {
+            for i in 0..self.c.len() {
+                let d = self.dev(z, i);
+                crate::comp::add(&mut self.c[i], &mut self.c_lo[i], b * d);
+            }
+        }
+    }
+
+    /// The centre takes `b` of its deviation from `other`'s.
+    fn step_toward(&mut self, other: &ClusterSummary, b: f64) {
+        if b > 0.0 {
+            for i in 0..self.c.len() {
+                let d = self.dev_of(other, i);
+                crate::comp::add(&mut self.c[i], &mut self.c_lo[i], b * d);
+            }
+        }
     }
 
     /// `n *= lam`: the clock passes. A mean does not decay.
@@ -108,7 +217,7 @@ impl ClusterSummary {
     ///
     /// ```text
     /// n' = n + w,  b = w / n'
-    /// c' = c + b (z − c)
+    /// c' = c + b (z − c)            (on the pair)
     /// r2' = r2 + b (d2 − r2)        (skipped when d2 is not finite)
     /// ```
     ///
@@ -121,9 +230,7 @@ impl ClusterSummary {
             return;
         }
         let b = w / n_new;
-        for (ci, zi) in self.c.iter_mut().zip(z) {
-            *ci += b * (zi - *ci);
-        }
+        self.step_to(z, b);
         if d2.is_finite() {
             self.r2 += b * (d2 - self.r2);
         }
@@ -139,17 +246,16 @@ impl ClusterSummary {
     /// ```
     ///
     /// Guarded as `absorb_plain`. With a one-row batch this *is*
-    /// `absorb_plain`, bit for bit, which is what makes `update_every_rows = 1`
-    /// the per-row model without a second code path.
+    /// `absorb_plain`, bit for bit -- the batch's centre is the row, its low
+    /// part 0 -- which is what makes `update_every_rows = 1` the per-row
+    /// model without a second code path.
     pub fn merge_plain(&mut self, other: &ClusterSummary) {
         let n_new = self.n + other.n;
         if n_new <= 0.0 {
             return;
         }
         let b = other.n / n_new;
-        for (ci, oi) in self.c.iter_mut().zip(&other.c) {
-            *ci += b * (oi - *ci);
-        }
+        self.step_toward(other, b);
         self.r2 += b * (other.r2 - self.r2);
         self.n = n_new;
     }
@@ -171,10 +277,8 @@ impl ClusterSummary {
             return;
         }
         let (a, b) = (self.n / n_new, w / n_new);
-        let q = dist2(&self.c, z, mw);
-        for (ci, zi) in self.c.iter_mut().zip(z) {
-            *ci += b * (zi - *ci);
-        }
+        let q = self.dist2(z, mw);
+        self.step_to(z, b);
         if q.is_finite() {
             self.r2 = a * self.r2 + a * b * q;
         }
@@ -184,7 +288,7 @@ impl ClusterSummary {
     /// What [`absorb`](Self::absorb) would leave in `r2`, without absorbing:
     /// [`merged_radius2`] at this summary's weight and radius.
     pub fn radius2_after(&self, z: &[f64], w: f64, mw: &[f64]) -> f64 {
-        merged_radius2(self.n, self.r2, dist2(&self.c, z, mw), w)
+        merged_radius2(self.n, self.r2, self.dist2(z, mw), w)
     }
 
     /// Welford merge of two centred summaries, with the cross term:
@@ -199,10 +303,8 @@ impl ClusterSummary {
             return;
         }
         let (a, b) = (self.n / n_new, other.n / n_new);
-        let q = dist2(&self.c, &other.c, mw);
-        for (ci, oi) in self.c.iter_mut().zip(&other.c) {
-            *ci += b * (oi - *ci);
-        }
+        let q = self.dist2_to(other, mw);
+        self.step_toward(other, b);
         if q.is_finite() {
             self.r2 = a * self.r2 + b * other.r2 + a * b * q;
         }

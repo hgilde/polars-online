@@ -2470,7 +2470,8 @@ mod tests {
         // with windows state 9, a variance's queue six wide; 49 for task
         // 211's `kalman` anchor and clocks, 50 for task 214's `kalman`
         // prior from a median and 51 for task 215's `ftrl` without its
-        // penalty scale, the windows state unchanged.
+        // penalty scale and the clusters' centres as pairs, the windows
+        // state unchanged.
         assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 51));
     }
 
