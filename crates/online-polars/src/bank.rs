@@ -163,7 +163,8 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// target's own spread, which each keeps where it kept a residual one; a
 /// file from before it is refit. **45 since task 116** (the same day):
 /// `rls` keeps the squared-weight sum its noise statistic reads Kish's size
-/// from; a file from before it is refit.
+/// from, and `huber` and `quantile` their data shares; a file from before it
+/// is refit.
 pub const MIN_BANK_SCHEMA_VERSION: u32 = 45;
 
 /// The version of the envelope a bank with these specs needs: 3 with a

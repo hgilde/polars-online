@@ -14,6 +14,7 @@ padasip, statsmodels -- are in ``tests/test_second_opinion.py``.
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any
 
 import numpy as np
@@ -342,3 +343,66 @@ class TestTheHardRules:
         b = unnest(po.ModelBank([s]).fit_predict(null))["error_inflation_y"].to_numpy()
         np.testing.assert_array_equal(a[:52], b[:52])
         assert np.isfinite(a[51])
+
+
+# ---------------------------------------------------------------------------
+# B. support_coef for huber and quantile
+
+
+def robust(kind: str, **kw: Any) -> dict:
+    base: dict[str, Any] = dict(targets=["y"], features=["x0", "x1"], half_life=math.inf)
+    if kind == "quantile":
+        base["quantile"] = 0.5
+    base.update(kw)
+    return getattr(po.spec, kind)("m", **base)
+
+
+class TestRobustSupport:
+    @pytest.mark.parametrize("kind", ["huber", "quantile"])
+    def test_a_duplicated_column_reads_half(self, kind):
+        """``support_coef = diag(G_raw · G⁻¹)`` on the system each solve
+        inverts, the band-reweighted Gram plus the mean-form ridge: a
+        duplicated pair splits its coefficient evenly, a clean column is
+        all data (WARMUP §2.2)."""
+        df = frame(300).with_columns(pl.col("x0").alias("x2"))
+        s = robust(kind, features=["x0", "x1", "x2"], ridge=1e-8, coef_every=0)
+        out = unnest(po.ModelBank([s]).fit_predict(df))
+        support = out["support_coef"][-1].to_list()
+        assert support[0] is None, "the intercept is not a share"
+        assert support[1:] == pytest.approx([0.5, 1.0, 0.5], abs=1e-3)
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_huber_without_outliers_is_the_ridges_shrinkage(self, standardize):
+        """With ``huber_delta`` far past every residual no row is
+        down-weighted, and the band Gram is the EW Gram: the share is
+        ``1 − λ ((Σ + λI)⁻¹)_jj``, ``Σ`` the centred mean-form covariance
+        (in correlation form under ``standardize``), from numpy."""
+        rng = np.random.default_rng(9)
+        n, ridge = 300, 0.4
+        x = rng.normal(size=(n, 2)) * np.array([1.5, 0.6])
+        x[:, 1] += 0.5 * x[:, 0]
+        y = 1.0 + x[:, 0] - x[:, 1] + 0.3 * rng.normal(size=n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        s = robust("huber", huber_delta=1e6, ridge=ridge, standardize=standardize, coef_every=0)
+        out = unnest(po.ModelBank([s]).fit_predict(df))
+        got = out["support_coef"][-1].to_list()
+        cov = np.cov(x.T, bias=True)
+        if standardize:
+            sd = np.sqrt(np.diag(cov))
+            cov = cov / np.outer(sd, sd)
+        want = 1.0 - ridge * np.diag(np.linalg.inv(cov + ridge * np.eye(2)))
+        assert got[0] is None
+        np.testing.assert_allclose(got[1:], want, rtol=1e-9)
+
+    def test_the_summary_and_the_warning_name_the_feature(self):
+        df = frame(300).with_columns(pl.col("x0").alias("x2"))
+        s = robust("huber", features=["x0", "x1", "x2"], ridge=1e-8, half_life=20.0, coef_every=1)
+        bank = po.ModelBank([s])
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            bank.fit_predict(df)
+        got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
+        assert len(got) == 1 and "support_coef" in got[0], got
+        summary = bank.summary("m")
+        assert summary["min_support_coef"][0] < 0.5
+        assert summary["min_support_coef_feature"][0] in ("x0", "x2")

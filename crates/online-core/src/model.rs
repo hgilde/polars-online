@@ -206,8 +206,9 @@ pub(crate) fn min_weight_of(own: &[f64], min_weight: f64, j: usize) -> f64 {
 /// human-readable export ([`crate::humanfloat`]; msgpack's bytes are the
 /// vectors' own), and `NaN != NaN` would make a model holding one unequal
 /// to its own clone, as the readiness shares' NaN would (`ewridge`'s
-/// `same_bits`).
-#[derive(Debug, Clone)]
+/// `same_bits`). `robust`'s data shares ride on it too (task 116), the
+/// intercept's NaN being their rule.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Fit<T>(pub(crate) T);
 
 impl Serialize for Fit<Vec<Vec<f64>>> {
@@ -734,7 +735,9 @@ pub trait OnlineModel: Sized {
     /// the intercept slot, which is not a share, and for a coefficient
     /// outside the slot's feature set; 0 for a column the standardiser
     /// dropped. `None` before the first solve, and for a model with no
-    /// ridge system to read it from.
+    /// ridge system to read it from: `ewridge`, `huber` and `quantile` have
+    /// one (docs/PLAN.md task 116); `lasso`'s L1 penalty has no shrinkage
+    /// matrix, and `ew_cov` no coefficients.
     fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
         None
     }

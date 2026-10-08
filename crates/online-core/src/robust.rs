@@ -100,8 +100,26 @@
 //!
 //! Because the weights are per target, the `S` accumulator is per target here
 //! (one [`EwCov`] each) — unlike [`crate::EwRidge`], which shares one.
+//!
+//! **Each coefficient's data share** (`support_coef`; docs/PLAN.md task 116,
+//! docs/WARMUP-AND-CONVERGENCE.md §2.2). The ridge is mean-form: each solve
+//! inverts `A = G + λI`, `G` the band Gram -- the rows as the loss weighs
+//! them, centred and scaled as the solve scales them, or raw through the
+//! origin -- and `λ` the ridge plus any jitter the factor needed. So
+//! `S = G A⁻¹ = I − λ A⁻¹` is the shrinkage matrix, and
+//!
+//! ```text
+//! support_coef_j = S_jj = 1 − λ (A⁻¹)_jj    in [0, 1]
+//! ```
+//!
+//! is the share of coefficient `j` the data, as the robust loss weighs it,
+//! determined rather than the ridge: `ewridge`'s statistic on the system
+//! this model solves. Taken at each solve, `O(k³)`, and kept per target;
+//! NaN in the intercept's slot, 0 for a column the solve dropped.
 
 use serde::{Deserialize, Serialize};
+
+use std::sync::{Arc, OnceLock};
 
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
@@ -374,6 +392,13 @@ pub struct Robust {
     /// every target.
     #[serde(default)]
     target_min_weight: Vec<f64>,
+    /// Per target, each coefficient's data share from the last solve that
+    /// fit it, `k_total` long (docs/WARMUP-AND-CONVERGENCE.md §2.2; the
+    /// module doc): NaN in the intercept slot and for a target no solve has
+    /// fit, 0 for a column the system dropped. Empty before the first solve.
+    /// State since schema 45 (docs/PLAN.md task 116).
+    #[serde(default)]
+    support: Shares,
     /// The row's augmented values ([`RowBuf`]). Not state.
     #[serde(skip)]
     zbuf: RowBuf,
@@ -411,6 +436,106 @@ impl std::ops::DerefMut for RowBuf {
     }
 }
 
+/// One solve's data shares for one target, taken when something reads them
+/// (docs/PLAN.md task 116): `A⁻¹`'s diagonal is `O(k³)` and a solve runs
+/// every few rows, so it waits for a `coef` row, the summary, a save or the
+/// end of the run, as `ewridge`'s does (task 140). The arithmetic is the
+/// same whenever it runs.
+#[derive(Debug)]
+struct PendingShares {
+    factor: SpdFactor,
+    /// The ridge plus the jitter the factor needed.
+    lam: f64,
+    /// Per kept column, in the factor's order, the coefficient slot its
+    /// share goes to.
+    to: Vec<usize>,
+    /// The shares before any column's ([`Robust::dropped_shares`]).
+    base: Vec<f64>,
+    shares: OnceLock<Vec<f64>>,
+}
+
+impl PendingShares {
+    /// `1 − λ (A⁻¹)_jj` for each kept column, in its slot (the module doc).
+    fn shares(&self) -> &[f64] {
+        self.shares.get_or_init(|| {
+            let mut out = self.base.clone();
+            let inv = self.factor.inverse_diagonal(self.to.len());
+            for (&slot, inv) in self.to.iter().zip(inv) {
+                out[slot] = (1.0 - self.lam * inv).clamp(0.0, 1.0);
+            }
+            out
+        })
+    }
+}
+
+/// Each target's data shares (`support_coef`): the ones stored, and per
+/// target the last solve's while nothing has read them. A save writes the
+/// shares a read would give, as [`Fit`] writes a fit, and two are equal on
+/// those values, by their bits (the intercept's is NaN).
+#[derive(Debug, Clone, Default)]
+struct Shares {
+    stored: Vec<Vec<f64>>,
+    pending: Vec<Option<Arc<PendingShares>>>,
+}
+
+impl Shares {
+    /// `n` targets no solve has fit: NaN everywhere, nothing pending.
+    fn unfit(n: usize, k: usize) -> Self {
+        Self {
+            stored: vec![vec![f64::NAN; k]; n],
+            pending: vec![None; n],
+        }
+    }
+
+    /// Target `j`'s shares as `prev` holds them, a pending solve's included.
+    fn keep(&mut self, prev: &Shares, j: usize) {
+        if let Some(v) = prev.stored.get(j) {
+            self.stored[j].clone_from(v);
+        }
+        self.pending[j] = prev.pending.get(j).cloned().flatten();
+    }
+
+    /// Every target's shares, a pending solve's taken.
+    fn settled(&self) -> Vec<Vec<f64>> {
+        self.stored
+            .iter()
+            .enumerate()
+            .map(|(j, v)| match self.pending.get(j) {
+                Some(Some(p)) => p.shares().to_vec(),
+                _ => v.clone(),
+            })
+            .collect()
+    }
+
+    /// Store every pending solve's shares and drop its factor.
+    fn settle(&mut self) {
+        if self.pending.iter().any(Option::is_some) {
+            self.stored = self.settled();
+            self.pending.iter_mut().for_each(|p| *p = None);
+        }
+    }
+}
+
+impl Serialize for Shares {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        Fit(self.settled()).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Shares {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let stored = Fit::<Vec<Vec<f64>>>::deserialize(d)?.0;
+        let pending = vec![None; stored.len()];
+        Ok(Self { stored, pending })
+    }
+}
+
+impl PartialEq for Shares {
+    fn eq(&self, other: &Self) -> bool {
+        Fit(self.settled()) == Fit(other.settled())
+    }
+}
+
 impl Robust {
     pub fn new(cfg: RobustCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -436,6 +561,7 @@ impl Robust {
             zbuf: RowBuf(vec![0.0; k]),
             systems: BandSystems(vec![None; m]),
             target_min_weight: Vec::new(),
+            support: Shares::default(),
             nudge: NudgeScratch::default(),
             cfg,
         })
@@ -595,6 +721,7 @@ impl Robust {
         // weight that underflows to 0 forgets as one just short of it does
         // (docs/PLAN.md task 115 (c)), where it took zeros too.
         let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets];
+        let mut support = Shares::unfit(self.cfg.n_targets, k);
         for j in 0..self.cfg.n_targets {
             let fit_before = self
                 .beta
@@ -612,16 +739,26 @@ impl Robust {
                 self.solve_through_origin(k, j)
             };
             match solved {
-                Some(sol) => beta[j] = sol,
+                Some((sol, shares)) => {
+                    beta[j] = sol;
+                    support.pending[j] = shares.map(Arc::new);
+                    if support.pending[j].is_none() {
+                        // No column kept: nothing to invert, every slope 0.
+                        support.stored[j] = self.dropped_shares(k);
+                    }
+                }
                 None => {
                     self.solve_failures += 1;
                     if let Some(prev) = &self.beta {
                         beta[j] = prev[j].clone();
                     }
+                    // The previous fit is kept, and its shares with it.
+                    support.keep(&self.support, j);
                 }
             }
         }
         self.beta = Some(Fit(beta));
+        self.support = support;
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
@@ -636,11 +773,12 @@ impl Robust {
     /// are scaled to correlation form and a ~zero-variance feature is
     /// dropped (coefficient 0). Nothing level-sized is subtracted from
     /// anything on the way (S2). `None` when every jitter failed.
-    fn solve_centred(&mut self, k: usize, j: usize) -> Option<Vec<f64>> {
+    fn solve_centred(&mut self, k: usize, j: usize) -> Option<(Vec<f64>, Option<PendingShares>)> {
         let kf = k - 1;
         let (asub, keep, s) = self.band_system(j);
         let kk = keep.len();
         let mut out = vec![0.0; k];
+        let mut shares = None;
         let mut jitter = 0u32;
         let mut factor = None;
         if kk > 0 {
@@ -656,6 +794,7 @@ impl Robust {
             for (i2, &i) in keep.iter().enumerate() {
                 out[i + 1] = sol[i2] / s[i];
             }
+            shares = Some(self.pending_shares(&f, keep.iter().map(|&i| i + 1).collect(), k));
             factor = Some(f);
         }
         let cov = &self.cov[j];
@@ -666,7 +805,46 @@ impl Robust {
         out[0] = b0;
         self.solve_failures += u64::from(jitter);
         self.keep_band_system(j, BandSystem { factor, keep, s });
-        Some(out)
+        Some((out, shares))
+    }
+
+    /// The data shares of the system `f` factorizes, to be taken when
+    /// something reads them ([`PendingShares`]): `λ` the ridge plus the
+    /// jitter the factor needed, since that is what it carries, and the
+    /// coefficient slot each kept column's share goes to.
+    fn pending_shares(&self, f: &SpdFactor, to: Vec<usize>, k: usize) -> PendingShares {
+        PendingShares {
+            factor: f.clone(),
+            lam: self.cfg.ridge + f.jitter(),
+            to,
+            base: self.dropped_shares(k),
+            shares: OnceLock::new(),
+        }
+    }
+
+    /// The shares before any column's: NaN in the intercept's slot, which
+    /// is not a share, and 0 elsewhere, a column the solve dropped having
+    /// none of the data's.
+    fn dropped_shares(&self, k: usize) -> Vec<f64> {
+        let mut base = vec![0.0; k];
+        if self.cfg.fit_intercept {
+            base[0] = f64::NAN;
+        }
+        base
+    }
+
+    /// Take the data shares of every solve nothing has read yet, and drop
+    /// the factors they wait on: what the stream calls at the end of each
+    /// run, as it does `ewridge`'s (docs/PLAN.md task 140). The values are
+    /// the ones a read would have given.
+    pub fn settle_readiness(&mut self) {
+        self.support.settle();
+    }
+
+    /// Targets whose data shares still hold the factor of the solve they
+    /// come from: 0 once [`Self::settle_readiness`] has run.
+    pub fn pending_readiness(&self) -> usize {
+        self.support.pending.iter().flatten().count()
     }
 
     /// Keep target `j`'s band system from its solve for the nudges that
@@ -941,7 +1119,11 @@ impl Robust {
     /// kept the raw right-hand side once, the hybrid system C8 found in
     /// `lasso`, least squares only when every feature has mean zero (review
     /// 2026-09-12, C11). `None` when every jitter failed.
-    fn solve_through_origin(&mut self, k: usize, j: usize) -> Option<Vec<f64>> {
+    fn solve_through_origin(
+        &mut self,
+        k: usize,
+        j: usize,
+    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
         let cov = &self.cov[j];
         let ybar = self.ybar[j];
         let b: Vec<f64> = (0..k)
@@ -950,6 +1132,7 @@ impl Robust {
         let (asub, keep, s) = self.band_system(j);
         let kk = keep.len();
         let mut out = vec![0.0; k];
+        let mut shares = None;
         let mut jitter = 0u32;
         let mut factor = None;
         if kk > 0 {
@@ -964,11 +1147,12 @@ impl Robust {
             for (i2, &i) in keep.iter().enumerate() {
                 out[i] = sol[i2] / s[i];
             }
+            shares = Some(self.pending_shares(&f, keep.clone(), k));
             factor = Some(f);
         }
         self.solve_failures += u64::from(jitter);
         self.keep_band_system(j, BandSystem { factor, keep, s });
-        Some(out)
+        Some((out, shares))
     }
 }
 
@@ -984,6 +1168,13 @@ impl OnlineModel for Robust {
     /// The solve cadence measures its clock by the row's stamp (task 180).
     fn stamp_next(&mut self, stamp: crate::Stamp) {
         self.since_solve.stamp_next(stamp);
+    }
+
+    /// Each coefficient's data share from the last solve, per target
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2.2): `None` before the first solve.
+    fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
+        self.beta.as_ref()?;
+        Some(self.support.settled())
     }
 
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
@@ -1251,6 +1442,19 @@ impl OnlineModel for Robust {
                     crate::model::check_target_min_weight("robust", &m.target_min_weight, n)
                 {
                     return Err(StateError::Invalid(e));
+                }
+                // The data shares are a solve's: none before the first, and
+                // a target's `k_total` each after it (docs/PLAN.md task 116).
+                let shares_fit = match &m.beta {
+                    None => m.support.stored.is_empty(),
+                    Some(_) => {
+                        m.support.stored.len() == n && m.support.stored.iter().all(|v| v.len() == k)
+                    }
+                };
+                if !shares_fit {
+                    return Err(StateError::Invalid(format!(
+                        "{kind}: the data shares have the wrong shape"
+                    )));
                 }
                 // No window here: a state written before the runs' flag keeps
                 // none from here (review 2026-09-26, C4).
@@ -3885,6 +4089,136 @@ mod tests {
             // At `2^20` a residual before a scale is far outside the band
             // the literal drew, so a row past the warm-up was a nudge.
             assert!(decided >= 1, "{name}: the literal decided {decided} rows");
+        }
+    }
+
+    // ---- data shares (docs/PLAN.md task 116, B) ----
+
+    /// With `huber_delta` past every residual no row is down-weighted, so
+    /// the band Gram is the EW Gram of the rows: `support_coef_j` is
+    /// `1 − λ ((Σ + λI)⁻¹)_jj`, `Σ` the rows' centred covariance (in
+    /// correlation form under `standardize`), here summed from the rows
+    /// with no decay and inverted by `crate::oracle`'s LU.
+    #[test]
+    fn the_data_shares_are_the_shrinkage_diagonal() {
+        for standardize in [false, true] {
+            let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1e9 });
+            c.ridge = 0.4;
+            c.standardize = standardize;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 7u64;
+            let mut rows = Vec::new();
+            for i in 0..200 {
+                let a = 1.5 * lcg(&mut s);
+                let x = [a, 0.6 * lcg(&mut s) + 0.5 * a];
+                let y = 1.0 + x[0] - x[1] + 0.3 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                rows.push(x);
+            }
+            let n = rows.len() as f64;
+            let mean = [0, 1].map(|j| rows.iter().map(|r| r[j]).sum::<f64>() / n);
+            let mut a = [0.0; 4];
+            for r in &rows {
+                for (i, j) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    a[i * 2 + j] += (r[i] - mean[i]) * (r[j] - mean[j]) / n;
+                }
+            }
+            if standardize {
+                let sd = [a[0].sqrt(), a[3].sqrt()];
+                for (i, j) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    a[i * 2 + j] /= sd[i] * sd[j];
+                }
+            }
+            a[0] += 0.4;
+            a[3] += 0.4;
+            let inv = crate::oracle::inverse(&a);
+            let got = m.support_coef().unwrap();
+            assert!(got[0][0].is_nan(), "the intercept is not a share");
+            for j in 0..2 {
+                let want = 1.0 - 0.4 * inv[j * 2 + j];
+                assert!(
+                    (got[0][j + 1] - want).abs() < 1e-9,
+                    "standardize {standardize}, {j}: {} vs {want}",
+                    got[0][j + 1]
+                );
+            }
+        }
+    }
+
+    /// A duplicated pair splits its coefficient evenly in the band Gram
+    /// either loss keeps, through the origin as well; a target no solve
+    /// has fit has no shares; and the shares survive a state round trip.
+    #[test]
+    fn a_duplicated_pair_reads_half_under_either_loss() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.345 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ] {
+            for fit_intercept in [true, false] {
+                let mut c = cfg(3, 2, loss);
+                c.fit_intercept = fit_intercept;
+                let mut m = Robust::new(c).unwrap();
+                assert!(m.support_coef().is_none(), "before the first solve");
+                let mut s = 11u64;
+                for i in 0..400 {
+                    let a = lcg(&mut s);
+                    let x = [a, lcg(&mut s), a];
+                    let y = 1.0 + 2.0 * a - x[1] + 0.3 * lcg(&mut s);
+                    m.step(&x, &[Some(y), None], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                }
+                let got = m.support_coef().unwrap();
+                let off = usize::from(fit_intercept);
+                let shares = &got[0][off..];
+                assert!(
+                    (shares[0] - 0.5).abs() < 1e-3
+                        && (shares[1] - 1.0).abs() < 1e-3
+                        && (shares[2] - 0.5).abs() < 1e-3,
+                    "{loss:?}, intercept {fit_intercept}: {:?}",
+                    got[0]
+                );
+                assert!(got[1].iter().all(|v| v.is_nan()), "no row, no fit");
+                let back = Robust::restore(&m.state()).unwrap();
+                assert_eq!(back, m);
+                let bytes = rmp_serde::to_vec(&m.state()).unwrap();
+                let again: crate::State = rmp_serde::from_slice(&bytes).unwrap();
+                // Compared by their bits: the intercept's share is NaN.
+                assert_eq!(Robust::restore(&again).unwrap(), m);
+            }
+        }
+    }
+
+    /// The shares wait for a read (`PendingShares`): read now, read after
+    /// the stream settles them, or saved, they are the same bits, and a
+    /// settled model holds no factor for them.
+    #[test]
+    fn the_shares_are_the_same_whenever_they_are_taken() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.345 },
+            RobustLoss::Quantile { tau: 0.3 },
+        ] {
+            let mut m = Robust::new(cfg(3, 1, loss)).unwrap();
+            let mut s = 23u64;
+            for i in 0..150 {
+                let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+                let y = 1.0 + x[0] - x[2] + 0.3 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            assert_eq!(m.pending_readiness(), 1, "{loss:?}: the last solve waits");
+            let unread = m.clone();
+            let read = m.support_coef().unwrap();
+            m.settle_readiness();
+            assert_eq!(m.pending_readiness(), 0);
+            let settled = m.support_coef().unwrap();
+            let bits = |v: &[Vec<f64>]| v.concat().iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&read), bits(&settled), "{loss:?}");
+            assert_eq!(unread, m, "equal on the values a read gives");
+            let saved = rmp_serde::to_vec(&unread.state()).unwrap();
+            assert_eq!(saved, rmp_serde::to_vec(&m.state()).unwrap());
+            // The shares are a ridge's: below 1, above 0.
+            assert!(
+                settled[0][1..].iter().all(|v| *v > 0.9 && *v < 1.0),
+                "{settled:?}"
+            );
         }
     }
 }

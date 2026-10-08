@@ -1942,6 +1942,11 @@ def huber(
         predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
+    ``support_coef``
+        On ``coef``'s rows, each coefficient's data share, laid out like
+        ``coef``: how much of the fit after the row the data, as the loss
+        weighs the rows, determined rather than the ridge
+        (:mod:`polars_online.spec`).
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them.
@@ -2085,6 +2090,11 @@ def quantile(
         predictions are null where they are, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
+    ``support_coef``
+        On ``coef``'s rows, each coefficient's data share, laid out like
+        ``coef``: how much of the fit after the row the data, as the loss
+        weighs the rows, determined rather than the ridge
+        (:mod:`polars_online.spec`).
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. ``pred_<t>`` is the conditional quantile, and a ``resid`` is

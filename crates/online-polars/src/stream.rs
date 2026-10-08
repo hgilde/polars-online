@@ -195,12 +195,14 @@ impl AnyModel {
 
     /// End a run of rows: learn every row a sharded step holds
     /// ([`Self::step_sharded`]), and take the readiness shares of every
-    /// solve an `ewridge` left unread, dropping the factors they wait on
-    /// ([`online_core::EwRidge::settle_readiness`], docs/PLAN.md task 140).
+    /// solve an `ewridge`, `huber` or `quantile` left unread, dropping the
+    /// factors they wait on ([`online_core::EwRidge::settle_readiness`],
+    /// docs/PLAN.md tasks 140 and 116).
     pub fn flush(&mut self, shards: usize) {
         match self {
             AnyModel::Marginal(m) => m.flush(&on_the_pool(shards)),
             AnyModel::EwRidge(m) => m.settle_readiness(),
+            AnyModel::Robust(m) => m.settle_readiness(),
             _ => {}
         }
     }

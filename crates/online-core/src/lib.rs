@@ -545,8 +545,10 @@ pub use window::{
 ///   state loads as it did before.
 /// - 45 (2026-10-07, task 116): readiness beyond `ewridge`. `rls` keeps
 ///   `s₂ = Σ λ^(2i) w_i²` over the rows its fit learned, for Kish's sample
-///   size behind its noise statistic. An `rls` state from before 45 does
-///   not decode; the minimum moves to 45 with it, and pre-1.0 no loader is
+///   size behind its noise statistic, and `huber` and `quantile` keep each
+///   target's data shares, `support_coef`, from their last solve. An `rls`
+///   state from before 45 does not decode, and a robust one carries no
+///   shares; the minimum moves to 45 with it, and pre-1.0 no loader is
 ///   written.
 pub const SCHEMA_VERSION: u32 = 45;
 

@@ -288,7 +288,9 @@ def test_chunk_invariance():
         .select("m")
         .unnest("m")
     )
-    keep = [c for c in one.columns if not c.startswith("coef")]
+    # `coef`, and `support_coef` beside it since task 116, are written on each
+    # chunk's last row, so they follow the chunking by design.
+    keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 

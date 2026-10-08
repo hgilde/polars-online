@@ -3272,7 +3272,10 @@ impl Spec {
     /// coefficient would read 1 at the default -- nor `ew_cov`, which has no
     /// coefficients.
     pub fn has_support_coef(&self) -> bool {
-        matches!(self.model, ModelKind::EwRidge { .. })
+        matches!(
+            self.model,
+            ModelKind::EwRidge { .. } | ModelKind::Huber { .. } | ModelKind::Quantile { .. }
+        )
     }
 
     /// The weight-share cadence (docs/PLAN.md task 115 (b)), the default
