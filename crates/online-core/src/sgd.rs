@@ -264,7 +264,6 @@ impl SgdCfg {
 pub struct Sgd {
     cfg: SgdCfg,
     /// Running feature means and variances, when `standardize` is on.
-    #[serde(default)]
     scaler: Option<EwDiag>,
     /// Coefficients per target.
     beta: Vec<Vec<f64>>,
@@ -301,17 +300,14 @@ pub struct Sgd {
     learned: Vec<bool>,
 }
 
-/// The layouts `Sgd` loads. A schema-2 `scaler` was a full [`EwCov`] of
-/// which only the diagonal was read; that diagonal is the schema-3
-/// [`EwDiag`], so the conversion copies the same numbers. Newtype variants
-/// for the reason `RlsWire` gives. The field keeps its name (it is optional,
-/// and a renamed optional field would default to `None` on an old file —
-/// silently dropping the standardization), so the two layouts are told
-/// apart by [`EwDiag`] refusing an `EwCov`'s fields and shape.
+/// The layout `Sgd` loads, checked on the way in: what the cfg asks for,
+/// the state carries, and nothing else. (A schema-2 `scaler` was a full
+/// `EwCov` read through its diagonal; the minimum schema has passed it,
+/// docs/PLAN.md tasks 198 and 194-202, and [`EwDiag`] refuses an `EwCov`'s
+/// fields and shape.)
 #[derive(Deserialize)]
 struct SgdV3 {
     cfg: SgdCfg,
-    #[serde(default)]
     scaler: Option<EwDiag>,
     beta: Vec<Vec<f64>>,
     g2: Vec<Vec<f64>>,

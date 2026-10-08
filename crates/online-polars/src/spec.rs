@@ -2462,7 +2462,7 @@ pub const RENAMED_VALUES: &[(&str, &str)] = &[("ew_ridge", "ewridge"), ("lagcorr
 /// name is refused through [`RENAMED`] (docs/PLAN.md task 198; review round
 /// 4, D2). Empty: every rename so far was made before 1.0, and stays
 /// refused by name, task 144's rule. A rename after 1.0 goes here, beside
-/// its twin in `python/polars_online/_spec.py`'s `_DEPRECATED`.
+/// its twin in `python/polars_online/_warnings.py`'s `_DEPRECATED`.
 pub const DEPRECATED: &[(&str, &str)] = &[];
 
 /// What a deprecated name is told: that it was renamed, that it still

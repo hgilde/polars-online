@@ -48,7 +48,7 @@ from typing import Any, overload
 import polars as pl
 from polars.io.plugins import register_io_source
 
-from polars_online import _formula
+from polars_online import _formula, _warnings
 from polars_online import _polars_online as _native
 from polars_online._duration import Duration, clock_nanoseconds, duration_text
 from polars_online._frame import (
@@ -64,7 +64,7 @@ from polars_online._frame import (
     _user_stacklevel,
     _warn_if_order_unspecified,
 )
-from polars_online._spec import _DEPRECATED, _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
+from polars_online._spec import _RENAMED, _RENAMED_KEYWORDS, _renamed_keywords
 from polars_online._warnings import forward_deprecated, warn_unstable
 
 __all__ = ["ROLE", "embargo", "refresh_time", "with_windows"]
@@ -860,7 +860,9 @@ def with_windows(
         # A hand-written dict with a clock key under its old name would be
         # read as not setting it (review R1, F1): refused naming the new one,
         # or, renamed after 1.0, read as it with a warning.
-        like = forward_deprecated(f"{who}: like= spec {like.get('name')!r}", like, _DEPRECATED)
+        like = forward_deprecated(
+            f"{who}: like= spec {like.get('name')!r}", like, _warnings._DEPRECATED
+        )
         if old := [k for k in like if k in _RENAMED]:
             raise TypeError(
                 f"{who}: like= spec {like.get('name')!r}: {old[0]} was renamed {_RENAMED[old[0]]}"

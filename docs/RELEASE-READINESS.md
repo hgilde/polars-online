@@ -184,6 +184,26 @@ rule 1 in `CLAUDE.md`).
 every release from 0.10.0 to 0.13.0. On 2026-10-03 each release saved all
 30 specs, and this build refused every file by its version.
 
+**From 1.0, a file a 1.x release wrote loads in every later 1.x and goes on
+as this build's own** (task 198; decision D1). The same test holds a 1.x
+release's files to that: this build loads each with its own spec, fits the
+second half beside a bank of its own that fitted both halves, and every
+float, the closed groups, the coefficients and `marginal`'s table agree.
+Until 1.0.0 is released it runs on the states this build writes itself, so
+the check has run before the first release that must honour it. **On
+release day, add 1.0.0 to `RELEASES`**, and every later release with it.
+
+**The frozen fixtures are the in-repo mechanism; the released-state test is
+the one against PyPI.** A state of every `ModelState` variant, a bank file,
+a `with_windows` state and a `refresh_time` state are frozen at each schema
+this build loads, from `MIN_SCHEMA_VERSION` and `MIN_BANK_SCHEMA_VERSION` to
+`SCHEMA_VERSION` (both minimums 44 since tasks 194-202), and each is held to
+loading, going on to the bit and saving its bytes again
+(`crates/online-core/tests/state_fixtures.rs`,
+`crates/online-polars/tests/state_fixtures.rs`). Before 1.0 a layout change
+regenerates them (`PRINT_STATE_FIXTURES=1`) and raises both minimums; from
+1.0 it keeps the previous set beside a loader for it.
+
 Until 2026-09-28 the test held a released file to loading, and the model
 to going on as this build's would. This build fitted the second half
 beside a bank of its own that saw both halves, and compared every float,

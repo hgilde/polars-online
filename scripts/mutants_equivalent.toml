@@ -672,14 +672,6 @@ same; with `i < n` neither overflows"""
 
 [[equivalent]]
 file = "crates/online-core/src/deco.rs"
-function = "<impl crate::OnlineModel for Deco>::restore"
-mutation = "replace > with >="
-line_has = "if m.rho_w.len() == 1 && values > 1 {"
-why = """`values` is at least 1, and at 1 the mutant widens a list of one \
-weight `[w]` to `vec![w; 1]`, the same list"""
-
-[[equivalent]]
-file = "crates/online-core/src/deco.rs"
 function = "Deco::advance"
 mutation = "replace > with >="
 line_has = "let b = if w_new > 0.0 { w / w_new } else { 0.0 };"

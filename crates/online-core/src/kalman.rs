@@ -286,13 +286,11 @@ pub struct Kalman {
     qbuf: Vec<f64>,
 }
 
-/// The layouts `Kalman` loads. Schema-2 files standardized with a full
-/// [`EwCov`] under `cov`; its diagonal is what the model read, and is what
-/// the schema-3 `stats` holds, so the conversion is a copy of the same
-/// numbers. Newtype variants for the reason `RlsWire` gives: the compact
-/// msgpack encoding writes structs as arrays. The two are told apart by the
-/// field name in a map and by [`EwDiag`]'s refusal of an `EwCov`'s shape in
-/// an array.
+/// The layout `Kalman` loads, checked on the way in: every vector at the
+/// cfg's width, so a damaged state is refused rather than panicking on its
+/// first step. (A schema-2 file kept a full `EwCov` under `cov` and was
+/// converted by taking its diagonal; the minimum schema has passed it,
+/// docs/PLAN.md tasks 198 and 194-202.)
 #[derive(Deserialize)]
 struct KalmanV3 {
     cfg: KalmanCfg,
@@ -1804,9 +1802,8 @@ mod tests {
         }
     }
 
-    /// The other half: a schema-3 state must not be mistaken for a schema-2
-    /// one, and a map with neither `stats` nor `cov` is refused rather than
-    /// defaulted.
+    /// A map without `stats` is refused rather than defaulted, and so is the
+    /// schema-2 layout's `cov` in its place.
     #[test]
     fn a_state_without_the_standardizer_is_refused() {
         let mut c = cfg(2, 1, vec![100.0]);

@@ -2257,10 +2257,8 @@ pub struct Persisted {
     /// a running `+=`/`-=` and a fresh sum of the held rows round
     /// differently, so rebuilding it made `settled_frac` depend on where a
     /// chunk ended (hard rule 3; found by a property test, 2026-09-24).
-    /// Kept only by a stream with an `embargo`, and empty without one, so a
-    /// spec without one writes what it always did. Empty in a schema-14
-    /// file, whose loader rebuilds it the way 0.10.0 did at a chunk
-    /// boundary.
+    /// Kept only by a stream with an `embargo`, one per model instance, and
+    /// empty without one, so a spec without one writes what it always did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_clock: Vec<f64>,
     /// Per model instance, which readiness notices it has raised (§3), so a
@@ -3338,17 +3336,17 @@ impl Stream {
             };
             return Err(format!("saved state's held row {i} is damaged: {what}"));
         }
-        // The held rows' clock per instance, kept where a delay holds rows.
-        // A schema-14 file has none, and its loader rebuilds it as 0.10.0
-        // did at every chunk boundary: the sum over the rows still held.
+        // The held rows' clock per instance, kept where a delay holds rows
+        // and nowhere else. (A schema-14 file had none, and its loader
+        // rebuilt it from the rows still held, until the minimum schema
+        // passed it: docs/PLAN.md tasks 198 and 194-202.)
         let instances = fresh.decay_time.len();
-        if p.pending_clock.len() != instances {
-            p.pending_clock = if fresh.pending_clock.is_empty() && p.pending.is_empty() {
-                Vec::new()
-            } else {
-                let held: f64 = p.pending.iter().map(|r| r.d_clock).sum();
-                vec![held; instances]
-            };
+        if p.pending_clock.len() != fresh.pending_clock.len() {
+            return Err(format!(
+                "saved state's held-rows clock has {} entries where this spec keeps {}",
+                p.pending_clock.len(),
+                fresh.pending_clock.len()
+            ));
         }
         // The score-time predictions ride with the waiting rows (C21). A file
         // written before they were kept has none: each of its waiting rows

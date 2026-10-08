@@ -610,6 +610,16 @@ def test_rolling_metrics_is_window_metrics_with_every():
     assert got["n"].to_list() == scored.sort("bucket")["pred_y"].to_list()
 
 
+def test_rows_seen_is_rows_fed():
+    """Task 194 (N9, PA11): the count the frames call ``rows_fed``. The old
+    method stays as a stub that raises naming the new one, as the helpers'
+    renamed functions do (``tests/test_state_frames.py`` holds the count)."""
+    bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
+    with pytest.raises(AttributeError, match=r"^ModelBank\.rows_seen was renamed rows_fed$"):
+        bank.rows_seen()
+    assert bank.rows_fed() == 0
+
+
 def test_corr_shift_is_absorption_shift():
     """N5 (YB10): Polars' ``shift`` is a lag; this is Kritzman's
     standardised absorption shift."""

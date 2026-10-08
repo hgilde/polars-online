@@ -20,9 +20,9 @@ from pathlib import Path
 import pytest
 
 import polars_online as po
-from polars_online import _spec
-from polars_online._spec import _DEPRECATED, _RENAMED
-from polars_online._warnings import forward_deprecated
+from polars_online import _warnings
+from polars_online._spec import _RENAMED
+from polars_online._warnings import _DEPRECATED, forward_deprecated
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -70,7 +70,7 @@ def renamed(monkeypatch):
     """A table with one entry, as a rename after 1.0 would add: the model's
     ``ridge`` once called ``rigde``, and the spec's ``half_life`` once
     ``half_lyfe``."""
-    monkeypatch.setattr(_spec, "_DEPRECATED", {"rigde": "ridge", "half_lyfe": "half_life"})
+    monkeypatch.setattr(_warnings, "_DEPRECATED", {"rigde": "ridge", "half_lyfe": "half_life"})
 
 
 def test_a_builder_reads_an_old_keyword_as_the_new_one(renamed):

@@ -1,4 +1,4 @@
-//! `EwDiag`: the diagonal of [`EwCov`] — exponentially weighted means and
+//! `EwDiag`: the diagonal of [`EwCov`](crate::EwCov) — exponentially weighted means and
 //! variances of a vector stream, O(k) a row.
 //!
 //! The same weighted Welford recursion as `ewcov.rs`, operation for
@@ -17,15 +17,12 @@
 //! `EwCov` for the purpose and paid `k²` co-moment updates a row for `k`
 //! variances (docs/PERFORMANCE.md §13). The numbers are the same to the bit:
 //! every diagonal entry is updated with exactly the arithmetic `EwCov` uses
-//! for it, in the same order, so a model moved from one to the other keeps
-//! its outputs (`tests/model_contract.rs`, the goldens), and a schema-2 state
-//! converts by taking the diagonal ([`EwDiag::diagonal_of`]).
+//! for it, in the same order, so a model moved from one to the other kept
+//! its outputs (`tests/model_contract.rs`, the goldens).
 
 use serde::{Deserialize, Serialize};
 
-use crate::EwCov;
-
-/// EW means and centered variances of a `k`-vector: [`EwCov`] without the
+/// EW means and centered variances of a `k`-vector: [`EwCov`](crate::EwCov) without the
 /// off-diagonal co-moments. See the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "EwDiagWire")]
@@ -43,11 +40,10 @@ pub struct EwDiag {
 }
 
 /// The wire layout, checked on the way in. `deny_unknown_fields` is load-
-/// bearing: a schema-2 `EwCov` carries these four names among its seven, and
-/// without it a map-encoded `EwCov` would deserialize as an `EwDiag` with
-/// `k²` "variances" — silently, where the untagged model loaders (`kalman`,
-/// `sgd`) need it to *fail* so they fall through to the schema-2 layout.
-/// The shape check covers the array encoding the same way.
+/// bearing: an `EwCov` carries these names among its own, and without it a
+/// map-encoded `EwCov` would deserialize as an `EwDiag` with `k²`
+/// "variances", silently. The shape check covers the array encoding the
+/// same way.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EwDiagWire {
@@ -89,20 +85,6 @@ impl EwDiag {
             m: vec![0.0; k],
             c: vec![0.0; k],
             m_lo: vec![0.0; k],
-        }
-    }
-
-    /// The diagonal of a full accumulator: the same means, variances and
-    /// weight, so a model that only ever read those continues unchanged.
-    /// This is how a schema-2 `kalman` or `sgd` state loads.
-    pub fn diagonal_of(cov: &EwCov) -> Self {
-        let k = cov.k();
-        Self {
-            k,
-            w_sum: cov.n_eff(),
-            m: cov.means().to_vec(),
-            c: (0..k).map(|i| cov.cov(i, i)).collect(),
-            m_lo: (0..k).map(|i| cov.mean_lo(i)).collect(),
         }
     }
 
@@ -249,6 +231,7 @@ impl Including<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::EwCov;
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state
@@ -329,7 +312,7 @@ mod tests {
                         assert_eq!(diag.raw(i).to_bits(), full.raw(i, i).to_bits(), "raw {i}");
                     }
                     assert_eq!(diag.means(), full.means());
-                    assert_eq!(diag, EwDiag::diagonal_of(&full));
+                    assert_eq!(diag.m_lo, full.means_lo());
                 }
                 if held {
                     assert_eq!(diag.mean(0), 1e8 + 0.37, "k {k}");
@@ -444,22 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn diagonal_of_takes_the_diagonal() {
-        let mut full = EwCov::with_precision_prior(3, 0.5).unwrap();
-        for (x, lam, w) in stream(3, 50, 1) {
-            full.update(&x, lam, w);
-        }
-        let d = EwDiag::diagonal_of(&full);
-        assert_eq!(d.k(), 3);
-        assert_eq!(d.n_eff(), full.n_eff());
-        for i in 0..3 {
-            assert_eq!(d.mean(i), full.mean(i));
-            assert_eq!(d.var(i), full.var(i));
-            assert_eq!(d.raw(i), full.raw(i, i));
-        }
-    }
-
-    #[test]
     fn serde_roundtrip_in_both_encodings() {
         let mut d = EwDiag::new(2);
         d.update(&[1.0, 2.0], 0.95, 1.3);
@@ -473,10 +440,8 @@ mod tests {
         }
     }
 
-    /// The property the schema-2 loaders of `kalman` and `sgd` rest on: a
-    /// serialized `EwCov` must not pass for an `EwDiag` in either encoding,
-    /// or an untagged loader would take the wrong branch and build a model
-    /// with `k²` variances.
+    /// A serialized `EwCov` must not pass for an `EwDiag` in either
+    /// encoding, or a model would load with `k²` variances.
     #[test]
     fn a_full_ewcov_is_refused_in_both_encodings() {
         for k in [1, 2, 4] {

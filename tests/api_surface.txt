@@ -6,20 +6,22 @@
   FormulaTarget
   ModelBank
   OrderNotGuaranteedWarning
+  PolarsOnlineDeprecationWarning
   ReadinessWarning
   Target
+  UnstableWarning
   __version__
   corr
   eval
   ewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   ewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   ewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+  fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   gram
   increment(input: 'str | pl.Expr') -> 'pl.Expr'
   native_version()
   ops
-  predict(frame: 'pl.LazyFrame | pl.DataFrame', bank: 'ModelBank | State', *, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+  predict(frame: 'pl.LazyFrame | pl.DataFrame', bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   rewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   rewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   rewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
@@ -27,10 +29,10 @@
   sim
   spec
   stream
-  target(column: 'str', *, relative_to: 'str | None' = None, relative: 'str' = 'difference', name: 'str | None' = None) -> 'Target'
+  target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 38
+  schema_version = 44
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -84,6 +86,7 @@
     robust_beta = None
     prune_below = None
     max_run = None
+    warm_rows = None
     common
   coef_fields:
     spec
@@ -100,7 +103,7 @@
     scalar = False
     crit = None
     n_perm = None
-    permute_every = None
+    permute_every_rows = None
     perm_block = None
     norm = 'l1'
     seed = None
@@ -124,6 +127,7 @@
     covariance = None
     precision_prior
     window_size = None
+    closed = 'right'
     window_every = None
     max_rows_between_snapshots = None
     window_budget = None
@@ -139,6 +143,7 @@
     max_rows_between_pca = None
     lags = None
     window_size = None
+    closed = 'right'
     window_every = None
     max_rows_between_snapshots = None
     window_budget = None
@@ -159,6 +164,7 @@
     gram_block_rows = None
     target_gaps = 'own_rows'
     window_size = None
+    closed = 'right'
     window_every = None
     max_rows_between_snapshots = None
     window_budget = None
@@ -194,7 +200,6 @@
   holt:
     name
     targets
-    level_half_life = None
     trend_half_life = None
     trend = True
     features = None
@@ -228,9 +233,9 @@
     warm_rows = None
     seed_rule = None
     seed = None
-    update_every = None
+    update_every_rows = None
     split_merge = None
-    split_merge_every = None
+    split_merge_every_rows = None
     dead_frac = None
     standardize = None
     scale_floor = None
@@ -245,6 +250,7 @@
     solve_every = None
     max_rows_between_solves = None
     window_size = None
+    closed = 'right'
     window_every = None
     max_rows_between_snapshots = None
     window_budget = None
@@ -266,6 +272,7 @@
     bin_budget = None
     shards = None
     window_size = None
+    closed = 'right'
     window_every = None
     max_rows_between_snapshots = None
     window_budget = None
@@ -298,6 +305,7 @@
     coef_min = None
     coef_max = None
     coef_sum = None
+    standardize = True
     common
   quantile:
     name
@@ -329,7 +337,7 @@
     name
     targets
     features
-    ridge = None
+    delta = None
     coef_prior = None
     common
   seqtest:
@@ -354,14 +362,15 @@
     power = None
     l2 = None
     clip_gradient = None
-    standardize = False
+    standardize = True
     coef_min = None
     coef_max = None
     coef_sum = None
+    strict_binary = False
     common
 
 [resolved defaults]  # what a spec left out resolves to, read off the bank's own build of the spec shown (_polars_online.resolved_defaults): a moved default is a diff here
-  chunk_rows = 100000
+  chunk_size = 100000
   shared by every kind below:
     clock.gap_cap = "inf"
     clock.min_backwards_jump = 0.0
@@ -377,9 +386,10 @@
     stream.resid_autocorr_lag = 1
     stream.window_budget = null
   bocpd(features=['x0', 'x1']):
-    derived.prior_mean = [0.0, 0.0]
-    derived.prior_nu = 4.0
-    derived.prior_scale = [1.0, 0.0, 0.0, 1.0]
+    derived.prior_mean = "data"
+    derived.prior_nu = 3.0
+    derived.prior_scale = "data"
+    derived.warm_rows = 4
     model.emission = "diag"
     model.hazard = 250.0
     model.hazard_from_row = false
@@ -392,6 +402,7 @@
     model.prior_scale = null
     model.prune_below = 1e-06
     model.robust_beta = 0.0
+    model.warm_rows = null
     stream.min_weight = [1.0]
   corrchange(features=['x0', 'x1'], span_rows=20):
     model.alpha = 0.05
@@ -406,7 +417,7 @@
     model.n_perm = 200
     model.norm = "l1"
     model.perm_block = 1
-    model.permute_every = 50
+    model.permute_every_rows = 50
     model.reset = false
     model.scalar = false
     model.seed = 0
@@ -506,7 +517,7 @@
   huber(features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
-    model.loss.huber.delta = 1.5
+    model.loss.huber.delta = 1.345
     model.max_rows_between_solves = 4294967295
     model.min_weight = 2.0
     model.n_features = 1
@@ -541,9 +552,9 @@
     model.seed = 0
     model.seed_rule = "lloyd"
     model.split_merge = 0.5
-    model.split_merge_every = 100
+    model.split_merge_every_rows = 100
     model.standardize = true
-    model.update_every = 1
+    model.update_every_rows = 1
     model.warm_rows = 500
     stream.min_weight = [3.0]
   lasso(features=['x0'], half_life=50.0, lasso_path=[0.1, 0.0], targets=['y']):
@@ -602,6 +613,7 @@
     model.mode = "pa1"
     model.n_features = 1
     model.n_targets = 1
+    model.standardize = true
     stream.min_weight = [2.0]
   quantile(features=['x0'], half_life=50.0, quantile=0.5, targets=['y']):
     model.decay.Halflife = 50.0
@@ -636,11 +648,11 @@
   rls(features=['x0'], half_life=50.0, targets=['y']):
     model.coef_prior = null
     model.decay.Halflife = 50.0
+    model.delta = 1.0
     model.fit_intercept = true
     model.min_weight = 2.0
     model.n_features = 1
     model.n_targets = 1
-    model.ridge = 1.0
     stream.min_weight = [2.0]
   seqtest(targets=['y']):
     model.min_weight = 0.0
@@ -658,7 +670,8 @@
     model.n_features = 1
     model.n_targets = 1
     model.schedule = "constant"
-    model.standardize = false
+    model.standardize = true
+    model.strict_binary = false
     stream.min_weight = [2.0]
   ewridge(features=['x0'], lam=0.99, targets=['y']), the lines that differ from ewridge's:
     model.decay.Lam = 0.99
@@ -668,7 +681,7 @@
     model.window = 100.0
     stream.window_budget.refuse = 256.0
   sgd(features=['x0'], half_life=50.0, loss='huber', targets=['y']), the lines that differ from sgd's:
-    model.loss.huber.delta = 1.0
+    model.loss.huber.delta = 1.345
   sgd(features=['x0'], half_life=50.0, loss='epsilon_insensitive', targets=['y']), the lines that differ from sgd's:
     model.loss.epsilon_insensitive.eps = 0.1
   sgd(features=['x0'], half_life=50.0, schedule='inv_scaling', targets=['y']), the lines that differ from sgd's:
@@ -700,41 +713,42 @@
   __init__(self, specs: 'Iterable[dict[str, Any]]') -> 'None'
   __reduce__(self, /)
   closed_groups(self, spec: 'str | int | None' = None, *, drop: 'bool' = True) -> 'pl.DataFrame'
-  coef(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
-  describe(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  coef(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
+  describe(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   drop_groups(self, keys: 'Iterable[str | None]', spec: 'str | int | None' = None) -> 'int'
-  fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_rows: 'int | None' = None) -> 'None'
+  fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'None'
   fit_predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
   fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'
-  fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_rows: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
-  gram(self, spec: 'str | int', group: 'str | None' = None) -> 'list[dict[str, Any]]'
+  fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
+  gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'list[dict[str, Any]]'
   groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
-  last_row(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  last_row(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   load(path: 'str | Path', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
   load_bytes(data: 'bytes', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
-  marginal(self, spec: 'str | int', group: 'str | None' = None) -> 'pl.DataFrame'
+  marginal(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   output_fields(self) -> 'dict[str, list[str]]'
   predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
   predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'
-  rows_seen(self) -> 'int'
+  rows_fed(self) -> 'int'
+  rows_seen(self) -> 'NoReturn'
   save(self, path: 'str | Path') -> 'None'
   save_bytes(self) -> 'bytes'
   save_json(self, path: 'str | Path', *, pretty: 'bool' = True) -> 'None'
   skip_learned(self, frame: 'pl.DataFrame | pl.LazyFrame') -> 'pl.DataFrame | pl.LazyFrame'
   solve_failures(self) -> 'dict[str, dict[str | None, int]]'
   specs
-  summary(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  summary(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   to_json(self, *, pretty: 'bool' = True) -> 'str'
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
-  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
-  LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame'
-  LazyFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
+  LazyFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
   DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None) -> 'pl.DataFrame'
   DataFrame.online.predict(bank: 'ModelBank | State') -> 'pl.DataFrame'
   DataFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.DataFrame'
-  DataFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
+  DataFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
 
 [frame columns]  # column: dtype, in order: a column renamed, retyped, moved or added is a diff here
   ModelBank.groups():
@@ -758,6 +772,7 @@
     clock_backwards: UInt64
     resets: UInt64
     settled_frac: Float64
+    weight_sum_settled: Float64
     error_inflation: Float64
     min_support_coef: Float64
     min_support_coef_feature: String
@@ -809,7 +824,7 @@
     cov: Float64
     corr: Float64
     beta: Float64
-    t: Float64
+    t_stat: Float64
   ModelBank.marginal() with lags, serial_rule and bins:
     group: String
     instance: String
@@ -824,11 +839,11 @@
     cov: Float64
     corr: Float64
     beta: Float64
-    t: Float64
-    lagcorr_xx: List[Float64]
-    lagcorr_yy: List[Float64]
-    lagcorr_xy: List[Float64]
-    lagcorr_yx: List[Float64]
+    t_stat: Float64
+    lag_corr_xx: List[Float64]
+    lag_corr_yy: List[Float64]
+    lag_corr_xy: List[Float64]
+    lag_corr_yx: List[Float64]
     n_serial: Float64
     t_serial: Float64
     phi_x: Float64
@@ -891,7 +906,9 @@
 
 [helper modules]  # po.<module>.<function> with its signature, keyword names and defaults
   corr:
+    Z_CLIP
     absorption(r: 'Any', k: 'int') -> 'float'
+    absorption_shift(ar_fast: 'Any', ar_slow: 'Any', *, scale: 'float | None' = None) -> 'Any'
     block_means(r: 'Any', labels: 'Sequence[Any]') -> 'tuple[Any, Any]'
     epps_invert(gram_or_row: 'Any', *, L: 'int') -> 'Any'
     equicorr(r: 'Any') -> 'float'
@@ -906,26 +923,28 @@
     mp_density(lam: 'Any', n: 'int', m: 'int', sigma2: 'float' = 1.0) -> 'Any'
     mp_edge(n: 'int', m: 'int', sigma2: 'float' = 1.0) -> 'tuple[float, float]'
     nearest(a: 'Any', w: 'Any' = None, *, tol: 'float' = 1e-08, max_iter: 'int' = 100) -> 'tuple[Any, float, int]'
-    shift(ar_fast: 'Any', ar_slow: 'Any', *, scale: 'float | None' = None) -> 'Any'
     shrink(r: 'Any', target: 'str' = 'constant', alpha: 'float | None' = None, x: 'Any' = None) -> 'tuple[Any, float]'
     signal_share(z_blocks: 'Any', n_kish_blocks: 'Any') -> 'Any'
     spectral(r: 'Any', k: 'int') -> 'tuple[Any, Any]'
     to_z(rho: 'Any') -> 'Any'
   eval:
-    compare_specs(df: 'pl.DataFrame', spec_names: 'Iterable[str]', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, specs: 'Sequence[dict] | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
-    from_sums(s: 'pl.DataFrame', *, min_obs: 'int' = 30) -> 'pl.DataFrame'
+    RESERVED
+    SUM_FIELDS
+    compare_specs(df: 'pl.DataFrame', spec_names: 'Iterable[str]', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, specs: 'Sequence[dict] | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    from_sums(s: 'pl.DataFrame', *, min_samples: 'int' = 30) -> 'pl.DataFrame'
     merge_sums(first: 'pl.DataFrame', *rest: 'pl.DataFrame') -> 'pl.DataFrame'
-    metrics(df: 'pl.DataFrame', spec_name: 'str', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
-    rolling_metrics(df: 'pl.DataFrame', spec_name: 'str', *, clock: 'str', window_size: 'float | Duration', by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_obs: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
-    seqtest(df: 'pl.DataFrame', *, targets: 'Sequence[str] | None' = None, a: 'str | None' = None, b: 'str | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', by: 'Iterable[str]' = (), min_weight: 'float' = 0.0, name: 'str' = 'seqtest') -> 'pl.DataFrame'
-    sums(df: 'pl.DataFrame', spec_name: 'str', *, by: 'Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, weight: 'str | None' = None, binary: 'bool' = False) -> 'pl.DataFrame'
+    metrics(df: 'pl.DataFrame', spec_name: 'str', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    seqtest(df: 'pl.DataFrame', *, targets: 'Sequence[str] | None' = None, a: 'str | None' = None, b: 'str | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', group: 'str | Iterable[str]' = (), min_weight: 'float' = 0.0, name: 'str' = 'seqtest') -> 'pl.DataFrame'
+    sums(df: 'pl.DataFrame', spec_name: 'str', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, weight: 'str | None' = None, binary: 'bool' = False) -> 'pl.DataFrame'
     unpack(df: 'pl.DataFrame', spec_name: 'str', *, spec: 'dict | None' = None, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame'
+    window_metrics(df: 'pl.DataFrame', spec_name: 'str', *, clock: 'str', every: 'float | Duration', group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
   gram:
+    INTERCEPT
     coef_stats(g: 'dict[str, Any]', coef: 'Sequence[float]', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
     condition(g: 'dict[str, Any]', *, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
     correlation(g: 'dict[str, Any]') -> 'Any'
     from_row(row: 'Any') -> 'dict[str, Any]'
-    lasso_path(g: 'dict[str, Any]', lambdas: 'Sequence[float]', *, l1_ratio: 'float' = 1.0, penalty_weights: 'Sequence[float] | None' = None, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int' = 1000, tol: 'float' = 1e-07) -> 'Any'
+    lasso_path(g: 'dict[str, Any]', penalties: 'Sequence[float]', *, l1_ratio: 'float' = 1.0, penalty_weights: 'Sequence[float] | None' = None, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int' = 1000, tol: 'float' = 1e-07) -> 'Any'
     merge(grams: 'Sequence[dict[str, Any]]') -> 'dict[str, Any]'
     solve(g: 'dict[str, Any]', *, ridge: 'float | Sequence[float]' = 0.0, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, standardize: 'bool' = False) -> 'Any'
     subset(g: 'dict[str, Any]', cols: 'Sequence[str | int]') -> 'dict[str, Any]'
@@ -941,9 +960,10 @@
   sim:
     regimes(m: 'int', *, states: 'Sequence[Any]', transition: 'Any', n_blocks: 'int', rows_per_block: 'int', durations: 'Sequence[int] | None' = None, design: 'str' = 'step', smooth_rows: 'int' = 0, phi: 'float | Sequence[float]' = 0.0, scale_state: 'float | Sequence[float]' = 0.0, async_rates: 'Sequence[float] | None' = None, noise: 'float' = 0.0, cycle_profile: 'Sequence[float] | None' = None, cycle_rows: 'int | None' = None, activity: 'tuple[float, float] | None' = None, seed: 'int' = 0) -> 'dict[str, pl.DataFrame]'
   stream:
+    ROLE
     embargo(lf: 'pl.LazyFrame | pl.DataFrame', *, clock: 'str', delay: 'float | Duration', weight: 'str | None' = None, role: 'str' = '_online_role') -> 'pl.LazyFrame | pl.DataFrame'
-    refresh_time(lf: 'pl.LazyFrame | pl.DataFrame', *, series: 'str', names: 'Sequence[str]', clock: 'str', value: 'str', group: 'str | None' = None, pairs: 'bool' = False, keep: 'Sequence[str]' = (), chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-    with_windows(lf: 'pl.LazyFrame | pl.DataFrame', *exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_rows: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame | pl.DataFrame'
+    refresh_time(lf: 'pl.LazyFrame | pl.DataFrame', *, series: 'str', names: 'Sequence[str]', clock: 'str', value: 'str', group: 'str | None' = None, pairs: 'bool' = False, keep: 'Sequence[str]' = (), chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+    with_windows(lf: 'pl.LazyFrame | pl.DataFrame', *exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame | pl.DataFrame'
 
 [output field grammar]  # the strings users index the output struct by
   ewridge minimal:
@@ -1323,7 +1343,7 @@
   kmeans minimal:
     cluster
     dist
-    dist2
+    dist_second
     weight_sum
     settled_frac
     withheld_reason
@@ -1371,14 +1391,14 @@
     weight_sum
   ew_cov with lags:
     corr_x0_x1
-    lagcorr_x0_x0_l1
-    lagcorr_x0_x1_l1
-    lagcorr_x1_x0_l1
-    lagcorr_x1_x1_l1
-    lagcorr_x0_x0_l5
-    lagcorr_x0_x1_l5
-    lagcorr_x1_x0_l5
-    lagcorr_x1_x1_l5
+    lag_corr_x0_x0_l1
+    lag_corr_x0_x1_l1
+    lag_corr_x1_x0_l1
+    lag_corr_x1_x1_l1
+    lag_corr_x0_x0_l5
+    lag_corr_x0_x1_l5
+    lag_corr_x1_x0_l5
+    lag_corr_x1_x1_l5
     weight_sum
     settled_frac
     withheld_reason
@@ -1437,69 +1457,69 @@
     withheld_reason
     coef
 
-[closed_groups columns]  # in order: a column renamed, moved or added is a diff here
+[closed_groups columns]  # column: dtype, in order: a column renamed, retyped, moved or added is a diff here
   shared:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    coef
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    coef: List[Float64]
   bocpd: the shared columns only
   corrchange: the shared columns only
   deco: the shared columns only
   ew_class: the shared columns only
   ew_cov:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    columns
-    means
-    comoments
-    targets
-    target_means
-    target_vars
-    target_weights
-    target_n_kish
-    cross_moments
-    means_by_target
-    cross_centred
-    coef
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    columns: List[String]
+    means: List[Float64]
+    comoments: List[Float64]
+    targets: List[String]
+    target_means: List[Float64]
+    target_vars: List[Float64]
+    target_weights: List[Float64]
+    target_n_kish: List[Float64]
+    cross_moments: List[Float64]
+    means_by_target: List[Float64]
+    cross_centred: List[Float64]
+    coef: List[Float64]
   ewridge:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    columns
-    means
-    comoments
-    targets
-    target_means
-    target_vars
-    target_weights
-    target_n_kish
-    cross_moments
-    means_by_target
-    cross_centred
-    coef
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    columns: List[String]
+    means: List[Float64]
+    comoments: List[Float64]
+    targets: List[String]
+    target_means: List[Float64]
+    target_vars: List[Float64]
+    target_weights: List[Float64]
+    target_n_kish: List[Float64]
+    cross_moments: List[Float64]
+    means_by_target: List[Float64]
+    cross_centred: List[Float64]
+    coef: List[Float64]
   ftrl: the shared columns only
   hmm: the shared columns only
   holt: the shared columns only
@@ -1507,143 +1527,143 @@
   kalman: the shared columns only
   kmeans: the shared columns only
   lasso:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    columns
-    means
-    comoments
-    targets
-    target_means
-    target_vars
-    target_weights
-    target_n_kish
-    cross_moments
-    means_by_target
-    cross_centred
-    coef
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    columns: List[String]
+    means: List[Float64]
+    comoments: List[Float64]
+    targets: List[String]
+    target_means: List[Float64]
+    target_vars: List[Float64]
+    target_weights: List[Float64]
+    target_n_kish: List[Float64]
+    cross_moments: List[Float64]
+    means_by_target: List[Float64]
+    cross_centred: List[Float64]
+    coef: List[Float64]
   marginal:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    coef
-    pair_feature
-    pair_target
-    pair_weight_sum
-    pair_n_kish
-    pair_mean_x
-    pair_var_x
-    pair_mean_y
-    pair_var_y
-    pair_cov
-    pair_corr
-    pair_beta
-    pair_t
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    coef: List[Float64]
+    pair_feature: List[String]
+    pair_target: List[String]
+    pair_weight_sum: List[Float64]
+    pair_n_kish: List[Float64]
+    pair_mean_x: List[Float64]
+    pair_var_x: List[Float64]
+    pair_mean_y: List[Float64]
+    pair_var_y: List[Float64]
+    pair_cov: List[Float64]
+    pair_corr: List[Float64]
+    pair_beta: List[Float64]
+    pair_t_stat: List[Float64]
   micro: the shared columns only
   pa: the shared columns only
   quantile: the shared columns only
   rcov:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    coef
-    rcov
-    rcorr
-    rcov_n
-    rcov_kind
-    bandwidth_used
-    omega2
-    iv_sparse
-    iq
-    psd_repaired
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    coef: List[Float64]
+    rcov: List[Float64]
+    rcorr: List[Float64]
+    rcov_n: Int64
+    rcov_kind: String
+    rcov_bandwidth_used: Int64
+    rcov_omega2: List[Float64]
+    rcov_iv_sparse: List[Float64]
+    rcov_iq: List[Float64]
+    rcov_psd_repaired: Boolean
   rls: the shared columns only
   seqtest: the shared columns only
   sgd: the shared columns only
   ew_cov with pca:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    columns
-    means
-    comoments
-    targets
-    target_means
-    target_vars
-    target_weights
-    target_n_kish
-    cross_moments
-    means_by_target
-    cross_centred
-    coef
-    eig_vals
-    eig_vecs
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    columns: List[String]
+    means: List[Float64]
+    comoments: List[Float64]
+    targets: List[String]
+    target_means: List[Float64]
+    target_vars: List[Float64]
+    target_weights: List[Float64]
+    target_n_kish: List[Float64]
+    cross_moments: List[Float64]
+    means_by_target: List[Float64]
+    cross_centred: List[Float64]
+    coef: List[Float64]
+    eig_vals: List[Float64]
+    eig_vecs: List[Float64]
   marginal with lags and bins:
-    spec
-    group
-    instance
-    session
-    weight_sum
-    n_kish
-    rows_fed
-    rows_learned
-    clock_min
-    clock_max
-    coef
-    pair_feature
-    pair_target
-    pair_weight_sum
-    pair_n_kish
-    pair_mean_x
-    pair_var_x
-    pair_mean_y
-    pair_var_y
-    pair_cov
-    pair_corr
-    pair_beta
-    pair_t
-    pair_lagcorr_xx
-    pair_lagcorr_yy
-    pair_lagcorr_xy
-    pair_lagcorr_yx
-    pair_n_serial
-    pair_t_serial
-    pair_phi_x
-    pair_phi_y
-    pair_bin_edges
-    pair_bin_n
-    pair_bin_mean_y
-    pair_bin_var_y
-    pair_split_gain
-    pair_split_at
-    pair_split_gain_t
+    spec: String
+    group: String
+    instance: String
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: UInt64
+    rows_learned: UInt64
+    clock_min: Float64
+    clock_max: Float64
+    coef: List[Float64]
+    pair_feature: List[String]
+    pair_target: List[String]
+    pair_weight_sum: List[Float64]
+    pair_n_kish: List[Float64]
+    pair_mean_x: List[Float64]
+    pair_var_x: List[Float64]
+    pair_mean_y: List[Float64]
+    pair_var_y: List[Float64]
+    pair_cov: List[Float64]
+    pair_corr: List[Float64]
+    pair_beta: List[Float64]
+    pair_t_stat: List[Float64]
+    pair_lag_corr_xx: List[List[Float64]]
+    pair_lag_corr_yy: List[List[Float64]]
+    pair_lag_corr_xy: List[List[Float64]]
+    pair_lag_corr_yx: List[List[Float64]]
+    pair_n_serial: List[Float64]
+    pair_t_serial: List[Float64]
+    pair_phi_x: List[Float64]
+    pair_phi_y: List[Float64]
+    pair_bin_edges: List[List[Float64]]
+    pair_bin_n: List[List[Float64]]
+    pair_bin_mean_y: List[List[Float64]]
+    pair_bin_var_y: List[List[Float64]]
+    pair_split_gain: List[Float64]
+    pair_split_at: List[Float64]
+    pair_split_gain_t: List[Float64]
 
 [enum values]  # the words each string-valued parameter takes, read from its refusal of one it does not: a word added, renamed or dropped is a diff here
   spec.drift_action: flag, reset
@@ -1654,9 +1674,14 @@
   corrchange.kind: monitor, sequential, window
   corrchange.norm: l1, linf
   deco.dynamics: ew, linear
+  ew_class.closed: both, left, none, right
+  ew_cov.closed: both, left, none, right
+  ewridge.closed: both, left, none, right
+  lasso.closed: both, left, none, right
+  marginal.closed: both, left, none, right
   ew_class.covariance: diagonal, full, shared
   ew_class.window_budget: refuse, thin
-  ew_cov.stats: corr, cov, lagcorr, mahal, mean, partial_corr, std, var
+  ew_cov.stats: corr, cov, lag_corr, mahal, mean, partial_corr, std, var
   ew_cov.window_budget: refuse, thin
   ewridge.ridge_scale: mean, sum
   ewridge.target_gaps: own_rows, pairwise
@@ -1677,7 +1702,6 @@
   rcov.kind: kernel, plain, preavg
   sgd.loss: epsilon_insensitive, huber, logistic, poisson, quantile, squared
   sgd.schedule: adagrad, constant, inv_scaling
-  po.target.relative: difference, log_ratio, ratio
   po.ewm_mean.closed: both, left, none, right
   po.ewm_mean.partial: drop, keep, null
   po.ewm_rate.closed: both, left, none, right
@@ -1698,7 +1722,7 @@
 
 [toml keys]  # read from the refusal of a key the table has not got: a key added, renamed or removed is a diff here; the run config's keys need the CLI
   run config:
-    chunk_rows
+    chunk_size
     closed_groups
     input
     input_format
@@ -1708,6 +1732,7 @@
     output_format
     predict
     save_state
+    skip_learned
     specs
   [[specs]]:
     average_eta
@@ -1749,27 +1774,27 @@
     targets
     weight
   [specs.model], by type:
-    bocpd: emission, hazard, hazard_col, max_run, prior_kappa, prior_mean, prior_nu, prior_scale, prune_below, robust_beta
-    corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every, reset_on_flag, scalar, seed, span_rows
+    bocpd: emission, hazard, hazard_col, max_run, prior_kappa, prior_mean, prior_nu, prior_scale, prune_below, robust_beta, warm_rows
+    corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every_rows, reset_on_flag, scalar, seed, span_rows
     deco: alpha, beta, blocks, dynamics
-    ew_class: classes, covariance, max_rows_between_snapshots, precision_prior, window_budget, window_every, window_size
-    ew_cov: lags, mahal_quantiles, max_rows_between_pca, max_rows_between_snapshots, pca, pca_every, precision_prior, stats, window_budget, window_every, window_size
-    ew_ridge: coef_prior, feature_sets, gram_block_rows, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, solve_every, standardize, target_gaps, window_budget, window_every, window_size
+    ew_class: classes, closed, covariance, max_rows_between_snapshots, precision_prior, window_budget, window_every, window_size
+    ew_cov: closed, lags, mahal_quantiles, max_rows_between_pca, max_rows_between_snapshots, pca, pca_every, precision_prior, stats, window_budget, window_every, window_size
+    ewridge: closed, coef_prior, feature_sets, gram_block_rows, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, solve_every, standardize, target_gaps, window_budget, window_every, window_size
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance, covs, exog_tvtp, k, learn, means, precision_prior, seed, seed_rule, transition, transition_prior, tvtp_coef, warm_rows
-    holt: level_half_life, trend, trend_half_life
+    holt: trend, trend_half_life
     huber: huber_delta, max_rows_between_solves, ridge, solve_every, standardize
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
-    kmeans: dead_frac, k, scale_floor, seed, seed_rule, split_merge, split_merge_every, standardize, update_every, warm_rows
-    lasso: l1_ratio, lasso_path, max_iter, max_rows_between_snapshots, max_rows_between_solves, select_half_life, solve_every, target_gaps, tol, window_budget, window_every, window_size
-    marginal: bin_budget, bin_edges, bin_rule, bin_warm_rows, bins, cross_lags, feature_moments, lags, max_rows_between_snapshots, serial_rule, shards, window_budget, window_every, window_lags, window_size
+    kmeans: dead_frac, k, scale_floor, seed, seed_rule, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
+    lasso: closed, l1_ratio, lasso_path, max_iter, max_rows_between_snapshots, max_rows_between_solves, select_half_life, solve_every, target_gaps, tol, window_budget, window_every, window_size
+    marginal: bin_budget, bin_edges, bin_rule, bin_warm_rows, bins, closed, cross_lags, feature_moments, lags, max_rows_between_snapshots, serial_rule, shards, window_budget, window_every, window_lags, window_size
     micro: beta_mu, eps, macro_link, max_clusters, max_rows_between_prunes, prune_every, scale_floor, standardize
-    pa: c, coef_max, coef_min, coef_sum, eps, mode
+    pa: c, coef_max, coef_min, coef_sum, eps, mode, standardize
     quantile: max_rows_between_solves, quantile, quantile_eps, ridge, solve_every, standardize
     rcov: bandwidth, block_rows, iv_stride, jitter, kernel, kind, max_bandwidth, noise_stride, preavg_rows, psd, theta
-    rls: coef_prior, ridge
+    rls: coef_prior, delta
     seqtest: a, a_suffix, b, b_suffix
-    sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, l2, learning_rate, loss, power, quantile, schedule, standardize
+    sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, l2, learning_rate, loss, power, quantile, schedule, standardize, strict_binary
 
 [cli flags]  # `online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
   Usage: online [OPTIONS] --config <CONFIG>
@@ -1779,8 +1804,9 @@
   --no-output
   --input-format <INPUT_FORMAT>
   --output-format <OUTPUT_FORMAT>
-  --chunk-rows <CHUNK_ROWS>
-  --resume <RESUME>
+  --chunk-size <CHUNK_SIZE>
+  --load-state <LOAD_STATE>
+  --skip-learned
   --save-state <SAVE_STATE>
   --closed-groups <CLOSED_GROUPS>
   --predict
@@ -1792,3 +1818,4 @@
 [env vars]  # read at run time by the shipped code (crates/*/src, the package): a variable added or renamed is a diff here
   ONLINE_TIMING
   POLARS_ONLINE_MAX_THREADS
+  POLARS_ONLINE_WARN_UNSTABLE

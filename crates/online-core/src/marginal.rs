@@ -427,11 +427,9 @@ pub struct Marginal {
     /// Per (target, feature) pair and per target, the value it has held on
     /// the target's rows since it last changed, and the weight of those rows
     /// ([`crate::Runs`]): what lets a window say that a slot held one value
-    /// over it, which its subtraction cannot (docs/PLAN.md task 94). Empty in
-    /// a state written before them. Ahead of `win`.
-    #[serde(default)]
+    /// over it, which its subtraction cannot (docs/PLAN.md task 94). Ahead
+    /// of `win`.
     x_runs: crate::Runs,
-    #[serde(default)]
     y_runs: crate::Runs,
     /// Per target, its learned rows so far: what its runs' start rows count
     /// in, and what the window's snapshot records. Ahead of `win`.

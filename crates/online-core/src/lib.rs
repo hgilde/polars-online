@@ -567,12 +567,26 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// It was 14 until task 198, and said "the oldest layout this build still
-/// loads" while six models' layouts had moved since with no loader: a state
-/// of such a layout failed in serde, before a `State` existed for this gate
-/// to read, whatever version it named. The repairs that defaulted a field
-/// written since an older layout went with that number. How it came to be
-/// 14:
+/// **44 since tasks 194-202** (2026-10-07), with [`SCHEMA_VERSION`] and the
+/// fixtures regenerated at it. A state from before a layout moved does not
+/// decode, so it is refused by its number first; by [`SCHEMA_VERSION`]'s
+/// history the moves were: `bocpd`, `ewridge`, `robust` (`huber` and
+/// `quantile`), `rls`, `sgd` and `pa` at 40 (task 195); a windowed
+/// `ewridge`, `lasso`, `ew_cov`, `ew_class` or `marginal`, a `kmeans` and a
+/// `corrchange` at 41 (task 196); the clock state, which holds an integer
+/// clock as one, at 42 (task 200, a float or temporal clock's bytes
+/// unchanged); and `pa` and `sgd` again at 44 (task 202). 39 and 43 moved a
+/// bank file alone (tasks 194 and 201). The loaders the floor passed went
+/// with it: `deco`'s single `rho_w`, `ew_cov`'s schema-1 names and P²
+/// markers, `marginal`'s missing runs and a stream's schema-14 held-rows
+/// clock.
+///
+/// **38 from task 198.** It was 14 until then, and said "the oldest layout
+/// this build still loads" while six models' layouts had moved since with
+/// no loader: a state of such a layout failed in serde, before a `State`
+/// existed for this gate to read, whatever version it named. The repairs
+/// that defaulted a field written since an older layout went with that
+/// number. How it came to be 14:
 ///
 /// **14 since 2026-09-24**: a schema-13 clock state holds a double where the
 /// nanoseconds now are, and pre-1.0 no loader is written for one.
@@ -617,7 +631,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 38;
+pub const MIN_SCHEMA_VERSION: u32 = 44;
 
 #[cfg(test)]
 mod tests {

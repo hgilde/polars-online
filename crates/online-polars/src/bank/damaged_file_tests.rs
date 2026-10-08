@@ -100,6 +100,40 @@ fn a_held_row_without_its_place_on_the_elapsed_clock_is_refused() {
     assert!(Bank::load_bytes(&bytes, None).is_ok());
 }
 
+/// A held-rows clock is kept, one per model instance, by a stream with an
+/// `embargo`, and by no other. A schema-14 file had none, and its loader
+/// rebuilt it from the rows still held, until the minimum schema passed it
+/// (docs/PLAN.md tasks 198 and 194-202): one of the wrong length is
+/// refused, as is one beside a spec that keeps none.
+#[test]
+fn a_held_rows_clock_of_the_wrong_length_is_refused() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0, "embargo": 2}"#,
+    );
+    let mut bank = Bank::new(vec![s]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    for (what, edit) in [
+        ("none", (|c: &mut Vec<f64>| c.clear()) as fn(&mut Vec<f64>)),
+        ("one too many", |c: &mut Vec<f64>| c.push(0.0)),
+    ] {
+        let damaged = reencoded(&bytes, |f| {
+            edit(&mut f.states[0][0].1.persisted.pending_clock)
+        });
+        let err = Bank::load_bytes(&damaged, None).err().expect(what);
+        assert!(err.contains("held-rows clock"), "{what}: {err}");
+    }
+    let mut plain = Bank::new(vec![ridge()]).unwrap();
+    plain.fit_predict(&frame()).unwrap();
+    let damaged = reencoded(&plain.save_bytes().unwrap(), |f| {
+        f.states[0][0].1.persisted.pending_clock = vec![0.0];
+    });
+    let err = Bank::load_bytes(&damaged, None).err().expect("no embargo");
+    assert!(err.contains("held-rows clock"), "{err}");
+    assert!(Bank::load_bytes(&bytes, None).is_ok());
+}
+
 /// A row held under `embargo` is learned at its release with the values the
 /// file holds, where none of the bank's checks on a row ran: a feature or a
 /// target that is not a usable number, a weight that is not one or is below

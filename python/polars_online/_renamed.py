@@ -8,6 +8,12 @@ the error rather than from a changelog. A spec's keyword goes through
 stub from :func:`renamed_function` under its old name (task 197). A keyword
 for something removed, such as ``po.target``'s ``relative_to`` (task 201),
 is refused by :func:`removed_keywords`, saying what replaces it.
+
+These are the refusals every module uses: the stream functions'
+``_spec._renamed_keywords`` (``chunk_size``, task 196) is
+:func:`renamed_keywords`. From 1.0 a rename is forwarded instead, with a
+warning, until the next major version refuses it here:
+:mod:`polars_online._warnings` keeps that table and its warning.
 """
 
 from __future__ import annotations

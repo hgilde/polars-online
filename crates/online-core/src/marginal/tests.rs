@@ -471,8 +471,9 @@ fn a_row_without_a_target_ages_that_targets_runs_alone() {
 
 /// A state without the means' low parts, or without each target's learned
 /// rows, is refused, where it loaded and sized them at zero (docs/PLAN.md
-/// task 198); one without the runs still loads, which start at the next
-/// learned row (`crate::Runs`).
+/// task 198); so is one without the runs, which loaded with them starting
+/// at the next learned row until the minimum schema passed it (tasks
+/// 194-202).
 #[test]
 fn a_state_without_the_low_parts_is_refused() {
     let mut c = cfg(2, 1);
@@ -502,15 +503,13 @@ fn a_state_without_the_low_parts_is_refused() {
             other => panic!("{key} one short: {other:?}"),
         }
     }
-    let mut old = serde_json::to_value(&m).unwrap();
     for key in ["x_runs", "y_runs"] {
+        let mut old = serde_json::to_value(&m).unwrap();
         assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
-    }
-    let mut back: Marginal = serde_json::from_value(old).unwrap();
-    for i in 0..40 {
-        back.step(&[lcg(&mut s), lcg(&mut s)], &[Some(lcg(&mut s))], 1.0, 1.0);
-        let p = back.pair(0, i % 2);
-        assert!(p.mean_x.is_finite() && p.var_x.is_finite(), "row {i}");
+        let err = serde_json::from_value::<Marginal>(old)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&format!("missing field `{key}`")), "{err}");
     }
 }
 

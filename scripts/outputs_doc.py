@@ -165,6 +165,13 @@ ALSO_NULL: dict[str, str] = {
     "state": UNTIL_SEEDED,
 }
 
+#: `bocpd`'s fields, null while its first rows set a prior left out (task 195).
+BOCPD_STEMS = ("p_change", "run_mode", "run_mean", "pred_<f>", "loglik")
+BOCPD_WARM = (
+    "while withheld, and on the first `warm_rows` learned rows (by default the feature count "
+    "plus 2) where `prior_mean` or `prior_scale` is left out, which set it"
+)
+
 #: A model whose rule for a stem differs from `ALSO_NULL`'s.
 ALSO_NULL_BY_MODEL: dict[tuple[str, str], str] = {
     ("kmeans", "cluster"): (
@@ -173,6 +180,7 @@ ALSO_NULL_BY_MODEL: dict[tuple[str, str], str] = {
     ),
     ("micro", "cluster"): "while withheld, and while no micro-cluster is established",
     ("hmm", "loglik"): UNTIL_SEEDED,
+    **{("bocpd", stem): BOCPD_WARM for stem in BOCPD_STEMS},
 }
 
 #: What a model writes when it writes nothing per row.
@@ -272,7 +280,8 @@ OPTIONAL: list[tuple[str, str]] = [
         "`emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, "
         "`conformal`",
         "[Per-row diagnostics](../README.md#per-row-diagnostics), for the models that "
-        "predict a target",
+        "predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` "
+        'fit with `loss="poisson"`, whose rate and count have no sign to hit',
     ),
     (
         "`emit_error_inflation`, `ewridge`'s",

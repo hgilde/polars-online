@@ -1,7 +1,11 @@
 """The warnings of the library's promise: a name on its way out, and a surface
 that is not yet promised (docs/PLAN.md task 198; review round 4, D2 and D5).
 
-Nothing here imports the rest of the package, so every module can use it.
+The rename mechanism has two halves: a name renamed before 1.0 is refused,
+naming the new one (:mod:`polars_online._renamed`), and one renamed after is
+forwarded here, with a warning, until the next major version moves it to the
+refusals. Nothing here imports the rest of the package, so every module can
+use it.
 """
 
 from __future__ import annotations
@@ -12,6 +16,19 @@ import threading
 import warnings
 from collections.abc import Callable, Mapping
 from typing import Any
+
+#: The parameters renamed after 1.0, old -> new: a builder's keyword or a
+#: spec dict's key under the old name is read as the new one, with a
+#: :class:`PolarsOnlineDeprecationWarning`, until the next major version
+#: moves the entry to ``_spec._RENAMED``, which refuses it naming the new one
+#: (docs/PLAN.md task 198; review round 4, D2). Empty: every rename so far
+#: was made before 1.0 and stays refused by name
+#: (:mod:`polars_online._renamed`). Its twin for a TOML file is the Rust
+#: side's ``online_polars::DEPRECATED``, which ``tests/test_deprecation.py``
+#: holds equal to this one. A function's own keyword renamed after 1.0
+#: forwards through :func:`forward_deprecated` at its top. Read where it is
+#: used, as ``_warnings._DEPRECATED``, so one table serves every caller.
+_DEPRECATED: dict[str, str] = {}
 
 #: The environment variable that turns :class:`UnstableWarning` on, as
 #: ``POLARS_WARN_UNSTABLE`` does Polars' own: ``1`` and nothing else.

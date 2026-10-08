@@ -199,7 +199,7 @@ fn decay() -> Decay {
     Decay::Halflife(H)
 }
 
-fn ew_ridge_cfg() -> EwRidgeCfg {
+fn ewridge_cfg() -> EwRidgeCfg {
     EwRidgeCfg {
         n_features: K,
         n_targets: 2,
@@ -407,16 +407,16 @@ pub fn all() -> Vec<Case> {
             before: 40,
         },
         case!(
-            "ew_ridge",
+            "ewridge",
             "EwRidge",
             EwRidge,
-            EwRidge::new(ew_ridge_cfg()).unwrap(),
+            EwRidge::new(ewridge_cfg()).unwrap(),
             K,
             Targets::Linear(2),
             40
         ),
         case!(
-            "ew_ridge_window",
+            "ewridge_window",
             "EwRidge",
             EwRidge,
             EwRidge::new(EwRidgeCfg {
@@ -424,7 +424,7 @@ pub fn all() -> Vec<Case> {
                 window: WINDOW.0,
                 window_every: WINDOW.1,
                 max_rows_between_snapshots: WINDOW.2,
-                ..ew_ridge_cfg()
+                ..ewridge_cfg()
             })
             .unwrap(),
             K,

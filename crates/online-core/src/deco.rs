@@ -234,10 +234,7 @@ pub struct Deco {
     rho_bar: Vec<f64>,
     /// Accumulated weight behind each `rho_bar`, one per value. Not the
     /// diag's: a row whose `u` for a value is not finite teaches that value
-    /// nothing, and must not decay it. One weight served every value before
-    /// task 115 (h); a state written then holds a number, which
-    /// `weight_or_weights` reads as a list of one and `restore` widens.
-    #[serde(deserialize_with = "weight_or_weights")]
+    /// nothing, and must not decay it.
     rho_w: Vec<f64>,
     /// What each `rho_bar` leaves out: the level is a pair no step is
     /// rounded off, as an `ew_cov`'s mean is ([`crate::comp`]; docs/PLAN.md
@@ -500,7 +497,7 @@ impl crate::OnlineModel for Deco {
         crate::check_schema(s)?;
         match &s.model {
             crate::ModelState::Deco(m) => {
-                let mut m = (**m).clone();
+                let m = (**m).clone();
                 // The width before the cfg's own check, which sizes a vector
                 // by it: the accumulator's is the data's, so a damaged width
                 // is refused here rather than allocated.
@@ -515,10 +512,6 @@ impl crate::OnlineModel for Deco {
                 // correlation vectors are one per block pair (review
                 // 2026-09-18, B3).
                 let values = n_values(m.blocks.len());
-                // One weight served every value before task 115 (h).
-                if m.rho_w.len() == 1 && values > 1 {
-                    m.rho_w = vec![m.rho_w[0]; values];
-                }
                 if m.diag.k() != m.cfg.n_features
                     || m.blocks != m.cfg.resolved_blocks()
                     || m.rho.len() != values
@@ -616,22 +609,6 @@ impl Deco {
             self.rho_w[m] = w_new;
         }
     }
-}
-
-/// `rho_w` was one weight for every correlation value before task 115 (h);
-/// a state written then holds a number, read here as a list of one, which
-/// [`Deco`]'s `restore` widens to every value.
-fn weight_or_weights<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Weights {
-        One(f64),
-        Each(Vec<f64>),
-    }
-    Ok(match Weights::deserialize(d)? {
-        Weights::One(w) => vec![w],
-        Weights::Each(v) => v,
-    })
 }
 
 #[cfg(test)]
@@ -1231,11 +1208,11 @@ mod tests {
         assert!(m.rho.iter().all(|v| v.is_finite()), "{:?}", m.rho);
     }
 
-    /// A state written before task 115 (h) has one weight for every value:
-    /// it loads with that weight on each value, from the state itself (its
-    /// JSON, `rho_w` a number) and from the format a bank file holds.
+    /// A state written before task 115 (h) had one weight for every value,
+    /// `rho_w` a number. It loaded widened to every value until the minimum
+    /// schema passed it (docs/PLAN.md tasks 198 and 194-202): it is refused.
     #[test]
-    fn a_state_with_one_weight_for_every_value_loads() {
+    fn a_state_with_one_weight_for_every_value_is_refused() {
         let mut m = Deco::new(DecoCfg {
             blocks: vec![vec![0, 1], vec![2, 3]],
             ..cfg(4)
@@ -1246,21 +1223,7 @@ mod tests {
         }
         let mut v = serde_json::to_value(crate::OnlineModel::state(&m)).unwrap();
         crate::window::json_edit(&mut v, "rho_w", &mut |x| *x = serde_json::json!(0.75));
-        let back =
-            <Deco as crate::OnlineModel>::restore(&serde_json::from_value(v).unwrap()).unwrap();
-        assert_eq!(back.rho_w, vec![0.75; 3]);
-        #[derive(Serialize)]
-        struct Written {
-            rho_w: f64,
-        }
-        #[derive(Deserialize)]
-        struct Read {
-            #[serde(deserialize_with = "super::weight_or_weights")]
-            rho_w: Vec<f64>,
-        }
-        let bytes = rmp_serde::to_vec_named(&Written { rho_w: 2.5 }).unwrap();
-        let read: Read = rmp_serde::from_slice(&bytes).unwrap();
-        assert_eq!(read.rho_w, vec![2.5]);
+        assert!(serde_json::from_value::<crate::State>(v).is_err());
     }
 
     /// A negative weight in the linear recursion is refused whichever of

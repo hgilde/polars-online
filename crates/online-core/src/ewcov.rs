@@ -125,7 +125,6 @@ pub struct EwCov {
     /// EW mean vector, length `k`.
     m: Vec<f64>,
     /// EW **centered** co-moments, row-major `k*k`.
-    #[serde(alias = "s")]
     c: Vec<f64>,
     /// Prior strength for the precision matrix `M⁻¹ = (C + s·prior·I)⁻¹`
     /// (docs/PLAN.md §4.7); `0` when none is wanted.
@@ -138,7 +137,7 @@ pub struct EwCov {
     /// zero there, which no later row can undo. [`Self::precision`] solves
     /// `M X = I` from the co-moments instead, which cannot drift, and is only
     /// paid for when partial correlations are read.
-    #[serde(default, alias = "inv_prior")]
+    #[serde(default)]
     precision_prior: f64,
     /// Row scratch: `x - m`, the deviations the co-moment update needs `k`
     /// times each (docs/ENHANCEMENTS.md E48). Not part of the state -- serde
@@ -151,7 +150,7 @@ pub struct EwCov {
     /// of what it would be with a constant prior:
     /// `M' = a·C + a·b·δδᵀ + a·s·prior·I = a·(M + b·δδᵀ)`. Like RLS's `P₀`,
     /// this makes the prior fade as data accumulates.
-    #[serde(default, alias = "inv_scale")]
+    #[serde(default)]
     precision_scale: f64,
     /// Per feature, the value it has held on every row learned since it last
     /// changed, and the learned row that started the run ([`crate::Runs`]):
@@ -231,7 +230,7 @@ impl EwCov {
     }
 
     /// What mean `i`'s double leaves out ([`crate::comp`]).
-    #[inline]
+    #[cfg(test)]
     pub(crate) fn mean_lo(&self, i: usize) -> f64 {
         self.m_lo[i]
     }
@@ -1445,32 +1444,12 @@ impl Pca {
 ///
 /// It has no targets: every column is a "feature", and the statistics are
 /// reported from the state *before* each row, like every prediction here.
-/// `mahal_q` as this build writes it, or, from a state written before
-/// schema 21, a list of P² markers, read as `None` for `restore` to refuse.
-fn sketch_or_p2_markers<'de, D>(d: D) -> Result<Option<crate::EwQuantile>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum Either {
-        Sketch(Option<crate::EwQuantile>),
-        Markers(#[allow(dead_code)] Vec<serde::de::IgnoredAny>),
-    }
-    Ok(match <Either as serde::Deserialize>::deserialize(d)? {
-        Either::Sketch(q) => q,
-        Either::Markers(_) => None,
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EwCovModel {
     cfg: EwCovCfg,
     cov: EwCov,
     /// The sketch of the past Mahalanobis scores, every level from one;
-    /// `None` without levels, and for a state written before schema 21,
-    /// which kept P² markers here and is refused where it has levels.
-    #[serde(default, deserialize_with = "sketch_or_p2_markers")]
+    /// `None` without levels.
     mahal_q: Option<crate::EwQuantile>,
     /// The components in force, refreshed every `pca_every` clock units or
     /// every `max_rows_between_pca` rows, whichever comes first.
@@ -2066,14 +2045,10 @@ impl crate::OnlineModel for EwCovModel {
             crate::ModelState::EwCovModel(m) => {
                 let mut m = (**m).clone();
                 crate::model::check_cfg("ew_cov", m.cfg.validate())?;
-                // P² markers say nothing about a decayed distribution, and
-                // pre-1.0 no loader is written (docs/PLAN.md task 146).
+                // Levels need the sketch they are read from.
                 if m.mahal_q.is_none() && !m.cfg.mahal_quantiles.is_empty() {
                     return Err(crate::StateError::Invalid(
-                        "ew_cov: a state written before schema 21 keeps P² markers for \
-                         mahal_quantiles, where this build keeps a decaying sketch; refit it \
-                         from its input"
-                            .into(),
+                        "ew_cov: the state keeps no sketch for its mahal_quantiles".into(),
                     ));
                 }
                 // A state written before task 48, resumed under a spec that
@@ -2921,10 +2896,12 @@ mod tests {
     }
 
     /// A state from before schema 21 kept P² markers for its Mahalanobis
-    /// quantiles: written into msgpack here as that build wrote them, it is
-    /// refused by name, and a state with no levels still loads.
+    /// quantiles: written into msgpack here as that build wrote them, it
+    /// does not decode. It was read as no sketch and refused by name until
+    /// the minimum schema passed it (docs/PLAN.md tasks 198 and 194-202). A
+    /// state with levels and no sketch is refused at `restore`.
     #[test]
-    fn a_state_with_p2_markers_is_refused_by_name() {
+    fn a_state_with_p2_markers_is_refused() {
         fn swap(v: &mut rmpv::Value, with: &rmpv::Value) -> bool {
             match v {
                 rmpv::Value::Map(kv) => kv.iter_mut().any(|(k, val)| {
@@ -2950,7 +2927,7 @@ mod tests {
                 ("count".into(), 5.into()),
             ])
         };
-        let old = |levels: Vec<f64>| {
+        let old = |levels: Vec<f64>| -> Result<crate::State, String> {
             let mut c = mahal_cfg(2, 1e-6);
             c.mahal_quantiles = levels.clone();
             let m = EwCovModel::new(c).unwrap();
@@ -2964,16 +2941,18 @@ mod tests {
             assert!(swap(&mut v, &markers), "the state has a mahal_q");
             let mut out = Vec::new();
             rmpv::encode::write_value(&mut out, &v).unwrap();
-            rmp_serde::from_slice::<crate::State>(&out).unwrap()
+            rmp_serde::from_slice::<crate::State>(&out).map_err(|e| e.to_string())
         };
-        let err = <EwCovModel as crate::OnlineModel>::restore(&old(vec![0.5, 0.9]))
+        assert!(old(vec![0.5, 0.9]).is_err());
+        assert!(old(vec![]).is_err());
+        let mut c = mahal_cfg(2, 1e-6);
+        c.mahal_quantiles = vec![0.5];
+        let mut m = EwCovModel::new(c).unwrap();
+        m.mahal_q = None;
+        let err = <EwCovModel as crate::OnlineModel>::restore(&crate::OnlineModel::state(&m))
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("before schema 21") && err.contains("P²"),
-            "{err}"
-        );
-        assert!(<EwCovModel as crate::OnlineModel>::restore(&old(vec![])).is_ok());
+        assert!(err.contains("no sketch for its mahal_quantiles"), "{err}");
     }
 
     #[test]
@@ -4226,11 +4205,13 @@ mod tests {
         assert_eq!(ew, back);
     }
 
+    /// Schema 1 stored the Sherman-Morrison inverse under `inv`, the
+    /// co-moments under `s` and the prior as `inv_prior` / `inv_scale`. It
+    /// loaded through aliases, with the inverse discarded, until the minimum
+    /// schema passed it (docs/PLAN.md tasks 198 and 194-202): it does not
+    /// decode.
     #[test]
-    fn loads_a_schema_1_state() {
-        // Schema 1 stored the Sherman-Morrison inverse under `inv` with its
-        // prior as `inv_prior` / `inv_scale`. The inverse is discarded (it is
-        // recomputed from the co-moments) and the prior carried over.
+    fn a_schema_1_state_is_refused() {
         let mut want = EwCov::with_precision_prior(2, 0.25).unwrap();
         want.update(&[1.0, 2.0], 0.95, 1.3);
         want.update(&[0.5, 2.5], 0.95, 1.0);
@@ -4239,33 +4220,13 @@ mod tests {
             "w_sum": want.w_sum,
             "prior_scale": want.prior_scale,
             "m": want.m,
-            "c": want.c,
+            "s": want.c,
             "inv": [1.0, 2.0, 3.0, 4.0],
             "inv_prior": 0.25,
             "inv_scale": want.precision_scale,
             "m_lo": want.m_lo,
         });
-        let got: EwCov = serde_json::from_value(v1.clone()).unwrap();
-        // No `q_sum` in a schema-1 file, and it cannot be reconstructed: the
-        // load reports `None` rather than a Kish size that would be wrong by
-        // the length of the history (E45).
-        assert_eq!(got.q_sum(), None);
-        assert_eq!(got.n_kish(), None);
-        want.q_sum = None;
-        // Nor runs, which schema 16 added: nothing is known of them, and
-        // they start at the next learned row (PLAN task 94).
-        want.runs = Runs::default();
-        want.rows_learned = 0;
-        assert_eq!(got, want);
-        // The means' low parts are required (docs/PLAN.md task 198): a file
-        // without them does not decode, where it loaded with the means at
-        // the doubles it held.
-        let mut v1 = v1;
-        v1.as_object_mut().unwrap().remove("m_lo");
-        let err = serde_json::from_value::<EwCov>(v1).unwrap_err().to_string();
-        assert!(err.contains("missing field `m_lo`"), "{err}");
-        assert!(got.has_precision_prior());
-        assert_eq!(got.precision(), want.precision());
+        assert!(serde_json::from_value::<EwCov>(v1).is_err());
     }
 
     #[test]
