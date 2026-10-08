@@ -856,7 +856,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 47
+    assert po.schema_version() == 50
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

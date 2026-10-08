@@ -63,6 +63,9 @@ pub struct WindowsConfig {
 
 const WHO: &str = "with_windows";
 const WINDOWS_MAGIC: &str = "polars-online windows";
+/// 9 since task 212: a queue keeps which of its operators are variances
+/// (`ewm_var`, `ewm_std`), its arenas six wide for one where every other
+/// operator's are three, and an operator keeps its `bias`;
 /// 8 since task 200: an integer clock rides in a row's `off` as its own
 /// value, beside the form `off` holds, where a bool said nanoseconds or
 /// the bits of a double, and an increment of an integer input keeps its
@@ -78,7 +81,7 @@ const WINDOWS_MAGIC: &str = "polars-online windows";
 /// task 143: formulas over operators, where 1 held descriptions. An older
 /// state would load with defaults and misbehave. The bank's schema moves
 /// with this number (review R4, A2; R6, D5).
-const WINDOWS_VERSION: u32 = 8;
+const WINDOWS_VERSION: u32 = 9;
 
 /// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
 /// core holds as Arrow IPC with their increment columns, and each group's
@@ -377,6 +380,7 @@ fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, String> {
                     Direction::Backward => Partial::Keep,
                     Direction::Forward => Partial::Null,
                 }),
+                bias: op.bias,
             });
             p.columns.push((key, p.ops.len() - 1));
         }
@@ -718,6 +722,7 @@ impl WindowsRun {
                     input: 0,
                     min_samples: 1,
                     partial: Partial::Keep,
+                    bias: false,
                 }],
                 cfg,
             )
@@ -2363,7 +2368,7 @@ mod tests {
             .err()
             .expect("refused");
         assert!(
-            err.contains("state version 2 not supported (this build reads 8)"),
+            err.contains("state version 2 not supported (this build reads 9)"),
             "{err}"
         );
         let other = rmp_serde::to_vec_named(&Old {
@@ -2461,8 +2466,9 @@ mod tests {
         // targets' removal (task 201), 44 for task 202's target spreads,
         // 45 for task 116's readiness statistics, 46 for the readiness
         // notices' waits (task 208) and 47 for task 206's warm-up of a
-        // standardizing fit, the windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (8, 47));
+        // standardizing fit, the windows state unchanged; 50 (task 212,
+        // provisional) with windows state 9, a variance's queue six wide.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 50));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

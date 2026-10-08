@@ -289,12 +289,16 @@ fn refresh_names() -> Vec<String> {
 }
 
 /// A backward mean and a mean that looks ahead, so rows are held across the
-/// save.
+/// save; a standard deviation on the mean's kernel, which makes its queue a
+/// variance's, six wide, and a biased variance with no window, whose running
+/// sums are six wide too (task 212).
 fn windows_config() -> WindowsConfig {
     serde_json::from_str(
         r#"{"formulas": [
                {"name": "level", "tree": ["ewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}]},
-               {"name": "ahead", "tree": ["-", ["rewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}], ["col", "mid"]]}
+               {"name": "ahead", "tree": ["-", ["rewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}], ["col", "mid"]]},
+               {"name": "spread", "tree": ["ewm_std", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}]},
+               {"name": "var", "tree": ["ewm_var", ["col", "mid"], {"half_life": 5.0, "bias": true}]}
              ],
              "clock": "t", "gap_cap": 50.0}"#,
     )
@@ -801,6 +805,17 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         // integer: present is what is checked.
         ("with_windows_int", "an increment's prev_int", |p, v| {
             p.contains(".prev_int.") && !v.is_nil()
+        }),
+        // Task 212: a variance's queue, its arenas six wide, and an
+        // operator's `bias`.
+        ("with_windows", "a variance's queue, six wide", |p, v| {
+            p.ends_with(".front.wide") && v.as_bool() == Some(true)
+        }),
+        ("with_windows", "a variance's running sums", |p, v| {
+            p.contains(".total.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("with_windows", "an operator's bias", |p, v| {
+            p.ends_with(".bias") && v.as_bool() == Some(true)
         }),
         ("refresh_time_int", "Instant::Int", |p, _| {
             p.contains(".last_time.") && p.ends_with(".Int")

@@ -16,8 +16,9 @@
 //! `["clip", x, lo, hi]` (either bound `["lit"]`, a bare `null` read too), `["fill_null", x, y]`,
 //! `["when", p, then, else]`, `["cast", x, "Float64"]` and
 //! `["alias", x, name]`. An operator is `[name, input, {params}]` for
-//! `ewm_mean`, `rewm_mean`, `ewm_sum`, `rewm_sum`, `ewm_rate` and
-//! `rewm_rate`, and `["increment", input]`. Nothing else is read, so a
+//! `ewm_mean`, `rewm_mean`, `ewm_sum`, `rewm_sum`, `ewm_rate`,
+//! `rewm_rate`, `ewm_var` and `ewm_std` (these two with a `bias` too), and
+//! `["increment", input]`. Nothing else is read, so a
 //! `shift`, a `cum_sum`, a rolling window or an aggregation -- which would
 //! depend on the chunking (hard rule 3) -- is refused by name, at build time.
 
@@ -93,6 +94,9 @@ pub struct OpNode {
     pub min_samples: u32,
     /// Unset takes the direction's default: `keep` backward, `null` forward.
     pub partial: Option<Partial>,
+    /// A variance's (`ewm_var`, `ewm_std`): uncorrected for the weights'
+    /// count, Polars' `bias`; false for every other operator.
+    pub bias: bool,
 }
 
 impl OpNode {
@@ -125,6 +129,9 @@ impl OpNode {
         m.insert("min_samples".into(), json!(self.min_samples));
         if let Some(p) = self.partial {
             m.insert("partial".into(), json!(p.name()));
+        }
+        if self.kind.stat().is_some_and(Stat::is_var) {
+            m.insert("bias".into(), json!(self.bias));
         }
         Value::Object(m)
     }
@@ -320,6 +327,7 @@ impl Node {
                     closed: Closed::Right,
                     min_samples: 1,
                     partial: None,
+                    bias: false,
                 }))
             }
             name if OpKind::parse(name).is_some() => {
@@ -341,7 +349,9 @@ impl Node {
                     closed: Closed::Right,
                     min_samples: 1,
                     partial: None,
+                    bias: false,
                 };
+                let var = kind.stat().is_some_and(Stat::is_var);
                 for (k, v) in params {
                     match k.as_str() {
                         "half_life" => {
@@ -387,10 +397,16 @@ impl Node {
                                 })?,
                             );
                         }
+                        "bias" if var => {
+                            op.bias = v.as_bool().ok_or_else(|| {
+                                format!("{name}: bias must be true or false, got {}", short(v))
+                            })?;
+                        }
                         other => {
                             return Err(format!(
                                 "{name}: unknown parameter {other:?}; the parameters are half_life, \
-                                 window_size, closed, min_samples and partial"
+                                 window_size, closed, min_samples and partial{}",
+                                if var { ", and bias" } else { "" }
                             ));
                         }
                     }
@@ -413,7 +429,9 @@ impl Node {
                              row have no end without one"
                         ));
                     }
-                    None if h.value().is_infinite() && kind.stat() == Some(Stat::Mean) => {
+                    None if h.value().is_infinite()
+                        && kind.stat().is_some_and(Stat::weighs_held) =>
+                    {
                         return Err(format!(
                             "{name}: half_life = inf needs a window_size; a value held from \
                              before the first row has no finite mass to weigh it by"

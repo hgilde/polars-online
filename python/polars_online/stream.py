@@ -719,7 +719,8 @@ def with_windows(
     unchanged, in order. The operators -- :func:`polars_online.ewm_mean`,
     :func:`polars_online.rewm_mean`, :func:`polars_online.ewm_sum`,
     :func:`polars_online.rewm_sum`, :func:`polars_online.ewm_rate`,
-    :func:`polars_online.rewm_rate` and :func:`polars_online.increment` --
+    :func:`polars_online.rewm_rate`, :func:`polars_online.ewm_var`,
+    :func:`polars_online.ewm_std` and :func:`polars_online.increment` --
     are stateful kernels computed by the core, each distinct one once. The
     formula around them is element-wise Polars, evaluated on each chunk
     emitted. Over ``trades``, quotes with a ``mid`` and trades between them

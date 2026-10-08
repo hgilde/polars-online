@@ -1,5 +1,6 @@
 """The window operators (docs/PLAN.md task 143): exponentially weighted
-means, sums and rates over a stream's clock, looking back or ahead, and the
+means, sums and rates over a stream's clock, looking back or ahead, a
+variance and a standard deviation looking back (task 212), and the
 increment of a running sum. Each returns a ``pl.Expr`` that composes with
 Polars' own -- ``pl.col`` is the current row -- and is computed by
 :func:`polars_online.stream.with_windows` one pass, O(window) memory, or
@@ -41,6 +42,14 @@ half_life)``:
        ds = half_life / ln 2 * (1 - 2 ** (-T / half_life))``, ``T`` the
        window's span inside the stretch: a quantity per unit time
      - the sum and the mass, each as above
+   * - :func:`ewm_var`, :func:`ewm_std`
+     - the variance about :func:`ewm_mean`, each value under the mean's
+       weight ``m_i``: ``sum m_i (x_i - mu) ** 2 / V1``, ``V1 = sum m_i``;
+       unless ``bias``, times ``V1 ** 2 / (V1 ** 2 - V2)``, ``V2 = sum
+       m_i ** 2``; and its root. Looking back only
+     - Polars' ``ewm_var`` and ``ewm_std`` under ``adjust=False`` on a
+       clock that steps by 1 a row, the correction for unequal weights
+       Polars' own
    * - :func:`increment`
      - ``x_i - x_{i-1}`` within the group and session; null on a session's
        first row; seconds on a temporal column
@@ -159,7 +168,17 @@ import polars as pl
 
 from polars_online._formula import operator
 
-__all__ = ["ewm_mean", "ewm_rate", "ewm_sum", "increment", "rewm_mean", "rewm_rate", "rewm_sum"]
+__all__ = [
+    "ewm_mean",
+    "ewm_rate",
+    "ewm_std",
+    "ewm_sum",
+    "ewm_var",
+    "increment",
+    "rewm_mean",
+    "rewm_rate",
+    "rewm_sum",
+]
 
 
 def ewm_mean(
@@ -305,6 +324,72 @@ def rewm_rate(
         closed=closed,
         min_samples=min_samples,
         partial=partial,
+    )
+
+
+def ewm_var(
+    input: str | pl.Expr,
+    *,
+    half_life: Any,
+    window_size: Any = None,
+    closed: str = "right",
+    min_samples: int = 1,
+    partial: str | None = None,
+    bias: bool = False,
+) -> pl.Expr:
+    """The variance of ``input`` about :func:`ewm_mean`, under the mean's own
+    weights, over the rows at or before each row, less than ``window_size``
+    older (none: the running variance). It looks back only.
+
+    Each value weighs ``m_i``, the decayed mass of its held interval inside
+    the window, as in :func:`ewm_mean`. The variance is ``sum m_i (x_i -
+    mu) ** 2 / V1``, with ``mu = sum m_i x_i / V1`` and ``V1 = sum m_i``.
+    Unless ``bias``, it is multiplied by ``V1 ** 2 / (V1 ** 2 - V2)``, with
+    ``V2 = sum m_i ** 2``: the correction for unequal weights that Polars'
+    ``ewm_var`` applies to its own. It is null while one row carries all the
+    weight, as Polars' first row is.
+
+    On a clock that steps by 1 a row, with ``half_life`` in rows, this is
+    Polars' ``ewm_var(half_life=..., adjust=False, bias=...)``.
+    ``adjust=False`` is the form :func:`ewm_mean` already mirrors: it is
+    ``ewm_mean_by``, which holds a stretch's first value from before it. So
+    the first row weighs ``(1 - alpha) ** (n - 1)``, as ``adjust=False``
+    weighs it. A window that holds one value gives 0 exactly, at any level.
+    """
+    return operator(
+        "ewm_var",
+        input,
+        half_life=half_life,
+        window_size=window_size,
+        closed=closed,
+        min_samples=min_samples,
+        partial=partial,
+        bias=bias,
+    )
+
+
+def ewm_std(
+    input: str | pl.Expr,
+    *,
+    half_life: Any,
+    window_size: Any = None,
+    closed: str = "right",
+    min_samples: int = 1,
+    partial: str | None = None,
+    bias: bool = False,
+) -> pl.Expr:
+    """The square root of :func:`ewm_var`, as Polars' ``ewm_std`` is the root
+    of its ``ewm_var``. ``(x - ewm_mean(x)) / ewm_std(x)`` is a feature in
+    units of its current spread: a z-score."""
+    return operator(
+        "ewm_std",
+        input,
+        half_life=half_life,
+        window_size=window_size,
+        closed=closed,
+        min_samples=min_samples,
+        partial=partial,
+        bias=bias,
     )
 
 

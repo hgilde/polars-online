@@ -686,7 +686,16 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
         return refuse
 
-    for op in ("ewm_mean", "ewm_rate", "ewm_sum", "rewm_mean", "rewm_rate", "rewm_sum"):
+    for op in (
+        "ewm_mean",
+        "ewm_rate",
+        "ewm_std",
+        "ewm_sum",
+        "ewm_var",
+        "rewm_mean",
+        "rewm_rate",
+        "rewm_sum",
+    ):
         for key in ("closed", "partial"):
             refuse = python_refusal(
                 getattr(po, op), {"input": "X", "half_life": 10.0, "window_size": 5.0}, key

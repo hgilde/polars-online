@@ -120,12 +120,21 @@ def loop(
     min_samples: int = 1,
     clock: str = "t",
     group: str | None = None,
+    bias: bool = False,
 ) -> list[float | None]:
     """Every row's operator from the definition, on a stream with no clock
     event: each group's rows, in stream order, at their own clock. A forward
-    window not closed by the end is unresolved: null."""
+    window not closed by the end is unresolved: null.
+
+    A variance weighs each value by the mean's weight, its held interval's
+    decayed mass ``m_i``, and is taken in two passes: the mean ``mu = sum
+    m_i x_i / sum m_i``, then ``sum m_i (x_i - mu) ** 2 / sum m_i``; unless
+    ``bias``, times ``V1 ** 2 / (V1 ** 2 - V2)`` with ``V1 = sum m_i`` and
+    ``V2 = sum m_i ** 2``, the correction Polars' ``ewm_var`` applies to its
+    own unequal weights, null where ``V1 ** 2 <= V2``."""
     forward = op.startswith("rewm")
     stat = op.split("_")[1]
+    weighs_held = stat in ("mean", "var", "std")
     t = df[clock].to_list()
     v = [math.nan if x is None else float(x) for x in df[value].to_list()]
     g = df[group].to_list() if group is not None else [None] * df.height
@@ -167,13 +176,14 @@ def loop(
                 ]
                 span = ta if w is None else min(w, ta)
             s = mass = count = 0.0
+            held: list[tuple[float, float]] = []
             for b in members:
                 xb = v[idx[b]]
                 if math.isnan(xb):
                     continue
                 count += 1
                 tb = tau[b]
-                if stat == "mean":
+                if weighs_held:
                     # A value is held from the previous valued row to its own,
                     # or until the next valued row ahead: ewm_mean_by skips a
                     # null.
@@ -193,18 +203,42 @@ def loop(
                         m = _between(half_life, False, ta, max(start, edge), tb)
                     s += m * xb
                     mass += m
+                    held.append((m, xb))
                 else:
                     s += _lam(half_life) ** abs(tb - ta) * xb
             if count < min_samples:
                 continue
             if stat == "mean":
                 out[idx[a]] = s / mass if mass > 0 else None
+            elif stat in ("var", "std"):
+                out[idx[a]] = _two_pass_var(held, bias, stat == "std")
             elif stat == "sum":
                 out[idx[a]] = s
             else:
                 m = _mass(half_life, span)
                 out[idx[a]] = s / m if m > 0 else None
     return out
+
+
+def _two_pass_var(held: list[tuple[float, float]], bias: bool, std: bool) -> float | None:
+    """The weighted variance of ``held``'s ``(weight, value)`` pairs, in two
+    passes, corrected as ``loop`` says unless ``bias``; its root if ``std``."""
+    v1 = sum(m for m, _ in held)
+    if not v1 > 0:
+        return None
+    mu = sum(m * x for m, x in held) / v1
+    var = sum(m * (x - mu) ** 2 for m, x in held) / v1
+    if not bias:
+        # V1 ** 2 - V2 = 2 sum_{i<j} m_i m_j: each weight times the ones
+        # before it, every term at or above 0, so nothing cancels.
+        before = pairs = 0.0
+        for m, _ in held:
+            pairs += m * before
+            before += m
+        if not pairs > 0:
+            return None
+        var *= v1 * v1 / (2.0 * pairs)
+    return math.sqrt(var) if std else var
 
 
 def assert_close(
@@ -1363,7 +1397,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     header = b"\x82" + b"\xa5magic" + b"\xb5polars-online windows" + b"\xa7version" + b"\x02"
     path = tmp_path / "v2.state"
     path.write_bytes(header)
-    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 8\)"):
+    with pytest.raises(ValueError, match=r"version 2 not supported \(this build reads 9\)"):
         po.stream.with_windows(
             ticks(5, 1), y=po.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK
         )
@@ -2201,3 +2235,179 @@ def test_which_rows_a_window_holds_is_polars_rolling_on_a_long_random_stream(
         assert_close(out, ref, f"seed {seed}")
         valued += sum(v is not None for v in out)
     assert valued > 1000, valued
+
+
+# --------------------------------------------------------------------------
+# The variance and the standard deviation (task 212)
+
+
+def _var_ops(**kw: Any) -> dict[str, pl.Expr]:
+    return {"v": po.ewm_var("x", **kw), "s": po.ewm_std("x", **kw)}
+
+
+@pytest.mark.parametrize("bias", [False, True])
+@pytest.mark.parametrize("clock", [True, False])
+def test_var_and_std_on_a_row_clock_are_polars_ewm_var_and_ewm_std(bias: bool, clock: bool) -> None:
+    """On a clock that steps by 1 a row, with ``half_life`` in rows, the
+    operators are Polars' ``ewm_var`` and ``ewm_std`` under ``adjust=False``:
+    the form ``po.ewm_mean`` mirrors, since ``ewm_mean_by`` holds a stretch's
+    first value from before it, which gives it the weight ``(1 - alpha) ** (n
+    - 1)`` that ``adjust=False`` gives the first row. ``bias`` and
+    ``min_samples`` are Polars' own, and so is the null on the first row
+    under ``bias=False``: one value has no spread to correct. With a clock
+    column and on the row count."""
+    rng = np.random.default_rng(41)
+    n = 600
+    df = pl.DataFrame({"t": np.arange(n, dtype=float), "x": rng.normal(size=n) * 3 + 1})
+    for h, min_samples in ((1.0, 1), (7.5, 3), (60.0, 1)):
+        kw: dict[str, Any] = {"half_life": h, "bias": bias, "min_samples": min_samples}
+        out = po.stream.with_windows(df, **_var_ops(**kw), **(CLOCK if clock else {}))
+        ref = df.select(
+            v=pl.col("x").ewm_var(**kw, adjust=False),
+            s=pl.col("x").ewm_std(**kw, adjust=False),
+        )
+        for c in ("v", "s"):
+            assert_close(out[c].to_list(), ref[c].to_list(), f"{c} h={h}", tol=1e-12)
+        nulls = max(min_samples - 1, 0 if bias else 1)
+        assert out["v"].null_count() == nulls
+
+
+@pytest.mark.parametrize("closed", ["right", "left", "both", "none"])
+@pytest.mark.parametrize("op", ["ewm_var", "ewm_std"])
+def test_var_and_std_match_the_definition_on_an_irregular_clock(op: str, closed: str) -> None:
+    """On an irregular clock -- bursts, gaps, repeated stamps, nulls -- a value
+    weighs what it weighs in ``po.ewm_mean``: its held interval's decayed mass
+    inside the window. The variance is about that mean, taken in two passes,
+    and corrected for the unequal weights as Polars corrects its own
+    (``loop``'s docstring)."""
+    df = ticks(700, 3)
+    fn = getattr(po, op)
+    for bias in (False, True):
+        for window in (7.0, None):
+            e = fn("x", half_life=4.0, window_size=window, closed=closed, min_samples=2, bias=bias)
+            out = po.stream.with_windows(df, y=e, **CLOCK)
+            want = loop(
+                df,
+                op,
+                "x",
+                half_life=4.0,
+                window_size=window,
+                closed=closed,
+                min_samples=2,
+                bias=bias,
+            )
+            assert_close(out["y"].to_list(), want, f"{op} {closed} {window} {bias}")
+            assert sum(v is not None for v in want) > 450
+
+
+def _zscore() -> dict[str, pl.Expr]:
+    return {
+        "v": po.ewm_var("x", half_life=2.0, window_size=5.0),
+        "s": po.ewm_std("x", half_life=3.0, bias=True),
+        "z": (pl.col("x") - po.ewm_mean("x", half_life=3.0)) / po.ewm_std("x", half_life=3.0),
+        "m": po.ewm_mean("x", half_life=2.0, window_size=5.0, closed="left"),
+    }
+
+
+@pytest.mark.parametrize("rows", [1, 7, 600])
+def test_var_and_std_chunking_changes_nothing(rows: int) -> None:
+    """Hard rule 3, with a mean on the same kernel as a variance and on one of
+    its own."""
+    df = ticks(800, 17, groups=3)
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
+    one = po.stream.with_windows(df, **_zscore(), **kw, chunk_size=10_000)
+    out = po.stream.with_windows(df, **_zscore(), **kw, chunk_size=rows)
+    assert out.equals(one)
+    assert one["z"].is_not_null().sum() > 600
+    # A mean on a variance's kernel, whose queue is six wide, gives the
+    # bits it gives on its own.
+    mean = po.ewm_mean("x", half_life=3.0)
+    alone = po.stream.with_windows(df, m=mean, **kw, chunk_size=rows)["m"]
+    beside = po.stream.with_windows(df, m=mean, s=po.ewm_std("x", half_life=3.0), **kw)["m"]
+    assert alone.equals(beside)
+
+
+def test_var_and_std_resume_through_a_state_at_any_row(tmp_path: Any) -> None:
+    df = ticks(60, 19, groups=2)
+    kw: dict[str, Any] = {"clock": "t", "gap_cap": 20.0, "group": "g"}
+    one = po.stream.with_windows(df, **_zscore(), **kw)
+    for at in (1, 2, 17, 33, 59):
+        state = tmp_path / f"v{at}.state"
+        first = po.stream.with_windows(df[:at], **_zscore(), **kw, save_state=state)
+        second = po.stream.with_windows(df[at:], **_zscore(), **kw, load_state=state)
+        assert pl.concat([first, second]).equals(one), at
+
+
+def test_a_null_row_gives_the_window_as_it_stands_and_the_next_value_its_interval() -> None:
+    """Nulls as ``po.ewm_mean`` takes them: a row with no value gives the
+    window as it stands, where Polars' ``ewm_var`` gives null, and the next
+    value is held from the last valued row, as ``ewm_mean_by`` skips a null.
+    So row 2's 4.0 is held over ``(0, 2]``, two units at a half-life of 2,
+    and weighs what the 1.0 before it does: the variance of two equal
+    weights at 1.0 and 4.0, ``2.25``."""
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "x": [1.0, None, 4.0, 3.0, None, 5.0]})
+    out = po.stream.with_windows(df, **_var_ops(half_life=2.0, bias=True), **CLOCK)
+    v = out["v"].to_list()
+    # The window seen a unit later: its weights all decayed alike, the same
+    # variance to a rounding.
+    assert v[0] == 0.0 and v[1] == v[0] and v[4] == pytest.approx(v[3], rel=1e-15)
+    assert v[2] == pytest.approx(2.25, rel=1e-12)
+    assert_close(v, loop(df, "ewm_var", "x", half_life=2.0, bias=True), tol=1e-12)
+    assert_close(out["s"].to_list(), [math.sqrt(x) for x in v], tol=1e-15)
+
+
+@pytest.mark.parametrize("level", [0.1, 1e8 + 0.1, -3e12])
+def test_a_constant_input_has_a_variance_of_exactly_zero(level: float) -> None:
+    """Every window holds one value however many rows it weighs, so its
+    variance is 0, not a rounding of 0, at any level: two partial windows
+    are merged about their means, whose difference is 0 (a mean square less
+    a squared mean would cancel to noise at a level). Repeated stamps,
+    nulls, cuts and every ``closed``; under ``bias=False`` a window weighing
+    a single row is null, as in Polars."""
+    df = ticks(400, 5).with_columns(x=pl.when(pl.col("x").is_not_null()).then(pl.lit(level)))
+    for kw in (
+        {"half_life": 3.0},
+        {"half_life": 2.0, "window_size": 5.0},
+        {"half_life": math.inf, "window_size": 6.0, "closed": "both"},
+        {"half_life": 5.0, "window_size": 7.0, "closed": "none"},
+    ):
+        out = po.stream.with_windows(
+            df,
+            b=po.ewm_var("x", **kw, bias=True),
+            u=po.ewm_var("x", **kw),
+            s=po.ewm_std("x", **kw),
+            **CLOCK,
+        )
+        for c in ("b", "u", "s"):
+            got = [x for x in out[c].to_list() if x is not None]
+            assert len(got) > 250 and all(x == 0.0 for x in got), (kw, c)
+
+
+def test_a_variance_at_a_level_decays_with_its_history() -> None:
+    """The compensated mean (``crate::comp``, docs/PLAN.md task 101): a value
+    held row after row is approached as exact arithmetic approaches it. At
+    1e8 a double mean stalls a few rounding steps short of a new level, and
+    a variance about it settles on that gap's square, about 1e-15, where the
+    definition decays as ``p (1 - p)``, ``p = 2 ** (-T / half_life)`` the
+    weight left on the old level ``T`` units after its last row (the rows
+    before the step hold ``(-inf, t_49]``, the rows after it the rest)."""
+    a, n_a, n, h = 1e8, 50, 500, 5.0
+    df = pl.DataFrame({"t": np.arange(n, dtype=float), "x": [a] * n_a + [a + 1.0] * (n - n_a)})
+    v = po.stream.with_windows(df, v=po.ewm_var("x", half_life=h, bias=True), **CLOCK)["v"]
+    for t in (n_a + 20, n_a + 100, n_a + 200, n - 1):
+        p = 2.0 ** (-(t - (n_a - 1)) / h)
+        want = p * (1.0 - p)
+        assert abs(v[t] - want) <= 1e-9 * want, (t, v[t], want)
+
+
+def test_bias_is_a_variances_own_and_a_boolean() -> None:
+    with pytest.raises(TypeError, match="bias"):
+        po.ewm_mean("x", half_life=2.0, bias=True)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="bias must be a bool"):
+        po.ewm_var("x", half_life=2.0, bias=1)  # type: ignore[arg-type]
+    df = ticks(50, 1)
+    with pytest.raises(ValueError, match="half_life = inf needs a window_size"):
+        po.stream.with_windows(df, y=po.ewm_std("x", half_life=math.inf), **CLOCK)
+    tree = to_tree(po.ewm_std("x", half_life=2.0, bias=True) - pl.col("x"))
+    assert to_tree(from_tree(tree)) == tree
+    assert tree[1][2]["bias"] is True

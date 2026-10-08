@@ -15,7 +15,9 @@
   eval
   ewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   ewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
+  ewm_std(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
   ewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
+  ewm_var(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
   fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   gram
   increment(input: 'str | pl.Expr') -> 'pl.Expr'
@@ -32,7 +34,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 47
+  schema_version = 50
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -972,7 +974,9 @@
   ops:
     ewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
     ewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
+    ewm_std(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
     ewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
+    ewm_var(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
     increment(input: 'str | pl.Expr') -> 'pl.Expr'
     rewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
     rewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
@@ -1728,8 +1732,12 @@
   po.ewm_mean.partial: drop, keep, null
   po.ewm_rate.closed: both, left, none, right
   po.ewm_rate.partial: drop, keep, null
+  po.ewm_std.closed: both, left, none, right
+  po.ewm_std.partial: drop, keep, null
   po.ewm_sum.closed: both, left, none, right
   po.ewm_sum.partial: drop, keep, null
+  po.ewm_var.closed: both, left, none, right
+  po.ewm_var.partial: drop, keep, null
   po.rewm_mean.closed: both, left, none, right
   po.rewm_mean.partial: drop, keep, null
   po.rewm_rate.closed: both, left, none, right

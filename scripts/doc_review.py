@@ -222,7 +222,16 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
                 add(obj, n)
     for n in ("target", "fit_predict", "predict", "increment"):
         add(getattr(po, n), n)
-    for n in ("ewm_mean", "ewm_sum", "ewm_rate", "rewm_mean", "rewm_sum", "rewm_rate"):
+    for n in (
+        "ewm_mean",
+        "ewm_sum",
+        "ewm_rate",
+        "ewm_var",
+        "ewm_std",
+        "rewm_mean",
+        "rewm_sum",
+        "rewm_rate",
+    ):
         add(getattr(po, n), n)
     for n, obj in inspect.getmembers(po.ModelBank):
         if n[0] != "_" and callable(obj):

@@ -63,14 +63,26 @@ from polars_online._polars_online import (
 )
 from polars_online._spec import FormulaTarget, Target, target
 from polars_online._warnings import PolarsOnlineDeprecationWarning, UnstableWarning
-from polars_online.ops import ewm_mean, ewm_rate, ewm_sum, increment, rewm_mean, rewm_rate, rewm_sum
+from polars_online.ops import (
+    ewm_mean,
+    ewm_rate,
+    ewm_std,
+    ewm_sum,
+    ewm_var,
+    increment,
+    rewm_mean,
+    rewm_rate,
+    rewm_sum,
+)
 
 __version__ = "0.13.0"
 
 __all__ = [
     "ewm_mean",
     "ewm_rate",
+    "ewm_std",
     "ewm_sum",
+    "ewm_var",
     "increment",
     "ops",
     "rewm_mean",

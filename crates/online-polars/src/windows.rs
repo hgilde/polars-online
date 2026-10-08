@@ -27,6 +27,23 @@
 //! - `ewm_rate` / `rewm_rate`: the sum over the decayed time the window
 //!   covers, `∫_0^T λ^s ds = h/ln2 · (1 - 2^(-T/h))`, `T` the window's span
 //!   inside the stretch.
+//! - `ewm_var` / `ewm_std` (task 212), looking back only: the variance about
+//!   `ewm_mean`, each value weighed by the mean's weight `m_i`, its held
+//!   interval's decayed mass inside the window: `Σ m_i (x_i - μ)² / V1`
+//!   with `μ = Σ m_i x_i / V1`, `V1 = Σ m_i`; unless `bias`, times
+//!   `V1² / (V1² - V2)`, `V2 = Σ m_i²`, the correction for unequal weights
+//!   Polars' `ewm_var` applies to its own, null where one row carries all
+//!   the weight (`V1² = V2`). `ewm_std`
+//!   is its root. On a clock that steps by 1 a row these are Polars'
+//!   `ewm_var` and `ewm_std` under `adjust = False`, the form `ewm_mean_by`
+//!   is: a stretch's first value is held from before it, so it weighs
+//!   `(1 - α)^(n-1)` as `adjust = False`'s first row does. A variance's
+//!   sums are merged about their means -- `(V1, μ, M2)` by Chan, Golub and
+//!   LeVeque's pairwise update, `M2 = M2_a + M2_b + δ² V1_a V1_b / V1` --
+//!   never as a mean square less a squared mean, so a window holding one
+//!   value is 0 exactly, and the mean is a compensated pair
+//!   (`online_core::comp`), so a variance at a level decays with its
+//!   history rather than settling on the square of a stalled mean's gap.
 //!
 //! **Which rows a window holds** follows Polars' `rolling_*_by`: a window is
 //! a set of timestamps. `closed = "right"`, the default, is `(T - w, T]`
@@ -164,6 +181,24 @@ pub enum Stat {
     Mean,
     Sum,
     Rate,
+    /// The variance about the mean, under the mean's weights (task 212).
+    Var,
+    /// The variance's root.
+    Std,
+}
+
+impl Stat {
+    /// Whether a value weighs its held interval's mass, as a mean's does.
+    #[inline]
+    pub fn weighs_held(self) -> bool {
+        matches!(self, Stat::Mean | Stat::Var | Stat::Std)
+    }
+
+    /// Whether its sums are a variance's: merged about a compensated mean.
+    #[inline]
+    pub fn is_var(self) -> bool {
+        matches!(self, Stat::Var | Stat::Std)
+    }
 }
 
 /// An operator, as the formulas name it.
@@ -176,6 +211,8 @@ pub enum OpKind {
     RewmSum,
     EwmRate,
     RewmRate,
+    EwmVar,
+    EwmStd,
     Increment,
 }
 
@@ -188,6 +225,8 @@ impl OpKind {
             OpKind::RewmSum => "rewm_sum",
             OpKind::EwmRate => "ewm_rate",
             OpKind::RewmRate => "rewm_rate",
+            OpKind::EwmVar => "ewm_var",
+            OpKind::EwmStd => "ewm_std",
             OpKind::Increment => "increment",
         }
     }
@@ -200,6 +239,8 @@ impl OpKind {
             "rewm_sum" => Some(OpKind::RewmSum),
             "ewm_rate" => Some(OpKind::EwmRate),
             "rewm_rate" => Some(OpKind::RewmRate),
+            "ewm_var" => Some(OpKind::EwmVar),
+            "ewm_std" => Some(OpKind::EwmStd),
             "increment" => Some(OpKind::Increment),
             _ => None,
         }
@@ -218,6 +259,8 @@ impl OpKind {
             OpKind::EwmMean | OpKind::RewmMean => Some(Stat::Mean),
             OpKind::EwmSum | OpKind::RewmSum => Some(Stat::Sum),
             OpKind::EwmRate | OpKind::RewmRate => Some(Stat::Rate),
+            OpKind::EwmVar => Some(Stat::Var),
+            OpKind::EwmStd => Some(Stat::Std),
             OpKind::Increment => None,
         }
     }
@@ -319,6 +362,9 @@ pub struct OpDef {
     /// Null with fewer rows carrying a value in the window.
     pub min_samples: u32,
     pub partial: Partial,
+    /// A variance's: the variance of the weights as they are, uncorrected
+    /// for their count (Polars' `bias`); read by no other statistic.
+    pub bias: bool,
 }
 
 /// One row as the core reads it: its group, clock and session, every
@@ -370,31 +416,153 @@ pub enum Refusal {
 
 /// Per operator, a segment's sums: the mass-weighted value, the mass and
 /// the rows with a value. For a sum or a rate `s` is the decayed sum and
-/// `w` unused.
+/// `w` unused. For a variance (task 212) `s` is the mean itself, `hi` of a
+/// compensated pair with `lo` (`online_core::comp`), `w` the mass `V1`,
+/// `q` the mass-weighted squared deviations from the mean `M2`, and `e`
+/// the masses' products in pairs, `Σ_{i<j} m_i m_j = (V1² − V2) / 2`, kept
+/// as a sum of its own so the count correction cancels nothing, and is 0,
+/// not a rounding of 0, while one row carries the window; the three are zero
+/// for every other statistic.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct Acc {
     s: f64,
     w: f64,
     n: f64,
+    lo: f64,
+    q: f64,
+    e: f64,
 }
 
 impl Acc {
+    /// A held value `x` of mass `m`: its sums as one row.
     #[inline]
-    fn scaled(self, f: f64) -> Acc {
-        Acc {
-            s: f * self.s,
-            w: f * self.w,
-            n: self.n,
+    fn held(x: f64, m: f64, var: bool) -> Acc {
+        if var {
+            Acc {
+                s: x,
+                w: m,
+                n: 1.0,
+                lo: 0.0,
+                q: 0.0,
+                e: 0.0,
+            }
+        } else {
+            Acc {
+                s: m * x,
+                w: m,
+                n: 1.0,
+                ..Acc::default()
+            }
         }
     }
 
+    /// The sums seen `f` of a discount later: a variance's mean stays where
+    /// it is, its masses scale, and their squares with `f²`.
     #[inline]
-    fn plus(self, o: Acc) -> Acc {
+    fn scaled(self, f: f64, var: bool) -> Acc {
+        if var {
+            Acc {
+                s: self.s,
+                lo: self.lo,
+                w: f * self.w,
+                n: self.n,
+                q: f * self.q,
+                e: f * (f * self.e),
+            }
+        } else {
+            Acc {
+                s: f * self.s,
+                w: f * self.w,
+                n: self.n,
+                ..Acc::default()
+            }
+        }
+    }
+
+    /// Both segments' sums, seen from one time.
+    #[inline]
+    fn plus(self, o: Acc, var: bool) -> Acc {
+        if var {
+            return merge(self, o);
+        }
         Acc {
             s: self.s + o.s,
             w: self.w + o.w,
             n: self.n + o.n,
+            ..Acc::default()
         }
+    }
+
+    /// Read from a stack's arena: three fields, or a variance-wide queue's
+    /// six.
+    #[inline]
+    fn read(v: &[f64], wide: bool) -> Acc {
+        if wide {
+            Acc {
+                s: v[0],
+                w: v[1],
+                n: v[2],
+                lo: v[3],
+                q: v[4],
+                e: v[5],
+            }
+        } else {
+            Acc {
+                s: v[0],
+                w: v[1],
+                n: v[2],
+                ..Acc::default()
+            }
+        }
+    }
+
+    /// Written to a stack's arena, as [`Acc::read`] reads it.
+    #[inline]
+    fn write(self, out: &mut [f64], wide: bool) {
+        out[0] = self.s;
+        out[1] = self.w;
+        out[2] = self.n;
+        if wide {
+            out[3] = self.lo;
+            out[4] = self.q;
+            out[5] = self.e;
+        }
+    }
+}
+
+/// Two variance segments' sums as one, about their pooled mean: Chan, Golub
+/// and LeVeque's pairwise update, `V1 = V1_a + V1_b`, `μ = μ_a + δ V1_b / V1`
+/// and `M2 = M2_a + M2_b + δ² V1_a V1_b / V1` with `δ = μ_b − μ_a`, and the
+/// pairs' products `e = e_a + e_b + V1_a V1_b`. No term
+/// is a difference of two large sums, so a window of one value has `M2 = 0`
+/// exactly at any level. The mean moves by its step as a compensated pair
+/// (`online_core::comp`): a plain one stops `1/(2 V1_b/V1)` rounding steps
+/// short of a value held row after row, and `M2` then settles on that gap's
+/// square instead of decaying with its history. A segment of no mass moves
+/// nothing but the row count, so it takes no step (`comp::add` says why);
+/// an empty one is `Acc::default()`.
+#[inline]
+fn merge(a: Acc, b: Acc) -> Acc {
+    let n = a.n + b.n;
+    let q = a.q + b.q;
+    let e = a.e + b.e;
+    if b.w <= 0.0 {
+        return Acc { n, q, e, ..a };
+    }
+    if a.w <= 0.0 {
+        return Acc { n, q, e, ..b };
+    }
+    let w = a.w + b.w;
+    let d = online_core::comp::dev(b.s, a.s, a.lo) + b.lo;
+    let (mut hi, mut lo) = (a.s, a.lo);
+    online_core::comp::add(&mut hi, &mut lo, d * (b.w / w));
+    Acc {
+        s: hi,
+        lo,
+        w,
+        n,
+        q: q + d * d * (a.w / w * b.w),
+        e: e + a.w * b.w,
     }
 }
 
@@ -403,11 +571,11 @@ impl Acc {
 /// ahead, so a window's sums are always anchored at the row they are read
 /// from or discounted to it once.
 #[inline]
-fn then(k: &KernelDef, a: Acc, a_at: f64, b: Acc, b_at: f64) -> (Acc, f64) {
+fn then(k: &KernelDef, a: Acc, a_at: f64, b: Acc, b_at: f64, var: bool) -> (Acc, f64) {
     let f = k.discount(b_at - a_at);
     match k.direction {
-        Direction::Backward => (a.scaled(f).plus(b), b_at),
-        Direction::Forward => (a.plus(b.scaled(f)), a_at),
+        Direction::Backward => (a.scaled(f, var).plus(b, var), b_at),
+        Direction::Forward => (a.plus(b.scaled(f, var), var), a_at),
     }
 }
 
@@ -416,31 +584,49 @@ fn then(k: &KernelDef, a: Acc, a_at: f64, b: Acc, b_at: f64) -> (Acc, f64) {
 const ROW: usize = 5;
 /// Per row, per operator, in a stack's `sums`: the partial sums.
 const SUM: usize = 3;
+/// [`ROW`] and [`SUM`] in a queue holding a variance: its sums are six wide
+/// ([`Acc`]), and every operator of the kernel takes the one width.
+const ROW_VAR: usize = 8;
+const SUM_VAR: usize = 6;
 
 /// Rows with their values and partial sums in flat arenas, so a row costs
 /// no allocation: one value and one accumulator per operator, side by side.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Stack {
     n: usize,
+    /// Whether the kernel holds a variance: its arenas' strides are
+    /// [`ROW_VAR`] and [`SUM_VAR`], not [`ROW`] and [`SUM`].
+    wide: bool,
     seq: Vec<u64>,
     tau: Vec<f64>,
     /// The row's raw clock in integer nanoseconds, 0 without a temporal
     /// clock: what a window's edge is decided from (review R2, W1).
     off: Vec<i64>,
     end: Vec<f64>,
-    /// Stride `ROW * n`.
+    /// Stride `row_w() * n`.
     vals: Vec<f64>,
-    /// Stride `SUM * n`, anchored at `at`.
+    /// Stride `sum_w() * n`, anchored at `at`.
     sums: Vec<f64>,
     at: Vec<f64>,
 }
 
 impl Stack {
-    fn new(n: usize) -> Self {
+    fn new(n: usize, wide: bool) -> Self {
         Stack {
             n,
+            wide,
             ..Default::default()
         }
+    }
+
+    #[inline]
+    fn row_w(&self) -> usize {
+        if self.wide { ROW_VAR } else { ROW }
+    }
+
+    #[inline]
+    fn sum_w(&self) -> usize {
+        if self.wide { SUM_VAR } else { SUM }
     }
 
     #[inline]
@@ -480,46 +666,39 @@ impl Stack {
         self.tau.truncate(i);
         self.off.truncate(i);
         self.end.truncate(i);
-        self.vals.truncate(i * ROW * self.n);
-        self.sums.truncate(i * SUM * self.n);
+        self.vals.truncate(i * self.row_w() * self.n);
+        self.sums.truncate(i * self.sum_w() * self.n);
         self.at.truncate(i);
     }
 
     #[inline]
     fn start(&self, i: usize, j: usize) -> f64 {
-        self.vals[(i * self.n + j) * ROW]
+        self.vals[(i * self.n + j) * self.row_w()]
     }
 
     #[inline]
     fn x(&self, i: usize, j: usize) -> f64 {
-        self.vals[(i * self.n + j) * ROW + 1]
+        self.vals[(i * self.n + j) * self.row_w() + 1]
     }
 
     #[inline]
     fn own(&self, i: usize, j: usize) -> Acc {
-        let b = (i * self.n + j) * ROW + 2;
-        Acc {
-            s: self.vals[b],
-            w: self.vals[b + 1],
-            n: self.vals[b + 2],
-        }
+        let b = (i * self.n + j) * self.row_w() + 2;
+        Acc::read(&self.vals[b..], self.wide)
     }
 
     #[inline]
     fn sum(&self, i: usize, j: usize) -> Acc {
-        let b = (i * self.n + j) * SUM;
-        Acc {
-            s: self.sums[b],
-            w: self.sums[b + 1],
-            n: self.sums[b + 2],
-        }
+        let b = (i * self.n + j) * self.sum_w();
+        Acc::read(&self.sums[b..], self.wide)
     }
 
-    /// Whether every arena is as long as the rows say, at `n` operators:
-    /// what the accessors above index by ([`Windows::check`]).
-    fn has_width(&self, n: usize) -> bool {
+    /// Whether every arena is as long as the rows say, at `n` operators of
+    /// this width: what the accessors above index by ([`Windows::check`]).
+    fn has_width(&self, n: usize, wide: bool) -> bool {
         let len = self.seq.len();
         self.n == n
+            && self.wide == wide
             && [
                 self.tau.len(),
                 self.off.len(),
@@ -528,17 +707,16 @@ impl Stack {
             ]
             .iter()
             .all(|&l| l == len)
-            && len.checked_mul(ROW * n) == Some(self.vals.len())
-            && len.checked_mul(SUM * n) == Some(self.sums.len())
+            && len.checked_mul(self.row_w() * n) == Some(self.vals.len())
+            && len.checked_mul(self.sum_w() * n) == Some(self.sums.len())
     }
 }
 
-/// Write `a` into `out`'s slot for operator `j`.
+/// Write `a` into `out`'s slot for operator `j`, at a queue's width.
 #[inline]
-fn put(out: &mut [f64], j: usize, a: Acc) {
-    out[j * SUM] = a.s;
-    out[j * SUM + 1] = a.w;
-    out[j * SUM + 2] = a.n;
+fn put(out: &mut [f64], j: usize, a: Acc, wide: bool) {
+    let w = if wide { SUM_VAR } else { SUM };
+    a.write(&mut out[j * w..], wide);
 }
 
 /// The two-stack queue. `front` holds the older rows, the oldest on top,
@@ -556,26 +734,47 @@ fn put(out: &mut [f64], j: usize, a: Acc) {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Queue {
     n: usize,
+    /// Per operator: whether its sums are a variance's, merged rather than
+    /// added ([`merge`]). A queue holding one is wide.
+    var: Vec<bool>,
     front: Stack,
     back: Stack,
-    /// Stride `SUM * n`; empty until the first row.
+    /// Stride `sum_w() * n`; empty until the first row.
     total: Vec<f64>,
     total_at: f64,
 }
 
 impl Queue {
-    fn new(n: usize) -> Self {
+    fn new(var: Vec<bool>) -> Self {
+        let (n, wide) = (var.len(), var.contains(&true));
         Queue {
             n,
-            front: Stack::new(n),
-            back: Stack::new(n),
+            var,
+            front: Stack::new(n, wide),
+            back: Stack::new(n, wide),
             total: Vec::new(),
             total_at: 0.0,
         }
     }
 
-    /// Push a row: `row` is its `ROW * n` values, `scratch` a buffer of
-    /// `SUM * n` for the sums.
+    #[inline]
+    fn wide(&self) -> bool {
+        self.front.wide
+    }
+
+    /// A row's width per operator in this queue's arenas.
+    #[inline]
+    fn row_w(&self) -> usize {
+        self.front.row_w()
+    }
+
+    #[inline]
+    fn sum_w(&self) -> usize {
+        self.front.sum_w()
+    }
+
+    /// Push a row: `row` is its `row_w() * n` values, `scratch` a buffer of
+    /// `sum_w() * n` for the sums.
     #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
@@ -587,49 +786,42 @@ impl Queue {
         row: &[f64],
         scratch: &mut [f64],
     ) {
-        let n = self.n;
+        let (n, wide, rw) = (self.n, self.wide(), self.row_w());
         // The buffers are sized for the widest kernel; this one's part.
-        let scratch = &mut scratch[..SUM * n];
-        let own = |j: usize| Acc {
-            s: row[j * ROW + 2],
-            w: row[j * ROW + 3],
-            n: row[j * ROW + 4],
-        };
+        let scratch = &mut scratch[..self.sum_w() * n];
+        let own = |j: usize| Acc::read(&row[j * rw + 2..], wide);
         if k.window_size.is_some() {
             let mut at = tau;
             match self.back.len().checked_sub(1) {
                 None => {
                     for j in 0..n {
-                        put(scratch, j, own(j));
+                        put(scratch, j, own(j), wide);
                     }
                 }
                 Some(last) => {
                     let last_at = self.back.at[last];
                     for j in 0..n {
-                        let (a, a_at) = then(k, self.back.sum(last, j), last_at, own(j), tau);
-                        put(scratch, j, a);
+                        let (a, a_at) =
+                            then(k, self.back.sum(last, j), last_at, own(j), tau, self.var[j]);
+                        put(scratch, j, a, wide);
                         at = a_at;
                     }
                 }
             }
             self.back.push(seq, tau, off, end, row, scratch, at);
         } else if self.total.is_empty() {
-            self.total.resize(SUM * n, 0.0);
+            self.total.resize(self.sum_w() * n, 0.0);
             for j in 0..n {
-                put(&mut self.total, j, own(j));
+                put(&mut self.total, j, own(j), wide);
             }
             self.total_at = tau;
         } else {
             let mut at = tau;
+            let sw = self.sum_w();
             for j in 0..n {
-                let b = j * SUM;
-                let t = Acc {
-                    s: self.total[b],
-                    w: self.total[b + 1],
-                    n: self.total[b + 2],
-                };
-                let (a, a_at) = then(k, t, self.total_at, own(j), tau);
-                put(&mut self.total, j, a);
+                let t = Acc::read(&self.total[j * sw..], wide);
+                let (a, a_at) = then(k, t, self.total_at, own(j), tau, self.var[j]);
+                put(&mut self.total, j, a, wide);
                 at = a_at;
             }
             self.total_at = at;
@@ -642,8 +834,8 @@ impl Queue {
         if !self.front.is_empty() {
             return;
         }
-        let n = self.n;
-        let scratch = &mut scratch[..SUM * n];
+        let (n, wide, rw) = (self.n, self.wide(), self.row_w());
+        let scratch = &mut scratch[..self.sum_w() * n];
         while let Some(i) = self.back.len().checked_sub(1) {
             let (seq, tau, off, end) = (
                 self.back.seq[i],
@@ -651,12 +843,12 @@ impl Queue {
                 self.back.off[i],
                 self.back.end[i],
             );
-            let row_base = i * ROW * n;
+            let row_base = i * rw * n;
             let mut at = tau;
             match self.front.len().checked_sub(1) {
                 None => {
                     for j in 0..n {
-                        put(scratch, j, self.back.own(i, j));
+                        put(scratch, j, self.back.own(i, j), wide);
                     }
                 }
                 Some(newer) => {
@@ -668,8 +860,9 @@ impl Queue {
                             tau,
                             self.front.sum(newer, j),
                             newer_at,
+                            self.var[j],
                         );
-                        put(scratch, j, a);
+                        put(scratch, j, a, wide);
                         at = a_at;
                     }
                 }
@@ -680,7 +873,7 @@ impl Queue {
                 tau,
                 off,
                 end,
-                &back.vals[row_base..row_base + ROW * n],
+                &back.vals[row_base..row_base + rw * n],
                 scratch,
                 at,
             );
@@ -712,13 +905,8 @@ impl Queue {
             if self.total.is_empty() {
                 return None;
             }
-            let b = j * SUM;
             return Some((
-                Acc {
-                    s: self.total[b],
-                    w: self.total[b + 1],
-                    n: self.total[b + 2],
-                },
+                Acc::read(&self.total[j * self.sum_w()..], self.wide()),
                 self.total_at,
             ));
         }
@@ -733,7 +921,7 @@ impl Queue {
             .checked_sub(1)
             .map(|l| (self.back.sum(l, j), self.back.at[l]));
         match (f, b) {
-            (Some((a, a_at)), Some((b, b_at))) => Some(then(k, a, a_at, b, b_at)),
+            (Some((a, a_at)), Some((b, b_at))) => Some(then(k, a, a_at, b, b_at, self.var[j])),
             (Some(x), None) | (None, Some(x)) => Some(x),
             (None, None) => None,
         }
@@ -744,12 +932,13 @@ impl Queue {
     /// summed row by row: rare, as the rows before an operator's oldest
     /// valued one carry nothing of it.
     fn sum_after_op(&self, k: &KernelDef, p: usize, j: usize) -> Option<(Acc, f64)> {
+        let var = self.var[j];
         let n = self.front.len();
         if p + 1 < n {
             let i = n - 2 - p;
             let a = (self.front.sum(i, j), self.front.at[i]);
             return Some(match self.back.len().checked_sub(1) {
-                Some(l) => then(k, a.0, a.1, self.back.sum(l, j), self.back.at[l]),
+                Some(l) => then(k, a.0, a.1, self.back.sum(l, j), self.back.at[l], var),
                 None => a,
             });
         }
@@ -759,7 +948,7 @@ impl Queue {
             let own = (self.back.own(i, j), self.back.tau[i]);
             sum = Some(match sum {
                 None => own,
-                Some((a, a_at)) => then(k, a, a_at, own.0, own.1),
+                Some((a, a_at)) => then(k, a, a_at, own.0, own.1, var),
             });
         }
         sum
@@ -793,12 +982,15 @@ impl Queue {
         self.front.len() + self.back.len()
     }
 
-    /// Whether both stacks and the running sums are at `n` operators.
-    fn has_width(&self, n: usize) -> bool {
+    /// Whether both stacks and the running sums are at these operators:
+    /// their count, which are variances, and the width that gives.
+    fn has_width(&self, var: &[bool]) -> bool {
+        let (n, wide) = (var.len(), var.contains(&true));
         self.n == n
-            && self.front.has_width(n)
-            && self.back.has_width(n)
-            && (self.total.is_empty() || self.total.len() == SUM * n)
+            && self.var == var
+            && self.front.has_width(n, wide)
+            && self.back.has_width(n, wide)
+            && (self.total.is_empty() || self.total.len() == self.sum_w() * n)
     }
 }
 
@@ -1147,6 +1339,23 @@ fn mass_between(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
     }
 }
 
+/// Whether operator `o` can run on its kernel: a mean or a variance with
+/// no decay needs a window, and a variance looks back only (task 212).
+fn check_op(o: usize, op: &OpDef, k: &KernelDef) -> Result<(), String> {
+    if op.stat.weighs_held() && k.half_life.is_infinite() && k.window_size.is_none() {
+        return Err(format!(
+            "operator {o}: a mean or a variance with half_life = inf needs a window_size; over \
+             an unbounded stretch every value weighs the same and the mean is not a number"
+        ));
+    }
+    if op.stat.is_var() && k.direction == Direction::Forward {
+        return Err(format!(
+            "operator {o}: a variance looks back only; it has no forward kernel"
+        ));
+    }
+    Ok(())
+}
+
 /// The rows not yet emitted, borrowed apart from the groups.
 struct Held<'a> {
     first: u64,
@@ -1182,12 +1391,7 @@ impl Windows {
                 return Err("min_samples must be at least 1".into());
             }
             let k = &kernels[op.kernel];
-            if op.stat == Stat::Mean && k.half_life.is_infinite() && k.window_size.is_none() {
-                return Err(format!(
-                    "operator {o}: a mean with half_life = inf needs a window_size; over an \
-                     unbounded stretch every value weighs the same and the mean is not a number"
-                ));
-            }
+            check_op(o, op, k)?;
             members[op.kernel].push(o);
         }
         if let Some(k) = members.iter().position(Vec::is_empty) {
@@ -1218,9 +1422,18 @@ impl Windows {
             ready: 0,
             ready_kept: 0,
             next_seq: 0,
-            scratch_row: vec![0.0; ROW * widest],
-            scratch_sum: vec![0.0; SUM * widest],
+            scratch_row: vec![0.0; ROW_VAR * widest],
+            scratch_sum: vec![0.0; SUM_VAR * widest],
         })
+    }
+
+    /// Per kernel, which of its operators are variances: what its queue is
+    /// built with, and checked against.
+    fn var_of(&self, ki: usize) -> Vec<bool> {
+        self.members[ki]
+            .iter()
+            .map(|&o| self.ops[o].stat.is_var())
+            .collect()
     }
 
     /// Say whether the rows carry a group column (review R2, W3): with
@@ -1257,6 +1470,7 @@ impl Windows {
                 Some(m) => m.push(o),
                 None => return Err(format!("operator {o} names kernel {}", op.kernel)),
             }
+            check_op(o, op, &self.kernels[op.kernel])?;
         }
         if no == 0 || members != self.members || members.iter().any(Vec::is_empty) {
             return Err("its kernels' operators are not its operators".into());
@@ -1298,12 +1512,10 @@ impl Windows {
             v.len() == nk && v.iter().zip(&self.members).all(|(x, m)| x.len() == m.len())
         };
         let mut open = vec![0u32; held];
+        let var: Vec<Vec<bool>> = (0..nk).map(|ki| self.var_of(ki)).collect();
         for (gi, g) in self.groups.iter().enumerate() {
             let fits = g.queues.len() == nk
-                && g.queues
-                    .iter()
-                    .zip(&self.members)
-                    .all(|(q, m)| q.has_width(m.len()))
+                && g.queues.iter().zip(&var).all(|(q, v)| q.has_width(v))
                 && g.open.len() == nk
                 && widths(&g.open_x)
                 && widths(&g.open_held)
@@ -1403,8 +1615,8 @@ impl Windows {
     fn scratch(&mut self) {
         if self.scratch_sum.is_empty() {
             let widest = self.members.iter().map(Vec::len).max().unwrap_or(0);
-            self.scratch_row = vec![0.0; ROW * widest];
-            self.scratch_sum = vec![0.0; SUM * widest];
+            self.scratch_row = vec![0.0; ROW_VAR * widest];
+            self.scratch_sum = vec![0.0; SUM_VAR * widest];
         }
     }
 
@@ -1460,6 +1672,9 @@ impl Windows {
             return gi;
         }
         let gi = self.groups.len();
+        let queues = (0..self.kernels.len())
+            .map(|ki| Queue::new(self.var_of(ki)))
+            .collect();
         self.groups.push(Group {
             clock: ClockState::new(),
             tau: 0.0,
@@ -1467,7 +1682,7 @@ impl Windows {
             off: 0,
             form: OffForm::Bits,
             restart: true,
-            queues: self.members.iter().map(|m| Queue::new(m.len())).collect(),
+            queues,
             open: vec![None; self.kernels.len()],
             open_x: self
                 .members
@@ -1717,6 +1932,7 @@ impl Windows {
             }
             if let Some((oseq, otau, ooff)) = g.open[ki].take() {
                 let m = &self.members[ki];
+                let rw = g.queues[ki].row_w();
                 fill_forward(
                     k,
                     &self.ops,
@@ -1725,6 +1941,7 @@ impl Windows {
                     tau,
                     &g.open_x[ki],
                     &g.open_held[ki],
+                    rw,
                     &mut self.scratch_row,
                 );
                 g.queues[ki].push(
@@ -1733,7 +1950,7 @@ impl Windows {
                     otau,
                     ooff,
                     tau,
-                    &self.scratch_row[..ROW * m.len()],
+                    &self.scratch_row[..rw * m.len()],
                     &mut self.scratch_sum,
                 );
             }
@@ -1775,6 +1992,7 @@ impl Windows {
             // A value is held from the operator's last valued row; the first
             // of a stretch from before it: from `-inf`, or from a window
             // back where one bounds the mass.
+            let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
             for (j, &o) in m.iter().enumerate() {
                 let v = row.values[self.ops[o].input];
                 let v = if usable(v) { v } else { f64::NAN };
@@ -1783,31 +2001,22 @@ impl Windows {
                 } else {
                     g.last_valued[o]
                 };
+                let stat = self.ops[o].stat;
                 let acc = if v.is_nan() {
                     Acc::default()
+                } else if stat.weighs_held() {
+                    Acc::held(v, mass_between(k, tau, start, tau), stat.is_var())
                 } else {
-                    match self.ops[o].stat {
-                        Stat::Mean => {
-                            let mass = mass_between(k, tau, start, tau);
-                            Acc {
-                                s: mass * v,
-                                w: mass,
-                                n: 1.0,
-                            }
-                        }
-                        Stat::Sum | Stat::Rate => Acc {
-                            s: v,
-                            w: 0.0,
-                            n: 1.0,
-                        },
+                    Acc {
+                        s: v,
+                        n: 1.0,
+                        ..Acc::default()
                     }
                 };
-                let b = j * ROW;
+                let b = j * rw;
                 self.scratch_row[b] = start;
                 self.scratch_row[b + 1] = v;
-                self.scratch_row[b + 2] = acc.s;
-                self.scratch_row[b + 3] = acc.w;
-                self.scratch_row[b + 4] = acc.n;
+                acc.write(&mut self.scratch_row[b + 2..], wide);
                 if !v.is_nan() {
                     g.last_valued[o] = tau;
                 }
@@ -1818,7 +2027,7 @@ impl Windows {
                 tau,
                 off,
                 tau,
-                &self.scratch_row[..ROW * m.len()],
+                &self.scratch_row[..rw * m.len()],
                 &mut self.scratch_sum,
             );
             if !k.closed.near(Direction::Backward) {
@@ -2130,6 +2339,7 @@ fn fill_forward(
     end: f64,
     x: &[f64],
     held: &[f64],
+    rw: usize,
     row: &mut [f64],
 ) {
     for (j, &o) in members.iter().enumerate() {
@@ -2142,21 +2352,22 @@ fn fill_forward(
                     s: mass * h,
                     w: mass,
                     n,
+                    ..Acc::default()
                 }
             }
-            Stat::Mean => Acc::default(),
+            // A variance has no forward kernel (`check_op`).
+            Stat::Mean | Stat::Var | Stat::Std => Acc::default(),
             Stat::Sum | Stat::Rate => Acc {
                 s: if v.is_nan() { 0.0 } else { v },
                 w: 0.0,
                 n,
+                ..Acc::default()
             },
         };
-        let b = j * ROW;
+        let b = j * rw;
         row[b] = tau;
         row[b + 1] = h;
-        row[b + 2] = acc.s;
-        row[b + 3] = acc.w;
-        row[b + 4] = acc.n;
+        acc.write(&mut row[b + 2..], rw == ROW_VAR);
     }
 }
 
@@ -2193,17 +2404,18 @@ fn read_backward(
     let edge = k.window_size.map_or(f64::NEG_INFINITY, |w| tau - w);
     for (j, &o) in members.iter().enumerate() {
         let op = &ops[o];
+        let var = op.stat.is_var();
         let Some((sum, at)) = q.sum_op(k, j) else {
             out[j] = f64::NAN;
             continue;
         };
         // The oldest held value's interval may start before the window:
-        // only the part inside counts, so a mean takes the window less the
-        // rows up to that one, then the row's mass inside, with no
-        // subtraction to cancel. Each operator's oldest valued row is its
-        // own.
-        let cut = match (k.window_size, op.stat) {
-            (Some(_), Stat::Mean) => q
+        // only the part inside counts, so a mean (and a variance) takes the
+        // window less the rows up to that one, then the row's mass inside,
+        // with no subtraction to cancel. Each operator's oldest valued row
+        // is its own.
+        let cut = match (k.window_size, op.stat.weighs_held()) {
+            (Some(_), true) => q
                 .find_oldest(|st, i| !st.x(i, j).is_nan())
                 .filter(|&(_, st, i)| st.start(i, j) < edge)
                 .map(|(p, st, i)| (p, st.start(i, j), st.end[i], st.x(i, j))),
@@ -2211,19 +2423,15 @@ fn read_backward(
         };
         let a = match cut {
             Some((p, start, end, x)) => {
-                let mut a = q
-                    .sum_after_op(k, p, j)
-                    .map_or(Acc::default(), |(r, r_at)| r.scaled(k.discount(tau - r_at)));
-                let m = mass_between(k, tau, start.max(edge), end);
-                a = a.plus(Acc {
-                    s: m * x,
-                    w: m,
-                    n: 1.0,
+                let mut a = q.sum_after_op(k, p, j).map_or(Acc::default(), |(r, r_at)| {
+                    r.scaled(k.discount(tau - r_at), var)
                 });
+                let m = mass_between(k, tau, start.max(edge), end);
+                a = a.plus(Acc::held(x, m, var), var);
                 a
             }
             // The sums are anchored at the newest row; seen from `tau`.
-            None => sum.scaled(k.discount(tau - at)),
+            None => sum.scaled(k.discount(tau - at), var),
         };
         out[j] = value_of(k, op, a, span);
     }
@@ -2246,6 +2454,27 @@ fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
         Stat::Rate => {
             let m = k.mass(t);
             if m > 0.0 { a.s / m } else { f64::NAN }
+        }
+        Stat::Var | Stat::Std => {
+            if a.w <= 0.0 {
+                return f64::NAN;
+            }
+            let biased = a.q / a.w;
+            // Polars' correction for unequal weights, `V1² / (V1² − V2)`
+            // times the biased variance, its denominator as `2 e`; none where
+            // one row carries the window's weight (`e = 0`).
+            let var = if op.bias {
+                biased
+            } else if a.e > 0.0 {
+                a.w * a.w / (2.0 * a.e) * biased
+            } else {
+                f64::NAN
+            };
+            if op.stat == Stat::Std {
+                var.sqrt()
+            } else {
+                var
+            }
         }
     }
 }
@@ -2340,7 +2569,8 @@ fn close(
             End::Cut => op.partial == Partial::Keep,
             End::Discard => false,
         };
-        if !(keep && meta.accept) {
+        // A variance has no forward kernel (`check_op`).
+        if !(keep && meta.accept) || op.stat.is_var() {
             continue;
         }
         // The sums are anchored at the oldest row in the window; seen from
@@ -2349,7 +2579,7 @@ fn close(
         // value of its own, since the rows before it hold a value from the
         // row itself or from one its stamp excludes.
         let seg = q.sum_op(k, j);
-        let scaled = |(a, at): (Acc, f64)| a.scaled(k.discount(at - t.tau));
+        let scaled = |(a, at): (Acc, f64)| a.scaled(k.discount(at - t.tau), false);
         let mut a = Acc::default();
         let mut any = seg.is_some();
         let mut first_own: Option<usize> = None;
@@ -2372,6 +2602,7 @@ fn close(
                     a = scaled(s);
                 }
             }
+            Stat::Var | Stat::Std => {}
         }
         if let Some((_, otau, _)) = open {
             let (x, h) = (open_x[j], open_held[j]);
@@ -2380,15 +2611,27 @@ fn close(
             match op.stat {
                 Stat::Mean if !h.is_nan() && (own || first_own.is_some()) => {
                     let m = mass_between(k, t.tau, otau, open_end.min(far));
-                    a = a.plus(Acc { s: m * h, w: m, n });
+                    a = a.plus(
+                        Acc {
+                            s: m * h,
+                            w: m,
+                            n,
+                            ..Acc::default()
+                        },
+                        false,
+                    );
                     any = true;
                 }
                 Stat::Sum | Stat::Rate if own => {
-                    a = a.plus(Acc {
-                        s: k.discount(otau - t.tau) * x,
-                        w: 0.0,
-                        n,
-                    });
+                    a = a.plus(
+                        Acc {
+                            s: k.discount(otau - t.tau) * x,
+                            w: 0.0,
+                            n,
+                            ..Acc::default()
+                        },
+                        false,
+                    );
                     any = true;
                 }
                 _ => {}
@@ -2947,6 +3190,7 @@ mod tests {
                     }
                     // The value, from the definition.
                     let (mut sum, mut mass, mut count) = (0.0, 0.0, 0.0);
+                    let mut held: Vec<(f64, f64)> = Vec::new();
                     for &b in &members {
                         let x = value(s.rows[b], op.input);
                         if x.is_nan() {
@@ -2955,7 +3199,7 @@ mod tests {
                         count += 1.0;
                         let tb = s.tau[b];
                         match op.stat {
-                            Stat::Mean => {
+                            Stat::Mean | Stat::Var | Stat::Std => {
                                 let (lo, hi) = match k.direction {
                                     Direction::Backward => {
                                         // Held from the operator's last valued row.
@@ -2991,6 +3235,7 @@ mod tests {
                                 let m = mass_bf(k, ta, lo, hi);
                                 sum += m * x;
                                 mass += m;
+                                held.push((m, x));
                             }
                             Stat::Sum | Stat::Rate => {
                                 let d = (tb - ta).abs();
@@ -3015,6 +3260,7 @@ mod tests {
                             }
                         }
                         Stat::Sum => sum,
+                        Stat::Var | Stat::Std => var_bf(&held, op.bias, op.stat == Stat::Std),
                         Stat::Rate => {
                             let m = mass_bf(k, 0.0, 0.0, span).abs();
                             let m = if k.direction == Direction::Backward {
@@ -3030,6 +3276,37 @@ mod tests {
         }
         let _ = (&stretch_of, &tau_of);
         Ok(t)
+    }
+
+    /// The variance of `held`'s `(weight, value)` pairs from the definition,
+    /// in two passes: the weighted mean, then the weighted mean square
+    /// deviation from it; unless `bias`, times `V1² / (V1² − V2)` (null
+    /// where one weight is all of it); its root for a standard deviation.
+    fn var_bf(held: &[(f64, f64)], bias: bool, std: bool) -> f64 {
+        let v1: f64 = held.iter().map(|&(m, _)| m).sum();
+        if v1 <= 0.0 {
+            return f64::NAN;
+        }
+        let mu = held.iter().map(|&(m, x)| m * x).sum::<f64>() / v1;
+        let mut var = held
+            .iter()
+            .map(|&(m, x)| m * (x - mu) * (x - mu))
+            .sum::<f64>()
+            / v1;
+        if !bias {
+            // `V1² − V2 = 2 Σ_{i<j} m_i m_j`, summed as the products of each
+            // weight with the ones before it: every term at or above 0.
+            let (mut before, mut pairs) = (0.0, 0.0);
+            for &(m, _) in held {
+                pairs += m * before;
+                before += m;
+            }
+            if pairs <= 0.0 {
+                return f64::NAN;
+            }
+            var *= v1 * v1 / (2.0 * pairs);
+        }
+        if std { var.sqrt() } else { var }
     }
 
     /// A test window's nanoseconds, as the frame reads them off a duration.
@@ -3175,7 +3452,25 @@ mod tests {
                     input: ops.len() % 2,
                     min_samples: min,
                     partial,
+                    bias: false,
                 });
+            }
+            // A variance and a standard deviation on every backward kernel,
+            // corrected and not (task 212).
+            if direction == Direction::Backward {
+                for (stat, partial, min, bias) in [
+                    (Stat::Var, Partial::Keep, 1, false),
+                    (Stat::Std, Partial::Null, 2, true),
+                ] {
+                    ops.push(OpDef {
+                        kernel: ki,
+                        stat,
+                        input: ops.len() % 2,
+                        min_samples: min,
+                        partial,
+                        bias,
+                    });
+                }
             }
         }
         (kernels, ops)
@@ -3263,6 +3558,15 @@ mod tests {
     ) {
         let want = brute(kernels, ops, c, rows).unwrap();
         let got = run(kernels, ops, c, rows, 1).unwrap();
+        // A match where a variance is never valued holds nothing of it (a
+        // sparse forward sum is valued on no row of one integer stream).
+        for (o, col) in want.values.iter().enumerate() {
+            let valued = col.iter().filter(|v| !v.is_nan()).count();
+            assert!(
+                valued > 0 || !ops[o].stat.is_var(),
+                "seed {seed}: output {o} valued on {valued} rows"
+            );
+        }
         if let Err((o, i, e)) = got.close_to(&want, 1e-9) {
             for (r, row) in rows
                 .iter()
@@ -3329,6 +3633,7 @@ mod tests {
                 input: 0,
                 min_samples: 1,
                 partial: Partial::Keep,
+                bias: false,
             }],
             ClockCfg::default(),
         )
@@ -3438,6 +3743,7 @@ mod tests {
                     input: 0,
                     min_samples: 1,
                     partial: Partial::Null,
+                    bias: false,
                 })
                 .collect();
             let fwd = run(std::slice::from_ref(&k), &ops, c, rows, 1).unwrap();
@@ -3555,6 +3861,7 @@ mod tests {
                 input: 0,
                 min_samples: 1,
                 partial: Partial::Keep,
+                bias: false,
             };
             run(&[k], &[op], c, &rows, 1).unwrap().values[0].clone()
         };
@@ -3605,6 +3912,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let got = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
             .unwrap()
@@ -3633,6 +3941,248 @@ mod tests {
         }
     }
 
+    /// One row's variance by Polars' own `ewm_var(adjust=False)` algorithm
+    /// (pandas' `ewmcov`), written out: the old weight scaled by `1 − α`
+    /// and the new row's by `α`, the weights renormalized to a sum of 1, the
+    /// mean and the co-moment moved together, and unless `bias` the
+    /// co-moment times `sum_wt² / (sum_wt² − sum_wt2)`.
+    fn polars_ewm_var(xs: &[f64], h: f64, bias: bool) -> Vec<f64> {
+        let alpha = 1.0 - (-1.0 / h).exp2();
+        let (mut mean, mut cov) = (xs[0], 0.0);
+        let (mut old_wt, mut sum_wt, mut sum_wt2) = (1.0f64, 1.0f64, 1.0f64);
+        let mut out = vec![if bias { 0.0 } else { f64::NAN }];
+        for &x in &xs[1..] {
+            sum_wt *= 1.0 - alpha;
+            sum_wt2 *= (1.0 - alpha) * (1.0 - alpha);
+            old_wt *= 1.0 - alpha;
+            let old_mean = mean;
+            let wt_sum = old_wt + alpha;
+            mean = (old_wt * old_mean + alpha * x) / wt_sum;
+            cov = (old_wt * (cov + (old_mean - mean) * (old_mean - mean))
+                + alpha * (x - mean) * (x - mean))
+                / wt_sum;
+            sum_wt += alpha;
+            sum_wt2 += alpha * alpha;
+            old_wt += alpha;
+            sum_wt /= old_wt;
+            sum_wt2 /= old_wt * old_wt;
+            old_wt = 1.0;
+            out.push(if bias {
+                cov
+            } else {
+                let num = sum_wt * sum_wt;
+                let den = num - sum_wt2;
+                if den > 0.0 { num / den * cov } else { f64::NAN }
+            });
+        }
+        out
+    }
+
+    /// On a clock that steps by 1, with `half_life` in rows, the variance is
+    /// Polars' `ewm_var(adjust=False)`, whose algorithm is written out above:
+    /// a stretch's first value held from before it weighs `(1 − α)^(n−1)`,
+    /// as `adjust=False`'s first row does (task 212). The standard deviation
+    /// is its root. The Python suite holds the same to Polars itself.
+    #[test]
+    fn the_variance_on_a_unit_clock_is_polars_adjust_false() {
+        let mut rng = Lcg(77);
+        let xs: Vec<f64> = (0..300).map(|_| rng.next() * 10.0 - 3.0).collect();
+        let rows: Vec<Row> = xs
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| Row {
+                group: None,
+                clock: Some(ClockValue::F64(i as f64)),
+                session: None,
+                values: vec![x],
+                accept: true,
+            })
+            .collect();
+        for (h, bias) in [(1.0, false), (6.5, true), (6.5, false), (40.0, false)] {
+            let k = KernelDef {
+                direction: Direction::Backward,
+                half_life: h,
+                window_size: None,
+                window_ns: None,
+                closed: Closed::Right,
+            };
+            let op = |stat| OpDef {
+                kernel: 0,
+                stat,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias,
+            };
+            let got = run(
+                &[k],
+                &[op(Stat::Var), op(Stat::Std)],
+                cfg(100.0, None, None),
+                &rows,
+                1,
+            )
+            .unwrap();
+            let want = polars_ewm_var(&xs, h, bias);
+            for (i, w) in want.iter().enumerate() {
+                let (v, s) = (got.values[0][i], got.values[1][i]);
+                assert_eq!(
+                    v.is_nan(),
+                    w.is_nan(),
+                    "h {h} bias {bias} row {i}: {v} vs {w}"
+                );
+                if !w.is_nan() {
+                    assert!(
+                        (v - w).abs() <= 1e-12 * w.abs().max(1.0),
+                        "h {h} row {i}: {v} vs {w}"
+                    );
+                    assert_eq!(s.to_bits(), v.sqrt().to_bits(), "row {i}");
+                }
+            }
+        }
+    }
+
+    /// Every window holds one value however many rows it weighs, so its
+    /// variance is 0 exactly, at any level and on every kernel: the merge
+    /// of two segments moves the mean by their means' difference, 0, and
+    /// adds nothing to `M2` (task 212). A mean square less a squared mean
+    /// would cancel to rounding noise at a level.
+    #[test]
+    fn a_constant_input_has_a_variance_of_exactly_zero() {
+        let (kernels, ops) = all_kernels();
+        let var: Vec<usize> = (0..ops.len()).filter(|&o| ops[o].stat.is_var()).collect();
+        for level in [0.1, 1e8 + 0.1, -3e12, 7.0] {
+            let rows: Vec<Row> = stream(5, 400, 2, true, true)
+                .into_iter()
+                .map(|mut r| {
+                    for v in &mut r.values {
+                        if !v.is_nan() {
+                            *v = level;
+                        }
+                    }
+                    r
+                })
+                .collect();
+            let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+            let t = run(&kernels, &ops, c, &rows, 1).unwrap();
+            for &o in &var {
+                let valued: Vec<f64> = t.values[o]
+                    .iter()
+                    .copied()
+                    .filter(|v| !v.is_nan())
+                    .collect();
+                assert!(
+                    valued.len() > 20,
+                    "level {level} output {o}: {}",
+                    valued.len()
+                );
+                assert!(
+                    valued.iter().all(|&v| v == 0.0),
+                    "level {level} output {o}: {:?}",
+                    valued.iter().find(|&&v| v != 0.0)
+                );
+            }
+        }
+    }
+
+    /// A variance's mean is a compensated pair (`online_core::comp`): a
+    /// value held row after row is approached as exact arithmetic approaches
+    /// it. At 1e8 a plain mean stalls a few rounding steps short of a new
+    /// level, and the variance about it settles on that gap's square, about
+    /// 1e-15; the definition decays as `p (1 − p)`, `p = 2^(−T/h)` the weight
+    /// left on the old level `T` units after its last row. The core's
+    /// discount is an `exp2`, so the bound is relative, not bitwise.
+    #[test]
+    fn a_variance_at_a_level_decays_with_its_history() {
+        let (a, n_a, n, h) = (1e8, 50usize, 500usize, 5.0);
+        let rows: Vec<Row> = (0..n)
+            .map(|i| Row {
+                group: None,
+                clock: Some(ClockValue::F64(i as f64)),
+                session: None,
+                values: vec![if i < n_a { a } else { a + 1.0 }],
+                accept: true,
+            })
+            .collect();
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: h,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Var,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: true,
+        };
+        let v = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
+            .unwrap()
+            .values[0]
+            .clone();
+        for t in [n_a + 20, n_a + 100, n_a + 200, n - 1] {
+            let p = (-((t - (n_a - 1)) as f64) / h).exp2();
+            let want = p * (1.0 - p);
+            assert!(
+                (v[t] - want).abs() <= 1e-9 * want,
+                "row {t}: {} vs {want}",
+                v[t]
+            );
+        }
+    }
+
+    /// A variance looks back only, and needs a window without decay, as a
+    /// mean does: refused when the core is built, and in a core read back
+    /// from a damaged state.
+    #[test]
+    fn a_variance_looks_back_only() {
+        let k = |direction| KernelDef {
+            direction,
+            half_life: 2.0,
+            window_size: Some(4.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = |kernel, stat| OpDef {
+            kernel,
+            stat,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+        };
+        let err = Windows::new(
+            vec![k(Direction::Forward)],
+            vec![op(0, Stat::Std)],
+            ClockCfg::default(),
+        )
+        .expect_err("refused");
+        assert!(err.contains("looks back only"), "{err}");
+        let err = Windows::new(
+            vec![KernelDef {
+                half_life: f64::INFINITY,
+                window_size: None,
+                ..k(Direction::Backward)
+            }],
+            vec![op(0, Stat::Var)],
+            ClockCfg::default(),
+        )
+        .expect_err("refused");
+        assert!(err.contains("needs a window_size"), "{err}");
+        let mut core = Windows::new(
+            vec![k(Direction::Backward), k(Direction::Forward)],
+            vec![op(0, Stat::Var), op(1, Stat::Sum)],
+            ClockCfg::default(),
+        )
+        .unwrap();
+        core.check().unwrap();
+        core.ops[0].kernel = 1;
+        let err = core.check().expect_err("refused");
+        assert!(err.contains("looks back only"), "{err}");
+    }
+
     /// A reset discards the windows open across it, whatever `partial`
     /// says; a cut keeps, nulls or drops them as it says. A window whose far
     /// edge is the last row before either is whole.
@@ -3652,6 +4202,7 @@ mod tests {
                 input: 0,
                 min_samples: 1,
                 partial: Partial::Keep,
+                bias: false,
             },
             OpDef {
                 kernel: 0,
@@ -3659,6 +4210,7 @@ mod tests {
                 input: 0,
                 min_samples: 1,
                 partial: Partial::Null,
+                bias: false,
             },
             OpDef {
                 kernel: 0,
@@ -3666,6 +4218,7 @@ mod tests {
                 input: 0,
                 min_samples: 1,
                 partial: Partial::Drop,
+                bias: false,
             },
         ];
         let mk = |ts: &[f64]| -> Vec<Row> {
@@ -3752,6 +4305,7 @@ mod tests {
             input: 0,
             min_samples: 2,
             partial: Partial::Keep,
+            bias: false,
         };
         let got = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
             .unwrap()
@@ -3802,6 +4356,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let mut core = Windows::new(vec![k], vec![op], cfg(10.0, None, None)).unwrap();
         let row = |t: f64| Row {
@@ -3831,6 +4386,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let same = |got: &[f64], want: &[f64]| {
             got.len() == want.len()
@@ -3930,6 +4486,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
             group: g.map(str::to_string),
@@ -3988,6 +4545,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let rows: Vec<Row> = [0, 100, 400, 800]
             .iter()
@@ -4066,6 +4624,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
             group: g.map(str::to_string),
@@ -4129,6 +4688,7 @@ mod tests {
             input: 0,
             min_samples: 1,
             partial: Partial::Keep,
+            bias: false,
         };
         let k = KernelDef {
             direction: Direction::Backward,

@@ -41,7 +41,20 @@ from polars_online._polars_online import parse_duration
 PREFIX = "@po:"
 
 #: The window operators, and the one that reads one row back.
-OPERATORS = ("ewm_mean", "rewm_mean", "ewm_sum", "rewm_sum", "ewm_rate", "rewm_rate", "increment")
+OPERATORS = (
+    "ewm_mean",
+    "rewm_mean",
+    "ewm_sum",
+    "rewm_sum",
+    "ewm_rate",
+    "rewm_rate",
+    "ewm_var",
+    "ewm_std",
+    "increment",
+)
+
+#: The operators that take ``bias``: a variance's own (task 212).
+VARIANCES = ("ewm_var", "ewm_std")
 
 _BINARY = {
     "Plus": "+",
@@ -430,9 +443,11 @@ def operator(
     closed: str = "right",
     min_samples: int = 1,
     partial: str | None = None,
+    bias: Any = None,
 ) -> pl.Expr:
     """The expression of operator ``name`` over ``input`` with these
-    parameters, checked here so a wrong value names its parameter."""
+    parameters, checked here so a wrong value names its parameter; ``bias``
+    a variance's alone."""
     who = f"po.{name}"
     tree = _input_tree(who, input)
     if name == "increment":
@@ -473,4 +488,12 @@ def operator(
                 "session change cuts short gives, and with no window_size nothing is cut short"
             )
         params["partial"] = partial
+    if name in VARIANCES:
+        # A bool, as Polars' `bias` is; written always, as `closed` is, so
+        # one variance asked for twice is one column.
+        if not isinstance(bias, bool):
+            raise TypeError(f"{who}: bias must be a bool, got {type(bias).__name__}")
+        params["bias"] = bias
+    elif bias is not None:
+        raise TypeError(f"{who}: bias is a variance's parameter (ewm_var, ewm_std)")
     return operator_column([name, tree, params])

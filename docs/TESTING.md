@@ -59,7 +59,7 @@ The words this ledger uses:
 | hard rule N | the numbered hard rules in `CLAUDE.md` |
 | a kind | one of the 21 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
 | the ten regression models | the models the per-model sweeps run: `ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` and `holt`, which `REGRESSIONS` in `tests/test_model_registry.py` lists |
-| the window operators | exponentially weighted means, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum` and `po.ewm_rate` look back, and `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate` look ahead |
+| the window operators | exponentially weighted means, variances, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_var` and `po.ewm_std` look back, and `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate` look ahead |
 | a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.rewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed (`docs/PLAN.md` task 104) |
 | the column form | the same window expression written as a column by `with_windows(like=spec)` and fed back as a plain target under the same `embargo`: what a formula target is held to |
 | the brute force | `brute()` in `crates/online-polars/src/windows.rs`, which computes each row's window from the definition by scanning every row of its stretch, with no running sums |

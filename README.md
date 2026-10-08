@@ -1117,7 +1117,7 @@ of rules in each of three uses:
 | a look-ahead as the target a model learns, its windows computed inside the bank | a spec's `targets` | [Windows as a model's inputs and target](#windows-as-a-models-inputs-and-target) |
 | a `with_windows` run fed in parts, each resuming where the one before it stopped | `save_state=`, then `load_state=` | [Saving and resuming a window run](#saving-and-resuming-a-window-run) |
 
-Seven operators make the expressions. Each takes the same work on a row
+Nine operators make the expressions. Each takes the same work on a row
 however long its window, while Polars' `rolling` gathers a window's rows
 again for every row ([Window operators](#window-operators)):
 
@@ -1127,10 +1127,12 @@ again for every row ([Window operators](#window-operators)):
 | `po.rewm_mean(x, half_life=, window_size=)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
 | `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing, and gets the window's sum as it stands, where `ewm_sum_by` gives it null |
 | `po.ewm_rate(x, ...)`, `po.rewm_rate(x, ...)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing, and gets the window's rate as it stands |
+| `po.ewm_var(x, ...)`, `po.ewm_std(x, ...)` | as for `po.ewm_mean`; they look back only | the variance about `po.ewm_mean`, each value weighed as the mean weighs it, and its square root. With `bias=False`, the default, the variance is corrected for the weights' number and inequality as Polars' `ewm_var` corrects it, so a window that one row's weight fills is null. On a clock that steps by 1 a row, with `half_life` in rows, they are Polars' `ewm_var` and `ewm_std` with `adjust=False`. A window that holds one value gives 0 exactly |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
 Every operator except `po.increment` takes these keywords, `half_life` and
-`window_size` in the clock's units.
+`window_size` in the clock's units. `po.ewm_var` and `po.ewm_std` also take
+Polars' `bias`.
 This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
