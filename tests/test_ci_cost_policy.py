@@ -318,42 +318,130 @@ class TestMutationTesting:
         "weekly": ("weekly-report", "mutants-shard-"),
     }
 
+    #: The job that lists the changed lines' mutants and sizes their pass
+    #: (task 219), and the shard count and indices it hands the shards.
+    LISTING = "changed-list"
+    COUNT = "${{ needs.changed-list.outputs.shards }}"
+    MATRIX = "${{ fromJSON(needs.changed-list.outputs.matrix) }}"
+
+    #: The slowest shard of run 37834489097, the push of 103d721: 51 mutants
+    #: tested in its 100-minute stop, 114 s each at `-j 2` after a 208 s
+    #: baseline (the fastest tested 99, the mean 65).
+    SLOWEST_SHARD = 51
+
     @staticmethod
     def _runs(job: dict) -> str:
         return " ".join(str(step.get("run", "")) for step in job["steps"])
 
+    def _count(self, job: str) -> str:
+        """The shard count a sharded job deals over, as the workflow writes it."""
+        if job == "changed":
+            return self.COUNT
+        return str(len(self.MUT["jobs"][job]["strategy"]["matrix"]["shard"]))
+
     def test_the_changed_lines_run_on_every_push_and_pull_request_and_gate(self):
         assert {"push", "pull_request"} <= set(self.MUT["on"])
-        assert "--in-diff" in self._runs(self.MUT["jobs"]["changed"])
+        cond = " ".join(self.MUT["jobs"][self.LISTING]["if"].split())
+        assert cond == "github.event_name == 'push' || github.event_name == 'pull_request'"
+        assert self.MUT["jobs"]["changed"]["needs"] == self.LISTING
+        assert "--in-diff changed.diff" in self.MUT["env"]["CHANGED_SCOPE"]
         report = self._runs(self.MUT["jobs"]["changed-report"])
         assert "mutants_report.py" in report and "--fail-on-missed" in report
 
     def test_the_changed_lines_are_sharded_as_the_weekly_pass_is(self):
-        """One job at `-j 2` tests 75 to 85 mutants inside its 100-minute
-        stop, and a normal push lists hundreds: three of five pushes to
-        `main` stopped incomplete, at 84 of 236, 82 of 666 and 75 of 656
-        mutants (review 2026-10-06, CI1). So the changed lines are dealt
-        round-robin over shards of 100 minutes each, as the weekly pass is,
-        enough that the largest push measured fits at the slowest rate
-        measured, and one job reports them all."""
+        """A shard deals round-robin, as the weekly pass does, so no shard
+        takes one slow file whole, and one job reports them all."""
         for job, (report_job, prefix) in self.SHARDED.items():
             spec = self.MUT["jobs"][job]
-            shards = spec["strategy"]["matrix"]["shard"]
             assert spec["strategy"]["fail-fast"] is False, job
             run = self._runs(spec)
-            assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)} --sharding round-robin" in run
+            shard = f"--shard ${{{{ matrix.shard }}}}/{self._count(job)} --sharding round-robin"
+            assert shard in run, job
             upload = next(s for s in spec["steps"] if "upload-artifact" in str(s.get("uses", "")))
             assert upload["with"]["name"] == f"{prefix}${{{{ matrix.shard }}}}", job
             report = self.MUT["jobs"][report_job]
-            assert report["needs"] == job
+            needs = [self.LISTING, job] if job == "changed" else job
+            assert report["needs"] == needs, report_job
             cond = " ".join(report["if"].split())
             assert cond == f"always() && needs.{job}.result != 'skipped'", cond
             download = next(
                 s for s in report["steps"] if "download-artifact" in str(s.get("uses", ""))
             )
             assert download["with"]["pattern"] == f"{prefix}*", report_job
-        shards = len(self.MUT["jobs"]["changed"]["strategy"]["matrix"]["shard"])
-        assert shards * 75 >= 666, shards
+
+    def test_the_changed_lines_take_as_many_shards_as_their_mutants_need(self):
+        """The user, 2026-10-08: "We don't pay for minutes being open
+        source." So the pass tests every mutant it lists, however large the
+        push (task 219). Ten fixed shards could not: the push of 103d721
+        listed 1,346, each shard stopped at its 100 minutes having tested 51
+        to 99 of its 135, and 698 went untested (run 37834489097). A first
+        job lists the pass's mutants, which builds nothing, and sizes the
+        pass from the count, at most 40 a shard: four-fifths of the slowest
+        shard's 51. The shards take their indices and the count from it, and
+        the report expects that many runs, so a shard that sent nothing
+        counts as untested."""
+        listing = self.MUT["jobs"][self.LISTING]
+        run = self._runs(listing)
+        assert 'cargo mutants --list "${scope[@]}" > listed.txt' in run
+        assert "--shard" not in run, "the listing lists the whole pass"
+        size = re.search(
+            r"python3 scripts/mutants_shards\.py listed\.txt --per-shard (\d+)"
+            r' >> "\$GITHUB_OUTPUT"',
+            run,
+        )
+        assert size, run
+        assert 0 < int(size.group(1)) <= 0.8 * self.SLOWEST_SHARD, size.group(1)
+        step = next(s for s in listing["steps"] if "mutants_shards.py" in str(s.get("run", "")))
+        assert listing["outputs"] == {
+            "shards": f"${{{{ steps.{step['id']}.outputs.shards }}}}",
+            "matrix": f"${{{{ steps.{step['id']}.outputs.matrix }}}}",
+        }
+        changed = self.MUT["jobs"]["changed"]
+        assert changed["strategy"]["matrix"] == {"shard": self.MATRIX}
+        assert changed["name"].endswith(f"shard ${{{{ matrix.shard }}}} of {self.COUNT}")
+        report = self._runs(self.MUT["jobs"]["changed-report"])
+        assert f"--expect-runs {self.COUNT} " in report
+
+    def test_the_listing_and_its_shards_list_the_same_mutants(self):
+        """The listing's count sizes the pass and the shards deal it, so the
+        two must list the same mutants: the same diff, from the same step in
+        both jobs, and one scope, the workflow's `CHANGED_SCOPE`, which each
+        job reads with `read -ra` (it splits on spaces and expands no glob,
+        so `**` reaches cargo-mutants as written)."""
+        listing, changed = self.MUT["jobs"][self.LISTING], self.MUT["jobs"]["changed"]
+
+        def step(job: dict, prefix: str) -> dict:
+            return next(s for s in job["steps"] if str(s.get("uses", "")).startswith(prefix))
+
+        assert step(listing, "actions/checkout@") == step(changed, "actions/checkout@")
+        assert step(listing, "actions/checkout@")["with"]["fetch-depth"] == 0
+        diffs = [
+            [s for s in job["steps"] if s.get("name") == "the diff this run examines"]
+            for job in (listing, changed)
+        ]
+        assert diffs[0] == diffs[1] and len(diffs[0]) == 1, diffs
+        scope = self.MUT["env"]["CHANGED_SCOPE"]
+        assert "--shard" not in scope and "--list" not in scope, scope
+        for job in (listing, changed):
+            run = self._runs(job)
+            assert 'read -ra scope <<< "$CHANGED_SCOPE"' in run
+            for flag in ("--in-diff", "--package", "--file"):
+                assert flag not in run, f"{flag} is spelled in a job, not in CHANGED_SCOPE"
+
+    def test_cargo_mutants_is_one_pinned_version(self):
+        """Every job installs the same cargo-mutants, by exact version, so
+        the listing that sizes the pass lists what the shards deal."""
+        installs = re.findall(r"cargo install .*cargo-mutants.*", self._all_runs())
+        assert len(installs) == 3, installs
+        assert len(set(installs)) == 1, installs
+        assert re.fullmatch(
+            r"cargo install --locked cargo-mutants --version \d+\.\d+\.\d+", installs[0]
+        )
+
+    def _all_runs(self) -> str:
+        return "\n".join(
+            str(step.get("run", "")) for job in self.MUT["jobs"].values() for step in job["steps"]
+        )
 
     def test_the_weekly_pass_runs_while_public_or_by_hand(self):
         """COST POLICY: ninety-six shards of up to four hours is not for a
@@ -367,12 +455,15 @@ class TestMutationTesting:
         assert "mutants_report.py" in run and "--fail-on-missed" not in run
 
     def test_every_shard_runs(self):
+        """The weekly matrix is 0 to 95 written out; the changed lines' is
+        the listing's, 0 to the count less one, which
+        `tests/test_mutants_report.py` holds `scripts/mutants_shards.py` to."""
+        shards = self.MUT["jobs"]["weekly"]["strategy"]["matrix"]["shard"]
+        assert shards == list(range(len(shards)))
+        assert self.MUT["jobs"]["changed"]["strategy"]["matrix"]["shard"] == self.MATRIX
         for job in self.SHARDED:
-            shards = self.MUT["jobs"][job]["strategy"]["matrix"]["shard"]
-            assert shards == list(range(len(shards))), job
-            assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in self._runs(
-                self.MUT["jobs"][job]
-            )
+            run = self._runs(self.MUT["jobs"][job])
+            assert f"--shard ${{{{ matrix.shard }}}}/{self._count(job)}" in run, job
 
     def test_every_run_skips_the_doctests_and_leaves_a_survivor_room(self):
         """Task 155: a test run of online-core took 67 seconds, 39 of them its
@@ -401,9 +492,9 @@ class TestMutationTesting:
             assert m, job
             assert int(m.group(1)) + 15 <= j["timeout-minutes"], job
             assert "cargo mutants --list" in run and "listed.txt" in run, job
-            shards = len(j["strategy"]["matrix"]["shard"])
             report = self._runs(self.MUT["jobs"][report_job])
-            assert f"--expect-runs {shards}" in report and "--fail-on-incomplete" in report
+            assert f"--expect-runs {self._count(job)}" in report, report_job
+            assert "--fail-on-incomplete" in report, report_job
 
     def test_a_push_cannot_cancel_the_weekly_pass(self):
         assert "github.event_name" in self.MUT["concurrency"]["group"]

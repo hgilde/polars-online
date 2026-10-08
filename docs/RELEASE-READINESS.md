@@ -1228,8 +1228,8 @@ what the fixes changed.
 
 ### The policy, as the test holds it
 
-`tests/test_ci_cost_policy.py` parses every workflow, in 61 cases over
-twelve classes, counted on 2026-10-07:
+`tests/test_ci_cost_policy.py` parses every workflow, in 64 cases over
+twelve classes, counted on 2026-10-08:
 
 | class | what it asserts |
 |---|---|
@@ -1238,7 +1238,7 @@ twelve classes, counted on 2026-10-07:
 | `TestStepOrderingThatHasAlreadyBrokenCI` | disk is freed before the cache is restored, rustflags are set before anything compiles, and the cache survives a failing job |
 | `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
 | `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
-| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, in ten shards that hold the largest push measured, with one report; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer or a shard that sent nothing |
+| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need: a first job lists them, with the scope, the diff and the pinned cargo-mutants the shards use, and takes a shard for every forty, at most four-fifths of the slowest shard measured, and the report expects that many; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer or a shard that sent nothing |
 | `TestTheRustTestsLinkNoPython` | every workflow and the local gate leave `online-py` out of `cargo test`, so no test binary links libpython |
 | `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
 | `TestActionsArePinnedToCommits` | every external action is pinned to a commit, with the version it names in a comment |

@@ -1,6 +1,7 @@
 """`scripts/mutants_report.py`, `scripts/mutants_equivalent.toml` and
 `scripts/mutants_tolerated.toml`: the report the mutation-testing jobs print,
-and the mutants it does not count (docs/TESTING.md T-D4, task 158)."""
+and the mutants it does not count (docs/TESTING.md T-D4, task 158). And
+`scripts/mutants_shards.py`, which sizes the changed lines' pass (task 219)."""
 
 from __future__ import annotations
 
@@ -10,7 +11,10 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
+
+import pytest
 
 TIER = "essential"
 
@@ -19,6 +23,10 @@ _spec = importlib.util.spec_from_file_location("mutants_report", REPO / "scripts
 assert _spec and _spec.loader
 report_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(report_mod)
+_spec = importlib.util.spec_from_file_location("mutants_shards", REPO / "scripts/mutants_shards.py")
+assert _spec and _spec.loader
+shards_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(shards_mod)
 
 
 def test_every_equivalent_still_finds_its_line():
@@ -268,3 +276,60 @@ def test_a_line_has_over_two_lines_holds_only_where_both_are(tmp_path):
     assert missed == 1
     survivors, kept = text.split("### Tolerated")
     assert "src/m.rs:4:9" in survivors and "src/m.rs:2:9" in kept
+
+
+@pytest.mark.parametrize(
+    ("mutants", "shards"),
+    [
+        (0, 1),
+        (1, 1),
+        (40, 1),
+        (41, 2),
+        (80, 2),
+        (81, 3),
+        (1_346, 34),
+        (10_240, 256),
+        (10_241, 256),
+        (11_138, 256),
+    ],
+)
+def test_a_shard_for_every_forty_mutants_at_least_one_and_at_most_256(mutants, shards):
+    """The changed lines' pass takes as many shards as its mutants need at
+    40 a shard (task 219): 1,346, the push of 103d721, is 34. A change with
+    nothing to mutate still runs one, which reports; GitHub's matrix takes
+    at most 256 jobs, so past 10,240 a shard is dealt more."""
+    assert shards_mod.shards(mutants, per_shard=40) == shards
+    assert shards_mod.MOST_SHARDS == 256
+
+
+def test_round_robin_deals_no_shard_past_its_share_and_none_nothing():
+    """cargo-mutants deals mutant `i` to shard `i % k`. Below the cap no
+    shard is dealt more than 40, and none is dealt nothing but the one
+    shard of a change with nothing to mutate, so no runner sets up a build
+    to test nothing."""
+    for n in [*range(0, 2_000, 7), 40, 41, 1_345, 1_346, 1_347, 10_239, 10_240]:
+        k = shards_mod.shards(n, per_shard=40)
+        dealt = Counter(i % k for i in range(n))
+        assert sum(dealt.values()) == n, n
+        assert max(dealt.values(), default=0) <= 40, (n, k)
+        assert len(dealt) == k or n == 0, (n, k)
+
+
+def _shards_cli(listing: Path) -> subprocess.CompletedProcess[str]:
+    script = str(REPO / "scripts/mutants_shards.py")
+    cmd = [sys.executable, script, str(listing), "--per-shard", "40"]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+
+def test_the_listing_job_reads_its_outputs_from_the_script(tmp_path):
+    """The lines the listing job appends to `$GITHUB_OUTPUT`: the count of
+    mutants, the shard count, and the shards' indices as the JSON list the
+    matrix takes. A blank line in the listing is not a mutant."""
+    listing = tmp_path / "listed.txt"
+    names = "".join(f"crates/x.rs:{i}:9: replace + with - in f\n" for i in range(41))
+    listing.write_text(names + "\n", encoding="utf-8")
+    done = _shards_cli(listing)
+    assert done.stdout == "mutants=41\nshards=2\nmatrix=[0,1]\n"
+    assert done.stderr == "mutants: 41, shards: 2, the most a shard is dealt: 21\n"
+    listing.write_text("", encoding="utf-8")
+    assert _shards_cli(listing).stdout == "mutants=0\nshards=1\nmatrix=[0]\n"

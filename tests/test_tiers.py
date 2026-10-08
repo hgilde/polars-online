@@ -326,20 +326,21 @@ def test_every_workflow_runs_the_full_tier_and_none_the_essentials():
 
 def test_mutation_testing_runs_the_extended_rust_tests_too():
     """cargo-mutants runs ``cargo test``, which skips an ignored test: a
-    mutant only an extended test catches would count as a survivor."""
-    runs = [
-        str(step.get("run", ""))
-        for _, step in _steps("mutants.yml")
-        if "cargo mutants" in str(step.get("run", ""))
-    ]
-    assert runs
-    for run in runs:
-        calls = [
-            line
-            for line in run.replace("\\\n", " ").splitlines()
-            if "cargo mutants" in line and "--list" not in line
-        ]
-        assert calls, run
+    mutant only an extended test catches would count as a survivor. A
+    listing (``--list``) runs no test: the job that sizes the changed lines'
+    pass only lists (task 219), and every job that tests mutants passes it."""
+    testing: set[str] = set()
+    listing: set[str] = set()
+    for job, step in _steps("mutants.yml"):
+        run = str(step.get("run", ""))
+        lines = [ln for ln in run.replace("\\\n", " ").splitlines() if "cargo mutants" in ln]
+        calls = [line for line in lines if "--list" not in line]
         assert all(line.rstrip().endswith("-- -- --include-ignored") for line in calls), calls
+        if calls:
+            testing.add(job)
+        elif lines:
+            listing.add(job)
+    assert testing == {"changed", "weekly"}, testing
+    assert listing == {"changed-list"}, listing
     script = (REPO / "scripts" / "mutants.sh").read_text(encoding="utf-8")
     assert 'cargo mutants "${args[@]}" -- -- --include-ignored' in script

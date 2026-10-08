@@ -622,7 +622,7 @@ own schedule:
 | each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`'s essentials, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint and type checks, Sphinx, and every output against the newest release's, as a report; the Python coverage, as a report |
-| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in ten shards with one report, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
+| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every forty mutants the change lists, with one report, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
 | weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check on Linux and macOS, its control included; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares |
@@ -1529,13 +1529,25 @@ and validation-branch comparisons, which are low value. T-D5 re-ran the full
 pass.
 
 **In CI since 2026-09-24** (`.github/workflows/mutants.yml`). Every push to
-`main` and pull request runs cargo-mutants over the lines it changed, in
-ten shards since 2026-10-07: one job tested 75 to 85 mutants in its time,
-and three of five pushes listed hundreds (review 2026-10-06, CI1). It
+`main` and pull request runs cargo-mutants over the lines it changed. It
 fails on a survivor that `scripts/mutants_equivalent.toml` does not list:
-new code should come with a test that would notice it breaking. The whole of
-`online-core`, 11,138 mutants on 2026-10-03, runs weekly in ninety-six
-shards, sixteen at a time. The weekly pass runs on its schedule only while
+new code should come with a test that would notice it breaking.
+
+**The changed lines' pass tests every mutant it lists, however large the
+push** (task 219). The repository is public, so GitHub's runners cost it
+nothing (the user, 2026-10-08: "We don't pay for minutes being open
+source"). A first job lists the change's mutants, which builds nothing.
+`scripts/mutants_shards.py` then takes a shard for every forty, at least
+one and at most 256, GitHub's limit on a matrix. Ten fixed shards, from
+2026-10-07, could not hold a large push. The push of `103d721` listed 1,346
+mutants. Each shard stopped at its 100 minutes having tested 51 to 99 of
+its 135, and 698 went untested. At that run's slowest rate, 114 s a
+mutant, forty take 79 of the 100 minutes. The account runs 20 jobs at a
+time, CI's among them, so a pass of more shards runs in waves. That push's
+34 would take two, about two and a half hours.
+
+The whole of `online-core`, 11,138 mutants on 2026-10-03, runs weekly in
+ninety-six shards, sixteen at a time. The weekly pass runs on its schedule only while
 the repository is public, and by hand. Its survivors are reported through
 `scripts/mutants_report.py` and never gate.
 
