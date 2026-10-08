@@ -411,10 +411,15 @@ class TestFeatureScaling:
 
     def test_matches_a_numpy_replica(self):
         """The model against a numpy LMS that standardizes each row against
-        Welford moments updated with the row first: one `z` for the prediction
-        and the gradient, `beta -= lr * (z . beta - y) * z`. Agreement to
-        1e-12 relative on every prediction of a few groups, the way sklearn's
-        recipe reads (`scaler.partial_fit(x)`, then `transform(x)`)."""
+        Welford moments updated with the row first, the way sklearn's recipe
+        reads (`scaler.partial_fit(x)`, then `transform(x)`). While the scaler
+        warms up, its first 22 rows (docs/PLAN.md task 206), one `z` serves
+        the prediction and the gradient, `beta -= lr * (z . beta - y) * z`; on
+        the 22nd row `beta` is read out with the moments as they stand, `b_i =
+        beta_i / s_i` and `b_0 = beta_0 - sum_i b_i m_i`, and from then on the
+        prediction is `[1, x] . b` and the step in `z` is mapped back by the
+        row's means and scales. Agreement to 1e-12 relative on every
+        prediction of a few groups."""
         n_groups, rows_per, k = 3, 200, 5
         lr, min_weight = 0.03, 10
         x, y, df = self._groups(n_groups, rows_per, k, seed=1)
@@ -442,10 +447,18 @@ class TestFeatureScaling:
                 var = m2 / n
                 scale = np.where(var > 0.0, np.sqrt(var), 1.0)
                 z = np.concatenate(([1.0], (xi - mean) / scale))
-                p = z @ beta
+                held = n > 22
+                p = beta[0] + xi @ beta[1:] if held else z @ beta
                 if n - 1 >= min_weight:
                     want[i] = p
-                beta = beta - lr * np.clip((p - y[i]) * z, -1e3, 1e3)
+                step = -lr * np.clip((p - y[i]) * z, -1e3, 1e3)
+                if held:
+                    step[1:] /= scale
+                    step[0] -= mean @ step[1:]
+                beta = beta + step
+                if n == 22:
+                    beta[1:] = beta[1:] / scale
+                    beta[0] -= beta[1:] @ mean
         ok = np.isfinite(want)
         assert np.array_equal(ok, np.isfinite(pred))
         np.testing.assert_allclose(pred[ok], want[ok], rtol=1e-12, atol=1e-12)

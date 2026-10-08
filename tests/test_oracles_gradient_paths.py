@@ -320,6 +320,117 @@ class TestSgd:
         assert ref["clipped"] > 1000, f"the clip bound {ref['clipped']} times"
 
 
+def _scaled(df: pl.DataFrame) -> pl.DataFrame:
+    """The stream with its features at levels and in units of their own, so
+    that the scaler's map has something to map."""
+    return df.with_columns(pl.col("x0") * 100.0 + 50.0, pl.col("x1") * 0.01, pl.col("x2") - 3.0)
+
+
+class TestStandardized:
+    """``sgd`` and ``pa`` under ``standardize``, their default, held to the
+    references' standardized paths, written from the builders' docstrings
+    with the scaler's moments by their definition (docs/PLAN.md task 206):
+    while Kish's count of the weights the scaler has learned is below 22 the
+    coefficients are in its coordinates and read out through the moments as
+    they stand; on the row it reaches 22 they are read out once and held in
+    the caller's units, each later step taken on the row standardized with
+    itself admitted and mapped back by the row's own means and scales. The
+    weights here end the warm-up on row 24 or 25 of 400; every row after it
+    is the held fit's. A box and a sum are projected in the standardized
+    coordinates before the switch and in their metric after it."""
+
+    @pytest.mark.parametrize(("schedule", "rate"), SCHEDULES, ids=[s for s, _ in SCHEDULES])
+    @pytest.mark.parametrize("loss", ["squared", "huber"])
+    @pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "no-intercept"])
+    def test_sgd(self, schedule, rate, loss, fit_intercept):
+        df = _scaled(_stream(5))
+        x, y, dc, w = _inputs(df)
+        kw = {"loss": loss, "schedule": schedule, "half_life": 50.0, "min_weight": 5.0, "l2": 0.01}
+        kw |= rate
+        spec = po.spec.sgd(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=True,
+            fit_intercept=fit_intercept,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = sgd_ref(
+            x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
+        )
+        _held(out, ref, y)
+
+    @pytest.mark.parametrize("mode", ["pa", "pa1", "pa2"])
+    @pytest.mark.parametrize("fit_intercept", [True, False], ids=["intercept", "no-intercept"])
+    def test_pa(self, mode, fit_intercept):
+        df = _scaled(_stream(6))
+        x, y, dc, w = _inputs(df)
+        kw = {"mode": mode, "c": 0.3, "eps": 0.05, "half_life": 50.0, "min_weight": 5.0}
+        spec = po.spec.pa(
+            "m",
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=True,
+            fit_intercept=fit_intercept,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        ref = pa_ref(
+            x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, fit_intercept=fit_intercept, **kw
+        )
+        _held(out, ref, y)
+
+    @pytest.mark.parametrize(
+        ("kind", "bounds"),
+        [
+            ("sgd", {"coef_min": 0.0, "coef_sum": 1.0}),
+            ("pa", {"coef_min": -0.5, "coef_max": 0.5}),
+            ("pa", {"coef_min": -2.0, "coef_max": 2.0, "coef_sum": 0.5}),
+        ],
+        ids=["sgd-simplex", "pa-box", "pa-box-and-sum"],
+    )
+    def test_a_constraint(self, kind, bounds):
+        df = _scaled(_stream(7))
+        x, y, dc, w = _inputs(df)
+        kw = {"half_life": 50.0, "min_weight": 5.0}
+        common = dict(
+            targets=TARGETS,
+            features=FEATURES,
+            clock="t",
+            gap_cap=MAX_DCLOCK,
+            weight="w",
+            coef_every=0,
+            standardize=True,
+        )
+        if kind == "sgd":
+            spec = po.spec.sgd("m", learning_rate=0.02, **common, **kw, **bounds)
+            ref = sgd_ref(
+                x,
+                y,
+                dc,
+                w,
+                gap_cap=MAX_DCLOCK,
+                learning_rate=0.02,
+                standardize=True,
+                **kw,
+                **bounds,
+            )
+        else:
+            spec = po.spec.pa("m", **common, **kw, **bounds)
+            ref = pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, standardize=True, **kw, **bounds)
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        _held(out, ref, y)
+
+
 class TestHolt:
     @pytest.mark.parametrize(
         ("kw", "dup"),

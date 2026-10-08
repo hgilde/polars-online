@@ -111,7 +111,8 @@ def test_wide_tube_is_passive():
     202)."""
     df = _linear(n=500)
     # Raw features, so a coefficient moves only where the fit does: under
-    # `standardize` it is read through the scaler as it stands.
+    # `standardize` it is read through the scaler as it stands while the
+    # scaler warms up, over the first 22 rows (docs/PLAN.md task 206).
     c, out = _fit(df, eps=1e6, standardize=False)
     coef = out["m"].struct.field("coef").to_list()
     assert coef[1] == list(c), "nothing should move inside a huge tube"

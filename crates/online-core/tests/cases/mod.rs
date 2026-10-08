@@ -372,6 +372,21 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
     }
 }
 
+fn pa_cfg() -> PaCfg {
+    PaCfg {
+        n_features: K,
+        n_targets: 2,
+        fit_intercept: true,
+        decay: decay(),
+        mode: PaMode::Pa1,
+        c: 1.0,
+        eps: 0.1,
+        min_weight: 3.0,
+        constraint: None,
+        standardize: true,
+    }
+}
+
 fn bocpd_cfg() -> BocpdCfg {
     BocpdCfg {
         n_features: K,
@@ -535,6 +550,16 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // Inside the standardizer's warm-up, as `sgd_warming`.
+        case!(
+            "kalman_warming",
+            "Kalman",
+            Kalman,
+            Kalman::new(kalman_cfg()).unwrap(),
+            K,
+            Targets::Linear(2),
+            20
+        ),
         case!(
             "huber",
             "Robust",
@@ -614,6 +639,19 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // Saved inside the scaler's warm-up (schema 47, docs/PLAN.md task
+        // 206): after 20 rows Kish's count of the weights is 14.8, and the
+        // continuation crosses the switch at 22. The 40-row cases are past
+        // it (29.1).
+        case!(
+            "sgd_warming",
+            "Sgd",
+            Sgd,
+            Sgd::new(sgd_cfg(SgdLoss::Squared, 2)).unwrap(),
+            K,
+            Targets::Linear(2),
+            20
+        ),
         // The per-loss state: the residual scale `sig2`/`wsig` under the
         // Huber loss (schema 40), the target's own spread under the
         // epsilon-insensitive one (44), and the logistic link.
@@ -648,22 +686,20 @@ pub fn all() -> Vec<Case> {
             "pa",
             "Pa",
             Pa,
-            Pa::new(PaCfg {
-                n_features: K,
-                n_targets: 2,
-                fit_intercept: true,
-                decay: decay(),
-                mode: PaMode::Pa1,
-                c: 1.0,
-                eps: 0.1,
-                min_weight: 3.0,
-                constraint: None,
-                standardize: true,
-            })
-            .unwrap(),
+            Pa::new(pa_cfg()).unwrap(),
             K,
             Targets::Linear(2),
             40
+        ),
+        // Inside the scaler's warm-up, as `sgd_warming`.
+        case!(
+            "pa_warming",
+            "Pa",
+            Pa,
+            Pa::new(pa_cfg()).unwrap(),
+            K,
+            Targets::Linear(2),
+            20
         ),
         case!(
             "holt",

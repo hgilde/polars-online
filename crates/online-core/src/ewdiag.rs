@@ -108,6 +108,15 @@ impl EwDiag {
         &self.m
     }
 
+    /// Mean `i` as the pair it is kept as, `(hi, lo)`: the mean is `hi +
+    /// lo` ([`crate::comp`]). `kalman` reads how far a mean moved from two
+    /// of them, `(hi' − hi) + (lo' − lo)`, which `hi' − hi` alone would
+    /// round at a level (docs/PLAN.md task 206).
+    #[inline]
+    pub fn mean_pair(&self, i: usize) -> (f64, f64) {
+        (self.m[i], self.m_lo[i])
+    }
+
     /// `x`'s deviation from mean `i`, the pair's ([`crate::comp::dev`]).
     #[inline]
     pub fn deviation(&self, i: usize, x: f64) -> f64 {

@@ -38,11 +38,42 @@
 //! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
 //! **`standardize`** reads `z` as the features standardized against their
-//! EW moments with the row admitted, `sgd`'s scaler and its rule
-//! ([`crate::SgdCfg::standardize`]), so `s` and `C` stop being in the
-//! features' units; the coefficients are read out in the caller's units
-//! through the moments as they stand. A box or a sum is projected in the
-//! standardized coordinates, the bounds scaled as `sgd` scales them.
+//! EW moments with the row admitted, `sgd`'s scaler, its rule and its
+//! warm-up ([`crate::Sgd`], [`crate::SgdCfg::standardize`],
+//! [`crate::Warmup`]; docs/PLAN.md task 206), so `s` and `C` stop being in
+//! the features' units: `z = M x̃`, `x̃ = [1, x]`, `z_0 = 1` and `z_i = (x_i −
+//! m_i) / s_i` (`z_i = x_i / s_i`, the root of the raw second moment,
+//! without an intercept).
+//!
+//! - **While the scaler warms up**, until Kish's count of the rows it has
+//!   learned reaches 22, `b` is in the coordinates of the moments, `p =
+//!   z·b`, the step is the one above, and the coefficients are read out in
+//!   the caller's units through the moments as they stand; a box or a sum is
+//!   projected in the standardized coordinates, the bounds scaled as `sgd`
+//!   scales them.
+//! - **On the row the count reaches 22** the coefficients are read out so
+//!   once and held in the caller's units; **after it** `p = x̃·b`, and the
+//!   step is mapped by the row's map:
+//!
+//! ```text
+//! Δβ   = min(w, 1) · tau · sign(y − p) · z      the step in the row's coordinates
+//! Δb   = Mᵀ Δβ:   Δb_i = Δβ_i / s_i,   Δb_0 = Δβ_0 − Σ_i m_i Δb_i
+//! ```
+//!
+//! The projection survives the map: `x̃ᵀΔb = (M x̃)ᵀΔβ = zᵀΔβ = min(w, 1)·
+//! tau·sign·||z||²`, so an uncapped step at weight 1 still puts the row on
+//! its tube's edge, `|y − x̃ᵀ(b + Δb)| = eps·σ_y`, and one at weight `w < 1`
+//! goes that fraction of the way, where read through the scaler after it
+//! learned the row at its weight the fraction was not `w` (review
+//! 2026-09-12, D5). A prediction reads no moment, so it never moves because
+//! the scaler did; read through the moments as they stood it moved with
+//! their wander under a finite half-life, 31.8 noise variances of
+//! out-of-sample error at R² 0.99998 and a half-life of 50 where the
+//! unstandardized fit paid 0.18 (review round 5, G1). A box or a sum bounds
+//! the coefficients in the caller's units and is projected in the metric of
+//! the row's standardized coordinates after each step, as `sgd`'s is
+//! ([`crate::SgdCfg::constraint`]). A step whose `Δb` is not finite
+//! teaches nothing.
 //!
 //! **Weight note.** A row weight below 1 scales the step; a weight above 1
 //! counts as 1. The update is a projection onto the row's constraint, and
@@ -69,10 +100,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::sgd::{scales_of, standardized, unscaled};
+use crate::sgd::{scales_of, standardize_row, standardized, unscaled};
 use crate::solve::dot_aug;
 use crate::spread::TargetSpread;
-use crate::{Constraint, Decay, EwDiag};
+use crate::{Constraint, Decay, EwDiag, Warmup};
 
 /// Which passive-aggressive variant (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -109,11 +140,16 @@ pub struct PaCfg {
     /// free. The initial `0` is projected too. A projected step no longer
     /// satisfies the row's margin exactly -- it is the closest feasible
     /// coefficient to the one that would. Under `standardize` the
-    /// projection is taken in the standardized coordinates, as `sgd`'s is.
+    /// projection is taken in the standardized coordinates, as `sgd`'s is:
+    /// while the scaler warms up on the coefficients held there, and after
+    /// it on the coefficients in the caller's units, in the metric of the
+    /// row's coordinates (the module docs).
     #[serde(default)]
     pub constraint: Option<Constraint>,
     /// Standardize the features against their EW moments, `sgd`'s scaler
-    /// (the module docs; docs/PLAN.md task 195, U2).
+    /// and its warm-up, past which the coefficients are held in the
+    /// caller's units (the module docs; docs/PLAN.md tasks 195, U2, and
+    /// 206).
     #[serde(default)]
     pub standardize: bool,
 }
@@ -148,6 +184,13 @@ pub struct Pa {
     cfg: PaCfg,
     /// Running feature means and variances, under `standardize`.
     scaler: Option<EwDiag>,
+    /// The scaler's warm-up count, and whether it has switched the fit to
+    /// the caller's units (the module docs; schema 47). Untouched without a
+    /// scaler.
+    warmup: Warmup,
+    /// Coefficients per target: in the standardized coordinates of the
+    /// moments as they stand while a scaler warms up, in the caller's
+    /// units without one or after it (docs/PLAN.md task 206).
     beta: Vec<Vec<f64>>,
     w_sum: f64,
     /// Per target, the weight of the rows that carried it, decayed: what its
@@ -162,6 +205,16 @@ pub struct Pa {
     /// standardized under a scaler.
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// Once the fit is held in the caller's units, the rest of the row's
+    /// map: the mean `m_i` and scale `s_i` each feature is standardized by.
+    #[serde(skip)]
+    mbuf: Vec<f64>,
+    #[serde(skip)]
+    sbuf: Vec<f64>,
+    /// The step in the caller's units, `Δb`, formed whole before any
+    /// coefficient moves; the slopes before a projection after it.
+    #[serde(skip)]
+    dbuf: Vec<f64>,
     /// The raw row `[1, x]` the scaler is updated with.
     #[serde(skip)]
     rawbuf: Vec<f64>,
@@ -193,11 +246,15 @@ impl Pa {
         }
         Ok(Self {
             scaler: cfg.standardize.then(|| EwDiag::new(k)),
+            warmup: Warmup::default(),
             beta,
             w_sum: 0.0,
             w_target: vec![0.0; m],
             spread: TargetSpread::new(m),
             zbuf: vec![0.0; k],
+            mbuf: vec![0.0; k],
+            sbuf: vec![1.0; k],
+            dbuf: vec![0.0; k],
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
@@ -209,14 +266,21 @@ impl Pa {
         &self.cfg
     }
 
-    /// Coefficients in the caller's units: under `standardize` the slopes
-    /// over each feature's scale as it stands, the intercept absorbing the
-    /// means, as `sgd`'s are read out.
+    /// Coefficients in the caller's units: while a scaler warms up, the
+    /// slopes over each feature's scale as it stands, the intercept
+    /// absorbing the means, as `sgd`'s are read out; without one, or once
+    /// it has, the state itself (the module docs).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         match &self.scaler {
-            None => self.beta.clone(),
-            Some(sc) => unscaled(&self.beta, sc, self.cfg.fit_intercept),
+            Some(sc) if !self.warmup.switched() => unscaled(&self.beta, sc, self.cfg.fit_intercept),
+            _ => self.beta.clone(),
         }
+    }
+
+    /// The scaler's warm-up ([`crate::Warmup`]): how many rows it has
+    /// learned, and whether the fit is held in the caller's units.
+    pub fn warmup(&self) -> &Warmup {
+        &self.warmup
     }
 
     pub fn n_eff(&self) -> f64 {
@@ -247,8 +311,78 @@ impl Pa {
         if self.zbuf.len() != k {
             self.zbuf = vec![0.0; k];
         }
+        if self.mbuf.len() != k {
+            self.mbuf = vec![0.0; k];
+            self.sbuf = vec![1.0; k];
+            self.dbuf = vec![0.0; k];
+        }
         if self.rawbuf.len() != k {
             self.rawbuf = vec![0.0; k];
+        }
+    }
+
+    /// Target `j`'s step once the fit is held in the caller's units (the
+    /// module docs): `Δβ = step · z` in the row's standardized coordinates,
+    /// mapped by the row's map, `Δb_i = Δβ_i / s_i` and `Δb_0 = Δβ_0 −
+    /// Σ_i m_i Δb_i`. Formed whole before anything moves; a step that would
+    /// make a coefficient infinite -- `Δβ_i / s_i` for a feature of all but
+    /// no spread -- teaches nothing, and `false` says so.
+    fn step_mapped(&mut self, j: usize, off: usize, step: f64) -> bool {
+        let Self {
+            beta,
+            zbuf,
+            mbuf,
+            sbuf,
+            dbuf,
+            ..
+        } = self;
+        let b = &mut beta[j];
+        let mut shift = 0.0;
+        for i in off..b.len() {
+            let db = step * zbuf[i] / sbuf[i];
+            if !(b[i] + db).is_finite() {
+                return false;
+            }
+            dbuf[i] = db;
+            shift += mbuf[i] * db;
+        }
+        if off == 1 {
+            let db = step - shift;
+            if !(b[0] + db).is_finite() {
+                return false;
+            }
+            dbuf[0] = db;
+        }
+        for (bi, di) in b.iter_mut().zip(dbuf.iter()) {
+            *bi += di;
+        }
+        true
+    }
+
+    /// Project target `j`'s slopes, held in the caller's units, on the
+    /// constraint ([`PaCfg::constraint`]): in the metric of the row's
+    /// standardized coordinates, the intercept keeping its standardized
+    /// value `b_0 + Σ m_i b_i`, as `sgd`'s does.
+    fn project_mapped(&mut self, j: usize, off: usize) {
+        let Self {
+            cfg,
+            beta,
+            pbuf,
+            mbuf,
+            sbuf,
+            dbuf,
+            ..
+        } = self;
+        let c = cfg.constraint.as_ref().expect("a constraint to project on");
+        let b = &mut beta[j];
+        dbuf[off..].copy_from_slice(&b[off..]);
+        c.project_in_units(&mut b[off..], &sbuf[off..], pbuf);
+        if off == 1 {
+            let mut shift = 0.0;
+            for i in 1..b.len() {
+                shift += mbuf[i] * (dbuf[i] - b[i]);
+            }
+            b[0] += shift;
         }
     }
 }
@@ -277,12 +411,27 @@ impl OnlineModel for Pa {
         // The row the model sees: `[1, x]`, or `[1, z]` standardized
         // against the moments with the row admitted, `sgd`'s rule; the raw
         // row updates the scaler afterwards, at the row's weight.
+        //
+        // Once the scaler has warmed up ([`crate::Warmup`]) the fit is held
+        // in the caller's units: the prediction reads `x`, and the row's map
+        // -- each feature's mean and scale beside `z` -- maps the step into
+        // the caller's units (the module docs, docs/PLAN.md task 206).
+        let held = self.warmup.switched();
         if off == 1 {
             self.zbuf[0] = 1.0;
             self.rawbuf[0] = 1.0;
         }
         self.rawbuf[off..].copy_from_slice(x);
         match &self.scaler {
+            Some(sc) if held => standardize_row(
+                sc,
+                off,
+                x,
+                lam,
+                &mut self.zbuf[off..],
+                &mut self.mbuf[off..],
+                &mut self.sbuf[off..],
+            ),
             Some(sc) => {
                 for (z, v) in self.zbuf[off..]
                     .iter_mut()
@@ -305,12 +454,16 @@ impl OnlineModel for Pa {
             self.learned.resize(m, false);
         }
         for j in 0..m {
-            let p: f64 = self
-                .zbuf
-                .iter()
-                .zip(&self.beta[j])
-                .map(|(z, b)| z * b)
-                .sum();
+            let p: f64 = if held {
+                // `x̃ᵀb`, in the caller's units: no moment is read.
+                dot_aug(&self.beta[j], x, self.cfg.fit_intercept)
+            } else {
+                self.zbuf
+                    .iter()
+                    .zip(&self.beta[j])
+                    .map(|(z, b)| z * b)
+                    .sum()
+            };
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
@@ -348,6 +501,14 @@ impl OnlineModel for Pa {
                     PaMode::Pa2 => loss / (sq_norm + 0.5 / self.cfg.c),
                 };
             let step = tau * err.signum();
+            if held {
+                // Mapped into the caller's units by the row's map, and
+                // projected there.
+                if self.step_mapped(j, off, step) && self.cfg.constraint.is_some() {
+                    self.project_mapped(j, off);
+                }
+                continue;
+            }
             for (b, z) in self.beta[j].iter_mut().zip(&self.zbuf) {
                 *b += step * z;
             }
@@ -363,8 +524,10 @@ impl OnlineModel for Pa {
         // the scales, so every target is re-projected when the scales
         // changed (a positive weight), otherwise only the ones this row
         // stepped. Without a scaler that is each stepped target, where its
-        // step left it.
-        if let Some(c) = &self.cfg.constraint {
+        // step left it. Once the fit is held in the caller's units each
+        // target was projected after its own step, and the scales move none
+        // of it.
+        if let Some(c) = self.cfg.constraint.as_ref().filter(|_| !held) {
             let scales = self.scaler.as_ref().map(|sc| scales_of(sc, off));
             let rescaled = self.scaler.is_some() && weight > 0.0;
             for (j, b) in self.beta.iter_mut().enumerate() {
@@ -376,6 +539,16 @@ impl OnlineModel for Pa {
                     );
                 }
             }
+        }
+        // The warm-up: the scaler has learned the row. On the row that
+        // completes it the coefficients are read out once, with the moments
+        // as they stand -- the numbers `coefficients()` gave until now --
+        // and held in the caller's units from then on.
+        if !held
+            && let Some(sc) = &self.scaler
+            && self.warmup.learn(weight)
+        {
+            self.beta = unscaled(&self.beta, sc, self.cfg.fit_intercept);
         }
         self.w_sum = lam * self.w_sum + weight;
         crate::model::age_target_weights(
@@ -407,7 +580,11 @@ impl OnlineModel for Pa {
             }
         };
         match &self.scaler {
+            // Without a scaler, or once the fit is held in the caller's
+            // units: `x̃ᵀb`, which reads no moment, so it is the next step's
+            // number whatever the clock.
             None => predict_with(x, &mut pred),
+            Some(_) if self.warmup.switched() => predict_with(x, &mut pred),
             // The row the step would see, standardized against the moments
             // with it admitted after the step's decay, so `predict` gives
             // the step's number exactly, as `sgd`'s does.
@@ -462,6 +639,13 @@ impl OnlineModel for Pa {
                 {
                     return Err(StateError::Invalid(
                         "pa: the state's scaler does not match its cfg's standardize".into(),
+                    ));
+                }
+                // A warm-up is a scaler's: without one it counts nothing
+                // (docs/PLAN.md task 206).
+                if m.scaler.is_none() && m.warmup != Warmup::default() {
+                    return Err(StateError::Invalid(
+                        "pa: the state's warm-up does not match its cfg's standardize".into(),
                     ));
                 }
                 m.ensure_buffers();
@@ -1378,5 +1562,101 @@ mod tests {
             assert_eq!(m.tube(0), c.eps * got.sqrt(), "row {i}");
         }
         assert!(seen.len() > 150, "{} rows taught it", seen.len());
+    }
+
+    /// Past the warm-up the step is still the projection onto the row's
+    /// band, in the caller's units (the module docs; docs/PLAN.md task 206):
+    /// `Δb = Mᵀ Δβ` with `M` the row's map, so `x̃ᵀ Δb = zᵀ Δβ = τ·sign·||z||²`,
+    /// and an uncapped step (`Pa`) leaves the row on its band's edge, `|y −
+    /// x̃ᵀ b'| = eps·σ_y`; one at weight `w < 1` goes that fraction of the way.
+    /// Read through the coefficients the model reports, at weights 1 and 0.5,
+    /// with an intercept and without, under a decay, on every row past the
+    /// switch that misses by a thousandth or more. Before task 206 the
+    /// coefficients were read through the scaler after it learned the row
+    /// at the row's weight, while the step was taken with the row admitted
+    /// at unit weight, so at 0.5 the two differed (review 2026-09-12, D5):
+    /// on that build the step closed 0.084 of the miss at row 31, not 0.5.
+    #[test]
+    fn past_the_warm_up_an_uncapped_step_puts_the_row_on_its_bands_edge() {
+        for fit_intercept in [true, false] {
+            for w in [1.0, 0.5] {
+                let mut c = cfg(2, PaMode::Pa);
+                c.standardize = true;
+                c.fit_intercept = fit_intercept;
+                c.decay = Decay::Lam(0.95);
+                c.eps = 0.1;
+                c.min_weight = 0.0;
+                let mut m = Pa::new(c.clone()).unwrap();
+                let mut s = 47u64;
+                let mut checked = 0;
+                for i in 0..300 {
+                    let x = [3.0 + lcg(&mut s), 0.01 * lcg(&mut s)];
+                    let y = 0.5 + 2.0 * x[0] - 40.0 * x[1] + 0.3 * lcg(&mut s);
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let tube = m.tube(0);
+                    let held = i > 30;
+                    if held {
+                        assert!(m.warmup().switched(), "row {i}");
+                    }
+                    let p = m.step(&x, &[Some(y)], d, w).pred[0];
+                    let miss = (y - p).abs() - tube;
+                    if !held || miss <= 1e-3 {
+                        continue;
+                    }
+                    let b = &m.coefficients()[0];
+                    let after = if fit_intercept {
+                        b[0] + b[1] * x[0] + b[2] * x[1]
+                    } else {
+                        b[0] * x[0] + b[1] * x[1]
+                    };
+                    // The fraction of the miss the step closed.
+                    let closed = (p - after).abs() / miss;
+                    assert!(
+                        (closed - w).abs() <= 1e-9,
+                        "intercept {fit_intercept}, w {w}, row {i}: closed {closed}"
+                    );
+                    assert_eq!((after - p).signum(), (y - p).signum());
+                    checked += 1;
+                }
+                assert!(checked > 100, "{checked} rows stepped");
+            }
+        }
+    }
+
+    /// The warm-up ends on the row after whose scaler update Kish's count of
+    /// the weights first reaches 22 (`crate::Warmup`); rows of weight 0
+    /// count nothing, and uneven weights count for fewer rows. Without a
+    /// scaler there is no warm-up. (`tests/standardized_fit.rs` holds the
+    /// rows up to the switch to the build before it, to the bit.)
+    #[test]
+    fn the_warm_up_ends_on_the_row_that_completes_kishs_count() {
+        let mut c = cfg(2, PaMode::Pa1);
+        c.standardize = true;
+        c.decay = Decay::Lam(0.9);
+        let mut m = Pa::new(c.clone()).unwrap();
+        let mut s = 3u64;
+        let (mut w1, mut w2) = (0.0f64, 0.0f64);
+        let mut switch = None;
+        for i in 0..60 {
+            let x = [lcg(&mut s), 2.0 + lcg(&mut s)];
+            let w = [1.0, 2.5, 0.0, 0.5][i % 4];
+            if switch.is_none() {
+                w1 += w;
+                w2 += w * w;
+            }
+            m.step(&x, &[Some(x[0] - x[1])], 1.0, w);
+            let now = w2 > 0.0 && w1 * w1 / w2 >= crate::WARMUP_ROWS;
+            assert_eq!(m.warmup().switched(), now, "row {i}");
+            if now && switch.is_none() {
+                switch = Some(i);
+            }
+        }
+        // Four rows bring Σw = 4 and Σw² = 7.5, 2.13 rows of Kish's count:
+        // 21.3 after row 39, and 41² / 76 = 22.1 after row 40.
+        assert_eq!(switch, Some(40), "{:?}", m.warmup());
+        c.standardize = false;
+        let mut raw = Pa::new(c).unwrap();
+        raw.step(&[1.0, 2.0], &[Some(1.0)], 0.0, 1.0);
+        assert_eq!(raw.warmup(), &Warmup::default());
     }
 }

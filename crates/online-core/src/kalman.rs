@@ -53,6 +53,52 @@
 //! across features; `R_j` defaults to the EW residual variance `sigma^2_j`
 //! unless `obs_var` is given.
 //!
+//! **The standardizer's warm-up, and the map after it (docs/PLAN.md task
+//! 206).** `z` is the row standardized against the moments *before* it, `z_0
+//! = 1` and `z_i = (x_i − m_i) / s_i` (`x_i / s_i`, the root of the raw second
+//! moment, without an intercept; review 2026-09-12, C10), and `b` and `P`
+//! are in those coordinates. Until Kish's count of the rows the moments
+//! have learned, undecayed, reaches 22 ([`crate::Warmup`]), they are read in
+//! the coordinates of the moments as they stand, whatever the moments did
+//! since the row that moved them: a coefficient "per unit of `x`" moves with
+//! the moments as well as with the fit, and over the first rows that lets a
+//! fit made against a scale a few rows old be read again at the next. On
+//! every row after the one the count reaches 22, the moments learn the row
+//! and `b` and `P` follow them to their new coordinates. With `m`, `s` the
+//! means and scales the row was read at and `m'`, `s'` after it learned the
+//! row, `z = Aᵀ z'` for every row `x`, with
+//!
+//! ```text
+//! A_00 = 1,    A_0i = (m'_i − m_i) / s_i   (0 without an intercept),    A_ii = s'_i / s_i
+//! b_j <- A b_j        P_j <- A P_j Aᵀ
+//! ```
+//!
+//! so `z'ᵀ(A b) = zᵀb` and `z'ᵀ(A P Aᵀ) z' = zᵀ P z`: no prediction and no
+//! predictive variance moves because the moments did, to rounding, and the
+//! coefficients in the caller's units move only with the fit. The
+//! reversion, the process noise and the prior stay defined in the current
+//! standardized coordinates, so a half-life and `p0` mean the same thing
+//! whatever a column's units. Read through the moments as they stood, the
+//! moments' own wander under a finite half-life moved every prediction with
+//! no row corrected -- the EW mean of a unit-variance feature has standard
+//! deviation `sqrt((1 − λ) / (1 + λ))`, 0.083 at a half-life of 50 -- 223
+//! noise variances of out-of-sample error at R² 0.99998 and a half-life of
+//! 50 where the unstandardized filter paid 0.014 (review round 5, G1).
+//!
+//! A row of weight 0 moves no moment and nothing is re-mapped. A change of
+//! coordinates past what a row of data makes -- a scale moving by more than
+//! a factor of 1024 either way in one row, or a mean by more than 1024 of
+//! its scale -- is refused whole, and so is one any of whose numbers would
+//! not be finite: `b` and `P` keep their numbers and are read in the new
+//! coordinates, as before the warm-up ended, as the row's other updates
+//! that would not be finite are skipped (docs/IMPROVEMENTS.md C2). `A P
+//! Aᵀ` puts `c² P_ii` into the intercept's variance, `c = A_0i`, and every
+//! later row reads it back through a cancellation, so a shift of `c` costs
+//! `c²` rounding steps of `P`'s narrowest direction: at the input bound,
+//! where a feature of 1e100 shifts a mean by about 1e99 of its scale, the
+//! re-map left a slope's variance at −3.6e149 and the reverting filter
+//! never recovered; at 1024 the cost is 2.3e-10 of it.
+//!
 //! **The noise before the first residual (review 2026-10-05, CC4).** A
 //! target has no residual variance until a row with a prediction for it
 //! gives it a residual, and a prediction needs `min_weight` met and an
@@ -153,7 +199,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::{Decay, EwDiag};
+use crate::{Decay, EwDiag, Warmup};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KalmanCfg {
@@ -187,7 +233,9 @@ pub struct KalmanCfg {
     #[serde(default = "default_revert")]
     #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
     pub revert_half_life: Vec<f64>,
-    /// Standardize features internally before filtering (default).
+    /// Standardize features internally before filtering (default), the
+    /// filter's state following the moments once they have warmed up (the
+    /// module doc; docs/PLAN.md task 206).
     ///
     /// On by default because the half-life-derived process noise
     /// `q_i = sigma^2 (ln2/h_i)^2` is only comparable across features on a
@@ -305,7 +353,12 @@ pub struct Kalman {
     /// Standardization stats over `z` (shared across targets): the means and
     /// variances the scales are read from.
     stats: EwDiag,
-    /// Per target: coefficient mean on the standardized scale.
+    /// The standardizer's warm-up count, and whether `b` and `P` are
+    /// re-mapped through every move of the moments (the module doc; schema
+    /// 47). Untouched without `standardize`.
+    warmup: Warmup,
+    /// Per target: coefficient mean on the standardized scale of the
+    /// moments as they stand.
     beta: Vec<Vec<f64>>,
     /// Per target (or one when `share_p`): covariance, row-major `k*k`; all
     /// zero, unsized, until a row sizes the noise (the module doc, CC4).
@@ -339,6 +392,20 @@ pub struct Kalman {
     /// `share_p`'s noises, sorted to be summed in ascending order.
     #[serde(skip)]
     sumbuf: Vec<f64>,
+    /// The re-map's scratch (the module doc): each slot's mean as a pair
+    /// before the moments learn the row, the change of coordinates' scale
+    /// factors `a_i` and shifts `c_i`, and for each `P` the row `u = (A
+    /// P)_0·`, formed before anything moves.
+    #[serde(skip)]
+    mean_hi: Vec<f64>,
+    #[serde(skip)]
+    mean_lo: Vec<f64>,
+    #[serde(skip)]
+    remap_a: Vec<f64>,
+    #[serde(skip)]
+    remap_c: Vec<f64>,
+    #[serde(skip)]
+    ubuf: Vec<Vec<f64>>,
 }
 
 /// The layout `Kalman` loads, checked on the way in: every vector at the
@@ -350,6 +417,7 @@ pub struct Kalman {
 struct KalmanV3 {
     cfg: KalmanCfg,
     stats: EwDiag,
+    warmup: Warmup,
     beta: Vec<Vec<f64>>,
     p: Vec<Vec<f64>>,
     sig2: Vec<f64>,
@@ -363,6 +431,7 @@ impl TryFrom<KalmanV3> for Kalman {
     fn try_from(v: KalmanV3) -> Result<Self, String> {
         let (cfg, stats, beta, p, sig2, wsig, wj) =
             (v.cfg, v.stats, v.beta, v.p, v.sig2, v.wsig, v.wj);
+        let warmup = v.warmup;
         let k = cfg.k_total();
         let m = cfg.n_targets;
         let n_p = if cfg.share_p { 1 } else { m };
@@ -377,10 +446,16 @@ impl TryFrom<KalmanV3> for Kalman {
         {
             return Err("kalman: state has the wrong shape".into());
         }
+        // A warm-up is the standardizer's: without one there is no map to
+        // follow, and the count stays empty (docs/PLAN.md task 206).
+        if !cfg.standardize && warmup != Warmup::default() {
+            return Err("kalman: the state's warm-up does not match its cfg's standardize".into());
+        }
         // The scratch buffers are sized by `ensure_buffers` on the first use.
         Ok(Self {
             cfg,
             stats,
+            warmup,
             beta,
             p,
             sig2,
@@ -395,6 +470,11 @@ impl TryFrom<KalmanV3> for Kalman {
             sbuf: vec![],
             qbuf: vec![],
             sumbuf: vec![],
+            mean_hi: vec![],
+            mean_lo: vec![],
+            remap_a: vec![],
+            remap_c: vec![],
+            ubuf: vec![],
         })
     }
 }
@@ -415,6 +495,7 @@ impl Kalman {
         }
         Ok(Self {
             stats: EwDiag::new(k),
+            warmup: Warmup::default(),
             beta: vec![vec![0.0; k]; m],
             p: vec![p_init; n_p],
             sig2: vec![0.0; m],
@@ -429,8 +510,19 @@ impl Kalman {
             sbuf: vec![1.0; k],
             qbuf: vec![0.0; k],
             sumbuf: Vec::with_capacity(m),
+            mean_hi: vec![],
+            mean_lo: vec![],
+            remap_a: vec![],
+            remap_c: vec![],
+            ubuf: vec![],
             cfg,
         })
+    }
+
+    /// The standardizer's warm-up ([`crate::Warmup`]): how many rows it has
+    /// learned, and whether `b` and `P` follow every move of the moments.
+    pub fn warmup(&self) -> &Warmup {
+        &self.warmup
     }
 
     pub fn cfg(&self) -> &KalmanCfg {
@@ -539,13 +631,15 @@ impl Kalman {
     /// Coefficients in the ORIGINAL feature units, per target.
     ///
     /// Under `standardize` the filter's state lives in standardized
-    /// coordinates, and each row's correction was made in the coordinates of
-    /// the feature means and scales as they stood on that row. They are read
-    /// out here with today's means and scales, so they are the coefficients
-    /// `pred` uses -- the two read the same state the same way -- but a
-    /// coefficient "per unit of `x`" moves with the standardizer as well as
-    /// with the fit, most in the early rows, while the scales settle
-    /// (review 2026-09-12, D3).
+    /// coordinates. They are read out here with today's means and scales,
+    /// so they are the coefficients `pred` uses -- the two read the same
+    /// state the same way. While the standardizer warms up, each row's
+    /// correction was made in the coordinates of the moments as they stood
+    /// on that row, so a coefficient "per unit of `x`" moves with the
+    /// standardizer as well as with the fit (review 2026-09-12, D3); past
+    /// the warm-up the state follows every move of the moments (the module
+    /// doc), and a coefficient moves only with the fit, to rounding
+    /// (docs/PLAN.md task 206).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         if !self.cfg.standardize {
             return self.beta.clone();
@@ -630,6 +724,146 @@ impl Kalman {
             self.phi = vec![1.0; k];
             self.sbuf = vec![1.0; k];
             self.qbuf = vec![0.0; k];
+        }
+    }
+
+    /// The re-map's scratch, sized on its first use: only a standardizing
+    /// filter past its warm-up keeps it.
+    fn ensure_remap_buffers(&mut self) {
+        let k = self.cfg.k_total();
+        if self.mean_hi.len() != k {
+            self.mean_hi = vec![0.0; k];
+            self.mean_lo = vec![0.0; k];
+            self.remap_a = vec![1.0; k];
+            self.remap_c = vec![0.0; k];
+        }
+        if self.ubuf.len() != self.p.len() {
+            self.ubuf = vec![vec![0.0; k]; self.p.len()];
+        }
+    }
+
+    /// The moments learn the row, and once the warm-up is over `b` and `P`
+    /// follow them (the module doc): with `s` the scales the row was read
+    /// at and `m` the means, as pairs, before the moments learned it, and
+    /// `s'`, `m'` after, the change of coordinates `z = Aᵀ z'` has
+    ///
+    /// ```text
+    /// a_i = s'_i / s_i,    c_i = (m'_i − m_i) / s_i   (0 without an intercept)
+    /// b'_0 = b_0 + Σ_i c_i b_i,    b'_i = a_i b_i
+    /// P' = A P Aᵀ:  u = P_0· + Σ_l c_l P_l·,   P'_00 = u_0 + Σ_j c_j u_j,
+    ///               P'_0j = P'_j0 = a_j u_j,    P'_ij = (a_i a_j) P_ij
+    /// ```
+    ///
+    /// so `z'ᵀb' = zᵀb` for every row and the prediction does not move with
+    /// the moments. Skipped where no slot moved -- a row of weight 0 moves
+    /// none -- and refused whole where a factor `a_i` is outside `[1/1024,
+    /// 1024]` or a shift `|c_i|` above 1024 ([`REMAP_LIMIT`]), or where a
+    /// number it would leave is not finite (each `b'`, `P'`'s diagonal and
+    /// `P'_00`, which bound the rest of a positive semi-definite `P'`): a
+    /// factor `s'/s` reaches about 1e100 where a feature at the input bound
+    /// follows a run at a tiny scale, and `P`'s entries go with its square.
+    /// `b` and `P` then keep their numbers, read in the new coordinates as
+    /// before the warm-up ended, as the row's other updates that would not
+    /// be finite are skipped (docs/IMPROVEMENTS.md C2). In place, every
+    /// check made before anything moves.
+    fn learn_the_row_and_follow(&mut self, lam: f64, weight: f64) {
+        self.ensure_remap_buffers();
+        let k = self.cfg.k_total();
+        let off = usize::from(self.cfg.fit_intercept);
+        for i in 0..k {
+            (self.mean_hi[i], self.mean_lo[i]) = self.stats.mean_pair(i);
+        }
+        self.stats.update(&self.zbuf, lam, weight);
+        // The scales after, into `remap_a`, then each over the scale the row
+        // was read at (`sbuf`, from before the update).
+        let mut a = std::mem::take(&mut self.remap_a);
+        self.scales_into(&mut a);
+        let mut moved = false;
+        let mut within = true;
+        for (i, ai) in a.iter_mut().enumerate().skip(off) {
+            *ai /= self.sbuf[i];
+            let c = if off == 1 {
+                let (hi, lo) = self.stats.mean_pair(i);
+                ((hi - self.mean_hi[i]) + (lo - self.mean_lo[i])) / self.sbuf[i]
+            } else {
+                0.0
+            };
+            self.remap_c[i] = c;
+            moved |= *ai != 1.0 || c != 0.0;
+            within &= *ai <= REMAP_LIMIT && *ai >= 1.0 / REMAP_LIMIT && c.abs() <= REMAP_LIMIT;
+        }
+        self.remap_a = a;
+        if !moved || !within {
+            return;
+        }
+        let (a, c) = (&self.remap_a, &self.remap_c);
+        // First the numbers the check reads, formed as the re-map forms them:
+        // each `b'`, each `P'`'s diagonal and, with an intercept, `u = (A
+        // P)_0·` and `P'_00` (kept in `u[0]`). `A P Aᵀ` is positive
+        // semi-definite as `P` is, so its other entries are bounded by its
+        // diagonal's.
+        let mut finite = true;
+        for b in &self.beta {
+            let mut b0 = b[0];
+            for i in off..k {
+                finite &= (b[i] * a[i]).is_finite();
+                b0 += c[i] * b[i];
+            }
+            finite &= off == 0 || b0.is_finite();
+        }
+        for (p, u) in self.p.iter().zip(self.ubuf.iter_mut()) {
+            for i in off..k {
+                finite &= (p[i * k + i] * (a[i] * a[i])).is_finite();
+            }
+            if off == 1 {
+                // u = row 0 of A P, the rows of P contiguous.
+                u.copy_from_slice(&p[0..k]);
+                for l in 1..k {
+                    let cl = c[l];
+                    for (uj, plj) in u.iter_mut().zip(&p[l * k..(l + 1) * k]) {
+                        *uj += cl * plj;
+                    }
+                }
+                let mut p00 = u[0];
+                for j in 1..k {
+                    p00 += c[j] * u[j];
+                }
+                u[0] = p00;
+                finite &= p00.is_finite();
+            }
+        }
+        if !finite {
+            return;
+        }
+        for b in &mut self.beta {
+            if off == 1 {
+                let mut b0 = b[0];
+                for i in 1..k {
+                    b0 += c[i] * b[i];
+                }
+                b[0] = b0;
+            }
+            for (bi, ai) in b[off..].iter_mut().zip(&a[off..]) {
+                *bi *= ai;
+            }
+        }
+        for (p, u) in self.p.iter_mut().zip(&self.ubuf) {
+            for i in off..k {
+                let ai = a[i];
+                let row = &mut p[i * k..(i + 1) * k];
+                if off == 1 {
+                    row[0] = u[i] * ai;
+                }
+                for (pij, aj) in row[off..].iter_mut().zip(&a[off..]) {
+                    *pij *= ai * aj;
+                }
+            }
+            if off == 1 {
+                for j in 1..k {
+                    p[j] = u[j] * a[j];
+                }
+                p[0] = u[0];
+            }
         }
     }
 
@@ -830,6 +1064,18 @@ impl Kalman {
         out
     }
 }
+
+/// How far one row may move the coordinates for `b` and `P` to follow
+/// (the module doc): a scale by this factor either way, a mean by this many
+/// of its old scale. `P' = A P Aᵀ` puts `c² P_ii` into the intercept's
+/// variance and reads it back through a cancellation on every later row, so
+/// a shift of `c` costs `c²` rounding steps of `P`'s narrowest direction:
+/// 2.3e-10 of it at 1024, and all of it at the input bound's 1e99, where the
+/// re-map left a slope's variance at −3.6e149 and the filter never
+/// recovered (`tests/model_contract.rs`, `kalman_recovers_from_bounded_extremes`,
+/// the reverting filter). A row of ordinary data moves a mean by a fraction
+/// of a scale: past this it is thousands of standard deviations out.
+const REMAP_LIMIT: f64 = 1024.0;
 
 /// A prediction, or none (NaN) when it is not a number. A feature at the
 /// input bound, standardized against a scale the earlier rows set, times its
@@ -1166,8 +1412,18 @@ impl OnlineModel for Kalman {
             take_the_row(&mut self.p[0], &self.gain, &self.pz);
         }
 
-        // Standardization stats update last, so this row's z used the prior stats.
-        self.stats.update(&self.zbuf, lam, weight);
+        // Standardization stats update last, so this row's z used the prior
+        // stats. Once the standardizer has warmed up, `b` and `P` follow the
+        // moments to their new coordinates (the module doc, docs/PLAN.md
+        // task 206); until then they are read in them as they stand.
+        if self.cfg.standardize && self.warmup.switched() {
+            self.learn_the_row_and_follow(lam, weight);
+        } else {
+            self.stats.update(&self.zbuf, lam, weight);
+            if self.cfg.standardize {
+                self.warmup.learn(weight);
+            }
+        }
 
         Step {
             pred,
@@ -1590,12 +1846,21 @@ mod tests {
                 1.0,
             );
         }
-        let beta = m.beta[0].clone();
+        // Past the warm-up `b` follows the moments to their new coordinates
+        // (the module doc), so a row with no target leaves the coefficients
+        // in the caller's units where they were, to rounding.
+        assert!(m.warmup().switched());
+        let coef = m.coefficients();
         let (wj, wsig, sig2) = (m.wj[0], m.wsig[0], m.sig2[0]);
 
         let lam = 0.5f64.powf(4.0 / 10.0);
         m.step(&[0.3, -0.2], &[None], 4.0, 1.0);
-        assert_eq!(m.beta[0], beta, "no target, no correction");
+        for (a, b) in m.coefficients()[0].iter().zip(&coef[0]) {
+            assert!(
+                (a - b).abs() <= 1e-14 * (1.0 + b.abs()),
+                "no target, no correction: {a} against {b}"
+            );
+        }
         assert_eq!(m.sig2[0], sig2);
         assert!((m.wj[0] - wj * lam).abs() < 1e-12);
         assert!((m.wsig[0] - wsig * lam).abs() < 1e-12);
@@ -1966,10 +2231,325 @@ mod tests {
                 1.0,
             );
         }
-        let before = m.beta[1].clone();
+        // The coefficients in the caller's units: past the warm-up `b`
+        // follows the moments, so the null target's are where they were, to
+        // rounding, and the observed target's moved.
+        let before = m.coefficients();
         let st = m.step(&[0.5], &[Some(1.0), None], 1.0, 1.0);
         assert!(st.pred[1].is_finite());
-        assert_eq!(m.beta[1], before);
+        let after = m.coefficients();
+        for (a, b) in after[1].iter().zip(&before[1]) {
+            assert!((a - b).abs() <= 1e-14 * (1.0 + b.abs()), "{a} against {b}");
+        }
+        assert_ne!(after[0], before[0], "the target that was there corrected");
+    }
+
+    /// The warm-up (the module doc): until Kish's count of the rows the
+    /// standardizer has learned reaches 22, `b` and `P` are read in the
+    /// coordinates of the moments as they stand; on the row after which it
+    /// does, the switch, and from the next row on they follow every move of
+    /// the moments. A row of weight 0 counts nothing; without `standardize`
+    /// nothing is counted.
+    #[test]
+    fn the_warm_up_ends_on_the_row_that_completes_kishs_count() {
+        let mut c = cfg(2, 1, vec![50.0]);
+        c.decay = Decay::Lam(0.9);
+        let mut m = Kalman::new(c.clone()).unwrap();
+        let mut s = 5u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let w = if i % 4 == 3 { 0.0 } else { 1.0 };
+            m.step(&x, &[Some(x[0])], 1.0, w);
+            let rows = f64::from(i + 1 - (i + 1) / 4);
+            assert_eq!(m.warmup().switched(), rows >= crate::WARMUP_ROWS, "row {i}");
+            if !m.warmup().switched() {
+                assert_eq!(m.warmup().count(), rows, "row {i}");
+            }
+        }
+        c.standardize = false;
+        let mut raw = Kalman::new(c).unwrap();
+        for _ in 0..40 {
+            raw.step(&[lcg(&mut s), lcg(&mut s)], &[Some(1.0)], 1.0, 1.0);
+        }
+        assert_eq!(raw.warmup(), &Warmup::default());
+    }
+
+    /// Past the warm-up a move of the moments re-maps `b` and `P` (the
+    /// module doc), so a row with no target that moves them -- a feature well
+    /// off its mean -- leaves the prediction for any row where it was, to
+    /// rounding, while `b` itself moves. A move past [`REMAP_LIMIT`] -- here
+    /// a feature at the input bound after a run at a scale of 1e-100, a
+    /// factor of about 1e200 -- is refused whole, as a move whose numbers
+    /// would not be finite is: `b` and `P` keep their bits, finite, and the
+    /// filter goes on predicting.
+    #[test]
+    fn a_move_of_the_moments_is_followed_and_one_past_the_limit_is_refused() {
+        let mut c = cfg(1, 1, vec![30.0]);
+        c.decay = Decay::Lam(0.5);
+        c.min_weight = 0.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 9u64;
+        for _ in 0..40 {
+            let x = [lcg(&mut s)];
+            m.step(&x, &[Some(1.0 + x[0] + 0.1 * lcg(&mut s))], 1.0, 1.0);
+        }
+        assert!(m.warmup().switched());
+        let at = [0.4];
+        let (pred, beta) = (m.predict(&at, 1.0).pred[0], m.beta[0].clone());
+        m.step(&[6.0], &[None], 1.0, 1.0);
+        assert_ne!(m.beta[0], beta, "the moments moved and b followed");
+        let after = m.predict(&at, 1.0).pred[0];
+        assert!(
+            (after - pred).abs() <= 1e-14 * (1.0 + pred.abs()),
+            "{after} against {pred}"
+        );
+        // A long run at a scale of 1e-100, the target at its own scale, so
+        // that `P` is not tiny with it; then the bound, with no target.
+        for _ in 0..1500 {
+            let x = [1e-100 * lcg(&mut s)];
+            m.step(&x, &[Some(1.0 + 0.1 * lcg(&mut s))], 1.0, 1.0);
+        }
+        assert!(m.scales()[1] < 1e-90, "the scale shrank: {:?}", m.scales());
+        let (beta, p) = (m.beta[0].clone(), m.p[0].clone());
+        m.step(&[1e100], &[None], 1.0, 1.0);
+        assert_eq!(m.beta[0], beta, "the re-map was refused");
+        assert!(m.p[0].iter().all(|v| v.is_finite()), "{:?}", m.p[0]);
+        // `P` took the row's process noise and nothing else.
+        assert_eq!(m.p[0][1], p[1]);
+        assert!(m.predict(&[0.5], 1.0).pred[0].is_finite());
+        for _ in 0..50 {
+            let x = [lcg(&mut s)];
+            let got = m.step(&x, &[Some(1.0 + x[0])], 1.0, 1.0);
+            assert!(got.n_eff.is_finite());
+        }
+        assert!(m.beta[0].iter().all(|v| v.is_finite()));
+    }
+
+    /// The standardized filter is its recursion, written from the module
+    /// doc with every moment from its definition (`the_filter_is_its_recursion`
+    /// holds the unstandardized one): the row standardized against the EW
+    /// means and variances of the rows before it, `z_i = (x_i − m_i) / s_i`
+    /// (`x_i / s_i`, the root mean square, through the origin), each a
+    /// weighted sum over the history with the weights aged by the decay; the
+    /// filter's recursion on `z`; and, once Kish's count of the weights has
+    /// reached 22, on every later row the change of coordinates from the
+    /// moments before it to the moments after it, `A` with `A_00 = 1`, `A_0i
+    /// = (m'_i − m_i) / s_i`, `A_ii = s'_i / s_i`, applied as `b' = A b` and
+    /// `P' = A P Aᵀ` by matrix products. Two targets, one present one row in
+    /// three, weights other than 1 and 0, shared and not -- shared, the
+    /// noise is the mean residual variance over the targets that have one
+    /// (review round 5, A1) -- with and without an intercept.
+    #[test]
+    fn the_standardized_filter_is_its_recursion() {
+        for (fit_intercept, share) in [(true, false), (true, true), (false, false)] {
+            let hq = 40.0;
+            let decay = Decay::Lam(0.9);
+            let mut c = cfg(2, 2, vec![hq]);
+            c.fit_intercept = fit_intercept;
+            c.share_p = share;
+            c.min_weight = 0.0;
+            c.decay = decay;
+            let mut m = Kalman::new(c).unwrap();
+            let off = usize::from(fit_intercept);
+            let k = 2 + off;
+            let n_p = if share { 1 } else { 2 };
+            let mut p = vec![vec![0.0f64; k * k]; n_p];
+            let mut b = vec![vec![0.0f64; k]; 2];
+            let (mut sig2, mut wsig, mut wj) = ([0.0f64; 2], [0.0f64; 2], [0.0f64; 2]);
+            let mut history: Vec<([f64; 2], f64)> = Vec::new();
+            let (mut w1, mut w2, mut switched) = (0.0f64, 0.0f64, false);
+            // The moments of the history, by their definition: `(m, s)` per
+            // feature, `m = 0` through the origin.
+            let moments = |h: &[([f64; 2], f64)]| -> ([f64; 2], [f64; 2]) {
+                let total: f64 = h.iter().map(|(_, w)| w).sum();
+                let (mut mean, mut scale) = ([0.0; 2], [1.0; 2]);
+                if total <= 0.0 {
+                    return (mean, scale);
+                }
+                for f in 0..2 {
+                    if fit_intercept {
+                        let mu = h.iter().map(|(x, w)| w * x[f]).sum::<f64>() / total;
+                        let var =
+                            h.iter().map(|(x, w)| w * (x[f] - mu).powi(2)).sum::<f64>() / total;
+                        mean[f] = mu;
+                        scale[f] = if var > 0.0 { var.sqrt() } else { 1.0 };
+                    } else {
+                        let raw = h.iter().map(|(x, w)| w * x[f] * x[f]).sum::<f64>() / total;
+                        scale[f] = if raw > 0.0 { raw.sqrt() } else { 1.0 };
+                    }
+                }
+                (mean, scale)
+            };
+            let mut s = 211u64;
+            let mut checked = 0;
+            for i in 0..150 {
+                let x = [2.0 + lcg(&mut s), 0.3 * lcg(&mut s)];
+                let ys = [
+                    Some(0.5 + x[0] - 2.0 * x[1] + 0.2 * lcg(&mut s)),
+                    (i % 3 == 0).then(|| -x[0] + 3.0 * lcg(&mut s)),
+                ];
+                let w = if i % 9 == 5 {
+                    0.0
+                } else {
+                    0.5 + (lcg(&mut s) + 1.0)
+                };
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let lam = decay.factor(d);
+                let (mean, scale) = moments(&history);
+                let mut z = vec![1.0; k];
+                for f in 0..2 {
+                    z[off + f] = (x[f] - mean[f]) / scale[f];
+                }
+                let dotz = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
+                let want: Vec<f64> = (0..2)
+                    .map(|j| if wj[j] > 0.0 { dotz(&b[j]) } else { f64::NAN })
+                    .collect();
+                let got = m.step(&x, &ys, d, w).pred;
+                for j in 0..2 {
+                    assert_eq!(
+                        got[j].is_nan(),
+                        want[j].is_nan(),
+                        "{fit_intercept} {share}, row {i}"
+                    );
+                    if want[j].is_finite() {
+                        assert!(
+                            (got[j] - want[j]).abs() <= 1e-9 * want[j].abs().max(1.0),
+                            "intercept {fit_intercept}, share {share}, row {i}, target {j}: {} against {}",
+                            got[j],
+                            want[j]
+                        );
+                        checked += usize::from(switched);
+                    }
+                }
+                // The filter on `z`, as `the_filter_is_its_recursion` writes
+                // it: a row of weight 0 observes nothing.
+                let obs: Vec<Option<f64>> = ys.iter().map(|y| y.filter(|_| w > 0.0)).collect();
+                let e2: Vec<Option<f64>> = (0..2)
+                    .map(|j| obs[j].map(|y| (y - dotz(&b[j])).powi(2)))
+                    .collect();
+                let seen: Vec<f64> = e2.iter().flatten().copied().collect();
+                let shared_first = if seen.is_empty() {
+                    0.0
+                } else {
+                    seen.iter().sum::<f64>() / seen.len() as f64
+                };
+                // Under `share_p` the noise is the mean residual variance
+                // over the targets that have one (review round 5, A1): the
+                // second target, present one row in three, has none for its
+                // first rows.
+                let have: Vec<f64> = sig2.iter().copied().filter(|v| *v > 0.0).collect();
+                let shared = if have.is_empty() {
+                    0.0
+                } else {
+                    have.iter().sum::<f64>() / have.len() as f64
+                };
+                let mut shared_row: Option<(Vec<f64>, f64)> = None;
+                for j in 0..2 {
+                    let pi = if share { 0 } else { j };
+                    let s2 = if share { shared } else { sig2[j] };
+                    let sigma2 = if s2 > 0.0 {
+                        s2
+                    } else if share {
+                        shared_first
+                    } else {
+                        e2[j].unwrap_or(0.0)
+                    };
+                    if (!share || j == 0) && p[pi].iter().all(|v| *v == 0.0) {
+                        if sigma2 > 0.0 {
+                            for a in 0..k {
+                                p[pi][a * k + a] = sigma2;
+                            }
+                        }
+                    } else if !share || j == 0 {
+                        let q = sigma2 * (std::f64::consts::LN_2 / hq).powi(2);
+                        for a in 0..k {
+                            p[pi][a * k + a] += q * d * d;
+                        }
+                    }
+                    let Some(y) = obs[j] else {
+                        wj[j] *= lam;
+                        wsig[j] *= lam;
+                        continue;
+                    };
+                    let pz: Vec<f64> = (0..k).map(|a| dotz(&p[pi][a * k..(a + 1) * k])).collect();
+                    let s_inn = dotz(&pz) + sigma2 / w;
+                    let err = y - dotz(&b[j]);
+                    if sigma2 > 0.0 {
+                        for a in 0..k {
+                            b[j][a] += pz[a] / s_inn * err;
+                        }
+                        if share {
+                            shared_row = Some((pz, s_inn));
+                        } else {
+                            for a in 0..k {
+                                for bb in 0..k {
+                                    p[pi][a * k + bb] -= pz[a] * pz[bb] / s_inn;
+                                }
+                            }
+                        }
+                    }
+                    let aged = lam * wsig[j];
+                    wsig[j] = aged;
+                    if want[j].is_finite() {
+                        let r = y - want[j];
+                        sig2[j] = (aged * sig2[j] + w * r * r) / (aged + w);
+                        wsig[j] = aged + w;
+                    }
+                    wj[j] = lam * wj[j] + w;
+                }
+                if let Some((pz, s_inn)) = shared_row {
+                    for a in 0..k {
+                        for bb in 0..k {
+                            p[0][a * k + bb] -= pz[a] * pz[bb] / s_inn;
+                        }
+                    }
+                }
+                // The moments learn the row, at its weight.
+                for (_, wh) in history.iter_mut() {
+                    *wh *= lam;
+                }
+                history.push((x, w));
+                if switched {
+                    let (mean2, scale2) = moments(&history);
+                    let mut am = vec![0.0f64; k * k];
+                    am[0] = 1.0;
+                    for f in 0..2 {
+                        let i = off + f;
+                        am[i * k + i] = scale2[f] / scale[f];
+                        if fit_intercept {
+                            am[i] = (mean2[f] - mean[f]) / scale[f];
+                        }
+                    }
+                    for bj in b.iter_mut() {
+                        let old = bj.clone();
+                        for r in 0..k {
+                            bj[r] = (0..k).map(|cc| am[r * k + cc] * old[cc]).sum();
+                        }
+                    }
+                    for pp in p.iter_mut() {
+                        let mut ap = vec![0.0f64; k * k];
+                        for r in 0..k {
+                            for cc in 0..k {
+                                ap[r * k + cc] =
+                                    (0..k).map(|t| am[r * k + t] * pp[t * k + cc]).sum();
+                            }
+                        }
+                        for r in 0..k {
+                            for cc in 0..k {
+                                pp[r * k + cc] =
+                                    (0..k).map(|t| ap[r * k + t] * am[cc * k + t]).sum();
+                            }
+                        }
+                    }
+                } else {
+                    w1 += w;
+                    w2 += w * w;
+                    switched = w2 > 0.0 && w1 * w1 / w2 >= crate::WARMUP_ROWS;
+                }
+                assert_eq!(m.warmup().switched(), switched, "row {i}");
+            }
+            assert!(checked > 150, "{checked} predictions past the switch");
+        }
     }
 
     // ---- reversion (ENHANCEMENTS E41) ----

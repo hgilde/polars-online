@@ -446,7 +446,17 @@ def switched_signature() -> dict[str, float | str | None]:
 #: same 12 once more: `pa`'s `eps` defaults to 0.01, not 0.1. That replica at
 #: 0.01 gives `pa`'s to 1.3e-15 and `pa_box`'s to 4.4e-16 on all 104 rows,
 #: with the same nulls, and at 0.1 gives back the old 12 to 3.4e-15; nothing
-#: else moved.
+#: else moved. Task 206 (2026-10-08) moved 24, the ``pred`` and ``resid`` at
+#: rows 60 and 119 of ``sgd``, ``pa``, ``sgd_simplex``, ``pa_box``, ``kalman``
+#: and ``kalman_revert``: past a standardizing fit's warm-up, 22 rows by
+#: Kish's count of each group's weights, ``sgd``'s and ``pa``'s coefficients
+#: are held in the caller's units and ``kalman``'s follow every move of the
+#: moments (review round 5, G1); row 25 is inside the warm-up and kept its
+#: bits. ``tests/reference_paths.py``'s ``sgd_ref`` and ``pa_ref`` and
+#: ``tests/reference.py``'s ``kalman_ref`` under ``standardize``, written from
+#: the docstrings with the moments by their definition, give every row the
+#: six predict, 104 each, to 5.4e-16, 1.4e-15, 5.5e-16, 7.5e-16, 1.4e-14 and
+#: 1.9e-15, with the same nulls; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -515,11 +525,11 @@ GOLDEN: dict[str, float | str | None] = {
     "rls.withheld_reason@60": None,
     "rls.withheld_reason@119": None,
     "kalman.pred_y0@25": -0.6299441602651041,
-    "kalman.pred_y0@60": -0.5177484630617406,
-    "kalman.pred_y0@119": -0.22833841135939936,
+    "kalman.pred_y0@60": -0.8455003178133764,
+    "kalman.pred_y0@119": -0.03218230787742116,
     "kalman.resid_y0@25": -4.221661663969612,
-    "kalman.resid_y0@60": 0.04570733424466267,
-    "kalman.resid_y0@119": 0.17763964040117053,
+    "kalman.resid_y0@60": 0.3734591889962985,
+    "kalman.resid_y0@119": -0.018516463080807677,
     "kalman.weight_sum@25": 7.999488060097996,
     "kalman.weight_sum@60": 12.473100285951407,
     "kalman.weight_sum@119": 15.110060335371337,
@@ -584,11 +594,11 @@ GOLDEN: dict[str, float | str | None] = {
     "quantile.withheld_reason@60": None,
     "quantile.withheld_reason@119": None,
     "sgd.pred_y0@25": -0.5042876466916486,
-    "sgd.pred_y0@60": -0.15162153453453298,
-    "sgd.pred_y0@119": -0.3442655537531709,
+    "sgd.pred_y0@60": -0.3200296009535316,
+    "sgd.pred_y0@119": -0.03480775917435869,
     "sgd.resid_y0@25": -4.347318177543068,
-    "sgd.resid_y0@60": -0.32041959428254496,
-    "sgd.resid_y0@119": 0.2935667827949421,
+    "sgd.resid_y0@60": -0.15201152786354633,
+    "sgd.resid_y0@119": -0.015891011783870146,
     "sgd.weight_sum@25": 7.999488060097996,
     "sgd.weight_sum@60": 12.473100285951407,
     "sgd.weight_sum@119": 15.110060335371337,
@@ -599,11 +609,11 @@ GOLDEN: dict[str, float | str | None] = {
     "sgd.withheld_reason@60": None,
     "sgd.withheld_reason@119": None,
     "pa.pred_y0@25": -3.2785908646795354,
-    "pa.pred_y0@60": 0.013829714062611576,
-    "pa.pred_y0@119": -0.2540070442584794,
+    "pa.pred_y0@60": -0.16754772525810724,
+    "pa.pred_y0@119": -0.15919145766170428,
     "pa.resid_y0@25": -1.5730149595551808,
-    "pa.resid_y0@60": -0.4858708428796895,
-    "pa.resid_y0@119": 0.20330827330025059,
+    "pa.resid_y0@60": -0.3044934035589707,
+    "pa.resid_y0@119": 0.10849268670347545,
     "pa.weight_sum@25": 7.999488060097996,
     "pa.weight_sum@60": 12.473100285951407,
     "pa.weight_sum@119": 15.110060335371337,
@@ -614,11 +624,11 @@ GOLDEN: dict[str, float | str | None] = {
     "pa.withheld_reason@60": None,
     "pa.withheld_reason@119": None,
     "sgd_simplex.pred_y0@25": 0.6901893652038122,
-    "sgd_simplex.pred_y0@60": -1.9767264663866784,
-    "sgd_simplex.pred_y0@119": -1.3784973797611744,
+    "sgd_simplex.pred_y0@60": -2.557240305293285,
+    "sgd_simplex.pred_y0@119": -1.158563092143918,
     "sgd_simplex.resid_y0@25": -5.5417951894385284,
-    "sgd_simplex.resid_y0@60": 1.5046853375696005,
-    "sgd_simplex.resid_y0@119": 1.3277986088029454,
+    "sgd_simplex.resid_y0@60": 2.0851991764762072,
+    "sgd_simplex.resid_y0@119": 1.1078643211856893,
     "sgd_simplex.weight_sum@25": 7.999488060097996,
     "sgd_simplex.weight_sum@60": 12.473100285951407,
     "sgd_simplex.weight_sum@119": 15.110060335371337,
@@ -629,11 +639,11 @@ GOLDEN: dict[str, float | str | None] = {
     "sgd_simplex.withheld_reason@60": None,
     "sgd_simplex.withheld_reason@119": None,
     "pa_box.pred_y0@25": -2.9977839049458024,
-    "pa_box.pred_y0@60": 0.82600431177703,
-    "pa_box.pred_y0@119": -0.2291221775538278,
+    "pa_box.pred_y0@60": 0.8415339734095449,
+    "pa_box.pred_y0@119": -0.18661734414175662,
     "pa_box.resid_y0@25": -1.8538219192889138,
-    "pa_box.resid_y0@60": -1.298045440594108,
-    "pa_box.resid_y0@119": 0.17842340659559897,
+    "pa_box.resid_y0@60": -1.3135751022266229,
+    "pa_box.resid_y0@119": 0.1359185731835278,
     "pa_box.weight_sum@25": 7.999488060097996,
     "pa_box.weight_sum@60": 12.473100285951407,
     "pa_box.weight_sum@119": 15.110060335371337,
@@ -644,11 +654,11 @@ GOLDEN: dict[str, float | str | None] = {
     "pa_box.withheld_reason@60": None,
     "pa_box.withheld_reason@119": None,
     "kalman_revert.pred_y0@25": -0.02009119013134438,
-    "kalman_revert.pred_y0@60": -1.3415903889730219,
-    "kalman_revert.pred_y0@119": -0.7283624639508658,
+    "kalman_revert.pred_y0@60": -1.5315881829843507,
+    "kalman_revert.pred_y0@119": -0.6848308688218904,
     "kalman_revert.resid_y0@25": -4.831514634103372,
-    "kalman_revert.resid_y0@60": 0.8695492601559439,
-    "kalman_revert.resid_y0@119": 0.677663692992637,
+    "kalman_revert.resid_y0@60": 1.0595470541672727,
+    "kalman_revert.resid_y0@119": 0.6341320978636615,
     "kalman_revert.weight_sum@25": 7.999488060097996,
     "kalman_revert.weight_sum@60": 12.473100285951407,
     "kalman_revert.weight_sum@119": 15.110060335371337,
@@ -956,6 +966,14 @@ GOLDEN: dict[str, float | str | None] = {
 }
 
 #: Produced by `uv run python tests/test_golden_pipeline.py`, as `GOLDEN` is.
+#: Task 206 (2026-10-08) moved 3, the two ``kalman`` specs' predictions at
+#: row 119 -- ``embargo``'s ``pred`` and ``resid``, ``formula``'s ``pred_fwd``
+#: -- by the change `GOLDEN`'s ``kalman`` took; rows 25 and 60 are inside the
+#: warm-up, which a held row reaches late, and kept their bits. No reference
+#: here replays a ``kalman`` embargo row for row: ``po.stream.embargo``'s
+#: doubled stream through ``kalman_ref`` parts from the native embargo
+#: before the switch too, where nothing moved (row 25: -0.3103 against
+#: -0.2970), so it is no replica of these three.
 SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "window.pred_y0@25": -4.68515442331697,
     "window.pred_y0@60": -0.2680628499022917,
@@ -974,10 +992,10 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "window.withheld_reason@119": None,
     "embargo.pred_y0@25": -0.297030662716732,
     "embargo.pred_y0@60": -0.6184279290422761,
-    "embargo.pred_y0@119": -0.38922812978297516,
+    "embargo.pred_y0@119": -0.04634909464751413,
     "embargo.resid_y0@25": -4.554575161517985,
     "embargo.resid_y0@60": 0.14638680022519812,
-    "embargo.resid_y0@119": 0.33852935882474633,
+    "embargo.resid_y0@119": -0.004349676310714701,
     "embargo.weight_sum@25": 5.255854811913398,
     "embargo.weight_sum@60": 10.867042954248578,
     "embargo.weight_sum@119": 12.473068731537921,
@@ -1181,7 +1199,7 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "diagnostics.learned_clock@119": 174.0,
     "formula.pred_fwd@25": 0.03271607966199878,
     "formula.pred_fwd@60": 0.13309799763766708,
-    "formula.pred_fwd@119": 0.06743285763369189,
+    "formula.pred_fwd@119": 0.051529160549880756,
     "formula.resid_fwd@25": None,
     "formula.resid_fwd@60": None,
     "formula.resid_fwd@119": None,

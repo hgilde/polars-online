@@ -703,9 +703,15 @@ class TestNoInterceptIsNotCentred:
         # reported after row i-1 is the fit row i is predicted with.
         # Centring without an intercept broke it by the hidden intercept,
         # about 16 here. Then the library check, statistical: with no process
-        # noise the filter is recursive least squares, and after 5000 rows it
-        # sits at numpy's no-intercept fit.
-        x, y = _no_intercept_rows(5000, seed=43)
+        # noise the filter is recursive least squares, and after 20,000 rows
+        # it sits at numpy's no-intercept fit. Not exactly: over the
+        # standardizer's warm-up its first 22 rows were learned in coordinates
+        # read again as the scales settled, and the filter, which forgets
+        # nothing here, keeps them as about 22 rows of a prior that is off,
+        # gone as 1/n. Measured 3.3e-3 here (1.3e-3 at 50,000 rows); at 5,000
+        # rows 1.25e-2, where the build before task 206, reading its state
+        # through the moments as they stood, missed by 7.3e-3.
+        x, y = _no_intercept_rows(20_000, seed=43)
         spec = po.spec.kalman(
             "m",
             targets=["y"],
@@ -726,14 +732,14 @@ class TestNoInterceptIsNotCentred:
         np.testing.assert_allclose(coef[-1], b, atol=1e-2)
 
     def test_sgd_converges_to_numpy_least_squares_and_its_coefficients_follow_it(self):
-        # C13. sgd standardizes a row against moments that include it, and
-        # reports `coef` through the scaler as it stood after the row before,
-        # so its coefficients reproduce a prediction to within a scaler step,
-        # not to rounding -- about 1% here, with or without an intercept once
-        # nothing is centred (the review's D5). Centring without an intercept
-        # put the two thousands of times apart. The library check is the
-        # statistical one: the fit settles at numpy's no-intercept least
-        # squares.
+        # C13. sgd standardizes a row against moments that include it. Past
+        # its scaler's warm-up it holds `coef` in the caller's units, the
+        # scaler shaping the step only (docs/PLAN.md task 206), so `coef`
+        # after the row before reproduces a prediction to rounding. Read
+        # through the scaler as it stood, it missed by a scaler step, about
+        # 1% here (the review's D5); centring without an intercept put the
+        # two thousands of times apart. The library check is the statistical
+        # one: the fit settles at numpy's no-intercept least squares.
         x, y = _no_intercept_rows(20_000, seed=44)
         spec = po.spec.sgd(
             "m",
@@ -750,7 +756,7 @@ class TestNoInterceptIsNotCentred:
         coef = np.array(out["coef"].to_list(), dtype=float)
         pred = out["pred_y"].to_numpy()
         via_coef = np.sum(coef[999:-1] * x[1000:], axis=1)
-        assert np.max(np.abs(via_coef - pred[1000:]) / np.abs(pred[1000:])) < 0.05
+        assert np.max(np.abs(via_coef - pred[1000:]) / np.abs(pred[1000:])) < 1e-13
         b = _wls(x, y, np.ones(len(y)), intercept=False)
         np.testing.assert_allclose(coef[-1], b, atol=5e-2)
 
@@ -1583,10 +1589,12 @@ class TestKalmanZeroWeightRow:
         w: np.ndarray,
         half_life: float,
         coef_hl: float,
+        F: list[np.ndarray] | None = None,
     ) -> np.ndarray:
         """filterpy's predictions over the regressor rows ``Z``, the
         intercept's column first: ``[1, x]`` unstandardized, the rows
-        standardized otherwise."""
+        standardized otherwise, each row's predict step taking ``F[i]`` as
+        its transition where ``F`` is given (the identity otherwise)."""
         n, k1 = Z.shape
         kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
         kf.x = np.zeros((k1, 1))
@@ -1608,7 +1616,10 @@ class TestKalmanZeroWeightRow:
             if sized:
                 # The process noise of a step d clock units long, as the
                 # docstring states it: sigma^2 * (ln 2 * d / coef_half_life)^2.
-                kf.predict(Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
+                kf.predict(
+                    Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2,
+                    F=None if F is None else F[i],
+                )
             elif s2 > 0.0:
                 # The prior, p0 = 1 times the first noise, on this row.
                 kf.P, sized = np.eye(k1) * s2, True
@@ -1696,6 +1707,15 @@ class TestAStandardizedKalmanIsFilterpy:
     numpy, by sums over the raw rows, and fed to filterpy as
     `TestKalmanZeroWeightRow` feeds it the raw ones.
 
+    Past the standardizer's warm-up -- 22 rows by Kish's count of the
+    weights, ``(sum w) ** 2 / sum w ** 2``, undecayed -- the filter's state
+    follows the moments to their new coordinates after every row (docs/PLAN.md
+    task 206): ``b <- A b`` and ``P <- A P A'``, with ``A_00 = 1``, ``A_0i =
+    (m'_i - m_i) / s_i`` and ``A_ii = s'_i / s_i`` from the moments the row
+    was read at to the ones after it. That is a Kalman predict step with
+    ``F = A``, so filterpy takes it as its transition on the next row,
+    beside the process noise.
+
     The coefficients are read out in the original units with the moments
     *after* the row, so ``coef`` after one row applied to the next row's
     features is the next row's prediction (docs/PLAN.md task 97): asserted
@@ -1703,18 +1723,13 @@ class TestAStandardizedKalmanIsFilterpy:
     it."""
 
     @staticmethod
-    def standardized(t: np.ndarray, x: np.ndarray, w: np.ndarray, half_life: float) -> np.ndarray:
-        n, k = x.shape
-        Z = np.ones((n, k + 1))
-        for i in range(n):
-            u = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / half_life) if i else np.zeros(0)
-            if u.sum() > 0.0:
-                m = (u[:, None] * x[:i]).sum(axis=0) / u.sum()
-                v = (u[:, None] * (x[:i] - m) ** 2).sum(axis=0) / u.sum()
-            else:
-                m, v = np.zeros(k), np.zeros(k)
-            Z[i, 1:] = (x[i] - m) / np.where(v > 0.0, np.sqrt(np.maximum(v, 0.0)), 1.0)
-        return Z
+    def standardized(
+        t: np.ndarray, x: np.ndarray, w: np.ndarray, half_life: float
+    ) -> tuple[np.ndarray, list[np.ndarray]]:
+        """The rows standardized against the moments before each, and the
+        transition each row's predict step takes (`_standardizer_moves`)."""
+        Z, F, _ = _standardizer_moves(t, x, w, half_life)
+        return Z, F
 
     @pytest.mark.parametrize("how", ["null", "zero weight"])
     def test_the_filter_is_filterpy_on_the_standardized_rows(self, how):
@@ -1760,9 +1775,13 @@ class TestAStandardizedKalmanIsFilterpy:
         )
         out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
         got = out["pred_y"].to_numpy()
-        Z = self.standardized(t, x, w, half_life)
-        want = TestKalmanZeroWeightRow.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl)
+        Z, F = self.standardized(t, x, w, half_life)
+        want = TestKalmanZeroWeightRow.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl, F)
         np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+        # Without the change of coordinates filterpy is the filter read
+        # through the moments as they stood, which this one no longer is.
+        stale = TestKalmanZeroWeightRow.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl)
+        assert np.nanmax(np.abs(stale - got)) > 1e-3
         assert np.isfinite(got[1:]).all()
         # Task 97: coef after row i, applied to row i + 1, is row i + 1's pred.
         coef = out["coef"].to_list()
@@ -3315,6 +3334,58 @@ class TestNearestIsStatsmodelsCorrNearest:
         assert repaired >= 8, "most inputs were not correlation matrices to begin with"
 
 
+def _standardizer_moves(
+    t: np.ndarray, x: np.ndarray, w: np.ndarray, half_life: float, fit_intercept: bool = True
+) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+    """What `kalman`'s standardizer does to the rows, from the moments'
+    definition (`kalman.rs`'s module doc; docs/PLAN.md task 206): each row
+    standardized against the EW moments of the rows before it, every
+    processed row at its weight, a scale of 1 where there is no spread --
+    ``[1, (x - m) / s]``, or through the origin ``x / s`` with ``s`` the root
+    mean square; and, once Kish's count of the weights, ``(sum w) ** 2 / sum
+    w ** 2`` undecayed, has reached 22, the change of coordinates every later
+    row makes from the moments before it to those after it: ``A_00 = 1``,
+    ``A_0i = (m'_i - m_i) / s_i`` and ``A_ii = s'_i / s_i`` (``A = diag(s' /
+    s)`` through the origin). ``F[i]`` is the change the row before row ``i``
+    made, the transition row ``i``'s predict step takes, ``I`` where there
+    was none; ``remapped[i]`` whether row ``i`` made one."""
+    n, k = x.shape
+    off = 1 if fit_intercept else 0
+    Z = np.ones((n, k + off))
+    moments = []
+    for i in range(n + 1):
+        u = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / half_life) if i else np.zeros(0)
+        m, s = np.zeros(k), np.ones(k)
+        if u.sum() > 0.0:
+            if fit_intercept:
+                m = (u[:, None] * x[:i]).sum(axis=0) / u.sum()
+                v = (u[:, None] * (x[:i] - m) ** 2).sum(axis=0) / u.sum()
+                s = np.where(v > 0.0, np.sqrt(np.maximum(v, 0.0)), 1.0)
+            else:
+                raw2 = (u[:, None] * x[:i] ** 2).sum(axis=0) / u.sum()
+                s = np.where(raw2 > 0.0, np.sqrt(raw2), 1.0)
+        moments.append((m, s))
+        if i < n:
+            Z[i, off:] = (x[i] - m) / s
+    F = [np.eye(k + off) for _ in range(n)]
+    remapped = np.zeros(n, dtype=bool)
+    w1 = w2 = 0.0
+    switched = False
+    for i in range(n):
+        if switched:
+            (m, s), (m2, s2) = moments[i], moments[i + 1]
+            remapped[i] = True
+            if i + 1 < n:
+                if fit_intercept:
+                    F[i + 1][0, 1:] = (m2 - m) / s
+                F[i + 1][off:, off:] = np.diag(s2 / s)
+        else:
+            w1, w2 = w1 + w[i], w2 + w[i] ** 2
+            switched = w2 > 0.0 and w1 * w1 / w2 >= 22.0
+    assert switched, "the stream is past the warm-up"
+    return Z, F, remapped
+
+
 def _filterpy_kalman(
     kalman: Any,
     t: np.ndarray,
@@ -3327,6 +3398,7 @@ def _filterpy_kalman(
     q: list[float] | None = None,
     obs_var: float | None = None,
     p0: float = 1.0,
+    F: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     """filterpy's predictions over the regressor rows ``Z`` under `kalman`'s
     documented recursion, as `TestKalmanZeroWeightRow.filterpy_pred` runs it,
@@ -3335,7 +3407,9 @@ def _filterpy_kalman(
     ``obs_var`` is the observation noise on every row and sizes the prior
     ``p0 * obs_var * I`` before the first row; and a ``coef_half_life`` per
     coefficient, ``inf`` pinning one, gives each its own ``sigma**2 (ln 2 d /
-    h)**2``, 0 at ``inf``."""
+    h)**2``, 0 at ``inf``. ``F[i]``, where given, is row ``i``'s transition:
+    the change of coordinates the standardizer's moments made on the row
+    before (`_standardizer_moves`)."""
     n, k1 = Z.shape
     hl = np.broadcast_to(np.asarray(coef_half_life, dtype=float), (k1,))
     kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
@@ -3362,7 +3436,7 @@ def _filterpy_kalman(
             else:
                 finite = np.where(np.isinf(hl), 1.0, hl)
                 qv = np.where(np.isinf(hl), 0.0, s2 * (np.log(2.0) / finite) ** 2)
-            kf.predict(Q=np.diag(qv * d * d))
+            kf.predict(Q=np.diag(qv * d * d), F=None if F is None else F[i])
         elif s2 > 0.0:
             kf.P, sized = np.eye(k1) * p0 * s2, True
         if wj > 0.0:
@@ -3476,13 +3550,10 @@ class TestKalmanSettingsAreFilterpy:
 
         frame, t, x, y, w = self.rows(44, scaled=True)
         got = self.ours(frame, coef_half_life=50.0, fit_intercept=False, p0=1.0)
-        n, k = x.shape
-        Z = x.copy()  # no moments before the first row: scale 1
-        for i in range(1, n):
-            u = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / 30.0)
-            raw2 = (u[:, None] * x[:i] ** 2).sum(axis=0) / u.sum()
-            Z[i] = x[i] / np.where(raw2 > 0.0, np.sqrt(raw2), 1.0)
-        want = _filterpy_kalman(kalman, t, Z, y, w, 30.0, coef_half_life=50.0)
+        # No moments before the first row: a scale of 1. Past the warm-up
+        # the filter follows each move of the scales, `F = diag(s' / s)`.
+        Z, F, _ = _standardizer_moves(t, x, w, 30.0, fit_intercept=False)
+        want = _filterpy_kalman(kalman, t, Z, y, w, 30.0, coef_half_life=50.0, F=F)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-13)
 
     def test_a_slip_in_the_mapping_misses(self):
@@ -3750,10 +3821,13 @@ def _filterpy_kalman_readiness(
     revert: float | list[float] = float("inf"),
     obs_var: float | None = None,
     p0: float = 1.0,
+    remap: list[np.ndarray] | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray | None]]:
     """filterpy's run of `kalman`'s documented recursion, as
     `_filterpy_kalman` runs it, with the transition ``F = diag(2^(-d / r))``
-    of `TestAMeanRevertingKalmanIsFilterpy`, returning per row what docs/PLAN.md
+    of `TestAMeanRevertingKalmanIsFilterpy` -- after ``remap[i]``, the change
+    of coordinates the row before made, where given (`_standardizer_moves`)
+    -- returning per row what docs/PLAN.md
     task 116 reads from it: the readiness statistic ``sqrt(1 + z' P⁻ z / R)``
     before the row's update -- ``P⁻`` filterpy's ``P`` after ``predict``,
     ``R`` the noise as the state holds it, ``obs_var`` or else the residual
@@ -3772,7 +3846,8 @@ def _filterpy_kalman_readiness(
     for i in range(n):
         d = 0.0 if i == 0 else t[i] - t[i - 1]
         lam = 0.5 ** (d / half_life)
-        kf.F = np.diag(0.5 ** (d / r))
+        # The reversion after the change of coordinates the row before made.
+        kf.F = np.diag(0.5 ** (d / r)) @ (np.eye(k1) if remap is None else remap[i])
         z = Z[i]
         seen = not np.isnan(y[i]) and w[i] > 0.0
         if obs_var is not None:
@@ -3853,8 +3928,9 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             **({"emit_se_coef": True} if se else {}),
         )
         out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        remap = None
         if case["standardize"]:
-            Z = TestAStandardizedKalmanIsFilterpy.standardized(t, x, w, 30.0)
+            Z, remap, _ = _standardizer_moves(t, x, w, 30.0)
             # One row before has no spread, and the filter takes a scale of 1
             # (`variance_is_usable`), where the sums here leave a variance of
             # rounding, 1e-34 at these levels, and a scale of 1e-17.
@@ -3872,6 +3948,7 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             revert=case.get("revert_half_life", float("inf")),
             obs_var=case.get("obs_var"),
             p0=case.get("p0", 1.0),
+            remap=remap,
         )
         return out, infl, posts, t, x, w
 
@@ -3891,6 +3968,8 @@ class TestKalmansErrorInflationIsFilterpysPrior:
         out, _, posts, t, x, w = self.run(self.CASES[case], se=True)
         se = out["se_coef"].to_list()
         n = len(t)
+        if self.CASES[case]["standardize"]:
+            remapped = _standardizer_moves(t, x, w, 30.0)[2]
         for i in range(n):
             if posts[i] is None:
                 assert se[i] is None or all(v is None for v in se[i]), (i, se[i])
@@ -3898,10 +3977,14 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             P = posts[i]
             if self.CASES[case]["standardize"]:
                 # The coefficients are read out with the moments after the
-                # row: c_i = b_i / s_i, c_0 = b_0 - sum_i c_i m_i.
-                u = w[: i + 1] * 0.5 ** ((t[i] - t[: i + 1]) / 30.0)
-                m = (u[:, None] * x[: i + 1]).sum(axis=0) / u.sum()
-                v = (u[:, None] * (x[: i + 1] - m) ** 2).sum(axis=0) / u.sum()
+                # row: c_i = b_i / s_i, c_0 = b_0 - sum_i c_i m_i. Past the
+                # warm-up `P` has followed them there, `A P A'`, so read
+                # out with them it is filterpy's posterior read out with the
+                # moments before the row (task 206).
+                j = i if remapped[i] else i + 1
+                u = w[:j] * 0.5 ** ((t[j - 1] - t[:j]) / 30.0)
+                m = (u[:, None] * x[:j]).sum(axis=0) / u.sum()
+                v = (u[:, None] * (x[:j] - m) ** 2).sum(axis=0) / u.sum()
                 # One row has no spread: the filter's is exactly 0 there,
                 # the sums' a rounding (as in `run`).
                 v = v if i > 0 else np.zeros_like(v)

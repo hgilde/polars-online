@@ -17,11 +17,54 @@
 //! | `Logistic` | sigmoid | `sigmoid(eta)` | `p − clamp(y, 0, 1)` |
 //!
 //! then `g_i = d · z_i · w + l2 · b_i` for a slope and `g_0 = d · w` for the
-//! intercept, which is not penalised; then `b_i -= lr_i · g_i`. The Poisson
+//! intercept, which is not penalised; then `b_i -= lr_i · g_i`, each `g_i`
+//! clipped at `±clip_gradient` first. Without `standardize`, `z = [1, x]`
+//! (`x` without an intercept) and `b` is in the caller's units. The Poisson
 //! link clamps its exponent at `±30`, so a rate is between `e^−30 ≈ 9.4e-14`
 //! and `e^30 ≈ 1.1e13`, and a linear predictor past either end predicts as
 //! that end does: the prediction and its gradient stay finite, where `exp`
 //! alone overflows past 709.
+//!
+//! **`standardize`** takes the step on the row standardized against the
+//! features' EW moments with the row admitted at unit weight (the row's
+//! map `M`; [`SgdCfg::standardize`] says why the row is in): `z = M x̃`,
+//! `x̃ = [1, x]`, `z_0 = 1` and `z_i = (x_i − m_i) / s_i`, `m_i` and `s_i` the
+//! mean and standard deviation, or without an intercept `z_i = x_i / s_i`,
+//! `s_i` the root of the raw second moment, uncentred (review 2026-09-12,
+//! C13); a feature with no spread yet has `s_i = 1`. The fit goes through
+//! two phases ([`crate::Warmup`]; docs/PLAN.md task 206):
+//!
+//! - **While the scaler warms up**, until Kish's count of the rows it has
+//!   learned, undecayed, reaches 22: `b` is in the coordinates of the
+//!   moments, `eta = z·b`, the step is the one above on `z`, and the
+//!   coefficients are read out with the moments as they stand, `b_i / s_i`
+//!   and `b_0 − Σ_i m_i b_i / s_i`. Over the first rows the moments rest on
+//!   almost nothing, and a step against a scale a few rows old is read again
+//!   at the next scale and forgotten as it settles.
+//! - **On the row the count reaches 22** the coefficients are read out so
+//!   once and held in the caller's units from then on; **after it**:
+//!
+//! ```text
+//! eta  = x̃·b                                  the prediction reads no moment
+//! g_i  = d · z_i · w + l2 · s_i b_i,  g_0 = d · w      (each clipped)
+//! Δβ_i = −lr_i · g_i                           the step in the row's coordinates
+//! Δb   = Mᵀ Δβ:   Δb_i = Δβ_i / s_i,   Δb_0 = Δβ_0 − Σ_i m_i Δb_i
+//! b   += Δb
+//! ```
+//!
+//! `x̃ᵀΔb = zᵀΔβ`, so the step moves the row's own prediction as the
+//! standardized step does, and one learning rate suits every feature's
+//! units, the scaler's purpose (docs/PLAN.md task 195, U2). A prediction is
+//! `x̃ᵀb` and never moves because the scaler did. Read through the moments
+//! as they stood, every prediction moved with the scaler's own wander under
+//! a finite half-life -- the EW mean of a unit-variance feature has standard
+//! deviation `sqrt((1 − λ) / (1 + λ))`, 0.083 at a half-life of 50 -- 248
+//! noise variances of out-of-sample error at R² 0.99998 and a half-life of
+//! 50 where the unstandardized fit paid 0.010 (review round 5, G1). A step
+//! whose `Δb` is not finite -- a feature of all but no spread, `Δβ_i / s_i`
+//! overflowing -- teaches nothing, as a row whose gradient is not finite
+//! does (below). The ridge is on the slope in the row's coordinates, `s_i
+//! b_i`, as it was on `b_i` while the scaler warmed up.
 //!
 //! **`delta` is in units of `s`**, the target's EW residual standard
 //! deviation as the row arrives, as `huber`'s `huber_delta` is
@@ -79,7 +122,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::spread::TargetSpread;
-use crate::{Constraint, Decay, EwDiag};
+use crate::{Constraint, Decay, EwDiag, Warmup};
 
 /// Loss function, and with it the link (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -131,9 +174,12 @@ pub struct SgdCfg {
     /// Ridge penalty added to the gradient. The intercept is never penalized.
     pub l2: f64,
     pub min_weight: f64,
-    /// Standardize features against their own running moments before the
-    /// gradient step (ENHANCEMENTS E24), unscaling the coefficients on the way
-    /// out so they stay in the caller's units.
+    /// Take the gradient step on the features standardized against their
+    /// own running moments (ENHANCEMENTS E24): while the moments warm up
+    /// the coefficients are in their coordinates and read out in the
+    /// caller's units, and from then on held in the caller's units, the
+    /// step mapped into them by the row's map (the module docs; docs/PLAN.md
+    /// task 206).
     ///
     /// Gradient methods are the ones that need this: a single learning rate has
     /// to suit every coordinate, so a feature measured in thousands and one
@@ -153,25 +199,31 @@ pub struct SgdCfg {
     /// where `ewridge` scored 0.97, and a wide fit is that on every row
     /// (docs/PLAN.md task 74). Not a leak: the row's features are known at
     /// prediction time, and the rule is about the target, which enters
-    /// nothing until after the prediction. The one standardized row serves
-    /// the prediction and the gradient, so a row is standardized the way
-    /// every row the coefficients were learned from was (sklearn's loop
-    /// predicts against the moments from before the row instead, which is
-    /// two standardizations a row and a prediction with no bound). The
-    /// row's own weight applies to what it teaches, not to where it sits
-    /// among the rows seen, so a prediction never depends on the weight and
-    /// `predict` gives the step's number exactly.
+    /// nothing until after the prediction. While the scaler warms up, the
+    /// one standardized row serves the prediction and the gradient, so a
+    /// row is standardized the way every row the coefficients were learned
+    /// from was (sklearn's loop predicts against the moments from before the
+    /// row instead, which is two standardizations a row and a prediction
+    /// with no bound). The row's own weight applies to what it teaches, not
+    /// to where it sits among the rows seen, so a prediction never depends
+    /// on the weight and `predict` gives the step's number exactly.
     ///
-    /// The coefficients are read out with the moments as they stand now,
-    /// while each step was taken in the coordinates of the moments on its
-    /// own row: `coefficients()`, `predict` and a constraint's projection
-    /// read the betas through today's scaler, so a coefficient "per unit of
-    /// `x`" moves with the scaler as well as with the fit, as `kalman`'s
-    /// does. And one gap only `sgd` has: the step standardizes with the row
-    /// admitted at unit weight, and the scaler then learns the row at its
-    /// own weight, so for a weight other than 1 the coordinates the gradient
-    /// was taken in and the ones the projection and the coefficients use a
-    /// moment later differ by that weight (review 2026-09-12, D5).
+    /// **The warm-up** ([`crate::Warmup`]): until Kish's count of the rows
+    /// the scaler has learned reaches 22 the coefficients are read out with
+    /// the moments as they stand, while each step was taken in the
+    /// coordinates of its own row, so a coefficient "per unit of `x`" moves
+    /// with the scaler as well as with the fit; and for a weight other than
+    /// 1 the coordinates the gradient was taken in (the row at unit weight)
+    /// and the ones the projection and the coefficients use a moment later
+    /// (the row at its weight) differ (review 2026-09-12, D5). From the row
+    /// after the switch the coefficients are held in the caller's units and
+    /// each step is mapped by its own row's map, once: a prediction is `x̃ᵀb`
+    /// and reads no moment, so the scaler's moving moves none of it, and
+    /// D5's gap is gone. Measured (task 206): at a half-life of 10 and R²
+    /// 0.978 the slope came out 3.03 for a truth of 2 read through the
+    /// moments, 2.02 held; at a half-life of 50 and R² 0.99998 the
+    /// out-of-sample error was 248 noise variances above the noise, 0.010
+    /// held, the unstandardized fit's.
     #[serde(default)]
     pub standardize: bool,
     /// Cap on `|gradient|` before the step. **Finite by default** (`1e3` via the
@@ -190,8 +242,15 @@ pub struct SgdCfg {
     /// free. The projection is taken in the space the step is taken in: the
     /// caller's units, or the standardized coordinates under
     /// `standardize`, where a caller bound `lo_i` on `c_i` is the bound
-    /// `lo_i * scale_i` on `b_i` and the sum is `sum(b_i / scale_i)`.
-    /// The reported coefficients satisfy the constraint after every learned
+    /// `lo_i * scale_i` on `b_i` and the sum is `sum(b_i / scale_i)`. While
+    /// the scaler warms up that is the coefficients held in those
+    /// coordinates, projected after the scaler learns each row, every target
+    /// when the scales moved; past it, the coefficients in the caller's
+    /// units, projected after each step in the metric of the row's
+    /// coordinates, the bounds met exactly, and the intercept keeping its
+    /// standardized value `b_0 + Σ m_i b_i`, so it takes `Σ m_i (b_i − b'_i)`
+    /// from the slopes' move ([`Constraint::project_in_units`]). The
+    /// reported coefficients satisfy the constraint after every learned
     /// row, and the initial `0` is projected too, so a simplex starts uniform.
     #[serde(default)]
     pub constraint: Option<Constraint>,
@@ -275,7 +334,13 @@ pub struct Sgd {
     cfg: SgdCfg,
     /// Running feature means and variances, when `standardize` is on.
     scaler: Option<EwDiag>,
-    /// Coefficients per target.
+    /// The scaler's warm-up count, and whether it has switched the fit to
+    /// the caller's units (the module docs; schema 47). Untouched without a
+    /// scaler.
+    warmup: Warmup,
+    /// Coefficients per target: in the standardized coordinates of the
+    /// moments as they stand while a scaler warms up, in the caller's
+    /// units without one or after it (docs/PLAN.md task 206).
     beta: Vec<Vec<f64>>,
     /// AdaGrad accumulators per target (empty for the other schedules).
     g2: Vec<Vec<f64>>,
@@ -299,6 +364,20 @@ pub struct Sgd {
     /// where the model reads `x` in place.
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// Once the fit is held in the caller's units, the rest of the row's
+    /// map: the mean `m_i` and scale `s_i` each feature is standardized by
+    /// (0 and 1 in the intercept's slot).
+    #[serde(skip)]
+    mbuf: Vec<f64>,
+    #[serde(skip)]
+    sbuf: Vec<f64>,
+    /// The step in the caller's units, `Δb`, formed whole before any
+    /// coefficient moves, and under AdaGrad each slot's new sum beside it;
+    /// the slopes before a projection after it.
+    #[serde(skip)]
+    dbuf: Vec<f64>,
+    #[serde(skip)]
+    gbuf: Vec<f64>,
     /// The raw row `[1, x]` the scaler is updated with, under a scaler.
     #[serde(skip)]
     rawbuf: Vec<f64>,
@@ -319,6 +398,7 @@ pub struct Sgd {
 struct SgdV3 {
     cfg: SgdCfg,
     scaler: Option<EwDiag>,
+    warmup: Warmup,
     beta: Vec<Vec<f64>>,
     g2: Vec<Vec<f64>>,
     w_sum: f64,
@@ -334,7 +414,7 @@ impl TryFrom<SgdV3> for Sgd {
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
         let (sig2, wsig, spread) = (v.sig2, v.wsig, v.spread);
-        let w_target = v.w_target;
+        let (w_target, warmup) = (v.w_target, v.warmup);
         let k = cfg.k_total();
         let m = cfg.n_targets;
         // What the cfg asks for, the state carries, and nothing else: a
@@ -345,6 +425,12 @@ impl TryFrom<SgdV3> for Sgd {
         // step (review 2026-09-12, S16).
         if cfg.standardize != scaler.is_some() {
             return Err("sgd: the state's scaler does not match its cfg's standardize".into());
+        }
+        // A warm-up is a scaler's: without one it counts nothing, and a
+        // state that says otherwise would read raw coefficients one way and
+        // standardized ones another (docs/PLAN.md task 206).
+        if scaler.is_none() && warmup != Warmup::default() {
+            return Err("sgd: the state's warm-up does not match its cfg's standardize".into());
         }
         let sums = if matches!(cfg.schedule, LearningRate::AdaGrad) {
             m
@@ -378,6 +464,7 @@ impl TryFrom<SgdV3> for Sgd {
         Ok(Self {
             cfg,
             scaler,
+            warmup,
             beta,
             g2,
             w_sum,
@@ -386,6 +473,10 @@ impl TryFrom<SgdV3> for Sgd {
             wsig,
             spread,
             zbuf: vec![],
+            mbuf: vec![],
+            sbuf: vec![],
+            dbuf: vec![],
+            gbuf: vec![],
             rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
@@ -416,6 +507,7 @@ impl Sgd {
         let residual = if residual { m } else { 0 };
         Ok(Self {
             scaler,
+            warmup: Warmup::default(),
             beta,
             g2,
             w_sum: 0.0,
@@ -428,6 +520,10 @@ impl Sgd {
                 TargetSpread::none()
             },
             zbuf: vec![0.0; k],
+            mbuf: vec![0.0; k],
+            sbuf: vec![1.0; k],
+            dbuf: vec![0.0; k],
+            gbuf: vec![0.0; k],
             rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
@@ -439,14 +535,23 @@ impl Sgd {
         &self.cfg
     }
 
-    /// Coefficients in the caller's units. With `standardize` the model
-    /// fits on standardized inputs, so they are unscaled here and the intercept
-    /// absorbs the shift.
+    /// Coefficients in the caller's units. While a scaler warms up the
+    /// model fits on standardized inputs, so they are unscaled here with
+    /// the moments as they stand and the intercept absorbs the shift; once
+    /// it has, they are the state (the module docs).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
-        let Some(sc) = &self.scaler else {
-            return self.beta.clone();
-        };
-        unscaled(&self.beta, sc, self.cfg.fit_intercept)
+        match &self.scaler {
+            Some(sc) if !self.warmup.switched() => unscaled(&self.beta, sc, self.cfg.fit_intercept),
+            // Held in the caller's units: the state itself (the module
+            // docs).
+            _ => self.beta.clone(),
+        }
+    }
+
+    /// The scaler's warm-up ([`crate::Warmup`]): how many rows it has
+    /// learned, and whether the fit is held in the caller's units.
+    pub fn warmup(&self) -> &Warmup {
+        &self.warmup
     }
 
     /// Per-slot scale: the running sd for features, 1 for the intercept and for
@@ -556,8 +661,116 @@ impl Sgd {
         if self.zbuf.len() != k {
             self.zbuf = vec![0.0; k];
         }
+        if self.mbuf.len() != k {
+            self.mbuf = vec![0.0; k];
+            self.sbuf = vec![1.0; k];
+            self.dbuf = vec![0.0; k];
+            self.gbuf = vec![0.0; k];
+        }
         if self.rawbuf.len() != k {
             self.rawbuf = vec![0.0; k];
+        }
+    }
+
+    /// Target `j`'s step once the fit is held in the caller's units (the
+    /// module docs): the gradient in the row's standardized coordinates,
+    /// `g_i = d z_i w + l2 β_i` with `β_i = s_i b_i` and `g_0 = d w`, each
+    /// clipped; `Δβ_i = −lr_i g_i`; mapped into the caller's units by the
+    /// row's map, `Δb_i = Δβ_i / s_i` and `Δb_0 = Δβ_0 − Σ_i m_i Δb_i`. The
+    /// step is formed whole, in `dbuf` (and AdaGrad's new sums in `gbuf`),
+    /// before anything moves: a row any of whose gradients is not finite
+    /// teaches nothing, as before the switch, and so does one any of whose
+    /// coefficients the step would make infinite -- `Δβ_i / s_i` for a
+    /// feature of all but no spread. `false` then.
+    #[inline]
+    fn step_mapped(&mut self, j: usize, d: f64, weight: f64, lr_row: Option<f64>) -> bool {
+        let off = usize::from(self.cfg.fit_intercept);
+        let (lr0, l2, clip) = (self.cfg.learning_rate, self.cfg.l2, self.cfg.clip_gradient);
+        let Self {
+            beta,
+            g2,
+            zbuf,
+            mbuf,
+            sbuf,
+            dbuf,
+            gbuf,
+            ..
+        } = self;
+        let b = &mut beta[j];
+        let sums: &[f64] = g2.get(j).map_or(&[], |v| v.as_slice());
+        // `Δβ` for slot `i` from its gradient, its new AdaGrad sum into
+        // `gbuf`; `None` where the gradient is not usable.
+        let mut delta = |i: usize, g: f64| -> Option<f64> {
+            match lr_row {
+                Some(lr) => g.is_finite().then(|| -(lr * g)),
+                None => {
+                    if !(g * g).is_finite() {
+                        return None;
+                    }
+                    let s = sums[i] + g * g;
+                    gbuf[i] = s;
+                    Some(-(lr0 / (s.sqrt() + 1e-8) * g))
+                }
+            }
+        };
+        let mut shift = 0.0;
+        for i in off..b.len() {
+            let g = (d * zbuf[i] * weight + l2 * (sbuf[i] * b[i])).clamp(-clip, clip);
+            let Some(step) = delta(i, g) else {
+                return false;
+            };
+            let db = step / sbuf[i];
+            if !(b[i] + db).is_finite() {
+                return false;
+            }
+            dbuf[i] = db;
+            shift += mbuf[i] * db;
+        }
+        if off == 1 {
+            let Some(step) = delta(0, (d * weight).clamp(-clip, clip)) else {
+                return false;
+            };
+            let db = step - shift;
+            if !(b[0] + db).is_finite() {
+                return false;
+            }
+            dbuf[0] = db;
+        }
+        for (bi, di) in b.iter_mut().zip(dbuf.iter()) {
+            *bi += di;
+        }
+        if let Some(sums) = g2.get_mut(j) {
+            sums.copy_from_slice(gbuf);
+        }
+        true
+    }
+
+    /// Project target `j`'s slopes, held in the caller's units, on the
+    /// constraint ([`SgdCfg::constraint`]): in the metric of the row's
+    /// standardized coordinates ([`Constraint::project_in_units`]), the
+    /// intercept keeping its standardized value `b_0 + Σ m_i b_i`, so it
+    /// takes `Σ m_i (b_i − b'_i)` from the slopes' move.
+    fn project_mapped(&mut self, j: usize) {
+        let off = usize::from(self.cfg.fit_intercept);
+        let Self {
+            cfg,
+            beta,
+            pbuf,
+            mbuf,
+            sbuf,
+            dbuf,
+            ..
+        } = self;
+        let c = cfg.constraint.as_ref().expect("a constraint to project on");
+        let b = &mut beta[j];
+        dbuf[off..].copy_from_slice(&b[off..]);
+        c.project_in_units(&mut b[off..], &sbuf[off..], pbuf);
+        if off == 1 {
+            let mut shift = 0.0;
+            for i in 1..b.len() {
+                shift += mbuf[i] * (dbuf[i] - b[i]);
+            }
+            b[0] += shift;
         }
     }
 }
@@ -666,6 +879,44 @@ pub(crate) fn standardized<'a>(
     })
 }
 
+/// The row's map once the fit is held in the caller's units (the module
+/// docs): [`standardized`]'s `z`, to the bit, and beside it the mean each
+/// feature is centred on and the scale it is divided by -- its sd, or 1
+/// while it has no spread; through the origin the root of the raw second
+/// moment, or 1 where that is 0, and a mean of 0, nothing being centred.
+/// Feature `i` sits in slot `off + i` of the scaler and slot `i` of `z`,
+/// `mean` and `scale`.
+#[inline]
+pub(crate) fn standardize_row(
+    sc: &EwDiag,
+    off: usize,
+    x: &[f64],
+    lam: f64,
+    z: &mut [f64],
+    mean: &mut [f64],
+    scale: &mut [f64],
+) {
+    let inc = sc.including(lam);
+    for (i, &xi) in x.iter().enumerate() {
+        let (m, v, dev) = inc.moments(off + i, xi);
+        if off == 0 {
+            let raw = v + m * m;
+            z[i] = if raw > 0.0 { xi / raw.sqrt() } else { xi };
+            mean[i] = 0.0;
+            scale[i] = if raw > 0.0 { raw.sqrt() } else { 1.0 };
+            continue;
+        }
+        let s = if crate::variance_is_usable(v, v + m * m) {
+            v.sqrt()
+        } else {
+            1.0
+        };
+        z[i] = dev / s;
+        mean[i] = m;
+        scale[i] = s;
+    }
+}
+
 /// Partial sums the dot product is accumulated in. A single running sum is
 /// a chain of dependent additions, three or four cycles each whatever the
 /// core could do in parallel; eight independent ones run at the adder's
@@ -726,11 +977,19 @@ impl OnlineModel for Sgd {
         // as it stands, the way `predict` reads them (E24, and
         // `SgdCfg::standardize` for the order); the raw `[1, x]` is kept
         // to update the scaler afterwards, at the row's actual weight.
+        //
+        // Once the scaler has warmed up ([`crate::Warmup`]) the fit is held
+        // in the caller's units: the prediction reads `x`, and the row's map
+        // -- each feature's mean and scale beside `z` -- maps the step into
+        // the caller's units (the module docs, docs/PLAN.md task 206).
+        let held = self.warmup.switched();
         if self.scaler.is_some() {
             self.ensure_buffers();
             let Self {
                 scaler,
                 zbuf,
+                mbuf,
+                sbuf,
                 rawbuf,
                 ..
             } = self;
@@ -740,10 +999,25 @@ impl OnlineModel for Sgd {
                 rawbuf[0] = 1.0;
             }
             rawbuf[off..].copy_from_slice(x);
-            for (z, v) in zbuf[off..].iter_mut().zip(standardized(sc, off, x, lam)) {
-                *z = v;
+            if held {
+                standardize_row(
+                    sc,
+                    off,
+                    x,
+                    lam,
+                    &mut zbuf[off..],
+                    &mut mbuf[off..],
+                    &mut sbuf[off..],
+                );
+            } else {
+                for (z, v) in zbuf[off..].iter_mut().zip(standardized(sc, off, x, lam)) {
+                    *z = v;
+                }
             }
         }
+        // The coordinates the prediction reads: `z` while the scaler warms
+        // up, `x` itself without one or after it.
+        let reads_z = self.scaler.is_some() && !held;
 
         // Decay first, so a long gap re-opens an annealed or adapted rate.
         if lam != 1.0 {
@@ -779,13 +1053,12 @@ impl OnlineModel for Sgd {
             LearningRate::AdaGrad => None,
         };
         let (lr0, l2, clip) = (self.cfg.learning_rate, self.cfg.l2, self.cfg.clip_gradient);
-        let z: &[f64] = if self.scaler.is_some() {
-            &self.zbuf[off..]
-        } else {
-            x
-        };
         for j in 0..m {
-            let eta = dot(&self.beta[j], off, z);
+            let eta = if reads_z {
+                dot(&self.beta[j], off, &self.zbuf[off..])
+            } else {
+                dot(&self.beta[j], off, x)
+            };
             let p = self.link(eta);
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
@@ -822,6 +1095,19 @@ impl OnlineModel for Sgd {
                     self.wsig[j] = ws_new;
                 }
             }
+            if held {
+                // The step in the row's coordinates, mapped into the
+                // caller's units by the row's map, and projected there.
+                if self.step_mapped(j, d, weight, lr_row) && self.cfg.constraint.is_some() {
+                    self.project_mapped(j);
+                }
+                continue;
+            }
+            let z: &[f64] = if self.scaler.is_some() {
+                &self.zbuf[off..]
+            } else {
+                x
+            };
             // Per slot: `g = d * z_i * w`, plus `l2 * beta_i` off the
             // intercept, clipped; `beta_i -= lr * g`. The intercept's `z`
             // is 1 (`d * 1 * w` is `d * w` exactly), and it is not
@@ -887,8 +1173,10 @@ impl OnlineModel for Sgd {
         // Project after the scaler moved: the bounds live in the caller's
         // units, and in standardized coordinates they move with the scales,
         // so every target is re-projected when the scales changed (a
-        // positive weight), otherwise only the ones this row stepped.
-        if self.cfg.constraint.is_some() {
+        // positive weight), otherwise only the ones this row stepped. Once
+        // the fit is held in the caller's units each target was projected
+        // after its own step, and the scales move none of it.
+        if self.cfg.constraint.is_some() && !held {
             let scales = self.scaler.is_some().then(|| self.scales());
             let rescaled = self.scaler.is_some() && weight > 0.0;
             let Self {
@@ -904,6 +1192,16 @@ impl OnlineModel for Sgd {
                     c.project(&mut b[off..], scales.as_deref().map(|s| &s[off..]), pbuf);
                 }
             }
+        }
+        // The warm-up: the scaler has learned the row. On the row that
+        // completes it the coefficients are read out once, with the moments
+        // as they stand -- the numbers `coefficients()` gave until now --
+        // and held in the caller's units from then on.
+        if !held
+            && let Some(sc) = &self.scaler
+            && self.warmup.learn(weight)
+        {
+            self.beta = unscaled(&self.beta, sc, self.cfg.fit_intercept);
         }
         self.w_sum = lam * self.w_sum + weight;
         // A label `strict_binary` refuses carries no weight for its target,
@@ -940,7 +1238,11 @@ impl OnlineModel for Sgd {
                 }
             };
             match &self.scaler {
+                // Without a scaler, or once the fit is held in the
+                // caller's units: `x̃ᵀb`, which reads no moment, so it is
+                // the next step's number whatever the clock.
                 None => predict_with(x, &mut pred),
+                Some(_) if self.warmup.switched() => predict_with(x, &mut pred),
                 // `&self`, so the standardized row goes into a buffer of
                 // the thread's rather than one of the model's, and not a
                 // fresh vector per row.
@@ -2040,10 +2342,15 @@ mod tests {
 
     /// Without an intercept, `standardize` divides each feature by the root
     /// of its raw second moment, the row admitted at unit weight, and leaves
-    /// a feature with none (here one always 0) as it is; the coefficients are
-    /// the betas over the root of the raw moment as it stands. Held to SGD
-    /// written from the module docs over the raw sums `Σ w`, `Σ w x²`
-    /// (task 158).
+    /// a feature with none (here one always 0) at a scale of 1. While the
+    /// scaler warms up the betas are in those coordinates and the
+    /// coefficients are the betas over the root of the raw moment as it
+    /// stands; on the row Kish's count of the weights reaches 22 they are
+    /// read out so once and held in the caller's units, the prediction `xᵀb`
+    /// and the step `Δβ_f = −lr (d z_f w + l2 s_f b_f)`, taken in the row's
+    /// coordinates, mapped back by `Δb_f = Δβ_f / s_f` (the module docs).
+    /// Held to SGD written from them over the raw sums `Σ w`, `Σ w x²`
+    /// (task 158; docs/PLAN.md task 206).
     #[test]
     fn standardizing_without_an_intercept_is_the_raw_moment_scaling() {
         let mut c = cfg(3, SgdLoss::Squared);
@@ -2055,6 +2362,7 @@ mod tests {
         c.decay = Decay::Halflife(10.0);
         let mut m = Sgd::new(c).unwrap();
         let (mut w_sum, mut s2, mut b) = (0.0f64, [0.0f64; 3], [0.0f64; 3]);
+        let (mut kish_w, mut kish_w2, mut held) = (0.0f64, 0.0f64, false);
         let mut s = 73u64;
         for i in 0..300 {
             let x = [3.0 + 2.0 * lcg(&mut s), 0.01 * lcg(&mut s), 0.0];
@@ -2062,34 +2370,61 @@ mod tests {
             let w = 0.5 + 0.5 * (lcg(&mut s) + 1.0);
             let d_clock = if i == 0 { 0.0 } else { 1.0 };
             let lam = 0.5f64.powf(d_clock / 10.0);
-            let z: Vec<f64> = (0..3)
+            let scale: Vec<f64> = (0..3)
                 .map(|f| {
                     let raw = (lam * s2[f] + x[f] * x[f]) / (lam * w_sum + 1.0);
-                    if raw > 0.0 { x[f] / raw.sqrt() } else { x[f] }
+                    if raw > 0.0 { raw.sqrt() } else { 1.0 }
                 })
                 .collect();
-            let want: f64 = (0..3).map(|f| b[f] * z[f]).sum();
+            let z: Vec<f64> = (0..3).map(|f| x[f] / scale[f]).collect();
+            let want: f64 = if held {
+                (0..3).map(|f| b[f] * x[f]).sum()
+            } else {
+                (0..3).map(|f| b[f] * z[f]).sum()
+            };
             let got = m.step(&x, &[Some(y)], d_clock, w).pred[0];
             assert!(
                 (got - want).abs() <= 1e-10 * want.abs().max(1.0),
                 "row {i}: {got} against {want}"
             );
             for f in 0..3 {
-                b[f] -= 0.1 * ((want - y) * z[f] * w + 0.01 * b[f]);
+                if held {
+                    let step = -0.1 * ((want - y) * z[f] * w + 0.01 * scale[f] * b[f]);
+                    b[f] += step / scale[f];
+                } else {
+                    b[f] -= 0.1 * ((want - y) * z[f] * w + 0.01 * b[f]);
+                }
                 s2[f] = lam * s2[f] + w * x[f] * x[f];
             }
             w_sum = lam * w_sum + w;
+            if !held {
+                kish_w += w;
+                kish_w2 += w * w;
+                if kish_w * kish_w / kish_w2 >= crate::WARMUP_ROWS {
+                    held = true;
+                    for f in 0..3 {
+                        let raw = s2[f] / w_sum;
+                        if raw > 0.0 {
+                            b[f] /= raw.sqrt();
+                        }
+                    }
+                }
+            }
+            assert_eq!(m.warmup().switched(), held, "row {i}");
         }
         let got = &m.coefficients()[0];
         for f in 0..3 {
-            let raw = s2[f] / w_sum;
-            let want = if raw > 0.0 { b[f] / raw.sqrt() } else { b[f] };
             assert!(
-                (got[f] - want).abs() <= 1e-10 * want.abs().max(1e-3),
-                "slot {f}: {} against {want}",
-                got[f]
+                (got[f] - b[f]).abs() <= 1e-10 * b[f].abs().max(1e-3),
+                "slot {f}: {} against {}",
+                got[f],
+                b[f]
             );
         }
+        assert!(
+            (got[0] - 0.4).abs() < 0.05 && (got[1] + 50.0).abs() < 5.0,
+            "{got:?}"
+        );
         assert_eq!(got[2], 0.0, "the feature with no moment");
     }
 
@@ -2384,7 +2719,16 @@ mod tests {
     /// correctly rounded everywhere. Under `Halflife(80)` with irregular
     /// steps each row's factor was an `exp2`, whose last bit glibc and
     /// Apple's libm round differently: the digests pinned on macOS failed
-    /// on Linux (CI, 2026-10-08), and were re-pinned here.
+    /// on Linux (CI, 2026-10-08), and were re-pinned here. Re-pinned again
+    /// for task 206 (2026-10-08): past the scaler's warm-up the coefficients
+    /// are held in the caller's units, each step mapped by its own row's
+    /// scaler, where they were read through the moments as they stood
+    /// (review round 5, G1). The picks were `[2.5454166364986803,
+    /// 0.22878767638248743, 4.291195395028382]` (Huber) and
+    /// `[3.8900811448866905, 0.6435315190771895, 4.854641183478482]`
+    /// (squared), the digests `0x95a9_bba1_2435_1e24` and
+    /// `0x5948_2068_29a3_3663`; `tests/reference_paths.py`'s `sgd_ref` under
+    /// `standardize`, on this stream, gives the new picks to 6e-16.
     #[test]
     fn the_huber_and_squared_losses_did_not_move() {
         let run = |loss: SgdLoss| {
@@ -2424,12 +2768,12 @@ mod tests {
         assert_ne!(huber.0, squared.0, "the cut binds on the outliers");
         for ((h, got), (digest, picks)) in [huber, squared].into_iter().zip([
             (
-                0x95a9_bba1_2435_1e24_u64,
-                [2.5454166364986803, 0.22878767638248743, 4.291195395028382],
+                0xe5e2_e8b6_26de_7159_u64,
+                [2.496277502087633, 0.14614547077981044, 4.2455196022404635],
             ),
             (
-                0x5948_2068_29a3_3663_u64,
-                [3.8900811448866905, 0.6435315190771895, 4.854641183478482],
+                0x5c6b_9580_7ef9_2eeb_u64,
+                [3.8184571260400335, 0.6039531382865846, 4.8134477635370345],
             ),
         ]) {
             assert_eq!(h, digest, "picks {got:?}");

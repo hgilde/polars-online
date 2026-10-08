@@ -166,8 +166,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// from, and `huber` and `quantile` their data shares; a file from before it
 /// is refit. **46 since task 208** (2026-10-08): a stream keeps the waits
 /// its "has not been met" notices count, which a 45 file's stream would
-/// start again at the load; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 46;
+/// start again at the load; a file from before it is refit. **47 since
+/// task 206** (the same day): a standardizing `sgd`, `pa` or `kalman` keeps
+/// its scaler's warm-up, and past it `sgd`'s and `pa`'s coefficients are in
+/// the caller's units, where they were in the scaler's coordinates; a file
+/// from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 47;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 46;
+pub const SCHEMA: u32 = 47;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");
@@ -28,6 +28,9 @@ pub mod lasso_window {
 pub mod kalman {
     include!("kalman.rs");
 }
+pub mod kalman_warming {
+    include!("kalman_warming.rs");
+}
 pub mod huber {
     include!("huber.rs");
 }
@@ -46,6 +49,9 @@ pub mod ew_cov_window {
 pub mod sgd {
     include!("sgd.rs");
 }
+pub mod sgd_warming {
+    include!("sgd_warming.rs");
+}
 pub mod sgd_huber {
     include!("sgd_huber.rs");
 }
@@ -57,6 +63,9 @@ pub mod sgd_logistic {
 }
 pub mod pa {
     include!("pa.rs");
+}
+pub mod pa_warming {
+    include!("pa_warming.rs");
 }
 pub mod holt {
     include!("holt.rs");
@@ -120,16 +129,19 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &lasso::FIXTURE,
     &lasso_window::FIXTURE,
     &kalman::FIXTURE,
+    &kalman_warming::FIXTURE,
     &huber::FIXTURE,
     &quantile::FIXTURE,
     &ftrl::FIXTURE,
     &ew_cov::FIXTURE,
     &ew_cov_window::FIXTURE,
     &sgd::FIXTURE,
+    &sgd_warming::FIXTURE,
     &sgd_huber::FIXTURE,
     &sgd_eps::FIXTURE,
     &sgd_logistic::FIXTURE,
     &pa::FIXTURE,
+    &pa_warming::FIXTURE,
     &holt::FIXTURE,
     &kmeans_warming::FIXTURE,
     &kmeans::FIXTURE,

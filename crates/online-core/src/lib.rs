@@ -101,6 +101,7 @@ mod since;
 mod solve;
 mod spread;
 mod stats;
+mod warmup;
 mod window;
 
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
@@ -156,6 +157,7 @@ pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, SlotMetrics};
+pub use warmup::{WARMUP_ROWS, Warmup};
 pub use window::{
     At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowClosed, WindowShadow,
     truncated, truncated_mean, truncated_scalar,
@@ -556,7 +558,15 @@ pub use window::{
 ///   withholding every row past 95% settled. A 45 file's stream would start
 ///   each wait again at the load; the bank refuses a file older than 46 by
 ///   number, and pre-1.0 no loader is written. No model's own state moved.
-pub const SCHEMA_VERSION: u32 = 46;
+/// - 47 (2026-10-08, task 206): a standardizing `sgd`, `pa` or `kalman`
+///   keeps its scaler's warm-up ([`Warmup`]: Kish's count of the rows the
+///   scaler has learned, and whether it has reached [`WARMUP_ROWS`]). Past
+///   it `sgd`'s and `pa`'s coefficients are in the caller's units, where
+///   they were in the scaler's coordinates, and `kalman`'s `b` and `P`
+///   follow every move of the moments (review round 5, G1). A state from
+///   before 47 does not decode, and its coefficients meant another thing;
+///   the minimum moves to 47 with it, and pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 47;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -580,11 +590,14 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// **46 since task 208** (2026-10-08), with [`SCHEMA_VERSION`] and the
-/// fixtures regenerated at it: a stream's state keeps its readiness
-/// notices' waits, and no model's own state moved. **45 since task 116**
-/// (2026-10-07): `rls`'s squared-weight sum and the robust models' data
-/// shares.
+/// **47 since task 206** (2026-10-08): a standardizing `sgd`, `pa` and
+/// `kalman` keep their scaler's warm-up, and past it their numbers mean
+/// another thing, so a state from before 47 is refused by its number; the
+/// fixtures are regenerated at 47. **46 since task 208** (2026-10-08), with
+/// [`SCHEMA_VERSION`] and the fixtures regenerated at it: a stream's state
+/// keeps its readiness notices' waits, and no model's own state moved.
+/// **45 since task 116** (2026-10-07): `rls`'s squared-weight sum and the
+/// robust models' data shares.
 ///
 /// **44 since tasks 194-202** (2026-10-07), with [`SCHEMA_VERSION`] and the
 /// fixtures regenerated at it. A state from before a layout moved does not
@@ -650,7 +663,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 46;
+pub const MIN_SCHEMA_VERSION: u32 = 47;
 
 #[cfg(test)]
 mod tests {

@@ -1517,12 +1517,20 @@ const GOLDEN_RLS: &[f64] = &[
     2.1844587322364037,
     -0.06708586579330882,
 ];
+// `kalman` and `kalman_revert` again for task 206 (2026-10-08): past the
+// standardizer's warm-up, 22 rows by Kish's count of the weights, `b` and `P`
+// follow every move of the moments (review round 5, G1). Row 20 is inside the
+// warm-up and kept its bits; rows 45 and 59 were 1.9517466851899055 and
+// 0.026207278510925018 (`kalman`), 1.153918160782199 and 0.028098479936384025
+// (`kalman_revert`). `tests/reference.py`'s `kalman_ref`, with the warm-up and
+// the change of coordinates by matrix products, gives the new ones to 1.4e-14.
 const GOLDEN_KALMAN: &[f64] = &[
     0.08051708612823805,
-    1.9517466851899055,
-    0.026207278510925018,
+    1.9812568625118254,
+    -0.06615560201475972,
 ];
-const GOLDEN_KALMAN_REVERT: &[f64] = &[0.3098186122738434, 1.153918160782199, 0.028098479936384025];
+const GOLDEN_KALMAN_REVERT: &[f64] =
+    &[0.3098186122738434, 1.1519113095475324, 0.009601088217273672];
 const GOLDEN_LASSO: &[f64] = &[
     0.25359037757905656,
     2.1511829817060866,
@@ -1559,11 +1567,18 @@ const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5899321334553916, 0.45251642
 // `huber_delta` is in units of the residual's EW std (U1), so the cut of 0.5
 // is 0.5·s where it was 0.5 of the target; a replica of the docstring's
 // recursion -- the scaler with the row admitted, `s²` the EW mean of the
-// squared out-of-sample residuals -- gives these three to 1e-15.
+// squared out-of-sample residuals -- gave those three to 1e-15. Again for
+// task 206 (2026-10-08): past the scaler's warm-up, 22 rows by Kish's count of
+// the weights, the coefficients are held in the caller's units and each step
+// mapped into them by its own row's scaler (review round 5, G1). Row 20 is
+// inside the warm-up and kept its bits; rows 45 and 59 were
+// 0.8740905120546256 and -0.026418737010923815. `tests/reference_paths.py`'s
+// `sgd_ref` under `standardize`, the moments by their definition, gives the
+// new ones to 1.3e-17.
 const GOLDEN_SGD: &[f64] = &[
     -9.140859901712872e-5,
-    0.8740905120546256,
-    -0.026418737010923815,
+    0.9626546015542387,
+    -0.09404195296589056,
 ];
 const GOLDEN_SGD_SQUARED: &[f64] = &[
     0.31727038792368356,

@@ -1763,10 +1763,33 @@ def kalman(
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients
-        are in the original units either way. Default ``True``. Without an
-        intercept the features are scaled by their root mean square and not
-        centred, as for :func:`ewridge`. With ``standardize = False``, ``q = 0``
-        and a fixed ``obs_var`` the filter is exactly Bayesian linear regression.
+        are in the original units either way. Default ``True``. Each row is
+        standardized against the EW moments of the rows before it, ``z_i = (x_i
+        - m_i) / s_i``. Without an intercept the features are scaled by their
+        root mean square and not centred, as for :func:`ewridge`. With
+        ``standardize = False``, ``q = 0`` and a fixed ``obs_var`` the filter is
+        exactly Bayesian linear regression.
+
+        The moments warm up first: until Kish's count of the rows they have
+        learned, ``(sum w) ** 2 / sum w ** 2`` undecayed, reaches 22, the
+        filter's state is read in their coordinates as they stand. From the row
+        after that, the state follows the moments to their new coordinates on
+        every row that moves them, ``b <- A b`` and ``P <- A P A'``:
+
+        .. code-block:: text
+
+            A_00 = 1,    A_0i = (m'_i - m_i) / s_i,    A_ii = s'_i / s_i
+
+        with ``m``, ``s`` the moments the row was read at and ``m'``, ``s'``
+        after it. So the moments' moving moves no prediction, no predictive
+        variance and no coefficient in the original units. Read through the
+        moments as they stood, a finite half-life's own wander moved every
+        prediction: at a half-life of 50 and R² 0.99998 the out-of-sample error
+        was 223 noise variances above the noise, where the unstandardized
+        filter paid 0.014 (docs/PLAN.md task 206). A move past what a row of
+        data makes -- a scale by more than 1024 times either way in one row, or
+        a mean by more than 1024 of its scale -- is not followed, and the state
+        is read in the new coordinates as before the warm-up ended.
     ``revert_half_life``
         A reversion half-life ``r_i`` per slot: between observations the
         coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a coefficient
@@ -2617,9 +2640,12 @@ def sgd(
 
     then ``g_i = d * z_i * w + l2 * b_i`` for a slope, and ``g_0 = d * w`` for
     the intercept, which is not penalised; each ``g_i`` is clamped to ``+/-
-    clip_gradient``; then ``b_i -= lr_i * g_i``. The Poisson link clamps
-    ``eta`` to ``+/- 30`` before the ``exp``, so a Poisson prediction never
-    exceeds ``e ** 30``, about ``1.07e13``.
+    clip_gradient``; then ``b_i -= lr_i * g_i``. With ``standardize=False``,
+    ``z = [1, x]`` and ``b`` is in the caller's units; under ``standardize``,
+    the default, ``z`` is the row standardized and the step, once the scaler
+    has warmed up, is mapped into the caller's units (``standardize`` below).
+    The Poisson link clamps ``eta`` to ``+/- 30`` before the ``exp``, so a
+    Poisson prediction never exceeds ``e ** 30``, about ``1.07e13``.
 
     ``s`` is the EW standard deviation of the target's out-of-sample
     residuals, as the row arrives, as for :func:`huber`. Its square is the EW
@@ -2682,7 +2708,8 @@ def sgd(
         not the coefficients.
     ``l2``
         A ridge on every step, on the slopes only: the intercept is not
-        penalised. Default 0.0.
+        penalised. Under ``standardize`` it is on the slope in the row's
+        standardized coordinates, ``s_i * b_i``. Default 0.0.
     ``clip_gradient``
         A cap on each coordinate of the gradient, which clamps each ``g_i`` to
         ``+/- clip_gradient``: a box, not a cap on the gradient's norm, in the
@@ -2698,15 +2725,44 @@ def sgd(
         as for :func:`kalman`: raw, features times 100 took the defaults' fit from
         an R² of 0.96 to -71847.
         Each row is standardized against the running moments with the row
-        admitted, sklearn's ``StandardScaler.partial_fit`` then ``transform``.
-        That bounds a standardized value by ``sqrt(weight_sum)``, and it is not a leak:
-        the rule is about the target, and the features of the row being predicted
+        admitted, sklearn's ``StandardScaler.partial_fit`` then ``transform``:
+        ``z_i = (x_i - m_i) / s_i``, ``m_i`` and ``s_i`` the EW mean and standard
+        deviation, ``s_i = 1`` for a feature with no spread yet. Without an
+        intercept the row is scaled by each column's root mean square and not
+        centred, ``z_i = x_i / s_i``, as for :func:`ewridge`. That bounds a
+        standardized value by ``sqrt(weight_sum)``, and it is not a leak: the
+        rule is about the target, and the features of the row being predicted
         are known. Against the moments from before the row, a variance a few rows
         old can be tiny by chance, and one step throws a coefficient the rest of a
-        short group never brings back. The same standardized row serves the
-        prediction and the step, and the coefficients come back in the caller's
-        units. Without an intercept the row is scaled by each column's root mean
-        square and not centred, as for :func:`ewridge`.
+        short group never brings back.
+
+        The moments warm up first. Until Kish's count of the rows they have
+        learned, ``(sum w) ** 2 / sum w ** 2`` undecayed, reaches 22, the
+        coefficients are held in the standardized coordinates, the same
+        standardized row serves the prediction and the step, and the
+        coefficients are read out in the caller's units through the moments as
+        they stand. On the row the count reaches 22 they are read out so once,
+        and from then on held in the caller's units, the step taken in ``z``
+        mapped into them by the row's own ``m_i`` and ``s_i``:
+
+        .. code-block:: text
+
+            eta   = b_0 + sum_i b_i * x_i
+            g_i   = d * z_i * w + l2 * s_i * b_i,    g_0 = d * w      (each clamped)
+            b_i  -= lr_i * g_i / s_i
+            b_0  -= lr_0 * g_0 - sum_i m_i * lr_i * g_i / s_i
+
+        So a step moves the row's own prediction as the step in ``z`` does, and
+        one learning rate suits every column. The prediction reads no moment,
+        so the moments' moving moves none of it. Read through the moments as
+        they stood, a finite half-life's own wander moved every prediction: at
+        a half-life of 10 and R² 0.978 the slope came out 3.03 for a truth of
+        2, and at a half-life of 50 and R² 0.99998 the out-of-sample error was
+        248 noise variances above the noise, where the raw fit's was 0.010
+        (docs/PLAN.md task 206). The warm-up is why the first rows keep their
+        old behaviour: held in the caller's units from the first row, a step
+        taken against a scale a few rows old was kept, and short groups lost
+        everything (R² -207 at rows 25-50 of 200-row groups).
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes; the intercept is always free. ``coef_min`` and
         ``coef_max`` bound each slope (one number for every feature, or a list
@@ -2722,10 +2778,14 @@ def sgd(
         ``standardize`` the step and the projection are taken in standardized
         coordinates with the bounds and the sum carried over exactly, and the
         reported coefficients satisfy the constraint in the caller's units after
-        every learned row. A sum the bounds cannot reach, a floor above a cap, or
-        an infinite bound on the wrong side is refused by name; floors of ``[0.1,
-        0.2, 0.3]`` accept a sum of ``0.6`` although they add up to
-        ``0.6000000000000001``.
+        every learned row. Past the scaler's warm-up the coefficients are held
+        in the caller's units and the projection is the same one written in
+        them, ``b_i = clamp(b_i - mu / s_i ** 2, lo_i, hi_i)``, the bounds met
+        exactly; the intercept keeps its standardized value, taking ``sum_i m_i
+        * (b_i - b_i')`` from the slopes' move. A sum the bounds cannot reach, a
+        floor above a cap, or an infinite bound on the wrong side is refused by
+        name; floors of ``[0.1, 0.2, 0.3]`` accept a sum of ``0.6`` although
+        they add up to ``0.6000000000000001``.
     ``strict_binary``
         Under ``loss = "logistic"``, refuse a chunk whose target is not 0 or 1,
         naming the row, before any stream is touched, as :func:`ftrl` does.
@@ -2860,6 +2920,11 @@ def pa(
         pa2   tau = loss / (s + 1 / (2c))    (damped by c)
         b    += min(w, 1) * tau * sign(y - p) * z
 
+    That is the step with ``standardize=False``, ``z = [1, x]``. Under
+    ``standardize``, the default, ``z`` is the row standardized, and once the
+    scaler has warmed up the step is mapped into the caller's units
+    (``standardize`` below).
+
     ``sigma`` is the target's own EW standard deviation as the row arrives, as
     for :func:`sgd`'s tube: the spread of ``y`` around its EW mean, over the
     rows with the target and a weight above 0, whatever the fit, each ``y``
@@ -2913,12 +2978,37 @@ def pa(
         outside the feasible set is never realizable, so the model keeps stepping
         against the walls; a small ``c`` keeps those steps small.
     ``standardize``
-        Take the step in standardized coordinates, :func:`sgd`'s scaler and its
-        rule: each row standardized against the running moments with the row
-        admitted, the coefficients read back in the caller's units, and a box or
-        a sum projected with its bounds carried over. Default ``True``: raw, ``s``
-        and ``c`` are in the features' units, so one feature in thousands makes
+        Take the step in standardized coordinates, :func:`sgd`'s scaler, its
+        rule and its warm-up: each row standardized against the running moments
+        with the row admitted, ``z_i = (x_i - m_i) / s_i`` (``z_i = x_i / s_i``,
+        the root mean square, without an intercept), and a box or a sum
+        projected with its bounds carried over. Default ``True``: raw, ``s`` and
+        ``c`` are in the features' units, so one feature in thousands makes
         every step tiny and one in thousandths every step the cap.
+
+        Until Kish's count of the rows the moments have learned reaches 22,
+        the coefficients are held in the standardized coordinates and read
+        back in the caller's units through the moments as they stand. On the
+        row it reaches 22 they are read out so once, and from then on held in
+        the caller's units, the step mapped into them by the row's own ``m_i``
+        and ``s_i``:
+
+        .. code-block:: text
+
+            step  = min(w, 1) * tau * sign(y - p)
+            b_i  += step * z_i / s_i
+            b_0  += step - sum_i m_i * step * z_i / s_i
+
+        The step still puts the row where the update says: the row's change of
+        prediction is ``step * ||z||^2``, so an uncapped step at weight 1 leaves
+        it on the tube's edge, and one at weight ``w < 1`` goes that fraction
+        of the way. The prediction reads no moment, so the moments' moving moves
+        none of it. Read through the moments as they stood, a finite
+        half-life's own wander moved every prediction: at a half-life of 50 and
+        R² 0.99998, 31.8 noise variances of out-of-sample error above the noise
+        where the raw fit paid 0.18 (docs/PLAN.md task 206). Past the warm-up a
+        box or a sum bounds the coefficients in the caller's units and is
+        projected as for :func:`sgd`.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the

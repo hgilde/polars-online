@@ -154,6 +154,7 @@ fn holds<M: OnlineModel>(
             .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
             .fold(0.0, f64::max);
         let tol = (inv.tol)(level);
+        println!("{name} at level {level}: predictions {worst:.1e} from those at 0.5 ({tol:.1e})");
         assert!(
             worst <= tol,
             "{name} at level {level}: predictions {worst:.3e} from those at 0.5, past {tol:.1e}"
@@ -406,8 +407,10 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
 /// held here; what it predicts is. Its scaler starts from a mean of zero, so
 /// its first rows see the level itself and the fit at a level differs from
 /// the fit at 0.5 by a warm-up that decays with the coefficient half-life:
-/// 7.3e-2 at the stop, 4.9e-4 at every level from 100 half-lives. The stall
-/// grew it back to 6.9e-2 there.
+/// 1.1e-5 at every level from 100 half-lives. Read through the moments as
+/// they stood, before task 206 re-mapped the filter through their moves, it
+/// was 7.3e-2 at the stop and 4.9e-4 from 100 half-lives. The stall grew it
+/// back to 6.9e-2 there.
 #[test]
 fn kalman_predicts_the_same_at_every_level() {
     let cfg = KalmanCfg {
@@ -438,8 +441,12 @@ fn kalman_predicts_the_same_at_every_level() {
 /// `sgd` standardizes each row with the moments that include it, so it reads
 /// the stopped feature's deviation against a spread that decays with it --
 /// the deviation from the pair, which keeps every bit as it shrinks.
-/// Measured from the stop: 3.7e-15 at 1e3, 1.7e-9 at 1e8, 3.2e-6 at 1e12.
-/// The stall left 6.4e-2 at 40 half-lives and 0.12 at 100.
+/// Measured from the stop: 5.4e-13 at 1e3, 5.8e-8 at 1e8, 5.6e-4 at 1e12,
+/// where the ridges read 1.3e-13, 1.3e-8 and 9.3e-5. Past its warm-up the fit
+/// is held in the caller's units (docs/PLAN.md task 206), so its intercept
+/// carries the level times the slope and rounds at that size; read through
+/// the scaler it was 3.7e-15, 1.7e-9 and 3.2e-6. The stall left 6.4e-2 at
+/// 40 half-lives and 0.12 at 100.
 #[test]
 fn sgd_predicts_the_same_at_every_level() {
     let cfg = SgdCfg {
@@ -730,10 +737,16 @@ fn a_held_target_is_reported_as_it_is() {
 /// 20,000, and the standardized ridge's slope went from the 0.5 it learned
 /// to 0.04 by row 300,000; with the means as pairs it stays at 0.50 to 0.52.
 /// `sgd`'s predictions, which the stall took 2.2e-2 from the fit at 0.5,
-/// stay within 7e-7 of it from the stop. Setting the mean to the value at
-/// the stall, the first fix built for this, moved them by 6.9e-2 at once;
-/// stepping a gap to it, the second, by 3.5e-3. At 1e8 a plain mean stalls
-/// at row 120,000.
+/// stay within ten rounding steps of the level of it from the stop: 6.6e-4
+/// measured. Setting the mean to the value at the stall, the first fix built
+/// for this, moved them by 6.9e-2 at once; stepping a gap to it, the second,
+/// by 3.5e-3. At 1e8 a plain mean stalls at row 120,000. `sgd`'s were within
+/// 7e-7 while its coefficients were read through the scaler; past the
+/// warm-up they are held in the caller's units (docs/PLAN.md task 206), so
+/// the intercept carries the level times the slope, 5e11 here, each step
+/// rounds it by up to 6e-5 and the prediction's products by as much: a few
+/// rounding steps of the level, as every fit in the caller's units pays
+/// (`steps_of`).
 #[test]
 fn without_decay_a_stopped_feature_keeps_its_slope() {
     let held = 100_000;
@@ -784,7 +797,7 @@ fn without_decay_a_stopped_feature_keeps_its_slope() {
         .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
         .fold(0.0, f64::max);
     assert!(
-        worst <= 1e-5,
+        worst <= steps_of(1e12) / 10.0,
         "sgd: predictions {worst:.3e} from those at 0.5"
     );
 }

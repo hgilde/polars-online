@@ -753,6 +753,175 @@ def _age_and_learn(history: list[list[float]], lam: float, y: float, w: float) -
         history.append([y, w])
 
 
+#: Kish's count of the rows a standardizing model's scaler learns before its
+#: fit is held in the caller's units (the ``sgd`` builder's ``standardize``
+#: docstring; docs/PLAN.md task 206).
+WARMUP_ROWS = 22.0
+
+
+def _moments(
+    rows: list[np.ndarray], om: list[float], fit_intercept: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """The scaler's means and scales by their definition, over the rows
+    ``rows`` at the aged weights ``om``: ``m_i`` the EW mean and ``s_i`` the
+    EW standard deviation, 1 where there is no spread; without an intercept
+    ``m_i = 0`` and ``s_i`` the root of the raw second moment, 1 where it is
+    0. Two passes over the rows; a feature every weighted row holds at one
+    value has no spread, exactly, as the core's pairs give it."""
+    k = len(rows[0]) if rows else 0
+    m, s = np.zeros(k), np.ones(k)
+    if not rows:
+        return m, s
+    X, v = np.vstack(rows), np.asarray(om)
+    if not np.sum(v) > 0.0:
+        return m, s
+    for i in range(k):
+        col = X[:, i]
+        if fit_intercept:
+            held = col[v > 0.0]
+            same = bool(np.all(held == held[0]))
+            mean = float(held[0]) if same else float(np.sum(v * col) / np.sum(v))
+            var = 0.0 if same else float(np.sum(v * (col - mean) ** 2) / np.sum(v))
+            m[i] = mean
+            s[i] = np.sqrt(var) if var > 0.0 else 1.0
+        else:
+            raw = float(np.sum(v * col**2) / np.sum(v))
+            s[i] = np.sqrt(raw) if raw > 0.0 else 1.0
+    return m, s
+
+
+def _row_map(
+    rows: list[np.ndarray], om: list[float], x: np.ndarray, fit_intercept: bool
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The row's map under ``standardize`` (the ``sgd`` builder's docstring):
+    the moments with the row itself admitted at unit weight, ``rows`` and
+    ``om`` the earlier rows already aged by this row's decay. ``z``, ``m``
+    and ``s`` over the coefficient slots, the intercept's ``(1, 0, 1)``
+    first: ``z_i = (x_i - m_i) / s_i``, or ``x_i / s_i`` without an
+    intercept."""
+    m, s = _moments([*rows, x], [*om, 1.0], fit_intercept)
+    z = (x - m) / s
+    if fit_intercept:
+        return (
+            np.concatenate(([1.0], z)),
+            np.concatenate(([0.0], m)),
+            np.concatenate(([1.0], s)),
+        )
+    return z, m, s
+
+
+def _read_out(beta: np.ndarray, m: np.ndarray, s: np.ndarray, fit_intercept: bool) -> np.ndarray:
+    """Coefficients in the scaler's coordinates read in the caller's units
+    with the moments ``m``, ``s`` as they stand: ``b_i = beta_i / s_i`` and
+    ``b_0 = beta_0 - sum_i b_i m_i``."""
+    off = 1 if fit_intercept else 0
+    b = beta.copy()
+    b[off:] = beta[off:] / s
+    if fit_intercept:
+        b[0] = beta[0] - float(np.sum(b[1:] * m))
+    return b
+
+
+def _mapped(dbeta: np.ndarray, m: np.ndarray, s: np.ndarray, fit_intercept: bool) -> np.ndarray:
+    """A step taken in the row's standardized coordinates, in the caller's
+    units (``m``, ``s`` over the coefficient slots, the intercept's 0 and 1
+    in): ``db_i = dbeta_i / s_i``, and ``db_0 = dbeta_0 - sum_i m_i db_i``."""
+    db = dbeta / s
+    if fit_intercept:
+        db[0] = dbeta[0] - float(np.sum(m[1:] * db[1:]))
+    return db
+
+
+def _box(
+    k: int, lo: float | None, hi: float | None, total: float | None
+) -> tuple[np.ndarray, np.ndarray, float | None] | None:
+    """The bounds a constraint gives, one per slope, or ``None`` where none
+    is given."""
+    if lo is None and hi is None and total is None:
+        return None
+    return (
+        np.full(k, -np.inf if lo is None else lo),
+        np.full(k, np.inf if hi is None else hi),
+        total,
+    )
+
+
+def _nearest(
+    v: np.ndarray,
+    step: np.ndarray,
+    weight: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+    total: float | None,
+) -> np.ndarray:
+    """``clip(v - mu * step, lo, hi)`` for the one ``mu`` at which ``sum(weight
+    * x) = total`` (0 without a sum): the nearest point of the box and the
+    sum in the metric ``sum((x_i - v_i) ** 2 / (step_i / weight_i))``, from
+    its KKT conditions. ``mu`` is found by bisection on the sum, which falls
+    as ``mu`` grows, not by the breakpoints the core sorts."""
+
+    def at(mu: float) -> np.ndarray:
+        return np.clip(v - mu * step, lo, hi)
+
+    if total is None:
+        return at(0.0)
+    lo_mu, hi_mu = -1.0, 1.0
+    while float(np.sum(weight * at(lo_mu))) < total:
+        lo_mu *= 2.0
+    while float(np.sum(weight * at(hi_mu))) > total:
+        hi_mu *= 2.0
+    for _ in range(400):
+        mid = 0.5 * (lo_mu + hi_mu)
+        if mid in (lo_mu, hi_mu):
+            break
+        if float(np.sum(weight * at(mid))) > total:
+            lo_mu = mid
+        else:
+            hi_mu = mid
+    return at(0.5 * (lo_mu + hi_mu))
+
+
+def _projected_standardized(
+    beta: np.ndarray, box: tuple, s: np.ndarray, fit_intercept: bool
+) -> np.ndarray:
+    """While the scaler warms up: the slopes ``beta_i`` in the scaler's
+    coordinates, ``beta_i = s_i b_i``, projected Euclidean there, the
+    caller's bounds carried over, ``lo_i s_i <= beta_i <= hi_i s_i`` and
+    ``sum(beta_i / s_i) = total``; the intercept free (the ``sgd`` builder's
+    ``coef_min`` docstring)."""
+    lo, hi, total = box
+    off = 1 if fit_intercept else 0
+    out = beta.copy()
+    out[off:] = _nearest(beta[off:], 1.0 / s, 1.0 / s, lo * s, hi * s, total)
+    return out
+
+
+def _projected_in_units(
+    b: np.ndarray, box: tuple, m: np.ndarray, s: np.ndarray, fit_intercept: bool
+) -> np.ndarray:
+    """Past the warm-up: the slopes in the caller's units projected on the
+    caller's box and sum in the metric of the row's standardized
+    coordinates, ``b_i = clip(b_i - mu / s_i ** 2, lo_i, hi_i)``, and the
+    intercept keeping its standardized value ``b_0 + sum_i m_i b_i`` (``m``,
+    ``s`` over the coefficient slots)."""
+    lo, hi, total = box
+    off = 1 if fit_intercept else 0
+    out = b.copy()
+    sl = s[off:]
+    out[off:] = _nearest(b[off:], 1.0 / sl**2, np.ones_like(sl), lo, hi, total)
+    if fit_intercept:
+        out[0] += float(np.sum(m[1:] * (b[1:] - out[1:])))
+    return out
+
+
+def _decay(half_life: float, decay_lam: float | None, d: float) -> float:
+    """The decay over a clock step ``d``: ``decay_lam ** d`` where a factor per
+    clock unit is given, else ``0.5 ** (d / half_life)``."""
+    if decay_lam is not None:
+        return decay_lam**d
+    return 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
+
+
 def pa_ref(
     X: np.ndarray,
     Y: np.ndarray,
@@ -766,9 +935,14 @@ def pa_ref(
     fit_intercept: bool = True,
     min_weight: float = 0.0,
     gap_cap: float = np.inf,
+    standardize: bool = False,
+    decay_lam: float | None = None,
+    coef_min: float | None = None,
+    coef_max: float | None = None,
+    coef_sum: float | None = None,
 ) -> dict[str, np.ndarray]:
     """Passive-aggressive regression, Crammer et al. (2006), as the ``pa``
-    builder's docstring states it, its features unstandardized
+    builder's docstring states it, unstandardized by default
     (``standardize=False``)::
 
         p = z . b    loss = max(0, |y - p| - eps * sigma)    s = ||z||^2  (the intercept's 1 in)
@@ -785,24 +959,52 @@ def pa_ref(
     coefficients never decay, ``weight_sum`` does. ``pred_j`` is null while the
     target's own weight, the rows that carried it, decayed, is below
     ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d)); ``weight_sum`` is
-    every row's. Returns ``pred``, ``weight_sum`` and ``coef`` (after the row)."""
+    every row's. Returns ``pred``, ``weight_sum`` and ``coef`` (after the row).
+
+    Under ``standardize``, ``z`` is the row standardized against the
+    features' EW moments with the row admitted at unit weight
+    (:func:`_row_map`), the moments learning each row at its weight. While
+    Kish's count of the weights the moments have learned, undecayed, is
+    below 22, ``b`` is in those coordinates, ``p = z . b``, and ``coef`` is it
+    read out with the moments as they stand (:func:`_read_out`); on the row
+    the count reaches 22, ``b`` is read out so once and held in the caller's
+    units, and from the next row ``p = [1, x] . b`` and the step is mapped
+    by the row's own ``m`` and ``s`` (:func:`_mapped`; docs/PLAN.md task
+    206). ``decay_lam``, where given, is the decay per clock unit in place
+    of ``half_life``'s. With ``coef_min``, ``coef_max`` or ``coef_sum`` the
+    slopes are projected (:func:`_projected_standardized`,
+    :func:`_projected_in_units`; Euclidean without a scaler) at the start,
+    after each step and, while the scaler warms up, after every row that
+    moves it."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if fit_intercept else k
     pred = np.full((n, m), np.nan)
     weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
+    box = _box(k, coef_min, coef_max, coef_sum)
     b = np.zeros((m, kt))
+    if box is not None:
+        ones = np.ones(k)
+        b = np.array([_projected_standardized(r, box, ones, fit_intercept) for r in b])
     w_sum = 0.0
     w_target = np.zeros(m)
     history: list[list[list[float]]] = [[] for _ in range(m)]
+    rows: list[np.ndarray] = []
+    om: list[float] = []
+    kish_w, kish_w2, held = 0.0, 0.0, False
     for i, d in _accepted_steps(X, dclock, gap_cap):
-        lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
-        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        lam = _decay(half_life, decay_lam, d)
+        xt = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        z = xt
+        if standardize:
+            om = [o * lam for o in om]
+            z, mv, sv = _row_map(rows, om, X[i], fit_intercept)
         weight_sum[i] = w_sum
-        p = b @ z
+        p = b @ (xt if (held or not standardize) else z)
         pred[i] = np.where(w_target >= min_weight, p, np.nan)
         s = z @ z
+        stepped = np.zeros(m, dtype=bool)
         for j in range(m):
             sigma2 = _ew_variance(history[j])
             _age_and_learn(history[j], lam, Y[i, j], w[i])
@@ -813,15 +1015,49 @@ def pa_ref(
             if s <= 0.0:
                 continue
             loss = max(0.0, abs(r) - tube)
+            if loss == 0.0:
+                continue
             tau = {
                 "pa": loss / s,
                 "pa1": min(c, loss / s),
                 "pa2": loss / (s + 1.0 / (2.0 * c)),
             }[mode]
-            b[j] += min(w[i], 1.0) * tau * np.sign(r) * z
+            step = min(w[i], 1.0) * tau * np.sign(r) * z
+            if held:
+                b[j] += _mapped(step, mv, sv, fit_intercept)
+                if box is not None:
+                    b[j] = _projected_in_units(b[j], box, mv, sv, fit_intercept)
+            else:
+                b[j] += step
+                stepped[j] = True
+        if standardize:
+            rows.append(X[i].copy())
+            om.append(float(w[i]))
+        if box is not None and not held:
+            # In the scaler's coordinates the bounds move with the scales:
+            # every target is projected when a row moved them.
+            if standardize:
+                _, s_now = _moments(rows, om, fit_intercept)
+                for j in range(m):
+                    if w[i] > 0.0 or stepped[j]:
+                        b[j] = _projected_standardized(b[j], box, s_now, fit_intercept)
+            else:
+                for j in np.flatnonzero(stepped):
+                    b[j] = _projected_standardized(b[j], box, np.ones(k), fit_intercept)
+        if standardize and not held:
+            kish_w += w[i]
+            kish_w2 += w[i] ** 2
+            m_now, s_now = _moments(rows, om, fit_intercept)
+            if kish_w2 > 0.0 and kish_w**2 / kish_w2 >= WARMUP_ROWS:
+                held = True
+                b = np.array([_read_out(r, m_now, s_now, fit_intercept) for r in b])
         w_sum = lam * w_sum + w[i]
         w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
-        coef[i] = b
+        if standardize and not held:
+            m_now, s_now = _moments(rows, om, fit_intercept)
+            coef[i] = np.array([_read_out(r, m_now, s_now, fit_intercept) for r in b])
+        else:
+            coef[i] = b
     return {"pred": pred, "weight_sum": weight_sum, "coef": coef}
 
 
@@ -844,9 +1080,14 @@ def sgd_ref(
     gap_cap: float = np.inf,
     l2: float = 0.0,
     clip_gradient: float = np.inf,
+    standardize: bool = False,
+    decay_lam: float | None = None,
+    coef_min: float | None = None,
+    coef_max: float | None = None,
+    coef_sum: float | None = None,
 ) -> dict[str, np.ndarray]:
     """Stochastic gradient descent as the ``sgd`` builder's docstring states
-    it, its features unstandardized (``standardize=False``)::
+    it, unstandardized by default (``standardize=False``)::
 
         eta = z . b    p = link(eta)    d = dL / d eta
         squared: p - y                huber: clamp(p - y, +/- delta * s)
@@ -873,14 +1114,36 @@ def sgd_ref(
     null while the target's own weight, the rows that carried it, decayed,
     is below ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d));
     ``weight_sum`` is every row's. Returns ``pred``, ``weight_sum`` and ``coef``
-    (after the row), and ``clipped``, how many coordinates the clip bound."""
+    (after the row), and ``clipped``, how many coordinates the clip bound.
+
+    Under ``standardize``, ``z`` is the row standardized against the
+    features' EW moments with the row admitted at unit weight
+    (:func:`_row_map`), the moments learning each row at its weight. While
+    Kish's count of the weights the moments have learned, undecayed, is
+    below 22, ``b`` is in those coordinates, ``eta = z . b``, the ridge is on
+    ``b`` there and ``coef`` is ``b`` read out with the moments as they stand
+    (:func:`_read_out`); on the row the count reaches 22, ``b`` is read out
+    so once and held in the caller's units, and from the next row ``eta =
+    [1, x] . b``, the gradient is taken on ``z`` with the ridge on ``s_i *
+    b_i``, and the step ``-lr_i * g_i`` is mapped by the row's own ``m`` and
+    ``s`` (:func:`_mapped`; docs/PLAN.md task 206). ``decay_lam``, where
+    given, is the decay per clock unit in place of ``half_life``'s. With
+    ``coef_min``, ``coef_max`` or ``coef_sum`` the slopes are projected as
+    :func:`pa_ref` projects them."""
     n, k = X.shape
     m = Y.shape[1]
     kt = k + 1 if fit_intercept else k
     pred = np.full((n, m), np.nan)
     weight_sum = np.full(n, np.nan)
     coef = np.full((n, m, kt), np.nan)
+    box = _box(k, coef_min, coef_max, coef_sum)
     b = np.zeros((m, kt))
+    if box is not None:
+        ones = np.ones(k)
+        b = np.array([_projected_standardized(r, box, ones, fit_intercept) for r in b])
+    rows: list[np.ndarray] = []
+    om: list[float] = []
+    kish_w, kish_w2, held = 0.0, 0.0, False
     G = np.zeros((m, kt))
     penalised = np.ones(kt)
     if fit_intercept:
@@ -895,13 +1158,18 @@ def sgd_ref(
         "logistic": lambda e: 1.0 / (1.0 + np.exp(-e)),
     }
     for i, d in _accepted_steps(X, dclock, gap_cap):
-        lam = 1.0 if np.isinf(half_life) else 0.5 ** (d / half_life)
+        lam = _decay(half_life, decay_lam, d)
         G *= lam
         wsig *= lam
-        z = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        xt = np.concatenate(([1.0], X[i])) if fit_intercept else X[i]
+        z, scale = xt, np.ones(kt)
+        if standardize:
+            om = [o * lam for o in om]
+            z, mv, scale = _row_map(rows, om, X[i], fit_intercept)
         weight_sum[i] = w_sum
-        p = links.get(loss, lambda e: e)(b @ z)
+        p = links.get(loss, lambda e: e)(b @ (xt if (held or not standardize) else z))
         pred[i] = np.where(w_target >= min_weight, p, np.nan)
+        stepped = np.zeros(m, dtype=bool)
         for j in range(m):
             s_y2 = _ew_variance(history[j])
             _age_and_learn(history[j], lam, Y[i, j], w[i])
@@ -923,7 +1191,10 @@ def sgd_ref(
             if np.isfinite(pred[i, j]):
                 sig2[j] = (wsig[j] * sig2[j] + w[i] * e * e) / (wsig[j] + w[i])
                 wsig[j] += w[i]
-            g = dl * z * w[i] + l2 * penalised * b[j]
+            # The ridge on the slope in the row's coordinates: `b` itself
+            # while it is held there, `s_i * b_i` once it is in the caller's
+            # units.
+            g = dl * z * w[i] + l2 * penalised * (scale * b[j] if held else b[j])
             clipped += int((np.abs(g) > clip_gradient).sum())
             g = np.clip(g, -clip_gradient, clip_gradient)
             if schedule == "constant":
@@ -933,10 +1204,41 @@ def sgd_ref(
             else:
                 G[j] += g * g
                 lr = learning_rate / (np.sqrt(G[j]) + 1e-8)
-            b[j] -= lr * g
+            if held:
+                b[j] += _mapped(-lr * g, mv, scale, fit_intercept)
+                if box is not None:
+                    b[j] = _projected_in_units(b[j], box, mv, scale, fit_intercept)
+            else:
+                b[j] -= lr * g
+                stepped[j] = True
+        if standardize:
+            rows.append(X[i].copy())
+            om.append(float(w[i]))
+        if box is not None and not held:
+            # In the scaler's coordinates the bounds move with the scales:
+            # every target is projected when a row moved them.
+            if standardize:
+                _, s_now = _moments(rows, om, fit_intercept)
+                for j in range(m):
+                    if w[i] > 0.0 or stepped[j]:
+                        b[j] = _projected_standardized(b[j], box, s_now, fit_intercept)
+            else:
+                for j in np.flatnonzero(stepped):
+                    b[j] = _projected_standardized(b[j], box, np.ones(k), fit_intercept)
+        if standardize and not held:
+            kish_w += w[i]
+            kish_w2 += w[i] ** 2
+            m_now, s_now = _moments(rows, om, fit_intercept)
+            if kish_w2 > 0.0 and kish_w**2 / kish_w2 >= WARMUP_ROWS:
+                held = True
+                b = np.array([_read_out(r, m_now, s_now, fit_intercept) for r in b])
         w_sum = lam * w_sum + w[i]
         w_target = lam * w_target + np.where(np.isnan(Y[i]), 0.0, w[i])
-        coef[i] = b
+        if standardize and not held:
+            m_now, s_now = _moments(rows, om, fit_intercept)
+            coef[i] = np.array([_read_out(r, m_now, s_now, fit_intercept) for r in b])
+        else:
+            coef[i] = b
     return {"pred": pred, "weight_sum": weight_sum, "coef": coef, "clipped": clipped}
 
 

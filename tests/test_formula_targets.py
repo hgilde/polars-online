@@ -944,18 +944,19 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     integer (41 refused); 43 since task 201, for the relative targets'
     removal (42 refused); and 44 since task 202, for the target spreads an
     insensitivity band is drawn in (43 refused); 45 since task 116, for
-    `rls`'s squared-weight sum (44 refused); and 46 since task 208, for the
-    readiness notices' waits (45 refused)."""
+    `rls`'s squared-weight sum (44 refused); 46 since task 208, for the
+    readiness notices' waits (45 refused); and 47 since task 206, for a
+    standardizing fit's warm-up (46 refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 46, state[i]
-    for before in range(25, 46):
+    assert state[i] == 47, state[i]
+    for before in range(25, 47):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 46"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 47"
         ):
             po.ModelBank.load_bytes(old)
 

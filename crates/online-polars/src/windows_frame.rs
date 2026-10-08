@@ -2459,9 +2459,10 @@ mod tests {
         // version may not. 42 (task 200) moved with windows state 8, an
         // integer clock held as an integer in its rows; 43 for the relative
         // targets' removal (task 201), 44 for task 202's target spreads,
-        // 45 for task 116's readiness statistics and 46 for the readiness
-        // notices' waits (task 208), the windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (8, 46));
+        // 45 for task 116's readiness statistics, 46 for the readiness
+        // notices' waits (task 208) and 47 for task 206's warm-up of a
+        // standardizing fit, the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (8, 47));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

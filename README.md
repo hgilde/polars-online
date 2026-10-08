@@ -2882,6 +2882,16 @@ standardized coordinates:** "no effect" for a slope, and "the target
 averages zero" for the intercept. So unless the target averages zero, keep
 the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
 
+**Once the standardization has warmed up, the filter follows it.** Until
+Kish's count of the rows it has learned reaches 22, the state is read in its
+coordinates as they stand. From then on, each row that moves the means and
+scales maps the coefficients and their covariance to the new coordinates,
+`b ← A b` and `P ← A P Aᵀ`. So no prediction moves because the scaler did.
+Read as they stood, the scaler's own wander under a half-life of 50 cost 223
+noise variances of out-of-sample error at R² 0.99998, against 0.014
+unstandardized. A move of more than 1024 times a scale in one row is not
+followed.
+
 **`predict` applies the reversion,** by the same `Φ` over the distance
 from the last learned row, capped by `gap_cap`. A slope therefore keeps at
 least `2^(−gap_cap/r_i)` of its value. To let a far prediction approach the
@@ -3000,6 +3010,14 @@ learned. `sgd` standardizes its features by default, as `kalman` does: one
 learning rate has to suit every feature, and raw, features in hundreds took
 the default fit's R² from 0.96 to below −70,000.
 
+**Once the scaler has warmed up, the coefficients are held in the caller's
+units.** Until it has learned 22 rows by Kish's count, the fit runs in its
+standardized coordinates and is read out through its moments. From then on
+each step is taken on the standardized row and mapped back by that row's
+means and scales. So the scaler's moving moves no prediction. Read through
+the moments instead, a half-life of 10 put the slope at 3.03 for a truth of
+2 at R² 0.978; held, it is 2.02.
+
 **The cut reads the residuals and the tube does not, because the fit starts
 from zero.** Its first residuals are the target's whole level. Beyond the
 cut the gradient is clipped, not zero, so a cut those residuals widen still
@@ -3081,7 +3099,9 @@ and 1.3 at `c=0.1`. `c=0.1` damps best where the noise is that large. Above
 about R² 0.99 the wider tube is the smaller loss (at R² 0.9975: 2.0, 1.2
 and 1.7). `pa` standardizes
 its features by default, with `sgd`'s scaler, so `s` and `c` are not in the features'
-units either. A row weight below 1 scales the step, and a weight above 1 counts as 1.
+units either. Past the scaler's warm-up its coefficients are held in the
+caller's units, as `sgd`'s are, and an uncapped step still puts the row on
+its tube's edge. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:
 
 | `mode` | the step |

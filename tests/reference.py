@@ -607,7 +607,17 @@ def kalman_ref(
       with a noise sets it to ``p0`` times that noise, in place of that row's
       ``Q``; with ``obs_var`` given it is ``p0 * obs_var * I`` from the start
       (CC4);
-    - the EW stats update last, so this row's z used the prior stats.
+    - the EW stats update last, so this row's z used the prior stats;
+    - under ``standardize``, a warm-up: Kish's count of the weights the stats
+      have learned, undecayed, ``(sum w) ** 2 / sum w ** 2``; on the row it
+      first reaches 22 nothing else happens, and on every row after it the
+      coefficients and ``P`` follow the stats to their new coordinates, ``b
+      <- A b`` and ``P <- A P A'``, with ``A`` the change of coordinates from
+      the means and scales before the row's update to those after it:
+      ``A_00 = 1``, ``A_0i = (m'_i - m_i) / s_i`` (with an intercept),
+      ``A_ii = s'_i / s_i``. A change with any ``A_ii`` outside ``[1/1024,
+      1024]``, any ``|A_0i|`` above 1024, or any number of ``A b`` or ``A P
+      A'`` not finite is refused whole (docs/PLAN.md task 206).
 
     Coefficients come back in the ORIGINAL feature units, read with the
     stats after the row: the means and scales the next row is standardized
@@ -650,6 +660,8 @@ def kalman_ref(
             "wsig": np.zeros(m),
             "wj": np.zeros(m),
             "pending": 0.0,
+            "kish": [0.0, 0.0],
+            "switched": False,
         }
 
     st = init()
@@ -767,6 +779,7 @@ def kalman_ref(
             st["P"][0] = st["P"][0] - shared_take
 
         # EW stats update last
+        mean_before = st["mean"].copy()
         W_new = lam * st["W"] + w[i]
         if W_new > 0.0:  # a zero-weight first row is 0/0 (hard rule 9)
             a = lam * st["W"] / W_new
@@ -774,6 +787,29 @@ def kalman_ref(
             st["mean"] = a * st["mean"] + b * z
             st["raw"] = a * st["raw"] + b * np.outer(z, z)
         st["W"] = W_new
+
+        # The warm-up, and past it the change of coordinates (task 206).
+        if standardize and st["switched"]:
+            moved = _kalman_scales(st, kt, off, standardize)
+            A = np.eye(kt)
+            for j in range(off, kt):
+                A[j, j] = moved[j] / scales[j]
+                if fit_intercept:
+                    A[0, j] = (st["mean"][j] - mean_before[j]) / scales[j]
+            diag = np.diag(A)[off:]
+            within = bool(np.all(diag <= 1024.0) and np.all(diag >= 1.0 / 1024.0)) and bool(
+                np.all(np.abs(A[0, off:]) <= 1024.0) if fit_intercept else True
+            )
+            if within:
+                beta2 = st["beta"] @ A.T
+                P2 = [A @ P @ A.T for P in st["P"]]
+                if np.isfinite(beta2).all() and all(np.isfinite(P).all() for P in P2):
+                    st["beta"], st["P"] = beta2, P2
+        elif standardize:
+            st["kish"][0] += w[i]
+            st["kish"][1] += w[i] ** 2
+            w1, w2 = st["kish"]
+            st["switched"] = w2 > 0.0 and w1 * w1 / w2 >= 22.0
 
         # Coefficients back in original units, read with the stats as they
         # stand after the row: the scales and the means of one moment, the

@@ -457,13 +457,22 @@ fn held(v: &rmpv::Value) -> usize {
 /// one (44) -- `ewridge`'s kept systems (38, under `set_keep_factor`),
 /// `bocpd`'s warm-up rows (40), `rls`'s second weight sum `s₂` and the
 /// robust models' data shares (45, docs/PLAN.md task 116). Each was empty
-/// in every fixture before.
+/// in every fixture before. The standardizing models' warm-up (47,
+/// docs/PLAN.md task 206) is written twice for each of `sgd`, `pa` and
+/// `kalman`: saved inside it, its count short of 22 and not switched, and
+/// saved past it, switched, where the coefficients mean another thing.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 8] = [
+    const FORMS: [(&str, &[&str]); 14] = [
+        ("sgd", &["model", "Sgd", "warmup"]),
+        ("sgd_warming", &["model", "Sgd", "warmup"]),
+        ("pa", &["model", "Pa", "warmup"]),
+        ("pa_warming", &["model", "Pa", "warmup"]),
+        ("kalman", &["model", "Kalman", "warmup"]),
+        ("kalman_warming", &["model", "Kalman", "warmup"]),
         ("sgd_huber", &["model", "Sgd", "sig2"]),
         ("sgd_huber", &["model", "Sgd", "wsig"]),
         ("sgd_eps", &["model", "Sgd", "spread"]),
@@ -490,6 +499,14 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             "{name}: {} is empty, so the fixture holds nothing of the layout it is there for",
             path.join(".")
         );
+        if path.last() == Some(&"warmup") {
+            let switched = at(field, &["switched"]).and_then(rmpv::Value::as_bool);
+            assert_eq!(
+                switched,
+                Some(!name.ends_with("_warming")),
+                "{name}: saved on the wrong side of the switch"
+            );
+        }
     }
 }
 

@@ -2884,7 +2884,14 @@ fn sgd_predict_is_the_step() {
 
 #[test]
 fn pa_predict_is_the_step() {
-    predict_is_the_step_without_the_step(|| Pa::new(pa_cfg()).unwrap(), 2, false);
+    // Standardized too, the default since task 195: before the scaler's
+    // warm-up ends and after it, when the fit is held in the caller's units
+    // (docs/PLAN.md task 206).
+    for standardize in [false, true] {
+        let mut cfg = pa_cfg();
+        cfg.standardize = standardize;
+        predict_is_the_step_without_the_step(move || Pa::new(cfg.clone()).unwrap(), 2, false);
+    }
 }
 
 #[test]

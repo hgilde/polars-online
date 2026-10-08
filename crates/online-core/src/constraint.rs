@@ -18,6 +18,19 @@
 //! caller's bound on `c_i` is a bound `lo_i * scale_i` on `b_i` and the sum
 //! `sum(c_i) = sum(b_i / scale_i)`, i.e. `a_i = 1 / scale_i`. Without
 //! standardization every scale is 1.
+//!
+//! **The same projection on coefficients in the caller's units**
+//! ([`Constraint::project_in_units`]; docs/PLAN.md task 206). Once `sgd` or
+//! `pa` has warmed up ([`crate::Warmup`]) it holds `c` itself, and projects
+//! it in the metric of the row's standardized coordinates: `min sum((beta_i -
+//! scale_i v_i)^2)` over `lo_i scale_i <= beta_i <= hi_i scale_i` and
+//! `sum(beta_i / scale_i) = s`, with `beta_i = scale_i c_i`. Written in `c`
+//! that is `min sum(scale_i^2 (c_i - v_i)^2)` over the caller's own box and
+//! sum, so the algorithm above runs with `a_i = 1 / scale_i^2` and the
+//! bounds as given: a step of `mu / scale_i` in `beta_i` is one of
+//! `mu / scale_i^2` in `c_i`. The point is the same as the one above, and
+//! a bound is met exactly, where one mapped to `beta` and back was met to a
+//! rounding.
 
 use serde::{Deserialize, Serialize};
 
@@ -138,40 +151,59 @@ impl Constraint {
             None => Self::project_with(
                 b,
                 self.sum,
-                |i| (1.0, self.lo[i], self.hi[i]),
+                |i| (1.0, 1.0, self.lo[i], self.hi[i]),
                 &mut scratch.breaks,
             ),
             Some(scales) => {
                 scratch.fill(self, scales);
                 let Scratch { a, lo, hi, breaks } = scratch;
-                Self::project_with(b, self.sum, |i| (a[i], lo[i], hi[i]), breaks)
+                Self::project_with(b, self.sum, |i| (a[i], a[i], lo[i], hi[i]), breaks)
             }
         }
     }
 
-    /// The projection proper, over `bound(i) = (a_i, lo_i, hi_i)` in b-space.
+    /// Project the slopes `b`, in the caller's units, in place, in the
+    /// metric of the standardized coordinates `scales[i] * b_i`: a step of
+    /// `mu / scales[i]²` per slope, the plain sum and the caller's bounds as
+    /// given (the module docs). The point [`Constraint::project`] reaches
+    /// from `scales[i] * b_i`, with the bounds met exactly.
+    pub fn project_in_units(&self, b: &mut [f64], scales: &[f64], scratch: &mut Scratch) {
+        debug_assert_eq!(b.len(), self.lo.len());
+        debug_assert_eq!(scales.len(), b.len());
+        scratch.a.clear();
+        scratch.a.extend(scales.iter().map(|sc| 1.0 / (sc * sc)));
+        let Scratch { a, breaks, .. } = scratch;
+        Self::project_with(b, self.sum, |i| (a[i], 1.0, self.lo[i], self.hi[i]), breaks);
+    }
+
+    /// The projection proper, over `bound(i) = (t_i, a_i, lo_i, hi_i)`: the
+    /// step a unit of `mu` takes coordinate `i`, its weight in the sum
+    /// `sum(a_i b_i) = s`, and its bounds. In the standardized coordinates
+    /// the two weights are one, `1 / scale_i`; in the caller's units under
+    /// the standardized metric they are `1 / scale_i^2` and 1 (the module
+    /// docs). `g(mu)` below is non-increasing either way.
     fn project_with(
         b: &mut [f64],
         sum: Option<f64>,
-        bound: impl Fn(usize) -> (f64, f64, f64),
+        bound: impl Fn(usize) -> (f64, f64, f64, f64),
         breaks: &mut Vec<f64>,
     ) {
         let Some(s) = sum else {
             for (i, bi) in b.iter_mut().enumerate() {
-                let (_, lo, hi) = bound(i);
+                let (_, _, lo, hi) = bound(i);
                 *bi = bi.clamp(lo, hi);
             }
             return;
         };
-        // Coordinate i sits at hi for mu < t_hi = (b_i - hi_i') / a_i and at
-        // lo for mu > t_lo = (b_i - lo_i') / a_i.
+        // Coordinate i sits at hi for mu < t_hi = (b_i - hi_i') / t_i and at
+        // lo for mu > t_lo = (b_i - lo_i') / t_i.
         let t_hi = |i: usize, bi: f64| {
-            let (a, _, hi) = bound(i);
-            (bi - hi) / a
+            let (t, _, _, hi) = bound(i);
+            (bi - hi) / t
         };
         let t_lo = |i: usize, bi: f64| {
-            let (a, lo, _) = bound(i);
-            (bi - lo) / a
+            let (t, _, lo, _) = bound(i);
+            (bi - lo) / t
         };
         breaks.clear();
         for (i, &bi) in b.iter().enumerate() {
@@ -185,8 +217,8 @@ impl Constraint {
         let g = |mu: f64| -> f64 {
             let mut acc = 0.0;
             for (i, &bi) in b.iter().enumerate() {
-                let (a, lo, hi) = bound(i);
-                acc += a * (bi - mu * a).clamp(lo, hi);
+                let (t, a, lo, hi) = bound(i);
+                acc += a * (bi - mu * t).clamp(lo, hi);
             }
             acc - s
         };
@@ -203,7 +235,7 @@ impl Constraint {
         let mut num = 0.0;
         let mut den = 0.0;
         for (i, &bi) in b.iter().enumerate() {
-            let (a, lo, hi) = bound(i);
+            let (ti, a, lo, hi) = bound(i);
             let at_hi = below && t <= t_hi(i, bi);
             let at_lo = if below {
                 t > t_lo(i, bi)
@@ -216,15 +248,15 @@ impl Constraint {
                 num += a * lo;
             } else {
                 num += a * bi;
-                den += a * a;
+                den += a * ti;
             }
         }
-        // sum_free a_i (b_i - mu a_i) + sum_fixed a_i bound_i = s. With no
+        // sum_free a_i (b_i - mu t_i) + sum_fixed a_i bound_i = s. With no
         // free coordinate the sum does not depend on mu within the segment.
         let mu = if den > 0.0 { (num - s) / den } else { t };
         for (i, bi) in b.iter_mut().enumerate() {
-            let (a, lo, hi) = bound(i);
-            *bi = (*bi - mu * a).clamp(lo, hi);
+            let (ti, _, lo, hi) = bound(i);
+            *bi = (*bi - mu * ti).clamp(lo, hi);
         }
     }
 }
@@ -442,6 +474,65 @@ mod tests {
                 assert!((again[i] - b[i]).abs() <= 1e-12 * (1.0 + b[i].abs()));
             }
         }
+    }
+
+    /// `project_in_units` on coefficients in the caller's units reaches the
+    /// point `project` reaches from the same coefficients in standardized
+    /// coordinates, `scale_i * c_i`, mapped back -- one projection in two
+    /// coordinates (the module docs; docs/PLAN.md task 206) -- and meets the
+    /// box exactly, where the standardized one meets it to a rounding.
+    #[test]
+    fn the_projection_in_the_callers_units_is_the_standardized_one() {
+        let mut s = 7u64;
+        let mut summed = 0;
+        for trial in 0..500 {
+            let k = 1 + trial % 7;
+            let lo: Vec<f64> = (0..k)
+                .map(|_| {
+                    let l = lcg(&mut s);
+                    if lcg(&mut s) > 0.4 {
+                        f64::NEG_INFINITY
+                    } else {
+                        l
+                    }
+                })
+                .collect();
+            let hi: Vec<f64> = lo
+                .iter()
+                .map(|l| {
+                    let h = l.max(-1.0) + 2.0 * lcg(&mut s).abs();
+                    if lcg(&mut s) > 0.4 { f64::INFINITY } else { h }
+                })
+                .collect();
+            let scales: Vec<f64> = (0..k).map(|_| 10f64.powf(3.0 * lcg(&mut s))).collect();
+            let inside: Vec<f64> = (0..k)
+                .map(|i| {
+                    let (l, h) = (lo[i].max(-3.0), hi[i].min(3.0));
+                    l + (h - l) * (0.5 + 0.5 * lcg(&mut s))
+                })
+                .collect();
+            let sum = (lcg(&mut s) > 0.0).then(|| inside.iter().sum());
+            summed += usize::from(sum.is_some());
+            let c = boxed(&lo, &hi, sum);
+            c.validate(k, "test").unwrap();
+            let v: Vec<f64> = (0..k).map(|_| 4.0 * lcg(&mut s)).collect();
+            let mut b = v.clone();
+            c.project_in_units(&mut b, &scales, &mut Scratch::default());
+            let mut beta: Vec<f64> = v.iter().zip(&scales).map(|(v, s)| v * s).collect();
+            c.project(&mut beta, Some(&scales), &mut Scratch::default());
+            for i in 0..k {
+                let want = beta[i] / scales[i];
+                assert!(
+                    (b[i] - want).abs() <= 1e-9 * (1.0 + want.abs()),
+                    "trial {trial}, slot {i}: {b:?} against {want}"
+                );
+                assert!(b[i] >= lo[i] && b[i] <= hi[i], "trial {trial}: {b:?}");
+            }
+            if let Some(total) = sum {
+                assert!((b.iter().sum::<f64>() - total).abs() <= 1e-12 * (1.0 + total.abs()));
+            }
+        }
+        assert!(summed > 200, "{summed} trials had a sum");
     }
 
     #[test]
