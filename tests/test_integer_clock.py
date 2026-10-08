@@ -14,6 +14,7 @@ exactly, which must give the same output to the bit.
 """
 
 import math
+import re
 
 import numpy as np
 import polars as pl
@@ -425,3 +426,94 @@ def test_embargo_moves_an_integer_clock_in_integers():
     learn = out.filter(pl.col("_online_role") == "learn")
     assert learn["t"].dtype == pl.Int64
     assert sorted(learn["t"].to_list()) == sorted(T0 + o + 7 for o in offsets(30))
+
+
+# --------------------------------------------------------------------------
+# Wider than 64 bits (review round 5, B3)
+
+#: Past the largest ``Int64``: where an ``Int128`` running count goes on.
+BIG = 2**63
+
+#: What every surface says of an ``Int128`` clock, the dtype named. The
+#: quote around the column is Rust's on the bank's side and Python's on
+#: ``embargo``'s.
+WIDE = (
+    r"clock column [\"']t[\"'] is Int128, wider than the Int64 an integer clock is held "
+    r"in; cast it to Int64 if its values fit, or after subtracting an origin"
+)
+
+
+def _wide(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(pl.col("t").cast(pl.Int128))
+
+
+@pytest.mark.parametrize("surface", ["bank", "with_windows", "refresh_time", "embargo"])
+def test_an_int128_clock_is_refused_by_name(surface):
+    """An integer clock is held as an ``Int64`` (task 200); an ``Int128`` was
+    read as a double instead, so its steps of 1 near ``1.79e18`` were 0, and
+    nothing said so: ``settled_frac`` stayed 0 and a five-unit window held a
+    row seven units back (review round 5, B3). Every surface that reads a
+    clock refuses it by name, with the advice a ``UInt64`` past the largest
+    ``Int64`` gets."""
+    df = _wide(frame(n=5, steps=(1, 7)))
+    if surface == "bank":
+        call = lambda: po.ModelBank([ridge()]).fit_predict(df)  # noqa: E731
+    elif surface == "with_windows":
+        s = po.ewm_sum("x", half_life=math.inf, window_size=5.0)
+        call = lambda: po.stream.with_windows(df, s=s, **CLOCK)  # noqa: E731
+    elif surface == "refresh_time":
+        ticks = df.with_columns(series=pl.Series(["a", "b", "a", "b", "a"]))
+        call = lambda: po.stream.refresh_time(  # noqa: E731
+            ticks, series="series", names=["a", "b"], clock="t", value="x"
+        )
+    else:
+        call = lambda: po.stream.embargo(df, clock="t", delay=7)  # noqa: E731
+    with pytest.raises((ValueError, TypeError, pl.exceptions.ComputeError), match=WIDE):
+        call()
+
+
+def test_the_command_line_refuses_an_int128_clock_by_name(online_cli, tmp_path):
+    """The CLI runs the bank's reader, so a parquet file's ``Int128`` clock is
+    refused there too, with the same words."""
+    _wide(frame(n=5, steps=(1, 7))).write_parquet(tmp_path / "wide.parquet")
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [ridge()],
+        input=tmp_path / "wide.parquet",
+        output=tmp_path / "wide_out.parquet",
+        check=False,
+    )
+    assert res.returncode != 0, res.stderr
+    assert re.search(WIDE, res.stderr), res.stderr
+
+
+def test_an_increment_of_an_int128_input_is_the_integers_step():
+    """``po.increment`` of an ``Int128`` running count past the largest
+    ``Int64`` -- ``2**63 + k`` -- is its step in integers, then made a float,
+    as a 64-bit one's is: 1, 7, 100, 0 and -103. It was read as doubles,
+    which resolve 2048 there, and gave 0.0 for every step (review round 5,
+    B3). At the type's two ends the step is ``2**128 - 1``, which no ``i128``
+    holds: it is taken whole and rounded once, to ``2**128``."""
+    c = [BIG + k for k in (0, 1, 8, 108, 108, 5)]
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": pl.Series(c, dtype=pl.Int128)})
+    out = po.stream.with_windows(df, d=po.increment("c"), **CLOCK)
+    assert out["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]
+    ends = pl.DataFrame(
+        {"t": [0.0, 1.0, 2.0], "c": pl.Series([-(2**127), 2**127 - 1, -(2**127)], dtype=pl.Int128)}
+    )
+    out = po.stream.with_windows(ends, d=po.increment("c"), **CLOCK)
+    assert out["d"].to_list() == [None, 2.0**128, -(2.0**128)]
+
+
+def test_an_int128_increment_resumes_on_the_integers(tmp_path):
+    """The previous value a saved state keeps for an ``Int128`` input past
+    the largest ``Int64`` is the integer, so a resumed stream's first step is
+    exact too."""
+    c = [BIG + k for k in (0, 1, 8, 108, 108, 5)]
+    df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "c": pl.Series(c, dtype=pl.Int128)})
+    d = po.increment("c")
+    state = tmp_path / "w.state"
+    a = po.stream.with_windows(df[:3], d=d, save_state=state, **CLOCK)
+    b = po.stream.with_windows(df[3:], d=d, load_state=state, **CLOCK)
+    assert pl.concat([a, b])["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]

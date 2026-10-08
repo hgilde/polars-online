@@ -517,6 +517,10 @@ impl RefreshTime {
             ),
             _ => self.grouped = Some(grouped),
         }
+        if time_dtype.is_integer() && !crate::arrow::fits_64(&time_dtype) {
+            polars_bail!(ComputeError: "{}",
+                crate::arrow::wide_integer_clock("refresh_time", cols.clock, &time_dtype));
+        }
         let integer = time_dtype.is_integer() && crate::arrow::fits_64(&time_dtype);
         let (numbers, nanos) = if time_dtype.is_temporal() {
             let ns = crate::arrow::nanos_array(

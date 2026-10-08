@@ -736,6 +736,24 @@ pub(crate) fn fits_64(dtype: &DataType) -> bool {
     )
 }
 
+/// The refusal of an integer clock wider than 64 bits, `who` the caller as
+/// its own errors name it (review round 5, B3). An integer clock is held as
+/// an `i64` (task 200); an `Int128` was read as a double instead, which
+/// rounds its steps of 1 away past 2^53 -- a step of 0, a window holding a
+/// row it should not -- and said nothing. The advice is the one a `UInt64`
+/// past the largest `Int64` gets.
+pub(crate) fn wide_integer_clock(who: &str, clock: &str, dtype: &DataType) -> String {
+    let name = match dtype {
+        DataType::Int128 => "Int128".to_string(),
+        DataType::UInt128 => "UInt128".to_string(),
+        other => other.to_string(),
+    };
+    format!(
+        "{who}: clock column {clock:?} is {name}, wider than the Int64 an integer clock is \
+         held in; cast it to Int64 if its values fit, or after subtracting an origin"
+    )
+}
+
 /// A key column as the text its keys are: each value's string form, which
 /// is what a group, a session and a label are read as. A zoned Datetime is
 /// its instant, written as the UTC wall time without the zone,
@@ -959,6 +977,10 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
                  Datetime, e.g. pl.col(\"date\").dt.combine(pl.col({:?}))",
                 spec.name, clock, clock
             );
+        }
+        if dtype.is_integer() && !fits_64(dtype) {
+            polars_bail!(ComputeError: "{}",
+                wide_integer_clock(&format!("spec {:?}", spec.name), clock, dtype));
         }
         if dtype.is_temporal() {
             if let ClockScale::Numbers(param @ ("lam" | "q")) = scale {

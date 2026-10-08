@@ -20,7 +20,7 @@ use online_core::{ClockCfg, ClockValue};
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{NanosRole, fits_64, key_text, nanos_array};
+use crate::arrow::{NanosRole, fits_64, key_text, nanos_array, wide_integer_clock};
 use crate::formula::{Formula, Node, OpNode};
 use crate::span::{Span, format_duration};
 use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
@@ -435,17 +435,32 @@ fn back_past(prev: ClockValue, now: ClockValue, restart: f64) -> bool {
 }
 
 /// An integer column's values, as `i128` so an unsigned 64-bit one is
-/// whole too, null where null.
+/// whole too, and an `Int128` (review round 5, B3); null where null.
 fn integer_values(s: &Series) -> PolarsResult<Vec<Option<i128>>> {
-    Ok(if *s.dtype() == DataType::UInt64 {
-        s.u64()?.iter().map(|v| v.map(i128::from)).collect()
-    } else {
-        s.cast(&DataType::Int64)?
+    Ok(match s.dtype() {
+        DataType::UInt64 => s.u64()?.iter().map(|v| v.map(i128::from)).collect(),
+        DataType::Int128 => s.i128()?.iter().collect(),
+        _ => s
+            .cast(&DataType::Int64)?
             .i64()?
             .iter()
             .map(|v| v.map(i128::from))
-            .collect()
+            .collect(),
     })
+}
+
+/// Whether an increment's input is read as its integers: every integer
+/// dtype [`integer_values`] holds whole, the 64-bit forms and an `Int128`.
+fn integer_input(dtype: &DataType) -> bool {
+    fits_64(dtype) || *dtype == DataType::Int128
+}
+
+/// `now − prev` as a double, rounded once: the difference of two `i128`s
+/// fits a `u128` either way round, where `i128` subtraction overflows
+/// between the type's two ends.
+fn integer_step(now: i128, prev: i128) -> f64 {
+    let size = now.abs_diff(prev) as f64;
+    if now >= prev { size } else { -size }
 }
 
 /// Durations and numbers must match the clock, as a spec's must
@@ -1298,7 +1313,7 @@ impl WindowsRun {
         let integer: Vec<Option<Vec<Option<i128>>>> = (0..self.increments.len())
             .map(|i| {
                 let c = inputs.column(input_column(i).as_str())?;
-                if self.increments[i].2 || !c.dtype().is_integer() || !fits_64(c.dtype()) {
+                if self.increments[i].2 || !integer_input(c.dtype()) {
                     Ok(None)
                 } else {
                     integer_values(c.as_materialized_series()).map(Some)
@@ -1391,7 +1406,7 @@ impl WindowsRun {
                 if let Some(vals) = &integer[i] {
                     let v = vals[r];
                     out[i].push(match (v, st.prev_int[i]) {
-                        (Some(c), Some(p)) => Some((c - p) as f64),
+                        (Some(c), Some(p)) => Some(integer_step(c, p)),
                         // A previous value a float input of another chunk left.
                         (Some(c), None) if !st.prev[i].is_nan() => Some(c as f64 - st.prev[i]),
                         _ => None,
@@ -1475,6 +1490,8 @@ impl WindowsRun {
                     })
                 })
                 .collect::<PolarsResult<_>>()?
+        } else if col.dtype().is_integer() {
+            polars_bail!(ComputeError: "{}", wide_integer_clock(WHO, c, col.dtype()));
         } else {
             let s = col.cast(&DataType::Float64)?;
             s.f64()?

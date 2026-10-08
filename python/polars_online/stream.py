@@ -72,6 +72,19 @@ __all__ = ["ROLE", "embargo", "refresh_time", "with_windows"]
 #: Column :func:`embargo` adds to say which copy of a row this is.
 ROLE = "_online_role"
 
+#: The integer dtypes a clock may have: every one an ``Int64`` holds, or a
+#: ``UInt64`` refused by row past it. A wider one is refused by name.
+_INTEGER_CLOCKS = (
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+)
+
 
 @overload
 def embargo(
@@ -193,7 +206,8 @@ def embargo(
       ``weight``, one named ``role + "_weight"``.
 
     ``TypeError`` for a ``clock`` column that is neither numeric nor temporal,
-    as :func:`polars_online.eval.window_metrics` refuses it.
+    as :func:`polars_online.eval.window_metrics` refuses it, and for an
+    integer wider than 64 bits (``Int128``), which a bank refuses as a clock.
 
     An integer clock within ``delay`` of its dtype's top cannot hold its
     learn copy: Polars raises ``InvalidOperationError`` when the plan runs,
@@ -209,6 +223,16 @@ def embargo(
         # Named before the plan is built; a String clock failed inside polars'
         # arithmetic when the plan ran (review round 4, YB15).
         msg = f"embargo: clock column {clock!r} must be numeric or temporal, got {schema[clock]}"
+        raise TypeError(msg)
+    if schema[clock].is_integer() and schema[clock] not in _INTEGER_CLOCKS:
+        # An integer clock is held as an Int64 (task 200), so a bank refuses
+        # an Int128 by name; said here, before the doubled frame is built
+        # for a bank that would refuse it (review round 5, B3).
+        msg = (
+            f"embargo: clock column {clock!r} is {schema[clock]}, wider than the Int64 an "
+            "integer clock is held in; cast it to Int64 if its values fit, or after "
+            "subtracting an origin"
+        )
         raise TypeError(msg)
     ns = clock_nanoseconds(delay, schema[clock], "embargo", "delay", clock)
     if ns is None:
