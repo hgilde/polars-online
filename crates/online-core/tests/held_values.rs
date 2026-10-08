@@ -1720,10 +1720,10 @@ fn rls_predicts_as_well_at_every_level_once_the_feature_stops() {
 }
 
 /// **`ftrl` does not standardize, and its fit depends on a feature's
-/// level** (docs/PLAN.md task 209's report raises it): with the stream's
-/// third feature at a level `L`, the squared loss's error over the rows
-/// after the stop is about `0.018 L`, 18 at 1e3 and 1.8e6 at 1e8, where it
-/// is 0.72 at 0.5. What holds at every level is the sign: each coordinate's
+/// level** (docs/PLAN.md task 209's report raised it; task 215 documents
+/// it): with the stream's third feature at a level `L`, the squared loss's
+/// error over the rows after the stop is about `0.018 L` (the next test
+/// holds it). What holds at every level is the sign: each coordinate's
 /// step is odd in its feature, so the fit with the feature at `-L`, the
 /// stream mirrored, `-(L + u)`, predicts to the bit what the fit at `L`
 /// does, under either loss.
@@ -1754,6 +1754,34 @@ fn ftrl_at_a_level_of_either_sign_is_the_others_mirror() {
             };
             assert_eq!(fit(1.0), fit(-1.0), "{loss:?} at ±{level}");
         }
+    }
+}
+
+/// The number the README, the builder and `ftrl.rs` give for a feature
+/// `ftrl` does not centre (docs/PLAN.md task 215): the squared loss's error
+/// over the rows after the stop, with the stream's third feature at a
+/// level `L`, is `0.0183 L` to 2% at either sign of 1e3 and at 1e8 (18.27,
+/// 18.26 and 1.830e6 measured), against 0.75 at 0.5 (0.755).
+#[test]
+fn ftrl_does_not_centre_a_feature_at_a_level() {
+    let error = |level: f64| {
+        let rows = stream(level);
+        let mut m = Ftrl::new(ftrl_cfg(FtrlLoss::Squared)).unwrap();
+        let pred: Vec<f64> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (x, y))| m.step(x, &[Some(*y)], d(i), 1.0).pred[0])
+            .collect();
+        rmse_from(&pred, &rows, MOVING)
+    };
+    let at_half = error(0.5);
+    assert!((at_half - 0.75).abs() <= 0.02, "at 0.5: {at_half}");
+    for level in [1e3, -1e3, 1e8] {
+        let ratio = error(level) / f64::abs(level);
+        assert!(
+            (ratio / 0.0183 - 1.0).abs() <= 0.02,
+            "at {level}: the error is {ratio:.5} of the level"
+        );
     }
 }
 

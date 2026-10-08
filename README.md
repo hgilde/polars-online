@@ -3319,6 +3319,18 @@ penalty that weight and density leave alone, use
 [`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), whose penalty
 is on the mean scale.
 
+**`ftrl` does not centre a feature, so give it features near 0.** A
+coefficient's error reaches the prediction multiplied by the feature's
+value, so a feature at a level `L` carries it at `L` times its size. On the
+stream of `crates/online-core/tests/held_values.rs`, with one of three
+features at `L`, the squared loss's error is about `0.018·L`: 18.3 at 1,000
+and at -1,000, and 1.8e6 at 1e8, where it is 0.75 at 0.5. Standardize or
+z-score such a feature first, as
+[Features in units of their spread](#features-in-units-of-their-spread)
+shows. `ftrl` has no `standardize` because `l1` zeroes a coefficient in the
+feature's own units: a scale inside the model would move which coefficients
+`l1` zeroes as the feature's spread moved.
+
 **A row whose target is null or whose weight is 0 leaves that target's fit
 where it was,** because the sums wait for the next row that teaches it.
 That row is scored with the fit as it stood, then ages the sums by the

@@ -81,6 +81,15 @@
 //! `rls`'s ridge, `ridge_scale` and `kalman`'s observation precision; the
 //! mean-scale sparse fit, invariant to both, is `lasso`.
 //!
+//! **No centring** (docs/PLAN.md task 215). A coefficient's error reaches
+//! the prediction multiplied by the feature, so a feature at a level `L`
+//! costs the squared loss about `0.018·L` of error on the stream of
+//! `tests/held_values.rs` (18.3 at ±1e3, 1.8e6 at 1e8, 0.75 at 0.5); a
+//! caller standardizes or z-scores such a feature upstream. There is no
+//! `standardize`: `l1` zeroes a coefficient in the feature's own units, and
+//! a scale inside the model would move which coefficients it zeroes as the
+//! feature's spread moved.
+//!
 //! `pred` is the probability computed from the state *before* the update, so it
 //! is out-of-sample like every other model; `resid = y - p`.
 //!

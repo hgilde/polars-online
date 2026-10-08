@@ -2344,6 +2344,17 @@ def ftrl(
     ``l2`` in ``r_i``'s, the feature squared. A feature scaled by ``c`` fits
     the same model at ``alpha / c``, ``beta * c``, ``l1 * c`` and ``l2 * c**2``.
 
+    ``ftrl`` does not centre a feature. A coefficient's error reaches the
+    prediction multiplied by the feature's value, so a feature that sits at a
+    level ``L`` carries it at ``L`` times its size. On the stream of
+    ``crates/online-core/tests/held_values.rs``, with one of three features at
+    ``L``, the squared loss's error is about ``0.018 * L``: 18.3 at 1,000 and
+    at -1,000, 1.8e6 at 1e8, where it is 0.75 at 0.5. Standardize or z-score
+    such a feature before the bank, as the README's *Features in units of
+    their spread* shows. There is no ``standardize`` here because ``l1``
+    zeroes a coefficient in the feature's own units: a scale inside the model
+    would move which coefficients it zeroes as the feature's spread moved.
+
     ``strict_binary``
         Refuse a chunk whose target is not 0 or 1, naming the row, before any
         stream is touched. Default ``False``: such a target is clamped into
