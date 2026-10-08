@@ -119,7 +119,9 @@ def stepping_back_streams(draw, min_rows=2, max_rows=40, max_groups=3):
 
 #: Ordinary rows at the head of `warmed_streams`. At weight 1, one clock unit
 #: apart under `build`'s `half_life` of 20, the weight before the fourth is
-#: 2.80, past its `min_weight` of 2, so every model scores that row.
+#: `1 + lam + lam^2` = 2.90 at `lam = 2^(-1/20)`, past its `min_weight` of 2,
+#: so every model scores that row (review round 5, E4: 2.80 was the
+#: once-decayed value).
 WARM_ROWS = 4
 
 
@@ -337,10 +339,24 @@ class TestUniversalProperties:
             field = next(f.name for f in base.schema["m"].fields if f.name.startswith("pred_"))
             preds = base["m"].struct.field(field).to_list()
             y = df["y0"].to_list()
-            scored = [i for i in range(df.height) if preds[i] is not None and y[i] is not None]
+            # A row the model scored and whose target it reads: a NaN,
+            # infinite or beyond-bound target is skipped by the bank, and
+            # `1e100 + 12345` is `1e100`, so perturbing one compared the
+            # same stream with itself (review round 5, E3).
+            usable = df.select((~_missing("y0")).alias("ok"))["ok"].to_list()
+            scored = [i for i in range(df.height) if preds[i] is not None and usable[i]]
             assert scored, f"no row scored, not even warm row {WARM_ROWS - 1}"
             idx = data.draw(st.sampled_from(scored), label="scored row")
-            y[idx] = (0.0 if y[idx] else 1.0) if model == "ftrl" else y[idx] + 12345.0
+            was = y[idx]
+            if model == "ftrl":
+                y[idx] = 0.0 if was else 1.0
+            elif abs(was) < 1e15:
+                y[idx] = was + 12345.0
+            else:
+                # Past 1e15 an addition of 12345 can round away; halving
+                # moves every finite value and stays inside the bound.
+                y[idx] = was / 2.0
+            assert y[idx] != was
             perturbed = po.ModelBank([spec]).fit_predict(
                 df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
             )
