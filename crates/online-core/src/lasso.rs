@@ -915,16 +915,10 @@ impl OnlineModel for Lasso {
         // at most the all-row weight, so below it each of them is too. A
         // history of no weight, at the head of a stream, has nothing to
         // forget, and the row's decay stands (the Grams' prior scale reads
-        // it).
-        let lam_decay = match self.cfg.decay.factor(d_clock) {
-            lam if weight > 0.0
-                && lam * self.acc.cross.w > 0.0
-                && lam * self.acc.cross.w < weight * f64::MIN_POSITIVE =>
-            {
-                0.0
-            }
-            lam => lam,
-        };
+        // it). One target's own history, the others going on, is its rule
+        // in `gaps::Acc::learn` (task 217).
+        let lam_decay =
+            crate::gaps::decay_into(self.cfg.decay.factor(d_clock), self.acc.cross.w, weight);
         if self.zbuf.len() != self.cfg.k_total() {
             self.zbuf = vec![0.0; self.cfg.k_total()];
         }

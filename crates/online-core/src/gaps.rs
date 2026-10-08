@@ -63,6 +63,28 @@ pub(crate) fn row_share(decayed: f64, w: f64) -> f64 {
     if w_new > 0.0 { w / w_new } else { 0.0 }
 }
 
+/// The decay a history of weight `history` takes into a row of weight `w`:
+/// `lam`, or 0 where the history would be in the subnormal range of the row
+/// -- its share of the weight after the row, `lam·W / (lam·W + w)`, below
+/// the smallest normal double. Forgotten there, as a decay that underflows
+/// to 0 forgets it, from 1075 half-lives on (docs/PLAN.md task 215). A
+/// history kept at that size gave the row's one-row Gram a spread of its
+/// own, which a standardized solve divided by, and the solve on the row read
+/// the old fit back. A per-row decay never takes a history there to 0: a
+/// subnormal times a decay near 1 rounds back to itself, so a target absent
+/// for some 1,060 half-lives sticks a few steps above 0 (task 217). A
+/// history of no weight has nothing to forget, and a row of none learns
+/// nothing, so both keep `lam`: the decay the prior's scale and the
+/// weights then age by.
+pub(crate) fn decay_into(lam: f64, history: f64, w: f64) -> f64 {
+    let carried = lam * history;
+    if w > 0.0 && carried > 0.0 && carried < w * f64::MIN_POSITIVE {
+        0.0
+    } else {
+        lam
+    }
+}
+
 /// Each target's cross-moments with the feature row `z`, centred (review
 /// 2026-09-12, N1), and the weight and mean of `z` over every row. Over the
 /// rows target `j` was present on: its EW mean `ȳ_j` (`my`), the centred
@@ -355,10 +377,18 @@ impl Grams {
         w: f64,
         gaps: TargetGaps,
     ) {
+        // A Gram that learns the row forgets a history the row leaves in
+        // the subnormal range ([`decay_into`]), by the rule each of its
+        // targets' weights does in `Acc::learn`: the two are equal to the
+        // bit, so they decide alike and stay equal (task 217).
+        fn learn(g: &mut EwCov, z: &[f64], lam: f64, w: f64) {
+            let lam = decay_into(lam, g.n_eff(), w);
+            g.update(z, lam, w);
+        }
         let Self { grams, of, flags } = self;
         if gaps == TargetGaps::Pairwise {
             for g in grams.iter_mut() {
-                g.update(z, lam, w);
+                learn(g, z, lam, w);
             }
             return;
         }
@@ -371,7 +401,7 @@ impl Grams {
         }
         for g in 0..n {
             match flags.0[g] {
-                PRESENT => grams[g].update(z, lam, w),
+                PRESENT => learn(&mut grams[g], z, lam, w),
                 ABSENT => grams[g].skip(z, lam),
                 // A Gram every target has left; there is none.
                 0 => {}
@@ -392,7 +422,7 @@ impl Grams {
                             *o = id;
                         }
                     }
-                    grams[g].update(z, lam, w);
+                    learn(&mut grams[g], z, lam, w);
                 }
             }
         }
@@ -607,6 +637,16 @@ impl Acc {
                 // never wash out: `W_j` stays NaN, `NaN > 0.0` is false, and
                 // the target silently stops predicting forever (hard rule 9).
                 Some(yj) if lam * *wj + w > 0.0 => {
+                    // A history of the target's own that the row leaves in
+                    // the subnormal range is forgotten, as its Gram forgets
+                    // it ([`decay_into`]): a target absent for some 1,060
+                    // half-lives while the others go on kept one, its
+                    // per-row decay stuck a few steps above 0, and the
+                    // solve on its return read the old fit back from it
+                    // (task 217). The all-row weight and mean need no rule:
+                    // what the decay leaves of a history that small is
+                    // under a rounding step of the row's weight.
+                    let lam = decay_into(lam, *wj, w);
                     let wj_new = lam * *wj + w;
                     let (a, b) = (lam * *wj / wj_new, w / wj_new);
                     self.cross.learn(j, z, yj, a, b);
@@ -1596,6 +1636,135 @@ mod tests {
                     );
                 }
                 let _ = OnlineModel::n_outputs(&m);
+            }
+        }
+    }
+
+    /// A target absent long enough that its own weight's per-row decay
+    /// reaches the subnormal range keeps that history -- a subnormal times
+    /// a decay near 1 rounds back to itself, so it sticks a few steps above
+    /// 0 and never reaches it -- and the row it returns on met it: its one
+    /// row's Gram had a spread of the history's, of a subnormal size, which a
+    /// standardized solve divided by and read the old fit back from
+    /// (docs/PLAN.md task 215, raised; task 217). A history whose share of
+    /// the weight after the row is below the smallest normal double is
+    /// forgotten, as a decay that underflows forgets it, per target and per
+    /// Gram: two returns, one from deep in the subnormal range and one from
+    /// where it sticks, read what a target never seen before reads. The
+    /// first rows carry a weight of `1e-300`, so the history reaches the
+    /// subnormal range within a hundred rows of `lam = 0.75` rather than
+    /// 2,500 (`0.75` at a clock of 1, so no libm: the subnormals a decay
+    /// leaves are the same bits everywhere).
+    #[test]
+    fn a_target_history_aged_below_the_normal_range_is_forgotten_on_its_return() {
+        use crate::{EwRidge, EwRidgeCfg, Lasso, LassoCfg, OnlineModel};
+        type R = ([f64; 2], [Option<f64>; 2], f64);
+        let row = |seed: u64, second: bool, w: f64| -> R {
+            let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5;
+            let x = [3.0 * lcg(&mut s), 3.0 * lcg(&mut s)];
+            let y0 = 1.0 + x[0] - 0.5 * x[1] + 0.1 * lcg(&mut s);
+            let y1 = -1.0 + 0.5 * x[0] + 2.0 * x[1] + 0.1 * lcg(&mut s);
+            (x, [Some(y0), second.then_some(y1)], w)
+        };
+        // Sixty rows of both targets (none of the second where `fresh`), at
+        // weight 1e-300; `gap` rows without the second, seeded from the
+        // return back, so every gap ends on the same rows; forty of both.
+        let stream = |gap: usize, fresh: bool| -> Vec<R> {
+            let mut v: Vec<R> = (0..60).map(|i| row(1000 + i, !fresh, 1e-300)).collect();
+            v.extend((0..gap).rev().map(|k| row(100_000 + k as u64, false, 1.0)));
+            v.extend((0..40).map(|i| row(10 + i, true, 1.0)));
+            v
+        };
+        // The second target's own weight before the return, and its
+        // predictions on the rows after it.
+        fn after<M: OnlineModel>(mut m: M, rows: &[R], slots: usize) -> (f64, Vec<f64>) {
+            let back = rows.len() - 40;
+            let (mut own, mut out, mut wj) = (Vec::new(), Vec::new(), f64::NAN);
+            for (i, (x, y, w)) in rows.iter().enumerate() {
+                if i == back {
+                    m.target_n_eff_into(&mut own);
+                    wj = own[1];
+                }
+                let s = m.step(x, y, if i == 0 { 0.0 } else { 1.0 }, *w);
+                if i > back {
+                    out.extend_from_slice(&s.pred[slots..2 * slots]);
+                }
+            }
+            (wj, out)
+        }
+        let ridge = |gaps: TargetGaps| {
+            EwRidge::new(EwRidgeCfg {
+                n_features: 2,
+                n_targets: 2,
+                fit_intercept: true,
+                decay: crate::Decay::Lam(0.75),
+                ridge: vec![1e-6],
+                feature_sets: vec![],
+                standardize: true,
+                ridge_scale: false,
+                session_shrink: None,
+                long_half_life: None,
+                coef_prior: None,
+                min_weight: 0.0,
+                solve_every: 0.0,
+                max_rows_between_solves: 1,
+                solve_share: None,
+                gram_block_rows: 0,
+                target_gaps: gaps,
+                window: None,
+                window_every: None,
+                max_rows_between_snapshots: None,
+            })
+            .unwrap()
+        };
+        let lasso = |gaps: TargetGaps| {
+            Lasso::new(LassoCfg {
+                n_features: 2,
+                n_targets: 2,
+                fit_intercept: true,
+                decay: crate::Decay::Lam(0.75),
+                lasso_path: vec![0.1, 0.0],
+                l1_ratio: 1.0,
+                select_half_life: None,
+                min_weight: 0.0,
+                target_min_weight: Vec::new(),
+                solve_every: 0.0,
+                max_rows_between_solves: 1,
+                solve_share: None,
+                window: None,
+                window_every: None,
+                max_rows_between_snapshots: None,
+                max_iter: 100,
+                tol: 1e-10,
+                target_gaps: gaps,
+            })
+            .unwrap()
+        };
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            type Run<'a> = &'a dyn Fn(&[R]) -> (f64, Vec<f64>);
+            let runs: [(&str, Run); 2] = [
+                ("ewridge", &|r| after(ridge(gaps), r, 1)),
+                ("lasso", &|r| after(lasso(gaps), r, 2)),
+            ];
+            for (name, run) in runs {
+                let (deep, a) = run(&stream(100, false));
+                let (stuck, b) = run(&stream(300, false));
+                let (never, fresh) = run(&stream(300, true));
+                // The case: one history deep in the subnormal range, one
+                // stuck a few steps above 0, and one never there.
+                assert!(deep > 1e-318 && deep < f64::MIN_POSITIVE, "{deep:e}");
+                assert!(stuck > 0.0 && stuck < 1e-320, "{stuck:e}");
+                assert_eq!(never, 0.0);
+                for (i, ((u, v), r)) in a.iter().zip(&b).zip(&fresh).enumerate() {
+                    assert!(
+                        r.is_finite()
+                            && (u - r).abs() <= 1e-9 * (1.0 + r.abs())
+                            && (v - r).abs() <= 1e-9 * (1.0 + r.abs()),
+                        "{name} {gaps:?}: slot {i} after the return, {u} from a history at \
+                         {deep:e} of its weight, {v} from one stuck at {stuck:e}, {r} where the \
+                         target was never seen"
+                    );
+                }
             }
         }
     }
