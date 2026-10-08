@@ -1583,13 +1583,21 @@ impl Kalman {
         }
         if self.cfg.standardize {
             self.size_slots(pi, r);
-            return;
+        } else {
+            self.size_whole(pi, self.cfg.p0 * r);
         }
-        let v = self.cfg.p0 * r;
+    }
+
+    /// Unstandardized, covariance `pi` sized whole to `v I`, where `v` is a
+    /// positive number: the first row with a noise does it, at `p0` times
+    /// that noise, and so does [`Self::size_again`].
+    fn size_whole(&mut self, pi: usize, v: f64) {
+        let k = self.cfg.k_total();
         if v > 0.0 && v.is_finite() {
-            let k = self.cfg.k_total();
+            let p = &mut self.p[pi];
+            p.fill(0.0);
             for i in 0..k {
-                self.p[pi][i * k + i] = v;
+                p[i * k + i] = v;
             }
         }
     }
@@ -2135,14 +2143,7 @@ impl OnlineModel for Kalman {
             } else if self.is_unsized(pi) {
                 // The first row with a noise sizes the prior, to `p0` times
                 // that noise, before its gain, and adds no process noise.
-                let v = self.cfg.p0 * sigma2;
-                if v > 0.0 && v.is_finite() {
-                    let p = &mut self.p[pi];
-                    p.fill(0.0);
-                    for i in 0..k {
-                        p[i * k + i] = v;
-                    }
-                }
+                self.size_whole(pi, self.cfg.p0 * sigma2);
             } else {
                 self.add_process_noise(pi, sigma2, gap);
             }

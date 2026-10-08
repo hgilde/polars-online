@@ -274,7 +274,7 @@ why = "as `replace && with ||` on this line"
 
 [[tolerated]]
 file = "crates/online-core/src/kalman.rs"
-function = "<impl OnlineModel for Kalman>::step"
+function = "Kalman::size_whole"
 mutation = "replace > with >="
 line_has = "if v > 0.0 && v.is_finite() {"
 kind = "rounding"
@@ -287,4 +287,6 @@ per-slot factors near `2^-537`). No prediction reads `P`, `pred_var` is \
 NaN until there is a residual variance, and the next row with a noise \
 sizes `P` afresh, to the same bits under both (measured): the saved state \
 shows the difference, and a gain reads it only on a row whose `p0 σ²` \
-underflows to 0 or overflows though `σ²` is a positive number"""
+underflows to 0 or overflows though `σ²` is a positive number. From \
+`size_again` (task 214) `P` has just been emptied with `+0.0`, and there \
+the mutant writes the same zeros"""
