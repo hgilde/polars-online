@@ -59,13 +59,18 @@ cargo run -p online-cli -- --config examples/bank.toml
    Polars, Python, or clocks-as-columns. Plumbing lives in `online-polars` / `online-py`.
 5. State files are versioned msgpack and must load on both OSes; bump `SCHEMA_VERSION`
    on any layout change. Every schema from `MIN_SCHEMA_VERSION` / `MIN_BANK_SCHEMA_VERSION`
-   to `SCHEMA_VERSION` has frozen fixtures (`crates/*/tests/state_fixtures.rs`), each
-   held to load, continue to the bit and re-save byte for byte; a layout change cannot
-   land without them. Pre-1.0 (the user, 2026-09-14 and 2026-09-28): a state saved
-   before the next release need not load, so regenerate the fixtures
-   (`PRINT_STATE_FIXTURES=1`) and raise both minimums instead of writing a loader.
-   From 1.0 (decided 2026-10-06, PLAN §18 D1): the minimums stay at 1.0's schema, and
-   each layout change ships a loader and keeps the previous version's fixtures.
+   to `SCHEMA_VERSION` has frozen fixtures (`crates/*/tests/state_fixtures.rs`): the
+   current schema's load, continue to the bit and re-save byte for byte; a previous
+   schema's load through its loader, continue to the bit and re-save as the current
+   schema's fixture bytes of the same case (`state_fixtures/v<N>/`, `previous![..]`).
+   A layout change cannot land without them, and a fixture must freeze every form a
+   layout can take (a test decodes each file and holds the new forms non-empty; review
+   5, B1 and D3). Pre-1.0 (the user, 2026-09-14 and 2026-09-28): a state saved before
+   the next release need not load, so regenerate the fixtures (`PRINT_STATE_FIXTURES=1`)
+   and raise both minimums instead of writing a loader. From 1.0 (decided 2026-10-06,
+   PLAN §18 D1): the minimums stay at 1.0's schema, and each layout change copies the
+   current sets to `v<N>/`, ships a loader and regenerates the current sets. The bank
+   fixture carries the package version, so it is regenerated at every version bump.
    `ModelState`'s variant names are frozen: they are the file's tags.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
