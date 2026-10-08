@@ -576,7 +576,14 @@ pub use window::{
 ///   embeds a windows state per formula target; it refuses a file older
 ///   than 48 by number, and pre-1.0 no loader is written. No model's own
 ///   state moved.
-pub const SCHEMA_VERSION: u32 = 48;
+/// - 49 (2026-10-08, task 211): `kalman` keeps no warm-up. A standardizing
+///   one holds `b` and `P` at an anchor -- the means, as pairs, and the
+///   scales of the moments at its last re-map -- and every `kalman` keeps,
+///   per covariance, the clock since it last took an observation (the
+///   process noise is charged once for it) and the squared innovations its
+///   standardized prior is sized from. A state from before 49 does not
+///   decode, and pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 49;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -600,9 +607,12 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// **48 since task 212** (2026-10-08), with [`SCHEMA_VERSION`] and the
-/// fixtures regenerated at it: a windows state is version 9, and no model's
-/// own state moved.
+/// **49 since task 211** (2026-10-08): `kalman`'s anchor, its clocks since
+/// an observation and its prior's squared innovations, in place of its
+/// warm-up; a state from before 49 is refused by its number, and the
+/// fixtures are regenerated at 49. **48 since task 212** (2026-10-08), with
+/// [`SCHEMA_VERSION`] and the fixtures regenerated at it: a windows state is
+/// version 9, and no model's own state moved.
 /// **47 since task 206** (2026-10-08): a standardizing `sgd`, `pa` and
 /// `kalman` keep their scaler's warm-up, and past it their numbers mean
 /// another thing, so a state from before 47 is refused by its number; the
@@ -676,7 +686,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 48;
+pub const MIN_SCHEMA_VERSION: u32 = 49;
 
 #[cfg(test)]
 mod tests {

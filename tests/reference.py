@@ -565,9 +565,14 @@ def kalman_ref(
     standardize: bool = True,
     gap_cap: float = np.inf,
 ) -> dict[str, np.ndarray]:
-    """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4).
+    """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4), written
+    from `kalman.rs`'s module doc (task 211).
 
-    Mirrors the core exactly, including the details that make it match:
+    The state is held here in the *current* coordinates -- the row
+    standardized against the EW stats before it -- and re-mapped after every
+    row that moves the stats, as task 206 did; the core holds it at an
+    anchor and re-maps only when the stats drift from it, which is the same
+    filter to rounding. Mirrors the core in every rule:
 
     - the transition ``b <- Phi b``, ``P <- Phi P Phi`` with
       ``Phi = diag(2^(-d / r_i))`` from ``revert_half_life`` runs first, before
@@ -578,9 +583,12 @@ def kalman_ref(
       is not positive (the core's ``variance_is_usable`` since T-E9; see
       ``_kalman_scales``), and, with no intercept, scaled by each feature's
       raw second moment and not centred;
-    - ``P += Q * d_clock**2`` happens after the transition and before the gain
-      (docs/PLAN.md task 150: the per-row noise that keeps ``coef_half_life``
-      a clock half-life at any spacing),
+    - each covariance keeps ``D``, the clock since it last took a row that
+      observes its target (present, at a positive weight; under ``share_p``
+      any target): every accepted row adds its ``d`` to it, and a row that
+      observes the target adds ``Q * D**2`` to ``P`` -- after the transition
+      and before the gain -- and clears it (task 211: the noise is not
+      additive over a split gap, so it is charged once for the whole clock);
       once per shared P;
     - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
       observation precision);
@@ -589,8 +597,7 @@ def kalman_ref(
       row the filter sees: a null target and a zero weight (review
       2026-09-12, S9), and a row with a target, a weight and no prediction,
       such as one after rows of weight 0 have taken the weight under
-      ``min_weight`` (N6). That last row aged nothing here until task 177,
-      1.75e-3 from the bank on a stream that withholds predictions;
+      ``min_weight`` (N6);
     - under ``share_p`` the noise is the mean ``sigma2`` over the targets
       that have one (review round 5, A1) as the row arrives, read once
       before any target's update (review round 4, CC3), and every observed
@@ -603,21 +610,26 @@ def kalman_ref(
       observes. A noise of 0 (an innovation of exactly 0, or none: a null
       target, a zero weight) corrects nothing and adds no ``Q`` from
       ``coef_half_life`` (review 2026-10-05, CC4);
-    - ``P`` starts unsized, all zero, and takes nothing until the first row
-      with a noise sets it to ``p0`` times that noise, in place of that row's
+    - unstandardized, ``P`` starts unsized, all zero, and the first row with
+      a noise sets it to ``p0`` times that noise, in place of that row's
       ``Q``; with ``obs_var`` given it is ``p0 * obs_var * I`` from the start
       (CC4);
-    - the EW stats update last, so this row's z used the prior stats;
-    - under ``standardize``, a warm-up: Kish's count of the weights the stats
-      have learned, undecayed, ``(sum w) ** 2 / sum w ** 2``; on the row it
-      first reaches 22 nothing else happens, and on every row after it the
-      coefficients and ``P`` follow the stats to their new coordinates, ``b
-      <- A b`` and ``P <- A P A'``, with ``A`` the change of coordinates from
-      the means and scales before the row's update to those after it:
-      ``A_00 = 1``, ``A_0i = (m'_i - m_i) / s_i`` (with an intercept),
-      ``A_ii = s'_i / s_i``. A change with any ``A_ii`` outside ``[1/1024,
-      1024]``, any ``|A_0i|`` above 1024, or any number of ``A b`` or ``A P
-      A'`` not finite is refused whole (docs/PLAN.md task 206).
+    - standardized (task 211), each slot's prior ``P_ii = p0 * R`` is set on
+      the first row that observes the target on which its scale is usable
+      (the intercept's always is), ``R`` the mean squared innovation ``sum w
+      e**2 / sum w`` over the rows that observed it so far, this one
+      included, once three rows give it (a row counts once whatever the
+      targets it observes); with ``obs_var``, ``R = obs_var`` and the
+      intercept is sized from the start. An unsized slot takes no noise;
+    - the EW stats update last, so this row's z used the prior stats; and
+      after a row of positive weight the coefficients and ``P`` follow the
+      stats to their new coordinates, ``b <- A b`` and ``P <- A P A'``, with
+      ``A`` the change of coordinates from the means and scales before the
+      row's update to those after it: ``A_00 = 1``, ``A_0i = (m'_i - m_i) /
+      s_i`` (with an intercept), ``A_ii = s'_i / s_i``. A change with any
+      ``A_ii`` of a sized slot outside ``[1/1024, 1024]``, any such ``|A_0i|``
+      above 1024, or any number of ``A b`` or ``A P A'`` not finite, is
+      refused whole (never met on the streams this is held to).
 
     Coefficients come back in the ORIGINAL feature units, read with the
     stats after the row: the means and scales the next row is standardized
@@ -627,6 +639,7 @@ def kalman_ref(
     m = Y.shape[1]
     off = 1 if fit_intercept else 0
     kt = k + off
+    n_p = 1 if share_p else m
     if reset is None:
         reset = np.zeros(n, dtype=bool)
     hl = np.asarray(
@@ -647,22 +660,37 @@ def kalman_ref(
     coef = np.full((n, m, kt), np.nan)
 
     def init():
+        if obs_var is None:
+            prior = np.zeros(kt)
+        elif standardize:
+            prior = np.where(np.arange(kt) < off, p0 * obs_var, 0.0)
+        else:
+            prior = np.full(kt, p0 * obs_var)
         return {
             "W": 0.0,
             "mean": np.zeros(kt),
             "raw": np.zeros((kt, kt)),
             "beta": np.zeros((m, kt)),
-            "P": [
-                np.eye(kt) * (p0 * obs_var if obs_var is not None else 0.0)
-                for _ in range(1 if share_p else m)
-            ],
+            "P": [np.diag(prior) for _ in range(n_p)],
+            "D": np.zeros(n_p),
+            # Per covariance: sum w e**2, sum w, rows.
+            "basis": np.zeros((n_p, 3)),
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             "wj": np.zeros(m),
             "pending": 0.0,
-            "kish": [0.0, 0.0],
-            "switched": False,
         }
+
+    def usable(st: dict) -> np.ndarray:
+        """Which slots' scales are usable, the intercept's always."""
+        ok = np.ones(kt, dtype=bool)
+        for j in range(off, kt):
+            if off == 0:
+                ok[j] = st["raw"][j, j] > 0.0
+            else:
+                var = st["raw"][j, j] - st["mean"][j] ** 2
+                ok[j] = var > 0.0 and np.isfinite(var)
+        return ok
 
     st = init()
     for i in range(n):
@@ -675,6 +703,7 @@ def kalman_ref(
         d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
         lam = 0.5 ** (d / half_life)
+        st["D"] = st["D"] + d
 
         # transition first: the clock moved by d since the last row
         if reverts:
@@ -685,6 +714,7 @@ def kalman_ref(
         # scales from the stats BEFORE this row (all ones, and no
         # centering, with `standardize` off: the state is the coefficient)
         scales = _kalman_scales(st, kt, off, standardize)
+        ok = usable(st) if standardize else np.ones(kt, dtype=bool)
         zs = z.copy()
         if standardize and off == 0:
             for j in range(kt):
@@ -722,37 +752,75 @@ def kalman_ref(
         # CC3; review round 5, A1).
         have = st["sig2"][st["sig2"] > 0.0]
         shared_s2 = float(have.mean()) if have.size else 0.0
-        shared_take = None
-
+        noise = np.zeros(m)
         for j in range(m):
-            pi = 0 if share_p else j
             if obs_var is not None:
-                sigma2 = obs_var
+                noise[j] = obs_var
             else:
                 s2 = shared_s2 if share_p else st["sig2"][j]
                 if s2 > 0.0:
-                    sigma2 = s2
+                    noise[j] = s2
                 elif share_p:
-                    sigma2 = first_shared
+                    noise[j] = first_shared
                 else:
-                    sigma2 = e2[j] if np.isfinite(e2[j]) else 0.0
-            if ((not share_p) or j == 0) and not np.diag(st["P"][pi]).any():
+                    noise[j] = e2[j] if np.isfinite(e2[j]) else 0.0
+
+        # The squared innovations a standardized prior is sized from.
+        if standardize and obs_var is None:
+            for pi in range(n_p):
+                mine = [
+                    e2[j]
+                    for j in range(m)
+                    if (share_p or j == pi) and np.isfinite(e2[j]) and e2[j] > 0.0
+                ]
+                if mine:
+                    st["basis"][pi] += [w[i] * sum(mine), w[i] * len(mine), 1.0]
+
+        # The process noise and the priors, per covariance, on a row that
+        # observes its target.
+        for pi in range(n_p):
+            informs = seen.any() if share_p else seen[pi]
+            if not informs:
+                continue
+            dd = st["D"][pi] ** 2
+            st["D"][pi] = 0.0
+            sigma2 = noise[0 if share_p else pi]
+            qv = (
+                np.asarray(q, dtype=float)
+                if q is not None
+                else np.where(np.isinf(hl), 0.0, sigma2 * (np.log(2.0) / hl) ** 2)
+            )
+            P = st["P"][pi]
+            if standardize:
+                sized = np.diag(P) != 0.0
+                P = P + np.diag(np.where(sized, qv * dd, 0.0))
+                if obs_var is not None:
+                    r = obs_var
+                else:
+                    sw, ww, rows = st["basis"][pi]
+                    r = sw / ww if rows >= 3.0 and ww > 0.0 else 0.0
+                if p0 * r > 0.0 and np.isfinite(p0 * r):
+                    for a in range(kt):
+                        if P[a, a] == 0.0 and ok[a]:
+                            P[a, a] = p0 * r
+            elif not np.diag(P).any():
                 # Unsized: the first row with a noise sizes the prior.
                 if sigma2 > 0.0:
-                    st["P"][pi] = np.eye(kt) * (p0 * sigma2)
-            elif (not share_p) or j == 0:
-                qv = (
-                    np.asarray(q, dtype=float)
-                    if q is not None
-                    else np.where(np.isinf(hl), 0.0, sigma2 * (np.log(2.0) / hl) ** 2)
-                )
-                st["P"][pi] = st["P"][pi] + np.diag(qv * d * d)
-            if np.isnan(Y[i, j]) or w[i] <= 0.0:
+                    P = np.eye(kt) * (p0 * sigma2)
+            else:
+                P = P + np.diag(qv * dd)
+            st["P"][pi] = P
+
+        shared_take = None
+        for j in range(m):
+            pi = 0 if share_p else j
+            if not seen[j]:
                 # A null target and a zero weight alike: no update, and time
                 # passes for both weights (review 2026-09-12, S9).
                 st["wj"][j] *= lam
                 st["wsig"][j] *= lam
                 continue
+            sigma2 = noise[j]
             pz = st["P"][pi] @ zs
             s_inn = zs @ pz + sigma2 / w[i]
             if sigma2 > 0.0 and s_inn > 0.0:
@@ -788,28 +856,31 @@ def kalman_ref(
             st["raw"] = a * st["raw"] + b * np.outer(z, z)
         st["W"] = W_new
 
-        # The warm-up, and past it the change of coordinates (task 206).
-        if standardize and st["switched"]:
+        # The state follows the stats to their new coordinates (tasks 206
+        # and 211): from the first row, after every row that moved them.
+        if standardize and w[i] > 0.0:
             moved = _kalman_scales(st, kt, off, standardize)
             A = np.eye(kt)
             for j in range(off, kt):
                 A[j, j] = moved[j] / scales[j]
                 if fit_intercept:
                     A[0, j] = (st["mean"][j] - mean_before[j]) / scales[j]
-            diag = np.diag(A)[off:]
+            held = np.array(
+                [
+                    any(P[j, j] != 0.0 for P in st["P"]) or (st["beta"][:, j] != 0.0).any()
+                    for j in range(kt)
+                ]
+            )
+            diag = np.diag(A)[off:][held[off:]]
+            shift = np.abs(A[0, off:][held[off:]]) if fit_intercept else np.zeros(0)
             within = bool(np.all(diag <= 1024.0) and np.all(diag >= 1.0 / 1024.0)) and bool(
-                np.all(np.abs(A[0, off:]) <= 1024.0) if fit_intercept else True
+                np.all(shift <= 1024.0)
             )
             if within:
                 beta2 = st["beta"] @ A.T
                 P2 = [A @ P @ A.T for P in st["P"]]
                 if np.isfinite(beta2).all() and all(np.isfinite(P).all() for P in P2):
                     st["beta"], st["P"] = beta2, P2
-        elif standardize:
-            st["kish"][0] += w[i]
-            st["kish"][1] += w[i] ** 2
-            w1, w2 = st["kish"]
-            st["switched"] = w2 > 0.0 and w1 * w1 / w2 >= 22.0
 
         # Coefficients back in original units, read with the stats as they
         # stand after the row: the scales and the means of one moment, the

@@ -172,8 +172,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// the caller's units, where they were in the scaler's coordinates; a file
 /// from before it is refit. **48 since task 212** (the same day): a windows
 /// state is version 9, its queues six wide for a variance and its
-/// operators carrying `bias`; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 48;
+/// operators carrying `bias`; a file from before it is refit. **49 since
+/// task 211** (the same day): `kalman` keeps an anchor, its clocks since an
+/// observation and its prior's squared innovations in place of its warm-up;
+/// a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 49;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

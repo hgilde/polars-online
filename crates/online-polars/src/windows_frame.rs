@@ -2467,8 +2467,9 @@ mod tests {
         // 45 for task 116's readiness statistics, 46 for the readiness
         // notices' waits (task 208) and 47 for task 206's warm-up of a
         // standardizing fit, the windows state unchanged; 48 (task 212)
-        // with windows state 9, a variance's queue six wide.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 48));
+        // with windows state 9, a variance's queue six wide; 49 for task
+        // 211's `kalman` anchor and clocks, the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 49));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

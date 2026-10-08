@@ -1302,16 +1302,6 @@ AdaGrad arm): `d / 1.0` is `d * 1.0`, both `d` exactly. The second `*`'s \
 would also excuse that one if it ever survived"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
-function = "Kalman::scales_into"
-mutation = "replace || with &&"
-line_has = "*s = if !self.cfg.standardize || i < off {"
-why = """the scales are read only under `standardize` and only for a feature \
-slot (`step`'s `zs`, `standardized` and `coefficients` each test both first), \
-and the intercept's scale the mutant computes is 1 anyway: its slot holds \
-the constant 1, so its variance is 0"""
-
-[[equivalent]]
 file = "crates/online-core/src/ewridge.rs"
 function = "EwRidge::inflation_into"
 mutation = "replace > with >="

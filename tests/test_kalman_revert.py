@@ -297,13 +297,19 @@ class TestLargeData:
         mse_rev = _track_mse(rev, truth, self.TAIL)
         assert mse_walk[1] < 0.5 * mse_rev[1], (mse_walk, mse_rev)
 
-    def test_reversion_bounds_the_covariance(self):
-        # A slot nothing identifies: under the random walk `P_ii` grows by
-        # `q d` per row without bound; under reversion it settles at
-        # `q d / (1 - phi^2)`. Read through the Kalman gain: after 200k
+    def test_reversion_forgets_the_mean_across_a_run_of_nulls(self):
+        # A run of null targets: the reversion shrinks the mean by `phi`
+        # on every row, and the process noise is charged once, on the next
+        # observation, for the whole clock since the last, `q D**2`
+        # (docs/PLAN.md task 211). Read through the Kalman gain: after 200k
         # rows of null targets, one observation `y = 5` at `z = e_0` moves
-        # the coefficient by `5 P / (P + R)` (the mean had decayed to zero
-        # under reversion, and to the fitted 1.0 under the walk).
+        # the coefficient by `5 P / (P + R)`, the mean having decayed to
+        # zero under reversion and kept the fitted 1.0 under the walk, and
+        # `P = q (n + 1)**2` either way, the decayed or kept posterior a
+        # rounding of it. Charged per row, the reverting slot's `P` settled
+        # at `q / (1 - phi**2)`, 7.3e-3 here, and the walk's grew to `q n`:
+        # the number a gap gave depended on the rows it was cut into, and a
+        # gap of 200k as one row gave `q (n + 1)**2` already.
         n = 200_000
         rng = np.random.default_rng(10)
         x = rng.normal(size=(300, 2))
@@ -332,17 +338,16 @@ class TestLargeData:
             before = _coef(bank.fit_predict(tail))[-1]
             after = _coef(bank.fit_predict(probe))[-1]
             got[rh] = (before[0], after[0])
-        phi = 0.5 ** (1.0 / 100.0)
-        p_settled = q / (1.0 - phi * phi)
-        # Reverting: the mean is gone and the gain is the settled one.
+        p_gap = q * (n + 1.0) ** 2
+        # Reverting: the mean is gone, and the gain is the gap's.
         assert abs(got[100.0][0]) < 1e-12
-        assert got[100.0][1] == pytest.approx(5.0 * p_settled / (p_settled + r_obs), rel=1e-6)
-        # Random walk: the mean is still the fitted slope and the gain ~1.
-        p_walk = n * q
+        assert got[100.0][1] == pytest.approx(5.0 * p_gap / (p_gap + r_obs), rel=1e-12)
+        # Random walk: the mean is still the fitted slope, and the gain the
+        # gap's.
         b_fit = got[INF][0]
         assert abs(b_fit - 1.0) < 0.05
-        gain = p_walk / (p_walk + r_obs)
-        assert got[INF][1] == pytest.approx(b_fit + gain * (5.0 - b_fit), rel=1e-3)
+        gain = p_gap / (p_gap + r_obs)
+        assert got[INF][1] == pytest.approx(b_fit + gain * (5.0 - b_fit), rel=1e-9)
 
 
 # --- exactness ----------------------------------------------------------------

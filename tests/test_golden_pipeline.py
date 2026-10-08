@@ -456,7 +456,17 @@ def switched_signature() -> dict[str, float | str | None]:
 #: ``tests/reference.py``'s ``kalman_ref`` under ``standardize``, written from
 #: the docstrings with the moments by their definition, give every row the
 #: six predict, 104 each, to 5.4e-16, 1.4e-15, 5.5e-16, 7.5e-16, 1.4e-14 and
-#: 1.9e-15, with the same nulls; nothing else moved.
+#: 1.9e-15, with the same nulls; nothing else moved. Task 211 (2026-10-08)
+#: moved 24: the ``pred`` and ``resid`` of ``kalman`` and ``kalman_revert``
+#: at rows 25, 60 and 119 -- the process noise charged once per
+#: observation for the clock since the last, each coefficient's prior
+#: waiting for its feature's scale, and no warm-up (`kalman.rs`'s module
+#: doc) -- and the 12 of ``seqtest_compare``, which reads ``kalman``'s
+#: ``resid_y0`` as its ``b``: ``kalman``'s residual is now the smaller, and
+#: the wins went to ``b``. ``tests/reference.py``'s ``kalman_ref``, rewritten
+#: from the new docstring with the state re-mapped on every row, gives
+#: ``kalman``'s and ``kalman_revert``'s every row, 104 each, to 8.4e-15 and
+#: 1.4e-15, with the same nulls; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -524,12 +534,12 @@ GOLDEN: dict[str, float | str | None] = {
     "rls.withheld_reason@25": None,
     "rls.withheld_reason@60": None,
     "rls.withheld_reason@119": None,
-    "kalman.pred_y0@25": -0.6299441602651041,
-    "kalman.pred_y0@60": -0.8455003178133764,
-    "kalman.pred_y0@119": -0.03218230787742116,
-    "kalman.resid_y0@25": -4.221661663969612,
-    "kalman.resid_y0@60": 0.3734591889962985,
-    "kalman.resid_y0@119": -0.018516463080807677,
+    "kalman.pred_y0@25": -3.6552608063527168,
+    "kalman.pred_y0@60": -0.2581562846045071,
+    "kalman.pred_y0@119": -0.15777533203159633,
+    "kalman.resid_y0@25": -1.1963450178819994,
+    "kalman.resid_y0@60": -0.2138848442125708,
+    "kalman.resid_y0@119": 0.1070765610733675,
     "kalman.weight_sum@25": 7.999488060097996,
     "kalman.weight_sum@60": 12.473100285951407,
     "kalman.weight_sum@119": 15.110060335371337,
@@ -653,12 +663,12 @@ GOLDEN: dict[str, float | str | None] = {
     "pa_box.withheld_reason@25": None,
     "pa_box.withheld_reason@60": None,
     "pa_box.withheld_reason@119": None,
-    "kalman_revert.pred_y0@25": -0.02009119013134438,
-    "kalman_revert.pred_y0@60": -1.5315881829843507,
-    "kalman_revert.pred_y0@119": -0.6848308688218904,
-    "kalman_revert.resid_y0@25": -4.831514634103372,
-    "kalman_revert.resid_y0@60": 1.0595470541672727,
-    "kalman_revert.resid_y0@119": 0.6341320978636615,
+    "kalman_revert.pred_y0@25": -0.08968675020611261,
+    "kalman_revert.pred_y0@60": -1.3392965336030473,
+    "kalman_revert.pred_y0@119": -0.8885065404934901,
+    "kalman_revert.resid_y0@25": -4.7619190740286035,
+    "kalman_revert.resid_y0@60": 0.8672554047859694,
+    "kalman_revert.resid_y0@119": 0.8378077695352613,
     "kalman_revert.weight_sum@25": 7.999488060097996,
     "kalman_revert.weight_sum@60": 12.473100285951407,
     "kalman_revert.weight_sum@119": 15.110060335371337,
@@ -932,18 +942,18 @@ GOLDEN: dict[str, float | str | None] = {
     "seqtest.withheld_reason@25": None,
     "seqtest.withheld_reason@60": None,
     "seqtest.withheld_reason@119": None,
-    "seqtest_compare.log_e_a_y0@25": 1.4759065198095778,
-    "seqtest_compare.log_e_a_y0@60": 7.327588430413045,
-    "seqtest_compare.log_e_a_y0@119": 2.822090994363675,
-    "seqtest_compare.log_e_b_y0@25": 0.0,
-    "seqtest_compare.log_e_b_y0@60": 0.0,
-    "seqtest_compare.log_e_b_y0@119": 0.0,
-    "seqtest_compare.wins_a_y0@25": 4,
-    "seqtest_compare.wins_a_y0@60": 21,
-    "seqtest_compare.wins_a_y0@119": 36,
-    "seqtest_compare.wins_b_y0@25": 0,
-    "seqtest_compare.wins_b_y0@60": 2,
-    "seqtest_compare.wins_b_y0@119": 14,
+    "seqtest_compare.log_e_a_y0@25": 0.0,
+    "seqtest_compare.log_e_a_y0@60": 0.0,
+    "seqtest_compare.log_e_a_y0@119": 0.0,
+    "seqtest_compare.log_e_b_y0@25": 1.4759065198095778,
+    "seqtest_compare.log_e_b_y0@60": 7.327588430413048,
+    "seqtest_compare.log_e_b_y0@119": 12.218800973478467,
+    "seqtest_compare.wins_a_y0@25": 0,
+    "seqtest_compare.wins_a_y0@60": 2,
+    "seqtest_compare.wins_a_y0@119": 7,
+    "seqtest_compare.wins_b_y0@25": 4,
+    "seqtest_compare.wins_b_y0@60": 21,
+    "seqtest_compare.wins_b_y0@119": 43,
     "seqtest_compare.weight_sum@25": 12.0,
     "seqtest_compare.weight_sum@60": 30.0,
     "seqtest_compare.weight_sum@119": 59.0,
@@ -973,7 +983,15 @@ GOLDEN: dict[str, float | str | None] = {
 #: here replays a ``kalman`` embargo row for row: ``po.stream.embargo``'s
 #: doubled stream through ``kalman_ref`` parts from the native embargo
 #: before the switch too, where nothing moved (row 25: -0.3103 against
-#: -0.2970), so it is no replica of these three.
+#: -0.2970), so it is no replica of these three. Task 211 (2026-10-08) moved
+#: 9, ``embargo``'s ``pred`` and ``resid`` and ``formula``'s ``pred_fwd`` at
+#: the three rows, by the change `GOLDEN`'s ``kalman`` took. The doubled
+#: stream now agrees with the native embargo where no gap is capped, but
+#: this stream caps seven; ``kalman_ref`` fed each learned row at its
+#: release with its arrival's capped clock, as the stream replays it, gives
+#: ``embargo``'s rows 25 and 60 to 1e-14, and parts from row 75 on (row
+#: 119 by 2e-4), which that emulation of the stream's release does not
+#: reproduce. ``formula``'s window target has no replica here.
 SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "window.pred_y0@25": -4.68515442331697,
     "window.pred_y0@60": -0.2680628499022917,
@@ -990,12 +1008,12 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "window.withheld_reason@25": None,
     "window.withheld_reason@60": None,
     "window.withheld_reason@119": None,
-    "embargo.pred_y0@25": -0.297030662716732,
-    "embargo.pred_y0@60": -0.6184279290422761,
-    "embargo.pred_y0@119": -0.04634909464751413,
-    "embargo.resid_y0@25": -4.554575161517985,
-    "embargo.resid_y0@60": 0.14638680022519812,
-    "embargo.resid_y0@119": -0.004349676310714701,
+    "embargo.pred_y0@25": -3.9026296120057635,
+    "embargo.pred_y0@60": -0.2395056878528834,
+    "embargo.pred_y0@119": -0.1605432657849435,
+    "embargo.resid_y0@25": -0.9489762122289527,
+    "embargo.resid_y0@60": -0.23253544096419454,
+    "embargo.resid_y0@119": 0.10984449482671466,
     "embargo.weight_sum@25": 5.255854811913398,
     "embargo.weight_sum@60": 10.867042954248578,
     "embargo.weight_sum@119": 12.473068731537921,
@@ -1197,9 +1215,9 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "diagnostics.learned_clock@25": 40.0,
     "diagnostics.learned_clock@60": 91.0,
     "diagnostics.learned_clock@119": 174.0,
-    "formula.pred_fwd@25": 0.03271607966199878,
-    "formula.pred_fwd@60": 0.13309799763766708,
-    "formula.pred_fwd@119": 0.051529160549880756,
+    "formula.pred_fwd@25": 0.0,
+    "formula.pred_fwd@60": 0.15023490186976923,
+    "formula.pred_fwd@119": 0.05558031264659617,
     "formula.resid_fwd@25": None,
     "formula.resid_fwd@60": None,
     "formula.resid_fwd@119": None,

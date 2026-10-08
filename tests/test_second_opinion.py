@@ -1569,7 +1569,9 @@ class TestKalmanZeroWeightRow:
     one than the other.
 
     The second opinion is ``filterpy``'s ``KalmanFilter`` beside a ``numpy``
-    recursion for ``σ²``: ``predict(Q)`` on every row, ``update(y, R = σ²/w,
+    recursion for ``σ²``: ``predict`` on every row, its process noise only
+    on a row that observes the target and for the whole clock since the last
+    one (docs/PLAN.md task 211), ``update(y, R = σ²/w,
     H = z)`` only where there is a target and a positive weight, and ``σ²``
     the EW mean of the squared out-of-sample residuals with its weight
     decayed on every row. Until ``σ²`` exists, the row's innovation squared
@@ -1590,56 +1592,23 @@ class TestKalmanZeroWeightRow:
         half_life: float,
         coef_hl: float,
         F: list[np.ndarray] | None = None,
+        usable: np.ndarray | None = None,
     ) -> np.ndarray:
         """filterpy's predictions over the regressor rows ``Z``, the
         intercept's column first: ``[1, x]`` unstandardized, the rows
         standardized otherwise, each row's predict step taking ``F[i]`` as
-        its transition where ``F`` is given (the identity otherwise)."""
-        n, k1 = Z.shape
-        kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
-        kf.x = np.zeros((k1, 1))
-        kf.F = np.eye(k1)
-        sized = False
-        sig2 = wsig = wj = 0.0
-        pred = np.full(n, np.nan)
-        for i in range(n):
-            d = 0.0 if i == 0 else t[i] - t[i - 1]
-            lam = 0.5 ** (d / half_life)
-            z = Z[i]
-            seen = not np.isnan(y[i]) and w[i] > 0.0
-            # The noise is sigma^2, and before there is one, the row's own
-            # innovation squared, before the update. None where that is 0 or
-            # the row has no innovation: no process noise and no update
-            # (review 2026-10-05, CC4).
-            first = (y[i] - z @ kf.x[:, 0]) ** 2 if seen else 0.0
-            s2 = sig2 if sig2 > 0.0 else first
-            if sized:
-                # The process noise of a step d clock units long, as the
-                # docstring states it: sigma^2 * (ln 2 * d / coef_half_life)^2.
-                kf.predict(
-                    Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2,
-                    F=None if F is None else F[i],
-                )
-            elif s2 > 0.0:
-                # The prior, p0 = 1 times the first noise, on this row.
-                kf.P, sized = np.eye(k1) * s2, True
-            if wj > 0.0:
-                pred[i] = z @ kf.x[:, 0]
-            if not seen:
-                # A prediction step and no update, and time passes for both
-                # weights.
-                wj *= lam
-                wsig *= lam
-                continue
-            if s2 > 0.0:
-                kf.update(y[i], R=s2 / w[i], H=z[None, :])
-            if not np.isnan(pred[i]):
-                r = y[i] - pred[i]
-                ws_new = lam * wsig + w[i]
-                sig2 = (lam * wsig * sig2 + w[i] * r * r) / ws_new
-                wsig = ws_new
-            wj = lam * wj + w[i]
-        return pred
+        its transition where ``F`` is given (the identity otherwise) and the
+        process noise of the clock since the last observation on a row that
+        observes the target, ``sigma^2 * (ln 2 * D / coef_half_life)^2``, as
+        the docstring states it (task 211). The noise is ``sigma^2``, and
+        before there is one, the row's own innovation squared, before the
+        update; none where that is 0 or the row has no innovation: no process
+        noise and no update (review 2026-10-05, CC4). Unstandardized the
+        prior is ``p0 = 1`` times the first noise; standardized each slot's
+        waits for its scale (``usable``, `_filterpy_run`)."""
+        return _filterpy_run(
+            kalman, t, Z, y, w, half_life, coef_half_life=coef_hl, F=F, usable=usable
+        )[0]
 
     @pytest.mark.parametrize("how", ["null", "zero weight"])
     def test_the_filter_is_filterpy_with_sigma_decayed_on_every_row(self, how):
@@ -1707,14 +1676,16 @@ class TestAStandardizedKalmanIsFilterpy:
     numpy, by sums over the raw rows, and fed to filterpy as
     `TestKalmanZeroWeightRow` feeds it the raw ones.
 
-    Past the standardizer's warm-up -- 22 rows by Kish's count of the
-    weights, ``(sum w) ** 2 / sum w ** 2``, undecayed -- the filter's state
-    follows the moments to their new coordinates after every row (docs/PLAN.md
-    task 206): ``b <- A b`` and ``P <- A P A'``, with ``A_00 = 1``, ``A_0i =
+    From the first row the filter's state follows the moments to their new
+    coordinates after every row that moves them (docs/PLAN.md tasks 206 and
+    211): ``b <- A b`` and ``P <- A P A'``, with ``A_00 = 1``, ``A_0i =
     (m'_i - m_i) / s_i`` and ``A_ii = s'_i / s_i`` from the moments the row
     was read at to the ones after it. That is a Kalman predict step with
     ``F = A``, so filterpy takes it as its transition on the next row,
-    beside the process noise.
+    beside the process noise. The filter holds its state at an anchor and
+    re-maps only when the moments drift from it, the same filter to
+    rounding. Each slot's prior waits for its scale, and is ``p0`` times the
+    mean squared innovation over three observed rows (task 211).
 
     The coefficients are read out in the original units with the moments
     *after* the row, so ``coef`` after one row applied to the next row's
@@ -1725,11 +1696,12 @@ class TestAStandardizedKalmanIsFilterpy:
     @staticmethod
     def standardized(
         t: np.ndarray, x: np.ndarray, w: np.ndarray, half_life: float
-    ) -> tuple[np.ndarray, list[np.ndarray]]:
-        """The rows standardized against the moments before each, and the
-        transition each row's predict step takes (`_standardizer_moves`)."""
-        Z, F, _ = _standardizer_moves(t, x, w, half_life)
-        return Z, F
+    ) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+        """The rows standardized against the moments before each, the
+        transition each row's predict step takes, and which slots' scales
+        each row reads are usable (`_standardizer_moves`)."""
+        Z, F, _, usable = _standardizer_moves(t, x, w, half_life)
+        return Z, F, usable
 
     @pytest.mark.parametrize("how", ["null", "zero weight"])
     def test_the_filter_is_filterpy_on_the_standardized_rows(self, how):
@@ -1775,12 +1747,16 @@ class TestAStandardizedKalmanIsFilterpy:
         )
         out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
         got = out["pred_y"].to_numpy()
-        Z, F = self.standardized(t, x, w, half_life)
-        want = TestKalmanZeroWeightRow.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl, F)
+        Z, F, usable = self.standardized(t, x, w, half_life)
+        want = TestKalmanZeroWeightRow.filterpy_pred(
+            kalman, t, Z, y_seen, w, half_life, coef_hl, F, usable
+        )
         np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
         # Without the change of coordinates filterpy is the filter read
         # through the moments as they stood, which this one no longer is.
-        stale = TestKalmanZeroWeightRow.filterpy_pred(kalman, t, Z, y_seen, w, half_life, coef_hl)
+        stale = TestKalmanZeroWeightRow.filterpy_pred(
+            kalman, t, Z, y_seen, w, half_life, coef_hl, None, usable
+        )
         assert np.nanmax(np.abs(stale - got)) > 1e-3
         assert np.isfinite(got[1:]).all()
         # Task 97: coef after row i, applied to row i + 1, is row i + 1's pred.
@@ -1799,8 +1775,10 @@ class TestASharedCovarianceIsFilterpy:
     the row once per target.) Every one of them reads the same noise, ``R = σ²/w``
     with ``σ²`` the targets' mean residual variance as the row arrives (before
     there is one, the mean squared innovation over the targets the row
-    observes; `kalman.rs`'s module doc, CC4), and the row's process noise
-    ``σ²·(ln 2 · d / coef_half_life)²`` goes in once, before the first update.
+    observes; `kalman.rs`'s module doc, CC4), and the process noise
+    ``σ²·(ln 2 · D / coef_half_life)²`` goes in once, before the first update,
+    on a row that observes a target, ``D`` the clock since the last such row
+    (docs/PLAN.md task 211).
     The filter read ``σ²`` inside its per-target loop, after the targets
     before had moved theirs on the row, so the second target's ``R`` held the
     first's residual of the same row and the order of ``targets`` changed
@@ -1828,11 +1806,13 @@ class TestASharedCovarianceIsFilterpy:
             kf.F = np.eye(k1)
         P = np.zeros((k1, k1))
         sized = False
+        gap = 0.0
         sig2, wsig, wj = np.zeros(m), np.zeros(m), np.zeros(m)
         preds = [np.full(n, np.nan) for _ in range(m)]
         for i in range(n):
             d = 0.0 if i == 0 else t[i] - t[i - 1]
             lam = 0.5 ** (d / half_life)
+            gap += d
             z = Z[i]
             zb = [z @ kf.x[:, 0] for kf in kfs]
             for j in range(m):
@@ -1845,10 +1825,14 @@ class TestASharedCovarianceIsFilterpy:
             if not s2 > 0.0:
                 e2 = [(ys[j][i] - zb[j]) ** 2 for j in range(m) if seen[j]]
                 s2 = float(np.mean(e2)) if e2 else 0.0
-            if sized:
-                P = P + np.eye(k1) * s2 * (np.log(2.0) * d / coef_hl) ** 2
-            elif s2 > 0.0:
-                P, sized = np.eye(k1) * s2, True
+            # The process noise on a row that observes a target, for the
+            # whole clock since the last such row (task 211).
+            if any(seen):
+                if sized:
+                    P = P + np.eye(k1) * s2 * (np.log(2.0) * gap / coef_hl) ** 2
+                elif s2 > 0.0:
+                    P, sized = np.eye(k1) * s2, True
+                gap = 0.0
             after = None
             for j in range(m):
                 if not seen[j]:
@@ -1919,6 +1903,69 @@ class TestASharedCovarianceIsFilterpy:
             got = out[f"pred_{c}"].to_numpy()
             assert np.isfinite(got).sum() > 250, c
             np.testing.assert_allclose(got, p, rtol=1e-9, atol=1e-12, err_msg=c)
+
+
+class TestASharedCovariancesStandardErrorsAreEachTargets:
+    """Docs/PLAN.md task 211 (the review of 2026-10-08, T8). Under
+    ``share_p`` the one ``P`` is driven by the targets' mean noise ``σ̄²``.
+    With a noise ``σ²_j`` of its own, a target's own filter keeps ``P_j =
+    σ²_j P̃`` where the shared one keeps ``σ̄² P̃``: ``P̃``'s recursion, ``P̃ -
+    P̃ z zᵀ P̃ / (zᵀ P̃ z + 1)`` with the noise ``(ln 2 / h)²`` and the prior
+    ``p0``, reads no noise at all. So target ``j``'s ``se_coef`` is the
+    shared ``P``'s times ``σ_j / σ̄``. Read off ``P`` as it stands, two
+    targets of noise 0.01 and 1 had standard errors 7.3 times too large and
+    1.39 times too small.
+
+    The second opinion is each target's own filter, filterpy's
+    ``KalmanFilter`` at the target's true noise and the process noise its
+    ``coef_half_life`` implies, ``R_j (ln 2 / h)²`` per unit row:
+    unstandardized, so ``P`` is the coefficients' covariance. The bank's
+    noises are EW estimates of the true ones, so the two agree to a few
+    percent past the first rows, where the old reading parted by 7.3 and
+    1.39 times."""
+
+    def test_each_target_reads_its_own_noise(self):
+        import filterpy.kalman as kalman
+
+        rng = np.random.default_rng(50)
+        n, h = 6000, 50.0
+        noise = (0.01, 1.0)
+        x = rng.normal(size=(n, 2))
+        Z = np.column_stack([np.ones(n), x])
+        ys = {}
+        for j, r in enumerate(noise):
+            q = r * (np.log(2.0) / h) ** 2
+            b = np.array([0.5, -0.3, 0.2]) + np.cumsum(np.sqrt(q) * rng.normal(size=(n, 3)), 0)
+            ys[f"y{j}"] = (Z * b).sum(axis=1) + np.sqrt(r) * rng.normal(size=n)
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], **ys})
+        spec = po.spec.kalman(
+            "k",
+            targets=["y0", "y1"],
+            features=["x0", "x1"],
+            coef_half_life=h,
+            half_life=500.0,
+            min_weight=0.0,
+            standardize=False,
+            share_p=True,
+            emit_se_coef=True,
+            coef_every=1,
+        )
+        se = np.array(
+            po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("se_coef").to_list(),
+            dtype=float,
+        )
+        for j, r in enumerate(noise):
+            kf = kalman.KalmanFilter(dim_x=3, dim_z=1)
+            kf.x = np.zeros((3, 1))
+            kf.P = np.eye(3) * r
+            own = np.empty((n, 3))
+            for i in range(n):
+                kf.predict(Q=np.eye(3) * r * (np.log(2.0) / h) ** 2)
+                kf.update(ys[f"y{j}"][i], R=r, H=Z[i][None, :])
+                own[i] = np.sqrt(np.diag(kf.P))
+            ratio = se[2000:, 3 * j : 3 * j + 3] / own[2000:]
+            assert np.median(ratio) == pytest.approx(1.0, abs=0.05), (j, np.median(ratio))
+            assert np.quantile(ratio, [0.01, 0.99]) == pytest.approx([1.0, 1.0], abs=0.15), j
 
 
 class TestAHopelessSerialFactorSaysSo:
@@ -3336,54 +3383,185 @@ class TestNearestIsStatsmodelsCorrNearest:
 
 def _standardizer_moves(
     t: np.ndarray, x: np.ndarray, w: np.ndarray, half_life: float, fit_intercept: bool = True
-) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+) -> tuple[np.ndarray, list[np.ndarray], np.ndarray, np.ndarray]:
     """What `kalman`'s standardizer does to the rows, from the moments'
-    definition (`kalman.rs`'s module doc; docs/PLAN.md task 206): each row
-    standardized against the EW moments of the rows before it, every
-    processed row at its weight, a scale of 1 where there is no spread --
-    ``[1, (x - m) / s]``, or through the origin ``x / s`` with ``s`` the root
-    mean square; and, once Kish's count of the weights, ``(sum w) ** 2 / sum
-    w ** 2`` undecayed, has reached 22, the change of coordinates every later
-    row makes from the moments before it to those after it: ``A_00 = 1``,
-    ``A_0i = (m'_i - m_i) / s_i`` and ``A_ii = s'_i / s_i`` (``A = diag(s' /
-    s)`` through the origin). ``F[i]`` is the change the row before row ``i``
-    made, the transition row ``i``'s predict step takes, ``I`` where there
-    was none; ``remapped[i]`` whether row ``i`` made one."""
+    definition (`kalman.rs`'s module doc; docs/PLAN.md tasks 206 and 211):
+    each row standardized against the EW moments of the rows before it,
+    every processed row at its weight, a scale of 1 where there is no spread
+    -- ``[1, (x - m) / s]``, or through the origin ``x / s`` with ``s`` the
+    root mean square; and, from the first row, the change of coordinates
+    each row of positive weight makes from the moments before it to those
+    after it: ``A_00 = 1``, ``A_0i = (m'_i - m_i) / s_i`` and ``A_ii = s'_i /
+    s_i`` (``A = diag(s' / s)`` through the origin). ``F[i]`` is the change
+    the row before row ``i`` made, the transition row ``i``'s predict step
+    takes, ``I`` where there was none; ``remapped[i]`` whether row ``i`` made
+    one; ``usable[i]`` which slots' scales row ``i`` reads are usable, the
+    intercept's always. A spread of the rounding a mean leaves on one row,
+    1e-34 at these levels where the filter's is exactly 0, is none."""
     n, k = x.shape
     off = 1 if fit_intercept else 0
     Z = np.ones((n, k + off))
+    usable = np.ones((n, k + off), dtype=bool)
     moments = []
     for i in range(n + 1):
         u = w[:i] * 0.5 ** ((t[i - 1] - t[:i]) / half_life) if i else np.zeros(0)
-        m, s = np.zeros(k), np.ones(k)
+        m, s, ok = np.zeros(k), np.ones(k), np.zeros(k, dtype=bool)
         if u.sum() > 0.0:
             if fit_intercept:
                 m = (u[:, None] * x[:i]).sum(axis=0) / u.sum()
                 v = (u[:, None] * (x[:i] - m) ** 2).sum(axis=0) / u.sum()
-                s = np.where(v > 0.0, np.sqrt(np.maximum(v, 0.0)), 1.0)
+                ok = v > 1e-20 * (m * m + 1.0)
             else:
-                raw2 = (u[:, None] * x[:i] ** 2).sum(axis=0) / u.sum()
-                s = np.where(raw2 > 0.0, np.sqrt(raw2), 1.0)
+                v = (u[:, None] * x[:i] ** 2).sum(axis=0) / u.sum()
+                ok = v > 0.0
+            s = np.where(ok, np.sqrt(np.maximum(v, 0.0)), 1.0)
         moments.append((m, s))
         if i < n:
             Z[i, off:] = (x[i] - m) / s
+            usable[i, off:] = ok
     F = [np.eye(k + off) for _ in range(n)]
-    remapped = np.zeros(n, dtype=bool)
-    w1 = w2 = 0.0
-    switched = False
-    for i in range(n):
-        if switched:
+    remapped = w > 0.0
+    for i in range(n - 1):
+        if remapped[i]:
             (m, s), (m2, s2) = moments[i], moments[i + 1]
-            remapped[i] = True
-            if i + 1 < n:
-                if fit_intercept:
-                    F[i + 1][0, 1:] = (m2 - m) / s
-                F[i + 1][off:, off:] = np.diag(s2 / s)
-        else:
-            w1, w2 = w1 + w[i], w2 + w[i] ** 2
-            switched = w2 > 0.0 and w1 * w1 / w2 >= 22.0
-    assert switched, "the stream is past the warm-up"
-    return Z, F, remapped
+            if fit_intercept:
+                F[i + 1][0, 1:] = (m2 - m) / s
+            F[i + 1][off:, off:] = np.diag(s2 / s)
+    return Z, F, remapped, usable
+
+
+def _filterpy_run(
+    kalman: Any,
+    t: np.ndarray,
+    Z: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    half_life: float,
+    *,
+    coef_half_life: float | list[float],
+    q: list[float] | None = None,
+    obs_var: float | None = None,
+    p0: float = 1.0,
+    F: list[np.ndarray] | None = None,
+    usable: np.ndarray | None = None,
+    revert: float | list[float] = float("inf"),
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray | None]]:
+    """filterpy's run of `kalman`'s documented recursion (`kalman.rs`'s
+    module doc; docs/PLAN.md task 211) over the regressor rows ``Z``, one
+    target: per row its prediction, its readiness statistic and the
+    posterior ``P`` after it (``None`` while unsized), which after a row
+    that observes nothing carries the noise of the clock since the last
+    observation as the next one will charge it.
+
+    Every row runs filterpy's ``predict`` with the transition ``F = diag(2^(-d
+    / r)) A``, ``A`` the change of coordinates the row before made (``F[i]``
+    here, `_standardizer_moves`; the identity unstandardized), and the
+    process noise only on a row that observes the target: ``Q D**2``, ``D``
+    the clock since the last such row, ``Q`` from ``coef_half_life`` --
+    ``sigma**2 (ln 2 / h)**2`` per coefficient, 0 at ``inf`` -- or ``q``. The
+    noise is ``obs_var``, else the residual variance, else the row's own
+    innovation squared, read after the transition. Unstandardized
+    (``usable`` None) the first row with a noise sizes ``P = p0 * R * I``,
+    and ``obs_var`` sizes it before the first row; standardized each slot's
+    ``P_ii = p0 * R`` is set on the first observed row its scale is usable
+    (``usable[i]``), ``R`` the mean squared innovation over the observed
+    rows so far once three give it, or ``obs_var``, the intercept's then
+    from the start; an unsized slot takes no noise. The readiness statistic
+    is ``sqrt(1 + z' P⁻ z / R)``, ``P⁻`` the prior with the noise of the
+    clock since the last observation, this row's included, ``R`` the noise
+    as the state holds it: infinite while ``P`` is unsized or there is none
+    (docs/PLAN.md task 116)."""
+    n, k1 = Z.shape
+    hl = np.broadcast_to(np.asarray(coef_half_life, dtype=float), (k1,))
+    r = np.broadcast_to(np.asarray(revert, dtype=float), (k1,))
+    standardize = usable is not None
+    kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
+    kf.x = np.zeros((k1, 1))
+    kf.P = np.zeros((k1, k1))
+    sized = np.zeros(k1, dtype=bool)
+    if obs_var is not None:
+        # Every slot unstandardized; standardized the intercept, whose
+        # column is all ones.
+        sized[:] = not standardize
+        sized[0] |= bool(np.all(Z[:, 0] == 1.0))
+        kf.P = np.diag(np.where(sized, p0 * obs_var, 0.0))
+    basis = [0.0, 0.0, 0.0]
+    gap = 0.0
+    sig2 = wsig = wj = 0.0
+    pred = np.full(n, np.nan)
+    infl = np.full(n, np.inf)
+    posts: list[np.ndarray | None] = []
+
+    def noise_of(s2: float) -> np.ndarray:
+        if q is not None:
+            return np.asarray(q, dtype=float)
+        finite = np.where(np.isinf(hl), 1.0, hl)
+        return np.where(np.isinf(hl), 0.0, s2 * (np.log(2.0) / finite) ** 2)
+
+    for i in range(n):
+        d = 0.0 if i == 0 else t[i] - t[i - 1]
+        lam = 0.5 ** (d / half_life)
+        gap += d
+        Fi = np.diag(0.5 ** (d / r)) @ (np.eye(k1) if F is None else F[i])
+        z = Z[i]
+        seen = not np.isnan(y[i]) and w[i] > 0.0
+        x_prior = Fi @ kf.x[:, 0]
+        e2 = (y[i] - z @ x_prior) ** 2 if seen else 0.0
+        # The row's noise, and the noise the state holds.
+        held = obs_var if obs_var is not None else sig2
+        s2 = held if obs_var is not None or sig2 > 0.0 else e2
+        P_prior = Fi @ kf.P @ Fi.T
+        if sized.any() and held > 0.0:
+            prior = P_prior + np.diag(np.where(sized, noise_of(held) * gap * gap, 0.0))
+            infl[i] = np.sqrt(1.0 + z @ prior @ z / held)
+        Q = np.diag(np.where(sized, noise_of(s2) * gap * gap, 0.0)) if seen else 0.0 * P_prior
+        kf.predict(Q=Q, F=Fi)
+        if seen:
+            gap = 0.0
+            if standardize:
+                if obs_var is None and e2 > 0.0:
+                    basis = [basis[0] + w[i] * e2, basis[1] + w[i], basis[2] + 1.0]
+                size = (
+                    obs_var
+                    if obs_var is not None
+                    else basis[0] / basis[1]
+                    if basis[2] >= 3
+                    else 0.0
+                )
+                for a in range(k1):
+                    if not sized[a] and usable[i][a] and size > 0.0:
+                        kf.P[a, a] = p0 * size
+                        sized[a] = True
+            elif not sized.any() and s2 > 0.0:
+                kf.P = np.eye(k1) * p0 * s2
+                sized[:] = True
+        if wj > 0.0:
+            pred[i] = z @ kf.x[:, 0]
+        if not seen:
+            wj *= lam
+            wsig *= lam
+            if not sized.any():
+                posts.append(None)
+                continue
+            # `P` as it stands carries the noise of the clock since the
+            # last observation, in the coordinates of the moments after this
+            # row, which the next row's transition maps to: here, before it,
+            # mapped back by that change.
+            now = np.diag(np.where(sized, noise_of(held) * gap * gap, 0.0)) if held > 0.0 else 0.0
+            A = np.linalg.inv(F[i + 1]) if F is not None and i + 1 < n else np.eye(k1)
+            posts.append(kf.P + A @ now @ A.T)
+            continue
+        if s2 > 0.0:
+            kf.update(y[i], R=s2 / w[i], H=z[None, :])
+        aged = lam * wsig
+        wsig = aged
+        if not np.isnan(pred[i]):
+            res = y[i] - pred[i]
+            sig2 = (aged * sig2 + w[i] * res * res) / (aged + w[i])
+            wsig = aged + w[i]
+        wj = lam * wj + w[i]
+        posts.append(kf.P.copy() if sized.any() else None)
+    return pred, infl, posts
 
 
 def _filterpy_kalman(
@@ -3399,62 +3577,31 @@ def _filterpy_kalman(
     obs_var: float | None = None,
     p0: float = 1.0,
     F: list[np.ndarray] | None = None,
+    usable: np.ndarray | None = None,
 ) -> np.ndarray:
     """filterpy's predictions over the regressor rows ``Z`` under `kalman`'s
-    documented recursion, as `TestKalmanZeroWeightRow.filterpy_pred` runs it,
-    with the three settings that one leaves at their defaults: an explicit
-    ``q`` makes the process noise ``diag(q) d**2`` whatever the residuals; an
+    documented recursion (`_filterpy_run`), with the three settings
+    `TestKalmanZeroWeightRow` leaves at their defaults: an explicit ``q``
+    makes the process noise ``diag(q) D**2`` whatever the residuals; an
     ``obs_var`` is the observation noise on every row and sizes the prior
-    ``p0 * obs_var * I`` before the first row; and a ``coef_half_life`` per
-    coefficient, ``inf`` pinning one, gives each its own ``sigma**2 (ln 2 d /
-    h)**2``, 0 at ``inf``. ``F[i]``, where given, is row ``i``'s transition:
-    the change of coordinates the standardizer's moments made on the row
-    before (`_standardizer_moves`)."""
-    n, k1 = Z.shape
-    hl = np.broadcast_to(np.asarray(coef_half_life, dtype=float), (k1,))
-    kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
-    kf.x = np.zeros((k1, 1))
-    kf.F = np.eye(k1)
-    sized = obs_var is not None
-    if obs_var is not None:
-        kf.P = np.eye(k1) * p0 * obs_var
-    sig2 = wsig = wj = 0.0
-    pred = np.full(n, np.nan)
-    for i in range(n):
-        d = 0.0 if i == 0 else t[i] - t[i - 1]
-        lam = 0.5 ** (d / half_life)
-        z = Z[i]
-        seen = not np.isnan(y[i]) and w[i] > 0.0
-        if obs_var is not None:
-            s2 = obs_var
-        else:
-            first = (y[i] - z @ kf.x[:, 0]) ** 2 if seen else 0.0
-            s2 = sig2 if sig2 > 0.0 else first
-        if sized:
-            if q is not None:
-                qv = np.asarray(q, dtype=float)
-            else:
-                finite = np.where(np.isinf(hl), 1.0, hl)
-                qv = np.where(np.isinf(hl), 0.0, s2 * (np.log(2.0) / finite) ** 2)
-            kf.predict(Q=np.diag(qv * d * d), F=None if F is None else F[i])
-        elif s2 > 0.0:
-            kf.P, sized = np.eye(k1) * p0 * s2, True
-        if wj > 0.0:
-            pred[i] = z @ kf.x[:, 0]
-        if not seen:
-            wj *= lam
-            wsig *= lam
-            continue
-        if s2 > 0.0:
-            kf.update(y[i], R=s2 / w[i], H=z[None, :])
-        aged = lam * wsig
-        wsig = aged
-        if not np.isnan(pred[i]):
-            r = y[i] - pred[i]
-            sig2 = (aged * sig2 + w[i] * r * r) / (aged + w[i])
-            wsig = aged + w[i]
-        wj = lam * wj + w[i]
-    return pred
+    before the first row; and a ``coef_half_life`` per coefficient, ``inf``
+    pinning one, gives each its own ``sigma**2 (ln 2 D / h)**2``, 0 at
+    ``inf``. ``F[i]`` and ``usable``, where given, are the standardizer's
+    (`_standardizer_moves`)."""
+    return _filterpy_run(
+        kalman,
+        t,
+        Z,
+        y,
+        w,
+        half_life,
+        coef_half_life=coef_half_life,
+        q=q,
+        obs_var=obs_var,
+        p0=p0,
+        F=F,
+        usable=usable,
+    )[0]
 
 
 class TestKalmanSettingsAreFilterpy:
@@ -3550,10 +3697,11 @@ class TestKalmanSettingsAreFilterpy:
 
         frame, t, x, y, w = self.rows(44, scaled=True)
         got = self.ours(frame, coef_half_life=50.0, fit_intercept=False, p0=1.0)
-        # No moments before the first row: a scale of 1. Past the warm-up
-        # the filter follows each move of the scales, `F = diag(s' / s)`.
-        Z, F, _ = _standardizer_moves(t, x, w, 30.0, fit_intercept=False)
-        want = _filterpy_kalman(kalman, t, Z, y, w, 30.0, coef_half_life=50.0, F=F)
+        # No moments before the first row: no usable scale, and no prior.
+        # From then the filter follows each move of the scales, `F = diag(s'
+        # / s)` (task 211).
+        Z, F, _, usable = _standardizer_moves(t, x, w, 30.0, fit_intercept=False)
+        want = _filterpy_kalman(kalman, t, Z, y, w, 30.0, coef_half_life=50.0, F=F, usable=usable)
         np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-13)
 
     def test_a_slip_in_the_mapping_misses(self):
@@ -3822,62 +3970,34 @@ def _filterpy_kalman_readiness(
     obs_var: float | None = None,
     p0: float = 1.0,
     remap: list[np.ndarray] | None = None,
+    usable: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray | None]]:
-    """filterpy's run of `kalman`'s documented recursion, as
-    `_filterpy_kalman` runs it, with the transition ``F = diag(2^(-d / r))``
-    of `TestAMeanRevertingKalmanIsFilterpy` -- after ``remap[i]``, the change
-    of coordinates the row before made, where given (`_standardizer_moves`)
-    -- returning per row what docs/PLAN.md
-    task 116 reads from it: the readiness statistic ``sqrt(1 + z' P⁻ z / R)``
-    before the row's update -- ``P⁻`` filterpy's ``P`` after ``predict``,
-    ``R`` the noise as the state holds it, ``obs_var`` or else the residual
-    variance, infinite while ``P`` is unsized or the target has no residual
-    variance -- and the posterior ``P`` after the row, ``None`` while unsized."""
-    n, k1 = Z.shape
-    r = np.broadcast_to(np.asarray(revert, dtype=float), (k1,))
-    kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
-    kf.x = np.zeros((k1, 1))
-    sized = obs_var is not None
-    if obs_var is not None:
-        kf.P = np.eye(k1) * p0 * obs_var
-    sig2 = wsig = wj = 0.0
-    infl = np.full(n, np.inf)
-    posts: list[np.ndarray | None] = []
-    for i in range(n):
-        d = 0.0 if i == 0 else t[i] - t[i - 1]
-        lam = 0.5 ** (d / half_life)
-        # The reversion after the change of coordinates the row before made.
-        kf.F = np.diag(0.5 ** (d / r)) @ (np.eye(k1) if remap is None else remap[i])
-        z = Z[i]
-        seen = not np.isnan(y[i]) and w[i] > 0.0
-        if obs_var is not None:
-            s2 = obs_var
-        else:
-            first = (y[i] - z @ (kf.F @ kf.x)[:, 0]) ** 2 if seen else 0.0
-            s2 = sig2 if sig2 > 0.0 else first
-        noise = obs_var if obs_var is not None else sig2
-        if sized:
-            kf.predict(Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_half_life) ** 2)
-            if noise > 0.0:
-                infl[i] = np.sqrt(1.0 + z @ kf.P @ z / noise)
-        elif s2 > 0.0:
-            kf.P, sized = np.eye(k1) * p0 * s2, True
-        pred = z @ kf.x[:, 0] if wj > 0.0 else np.nan
-        if not seen:
-            wj *= lam
-            wsig *= lam
-            posts.append(kf.P.copy() if sized else None)
-            continue
-        if s2 > 0.0:
-            kf.update(y[i], R=s2 / w[i], H=z[None, :])
-        aged = lam * wsig
-        wsig = aged
-        if not np.isnan(pred):
-            res = y[i] - pred
-            sig2 = (aged * sig2 + w[i] * res * res) / (aged + w[i])
-            wsig = aged + w[i]
-        wj = lam * wj + w[i]
-        posts.append(kf.P.copy() if sized else None)
+    """filterpy's run of `kalman`'s documented recursion (`_filterpy_run`),
+    with the transition ``F = diag(2^(-d / r))`` of
+    `TestAMeanRevertingKalmanIsFilterpy` -- after ``remap[i]``, the change of
+    coordinates the row before made, where given (`_standardizer_moves`) --
+    returning per row what docs/PLAN.md task 116 reads from it: the
+    readiness statistic ``sqrt(1 + z' P⁻ z / R)`` before the row's update --
+    ``P⁻`` filterpy's ``P`` carried through the transition with the process
+    noise of the clock since the last observation, this row's included
+    (task 211), ``R`` the noise as the state holds it, ``obs_var`` or else
+    the residual variance, infinite while ``P`` is unsized or the target has
+    no residual variance -- and the posterior ``P`` after the row, ``None``
+    while unsized."""
+    _, infl, posts = _filterpy_run(
+        kalman,
+        t,
+        Z,
+        y,
+        w,
+        half_life,
+        coef_half_life=coef_half_life,
+        obs_var=obs_var,
+        p0=p0,
+        F=remap,
+        usable=usable,
+        revert=revert,
+    )
     return infl, posts
 
 
@@ -3928,13 +4048,13 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             **({"emit_se_coef": True} if se else {}),
         )
         out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
-        remap = None
+        remap, usable = None, None
         if case["standardize"]:
-            Z, remap, _ = _standardizer_moves(t, x, w, 30.0)
             # One row before has no spread, and the filter takes a scale of 1
             # (`variance_is_usable`), where the sums here leave a variance of
-            # rounding, 1e-34 at these levels, and a scale of 1e-17.
-            Z[1, 1:] = x[1] - x[0]
+            # rounding, 1e-34 at these levels: `_standardizer_moves` reads
+            # that as none.
+            Z, remap, _, usable = _standardizer_moves(t, x, w, 30.0)
         else:
             Z = np.column_stack([np.ones(len(t)), x])
         infl, posts = _filterpy_kalman_readiness(
@@ -3949,6 +4069,7 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             obs_var=case.get("obs_var"),
             p0=case.get("p0", 1.0),
             remap=remap,
+            usable=usable,
         )
         return out, infl, posts, t, x, w
 
@@ -3977,18 +4098,17 @@ class TestKalmansErrorInflationIsFilterpysPrior:
             P = posts[i]
             if self.CASES[case]["standardize"]:
                 # The coefficients are read out with the moments after the
-                # row: c_i = b_i / s_i, c_0 = b_0 - sum_i c_i m_i. Past the
-                # warm-up `P` has followed them there, `A P A'`, so read
-                # out with them it is filterpy's posterior read out with the
-                # moments before the row (task 206).
+                # row: c_i = b_i / s_i, c_0 = b_0 - sum_i c_i m_i. `P` has
+                # followed them there, `A P A'`, so read out with them it is
+                # filterpy's posterior read out with the moments before the
+                # row (tasks 206 and 211). The first rows are unsized.
                 j = i if remapped[i] else i + 1
                 u = w[:j] * 0.5 ** ((t[j - 1] - t[:j]) / 30.0)
                 m = (u[:, None] * x[:j]).sum(axis=0) / u.sum()
                 v = (u[:, None] * (x[:j] - m) ** 2).sum(axis=0) / u.sum()
                 # One row has no spread: the filter's is exactly 0 there,
-                # the sums' a rounding (as in `run`).
-                v = v if i > 0 else np.zeros_like(v)
-                s = np.where(v > 0.0, np.sqrt(np.maximum(v, 0.0)), 1.0)
+                # the sums' a rounding (as in `_standardizer_moves`).
+                s = np.where(v > 1e-20 * (m * m + 1.0), np.sqrt(np.maximum(v, 0.0)), 1.0)
                 T = np.zeros((3, 3))
                 T[0, 0] = 1.0
                 T[0, 1:] = -m / s

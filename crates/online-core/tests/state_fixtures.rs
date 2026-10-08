@@ -458,21 +458,28 @@ fn held(v: &rmpv::Value) -> usize {
 /// `bocpd`'s warm-up rows (40), `rls`'s second weight sum `s₂` and the
 /// robust models' data shares (45, docs/PLAN.md task 116). Each was empty
 /// in every fixture before. The standardizing models' warm-up (47,
-/// docs/PLAN.md task 206) is written twice for each of `sgd`, `pa` and
-/// `kalman`: saved inside it, its count short of 22 and not switched, and
-/// saved past it, switched, where the coefficients mean another thing.
+/// docs/PLAN.md task 206) is written twice for each of `sgd` and `pa`:
+/// saved inside it, its count short of 22 and not switched, and saved past
+/// it, switched, where the coefficients mean another thing. `kalman`'s
+/// anchor, the squared innovations its prior is sized from and its clock
+/// since an observation (49, docs/PLAN.md task 211): the last written by
+/// `kalman_gap`, saved after a row whose targets are null, where `kalman`'s
+/// clocks are 0, its last row having observed both targets.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 14] = [
+    const FORMS: [(&str, &[&str]); 17] = [
         ("sgd", &["model", "Sgd", "warmup"]),
         ("sgd_warming", &["model", "Sgd", "warmup"]),
         ("pa", &["model", "Pa", "warmup"]),
         ("pa_warming", &["model", "Pa", "warmup"]),
-        ("kalman", &["model", "Kalman", "warmup"]),
-        ("kalman_warming", &["model", "Kalman", "warmup"]),
+        ("kalman", &["model", "Kalman", "anchor_hi"]),
+        ("kalman", &["model", "Kalman", "anchor_lo"]),
+        ("kalman", &["model", "Kalman", "anchor_scale"]),
+        ("kalman", &["model", "Kalman", "basis"]),
+        ("kalman_gap", &["model", "Kalman", "elapsed"]),
         ("sgd_huber", &["model", "Sgd", "sig2"]),
         ("sgd_huber", &["model", "Sgd", "wsig"]),
         ("sgd_eps", &["model", "Sgd", "spread"]),

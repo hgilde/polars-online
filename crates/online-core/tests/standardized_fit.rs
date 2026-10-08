@@ -1,14 +1,17 @@
 //! The fit of a standardizing model under a moving scaler (docs/PLAN.md task
 //! 206; review round 5, G1): `sgd`, `pa` and `kalman` under `standardize`.
 //!
-//! Each runs its design from before task 206 while its scaler warms up
-//! (`Warmup`, 22 rows by Kish's count), and from the row after that holds
-//! its fit so that the scaler's moving moves no prediction: `sgd` and `pa`
-//! in the caller's units, `kalman` re-mapped through every move of the
-//! moments. Held here: the rows up to the switch are the old build's to the
-//! bit; after it, rows that move only the scaler leave every prediction and
-//! coefficient where it was; a power of two in the features' units changes
-//! no bit; and a save at, before or after the switch goes on to the bit.
+//! `sgd` and `pa` run their design from before task 206 while their scaler
+//! warms up (`Warmup`, 22 rows by Kish's count), and from the row after
+//! that hold their fit in the caller's units, so that the scaler's moving
+//! moves no prediction. `kalman` holds `b` and `P` in the coordinates of an
+//! anchor and follows every move of the moments exactly from its first row,
+//! with no warm-up (docs/PLAN.md task 211). Held here: `sgd`'s and `pa`'s
+//! rows up to the switch are the old build's to the bit; after it, and for
+//! `kalman` throughout, rows that move only the scaler leave every
+//! prediction and coefficient where it was; a power of two in the features'
+//! units changes no bit; and a save at, before or after the switch goes on
+//! to the bit.
 //!
 //! Every stream here decays by a literal factor at unit clock steps, so no
 //! call into the platform's libm is on a path a bit is pinned on.
@@ -254,12 +257,14 @@ fn the_rows_up_to_the_switch_are_the_old_builds_to_the_bit() {
         ("pa, weighted", 0xb54a_2797_8e0e_970b),
         ("pa2 simplex, weighted", 0x8958_0977_2e27_2aec),
         ("pa1 through the origin", 0x77e8_1c5a_5178_8230),
-        ("kalman", 0xda66_a81c_b19d_89a6),
-        ("kalman share_p, weighted", 0x531a_f84a_0f6a_1664),
-        ("kalman through the origin, weighted", 0x001f_61e5_b0fc_dfe4),
     ];
     let mut got = Vec::new();
-    for (name, build, weighted) in cases() {
+    // `kalman` has no warm-up since task 211, and its first rows moved
+    // with it: each feature's prior waits for its scale.
+    for (name, build, weighted) in cases()
+        .into_iter()
+        .filter(|(name, _, _)| !name.starts_with("kalman"))
+    {
         let mut m = build();
         let last = switch_row(weighted);
         let mut s = 5u64;
@@ -287,8 +292,9 @@ fn the_rows_up_to_the_switch_are_the_old_builds_to_the_bit() {
 /// the features at another level and spread -- leave the prediction for a
 /// fixed row and the coefficients where they were: to the bit for `sgd` and
 /// `pa`, whose fit is in the caller's units and reads no moment, and for
-/// `kalman`, whose `b` and `P` are re-mapped through each move, to rounding:
-/// within 1e-12 of `1 + |p|` (4.5e-15 measured). Read through the moments
+/// `kalman`, whose `b` and `P` are held at an anchor and re-mapped when the
+/// moments drift from it, to rounding: within 1e-12 of `1 + |p|`. Read
+/// through the moments
 /// as they stood, as before task 206, the prediction moved with them though
 /// no step was taken: on that build `sgd squared` predicted the fixed row
 /// at 7.49 before the rows and 5.35 after them.
@@ -341,14 +347,16 @@ fn past_the_switch_the_scaler_moves_and_the_fit_does_not() {
 /// standardizing (docs/PLAN.md task 195) still holds of a fit held in the
 /// caller's units, whose map divides by a scale and multiplies by a mean
 /// that scale with the features. A constraint's bounds are the caller's, in
-/// the features' units, so the constrained cases sit this one out, and so
-/// does `kalman`: it standardizes against the moments before the row, so
-/// its first row meets moments with no row in them and reads `x` as it is,
-/// as it did before task 206 (the research behind it, side finding).
+/// the features' units, so the constrained cases sit this one out. `kalman`
+/// sat it out until task 211: it standardizes against the moments before
+/// the row, so its first row met moments with no row in them, read `x` as
+/// it was, and sized its prior on it; each feature's prior now waits for its
+/// feature's scale, no row's raw `x` reaches the state, and it keeps its
+/// bits too (it failed here on `3d0894b`).
 #[test]
 fn features_scaled_by_a_power_of_two_predict_the_same_to_the_bit() {
     for (name, build, weighted) in cases() {
-        if name.contains("simplex") || name.starts_with("kalman") {
+        if name.contains("simplex") {
             continue;
         }
         let run = |c: f64| {

@@ -1,9 +1,11 @@
-"""docs/PLAN.md task 206 (review round 5, G1): a standardizing ``sgd``, ``pa``
-or ``kalman`` warms its scaler up over 22 rows (Kish's count of the weights)
-as it did before, and from then on holds its fit so that the scaler's moving
-moves no prediction: ``sgd`` and ``pa`` in the caller's units, the step
-mapped into them by the row's own moments, and ``kalman`` with its
-coefficients and their covariance re-mapped through every move.
+"""docs/PLAN.md task 206 (review round 5, G1): a standardizing ``sgd`` or
+``pa`` warms its scaler up over 22 rows (Kish's count of the weights) as it
+did before, and from then on holds its fit so that the scaler's moving moves
+no prediction, in the caller's units, the step mapped into them by the row's
+own moments. ``kalman`` holds its coefficients and their covariance at an
+anchor and re-maps them when the moments drift from it, from its first row:
+since task 211 it takes no warm-up, each coefficient's prior waiting for its
+feature's scale instead.
 
 Read through the moments as they stood, as before the change, every
 prediction moved with the scaler's own wander under a finite half-life --
@@ -105,9 +107,11 @@ def test_a_short_history_learns_as_it_did(kind):
     """Task 74's regime, where a fit held in the caller's units from the
     first row lost everything (``sgd`` R² -207, ``pa`` -20206 at rows 25-50,
     the research behind task 206): the warm-up keeps it at least where it
-    was, less 0.01. Measured on this build 0.4488 / 0.7075 / 0.6886 against
-    0.4328 / 0.7120 / 0.6749 (``sgd`` / ``pa`` / ``kalman``): the warm-up
-    ends on row 21, before the window, so its rows are the new design's."""
+    was, less 0.01. Measured on task 206's build 0.4488 / 0.7075 / 0.6886
+    against 0.4328 / 0.7120 / 0.6749 (``sgd`` / ``pa`` / ``kalman``): the
+    warm-up ends on row 21, before the window, so its rows are the new
+    design's. ``kalman`` has no warm-up since task 211 and measured 0.925
+    here (``tests/test_kalman.py`` holds it to 0.9)."""
     y, df = _groups()
     pos = np.tile(np.arange(200), 500)
     features = [f"x{j}" for j in range(20)]

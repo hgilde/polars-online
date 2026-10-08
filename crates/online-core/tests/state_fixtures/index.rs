@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 48;
+pub const SCHEMA: u32 = 49;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");
@@ -28,8 +28,8 @@ pub mod lasso_window {
 pub mod kalman {
     include!("kalman.rs");
 }
-pub mod kalman_warming {
-    include!("kalman_warming.rs");
+pub mod kalman_gap {
+    include!("kalman_gap.rs");
 }
 pub mod huber {
     include!("huber.rs");
@@ -129,7 +129,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &lasso::FIXTURE,
     &lasso_window::FIXTURE,
     &kalman::FIXTURE,
-    &kalman_warming::FIXTURE,
+    &kalman_gap::FIXTURE,
     &huber::FIXTURE,
     &quantile::FIXTURE,
     &ftrl::FIXTURE,

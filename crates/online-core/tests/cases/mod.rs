@@ -550,15 +550,16 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
-        // Inside the standardizer's warm-up, as `sgd_warming`.
+        // Saved after row 40, whose targets are null: each covariance holds
+        // the clock since its last observation (docs/PLAN.md task 211).
         case!(
-            "kalman_warming",
+            "kalman_gap",
             "Kalman",
             Kalman,
             Kalman::new(kalman_cfg()).unwrap(),
             K,
             Targets::Linear(2),
-            20
+            41
         ),
         case!(
             "huber",

@@ -1,5 +1,9 @@
-//! The warm-up of a standardizing fit: `sgd`, `pa` and `kalman` under
-//! `standardize` (docs/PLAN.md task 206; review round 5, G1).
+//! The warm-up of a standardizing fit: `sgd` and `pa` under `standardize`
+//! (docs/PLAN.md task 206; review round 5, G1). `kalman` took it too until
+//! task 211, which replaced it: the filter's `P` carries its own
+//! uncertainty through the first rows, so it sizes each coefficient's prior
+//! once the feature's scale is usable and follows the moments from the
+//! first row (`kalman.rs`'s module doc). The numbers below are task 206's.
 //!
 //! Each of the three takes its step in the coordinates of the features' EW
 //! moments, the scaler: `z_i = (x_i − m_i) / s_i`. Holding the fit in those

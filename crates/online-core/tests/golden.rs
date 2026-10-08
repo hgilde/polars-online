@@ -1511,7 +1511,22 @@ const GOLDEN_HUBER_ORIGIN_STD: &[f64] = &[
 // that first noise, where it was `p0` in the target's units. Each matches
 // `tests/reference.py`'s `kalman_ref`, with the same rules, on this stream to
 // 1.3e-14; the old values matched the old `kalman_ref` to 6.3e-16.
-const GOLDEN_KALMAN_PLAIN: &[f64] = &[0.2534302289666238, 2.226426987212936, -0.05944106082324331];
+//
+// Every `kalman` signature again for task 211 (2026-10-08): the process noise
+// is charged once on each row that observes the target, for the whole clock
+// since the last, `Q D²`, so the null target on row 31 takes its clock into
+// row 32's charge (`Q 2²`, where two rows charged `Q 1²` each); and a
+// standardizing filter sizes each coefficient's prior once its feature's
+// scale is usable, from the mean squared innovation over three rows, and
+// follows the moments from its first row, with no warm-up. Rows 45 and 59
+// moved for all five; row 20, before the null, for the standardizing two
+// alone. Before: `kalman_plain` 2.226426987212936 and -0.05944106082324331,
+// `kalman_q` 2.1635957406955013 and -0.08050613330500465, `kalman_obs_var`
+// 2.2123547676208344 and -0.06081942698886093 (rows 45 and 59). The new
+// values match `tests/reference.py`'s `kalman_ref`, rewritten from the module
+// doc with the state re-mapped on every row, to 1.8e-15 (the scratchpad's
+// `replica_rust_pins.py`).
+const GOLDEN_KALMAN_PLAIN: &[f64] = &[0.2534302289666238, 2.2264285943696005, -0.0594422280502202];
 const GOLDEN_RLS: &[f64] = &[
     0.24355619170018697,
     2.1844587322364037,
@@ -1524,13 +1539,15 @@ const GOLDEN_RLS: &[f64] = &[
 // 0.026207278510925018 (`kalman`), 1.153918160782199 and 0.028098479936384025
 // (`kalman_revert`). `tests/reference.py`'s `kalman_ref`, with the warm-up and
 // the change of coordinates by matrix products, gives the new ones to 1.4e-14.
+// Task 211 (above): `kalman` was 0.08051708612823805, 1.9812568625118254 and
+// -0.06615560201475972, `kalman_revert` 0.3098186122738434, 1.1519113095475324
+// and 0.009601088217273672.
 const GOLDEN_KALMAN: &[f64] = &[
-    0.08051708612823805,
-    1.9812568625118254,
-    -0.06615560201475972,
+    0.22526048935963278,
+    2.2330040098824835,
+    -0.06612869061558382,
 ];
-const GOLDEN_KALMAN_REVERT: &[f64] =
-    &[0.3098186122738434, 1.1519113095475324, 0.009601088217273672];
+const GOLDEN_KALMAN_REVERT: &[f64] = &[0.4810076582323497, 1.2730031757113542, 0.13848333209268554];
 const GOLDEN_LASSO: &[f64] = &[
     0.25359037757905656,
     2.1511829817060866,
@@ -1706,12 +1723,10 @@ const GOLDEN_HMM_TVTP: &[f64] = &[
     -1.8091334719187875,
     -1.0356264682715979,
 ];
-const GOLDEN_KALMAN_OBS_VAR: &[f64] = &[
-    0.24438391241807816,
-    2.2123547676208344,
-    -0.06081942698886093,
-];
-const GOLDEN_KALMAN_Q: &[f64] = &[0.2624940862221372, 2.1635957406955013, -0.08050613330500465];
+// Both again for task 211 (`GOLDEN_KALMAN_PLAIN`'s note).
+const GOLDEN_KALMAN_OBS_VAR: &[f64] =
+    &[0.24438391241807816, 2.212385812063775, -0.06082198940989911];
+const GOLDEN_KALMAN_Q: &[f64] = &[0.2624940862221372, 2.16361003592116, -0.08052213955730514];
 const GOLDEN_KMEANS_FARTHEST: &[f64] =
     &[0.5834101526098997, 0.8292779994915372, 1.0040104663998375];
 const GOLDEN_KMEANS_FLOOR: &[f64] = &[0.5834101526098997, 1.1754072514037952, 0.7869506375655098];
