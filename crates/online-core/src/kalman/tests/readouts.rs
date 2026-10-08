@@ -868,10 +868,12 @@ fn a_state_damaged_in_any_one_part_is_refused() {
     };
     let basis = |edit: fn(&mut Value)| move |v: &mut Value| edit(&mut list(field(v, "basis"))[0]);
     type Edit = Box<dyn Fn(&mut Value)>;
-    let (shape, anchor, clocks) = (
+    let (shape, anchor, clocks, noise) = (
         "kalman: state has the wrong shape",
         "the anchor's scales must be finite and > 0, its means finite",
-        "the clocks since an observation and the noise's sums",
+        "kalman: the clocks since an observation must be finite and >= 0",
+        "kalman: the noise basis must hold at most 3 rows, as many weights as squared \
+         innovations, each finite and > 0",
     );
     let mut cases: Vec<(String, Edit, &str)> = Vec::new();
     for name in ["beta", "p", "elapsed", "basis", "sig2", "wsig", "wj"] {
@@ -948,11 +950,7 @@ fn a_state_damaged_in_any_one_part_is_refused() {
         }),
     ];
     for (what, edit) in damaged {
-        cases.push((
-            format!("a basis with {what}"),
-            Box::new(basis(edit)),
-            clocks,
-        ));
+        cases.push((format!("a basis with {what}"), Box::new(basis(edit)), noise));
     }
     for (what, edit, says) in &cases {
         let err = reread(&m, |v| edit(v)).expect_err(what);

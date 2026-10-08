@@ -780,14 +780,17 @@ impl TryFrom<KalmanV4> for Kalman {
                 "kalman: the anchor's scales must be finite and > 0, its means finite".into(),
             );
         }
-        if !v.elapsed.iter().all(|e| e.is_finite() && *e >= 0.0)
-            || !v.basis.iter().all(NoiseBasis::is_valid)
-        {
-            return Err(
-                "kalman: the clocks since an observation and the noise's sums must be finite \
-                 and >= 0"
-                    .into(),
-            );
+        if !v.elapsed.iter().all(|e| e.is_finite() && *e >= 0.0) {
+            return Err("kalman: the clocks since an observation must be finite and >= 0".into());
+        }
+        // Each message says what its check requires (docs/PLAN.md task 218):
+        // the basis's said ">= 0" of a check that refuses a 0, and named
+        // neither its lengths nor its bound.
+        if !v.basis.iter().all(NoiseBasis::is_valid) {
+            return Err(format!(
+                "kalman: the noise basis must hold at most {PRIOR_ROWS} rows, as many weights \
+                 as squared innovations, each finite and > 0"
+            ));
         }
         // The scratch buffers are sized by `ensure_buffers` on the first use.
         Ok(Self {
