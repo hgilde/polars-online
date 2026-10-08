@@ -668,21 +668,52 @@ class TestSettledWeight:
         assert len(at.notices) == 1 and "min_weight = 10" in at.notices[0], at.notices
         _says_not_met_at_the_rate_so_far(at.notices[0])
 
-    def test_a_resumed_stream_waits_again_from_the_load(self):
-        """The wait is held in memory, not in the state file (schema 45 does
-        not carry it), so a stream saved and loaded inside its wait starts
-        it again at the first withheld row after the load: the notice comes
-        later than the unbroken stream's (row 28, above), never sooner.
-        Saved after row 26, the wait restarts at row 26 (``T = 25``) and
-        ends at row 31 (``T = 30``)."""
-        df = frame(200)
-        s = po.spec.rls("m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0)
-        bank = po.ModelBank([s])
-        assert _fit_noting(bank, df[:26]).notices == []
-        bank = po.ModelBank.load_bytes(bank.save_bytes())
-        assert _fit_noting(bank, df[26:31]).notices == []
-        at = _fit_noting(bank, df[31:32])
-        assert len(at.notices) == 1 and "min_weight = 20" in at.notices[0], at.notices
+    @pytest.mark.parametrize(
+        ("gate", "rows", "saved_after", "notice_at"),
+        [
+            # The floor of the test above: the wait begins at row 23, the
+            # notice comes at row 28.
+            ("min_weight", 40, 25, 28),
+            # The noise gate of `test_an_unreachable_gate_is_named_with_the_fix`:
+            # the wait begins at row 10, the notice comes at row 12.
+            ("max_error_inflation", 20, 10, 12),
+        ],
+    )
+    def test_a_resumed_stream_keeps_its_wait(self, gate, rows, saved_after, notice_at):
+        """The wait is state (schema 46): a stream saved and loaded inside it
+        goes on waiting from where it began, and says its notice on the row
+        the unbroken stream does. Held in memory alone, it started again at
+        the load, so a workflow that saves and loads each day, with a
+        half-life longer than one run's learned clock, never heard the notice
+        (task 208's worker, review round 5 F3). Saved once inside the wait,
+        and saved and loaded before every row, the notice comes on the same
+        row."""
+        if gate == "min_weight":
+            df = frame(rows)
+            s = po.spec.rls(
+                "m", targets=["y"], features=["x0", "x1"], half_life=5.0, min_weight=20.0
+            )
+        else:
+            df = frame(rows, k=10)
+            s = spec(features=[f"x{j}" for j in range(10)], half_life=2.0)
+
+        def notice_rows(resume: set[int]) -> list[int]:
+            """The rows a notice came on, fed a row at a time, the bank saved
+            and loaded before each row in ``resume``."""
+            bank, said = po.ModelBank([s]), []
+            for i in range(df.height):
+                if i in resume:
+                    bank = po.ModelBank.load_bytes(bank.save_bytes())
+                notices = _fit_noting(bank, df[i : i + 1]).notices
+                assert len(notices) <= 1, notices
+                if notices:
+                    assert f"{gate} = " in notices[0], notices
+                    said.append(i)
+            return said
+
+        assert notice_rows(set()) == [notice_at]
+        assert notice_rows({saved_after + 1}) == [notice_at]
+        assert notice_rows(set(range(1, df.height))) == [notice_at]
 
     def test_the_readmes_kernel_example_does_not_warn(self, tmp_path, monkeypatch):
         """README, *A local fit along any feature*, verbatim, on the README's

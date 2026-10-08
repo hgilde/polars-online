@@ -145,8 +145,13 @@ fn from_ipc(hex_text: &str) -> DataFrame {
 /// an integer stamp), saved right after a skipped row, so the removed and
 /// pending ticks hold time and are written; a `UInt32`
 /// clock that starts over at each session, under a `session_gap`, for the
-/// width and the elapsed clock's removed ticks; and a group closed on
-/// session, whose PCA continuity is kept per group (`pca_prev_by_group`).
+/// width and the elapsed clock's removed ticks; a group closed on
+/// session, whose PCA continuity is kept per group (`pca_prev_by_group`);
+/// and a `min_weight` above the ceiling its half-life allows, saved inside
+/// the wait its readiness notice counts (task 208, schema 46): the floor
+/// and the noise gate have withheld every row since the stream was 95%
+/// settled, a half-life not yet past, so the notice comes in the
+/// continuation.
 fn specs() -> Vec<Spec> {
     [
         r#"{"name": "dated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "ts", "half_life": "10m", "gap_cap": "1h", "weight": "w"}"#,
@@ -156,6 +161,7 @@ fn specs() -> Vec<Spec> {
         r#"{"name": "int_clock", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "xi"], "clock": "ti", "half_life": 160.0, "gap_cap": 6.5, "embargo": 12.5, "weight": "w"}"#,
         r#"{"name": "uint_clock", "model": {"type": "ew_cov"}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "tu", "half_life": 80.0, "gap_cap": 6.5, "session": "s", "session_gap": 3.5}"#,
         r#"{"name": "sessioned", "model": {"type": "ew_cov", "pca": 1}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "session": "s", "group_close": "session"}"#,
+        r#"{"name": "waiting", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "half_life": 16.0, "min_weight": 30.0}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -735,17 +741,21 @@ fn leaves(v: &rmpv::Value, path: &str, out: &mut Vec<(String, rmpv::Value)>) {
     }
 }
 
-/// The integer clock's forms (docs/PLAN.md task 200, schema 42 and windows
-/// state 8) are each written by a fixture, so a change to their tags or
-/// layouts cannot pass the harness unseen (review round 5, B1): the bank's
-/// `ClockValue::I64`, `Stamp::Int`, the three `Ticks` fields -- skipped
-/// when zero, so written only by a state saved while they hold time -- a
-/// fraction in one of them, `ClockDtype::Int` at two widths, and the
-/// per-group PCA continuity; the windows state's `OffForm::Int`, its
-/// group's stamp as a `ClockValue::I64` and an increment's integer previous
-/// value; the refresh state's `Instant::Int`.
+/// The forms a schema moved in the bank's states are each written by a
+/// fixture, so a change to their tags or layouts cannot pass the harness
+/// unseen (review round 5, B1). The integer clock's (docs/PLAN.md task
+/// 200, schema 42 and windows state 8): the bank's `ClockValue::I64`,
+/// `Stamp::Int`, the three `Ticks` fields -- skipped when zero, so written
+/// only by a state saved while they hold time -- a fraction in one of them,
+/// `ClockDtype::Int` at two widths, and the per-group PCA continuity; the
+/// windows state's `OffForm::Int`, its group's stamp as a
+/// `ClockValue::I64` and an increment's integer previous value; the refresh
+/// state's `Instant::Int`. And the readiness notices' waits (schema 46,
+/// task 208), skipped while none runs, so written only by a stream saved
+/// inside one: a target's `floor_since` and the noise gate's `gate_since`,
+/// each a decay time.
 #[test]
-fn every_form_of_the_integer_clock_is_written_by_a_fixture() {
+fn every_form_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
@@ -794,6 +804,12 @@ fn every_form_of_the_integer_clock_is_written_by_a_fixture() {
         }),
         ("refresh_time_int", "Instant::Int", |p, _| {
             p.contains(".last_time.") && p.ends_with(".Int")
+        }),
+        ("bank", "a target's floor_since", |p, v| {
+            p.contains(".notified.") && p.contains(".floor_since.") && v.as_f64().is_some()
+        }),
+        ("bank", "the noise gate's gate_since", |p, v| {
+            p.contains(".notified.") && p.ends_with(".gate_since") && v.as_f64().is_some()
         }),
     ];
     for (kind, form, holds) in FORMS {

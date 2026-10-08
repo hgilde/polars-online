@@ -369,10 +369,12 @@ weight reaching 102.66, after a notice that it topped out near 7.7169
 gate has withheld every row for a further half-life of the learned rows'
 clock past 95% settled, and a row the gate lets through in between starts
 the wait again. Its words say what was seen and what the rate so far
-implies, and promise nothing of faster rows. The wait is held in memory,
-not in the state file, so a stream saved and loaded inside it waits again
-from the load: its notice comes later than an unbroken stream's, never
-sooner.
+implies, and promise nothing of faster rows. The wait is in the state file
+(schema 46): a stream saved and loaded inside it goes on waiting from where
+the wait began, and says its notice on the row an unbroken stream would.
+Held in memory alone, a save and load started it again, so a stream saved
+and loaded each day, with a half-life longer than one day's learned clock,
+never said it (task 208).
 
 Only report, never warn, when output appears but is degraded (a user who
 raised `max_error_inflation` asked for it): a short half-life can be

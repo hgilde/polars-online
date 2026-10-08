@@ -550,7 +550,13 @@ pub use window::{
 ///   state from before 45 does not decode, and a robust one carries no
 ///   shares; the minimum moves to 45 with it, and pre-1.0 no loader is
 ///   written.
-pub const SCHEMA_VERSION: u32 = 45;
+/// - 46 (2026-10-08, task 208): a stream keeps the wait its "has not been
+///   met" notices count (review round 5, F3): per instance, the decay time
+///   at which each target's `min_weight` floor, and the noise gate, began
+///   withholding every row past 95% settled. A 45 file's stream would start
+///   each wait again at the load; the bank refuses a file older than 46 by
+///   number, and pre-1.0 no loader is written. No model's own state moved.
+pub const SCHEMA_VERSION: u32 = 46;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -573,6 +579,12 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// a loader, keeping the fixture of the schema before it. The bank's own
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
+///
+/// **46 since task 208** (2026-10-08), with [`SCHEMA_VERSION`] and the
+/// fixtures regenerated at it: a stream's state keeps its readiness
+/// notices' waits, and no model's own state moved. **45 since task 116**
+/// (2026-10-07): `rls`'s squared-weight sum and the robust models' data
+/// shares.
 ///
 /// **44 since tasks 194-202** (2026-10-07), with [`SCHEMA_VERSION`] and the
 /// fixtures regenerated at it. A state from before a layout moved does not
@@ -638,7 +650,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 45;
+pub const MIN_SCHEMA_VERSION: u32 = 46;
 
 #[cfg(test)]
 mod tests {

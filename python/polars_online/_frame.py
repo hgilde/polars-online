@@ -290,10 +290,11 @@ class ReadinessWarning(UserWarning):
     the clock the learned rows have covered; a row the gate lets through
     starts the wait again. Their ceiling is a projection from the rows so
     far, which rows that come faster can beat, so neither says "for good".
-    The wait is not in the state file: a bank saved and loaded inside it
-    waits again from the load. Under ``embargo`` both notices read how far
-    the rows the model has learned from have settled, the clock its weight
-    has covered; the row's ``settled_frac`` counts the held rows' clock too.
+    The wait is in the state file: a bank saved and loaded inside it goes
+    on waiting, and says its notice on the row an unbroken stream would.
+    Under ``embargo`` both notices read how far the rows the model has
+    learned from have settled, the clock its weight has covered; the row's
+    ``settled_frac`` counts the held rows' clock too.
 
     Every row already carries the state (``withheld_reason``, ``settled_frac``,
     ``support_coef``); the warning is the once-only pointer to it. For a spec

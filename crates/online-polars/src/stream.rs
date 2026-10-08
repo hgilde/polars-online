@@ -2353,15 +2353,22 @@ pub struct Notified {
     /// Per target, the decay time at the first row of the run of rows the
     /// `min_weight` floor has withheld since the stream was 95% settled
     /// ([`settled_enough`]); `None` where the floor let the last row
-    /// through. Not state: schema 45 does not carry it, so a stream saved
-    /// and loaded inside a wait starts it again at the load, and says its
-    /// notice later than an unbroken one would, never sooner (review round
-    /// 5, F3).
-    #[serde(skip)]
+    /// through. State since schema 46: held in memory alone, a save and
+    /// load started the wait again, so a stream saved and loaded each day,
+    /// with a half-life longer than one run's learned clock, never said its
+    /// notice (review round 5, F3; task 208). Skipped while no target
+    /// waits, and emptied once a notice is said, after which nothing reads
+    /// it.
+    #[serde(default, skip_serializing_if = "no_wait")]
     pub floor_since: Vec<Option<f64>>,
     /// The same for the noise gate, over the instance's slots.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_since: Option<f64>,
+}
+
+/// [`Notified::floor_since`] holds no wait: no target's floor is in a run.
+fn no_wait(since: &[Option<f64>]) -> bool {
+    since.iter().all(Option::is_none)
 }
 
 impl Notified {
@@ -2375,7 +2382,8 @@ impl Notified {
         withheld_for(&mut self.floor_since[tj], withheld, judged, now)
     }
 
-    /// A reset restarts the decay time the waits are read on.
+    /// A reset restarts the decay time the waits are read on, and a notice
+    /// said ends them: nothing reads a wait once `unreachable` is set.
     fn restart_waits(&mut self) {
         self.floor_since.clear();
         self.gate_since = None;
@@ -5111,6 +5119,7 @@ fn run_instance(
         // is, with the way out (docs/PLAN.md task 198, D8).
         if let Some((tj, ceiling)) = unmet_floor {
             inst.notified.unreachable = true;
+            inst.notified.restart_waits();
             let floor = min_weight[tj];
             let target = inst
                 .spec
@@ -5176,6 +5185,7 @@ fn run_instance(
         if let Some(unmet) = unmet {
             let worst = unmet.worst;
             inst.notified.unreachable = true;
+            inst.notified.restart_waits();
             let figure = half_life_figure(inst.spec, inst.decay, &unmet);
             let k = inst.spec.k() + usize::from(inst.spec.fit_intercept);
             inst.notified.pending.push(if worst.is_finite() {

@@ -164,8 +164,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// file from before it is refit. **45 since task 116** (the same day):
 /// `rls` keeps the squared-weight sum its noise statistic reads Kish's size
 /// from, and `huber` and `quantile` their data shares; a file from before it
-/// is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 45;
+/// is refit. **46 since task 208** (2026-10-08): a stream keeps the waits
+/// its "has not been met" notices count, which a 45 file's stream would
+/// start again at the load; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 46;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
