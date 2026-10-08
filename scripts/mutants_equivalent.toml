@@ -1582,3 +1582,43 @@ slot when `coupled` is false and in the intercept's when it is true -- \
 and `g_i` is ±0 there: `g` starts at zeros, `coupling` writes `g_0 = 0`, \
 and it returns false before writing or with every `g_i` ±0; `±0 + \
 phi_i z_i` is `phi_i z_i`"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::coef_variance"
+mutation = "replace || with &&"
+line_has = "if n.is_nan() || n <= 0.0 {"
+why = """`gram_kish` gives a number above 0 or none: `n_kish` is `W² / Q` \
+only for `Q > 0`, the window's `w² / q` only for `w > 0` and `q > 0`, \
+and `Q ≤ W²` for weights of at least 0, so `W²` is no smaller than a \
+`Q` above 0 and `n` is a positive number. The guard is never true, and \
+neither is its mutant"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::coef_variance"
+mutation = "replace > with >="
+line_has = """let v = &mut out[slot];
+                if kk > 0 {"""
+why = """a kept system with no column, `kk = 0`, has a factor only after a \
+load (`refactor` factors its 0×0 matrix); there `inverse_diagonal(0)` is \
+empty, and the loop over `sys.z` writes nothing"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::coef_variance"
+mutation = "replace > with >="
+line_has = "let q = if kk > 0 {"
+why = """at `kk = 0` (a loaded factor of the empty system) the mutant's \
+`quad_forms` of the empty vector is `[0.0]`, times the scale: the `0.0` \
+the original takes"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewridge.rs"
+function = "<impl OnlineModel for EwRidge>::coef_variance"
+mutation = "replace * with /"
+line_has = "factor.quad_forms(&u, kk, 1)[0] * sys.scale"
+why = """the line runs for a centred system, and every centred system is \
+built with `scale: 1.0` (`solve_centred`), which the state carries as \
+written: only a raw system under `ridge_scale` holds the Gram's weight \
+there"""

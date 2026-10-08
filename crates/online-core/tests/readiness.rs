@@ -637,6 +637,82 @@ fn ewridge_coef_variance_is_the_least_squares_covariance() {
     assert!(plain.coef_variance().is_none());
 }
 
+/// Each output slot reads its own target's Gram and its own feature set
+/// (docs/PLAN.md task 218): two targets, the second missing one row in
+/// three, so its Gram is over its own rows, and two feature sets, the first
+/// feature alone and both. With no decay, unit weights and a vanishing
+/// ridge, slot `(j, set)`'s variances are `(X'X)⁻¹`'s diagonal over target
+/// `j`'s rows and the set's columns `[1, x_set]`, and NaN for a feature
+/// outside the set; the plain and the standardized solve read alike.
+#[test]
+fn ewridge_coef_variance_is_per_target_and_per_feature_set() {
+    let mut rng = Rng(37);
+    let rows: Vec<(Vec<f64>, [Option<f64>; 2])> = (0..240)
+        .map(|i| {
+            let x = vec![3.0 * rng.normal() + 10.0, 0.5 * rng.normal() - 2.0];
+            let y0 = 1.0 + 0.5 * x[0] - 2.0 * x[1] + rng.normal();
+            let y1 = (i % 3 != 0).then(|| -x[0] + x[1] + rng.normal());
+            (x, [Some(y0), y1])
+        })
+        .collect();
+    // `(X'X)⁻¹`'s diagonal over target `j`'s rows: with the second feature
+    // when `both`, else with that column dropped.
+    let diag = |j: usize, both: bool| -> [f64; 3] {
+        let mut xtx = [[0.0f64; 3]; 3];
+        for (x, y) in &rows {
+            if y[j].is_none() {
+                continue;
+            }
+            let z = [1.0, x[0], x[1]];
+            for (r, zr) in z.iter().enumerate() {
+                for (c, zc) in z.iter().enumerate() {
+                    xtx[r][c] += zr * zc;
+                }
+            }
+        }
+        if both {
+            let inv = invert3(xtx);
+            [inv[0][0], inv[1][1], inv[2][2]]
+        } else {
+            // The 2×2 block over `[1, x0]`, inverted by its adjugate.
+            let det = xtx[0][0] * xtx[1][1] - xtx[0][1] * xtx[1][0];
+            [xtx[1][1] / det, xtx[0][0] / det, f64::NAN]
+        }
+    };
+    for standardize in [false, true] {
+        let mut c = cfg(2, f64::INFINITY);
+        c.n_targets = 2;
+        c.ridge = vec![1e-10];
+        c.feature_sets = vec![("one".into(), vec![0]), ("both".into(), vec![0, 1])];
+        c.standardize = standardize;
+        let mut m = model(c);
+        for (x, y) in &rows {
+            m.step(x, y, 1.0, 1.0);
+        }
+        let Some(CoefVariance::PerNoise(v)) = m.coef_variance() else {
+            panic!("ewridge's variances are over the noise");
+        };
+        assert_eq!(v.len(), 4, "a slot per target and feature set");
+        for j in 0..2 {
+            for (set, both) in [false, true].into_iter().enumerate() {
+                let want = diag(j, both);
+                let got = &v[j * 2 + set];
+                for i in 0..3 {
+                    assert!(
+                        (want[i].is_nan() && got[i].is_nan())
+                            || (got[i] - want[i]).abs() <= 1e-6 * want[i],
+                        "standardize {standardize}, target {j}, set {set}, slot {i}: {} vs {}",
+                        got[i],
+                        want[i]
+                    );
+                }
+            }
+        }
+        // The two targets' rows differ, and so do their variances.
+        assert!((v[0][1] - v[2][1]).abs() > 1e-3 * v[0][1], "{v:?}");
+    }
+}
+
 /// `A⁻¹` of a 3×3 by Gauss-Jordan with partial pivoting.
 fn invert3(a: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
     let mut m = [[0.0; 6]; 3];
