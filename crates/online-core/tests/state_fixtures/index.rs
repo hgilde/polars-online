@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 50;
+pub const SCHEMA: u32 = 48;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");

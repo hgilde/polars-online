@@ -569,14 +569,14 @@ pub use window::{
 ///   follow every move of the moments (review round 5, G1). A state from
 ///   before 47 does not decode, and its coefficients meant another thing;
 ///   the minimum moves to 47 with it, and pre-1.0 no loader is written.
-/// - 50 (2026-10-08, task 212; provisional, after tasks 207 and 211's 48
-///   and 49): a windows state is version 9. A window operator's queue keeps
-///   which of its operators are variances (`ewm_var`, `ewm_std`), whose
-///   sums are six wide where every other operator's are three, and each
-///   operator keeps its `bias`. A bank file embeds a windows state per
-///   formula target; it refuses a file older than 50 by number, and pre-1.0
-///   no loader is written. No model's own state moved.
-pub const SCHEMA_VERSION: u32 = 50;
+/// - 48 (2026-10-08, task 212): a windows state is version 9. A window
+///   operator's queue keeps which of its operators are variances
+///   (`ewm_var`, `ewm_std`), whose sums are six wide where every other
+///   operator's are three, and each operator keeps its `bias`. A bank file
+///   embeds a windows state per formula target; it refuses a file older
+///   than 48 by number, and pre-1.0 no loader is written. No model's own
+///   state moved.
+pub const SCHEMA_VERSION: u32 = 48;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -600,9 +600,10 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// **50 since task 212** (2026-10-08), with [`SCHEMA_VERSION`] and the
+/// **48 since task 212** (2026-10-08), with [`SCHEMA_VERSION`] and the
 /// fixtures regenerated at it: a windows state is version 9, and no model's
-/// own state moved. **47 since task 206** (2026-10-08): a standardizing `sgd`, `pa` and
+/// own state moved.
+/// **47 since task 206** (2026-10-08): a standardizing `sgd`, `pa` and
 /// `kalman` keep their scaler's warm-up, and past it their numbers mean
 /// another thing, so a state from before 47 is refused by its number; the
 /// fixtures are regenerated at 47. **46 since task 208** (2026-10-08), with
@@ -675,7 +676,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 50;
+pub const MIN_SCHEMA_VERSION: u32 = 48;
 
 #[cfg(test)]
 mod tests {

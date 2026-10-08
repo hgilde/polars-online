@@ -170,10 +170,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// task 206** (the same day): a standardizing `sgd`, `pa` or `kalman` keeps
 /// its scaler's warm-up, and past it `sgd`'s and `pa`'s coefficients are in
 /// the caller's units, where they were in the scaler's coordinates; a file
-/// from before it is refit. **50 since task 212** (the same day): a windows
+/// from before it is refit. **48 since task 212** (the same day): a windows
 /// state is version 9, its queues six wide for a variance and its
 /// operators carrying `bias`; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 50;
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 48;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

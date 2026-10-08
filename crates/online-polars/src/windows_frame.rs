@@ -2466,9 +2466,9 @@ mod tests {
         // targets' removal (task 201), 44 for task 202's target spreads,
         // 45 for task 116's readiness statistics, 46 for the readiness
         // notices' waits (task 208) and 47 for task 206's warm-up of a
-        // standardizing fit, the windows state unchanged; 50 (task 212,
-        // provisional) with windows state 9, a variance's queue six wide.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 50));
+        // standardizing fit, the windows state unchanged; 48 (task 212)
+        // with windows state 9, a variance's queue six wide.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 48));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first
