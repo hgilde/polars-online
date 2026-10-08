@@ -8137,7 +8137,7 @@ tick, and that the series holding it up has a count near 1.
       moved. At the merge: `hmm`'s `k` held to 1024 in core, spec and builder,
       and `micro`'s matrix kept up to 4,096 potential summaries, its O(m)
       path past it, a test holding the two to the same labels.
-- [ ] 194. **The bank's and the stream's state and frames** (§18, decided):
+- [x] 194. **The bank's and the stream's state and frames** (§18, decided):
       the stream's persisted fields as one sub-struct (S6, D7); a key
       column's dtype kept in the state and a change refused (N22); the clock
       range in each frame in the clock's own dtype (N18); counts `UInt64`
@@ -8145,8 +8145,13 @@ tick, and that the series holding it up has a count near 1.
       takes a list of `str | None` and integer keys sort as numbers (N21);
       `coef` on the group's last accepted row of a chunk (S2); `predict`
       under an embargo documented and pinned (S3); `rows_fed()` (N9);
-      `t_stat`/`pair_t_stat` (N8). Schema 39.
-- [ ] 195. **The models' defaults and semantics** (§18, decided): `sgd`'s
+      `t_stat`/`pair_t_stat` (N8). Schema 39. *Worker `task194-state-frames`.*
+      *Done 2026-10-07*: a number clock's range is Float64 (an integer one its
+      own dtype since task 200); frames over specs whose clocks differ in
+      type ask for `spec=`. N22's `key_dtypes` replaced `key_integer`, and
+      G1's branch went. No golden moved. `rows_seen`'s refusal is pinned in
+      `test_state_frames.py` and, at the merge, `test_renames.py`.
+- [x] 195. **The models' defaults and semantics** (§18, decided): `sgd`'s
       `huber_delta` and `eps` and `pa`'s `eps` in units of the residual's EW
       standard deviation (U1); `standardize=True` for `sgd`, and on `pa`
       (U2); `huber_delta` 1.345 (U3); `bocpd`'s `prior_scale` from the first
@@ -8154,8 +8159,14 @@ tick, and that the series holding it up has a count near 1.
       (U6); `sgd`'s logistic labels clamped, `strict_binary` (S4); a Poisson
       fit's `hit_rate` null (S5); an exact zero prediction left out of
       `hit_rate` in the bank and in `po.eval` (S6); a target's own first
-      solve (S9b); `rls`'s `ridge` renamed `delta` (N11).
-- [ ] 196. **Names in the specs, the models and the command line** (§18,
+      solve (S9b); `rls`'s `ridge` renamed `delta` (N11). *Worker
+      `task195-defaults`.* *Done 2026-10-07*: goldens re-pinned with replicas
+      written from the docstrings (sgd, pa, pa_box; pipeline 45 of 505).
+      `bocpd`'s robust emission found not unit-free and `pa`'s residual band
+      stalling far from zero (task 202 replaced it). S6 is `pred != 0`
+      beside `y != 0` since task 201 removed the ratio's centre;
+      `corrchange`'s sequential floor is 5e-11.
+- [x] 196. **Names in the specs, the models and the command line** (§18,
       decided): `type = "ewridge"` and the `huber:`/`quantile:` message
       prefixes (N1); `chunk_size` on every surface (N2); `dist_second` (N7);
       `lag_corr` (N10); `*_every_rows` and `permute_every`'s redraw as
@@ -8163,11 +8174,21 @@ tick, and that the series holding it up has a count near 1.
       dropped (N16); a `closed` parameter on the windowed models, default
       `"right"` (N17); `--skip-learned` (N26); a row cap of 0, `pca = 0` and
       `stats = []` refused (U7). Every old name refused, naming the new one.
-- [ ] 197. **Names in the helper modules** (§18, decided): `po.eval`'s
+      *Worker `task196-names`.* *Done 2026-10-07*, all but `stats = []`, which
+      stays accepted: it is the documented accumulate-only mode (E43), and
+      refusing it is the user's decision.
+      `lag_corr` reached `marginal`'s and `closed_groups`' columns too. The
+      windowed goldens run `closed="both"`, the old edge to the bit. At the
+      merge `--skip-learned` took task 200's integer clocks.
+- [x] 197. **Names in the helper modules** (§18, decided): `po.eval`'s
       `min_samples` and `group` (N3); `window_metrics(every=)` (N4);
       `absorption_shift` (N5); `po.gram.lasso_path(penalties=)` (N6); the
-      five module constants in `__all__` (N24).
-- [ ] 198. **The mechanisms of the 1.0 promise** (§18, decided): the state
+      five module constants in `__all__` (N24). *Worker
+      `task197-helper-names`.* *Done 2026-10-07*: `from_sums`' `min_obs`
+      too, and `refresh_time` refuses a clock column of another type (from
+      task 187). The refusals are `_renamed.py`'s, the one mechanism the
+      merge made of tasks 196, 197, 198 and 201's helpers.
+- [x] 198. **The mechanisms of the 1.0 promise** (§18, decided): the state
       fixture harness, one frozen state per `ModelState` variant checked
       three ways, `MIN_SCHEMA_VERSION` raised to the schema shipped, the
       variant names frozen, the dead `#[serde(default)]` repairs deleted, the
@@ -8176,14 +8197,83 @@ tick, and that the series holding it up has a count near 1.
       opt-in warning on the windows state format, the formula tree's written
       form, `fit_predict_arrow`, `po.sim` and `po.corr` (D5, N23); task 116's
       parts that move no default, the current floors declared final (D8);
-      `ModelBank.load`'s note on damaged payloads (D14).
-- [ ] 199. **The 1.0 policy text and the process** (§18, decided): the
+      `ModelBank.load`'s note on damaged payloads (D14). *Worker
+      `task198-mechanisms`.* *Done 2026-10-07*: D8's column is
+      `weight_sum_settled` (hard rule 8). The merge deleted the loaders the
+      floor passed (deco's `rho_w`, `EwDiag::diagonal_of`, `ew_cov`'s
+      schema-1 names and P² markers, marginal's runs, schema-14's held-rows
+      clock), raised both minimums to 44 and regenerated the fixtures.
+- [x] 199. **The 1.0 policy text and the process** (§18, decided): the
       README's stability table, versioning after 1.0 and state-file promise
       (D3, DA1 DA2 DA4 DA16); a polars floor leg in the release and monthly
       in the canary (D4); the changed-lines mutation job sharded (D10); a
       weekly 1.95 check (D11); SECURITY.md's support line (D12); uncited
       records to `docs/records/` (D13); the `embargo` columns named stable
       (N24). D9 (the dev pin to polars 2.0.x) when the canary passes.
+      *Worker `task199-policy`.* *Done 2026-10-07*: on 1.34.0 the suite
+      passes with 23 tests skipped by version (`needs_polars`), none failing
+      in the package. REVIEW-2026-09-18 and README-ITERATIONS stay in
+      `docs/` (code cites them). release.yml and the canary changed, so the
+      next release rehearses first.
+- [x] 200. **An integer clock column is held as an integer** -- raised
+      2026-10-07 (the user: "Is the way the bank holds a clock the best? Could
+      it hold different types in the same 64bit structure depending on the
+      clock column type?"; then "Add it and implement"). `ClockValue` holds a
+      temporal clock as integer nanoseconds (exact) and every number column as
+      a double, so an integer clock is cast to `Float64` on read and is exact
+      only below 2^53: an `Int64` column of epoch nanoseconds resolves to
+      256 ns, and the number-clock stamps the cadences and window edges compare
+      inherit it. A third, integer form, chosen from the column's dtype: steps
+      in `i128`, integer stamps, every clock reader (the bank, `with_windows`,
+      `refresh_time`, `embargo`, the CLI) held to it, and the frames' clock
+      columns in the clock's own integer dtype. Schema 42. *Widened the same
+      day (the user: "Yes"): the rule is that a difference is taken in the
+      column's own type, then converted -- so `po.increment` of an integer
+      input subtracts in `i128` too. Values a model multiplies (features,
+      targets, weights) stay doubles: a model's first product rounds them
+      anyway.* (A `relative="difference"` target was in this scope until
+      task 201 removed relative targets.) *Worker `task200-int-clock`.*
+      *Done 2026-10-07*: windows state 8; a clock of another kind or width
+      is now refused (the bank recorded it but never refused it), and a
+      `UInt64` past `i64::MAX` by row. No float field of an existing test
+      moved; above 2^53 the values are now exact.
+- [x] 201. **Relative targets are removed** -- the user, 2026-10-07 ("Since we
+      now have polars expressions do we need relative columns?"; then "Yes
+      and start task 201"). `po.target(..., relative_to=...)` (task 107a)
+      duplicates `with_columns(ret=pl.col("p") - pl.col("mid"))`, which Polars
+      computes in the columns' own type; E11 already points a row-known target
+      formula to `with_columns`. Removed on every surface (Python, spec keys,
+      TOML, state; the ratio's hit centre; `po.eval`'s relative scoring),
+      refused by name pointing at `with_columns` or an upstream column; the
+      docs recommend a log ratio or a difference for a return. Formula targets
+      stay: they need the bank's release timing. Schema 43. *Worker
+      `task201-no-relative`.* *Done 2026-10-07*: 30 of 30 forms and models
+      matched `with_columns` to the bit before the removal, but the ratio's
+      `hit_rate`. `po.target` keeps `name=`; `update_about` went back into
+      `update` (the merge keeps 195's `HitTest` with `Sign`).
+- [x] 202. **An insensitivity band in units of the target's own spread** --
+      found by task 195, decided 2026-10-07 (the user: "follow your suggestion
+      on item 2"). Task 195 measured `pa`'s `eps` (and `sgd`'s
+      epsilon-insensitive `eps`) in units of the residual σ; a fit starting
+      from zero coefficients learns σ from residuals as large as the target's
+      level, and without decay the band never shrinks: `pa` stops learning
+      (R² −52 at `half_life` 1e9, +0.954 at 500). The band is measured in the
+      target's own EW spread around its EW mean instead, which the fit does not
+      inflate; `huber_delta` stays on the residual σ (a clipped gradient keeps
+      learning). `bocpd`'s `robust` emission is documented as not free of the
+      data's units. Schema 44. *Marked for the user's review (2026-10-07).*
+      *Worker `task202-band`.* *Done 2026-10-07*: `spread.rs`; `pa`'s R² at
+      level 1000 without decay goes from -52.6 to +0.965; GOLDEN_PA,
+      GOLDEN_PA_BOX and 12 pipeline values re-pinned against `pa_ref` to the
+      bit. `eps = 0.1` of the target's spread proved wide on a high-R²
+      target: task 203.
+- [ ] 203. **An insensitivity band defaults to 1% of the target's spread** --
+      found by task 202 (in its new unit, `eps = 0.1` is 10% of the target's
+      spread and does not shrink as the fit improves: a good fit's errors fall
+      inside it and the fit stops short -- slopes 1.87/1.89 against 2.0 at
+      `eps = 0.2`). Decided 2026-10-07 (the user: "Mark the eps decisions for
+      review and follow your reco"): the default is 0.01. *Marked for the
+      user's review (2026-10-07), with task 202's unit.*
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
@@ -12285,3 +12375,9 @@ in the table above, and task 183's cost accepted.* Built as tasks 194-199
 once tasks 183-193 merge, since they touch the same files. D9 waits for the
 weekly canary to pass on polars 2.0.0: its run of 2026-10-05 failed on the
 unwrapped `ValueError`, fixed in `a7a8f3c`.
+
+**Marked for the user's review (2026-10-07).** Two decisions taken after §18,
+on the user's word, to be looked at again before 1.0: the unit of an
+insensitivity band (`pa`'s `eps`, `sgd`'s under `epsilon_insensitive`) -- the
+target's own EW spread rather than the residual's (task 202) -- and its
+default, 0.01 (task 203).

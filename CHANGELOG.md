@@ -10,18 +10,21 @@ carries breaking changes, and any change to the numbers a model returns.
 **Upgrading from 0.13.0.** Refit every saved bank: a bank file from 0.13.0
 or any earlier release is refused by its schema version, naming the way
 out. Many public names now follow Polars', and an old name is refused,
-naming the new one. Some models' numbers move. Each is under *Changed*.
+naming the new one. A target computed from its own row's columns, which
+`po.target(relative_to=)` built, is now a column made with `with_columns`
+before the bank, or upstream of the command line. Some models' numbers move,
+and some defaults: `sgd` and `pa` standardize their features, and a model
+window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
 - **`po.eval` reads a target through the spec that wrote it** (task 188;
-  review round 4, YB1). `metrics`, `rolling_metrics` and `sums` take
-  `spec=`, and `compare_specs` takes `specs=`. With it, a target taken
-  against another column is scored on the bank's own difference, ratio or
-  log ratio, and a ratio's hit test is taken about 1. A renamed target reads
-  its column. On the review's frame, a relative target's r² went from −1723
-  to 0.88. Without `spec=` nothing changes, except that a slot naming no
-  column now asks for it.
+  review round 4, YB1). `metrics`, `window_metrics` and `sums` take
+  `spec=`, and `compare_specs` takes `specs=`. With it, a target renamed by
+  `po.target(name=)` reads its column. Without `spec=` nothing changes,
+  except that a slot naming no column now asks for it. (Task 188 also scored
+  a relative target on the bank's own difference or ratio; task 201 removed
+  relative targets.)
 - **The release checks more before it publishes** (task 191; review round
   4, CI5, CI7, CI12, CI13). It installs the sdist into a fresh environment
   and runs it, as it does each wheel, and builds with `--locked`. It refuses
@@ -168,6 +171,36 @@ naming the new one. Some models' numbers move. Each is under *Changed*.
   builder's `targets` is typed as a `Sequence`, so mypy accepts a list of
   `po.target` tables, of window expressions, or a mix.
 
+- **`PolarsOnlineDeprecationWarning` and its forwarding table** (task 198;
+  review round 4, D2). From 1.0 a renamed parameter keeps working under its
+  old name, with this warning, until the next major version refuses it. The
+  table is empty: every rename before 1.0 stays refused by name. A spec dict,
+  a builder's keyword and a TOML file (on the command line's stderr) are
+  forwarded alike.
+- **`UnstableWarning`, opt-in with `POLARS_ONLINE_WARN_UNSTABLE=1`** (task
+  198; review round 4, D5, N23), as Polars' `POLARS_WARN_UNSTABLE`. It and a
+  docstring label mark what 1.0 does not promise: the `with_windows` state
+  file, a formula target's written form, `fit_predict_arrow`,
+  `predict_arrow` and `ArrowStruct`, and the modules `po.sim` and `po.corr`.
+- **`summary()` gains `weight_sum_settled`, the weight the stream settles
+  at** (task 198; review round 4, D8): `(W − w₁(1 − s))/s`, with `w₁` a
+  row's weight and `s` the settled fraction, null on the first row, with no
+  decay and under a window. A `ReadinessWarning` says when a `min_weight`
+  can never be met, and the noise gate's notice names the half-life that
+  would open it. The readiness floors are final for 1.0.
+- **The command line takes `--skip-learned`**, and the TOML key
+  `skip_learned` (task 196; review round 4, N26, AP22), as Python's
+  `ModelBank.skip_learned` does: a resumed run drops the rows each group's
+  saved clock has passed. It needs `load_state` and a spec that reads a
+  clock.
+- **New parameters, each with an entry under *Changed (breaking)*:**
+  `closed` on the windowed models (task 196), `pa`'s `standardize` and
+  `bocpd`'s `warm_rows` (task 195), and `sgd`'s `strict_binary`, which
+  refuses a chunk holding a logistic label outside 0 and 1 (task 195, S4).
+- **`gram.INTERCEPT`, `eval.SUM_FIELDS`, `eval.RESERVED`, `stream.ROLE` and
+  `corr.Z_CLIP` are exported and in the reference** (task 197; review round
+  4, N24), where the docs linked them.
+
 ### Changed (breaking)
 
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
@@ -188,7 +221,19 @@ reinterpreted parameter, an output's dtype or a file to refit.
   the stamp of the last solve, PCA refresh and checkpoint (task 180).
   Schema 38 drops a Gram index nothing read from the systems `ewridge` keeps
   for its readiness statistics, and lets a closed `rcov` row's
-  `psd_repaired` be null (task 186). It refuses 37 and older.
+  `psd_repaired` be null (task 186). Schema 44, the one a bank file now
+  carries, follows tasks 194 to 202: the stream's state as one value, the
+  clock range as clock values and the key columns' types (194); the
+  residual scales, `pa`'s scaler, `bocpd`'s warm-up and the per-target
+  thresholds (195); the window's edge and the renamed counts (196); an
+  integer clock held as one (200, windows state 8); relative targets
+  removed (201); and the target's own spread (202). It refuses 43 and
+  older, and so do the models' own states.
+- **A state is loaded whole or refused, never mended** (task 198; review
+  round 4, D1, CC8). A state missing a field written since an older layout,
+  or holding a vector of the wrong length, such as a mean's low part, is
+  refused where it was filled in. Every schema this build loads is frozen
+  in the tests: each loads, goes on to the bit and saves its bytes again.
 
 - **A fit nobody solved predicts nothing** (task 186; review round 4, CC1).
   `ewridge`, `lasso`, `huber` and `quantile` predicted a target no solve had
@@ -402,6 +447,91 @@ reinterpreted parameter, an output's dtype or a file to refit.
   dtype, exactly, where it was a `Float64` of the clock's physical integer.
   The group column is the input's own value at each completing tick, so
   `Datetime`, `Time`, `Struct`, `Boolean` and zoned keys round-trip.
+
+- **Names that follow Polars and the library's own words** (tasks 194, 196
+  and 197; review round 4, N1-N10, N14-N16). Each old name is refused,
+  naming the new one:
+
+  | was | is |
+  |---|---|
+  | a spec's `type = "ew_ridge"` | `type = "ewridge"`, the builder's spelling; core messages say `huber:` or `quantile:` where they said `robust:` |
+  | `chunk_rows`, the TOML key and `--chunk-rows` | `chunk_size` and `--chunk-size`, Polars' name |
+  | the command line's `--resume` | `--load-state` |
+  | `kmeans`' `update_every` and `split_merge_every`; `corrchange`'s `permute_every` | `update_every_rows`, `split_merge_every_rows`; `permute_every_rows` |
+  | `rls`'s `ridge` | `delta`, the prior's strength |
+  | `ew_cov`'s statistic `lagcorr`, its fields `lagcorr_<a>_<b>_l<ℓ>`, and `marginal()`'s and `closed_groups()`' `lagcorr_*` | `lag_corr`, `lag_corr_<a>_<b>_l<ℓ>`, `lag_corr_xx` and the rest |
+  | `kmeans`' field `dist2` | `dist_second`, the distance to the second-nearest centre |
+  | `marginal()`'s `t` and `closed_groups()`' `pair_t` | `t_stat` and `pair_t_stat` |
+  | `closed_groups()`' rcov block `bandwidth_used`, `omega2`, `iv_sparse`, `iq`, `psd_repaired` | `rcov_bandwidth_used`, `rcov_omega2`, `rcov_iv_sparse`, `rcov_iq`, `rcov_psd_repaired` |
+  | `ModelBank.rows_seen()` | `rows_fed()` |
+  | `po.eval`'s `min_obs` and `by=` | `min_samples` and `group=`, which takes one key as a bare string |
+  | `po.eval.rolling_metrics(window_size=)` | `window_metrics(every=)`: its windows do not overlap, as Polars' `group_by_dynamic(every=)` |
+  | `po.corr.shift` | `po.corr.absorption_shift`; Polars' `shift` is a lag |
+  | `po.gram.lasso_path(lambdas=)` | `penalties=`, the name `coef()` reports them under |
+
+- **`holt`'s `level_half_life` is removed** (task 196; review round 4,
+  N16): the level takes the spec's `half_life`, and the old key is refused
+  naming it.
+- **Relative targets are removed** (task 201). `po.target(relative_to=,
+  relative=)` and a target table's `relative_to` and `relative` keys are
+  refused by name. Compute such a target as a column with `with_columns`,
+  upstream for the command line, preferring a log ratio or a difference for
+  a return: a plain ratio sits about 1, where every row is a hit. Every
+  target's `hit_rate` is taken about 0. `po.target` keeps `name=`, and
+  formula targets stay.
+- **The windowed models take Polars' `closed`, default `"right"`** (task
+  196; review round 4, N17): a row exactly `window_size` old leaves the
+  window, as in Polars' `rolling_*_by`, where it stayed. On a 1 ms clock
+  with a 1 s window `weight_sum` is 1000 where it was 1001. `closed="both"`
+  keeps the old edge, to the bit; `"left"` and `"none"` are refused.
+- **`sgd` and `pa` standardize their features by default** (task 195; review
+  round 4, U2): `standardize=True`, and `pa` gains the parameter. A fit is
+  then free of the features' units. Standardizing costs about 23% of `sgd`'s
+  throughput and 21% of `pa`'s.
+- **`huber_delta` defaults to 1.345, the 95%-efficiency constant** (task 195;
+  review round 4, U1, U3), on `huber` (from 1.5) and on `sgd`'s `huber` loss
+  (from 1.0), whose cut is now in units of each target's residual standard
+  deviation, as `huber`'s is.
+- **An insensitivity band is in units of the target's own spread** (tasks
+  195 and 202; review round 4, U1). `pa`'s `eps`, and `sgd`'s under
+  `loss="epsilon_insensitive"`, are multiples of the EW standard deviation
+  of the target around its EW mean, where they were in the target's units.
+  A fit from zero coefficients on a target far from zero no longer stalls:
+  at a level of 1,000 without decay, `pa`'s R² goes from −52.6 to +0.965. A
+  band 0.1 wide on a target with little noise ignores more than it did.
+- **`bocpd` sets a left-out prior from its first rows** (task 195; review
+  round 4, U4, U5). Without `prior_mean` or `prior_scale`, the first
+  `warm_rows` learned rows (default the feature count plus 2) set it from
+  their mean and covariance, and report null. The identity prior made a
+  stream at 1e-4 a changepoint on every row and one at 1e4 never break.
+  `prior_nu` defaults to `d + 2` under `gaussian` and 3 under `diag` and
+  `robust`. In the REGIMES benchmark false alarms fall from 0.68 to 0.53
+  per 1000 rows and the median delay rises from 98 to 121.
+- **Clock columns in the frames keep the clock's own type** (tasks 194 and
+  200; review round 4, N18). `summary()`, `groups()` and `closed_groups()`
+  give the clock range in the clock column's dtype, exactly, where a
+  temporal clock read as Float64 seconds (64 ns off at 2024). An integer
+  clock is held as an integer: its fields, `scored_clock` and
+  `learned_clock` included, are its own integer dtype. Over specs whose
+  clocks differ in type, these frames ask for `spec=`.
+- **`closed_groups()`' `rows_fed` and `rows_learned` are UInt64**, as in
+  `summary()` (task 194; review round 4, N19).
+- **`group=` on the readers takes a list of keys, `None` for the null
+  group, and integer keys list in numeric order** (task 194; review round
+  4, N21): `coef`, `gram`, `last_row`, `summary`, `describe` and `marginal`.
+  Another element type raises `TypeError`.
+- **A key or clock column that changes type is refused by name** (tasks 194
+  and 200; review round 4, N22). A group or session column keeps the type
+  of its first chunk, in the state too: an Int64 key then a Float64 one
+  started every group over. A clock that turns from integer to float, or to
+  an integer of another width, is refused, and so is a `UInt64` clock value
+  past the largest `Int64`.
+- **More values are refused by name** (tasks 195, 196 and 197): a row cap
+  of 0 (`max_rows_between_solves` and the rest) and `pca = 0` (U7);
+  `refresh_time`'s clock column of any type but a number or a time, where
+  text of digits was read as a clock; and `corrchange(kind="sequential")`
+  with a share of `alpha` per pair below 5e-11, where the floor was 2^-52:
+  past it the critical value's error grows from 2% to 29% at 1e-11.
 
 ### Changed
 
@@ -724,6 +854,21 @@ The output names task 144 renamed:
   and two instants a zone shows at one wall time are two. `with_windows`
   and `refresh_time` return the column's own values.
 
+- **`hit_rate` leaves out a prediction of exactly zero** (task 195; review
+  round 4, S6), in the bank's `emit_metrics` and in `po.eval`, as it leaves
+  out a target of zero. The bank's sign test called a prediction of 0 "up",
+  a hit on every rising row, where `po.eval` scored it a miss.
+- **A Poisson `sgd` fit's `hit_rate` is null** (task 195; review round 4,
+  S5): a rate and a count have no sign to hit, and it read 1.0 whatever the
+  fit.
+- **`sgd(loss="logistic")` clamps a label into [0, 1]**, as `ftrl` does
+  (task 195; review round 4, S4); `strict_binary=True` refuses the chunk
+  instead.
+- **A late target is solved on the row its own weight reaches its
+  `min_weight`** (task 195; review round 4, S9b), in `ewridge`, `lasso`,
+  `huber` and `quantile`, where it waited for the next scheduled solve: on
+  the review's stream it predicts from row 24, where 56 rows were null.
+
 ### Performance
 
 - **The core checks every value a model is handed** (task 183; *Fixed*
@@ -1036,6 +1181,23 @@ The output names task 144 renamed:
   W5). One below `f64::MIN_POSITIVE` passed the check, and its mass
   underflowed: a mean of 0 and an infinite rate.
 
+- **An integer clock is exact at any size** (task 200). Its steps, stamps,
+  window edges, cadences and embargo releases are taken in integers, where
+  an `Int64` of epoch nanoseconds was rounded to 256. `po.increment` of an
+  integer column takes its step in integers too, so a running count past
+  2^53 keeps its steps of 1.
+- **Without a cadence, `coef` is written on each group's last accepted row
+  of a chunk** (task 194; review round 4, S2). A chunk ending in a skipped
+  row carried none.
+- **`corrchange`'s permutation critical value is redrawn every
+  `permute_every_rows` reports**, as documented, not one more (task 196;
+  review round 4, S1). In the REGIMES benchmark the window test's false
+  alarms go from 51.33 to 53.67 per 1000 rows and its median delay from 29
+  to 25 rows.
+- **The noise gate's notice no longer says "cannot be met" of a gate that
+  opens later** (task 198). It read the ratio at 95% settled, which is still
+  falling there; it now projects it to steady state.
+
 ### Tests and documents
 
 - The 23 survivors and one timeout of the mutation run over tasks 168-182
@@ -1050,6 +1212,27 @@ The output names task 144 renamed:
   RUNNER.md the exit statuses (task 191).
 - Every dated record under `docs/` points to one table of renamed names,
   PERFORMANCE.md's "Names that changed" (task 192).
+- One state of every model kind, a bank file, a `with_windows` state and a
+  `refresh_time` state are frozen at the schema shipped, each held to
+  loading, going on to the bit and saving its bytes again, and the variant
+  names are frozen (task 198). `tests/test_released_state.py` holds a 1.x
+  release's files to loading from 1.0.
+- The README and RELEASE-READINESS state what is stable, unstable and not
+  stable at 1.0, and which release each kind of change needs from 1.0
+  (task 199; review round 4, D3).
+- Every release, and the canary each month, run the suite on the Polars
+  floor (1.34.0); a test that needs a newer Polars skips there by version,
+  naming it (task 199, D4). The changed-lines mutation job runs in ten
+  shards with one report (D10), a weekly job checks the declared
+  rust-version, 1.95 (D11), and SECURITY.md says which release receives
+  fixes (D12).
+- Records nothing outside `docs/` cites moved to `docs/records/`, and every
+  document has an index row, held by a test (task 199, D13).
+- Documented: under an embargo `predict` releases nothing (task 194, S3);
+  every unit-bearing default states its unit (task 195, U6);
+  `ModelBank.load` checks no checksum (task 198, D14); `bocpd`'s `robust`
+  emission is not free of the data's units, so centre and scale its
+  features (task 202).
 
 ## [0.13.0] — 2026-09-30
 
