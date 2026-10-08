@@ -517,3 +517,42 @@ def test_a_prediction_at_zero_is_left_out_in_the_bank_and_here():
     sums = po.eval.sums(out.head(3), "m")
     assert sums["signed"][0] == 2.0
     assert po.eval.from_sums(sums, min_samples=1)["hit_rate"][0] == pytest.approx(here, abs=1e-15)
+
+
+def test_a_poisson_fits_hit_rate_is_null_in_the_bank_and_here_with_the_spec():
+    """Review round 5 (E1; docs/PLAN.md task 195, S5): a Poisson fit has no
+    sign to hit -- a rate is positive and a count never negative, so the
+    sign test about zero agreed on every row and read 1.0 whatever the fit.
+    The bank's ``emit_metrics`` nulls its ``hit_rate``; with ``spec`` naming
+    the loss, :func:`metrics` nulls it too, and :func:`sums` counts no hit
+    and no signed row, so :func:`from_sums` gives null. Without ``spec`` the
+    loss cannot be known, and the sign test reads its 1.0."""
+    rng = np.random.default_rng(3)
+    n = 300
+    x = rng.standard_normal(n)
+    y = rng.poisson(np.exp(0.3 + 0.5 * x)).astype(float)
+    df = pl.DataFrame({"x": x, "y": y})
+    spec = po.spec.sgd(
+        "m",
+        targets=["y"],
+        features=["x"],
+        loss="poisson",
+        half_life=float("inf"),
+        learning_rate=0.01,
+        emit_metrics=True,
+        min_weight=5.0,
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    assert out["m"].struct.field("hit_rate_y").null_count() == n
+    assert out["m"].struct.field("r2_y").drop_nulls().len() > 0
+    assert po.eval.metrics(out, "m", spec=spec, min_samples=1)["hit_rate"][0] is None
+    sums = po.eval.sums(out, "m", spec=spec)
+    assert sums["hits"][0] == 0.0 and sums["signed"][0] == 0.0
+    assert po.eval.from_sums(sums, min_samples=1)["hit_rate"][0] is None
+    assert po.eval.metrics(out, "m", min_samples=1)["hit_rate"][0] == 1.0
+    # The other metrics are the bank's: the last row carries them as read
+    # before that row, so over the rows ahead of it.
+    bank = out["m"].struct.unnest().tail(1)
+    here = po.eval.metrics(out.head(n - 1), "m", spec=spec, min_samples=1)
+    for metric in ("r2", "ic"):
+        assert here[metric][0] == pytest.approx(bank[f"{metric}_y"][0], abs=1e-12), metric

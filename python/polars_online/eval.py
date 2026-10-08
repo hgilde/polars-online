@@ -276,7 +276,18 @@ def _scored(long: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _metric_exprs(min_samples: int, *, binary: bool = False) -> list[pl.Expr]:
+def _no_hit(spec: dict | None) -> bool:
+    """Whether ``spec`` names a fit with no sign to hit, whose ``hit_rate``
+    the bank's ``emit_metrics`` nulls: a Poisson ``sgd`` (``loss =
+    "poisson"``), where a rate is positive and a count never negative, so
+    the sign test about zero agrees on every row and reads 1.0 whatever the
+    fit (docs/PLAN.md task 195, S5; review round 5, E1). Without ``spec``
+    the loss cannot be known, and the sign test is read."""
+    model = (spec or {}).get("model") or {}
+    return model.get("type") == "sgd" and model.get("loss") == "poisson"
+
+
+def _metric_exprs(min_samples: int, *, binary: bool = False, hit: bool = True) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
     # The centred sums, as :func:`sums` keeps them: a metric is null where
     # one it divides by is 0, as :func:`from_sums` gives it, where this gave
@@ -315,6 +326,9 @@ def _metric_exprs(min_samples: int, *, binary: bool = False) -> list[pl.Expr]:
             .mean()
             .alias("log_loss")
         )
+    elif not hit:
+        # A fit with no sign to hit (`_no_hit`): null, as the bank nulls it.
+        exprs.append(pl.lit(None, dtype=pl.Float64).alias("hit_rate"))
     else:
         # Fraction of rows where the sign of pred matches the sign of y
         # (rows with y == 0 or pred == 0 excluded: neither up nor down, not a
@@ -370,7 +384,11 @@ def metrics(
         as the bank's ``emit_metrics`` takes them; null where every row is
         excluded. A target that sits about 1, such as a plain ratio of two
         prices, reads 1.0 whatever the fit, so a return is better a
-        difference or a log ratio.
+        difference or a log ratio. A Poisson ``sgd`` fit (``loss =
+        "poisson"``) has no sign to hit -- a rate is positive and a count
+        never negative -- and the bank nulls its ``hit_rate``: with ``spec``
+        naming one, null here too. Without ``spec`` the loss cannot be
+        known, and the sign test reads its 1.0.
     ``mse``
         The mean squared residual.
 
@@ -397,7 +415,7 @@ def metrics(
     """
     long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
     keys = ["slot", "target", *_group_keys(group)]
-    exprs = _metric_exprs(min_samples, binary=binary)
+    exprs = _metric_exprs(min_samples, binary=binary, hit=not _no_hit(spec))
     out = long.group_by(keys).agg(exprs).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
@@ -490,7 +508,7 @@ def window_metrics(
         start.alias("window_start")
     )
     keys = ["slot", "target", *_group_keys(group), "window_start"]
-    exprs = _metric_exprs(min_samples, binary=binary)
+    exprs = _metric_exprs(min_samples, binary=binary, hit=not _no_hit(spec))
     out = long.group_by(keys).agg(exprs).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
@@ -756,6 +774,8 @@ def sums(
         with ``y != 0`` and ``pred != 0``, as :func:`metrics` takes them. Under
         ``binary=True`` (:func:`metrics`'s reading), ``hits`` counts agreement
         at a 0.5 threshold and ``signed`` every row, since every row scores.
+        With ``spec`` naming a Poisson ``sgd`` fit, which has no sign to hit,
+        both are 0, and :func:`from_sums` gives the null the bank gives.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
@@ -802,8 +822,9 @@ def sums(
         hits, signed = w * ((p > 0.5) == (y > 0.5)), w
     else:
         # A target or a prediction of zero has no sign, as in :func:`metrics`
-        # and the bank (docs/PLAN.md task 195, S6).
-        scored = (y != 0) & (p != 0)
+        # and the bank (docs/PLAN.md task 195, S6); a fit with no sign to
+        # hit signs no row at all, so :func:`from_sums` gives null (E1).
+        scored = pl.lit(False) if _no_hit(spec) else (y != 0) & (p != 0)
         hits, signed = w * ((y.sign() == p.sign()) & scored), w * scored
     keys = ["slot", "target", *_group_keys(group)]
     return (
