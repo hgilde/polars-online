@@ -512,6 +512,43 @@ fn a_refused_chunk_updates_nothing() {
     assert_eq!(out, want);
 }
 
+/// A Poisson `sgd` takes counts: a negative target refuses the chunk by row,
+/// before any stream is touched, as scikit-learn's `PoissonRegressor`
+/// refuses one; `-0.0` is the count 0, and another loss takes any target
+/// (the user, 2026-10-08; docs/PLAN.md task 209 (e)).
+#[test]
+fn a_poisson_fit_refuses_a_negative_count_by_row() {
+    let spec = |loss: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "p", "model": {{"type": "sgd", "loss": "{loss}"}},
+                "targets": ["y"], "features": ["x"], "half_life": 50.0}}"#
+        ))
+        .unwrap()
+    };
+    let frame = |y: &[f64]| {
+        let x: Vec<f64> = (0..y.len()).map(|i| (i as f64).sin()).collect();
+        df!("x" => x, "y" => y.to_vec()).unwrap()
+    };
+    let good = frame(&[1.0, 0.0, -0.0, 3.0, 2.0]);
+    let bad = frame(&[1.0, 0.0, 3.0, -2.0, 2.0]);
+    let mut bank = Bank::new(vec![spec("poisson")]).unwrap();
+    bank.fit_predict(&good).unwrap();
+    let before = bank.save_bytes().unwrap();
+    let err = bank.fit_predict(&bad).unwrap_err().to_string();
+    assert!(
+        err.contains(r#"target column "y" has -2 at row 3"#) && err.contains("never negative"),
+        "{err}"
+    );
+    assert!(
+        bank.save_bytes().unwrap() == before,
+        "the refused chunk taught"
+    );
+    Bank::new(vec![spec("squared")])
+        .unwrap()
+        .fit_predict(&bad)
+        .unwrap();
+}
+
 #[test]
 fn coef_is_the_output_s_last_coef_per_group() {
     // `Bank::coef` reads the same coefficients the `coef` field reports: for

@@ -3659,9 +3659,11 @@ mod generated {
             prop::collection::vec(value(), K),
             prop::collection::vec(prop::option::weighted(0.85, value()), targets),
             prop_oneof![5 => Just(1.0), 1 => Just(0.0), 1 => 0.0..30.0f64],
+            // `-0.0` is a weight of 0 too (hard rule 9), and is drawn by
+            // name (docs/PLAN.md task 209 (e)).
             prop_oneof![
                 5 => Just(1.0),
-                1 => Just(0.0),
+                1 => prop_oneof![Just(0.0), Just(-0.0)],
                 2 => 0.01..4.0f64,
                 1 => Just(1e-100),
                 1 => Just(1e100)

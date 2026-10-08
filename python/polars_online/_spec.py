@@ -2739,7 +2739,12 @@ def sgd(
     ``loss``
         One of the table's. Default ``"squared"``. ``epsilon_insensitive`` has a
         sign-valued subgradient, so a constant rate oscillates in a band around
-        the optimum; use ``schedule = "inv_scaling"`` with it.
+        the optimum; use ``schedule = "inv_scaling"`` with it. ``poisson`` takes
+        counts: a chunk with a negative target is refused, naming the row,
+        before any stream is touched, as scikit-learn's ``PoissonRegressor``
+        refuses one. Taken as it stood, ``p - y`` drove the prediction down to
+        the link's floor, ``e ** -30``, and held it there. ``-0.0`` is the
+        count 0.
     ``huber_delta``
         The Huber cut, in units of ``s``, the residual's std, as for
         :func:`huber`, with its default, 1.345. ``inf`` clips nothing, which is the

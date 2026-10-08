@@ -60,9 +60,12 @@ _values = st.one_of(
     st.sampled_from([INPUT_BOUND, -INPUT_BOUND, float("nan"), float("inf"), float("-inf")]),
     st.none(),
 )
+#: A weight of ``-0.0`` is a weight of 0, "advance the clock, learn nothing"
+#: (hard rule 9): it is not below zero, so the bank takes it. Hypothesis never
+#: draws it from ``floats(min_value=0.0)``, so it is named (task 209 (e)).
 _weights = st.one_of(
     st.floats(min_value=0.0, max_value=10.0, allow_nan=False, allow_infinity=False),
-    st.sampled_from([1e-100, INPUT_BOUND, float("nan"), float("inf")]),
+    st.sampled_from([-0.0, 1e-100, INPUT_BOUND, float("nan"), float("inf")]),
     st.none(),
 )
 
@@ -550,3 +553,38 @@ class TestEveryOtherKind:
             if skip:
                 present = [c for c in fields.columns if fields[c][i] is not None]
                 assert not present, f"row {i} was skipped but reported {present}"
+
+    def test_a_negative_weight_is_refused_naming_the_row(self, kind):
+        """One check refuses a finite negative weight for every kind
+        (`bank.rs`, `extract`), and `test_semantics_all_models` held the ten
+        regressions to it; these eleven were held to it nowhere (task 209
+        (e)). A weight of ``-0.0`` is not below zero, and is taken.
+        `seqtest` takes no weight column at all: every learned row is one
+        trial, and the bank refuses the spec."""
+        n = 12
+        rng = np.random.default_rng(9)
+        df = pl.DataFrame(
+            {
+                "x0": rng.normal(size=n),
+                "x1": rng.normal(size=n),
+                "y": rng.normal(size=n),
+                "g": np.arange(n) // 4,
+                "w": [1.0] * 6 + [-0.0] + [1.0] * 5,
+            }
+        )
+        if kind == "ew_class":
+            df = df.with_columns(
+                y=pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
+            )
+        spec = {**_kind_spec(kind), "weight": "w"}
+        if kind == "seqtest":
+            with pytest.raises(ValueError, match="weight does not apply to seqtest"):
+                po.ModelBank([spec])
+            return
+        po.ModelBank([spec]).fit_predict(df)
+        w = df["w"].to_list()
+        w[8] = -0.5
+        bad = df.with_columns(w=pl.Series(w, dtype=pl.Float64))
+        says = r'weight column "w" has a negative value \(-0\.5\) at row 8'
+        with pytest.raises((pl.exceptions.ComputeError, ValueError), match=says):
+            po.ModelBank([spec]).fit_predict(bad)

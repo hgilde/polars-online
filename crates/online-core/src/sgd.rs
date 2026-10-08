@@ -126,6 +126,12 @@
 //! refuses the chunk naming the row. `p − y` with `y = 5` pushed the linear
 //! predictor up on every row for ever (review round 4, CC9).
 //!
+//! **A negative count under the Poisson loss** teaches nothing, and counts
+//! nothing toward its target's weight; the bank refuses the chunk naming the
+//! row, as scikit-learn's `PoissonRegressor` refuses one (docs/PLAN.md task
+//! 209 (e)). `p − y` with `y < 0` drove the prediction to the link's clamp,
+//! `e^−30`, within a few thousand rows and held it there.
+//!
 //! Learning rates ([`LearningRate`]): a constant, an inverse-scaling schedule
 //! that anneals with `n_eff`, or AdaGrad's per-coordinate `lr / (sqrt(G_i) + eps)`.
 //! AdaGrad's accumulator and `n_eff` are both decayed on the model's clock, so
@@ -160,7 +166,8 @@ pub enum SgdLoss {
     EpsilonInsensitive {
         eps: f64,
     },
-    /// Log link, for non-negative count targets.
+    /// Log link, for non-negative count targets: a negative one teaches
+    /// nothing, and the bank refuses it by row (the module docs).
     Poisson,
     Logistic,
 }
@@ -663,13 +670,13 @@ impl Sgd {
     /// The label a row teaches target `j` with: `y` itself, except under
     /// the logistic loss, where a label outside {0, 1} is clamped into
     /// `[0, 1]`, or under `strict_binary` teaches nothing (`None`), `ftrl`'s
-    /// rule (docs/PLAN.md task 195, S4).
+    /// rule (docs/PLAN.md task 195, S4); and under the Poisson loss, where a
+    /// negative count teaches nothing (docs/PLAN.md task 209 (e)).
     fn label(&self, y: f64) -> Option<f64> {
-        match self.cfg.loss {
-            SgdLoss::Logistic if self.cfg.strict_binary => (y == 0.0 || y == 1.0).then_some(y),
-            SgdLoss::Logistic => Some(y.clamp(0.0, 1.0)),
-            _ => Some(y),
-        }
+        teaches(self.cfg.loss, self.cfg.strict_binary, y).then(|| match self.cfg.loss {
+            SgdLoss::Logistic => y.clamp(0.0, 1.0),
+            _ => y,
+        })
     }
 
     fn ensure_buffers(&mut self) {
@@ -800,6 +807,20 @@ fn scales_kept(loss: &SgdLoss) -> (bool, bool) {
         matches!(loss, SgdLoss::Huber { .. }),
         matches!(loss, SgdLoss::EpsilonInsensitive { .. }),
     )
+}
+
+/// Whether a finite target `y` teaches at all under `loss`: not a label
+/// `strict_binary` refuses, nor a negative count under the Poisson loss,
+/// which `p − y` would drive to the link's clamp, `e^−30`, and hold there
+/// (docs/PLAN.md task 209 (e)). The bank never hands the model either: it
+/// refuses the chunk, naming the row. `-0.0` is not below zero, so it is the
+/// count 0.
+fn teaches(loss: SgdLoss, strict_binary: bool, y: f64) -> bool {
+    match loss {
+        SgdLoss::Logistic if strict_binary => y == 0.0 || y == 1.0,
+        SgdLoss::Poisson => y >= 0.0,
+        _ => true,
+    }
 }
 
 thread_local! {
@@ -1220,12 +1241,12 @@ impl OnlineModel for Sgd {
             self.beta = unscaled(&self.beta, sc, self.cfg.fit_intercept);
         }
         self.w_sum = lam * self.w_sum + weight;
-        // A label `strict_binary` refuses carries no weight for its target,
-        // as in `ftrl`: it taught nothing.
-        let strict = self.cfg.strict_binary;
+        // A label `strict_binary` refuses, or a negative count, carries no
+        // weight for its target, as in `ftrl`: it taught nothing.
+        let (loss, strict) = (self.cfg.loss, self.cfg.strict_binary);
         crate::model::age_target_weights(
             &mut self.w_target,
-            |j| y[j].is_some_and(|v| v.is_finite() && (!strict || v == 0.0 || v == 1.0)),
+            |j| y[j].is_some_and(|v| v.is_finite() && teaches(loss, strict, v)),
             lam,
             weight,
         );
@@ -2872,6 +2893,43 @@ mod tests {
         bad.loss = SgdLoss::Squared;
         let err = bad.validate().unwrap_err();
         assert!(err.contains("strict_binary"), "{err}");
+    }
+
+    /// Under the Poisson loss a negative count teaches nothing and counts
+    /// nothing toward its target's weight, as a label `strict_binary`
+    /// refuses; `-0.0` is the count 0, and another loss learns from a
+    /// negative target (docs/PLAN.md task 209 (e)). Before, `p − y` drove
+    /// the prediction to the link's clamp, `e^−30`.
+    #[test]
+    fn a_negative_count_teaches_a_poisson_fit_nothing() {
+        let mut c = cfg(1, SgdLoss::Poisson);
+        c.min_weight = 0.0;
+        let mut m = Sgd::new(c.clone()).unwrap();
+        m.step(&[0.5], &[Some(2.0)], 0.0, 1.0);
+        let (before, w) = (m.coefficients(), m.target_weights()[0]);
+        for y in [-1.0, -1e-300, -crate::INPUT_BOUND] {
+            m.step(&[0.5], &[Some(y)], 0.0, 1.0);
+            assert_eq!(m.coefficients(), before, "a count of {y} taught nothing");
+            assert_eq!(m.target_weights()[0], w, "and counted nothing");
+        }
+        let fit = |y: f64| {
+            let mut m = Sgd::new(c.clone()).unwrap();
+            m.step(&[0.5], &[Some(2.0)], 0.0, 1.0);
+            m.step(&[0.5], &[Some(y)], 1.0, 1.0);
+            let bits = |v: &[f64]| v.iter().map(|b| b.to_bits()).collect::<Vec<_>>();
+            (bits(&m.coefficients()[0]), m.target_weights()[0])
+        };
+        assert_eq!(fit(-0.0), fit(0.0), "-0.0 is the count 0");
+        assert_ne!(fit(0.0).0, fit(2.0).0, "a count of 0 teaches");
+        let mut squared = Sgd::new(cfg(1, SgdLoss::Squared)).unwrap();
+        squared.step(&[0.5], &[Some(2.0)], 0.0, 1.0);
+        let before = squared.coefficients();
+        squared.step(&[0.5], &[Some(-1.0)], 0.0, 1.0);
+        assert_ne!(
+            squared.coefficients(),
+            before,
+            "the squared loss takes any target"
+        );
     }
 
     /// `s²` is the EW mean of the squared out-of-sample residuals of the

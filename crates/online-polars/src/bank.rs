@@ -504,6 +504,22 @@ fn extract(
                         spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
                     );
                 }
+                // A Poisson fit takes counts, and a negative one is an error
+                // naming the row, as scikit-learn's `PoissonRegressor`
+                // refuses one and as `strict_binary` refuses a label (the
+                // user, 2026-10-08; docs/PLAN.md task 209 (e)). Taken as it
+                // stood, `p - y` drove the prediction to the link's clamp.
+                // `-0.0` is not below zero: it is the count 0.
+                if matches!(&spec.model, ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("poisson"))
+                    && let Some(j) = v.iter().position(|f| f.is_finite() && *f < 0.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: target column {:?} has {} at row {}, and loss=\"poisson\" \
+                         takes a count, which is never negative; null the rows that should \
+                         only be scored, or fit another loss",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
+                }
                 // `bocpd`'s hazard column rides in the targets slot and is
                 // not a target: it is a parameter, and a value the model
                 // cannot use makes the row report nulls and vanish from the

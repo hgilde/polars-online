@@ -634,6 +634,57 @@ class TestLogisticLabels:
             po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, strict_binary=True)
 
 
+class TestNegativeCounts:
+    """docs/PLAN.md task 209 (e), the user's decision of 2026-10-08: a
+    Poisson fit takes counts, and a negative target refuses the chunk,
+    naming the row, before any stream is touched, as scikit-learn's
+    `PoissonRegressor` refuses one and as `strict_binary` refuses a
+    logistic label. Taken as it stood, `p - y` with `y < 0` drove the
+    prediction down to the link's clamp, `e ** -30`, and held it there."""
+
+    @staticmethod
+    def _frame(y):
+        n = len(y)
+        rng = np.random.default_rng(5)
+        return pl.DataFrame({"x": rng.normal(size=n), "y": np.asarray(y, dtype=float)})
+
+    @staticmethod
+    def _spec():
+        return po.spec.sgd(
+            "m", targets=["y"], features=["x"], half_life=1e9, min_weight=2.0, loss="poisson"
+        )
+
+    def test_a_negative_count_refuses_the_chunk_naming_the_row(self):
+        counts = [1.0, 0.0, 3.0, 2.0, -1.0, 4.0]
+        bank = po.ModelBank([self._spec()])
+        with pytest.raises(ValueError, match=r'"y" has -1 at row 4.*poisson.*never negative'):
+            bank.fit_predict(self._frame(counts))
+        # Before any stream is touched: the bank goes on as a new one does.
+        good = self._frame([2.0, 0.0, 1.0, 5.0])
+        assert bank.fit_predict(good).equals(po.ModelBank([self._spec()]).fit_predict(good))
+
+    def test_the_row_is_counted_across_one_inputs_chunks(self):
+        chunks = [self._frame([1.0, 2.0, 3.0]), self._frame([0.0, -0.5, 2.0])]
+        with pytest.raises(ValueError, match=r"has -0\.5 at row 4\b"):
+            list(po.ModelBank([self._spec()]).fit_predict_batches(iter(chunks)))
+
+    def test_negative_zero_is_the_count_zero_and_a_null_is_scored(self):
+        """`-0.0` is not below zero: it fits as `0.0` does. A null target is
+        scored and not learned, as everywhere."""
+        y = [1.0, 0.0, 2.0, -0.0, None, 3.0, 1.0]
+        df = self._frame([0.0] * len(y)).with_columns(y=pl.Series(y, dtype=pl.Float64))
+        out = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct.field("pred_y")
+        zero = df.with_columns(y=pl.col("y").abs())
+        assert out.equals(
+            po.ModelBank([self._spec()]).fit_predict(zero)["m"].struct.field("pred_y")
+        )
+        assert out[4] is not None, "the null target's row is scored"
+
+    def test_another_loss_takes_a_negative_target(self):
+        spec = po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, min_weight=2.0)
+        po.ModelBank([spec]).fit_predict(self._frame([1.0, -2.0, -3.0, 4.0]))
+
+
 def test_a_poisson_fits_hit_rate_is_null():
     """docs/PLAN.md task 195 (S5; review round 4, CC5): a rate is positive
     and a count is not negative, so the sign test about zero agreed on every

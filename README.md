@@ -3087,7 +3087,7 @@ The loss sets the link and the gradient:
 | `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is |
 | `quantile` | identity | `1{y < p} − τ` | `τ` is `quantile=`, the level, between 0 and 1 |
 | `epsilon_insensitive` | identity | 0 within `eps·s_y` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.01 by default, in units of `s_y` |
-| `poisson` | log, for count targets | `p − y` | |
+| `poisson` | log, for count targets | `p − y` | a negative target refuses the chunk, naming the row |
 | `logistic` | sigmoid, for 0/1 targets | `p − clamp(y, 0, 1)` | `strict_binary=True` refuses a chunk with a label not 0 or 1 |
 
 **`s` is the exponentially weighted standard deviation of the target's
@@ -3136,7 +3136,10 @@ weight 1, so at the default rate of 0.01 a target at a level of 1,000 is
 **Under `loss="poisson"`, keep `clip_gradient`, `1e3` by default,** because
 through the log link one large count would make the next gradient
 exponentially bigger. At ordinary scales it does not bind for the other
-losses.
+losses. A Poisson fit takes counts, so a negative target refuses the chunk
+and names the row, as scikit-learn's `PoissonRegressor` refuses one. Taken
+as it stood, `p − y` drove the prediction down to the link's floor,
+`e^−30`, and held it there.
 This code uses `df` from [Example data](#example-data):
 
 ```python
