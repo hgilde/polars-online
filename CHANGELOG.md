@@ -206,7 +206,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 38,
+- **Every saved bank must be refit.** A bank file now carries schema 44,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
