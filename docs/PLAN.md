@@ -8550,9 +8550,11 @@ tick, and that the series holding it up has a count near 1.
     regressions only: add the other 11 kinds. A weight of -0.0 is never
     drawn (`_weights` has 0.0 only): draw it. **A Poisson `sgd` fit takes a
     negative target**: the gradient `p - y` drives the prediction to its
-    clamp. Decision for the user: refuse a negative count by name as
-    scikit-learn's `PoissonRegressor` does (recommended), or clamp it at 0
-    as S4 does for a logistic label, with `strict_binary`'s analogue.
+    clamp. **Decided 2026-10-08 (the user: "Your reco all"): refuse a
+    negative count by name**, naming the row, as scikit-learn's
+    `PoissonRegressor` does and as `strict_binary` refuses a logistic
+    label; a negative count is a data error that clamping would hide.
+    Task 209 starts after the push, on task 210's tiers.
   - Keep the platform's libm off any bit-pinned stream (Decay::Lam at unit
     steps, or tolerances against the oracle).
 - [ ] 210. **Two tiers of tests: essentials on every commit's gate, the
@@ -8705,6 +8707,32 @@ tick, and that the series holding it up has a count near 1.
       sets the cap for thousands of rows. **`c` stays in the target's
       units**, documented (task 207). The research switch and logs are in
       the scratchpad, `review5/fix/task213-relative-c/`.
+- [ ] 214. **Hard rule 9 in `ftrl`, `hmm` and `ewridge`'s clock cadence,
+      and kalman's two edge cases** -- found by task 211; decided by the
+      user, 2026-10-08 ("Your reco all"). (1) The rule-9 contract test,
+      now comparing predictions for every model, exempts three by name:
+      `ftrl` (1.9%: its penalty scale `W/W*` reads `W*` on a clock that
+      runs only on teaching rows -- advance it on every row), `hmm`
+      (1.2e-5: it reads its posterior before its own decay, from states
+      whose precision prior grows with their age in rows -- read it after
+      the decay, the age a function of the clock), `ewridge` with
+      `solve_every > 0` (1.8e-4 until the next solve: a clock-due solve
+      fires on the zero-weight row -- defer a due solve on a row that
+      taught nothing to the next row that teaches). Acceptance: the three
+      exemptions removed. (2) A reverting kalman slot is charged `q·D²`
+      for a gap since task 211, unbounded across a run of nulls, where
+      per-row charging settled at `q/(1 - φ²)`: measure a gap variance that
+      grows as `q·D²` for short gaps, saturates for long ones and stays
+      near today's on a dense unit-spaced stream -- the candidate
+      `V(D) = q·(1 - φ(D))²/θ²`, `θ = ln2/h_rev` -- and ship the one that
+      passes. (3) A target at the input bound among kalman's first rows
+      leaves `P` indefinite for good (task 211's repro): size the prior
+      robustly (the median of the first squared innovations) and re-size
+      `P` if it loses positive-definiteness. Also the docs for `share_p`
+      (the user: keep the default off, document): when it helps -- related
+      targets, noisy noise estimates, many targets for cost -- with the
+      corrected VALIDATION §4 figures; revisit with a second dataset.
+      **Start after the push**, on task 210's tiers.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
