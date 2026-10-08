@@ -217,8 +217,15 @@ def bocpd(
         The learned rows held to set the prior from, where ``prior_mean`` or
         ``prior_scale`` is left out. Default ``d + 2``, the smallest count whose
         covariance is positive definite in general, as :func:`hmm` and
-        :func:`kmeans` name theirs. At least 2, and refused beside both priors,
-        which leave nothing to set.
+        :func:`kmeans` name theirs. The prior is set once from those rows and
+        kept for the stream's life, so at ``d + 2`` rows its scale rests on
+        ``d + 1`` degrees of freedom. For one feature, a 3-row variance lies
+        between 0.05 and 3 times the truth nine times in ten, and a warm-up
+        that straddles a regime change sets a wide prior: a variance of 37
+        across a 10-sigma step, against 0.53 from rows inside one regime.
+        Where the first rows are not representative and rows are to spare,
+        pass a ``warm_rows`` of tens, all from one regime. At least 2, and
+        refused beside both priors, which leave nothing to set.
     ``prune_below``, ``max_run``
         The share of the mass below which a run is dropped (default
         ``1e-6``), and the run length every longer run is folded into
@@ -252,7 +259,11 @@ def bocpd(
         = 0`` after it, and ``p_change`` is the chance that this row began a
         run. A row whose step is 0 reports 0. On row one of a group ``P(r <=
         1)`` is 1 however the row looks: the default ``min_weight`` withholds
-        the row, and at ``min_weight=0`` it reports that 1.
+        the row, and at ``min_weight=0`` it reports that 1. A break the
+        posterior accepts a row or two late shows as a fall in ``run_mode``,
+        not in ``p_change``: a 5-sigma step at row 500 put ``run_mode`` at
+        450 and 451 on rows 500 and 501, then 2, 3, 4 from row 502, and
+        ``p_change`` never rose above 0.023.
     ``run_mode``
         The most likely run length before the row, so ``t - run_mode`` is
         the row the current run began on. This is the answer, and
