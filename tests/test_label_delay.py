@@ -757,6 +757,46 @@ class TestRefusals:
             stream.embargo(df, clock="t", delay=2.5)
         assert "clock column 't' is Int64" in str(e.value), str(e.value)
 
+    @pytest.mark.parametrize(
+        ("dtype", "top"),
+        [
+            (pl.Int8, 2**7 - 1),
+            (pl.UInt8, 2**8 - 1),
+            (pl.Int16, 2**15 - 1),
+            (pl.Int32, 2**31 - 1),
+            (pl.Int64, 2**63 - 1),
+            (pl.UInt64, 2**64 - 1),
+        ],
+    )
+    def test_a_clock_within_delay_of_its_dtypes_top_is_refused_not_wrapped(self, dtype, top):
+        """Review round 5 (B2): Polars adds integers in the column's width
+        and wraps at its top, so an Int8 clock of ``[5, 6, 120]`` with a
+        delay of 100 put row 120's learn copy at -36, first in the stream,
+        where a bank learned the row before scoring it -- a silent
+        look-ahead. The add is widened (Int64, and Int128 past 64 bits) and
+        the cast back is strict, so Polars refuses the value when the plan
+        runs, naming the column. Measured the same on polars 1.34.0, the
+        floor, and 1.44.2."""
+        delay = 100
+        fits = pl.DataFrame(
+            {"t": [top - 115, top - 114, top - delay], "x": [1.0, 2.0, 3.0]},
+            schema_overrides={"t": dtype},
+        )
+        out = stream.embargo(fits, clock="t", delay=delay)
+        assert out["t"].dtype == dtype
+        assert out["t"].to_list() == sorted(
+            [top - 115, top - 114, top - delay, top - 15, top - 14, top]
+        )
+        wraps = pl.DataFrame(
+            {"t": [top - 114, top - delay, top], "x": [1.0, 2.0, 3.0]},
+            schema_overrides={"t": dtype},
+        )
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="conversion from") as e:
+            stream.embargo(wraps, clock="t", delay=delay)
+        assert "column 't'" in str(e.value), str(e.value)
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="conversion from"):
+            stream.embargo(wraps.lazy(), clock="t", delay=delay).collect()
+
     def test_a_zero_delay_is_told_to_leave_it_out(self):
         """Task 160, PB9: the refusal called 0 "the default", where the
         default is no embargo at all."""

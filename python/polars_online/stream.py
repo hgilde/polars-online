@@ -194,6 +194,11 @@ def embargo(
 
     ``TypeError`` for a ``clock`` column that is neither numeric nor temporal,
     as :func:`polars_online.eval.window_metrics` refuses it.
+
+    An integer clock within ``delay`` of its dtype's top cannot hold its
+    learn copy: Polars raises ``InvalidOperationError`` when the plan runs,
+    naming the column, rather than wrapping the clock around, which put the
+    learn copy before the stream.
     """
     lazy = lf.lazy()
     schema = lazy.collect_schema()
@@ -222,7 +227,15 @@ def embargo(
                     "delay, or cast the clock to a float"
                 )
                 raise ValueError(msg)
-            later = (pl.col(clock) + int(delay)).cast(schema[clock])  # type: ignore[arg-type]
+            # Widened before the add, and cast back strictly: Polars adds
+            # integers in the column's width and wraps at its top, so a
+            # clock within `delay` of it put the learn copy before the
+            # stream, where a bank learned the row before scoring it (review
+            # round 5, B2). Past 64 bits the add is in Int128; either way the
+            # cast back refuses a sum the column cannot hold when the plan
+            # runs. Measured the same on the 1.34.0 floor and on 1.44.2.
+            wide = pl.Int128 if schema[clock] in (pl.Int64, pl.UInt64) else pl.Int64
+            later = (pl.col(clock).cast(wide) + int(delay)).cast(schema[clock], strict=True)  # type: ignore[arg-type]
     else:
         # Exact: the delay is whole steps of the column, so the cast back to
         # its own dtype drops nothing.
