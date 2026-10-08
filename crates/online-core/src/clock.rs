@@ -66,6 +66,14 @@ impl Decay {
                     (-(d_clock / h)).exp2()
                 }
             }
+            // A step of one clock unit is `lam` itself, and no step is 1,
+            // by construction rather than by the platform's `pow`: every
+            // libm met so far returns `x` for `pow(x, 1)` and none promises
+            // it, and a stream pinned to the bit under `Lam` at unit steps
+            // (`sgd.rs`'s libm-free digests) rested on it (review round 5,
+            // A4). No bit moves where `pow` already returned `x`.
+            Decay::Lam(l) if d_clock == 1.0 => l,
+            Decay::Lam(_) if d_clock == 0.0 => 1.0,
             Decay::Lam(l) => l.powf(d_clock),
         }
     }
@@ -2848,6 +2856,43 @@ mod tests {
         assert_eq!(Decay::Halflife(f64::INFINITY).factor(123.0), 1.0);
         assert!((Decay::Lam(0.9).factor(2.0) - 0.81).abs() < 1e-15);
         assert_eq!(Decay::Halflife(10.0).factor(0.0), 1.0);
+    }
+
+    /// A `lam` factor at a step of one clock unit is `lam` itself, and at
+    /// no step 1, to the bit and by construction: a stream pinned to the
+    /// bit under `Decay::Lam` at unit steps (`sgd.rs`'s libm-free digests)
+    /// rested on the platform's `pow(x, 1)` returning `x`, which every libm
+    /// met so far does and none promises (review round 5, A4).
+    #[test]
+    fn a_lam_factor_at_a_unit_step_is_lam_to_the_bit() {
+        for lam in [
+            0.9914,
+            0.5,
+            0.999_999_999,
+            1.0,
+            1e-300,
+            0.123_456_789_012_345_6,
+        ] {
+            assert_eq!(
+                Decay::Lam(lam).factor(1.0).to_bits(),
+                lam.to_bits(),
+                "{lam}"
+            );
+            assert_eq!(
+                Decay::Lam(lam).factor(0.0).to_bits(),
+                1.0f64.to_bits(),
+                "{lam}"
+            );
+            assert_eq!(
+                Decay::Lam(lam).factor(-0.0).to_bits(),
+                1.0f64.to_bits(),
+                "{lam}"
+            );
+        }
+        // Every other step is still the power.
+        assert!((Decay::Lam(0.9).factor(0.5) - 0.9f64.sqrt()).abs() < 1e-15);
+        assert_eq!(Decay::Lam(0.9).factor(f64::INFINITY), 0.0);
+        assert!(Decay::Lam(0.9).factor(f64::NAN).is_nan());
     }
 }
 
