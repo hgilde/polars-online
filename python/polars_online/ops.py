@@ -115,6 +115,22 @@ inside both sums. There is no ``weight=``:
         clock="ts", gap_cap="5m", group="symbol",
     )
 
+**A feature in units of its spread is a ratio of a deviation and an
+operator.** ``(x - ewm_mean(x)) / ewm_std(x)`` is the feature's z-score: a
+model fitted on it has a coefficient per standard deviation of the feature
+as its spread stands on each row, where a model on ``x`` has one per unit.
+Where a target responds to a feature relative to its volatility, fit on the
+z-score; every model reads it as a column (README, *Features in units of
+their spread*, with the measured gain):
+
+.. code-block:: python
+
+    spread = {"half_life": "30m"}
+    z_mid = (pl.col("mid") - po.ewm_mean("mid", **spread)) / po.ewm_std("mid", **spread)
+    zscored = pl.scan_parquet("trades.parquet").online.with_windows(
+        z_mid=z_mid, clock="ts", gap_cap="5m", group="symbol"
+    ).collect()
+
 **The clock and its policy** -- ``clock``, ``gap_cap``,
 ``restart_after_step_back``, ``session``, ``session_gap``, ``group`` -- are
 the call's, shared by every operator in it, in a spec's own words

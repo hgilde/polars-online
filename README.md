@@ -13,7 +13,7 @@ ahead. Rust core, Python API, and a standalone command line.
 |---|---|
 | [Introduction](#introduction) | [a first fit](#a-first-fit) · [the idea](#the-idea) · [terminology](#terminology) · [what you can rely on](#what-you-can-rely-on) · [install](#install) · [example data](#example-data) |
 | [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [convergence without a decay](#convergence-without-a-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [row order](#row-order-and-the-two-guarantees) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) |
-| [Preparing a stream](#preparing-a-stream) | [windowed means](#windowed-means-looking-back-or-ahead) · [windows as columns](#windows-as-columns) · [windows as a model's inputs and target](#windows-as-a-models-inputs-and-target) · [saving and resuming a window run](#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
+| [Preparing a stream](#preparing-a-stream) | [windowed means](#windowed-means-looking-back-or-ahead) · [windows as columns](#windows-as-columns) · [windows as a model's inputs and target](#windows-as-a-models-inputs-and-target) · [features in units of their spread](#features-in-units-of-their-spread) · [saving and resuming a window run](#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [outside Python](#outside-a-live-python-process) · [output as Arrow](#output-as-arrow) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [the running sums](#the-running-sums-behind-a-fit) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
@@ -1340,6 +1340,60 @@ predictions row for row, except when the embargo equals the window under
 `closed="right"`, as in the example.** Then the column form learns each row
 at the row exactly one window after it, and the expression in `targets` at
 the next distinct stamp after that.
+
+#### Features in units of their spread
+
+**When a target responds to a feature relative to the feature's current
+volatility, fit the model on the feature's z-score.** A coefficient on a
+raw feature is a response per unit of the feature, the same in a calm hour
+and a volatile one. A coefficient on its z-score is a response per standard
+deviation, at the feature's spread as it stands on that row. Make each
+z-score a column with `po.ewm_mean` and `po.ewm_std` in `with_windows`,
+chained in the query before the bank, and name the columns in the spec's
+`features`.
+This code uses `ticks.parquet` from [Example data](#example-data):
+
+```python
+row_clock = dict(clock="t", gap_cap=10.0)                # one clock for the z-scores and the model
+spread = dict(half_life=100.0)                           # how fast the mean and the spread forget, in the clock's units
+zscored = pl.scan_parquet("ticks.parquet").online.with_windows(
+    z_x0=(pl.col("x0") - po.ewm_mean("x0", **spread)) / po.ewm_std("x0", **spread),   # x0 in units of its current spread
+    z_x1=(pl.col("x1") - po.ewm_mean("x1", **spread)) / po.ewm_std("x1", **spread),
+    **row_clock,
+)
+per_sd = po.spec.ewridge("per_sd", targets=["y"], features=["z_x0", "z_x1"], half_life=100.0, **row_clock)
+fitted = zscored.online.fit_predict([per_sd]).collect()   # the rows, z_x0, z_x1 and the column per_sd
+```
+
+**On a frame in memory, Polars' own `ewm_mean` and `ewm_std` make the same
+column.** On a clock that steps by 1 a row, `po.ewm_std("x0",
+half_life=100.0)` is `pl.col("x0").ewm_std(half_life=100.0, adjust=False)`
+to rounding, and so is the mean. The window operators read the clock
+rather than the row count, and run over a stream in one pass.
+
+**The recipe costs a column per feature, and it works with every model.**
+Each z-score is one more column, made by two operators on one queue in the
+`with_windows` pass. A model reads it as any other column, so `ewridge`,
+`rls`, `kalman` and the rest take it alike.
+
+**On minute returns, every model lost less with z-scored features.**
+Section 6 of [docs/VALIDATION.md](docs/VALIDATION.md) fits four models to
+BTCUSDT's next one and next five minutes of log returns, each at a
+half-life of 500 minutes and with the features raw, then z-scored. No model
+predicts these returns better than their mean, so every R² is below 0, but
+each is closer to 0 on the z-scores:
+
+| model | next minute, raw | next minute, z-scores | next five minutes, raw | next five minutes, z-scores |
+|---|---|---|---|---|
+| `ewridge`, at its default solve cadence | -0.0148 | -0.0096 | -0.0521 | -0.0262 |
+| `ewridge`, solved every row | -0.0647 | -0.0412 | -0.1113 | -0.0474 |
+| `rls` | -0.0644 | -0.0412 | -0.1108 | -0.0475 |
+| `kalman` | -0.0602 | -0.0404 | -0.0608 | -0.0286 |
+
+**`kalman` fitted this model on its own in 0.13.0.** It standardized each
+feature by the feature's moving moments, and kept its coefficients per
+standard deviation. It now keeps them per unit, as every other model does.
+For the model per standard deviation, give `kalman` the z-scored columns.
 
 #### Saving and resuming a window run
 

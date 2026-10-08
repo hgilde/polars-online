@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from functools import reduce
+from operator import add
 from pathlib import Path
 
 import polars as pl
@@ -22,9 +24,35 @@ import polars_online as po  # noqa: E402
 from data import VALIDATION_DATES as DATES  # noqa: E402
 from data import public_intraday, synthetic  # noqa: E402
 
+#: Every model's memory, in rows of the row clock: `half_life` for each, and
+#: `coef_half_life` for kalman's coefficients too (task 212).
+HL = 500.0
 
-def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str]]:
-    """Returns (df, source, features, targets)."""
+#: Each target's horizon: the sum of the log returns of the next `k` rows.
+#: Built by `ahead`, so the target and its embargo come from one number.
+HORIZONS = {"y0": 1, "y1": 5}
+
+
+def ahead(k: int) -> pl.Expr:
+    """The sum of the next ``k`` rows' log returns. It reads rows ``t + 1``
+    to ``t + k``, so it is known ``k`` rows after its own: its embargo."""
+    return reduce(add, [pl.col("lr").shift(-i) for i in range(1, k + 1)])
+
+
+def zscores(df: pl.DataFrame, feats: list[str]) -> pl.DataFrame:
+    """Each feature in units of its current spread, ``(x - ewm_mean(x)) /
+    ewm_std(x)`` at the models' half-life, as columns ``z_<name>``: the
+    per-standard-deviation recipe (README, *Features in units of their
+    spread*). Streaming window operators, so nothing looks ahead."""
+    z = {
+        f"z_{f}": (pl.col(f) - po.ewm_mean(f, half_life=HL)) / po.ewm_std(f, half_life=HL)
+        for f in feats
+    }
+    return po.stream.with_windows(df, **z)
+
+
+def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str], dict[str, float | None]]:
+    """Returns (df, source, features, targets, embargo per target)."""
     try:
         raw = public_intraday(DATES)
         source = (
@@ -35,10 +63,15 @@ def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str]]:
         df, _ = synthetic(
             seed=1234, n_groups=1, n_rows=rows or 5000, k=4, n_targets=2, null_frac=0.0
         )
-        return df, "synthetic (offline fallback)", ["x0", "x1", "x2", "x3"], ["y0", "y1"]
+        feats = ["x0", "x1", "x2", "x3"]
+        df = zscores(df, feats).drop_nulls([f"z_{f}" for f in feats])
+        # The synthetic targets are of their own row: nothing to wait for.
+        return df, "synthetic (offline fallback)", feats, ["y0", "y1"], {"y0": None, "y1": None}
 
     # Simple, honest intraday features: past returns and volume/activity
-    # signals. Targets are strictly future returns, so nothing leaks.
+    # signals. Targets are future returns, each learned under the embargo
+    # its horizon needs, so none is learned before it is known.
+    feats = ["x0", "x1", "x2", "x3"]
     df = (
         (raw.head(rows) if rows > 0 else raw)
         .with_columns(
@@ -54,14 +87,16 @@ def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str]]:
             x1=pl.col("lr").rolling_sum(5),
             x2=pl.col("vol_z"),
             x3=pl.col("trades_z"),
-            # Targets are strictly future returns, so nothing leaks.
-            y0=pl.col("lr").shift(-1),
-            y1=pl.col("lr").rolling_sum(5).shift(-5),
+            **{t: ahead(k) for t, k in HORIZONS.items()},
         )
-        .drop_nulls(["x0", "x1", "x2", "x3", "y0", "y1"])
+        .drop_nulls([*feats, *HORIZONS])
         .with_columns(group=pl.lit("BTCUSDT"))
     )
-    return df, source, ["x0", "x1", "x2", "x3"], ["y0", "y1"]
+    # The z-scores' first row has one value and no spread: null, dropped,
+    # so every section reads the same rows.
+    df = zscores(df, feats).drop_nulls([f"z_{f}" for f in feats])
+    embargo: dict[str, float | None] = {t: float(k) for t, k in HORIZONS.items()}
+    return df, source, feats, list(HORIZONS), embargo
 
 
 def run(df: pl.DataFrame, specs: list[dict], targets: list[str]) -> pl.DataFrame:
@@ -86,19 +121,35 @@ def table(df: pl.DataFrame, cols: list[str]) -> str:
     return "\n".join([head, sep, *rows])
 
 
+def matched(target: str, feats: list[str], embargo: float | None, suffix: str = "") -> list[dict]:
+    """The models of sections 5 and 6 on one target at matched memory: each
+    at half-life `HL`, kalman's coefficients too, and `ewridge` both at its
+    default solve cadence and solved every row."""
+    one = dict(targets=[target], features=feats, half_life=HL, min_weight=50.0, embargo=embargo)
+    return [
+        po.spec.ewridge(f"ewridge{suffix}", ridge=1e-4, standardize=True, **one),
+        po.spec.ewridge(
+            f"ewridge_every_row{suffix}", ridge=1e-4, standardize=True, solve_every=1.0, **one
+        ),
+        po.spec.rls(f"rls{suffix}", delta=1e-4, **one),
+        po.spec.kalman(f"kalman{suffix}", coef_half_life=HL, **one),
+    ]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", type=int, default=0, help="cap the row count (0 = use everything)")
     args = ap.parse_args()
 
-    df, source, feats, targets = load(args.rows)
+    df, source, feats, targets, embargo = load(args.rows)
     target = targets[0]
     common = dict(
         targets=[target],
         features=feats,
-        half_life=500.0,
+        half_life=HL,
         min_weight=50.0,
         standardize=True,
+        embargo=embargo[target],
     )
 
     print("# Validation results")
@@ -112,17 +163,35 @@ def main() -> None:
     print(f"- Data: {source}")
     print(f"- Rows: {df.height}, features: {feats}, targets: {targets}")
     print(f"- Polars {pl.__version__}, polars-online {po.__version__}")
+    section(
+        "How the runs are set",
+        "The clock is the row count: a row is a minute, and every number in clock units "
+        "below is a count of rows.\n\n"
+        "| rule | setting |\n"
+        "|---|---|\n"
+        "| **no target is learned before it is known** | `y0` is the next row's log return "
+        "and `y1` the sum of the next five, so each is known 1 and 5 rows after its own row; "
+        "each spec takes that as its `embargo`, and a spec with both targets (section 4) the "
+        "longer, 5 |\n"
+        f"| **the models are compared at matched memory** | every model at `half_life` = {HL:g} "
+        f"rows, and `kalman`'s `coef_half_life` = {HL:g} too; `ewridge` and `lasso` solve at "
+        "their default cadence, once the weight learned since the last solve reaches "
+        "`ln 2 / 50` of the fit's (every 10 rows at this half-life), so their coefficients "
+        "lag a row-by-row fit; section 5 runs `ewridge` solved every row beside it |\n"
+        "| **the features** | `x0` the row's log return, `x1` the last five's sum, `x2` and `x3` "
+        "volume and trade count against their last 60 rows' mean and spread; section 6 also "
+        "runs each as a z-score, `(x - po.ewm_mean(x)) / po.ewm_std(x)` at the same half-life |",
+    )
 
     # ---- 1. solve schedule: is half-life/50 the right cadence? ----
     # The default is by weight (docs/PLAN.md task 115 (b)): a solve once the
     # weight learned since the last reaches ln 2 / 50 of the weight the fit
     # holds, which on evenly spaced rows is every half-life/50 of clock. The
     # divisors measure the clock cadences; the default is measured beside.
-    hl = 500.0
     divisors = [1, 5, 10, 50, 200, 1000]
     specs = [po.spec.ewridge("default", ridge=1e-4, **common)]
     for d in divisors:
-        specs.append(po.spec.ewridge(f"s{d}", ridge=1e-4, solve_every=hl / d, **common))
+        specs.append(po.spec.ewridge(f"s{d}", ridge=1e-4, solve_every=HL / d, **common))
     t0 = time.perf_counter()
     res = run(df, specs, [target])
     elapsed = time.perf_counter() - t0
@@ -136,7 +205,7 @@ def main() -> None:
     section(
         "1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) "
         "[validate]",
-        f"Solving every `half_life/d` clock units, half_life = {hl}. "
+        f"Solving every `half_life/d` clock units, half_life = {HL}, on `{target}`. "
         f"All schedules share one accumulator, so this is a free experiment "
         f"({elapsed:.2f}s for {len(divisors) + 1} schedules).\n\n"
         + table(res, ["divisor", "n", "r2", "ic", "hit_rate", "mse"])
@@ -168,8 +237,9 @@ def main() -> None:
             l1_ratio=r,
             targets=[target],
             features=feats,
-            half_life=hl,
+            half_life=HL,
             min_weight=50.0,
+            embargo=embargo[target],
         )
         for r in (1.0, 0.5, 0.1)
     ]
@@ -184,14 +254,16 @@ def main() -> None:
     )
 
     # ---- 4. share_p [validate] ----
-    kal = dict(
-        targets=[target],
+    # One spec holds both targets, so it takes the longer horizon's embargo.
+    both = [e for e in (embargo[t] for t in targets) if e is not None]
+    kal_multi = dict(
+        targets=targets,
         features=feats,
-        coef_half_life=200.0,
-        half_life=hl,
+        coef_half_life=HL,
+        half_life=HL,
         min_weight=50.0,
+        embargo=max(both) if both else None,
     )
-    kal_multi = {**kal, "targets": targets}
     specs = [
         po.spec.kalman("per_target_p", share_p=False, **kal_multi),
         po.spec.kalman("shared_p", share_p=True, **kal_multi),
@@ -202,31 +274,59 @@ def main() -> None:
     section(
         "4. Kalman `share_p` approximation [validate]",
         f"Two targets ({targets}) with very different noise levels, so the "
-        f"shared-P approximation is doing real work. Both specs run in "
-        f"{share_elapsed:.2f}s total.\n\n"
+        f"shared-P approximation is doing real work; one spec holds both, so both "
+        f"wait the longer embargo. Both specs run in {share_elapsed:.2f}s total.\n\n"
         + table(res, ["spec", "slot", "target", "n", "r2", "ic", "mse"]),
     )
 
     # ---- 5. model comparison at matched settings ----
-    specs = [
-        po.spec.ewridge("ewridge", ridge=1e-4, **common),
-        po.spec.rls(
-            "rls", delta=1e-4, targets=[target], features=feats, half_life=hl, min_weight=50.0
-        ),
-        po.spec.kalman("kalman", **kal),
-        po.spec.lasso(
-            "lasso",
-            lasso_path=[1e-3, 1e-4, 0.0],
-            targets=[target],
-            features=feats,
-            half_life=hl,
-            min_weight=50.0,
-        ),
-    ]
-    res = run(df, specs, [target])
+    frames = []
+    for t in targets:
+        specs = matched(t, feats, embargo[t])
+        specs.append(
+            po.spec.lasso(
+                "lasso",
+                lasso_path=[1e-3, 1e-4, 0.0],
+                targets=[t],
+                features=feats,
+                half_life=HL,
+                min_weight=50.0,
+                embargo=embargo[t],
+            )
+        )
+        frames.append(run(df, specs, [t]))
+    res = pl.concat(frames)
     section(
         "5. Models at matched settings",
-        table(res, ["spec", "slot", "n", "r2", "ic", "hit_rate", "mse"]),
+        "Each target under its own embargo, every model at the same memory "
+        "(*How the runs are set*).\n\n"
+        + table(res, ["spec", "slot", "target", "n", "r2", "ic", "hit_rate", "mse"]),
+    )
+
+    # ---- 6. the per-standard-deviation recipe ----
+    zfeats = [f"z_{f}" for f in feats]
+    frames = []
+    for t in targets:
+        specs = matched(t, feats, embargo[t]) + matched(t, zfeats, embargo[t], "_z")
+        frames.append(
+            run(df, specs, [t]).with_columns(
+                features=pl.when(pl.col("spec").str.ends_with("_z"))
+                .then(pl.lit("z-scores"))
+                .otherwise(pl.lit("raw")),
+                spec=pl.col("spec").str.strip_suffix("_z"),
+            )
+        )
+    res = pl.concat(frames).sort("target", "spec", "features", descending=[False, False, True])
+    section(
+        "6. Features as z-scores (the per-standard-deviation recipe)",
+        "The models of section 5 on the raw features and on each feature in units of its "
+        f"current spread, `(x - po.ewm_mean(x, half_life={HL:g})) / "
+        f"po.ewm_std(x, half_life={HL:g})`, computed as columns by "
+        "`po.stream.with_windows`. A z-scored feature's coefficient is a response per "
+        "standard deviation of the feature as it is now, where a raw one is per unit; "
+        "it is the better model where the target moves with a feature relative to its "
+        "volatility. The same rows, embargoes and memory as section 5.\n\n"
+        + table(res, ["spec", "target", "features", "n", "r2", "ic", "mse"]),
     )
 
     print()

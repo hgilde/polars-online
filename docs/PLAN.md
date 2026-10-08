@@ -8437,7 +8437,14 @@ tick, and that the series holding it up has a count near 1.
       row 25, before the switch: a pre-existing gap, to look at);
       `docs/VALIDATION.md`'s real-data `kalman` rows lower (R² -0.109 to
       -0.123, -0.005 to -0.059: the old readout's accidental shrinkage in
-      volatility bursts). Cost: `kalman` +85% per row; a 10% re-anchoring
+      volatility bursts; *reads differently since task 212*: the
+      kalman review of 2026-10-08 found the pre-206 model a filter on
+      exponentially weighted z-scores, to 1e-14 of the predictions'
+      spread, a model per standard deviation rather than an accident, and
+      `validate.py` learning `y1` five rows early; under each target's
+      embargo and matched memory VALIDATION §5 has `kalman` at -0.0602 and
+      -0.0608 on the raw features and §6 at -0.0404 and -0.0286 on
+      z-scores). Cost: `kalman` +85% per row; a 10% re-anchoring
       measured (141 against 195 ns in a replica), not shipped.
 - [ ] 207. **The insensitivity band and `c` in noise units, measured**
       (§19 G3 and G5, decided 2026-10-08). On task 206's code: sweep the
@@ -11642,6 +11649,15 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   different noise levels, sharing P helped the short-horizon target slightly
   (-0.049 vs -0.060 R2) but hurt the long-horizon one (-0.085 vs -0.011 R2).
   Default stays `share_p = false`; it remains available.
+  *Reads differently since task 212 (2026-10-08):* `validate.py` then
+  learned each target at its own row, `y1` five rows before it was known,
+  and ran `kalman` at a coefficient half-life of 200 beside the others' 500.
+  Under each target's embargo (one spec holding both waits 5 rows) and
+  matched memory, VALIDATION §4's shared `P` is the better of the two on
+  both targets: `y0` −0.0102 against −0.0173, `y1` −0.0590 against −0.0608.
+  The default is not revisited there; the kalman review of 2026-10-08 (T8)
+  measured `share_p`'s `se_coef` off by 0.019 and 1.93 against a calibrated
+  1, where one `P` per target gives 0.98 and 0.98.
 - Solve-schedule sweeps really are free: 6 schedules over 14k rows in 0.06s,
   because they share one accumulator.
 - `tests/data.py` now downloads N days (`public_intraday(dates)`), cached per

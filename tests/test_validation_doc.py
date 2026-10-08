@@ -86,5 +86,45 @@ def test_it_still_measures_the_defaults_it_claims_to(regenerated):
         "Elastic net",
         "Kalman `share_p`",
         "Models at matched settings",
+        # Task 212: the protocol every section runs under, and the recipe
+        # the README cites the numbers of.
+        "How the runs are set",
+        "Features as z-scores",
     ]:
         assert heading in regenerated, f"validate.py no longer measures: {heading}"
+
+
+def _table(text: str, after: str) -> list[list[str]]:
+    """The cells of the first markdown table after the line holding
+    ``after``, its header and rule dropped."""
+    lines = text[text.index(after) :].splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("|"))
+    rows = []
+    for line in lines[start + 2 :]:
+        if not line.startswith("|"):
+            break
+        rows.append([c.strip() for c in line.strip("|").split("|")])
+    return rows
+
+
+def test_the_readme_quotes_section_6_as_it_stands():
+    """The README's *Features in units of their spread* quotes section 6's
+    R² for four models, each target, raw and z-scored (task 212). Read from
+    the committed document, so a regeneration that moves a number fails here
+    until the README is brought along: the README rounds to four places."""
+    rows = _table(DOC.read_text(encoding="utf-8"), "## 6. Features as z-scores")
+    r2 = {(spec, target, features): float(r) for spec, target, features, _, r, *_ in rows}
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    quoted = _table(readme, "**On minute returns, every model lost less with z-scored features.**")
+    names = {
+        "`ewridge`, at its default solve cadence": "ewridge",
+        "`ewridge`, solved every row": "ewridge_every_row",
+        "`rls`": "rls",
+        "`kalman`": "kalman",
+    }
+    assert [row[0] for row in quoted] == list(names)
+    columns = [("y0", "raw"), ("y0", "z-scores"), ("y1", "raw"), ("y1", "z-scores")]
+    for model, *cells in quoted:
+        for (target, features), cell in zip(columns, cells, strict=True):
+            want = round(r2[(names[model], target, features)], 4)
+            assert float(cell) == want, (model, target, features, cell, want)

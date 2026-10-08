@@ -7,30 +7,40 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 ```
 
 - Data: public intraday (BTCUSDT 1m, Binance public dump, 2024-01-02..2024-01-11, 10 days)
-- Rows: 14336, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
+- Rows: 14335, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
 - Polars 2.0.0, polars-online 0.13.0
+
+## How the runs are set
+
+The clock is the row count: a row is a minute, and every number in clock units below is a count of rows.
+
+| rule | setting |
+|---|---|
+| **no target is learned before it is known** | `y0` is the next row's log return and `y1` the sum of the next five, so each is known 1 and 5 rows after its own row; each spec takes that as its `embargo`, and a spec with both targets (section 4) the longer, 5 |
+| **the models are compared at matched memory** | every model at `half_life` = 500 rows, and `kalman`'s `coef_half_life` = 500 too; `ewridge` and `lasso` solve at their default cadence, once the weight learned since the last solve reaches `ln 2 / 50` of the fit's (every 10 rows at this half-life), so their coefficients lag a row-by-row fit; section 5 runs `ewridge` solved every row beside it |
+| **the features** | `x0` the row's log return, `x1` the last five's sum, `x2` and `x3` volume and trade count against their last 60 rows' mean and spread; section 6 also runs each as a z-score, `(x - po.ewm_mean(x)) / po.ewm_std(x)` at the same half-life |
 
 ## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) [validate]
 
-Solving every `half_life/d` clock units, half_life = 500.0. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
+Solving every `half_life/d` clock units, half_life = 500.0, on `y0`. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
-| 1 | 14284 | -0.0230677 | 0.013024 | 0.497919 | 1.17804e-06 |
-| 5 | 14284 | -0.0095268 | 0.0241933 | 0.499118 | 1.16244e-06 |
-| 10 | 14284 | -0.0145283 | 0.0054352 | 0.497566 | 1.1682e-06 |
-| 50 | 14284 | -0.0088945 | 0.0230593 | 0.497778 | 1.16172e-06 |
-| 200 | 14284 | -0.0515809 | -0.0823539 | 0.498131 | 1.21087e-06 |
-| 1000 | 14284 | -0.0642677 | -0.122221 | 0.497002 | 1.22548e-06 |
+| 1 | 14283 | -0.0727934 | 0.00594082 | 0.498025 | 1.23526e-06 |
+| 5 | 14283 | -0.0180442 | 0.0219514 | 0.498095 | 1.17222e-06 |
+| 10 | 14283 | -0.0103518 | 0.0290077 | 0.497178 | 1.16336e-06 |
+| 50 | 14283 | -0.00865016 | 0.0322924 | 0.497602 | 1.1614e-06 |
+| 200 | 14283 | -0.0203975 | -0.00584028 | 0.497672 | 1.17493e-06 |
+| 1000 | 14283 | -0.0646675 | -0.120803 | 0.496614 | 1.2259e-06 |
 
-**Result:** lowest MSE at divisor 50 (mse 1.16172e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.17042e-06, r2 -0.0164563, ic -0.00966967.
+**Result:** lowest MSE at divisor 50 (mse 1.1614e-06). The default, a solve once the weight learned since the last reaches `ln 2 / 50` of the weight the fit holds: mse 1.16848e-06, r2 -0.0147959, ic -0.00132871.
 
 ## 2. `standardize` default (false for ridge, true for lasso)
 
 | spec | n | r2 | ic | mse |
 |---|---|---|---|---|
-| plain | 14284 | -0.00378539 | -0.00850127 | 1.15583e-06 |
-| std | 14284 | -0.0164563 | -0.00966967 | 1.17042e-06 |
+| plain | 14283 | -0.00384711 | -0.00559047 | 1.15587e-06 |
+| std | 14283 | -0.0147959 | -0.00132871 | 1.16848e-06 |
 
 ## 3. Elastic net `l1_ratio` [validate]
 
@@ -38,37 +48,70 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 
 | spec | slot | n | r2 | ic | mse |
 |---|---|---|---|---|---|
-| l1_100 | pred_y0__l0.0001 | 14284 | -0.00422842 | -0.0200441 | 1.15634e-06 |
-| l1_100 | pred_y0__l0.001 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
-| l1_100 | pred_y0__l0.01 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
-| l1_50 | pred_y0__l0.0001 | 14284 | -0.00699471 | -0.0111053 | 1.15953e-06 |
-| l1_50 | pred_y0__l0.001 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
-| l1_50 | pred_y0__l0.01 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
-| l1_10 | pred_y0__l0.0001 | 14284 | -0.0123753 | -0.00591977 | 1.16572e-06 |
-| l1_10 | pred_y0__l0.001 | 14284 | -0.0042236 | -0.0200419 | 1.15634e-06 |
-| l1_10 | pred_y0__l0.01 | 14284 | -0.00096478 | -0.0142343 | 1.15258e-06 |
+| l1_100 | pred_y0__l0.0001 | 14283 | -0.00368412 | -0.0144557 | 1.15568e-06 |
+| l1_100 | pred_y0__l0.001 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
+| l1_100 | pred_y0__l0.01 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
+| l1_50 | pred_y0__l0.0001 | 14283 | -0.00616189 | -0.00495869 | 1.15854e-06 |
+| l1_50 | pred_y0__l0.001 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
+| l1_50 | pred_y0__l0.01 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
+| l1_10 | pred_y0__l0.0001 | 14283 | -0.0111905 | 0.00125633 | 1.16433e-06 |
+| l1_10 | pred_y0__l0.001 | 14283 | -0.00367987 | -0.0144508 | 1.15568e-06 |
+| l1_10 | pred_y0__l0.01 | 14283 | -0.00088852 | -0.0124867 | 1.15246e-06 |
 
 ## 4. Kalman `share_p` approximation [validate]
 
-Two targets (['y0', 'y1']) with very different noise levels, so the shared-P approximation is doing real work. Both specs run in 0.01s total.
+Two targets (['y0', 'y1']) with very different noise levels, so the shared-P approximation is doing real work; one spec holds both, so both wait the longer embargo. Both specs run in 0.01s total.
 
 | spec | slot | target | n | r2 | ic | mse |
 |---|---|---|---|---|---|---|
-| per_target_p | pred_y0 | y0 | 14284 | -0.123094 | -0.149177 | 1.29321e-06 |
-| per_target_p | pred_y1 | y1 | 14284 | -0.0586471 | 0.067908 | 5.24963e-06 |
-| shared_p | pred_y0 | y0 | 14284 | -0.0916086 | -0.146581 | 1.25696e-06 |
-| shared_p | pred_y1 | y1 | 14284 | -0.0597867 | 0.0687697 | 5.25528e-06 |
+| per_target_p | pred_y0 | y0 | 14279 | -0.0173017 | -0.00193585 | 1.17157e-06 |
+| per_target_p | pred_y1 | y1 | 14279 | -0.0607977 | -0.00878072 | 5.26052e-06 |
+| shared_p | pred_y0 | y0 | 14279 | -0.0102018 | 0.00578449 | 1.16339e-06 |
+| shared_p | pred_y1 | y1 | 14279 | -0.0590077 | -0.00740078 | 5.25164e-06 |
 
 ## 5. Models at matched settings
 
-| spec | slot | n | r2 | ic | hit_rate | mse |
+Each target under its own embargo, every model at the same memory (*How the runs are set*).
+
+| spec | slot | target | n | r2 | ic | hit_rate | mse |
+|---|---|---|---|---|---|---|---|
+| ewridge | pred_y0 | y0 | 14283 | -0.0147959 | -0.00132871 | 0.499083 | 1.16848e-06 |
+| ewridge_every_row | pred_y0 | y0 | 14283 | -0.0646675 | -0.120803 | 0.496614 | 1.2259e-06 |
+| rls | pred_y0 | y0 | 14283 | -0.0644381 | -0.120948 | 0.496543 | 1.22564e-06 |
+| kalman | pred_y0 | y0 | 14283 | -0.0602003 | -0.11335 | 0.499295 | 1.22076e-06 |
+| lasso | pred_y0__l0 | y0 | 14283 | -0.0147995 | -0.00132935 | 0.499083 | 1.16848e-06 |
+| lasso | pred_y0__l0.0001 | y0 | 14283 | -0.00368412 | -0.0144557 | 0.504374 | 1.15568e-06 |
+| lasso | pred_y0__l0.001 | y0 | 14283 | -0.00088852 | -0.0124867 | 0.500071 | 1.15246e-06 |
+| ewridge | pred_y1 | y1 | 14279 | -0.052132 | -0.00735021 | 0.495413 | 5.21755e-06 |
+| ewridge_every_row | pred_y1 | y1 | 14279 | -0.111272 | -0.0398077 | 0.493452 | 5.51082e-06 |
+| rls | pred_y1 | y1 | 14279 | -0.110781 | -0.0400024 | 0.493452 | 5.50839e-06 |
+| kalman | pred_y1 | y1 | 14279 | -0.0607977 | -0.00878072 | 0.492822 | 5.26052e-06 |
+| lasso | pred_y1__l0 | y1 | 14279 | -0.0521462 | -0.00735635 | 0.495413 | 5.21762e-06 |
+| lasso | pred_y1__l0.0001 | y1 | 14279 | -0.0411806 | -0.0268843 | 0.499335 | 5.16324e-06 |
+| lasso | pred_y1__l0.001 | y1 | 14279 | -0.00456231 | -0.0246413 | 0.494292 | 4.98165e-06 |
+
+## 6. Features as z-scores (the per-standard-deviation recipe)
+
+The models of section 5 on the raw features and on each feature in units of its current spread, `(x - po.ewm_mean(x, half_life=500)) / po.ewm_std(x, half_life=500)`, computed as columns by `po.stream.with_windows`. A z-scored feature's coefficient is a response per standard deviation of the feature as it is now, where a raw one is per unit; it is the better model where the target moves with a feature relative to its volatility. The same rows, embargoes and memory as section 5.
+
+| spec | target | features | n | r2 | ic | mse |
 |---|---|---|---|---|---|---|
-| ewridge | pred_y0 | 14284 | -0.0164563 | -0.00966967 | 0.498131 | 1.17042e-06 |
-| rls | pred_y0 | 14284 | -0.064088 | -0.122254 | 0.497002 | 1.22527e-06 |
-| kalman | pred_y0 | 14284 | -0.123094 | -0.149177 | 0.503139 | 1.29321e-06 |
-| lasso | pred_y0__l0 | 14284 | -0.0164607 | -0.00967148 | 0.498131 | 1.17043e-06 |
-| lasso | pred_y0__l0.0001 | 14284 | -0.00422842 | -0.0200441 | 0.503068 | 1.15634e-06 |
-| lasso | pred_y0__l0.001 | 14284 | -0.00096478 | -0.0142343 | 0.498907 | 1.15258e-06 |
+| ewridge | y0 | z-scores | 14283 | -0.00957055 | 0.00255103 | 1.16246e-06 |
+| ewridge | y0 | raw | 14283 | -0.0147959 | -0.00132871 | 1.16848e-06 |
+| ewridge_every_row | y0 | z-scores | 14283 | -0.0411778 | -0.112844 | 1.19886e-06 |
+| ewridge_every_row | y0 | raw | 14283 | -0.0646675 | -0.120803 | 1.2259e-06 |
+| kalman | y0 | z-scores | 14283 | -0.0404003 | -0.105992 | 1.19796e-06 |
+| kalman | y0 | raw | 14283 | -0.0602003 | -0.11335 | 1.22076e-06 |
+| rls | y0 | z-scores | 14283 | -0.041183 | -0.11284 | 1.19886e-06 |
+| rls | y0 | raw | 14283 | -0.0644381 | -0.120948 | 1.22564e-06 |
+| ewridge | y1 | z-scores | 14279 | -0.0261524 | 0.0159958 | 5.08871e-06 |
+| ewridge | y1 | raw | 14279 | -0.052132 | -0.00735021 | 5.21755e-06 |
+| ewridge_every_row | y1 | z-scores | 14279 | -0.0474414 | -0.00240756 | 5.19429e-06 |
+| ewridge_every_row | y1 | raw | 14279 | -0.111272 | -0.0398077 | 5.51082e-06 |
+| kalman | y1 | z-scores | 14279 | -0.0286322 | 0.0268341 | 5.10101e-06 |
+| kalman | y1 | raw | 14279 | -0.0607977 | -0.00878072 | 5.26052e-06 |
+| rls | y1 | z-scores | 14279 | -0.047455 | -0.00241081 | 5.19435e-06 |
+| rls | y1 | raw | 14279 | -0.110781 | -0.0400024 | 5.50839e-06 |
 
 ---
 
