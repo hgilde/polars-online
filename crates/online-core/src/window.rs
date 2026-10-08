@@ -920,6 +920,37 @@ impl Footprint for Moments {
 /// difference of positives of size `C`, so it is negligible at `window =
 /// 3·half-life`, where the correction is an eighth, and worse as the window
 /// shortens toward the half-life.
+///
+/// **A variance no larger than the subtraction's rounding is no spread**
+/// (review 2026-09-27, G5; docs/PLAN.md task 217). It carries no digit of
+/// the window's spread, so it is read as 0, and its co-moments with it. The
+/// rounding has two parts:
+///
+/// ```text
+/// 64 ε (g·C + ratio·C_u)                  the terms' own
+/// 64 ε ratio·g·|d|·(|m| + |m_u|)          the level's
+/// ```
+///
+/// The terms' own is `ε` of what is subtracted. Rows far outside the window
+/// that dominate the live accumulator, such as a feature at `1e100` before
+/// the window or a row of weight `1e100` inside it, leave a remainder of
+/// `1e84` against a spread of `1e-99`. The level's comes from `d = m_u − m`,
+/// a difference of two means each rounded at the level: the snapshot keeps
+/// no low parts. So `d` is off by about `ε·(|m| + |m_u|)`, and `ratio·g·d²`
+/// by twice `ratio·g·|d|` times that. This grows with the level times the
+/// means' difference, not with the level squared. A bound on the raw
+/// second moments, `ε·(m² + C)`, the rounding of `E[x²] − m²`, is that
+/// earlier form's and not this one's: it read a window of unit variance at
+/// `1e8` as none (`a_window_keeps_its_precision_at_a_large_offset`, 0
+/// against 0.349), and moved 48 of 120 ordinary windowed fits by up to 3.8
+/// times their spread. Measured where a row of weight `1e100` left a window
+/// of 7 at a level of 1,000 (docs/PLAN.md task 209's stream), the
+/// remainders were 6.8e-15 and 1.0e-14 against spreads near 1e-106. The
+/// terms' bound was 6.7e-17 and 9.1e-16 and the level's 2.5e-12 and
+/// 9.2e-12; at `1e8`, 1.3e-9 against a level's bound of 9.2e-7. Read as
+/// spread, they set a windowed `ewridge`'s slope at -6.6e41 and drove a
+/// windowed `lasso` to `inf`. Read as none, every level reads what level 0
+/// does, to the bit, and the 120 ordinary fits do not move.
 pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let k = cov.k();
     let w_now = cov.n_eff();
@@ -947,22 +978,19 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         // round 4, CB7; task 182's rule).
         let ii = i * k + i;
         cen[ii] = crate::solve::clamp_rounding(cen[ii]);
-        // And a variance no larger than the rounding of the terms it
-        // is formed from carries no digit of the window's spread: the live
-        // accumulator itself resolves the window's rows only to `ε` of its
-        // co-moment, so when rows far outside the window dominate it -- a
-        // feature at `1e100` before the window, a row of weight `1e100`
-        // inside it -- the difference is that rounding, `1e84` against a
-        // spread of `1e-99` (review 2026-09-27, G5). Read as no spread, as a
-        // held feature is below. On a window over ordinary rows the variance
-        // is many orders above this. The third term, `ratio·g·d²`, needs no
-        // place of its own: the variance kept is `g·C − ratio·C_u −
-        // ratio·g·d² ≥ 0`, so that term is at most `g·C`, and leaving it out
-        // moves the bound by a factor of two at most, inside the 64 (and a
-        // bound no test could hold that term to, the mutants of 2026-09-27
-        // showed).
+        // And a variance no larger than the subtraction's rounding carries
+        // no digit of the window's spread (the doc comment has the bound and
+        // the measurements): read as no spread, as a held feature is below.
+        // On a window over ordinary rows the variance is many orders above
+        // it. The third term's own rounding, `ε·ratio·g·d²`, needs no place:
+        // the variance kept is `g·C − ratio·C_u − ratio·g·d² ≥ 0`, so that
+        // term is at most `g·C`, and leaving it out moves the bound by a
+        // factor of two at most, inside the 64 (and a bound no test could
+        // hold that term to, the mutants of 2026-09-27 showed). Its
+        // rounding through `d`, the means' at the level, does (task 217).
         let terms = g * c_now[ii] + ratio * old.c[ii];
-        unresolved[i] = cen[ii] <= 64.0 * f64::EPSILON * terms;
+        let level = ratio * g * d[i].abs() * (cov.mean(i).abs() + old.m[i].abs());
+        unresolved[i] = cen[ii] <= 64.0 * f64::EPSILON * (terms + level);
     }
     for i in (0..k).filter(|&i| unresolved[i]) {
         for j in 0..k {
@@ -1172,6 +1200,78 @@ mod tests {
             "and its value: {}",
             kept.mean(0)
         );
+    }
+
+    /// **An ordinary window keeps its spread at any level** (docs/PLAN.md
+    /// task 217). The level's part of [`truncated`]'s bound must zero no
+    /// variance the terms' own part keeps, on windows with no dominant row:
+    /// at levels from 0 to ±1e8 and spreads 1 and 1e-3, a window of 7 and of
+    /// 40 rows. Each truncation is held to a replica of the bound before the
+    /// level's part, computed from the same inputs: where that kept a
+    /// variance, `truncated` keeps the same bits. A bound on the raw second
+    /// moments, `ε·(m² + C)`, failed this from a level of 1,000 at a spread
+    /// of 1e-3 (and the models' fits moved by up to 3.8 times the spread, in
+    /// 48 of 120 such configurations). The smallest kept variance stood 13.6
+    /// times above the new bound, at a spread of 1e-3 and a level of 1e8.
+    #[test]
+    fn an_ordinary_window_keeps_its_spread_at_any_level() {
+        // About a half-life of 20 rows; a literal, so no libm.
+        let lam = 0.965_936_328_924_846_f64;
+        let mut least = (f64::INFINITY, 0.0, 0.0, 0);
+        for level in [0.0, 1e3, -1e3, 1e6, 1e8, -1e8] {
+            for spread in [1.0, 1e-3] {
+                for window in [7usize, 40] {
+                    let mut cov = EwCov::new(2);
+                    let mut snaps: Vec<Moments> = Vec::new();
+                    let mut s = 217u64;
+                    for t in 0..300usize {
+                        let step = if t == 0 { 1.0 } else { lam };
+                        snaps.push(Moments::of(&cov, step));
+                        let u = lcg(&mut s);
+                        let x = [level + spread * u, level + spread * (0.5 * u + lcg(&mut s))];
+                        cov.update(&x, step, 0.5 + 0.5 * lcg(&mut s).abs());
+                        if t + 1 < window {
+                            continue;
+                        }
+                        // The window keeps rows `first..=t`.
+                        let first = t + 1 - window;
+                        let old = &snaps[first];
+                        let f = (first..t).fold(1.0, |f, _| f * lam);
+                        let out = truncated(&cov, old, f).expect("rows inside");
+                        // The bound without the level's part.
+                        let (w_now, w_old) = (cov.n_eff(), f * old.w);
+                        let w = w_now - w_old;
+                        let (ratio, g) = (w_old / w, w_now / w);
+                        let c = cov.comoments();
+                        for i in 0..2 {
+                            let ii = i * 2 + i;
+                            let d = old.m[i] - cov.mean(i);
+                            let cen = crate::solve::clamp_rounding(
+                                g * c[ii] - ratio * old.c[ii] - ratio * g * d * d,
+                            );
+                            let terms = g * c[ii] + ratio * old.c[ii];
+                            let level_part =
+                                ratio * g * d.abs() * (cov.mean(i).abs() + old.m[i].abs());
+                            if cen > 64.0 * f64::EPSILON * terms {
+                                assert_eq!(
+                                    out.cov(i, i).to_bits(),
+                                    cen.to_bits(),
+                                    "level {level}, spread {spread}, window {window}, row {t}, \
+                                     slot {i}: {} where the bound before kept {cen}",
+                                    out.cov(i, i)
+                                );
+                                let over = cen / (64.0 * f64::EPSILON * (terms + level_part));
+                                if over < least.0 {
+                                    least = (over, level, spread, window);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("the smallest kept variance over its bound, and where: {least:?}");
+        assert!(least.0 > 1.0, "{least:?}");
     }
 
     fn lcg(s: &mut u64) -> f64 {

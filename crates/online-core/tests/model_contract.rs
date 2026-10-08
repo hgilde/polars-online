@@ -3736,12 +3736,6 @@ mod generated {
         .prop_flat_map(move |sign| prop::collection::vec(row(targets, binary, sign), 1..60))
     }
 
-    /// [`stream`] of mixed signs only: for the one model that fails on a
-    /// one-sided stream and is not fixed yet (see `lasso_windowed` below).
-    fn mixed_stream(targets: usize, binary: bool) -> impl Strategy<Value = Vec<GenRow>> {
-        prop::collection::vec(row(targets, binary, Sign::Mixed), 1..60)
-    }
-
     fn equal(a: &Step, b: &Step) -> bool {
         let same = |u: &f64, v: &f64| u.to_bits() == v.to_bits() || (u.is_nan() && v.is_nan());
         a.pred.len() == b.pred.len()
@@ -3931,6 +3925,148 @@ mod generated {
         .unwrap();
     }
 
+    /// Task 209's stream at a level, its values `v` read as `level + v -
+    /// 1000`: a row of weight `1e100` (row 1) leaves a window of 7 at row 9
+    /// while another (row 6) stays, and the last row's feature is at the
+    /// bound. Its first row was the one-sided stream the windowed `lasso`
+    /// failed the contract on (docs/PLAN.md task 209's report; task 216, D4).
+    fn dominant_row_leaving(level: f64) -> Vec<GenRow> {
+        let s = level - 1000.0;
+        let row = |x0: f64, x1: f64, y0: Option<f64>, d: f64, w: f64| GenRow {
+            x: vec![x0 + s, x1 + s],
+            y: vec![y0.map(|v| v + s)],
+            d,
+            w,
+        };
+        vec![
+            row(1000.0, 526586.3282990033, Some(1000.0), 1.0, 0.01),
+            row(
+                1000.1221927147707,
+                1000.4436148121216,
+                Some(1000.0),
+                1.0,
+                1e100,
+            ),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, None, 0.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(
+                1000.0218939707881,
+                1000.8139282141994,
+                Some(1.9261315645396117e49),
+                1.0,
+                1e100,
+            ),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, Some(1000.0), 1.0, 0.01),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1000.0, None, 1.0, 1.0),
+            row(1000.0, 1e100, None, 1.0, 1.0),
+        ]
+    }
+
+    /// **A windowed fit at a level reads what it reads at level 0 once a
+    /// dominant row has left the window** (docs/PLAN.md task 217, D4). The
+    /// row of weight `1e100` that leaves takes the window's spread to about
+    /// `1e-106`, and the subtraction left a remainder of the means' rounding
+    /// at the level: 1e-14 at 1,000 and 1.3e-9 at 1e8, which passed for a
+    /// spread (`crate::truncated` has the bound and the numbers). On the
+    /// base, at ±1,000 the windowed `lasso` grew by about `1e45` a row and
+    /// predicted `inf` on the last, and `ewridge` held slopes of -6.6e41
+    /// where the kept rows give 4.5e-49; at ±1e8 both were finite with
+    /// slopes of 2.6e49 and 3.4e46. Now the coefficients after the row has
+    /// left (rows 9 to 11) are level 0's to the bit, under both snapshot
+    /// cadences; before it (row 8), with a snapshot every row, each is the
+    /// fit of the rows inside the window to 1e-9, read from a model fed
+    /// those rows alone; and every level keeps the contract.
+    #[test]
+    fn a_dominant_row_leaving_a_window_at_a_level_reads_as_level_0() {
+        type Coefs = Vec<f64>;
+        let lasso = |every: Option<usize>, window: Option<f64>| {
+            let mut c = lasso_cfg();
+            c.window = window;
+            c.max_rows_between_snapshots = every;
+            Lasso::new(c).unwrap()
+        };
+        let ridge = |every: Option<usize>, window: Option<f64>| {
+            let mut c = ewridge_cfg();
+            c.window = window;
+            c.max_rows_between_snapshots = every;
+            EwRidge::new(c).unwrap()
+        };
+        let two = |rows: &[GenRow]| -> Vec<GenRow> {
+            rows.iter()
+                .map(|r| GenRow {
+                    y: vec![r.y[0], r.y[0]],
+                    ..r.clone()
+                })
+                .collect()
+        };
+        let lasso_coefs = |m: &Lasso| -> Coefs { m.coefficients().unwrap().concat().concat() };
+        let ridge_coefs = |m: &EwRidge| -> Coefs { m.coefficients().unwrap().concat() };
+        // Each model's coefficients after rows 8 to 11, and the fit of the
+        // rows inside the window after row 8 (rows 1 to 8: row 0 is 8 clock
+        // units old there, past the window of 7).
+        let fits = |level: f64, every: Option<usize>| -> [(Vec<Coefs>, Coefs); 2] {
+            let rows = dominant_row_leaving(level);
+            let mut l = lasso(every, Some(7.0));
+            let mut e = ridge(every, Some(7.0));
+            let (mut lc, mut ec) = (Vec::new(), Vec::new());
+            for (i, (r, r2)) in rows.iter().zip(two(&rows)).enumerate() {
+                let d = if i == 0 { 0.0 } else { r.d };
+                l.step(&r.x, &r.y, d, r.w);
+                e.step(&r2.x, &r2.y, d, r2.w);
+                if i >= 8 {
+                    lc.push(lasso_coefs(&l));
+                    ec.push(ridge_coefs(&e));
+                }
+            }
+            let (mut ls, mut es) = (lasso(None, None), ridge(None, None));
+            for (i, (r, r2)) in rows[1..=8].iter().zip(two(&rows[1..=8])).enumerate() {
+                let d = if i == 0 { 0.0 } else { r.d };
+                ls.step(&r.x, &r.y, d, r.w);
+                es.step(&r2.x, &r2.y, d, r2.w);
+            }
+            [(lc, lasso_coefs(&ls)), (ec, ridge_coefs(&es))]
+        };
+        for every in [None, Some(3)] {
+            let base = fits(0.0, every);
+            for level in [0.0, 1e3, -1e3, 1e8, -1e8] {
+                let got = fits(level, every);
+                for (name, (at, inside), (at0, _)) in
+                    [("lasso", &got[0], &base[0]), ("ewridge", &got[1], &base[1])]
+                {
+                    let case = format!("{name} at level {level}, snapshots {every:?}");
+                    // A snapshot every 3 rows draws the boundary later, past
+                    // row 1 already: its window is not rows 1 to 8.
+                    let kept = if every.is_none() {
+                        at[0].as_slice()
+                    } else {
+                        &[]
+                    };
+                    for (u, v) in kept.iter().zip(inside) {
+                        assert!(
+                            (u - v).abs() <= 1e-9 * u.abs().max(v.abs()).max(1.0),
+                            "{case}: row 8, {:?} where the rows inside the window fit {inside:?}",
+                            at[0]
+                        );
+                    }
+                    for (row, (c, c0)) in at.iter().zip(at0).enumerate().skip(1) {
+                        assert!(
+                            c.iter().zip(c0).all(|(u, v)| u.to_bits() == v.to_bits()),
+                            "{case}: row {}, {c:?} where level 0 has {c0:?}",
+                            row + 8
+                        );
+                    }
+                }
+                let rows = dominant_row_leaving(level);
+                contract(|| lasso(every, Some(7.0)), &rows, 0).unwrap();
+                contract(|| ridge(every, Some(7.0)), &two(&rows), 0).unwrap();
+            }
+        }
+    }
+
     /// The case that failed the scheduled mutation pass of 2026-10-04 at its
     /// baseline (run 37194203887, shard 13), as proptest shrank it: on row
     /// 7 a feature at the input bound, standardized against a scale the
@@ -4008,17 +4144,15 @@ mod generated {
             contract(|| Lasso::new(lasso_cfg()).unwrap(), &rows, split)?;
         }
 
-        /// **Mixed signs only, until a defect is fixed** (docs/PLAN.md task
-        /// 209's report raises it). Drawn one-sided, this failed one run in
-        /// 18: on a stream at a level of 1,000 (or -1,000) with rows of weight
-        /// `1e100`, once a heavy row leaves the window of 7 the windowed
-        /// lasso's coefficients grow by about `1e45` a row (`1e98` to
-        /// `1e278` over rows 8 to 11; unwindowed they hold at `1e53`), and a
-        /// feature at the bound then predicts `-inf`. At a level of 0, 1 or
-        /// 2,000 the same stream passes, and so does `ewridge` under the same
-        /// window.
+        /// One-sided streams too, since docs/PLAN.md task 217 (D4). Drawn
+        /// one-sided, this failed one run in 18 before it: once a row of
+        /// weight `1e100` left the window of 7 at a level of ±1,000, the
+        /// windowed lasso's coefficients grew by about `1e45` a row and a
+        /// feature at the bound predicted `inf`
+        /// ([`a_dominant_row_leaving_a_window_at_a_level_reads_as_level_0`]).
+        /// 12,000 cases drawn as here passed with the fix.
         #[test]
-        fn lasso_windowed(rows in mixed_stream(1, false), split in 0usize..60, every in 0usize..2) {
+        fn lasso_windowed(rows in stream(1, false), split in 0usize..60, every in 0usize..2) {
             contract(|| {
                 let mut c = lasso_cfg();
                 c.window = Some(7.0);
