@@ -8442,9 +8442,10 @@ tick, and that the series holding it up has a count near 1.
       exponentially weighted z-scores, to 1e-14 of the predictions'
       spread, a model per standard deviation rather than an accident, and
       `validate.py` learning `y1` five rows early; under each target's
-      embargo and matched memory VALIDATION §5 has `kalman` at -0.0602 and
+      embargo and matched memory VALIDATION §5 had `kalman` at -0.0602 and
       -0.0608 on the raw features and §6 at -0.0404 and -0.0286 on
-      z-scores). Cost: `kalman` +85% per row; a 10% re-anchoring
+      z-scores; after task 211, -0.0581 and -0.0849 raw, -0.0395 and
+      -0.0489 on z-scores). Cost: `kalman` +85% per row; a 10% re-anchoring
       measured (141 against 195 ns in a replica), not shipped.
 - [x] 207. **The insensitivity band and `c` in noise units, measured**
       (§19 G3 and G5, decided 2026-10-08). On task 206's code: sweep the
@@ -8613,7 +8614,7 @@ tick, and that the series holding it up has a count near 1.
     CI reports the essentials' duration, so a slow test that creeps into
     the tier is seen. `CLAUDE.md`'s Commands, `docs/TESTING.md` and the
     gate's own header say which tier runs where.
-- [ ] 211. **Kalman, from its review of 2026-10-08** -- the user: "Review
+- [x] 211. **Kalman, from its review of 2026-10-08** -- the user: "Review
       kalman. What should we do", "Be sure to review from a theoretical
       perspective as well", then "Your reco" on all six recommendations.
       A read-only review with a bit-exact Rust replica (scratchpad
@@ -8638,7 +8639,36 @@ tick, and that the series holding it up has a count near 1.
       on the first usable row, no warm-up for kalman; the anchored exact
       filter; `share_p`'s reports per target; the docs; and the rule-9
       contract test comparing predictions for every model. *Worker
-      `task211-kalman`.*
+      `task211-kalman`.* *Done 2026-10-08* (schema 49): (1) each covariance keeps
+      the clock since it last took an informative row and is charged
+      `Q·D²` for all of it then -- rule 9's probe 0.197 to 2.1e-15, the
+      doubled-stream embargo equal to the native one where no gap is capped
+      (0.28 to 1.8e-15), a sparse target forgetting on its clock (166 / 270
+      / 462 to 70 / 75 / 100 clock units at n = 4 / 10 / 25); (2) each
+      coefficient's prior sized once its feature's scale is usable, from the
+      mean squared innovation over at least three rows (`PRIOR_ROWS`, so the
+      intercept never sizes on one χ²₁ innovation), and kalman follows the
+      moments from its first row, with no warm-up: short histories 0.72 to
+      0.95, a level of 1e8 0.87 to 2.3e-8; (3) the anchored exact filter,
+      with a **two-sided drift** (the review's `|a - 1|` never re-mapped a
+      shrinking scale: 8e9 noise std apart on a feature shrinking 3% a
+      row), exact to 1.3e-12 (2e-11 at `q = 0`, where two per-row
+      implementations differ by 4.7e-12), 277 to 221 ns a row at k = 10;
+      (4) `share_p`'s `se_coef` and `pred_var` per target (calibration
+      0.019 / 1.93 to 0.983 / 0.975); (5) the docs. Every kalman golden
+      re-pinned against `kalman_ref` rewritten from the docstring (to
+      1.8e-15); `seqtest_compare`'s keys moved with kalman's residuals.
+      VALIDATION after the merge: kalman `y0` -0.0602 to -0.0581, `y1`
+      -0.0608 to -0.0849. **Found, for the user**: the rule-9 contract test,
+      now comparing predictions for every model, exempts by name three
+      more models that break the rule -- `ftrl` (1.9%: its penalty scale
+      reads a clock that runs only on teaching rows), `hmm` (1.2e-5: it
+      reads its posterior before its own decay), `ewridge` with
+      `solve_every > 0` (1.8e-4 until the next solve: a clock-due solve
+      fires on the zero-weight row); a reverting slot's gap noise `q·D²` is
+      unbounded across a run of nulls where per-row charging settled at
+      `q/(1 - φ²)`; and, pre-existing, a target at the input bound among
+      the first rows leaves `P` indefinite for good.
 - [x] 212. **The validation run, the per-standard-deviation recipe, and
       `po.ewm_std`** (the same review, items 1 and 5). The pre-206 kalman
       was a filter on z-scored features (to 1e-14); task 206 made it per
@@ -11694,10 +11724,12 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   and ran `kalman` at a coefficient half-life of 200 beside the others' 500.
   Under each target's embargo (one spec holding both waits 5 rows) and
   matched memory, VALIDATION §4's shared `P` is the better of the two on
-  both targets: `y0` −0.0102 against −0.0173, `y1` −0.0590 against −0.0608.
-  The default is not revisited there; the kalman review of 2026-10-08 (T8)
+  both targets: `y0` −0.0102 against −0.0173, `y1` −0.0590 against −0.0608
+  (after task 211: −0.0138 against −0.0157, −0.0725 against −0.0849). The
+  default is not revisited there; the kalman review of 2026-10-08 (T8)
   measured `share_p`'s `se_coef` off by 0.019 and 1.93 against a calibrated
-  1, where one `P` per target gives 0.98 and 0.98.
+  1, where one `P` per target gives 0.98 and 0.98 -- fixed by task 211
+  (0.983 and 0.975), so the default is a question for the user.
 - Solve-schedule sweeps really are free: 6 schedules over 14k rows in 0.06s,
   because they share one accumulator.
 - `tests/data.py` now downloads N days (`public_intraday(dates)`), cached per

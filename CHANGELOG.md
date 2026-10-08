@@ -269,7 +269,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 48,
+- **Every saved bank must be refit.** A bank file now carries schema 49,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -294,9 +294,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
   `huber` and `quantile` keep per target (task 116). Schema 46 keeps the
   readiness notices' wait (task 208). Schema 47 adds the standardized
   models' warm-up count and holds `sgd`'s and `pa`'s coefficients in the
-  caller's units after it (task 206). Schema 48, the one a bank file now
-  carries, is a `with_windows` state's version 9 (task 212: the variance
-  operators). It refuses 47 and older, and so do the models' own states.
+  caller's units after it (task 206). Schema 48 is a `with_windows`
+  state's version 9 (task 212: the variance operators). Schema 49, the one
+  a bank file now carries, adds `kalman`'s
+  anchor and the clock since each covariance last observed its target
+  (task 211). It refuses 48 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -983,6 +985,10 @@ The output names task 144 renamed:
 
 ### Performance
 
+- **A standardizing `kalman` holds its state at an anchor and re-maps it
+  only when the moments drift past a factor of 2 in scale or one scale in
+  mean** (task 211): the same filter to rounding, 277 to 221 ns a row at
+  ten features.
 - **`kalman` with `standardize` costs about +85% per row** (task 206: the
   exact re-map through each move of the scaler; 142 to 270 ns at k = 10).
   A re-map only past a 10% move was measured at 141 against the exact
@@ -1047,6 +1053,24 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`kalman` keeps hard rule 9: a zero-weight or null-target row inside a
+  clock gap no longer moves later predictions** (task 211). The process
+  noise `Q·d²` was charged per row, and a square is not additive over a
+  split gap, so such a row shrank the gap's noise (0.197 at a
+  `coef_half_life` of 20). Each covariance now keeps the clock since it
+  last took a row that observed its target, and is charged for all of it
+  then. `po.stream.embargo`'s doubled stream equals the native embargo
+  where no gap is capped, and a target seen on one row in 25 forgets on
+  its clock like a dense one (100 clock units, where it took 462).
+- **A standardizing `kalman` sizes each coefficient's prior once its
+  feature's scale is usable**, from the mean squared innovation over at
+  least three rows, and follows the moments from its first row with no
+  warm-up (task 211). The prior was sized on row 0 against empty moments
+  from one squared innovation: short histories' R² goes from 0.72 to
+  0.95, and a feature level of 1e8 no longer moves a prediction.
+- **Under `share_p`, `kalman`'s `se_coef` and `pred_var` read each
+  target's own noise** (task 211); they read the mean, 7.3 times too wide
+  for a quiet target.
 - **Under `share_p`, `kalman`'s shared noise is the mean residual variance
   over the targets that have one** (task 208, A1). A target with none yet
   counted as a noise of 0: a copy null for its first 300 rows moved its
