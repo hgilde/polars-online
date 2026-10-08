@@ -879,7 +879,11 @@ as `po.eval` and `po.gram` do. `po.sim`'s frames also rest on NumPy's
 
 **Each stable part is pinned by a section of `tests/api_surface.txt`,
 except the exit status, which a test holds.** A change to one is a diff in
-that section ([the mechanism](#s--the-mechanism-one-api-snapshot-test--done)):
+that section ([the mechanism](#s--the-mechanism-one-api-snapshot-test--done)).
+An unstable name that stands in a section -- `po.sim`, `po.corr`,
+`ArrowStruct`, `fit_predict_arrow` and `predict_arrow` -- is pinned with the
+label `# unstable` on its line, so the snapshot says which of its lines
+carry no promise (review round 5, E7):
 
 | stable part | pinned by |
 |---|---|

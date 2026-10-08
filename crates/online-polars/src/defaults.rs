@@ -10,7 +10,7 @@
 //! every kind, so a default that moves is a diff there (review 2026-10-06,
 //! AP1, YA1, TB1, DB4).
 
-use online_core::{ClockCfg, SessionGap, WindowBudget};
+use online_core::{ClockCfg, OnClockReset, SessionGap, WindowBudget};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
@@ -165,12 +165,19 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
     Value::Object(s)
 }
 
-/// The clock policy a spec resolves to ([`Spec::clock_cfg`]).
+/// The clock policy a spec resolves to ([`Spec::clock_cfg`]), under the
+/// names a spec spells: `restart_after_step_back` is the one knob that sets
+/// the core's `on_clock_reset` and `min_backwards_jump` together (task
+/// 144), so it is rendered as the spec gives it -- `null` unset, else its
+/// value -- rather than as the two core fields, whose names no spec takes
+/// (review round 5, C5).
 fn clock(c: &ClockCfg) -> Result<Value, String> {
     Ok(json!({
         "gap_cap": number(c.gap_cap),
-        "min_backwards_jump": number(c.min_backwards_jump),
-        "on_clock_reset": serde_json::to_value(c.on_clock_reset).map_err(|e| e.to_string())?,
+        "restart_after_step_back": match c.on_clock_reset {
+            OnClockReset::Error => Value::Null,
+            OnClockReset::ResetState => number(c.min_backwards_jump),
+        },
         "session_gap": match c.session_gap {
             None => Value::Null,
             Some(SessionGap::Gap(g)) => number(g),

@@ -221,14 +221,16 @@ fn the_ridge_keeps_its_count_floor_in_the_model_and_gates_at_zero() {
 
 /// The clock policy as task 120 decided it: without a clock, a row is one
 /// step with no cap and every step back is refused; given, each setting is
-/// what the spec says.
+/// what the spec says, under the name the spec spells it by --
+/// `restart_after_step_back`, null unset, since task 144 folded the core's
+/// `on_clock_reset` and `min_backwards_jump` into it (review round 5, C5:
+/// the snapshot pinned the two core names, which no spec takes).
 #[test]
 fn the_clock_policy_resolves_as_task_120_decided() {
     let r = resolved_with("", "type = \"ewridge\"");
     assert_eq!(
         r["clock"],
-        json!({"gap_cap": "inf", "min_backwards_jump": 0.0, "on_clock_reset": "error",
-               "session_gap": null})
+        json!({"gap_cap": "inf", "restart_after_step_back": null, "session_gap": null})
     );
     let clocked = "clock = \"t\"\ngap_cap = 5.0\nrestart_after_step_back = 2.0\nsession = \"s\"";
     let r = resolved_with(
@@ -237,14 +239,19 @@ fn the_clock_policy_resolves_as_task_120_decided() {
     );
     assert_eq!(
         r["clock"],
-        json!({"gap_cap": 5.0, "min_backwards_jump": 2.0, "on_clock_reset": "reset_state",
-               "session_gap": 3.0})
+        json!({"gap_cap": 5.0, "restart_after_step_back": 2.0, "session_gap": 3.0})
     );
     let r = resolved_with(
         &format!("{clocked}\nsession_gap = \"reset\""),
         "type = \"ewridge\"",
     );
     assert_eq!(r["clock"]["session_gap"], "reset");
+    // 0 restarts at every step back, and reads as the 0 it is, not as unset.
+    let r = resolved_with(
+        "clock = \"t\"\ngap_cap = 5.0\nrestart_after_step_back = 0.0",
+        "type = \"ewridge\"",
+    );
+    assert_eq!(r["clock"]["restart_after_step_back"], 0.0);
 }
 
 /// A window refuses past 256 MiB where its spec names no budget

@@ -3,12 +3,11 @@
 //! struct layout.
 
 use online_core::{ClockCfg, Decay, ExactCaps, OnClockReset, SessionGap, TargetGaps};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
 use crate::span::{Span, SpanList};
 use crate::targets::Targets;
-use crate::windows::Closed;
 
 fn default_true() -> bool {
     true
@@ -662,21 +661,58 @@ pub enum RidgeScale {
     Sum,
 }
 
-/// A windowed model's `closed` is the window operators' ([`Closed`]),
-/// Polars' name and values (`rolling_*_by(closed=)`; docs/PLAN.md task 196,
-/// N17): which edge of the window holds the row exactly `window_size` old.
-/// `Right`, the default, keeps the rows less than `window_size` old -- a row
-/// exactly that old has left, as it has in the window operators and in
-/// `rolling_*_by` -- and `Both` keeps it too. `Left` and `None` leave out
-/// the row the window ends at, which a model cannot do: it reads its fit
-/// after it has learned that row. They are read, so that the refusal can
-/// say so ([`Spec::validate`]), and never reach a model: this is `None` for
-/// them.
-fn model_edge(closed: Closed) -> Option<online_core::WindowClosed> {
+/// A windowed model's `closed`: the window operators' name and two of its
+/// values (`crate::windows::Closed`, Polars' `rolling_*_by(closed=)`;
+/// docs/PLAN.md task 196, N17), which edge of the window holds the row
+/// exactly `window_size` old. `Right`, the default, keeps the rows less
+/// than `window_size` old -- a row exactly that old has left, as it has in
+/// the window operators and in `rolling_*_by` -- and `Both` keeps it too.
+/// Polars' `"left"` and `"none"` leave out the row the window ends at,
+/// which a model cannot do: it reads its fit after it has learned that row.
+/// The two are refused with that reason as the spec is read, and any other
+/// word with the two this takes, so the words the parameter takes are the
+/// words it accepts (review round 5, E2: the API snapshot pinned all four).
+/// Written as `Closed` writes the same two, so a state file does not move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelClosed {
+    #[default]
+    Right,
+    Both,
+}
+
+impl<'de> Deserialize<'de> for ModelClosed {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = ModelClosed;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("`right` or `both`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ModelClosed, E> {
+                match v {
+                    "right" => Ok(ModelClosed::Right),
+                    "both" => Ok(ModelClosed::Both),
+                    "left" | "none" => Err(E::custom(format!(
+                        "closed = \"{v}\" leaves out the current row, the one the window ends \
+                         at; a model reads its fit after it has learned that row, so its window \
+                         always holds it: give \"right\" (the default) or \"both\""
+                    ))),
+                    _ => Err(E::unknown_variant(v, &["right", "both"])),
+                }
+            }
+        }
+        d.deserialize_str(V)
+    }
+}
+
+/// The edge a windowed model's ring keeps for its `closed`.
+fn model_edge(closed: ModelClosed) -> online_core::WindowClosed {
     match closed {
-        Closed::Right => Some(online_core::WindowClosed::Right),
-        Closed::Both => Some(online_core::WindowClosed::Both),
-        Closed::Left | Closed::Neither => None,
+        ModelClosed::Right => online_core::WindowClosed::Right,
+        ModelClosed::Both => online_core::WindowClosed::Both,
     }
 }
 
@@ -757,7 +793,7 @@ pub enum ModelKind {
         /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
         /// default, or `"both"`, which needs `window_size`.
         #[serde(default)]
-        closed: Closed,
+        closed: ModelClosed,
         /// Clock units between the snapshots the window is computed from, as
         /// `solve_every` is between solves: a number of the clock column's
         /// units, or a duration on a temporal clock, `0` every row
@@ -807,7 +843,7 @@ pub enum ModelKind {
         /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
         /// default, or `"both"`, which needs `window_size`.
         #[serde(default)]
-        closed: Closed,
+        closed: ModelClosed,
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
@@ -964,7 +1000,7 @@ pub enum ModelKind {
         /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
         /// default, or `"both"`, which needs `window_size`.
         #[serde(default)]
-        closed: Closed,
+        closed: ModelClosed,
         /// Clock units between the snapshots the window is computed from, as
         /// for `EwRidge`, `0` every row (docs/PLAN.md task 162). Every row,
         /// the default, is the tightest boundary; a coarser cadence divides
@@ -1228,7 +1264,7 @@ pub enum ModelKind {
         /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
         /// default, or `"both"`, which needs `window_size`.
         #[serde(default)]
-        closed: Closed,
+        closed: ModelClosed,
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
@@ -1367,7 +1403,7 @@ pub enum ModelKind {
         /// `closed` ([`Closed`], docs/PLAN.md task 196): `"right"`, the
         /// default, or `"both"`, which needs `window_size`.
         #[serde(default)]
-        closed: Closed,
+        closed: ModelClosed,
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
@@ -1838,7 +1874,7 @@ impl ModelKind {
 
     /// A windowed kind's `closed`, as the spec gives it; `None` for a kind
     /// with no window (docs/PLAN.md task 196, N17).
-    pub fn window_closed(&self) -> Option<Closed> {
+    pub fn window_closed(&self) -> Option<ModelClosed> {
         match self {
             ModelKind::EwRidge { closed, .. }
             | ModelKind::Lasso { closed, .. }
@@ -1851,12 +1887,10 @@ impl ModelKind {
 
     /// The edge a windowed model's ring keeps ([`online_core::WindowClosed`]):
     /// the spec's `closed`, `Right` by default and for a kind with no window,
-    /// which ignores it. A `closed` a model refuses never gets here
-    /// ([`Spec::validate`]).
+    /// which ignores it. A `closed` a model refuses never gets here: it is
+    /// refused as the spec is read ([`ModelClosed`]).
     pub fn window_edge(&self) -> online_core::WindowClosed {
-        self.window_closed()
-            .and_then(model_edge)
-            .unwrap_or_default()
+        self.window_closed().map(model_edge).unwrap_or_default()
     }
 
     /// Every `max_rows_between_*` the model takes, as given, beside the
@@ -3709,27 +3743,19 @@ impl Spec {
         }
         // The window's edge, Polars' `closed` (docs/PLAN.md task 196, N17):
         // of its four values the two that leave out the window's last row
-        // cannot apply, and `"both"` with no window is a key that does
+        // cannot apply, and are refused as the spec is read
+        // ([`ModelClosed`]); `"both"` with no window is a key that does
         // nothing (review S10's rule).
         if let (Some((window, _)), Some(closed)) =
             (self.model.window_parts(), self.model.window_closed())
+            && closed == ModelClosed::Both
+            && window.is_none()
         {
-            if model_edge(closed).is_none() {
-                return Err(format!(
-                    "spec {:?}: closed = \"{}\" leaves out the current row, the one the window \
-                     ends at; a model reads its fit after it has learned that row, so its window \
-                     always holds it: give \"right\" (the default) or \"both\"",
-                    self.name,
-                    closed.name()
-                ));
-            }
-            if closed == Closed::Both && window.is_none() {
-                return Err(format!(
-                    "spec {:?}: closed needs `window_size` (it says which edge holds a row \
-                     exactly one window old)",
-                    self.name
-                ));
-            }
+            return Err(format!(
+                "spec {:?}: closed needs `window_size` (it says which edge holds a row \
+                 exactly one window old)",
+                self.name
+            ));
         }
         // A row cap of no rows is no schedule, in every `max_rows_between_*`,
         // as `max_rows_between_coefs`'s is since task 178; the clock form's

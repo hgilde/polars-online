@@ -1,7 +1,7 @@
 # polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
 
 [package]  # a function with its signature, keyword names and defaults included
-  ArrowStruct
+  ArrowStruct  # unstable
   ConsumedSourceWarning
   FormulaTarget
   ModelBank
@@ -11,7 +11,7 @@
   Target
   UnstableWarning
   __version__
-  corr
+  corr  # unstable
   eval
   ewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   ewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
@@ -26,7 +26,7 @@
   rewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   rewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   schema_version()
-  sim
+  sim  # unstable
   spec
   stream
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
@@ -373,8 +373,7 @@
   chunk_size = 100000
   shared by every kind below:
     clock.gap_cap = "inf"
-    clock.min_backwards_jump = 0.0
-    clock.on_clock_reset = "error"
+    clock.restart_after_step_back = null
     clock.session_gap = null
     stream.average_eta = 1.0
     stream.conformal_rate = 0.05
@@ -718,7 +717,7 @@
   drop_groups(self, keys: 'Iterable[str | None]', spec: 'str | int | None' = None) -> 'int'
   fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'None'
   fit_predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
-  fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'
+  fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'  # unstable
   fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
   gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'list[dict[str, Any]]'
   groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
@@ -728,7 +727,7 @@
   marginal(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   output_fields(self) -> 'dict[str, list[str]]'
   predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
-  predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'
+  predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'  # unstable
   rows_fed(self) -> 'int'
   rows_seen(self) -> 'NoReturn'
   save(self, path: 'str | Path') -> 'None'
@@ -905,7 +904,7 @@
     lag_comoments
 
 [helper modules]  # po.<module>.<function> with its signature, keyword names and defaults
-  corr:
+  corr:  # unstable
     Z_CLIP
     absorption(r: 'Any', k: 'int') -> 'float'
     absorption_shift(ar_fast: 'Any', ar_slow: 'Any', *, scale: 'float | None' = None) -> 'Any'
@@ -957,7 +956,7 @@
     rewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
     rewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
     rewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  sim:
+  sim:  # unstable
     regimes(m: 'int', *, states: 'Sequence[Any]', transition: 'Any', n_blocks: 'int', rows_per_block: 'int', durations: 'Sequence[int] | None' = None, design: 'str' = 'step', smooth_rows: 'int' = 0, phi: 'float | Sequence[float]' = 0.0, scale_state: 'float | Sequence[float]' = 0.0, async_rates: 'Sequence[float] | None' = None, noise: 'float' = 0.0, cycle_profile: 'Sequence[float] | None' = None, cycle_rows: 'int | None' = None, activity: 'tuple[float, float] | None' = None, seed: 'int' = 0) -> 'dict[str, pl.DataFrame]'
   stream:
     ROLE
@@ -1674,11 +1673,11 @@
   corrchange.kind: monitor, sequential, window
   corrchange.norm: l1, linf
   deco.dynamics: ew, linear
-  ew_class.closed: both, left, none, right
-  ew_cov.closed: both, left, none, right
-  ewridge.closed: both, left, none, right
-  lasso.closed: both, left, none, right
-  marginal.closed: both, left, none, right
+  ew_class.closed: both, right
+  ew_cov.closed: both, right
+  ewridge.closed: both, right
+  lasso.closed: both, right
+  marginal.closed: both, right
   ew_class.covariance: diagonal, full, shared
   ew_class.window_budget: refuse, thin
   ew_cov.stats: corr, cov, lag_corr, mahal, mean, partial_corr, std, var

@@ -37,6 +37,7 @@ import pkgutil
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import polars as pl
@@ -76,6 +77,18 @@ def signature_of(obj: object) -> str:
         return ""
 
 
+#: The names the policy calls unstable (docs/RELEASE-READINESS.md, "Keeping
+#: the API stable"): the Arrow export and the two helper modules beside the
+#: bank. Each is pinned with the label, so the snapshot says which of its
+#: lines carry no promise (review round 5, E7); `tests/test_unstable.py`
+#: holds each to its docstring label and to `UnstableWarning`.
+UNSTABLE = {"ArrowStruct", "corr", "sim", "fit_predict_arrow", "predict_arrow"}
+
+
+def unstable_label(name: str) -> str:
+    return "  # unstable" if name in UNSTABLE else ""
+
+
 def describe_api(cli: Path | None = None) -> str:
     """The snapshot's text. `cli` is the `online` executable (the
     `online_cli` fixture): its configuration's own keys, its flags and the
@@ -89,7 +102,7 @@ def describe_api(cli: Path | None = None) -> str:
 
     w("[package]  # a function with its signature, keyword names and defaults included")
     for name in sorted(po.__all__):
-        w(f"  {name}{signature_of(getattr(po, name))}")
+        w(f"  {name}{signature_of(getattr(po, name))}{unstable_label(name)}")
     w(f"  schema_version = {po.schema_version()}")
     w("")
 
@@ -128,7 +141,7 @@ def describe_api(cli: Path | None = None) -> str:
                 sig = str(inspect.signature(obj)) if callable(obj) else ""
             except (TypeError, ValueError):
                 sig = ""
-            w(f"  {name}{sig}")
+            w(f"  {name}{sig}{unstable_label(name)}")
     w("")
 
     w("[frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame")
@@ -145,7 +158,7 @@ def describe_api(cli: Path | None = None) -> str:
 
     w("[helper modules]  # po.<module>.<function> with its signature, keyword names and defaults")
     for mod in helper_modules():
-        w(f"  {mod}:")
+        w(f"  {mod}:{unstable_label(mod)}")
         module = importlib.import_module(f"polars_online.{mod}")
         for name in sorted(module.__all__):
             w(f"    {name}{signature_of(getattr(module, name))}")
@@ -513,12 +526,26 @@ def frame_columns_section() -> list[str]:
 BOGUS = "zz_bogus"
 
 #: (owner.parameter, builder, keywords the builder needs for the parameter to
-#: be read, where the word goes): every string-valued spec parameter, probed
-#: at the bank's own door (`validate_spec`, which a TOML spec meets too). The
-#: shape is a word, a list of words, or a table's key.
-ENUM_PROBES: list[tuple[str, str, dict[str, object], str, str]] = [
-    ("spec.drift_action", "ewridge", {}, "drift_action", "word"),
-    ("spec.group_close", "rcov", {}, "group_close", "word"),
+#: be read, where the word goes, the shape, and for a word that needs a
+#: companion the others do not, those keywords by word): every string-valued
+#: spec parameter, probed at the bank's own door (`validate_spec`, which a
+#: TOML spec meets too). The shape is a word, a list of words, or a table's
+#: key. Each word must be taken under its keywords (`taken_words`).
+ENUM_PROBES: list[
+    tuple[str, str, dict[str, object], str, str, *tuple[dict[str, dict[str, object]], ...]]
+] = [
+    ("spec.drift_action", "ewridge", {"emit_drift": True}, "drift_action", "word"),
+    # `"session"` closes on a session column, which needs its clock and gap,
+    # and stands in for `session_gap`, which the builder needs beside a
+    # session otherwise: dropped for that word alone.
+    (
+        "spec.group_close",
+        "rcov",
+        {"clock": "t", "gap_cap": 10.0, "session": "s", "session_gap": 1.0},
+        "group_close",
+        "word",
+        {"session": {"session_gap": None}},
+    ),
     (
         "spec.session_gap",
         "ewridge",
@@ -530,9 +557,18 @@ ENUM_PROBES: list[tuple[str, str, dict[str, object], str, str]] = [
     ("corrchange.alpha_adjust", "corrchange", {}, "model.alpha_adjust", "word"),
     ("corrchange.kind", "corrchange", {}, "model.kind", "word"),
     ("corrchange.norm", "corrchange", {"kind": "window"}, "model.norm", "word"),
-    ("deco.dynamics", "deco", {}, "model.dynamics", "word"),
-    # A windowed model's `closed` (docs/PLAN.md task 196): Polars' four words,
-    # `"left"` and `"none"` refused by name with their reason.
+    # `"linear"` needs both of its coefficients.
+    (
+        "deco.dynamics",
+        "deco",
+        {},
+        "model.dynamics",
+        "word",
+        {"linear": {"alpha": 0.05, "beta": 0.9}},
+    ),
+    # A windowed model's `closed` (docs/PLAN.md task 196): two of Polars' four
+    # words; `"left"` and `"none"` are refused by name with their reason, and
+    # are not taken (review round 5, E2).
     ("ew_class.closed", "ew_class", {"window_size": 100.0}, "model.closed", "word"),
     ("ew_cov.closed", "ew_cov", {"window_size": 100.0}, "model.closed", "word"),
     ("ewridge.closed", "ewridge", {"window_size": 100.0}, "model.closed", "word"),
@@ -540,7 +576,8 @@ ENUM_PROBES: list[tuple[str, str, dict[str, object], str, str]] = [
     ("marginal.closed", "marginal", {"window_size": 100.0}, "model.closed", "word"),
     ("ew_class.covariance", "ew_class", {}, "model.covariance", "word"),
     ("ew_class.window_budget", "ew_class", {"window_size": 100.0}, "model.window_budget", "key"),
-    ("ew_cov.stats", "ew_cov", {}, "model.stats", "list"),
+    # `mahal` and `partial_corr` need the prior, `lag_corr` the lags.
+    ("ew_cov.stats", "ew_cov", {"precision_prior": 1e-6, "lags": [1]}, "model.stats", "list"),
     ("ew_cov.window_budget", "ew_cov", {"window_size": 100.0}, "model.window_budget", "key"),
     ("ewridge.ridge_scale", "ewridge", {}, "model.ridge_scale", "word"),
     ("ewridge.target_gaps", "ewridge", {}, "model.target_gaps", "word"),
@@ -559,7 +596,8 @@ ENUM_PROBES: list[tuple[str, str, dict[str, object], str, str]] = [
     ("pa.mode", "pa", {}, "model.mode", "word"),
     ("rcov.kernel", "rcov", {}, "model.kernel", "word"),
     ("rcov.kind", "rcov", {}, "model.kind", "word"),
-    ("sgd.loss", "sgd", {}, "model.loss", "word"),
+    # `"quantile"` needs its level.
+    ("sgd.loss", "sgd", {}, "model.loss", "word", {"quantile": {"quantile": 0.5}}),
     ("sgd.schedule", "sgd", {}, "model.schedule", "word"),
 ]
 
@@ -582,14 +620,19 @@ def words_in(message: str, parameter: str) -> list[str]:
     return words
 
 
-def _spec_refusal(spec: dict, path: str, value: object) -> str:
-    """What the bank's door says to `spec` with `value` at `path`; empty when
-    it takes it. The spec is renamed to a name that cannot read as a word, as
-    a refusal's `spec "<name>":` prefix would otherwise."""
+def _spec_refusal(
+    spec: dict, path: str, value: object, beside: dict[str, object] | None = None
+) -> str:
+    """What the bank's door says to `spec` with `value` at `path`, and the
+    keys of `beside` next to it (`None` unsets one); empty when it takes it.
+    The spec is renamed to a name that cannot read as a word, as a refusal's
+    `spec "<name>":` prefix would otherwise."""
     raw = json.loads(_spec._json(spec))
     raw["name"] = "Probe"
     where = raw["model"] if path.startswith("model.") else raw
     where[path.removeprefix("model.")] = value
+    for key, v in (beside or {}).items():
+        where[key] = v
     try:
         native.validate_spec(json.dumps(raw))
     except ValueError as e:
@@ -603,8 +646,10 @@ def _shaped(word: str, shape: str) -> object:
 
 def taken_words(label: str, refuse) -> list[str]:
     """The words a parameter takes: those its refusal of `BOGUS` names, each
-    checked to be taken -- refused, if at all, for another reason than the
-    word, which is refused with `BOGUS`'s message."""
+    checked to be taken. A word refused for any reason is not taken: the
+    windowed models' `closed` once named Polars' four words and refused two
+    of them with a reason of its own, and the snapshot pinned all four
+    (review round 5, E2)."""
     parameter = label.rsplit(".", 1)[-1]
     template = refuse(BOGUS)
     assert template, f"{label}: {BOGUS!r} was taken"
@@ -612,7 +657,7 @@ def taken_words(label: str, refuse) -> list[str]:
     assert words, f"{label}: no words read from {template!r}"
     for word in words:
         said = refuse(word)
-        assert said != template.replace(BOGUS, word), f"{label}: {word!r} is refused: {said}"
+        assert not said, f"{label}: {word!r} is refused: {said}"
     return words
 
 
@@ -621,11 +666,14 @@ def enum_values_section(cli: Path | None) -> list[str]:
         "[enum values]  # the words each string-valued parameter takes, read from its refusal"
         " of one it does not: a word added, renamed or dropped is a diff here"
     ]
-    for label, name, needs, path, shape in ENUM_PROBES:
+    for label, name, needs, path, shape, *per_word in ENUM_PROBES:
         spec, _ = _registry_spec(name, needs)
-        words = taken_words(
-            label, lambda word, s=spec, p=path, sh=shape: _spec_refusal(s, p, _shaped(word, sh))
-        )
+        beside: dict[str, dict[str, object]] = per_word[0] if per_word else {}
+
+        def refuse(word: str, s=spec, p=path, sh=shape, beside=beside) -> str:
+            return _spec_refusal(s, p, _shaped(word, sh), beside.get(word))
+
+        words = taken_words(label, refuse)
         out.append(f"  {label}: {', '.join(sorted(words))}")
 
     def python_refusal(fn, kw: dict[str, object], key: str):
@@ -656,13 +704,13 @@ def enum_values_section(cli: Path | None) -> list[str]:
         for key in ("input_format", "output_format"):
 
             def toml_refusal(word: str, key: str = key) -> str:
-                return _cli_refusal(cli, f'{key} = "{word}"\n')
+                return _format_refusal(cli, key, word)
 
             out.append(f"  toml.{key}: {', '.join(sorted(taken_words(key, toml_refusal)))}")
         for flag in ("--input-format", "--output-format"):
 
             def flag_refusal(word: str, flag: str = flag) -> str:
-                return _cli_refusal(cli, "", [flag, word])
+                return _format_refusal(cli, flag, word)
 
             words = taken_words(flag.lstrip("-").replace("-", "_"), flag_refusal)
             out.append(f"  cli {flag}: {', '.join(sorted(words))}")
@@ -686,6 +734,51 @@ def _cli_refusal(cli: Path, config: str, args: list[str] | None = None) -> str:
             check=False,
         )
     return "" if res.returncode == 0 else res.stderr
+
+
+#: How a frame is written in each format the runner reads, for the probe
+#: below to hand the dry run an input it can read the schema of.
+_WRITERS: dict[str, Callable[[pl.DataFrame, Path], None]] = {
+    "parquet": lambda df, p: df.write_parquet(p),
+    "ipc": lambda df, p: df.write_ipc(p),
+    "csv": lambda df, p: df.write_csv(p),
+    "ndjson": lambda df, p: df.write_ndjson(p),
+}
+
+
+def _format_refusal(cli: Path, where: str, word: str) -> str:
+    """What `online --dry-run` says to a complete config whose format, under
+    the TOML key or the flag `where`, is `word`; empty when it takes it. A
+    word is taken when the dry run exits 0, as `taken_words` requires
+    (review round 5, E2): a config with no specs was refused for every word
+    alike, which said nothing about the word. The input is written in the
+    probed format where that is the input's, so the dry run can read its
+    schema. A word with no writer here gets a parquet input: the door
+    refuses a word it does not take before the file is read, and a word it
+    takes that this test cannot write fails at the read, naming it."""
+    flag = where.startswith("--")
+    fmt = word if "input" in where else "parquet"
+    write = _WRITERS.get(fmt, _WRITERS["parquet"])
+    with tempfile.TemporaryDirectory() as tmp:
+        inp = Path(tmp) / f"in.{fmt}"
+        write(pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]}), inp)
+        config = (
+            f"input = {json.dumps(str(inp))}\n"
+            f"output = {json.dumps(str(Path(tmp) / 'out.parquet'))}\n"
+            + ("" if flag else f'{where} = "{word}"\n')
+            + '[[specs]]\nname = "m"\ntargets = ["y"]\nfeatures = ["x"]\nhalf_life = 10.0\n'
+            '[specs.model]\ntype = "ewridge"\n'
+        )
+        path = Path(tmp) / "bank.toml"
+        path.write_text(config, encoding="utf-8")
+        res = subprocess.run(
+            [str(cli), "--config", str(path), "--dry-run", *([where, word] if flag else [])],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    return "" if res.returncode == 0 else res.stderr or res.stdout
 
 
 def keys_in(message: str) -> list[str]:
