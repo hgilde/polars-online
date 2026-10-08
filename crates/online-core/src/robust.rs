@@ -119,7 +119,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
@@ -441,7 +441,7 @@ impl std::ops::DerefMut for RowBuf {
 /// every few rows, so it waits for a `coef` row, the summary, a save or the
 /// end of the run, as `ewridge`'s does (task 140). The arithmetic is the
 /// same whenever it runs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PendingShares {
     factor: SpdFactor,
     /// The ridge plus the jitter the factor needed.
@@ -449,16 +449,29 @@ struct PendingShares {
     /// Per kept column, in the factor's order, the coefficient slot its
     /// share goes to.
     to: Vec<usize>,
-    /// The shares before any column's ([`Robust::dropped_shares`]).
-    base: Vec<f64>,
+    /// The coefficients a target has, and whether the first is an
+    /// intercept.
+    k: usize,
+    intercept: bool,
     shares: OnceLock<Vec<f64>>,
 }
 
 impl PendingShares {
+    /// The shares before any column's: NaN in the intercept's slot, which
+    /// is not a share, and 0 elsewhere, a column the solve dropped having
+    /// none of the data's.
+    fn fill_base(out: &mut [f64], intercept: bool) {
+        out.fill(0.0);
+        if intercept && let Some(first) = out.first_mut() {
+            *first = f64::NAN;
+        }
+    }
+
     /// `1 − λ (A⁻¹)_jj` for each kept column, in its slot (the module doc).
     fn shares(&self) -> &[f64] {
         self.shares.get_or_init(|| {
-            let mut out = self.base.clone();
+            let mut out = vec![0.0; self.k];
+            Self::fill_base(&mut out, self.intercept);
             let inv = self.factor.inverse_diagonal(self.to.len());
             for (&slot, inv) in self.to.iter().zip(inv) {
                 out[slot] = (1.0 - self.lam * inv).clamp(0.0, 1.0);
@@ -475,24 +488,25 @@ impl PendingShares {
 #[derive(Debug, Clone, Default)]
 struct Shares {
     stored: Vec<Vec<f64>>,
-    pending: Vec<Option<Arc<PendingShares>>>,
+    pending: Vec<Option<PendingShares>>,
 }
 
 impl Shares {
-    /// `n` targets no solve has fit: NaN everywhere, nothing pending.
-    fn unfit(n: usize, k: usize) -> Self {
-        Self {
-            stored: vec![vec![f64::NAN; k]; n],
-            pending: vec![None; n],
+    /// `n` targets of `k` coefficients: NaN, no fit, for a target the
+    /// table had no room for -- all of them before the first solve.
+    fn shape(&mut self, n: usize, k: usize) {
+        if self.stored.len() != n || self.stored.iter().any(|v| v.len() != k) {
+            self.stored = vec![vec![f64::NAN; k]; n];
+        }
+        if self.pending.len() != n {
+            self.pending = vec![None; n];
         }
     }
 
-    /// Target `j`'s shares as `prev` holds them, a pending solve's included.
-    fn keep(&mut self, prev: &Shares, j: usize) {
-        if let Some(v) = prev.stored.get(j) {
-            self.stored[j].clone_from(v);
-        }
-        self.pending[j] = prev.pending.get(j).cloned().flatten();
+    /// Target `j` has no fit, so no shares: NaN.
+    fn unfit(&mut self, j: usize) {
+        self.stored[j].fill(f64::NAN);
+        self.pending[j] = None;
     }
 
     /// Every target's shares, a pending solve's taken.
@@ -721,13 +735,17 @@ impl Robust {
         // weight that underflows to 0 forgets as one just short of it does
         // (docs/PLAN.md task 115 (c)), where it took zeros too.
         let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets];
-        let mut support = Shares::unfit(self.cfg.n_targets, k);
+        // The data shares move in place, target by target, as the fit does:
+        // a target this solve skips has none, one it fits the solve's, one
+        // whose solve fails keeps its own.
+        self.support.shape(self.cfg.n_targets, k);
         for j in 0..self.cfg.n_targets {
             let fit_before = self
                 .beta
                 .as_ref()
                 .is_some_and(|b| !b[j].iter().any(|v| v.is_nan()));
             if self.wj[j] <= 0.0 && !fit_before {
+                self.support.unfit(j);
                 continue;
             }
             // `None` is a solve that failed at every jitter: counted, and the
@@ -741,10 +759,15 @@ impl Robust {
             match solved {
                 Some((sol, shares)) => {
                     beta[j] = sol;
-                    support.pending[j] = shares.map(Arc::new);
-                    if support.pending[j].is_none() {
-                        // No column kept: nothing to invert, every slope 0.
-                        support.stored[j] = self.dropped_shares(k);
+                    match shares {
+                        Some(p) => self.support.pending[j] = Some(p),
+                        None => {
+                            // No column kept: nothing to invert, every
+                            // slope 0.
+                            self.support.pending[j] = None;
+                            let intercept = self.cfg.fit_intercept;
+                            PendingShares::fill_base(&mut self.support.stored[j], intercept);
+                        }
                     }
                 }
                 None => {
@@ -753,12 +776,10 @@ impl Robust {
                         beta[j] = prev[j].clone();
                     }
                     // The previous fit is kept, and its shares with it.
-                    support.keep(&self.support, j);
                 }
             }
         }
         self.beta = Some(Fit(beta));
-        self.support = support;
         self.since_solve.restart();
         self.rows_since_solve = 0;
         self.weight_since_solve = 0.0;
@@ -794,8 +815,9 @@ impl Robust {
             for (i2, &i) in keep.iter().enumerate() {
                 out[i + 1] = sol[i2] / s[i];
             }
-            shares = Some(self.pending_shares(&f, keep.iter().map(|&i| i + 1).collect(), k));
-            factor = Some(f);
+            let (pending, kept) = self.pending_shares(f, keep.iter().map(|&i| i + 1).collect(), k);
+            shares = Some(pending);
+            factor = kept;
         }
         let cov = &self.cov[j];
         let mut b0 = self.ybar[j];
@@ -811,26 +833,27 @@ impl Robust {
     /// The data shares of the system `f` factorizes, to be taken when
     /// something reads them ([`PendingShares`]): `λ` the ridge plus the
     /// jitter the factor needed, since that is what it carries, and the
-    /// coefficient slot each kept column's share goes to.
-    fn pending_shares(&self, f: &SpdFactor, to: Vec<usize>, k: usize) -> PendingShares {
-        PendingShares {
-            factor: f.clone(),
-            lam: self.cfg.ridge + f.jitter(),
+    /// coefficient slot each kept column's share goes to. The factor moves
+    /// into them; a quantile fit, whose nudges read it as well
+    /// ([`BandSystem`]), gets a copy back, and a Huber fit, which keeps no
+    /// band system, none -- a copy a solve it would only have dropped.
+    fn pending_shares(
+        &self,
+        f: SpdFactor,
+        to: Vec<usize>,
+        k: usize,
+    ) -> (PendingShares, Option<SpdFactor>) {
+        let kept = matches!(self.cfg.loss, RobustLoss::Quantile { .. }).then(|| f.clone());
+        let lam = self.cfg.ridge + f.jitter();
+        let pending = PendingShares {
+            factor: f,
+            lam,
             to,
-            base: self.dropped_shares(k),
+            k,
+            intercept: self.cfg.fit_intercept,
             shares: OnceLock::new(),
-        }
-    }
-
-    /// The shares before any column's: NaN in the intercept's slot, which
-    /// is not a share, and 0 elsewhere, a column the solve dropped having
-    /// none of the data's.
-    fn dropped_shares(&self, k: usize) -> Vec<f64> {
-        let mut base = vec![0.0; k];
-        if self.cfg.fit_intercept {
-            base[0] = f64::NAN;
-        }
-        base
+        };
+        (pending, kept)
     }
 
     /// Take the data shares of every solve nothing has read yet, and drop
@@ -1147,8 +1170,9 @@ impl Robust {
             for (i2, &i) in keep.iter().enumerate() {
                 out[i] = sol[i2] / s[i];
             }
-            shares = Some(self.pending_shares(&f, keep.clone(), k));
-            factor = Some(f);
+            let (pending, kept) = self.pending_shares(f, keep.clone(), k);
+            shares = Some(pending);
+            factor = kept;
         }
         self.solve_failures += u64::from(jitter);
         self.keep_band_system(j, BandSystem { factor, keep, s });
