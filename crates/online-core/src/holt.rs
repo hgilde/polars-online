@@ -93,6 +93,14 @@ impl HoltCfg {
         if self.trend_half_life <= 0.0 || self.trend_half_life.is_nan() {
             return Err("holt: trend_half_life must be > 0 (inf forgets no slope)".into());
         }
+        // A NaN `min_weight` is never reached, and a negative one is no
+        // floor; `inf` never predicts, which is legal (review round 5, C6).
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "holt: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
+        }
         Ok(())
     }
 }

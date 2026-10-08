@@ -246,6 +246,13 @@ impl EwRidgeCfg {
                 self.min_weight
             ));
         }
+        // A NaN cadence never comes due on the clock, and left the row cap
+        // alone to schedule the solves, with no word (review round 5, C6).
+        // `<= 0` solves every row and `inf` leaves the cadence to the row
+        // cap on purpose.
+        if self.solve_every.is_nan() {
+            return Err("ewridge: solve_every must not be NaN (<= 0 solves every row)".into());
+        }
         if let Some(w) = self.window {
             if !w.is_finite() || w <= 0.0 {
                 return Err(format!(

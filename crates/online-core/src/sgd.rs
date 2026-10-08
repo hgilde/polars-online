@@ -255,6 +255,16 @@ impl SgdCfg {
         if self.strict_binary && self.loss != SgdLoss::Logistic {
             return Err("sgd: strict_binary applies to the logistic loss only".into());
         }
+        // What the spec layer refuses, refused here too, so the Rust API
+        // and a state file are held to it (review round 5, C6): a NaN
+        // `min_weight` is never reached, and a negative one is no floor.
+        // `inf` never predicts, which is legal.
+        if self.min_weight.is_nan() || self.min_weight < 0.0 {
+            return Err(format!(
+                "sgd: min_weight must be >= 0, got {}",
+                self.min_weight
+            ));
+        }
         Ok(())
     }
 }

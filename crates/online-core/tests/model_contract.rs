@@ -1412,6 +1412,62 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
             }),
             "rls: min_weight must be >= 0, got NaN",
         ),
+        // Review round 5 (C6): a NaN `min_weight` loaded through the Rust
+        // API for the three models that did not check it, and a NaN
+        // `solve_every` for the three that solve on a schedule.
+        (
+            Sgd::new(SgdCfg {
+                min_weight: nan,
+                ..sgd_cfg()
+            })
+            .map(drop),
+            "sgd: min_weight must be >= 0, got NaN",
+        ),
+        (
+            Sgd::new(SgdCfg {
+                min_weight: -1.0,
+                ..sgd_cfg()
+            })
+            .map(drop),
+            "sgd: min_weight must be >= 0, got -1",
+        ),
+        (
+            Holt::new(HoltCfg {
+                min_weight: nan,
+                ..holt_cfg()
+            })
+            .map(drop),
+            "holt: min_weight must be >= 0, got NaN",
+        ),
+        (
+            EwCovModel::new(EwCovCfg {
+                min_weight: nan,
+                ..ew_cov_model_cfg()
+            })
+            .map(drop),
+            "ew_cov: min_weight must be >= 0, got NaN",
+        ),
+        (
+            ewridge(EwRidgeCfg {
+                solve_every: nan,
+                ..ewridge_cfg()
+            }),
+            "ewridge: solve_every must not be NaN",
+        ),
+        (
+            lasso(LassoCfg {
+                solve_every: nan,
+                ..lasso_cfg()
+            }),
+            "lasso: solve_every must not be NaN",
+        ),
+        (
+            robust(RobustCfg {
+                solve_every: nan,
+                ..quantile()
+            }),
+            "quantile: solve_every must not be NaN",
+        ),
         (
             robust(RobustCfg {
                 ridge: nan,
@@ -1547,6 +1603,36 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
             half_life: vec![inf],
             min_weight: inf,
             ..kalman_cfg()
+        }),
+        // An infinite `min_weight` never predicts, and an infinite
+        // `solve_every` leaves the cadence to the row cap: both legal, as
+        // the models above take them (C6).
+        Sgd::new(SgdCfg {
+            min_weight: inf,
+            ..sgd_cfg()
+        })
+        .map(drop),
+        Holt::new(HoltCfg {
+            min_weight: inf,
+            ..holt_cfg()
+        })
+        .map(drop),
+        EwCovModel::new(EwCovCfg {
+            min_weight: inf,
+            ..ew_cov_model_cfg()
+        })
+        .map(drop),
+        ewridge(EwRidgeCfg {
+            solve_every: inf,
+            ..ewridge_cfg()
+        }),
+        lasso(LassoCfg {
+            solve_every: inf,
+            ..lasso_cfg()
+        }),
+        robust(RobustCfg {
+            solve_every: inf,
+            ..huber()
         }),
     ];
     for (i, got) in accepted.into_iter().enumerate() {

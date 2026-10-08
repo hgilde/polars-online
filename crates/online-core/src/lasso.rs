@@ -184,6 +184,11 @@ impl LassoCfg {
                 self.min_weight
             ));
         }
+        // A NaN cadence never comes due on the clock, and left the row cap
+        // alone to schedule the solves, with no word (review round 5, C6).
+        if self.solve_every.is_nan() {
+            return Err("lasso: solve_every must not be NaN (<= 0 solves every row)".into());
+        }
         // No sweep is no descent: every solve a failure, and the output the
         // start of one -- the intercept at the mean, every slope 0 -- that
         // looked like a fit (review 2026-10-05, PB7).
