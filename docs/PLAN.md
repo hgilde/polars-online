@@ -8390,6 +8390,38 @@ tick, and that the series holding it up has a count near 1.
       F5 F6 F8 G2, G1's sentence) plus CLAUDE.md rule 5. The decisions (G1
       G3 G5 A1 B3 C4 D4 F3 F7 F9) are the user's, in §19.
 
+- [ ] 206. **A standardized fit is held in the caller's units; the scaler
+      shapes the step only** (§19 G1, decided 2026-10-08). `sgd`, `pa` and
+      `kalman` persist their coefficients (and `kalman` its `P`) in the
+      caller's units; the step is taken in standardized coordinates and
+      mapped back through the row's affine map, so a prediction never moves
+      because the scaler did. Schema 46. With A1 (`share_p`'s noise over the
+      targets that have one). *Worker `task206-raw-fit`.*
+- [ ] 207. **The insensitivity band and `c` in noise units, measured**
+      (§19 G3 and G5, decided 2026-10-08). On task 206's code: sweep the
+      band rules (the target's spread, the residual's capped by the target's,
+      a start-up cap) under half-lives 50, 500 and none, levels 0 and 1,000,
+      R² from 0.5 to 0.99998, `c` and `mode`, `sgd`'s schedules, k 1 and 5;
+      choose by the criterion stated before the sweep (minimax regret of
+      excess error over the noise, the level trap as a hard floor); build
+      the winner with its default, and `c` as a multiple of the target's
+      spread. *To brief after 206.*
+- [x] 208. **The smaller round-5 decisions** (§19 A1 B3 C4 D4 F3): `share_p`'s
+      noise over targets with one (A1, in 206's branch); `Int128` refused as
+      a clock, read exactly by `po.increment` (B3); the summary's
+      `settled_frac` held-inclusive as the row's (C4); the forwarding
+      promise narrowed to what is built (D4); the "cannot be met" notices
+      reworded and fired a further half-life past 95% settled (F3). *Worker
+      `task208-small`.* *Done 2026-10-08* (B3 C4 D4 F3; A1 rides in task
+      206's branch): the kernel example no longer warns; an `Int128` clock is
+      refused on every surface and its increment exact; the summary reads
+      the next row's `settled_frac`; the forwarding promise names spec
+      parameters (builder keyword, dict key at any depth, `like=`, TOML).
+      Found by the worker, for task 206's integration: F3's wait is held in
+      memory, so a save and load restarts it (persist it in schema 46); a
+      `UInt128` column panics in Polars' frame conversion (refuse by name);
+      a never-present target's notice names a negative ceiling (say it has
+      no values).
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -12585,7 +12617,7 @@ mutants and MSRV workflows; the 1.0 policy's tables against each other.
 | D1 | med | the promise's "re-save byte for byte" cannot hold for a loaded previous schema | stated as conversion to the current schema's bytes (README, RR, rule 5) |
 | F1, F2, G2, A2, A5, A6, B4, E6, F5, F6, F8, D5, D6, C6, C7, A4, D7, E3, E4, F4b | low-med | wording, counts, a NaN cfg through the Rust API, `pow(lam, 1)`, `to_json`'s label, the property's draw, the floor test's mark | as the CHANGELOG says |
 
-**Decisions, the user's (open 2026-10-08):**
+**Decisions, the user's (open 2026-10-08; decided the same day, below the table):**
 
 | id | finding | options | reco |
 |---|---|---|---|
@@ -12600,6 +12632,27 @@ mutants and MSRV workflows; the 1.0 policy's tables against each other.
 | F7, F9 (low) | U7's `stats=[]` exception recorded only in a task note; PERFORMANCE §11 cells rewritten where the rule was a pointer | annotate U7; accept the cells | as stated |
 | D8 (note) | `test_released_state.py` asserts `refused == {}` per release: after 1.0.0 a new kind fails 1.0.0's leg | filter per release on release day | -- |
 | 116-K | the "never met" notice for `kalman`'s per-row gate: `P` settles on `coef_half_life`'s clock and the rows spread 1.02-1.11 around the average 1.07 at `coef_half_life` 50, so a notice tested at ±5% cannot hold (task 116) | judge the best row (`√(1 + 1/(P⁻¹)₀₀/R)` with an intercept), the average row, or stay off; evidence WARMUP §7.11 | stay off until a 1.x user asks |
+
+**Decided 2026-10-08 (the user: "Your reco all").** Every row above as
+recommended:
+- **G1** (option a): the fit is held in the caller's units and the scaler
+  shapes the step only -- task 206 (schema 46).
+- **G3 and G5**: a measured task -- the band in noise units with a start-up
+  cap, swept under decay, levels, `c` and `mode`, `eps·min(σ_resid, σ_y)`
+  at 0.5 the candidate; `c` a multiple of the target's spread -- task 207,
+  built on task 206's code, since the scaler's wobble dominated every
+  decayed measurement before it.
+- **A1** (option a), **B3** (both), **C4** (option a), **D4** (option i),
+  **F3** (as stated) -- task 208 (A1 inside task 206's branch, kalman).
+- **F7**: U7's `stats = []` exception is annotated in §18's U7 row's
+  reading here: U7 holds except `stats = []`, a documented accumulate-only
+  mode the user kept (task 196's note).
+- **F9**: PERFORMANCE §11's rewritten cells are accepted.
+- **116-K**: kalman's "never met" notice stays off.
+- **Ubuntu 26.04** (`ubuntu-latest` moves on 2026-10-19): let it move; the
+  CLI's glibc floor is manylinux2014's, not the runner's.
+- **D8** is a release-day step: filter `test_released_state.py`'s refused
+  kinds per release once 1.0.0 is in `RELEASES`.
 
 The coordinator's own correction, recorded here: the eps review of
 2026-10-07 said "nothing else in the eps chain needs reopening"; G3's

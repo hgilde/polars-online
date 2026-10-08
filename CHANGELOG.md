@@ -191,8 +191,10 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
   at** (task 198; review round 4, D8): `(W − w₁(1 − s))/s`, with `w₁` a
   row's weight and `s` the settled fraction, null on the first row, with no
   decay and under a window. A `ReadinessWarning` says when a `min_weight`
-  can never be met, and the noise gate's notice names the half-life that
-  would open it. The readiness floors are final for 1.0.
+  has gone unmet for a half-life since the stream settled, with the weight
+  the row rate so far implies, and the noise gate's notice names the
+  half-life that would open it (task 208). The readiness floors are final
+  for 1.0.
 - **`max_error_inflation` and `emit_error_inflation` work on `rls` and
   `kalman`, and `max_error_inflation` on `lasso`** (task 116, A;
   WARMUP-AND-CONVERGENCE §5.8). Each is off unless set, and `ewridge`'s
@@ -1004,6 +1006,22 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **The `min_weight` and noise-gate `ReadinessWarning`s no longer tell a
+  stream whose rows then come faster that its floor "cannot be met ... for
+  good"** (task 208; review round 5, F3). The README's own kernel example
+  met its floor on 381 of 400 rows after the notice. Each now fires only
+  after its gate has withheld every row for a further half-life of the
+  learned clock past 95% settled; a row that meets it restarts the wait.
+  The notice says what the row rate so far implies, not what can never
+  happen.
+- **`summary()`'s `settled_frac` counts the clock covered by the rows held
+  under `embargo`, as each row's field does** (task 208, C4), so it reads
+  what the next row will: 0.97632 became 0.98325 at `half_life=10`,
+  `embargo=5`. `weight_sum_settled` is unchanged.
+- **An `Int128` clock is refused by name** by the bank, the command line,
+  `with_windows`, `refresh_time` and `po.stream.embargo` (task 208, B3). It
+  was read as a double and lost its steps of 1 past 2^53. `po.increment`
+  takes an `Int128` input's step in integers, exact past 2^63.
 - **Review round 5 (2026-10-08): the changes since round 4, read by seven
   reviewers** (PLAN §19). The fixes with a plain shape:
   - Under `embargo` the two "cannot be met" readiness notices read how far
