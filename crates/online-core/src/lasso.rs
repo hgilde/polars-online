@@ -1310,6 +1310,65 @@ mod tests {
         assert!((aged[1][1] + 2.0).abs() < 0.05, "{aged:?}");
     }
 
+    /// Under a window, `error_inflation` reads Kish's size of the rows
+    /// inside it (the module doc; docs/PLAN.md task 218), as `ewridge`'s
+    /// does: the rows less than one window old (at most one window old
+    /// under `closed = "both"`), weighted `2^(-age / half_life)`, `(Σ w)² /
+    /// Σ w²`, beside the active count of each path point's fit. The steps
+    /// are sums of quarters, so every age is exact.
+    #[test]
+    fn the_windowed_error_inflation_reads_the_rows_inside_the_window() {
+        use crate::OnlineModel;
+        for closed in [crate::WindowClosed::Right, crate::WindowClosed::Both] {
+            let (half_life, window) = (30.0, 80.0);
+            let mut c = cfg(1, 1, vec![0.05, 0.0]);
+            c.decay = Decay::Halflife(half_life);
+            c.window = Some(window);
+            c.max_rows_between_snapshots = Some(1);
+            c.min_weight = 0.0;
+            let mut m = Lasso::new(c).unwrap();
+            m.set_window_closed(closed);
+            let inside = |age: f64| match closed {
+                crate::WindowClosed::Right => age < window,
+                crate::WindowClosed::Both => age <= window,
+            };
+            let mut s = 31u64;
+            let (mut t, mut clock, mut out, mut checked) = (Vec::new(), 0.0, Vec::new(), 0);
+            for i in 0..150 {
+                let d = if i == 0 {
+                    0.0
+                } else {
+                    0.25 * (2.0 + (lcg(&mut s).abs() * 8.0).floor())
+                };
+                clock += d;
+                let x = [4.0 * lcg(&mut s)];
+                m.step(&x, &[Some(1.0 + 3.0 * x[0] + 0.5 * lcg(&mut s))], d, 1.0);
+                t.push(clock);
+                if i < 20 {
+                    continue;
+                }
+                let (ws, wq) = t
+                    .iter()
+                    .filter(|&&tr| inside(clock - tr))
+                    .map(|tr| (-((clock - tr) / half_life)).exp2())
+                    .fold((0.0, 0.0), |(a, b), w| (a + w, b + w * w));
+                let n_kish = ws * ws / wq;
+                assert!(m.error_inflation_into(&mut out));
+                for (li, b) in m.coefficients().unwrap()[0].iter().enumerate() {
+                    let df = 1 + b[1..].iter().filter(|v| **v != 0.0).count();
+                    let want = (1.0 + df as f64 / n_kish).sqrt();
+                    assert!(
+                        (out[li] - want).abs() <= 1e-9 * want,
+                        "{closed:?}, row {i}, point {li}: {} against {want}, n_kish {n_kish}",
+                        out[li]
+                    );
+                    checked += 1;
+                }
+            }
+            assert_eq!(checked, 2 * 130, "{closed:?}");
+        }
+    }
+
     /// A history the decay leaves in the subnormal range of the row it
     /// meets is forgotten, as one the decay takes to exactly 0 is
     /// (docs/PLAN.md task 215). One half-life short of the underflow,
