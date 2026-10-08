@@ -260,7 +260,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 46,
+- **Every saved bank must be refit.** A bank file now carries schema 47,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -282,9 +282,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
   renamed counts (196); an integer clock held as one (200, windows state
   8); relative targets removed (201); and the target's own spread (202).
   Schema 45 adds `rls`'s second weight sum `s₂` and the data shares
-  `huber` and `quantile` keep per target (task 116). Schema 46, the one a
-  bank file now carries, keeps the readiness notices' wait (task 208). It
-  refuses 45 and older, and so do the models' own states.
+  `huber` and `quantile` keep per target (task 116). Schema 46 keeps the
+  readiness notices' wait (task 208). Schema 47, the one a bank file now
+  carries, adds the standardized models' warm-up count and holds `sgd`'s
+  and `pa`'s coefficients in the caller's units after it (task 206). It
+  refuses 46 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -598,6 +600,29 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **A standardized `sgd`, `pa` or `kalman` fit no longer moves because its
+  scaler did** (task 206; review round 5, G1). Under a finite half-life the
+  EW moments wander, and a fit held in standardized coordinates and read
+  through them moved its predictions with them: at R² 0.99998 and a
+  half-life of 50, `sgd` paid 237 noise variances of excess error where an
+  unstandardized fit paid 0.010; at a half-life of 10 it reported a slope
+  of 3.03 for a truth of 2. Each now runs as before for its first 22 rows
+  (Kish's count of the rows its scaler has learned; the bits are 0.13's),
+  then `sgd` and `pa` hold their coefficients in the caller's units, each
+  step still formed in standardized coordinates, and `kalman` re-maps its
+  coefficients and covariance exactly through every move of the scaler. A
+  re-map a row of data cannot make -- a scale moving by more than 1,024
+  times in one row, or a mean by more than 1,024 of its scale -- is refused
+  whole, as a non-finite update is. G1's worst cell goes from 1.8e5 times
+  the unstandardized error to 1.05; short histories are unchanged; a ×10
+  change of a feature's scale goes from 7.5e4 noise variances to 0.12.
+  Holding the fit in the caller's units from the first row was built
+  first and wrecked short histories (R² at rows 25-50 of 200-row groups
+  from 0.43 to -207), which is why the warm-up exists. On
+  `docs/VALIDATION.md`'s real BTCUSDT data `kalman` reads lower (R²
+  -0.109 to -0.123 and -0.005 to -0.059): reading the fit through the
+  moving moments had shrunk its coefficients in volatility bursts, which
+  on those near-noise targets happened to help. Schema 47.
 - The windowed models' `closed` is a two-word type: `left` and `none` are
   refused with their reason as the spec is read, where `validate` refused
   them a step later (review 5, E2). `resolved_defaults` renders the clock
@@ -948,6 +973,11 @@ The output names task 144 renamed:
 
 ### Performance
 
+- **`kalman` with `standardize` costs about +85% per row** (task 206: the
+  exact re-map through each move of the scaler; 142 to 270 ns at k = 10).
+  A re-map only past a 10% move was measured at 141 against the exact
+  195 ns in a replica, within 0.046 of a noise std of it, and not shipped.
+  `sgd` and `pa` are 2-3% faster after the warm-up.
 - **The core checks every value a model is handed** (task 183; *Fixed*
   says what it buys). The inlined check costs `sgd` and `pa` 6-16% of a
   core `step`, 1.4 to 4.5 ns a row, and `kalman` 3-6%. Through the bank,

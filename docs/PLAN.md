@@ -8390,7 +8390,7 @@ tick, and that the series holding it up has a count near 1.
       F5 F6 F8 G2, G1's sentence) plus CLAUDE.md rule 5. The decisions (G1
       G3 G5 A1 B3 C4 D4 F3 F7 F9) are the user's, in §19.
 
-- [ ] 206. **A standardized fit is held in the caller's units after a
+- [x] 206. **A standardized fit is held in the caller's units after a
       warm-up; the scaler shapes the step** (§19 G1, decided 2026-10-08,
       revised the same day). *First build stopped* (worker
       `task206-raw-fit`): holding the fit in the caller's units from row 0
@@ -8418,7 +8418,27 @@ tick, and that the series holding it up has a count near 1.
       coordinates, re-mapped exactly each row (`β' = Aβ`, `P' = A P Aᵀ`),
       +78% per row at k = 10 (120 to 213 ns); a cheaper re-anchoring is
       measured in the task. The user, 2026-10-08: "Go". Schema bump. *Worker
-      `task206b`.*
+      `task206b`.* *Done 2026-10-08* (`ca60d9b`, merged over task 208's
+      schema 46 as 47): `warmup.rs` (`WARMUP_ROWS = 22`, Kish's undecayed
+      count, persisted); the first 22 rows are 0.13's to the bit; `kalman`
+      re-maps through the compensated mean pair. One addition the code
+      needed, accepted by the coordinator: a re-map past `REMAP_LIMIT =
+      1024` (a scale by more than 1,024 times in one row, a mean by more
+      than 1,024 of its scale) is refused whole, as a non-finite update is
+      (`kalman_recovers_from_bounded_extremes`: at the input bound the exact
+      re-map left a slope's variance at -3.6e149). Measured: G1's worst
+      ratio 1.8e5 to 1.05; `sgd` at half-life 10 [0.83, 3.03] to [0.025,
+      2.018]; a ×10 scale change 7.5e4 to 0.118; short histories, mixed
+      scales and save/load at the switch unchanged or better. Moved:
+      `GOLDEN_SGD`, `GOLDEN_KALMAN`, `GOLDEN_KALMAN_REVERT`, 27 golden
+      pipeline keys (each replica to 1e-14 or better), three
+      `SWITCHED_GOLDEN` values without a replica (`po.stream.embargo`'s
+      doubled stream already parts from the native embargo for `kalman` at
+      row 25, before the switch: a pre-existing gap, to look at);
+      `docs/VALIDATION.md`'s real-data `kalman` rows lower (R² -0.109 to
+      -0.123, -0.005 to -0.059: the old readout's accidental shrinkage in
+      volatility bursts). Cost: `kalman` +85% per row; a 10% re-anchoring
+      measured (141 against 195 ns in a replica), not shipped.
 - [ ] 207. **The insensitivity band and `c` in noise units, measured**
       (§19 G3 and G5, decided 2026-10-08). On task 206's code: sweep the
       band rules (the target's spread, the residual's capped by the target's,
