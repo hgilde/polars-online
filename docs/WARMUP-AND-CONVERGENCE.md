@@ -317,7 +317,12 @@ Python as `ReadinessWarning` and printed on stderr by the command line,
   a clock column keeps any spec from knowing in advance -- so the floor
   withholds every prediction for good. The message names the ceiling
   (`weight_sum_settled`) and the fix: a lower `min_weight` or a longer
-  half-life. On every model, since every model has the floor.
+  half-life. On every model, since every model has the floor. Under
+  `embargo` both notices read how far the rows the model has learned from
+  have settled, the clock its weight has covered, as `weight_sum_settled`
+  does; paired with the row's fraction, which counts the held rows' clock
+  too (§8), the ceiling read negative before anything was learned, and a
+  floor the stream then met was called unreachable (review round 5, C1).
 
 Only report, never warn, when output appears but is degraded (a user who
 raised `max_error_inflation` asked for it): a short half-life can be

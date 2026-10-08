@@ -2403,8 +2403,10 @@ pub struct Readiness {
 }
 
 /// Where the noise gate's notice reads the stream: the gate's largest ratio,
-/// its limit, the settled fraction, the weight before the row and the row's
-/// own (docs/PLAN.md task 198, D8).
+/// its limit, the fraction the learned rows have settled -- the rows held
+/// under an embargo left out, as the weight has them (review round 5, C1)
+/// -- the weight before the row and the row's own (docs/PLAN.md task 198,
+/// D8).
 struct Unmet {
     worst: f64,
     max: f64,
@@ -4870,6 +4872,15 @@ fn run_instance(
         // 140); `summary` reads the exact one.
         let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
         let settled = settled_frac(inst.decay, *inst.decay_time + held);
+        // The two "cannot be met" notices below read the learned rows'
+        // clock alone, as `Stream::readiness` does: the weight they
+        // project a ceiling from has neither decayed by nor accumulated
+        // the held rows, so paired with the row's fraction it read as
+        // settled before anything was learned, and the ceiling came out
+        // negative -- a floor the stream then met, after a notice that it
+        // never would (review round 5, C1). The gate and the row's field
+        // keep the fraction above, the held rows' clock counted (§8).
+        let learned = settled_frac(inst.decay, *inst.decay_time);
         let max_infl = inst.spec.max_error_inflation_or_default();
         let has_infl = inst
             .model
@@ -4942,9 +4953,9 @@ fn run_instance(
         // gate's is, with the way out (docs/PLAN.md task 198, D8).
         if let Some((tj, weight)) = short
             && !inst.notified.unreachable
-            && settled >= 0.95
+            && learned >= 0.95
         {
-            let ceiling = settled_weight(weight, w, settled);
+            let ceiling = settled_weight(weight, w, learned);
             let floor = min_weight.get(tj).copied().unwrap_or(f64::NAN);
             if ceiling < floor {
                 inst.notified.unreachable = true;
@@ -4959,7 +4970,7 @@ fn run_instance(
                      at its rows' spacing d and weight, so every prediction is withheld for \
                      good. Lower min_weight below {ceiling:.4}, or raise the half_life \
                      (docs/WARMUP-AND-CONVERGENCE.md).",
-                    100.0 * settled
+                    100.0 * learned
                 ));
             }
         }
@@ -4982,11 +4993,11 @@ fn run_instance(
         // The noise gate cannot be met: the stream has all but settled and
         // the ratio is still above the threshold, so nothing will change
         // it. Said once per instance, with the way out (§3).
-        let unmet = (reason == REASON_INFLATION && !inst.notified.unreachable && settled >= 0.95)
+        let unmet = (reason == REASON_INFLATION && !inst.notified.unreachable && learned >= 0.95)
             .then(|| Unmet {
                 worst: sc.infl.iter().cloned().fold(0.0, f64::max),
                 max: max_infl,
-                settled,
+                settled: learned,
                 weight: step.n_eff,
                 row_weight: w,
             })
@@ -5004,7 +5015,7 @@ fn run_instance(
                      half_lives of rows; {figure} so it can carry the {k} coefficients, or \
                      raise max_error_inflation to at least {worst:.3} to accept this much \
                      estimation noise (docs/WARMUP-AND-CONVERGENCE.md).",
-                    100.0 * settled
+                    100.0 * learned
                 )
             } else {
                 // Infinite: the model has not solved, its weight short of the
@@ -5016,8 +5027,8 @@ fn run_instance(
                      error_inflation stays infinite and every prediction is withheld for good. \
                      {}{} so it can carry the {k} coefficients \
                      (docs/WARMUP-AND-CONVERGENCE.md).",
-                    100.0 * settled,
-                    settled_weight(step.n_eff, w, settled),
+                    100.0 * learned,
+                    settled_weight(step.n_eff, w, learned),
                     solve_floor(inst.spec),
                     figure[..1].to_uppercase(),
                     &figure[1..]

@@ -610,6 +610,45 @@ class TestSettledWeight:
             out = po.ModelBank([s]).fit_predict(frame(200))
         assert field(out, "pred_y")[-1] is not None
 
+    @pytest.mark.parametrize("kind", ["ewridge", "sgd"])
+    def test_under_an_embargo_a_reachable_min_weight_does_not_warn(self, kind):
+        """Review round 5 (C1): the row's ``settled_frac`` counts the clock
+        the held rows have covered (§8), and the notice paired it with a
+        weight that had neither decayed by nor accumulated those rows, so
+        the ceiling read negative before anything was learned, and a floor
+        of 3 was said to be unreachable at row 9 -- then 374 of 400 rows
+        were predicted. The notices read the learned rows' clock, the one
+        the weight has settled on, as ``weight_sum_settled`` does: at a
+        half-life of 2 the ceiling is 3.4142, above the floor, so no notice,
+        and the predictions arrive once the held rows are released. The
+        row's field keeps counting the held rows."""
+        n, h, embargo = 400, 2.0, 20.0
+        ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / h))
+        kw: dict = dict(
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            gap_cap=1e9,
+            half_life=h,
+            min_weight=3.0,
+            embargo=embargo,
+        )
+        if kind == "sgd":
+            kw["learning_rate"] = 0.01
+        bank = po.ModelBank([getattr(po.spec, kind)("m", **kw)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            out = bank.fit_predict(frame(n))
+        preds = field(out, "pred_y")
+        # Row i releases rows 0..i-20, and the floor needs seven of them:
+        # (1 - lam^7)/(1 - lam) is 3.11 at lam = 2^(-1/2), where six give 2.99.
+        assert first_present(preds) == 26, first_present(preds)
+        assert preds.tail(n - 30).null_count() == 0
+        assert bank.summary("m")["weight_sum_settled"][0] == pytest.approx(ceiling, rel=1e-12)
+        # The field counts the held rows' clock too (§8): before row 10 the
+        # stream has covered 9 clock units, none of them learned yet.
+        assert field(out, "settled_frac")[10] == pytest.approx(1.0 - 2.0 ** (-9.0 / h))
+
     @pytest.mark.parametrize(
         ("k", "h", "limit"),
         [

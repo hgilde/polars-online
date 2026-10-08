@@ -276,6 +276,10 @@ class ReadinessWarning(UserWarning):
       advance. The message names the ceiling (``weight_sum_settled`` in
       :meth:`ModelBank.summary`), and the way out.
 
+    Under ``embargo`` both notices read how far the rows the model has
+    learned from have settled, the clock its weight has covered; the row's
+    ``settled_frac`` counts the held rows' clock too.
+
     Every row already carries the state (``withheld_reason``, ``settled_frac``,
     ``support_coef``); the warning is the once-only pointer to it. For a spec
     where the finding is intended,
