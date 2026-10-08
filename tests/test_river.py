@@ -47,14 +47,17 @@ class TestFtrlRecursion:
     ALPHA, BETA, L1, L2 = 0.1, 1.0, 0.0, 1.0
 
     def _data(self, n=400, seed=1, level=0.0):
-        """With the features at ``level``: the labels read the features
-        about 0, the model the features as they come (task 209 (c))."""
+        """With the features at ``level``, or at a level running from +1,000
+        to -1,000 across the rows (``"crossing"``): the labels read the
+        features about 0, the model the features as they come (task 209 (c)
+        and (d))."""
         rng = np.random.default_rng(seed)
         x0 = rng.standard_normal(n)
         x1 = rng.standard_normal(n)
         p = _sigmoid(1.5 * x0 - 0.5 * x1)
         y = (rng.random(n) < p).astype(float)
-        return pl.DataFrame({"x0": x0 + level, "x1": x1 + level, "y0": y})
+        at = np.linspace(1000.0, -1000.0, n) if level == "crossing" else level
+        return pl.DataFrame({"x0": x0 + at, "x1": x1 + at, "y0": y})
 
     def _ours(self, df, **kw):
         spec = po.spec.ftrl(
@@ -73,12 +76,13 @@ class TestFtrlRecursion:
         )
         return po.ModelBank([spec]).fit_predict(df)
 
-    @pytest.mark.parametrize("level", [0.0, 1e3, -1e3])
+    @pytest.mark.parametrize("level", [0.0, 1e3, -1e3, "crossing"])
     @pytest.mark.parametrize("l1", [0.0, 0.5])
     def test_weights_match_river_given_the_same_gradients(self, l1, level):
         """At feature levels of each sign too (docs/PLAN.md task 209 (c)):
         ``ftrl`` does not standardize, so a level reaches its recursion as it
-        reaches river's."""
+        reaches river's; and at a level running from +1,000 to -1,000 across
+        the rows (task 209 (d))."""
         # `try/finally` so a failure in the `l1 = 0.5` case cannot leave the
         # class attribute set for the two other tests that read `self.L1`
         # (review 2026-09-18, minor).
@@ -99,6 +103,16 @@ class TestFtrlRecursion:
                 prev = coef[t - 1] if t > 0 else np.zeros(2)
                 p = _sigmoid(x[t] @ prev)
                 g = {"x0": (p - y[t]) * x[t, 0], "x1": (p - y[t]) * x[t, 1]}
+                # McMahan et al.'s Algorithm 1 sets a weight whose |z| is at
+                # most l1 to 0. River's `_step_with_dict` recomputes only the
+                # weights past it and leaves the rest at their last value
+                # (river 0.26, `optim/ftrl.py`), which z then reads in its
+                # update. A crossing reaches such a row: at row 155, l1 =
+                # 0.5, x1's z was under 0.5 with a weight it had last had
+                # past it, and river's z took that weight where 0 belonged
+                # (3.5e-4 of the weight after it). Handed the paper's zero,
+                # its z and n are ours (task 209 (d)).
+                w = {k: 0.0 if abs(opt.z[k]) <= l1 else v for k, v in w.items()}
                 # river recomputes w from z (i.e. `prev`) and then advances z.
                 w = opt._step_with_dict(w, g)
                 max_diff = max(max_diff, np.max(np.abs(np.array([w["x0"], w["x1"]]) - prev)))

@@ -33,6 +33,22 @@ import polars_online as po
 
 TIER = "essential"
 
+#: A level that crosses zero (docs/PLAN.md task 209 (d)): the oracle tests
+#: that take a ``level`` take this too, a level running from +1,000 to
+#: -1,000 in equal steps over the rows.
+CROSSING = "crossing"
+
+
+def _level(level: float | str, n: int) -> Any:
+    """``level`` itself, or ``CROSSING``'s levels over ``n`` rows."""
+    return np.linspace(1000.0, -1000.0, n) if level == CROSSING else level
+
+
+def _magnitude(level: float | str) -> float:
+    """``1 +`` the largest ``|level|``: what an absolute tolerance scales by,
+    the numbers carrying the level's rounding."""
+    return 1001.0 if level == CROSSING else 1.0 + abs(float(level))
+
 
 def _window(
     ages: np.ndarray, half_life: float, window: float | None
@@ -1341,14 +1357,23 @@ class TestHoltAcrossAMissingObservation:
     SETTLED = 1000
 
     @staticmethod
-    def series(n: int) -> np.ndarray:
+    def series(n: int, drift: float | str = 0.0) -> np.ndarray:
+        """A rising trend, or with ``drift`` its walk about a level running
+        from +1,000 to -1,000 (`CROSSING`)."""
         rng = np.random.default_rng(5)
-        return 3.0 + 0.4 * np.arange(n) + np.cumsum(rng.normal(0.0, 0.5, n))
+        rising = 3.0 + 0.4 * np.arange(n) + np.cumsum(rng.normal(0.0, 0.5, n))
+        return rising if drift == 0.0 else _level(drift, n) + rising - 0.4 * np.arange(n)
 
-    def test_the_recursion_is_statsmodels_holt(self):
+    @pytest.mark.parametrize("drift", [0.0, CROSSING])
+    def test_the_recursion_is_statsmodels_holt(self, drift):
+        """And on a series that falls through zero from +1,000 to -1,000,
+        200 rows after the gains have settled (docs/PLAN.md task 209 (d))."""
         import statsmodels.tsa.holtwinters as holtwinters
 
-        y = self.series(self.SETTLED + 200)
+        n = self.SETTLED + (1400 if drift == CROSSING else 200)
+        y = self.series(n, drift)
+        if drift == CROSSING:
+            assert y[self.SETTLED :].min() < 0 < y[self.SETTLED :].max(), "the case: it crosses"
         pred, level, trend = _holt(y, self.H_LEVEL, self.H_TREND)
         res = holtwinters.Holt(
             y, initialization_method="known", initial_level=y[0], initial_trend=0.0
@@ -1361,7 +1386,9 @@ class TestHoltAcrossAMissingObservation:
         # The first rows part by design: a weighted mean's first gains are
         # larger than the fixed ones, so it follows the series sooner.
         assert not np.allclose(pred[1:50], fitted[1:50], rtol=1e-6)
-        np.testing.assert_allclose(pred[self.SETTLED :], fitted[self.SETTLED :], rtol=1e-12)
+        settled = slice(self.SETTLED, None)
+        atol = 1e-12 * _magnitude(drift)
+        np.testing.assert_allclose(pred[settled], fitted[settled], rtol=1e-12, atol=atol)
         assert level == pytest.approx(res.level[-1], rel=1e-12)
         assert trend == pytest.approx(res.trend[-1], rel=1e-12)
 
@@ -1705,20 +1732,21 @@ class TestAStandardizedKalmanIsFilterpy:
         Z, F, _, usable = _standardizer_moves(t, x, w, half_life)
         return Z, F, usable
 
-    @pytest.mark.parametrize("level", [0.0, 1e3, -1e3])
+    @pytest.mark.parametrize("level", [0.0, 1e3, -1e3, CROSSING])
     @pytest.mark.parametrize("how", ["null", "zero weight"])
     def test_the_filter_is_filterpy_on_the_standardized_rows(self, how, level):
         """At a target level of ±1,000 too (docs/PLAN.md task 209 (c)): the
         intercept travels there from its prior at 0, on the noise the
         filter learns from innovations the level makes a thousand times
-        the noise's."""
+        the noise's; and at a level running from +1,000 to -1,000 across the
+        rows, through zero (task 209 (d))."""
         import filterpy.kalman as kalman
 
         rng = np.random.default_rng(43)
         n, half_life, coef_hl = 300, 30.0, 50.0
         raw = rng.normal(0.0, 1.0, (n, 2))
         drift = np.arange(n) / n
-        y = level + 0.5 + (1.5 - drift) * raw[:, 0] + (-0.8 + 2.0 * drift) * raw[:, 1]
+        y = _level(level, n) + 0.5 + (1.5 - drift) * raw[:, 0] + (-0.8 + 2.0 * drift) * raw[:, 1]
         y = y + rng.normal(0.0, 0.3, n)
         # Features at levels and scales of their own, so standardizing matters.
         x = raw * np.array([5.0, 0.2]) + np.array([3.0, -40.0])
@@ -1758,7 +1786,7 @@ class TestAStandardizedKalmanIsFilterpy:
         want = TestKalmanZeroWeightRow.filterpy_pred(
             kalman, t, Z, y_seen, w, half_life, coef_hl, F, usable
         )
-        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12 * _magnitude(level))
         # Without the change of coordinates filterpy is the filter read
         # through the moments as they stood, which this one no longer is.
         stale = TestKalmanZeroWeightRow.filterpy_pred(
@@ -2555,15 +2583,16 @@ class TestPassiveAggressiveIsRivers:
     the two are held at ``eps = 0``, which is no tube in either; and ours on
     the raw features, as river reads them."""
 
-    @pytest.mark.parametrize("level", [0.0, -1e3])
+    @pytest.mark.parametrize("level", [0.0, -1e3, CROSSING])
     @pytest.mark.parametrize(("mode", "river_mode"), [("pa", 0), ("pa1", 1), ("pa2", 2)])
     def test_every_row_is_rivers_without_an_intercept(self, mode, river_mode, level):
         """At a level of -1,000 too, both features and the target all
         negative (docs/PLAN.md task 209 (b)), where the numbers are a
-        thousand times larger and agree to 1e-12 of them."""
+        thousand times larger and agree to 1e-12 of them; and at a level
+        running from +1,000 to -1,000 across the rows (task 209 (d))."""
         rng = np.random.default_rng(11)
         n, c, eps = 500, 0.3, 0.0
-        x = rng.normal(level, 1.0, (n, 2))
+        x = rng.normal(0.0, 1.0, (n, 2)) + np.reshape(_level(level, n), (-1, 1))
         y = 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.3, n)
         spec = po.spec.pa(
             "m",
@@ -2586,7 +2615,7 @@ class TestPassiveAggressiveIsRivers:
         for i in range(n):
             row = {"x0": x[i, 0], "x1": x[i, 1]}
             # The prediction the row is scored with, then the fit it leaves.
-            scale = 1.0 + abs(level)
+            scale = _magnitude(level)
             want_p = river.predict_one(row)
             assert pred[i] == pytest.approx(want_p, abs=1e-12 * scale), (mode, i)
             river.learn_one(row, y[i])
@@ -3863,20 +3892,25 @@ class TestSgdIsScikitLearnsSgd:
         [
             ("squared", 0.0),
             ("squared", -1e3),
+            ("squared", CROSSING),
             ("epsilon_insensitive", 0.0),
             ("epsilon_insensitive", -1e3),
+            ("epsilon_insensitive", CROSSING),
             ("logistic", 0.0),
         ],
     )
     def test_every_row_is_scikit_learns(self, loss, weighted, level):
         """A regression's target at a level of -1,000 too, every one below
-        zero (docs/PLAN.md task 209 (c)), with the gradient's clip lifted:
-        scikit-learn has none, and the first residuals are the level. The
-        logistic loss's target is a label, 0 or 1, with no level to take."""
+        zero (docs/PLAN.md task 209 (c)), and at a level running from +1,000
+        to -1,000 across the rows (task 209 (d)), with the gradient's clip
+        lifted: scikit-learn has none, and the first residuals are the level.
+        The logistic loss's target is a label, 0 or 1, with no level to
+        take."""
         from sklearn.linear_model import SGDClassifier, SGDRegressor
 
-        frame = self.rows().with_columns(pl.col("y") + level)
-        if level:
+        frame = self.rows()
+        frame = frame.with_columns(pl.col("y") + _level(level, frame.height))
+        if level == -1e3:
             assert (frame["y"] < 0).all(), "the case: every target below zero"
         sk: dict[str, Any] = dict(
             penalty=None, learning_rate="constant", eta0=self.LR, shuffle=False
@@ -3893,7 +3927,7 @@ class TestSgdIsScikitLearnsSgd:
             got = self.ours(frame, "yb", weighted, loss=loss, learning_rate=self.LR)
             est, target = SGDClassifier(loss="log_loss", **sk), "yb"
         want = self.sklearns(est, frame, target, weighted)
-        np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15)
+        np.testing.assert_allclose(got, want, rtol=self.TOL, atol=1e-15 * _magnitude(level))
 
     def test_inv_scaling_at_unit_weights_is_scikit_learns_invscaling(self):
         from sklearn.linear_model import SGDRegressor
@@ -4017,16 +4051,19 @@ class TestRlsIsPadasips:
 
     TOL = 1e-11
 
+    @pytest.mark.parametrize("level", [0.0, CROSSING])
     @pytest.mark.parametrize(
         ("half_life", "ridge"), [(50.0, 1.0), (200.0, 0.1), (float("inf"), 1.0)]
     )
-    def test_every_row_is_padasips(self, half_life, ridge):
+    def test_every_row_is_padasips(self, half_life, ridge, level):
+        """And with the target's level running from +1,000 to -1,000 across
+        the rows, through zero (docs/PLAN.md task 209 (d))."""
         import padasip
 
         rng = np.random.default_rng(31)
         n = 400
         x = rng.normal(size=(n, 2))
-        y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.3 * rng.normal(size=n)
+        y = _level(level, n) + 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.3 * rng.normal(size=n)
         spec = po.spec.rls(
             "r",
             targets=["y"],
@@ -4045,7 +4082,8 @@ class TestRlsIsPadasips:
             want[i] = rls.predict(z)
             rls.adapt(y[i], z)
         assert np.isnan(got[0]) and np.isfinite(got[1:]).all()
-        np.testing.assert_allclose(got[1:], want[1:], rtol=self.TOL, atol=1e-13)
+        atol = 1e-13 * _magnitude(level)
+        np.testing.assert_allclose(got[1:], want[1:], rtol=self.TOL, atol=atol)
 
 
 def _filterpy_kalman_readiness(
