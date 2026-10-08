@@ -1174,6 +1174,54 @@ fn weight_sum_settled_is_the_ceiling_and_an_unreachable_min_weight_is_named() {
     assert!(notices(0.99 * ceiling).is_empty());
 }
 
+/// Task 208: a target no row has given a value with a positive weight reads
+/// a weight of 0, and the ceiling's projection, `(0 − w₁(1 − s))/s`, made
+/// that a negative ceiling, with advice to lower the floor below it ("tops
+/// out near -0.0256"). Its notice says the target has had no such row, with
+/// no figure: a target never present beside one that is, and a stream whose
+/// every row weighs 0 (which read "tops out near 0.0000"). The present
+/// target meets its floor and is not named.
+#[test]
+fn a_target_with_no_weighted_value_is_named_without_a_ceiling() {
+    let n = 200usize;
+    let df = df!(
+        "x0" => (0..n).map(|i| ((i * 7) % 11) as f64).collect::<Vec<_>>(),
+        "y" => (0..n).map(|i| ((i * 3) % 13) as f64).collect::<Vec<_>>(),
+        "z" => vec![None::<f64>; n],
+        "w" => vec![0.0; n]
+    )
+    .unwrap();
+    for (targets, weight, named) in [
+        (r#"["y", "z"]"#, "", "\"z\""),
+        (r#"["y"]"#, r#", "weight": "w""#, "\"y\""),
+    ] {
+        let spec: Spec = serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": {targets},
+                "features": ["x0"], "half_life": 10.0, "min_weight": 5.0,
+                "max_error_inflation": "inf"{weight}}}"#
+        ))
+        .unwrap();
+        let mut bank = Bank::new(vec![spec]).unwrap();
+        bank.fit_predict(&df).unwrap();
+        let said = bank.take_notices();
+        assert_eq!(said.len(), 1, "{said:?}");
+        let msg = &said[0];
+        assert!(
+            msg.contains("min_weight = 5 has not been met for target")
+                && msg.contains(named)
+                && msg.contains("the target has had no row with a value and a positive weight")
+                && !msg.contains("tops out")
+                && !msg.contains("Lower min_weight"),
+            "{msg}"
+        );
+        let digits: Vec<&str> = msg
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(digits, ["5"], "the floor is the one number: {msg}");
+    }
+}
+
 /// Task 116 (G): a coefficient more ridge than data is named only on a row
 /// the gates let through of a stream at least 95% settled, the rule the
 /// other two notices keep. A duplicated pair under a ridge of 0.5 reads

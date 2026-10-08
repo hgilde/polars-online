@@ -642,6 +642,32 @@ class TestSettledWeight:
         _says_not_met_at_the_rate_so_far(msg)
         assert bank.summary("m")["weight_sum_settled"][0] == pytest.approx(ceiling, rel=1e-12)
 
+    @pytest.mark.parametrize("absent", ["null_target", "zero_weights"])
+    def test_a_target_with_no_weighted_value_is_named_without_a_ceiling(self, absent):
+        """A target no row has given a value reads a weight of 0, which the
+        ceiling's projection turned into a negative one: "tops out near
+        -0.0256 ... Lower min_weight below -0.0256" (task 208's worker, on
+        `test_production_hardening.py`'s all-null target). Its notice says
+        the target has had no row with a value, with no figure and no advice
+        to lower the floor; a stream whose every row weighs 0 is the same
+        case, and read "tops out near 0.0000". The present target ``y`` beside
+        the null one reaches its floor and is not named, and the ordinary
+        unreachable floor keeps its figure (the test above)."""
+        df = frame(300).with_columns(z=pl.lit(None, dtype=pl.Float64), w=pl.lit(0.0))
+        kw: dict = {"targets": ["y", "z"]} if absent == "null_target" else {"weight": "w"}
+        named = '"z"' if absent == "null_target" else '"y"'
+        s = spec(min_weight=5.0, max_error_inflation=math.inf, **kw)
+        fitted = _fit_noting(po.ModelBank([s]), df)
+        assert len(fitted.notices) == 1, fitted.notices
+        msg = fitted.notices[0]
+        assert "min_weight = 5" in msg and named in msg, msg
+        assert "has had no row with a value and a positive weight" in msg, msg
+        assert "tops out" not in msg and "Lower min_weight" not in msg, msg
+        assert re.findall(r"\d+(?:\.\d+)?", msg) == ["5"], msg
+        if absent == "null_target":
+            assert field(fitted.out, "pred_y").null_count() < 30
+            assert field(fitted.out, "pred_z").null_count() == 300
+
     def test_a_row_that_meets_the_floor_restarts_the_wait(self):
         """One heavy row at row 25, inside the wait that began at row 23,
         lifts the weight past a floor of 10 that the stream's ceiling of 7.73

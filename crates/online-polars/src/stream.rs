@@ -5084,8 +5084,8 @@ fn run_instance(
             f64::NAN
         };
         // The first target whose floor has withheld every row for that long,
-        // and the ceiling its weight tops out at.
-        let mut unmet_floor: Option<(usize, f64)> = None;
+        // the ceiling its weight tops out at, and the weight it reads.
+        let mut unmet_floor: Option<(usize, f64, f64)> = None;
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
             let weight = match sc.tn.get(tj) {
                 Some(&w) if own_weights => w,
@@ -5104,7 +5104,7 @@ fn run_instance(
             {
                 let ceiling = settled_weight(weight, w, learned);
                 if ceiling < min_weight[tj] {
-                    unmet_floor = Some((tj, ceiling));
+                    unmet_floor = Some((tj, ceiling, weight));
                 }
             }
         }
@@ -5116,25 +5116,42 @@ fn run_instance(
         // no spec can say in advance, and which rows that come faster than
         // so far can still pass: the notice projects, it does not promise
         // (review round 5, F3). Said once per instance, as the noise gate's
-        // is, with the way out (docs/PLAN.md task 198, D8).
-        if let Some((tj, ceiling)) = unmet_floor {
+        // is, with the way out (docs/PLAN.md task 198, D8). A weight of 0
+        // has no rate to project: no row has given the target a value with a
+        // positive weight -- a target never present, or a stream whose every
+        // row weighs 0 -- and `(0 − w₁(1 − s))/s` read a negative ceiling, or
+        // 0, with advice to lower the floor below it (task 208's worker). So
+        // that notice says what the stream lacks, with no figure.
+        if let Some((tj, ceiling, weight)) = unmet_floor {
             inst.notified.unreachable = true;
             inst.notified.restart_waits();
             let floor = min_weight[tj];
-            let target = inst
-                .spec
-                .targets
-                .get(tj)
-                .map_or_else(String::new, |t| format!(" for target {t:?}"));
-            inst.notified.pending.push(format!(
-                "min_weight = {floor} has not been met{target} on any row for a half-life \
-                 since the stream settled (it is {:.0}% settled), and at the row rate seen so \
-                 far the weight it reads tops out near {ceiling:.4}, the ceiling \
-                 1/(1 - lam^d) at its rows' spacing d and weight, so predictions stay \
-                 withheld unless the rows come faster or carry more weight. Lower min_weight \
-                 below {ceiling:.4}, or raise the half_life (docs/WARMUP-AND-CONVERGENCE.md).",
-                100.0 * learned
-            ));
+            let named = inst.spec.targets.get(tj);
+            let target = named.map_or_else(String::new, |t| format!(" for target {t:?}"));
+            inst.notified.pending.push(if weight == 0.0 {
+                let lacks = if named.is_some() {
+                    "the target has had no row with a value and a positive weight"
+                } else {
+                    "no row has had a positive weight"
+                };
+                format!(
+                    "min_weight = {floor} has not been met{target} on any row for a half-life \
+                     since the stream settled: {lacks}, so it has no weight to meet the floor \
+                     with, and predictions stay withheld until a row brings some \
+                     (docs/WARMUP-AND-CONVERGENCE.md)."
+                )
+            } else {
+                format!(
+                    "min_weight = {floor} has not been met{target} on any row for a half-life \
+                     since the stream settled (it is {:.0}% settled), and at the row rate seen \
+                     so far the weight it reads tops out near {ceiling:.4}, the ceiling \
+                     1/(1 - lam^d) at its rows' spacing d and weight, so predictions stay \
+                     withheld unless the rows come faster or carry more weight. Lower \
+                     min_weight below {ceiling:.4}, or raise the half_life \
+                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                    100.0 * learned
+                )
+            });
         }
         // At or above the ratio: at equality the estimation variance is the
         // noise, and one observation's mean -- `edf = n_kish = 1`, exactly

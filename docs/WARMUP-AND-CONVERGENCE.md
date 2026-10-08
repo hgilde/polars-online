@@ -351,7 +351,11 @@ its own stream -- and only once the stream is at least 95% settled:
   every prediction unless the rows come faster or carry more weight. The
   message names the ceiling (`weight_sum_settled`) and the fix: a lower
   `min_weight` or a longer half-life. On every model, since every model has
-  the floor. Under
+  the floor. A target no row has given a value with a positive weight -- a
+  target never present, or a stream whose every row weighs 0 -- reads a
+  weight of 0, which projects to no rate at all: its notice says the target
+  has had no such row, with no ceiling and no advice to lower the floor,
+  where it once read "tops out near -0.0256" (task 208). Under
   `embargo` both notices read how far the rows the model has learned from
   have settled, the clock its weight has covered, as `weight_sum_settled`
   does; paired with the row's fraction, which counts the held rows' clock

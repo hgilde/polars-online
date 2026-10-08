@@ -285,6 +285,8 @@ class ReadinessWarning(UserWarning):
       ``1 / (1 - 2 ** (-d / half_life))``, which a clock column keeps any
       spec from knowing in advance. The message names the ceiling
       (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
+      A target no row has given a value with a positive weight has no rate
+      to project from, so its message says that instead, with no ceiling.
 
     Both wait a half-life during which their gate withholds every row, on
     the clock the learned rows have covered; a row the gate lets through
