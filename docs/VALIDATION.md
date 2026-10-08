@@ -12,7 +12,7 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 
 ## 1. Solve schedule (`solve_every` default = by weight, half_life/50 in steady state) [validate]
 
-Solving every `half_life/d` clock units, half_life = 500.0. All schedules share one accumulator, so this is a free experiment (0.06s for 7 schedules).
+Solving every `half_life/d` clock units, half_life = 500.0. All schedules share one accumulator, so this is a free experiment (0.03s for 7 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
