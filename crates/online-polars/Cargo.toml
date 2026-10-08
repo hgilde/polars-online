@@ -41,4 +41,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+rmpv.workspace = true
 toml.workspace = true

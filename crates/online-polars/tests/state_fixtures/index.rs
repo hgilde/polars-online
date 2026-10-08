@@ -7,13 +7,21 @@ pub mod bank {
 pub mod with_windows {
     include!("with_windows.rs");
 }
+pub mod with_windows_int {
+    include!("with_windows_int.rs");
+}
 pub mod refresh_time {
     include!("refresh_time.rs");
+}
+pub mod refresh_time_int {
+    include!("refresh_time_int.rs");
 }
 
 /// Every fixture.
 pub const ALL: &[&crate::Fixture] = &[
     &bank::FIXTURE,
     &with_windows::FIXTURE,
+    &with_windows_int::FIXTURE,
     &refresh_time::FIXTURE,
+    &refresh_time_int::FIXTURE,
 ];

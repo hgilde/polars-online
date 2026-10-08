@@ -13,6 +13,9 @@ pub mod ewridge {
 pub mod ewridge_window {
     include!("ewridge_window.rs");
 }
+pub mod ewridge_leverage {
+    include!("ewridge_leverage.rs");
+}
 pub mod rls {
     include!("rls.rs");
 }
@@ -42,6 +45,15 @@ pub mod ew_cov_window {
 }
 pub mod sgd {
     include!("sgd.rs");
+}
+pub mod sgd_huber {
+    include!("sgd_huber.rs");
+}
+pub mod sgd_eps {
+    include!("sgd_eps.rs");
+}
+pub mod sgd_logistic {
+    include!("sgd_logistic.rs");
 }
 pub mod pa {
     include!("pa.rs");
@@ -91,6 +103,9 @@ pub mod corrchange_monitor {
 pub mod corrchange_sequential {
     include!("corrchange_sequential.rs");
 }
+pub mod bocpd_warming {
+    include!("bocpd_warming.rs");
+}
 pub mod bocpd {
     include!("bocpd.rs");
 }
@@ -100,6 +115,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &ew_cov_accumulator::FIXTURE,
     &ewridge::FIXTURE,
     &ewridge_window::FIXTURE,
+    &ewridge_leverage::FIXTURE,
     &rls::FIXTURE,
     &lasso::FIXTURE,
     &lasso_window::FIXTURE,
@@ -110,6 +126,9 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &ew_cov::FIXTURE,
     &ew_cov_window::FIXTURE,
     &sgd::FIXTURE,
+    &sgd_huber::FIXTURE,
+    &sgd_eps::FIXTURE,
+    &sgd_logistic::FIXTURE,
     &pa::FIXTURE,
     &holt::FIXTURE,
     &kmeans_warming::FIXTURE,
@@ -126,5 +145,6 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &hmm::FIXTURE,
     &corrchange_monitor::FIXTURE,
     &corrchange_sequential::FIXTURE,
+    &bocpd_warming::FIXTURE,
     &bocpd::FIXTURE,
 ];

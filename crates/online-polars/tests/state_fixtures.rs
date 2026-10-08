@@ -102,14 +102,23 @@ fn from_ipc(hex_text: &str) -> DataFrame {
 // --- the streams ------------------------------------------------------------
 
 /// The bank's specs: a temporal clock with duration parameters and a weight,
-/// rows held under an `embargo`, groups closed as the key grows, and a
-/// window.
+/// rows held under an `embargo`, groups closed as the key grows, a window,
+/// and the integer clock's forms (task 200; review round 5, B1): an `Int64`
+/// clock under a fractional `gap_cap` and `embargo` (rows held, each with
+/// an integer stamp), saved right after a skipped row, so the removed and
+/// pending ticks hold time and are written; a `UInt32`
+/// clock that starts over at each session, under a `session_gap`, for the
+/// width and the elapsed clock's removed ticks; and a group closed on
+/// session, whose PCA continuity is kept per group (`pca_prev_by_group`).
 fn specs() -> Vec<Spec> {
     [
         r#"{"name": "dated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "ts", "half_life": "10m", "gap_cap": "1h", "weight": "w"}"#,
         r#"{"name": "embargoed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 40.0, "gap_cap": 50.0, "embargo": 3.0}"#,
         r#"{"name": "closing", "model": {"type": "ew_cov"}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "group_close": "monotone"}"#,
         r#"{"name": "windowed", "model": {"type": "ew_cov", "window_size": 12.0}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0}"#,
+        r#"{"name": "int_clock", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "xi"], "clock": "ti", "half_life": 160.0, "gap_cap": 6.5, "embargo": 12.5, "weight": "w"}"#,
+        r#"{"name": "uint_clock", "model": {"type": "ew_cov"}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "tu", "half_life": 80.0, "gap_cap": 6.5, "session": "s", "session_gap": 3.5}"#,
+        r#"{"name": "sessioned", "model": {"type": "ew_cov", "pca": 1}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "session": "s", "group_close": "session"}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -140,12 +149,20 @@ const T0_NS: i64 = 1_704_067_200_000_000_000;
 /// Features `x0`, `x1` (null now and then), a target `y`, weights `w` with
 /// zeros among them, a drifting level `mid`, a number clock `t` in quarter
 /// steps, the same instants as a `Datetime` `ts`, and a group key `g` that
-/// only grows, blocks of 25.
+/// only grows, blocks of 25. Beside them, for the integer clock (task 200):
+/// the same clock in whole units, `ti = 4t` as `Int64`; a session `s` of 20
+/// rows, and `tu` as `UInt32`, `ti` since the session began, so it steps
+/// back at each session change; `xi`, `x1`'s value null on the last row of
+/// each session, so the row before the save ([`SPLIT`]) is skipped; and a
+/// running count `cum`, an integer input to `increment`. None of them
+/// draws on the generator, so the other columns are what they were.
 fn frame() -> DataFrame {
     let mut r = lcg(198);
     let (mut t, mut ts, mut g, mut x0, mut x1) = (vec![], vec![], vec![], vec![], vec![]);
     let (mut y, mut w, mut mid) = (vec![], vec![], vec![]);
+    let (mut ti, mut tu, mut s, mut xi, mut cum) = (vec![], vec![], vec![], vec![], vec![]);
     let (mut clock, mut level) = (0.0f64, 100.0f64);
+    let (mut session_start, mut count) = (0i64, 0i64);
     for i in 0..N {
         if i > 0 {
             clock += 0.25 * (1.0 + (4.0 * (r() + 1.0)).floor());
@@ -160,12 +177,27 @@ fn frame() -> DataFrame {
         w.push(if i % 13 == 6 { 0.0 } else { 1.0 + 0.5 * r() });
         level += 0.1 * r();
         mid.push(level);
+        let whole = (clock * 4.0) as i64;
+        if i % 20 == 0 {
+            session_start = whole;
+        }
+        ti.push(whole);
+        tu.push((whole - session_start) as u32);
+        s.push((i / 20) as i64);
+        xi.push((i % 20 != 19).then_some(b));
+        count += 1 + (i % 3) as i64;
+        cum.push(count);
     }
+    assert!(
+        xi[SPLIT - 1].is_none(),
+        "the row before the save is skipped, so the pending ticks hold its step"
+    );
     let ts = Series::new("ts".into(), ts)
         .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
         .unwrap();
-    df!("t" => t, "ts" => ts, "g" => g, "x0" => x0, "x1" => x1, "y" => y, "w" => w, "mid" => mid)
-        .unwrap()
+    df!("t" => t, "ts" => ts, "g" => g, "x0" => x0, "x1" => x1, "y" => y, "w" => w, "mid" => mid,
+        "ti" => ti, "tu" => tu, "s" => s, "xi" => xi, "cum" => cum)
+    .unwrap()
 }
 
 /// Three series ticking at their own pace on a number clock, long form.
@@ -187,6 +219,16 @@ fn ticks() -> DataFrame {
         v.push(100.0 + r());
     }
     df!("series" => series, "t" => t, "v" => v).unwrap()
+}
+
+/// The same ticks on an integer clock: `t` doubled, as `Int64` (task 200).
+fn ticks_int() -> DataFrame {
+    let mut df = ticks();
+    let t = (df.column("t").unwrap().as_materialized_series() * 2.0)
+        .cast(&DataType::Int64)
+        .unwrap();
+    df.with_column(t.into()).unwrap();
+    df
 }
 
 fn refresh_cols() -> RefreshCols<'static> {
@@ -218,6 +260,26 @@ fn windows_config() -> WindowsConfig {
 
 fn window_input(df: &DataFrame) -> DataFrame {
     df.select(["t", "mid"]).unwrap()
+}
+
+/// The same two means on the `Int64` clock, under a fractional `gap_cap`,
+/// and an `increment` of an integer input (task 200; review round 5, B1):
+/// the rows' `off` in the integer form, and the increment's previous value
+/// kept as an integer.
+fn windows_int_config() -> WindowsConfig {
+    serde_json::from_str(
+        r#"{"formulas": [
+               {"name": "level", "tree": ["ewm_mean", ["col", "mid"], {"half_life": 20.0, "window_size": 40.0}]},
+               {"name": "ahead", "tree": ["-", ["rewm_mean", ["col", "mid"], {"half_life": 20.0, "window_size": 40.0}], ["col", "mid"]]},
+               {"name": "step", "tree": ["increment", ["col", "cum"]]}
+             ],
+             "clock": "ti", "gap_cap": 200.5}"#,
+    )
+    .unwrap()
+}
+
+fn window_int_input(df: &DataFrame) -> DataFrame {
+    df.select(["ti", "mid", "cum"]).unwrap()
 }
 
 // --- the three kinds --------------------------------------------------------
@@ -265,9 +327,8 @@ fn bank_run(bytes: &[u8], input: &DataFrame) -> Ran {
     ))
 }
 
-fn windows_first() -> (Vec<u8>, DataFrame) {
-    let input = window_input(&frame());
-    let mut run = WindowsRun::new(windows_config(), input.schema()).unwrap();
+fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
+    let mut run = WindowsRun::new(config, input.schema()).unwrap();
     run.feed(&input.slice(0, SPLIT), None).unwrap();
     assert!(run.held() > 0, "rows held across the save");
     (
@@ -276,8 +337,8 @@ fn windows_first() -> (Vec<u8>, DataFrame) {
     )
 }
 
-fn windows_run(bytes: &[u8], input: &DataFrame) -> Ran {
-    let mut run = WindowsRun::load_bytes(bytes, windows_config(), input.schema())?;
+fn windows_run_of(config: WindowsConfig, bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut run = WindowsRun::load_bytes(bytes, config, input.schema())?;
     let again = run.save_bytes()?;
     let fed = run.feed(input, None).map_err(|e| e.to_string())?;
     let finished = run.finish().map_err(|e| e.to_string())?;
@@ -287,8 +348,23 @@ fn windows_run(bytes: &[u8], input: &DataFrame) -> Ran {
     ))
 }
 
-fn refresh_first() -> (Vec<u8>, DataFrame) {
-    let ticks = ticks();
+fn windows_first() -> (Vec<u8>, DataFrame) {
+    windows_first_of(windows_config(), window_input(&frame()))
+}
+
+fn windows_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    windows_run_of(windows_config(), bytes, input)
+}
+
+fn windows_int_first() -> (Vec<u8>, DataFrame) {
+    windows_first_of(windows_int_config(), window_int_input(&frame()))
+}
+
+fn windows_int_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    windows_run_of(windows_int_config(), bytes, input)
+}
+
+fn refresh_first_of(ticks: DataFrame) -> (Vec<u8>, DataFrame) {
     let half = ticks.height() / 2;
     let mut r = RefreshTime::new(refresh_names(), false).unwrap();
     r.feed(&ticks.slice(0, half), &refresh_cols()).unwrap();
@@ -305,6 +381,14 @@ fn refresh_run(bytes: &[u8], input: &DataFrame) -> Ran {
     Ok((again, vec![("feed".into(), fed)]))
 }
 
+fn refresh_first() -> (Vec<u8>, DataFrame) {
+    refresh_first_of(ticks())
+}
+
+fn refresh_int_first() -> (Vec<u8>, DataFrame) {
+    refresh_first_of(ticks_int())
+}
+
 fn kinds() -> Vec<Kind> {
     vec![
         Kind {
@@ -318,8 +402,18 @@ fn kinds() -> Vec<Kind> {
             run: windows_run,
         },
         Kind {
+            name: "with_windows_int",
+            first: windows_int_first,
+            run: windows_int_run,
+        },
+        Kind {
             name: "refresh_time",
             first: refresh_first,
+            run: refresh_run,
+        },
+        Kind {
+            name: "refresh_time_int",
+            first: refresh_int_first,
             run: refresh_run,
         },
     ]
@@ -452,6 +546,100 @@ fn the_bank_fixtures_cover_the_schemas_a_bank_loads() {
         "a bank loads schemas {MIN_BANK_SCHEMA_VERSION}..={SCHEMA_VERSION} and fixtures cover \
          {covered:?}: each needs a frozen file, held to its loader"
     );
+}
+
+/// Every leaf of a msgpack value: its dotted path and its value.
+fn leaves(v: &rmpv::Value, path: &str, out: &mut Vec<(String, rmpv::Value)>) {
+    match v {
+        rmpv::Value::Map(m) => {
+            for (k, v) in m {
+                let key = k.as_str().map_or_else(|| k.to_string(), str::to_string);
+                leaves(v, &format!("{path}.{key}"), out);
+            }
+        }
+        rmpv::Value::Array(a) => {
+            for (i, v) in a.iter().enumerate() {
+                leaves(v, &format!("{path}.{i}"), out);
+            }
+        }
+        _ => out.push((path.to_string(), v.clone())),
+    }
+}
+
+/// The integer clock's forms (docs/PLAN.md task 200, schema 42 and windows
+/// state 8) are each written by a fixture, so a change to their tags or
+/// layouts cannot pass the harness unseen (review round 5, B1): the bank's
+/// `ClockValue::I64`, `Stamp::Int`, the three `Ticks` fields -- skipped
+/// when zero, so written only by a state saved while they hold time -- a
+/// fraction in one of them, `ClockDtype::Int` at two widths, and the
+/// per-group PCA continuity; the windows state's `OffForm::Int`, its
+/// group's stamp as a `ClockValue::I64` and an increment's integer previous
+/// value; the refresh state's `Instant::Int`.
+#[test]
+fn every_form_of_the_integer_clock_is_written_by_a_fixture() {
+    if regenerating() {
+        return;
+    }
+    type Holds = fn(&str, &rmpv::Value) -> bool;
+    const FORMS: &[(&str, &str, Holds)] = &[
+        ("bank", "ClockValue::I64", |p, _| {
+            p.ends_with(".prev_clock.I64")
+        }),
+        ("bank", "Stamp::Int", |p, _| p.contains(".stamp.Int.")),
+        ("bank", "Ticks: removed_int", |p, _| {
+            p.ends_with(".removed_int.whole")
+        }),
+        ("bank", "Ticks: elapsed_removed_int", |p, _| {
+            p.ends_with(".elapsed_removed_int.whole")
+        }),
+        ("bank", "Ticks: pending_int", |p, _| {
+            p.ends_with(".pending_int.whole")
+        }),
+        ("bank", "a Ticks fraction", |p, v| {
+            p.ends_with("_int.frac") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank", "ClockDtype::Int(I64)", |p, v| {
+            p.contains(".clock_dtypes.") && p.ends_with(".Int") && v.as_str() == Some("I64")
+        }),
+        ("bank", "ClockDtype::Int(U32)", |p, v| {
+            p.contains(".clock_dtypes.") && p.ends_with(".Int") && v.as_str() == Some("U32")
+        }),
+        ("bank", "pca_prev_by_group", |p, _| {
+            p.starts_with(".pca_prev_by_group.")
+        }),
+        ("with_windows_int", "OffForm::Int", |p, v| {
+            p.ends_with(".form") && v.as_str() == Some("Int")
+        }),
+        ("with_windows_int", "ClockValue::I64", |p, _| {
+            p.ends_with(".prev_clock.I64")
+        }),
+        (
+            "with_windows_int",
+            "the group's stamp as ClockValue::I64",
+            |p, _| p.ends_with(".stamp.I64"),
+        ),
+        // An `i128` rides as sixteen bytes, so the leaf is a binary, not an
+        // integer: present is what is checked.
+        ("with_windows_int", "an increment's prev_int", |p, v| {
+            p.contains(".prev_int.") && !v.is_nil()
+        }),
+        ("refresh_time_int", "Instant::Int", |p, _| {
+            p.contains(".last_time.") && p.ends_with(".Int")
+        }),
+    ];
+    for (kind, form, holds) in FORMS {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == *kind)
+            .unwrap_or_else(|| panic!("{kind}: no fixture; add the kind and regenerate"));
+        let v = rmpv::decode::read_value(&mut unhex(f.state).as_slice()).unwrap();
+        let mut all = Vec::new();
+        leaves(&v, "", &mut all);
+        assert!(
+            all.iter().any(|(p, v)| holds(p, v)),
+            "{kind}: no leaf of the state holds {form}, so the fixture freezes nothing of it"
+        );
+    }
 }
 
 // --- regeneration -----------------------------------------------------------

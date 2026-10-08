@@ -143,6 +143,24 @@ const SPECS: &[(&str, &str, &str)] = &[
         r#"{"type": "sgd", "loss": "squared", "learning_rate": 0.01, "schedule": "constant", "standardize": false}"#,
         r#""targets": ["y"], "features": ["x0"], "half_life": 50.0"#,
     ),
+    // `sgd`'s per-loss state (review round 5, D3): the residual scale under
+    // the Huber loss, the target's spread under the epsilon-insensitive one,
+    // and the logistic link.
+    (
+        "sgd_huber",
+        r#"{"type": "sgd", "loss": "huber", "huber_delta": 1.5, "learning_rate": 0.01, "schedule": "constant", "standardize": false}"#,
+        r#""targets": ["y"], "features": ["x0"], "half_life": 50.0"#,
+    ),
+    (
+        "sgd_eps",
+        r#"{"type": "sgd", "loss": "epsilon_insensitive", "eps": 0.5, "learning_rate": 0.01, "schedule": "constant", "standardize": false}"#,
+        r#""targets": ["y"], "features": ["x0"], "half_life": 50.0"#,
+    ),
+    (
+        "sgd_logistic",
+        r#"{"type": "sgd", "loss": "logistic", "learning_rate": 0.01, "schedule": "constant", "standardize": false}"#,
+        r#""targets": ["yb"], "features": ["x0"], "half_life": 50.0"#,
+    ),
     (
         "on_a_datetime",
         r#"{"type": "ewridge"}"#,
@@ -168,10 +186,30 @@ const SPECS: &[(&str, &str, &str)] = &[
         r#"{"type": "ewridge"}"#,
         r#""targets": [{"name": "fwd", "formula": ["-", ["rewm_mean", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0}], ["col", "mid"]]}], "features": ["x0"], "clock": "t", "half_life": 40.0, "gap_cap": 50.0, "embargo": 12.0"#,
     ),
+    // The integer clock (task 200; review round 5, B1): an `Int64` clock
+    // under a fractional `gap_cap` and `embargo`, saved right after a
+    // skipped row; a `UInt32` clock starting over at each session, under a
+    // `session_gap`; and a group closed on session, whose PCA continuity
+    // is kept per group.
+    (
+        "on_an_int64",
+        r#"{"type": "ewridge"}"#,
+        r#""targets": ["y"], "features": ["x0", "xi"], "clock": "ti", "half_life": 160.0, "gap_cap": 6.5, "embargo": 12.5, "weight": "w""#,
+    ),
+    (
+        "on_a_uint32",
+        r#"{"type": "ew_cov"}"#,
+        r#""targets": ["x0"], "features": ["x0", "x1"], "clock": "tu", "half_life": 80.0, "gap_cap": 6.5, "session": "s", "session_gap": 3.5"#,
+    ),
+    (
+        "sessioned",
+        r#"{"type": "ew_cov", "pca": 1}"#,
+        r#""targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "session": "s", "group_close": "session""#,
+    ),
 ];
 
 /// The specs that close groups, whose estimates `closed_groups` reports.
-const CLOSING: [&str; 2] = ["rcov", "closing"];
+const CLOSING: [&str; 3] = ["rcov", "closing", "sessioned"];
 
 /// The rows of the stream, and the row it is saved at.
 const N: usize = 400;
@@ -209,11 +247,18 @@ const T0_NS: i64 = 1_704_067_200_000_000_000;
 /// them, a drifting level `mid`, a number clock `t` in quarter steps with
 /// one gap past every cap, the same instants as a `Datetime` in
 /// nanoseconds `ts`, and a group key `g` that only grows, blocks of 50.
+/// For the integer clock (task 200): the same clock in whole units, `ti =
+/// 4t` as `Int64`; a session `s` of 40 rows, and `tu` as `UInt32`, `ti`
+/// since the session began, so it steps back at each session change; and
+/// `xi`, `x1`'s value null on the last row of each session, so the row
+/// before the save is skipped. None of them draws on the generator.
 fn frame() -> DataFrame {
     let mut r = lcg(7);
     let (mut t, mut ts, mut g, mut x0, mut x1) = (vec![], vec![], vec![], vec![], vec![]);
     let (mut y, mut yb, mut lab, mut w, mut mid) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut ti, mut tu, mut s, mut xi) = (vec![], vec![], vec![], vec![]);
     let (mut clock, mut level) = (0.0f64, 100.0f64);
+    let mut session_start = 0i64;
     for i in 0..N {
         if i > 0 {
             // Quarter steps, exact in nanoseconds; one gap past every cap.
@@ -236,12 +281,24 @@ fn frame() -> DataFrame {
         w.push(if i % 13 == 6 { 0.0 } else { 1.0 + 0.5 * r() });
         level += 0.1 * r();
         mid.push(level);
+        let whole = (clock * 4.0) as i64;
+        if i % 40 == 0 {
+            session_start = whole;
+        }
+        ti.push(whole);
+        tu.push((whole - session_start) as u32);
+        s.push((i / 40) as i64);
+        xi.push((i % 40 != 39).then_some(b));
     }
+    assert!(
+        xi[SPLIT - 1].is_none(),
+        "the row before the save is skipped"
+    );
     let ts = Series::new("ts".into(), ts)
         .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
         .unwrap();
     df!("t" => t, "ts" => ts, "g" => g, "x0" => x0, "x1" => x1, "y" => y, "yb" => yb,
-        "lab" => lab, "w" => w, "mid" => mid)
+        "lab" => lab, "w" => w, "mid" => mid, "ti" => ti, "tu" => tu, "s" => s, "xi" => xi)
     .unwrap()
 }
 

@@ -267,6 +267,57 @@ fn every_variant_and_every_case_has_a_fixture() {
     }
 }
 
+/// `v` at a path of map keys, or `None` where a key is absent.
+fn at<'a>(v: &'a rmpv::Value, path: &[&str]) -> Option<&'a rmpv::Value> {
+    path.iter().try_fold(v, |v, key| {
+        v.as_map()?
+            .iter()
+            .find(|(k, _)| k.as_str() == Some(key))
+            .map(|(_, v)| v)
+    })
+}
+
+/// A layout a schema bump moved is written by a fixture that holds it, so
+/// a change to its tags or fields cannot pass the harness unseen (review
+/// round 5, D3): `sgd`'s per-loss state -- the residual scale under the
+/// Huber loss (schema 40), the target's spread under the epsilon-insensitive
+/// one (44) -- `ewridge`'s kept systems (38, under `set_keep_factor`) and
+/// `bocpd`'s warm-up rows (40). Each was empty in every fixture before.
+#[test]
+fn every_layout_a_schema_moved_is_written_by_a_fixture() {
+    if regenerating() {
+        return;
+    }
+    const FORMS: [(&str, &[&str]); 5] = [
+        ("sgd_huber", &["model", "Sgd", "sig2"]),
+        ("sgd_huber", &["model", "Sgd", "wsig"]),
+        ("sgd_eps", &["model", "Sgd", "spread"]),
+        (
+            "ewridge_leverage",
+            &["model", "EwRidge", "ready", "systems"],
+        ),
+        ("bocpd_warming", &["model", "Bocpd", "warm"]),
+    ];
+    for (name, path) in FORMS {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let Some(field) = at(&v, path) else {
+            panic!("{name}: the state has no {}", path.join("."));
+        };
+        let held = field
+            .as_array()
+            .map_or(0, |a| a.iter().filter(|e| !e.is_nil()).count());
+        assert!(
+            held > 0,
+            "{name}: {} is empty, so the fixture holds nothing of the layout it is there for",
+            path.join(".")
+        );
+    }
+}
+
 // --- regeneration -----------------------------------------------------------
 
 fn dir() -> PathBuf {

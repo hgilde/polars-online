@@ -2011,6 +2011,7 @@ dependencies = [
  "polars-utils",
  "rayon",
  "rmp-serde",
+ "rmpv",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

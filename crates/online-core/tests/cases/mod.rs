@@ -354,6 +354,43 @@ fn kmeans_cfg() -> KMeansCfg {
     }
 }
 
+fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
+    SgdCfg {
+        n_features: K,
+        n_targets,
+        fit_intercept: true,
+        decay: decay(),
+        loss,
+        learning_rate: 0.05,
+        schedule: LearningRate::AdaGrad,
+        l2: 0.01,
+        clip_gradient: 1e3,
+        constraint: None,
+        standardize: true,
+        min_weight: 3.0,
+        strict_binary: false,
+    }
+}
+
+fn bocpd_cfg() -> BocpdCfg {
+    BocpdCfg {
+        n_features: K,
+        hazard: 20.0,
+        hazard_from_row: false,
+        emission: BocpdEmission::Diag,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: Some(4.0),
+        prior_scale: Some(vec![1.0]),
+        robust_beta: 0.0,
+        prune_below: 1e-6,
+        max_run: 60,
+        min_weight: 0.0,
+        warm_rows: None,
+        hazard_on_clock: true,
+    }
+}
+
 fn corrchange_cfg(kind: CorrChangeKind) -> CorrChangeCfg {
     CorrChangeCfg {
         n_features: K,
@@ -427,6 +464,22 @@ pub fn all() -> Vec<Case> {
                 ..ewridge_cfg()
             })
             .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // Keeping each solve's system for the per-row leverage
+        // (`emit_error_inflation`): the `systems` of schema 38, empty in
+        // every other ewridge state.
+        case!(
+            "ewridge_leverage",
+            "EwRidge",
+            EwRidge,
+            {
+                let mut m = EwRidge::new(ewridge_cfg()).unwrap();
+                m.set_keep_factor(true);
+                m
+            },
             K,
             Targets::Linear(2),
             40
@@ -556,24 +609,39 @@ pub fn all() -> Vec<Case> {
             "sgd",
             "Sgd",
             Sgd,
-            Sgd::new(SgdCfg {
-                n_features: K,
-                n_targets: 2,
-                fit_intercept: true,
-                decay: decay(),
-                loss: SgdLoss::Squared,
-                learning_rate: 0.05,
-                schedule: LearningRate::AdaGrad,
-                l2: 0.01,
-                clip_gradient: 1e3,
-                constraint: None,
-                standardize: true,
-                min_weight: 3.0,
-                strict_binary: false,
-            })
-            .unwrap(),
+            Sgd::new(sgd_cfg(SgdLoss::Squared, 2)).unwrap(),
             K,
             Targets::Linear(2),
+            40
+        ),
+        // The per-loss state: the residual scale `sig2`/`wsig` under the
+        // Huber loss (schema 40), the target's own spread under the
+        // epsilon-insensitive one (44), and the logistic link.
+        case!(
+            "sgd_huber",
+            "Sgd",
+            Sgd,
+            Sgd::new(sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)).unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_eps",
+            "Sgd",
+            Sgd,
+            Sgd::new(sgd_cfg(SgdLoss::EpsilonInsensitive { eps: 0.5 }, 2)).unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        case!(
+            "sgd_logistic",
+            "Sgd",
+            Sgd,
+            Sgd::new(sgd_cfg(SgdLoss::Logistic, 1)).unwrap(),
+            K,
+            Targets::Binary,
             40
         ),
         case!(
@@ -828,27 +896,26 @@ pub fn all() -> Vec<Case> {
             Targets::None,
             40
         ),
+        // Saved with its warm-up buffer still filling: 10 learned rows
+        // wanted, 5 held (schema 40's `WarmRow`), as `kmeans_warming` is.
+        case!(
+            "bocpd_warming",
+            "Bocpd",
+            Bocpd,
+            Bocpd::new(BocpdCfg {
+                warm_rows: Some(10),
+                ..bocpd_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::None,
+            6
+        ),
         case!(
             "bocpd",
             "Bocpd",
             Bocpd,
-            Bocpd::new(BocpdCfg {
-                n_features: K,
-                hazard: 20.0,
-                hazard_from_row: false,
-                emission: BocpdEmission::Diag,
-                prior_mean: None,
-                prior_kappa: 1.0,
-                prior_nu: Some(4.0),
-                prior_scale: Some(vec![1.0]),
-                robust_beta: 0.0,
-                prune_below: 1e-6,
-                max_run: 60,
-                min_weight: 0.0,
-                warm_rows: None,
-                hazard_on_clock: true,
-            })
-            .unwrap(),
+            Bocpd::new(bocpd_cfg()).unwrap(),
             K,
             Targets::None,
             40
