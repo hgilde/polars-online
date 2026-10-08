@@ -2487,6 +2487,40 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     }
 }
 
+/// The models whose fitted function a zero-weight row inside a gap moves,
+/// found when [`zero_weight_rows_only_advance_the_clock`] began comparing
+/// the numbers (docs/PLAN.md task 211) and raised there, not fixed: each is a
+/// design of its own, not a slip. Measured on that test's stream.
+const PARTS_ON_A_SPLIT_GAP: [(&str, &str); 2] = [
+    (
+        "ftrl",
+        "the penalties' scale `W/W*` reads `W*` on a clock that runs only on the rows \
+         that teach the target, each such row aging it by its own delta: a zero-weight row \
+         takes its delta off that clock, and the fit at a fixed row moved by 1.9% \
+         (-0.027757 against -0.027249) on the row after the first one",
+    ),
+    (
+        "hmm",
+        "a row reads its posterior before its own decay, from states whose absolute \
+         precision prior weighs more as their weight ages, and learns from that posterior: \
+         a zero-weight row ages the states before the next row reads them, and the fit at a \
+         fixed row moved by 1.2e-5 (0.997912 against 0.997900) on the row after the first \
+         one",
+    ),
+];
+
+/// A fit solved on a clock schedule (`ewridge`'s `solve_every`), which a
+/// zero-weight row at the clock a solve is due triggers before the next row's
+/// data where the stream without it solves after them: the reported fit
+/// differs until the next solve, by 1.8e-4 on the rows between, though both
+/// hold the same statistics (docs/PLAN.md task 211, raised).
+fn solves_on_a_clock<M: OnlineModel>(m: &M) -> bool {
+    match m.state().model {
+        ModelState::EwRidge(e) => e.cfg().solve_every > 0.0,
+        _ => false,
+    }
+}
+
 /// Hard rules 8 and 9, together and without naming a decay: a zero-weight
 /// row advances the clock and teaches nothing, so the `n_eff` a stream
 /// reports after one must equal the `n_eff` of the same stream with that row
@@ -2494,6 +2528,16 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
 /// exponential decay `lam(a)·lam(b) = lam(a + b)`, so the two agree exactly
 /// whatever the half-life -- and a model that forgets to decay `n_eff` on the
 /// row it learns nothing from does not (docs/REVIEW-E54-E64.md H3/C2).
+///
+/// And every number the real rows report agrees too, to rounding (within
+/// 1e-9 of `1 + |value|`): each prediction, the fitted function -- what the
+/// model predicts at two fixed rows after each real row, which for a linear
+/// fit is its coefficients -- and the coefficients' variances where a model
+/// keeps them. `kalman` charged its process noise per row, `Q d²`, which is
+/// not additive over a split gap, and moved every prediction after a
+/// zero-weight row by up to 0.197 at `coef_half_life` 20 while this test,
+/// which compared `n_eff` and which predictions were null, passed
+/// (docs/PLAN.md task 211).
 fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
     build: &impl Fn() -> M,
     targets: usize,
@@ -2564,6 +2608,54 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
             a.pred,
             b.pred
         );
+        // And the numbers themselves (docs/PLAN.md task 211): the
+        // predictions on the rows `n_eff` is compared on, and after every
+        // real row the fitted function at two fixed rows and the
+        // coefficients' variances. On the row that carries a skipped row's
+        // delta the prediction may differ by construction, as `n_eff` does:
+        // the stream with the zero-weight row has aged its moments by that
+        // row's delta before predicting, and a fit solved after that, with
+        // a penalty that does not age with them, is a fit solved after the
+        // decay; the other ages them inside the row. The models whose fit a
+        // zero-weight row inside a gap moves, each a decision of its own,
+        // are named in `PARTS_ON_A_SPLIT_GAP`.
+        if PARTS_ON_A_SPLIT_GAP.iter().any(|(k, _)| *k == kind) || solves_on_a_clock(&with) {
+            continue;
+        }
+        let probes: [Vec<f64>; 2] = [vec![0.7; K], (0..K).map(|f| f as f64 - 0.4).collect()];
+        let mut theirs = Vec::new();
+        if compare {
+            theirs.push((String::from("pred"), a.pred.clone(), b.pred.clone()));
+        }
+        for (n, x) in probes.iter().enumerate() {
+            theirs.push((
+                format!("the fit at probe {n}"),
+                with.predict(x, 0.0).pred,
+                without.predict(x, 0.0).pred,
+            ));
+        }
+        let variances = |m: &M| match m.coef_variance() {
+            Some(CoefVariance::PerNoise(v) | CoefVariance::Absolute(v)) => {
+                v.into_iter().flatten().collect()
+            }
+            None => vec![],
+        };
+        theirs.push((
+            String::from("coef variance"),
+            variances(&with),
+            variances(&without),
+        ));
+        for (what, u, v) in theirs {
+            assert_eq!(u.len(), v.len(), "{kind}: row {i}: {what}");
+            for (slot, (p, q)) in u.iter().zip(&v).enumerate() {
+                assert!(
+                    !(p.is_finite() && q.is_finite()) || (p - q).abs() <= 1e-9 * (1.0 + q.abs()),
+                    "{kind}: row {i}: {what}, slot {slot}: {p} in the stream with zero-weight \
+                     rows, {q} in the one without them -- a zero-weight row must advance the \
+                     clock and teach nothing"
+                );
+            }
+        }
     }
 }
 
