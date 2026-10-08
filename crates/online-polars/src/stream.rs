@@ -2450,6 +2450,24 @@ pub fn settled_frac(decay: Decay, t: f64) -> f64 {
 /// row's weight, which on such a stream is every row's: the stream keeps no
 /// first weight, so a caller hands the weight a row has there (docs/PLAN.md
 /// task 198, D8).
+/// A projected weight as a notice prints it: four decimals in the range a
+/// reader reads at a glance, four significant figures outside it, so a
+/// ceiling of 3e-7 is not "0.0000" and one of 1e90 is not ninety digits.
+/// `None` where the projection is not a positive, finite weight: on an
+/// irregular stream `(W − w₁(1 − s))/s` can read 0 or below (a target
+/// present on one row in 50, or a heavy row where the notice comes), and a
+/// notice must not advise lowering a floor below such a figure (task 208).
+fn projected_figure(weight: f64) -> Option<String> {
+    if !(weight > 0.0 && weight.is_finite()) {
+        return None;
+    }
+    Some(if (1e-3..1e6).contains(&weight) {
+        format!("{weight:.4}")
+    } else {
+        format!("{weight:.4e}")
+    })
+}
+
 pub fn settled_weight(weight: f64, first: f64, settled: f64) -> f64 {
     if settled > 0.0 && settled.is_finite() {
         (weight - first * (1.0 - settled)) / settled
@@ -5128,6 +5146,7 @@ fn run_instance(
             let floor = min_weight[tj];
             let named = inst.spec.targets.get(tj);
             let target = named.map_or_else(String::new, |t| format!(" for target {t:?}"));
+            let figure = projected_figure(ceiling);
             inst.notified.pending.push(if weight == 0.0 {
                 let lacks = if named.is_some() {
                     "the target has had no row with a value and a positive weight"
@@ -5140,14 +5159,24 @@ fn run_instance(
                      with, and predictions stay withheld until a row brings some \
                      (docs/WARMUP-AND-CONVERGENCE.md)."
                 )
-            } else {
+            } else if let Some(figure) = figure {
                 format!(
                     "min_weight = {floor} has not been met{target} on any row for a half-life \
                      since the stream settled (it is {:.0}% settled), and at the row rate seen \
-                     so far the weight it reads tops out near {ceiling:.4}, the ceiling \
+                     so far the weight it reads tops out near {figure}, the ceiling \
                      1/(1 - lam^d) at its rows' spacing d and weight, so predictions stay \
                      withheld unless the rows come faster or carry more weight. Lower \
-                     min_weight below {ceiling:.4}, or raise the half_life \
+                     min_weight below {figure}, or raise the half_life \
+                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                    100.0 * learned
+                )
+            } else {
+                format!(
+                    "min_weight = {floor} has not been met{target} on any row for a half-life \
+                     since the stream settled (it is {:.0}% settled), and the rows so far are \
+                     too uneven -- a target present on few of them, or weights far apart -- \
+                     to project the weight they settle at, so predictions stay withheld until \
+                     the target's rows bring weight past the floor \
                      (docs/WARMUP-AND-CONVERGENCE.md).",
                     100.0 * learned
                 )
@@ -5220,16 +5249,18 @@ fn run_instance(
             } else {
                 // Infinite: the model has not solved, its weight short of the
                 // floor its first solve needs, which no ratio can loosen.
+                let tops = projected_figure(settled_weight(step.n_eff, w, learned)).map_or_else(
+                    || "the rows so far are too uneven to project the weight it settles at".into(),
+                    |f| format!("at the row rate seen so far its weight tops out near {f}"),
+                );
                 format!(
                     "max_error_inflation = {max_infl:.3} has not been met on any row for a \
-                     half-life since the stream settled (it is {:.0}% settled): at the row rate \
-                     seen so far its weight tops out near {:.4}, below the {} the model needs \
-                     before it solves (a row per coefficient, or min_weight), so \
-                     error_inflation stays infinite and predictions stay withheld unless the \
-                     rows come faster. {}{} so it can carry the {k} coefficients \
-                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                     half-life since the stream settled (it is {:.0}% settled): {tops}, below \
+                     the {} the model needs before it solves (a row per coefficient, or \
+                     min_weight), so error_inflation stays infinite and predictions stay \
+                     withheld unless the rows come faster. {}{} so it can carry the {k} \
+                     coefficients (docs/WARMUP-AND-CONVERGENCE.md).",
                     100.0 * learned,
-                    settled_weight(step.n_eff, w, learned),
                     solve_floor(inst.spec),
                     figure[..1].to_uppercase(),
                     &figure[1..]
@@ -5603,4 +5634,34 @@ fn run_instance(
         inst.model.get_mut().flush(inst.shards);
     }
     drift_seen
+}
+
+#[cfg(test)]
+mod projected_figure_tests {
+    use super::projected_figure;
+
+    /// A notice gives a projected weight only when it is a positive, finite
+    /// number, in four decimals in the everyday range and four significant
+    /// figures outside it (task 208: a sparse target read "-0.0000", a heavy
+    /// row a ninety-digit negative).
+    #[test]
+    fn a_projection_is_printed_only_when_it_is_a_positive_weight() {
+        for bad in [
+            0.0,
+            -0.0,
+            -1e-9,
+            -2.4e88,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert_eq!(projected_figure(bad), None, "{bad}");
+        }
+        assert_eq!(projected_figure(7.725).as_deref(), Some("7.7250"));
+        assert_eq!(projected_figure(1e-3).as_deref(), Some("0.0010"));
+        assert_eq!(projected_figure(3e-7).as_deref(), Some("3.0000e-7"));
+        assert_eq!(projected_figure(1e90).as_deref(), Some("1.0000e90"));
+        assert_eq!(projected_figure(999_999.0).as_deref(), Some("999999.0000"));
+        assert_eq!(projected_figure(1e6).as_deref(), Some("1.0000e6"));
+    }
 }

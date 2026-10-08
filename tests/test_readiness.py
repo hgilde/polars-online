@@ -668,6 +668,52 @@ class TestSettledWeight:
             assert field(fitted.out, "pred_y").null_count() < 30
             assert field(fitted.out, "pred_z").null_count() == 300
 
+    @pytest.mark.parametrize("why", ["sparse_target", "heavy_row"])
+    def test_a_projection_that_is_not_a_positive_weight_is_not_given(self, why):
+        """The ceiling's projection `(W - w₁(1 - s))/s` is exact on a regular
+        stream; on an irregular one it can read 0 or below, and the notice
+        then advised lowering the floor below it. A target present on one
+        row in 50 at half-life 5 read "tops out near -0.0000 ... Lower
+        min_weight below -0.0000", and a row of weight 1e90 where the notice
+        fires a ceiling near -1e90 (task 208's worker; review 5's Hypothesis
+        runs drew -9.78e96). Such a notice keeps the floor and the rate it
+        could not project from, with no figure and no advice to lower the
+        floor below one."""
+        n = 600
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal(n)
+        if why == "sparse_target":
+            y = np.where(np.arange(n) % 50 == 0, 2 * x, np.nan)
+            df = pl.DataFrame({"x0": x, "y": y}).with_columns(pl.col("y").fill_nan(None))
+            s = po.spec.ewridge(
+                "m",
+                targets=["y"],
+                features=["x0"],
+                half_life=5.0,
+                min_weight=1.0,
+                max_error_inflation=math.inf,
+            )
+        else:
+            # One heavy row on the row the notice comes on, a half-life
+            # after the wait began (row 28 at half-life 5, as the tests
+            # above pin): the projection reads that row's weight as `w₁`.
+            w = np.where(np.arange(n) == 28, 1e90, 1.0)
+            df = pl.DataFrame({"x0": x, "y": 2 * x, "w": w})
+            s = po.spec.ewridge(
+                "m",
+                targets=["y"],
+                features=["x0"],
+                half_life=5.0,
+                min_weight=20.0,
+                weight="w",
+                max_error_inflation=math.inf,
+            )
+        fitted = _fit_noting(po.ModelBank([s]), df)
+        for msg in fitted.notices:
+            assert "Lower min_weight" not in msg, msg
+            assert not re.search(r"tops out near -", msg), msg
+            assert "tops out near 0.0000" not in msg, msg
+
     def test_a_row_that_meets_the_floor_restarts_the_wait(self):
         """One heavy row at row 25, inside the wait that began at row 23,
         lifts the weight past a floor of 10 that the stream's ceiling of 7.73
