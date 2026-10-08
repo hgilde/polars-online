@@ -7,7 +7,7 @@
 //! are wired wrongly (§7.4). They verify the wiring; nothing here is tuned.
 
 use online_core::{
-    Decay, EwRidge, EwRidgeCfg, Lasso, LassoCfg, OnlineModel, Rls, RlsCfg, TargetGaps,
+    CoefVariance, Decay, EwRidge, EwRidgeCfg, Lasso, LassoCfg, OnlineModel, Rls, RlsCfg, TargetGaps,
 };
 
 fn cfg(k: usize, half_life: f64) -> EwRidgeCfg {
@@ -578,4 +578,92 @@ fn lasso_reads_the_active_count_over_kish_n() {
     let mut gate = Vec::new();
     assert!(m.error_inflation_gate_into(&[0.0; 5], 1.0, &mut gate, 1.1));
     assert_eq!(gate, out);
+}
+
+// ---- coefficient standard errors (docs/PLAN.md task 116, F) ----
+
+/// The coefficient variances `ewridge` reports are `M = Σ̂⁻¹ / n_kish`
+/// mapped to `coef`'s units over the noise: with no decay, unit weights and
+/// a vanishing ridge, `(X'X)⁻¹`'s diagonal, the intercept's included, which
+/// the plain and the standardized solve read alike. `X'X` over `[1, x]` is
+/// summed here and inverted by a Gauss-Jordan elimination written here,
+/// which no model runs.
+#[test]
+fn ewridge_coef_variance_is_the_least_squares_covariance() {
+    let k = 2;
+    let mut rng = Rng(31);
+    let rows: Vec<(Vec<f64>, f64)> = (0..200)
+        .map(|_| {
+            let x = vec![3.0 * rng.normal() + 10.0, 0.5 * rng.normal() - 2.0];
+            let y = 1.0 + 0.5 * x[0] - 2.0 * x[1] + rng.normal();
+            (x, y)
+        })
+        .collect();
+    let mut xtx = [[0.0f64; 3]; 3];
+    for (x, _) in &rows {
+        let z = [1.0, x[0], x[1]];
+        for (r, zr) in z.iter().enumerate() {
+            for (c, zc) in z.iter().enumerate() {
+                xtx[r][c] += zr * zc;
+            }
+        }
+    }
+    let inv = invert3(xtx);
+    for standardize in [false, true] {
+        let mut c = cfg(k, f64::INFINITY);
+        c.ridge = vec![1e-10];
+        c.standardize = standardize;
+        let mut m = model(c);
+        for (x, y) in &rows {
+            m.step(x, &[Some(*y)], 1.0, 1.0);
+        }
+        let Some(CoefVariance::PerNoise(v)) = m.coef_variance() else {
+            panic!("ewridge's variances are over the noise");
+        };
+        for (j, row) in inv.iter().enumerate() {
+            let want = row[j];
+            assert!(
+                (v[0][j] - want).abs() <= 1e-6 * want,
+                "standardize {standardize}, {j}: {} vs {want}",
+                v[0][j]
+            );
+        }
+    }
+    // Without the kept systems there is nothing to read them from.
+    let mut plain = EwRidge::new(cfg(k, f64::INFINITY)).unwrap();
+    for (x, y) in &rows {
+        plain.step(x, &[Some(*y)], 1.0, 1.0);
+    }
+    assert!(plain.coef_variance().is_none());
+}
+
+/// `A⁻¹` of a 3×3 by Gauss-Jordan with partial pivoting.
+fn invert3(a: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0; 6]; 3];
+    for r in 0..3 {
+        m[r][..3].copy_from_slice(&a[r]);
+        m[r][3 + r] = 1.0;
+    }
+    for col in 0..3 {
+        let piv = (col..3)
+            .max_by(|&i, &j| m[i][col].abs().total_cmp(&m[j][col].abs()))
+            .unwrap();
+        m.swap(col, piv);
+        let d = m[col][col];
+        m[col].iter_mut().for_each(|v| *v /= d);
+        for r in 0..3 {
+            if r != col {
+                let f = m[r][col];
+                let pivot_row = m[col];
+                for (dst, p) in m[r].iter_mut().zip(pivot_row) {
+                    *dst -= f * p;
+                }
+            }
+        }
+    }
+    let mut out = [[0.0; 3]; 3];
+    for r in 0..3 {
+        out[r].copy_from_slice(&m[r][3..]);
+    }
+    out
 }

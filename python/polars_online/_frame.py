@@ -267,7 +267,9 @@ class ReadinessWarning(UserWarning):
       columns is arbitrary and moves the moment the collinearity breaks.
     - **The noise gate cannot be met**: the stream has all but settled and
       ``error_inflation`` is still above ``max_error_inflation``, so every
-      prediction is withheld for good. The message says how far, and the way
+      prediction is withheld for good. Not for ``kalman``, whose gate reads
+      each row's own value, which a row nearer the design's centre reads
+      lower. The message says how far, and the way
       out -- a half-life above the one it names, or a looser ratio.
     - **A** ``min_weight`` **cannot be met**: the stream has all but settled
       and the weight a target reads tops out below its ``min_weight`` -- the
@@ -588,6 +590,8 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "emit_zscore": (False,),
     "emit_selected": (False,),
     "emit_sigma": (False,),
+    # `sigma` times a fit's own variances: order-free no more than `sigma`.
+    "emit_se_coef": (False,),
     "resid_autocorr_lag": (None,),
     "resid_quantiles": (None,),
 }
@@ -954,18 +958,19 @@ def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Exp
         lists = set(idx.filter(pl.col("kind") == "coef")["field"]) & set(coefs["field"])
         for field in fields:
             col = pl.col(column).struct.field(field)
-            # `support_coef` is laid out like `coef` -- one share per
-            # coefficient (docs/WARMUP-AND-CONVERGENCE.md §2.2) -- so it
-            # unnests the same way, `support_coef_<t>_<term>`.
-            support = field.startswith("support_coef")
-            base = "coef" + field.removeprefix("support_coef") if support else field
+            # `support_coef` and `se_coef` are laid out like `coef` -- one
+            # value per coefficient (docs/WARMUP-AND-CONVERGENCE.md §2.2,
+            # docs/PLAN.md task 116) -- so they unnest the same way,
+            # `support_coef_<t>_<term>` and `se_coef_<t>_<term>`.
+            beside = next((b for b in ("support_coef", "se_coef") if field.startswith(b)), "")
+            base = "coef" + field.removeprefix(beside) if beside else field
             if base not in lists:
                 exprs.append(col)
                 continue
             for position, name in (
                 coefs.filter(pl.col("field") == base).select("position", "name").iter_rows()
             ):
-                out = "support_coef_" + name.removeprefix("coef_") if support else name
+                out = beside + "_" + name.removeprefix("coef_") if beside else name
                 exprs.append(col.list.get(position, null_on_oob=False).alias(out))
     if by_name:
         msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
@@ -1116,7 +1121,8 @@ class LazyFrameOnlineNamespace:
         (``coef_y_intercept``, ``coef_y_x1__r0.5@h500``) as
         :func:`polars_online.spec.coef_fields` lists them. ``support_coef``
         -- one data share per coefficient, on the same rows -- goes the same
-        way, as ``support_coef_{target}_{term}...``. The columns take the
+        way, as ``support_coef_{target}_{term}...``, and so does ``se_coef``,
+        as ``se_coef_{target}_{term}...``. The columns take the
         struct's place; the rest of the frame, and any spec column not named,
         are left as they are. ``specs`` is the spec dicts, a
         :class:`ModelBank` (its specs), or the path of a saved bank (which

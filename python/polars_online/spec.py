@@ -299,9 +299,9 @@ at midnight.
 .. rubric:: What a spec writes
 
 A bank adds one struct column per spec, named after the spec. Every field but
-``coef`` and ``support_coef`` is computed from the state *before* the row
-updates it, so a prediction is out-of-sample and a diagnostic never sees the
-row it describes. ``coef`` and ``support_coef`` report the fit *after* the
+``coef``, ``support_coef`` and ``se_coef`` is computed from the state
+*before* the row updates it, so a prediction is out-of-sample and a diagnostic
+never sees the row it describes. Those three report the fit *after* the
 row: ``coef`` on row *t* is the fit row *t + 1* is predicted with. Under an
 ``embargo`` the row's own update waits for the delay, so ``coef`` on row *t*
 is the fit after the rows *t* released, and row *t + 1* is predicted with it
@@ -343,12 +343,14 @@ only when *t + 1* releases none. A regression writes, with ``<t>`` a target:
     than a string, because a string column costs sixteen bytes a row even
     when every value is null.
 ``support_coef``
-    On ``coef``'s rows, for ``ewridge``, and of the same fit after the row:
-    each coefficient's data share, ``1 - ridge * (S^-1)_jj`` in ``[0, 1]``,
+    On ``coef``'s rows, for ``ewridge``, ``huber`` and ``quantile``, and of the
+    same fit after the row: each coefficient's data share,
+    ``1 - ridge * (S^-1)_jj`` in ``[0, 1]`` with ``S`` the system the solve
+    inverts (for the robust models, the Gram as the loss weighs the rows),
     laid out like ``coef`` -- how much of it the data determined rather than
     the ridge. A duplicated pair reads ``0.5`` each, a clean design ``1``, a
     column the standardiser dropped ``0``; the intercept is not a share and
-    is null.
+    is null. Not ``lasso``, whose L1 penalty has no such matrix.
 
 A model that is not a regression writes fields of its own, which its builder
 describes. Per model, the fields of the plainest spec are listed in
@@ -372,6 +374,7 @@ target, so their fields take no suffix:
     withheld_reason{instance}
     coef{instance}                     instance = ""             single half-life
     support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
+    se_coef{instance}                           emit_se_coef
     penalty_selected_{target}{instance}         lasso: the path point in force
     selected_{target}                           emit_selected: the chosen slot
     pred_{target}__selected                     emit_selected: its prediction
@@ -414,6 +417,21 @@ The diagnostics add, per slot:
        triangular solve or quadratic form a row, which is why it is opt-in.
        ``ewridge``'s and ``rls``'s gates read the stream average, which is
        free; ``kalman``'s reads this value.
+   * - ``emit_se_coef``
+     - ``se_coef``
+     - On ``coef``'s rows and laid out like it, each coefficient's standard
+       error, in ``coef``'s own units (the intercept's included). ``ewridge``:
+       ``sigma * sqrt(diag(T M T'))``, ``M = S^-1 / n_kish`` the
+       coefficients' covariance over the noise and ``T`` the map ``coef`` is
+       read out by; it leaves out the ridge's sandwich, so it errs large.
+       ``rls``: ``sigma * sqrt(s2 / s1 * diag(A^-1))``, the same in sum form.
+       ``kalman``: ``sqrt(diag(T P T'))``, its posterior, exact. ``sigma`` is
+       the row's EW out-of-sample residual std, which during warm-up still
+       carries the estimation error, ``sqrt(1 + h)`` too large, so the error
+       errs large there too; null until there is one. A report, not a gate.
+       Refused for ``lasso`` (post-selection), ``huber`` and ``quantile``
+       (an M-estimator's covariance is a sandwich), and the gradient models
+       (no second moment).
    * - ``emit_clocks``
      - ``scored_clock``, ``learned_clock``
      - The row's own clock, and the clock of the newest row the models had

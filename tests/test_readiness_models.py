@@ -406,3 +406,67 @@ class TestRobustSupport:
         summary = bank.summary("m")
         assert summary["min_support_coef"][0] < 0.5
         assert summary["min_support_coef_feature"][0] in ("x0", "x2")
+
+
+# ---------------------------------------------------------------------------
+# F. se_coef
+
+
+class TestSeCoef:
+    @pytest.mark.parametrize(
+        ("kind", "why"),
+        [
+            ("lasso", "post-selection"),
+            ("huber", "sandwich"),
+            ("quantile", "sandwich"),
+            ("sgd", "second moment"),
+            ("pa", "second moment"),
+            ("ftrl", "second moment"),
+        ],
+    )
+    def test_is_refused_where_no_covariance_is_kept_with_the_reason(self, kind, why):
+        kw: dict[str, Any] = {}
+        if kind == "quantile":
+            kw["quantile"] = 0.5
+        if kind == "sgd":
+            kw["learning_rate"] = 0.01
+        with pytest.raises(ValueError, match=why):
+            build(kind, emit_se_coef=True, **kw)
+
+    @pytest.mark.parametrize("kind", ["ewridge", "rls", "kalman"])
+    def test_rides_on_the_coef_schedule_and_unnests_like_coef(self, kind):
+        s = build(kind, emit_se_coef=True)
+        out = po.ModelBank([s]).fit_predict(frame(100))
+        f = unnest(out)
+        assert f["se_coef"].null_count() == f["coef"].null_count()
+        assert len(f["se_coef"][-1]) == len(f["coef"][-1]) == 3
+        assert all(v > 0.0 for v in f["se_coef"][-1].to_list())
+        cols = po.unnest(out, [s]).columns
+        assert {"se_coef_y_intercept", "se_coef_y_x0", "se_coef_y_x1"} <= set(cols), cols
+
+    @pytest.mark.parametrize("kind", ["ewridge", "rls", "kalman"])
+    def test_is_chunk_invariant_on_every_coef_row(self, kind):
+        df = frame(210)
+        s = build(kind, emit_se_coef=True, coef_every=1)
+        one = unnest(po.ModelBank([s]).fit_predict(df))
+        bank = po.ModelBank([s])
+        many = unnest(pl.concat([bank.fit_predict(df[i : i + 30]) for i in range(0, 210, 30)]))
+        assert one["se_coef"].equals(many["se_coef"])
+
+    def test_is_null_until_there_is_a_residual_spread(self):
+        """``ewridge``'s and ``rls``'s are ``sigma · sqrt(M_jj)``: no
+        ``sigma`` yet, no standard error."""
+        f = unnest(
+            po.ModelBank([build("rls", emit_se_coef=True, coef_every=1)]).fit_predict(frame(30))
+        )
+        se = f["se_coef"].to_list()
+        assert se[0] is None or all(v is None for v in se[0])
+        assert all(v is not None for v in se[-1])
+
+    def test_shrinks_as_the_sample_grows(self):
+        """Without decay the standard errors fall like one over the root of
+        the rows."""
+        s = build("ewridge", emit_se_coef=True, coef_every=1, half_life=math.inf)
+        se = unnest(po.ModelBank([s]).fit_predict(frame(1600)))["se_coef"]
+        ratio = np.array(se[1599].to_list()) / np.array(se[399].to_list())
+        np.testing.assert_allclose(ratio, 0.5, rtol=0.15)

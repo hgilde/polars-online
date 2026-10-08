@@ -44,6 +44,8 @@ impl WindowBudgetSpec {
     }
 }
 
+mod readiness;
+
 /// A number rendered for a **field name** (`__r{ridge}`, `@h{half_life}`,
 /// `abs_resid_q{level}`, `__l{lambda}`).
 ///
@@ -2690,6 +2692,22 @@ pub struct Spec {
     /// elsewhere, `lasso` included: it keeps no factor.
     #[serde(default)]
     pub emit_error_inflation: bool,
+    /// Emit `se_coef`: each coefficient's standard error, on `coef`'s rows
+    /// and laid out like it, in `coef`'s own units, the intercept's included
+    /// -- `T Cov Tᵀ`'s diagonal, `T` the map `coef` is read out by
+    /// (docs/PLAN.md task 116, F). `ewridge`: `Cov = σ̂² M`,
+    /// `M = Σ̂⁻¹ / n_kish` (WARMUP §7.1), which leaves out the ridge's
+    /// sandwich and so errs large; `rls`: `Cov = σ̂² (s₂ / s₁) A⁻¹`, the same
+    /// in sum form, `O(k³)` on the `coef` schedule; `kalman`: `Cov = P`, its
+    /// posterior, exact. `σ̂` is the slot's EW out-of-sample residual std as
+    /// the row reads it (`sigma`), which carries the estimation error too,
+    /// `sqrt(1 + h)` larger than the noise in warm-up, so the error errs
+    /// large there; null before there is one. A report, not a gate. Refused
+    /// for `lasso` (post-selection), `huber` and `quantile` (an
+    /// M-estimator's covariance is a sandwich) and the gradient models (no
+    /// second moment).
+    #[serde(default)]
+    pub emit_se_coef: bool,
     /// Emit `scored_clock` and `learned_clock` on every scored row: the row's
     /// own clock, and the clock of the newest row the models had learned
     /// from, at a positive weight, when the row was scored (docs/PLAN.md
@@ -3199,85 +3217,6 @@ impl Spec {
         })
     }
 
-    /// Whether this spec's model reads the noise gate's statistic
-    /// ([`online_core::OnlineModel::error_inflation_into`]): the fits
-    /// linear in the past targets whose estimation variance is known --
-    /// `ewridge`, `rls` and `kalman` -- and `lasso`, from its active count
-    /// (docs/PLAN.md task 116). The others are left to `min_weight`, and
-    /// `max_error_inflation` is refused for them, with the reason
-    /// [`Self::no_noise_statistic`] gives.
-    pub fn has_error_inflation(&self) -> bool {
-        matches!(
-            self.model,
-            ModelKind::EwRidge { .. }
-                | ModelKind::Rls { .. }
-                | ModelKind::Kalman { .. }
-                | ModelKind::Lasso { .. }
-        )
-    }
-
-    /// Whether this spec's model reads the statistic for one row's
-    /// features ([`online_core::OnlineModel::row_error_inflation_into`]),
-    /// the field `emit_error_inflation` writes: `ewridge` and `rls` from
-    /// the factor their fit keeps, `kalman` from its `P`. Not `lasso`, which
-    /// keeps no factor.
-    pub fn has_row_error_inflation(&self) -> bool {
-        matches!(
-            self.model,
-            ModelKind::EwRidge { .. } | ModelKind::Rls { .. } | ModelKind::Kalman { .. }
-        )
-    }
-
-    /// Why this spec's model has no noise statistic, for the refusal of a
-    /// setting that reads one (docs/PLAN.md task 116).
-    fn no_noise_statistic(&self) -> &'static str {
-        match self.model {
-            ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
-                "a gradient fit keeps no second moment of the features to read an estimation \
-                 variance from"
-            }
-            ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
-                "a robust fit is not linear in the targets, so the ridge family's variance does \
-                 not hold for it"
-            }
-            ModelKind::EwCov { .. }
-            | ModelKind::Marginal { .. }
-            | ModelKind::Deco { .. }
-            | ModelKind::Rcov { .. }
-            | ModelKind::CorrChange { .. } => {
-                "its statistics are EW moments, and 1 / n_kish is a mean's variance, not a \
-                 standard deviation's or a correlation's; its min_weight of k + 1 already holds \
-                 the gate's point"
-            }
-            _ => "it keeps no estimation variance of a prediction",
-        }
-    }
-
-    /// Whether this spec's model reports its coefficients' sampling
-    /// variances ([`online_core::OnlineModel::coef_variance`]), the field
-    /// `emit_se_coef` writes: `ewridge`, `rls` and `kalman` (docs/PLAN.md
-    /// task 116, F).
-    pub fn has_se_coef(&self) -> bool {
-        matches!(
-            self.model,
-            ModelKind::EwRidge { .. } | ModelKind::Rls { .. } | ModelKind::Kalman { .. }
-        )
-    }
-
-    /// Whether this spec's model reports `support_coef`
-    /// ([`online_core::OnlineModel::support_coef`]): the fits whose solve
-    /// inverts a Gram with a mean-form ridge on its diagonal, `ewridge`,
-    /// `huber` and `quantile` (docs/WARMUP-AND-CONVERGENCE.md §2.2). Not
-    /// `lasso`, an L1 penalty having no shrinkage matrix -- every active
-    /// coefficient would read 1 at the default -- nor `ew_cov`, which has no
-    /// coefficients.
-    pub fn has_support_coef(&self) -> bool {
-        matches!(
-            self.model,
-            ModelKind::EwRidge { .. } | ModelKind::Huber { .. } | ModelKind::Quantile { .. }
-        )
-    }
-
     /// The weight-share cadence (docs/PLAN.md task 115 (b)), the default
     /// where `solve_every` is left out under a finite half-life: a solve once
     /// the weight learned since the last reaches `ln 2 / 50` of the weight
@@ -3667,6 +3606,29 @@ impl Spec {
                     self.no_noise_statistic()
                 ));
             }
+        }
+        if self.emit_se_coef && !self.has_se_coef() {
+            let why = match self.model {
+                ModelKind::Lasso { .. } => {
+                    "lasso's fit is post-selection: its active set is chosen from the same rows, \
+                     and a covariance that ignores the choice understates it"
+                }
+                ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
+                    "an M-estimator's covariance is a sandwich of the loss's curvature and the \
+                     scores' spread, a different formula from a least-squares fit's"
+                }
+                ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
+                    "a gradient fit keeps no second moment of the features to read a covariance \
+                     from"
+                }
+                _ => "it keeps no covariance of coefficients",
+            };
+            return Err(format!(
+                "spec {:?}: emit_se_coef needs a model that keeps its coefficients' covariance \
+                 (ewridge, rls, kalman); {} has none: {why}",
+                self.name,
+                self.model.kind_name()
+            ));
         }
         if self.emit_error_inflation && !self.has_row_error_inflation() {
             let why = if matches!(self.model, ModelKind::Lasso { .. }) {

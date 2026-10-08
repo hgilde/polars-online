@@ -11,7 +11,7 @@ use online_core::{
     Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
     SlotMetrics, State, StateError, WindowShadow,
 };
-use online_core::{ClockValue, ExactCaps, Stamp};
+use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::ClockCol;
@@ -612,8 +612,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             let mut m = EwRidge::new(cfg)?;
-            // The per-row leverage needs the factors kept (§2.1).
-            m.set_keep_factor(spec.emit_error_inflation);
+            // The per-row leverage needs the factors kept (§2.1), and so do
+            // the coefficients' standard errors (task 116, F).
+            m.set_keep_factor(spec.emit_error_inflation || spec.emit_se_coef);
             // Each target's own threshold, for its own first solve (task
             // 195, S9b); left out, every target's is the model's.
             if spec.min_weight.is_some() {
@@ -2767,6 +2768,9 @@ pub struct ChunkOut {
     pub inflation: Vec<f64>,
     /// Each coefficient's data share, on `coef`'s cadence: `[model][row]`.
     pub support_coef: Vec<Vec<Option<Vec<f64>>>>,
+    /// Each coefficient's standard error under `emit_se_coef`, on `coef`'s
+    /// cadence: `[model][row]` (docs/PLAN.md task 116, F).
+    pub se_coef: Vec<Vec<Option<Vec<f64>>>>,
     /// `n_rows` each under `emit_clocks`, else empty: the row's own clock,
     /// and the newest learned row's when it was scored (task 152).
     pub scored_clock: Vec<Option<ClockValue>>,
@@ -2863,6 +2867,7 @@ impl ChunkOut {
             reason: vec![0; n_models * n_rows],
             inflation: vec![f64::NAN; on(spec.emit_error_inflation)],
             support_coef: vec![vec![None; n_rows]; n_models],
+            se_coef: vec![vec![None; n_rows]; n_models],
             scored_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
             learned_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
             n_models,
@@ -2985,6 +2990,9 @@ pub struct LastRow {
     /// The intercept's share is NaN by definition, so the export tags it.
     #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
     pub support_coef: Vec<Option<Vec<f64>>>,
+    /// Under `emit_se_coef` (task 116): NaN where nothing is estimated.
+    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
+    pub se_coef: Vec<Option<Vec<f64>>>,
 }
 
 /// Row `ri` of a buffer of `n_rows` rows: in every `ChunkOut` buffer the row
@@ -3022,6 +3030,9 @@ impl LastRow {
         self.support_coef.clear();
         self.support_coef
             .extend(out.support_coef.iter().map(|c| c[ri].clone()));
+        self.se_coef.clear();
+        self.se_coef
+            .extend(out.se_coef.iter().map(|c| c[ri].clone()));
     }
 
     /// A one-row chunk at absolute row `row`, marked processed, for
@@ -3053,6 +3064,7 @@ impl LastRow {
             out.reason.len() == self.reason.len(),
             out.inflation.len() == self.inflation.len(),
             out.support_coef.len() == self.support_coef.len(),
+            out.se_coef.len() == self.se_coef.len(),
             out.scored_clock.len() == self.scored_clock.len(),
             out.learned_clock.len() == self.learned_clock.len(),
         ];
@@ -3084,6 +3096,9 @@ impl LastRow {
         out.reason.clone_from(&self.reason);
         out.inflation.clone_from(&self.inflation);
         for (dst, src) in out.support_coef.iter_mut().zip(&self.support_coef) {
+            dst[0].clone_from(src);
+        }
+        for (dst, src) in out.se_coef.iter_mut().zip(&self.se_coef) {
             dst[0].clone_from(src);
         }
         Ok(out)
@@ -4492,6 +4507,7 @@ fn build_instances<'a>(
     let mut o_reason = out.reason.chunks_mut(n_rows.max(1));
     let mut o_inflation = out.inflation.chunks_mut(block.max(1));
     let mut o_support_coef = out.support_coef.iter_mut();
+    let mut o_se_coef = out.se_coef.iter_mut();
 
     let n_slots = out.n_slots;
     let mut decays = decays.iter();
@@ -4540,6 +4556,7 @@ fn build_instances<'a>(
             o_reason: o_reason.next().unwrap_or_default(),
             o_inflation: o_inflation.next().unwrap_or_default(),
             o_support_coef: o_support_coef.next().expect("one per instance"),
+            o_se_coef: o_se_coef.next().expect("one per instance"),
             decay_time: decay_time.next().expect("one per instance"),
             notified: notified.next().expect("one per instance"),
             // None without an embargo, which keeps no held rows' clock.
@@ -4712,6 +4729,7 @@ struct Instance<'a> {
     o_reason: &'a mut [u8],
     o_inflation: &'a mut [f64],
     o_support_coef: &'a mut Vec<Option<Vec<f64>>>,
+    o_se_coef: &'a mut Vec<Option<Vec<f64>>>,
     /// The decay time this instance has seen (docs/WARMUP-AND-CONVERGENCE.md
     /// §2), read before each row and advanced by the rows it learns from.
     decay_time: &'a mut f64,
@@ -5388,6 +5406,38 @@ fn run_instance(
                 }
             }
             inst.o_support_coef[ri] = support.map(|s| s.into_iter().flatten().collect());
+            // Each coefficient's standard error on the same cadence, in
+            // `coef`'s units (docs/PLAN.md task 116, F): a variance over the
+            // noise times the slot's `sigma` as the row read it -- the EW
+            // out-of-sample residual spread, larger than the noise by
+            // `sqrt(1 + h)` while estimation error is in it, so the error
+            // errs large in warm-up -- or `kalman`'s own, which carries the
+            // noise.
+            if inst.spec.emit_se_coef {
+                inst.o_se_coef[ri] = inst.model.get().coef_variance().map(|v| {
+                    let (per, over_noise) = match v {
+                        CoefVariance::PerNoise(per) => (per, true),
+                        CoefVariance::Absolute(per) => (per, false),
+                    };
+                    per.iter()
+                        .enumerate()
+                        .flat_map(|(slot, vars)| {
+                            let sigma = if over_noise {
+                                sc.sig.get(slot).copied().unwrap_or(f64::NAN)
+                            } else {
+                                1.0
+                            };
+                            vars.iter().map(move |&var| {
+                                if var.is_nan() {
+                                    f64::NAN
+                                } else {
+                                    var.max(0.0).sqrt() * sigma
+                                }
+                            })
+                        })
+                        .collect()
+                });
+            }
         }
         if reset_on_drift && row_drift {
             inst.reset();

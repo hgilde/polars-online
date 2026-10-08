@@ -3886,6 +3886,33 @@ class TestKalmansErrorInflationIsFilterpysPrior:
         np.testing.assert_allclose(got[finite], want[finite], rtol=self.TOL)
         assert (got[finite] > 1.0).all()
 
+    @pytest.mark.parametrize("case", sorted(CASES))
+    def test_se_coef_is_the_posterior_covariance_in_coefs_units(self, case):
+        out, _, posts, t, x, w = self.run(self.CASES[case], se=True)
+        se = out["se_coef"].to_list()
+        n = len(t)
+        for i in range(n):
+            if posts[i] is None:
+                assert se[i] is None or all(v is None for v in se[i]), (i, se[i])
+                continue
+            P = posts[i]
+            if self.CASES[case]["standardize"]:
+                # The coefficients are read out with the moments after the
+                # row: c_i = b_i / s_i, c_0 = b_0 - sum_i c_i m_i.
+                u = w[: i + 1] * 0.5 ** ((t[i] - t[: i + 1]) / 30.0)
+                m = (u[:, None] * x[: i + 1]).sum(axis=0) / u.sum()
+                v = (u[:, None] * (x[: i + 1] - m) ** 2).sum(axis=0) / u.sum()
+                # One row has no spread: the filter's is exactly 0 there,
+                # the sums' a rounding (as in `run`).
+                v = v if i > 0 else np.zeros_like(v)
+                s = np.where(v > 0.0, np.sqrt(np.maximum(v, 0.0)), 1.0)
+                T = np.zeros((3, 3))
+                T[0, 0] = 1.0
+                T[0, 1:] = -m / s
+                T[1:, 1:] = np.diag(1.0 / s)
+                P = T @ P @ T.T
+            np.testing.assert_allclose(se[i], np.sqrt(np.diag(P)), rtol=1e-8, err_msg=str(i))
+
 
 class TestRlsErrorInflationIsPadasips:
     """docs/PLAN.md task 116 (A): `rls`'s per-row ``error_inflation`` is
@@ -3944,3 +3971,61 @@ class TestRlsErrorInflationIsPadasips:
                 want = np.sqrt(1.0 + z @ rls.R @ z * s2 / s1)
                 np.testing.assert_allclose(got[i], want, rtol=1e-9, err_msg=str(i))
             rls.adapt(y[i], z)
+
+    @pytest.mark.parametrize(("half_life", "ridge"), CASES)
+    def test_se_coef_is_sigma_times_padasips_inverse(self, half_life, ridge):
+        out, x, y, mu, rls = self.run(half_life, ridge, se=True)
+        se = out["se_coef"].to_list()
+        sigma = out["sigma_y"].to_numpy()
+        checked = 0
+        for i in range(len(y)):
+            rls.adapt(y[i], np.array([1.0, *x[i]]))
+            s1, s2 = self.kish(mu, i + 1)
+            if np.isfinite(sigma[i]):
+                want = sigma[i] * np.sqrt(s2 / s1 * np.diag(rls.R))
+                np.testing.assert_allclose(se[i], want, rtol=1e-8, err_msg=str(i))
+                checked += 1
+        assert checked > len(y) - 5
+
+
+class TestEwRidgeSeCoefIsStatsmodels:
+    """docs/PLAN.md task 116 (F): `ewridge`'s ``se_coef`` is
+    ``sigma · sqrt(diag(T M Tᵀ))`` with ``M = Σ̂⁻¹ / n_kish`` (WARMUP §7.1),
+    which with no decay, unit weights and a vanishing ridge is the
+    least-squares covariance over the noise, ``(X'X)⁻¹`` -- statsmodels'
+    ``WLS(...).fit().cov_params() / scale``, the intercept's included, which
+    the unstandardizing map ``T`` carries. Standardized or not, the solve's
+    space is mapped out, so both read the same."""
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_se_over_sigma_is_the_least_squares_covariance(self, standardize):
+        import statsmodels.api as sm
+
+        rng = np.random.default_rng(53)
+        n = 200
+        x = rng.normal(size=(n, 2)) * np.array([3.0, 0.5]) + np.array([10.0, -2.0])
+        y = 1.0 + 0.5 * x[:, 0] - 2.0 * x[:, 1] + rng.normal(size=n)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            ridge=1e-10,
+            standardize=standardize,
+            emit_se_coef=True,
+            emit_sigma=True,
+            coef_every=1,
+            max_rows_between_solves=1,
+        )
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
+        se = out["se_coef"].to_list()
+        sigma = out["sigma_y"].to_numpy()
+        checked = 0
+        for i in (20, 60, n - 1):
+            X = sm.add_constant(x[: i + 1])
+            fit = sm.WLS(y[: i + 1], X, weights=np.ones(i + 1)).fit()
+            want = np.sqrt(np.diag(fit.cov_params() / fit.scale))
+            np.testing.assert_allclose(np.asarray(se[i]) / sigma[i], want, rtol=1e-6)
+            checked += 1
+        assert checked == 3

@@ -4843,6 +4843,19 @@ fn assemble(
                     }
                     coef_list_array(&support)
                 }
+                Source::SeCoef(mi) => {
+                    let mut se: Vec<Option<&Vec<f64>>> = vec![None; n];
+                    for ch in chunks {
+                        for (ri, &row) in ch.rows.iter().enumerate() {
+                            if ch.processed[ri]
+                                && let Some(c) = &ch.se_coef[mi][ri]
+                            {
+                                se[row] = Some(c);
+                            }
+                        }
+                    }
+                    coef_list_array(&se)
+                }
                 Source::LamSelected(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
                         .finish_array_boxed()

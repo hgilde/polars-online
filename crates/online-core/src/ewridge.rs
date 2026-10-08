@@ -1881,6 +1881,67 @@ impl OnlineModel for EwRidge {
         true
     }
 
+    /// Per slot, each coefficient's variance over the noise in `coef`'s
+    /// units: `T M Tᵀ`'s diagonal with `M = scale · A⁻¹ / n_kish` in the
+    /// kept system's coordinates (docs/WARMUP-AND-CONVERGENCE.md §7.1;
+    /// docs/PLAN.md task 116, F), read against the factor the fit came from
+    /// and Kish's size as it stands. `M` is `h(x)`'s matrix, `h(x) = x' M x`:
+    /// a slope `zᵢ`'s is `M_ii / sᵢ²`; a centred system's intercept,
+    /// `β₀ = ȳ − Σ (mᵢ / sᵢ) solᵢ`, adds the mean's own `1 / n_kish` to the
+    /// slopes' share through `u = m / s`, `(1 + scale · u' A⁻¹ u) / n_kish`,
+    /// which is `h` at the features' origin. It ignores the ridge's sandwich,
+    /// `A⁻¹ G A⁻¹ ≤ A⁻¹`, so it errs large under a ridge. NaN outside the
+    /// slot's feature set and for a column the standardiser dropped, whose
+    /// coefficient no data estimates. `None` unless the systems are kept
+    /// ([`EwRidge::set_keep_factor`]), and before the first solve.
+    fn coef_variance(&self) -> Option<crate::CoefVariance> {
+        if !self.keep_factor {
+            return None;
+        }
+        self.beta.as_ref()?;
+        let (m, nc, k) = (self.cfg.n_targets, self.cfg.n_combos(), self.cfg.k_total());
+        if self.ready.system_of.len() != m * nc {
+            return None;
+        }
+        let kish = self.gram_kish();
+        let mut out = vec![vec![f64::NAN; k]; m * nc];
+        for j in 0..m {
+            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+                continue;
+            };
+            if n.is_nan() || n <= 0.0 {
+                continue;
+            }
+            for c in 0..nc {
+                let slot = j * nc + c;
+                let at = self.ready.system_of[slot];
+                let (Some(Some(sys)), Some(Some(factor))) =
+                    (self.ready.systems.get(at), self.factors.0.get(at))
+                else {
+                    continue;
+                };
+                let kk = sys.z.len();
+                let v = &mut out[slot];
+                if kk > 0 {
+                    let inv = factor.inverse_diagonal(kk);
+                    for (i2, &zi) in sys.z.iter().enumerate() {
+                        v[zi] = sys.scale * inv[i2] / (n * sys.s[i2] * sys.s[i2]);
+                    }
+                }
+                if sys.centred {
+                    let u: Vec<f64> = sys.mean.iter().zip(&sys.s).map(|(mu, s)| mu / s).collect();
+                    let q = if kk > 0 {
+                        factor.quad_forms(&u, kk, 1)[0] * sys.scale
+                    } else {
+                        0.0
+                    };
+                    v[0] = (1.0 + q) / n;
+                }
+            }
+        }
+        Some(crate::CoefVariance::PerNoise(out))
+    }
+
     fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
         self.beta.as_ref()?;
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());

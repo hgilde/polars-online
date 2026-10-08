@@ -56,6 +56,7 @@ class ExprKwargs(TypedDict, total=False):
     min_settled_frac: float | None
     max_error_inflation: float | None
     emit_error_inflation: bool
+    emit_se_coef: bool
     emit_clocks: bool
     coef_every: float | Duration | None
     max_rows_between_coefs: int | None
