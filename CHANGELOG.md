@@ -501,10 +501,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
   The default `eps` is 0.01, where it was 0.1 (task 203): the band does not
   shrink as the fit improves, so it must sit below a good fit's errors. On
   a target predicted to within 1% of its spread, 0.1 stopped the fit about
-  0.08 off the truth. On a target predicted less well (R² 0.97 to 0.998),
-  `pa` at `c = 1` fits about a third worse out of sample at 0.01 than at
-  0.1, and better still at `c=0.1`; the tube is its only damping against
-  noise.
+  0.08 off the truth. On a target predicted less well (R² 0.98), `pa` at
+  `c = 1` fits about a third worse out of sample at 0.01 than at 0.1 (2.2
+  against 1.6 times the noise), and `c=0.1` damps best there (1.3): the
+  tube is its only damping against noise. Above about R² 0.99 the wider
+  tube is the smaller loss (at R² 0.9975: 2.0, 1.2 and 1.7).
 - **`bocpd` sets a left-out prior from its first rows** (task 195; review
   round 4, U4, U5). Without `prior_mean` or `prior_scale`, the first
   `warm_rows` learned rows (default the feature count plus 2) set it from

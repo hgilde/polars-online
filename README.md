@@ -3055,9 +3055,11 @@ no width. `eps` is 0.01 by default, so errors under 1% of the target's own
 spread do not move the fit: the tube does not shrink as the fit improves,
 and must sit below a good fit's errors on most targets, as `sgd`'s does. The
 tube is also `pa`'s only damping against noise, since at `c = 1` every row
-outside it is fitted in full: on a target predicted to R² 0.97 to 0.998 the
+outside it is fitted in full: on a target predicted to R² 0.98 the
 out-of-sample error is 2.2 times the noise at the default, 1.6 at `eps=0.1`
-and 1.3 at `c=0.1`, which damps without stalling a better fit. `pa` standardizes
+and 1.3 at `c=0.1`. `c=0.1` damps best where the noise is that large. Above
+about R² 0.99 the wider tube is the smaller loss (at R² 0.9975: 2.0, 1.2
+and 1.7). `pa` standardizes
 its features by default, with `sgd`'s scaler, so `s` and `c` are not in the features'
 units either. A row weight below 1 scales the step, and a weight above 1 counts as 1.
 Where outliers are possible, keep a `mode` that caps or damps the step:

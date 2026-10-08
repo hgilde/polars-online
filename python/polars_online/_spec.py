@@ -2827,7 +2827,7 @@ def pa(
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Passive-aggressive regression (Crammer et al. 2006): each row asks the fit to
-    come within ``eps`` of the target's own standard deviation of its target, and
+    come within ``eps`` standard deviations of the target (its own EW spread), and
     the update is the smallest change that does so.
 
     Passive when the constraint already holds, aggressive when it does not, and
@@ -2886,9 +2886,11 @@ def pa(
         must sit below a good fit's errors on most targets, as :func:`sgd`'s
         tube does. The tube is also this model's only damping against noise:
         at ``c = 1`` every row outside it is fitted in full. On a target
-        predicted to R² 0.97 to 0.998 the out-of-sample error is 2.2 times
-        the noise at the default, 1.6 times at ``eps=0.1``, and 1.3 times at
-        ``c=0.1``, which damps without stalling a better fit.
+        predicted to R² 0.98 the out-of-sample error is 2.2 times the noise
+        at the default, 1.6 times at ``eps=0.1`` and 1.3 times at ``c=0.1``.
+        ``c=0.1`` damps best where the noise is that large. Above about R²
+        0.99 the wider tube is the smaller loss: at R² 0.9975 the three are
+        2.0, 1.2 and 1.7 times the noise.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes, exactly as for :func:`sgd`. The projection
         follows each update, so the step does not meet the row's margin exactly:

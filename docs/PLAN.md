@@ -12470,8 +12470,14 @@ near-deterministic target a user has before differencing it); for `sgd`
 0.01 loses nowhere. Changed: "inside a good fit's errors" became "below a
 good fit's errors on most targets" (at R² 0.9998 the band is two-thirds of
 the noise std), and `pa`'s docstring and the README carry the trade-off
-with `c=0.1` as the better lever (2.2× / 1.6× / 1.3× the noise at R² 0.978,
-`test_pa.py::test_the_tube_is_pas_only_damping_on_a_target_predicted_less_well`).
+(2.2× / 1.6× / 1.3× the noise at the default / `eps=0.1` / `c=0.1`, at R²
+0.978, `test_pa.py::test_the_tube_is_pas_only_damping_on_a_target_predicted_less_well`).
+*Review 5 (F2, E5, A3, G4):* the four places had stated those figures for
+"R² 0.97 to 0.998" with `c=0.1` as the better lever, from that one point.
+At R² 0.9975 the bank gives 2.00 / 1.18 / 1.70 and at 0.990 2.12 / 1.42 /
+1.46 (median of 3 seeds), so `eps=0.1` is the smaller loss above about R²
+0.99 and `c=0.1` damps best where the noise is large. They now say so, at
+R² 0.98 and without the range.
 
 **Decided 2026-10-07 (the user: "Your reco all except 116").** On the open
 items after the round:
