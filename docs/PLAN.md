@@ -8589,6 +8589,45 @@ tick, and that the series holding it up has a count near 1.
     CI reports the essentials' duration, so a slow test that creeps into
     the tier is seen. `CLAUDE.md`'s Commands, `docs/TESTING.md` and the
     gate's own header say which tier runs where.
+- [ ] 211. **Kalman, from its review of 2026-10-08** -- the user: "Review
+      kalman. What should we do", "Be sure to review from a theoretical
+      perspective as well", then "Your reco" on all six recommendations.
+      A read-only review with a bit-exact Rust replica (scratchpad
+      `review5/kalman/`) found: (1) **hard rule 9 broken** -- task 150's
+      process noise `Q·d²` is not additive over a split gap, so a
+      zero-weight or null-target row inside a gap moves later predictions
+      (0.197 at `coef_half_life` 20, confirmed by the coordinator; `rls`,
+      `ewridge`, `sgd` to rounding), the cause of the embargo gap task 206
+      found and of a sparse target adapting about `h·√n` slowly; the
+      contract test compared `weight_sum` and nulls only; (2) the prior is
+      sized on row 0 against empty moments from one χ²₁ innovation, and the
+      22-row warm-up leaves a stale pseudo-prior; (3) the exact re-map can
+      be held exactly at O(k) a row in an anchor's coordinates; (4)
+      `share_p`'s `se_coef` and `pred_var` use the mean noise for every
+      target; (6) docs claim EW-RLS's memory at any spacing (it is `h/√λ`
+      per direction), `se_coef` "exact" without "under the model", and the
+      ridge equivalence where it holds unstandardized only. The theory
+      (state-space model, the noise estimate's `R + E[zᵀPz]` bias, the
+      Riccati memory, the RLS-forgetting equivalence, the unit-information
+      prior, `share_p`'s exactness under constant noise) is in the
+      review's report. Build: process noise per informative row; the prior
+      on the first usable row, no warm-up for kalman; the anchored exact
+      filter; `share_p`'s reports per target; the docs; and the rule-9
+      contract test comparing predictions for every model. *Worker
+      `task211-kalman`.*
+- [ ] 212. **The validation run, the per-standard-deviation recipe, and
+      `po.ewm_std`** (the same review, items 1 and 5). The pre-206 kalman
+      was a filter on z-scored features (to 1e-14); task 206 made it per
+      raw unit; on `docs/VALIDATION.md`'s data the per-SD model fits
+      better, for `ewridge` too -- a column, not a model property.
+      `scripts/validate.py` learns `y0` (the next return) and `y1` (a
+      5-row forward sum) at their own rows, a look-ahead, and compares the
+      models at different memories; at matched memory and held back,
+      kalman ties `ewridge` (-0.0164 against -0.0165). Build: each target
+      under its horizon's embargo, models at matched memory, VALIDATION
+      regenerated; `po.ewm_std`/`po.ewm_var` streaming operators matching
+      Polars'; the recipe documented and tested. *Worker
+      `task212-validate`.*
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
