@@ -887,6 +887,66 @@ fn skip_learned_resumes_on_overlapping_input() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Rows `from` on of `path`, the clock of row `nan_at` among them NaN,
+/// written as `to`.
+fn tail_with_nan_clock(path: &Path, from: usize, nan_at: usize, to: &Path) {
+    let mut df = read_frame(path).slice(from as i64, usize::MAX);
+    let t: Vec<f64> = df
+        .column("t")
+        .unwrap()
+        .f64()
+        .unwrap()
+        .into_no_null_iter()
+        .enumerate()
+        .map(|(i, v)| if i == nan_at { f64::NAN } else { v })
+        .collect();
+    df.with_column(Column::new("t".into(), t)).unwrap();
+    ParquetWriter::new(std::fs::File::create(to).unwrap())
+        .finish(&mut df)
+        .unwrap();
+}
+
+/// Review round 5 (C3): `--skip-learned` read a clock that is not a number
+/// as "not after the group's last learned clock", and dropped the row in
+/// silence, where the bank refuses such a row by its position and
+/// `ModelBank.skip_learned` keeps it for the bank to refuse. The rows past
+/// a saved state, the sixth with a NaN clock: exit 1 naming row 5, with
+/// `--skip-learned` as without it, and no output written.
+#[test]
+fn skip_learned_keeps_a_nan_clock_for_the_bank_to_refuse() {
+    let dir = fresh_dir("r5-c3-nan-clock");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 40).unwrap();
+    let head = dir.join("head.parquet");
+    head_of(&input, 20, &head);
+    let state = dir.join("bank.state");
+    let state_arg = state.to_str().unwrap();
+    let (code, _, err) = online_with(
+        &dir,
+        &head,
+        &dir.join("head-out.parquet"),
+        "",
+        50.0,
+        &["-q", "--save-state", state_arg],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    let rest = dir.join("rest.parquet");
+    tail_with_nan_clock(&input, 20, 5, &rest);
+    for args in [
+        &["-q", "--load-state", state_arg][..],
+        &["-q", "--load-state", state_arg, "--skip-learned"][..],
+    ] {
+        let (code, _, err) = online_with(&dir, &rest, &output, "", 50.0, args);
+        assert_eq!(code, Some(1), "{args:?}: {err}");
+        assert!(
+            err.contains("clock column \"t\" has a null/non-finite value at row 5"),
+            "{args:?}: {err}"
+        );
+        assert!(!output.exists(), "{args:?}: an output was written");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Task 198 (D5): a formula target's written form -- its tree in the TOML
 /// file and in a saved state -- is labelled unstable. Under
 /// `POLARS_ONLINE_WARN_UNSTABLE=1` the command line says so on stderr, as

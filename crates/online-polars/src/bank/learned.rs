@@ -97,8 +97,18 @@ impl Learned {
                             Some(Err(_)) => continue,
                         },
                     };
-                    let not_after =
-                        |o: Option<std::cmp::Ordering>| o != Some(std::cmp::Ordering::Greater);
+                    // At or before the last learned clock. A comparison
+                    // that is undefined -- a NaN clock -- is neither, and
+                    // keeps the row for the bank to refuse by row, as a
+                    // null is kept and as `ModelBank.skip_learned` keeps
+                    // it; read as "not after", it dropped the row in
+                    // silence (review round 5, C3).
+                    let not_after = |o: Option<std::cmp::Ordering>| {
+                        matches!(
+                            o,
+                            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                        )
+                    };
                     let learned = match (now, last) {
                         (None, _) => false,
                         (Some(ClockValue::F64(now)), ClockValue::F64(last)) => {
