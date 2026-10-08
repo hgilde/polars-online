@@ -269,7 +269,11 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
-- **Every saved bank must be refit.** A bank file now carries schema 49,
+- **A Poisson `sgd` fit refuses a chunk with a negative target, naming the
+  row** (task 209), as scikit-learn's `PoissonRegressor` does and as
+  `strict_binary` refuses a logistic label. A count is never negative, and
+  the gradient `p - y` drove the prediction to the link's floor, e^-30.
+- **Every saved bank must be refit.** A bank file now carries schema 50,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -295,10 +299,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
   readiness notices' wait (task 208). Schema 47 adds the standardized
   models' warm-up count and holds `sgd`'s and `pa`'s coefficients in the
   caller's units after it (task 206). Schema 48 is a `with_windows`
-  state's version 9 (task 212: the variance operators). Schema 49, the one
-  a bank file now carries, adds `kalman`'s
-  anchor and the clock since each covariance last observed its target
-  (task 211). It refuses 48 and older, and so do the models' own states.
+  state's version 9 (task 212: the variance operators). Schema 49 adds
+  `kalman`'s anchor and the clock since each covariance last observed its
+  target (task 211). Schema 50 sizes `kalman`'s prior from a median of its
+  first innovations (task 214). It refuses 49 and older, and so do the
+  models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -612,6 +617,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **A reverting `kalman` slot's process noise over a gap is bounded**,
+  `q·((1 - 2^(-D/r))/θ)²` with `θ = ln2/r` (task 214): it grows as `q·D²`
+  for a short gap and saturates for a long one, so the slot's uncertainty
+  no longer grows without limit across a run of null targets. A random-walk
+  slot is unchanged to the bit.
 - **A standardized `sgd`, `pa` or `kalman` fit no longer moves because its
   scaler did** (task 206; review round 5, G1). Under a finite half-life the
   EW moments wander, and a fit held in standardized coordinates and read
@@ -1053,6 +1063,18 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`hmm` reads its transition matrix from counts aged by the row's
+  clock**, so a zero-weight row is clock alone (hard rule 9); after a gap
+  that takes the counts to nothing it reads the prior's mean (task 214).
+- **`ewridge`, `lasso`, `huber` and `quantile` never solve on a zero-weight
+  row, nor count one toward `max_rows_between_solves`** (task 214): a solve
+  due on such a row falls on the next row with weight, so the solves fall
+  where they would without it.
+- **A standardizing `kalman` sizes its prior from the median of its first
+  three squared innovations** (scaled to keep `p0` meaning `p0` times the
+  noise variance) **and re-sizes a covariance that loses its positive
+  diagonal** (task 214): a target at the input bound among the first rows
+  no longer leaves the filter stuck.
 - **`kalman` keeps hard rule 9: a zero-weight or null-target row inside a
   clock gap no longer moves later predictions** (task 211). The process
   noise `Q·d²` was charged per row, and a square is not additive over a
@@ -1435,6 +1457,21 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **Two tiers of tests** (task 210). The essentials -- a fast test of
+  every hard rule, the goldens, the contract, the refusals, each module's
+  unit tests -- gate the commits of a task in progress, in 74 s of pytest
+  and 29 s of `cargo test` where the whole suite took 196 s and 146 s; the
+  full suite runs before every push, in CI on all three OSes and before a
+  release (`scripts/gate.sh --extended`, `cargo test -- --include-ignored`;
+  a plain `pytest` runs everything). Every test module declares its tier,
+  every `extended` mark gives its reason, and `tests/test_tiers.py` holds
+  the rules. Every model is tested on all-positive, all-negative and mixed
+  streams, and every regression on a level crossing zero against its
+  oracle (task 209). `kalman`'s `share_p` is documented: the default stays
+  one `P` per target, the exact filter per target, and sharing helps
+  related targets with noisy noise estimates (task 214; `docs/VALIDATION.md`
+  §4: shared -0.0110 against -0.0168 on the one-row target, -0.0880
+  against -0.0746 on the five-row one).
 - `scripts/validate.py` learns each target only once it is known -- the
   next row's return after one row, the five-row sum after five -- where it
   learned both at their own rows, and compares the models at matched

@@ -8496,7 +8496,7 @@ tick, and that the series holding it up has a count near 1.
       the notice comes: "-0.0000", a ninety-digit negative) given no figure
       and no advice to lower the floor, every figure printed in significant
       figures outside 0.001 to 1,000,000.
-- [ ] 209. **Every model is tested on positive, negative and mixed values,
+- [x] 209. **Every model is tested on positive, negative and mixed values,
       and on a level that crosses zero** -- the user, 2026-10-08 ("Do the
       tests for every model include both positive and negative and mixed
       values?"; then "Add the plan for testing negative values"). An audit
@@ -8557,7 +8557,29 @@ tick, and that the series holding it up has a count near 1.
     Task 209 starts after the push, on task 210's tiers.
   - Keep the platform's libm off any bit-pinned stream (Decay::Lam at unit
     steps, or tolerances against the oracle).
-- [ ] 210. **Two tiers of tests: essentials on every commit's gate, the
+  - *Done 2026-10-08* (worker `task209-signs`; no layout change, no golden
+    moved): the property generators and the contract's `value()` draw P, N
+    and M streams for all 21 kinds (30 mixed and 10 per one-sided sign in
+    the full tier, 10 and 4 in the essentials); `held_values.rs` holds
+    `quantile`, `pa`, `rls`, `ftrl`, `kmeans`, `micro`, `deco`, `bocpd` and
+    `corrchange` at every level of either sign; the gap tests (quantile
+    against QuantReg at ±1e3, kalman against filterpy at ±1,000, sgd
+    against scikit-learn at -1,000, ftrl against river's recursion); a level
+    crossing zero for all ten regressions, each against its oracle and with
+    `hit_rate` right on both sides; negative weights refused for every
+    kind; -0.0 drawn; the Poisson refusal. **Defects the new tests found,
+    raised to the user, none fixed**: D1 `rls` windup -- a feature held
+    for about 50 half-lives leaves its coefficient indistinguishable from
+    the intercept below rounding, the slope drifts to ±1e13, and predictions
+    are off by 3.3e12 when it moves again; D2 `kmeans`/`micro` centres
+    stall short of a value held at 1e12 and mis-assign 40-60 half-lives
+    later; D3 `bocpd`'s predictive mean is off by 2.3e-13 of the level; D4
+    a windowed `lasso` blows up to -inf with rows of weight 1e100 at a
+    level of ±1,000 (`lasso_windowed`'s generator stays mixed-sign until
+    it is fixed). Behaviours to decide: `ftrl` does not centre (error about
+    0.018 of a feature's level, the README silent); `pa` at its defaults on
+    a drifting level.
+- [x] 210. **Two tiers of tests: essentials on every commit's gate, the
       rest before every push, in CI and before a release** -- the user,
       2026-10-08 ("a plan item to split tests into essentials that can run
       quickly with a gate and extended that run before a release and from
@@ -8616,6 +8638,19 @@ tick, and that the series holding it up has a count near 1.
     CI reports the essentials' duration, so a slow test that creeps into
     the tier is seen. `CLAUDE.md`'s Commands, `docs/TESTING.md` and the
     gate's own header say which tier runs where.
+  - *Done 2026-10-08* (worker `task210-tiers`): essentials 74 s of pytest
+    and 29 s of `cargo test` (`PROPTEST_CASES=32`) against 196 s and 146 s,
+    every hard rule keeping an essentials test (`docs/TESTING.md`'s table,
+    held by `tests/test_tiers.py`); 74 Python and 47 Rust tests extended,
+    each with its reason; Hypothesis profiles; `gate.sh` essentials by
+    default, `--extended` everything, its last line saying it is not the
+    pre-push check; every workflow and the mutation runs on the full tier.
+    **CI does not time the essentials** -- the brief's report step re-ran
+    them on every leg, 1.5-3 minutes each, and was removed on the user's
+    "save ci time"; the gate prints the times where the essentials run. A
+    proptest count is a multiple of proptest's default, so `PROPTEST_CASES`
+    scales it without the code reading the variable (the API snapshot pins
+    every variable the code reads).
 - [x] 211. **Kalman, from its review of 2026-10-08** -- the user: "Review
       kalman. What should we do", "Be sure to review from a theoretical
       perspective as well", then "Your reco" on all six recommendations.
@@ -8707,7 +8742,7 @@ tick, and that the series holding it up has a count near 1.
       sets the cap for thousands of rows. **`c` stays in the target's
       units**, documented (task 207). The research switch and logs are in
       the scratchpad, `review5/fix/task213-relative-c/`.
-- [ ] 214. **Hard rule 9 in `ftrl`, `hmm` and `ewridge`'s clock cadence,
+- [x] 214. **Hard rule 9 in `ftrl`, `hmm` and `ewridge`'s clock cadence,
       and kalman's two edge cases** -- found by task 211; decided by the
       user, 2026-10-08 ("Your reco all"). (1) The rule-9 contract test,
       now comparing predictions for every model, exempts three by name:
@@ -8732,7 +8767,27 @@ tick, and that the series holding it up has a count near 1.
       (the user: keep the default off, document): when it helps -- related
       targets, noisy noise estimates, many targets for cost -- with the
       corrected VALIDATION §4 figures; revisit with a second dataset.
-      **Start after the push**, on task 210's tiers.
+      **Start after the push**, on task 210's tiers. *Done 2026-10-08* (worker
+      `task214-rule9`, before the push on the user's "Do the work before
+      the push just to save ci time"; schema 50): `hmm` reads its transition
+      counts aged by the row's clock; the solve cadence of `ewridge`,
+      `lasso`, `huber` and `quantile` never solves on a zero-weight row;
+      the rule-9 contract test passes for every model but `ftrl`, at levels
+      0 and ±1,000. A reverting kalman slot's gap noise is
+      `q·((1 - 2^(-D/r))/θ)²` (V/(qD²) 0.993 at `D = r/100`; saturates at
+      `q/θ²`; within 0.69% of today's per-row noise at r = 100). kalman's
+      prior is the weighted median of its first three squared innovations
+      over 0.4549 (χ²₁'s median, so `p0` keeps its meaning), with a re-size
+      if a diagonal goes negative. `share_p` documented; VALIDATION §4 now
+      reads shared -0.0110 against -0.0168 (`y0`), -0.0880 against -0.0746
+      (`y1`): the default stays off. **`ftrl` stopped on a design
+      conflict, for the user**: task 115(d)'s penalty scale `W/W*` works
+      only by seeing rows that teach nothing, which rule 9 and the
+      null-target policy make invisible -- drop the scale (`GOLDEN_FTRL`
+      moves 0.09-0.17%), or exempt `ftrl` from rule 9, or from the
+      null-target policy (`FTRL_STOPPED.md` in the worker's scratch).
+      Raised, pre-existing: a clock-scheduled `lasso` solving on the first
+      row after a gap that underflows its decay parts by 4.66.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
