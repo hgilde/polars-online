@@ -1705,15 +1705,20 @@ class TestAStandardizedKalmanIsFilterpy:
         Z, F, _, usable = _standardizer_moves(t, x, w, half_life)
         return Z, F, usable
 
+    @pytest.mark.parametrize("level", [0.0, 1e3, -1e3])
     @pytest.mark.parametrize("how", ["null", "zero weight"])
-    def test_the_filter_is_filterpy_on_the_standardized_rows(self, how):
+    def test_the_filter_is_filterpy_on_the_standardized_rows(self, how, level):
+        """At a target level of ±1,000 too (docs/PLAN.md task 209 (c)): the
+        intercept travels there from its prior at 0, on the noise the
+        filter learns from innovations the level makes a thousand times
+        the noise's."""
         import filterpy.kalman as kalman
 
         rng = np.random.default_rng(43)
         n, half_life, coef_hl = 300, 30.0, 50.0
         raw = rng.normal(0.0, 1.0, (n, 2))
         drift = np.arange(n) / n
-        y = 0.5 + (1.5 - drift) * raw[:, 0] + (-0.8 + 2.0 * drift) * raw[:, 1]
+        y = level + 0.5 + (1.5 - drift) * raw[:, 0] + (-0.8 + 2.0 * drift) * raw[:, 1]
         y = y + rng.normal(0.0, 0.3, n)
         # Features at levels and scales of their own, so standardizing matters.
         x = raw * np.array([5.0, 0.2]) + np.array([3.0, -40.0])
@@ -1765,6 +1770,45 @@ class TestAStandardizedKalmanIsFilterpy:
         coef = out["coef"].to_list()
         via = np.array([np.dot(coef[i], [1.0, *x[i + 1]]) for i in range(1, n - 1)])
         np.testing.assert_allclose(via, got[2:], rtol=1e-12, atol=1e-12)
+
+    @pytest.mark.parametrize("level", [1e3, -1e3])
+    def test_a_target_at_a_level_settles_where_one_at_zero_does(self, level):
+        """What filterpy's agreement above does not say: how well the
+        filter predicts once the intercept has travelled (docs/PLAN.md task
+        209 (c)). The first innovation is the whole level, and the noise the
+        filter learns from it -- in ``R`` and in the process noise -- decays
+        on the half-life, so the fit at ±1,000 runs behind the fit at 0 for a
+        while: measured, up to 23 off over rows 20 to 100 (the noise is 0.3),
+        0.37 over 100 to 500, where its error is 0.320 against 0.312, and
+        0.05 from 500 on, where its error is 0.3095 against 0.3090. Held
+        there: within 1% of the fit at 0, and a prediction at every row."""
+        rng = np.random.default_rng(43)
+        n = 2000
+        raw = rng.normal(0.0, 1.0, (n, 2))
+        noise = rng.normal(0.0, 0.3, n)
+        x = raw * np.array([5.0, 0.2]) + np.array([3.0, -40.0])
+
+        def fit(level):
+            y = level + 0.5 + 1.5 * raw[:, 0] - 0.8 * raw[:, 1] + noise
+            spec = po.spec.kalman(
+                "k",
+                targets=["y"],
+                features=["x0", "x1"],
+                coef_half_life=50.0,
+                half_life=30.0,
+                min_weight=0.0,
+            )
+            frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+            out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y")
+            return out.to_numpy().astype(float), y
+
+        def rmse(p, y):
+            return float(np.sqrt(np.mean((p[500:] - y[500:]) ** 2)))
+
+        p0, y0 = fit(0.0)
+        p, y = fit(level)
+        assert np.isfinite(p[1:]).all()
+        assert rmse(p, y) <= 1.01 * rmse(p0, y0), (rmse(p, y), rmse(p0, y0))
 
 
 class TestASharedCovarianceIsFilterpy:
@@ -2759,6 +2803,29 @@ class TestQuantileIsQuantReg:
         assert np.max(np.abs(got - want)) <= tol, (got, want)
         # The quantile it was asked for, not the mean: least squares is far off.
         assert np.max(np.abs(np.linalg.lstsq(z, y, rcond=None)[0] - want)) > 0.25
+
+    @pytest.mark.parametrize("level", [1e3, -1e3])
+    @pytest.mark.parametrize("tau", [0.25, 0.75])
+    def test_the_fit_is_quantregs_on_a_target_of_one_sign(self, tau, level):
+        """Every target above zero, at 1e3, or every one below, at -1e3, at a
+        level on each side of the median (docs/PLAN.md task 209 (c)): both
+        sides of the check function, its scale ``s`` -- its first residuals
+        are the whole level -- and the least-squares rows before it, which
+        the first rows are. The fit is ``QuantReg``'s, 0.011 off at 0.25 and
+        0.010 at 0.75 measured, and the fit of the same rows at 0, shifted by
+        the level, to 5.8e-15."""
+        import statsmodels.api as sm
+
+        x, y = self._rows(20_000)
+        y_level = y + level
+        assert (np.sign(y_level) == np.sign(level)).all(), "the case: one sign"
+        got = self._fit(x, y_level, tau, half_life=float("inf"))
+        z = sm.add_constant(x)
+        want = np.asarray(sm.QuantReg(y_level, z).fit(q=tau).params)
+        assert np.max(np.abs(got - want)) <= 0.03, (got, want)
+        at_zero = self._fit(x, y, tau, half_life=float("inf"))
+        shifted = at_zero + np.array([level, 0.0, 0.0])
+        np.testing.assert_allclose(got, shifted, rtol=0.0, atol=1e-11)
 
     def test_it_is_the_batch_smoothed_fit_at_the_same_bandwidth(self):
         """The estimator the stream approximates, computed by hand: Newton to
@@ -3791,20 +3858,36 @@ class TestSgdIsScikitLearnsSgd:
         return pred
 
     @pytest.mark.parametrize("weighted", [False, True], ids=["unit weights", "weighted"])
-    @pytest.mark.parametrize("loss", ["squared", "epsilon_insensitive", "logistic"])
-    def test_every_row_is_scikit_learns(self, loss, weighted):
+    @pytest.mark.parametrize(
+        ("loss", "level"),
+        [
+            ("squared", 0.0),
+            ("squared", -1e3),
+            ("epsilon_insensitive", 0.0),
+            ("epsilon_insensitive", -1e3),
+            ("logistic", 0.0),
+        ],
+    )
+    def test_every_row_is_scikit_learns(self, loss, weighted, level):
+        """A regression's target at a level of -1,000 too, every one below
+        zero (docs/PLAN.md task 209 (c)), with the gradient's clip lifted:
+        scikit-learn has none, and the first residuals are the level. The
+        logistic loss's target is a label, 0 or 1, with no level to take."""
         from sklearn.linear_model import SGDClassifier, SGDRegressor
 
-        frame = self.rows()
+        frame = self.rows().with_columns(pl.col("y") + level)
+        if level:
+            assert (frame["y"] < 0).all(), "the case: every target below zero"
         sk: dict[str, Any] = dict(
             penalty=None, learning_rate="constant", eta0=self.LR, shuffle=False
         )
+        clip = {"clip_gradient": float("inf")} if level else {}
         est: Any
         if loss == "squared":
-            got = self.ours(frame, "y", weighted, loss=loss, learning_rate=self.LR)
+            got = self.ours(frame, "y", weighted, loss=loss, learning_rate=self.LR, **clip)
             est, target = SGDRegressor(loss="squared_error", **sk), "y"
         elif loss == "epsilon_insensitive":
-            got = self.ours(frame, "y", weighted, loss=loss, eps=0.0, learning_rate=self.LR)
+            got = self.ours(frame, "y", weighted, loss=loss, eps=0.0, learning_rate=self.LR, **clip)
             est, target = SGDRegressor(loss="epsilon_insensitive", epsilon=0.0, **sk), "y"
         else:
             got = self.ours(frame, "yb", weighted, loss=loss, learning_rate=self.LR)

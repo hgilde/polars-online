@@ -634,6 +634,69 @@ class TestLogisticLabels:
             po.spec.sgd("m", targets=["y"], features=["x"], half_life=1e9, strict_binary=True)
 
 
+class TestATargetBelowZero:
+    """docs/PLAN.md task 209 (c): every loss on a target at a level below
+    zero, where the only negative-target test compared ``s`` to its own
+    residuals. Each step's derivative is odd in the residual -- ``p - y``,
+    its clamp at ``±delta * s``, its sign outside a tube of ``eps * s_y``,
+    and the check's ``1{y < p} - tau``, which mirrors to ``1 - tau`` -- and
+    ``s`` and ``s_y`` are spreads, so the fit of ``-y`` is the fit of ``y``
+    mirrored, the quantile's at ``1 - tau``: at -1,000 as at 1,000. The
+    logistic loss's target is a label, and a Poisson fit refuses a negative
+    count (`TestNegativeCounts`); scikit-learn holds the squared and
+    epsilon-insensitive losses row for row at -1,000
+    (`test_second_opinion.TestSgdIsScikitLearnsSgd`)."""
+
+    @staticmethod
+    def _frame(level, n=6000, seed=8):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(size=(n, 2))
+        y = level + 1.5 * x[:, 0] - 0.5 * x[:, 1] + 0.3 * rng.normal(size=n)
+        return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y})
+
+    @staticmethod
+    def _pred(df, **kw):
+        spec = po.spec.sgd(
+            "m", targets=["y0"], features=["x0", "x1"], half_life=500.0, min_weight=10.0, **kw
+        )
+        return po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
+
+    @pytest.mark.parametrize(
+        ("kw", "mirrored"),
+        [
+            ({"loss": "squared"}, {"loss": "squared"}),
+            ({"loss": "huber"}, {"loss": "huber"}),
+            ({"loss": "epsilon_insensitive"}, {"loss": "epsilon_insensitive"}),
+            ({"loss": "quantile", "quantile": 0.25}, {"loss": "quantile", "quantile": 0.75}),
+        ],
+        ids=["squared", "huber", "epsilon_insensitive", "quantile"],
+    )
+    def test_a_target_below_zero_is_the_mirror_of_one_above(self, kw, mirrored):
+        up = self._frame(1000.0)
+        down = up.with_columns(-pl.col("y0"))
+        assert (down["y0"] < 0).all(), "the case: every target below zero"
+        above, below = self._pred(up, **kw), self._pred(down, **mirrored)
+        assert np.isfinite(below[20:]).all()
+        np.testing.assert_array_equal(below, -above)
+
+    @pytest.mark.parametrize("loss", ["squared", "huber"])
+    def test_a_target_at_minus_a_thousand_fits_as_one_at_zero(self, loss):
+        """The losses whose step is the residual's size travel to the
+        level: from row 3,000 their error is the fit at 0's to 1% (measured,
+        0.3009 at both under the squared loss, 0.3009 against 0.3006 under
+        Huber's). The sign-valued ones step by the rate and are a level's
+        worth of rows away (the README's `sgd` section): 955 off at row
+        3,000 here."""
+        at_zero, below = self._frame(0.0), self._frame(-1000.0)
+        p0, p = self._pred(at_zero, loss=loss), self._pred(below, loss=loss)
+
+        def rmse(p, df):
+            return float(np.sqrt(np.mean((p[3000:] - df["y0"].to_numpy()[3000:]) ** 2)))
+
+        assert rmse(p0, at_zero) < 0.4, "the case: the fit at 0 fits"
+        assert rmse(p, below) <= 1.01 * rmse(p0, at_zero), (rmse(p, below), rmse(p0, at_zero))
+
+
 class TestNegativeCounts:
     """docs/PLAN.md task 209 (e), the user's decision of 2026-10-08: a
     Poisson fit takes counts, and a negative target refuses the chunk,

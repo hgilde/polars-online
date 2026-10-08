@@ -46,13 +46,15 @@ class TestFtrlRecursion:
 
     ALPHA, BETA, L1, L2 = 0.1, 1.0, 0.0, 1.0
 
-    def _data(self, n=400, seed=1):
+    def _data(self, n=400, seed=1, level=0.0):
+        """With the features at ``level``: the labels read the features
+        about 0, the model the features as they come (task 209 (c))."""
         rng = np.random.default_rng(seed)
         x0 = rng.standard_normal(n)
         x1 = rng.standard_normal(n)
         p = _sigmoid(1.5 * x0 - 0.5 * x1)
         y = (rng.random(n) < p).astype(float)
-        return pl.DataFrame({"x0": x0, "x1": x1, "y0": y})
+        return pl.DataFrame({"x0": x0 + level, "x1": x1 + level, "y0": y})
 
     def _ours(self, df, **kw):
         spec = po.spec.ftrl(
@@ -71,14 +73,18 @@ class TestFtrlRecursion:
         )
         return po.ModelBank([spec]).fit_predict(df)
 
+    @pytest.mark.parametrize("level", [0.0, 1e3, -1e3])
     @pytest.mark.parametrize("l1", [0.0, 0.5])
-    def test_weights_match_river_given_the_same_gradients(self, l1):
+    def test_weights_match_river_given_the_same_gradients(self, l1, level):
+        """At feature levels of each sign too (docs/PLAN.md task 209 (c)):
+        ``ftrl`` does not standardize, so a level reaches its recursion as it
+        reaches river's."""
         # `try/finally` so a failure in the `l1 = 0.5` case cannot leave the
         # class attribute set for the two other tests that read `self.L1`
         # (review 2026-09-18, minor).
         type(self).L1 = l1
         try:
-            df = self._data()
+            df = self._data(level=level)
             out = self._ours(df)
             coef = np.array(out["m"].struct.field("coef").to_list(), dtype=float)
             x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
