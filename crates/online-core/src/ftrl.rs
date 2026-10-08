@@ -17,12 +17,12 @@
 //! probability, `g_i = (p - y) * z_i * w` the gradient):
 //!
 //! ```text
-//! decay:   n_i <- lam·n_i ;  zz_i <- lam·zz_i ;  d_i <- lam·d_i   (lam from the clock)
 //! predict: b_i = 0 if |zz_i| <= l1
-//!              = -(zz_i - sign(zz_i) l1) / (beta/alpha + d_i + l2)          under a half_life,
-//!                with l1, l2 and beta/alpha times the target's scale m (below)
+//!              = -(zz_i - sign(zz_i) l1) / (beta/alpha + d_i + l2)          under a half_life
 //!              = -(zz_i - sign(zz_i) l1) / ((beta + sqrt(n_i))/alpha + l2)  without one
 //!          p   = sigmoid(z . b)
+//! decay:   n_i <- lam·n_i ;  zz_i <- lam·zz_i ;  d_i <- lam·d_i
+//!          (on a row that teaches the target, lam over the clock since the last one that did)
 //! update:  s_i = (sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha
 //!          zz_i += g_i - s_i b_i ;  n_i += g_i^2 ;  d_i += s_i
 //! ```
@@ -35,40 +35,49 @@
 //! root instead shrank every coefficient toward zero on every row, and a
 //! constant target of 5 settled at 2.25 at `half_life = 100`.
 //!
-//! **The penalties under a half-life** (docs/PLAN.md task 115 (d)). `beta`,
-//! `l1` and `l2` are river's constants on the sums' scale, and the sums
-//! decay; held constant, they shrank the fit toward zero on every row that
-//! taught it nothing, 0.75 of itself over one half-life at 100, where
-//! `ewridge` does not move. So each target's penalties take a scale,
+//! **The objective under a half-life** (docs/PLAN.md task 215). After a
+//! row that teaches the target at clock `t`, its coefficients minimize
 //!
 //! ```text
-//! b_i  = -(zz_i - sign(zz_i)·l1·m) / (beta/alpha·m + d_i + l2·m),  0 if |zz_i| <= l1·m
-//! m    = W / W*       W  = the target's weight, decayed on every row
-//!                     W* = the same on a clock that runs only on the rows that teach it
+//! Σ_s lam^(t − t_s)·(g_s·b + σ_s/2·|b − b_s|²)  +  l1·|b|₁  +  (beta/alpha + l2)/2·|b|²
 //! ```
+//!
+//! over the rows `s` that taught it, `σ_s` a row's proximal step and `b_s`
+//! the fit it was scored with: FTRL's fixed regularizer against linearized
+//! losses weighted by their age on the clock. `zz = Σ lam^age·(g_s − σ_s·b_s)`,
+//! `n` and `d` are those sums, and the penalties are not, so old evidence
+//! counts for less against the prior. In steady state the penalties act as
+//! a mean-scale ridge of `(1 − lam)·(beta/alpha + l2)`, and a constant 5
+//! settles at `5/(1 + (1 − lam)(beta/alpha + l2))`, 4.65 at
+//! `half_life = 100` and 4.96 at 1000 -- the prior against the window's
+//! worth of evidence, which vanishes as the half-life grows.
 //!
 //! A row that teaches the target nothing -- absent, at weight 0, a label
 //! `strict_binary` refuses, or a gradient whose square would overflow --
-//! ages `zz`, `d` and `m` by the same factor, so the fit does not move, and
-//! adds nothing to the target's weight; the rows that teach it bring `m`
-//! back toward 1.
-//! Without a half-life `W = W*`, `m = 1`, and the model is river's to the
-//! bit, and Vowpal Wabbit's to its single precision. The steady state is as
-//! before: the penalties act as a mean-scale ridge of
-//! `(1 − lam)·(beta/alpha + l2)`, and a constant 5 settles at
-//! `5/(1 + (1 − lam)(beta/alpha + l2))`, 4.65 at `half_life = 100` and 4.96
-//! at 1000 -- the prior against the
-//! window's worth of evidence, which vanishes as the half-life grows. The
-//! model keeps a target's decay until the next row that teaches it, so the
-//! fit read from the sums as that row left them is the frozen one exactly,
-//! and a gap of any length cannot take the sums into the subnormal range.
+//! minimizes nothing: the sums wait for the next row that teaches, with
+//! the decay the clock owes them, so the fit read on every row between,
+//! and that row's own prediction, is the one the last row that taught
+//! left. That row ages the sums by the whole clock since and learns.
+//! The gap ages the evidence and not the prior, so the fit after that row
+//! has given way to the prior as far as the gap went: a constant 5,
+//! settled at `half_life = 100`, stands at 0.75 of itself after a gap of
+//! one half-life, 0.51 after two and 0.15 after five.
+//! A row of weight 0 is clock alone, as in every model (hard rule 9), and
+//! a null target is a weight of 0 for its target. Task 115 (d) scaled the
+//! penalties by `W/W*`, the target's weight over its weight on a clock that
+//! ran only on the rows that taught it, which spared that first row the
+//! meeting with the penalties at full size; a zero-weight row moved `W*`,
+//! the fit after the next row moved 1.9%, and no `W*` kept both rules
+//! (task 214), so the scale is gone. Waiting, a gap of any length cannot
+//! take the sums into the subnormal range. Without a half-life the model
+//! is river's to the bit, and Vowpal Wabbit's to its single precision.
 //!
 //! **Row weights** (docs/PLAN.md task 151). The gradient is `(p − y)·z·w`,
 //! an importance weight as Vowpal Wabbit's, and `l1`, `l2` and `beta` are a
 //! prior of fixed mass against evidence that grows with weight and density:
-//! FTRL minimizes the cumulative loss plus a fixed regularizer, which its
-//! regret bound rests on, so under a half-life the effective penalty is
-//! `l1 / W` for the weight the window holds. The sum-scale family, beside
+//! the regularizer above is fixed, which FTRL's regret bound rests on, so
+//! under a half-life the effective penalty is `l1 / W` for the weight the
+//! window holds. The sum-scale family, beside
 //! `rls`'s ridge, `ridge_scale` and `kalman`'s observation precision; the
 //! mean-scale sparse fit, invariant to both, is `lasso`.
 //!
@@ -178,18 +187,10 @@ pub struct Ftrl {
     /// count: a label `strict_binary` refuses, and a row whose gradient
     /// would overflow, which is skipped (review 2026-10-05, CC3).
     w_target: Vec<f64>,
-    /// Per target, the scale on the penalties `beta/alpha`, `l1` and `l2`
-    /// under a half-life, as the last row that taught it left it: `W/W*`, its
-    /// weight over its weight on a clock that runs only on the rows that
-    /// teach it (docs/PLAN.md task 115 (d); the module docs). `1` without a
-    /// half-life.
-    scale: Vec<f64>,
-    /// Per target, `W*`: its weight on the clock of the rows that teach it.
-    w_taught: Vec<f64>,
     /// Per target, the decay the clock has run since the last row that
     /// taught it, not yet applied to its sums: they stay as that row left
-    /// them, so the fit read from them is the frozen one exactly, and a
-    /// long gap cannot run them into the subnormal range.
+    /// them, so the fit read from them is that row's exactly, and a long gap
+    /// cannot run them into the subnormal range (the module docs).
     pending: Vec<f64>,
     #[serde(skip)]
     zbuf: Vec<f64>,
@@ -197,9 +198,9 @@ pub struct Ftrl {
     coef: Vec<f64>,
 }
 
-/// A target's penalties as its weights read them ([`Ftrl::penalties`]):
-/// under a half-life `l1`, `beta / alpha` and `l2` each times the target's
-/// scale, else river's `l1`, `beta` and `l2`.
+/// The penalties as the weights read them ([`Ftrl::penalties`]): under a
+/// half-life `l1`, `beta / alpha` and `l2`, else river's `l1`, `beta` and
+/// `l2`.
 #[derive(Clone, Copy)]
 struct Penalties {
     forgets: bool,
@@ -219,8 +220,6 @@ impl Ftrl {
             prox: vec![vec![0.0; k]; m],
             w_sum: 0.0,
             w_target: vec![0.0; m],
-            scale: vec![1.0; m],
-            w_taught: vec![0.0; m],
             pending: vec![1.0; m],
             zbuf: vec![0.0; k],
             coef: vec![0.0; k],
@@ -246,7 +245,7 @@ impl Ftrl {
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         (0..self.cfg.n_targets)
             .map(|j| {
-                let pen = self.penalties(j);
+                let pen = self.penalties();
                 (0..self.cfg.k_total())
                     .map(|i| self.weight(pen, j, i))
                     .collect()
@@ -259,19 +258,18 @@ impl Ftrl {
         self.weight_of(pen, self.zz[j][i], self.n[j][i], self.prox[j][i])
     }
 
-    /// Target `j`'s penalties as its weights read them, taken once for all
-    /// of its coordinates: `k` of them a row, each recomputing the same
-    /// products and the `beta / alpha` quotient, had cost `ftrl` 18% of its
-    /// rows a second once the penalties took the target's scale. The same
-    /// operations in the same order, so the same bits.
-    fn penalties(&self, j: usize) -> Penalties {
+    /// The penalties as the weights read them, taken once for all of a
+    /// row's coordinates: `k` of them a row, each recomputing the
+    /// `beta / alpha` quotient and the scale's products, had cost `ftrl` 18%
+    /// of its rows a second when the penalties took a per-target scale
+    /// (docs/PLAN.md task 115 (d), gone since task 215).
+    fn penalties(&self) -> Penalties {
         if self.forgets() {
-            let scale = self.scale[j];
             Penalties {
                 forgets: true,
-                l1: self.cfg.l1 * scale,
-                base: self.cfg.beta / self.cfg.alpha * scale,
-                l2: self.cfg.l2 * scale,
+                l1: self.cfg.l1,
+                base: self.cfg.beta / self.cfg.alpha,
+                l2: self.cfg.l2,
             }
         } else {
             Penalties {
@@ -295,16 +293,16 @@ impl Ftrl {
     /// The proximal weight for one coordinate's `(z, n, d)` -- the closed
     /// form of the FTRL-Proximal update, shared by `step` and `predict`.
     /// Under a half-life the rate's term is `d`, the discounted sum of the
-    /// proximal steps, and the penalties take the target's `scale`; without
-    /// one it is `sqrt(n)/alpha`, which `d` telescopes to, and the penalties
-    /// are river's (review 2026-09-12, C24; the module docs).
+    /// proximal steps; without one it is `sqrt(n)/alpha`, which `d`
+    /// telescopes to, and the penalties are river's (review 2026-09-12, C24;
+    /// the module docs).
     fn weight_of(&self, pen: Penalties, zz: f64, n: f64, prox: f64) -> f64 {
         if pen.forgets {
             if zz.abs() <= pen.l1 {
                 return 0.0;
             }
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
-            // `beta / alpha * scale + prox + l2 * scale`, left to right.
+            // `beta / alpha + prox + l2`, left to right.
             let rate = pen.base + prox + pen.l2;
             // No evidence and no prior left -- a total gap takes both to 0 --
             // is no fit, not 0/0.
@@ -347,12 +345,10 @@ impl Ftrl {
     /// that teaches nothing -- the target absent, a weight of 0, a label
     /// `strict_binary` refuses, or a gradient whose square would overflow
     /// -- touches none of the target's state: its sums keep the decay they
-    /// are owed, `W*` and the scale stay as the last row that taught left
-    /// them, so the fit does not move (the module docs). The overflow skip
-    /// came after the owed decay, `W*` and the scale had moved as though
-    /// the row taught, and the next prediction moved 2.2% (review
-    /// 2026-10-05, CC3).
-    fn teach(&mut self, j: usize, p: f64, y: Option<f64>, lam: f64, weight: f64) -> bool {
+    /// are owed, so the fit does not move (the module docs). The overflow
+    /// skip came after the owed decay, which had moved as though the row
+    /// taught, and the next prediction moved 2.2% (review 2026-10-05, CC3).
+    fn teach(&mut self, j: usize, p: f64, y: Option<f64>, weight: f64) -> bool {
         let Some(yj) = y else { return false };
         if weight <= 0.0 {
             return false;
@@ -379,7 +375,7 @@ impl Ftrl {
         }
         let k = self.cfg.k_total();
         // The row teaches the target: its sums take the decay they were
-        // owed, and its weight on the teaching clock this row's.
+        // owed, the clock's since the last row that taught it.
         let owed = self.pending[j];
         if owed != 1.0 {
             for i in 0..k {
@@ -388,13 +384,6 @@ impl Ftrl {
                 self.prox[j][i] *= owed;
             }
             self.pending[j] = 1.0;
-        }
-        self.w_taught[j] = lam * self.w_taught[j] + weight;
-        // The penalties' scale `W/W*`, with `W` as the ageing after this
-        // leaves it: rows that teach bring it back toward 1 after a gap took
-        // it down with the sums. Without a half-life it stays 1.
-        if self.forgets() {
-            self.scale[j] = (lam * self.w_target[j] + weight) / self.w_taught[j];
         }
         for i in 0..k {
             let g = err * self.zbuf[i] * weight;
@@ -437,9 +426,9 @@ impl OnlineModel for Ftrl {
         }
 
         // The accumulators forget on the model's clock. Each target's decay
-        // waits in `pending` until a row teaches it: the fit read from the
-        // sums as that row left them, under the scale it left, is the one
-        // the decayed sums and penalties give (the module docs).
+        // waits in `pending` until a row teaches it, so every row until
+        // then reads the fit from the sums as the last row that taught it
+        // left them (the module docs).
         if lam != 1.0 {
             for p in &mut self.pending {
                 *p *= lam;
@@ -449,9 +438,9 @@ impl OnlineModel for Ftrl {
         let n_eff = self.w_sum;
 
         let mut pred = vec![f64::NAN; m];
+        let pen = self.penalties();
         for j in 0..m {
             // Proximal weights from the state before this row's update.
-            let pen = self.penalties(j);
             for i in 0..k {
                 self.coef[i] = self.weight(pen, j, i);
             }
@@ -465,7 +454,7 @@ impl OnlineModel for Ftrl {
             if self.w_target[j] >= self.cfg.min_weight {
                 pred[j] = p;
             }
-            let taught = self.teach(j, p, y[j], lam, weight);
+            let taught = self.teach(j, p, y[j], weight);
             // The target's own weight, aged by the row and carrying it only
             // where it taught (`crate::model::age_target_weights`'
             // expression): read above, and in `teach`, as it stood before
@@ -492,11 +481,11 @@ impl OnlineModel for Ftrl {
         let mut pred = vec![f64::NAN; m];
         let k = self.cfg.k_total();
         let off = usize::from(self.cfg.fit_intercept);
+        let pen = self.penalties();
         for (j, p) in pred.iter_mut().enumerate() {
             if self.w_target[j] < self.cfg.min_weight {
                 continue;
             }
-            let pen = self.penalties(j);
             let raw: f64 = (0..k)
                 .map(|i| {
                     let z = if i < off { 1.0 } else { x[i - off] };
@@ -541,12 +530,9 @@ impl OnlineModel for Ftrl {
                         "ftrl: the target weights have the wrong shape".into(),
                     ));
                 }
-                if [&m.scale, &m.w_taught, &m.pending]
-                    .iter()
-                    .any(|v| v.len() != n)
-                {
+                if m.pending.len() != n {
                     return Err(StateError::Invalid(
-                        "ftrl: the penalties' scale has the wrong shape".into(),
+                        "ftrl: the decay owed has the wrong shape".into(),
                     ));
                 }
                 m.ensure_buffers();
@@ -643,11 +629,11 @@ mod tests {
         assert_eq!(m.target_weights(), &[5.0, 0.0]);
     }
 
-    /// A state without target weights, or without the penalties' scale, is
-    /// refused, where it loaded with each target at the shared weight and
-    /// each penalty whole -- the layouts before schema 20, which this build
-    /// refuses by their version, and the repair a damaged file reached
-    /// (docs/PLAN.md task 198).
+    /// A state without target weights, or without the decay each target is
+    /// owed, is refused, where it loaded with each target at the shared
+    /// weight -- the layouts before schema 20, which this build refuses by
+    /// their version, and the repair a damaged file reached (docs/PLAN.md
+    /// task 198).
     #[test]
     fn a_state_without_target_weights_is_refused() {
         use crate::{ModelState, State};
@@ -660,7 +646,7 @@ mod tests {
             m.step(&x, &[(i >= 5).then_some(1.0), None], 1.0, 1.0);
         }
         assert!(m.target_weights()[0] < m.n_eff() && m.target_weights()[1] == 0.0);
-        for key in ["w_target", "scale", "w_taught", "pending"] {
+        for key in ["w_target", "pending"] {
             let mut v = serde_json::to_value(&m).unwrap();
             assert!(v.as_object_mut().unwrap().remove(key).is_some());
             let err = serde_json::from_value::<Ftrl>(v).unwrap_err().to_string();
@@ -1021,44 +1007,51 @@ mod tests {
     }
 
     /// The recursion under decay written out longhand, for the squared loss
-    /// on an intercept alone: `n` and `zz` are decayed sums, and so is the
-    /// proximal term, `d = Σ λ^age·σ_s`, which `√n/α` telescopes to without
-    /// decay and does not with it (review 2026-09-12, C24). The penalties
-    /// carry the scale `m = W/W*`: `W` the target's weight, decayed on every
-    /// row, `W*` the same on a clock that runs only on the rows that teach
-    /// it (docs/PLAN.md task 115 (d)). Every row here is `(clock, target,
-    /// weight)`; a row teaches when the target is there and the weight is
-    /// above 0. Each row's prediction, and the last state `(zz, n, d)`.
+    /// on an intercept alone, from the FTRL objective (the module docs):
+    /// after a row that teaches the target at clock `t`, the coefficient is
+    /// the minimizer of
+    /// `Σ_s λ^(t − t_s)·(g_s·b + σ_s/2·(b − b_s)²) + l1·|b| + (β/α + l2)/2·b²`
+    /// over the rows `s` that taught it -- a fixed regularizer against
+    /// losses aged on the clock -- so `zz`, `n` and `d` are sums aged by the
+    /// clock since each row, and `d = Σ λ^age·σ_s` is the proximal term,
+    /// which `√n/α` telescopes to without decay and does not with it (review
+    /// 2026-09-12, C24). A row that teaches nothing leaves the sums, and the
+    /// fit read from them, as the last row that taught left them; the next
+    /// row that teaches ages them by the whole clock since that row, read
+    /// here as one factor where the model multiplies one a row
+    /// (docs/PLAN.md task 215: task 115 (d)'s penalty scale is gone). Every
+    /// row here is `(clock, target, weight)`; a row teaches when the target
+    /// is there and the weight is above 0. Each row's prediction, and the
+    /// last state `(zz, n, d)`.
     fn decayed_longhand(
         c: &FtrlCfg,
         rows: &[(f64, Option<f64>, f64)],
     ) -> (Vec<f64>, f64, f64, f64) {
         let (mut zz, mut n, mut d) = (0.0f64, 0.0f64, 0.0f64);
-        let (mut w, mut w_taught) = (0.0f64, 0.0f64);
+        // The clock since the last row that taught the target.
+        let mut since = 0.0f64;
         let mut preds = Vec::with_capacity(rows.len());
         for &(clock, y, weight) in rows {
-            let lam = c.decay.factor(clock);
-            zz *= lam;
-            n *= lam;
-            d *= lam;
-            w *= lam;
-            let m = if w_taught > 0.0 { w / w_taught } else { 1.0 };
-            let b = if zz.abs() <= c.l1 * m {
+            since += clock;
+            let b = if zz.abs() <= c.l1 {
                 0.0
             } else {
-                -(zz - zz.signum() * c.l1 * m) / (c.beta / c.alpha * m + d + c.l2 * m)
+                -(zz - zz.signum() * c.l1) / (c.beta / c.alpha + d + c.l2)
             };
             preds.push(b);
             let Some(y) = y.filter(|_| weight > 0.0) else {
                 continue;
             };
+            let lam = c.decay.factor(since);
+            since = 0.0;
+            zz *= lam;
+            n *= lam;
+            d *= lam;
             let g = (b - y) * weight;
             let s = ((n + g * g).sqrt() - n.sqrt()) / c.alpha;
             zz += g - s * b;
             n += g * g;
             d += s;
-            w += weight;
-            w_taught = lam * w_taught + weight;
         }
         (preds, zz, n, d)
     }
@@ -1119,12 +1112,13 @@ mod tests {
 
     /// A row that teaches the target nothing leaves the fit where it was
     /// (docs/PLAN.md task 115 (d); the user, 2026-09-29: "Build it"): the
-    /// penalties age with the sums, so the target absent, a zero weight, a
-    /// clock of 100 or of a million, and a hundred thousand half-lives of
-    /// rows without it all leave every coefficient and every prediction to
-    /// the bit. With constant penalties 100 clock units took the
-    /// coefficient to 0.75 of itself at `half_life = 100` (review 2026-09-12,
-    /// C24).
+    /// sums wait for the next row that teaches, so the target absent, a
+    /// zero weight, a clock of 100 or of a million, and a hundred thousand
+    /// half-lives of rows without it all leave every coefficient and every
+    /// prediction to the bit (task 215 keeps this without the penalty
+    /// scale). Sums decayed on every row against constant penalties took
+    /// the coefficient to 0.75 of itself in 100 clock units at
+    /// `half_life = 100` (review 2026-09-12, C24).
     #[test]
     fn a_row_that_teaches_nothing_leaves_the_fit() {
         for l1 in [0.0, 0.5] {
@@ -1152,10 +1146,10 @@ mod tests {
             assert!(next.is_finite() && (next - 5.0).abs() < 5.0, "{next}");
             // A row whose squared gradient would overflow -- a feature and a
             // target at the input bound -- is skipped, and a skipped row
-            // teaches nothing: the fit, the target's weight and its scale
-            // after it are those after the same row with the target absent
-            // (review 2026-10-05, CC3: the skip came after the owed decay,
-            // `W*` and the scale had moved as though it taught).
+            // teaches nothing: the fit, the target's weight and the decay it
+            // is owed after it are those after the same row with the target
+            // absent (review 2026-10-05, CC3: the skip came after the owed
+            // decay, which had moved as though it taught).
             let mut c2 = intercept_only(Decay::Halflife(20.0));
             c2.l1 = l1;
             let (_, fitted) = fit_constant(&c2, 5.0, 300);
@@ -1168,8 +1162,8 @@ mod tests {
                 "the overflow row moved the fit"
             );
             assert_eq!(skipped.target_weights(), absent.target_weights());
-            assert_eq!(skipped.scale, absent.scale);
-            assert_eq!(skipped.w_taught, absent.w_taught);
+            assert_eq!(skipped.pending, absent.pending);
+            assert_eq!(skipped.zz, absent.zz);
             let (a, b) = (
                 skipped.step(&[0.5], &[Some(5.0)], 1.0, 1.0).pred[0],
                 absent.step(&[0.5], &[Some(5.0)], 1.0, 1.0).pred[0],
@@ -1187,14 +1181,17 @@ mod tests {
     }
 
     /// The fit after rows that teach nothing, and after the rows that teach
-    /// it again, is the longhand's: the decayed sums over the decayed
-    /// penalties, the scale `W/W*` coming back toward 1 as the target's rows
-    /// refill the window. Gaps of one clock unit to 2,000 -- `2^-50` of the
-    /// weight at `half_life = 40`, where the longhand's decayed sums are still
-    /// normal numbers; a total gap is the test above -- a zero weight and
-    /// weights of 0.3 to 2, under both penalties' settings.
+    /// it again, is the longhand's: rows that teach nothing leave it, and
+    /// the next row that teaches meets the sums aged by the whole clock
+    /// since against the penalties at their fixed size (docs/PLAN.md task
+    /// 215; task 115 (d)'s scale `W/W*` spared that row the meeting, and a
+    /// zero-weight row moved its second clock). Gaps of one clock unit to
+    /// 2,000 -- `2^-50` of the weight at `half_life = 40`, where the
+    /// longhand's decayed sums are still normal numbers; a total gap is the
+    /// test above -- a zero weight and weights of 0.3 to 2, under both
+    /// penalties' settings.
     #[test]
-    fn the_penalty_scale_is_the_longhands_across_gaps() {
+    fn the_fit_is_the_longhands_across_gaps() {
         for l1 in [0.0, 0.2] {
             let mut c = intercept_only(Decay::Halflife(40.0));
             c.l1 = l1;
@@ -1412,9 +1409,8 @@ mod tests {
         );
     }
 
-    /// One corruption per accumulator and per part of the penalties' scale,
-    /// each refused alone; the three scale parts all absent are a state
-    /// written before them, which loads at a scale of 1.
+    /// One corruption per accumulator and of the decay each target is owed,
+    /// each refused alone.
     #[test]
     fn each_part_of_a_state_is_checked_alone() {
         use crate::{ModelState, StateError};
@@ -1433,7 +1429,7 @@ mod tests {
         };
         assert_eq!(restored(&|_| {}).unwrap(), m);
         type Corruption<'a> = (&'a str, &'a dyn Fn(&mut Ftrl));
-        let parts: [Corruption; 7] = [
+        let parts: [Corruption; 5] = [
             ("a target short in n", &|f: &mut Ftrl| {
                 f.n.pop();
             }),
@@ -1444,28 +1440,13 @@ mod tests {
                 f.zz.pop();
             }),
             ("no prox", &|f: &mut Ftrl| f.prox.clear()),
-            ("no scale", &|f: &mut Ftrl| f.scale.clear()),
             ("no pending decay", &|f: &mut Ftrl| f.pending.clear()),
-            ("neither W* nor the pending decay", &|f: &mut Ftrl| {
-                f.w_taught.clear();
-                f.pending.clear();
-            }),
         ];
         for (what, corrupt) in parts {
             match restored(corrupt) {
                 Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
                 other => panic!("{what}: {other:?}"),
             }
-        }
-        // All three absent, a state written before them, is refused too,
-        // where it loaded with the penalties whole (docs/PLAN.md task 198).
-        match restored(&|f| {
-            f.scale.clear();
-            f.w_taught.clear();
-            f.pending.clear();
-        }) {
-            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
-            other => panic!("all three absent: {other:?}"),
         }
     }
 }

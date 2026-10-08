@@ -332,7 +332,8 @@ pub use window::{
 ///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
 ///   `min_weight` reads, and `ftrl` each target's penalty scale, its weight
 ///   on the clock of the rows that teach it and the decay it is owed (task
-///   115 (d)), a 19 file loading with the scale at 1; `corrchange` keeps a `sequential`
+///   115 (d); the scale and that weight gone in 51), a 19 file loading with
+///   the scale at 1; `corrchange` keeps a `sequential`
 ///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
 ///   (task 114); a window's snapshot in `ewridge` and `lasso` keeps the
 ///   target moments (task 136), and in `marginal` the lag moments (task
@@ -588,7 +589,11 @@ pub use window::{
 ///   keeps those rows' squares and weights where it kept the sums of every
 ///   row's. A state from before 50 does not decode, and pre-1.0 no loader is
 ///   written.
-pub const SCHEMA_VERSION: u32 = 50;
+/// - 51 (2026-10-08, task 215): `ftrl` keeps no penalty scale: its `scale`
+///   and `w_taught` are gone, the penalties fixed against sums aged on the
+///   clock. A state from before 51 does not decode, and pre-1.0 no loader
+///   is written.
+pub const SCHEMA_VERSION: u32 = 51;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -612,6 +617,9 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **51 since task 215** (2026-10-08): `ftrl` keeps no penalty scale; a
+/// state from before 51 is refused by its number, and the fixtures are
+/// regenerated at 51.
 /// **50 since task 214** (2026-10-08): `kalman`'s noise basis is the first
 /// three rows' squared innovations and weights, its prior their median; a
 /// state from before 50 is refused by its number, and the fixtures are
@@ -695,7 +703,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 50;
+pub const MIN_SCHEMA_VERSION: u32 = 51;
 
 #[cfg(test)]
 mod tests {

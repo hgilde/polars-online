@@ -214,18 +214,17 @@ fn a_low_part_of_the_wrong_length_is_refused() {
 /// them (CC8), each refused left out, emptied or short, where each loaded
 /// as the repair made it: `robust`'s row counts as its weights, `holt`'s
 /// clock since an observation at zero, the update models' target weights at
-/// the shared weight, `ftrl`'s penalty scale at 1.
+/// the shared weight, `ftrl`'s owed decay at none (with the penalty scale
+/// task 215 removed).
 #[test]
 fn a_field_written_since_an_older_layout_is_required() {
-    const FIELDS: [(&str, &str, &str); 9] = [
+    const FIELDS: [(&str, &str, &str); 7] = [
         ("huber", "Robust", "nobs"),
         ("holt", "Holt", "since"),
         ("sgd", "Sgd", "w_target"),
         ("pa", "Pa", "w_target"),
         ("rls", "Rls", "w_target"),
         ("ftrl", "Ftrl", "w_target"),
-        ("ftrl", "Ftrl", "scale"),
-        ("ftrl", "Ftrl", "w_taught"),
         ("ftrl", "Ftrl", "pending"),
     ];
     let cases = all();
@@ -243,23 +242,6 @@ fn a_field_written_since_an_older_layout_is_required() {
                 loaded.push(format!("{name}: {field} {how}: {what}"));
             }
         }
-    }
-    // `ftrl` repaired its three penalty vectors only when all three were
-    // absent, the shape of a state written before them.
-    let case = cases.iter().find(|c| c.name == "ftrl").unwrap();
-    let mut v = state_value(case);
-    for field in ["scale", "w_taught", "pending"] {
-        let path = [
-            Step::Key("model".into()),
-            Step::Key("Ftrl".into()),
-            Step::Key(field.into()),
-        ];
-        v = removed(&v, &path);
-    }
-    if let Ok(what) = fate(case, &encode(&v)) {
-        loaded.push(format!(
-            "ftrl: scale, w_taught and pending left out: {what}"
-        ));
     }
     assert!(
         loaded.is_empty(),

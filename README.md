@@ -3287,11 +3287,11 @@ chunk with any target but 0 or 1 and names the row.
 `α` and `β` are its `alpha` and `beta`:
 
 ```
-zz_i ← λzz_i      n_i ← λn_i      d_i ← λd_i
-b_i  = 0 if |zz_i| ≤ l1·m else −(zz_i − sign(zz_i)·l1·m) / (β/α·m + d_i + l2·m)
-p    = sigmoid(zᵀb)      g_i = (p − y)·z_i·w      s_i = (√(n_i + g_i²) − √n_i)/α
+b_i  = 0 if |zz_i| ≤ l1 else −(zz_i − sign(zz_i)·l1) / (β/α + d_i + l2)
+p    = sigmoid(zᵀb)
+zz_i ← λzz_i      n_i ← λn_i      d_i ← λd_i      λ over the clock since the row that last taught the target
+g_i  = (p − y)·z_i·w      s_i = (√(n_i + g_i²) − √n_i)/α
 zz_i += g_i − s_i·b_i      n_i += g_i²      d_i += s_i
-m    = W / W*, per target: W its weight, W* its weight on a clock that runs only on the rows that teach it
 ```
 
 This code uses `df` from [Example data](#example-data):
@@ -3320,11 +3320,13 @@ penalty that weight and density leave alone, use
 is on the mean scale.
 
 **A row whose target is null or whose weight is 0 leaves that target's fit
-where it was,** because it ages the sums and the penalties alike. The rows
-that teach the target bring `m` back toward 1, which restores the
-penalties.
+where it was,** because the sums wait for the next row that teaches it.
+That row is scored with the fit as it stood, then ages the sums by the
+whole clock since. The gap ages the evidence and not the penalties, so the
+fit gives way to them: a constant 5 settled at `half_life=100` stands at
+0.75 of itself after the row that ends a gap of one half-life.
 
-With decay off, `m` is 1 and `d_i` is `√n_i/α`, which is river's FTRL: the
+With decay off, `d_i` is `√n_i/α`, which is river's FTRL: the
 two agree to 1e-12, row for row, and Vowpal Wabbit's `--ftrl` agrees to its
 single precision.
 

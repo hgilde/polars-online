@@ -1274,23 +1274,27 @@ def ftrl_ref(
     """FTRL-proximal oracle (docs/PLAN.md section 4.6, McMahan 2013), for the
     logistic loss and the squared one (E18).
 
-    The decay is applied to ``n``, ``z`` and the proximal sum ``d`` *before*
-    the proximal weights are computed, so a row's prediction already reflects
-    its own elapsed clock. Without decay the rate is river's ``(beta +
-    sqrt(n)) / alpha``, which the proximal steps telescope to; under decay it
-    is ``beta / alpha + d``, their own discounted sum. Decaying ``n`` inside
+    Without decay the rate is river's ``(beta + sqrt(n)) / alpha``, which the
+    proximal steps telescope to. Under a half-life the fit after a row that
+    teaches the target at clock ``t`` minimizes a fixed regularizer against
+    the linearized losses aged on the clock::
+
+        sum_s lam^(t - t_s) (g_s . b + sigma_s / 2 |b - b_s|^2)
+            + l1 |b|_1 + (beta / alpha + l2) / 2 |b|^2
+
+    over the rows ``s`` that taught it, so the rate is ``beta / alpha + d``
+    with ``d`` the proximal steps' own discounted sum. Decaying ``n`` inside
     the square root instead shrank every coefficient toward zero on every
-    row, by a factor between ``lam`` and ``sqrt(lam)`` (review 2026-09-12,
-    C24). Under decay the penalties ``beta / alpha``, ``l1`` and ``l2`` take
-    the scale ``W / W*``: ``W`` the target's weight decayed on every row,
-    ``W*`` the same on a clock that runs only on the rows that teach the
-    target, so a row that teaches it nothing ages the sums and the penalties
-    alike and the fit does not move (docs/PLAN.md task 115 (d)); here in the
-    decayed form, where the model keeps the decay until the next row that
-    teaches. ``pred_j`` waits for the target's own weight, the rows that
-    carried it (a label ``strict_binary`` refuses does not), decayed, to
-    reach ``min_weight`` (hard rule 8, docs/PLAN.md task 115 (d));
-    ``weight_sum`` is every row's.
+    row (review 2026-09-12, C24). A row that teaches the target nothing (a
+    null target, a weight of 0, a label ``strict_binary`` refuses) leaves
+    ``n``, ``z`` and ``d``, and the fit read from them, as the last row that
+    taught it left them; the next row that teaches is scored with that fit,
+    then ages them by the whole clock since that row, here one factor of the
+    summed clock, and learns (docs/PLAN.md task 215: task 115 (d)'s penalty
+    scale ``W / W*`` is gone). ``pred_j`` waits for the target's own weight,
+    the rows that carried it (a label ``strict_binary`` refuses does not),
+    decayed, to reach ``min_weight`` (hard rule 8, docs/PLAN.md task 115
+    (d)); ``weight_sum`` is every row's.
     """
     n, k = X.shape
     m = Y.shape[1]
@@ -1312,18 +1316,19 @@ def ftrl_ref(
             "d": np.zeros((m, kt)),
             "w_sum": 0.0,
             "w_target": np.zeros(m),
-            "w_taught": np.zeros(m),
+            # Per target, the clock since the last row that taught it.
+            "since": np.zeros(m),
             "pending": 0.0,
         }
 
-    def weights(st, j, scale):
+    def weights(st, j):
         out = np.zeros(kt)
         for i in range(kt):
             zi = st["z"][j, i]
             if forgets:
-                if abs(zi) > l1 * scale:
-                    rate = beta / alpha * scale + st["d"][j, i] + l2 * scale
-                    out[i] = -(zi - np.sign(zi) * l1 * scale) / rate if rate > 0 else 0.0
+                if abs(zi) > l1:
+                    rate = beta / alpha + st["d"][j, i] + l2
+                    out[i] = -(zi - np.sign(zi) * l1) / rate if rate > 0 else 0.0
             elif abs(zi) > l1:
                 rate = (beta + np.sqrt(st["n"][j, i])) / alpha
                 out[i] = -(zi - np.sign(zi) * l1) / (rate + l2)
@@ -1341,20 +1346,14 @@ def ftrl_ref(
         st["pending"] = 0.0
         lam = 0.5 ** (d / half_life) if forgets else 1.0
 
-        if lam != 1.0:
-            st["n"] *= lam
-            st["z"] *= lam
-            st["d"] *= lam
+        st["since"] += d
 
         weight_sum[i] = st["w_sum"]
 
         for j in range(m):
             ready = st["w_target"][j] >= min_weight
-            # The scale from the target's weight aged to this row, before it
-            # learns, over its weight on the teaching clock.
-            taught = st["w_taught"][j]
-            scale = lam * st["w_target"][j] / taught if taught > 0 else 1.0
-            b = weights(st, j, scale)
+            # The fit as the last row that taught the target left it.
+            b = weights(st, j)
             coef[i, j] = b
             p = z @ b if loss == "squared" else 1.0 / (1.0 + np.exp(-(z @ b)))
             if ready:
@@ -1370,7 +1369,13 @@ def ftrl_ref(
                         continue
                 else:
                     yb = min(max(yb, 0.0), 1.0)
-            st["w_taught"][j] = lam * st["w_taught"][j] + w[i]
+            # The row teaches: the sums age by the clock since the last row
+            # that taught the target, one factor of the whole of it.
+            owed = 0.5 ** (st["since"][j] / half_life) if forgets else 1.0
+            st["since"][j] = 0.0
+            st["n"][j] *= owed
+            st["z"][j] *= owed
+            st["d"][j] *= owed
             err = p - yb
             for ii in range(kt):
                 g = err * z[ii] * w[i]

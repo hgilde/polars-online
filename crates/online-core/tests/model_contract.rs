@@ -2504,24 +2504,6 @@ fn a_zero_weight_row_past_the_underflow_forgets<M: OnlineModel>(
     }
 }
 
-/// The model whose fitted function a zero-weight row inside a gap moves,
-/// found when [`zero_weight_rows_only_advance_the_clock`] began comparing the
-/// numbers (docs/PLAN.md task 211) and raised there; `hmm` and `ewridge`'s
-/// clock-scheduled solve were fixed in task 214, and this one was left for
-/// the user there. Measured on that test's stream.
-const PARTS_ON_A_SPLIT_GAP: [(&str, &str); 1] = [(
-    "ftrl",
-    "the penalties' scale `W/W*` reads `W*` on a clock that runs only on the rows that \
-     teach the target, each such row aging it by its own delta: a zero-weight row takes \
-     its delta off that clock, and the fit at a fixed row moved by 1.9% (-0.027757 \
-     against -0.027249) on the row after the first one. Task 214 found no `W*` that \
-     keeps both this test and `test_semantics_all_models`' rule that a null target is a \
-     zero weight: with both, a row that teaches nothing is invisible, and the scale's \
-     whole point (task 115 (d)) is that it is not -- aged on every row, `W*` is `W` and \
-     the scale is 1; aged on zero-weight rows alone, a null target is no longer a zero \
-     weight",
-)];
-
 /// A `lasso` whose solves are scheduled on the clock, which
 /// [`a_zero_weight_row_past_the_underflow_forgets`] does not compare
 /// predictions for.
@@ -2643,12 +2625,9 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
         // the stream with the zero-weight row has aged its moments by that
         // row's delta before predicting, and a fit solved after that, with
         // a penalty that does not age with them, is a fit solved after the
-        // decay; the other ages them inside the row. A model whose fit a
-        // zero-weight row inside a gap moves, a decision of its own, is
-        // named in `PARTS_ON_A_SPLIT_GAP`.
-        if PARTS_ON_A_SPLIT_GAP.iter().any(|(k, _)| *k == kind) {
-            continue;
-        }
+        // decay; the other ages them inside the row. No model is exempt:
+        // `ftrl`, the last, dropped the penalty scale whose second clock a
+        // zero-weight row moved (docs/PLAN.md task 215).
         let probes: [Vec<f64>; 2] = [
             vec![side(0.7); K],
             (0..K).map(|f| side(f as f64 - 0.4)).collect(),

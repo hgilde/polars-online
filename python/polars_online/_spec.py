@@ -2281,39 +2281,46 @@ def ftrl(
 
     .. code-block:: text
 
-        n_i   <- lam * n_i ;  zz_i <- lam * zz_i ;  d_i <- lam * d_i
         b_i   = 0 if |zz_i| <= l1 else -(zz_i - sign(zz_i) l1) / (r_i + l2)
-        r_i   = beta / alpha + d_i                 (under a half-life, with l1, l2 and
-                                                    beta / alpha times m, below)
+        r_i   = beta / alpha + d_i                 (under a half-life)
               = (beta + sqrt(n_i)) / alpha         (without one: river's closed form)
         p     = sigmoid(z . b)                     (z . b itself under loss="squared")
+        n_i   <- lam * n_i ;  zz_i <- lam * zz_i ;  d_i <- lam * d_i
+                                                   (on a row that teaches the target,
+                                                    over the clock since the last one)
         g_i   = (p - y) * z_i * w
         s_i   = (sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha
         zz_i += g_i - s_i * b_i ;  n_i += g_i^2 ;  d_i += s_i
 
-    Under a half-life the penalties ``beta / alpha``, ``l1`` and ``l2`` take
-    a per-target scale ``m = W / W*``. ``W`` is the target's weight, decayed
-    on every row, and ``W*`` the same on a clock that runs only on the rows
-    that teach it. A row that teaches the target nothing -- absent, at
-    weight 0, a label ``strict_binary`` refuses, or a row whose squared
-    gradient would overflow, which is skipped -- ages the sums and the
-    penalties alike, so the fit does not move, as :func:`ewridge`'s does not.
-    The rows that teach it bring ``m`` back toward 1. Held constant, the
-    penalties shrank the fit to 0.75 of itself over one half-life of such
-    rows at ``half_life = 100``. In steady state they act as a mean-scale
+    Under a half-life the fit after a row that teaches the target minimizes
+    FTRL's objective: a fixed regularizer, ``l1 |b|_1 + (beta / alpha + l2)
+    |b|^2 / 2``, against the rows' linearized losses and proximal terms,
+    each weighted by its age on the clock. So old evidence counts for less
+    against the prior. In steady state the penalties act as a mean-scale
     ridge of ``(1 - lam) * (beta / alpha + l2)``: a constant 5 settles at
-    4.65 at ``half_life = 100`` and 4.96 at 1000. Without a half-life ``m``
-    is 1, and the fit is river's ``FTRLProximal`` to the bit. A row's weight
-    is an importance weight, as Vowpal Wabbit's: the gradient carries it,
-    against penalties in absolute weight. So a heavier stream overcomes
-    ``l1`` and ``l2`` sooner (``tests/test_second_opinion.py`` holds the fit
-    to VW's, weighted). ``l1``, ``l2`` and ``beta`` are a prior of fixed
-    mass against evidence that grows with weight and density. FTRL minimizes
-    the cumulative loss plus a fixed regularizer, which its regret bound
-    rests on. So under a half-life the effective penalty is ``l1 / W`` for
-    the weight ``W`` the window holds, and more rows in a half-life, or
-    heavier ones, outweigh it sooner. For a penalty on the mean scale,
-    invariant to both, use :func:`lasso`.
+    4.65 at ``half_life = 100`` and 4.96 at 1000.
+
+    A row that teaches the target nothing -- absent, at weight 0, a label
+    ``strict_binary`` refuses, or a row whose squared gradient would
+    overflow, which is skipped -- leaves the sums as the last row that
+    taught it left them. So the fit does not move, as :func:`ewridge`'s does
+    not, and a row of weight 0 is clock alone, as in every model. The next
+    row that teaches is scored with that fit, then ages the sums by the
+    whole clock since and learns. The gap ages the evidence and not the
+    prior: a constant 5 settled at ``half_life = 100`` stands at 0.75 of
+    itself after that row when the gap was one half-life, and at 0.15 when
+    it was five. Without a half-life the fit is river's ``FTRLProximal`` to
+    the bit.
+
+    A row's weight is an importance weight, as Vowpal Wabbit's: the gradient
+    carries it, against penalties in absolute weight. So a heavier stream
+    overcomes ``l1`` and ``l2`` sooner (``tests/test_second_opinion.py``
+    holds the fit to VW's, weighted). ``l1``, ``l2`` and ``beta`` are a prior of fixed
+    mass against evidence that grows with weight and density, which FTRL's
+    regret bound rests on. So under a half-life the effective penalty is
+    ``l1 / W`` for the weight ``W`` the window holds, and more rows in a
+    half-life, or heavier ones, outweigh it sooner. For a penalty on the
+    mean scale, invariant to both, use :func:`lasso`.
 
     .. rubric:: Parameters
 

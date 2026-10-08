@@ -1594,12 +1594,18 @@ const GOLDEN_QUANTILE: &[f64] = &[0.25710455741995175, 2.226788224665792, -0.021
 // was decayed inside its square root and every coefficient shrank.
 // Both moved on 2026-09-29 (docs/PLAN.md task 115 (d)): under a half-life the
 // penalties now age with the sums, so the fit no longer shrinks between rows.
+// Both moved again on 2026-10-08 (task 215), at rows 45 and 59, after the
+// null target at row 31: the penalties keep their size, and the first row to
+// teach after it meets the sums aged by two rows (-0.093% and +0.032% for the
+// logistic loss, -0.17% and +0.18% for the squared). `ftrl_ref`, rewritten
+// from the module docs, gives them to 1.2e-15 (and the old ones, under the
+// old scale, to 1.6e-15).
 const GOLDEN_FTRL_SQUARED: &[f64] = &[
     0.31755217793601365,
-    1.8450090309450071,
-    -0.05909108310584128,
+    1.8418686598361362,
+    -0.059195743763157324,
 ];
-const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5899321334553916, 0.45251642778855805];
+const GOLDEN_FTRL: &[f64] = &[0.4937166166955374, 0.5893822512193234, 0.45266254275109397];
 // Regenerated for docs/PLAN.md task 74 (2026-09-08): `standardize`
 // standardises against the moments with the row admitted, so every
 // prediction of this scaled fit moved. Again for task 195 (2026-10-07):

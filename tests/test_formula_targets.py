@@ -950,18 +950,19 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     readiness notices' waits (45 refused); 47 since task 206, for a
     standardizing fit's warm-up (46 refused); 48 since task 212, with
     windows state 9, for a variance's queue (47 refused); 49 since task 211,
-    for `kalman`'s anchor and clocks (48 refused); and 50 since task 214,
-    for `kalman`'s prior from a median (49 refused)."""
+    for `kalman`'s anchor and clocks (48 refused); 50 since task 214, for
+    `kalman`'s prior from a median (49 refused); and 51 since task 215, for
+    `ftrl` without its penalty scale (50 refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 50, state[i]
-    for before in range(25, 50):
+    assert state[i] == 51, state[i]
+    for before in range(25, 51):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 50"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 51"
         ):
             po.ModelBank.load_bytes(old)
 

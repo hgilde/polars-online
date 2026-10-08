@@ -167,7 +167,9 @@ class TestFtrl:
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         ref = ftrl_ref(x, y, dc, w, min_weight=8.0, gap_cap=MAX_DCLOCK, **kw)
         # ftrl_ref reports the weights a row was scored with, the bank's
-        # `coef` those after it; they meet only without decay (below).
+        # `coef` those after it, which the next row is scored with (below,
+        # without decay; under one too since task 215, the sums waiting for
+        # the next row that teaches).
         _held(out, ref, y, coef=False)
 
     def test_without_decay_coef_is_the_next_rows_weights(self):

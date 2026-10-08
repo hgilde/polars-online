@@ -177,8 +177,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// observation and its prior's squared innovations in place of its warm-up;
 /// a file from before it is refit. **50 since task 214** (the same day):
 /// `kalman` keeps the first three rows' squared innovations, which its
-/// prior is the median of; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 50;
+/// prior is the median of; a file from before it is refit. **51 since task
+/// 215** (the same day): `ftrl` keeps no penalty scale; a file from before
+/// it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 51;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
