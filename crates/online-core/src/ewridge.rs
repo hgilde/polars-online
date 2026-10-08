@@ -1814,7 +1814,13 @@ impl OnlineModel for EwRidge {
     /// solve's shares have not been taken and the `edf` bound already puts
     /// the ratio below it, the bound stands in and the `O(k³)` read waits
     /// (docs/PLAN.md task 140).
-    fn error_inflation_gate_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
+    fn error_inflation_gate_into(
+        &self,
+        _x: &[f64],
+        _d_clock: f64,
+        out: &mut Vec<f64>,
+        limit: f64,
+    ) -> bool {
         self.inflation_into(out, limit)
     }
 
@@ -1827,7 +1833,7 @@ impl OnlineModel for EwRidge {
     /// NaN where a feature the system kept is not a number, whose form is
     /// NaN, not the 0 the form's clamp once made of it (task 181). Read for
     /// output only: nothing here reaches the state.
-    fn row_error_inflation_into(&self, x: &[f64], out: &mut Vec<f64>) -> bool {
+    fn row_error_inflation_into(&self, x: &[f64], _d_clock: f64, out: &mut Vec<f64>) -> bool {
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
         out.clear();
         out.resize(m * nc, f64::INFINITY);

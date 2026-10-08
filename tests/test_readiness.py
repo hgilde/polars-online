@@ -211,12 +211,13 @@ class TestMaxErrorInflation:
         assert 60 < first < 90, first
 
     def test_is_refused_by_name_where_no_ridge_system_reads_it(self):
-        """A model without a Gram to read the gate from took the setting and
-        dropped it (docs/PLAN.md task 109)."""
+        """A model without a noise statistic to read the gate from took the
+        setting and dropped it (docs/PLAN.md task 109). Since task 116 the
+        gate reads `rls`, `kalman` and `lasso` too
+        (`tests/test_readiness_models.py`)."""
         for build, kw in [
             (po.spec.sgd, dict(learning_rate=0.01)),
             (po.spec.huber, {}),
-            (po.spec.lasso, dict(lasso_path=[0.1, 0.0])),
         ]:
             with pytest.raises(ValueError, match="max_error_inflation needs a model with"):
                 build(

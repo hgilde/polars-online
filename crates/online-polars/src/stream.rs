@@ -271,16 +271,29 @@ impl AnyModel {
         dispatch!(self, m => m.error_inflation_into(out))
     }
 
-    /// The same for the noise gate at `limit`, where a bound may stand in
-    /// below it ([`OnlineModel::error_inflation_gate_into`]).
-    pub fn error_inflation_gate_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
-        dispatch!(self, m => m.error_inflation_gate_into(out, limit))
+    /// The same for the noise gate at `limit` on the row `x`, `d_clock`
+    /// after the last, where a bound may stand in below it
+    /// ([`OnlineModel::error_inflation_gate_into`]).
+    pub fn error_inflation_gate_into(
+        &self,
+        x: &[f64],
+        d_clock: f64,
+        out: &mut Vec<f64>,
+        limit: f64,
+    ) -> bool {
+        dispatch!(self, m => m.error_inflation_gate_into(x, d_clock, out, limit))
     }
 
     /// The same for one row's features
     /// ([`OnlineModel::row_error_inflation_into`]).
-    pub fn row_error_inflation_into(&self, x: &[f64], out: &mut Vec<f64>) -> bool {
-        dispatch!(self, m => m.row_error_inflation_into(x, out))
+    pub fn row_error_inflation_into(&self, x: &[f64], d_clock: f64, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.row_error_inflation_into(x, d_clock, out))
+    }
+
+    /// The coefficients' sampling variances
+    /// ([`OnlineModel::coef_variance`]).
+    pub fn coef_variance(&self) -> Option<online_core::CoefVariance> {
+        dispatch!(self, m => m.coef_variance())
     }
 
     /// Each coefficient's data share ([`OnlineModel::support_coef`]), laid
@@ -4881,7 +4894,9 @@ fn run_instance(
         // `max_error_inflation` a slot is on, and the largest ratio when one
         // is at or above it, so a model may put a bound below the limit in
         // place of a ratio that costs it an `O(k³)` read (docs/PLAN.md task
-        // 140); `summary` reads the exact one.
+        // 140); `summary` reads the exact one. A gate that is off -- every
+        // model's but `ewridge`'s unless set (task 116) -- reads nothing:
+        // `kalman`'s is `O(k²)` a row, paid only where it is used.
         let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
         let settled = settled_frac(inst.decay, *inst.decay_time + held);
         // The two "cannot be met" notices below read the learned rows'
@@ -4894,15 +4909,16 @@ fn run_instance(
         // keep the fraction above, the held rows' clock counted (§8).
         let learned = settled_frac(inst.decay, *inst.decay_time);
         let max_infl = inst.spec.max_error_inflation_or_default();
-        let has_infl = inst
-            .model
-            .get()
-            .error_inflation_gate_into(&mut sc.infl, max_infl);
+        let has_infl = max_infl.is_finite()
+            && inst
+                .model
+                .get()
+                .error_inflation_gate_into(xs, plan.d_clock, &mut sc.infl, max_infl);
         let has_row_infl = inst.spec.emit_error_inflation
             && inst
                 .model
                 .get()
-                .row_error_inflation_into(xs, &mut sc.row_infl);
+                .row_error_inflation_into(xs, plan.d_clock, &mut sc.row_infl);
 
         let mut step = if learn {
             // The row's stamp, for a window to key its snapshot by and
@@ -5004,8 +5020,18 @@ fn run_instance(
         }
         // The noise gate cannot be met: the stream has all but settled and
         // the ratio is still above the threshold, so nothing will change
-        // it. Said once per instance, with the way out (§3).
-        let unmet = (reason == REASON_INFLATION && !inst.notified.unreachable && learned >= 0.95)
+        // it. Said once per instance, with the way out (§3). Not for
+        // `kalman`, whose gate reads each row's own value: its `P` settles
+        // on `coef_half_life`'s clock, not the spec's decay, and a row
+        // nearer the design's centre reads below the average, so one
+        // withheld row, settled or not, says nothing of the rows after it
+        // and the projection to steady state here is Kish's, which `P`
+        // does not follow (docs/PLAN.md task 116).
+        let per_row_gate = matches!(inst.spec.model, ModelKind::Kalman { .. });
+        let unmet = (reason == REASON_INFLATION
+            && !per_row_gate
+            && !inst.notified.unreachable
+            && learned >= 0.95)
             .then(|| Unmet {
                 worst: sc.infl.iter().cloned().fold(0.0, f64::max),
                 max: max_infl,

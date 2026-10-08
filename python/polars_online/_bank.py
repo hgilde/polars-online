@@ -966,8 +966,13 @@ class ModelBank:
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
             last row (docs/WARMUP-AND-CONVERGENCE.md): how full the decay
-            window is, and the largest noise-gate ratio over its slots. Null
-            where the model has no such reading.
+            window is, and the largest noise-gate ratio over its slots --
+            ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
+            ``sqrt(1 + k_total / n_kish)``, ``lasso``'s
+            ``sqrt(1 + df / n_kish)``, and for ``kalman``, whose gate reads
+            each row's own value, its mean field over the design,
+            ``sqrt(1 + sum_i P_ii E[z_i^2] / R)``. Null where the model has
+            no such reading.
         ``weight_sum_settled``
             The weight the stream settles at, read from where it stands:
             ``(W - w1 * (1 - settled_frac)) / settled_frac``, ``W`` the

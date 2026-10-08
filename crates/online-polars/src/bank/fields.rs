@@ -392,7 +392,7 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                         .src(Source::Reason(mi)),
                 ));
             }
-            Source::Coef(mi) if spec.has_error_inflation() => {
+            Source::Coef(mi) if spec.has_support_coef() => {
                 let suffix = suffix.strip_prefix("coef").unwrap_or("");
                 fields.push(like(
                     FieldMeta::new(format!("support_coef{suffix}"), "support_coef")

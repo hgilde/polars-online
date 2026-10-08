@@ -6,7 +6,9 @@
 //! of which fails loudly if the squared-weight sum, the weights or the ridge
 //! are wired wrongly (§7.4). They verify the wiring; nothing here is tuned.
 
-use online_core::{Decay, EwRidge, EwRidgeCfg, OnlineModel, TargetGaps};
+use online_core::{
+    Decay, EwRidge, EwRidgeCfg, Lasso, LassoCfg, OnlineModel, Rls, RlsCfg, TargetGaps,
+};
 
 fn cfg(k: usize, half_life: f64) -> EwRidgeCfg {
     EwRidgeCfg {
@@ -62,7 +64,7 @@ impl Rng {
 /// `h(x)` for this row, from the state before it: `inflation² − 1`.
 fn h_of(m: &EwRidge, x: &[f64]) -> f64 {
     let mut out = Vec::new();
-    assert!(m.row_error_inflation_into(x, &mut out));
+    assert!(m.row_error_inflation_into(x, 1.0, &mut out));
     out[0] * out[0] - 1.0
 }
 
@@ -333,6 +335,247 @@ fn before_the_first_solve_the_gate_is_infinite() {
     assert!(m.error_inflation_into(&mut out));
     assert!(out[0].is_infinite());
     assert!(m.support_coef().is_none());
-    assert!(m.row_error_inflation_into(&[1.0, 2.0], &mut out));
+    assert!(m.row_error_inflation_into(&[1.0, 2.0], 1.0, &mut out));
     assert!(out[0].is_infinite());
+}
+
+// ---- `rls` (docs/PLAN.md task 116): the §7.4 identities, in sum form ----
+
+fn rls(k: usize, half_life: f64, delta: f64) -> Rls {
+    Rls::new(RlsCfg {
+        n_features: k,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: Decay::Halflife(half_life),
+        delta,
+        coef_prior: None,
+        min_weight: 0.0,
+    })
+    .unwrap()
+}
+
+/// `h(x)` for this row from `rls`'s per-row field, and the gate's bound.
+fn rls_h(m: &Rls, x: &[f64]) -> f64 {
+    let mut out = Vec::new();
+    assert!(m.row_error_inflation_into(x, 1.0, &mut out));
+    out[0] * out[0] - 1.0
+}
+
+fn rls_gate_h(m: &Rls) -> f64 {
+    let mut out = Vec::new();
+    assert!(m.error_inflation_into(&mut out));
+    out[0] * out[0] - 1.0
+}
+
+/// (i) On a stationary design the mean of the per-row `h` is the gate's
+/// `k_total / n_kish` once the prior has faded, as `ewridge`'s is its
+/// `edf / n_kish`: the per-row form conservative by the same sampling
+/// correlation (§2.1), at `delta` small and not.
+#[test]
+fn rls_the_mean_of_h_over_a_stationary_design_is_k_over_n_kish() {
+    for delta in [1e-6, 10.0] {
+        let (k, half_life) = (4, 20.0);
+        let mut m = rls(k, half_life, delta);
+        let mut rng = Rng(11);
+        let mut hs = Vec::new();
+        for i in 0..3000 {
+            let x = rng.row(k);
+            let y = x.iter().sum::<f64>() + rng.normal();
+            if i >= 2000 {
+                hs.push(rls_h(&m, &x));
+            }
+            m.step(&x, &[Some(y)], 1.0, 1.0);
+        }
+        let mean_h = hs.iter().sum::<f64>() / hs.len() as f64;
+        let gate = rls_gate_h(&m);
+        assert!(
+            mean_h >= 0.95 * gate && mean_h <= 1.25 * gate,
+            "delta {delta}: mean h {mean_h} vs k / n_kish {gate}"
+        );
+        let expect = (k + 1) as f64 / steady_n_kish(half_life);
+        assert!((gate - expect).abs() < 0.01 * expect, "{gate} vs {expect}");
+    }
+}
+
+/// (ii) The observed out-of-sample error is the noise floor inflated by
+/// the gate's `sqrt(1 + k_total / n_kish)`, within 5% at a half-life of 4
+/// rows, where the fit is visibly noisy; the per-row form errs on the safe
+/// side.
+#[test]
+fn rls_observed_error_inflation_matches_the_gate() {
+    let (k, half_life, sigma) = (4, 4.0, 1.0);
+    let mut m = rls(k, half_life, 1e-6);
+    let mut rng = Rng(23);
+    let (mut se, mut hs) = (0.0, Vec::new());
+    for i in 0..6000 {
+        let x = rng.row(k);
+        let y = 1.0 + x.iter().sum::<f64>() + sigma * rng.normal();
+        if i >= 200 {
+            hs.push(rls_h(&m, &x));
+        }
+        let step = m.step(&x, &[Some(y)], 1.0, 1.0);
+        if i >= 200 {
+            let e = y - step.pred[0];
+            se += e * e;
+        }
+    }
+    let observed = (se / hs.len() as f64).sqrt() / sigma;
+    let gate = (1.0 + rls_gate_h(&m)).sqrt();
+    assert!(
+        (observed - gate).abs() < 0.05 * gate,
+        "observed {observed} vs the gate's {gate}"
+    );
+    let mean_h = hs.iter().sum::<f64>() / hs.len() as f64;
+    assert!(mean_h >= observed * observed - 1.0, "{mean_h}");
+    assert!(gate > 1.1, "{gate}");
+}
+
+/// (iii) Weights enter through Kish's `n`: scaling every weight changes
+/// nothing (to the prior's share, here 1e-9 of the information), and
+/// splitting every row into two halves at the same clock keeps `A` and the
+/// weight while `s₂` halves, so `h` halves.
+#[test]
+fn rls_weights_enter_through_kish_n_exactly() {
+    let (k, half_life) = (3, 30.0);
+    let (mut whole, mut scaled, mut split) = (
+        rls(k, half_life, 1e-9),
+        rls(k, half_life, 1e-9),
+        rls(k, half_life, 1e-9),
+    );
+    let mut rng = Rng(5);
+    let probe = rng.row(k);
+    for _ in 0..400 {
+        let x = rng.row(k);
+        let y = x[0] - x[1] + rng.normal();
+        whole.step(&x, &[Some(y)], 1.0, 1.0);
+        scaled.step(&x, &[Some(y)], 1.0, 2.5);
+        split.step(&x, &[Some(y)], 1.0, 0.5);
+        split.step(&x, &[Some(y)], 0.0, 0.5);
+    }
+    let (hw, hs, hh) = (
+        rls_h(&whole, &probe),
+        rls_h(&scaled, &probe),
+        rls_h(&split, &probe),
+    );
+    assert!((hs - hw).abs() < 1e-6 * hw, "scaled {hs} vs {hw}");
+    assert!(
+        (hh - hw / 2.0).abs() < 1e-9 * hw,
+        "split {hh} vs half of {hw}"
+    );
+    let (mw, mh) = (rls_gate_h(&whole), rls_gate_h(&split));
+    assert!((mh - mw / 2.0).abs() < 1e-9 * mw);
+}
+
+/// (iv) A row that breaks a collinearity the fit relied on reads an `h`
+/// more than 100 times the rows that respect it.
+#[test]
+fn rls_a_row_that_breaks_a_collinearity_reads_a_large_h() {
+    let (k, half_life) = (3, 50.0);
+    let mut m = rls(k, half_life, 1e-6);
+    let mut rng = Rng(7);
+    let mut in_sample = Vec::new();
+    for i in 0..600 {
+        let mut x = rng.row(k);
+        x[2] = x[0];
+        let y = x[0] + 2.0 * x[1] + rng.normal();
+        if i >= 300 {
+            in_sample.push(rls_h(&m, &x));
+        }
+        m.step(&x, &[Some(y)], 1.0, 1.0);
+    }
+    let typical = in_sample.iter().sum::<f64>() / in_sample.len() as f64;
+    let mut probe = rng.row(k);
+    probe[2] = probe[0] + 1.0;
+    assert!(rls_h(&m, &probe) > 100.0 * typical, "{typical}");
+}
+
+/// (v) The prior only adds information, so a stronger `delta` reads no
+/// larger `h` on any row, while the gate's bound, `k_total / n_kish`, is
+/// the same for both: conservative under the fading prior, by exactly what
+/// the prior holds.
+#[test]
+fn rls_a_stronger_prior_reads_no_larger_h_and_the_same_bound() {
+    let k = 2;
+    let (mut weak, mut strong) = (rls(k, 25.0, 1e-6), rls(k, 25.0, 50.0));
+    let mut rng = Rng(13);
+    for i in 0..300 {
+        let x = rng.row(k);
+        let y = 1.0 + x[0] - x[1] + rng.normal();
+        if i > 0 {
+            let (hw, hs) = (rls_h(&weak, &x), rls_h(&strong, &x));
+            assert!(hs <= hw * (1.0 + 1e-12), "row {i}: {hs} > {hw}");
+            assert_eq!(rls_gate_h(&weak).to_bits(), rls_gate_h(&strong).to_bits());
+        }
+        weak.step(&x, &[Some(y)], 1.0, 1.0);
+        strong.step(&x, &[Some(y)], 1.0, 1.0);
+    }
+}
+
+// ---- `lasso` (docs/PLAN.md task 116): the active count ----
+
+/// The gate reads `sqrt(1 + df / n_kish)` per path point, `df` the active
+/// coefficients plus the intercept: held against the fit's own non-zeros
+/// and Kish's size of unit rows at a literal `λ`, `(Σ λ^i)² / Σ λ^(2i)`.
+#[test]
+fn lasso_reads_the_active_count_over_kish_n() {
+    let (k, n, lam) = (5, 400, 0.98);
+    let mut m = Lasso::new(LassoCfg {
+        n_features: k,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: Decay::Lam(lam),
+        lasso_path: vec![0.5, 0.05, 0.0],
+        l1_ratio: 1.0,
+        select_half_life: None,
+        min_weight: 0.0,
+        target_min_weight: Vec::new(),
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        solve_share: None,
+        window: None,
+        window_every: None,
+        max_rows_between_snapshots: None,
+        target_gaps: TargetGaps::OwnRows,
+        max_iter: 500,
+        tol: 1e-12,
+    })
+    .unwrap();
+    let mut rng = Rng(19);
+    let mut out = Vec::new();
+    let mut seen_sparse = false;
+    for i in 0..n {
+        let x = rng.row(k);
+        let y = 1.0 + 2.0 * x[0] - 1.5 * x[1] + 0.5 * rng.normal();
+        m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        let rows = i + 1;
+        let s1: f64 = (0..rows).map(|a| lam.powi(a)).sum();
+        let s2: f64 = (0..rows).map(|a| lam.powi(2 * a)).sum();
+        let n_kish = s1 * s1 / s2;
+        assert!(m.error_inflation_into(&mut out));
+        let path = &m.coefficients().unwrap()[0];
+        for (li, b) in path.iter().enumerate() {
+            if b.iter().any(|v| v.is_nan()) {
+                assert!(out[li].is_infinite());
+                continue;
+            }
+            let active = b[1..].iter().filter(|v| **v != 0.0).count();
+            seen_sparse |= li == 0 && active == 2 && i > 100;
+            let want = (1.0 + (active + 1) as f64 / n_kish).sqrt();
+            assert!(
+                (out[li] - want).abs() <= 1e-12 * want,
+                "row {i}, point {li}"
+            );
+        }
+    }
+    assert!(
+        seen_sparse,
+        "the heavy penalty kept the two real features alone"
+    );
+    // The unpenalized point keeps every feature: df = k + 1.
+    let b0 = &m.coefficients().unwrap()[0][2];
+    assert!(b0.iter().all(|v| *v != 0.0));
+    // And the gate's own read is the same statistic.
+    let mut gate = Vec::new();
+    assert!(m.error_inflation_gate_into(&[0.0; 5], 1.0, &mut gate, 1.1));
+    assert_eq!(gate, out);
 }

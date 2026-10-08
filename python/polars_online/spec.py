@@ -134,18 +134,34 @@ sees a stream* is the guide to them. This is the reference.
     when the process is stationary. Needs a decay: a finite ``half_life``, or
     ``lam`` below 1.
 ``max_error_inflation``
-    ``ewridge`` only. Why: a fit from too little data adds its estimation
-    error to every prediction's. What: predictions are withheld while
-    ``sqrt(1 + edf / n_kish)`` is at or above it. That is the factor by
-    which estimation error is expected to inflate the prediction error over
-    the noise floor, with ``edf`` the effective degrees of freedom the last
-    solve used and ``n_kish`` Kish's effective sample size. A ratio above 1,
-    default ``sqrt(2)``; ``inf`` switches it off. It reads Kish's count, so
-    uneven weights withhold for longer, and adding a feature moves the gate
-    with the model.
+    ``ewridge``, ``rls``, ``kalman`` and ``lasso``. Why: a fit from too
+    little data adds its estimation error to every prediction's. What:
+    predictions are withheld while ``sqrt(1 + estimation variance / noise)``
+    is at or above it, the factor by which estimation error is expected to
+    inflate the prediction error over the noise floor. Per model:
+
+    .. code-block:: text
+
+        ewridge   sqrt(1 + edf / n_kish)          default sqrt(2)
+        rls       sqrt(1 + k_total / n_kish)      off unless set
+        lasso     sqrt(1 + df / n_kish)           off unless set, per path point
+        kalman    sqrt(1 + z' P⁻ z / R)           off unless set, per row
+
+    ``edf`` is the effective degrees of freedom the last solve used, at most
+    ``k_total`` (``rls``'s fading prior makes its bound conservative);
+    ``df`` the active coefficients plus the intercept (Zou, Hastie and
+    Tibshirani 2007); ``n_kish`` Kish's effective sample size. ``kalman``'s
+    is exact and per row: ``P⁻`` the coefficients' covariance carried
+    through the row's clock gap, ``R`` the noise, ``obs_var`` or the
+    residual variance, so a row far from the design reads larger. A ratio
+    above 1; ``inf`` switches it off. It reads Kish's count, so uneven
+    weights withhold for longer, and adding a feature moves the gate with
+    the model.
 ``emit_error_inflation``
-    ``ewridge`` only: write ``error_inflation_<slot>``, the same factor for
-    the row's own features (*What a spec writes*, below). Default ``False``.
+    ``ewridge``, ``rls`` and ``kalman``: write ``error_inflation_<slot>``,
+    the same factor for the row's own features (*What a spec writes*,
+    below). Default ``False``. Not ``lasso``, which keeps no factor to read
+    a row's leverage from.
 ``coef_every``, ``max_rows_between_coefs``
     How often the ``coef`` field is filled, as ``solve_every`` and
     ``max_rows_between_solves`` schedule a solve. ``coef_every`` writes a
@@ -388,13 +404,16 @@ The diagnostics add, per slot:
        model's own recent error.
    * - ``emit_error_inflation``
      - ``error_inflation_<slot>``
-     - ``sqrt(1 + h(x))`` for *this* row, ``h(x)`` its leverage against the
-       factor the fit came from, over Kish's effective sample size. It says
-       how much estimation error is expected to inflate this prediction's
-       error over the noise floor. Large for a row leaning on a direction
-       the data never showed. ``ewridge`` only; one triangular solve a row,
-       which is why it is opt-in. The gate ``max_error_inflation`` reads the
-       stream average, which is free.
+     - ``sqrt(1 + h(x))`` for *this* row, ``h(x)`` the estimation variance
+       of its prediction over the noise. It says how much estimation error
+       is expected to inflate this prediction's error over the noise floor.
+       Large for a row leaning on a direction the data never showed.
+       ``ewridge``: ``x' S^-1 x / n_kish``, the row's leverage against the
+       factor the fit came from; ``rls``: ``z' A^-1 z * s2 / s1``, the same
+       in the sum form it keeps; ``kalman``: ``z' P⁻ z / R``, exact. One
+       triangular solve or quadratic form a row, which is why it is opt-in.
+       ``ewridge``'s and ``rls``'s gates read the stream average, which is
+       free; ``kalman``'s reads this value.
    * - ``emit_clocks``
      - ``scored_clock``, ``learned_clock``
      - The row's own clock, and the clock of the newest row the models had

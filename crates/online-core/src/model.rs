@@ -24,6 +24,20 @@ pub enum Extra {
     Lasso { lam_selected: Vec<f64> },
 }
 
+/// The coefficients' sampling variances ([`OnlineModel::coef_variance`]),
+/// per output slot and laid out like the coefficients, in their units, in
+/// one of two scales (docs/PLAN.md task 116, F).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CoefVariance {
+    /// Over the noise variance `σ²`: `diag(T M Tᵀ)` for a fit linear in the
+    /// targets, whose covariance is `σ² M` with `M` known and `σ²` not.
+    /// The caller multiplies by its own estimate of `σ²`.
+    PerNoise(Vec<Vec<f64>>),
+    /// A variance already: `kalman`'s posterior `P`, which carries the
+    /// noise in it.
+    Absolute(Vec<Vec<f64>>),
+}
+
 /// Versioned, serializable model state. The bank wraps this with its own header
 /// (spec, package version) before writing msgpack (docs/PLAN.md §5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -648,39 +662,69 @@ pub trait OnlineModel: Sized {
 
     /// Per output slot, how much estimation error is expected to inflate a
     /// prediction's error over the noise floor, read from the state before
-    /// the row: `sqrt(1 + edf / n_kish)`, the effective degrees of freedom
-    /// the last solve used over Kish's effective sample size behind the
-    /// slot's Gram (docs/WARMUP-AND-CONVERGENCE.md §2.1). Infinite before
-    /// the first solve, and where the Gram has no weight. Clears and fills
-    /// `out`, an entry a slot, and says whether it did. Only `ewridge`
-    /// reports it. Every other model keeps the default, `false`, the linear
-    /// fits `rls`, `lasso`, `huber`, `quantile` and `kalman` among them, and
-    /// the spec refuses `max_error_inflation` and `emit_error_inflation` for
-    /// every model but `ewridge`.
+    /// the row: `sqrt(1 + estimation variance / noise)`
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2.1). For the stream, without a row:
+    /// `ewridge`'s `sqrt(1 + edf / n_kish)`, the effective degrees of
+    /// freedom the last solve used over Kish's effective sample size behind
+    /// the slot's Gram; `rls`'s bound `sqrt(1 + k_total / n_kish)`; `lasso`'s
+    /// `sqrt(1 + df / n_kish)` per path point, `df` the active count; and
+    /// `kalman`'s mean field over the design, whose own statistic is per
+    /// row ([`Self::error_inflation_gate_into`]). Infinite where it cannot
+    /// be formed: before the first solve, where the Gram has no weight, and
+    /// for `kalman` while `P` is unsized or the noise unknown. Clears and
+    /// fills `out`, an entry a slot, and says whether it did. Every other
+    /// model keeps the default, `false` -- `huber` and `quantile`, whose
+    /// fits are not linear in the targets, the gradient models, which keep
+    /// no second moment, and the scalar EW models, for which `1/n_kish` is
+    /// a mean's variance -- and the spec refuses `max_error_inflation` for
+    /// them (docs/PLAN.md task 116).
     fn error_inflation_into(&self, _out: &mut Vec<f64>) -> bool {
         false
     }
 
-    /// [`Self::error_inflation_into`] for the noise gate at `limit`, which
+    /// The noise gate's statistic for the row about to be stepped, `x` at
+    /// `d_clock` after the last, for the gate at `limit`. Most models gate
+    /// on the stream's [`Self::error_inflation_into`] and ignore the row;
+    /// `kalman`'s is the row's own `sqrt(1 + z' P⁻ z / R)`, which needs the
+    /// row's features and the process noise its clock gap adds. The gate
     /// reads only which side of `limit` each slot is on: exact wherever the
     /// ratio could reach `limit`, while below it a bound may stand in, so a
     /// model can skip work the gate would not look at (docs/PLAN.md task
     /// 140). The largest value is then exact whenever any slot is at or
-    /// above `limit`. The default is the exact statistic.
-    fn error_inflation_gate_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
-        let _ = limit;
+    /// above `limit`. The default is the exact stream statistic.
+    fn error_inflation_gate_into(
+        &self,
+        x: &[f64],
+        d_clock: f64,
+        out: &mut Vec<f64>,
+        limit: f64,
+    ) -> bool {
+        let _ = (x, d_clock, limit);
         self.error_inflation_into(out)
     }
 
-    /// The same for *this* row's features: `sqrt(1 + h(x))` per slot with
-    /// `h(x) = x' Σ̂⁻¹ x / n_kish`, the leverage of the row against the
-    /// factor the fit came from, so a row whose `x` leans on a direction the
-    /// data never showed reads large where the stream average cannot see it.
-    /// One triangular solve per slot, `O(k²)`, which is why it rides on an
-    /// opt-in field (`emit_error_inflation`) and the model keeps the factor
-    /// only when asked to. `false` where [`Self::error_inflation_into`] is.
-    fn row_error_inflation_into(&self, _x: &[f64], _out: &mut Vec<f64>) -> bool {
+    /// The same for *this* row's features, `x` at `d_clock` after the last
+    /// row: `sqrt(1 + h(x))` per slot, `h(x)` the estimation variance of
+    /// the row's prediction over the noise, so a row whose `x` leans on a
+    /// direction the data never showed reads large where the stream average
+    /// cannot see it. `ewridge`: `x' Σ̂⁻¹ x / n_kish` against the factor its
+    /// fit came from; `rls`: `‖R⁻ᵀ z‖² s₂ / s₁` against its kept factor;
+    /// `kalman`: `z' P⁻ z / R`, exact. One triangular solve or quadratic
+    /// form per slot, `O(k²)`, which is why it rides on an opt-in field
+    /// (`emit_error_inflation`). `false` for a model without one, `lasso`
+    /// among them: it keeps no factor to read a leverage from.
+    fn row_error_inflation_into(&self, _x: &[f64], _d_clock: f64, _out: &mut Vec<f64>) -> bool {
         false
+    }
+
+    /// Per output slot, the sampling variance of each coefficient in
+    /// `coefficients`' own units and layout (`k_total` per slot), as the
+    /// state stands after the last row: `T Cov Tᵀ`'s diagonal, `T` the map
+    /// the coefficients are read out by (docs/PLAN.md task 116, F). NaN for
+    /// a coefficient no data estimates. `None` before there is a fit, and
+    /// for a model that keeps no such covariance.
+    fn coef_variance(&self) -> Option<CoefVariance> {
+        None
     }
 
     /// Per output slot, each coefficient's data share
@@ -726,42 +770,43 @@ mod tests {
     }
 
     /// A model that keeps none of the optional statistics answers as the
-    /// trait's defaults say: no schedule, no window, no weight per target,
-    /// no noise inflation, no data shares -- and says so, leaving each
-    /// buffer it was handed as it found it. `rls` overrides none of them
-    /// (task 158: the defaults were changed to answers no test noticed).
+    /// trait's defaults say: no schedule, no window, no noise inflation, no
+    /// data shares, no coefficient variances -- and says so, leaving each
+    /// buffer it was handed as it found it. `pa` overrides none of them
+    /// (task 158: the defaults were changed to answers no test noticed;
+    /// `rls`, which this read until task 116, now has the noise statistic).
     #[test]
     fn a_model_without_the_optional_statistics_reports_none_of_them() {
-        let mut rls = crate::Rls::new(crate::RlsCfg {
+        let mut pa = crate::Pa::new(crate::PaCfg {
             n_features: 1,
             n_targets: 2,
             fit_intercept: true,
-            decay: crate::Decay::Halflife(10.0),
-            delta: 1.0,
-            coef_prior: None,
+            decay: crate::Decay::Lam(0.9),
+            mode: crate::PaMode::Pa,
+            c: 1.0,
+            eps: 0.0,
             min_weight: 0.0,
+            constraint: None,
+            standardize: false,
         })
         .unwrap();
-        rls.step(&[1.0], &[Some(2.0), Some(-1.0)], 0.0, 1.0);
-        rls.step(&[3.0], &[Some(5.0), None], 1.0, 1.0);
-        assert_eq!(rls.solve_share(), None);
-        assert_eq!(rls.window_over_budget(), None);
-        assert!(rls.window_shadow().is_none());
-        assert_eq!(rls.support_coef(), None);
+        pa.step(&[1.0], &[Some(2.0), Some(-1.0)], 0.0, 1.0);
+        pa.step(&[3.0], &[Some(5.0), None], 1.0, 1.0);
+        assert_eq!(pa.solve_share(), None);
+        assert_eq!(pa.window_over_budget(), None);
+        assert!(pa.window_shadow().is_none());
+        assert_eq!(pa.support_coef(), None);
+        assert_eq!(pa.coef_variance(), None);
         let mut out = vec![7.0];
-        assert!(!rls.error_inflation_into(&mut out));
-        assert!(!rls.error_inflation_gate_into(&mut out, 2.0));
-        assert!(!rls.row_error_inflation_into(&[1.0], &mut out));
+        assert!(!pa.error_inflation_into(&mut out));
+        assert!(!pa.error_inflation_gate_into(&[1.0], 1.0, &mut out, 2.0));
+        assert!(!pa.row_error_inflation_into(&[1.0], 1.0, &mut out));
         assert_eq!(out, [7.0], "a model with none fills nothing");
-        // `rls` keeps a weight per target, the rows it learned from: here
-        // the first row only, since a row with a null target teaches nothing,
-        // decayed by the one clock unit since, at a half-life of 10.
-        assert!(rls.target_n_eff_into(&mut out));
-        let first = 0.5f64.powf(0.1);
-        assert!(
-            out.len() == 2 && out.iter().all(|w| (w - first).abs() < 1e-15),
-            "{out:?}"
-        );
+        // `pa` keeps a weight per target, the rows it was present on,
+        // decayed by `lam` per clock unit: the first target both rows, the
+        // second the first row alone.
+        assert!(pa.target_n_eff_into(&mut out));
+        assert_eq!(out, [0.9 + 1.0, 0.9]);
         // A model that keeps only the shared weight fills nothing.
         let mut seq = crate::SeqTest::new(crate::SeqTestCfg {
             n_targets: 2,
@@ -811,7 +856,7 @@ mod tests {
         }
         for limit in [0.5, 1.25, 2.0, f64::INFINITY] {
             let mut out = Vec::new();
-            assert!(Inflated.error_inflation_gate_into(&mut out, limit));
+            assert!(Inflated.error_inflation_gate_into(&[], 0.0, &mut out, limit));
             assert_eq!(out, [1.25, f64::INFINITY], "at the limit {limit}");
         }
     }

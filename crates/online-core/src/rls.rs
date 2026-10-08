@@ -46,6 +46,41 @@
 //! Null policy deviation, documented: a row with ANY null target is predict-only
 //! for all targets, because `R` is shared across targets and a per-target
 //! update would desynchronize it.
+//!
+//! **Readiness (docs/PLAN.md task 116; docs/WARMUP-AND-CONVERGENCE.md
+//! §2.1).** The fit is linear in the past targets, `beta = A⁻¹ b`, so for
+//! homoskedastic noise of variance `σ²` the estimation variance of the
+//! prediction at `z` is, exactly,
+//!
+//! ```text
+//! Var(z' beta) = σ² z' A⁻¹ G₂ A⁻¹ z,    G₂ = Σ λ^(2i) w_i² z_i z_i'
+//! ```
+//!
+//! (the prior's `delta λ^t` in `b` is a constant, not a variance). For a
+//! design whose covariance is constant over the memory window,
+//! `G₂ = (s₂ / s₁) G` with `G = Σ λ^i w_i z_i z_i'` the data's part of `A`,
+//! `s₁ = Σ λ^i w_i` the weight of the rows the fit learned and
+//! `s₂ = Σ λ^(2i) w_i²` the same sum squared, one `f64` of state decayed by
+//! `λ²` and fed `w²` on the rows the fit learns, on the same capped clock.
+//! `A⁻¹ G A⁻¹ ≤ A⁻¹` (the prior only adds to `A`), so
+//!
+//! ```text
+//! h(z) = z' A⁻¹ z · s₂ / s₁ = ‖R⁻ᵀ z‖² · s₂ / s₁,    error_inflation = sqrt(1 + h)
+//! ```
+//!
+//! bounds the variance over `σ²` from above: one forward substitution
+//! against the kept factor, `O(k²)`, the opt-in row field. This is
+//! `ewridge`'s `x' Σ̂⁻¹ x / n_kish` in sum form: `Σ̂ = A / s₁`,
+//! `n_kish = s₁² / s₂`. The noise gate reads the stream's bound
+//! `sqrt(1 + k_total / n_kish)`, `O(1)`: the average of `h` over the design is
+//! `edf / n_kish`, and the effective degrees of freedom under `delta`'s
+//! fading prior, `tr(G A⁻¹)`, are at most `k_total` -- conservative, and
+//! exact once the prior has faded.
+//!
+//! **Coefficient standard errors** (`se_coef`). By the same collapse,
+//! `Cov(beta) = σ² (s₂ / s₁) A⁻¹`, also from above: [`OnlineModel::coef_variance`]
+//! reports `(s₂ / s₁) diag(A⁻¹)` over `σ²`, `diag(A⁻¹)_i = ‖R⁻ᵀ e_i‖²`,
+//! `O(k³)` on the `coef` schedule only.
 
 use serde::{Deserialize, Serialize};
 
@@ -125,6 +160,10 @@ pub struct Rls {
     /// present, so the entries move together. `w_sum` stood in for it, so
     /// rows with a null target counted toward a fit they never reached.
     w_target: Vec<f64>,
+    /// `s₂ = Σ λ^(2i) w_i²` over the rows the fit learned: decayed by `λ²`
+    /// on every row and fed `w²` where the fit learns, so Kish's sample
+    /// size behind the fit is `w_target² / s₂` (the module doc; schema 45).
+    s2: f64,
     seen: bool,
     #[serde(skip)]
     zbuf: Vec<f64>,
@@ -156,6 +195,7 @@ impl Rls {
             beta,
             w_sum: 0.0,
             w_target: vec![0.0; cfg.n_targets],
+            s2: 0.0,
             seen: false,
             zbuf: vec![0.0; k],
             ybuf: vec![0.0; cfg.n_targets],
@@ -217,6 +257,35 @@ impl Rls {
             }
         }
     }
+
+    /// `‖R⁻ᵀ z‖² = z' A⁻¹ z` by forward substitution against the kept
+    /// factor, `Rᵀ v = z`. Infinite where `z` leans on a direction whose
+    /// pivot is 0 -- one no row has excited since the prior decayed away --
+    /// and NaN where `z` is not a number.
+    fn leverage(&self, z: &[f64]) -> f64 {
+        let k = self.cfg.k_total();
+        let mut v = vec![0.0; k];
+        for i in 0..k {
+            let mut acc = z[i];
+            for (m, vm) in v.iter().enumerate().take(i) {
+                acc -= self.r[m * k + i] * vm;
+            }
+            let d = self.r[i * k + i];
+            if d > 0.0 {
+                v[i] = acc / d;
+            } else if acc != 0.0 {
+                return f64::INFINITY;
+            }
+        }
+        v.iter().map(|vi| vi * vi).sum()
+    }
+
+    /// `s₂ / s₁`, the Kish ratio of the rows the fit learned (the module
+    /// doc): `None` before it has learned one.
+    fn kish_ratio(&self) -> Option<f64> {
+        let s1 = self.w_target.first().copied().unwrap_or(0.0);
+        (self.s2 > 0.0 && s1 > 0.0).then(|| self.s2 / s1)
+    }
 }
 
 impl OnlineModel for Rls {
@@ -227,6 +296,60 @@ impl OnlineModel for Rls {
         out.clear();
         out.extend_from_slice(&self.w_target);
         true
+    }
+
+    /// The gate's bound, `sqrt(1 + k_total / n_kish)` with
+    /// `n_kish = s₁² / s₂` (the module doc), the same for every target, as
+    /// the fit learns every target on the same rows. Infinite before the
+    /// fit has learned a row.
+    fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        let k = self.cfg.k_total() as f64;
+        let s1 = self.w_target.first().copied().unwrap_or(0.0);
+        let ratio = match self.kish_ratio() {
+            Some(r) => (1.0 + k * r / s1).sqrt(),
+            None => f64::INFINITY,
+        };
+        out.clear();
+        out.resize(self.cfg.n_targets, ratio);
+        true
+    }
+
+    /// `sqrt(1 + ‖R⁻ᵀ z‖² s₂ / s₁)`, the row's leverage against the kept
+    /// factor (the module doc). Infinite before the fit has learned a row.
+    fn row_error_inflation_into(&self, x: &[f64], _d_clock: f64, out: &mut Vec<f64>) -> bool {
+        let ratio = match self.kish_ratio() {
+            Some(r) => {
+                let mut z = Vec::with_capacity(self.cfg.k_total());
+                if self.cfg.fit_intercept {
+                    z.push(1.0);
+                }
+                z.extend_from_slice(x);
+                (1.0 + self.leverage(&z) * r).sqrt()
+            }
+            None => f64::INFINITY,
+        };
+        out.clear();
+        out.resize(self.cfg.n_targets, ratio);
+        true
+    }
+
+    /// `(s₂ / s₁) diag(A⁻¹)` per target, over the noise variance (the
+    /// module doc): `None` before the fit has learned a row.
+    fn coef_variance(&self) -> Option<crate::CoefVariance> {
+        let r = self.kish_ratio()?;
+        let k = self.cfg.k_total();
+        let mut e = vec![0.0; k];
+        let diag: Vec<f64> = (0..k)
+            .map(|i| {
+                e.fill(0.0);
+                e[i] = 1.0;
+                self.leverage(&e) * r
+            })
+            .collect();
+        Some(crate::CoefVariance::PerNoise(vec![
+            diag;
+            self.cfg.n_targets
+        ]))
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
@@ -268,6 +391,9 @@ impl OnlineModel for Rls {
         self.w_sum = lam * self.w_sum + weight;
         let learns = weight > 0.0 && y.iter().all(Option::is_some);
         crate::model::age_target_weights(&mut self.w_target, |_| learns, lam, weight);
+        // Kish's squared-weight sum, on the rows the fit learns (the module
+        // doc): decayed by `λ²` on every row, as the weights by `λ`.
+        self.s2 = lam * lam * self.s2 + if learns { weight * weight } else { 0.0 };
 
         // ---- update (only when every target is present) ----
         if learns {
@@ -368,6 +494,14 @@ impl OnlineModel for Rls {
                     return Err(StateError::Invalid(
                         "rls: the target weights have the wrong shape".into(),
                     ));
+                }
+                // A sum of squared weights is finite and not negative; one
+                // that is not reads Kish's size as NaN or below zero.
+                if !(m.s2.is_finite() && m.s2 >= 0.0) {
+                    return Err(StateError::Invalid(format!(
+                        "rls: the squared-weight sum must be finite and >= 0, got {}",
+                        m.s2
+                    )));
                 }
                 m.ensure_buffers();
                 Ok(m)
@@ -968,5 +1102,118 @@ mod tests {
             }
         }
         assert!(Rls::restore(&m.state()).is_ok());
+    }
+
+    // ---- readiness (docs/PLAN.md task 116) ----
+
+    /// The information matrix `A = Σ λ^(t−i) w_i z_i z_i' + delta λ^t I` and
+    /// `s₁ = Σ λ^(t−i) w_i`, `s₂ = Σ λ^(2(t−i)) w_i²` over the rows the fit
+    /// learned, written from the module doc: rows one clock unit apart at a
+    /// literal `λ` (so every power is exact), a zero-weight row and a null
+    /// target among them, which learn nothing and age everything.
+    fn by_definition(
+        rows: &[(Vec<f64>, Option<f64>, f64)],
+        lam: f64,
+        delta: f64,
+    ) -> (Vec<f64>, f64, f64) {
+        let k = rows[0].0.len() + 1;
+        let mut a = vec![0.0; k * k];
+        let (mut s1, mut s2, mut prior) = (0.0, 0.0, delta);
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            let l = if i == 0 { 1.0 } else { lam };
+            a.iter_mut().for_each(|v| *v *= l);
+            prior *= l;
+            s1 *= l;
+            s2 *= l * l;
+            if y.is_some() && *w > 0.0 {
+                let z: Vec<f64> = std::iter::once(1.0).chain(x.iter().copied()).collect();
+                for r in 0..k {
+                    for c in 0..k {
+                        a[r * k + c] += w * z[r] * z[c];
+                    }
+                }
+                s1 += w;
+                s2 += w * w;
+            }
+        }
+        for r in 0..k {
+            a[r * k + r] += prior;
+        }
+        (a, s1, s2)
+    }
+
+    fn readiness_rows(n: usize) -> Vec<(Vec<f64>, Option<f64>, f64)> {
+        let mut s = 41u64;
+        (0..n)
+            .map(|i| {
+                let x = vec![2.0 * lcg(&mut s), lcg(&mut s) - 0.5];
+                let y = (i % 9 != 4).then(|| 1.0 + x[0] - 3.0 * x[1] + 0.3 * lcg(&mut s));
+                let w = if i % 7 == 2 {
+                    0.0
+                } else {
+                    0.5 + lcg(&mut s).abs()
+                };
+                (x, y, w)
+            })
+            .collect()
+    }
+
+    /// The row field is `sqrt(1 + z' A⁻¹ z · s₂ / s₁)` and the gate
+    /// `sqrt(1 + k_total s₂ / s₁²)`, each read before the row, against `A`,
+    /// `s₁` and `s₂` from their definition and `A⁻¹` from `crate::oracle`'s
+    /// LU; after the row, the coefficient variances over the noise are
+    /// `(s₂ / s₁) diag(A⁻¹)` (the module doc).
+    #[test]
+    fn the_readiness_statistics_are_the_definitions() {
+        for delta in [1e-6, 5.0] {
+            let mut c = rls_cfg(2, 1, 1.0, delta);
+            c.decay = Decay::Lam(0.97);
+            let mut m = Rls::new(c).unwrap();
+            let rows = readiness_rows(200);
+            let mut out = Vec::new();
+            for (i, (x, y, w)) in rows.iter().enumerate() {
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                if i > 0 {
+                    let (a, s1, s2) = by_definition(&rows[..i], 0.97, delta);
+                    let z = [1.0, x[0], x[1]];
+                    let want = (1.0 + crate::oracle::quad_form(&a, &z) * s2 / s1).sqrt();
+                    assert!(m.row_error_inflation_into(x, d, &mut out));
+                    assert!(
+                        (out[0] - want).abs() <= 1e-10 * want,
+                        "row {i}: {} vs {want}",
+                        out[0]
+                    );
+                    let gate = (1.0 + 3.0 * s2 / (s1 * s1)).sqrt();
+                    assert!(m.error_inflation_into(&mut out));
+                    assert!((out[0] - gate).abs() <= 1e-12 * gate, "row {i}");
+                }
+                m.step(x, &[*y], d, *w);
+                let (a, s1, s2) = by_definition(&rows[..=i], 0.97, delta);
+                let inv = crate::oracle::inverse(&a);
+                let Some(crate::CoefVariance::PerNoise(v)) = m.coef_variance() else {
+                    panic!("rls's variances are over the noise");
+                };
+                for (j, got) in v[0].iter().enumerate() {
+                    let want = s2 / s1 * inv[j * 3 + j];
+                    assert!((got - want).abs() <= 1e-10 * want, "row {i}, {j}");
+                }
+            }
+        }
+    }
+
+    /// Before the fit has learned a row there is no Kish size: the ratio is
+    /// infinite, and nothing is estimated. A zero-weight first row learns
+    /// nothing (hard rule 9).
+    #[test]
+    fn before_a_learned_row_the_statistics_are_infinite() {
+        let mut m = Rls::new(rls_cfg(2, 1, 50.0, 1.0)).unwrap();
+        let mut out = Vec::new();
+        assert!(m.error_inflation_into(&mut out) && out[0].is_infinite());
+        assert!(m.row_error_inflation_into(&[1.0, 2.0], 0.0, &mut out) && out[0].is_infinite());
+        assert_eq!(m.coef_variance(), None);
+        m.step(&[1.0, 2.0], &[Some(3.0)], 0.0, 0.0);
+        assert!(m.error_inflation_into(&mut out) && out[0].is_infinite());
+        m.step(&[1.0, 2.0], &[Some(3.0)], 1.0, 1.0);
+        assert!(m.error_inflation_into(&mut out) && out[0].is_finite());
     }
 }

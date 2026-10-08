@@ -103,6 +103,45 @@
 //! as it would alone, to the bit. Updating the shared `P` once per target,
 //! as it did, counted each row once per target, as if the targets shared
 //! their coefficients (docs/PLAN.md task 204).
+//!
+//! **Readiness (docs/PLAN.md task 116; docs/WARMUP-AND-CONVERGENCE.md
+//! §2.1).** The filter knows the estimation variance of each prediction
+//! exactly: before row `z`'s target, at `d` clock units after the last, the
+//! prediction's variance over the noise is
+//!
+//! ```text
+//! h(z) = z' P⁻ z / R,    P⁻ = Phi P Phi + Q d²
+//! error_inflation = sqrt(1 + h(z))
+//! ```
+//!
+//! with `z` standardized as the prediction is and `P⁻` the prior the row's
+//! update starts from, after the transition and the process noise its clock
+//! gap adds. `R` is the noise as the state holds it: `obs_var`, else the
+//! target's residual variance (the targets' mean under `share_p`). Never
+//! the row's own innovation, which reads its target (hard rule 2), so the
+//! ratio is infinite while `P` is unsized or the target has no residual
+//! variance yet. `z' P⁻ z + R` is the prior predictive variance a Kalman
+//! filter's `predict` step gives: exact where the model is specified
+//! exactly, and per row, so the noise gate reads it per row. `O(k²)`, paid
+//! only when the gate is set or the field emitted.
+//!
+//! Without a row to read it at (the bank's summary) the statistic is its
+//! mean field over the design, `sqrt(1 + Σ_i P_ii E[z_i²] / R)` at the
+//! posterior: exact for uncorrelated features, and above the average of
+//! `h` over the design while `P` tracks it (a correlation matrix's inverse
+//! has a trace of at least `k`).
+//!
+//! Under process noise `P` never reaches 0. Per direction, on standardized
+//! features with the half-life-derived `q`, `p = P⁻ / R` settles where
+//! `p² / (p + 1) = c²`, `c = ln 2 · d / coef_half_life`, so
+//! `p = (c² + sqrt(c⁴ + 4 c²)) / 2`, and the average row reads about
+//! `sqrt(1 + k p)`: 1.07 at `k = 10`, `d = 1`, `coef_half_life = 50`.
+//!
+//! **Coefficient standard errors** (`se_coef`). `P` after the row is the
+//! coefficients' posterior covariance in the filter's coordinates, the
+//! noise already in it; read out in the original units by the map
+//! `coefficients` uses, `c_i = b_i / s_i` and `c_0 = b_0 − Σ_i c_i m_i`, it
+//! is `T P Tᵀ`, whose diagonal [`OnlineModel::coef_variance`] reports.
 
 use serde::{Deserialize, Serialize};
 
@@ -649,6 +688,141 @@ impl Kalman {
             }
         }
     }
+
+    /// The noise target `j`'s readiness is read against, as the state holds
+    /// it before a row (the module doc): `obs_var`, else the residual
+    /// variance -- the targets' mean under `share_p`, summed in ascending
+    /// order as `step` sums it -- and NaN, none, before there is one. Never
+    /// the row's own innovation, which reads its target.
+    fn readiness_noise(&self, j: usize) -> f64 {
+        if let Some(v) = self.cfg.obs_var {
+            return v;
+        }
+        let s2 = if self.cfg.share_p {
+            sum_ascending(&mut Vec::new(), self.sig2.iter().copied()) / self.cfg.n_targets as f64
+        } else {
+            self.sig2[j]
+        };
+        if s2 > 0.0 && s2.is_finite() {
+            s2
+        } else {
+            f64::NAN
+        }
+    }
+
+    /// `z' P⁻ z` against covariance `pi` for a row `d_clock` after the
+    /// last, at the noise `r` the process noise is derived from: `P` carried
+    /// through the transition and the process noise the row adds, without
+    /// moving it -- `w' P w + d² Σ_i q_i z_i²` with `w = Phi z`, which is
+    /// `step`'s `P <- Phi P Phi + Q d²` read through `z`.
+    fn prior_quad(&self, pi: usize, z: &[f64], d_clock: f64, r: f64) -> f64 {
+        let k = self.cfg.k_total();
+        let p = &self.p[pi];
+        let w: Vec<f64> = if self.cfg.reverts() {
+            z.iter()
+                .enumerate()
+                .map(|(i, zi)| zi * self.cfg.phi(i, d_clock))
+                .collect()
+        } else {
+            z.to_vec()
+        };
+        let mut quad = 0.0;
+        for i in 0..k {
+            let row = i * k;
+            let mut acc = 0.0;
+            for jj in 0..k {
+                acc += p[row + jj] * w[jj];
+            }
+            quad += w[i] * acc;
+        }
+        let mut q = vec![0.0; k];
+        self.q_into(r, &mut q);
+        let dd = d_clock * d_clock;
+        let noise: f64 = q.iter().zip(z).map(|(qi, zi)| qi * zi * zi).sum();
+        quad + dd * noise
+    }
+
+    /// `sqrt(1 + z' P⁻ z / R)` per target for the row `x` at `d_clock`
+    /// (the module doc): infinite while `P` is unsized or the noise is
+    /// none, NaN where a feature is not a number.
+    fn row_inflation_into(&self, x: &[f64], d_clock: f64, out: &mut Vec<f64>) {
+        let m = self.cfg.n_targets;
+        out.clear();
+        out.resize(m, f64::INFINITY);
+        let z = self.standardized(x);
+        for (j, o) in out.iter_mut().enumerate() {
+            let pi = if self.cfg.share_p { 0 } else { j };
+            let r = self.readiness_noise(j);
+            if self.is_unsized(pi) || r.is_nan() {
+                continue;
+            }
+            *o = (1.0 + self.prior_quad(pi, &z, d_clock, r) / r).sqrt();
+        }
+    }
+
+    /// `E[z_i²]` per slot over the rows the standardizer has seen, as `z`
+    /// is formed from them: 1 for the intercept, `var / s²` centred and
+    /// `raw / s²` through the origin, the raw second moment unstandardized.
+    fn design_second_moments(&self) -> Vec<f64> {
+        let off = usize::from(self.cfg.fit_intercept);
+        let s = self.scales();
+        (0..self.cfg.k_total())
+            .map(|i| {
+                if i < off {
+                    1.0
+                } else if !self.cfg.standardize {
+                    self.stats.raw(i)
+                } else if off == 0 {
+                    self.stats.raw(i) / (s[i] * s[i])
+                } else {
+                    self.stats.var(i) / (s[i] * s[i])
+                }
+            })
+            .collect()
+    }
+
+    /// `T P Tᵀ`'s diagonal for covariance `pi`: the variance of each
+    /// coefficient as `coefficients` reads it out (the module doc).
+    fn coef_variance_of(&self, pi: usize) -> Vec<f64> {
+        let k = self.cfg.k_total();
+        let p = &self.p[pi];
+        if !self.cfg.standardize {
+            return (0..k).map(|i| p[i * k + i]).collect();
+        }
+        let off = usize::from(self.cfg.fit_intercept);
+        let s = self.scales();
+        let mut out: Vec<f64> = (0..k)
+            .map(|i| {
+                if i < off {
+                    p[i * k + i]
+                } else {
+                    p[i * k + i] / (s[i] * s[i])
+                }
+            })
+            .collect();
+        if off == 1 {
+            // c_0 = b_0 − Σ_i b_i m_i / s_i: v' P v with v = [1, −m / s].
+            let v: Vec<f64> = (0..k)
+                .map(|i| {
+                    if i == 0 {
+                        1.0
+                    } else {
+                        -self.stats.mean(i) / s[i]
+                    }
+                })
+                .collect();
+            let mut quad = 0.0;
+            for i in 0..k {
+                let mut acc = 0.0;
+                for jj in 0..k {
+                    acc += p[i * k + jj] * v[jj];
+                }
+                quad += v[i] * acc;
+            }
+            out[0] = quad.max(0.0);
+        }
+        out
+    }
 }
 
 /// A prediction, or none (NaN) when it is not a number. A feature at the
@@ -701,6 +875,60 @@ impl OnlineModel for Kalman {
         out.clear();
         out.extend_from_slice(&self.wj);
         true
+    }
+
+    /// Without a row: the per-row statistic's mean field over the design at
+    /// the posterior, `sqrt(1 + Σ_i P_ii E[z_i²] / R)` (the module doc).
+    fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        let (m, k) = (self.cfg.n_targets, self.cfg.k_total());
+        out.clear();
+        out.resize(m, f64::INFINITY);
+        let ez2 = self.design_second_moments();
+        for (j, o) in out.iter_mut().enumerate() {
+            let pi = if self.cfg.share_p { 0 } else { j };
+            let r = self.readiness_noise(j);
+            if self.is_unsized(pi) || r.is_nan() {
+                continue;
+            }
+            let p = &self.p[pi];
+            let trace: f64 = (0..k).map(|i| p[i * k + i] * ez2[i]).sum();
+            *o = (1.0 + trace / r).sqrt();
+        }
+        true
+    }
+
+    /// The gate reads the row's own `sqrt(1 + z' P⁻ z / R)`: exact, `O(k²)`.
+    fn error_inflation_gate_into(
+        &self,
+        x: &[f64],
+        d_clock: f64,
+        out: &mut Vec<f64>,
+        _limit: f64,
+    ) -> bool {
+        self.row_inflation_into(x, d_clock, out);
+        true
+    }
+
+    fn row_error_inflation_into(&self, x: &[f64], d_clock: f64, out: &mut Vec<f64>) -> bool {
+        self.row_inflation_into(x, d_clock, out);
+        true
+    }
+
+    /// `T P Tᵀ`'s diagonal per target, absolute: `P` carries the noise.
+    /// NaN for a target whose `P` is unsized.
+    fn coef_variance(&self) -> Option<crate::CoefVariance> {
+        let (m, k) = (self.cfg.n_targets, self.cfg.k_total());
+        let per = (0..m)
+            .map(|j| {
+                let pi = if self.cfg.share_p { 0 } else { j };
+                if self.is_unsized(pi) {
+                    vec![f64::NAN; k]
+                } else {
+                    self.coef_variance_of(pi)
+                }
+            })
+            .collect();
+        Some(crate::CoefVariance::Absolute(per))
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
@@ -2667,5 +2895,260 @@ mod tests {
         assert_eq!(pred, 0.5, "the row is its prediction exactly");
         assert_eq!((m.p[0][0], m.beta[0][0]), (0.5, 0.5));
         assert_eq!(m.sig2, vec![0.0], "every residual so far exactly 0");
+    }
+
+    // ---- readiness (docs/PLAN.md task 116) ----
+
+    /// A standard normal, near enough: twelve uniforms, centred.
+    fn normal(s: &mut u64) -> f64 {
+        (0..12).map(|_| 0.5 * (lcg(s) + 1.0)).sum::<f64>() - 6.0
+    }
+
+    /// `error_inflation` is `sqrt(1 + z' P⁻ z / R)`, the prior predictive
+    /// variance over the noise, with `P⁻` written here from the module
+    /// doc's recursion -- `b <- Phi b`, `P <- Phi P Phi + Q d²`, the gain
+    /// `P z / (z' P z + R / w)`, `P <- P − g z' P` -- in its own loops, on a
+    /// reverting slot, irregular steps, a zero-weight row and a null
+    /// target, with a fixed `obs_var` so `R` is known. The gate reads the
+    /// same per-row value.
+    #[test]
+    fn the_row_statistic_is_the_prior_predictive_variance_over_the_noise() {
+        let (r, coef_hl) = (0.3, 40.0);
+        let mut c = plain(2.0, coef_hl, Some(r));
+        c.n_features = 2;
+        c.fit_intercept = true;
+        c.revert_half_life = vec![f64::INFINITY, 25.0, 60.0];
+        let k = 3;
+        let mut m = Kalman::new(c).unwrap();
+        let mut b = vec![0.0; k];
+        let mut p = vec![0.0; k * k];
+        for i in 0..k {
+            p[i * k + i] = 2.0 * r;
+        }
+        let q = r * (std::f64::consts::LN_2 / coef_hl).powi(2);
+        let revert = [f64::INFINITY, 25.0, 60.0];
+        let mut s = 17u64;
+        let mut checked = 0;
+        for i in 0..300 {
+            let x = [3.0 * lcg(&mut s), 1.0 + lcg(&mut s)];
+            let d = match i {
+                0 => 0.0,
+                _ if i % 7 == 3 => 4.0,
+                _ => 1.0,
+            };
+            let w = if i % 11 == 5 { 0.0 } else { 1.0 };
+            let y = (i % 13 != 8).then(|| 0.5 + x[0] - 2.0 * x[1] + 0.4 * lcg(&mut s));
+            let z = [1.0, x[0], x[1]];
+            let phi: Vec<f64> = revert
+                .iter()
+                .map(|h| Decay::Halflife(*h).factor(d))
+                .collect();
+            for (bi, ph) in b.iter_mut().zip(&phi) {
+                *bi *= ph;
+            }
+            for a in 0..k {
+                for e in 0..k {
+                    p[a * k + e] *= phi[a] * phi[e];
+                }
+                p[a * k + a] += q * d * d;
+            }
+            let pz: Vec<f64> = (0..k)
+                .map(|a| (0..k).map(|e| p[a * k + e] * z[e]).sum())
+                .collect();
+            let zpz: f64 = z.iter().zip(&pz).map(|(a, e)| a * e).sum();
+            let want = (1.0 + zpz / r).sqrt();
+            let (mut row, mut gate) = (Vec::new(), Vec::new());
+            assert!(m.row_error_inflation_into(&x, d, &mut row));
+            assert!(m.error_inflation_gate_into(&x, d, &mut gate, 1.1));
+            assert!(
+                (row[0] - want).abs() <= 1e-12 * want,
+                "row {i}: {} vs {want}",
+                row[0]
+            );
+            assert_eq!(row[0].to_bits(), gate[0].to_bits(), "row {i}");
+            checked += 1;
+            m.step(&x, &[y], d, w);
+            if let (Some(y), true) = (y, w > 0.0) {
+                let s_inn = zpz + r / w;
+                let err = y - z.iter().zip(&b).map(|(a, e)| a * e).sum::<f64>();
+                let g: Vec<f64> = pz.iter().map(|v| v / s_inn).collect();
+                for a in 0..k {
+                    b[a] += g[a] * err;
+                    for e in 0..k {
+                        p[a * k + e] -= g[a] * pz[e];
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 300);
+    }
+
+    /// The noise is the state's, never the row's own innovation, which
+    /// reads its target (hard rule 2; the bank's test perturbs the target):
+    /// without `obs_var` the ratio is infinite while `P` is unsized and
+    /// until the target has a residual variance.
+    #[test]
+    fn the_row_statistic_is_infinite_until_there_is_a_noise() {
+        let mut m = Kalman::new(cfg(2, 1, vec![50.0])).unwrap();
+        let mut out = Vec::new();
+        let mut s = 5u64;
+        let mut finite_from = None;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.0 + x[0] + 0.2 * lcg(&mut s);
+            m.row_error_inflation_into(&x, 1.0, &mut out);
+            let unknown = m.is_unsized(0) || m.sig2[0] <= 0.0;
+            assert_eq!(out[0].is_infinite(), unknown, "row {i}");
+            if !unknown {
+                finite_from.get_or_insert(i);
+            }
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        // `min_weight` 10 holds the first predictions back, and the noise
+        // waits for the first residual, after them.
+        assert!(finite_from.is_some_and(|i| i >= 10), "{finite_from:?}");
+    }
+
+    /// Under `share_p` every target reads the one `P` and the mean noise:
+    /// one value for all of them.
+    #[test]
+    fn share_p_reads_one_statistic_for_every_target() {
+        let mut c = cfg(2, 3, vec![50.0]);
+        c.share_p = true;
+        c.min_weight = 0.0;
+        let m = fit(c, 120, 9);
+        let mut out = Vec::new();
+        assert!(m.row_error_inflation_into(&[0.3, 0.1], 1.0, &mut out));
+        assert_eq!(out.len(), 3);
+        assert!(out[0].is_finite() && out[0] > 1.0, "{out:?}");
+        assert!(
+            out.iter().all(|v| v.to_bits() == out[0].to_bits()),
+            "{out:?}"
+        );
+    }
+
+    /// `se_coef`'s variances are `T P Tᵀ`'s diagonal: through `coef`'s own
+    /// read-out, a prediction's variance at a row is the quadratic form of
+    /// `P` in its standardized coordinates, so at the features' origin it
+    /// is the intercept's variance, and a slope's is `P_ii / s_i²`.
+    /// Unstandardized, `T` is the identity and they are `P`'s diagonal.
+    #[test]
+    fn the_coefficient_variances_are_the_posterior_in_coefs_units() {
+        let mut c = cfg(2, 1, vec![50.0]);
+        c.min_weight = 0.0;
+        let m = fit(c.clone(), 200, 3);
+        let Some(crate::CoefVariance::Absolute(v)) = m.coef_variance() else {
+            panic!("kalman's variances are absolute");
+        };
+        let k = 3;
+        let z0 = m.standardized(&[0.0, 0.0]);
+        let quad: f64 = (0..k)
+            .map(|a| {
+                (0..k)
+                    .map(|e| z0[a] * m.p[0][a * k + e] * z0[e])
+                    .sum::<f64>()
+            })
+            .sum();
+        assert!(
+            (v[0][0] - quad).abs() <= 1e-12 * quad,
+            "{} vs {quad}",
+            v[0][0]
+        );
+        let s = m.scales();
+        for i in 1..k {
+            let want = m.p[0][i * k + i] / (s[i] * s[i]);
+            assert!((v[0][i] - want).abs() <= 1e-12 * want, "{i}");
+        }
+        c.standardize = false;
+        let m = fit(c, 200, 3);
+        let Some(crate::CoefVariance::Absolute(v)) = m.coef_variance() else {
+            panic!()
+        };
+        let diag: Vec<f64> = (0..k).map(|i| m.p[0][i * k + i]).collect();
+        assert_eq!(v[0], diag);
+        // Unsized, nothing is estimated.
+        let fresh = Kalman::new(cfg(2, 1, vec![50.0])).unwrap();
+        let Some(crate::CoefVariance::Absolute(v)) = fresh.coef_variance() else {
+            panic!()
+        };
+        assert!(v[0].iter().all(|x| x.is_nan()));
+    }
+
+    /// The mean of the per-row `h` over rows 5,000 to 20,000, the mean of
+    /// the summary's mean field over the same rows, and the doc's `p`, for
+    /// `n_feat` standardized, uncorrelated features and a constant truth
+    /// at `coef_half_life`, rows one clock unit apart.
+    fn settled_readiness(n_feat: usize, coef_hl: f64) -> (f64, f64, f64) {
+        let c = KalmanCfg {
+            n_features: n_feat,
+            n_targets: 1,
+            fit_intercept: true,
+            decay: Decay::Halflife(200.0),
+            half_life: vec![coef_hl],
+            q: None,
+            obs_var: None,
+            p0: 1.0,
+            share_p: false,
+            min_weight: 0.0,
+            revert_half_life: vec![f64::INFINITY],
+            standardize: true,
+        };
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 29u64;
+        let (mut sum_h, mut sum_field, mut rows) = (0.0, 0.0, 0.0);
+        let mut out = Vec::new();
+        for i in 0..20_000 {
+            let x: Vec<f64> = (0..n_feat).map(|_| normal(&mut s)).collect();
+            let truth: f64 = x
+                .iter()
+                .enumerate()
+                .map(|(j, v)| (j as f64 - 4.0) * v)
+                .sum();
+            let y = 1.0 + truth + normal(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            if i >= 5_000 {
+                m.row_error_inflation_into(&x, d, &mut out);
+                sum_h += out[0] * out[0] - 1.0;
+                m.error_inflation_into(&mut out);
+                sum_field += out[0] * out[0] - 1.0;
+                rows += 1.0;
+            }
+            m.step(&x, &[Some(y)], d, 1.0);
+        }
+        let c = std::f64::consts::LN_2 / coef_hl;
+        let p = (c * c + (c.powi(4) + 4.0 * c * c).sqrt()) / 2.0;
+        (sum_h / rows, sum_field / rows, p)
+    }
+
+    /// The floor the module doc derives: under process noise `P⁻` never
+    /// reaches 0, and per direction `p = P⁻ / R` settles where
+    /// `p² / (p + 1) = c²`, `c = ln 2 · d / coef_half_life`, so the average
+    /// row reads about `sqrt(1 + k p)` -- 1.0675 at `k = 10`, `d = 1`,
+    /// `coef_half_life = 50`. Measured (task 116, 2026-10-07) on
+    /// standardized, uncorrelated features: the mean of `h` is 6.0% above
+    /// `k p` there (`sqrt(1 + h)` 1.0715), and the summary's mean field
+    /// 5.3% above `k p / (p + 1)`, its value at the posterior. The mean
+    /// field is a slow-drift reading: at `coef_half_life = 5` the mean of
+    /// `h` is 1.60 times `k p` (`sqrt(1 + h)` 1.84 against the formula's
+    /// 1.58), each row's rank-one update narrowing one direction where the
+    /// mean field spreads it over all of them.
+    #[test]
+    fn the_average_row_settles_near_the_floor_the_doc_derives() {
+        let k = 10.0;
+        let (mean_h, field, p) = settled_readiness(9, 50.0);
+        let floor = k * p;
+        assert!(((1.0 + floor).sqrt() - 1.0675).abs() < 1e-4, "{floor}");
+        assert!(
+            mean_h > floor && mean_h < 1.08 * floor,
+            "mean h {mean_h} vs k p {floor}"
+        );
+        let posterior = floor / (p + 1.0);
+        assert!(
+            field > posterior && field < 1.08 * posterior,
+            "mean field {field} vs k p / (p + 1) {posterior}"
+        );
+        let (fast, _, p5) = settled_readiness(9, 5.0);
+        let ratio = fast / (k * p5);
+        assert!(ratio > 1.5 && ratio < 1.7, "{ratio}");
     }
 }

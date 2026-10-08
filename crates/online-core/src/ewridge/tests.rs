@@ -2755,7 +2755,7 @@ fn a_kept_system_of_the_wrong_shape_is_refused() {
     m.solve();
     let x = [0.3, 1.1, 2.4];
     let mut out = Vec::new();
-    m.row_error_inflation_into(&x, &mut out);
+    m.row_error_inflation_into(&x, 1.0, &mut out);
     assert!(out[0].is_finite(), "the fixture reads a leverage: {out:?}");
     assert!(EwRidge::restore(&m.state()).is_ok(), "the state as saved");
     type Damage<'a> = (&'a str, &'a dyn Fn(&mut System));
@@ -2783,7 +2783,7 @@ fn a_kept_system_of_the_wrong_shape_is_refused() {
         match EwRidge::restore(&st) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{what}: {e}"),
             Ok(back) => {
-                back.row_error_inflation_into(&x, &mut out);
+                back.row_error_inflation_into(&x, 1.0, &mut out);
                 panic!("{what}: loaded and was read: {out:?}");
             }
             Err(e) => panic!("{what}: {e}"),
@@ -3193,7 +3193,7 @@ fn the_gate_bound_decides_as_the_exact_ratio_would() {
             let (mut gate, mut exact) = (Vec::new(), Vec::new());
             for (i, (x, y, w)) in rows.iter().enumerate() {
                 // The gate first: the exact read below takes the shares.
-                let has = m.error_inflation_gate_into(&mut gate, limit);
+                let has = m.error_inflation_gate_into(&[], 1.0, &mut gate, limit);
                 stood_in += unread(&m);
                 assert_eq!(has, m.error_inflation_into(&mut exact));
                 let at = format!("{name}, row {i}, limit {limit}: {gate:?} against {exact:?}");
@@ -3241,7 +3241,7 @@ fn a_share_that_is_not_a_number_withholds_whichever_way_the_gate_reads() {
     for i in 0..40 {
         let x: Vec<f64> = (0..3).map(|j| 3e-155 * (lcg(&mut s) + j as f64)).collect();
         let y = x.iter().sum::<f64>() + 1e-156 * lcg(&mut s);
-        m.error_inflation_gate_into(&mut gate, limit);
+        m.error_inflation_gate_into(&[], 1.0, &mut gate, limit);
         m.error_inflation_into(&mut exact);
         assert_eq!(
             gate[0] >= limit,
@@ -3268,7 +3268,7 @@ fn the_kept_factors_follow_the_setting_and_survive_a_load() {
     m.solve();
     let x = [0.3, 1.1, 2.4];
     let mut on = Vec::new();
-    m.row_error_inflation_into(&x, &mut on);
+    m.row_error_inflation_into(&x, 1.0, &mut on);
     assert!(on[0].is_finite() && on[0] > 1.0, "{on:?}");
     // A loaded model rebuilds the factors from the systems it carries:
     // through the bytes a file holds, which carry no factor (an
@@ -3276,12 +3276,12 @@ fn the_kept_factors_follow_the_setting_and_survive_a_load() {
     let bytes = rmp_serde::to_vec_named(&m.state()).unwrap();
     let back = EwRidge::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
     let mut loaded = Vec::new();
-    back.row_error_inflation_into(&x, &mut loaded);
+    back.row_error_inflation_into(&x, 1.0, &mut loaded);
     assert_eq!(loaded, on);
     // Off, nothing is kept and the answer is infinite.
     m.set_keep_factor(false);
     let mut off = Vec::new();
-    m.row_error_inflation_into(&x, &mut off);
+    m.row_error_inflation_into(&x, 1.0, &mut off);
     assert_eq!(off, vec![f64::INFINITY]);
 }
 
@@ -3319,14 +3319,14 @@ fn a_row_that_is_not_a_number_has_no_row_inflation() {
         m.set_keep_factor(true);
         m.solve();
         let mut out = Vec::new();
-        m.row_error_inflation_into(&[0.3, 1.1, 2.4], &mut out);
+        m.row_error_inflation_into(&[0.3, 1.1, 2.4], 1.0, &mut out);
         assert_eq!(out.len(), slots, "{case}");
         assert!(
             out.iter().all(|v| v.is_finite() && *v >= 1.0),
             "{case}: {out:?}"
         );
         for x in [[f64::NAN, 1.1, 2.4], [0.3, 1.1, f64::NAN]] {
-            m.row_error_inflation_into(&x, &mut out);
+            m.row_error_inflation_into(&x, 1.0, &mut out);
             assert!(out.iter().all(|v| v.is_nan()), "{case}, {x:?}: {out:?}");
         }
     }
@@ -3354,7 +3354,7 @@ fn the_row_error_inflation_is_the_leverage_of_its_definition() {
         m.solve();
         let x = [0.3, 1.1, 2.4];
         let mut got = Vec::new();
-        m.row_error_inflation_into(&x, &mut got);
+        m.row_error_inflation_into(&x, 1.0, &mut got);
         let ws: f64 = rows.iter().map(|r| r.2).sum();
         let wq: f64 = rows.iter().map(|r| r.2 * r.2).sum();
         let n = ws * ws / wq;
@@ -3800,7 +3800,7 @@ fn with_no_feature_moving_the_fit_is_the_mean_and_keeps_no_system() {
     assert!((beta[0] - ys / ws).abs() <= 1e-12 * (ys / ws), "{beta:?}");
     assert_eq!(&beta[1..], &[0.0, 0.0]);
     let mut out = Vec::new();
-    m.row_error_inflation_into(&[3.0, -2.0], &mut out);
+    m.row_error_inflation_into(&[3.0, -2.0], 1.0, &mut out);
     assert_eq!(out, vec![f64::INFINITY]);
 }
 
@@ -3912,7 +3912,7 @@ fn the_row_error_inflation_has_each_slots_own_leverage() {
     let x_new = [0.4, 1.9];
     let mut out = Vec::new();
     for i in 0..40 {
-        m.row_error_inflation_into(&x_new, &mut out);
+        m.row_error_inflation_into(&x_new, 1.0, &mut out);
         assert_eq!(out.len(), 6);
         if i < 12 {
             assert!(out.iter().all(|v| *v == f64::INFINITY), "row {i}: {out:?}");
@@ -3927,7 +3927,7 @@ fn the_row_error_inflation_has_each_slots_own_leverage() {
         m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
         rows.push((x, y));
     }
-    m.row_error_inflation_into(&x_new, &mut out);
+    m.row_error_inflation_into(&x_new, 1.0, &mut out);
     assert_eq!(m.support_coef().map(|v| v.len()), Some(6));
     for j in 0..2 {
         let own: Vec<&Vec<f64>> = rows
@@ -3964,7 +3964,7 @@ fn the_row_error_inflation_has_each_slots_own_leverage() {
         }
     }
     m.ready.system_of.clear();
-    m.row_error_inflation_into(&x_new, &mut out);
+    m.row_error_inflation_into(&x_new, 1.0, &mut out);
     assert!(out.iter().all(|v| *v == f64::INFINITY), "{out:?}");
 }
 
@@ -4383,7 +4383,12 @@ fn an_empty_window_reports_no_shares() {
         "no solve's shares wait to be read"
     );
     let mut rows = Vec::new();
-    assert!(OnlineModel::row_error_inflation_into(&m, &[0.3], &mut rows));
+    assert!(OnlineModel::row_error_inflation_into(
+        &m,
+        &[0.3],
+        1.0,
+        &mut rows
+    ));
     assert_eq!(rows, [f64::INFINITY], "no system to read a row against");
 }
 
@@ -4525,7 +4530,7 @@ fn the_gate_bound_is_the_largest_edf_ratio_and_only_below_the_limit() {
         if let Some(bound) = m.ready.edf_bound_at(0) {
             let n = w_sum * w_sum / q_sum;
             let want = (1.0 + 4.0 / n).sqrt();
-            m.error_inflation_gate_into(&mut gate, 10.0);
+            m.error_inflation_gate_into(&[], 1.0, &mut gate, 10.0);
             assert!(
                 (gate[0] - want).abs() <= 1e-12 * want,
                 "row {i}: {gate:?} against {want}"
@@ -4535,7 +4540,7 @@ fn the_gate_bound_is_the_largest_edf_ratio_and_only_below_the_limit() {
             // At the bound's own ratio, the exact one.
             let n = m.gram_kish()[0].unwrap();
             let at = (1.0 + bound / n).sqrt();
-            m.error_inflation_gate_into(&mut gate, at);
+            m.error_inflation_gate_into(&[], 1.0, &mut gate, at);
             m.error_inflation_into(&mut exact);
             assert!(exact[0] < at, "row {i}: the shares are under 1");
             assert_eq!(gate[0].to_bits(), exact[0].to_bits(), "row {i}");
@@ -4543,7 +4548,7 @@ fn the_gate_bound_is_the_largest_edf_ratio_and_only_below_the_limit() {
         if m.beta.is_some() {
             // The shares are taken: the gate reads them.
             m.error_inflation_into(&mut exact);
-            m.error_inflation_gate_into(&mut gate, 10.0);
+            m.error_inflation_gate_into(&[], 1.0, &mut gate, 10.0);
             assert_eq!(gate[0].to_bits(), exact[0].to_bits(), "row {i}");
             read += 1;
         }

@@ -141,8 +141,8 @@ pub use marginal::{
 };
 pub(crate) use marglag::{LagMoments, MarginalLags, PairMix, TargetLag};
 pub use model::{
-    Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, all_usable, check_schema,
-    usable,
+    CoefVariance, Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, all_usable,
+    check_schema, usable,
 };
 pub use pa::{Pa, PaCfg, PaMode};
 pub use rcov::{
@@ -543,7 +543,12 @@ pub use window::{
 ///   and its band meant another number; the bank refuses a file older than
 ///   44 by number, and pre-1.0 no loader is written. Every other model's
 ///   state loads as it did before.
-pub const SCHEMA_VERSION: u32 = 44;
+/// - 45 (2026-10-07, task 116): readiness beyond `ewridge`. `rls` keeps
+///   `s₂ = Σ λ^(2i) w_i²` over the rows its fit learned, for Kish's sample
+///   size behind its noise statistic. An `rls` state from before 45 does
+///   not decode; the minimum moves to 45 with it, and pre-1.0 no loader is
+///   written.
+pub const SCHEMA_VERSION: u32 = 45;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -631,7 +636,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 44;
+pub const MIN_SCHEMA_VERSION: u32 = 45;
 
 #[cfg(test)]
 mod tests {

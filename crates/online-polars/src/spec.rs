@@ -2664,22 +2664,30 @@ pub struct Spec {
     pub min_settled_frac: Option<Num>,
     /// Withhold predictions while the estimation error is expected to
     /// inflate the prediction error over the noise floor by more than this:
-    /// `error_inflation = sqrt(1 + edf / n_kish)`, the effective degrees of
-    /// freedom the last solve used over Kish's effective sample size behind
-    /// the fit (§2.1). Default `sqrt(2)`: the estimation variance no larger
-    /// than the noise being fitted. Tracks the model, so adding a feature
-    /// moves the gate with it, and reads Kish's `n` rather than the weight,
-    /// so uneven weights withhold for longer. A ratio above 1; `inf` is off.
-    /// Gates the models that have the statistic (`ewridge`); the others are
-    /// left to `min_weight`.
+    /// `error_inflation = sqrt(1 + estimation variance / noise)` (§2.1).
+    /// `ewridge`: `sqrt(1 + edf / n_kish)`, the effective degrees of freedom
+    /// the last solve used over Kish's effective sample size behind the fit,
+    /// default `sqrt(2)`, the estimation variance no larger than the noise
+    /// being fitted. Off (`inf`) unless set on the others (docs/PLAN.md task
+    /// 116): `rls`, `sqrt(1 + k_total / n_kish)`, its edf's bound under the
+    /// fading prior; `lasso`, `sqrt(1 + df / n_kish)` per path point, `df`
+    /// the active count plus the intercept; `kalman`, per row and exact,
+    /// `sqrt(1 + z' P⁻ z / R)`, the prior predictive variance over the noise.
+    /// Tracks the model, so adding a feature moves the gate with it, and
+    /// reads Kish's `n` rather than the weight, so uneven weights withhold
+    /// for longer. A ratio above 1; `inf` is off. Refused on every other
+    /// model, which is left to `min_weight`.
     #[serde(default)]
     pub max_error_inflation: Option<Num>,
     /// Emit `error_inflation_<slot>`: the same ratio for *this* row's
-    /// features, `sqrt(1 + h(x))`, the row's leverage against the factor
-    /// its fit came from, so a row leaning on a direction the data never
-    /// showed reads large where the stream average cannot see it. One
-    /// triangular solve a row, `O(k²)`, and the model keeps its factors --
-    /// which is why it is opt-in. Needs a model that has it (`ewridge`).
+    /// features, `sqrt(1 + h(x))`, so a row leaning on a direction the data
+    /// never showed reads large where the stream average cannot see it.
+    /// `ewridge`: `h = x' Σ̂⁻¹ x / n_kish`, the row's leverage against the
+    /// factor its fit came from; `rls`: `‖R⁻ᵀ z‖² s₂ / s₁`, the same in sum
+    /// form against its kept factor; `kalman`: `z' P⁻ z / R`, the gate's own
+    /// value. One triangular solve or quadratic form a row, `O(k²)`, and
+    /// `ewridge` keeps its factors -- which is why it is opt-in. Refused
+    /// elsewhere, `lasso` included: it keeps no factor.
     #[serde(default)]
     pub emit_error_inflation: bool,
     /// Emit `scored_clock` and `learned_clock` on every scored row: the row's
@@ -3132,10 +3140,18 @@ impl Spec {
         self.min_settled_frac.map_or(0.0, |v| v.0)
     }
 
-    /// The noise gate, `sqrt(2)` unless set: the estimation variance no
-    /// larger than the noise (§2).
+    /// The noise gate: on `ewridge`, `sqrt(2)` unless set -- the estimation
+    /// variance no larger than the noise (§2), the gate that replaced its
+    /// `k + 1` floor -- and on every other model off, infinite, unless set:
+    /// those keep their `min_weight` defaults, and no default moves
+    /// (docs/PLAN.md task 116, D8).
     pub fn max_error_inflation_or_default(&self) -> f64 {
-        self.max_error_inflation.map_or(2f64.sqrt(), |v| v.0)
+        let default = if matches!(self.model, ModelKind::EwRidge { .. }) {
+            2f64.sqrt()
+        } else {
+            f64::INFINITY
+        };
+        self.max_error_inflation.map_or(default, |v| v.0)
     }
 
     // The diagnostics' defaults, each read here and nowhere else, so the
@@ -3184,10 +3200,78 @@ impl Spec {
     }
 
     /// Whether this spec's model reads the noise gate's statistic
-    /// ([`online_core::OnlineModel::error_inflation_into`]): the ridge
-    /// family with a Gram it factorizes. The others are left to
-    /// `min_weight`, and `emit_error_inflation` is refused for them.
+    /// ([`online_core::OnlineModel::error_inflation_into`]): the fits
+    /// linear in the past targets whose estimation variance is known --
+    /// `ewridge`, `rls` and `kalman` -- and `lasso`, from its active count
+    /// (docs/PLAN.md task 116). The others are left to `min_weight`, and
+    /// `max_error_inflation` is refused for them, with the reason
+    /// [`Self::no_noise_statistic`] gives.
     pub fn has_error_inflation(&self) -> bool {
+        matches!(
+            self.model,
+            ModelKind::EwRidge { .. }
+                | ModelKind::Rls { .. }
+                | ModelKind::Kalman { .. }
+                | ModelKind::Lasso { .. }
+        )
+    }
+
+    /// Whether this spec's model reads the statistic for one row's
+    /// features ([`online_core::OnlineModel::row_error_inflation_into`]),
+    /// the field `emit_error_inflation` writes: `ewridge` and `rls` from
+    /// the factor their fit keeps, `kalman` from its `P`. Not `lasso`, which
+    /// keeps no factor.
+    pub fn has_row_error_inflation(&self) -> bool {
+        matches!(
+            self.model,
+            ModelKind::EwRidge { .. } | ModelKind::Rls { .. } | ModelKind::Kalman { .. }
+        )
+    }
+
+    /// Why this spec's model has no noise statistic, for the refusal of a
+    /// setting that reads one (docs/PLAN.md task 116).
+    fn no_noise_statistic(&self) -> &'static str {
+        match self.model {
+            ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
+                "a gradient fit keeps no second moment of the features to read an estimation \
+                 variance from"
+            }
+            ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
+                "a robust fit is not linear in the targets, so the ridge family's variance does \
+                 not hold for it"
+            }
+            ModelKind::EwCov { .. }
+            | ModelKind::Marginal { .. }
+            | ModelKind::Deco { .. }
+            | ModelKind::Rcov { .. }
+            | ModelKind::CorrChange { .. } => {
+                "its statistics are EW moments, and 1 / n_kish is a mean's variance, not a \
+                 standard deviation's or a correlation's; its min_weight of k + 1 already holds \
+                 the gate's point"
+            }
+            _ => "it keeps no estimation variance of a prediction",
+        }
+    }
+
+    /// Whether this spec's model reports its coefficients' sampling
+    /// variances ([`online_core::OnlineModel::coef_variance`]), the field
+    /// `emit_se_coef` writes: `ewridge`, `rls` and `kalman` (docs/PLAN.md
+    /// task 116, F).
+    pub fn has_se_coef(&self) -> bool {
+        matches!(
+            self.model,
+            ModelKind::EwRidge { .. } | ModelKind::Rls { .. } | ModelKind::Kalman { .. }
+        )
+    }
+
+    /// Whether this spec's model reports `support_coef`
+    /// ([`online_core::OnlineModel::support_coef`]): the fits whose solve
+    /// inverts a Gram with a mean-form ridge on its diagonal, `ewridge`,
+    /// `huber` and `quantile` (docs/WARMUP-AND-CONVERGENCE.md §2.2). Not
+    /// `lasso`, an L1 penalty having no shrinkage matrix -- every active
+    /// coefficient would read 1 at the default -- nor `ew_cov`, which has no
+    /// coefficients.
+    pub fn has_support_coef(&self) -> bool {
         matches!(self.model, ModelKind::EwRidge { .. })
     }
 
@@ -3569,19 +3653,28 @@ impl Spec {
             }
             // Range-checked and then dropped on every other model before
             // release 0.11.1 (docs/PLAN.md task 109): refused by name, as
-            // `emit_error_inflation` is.
+            // `emit_error_inflation` is, with the reason (task 116).
             if !self.has_error_inflation() {
                 return Err(format!(
-                    "spec {:?}: max_error_inflation needs a model with a ridge system to gate \
-                     on (ewridge); this model is held by min_weight alone",
-                    self.name
+                    "spec {:?}: max_error_inflation needs a model with a noise statistic to \
+                     gate on (ewridge, rls, kalman, lasso); {} has none: {}. It is held by \
+                     min_weight alone",
+                    self.name,
+                    self.model.kind_name(),
+                    self.no_noise_statistic()
                 ));
             }
         }
-        if self.emit_error_inflation && !self.has_error_inflation() {
+        if self.emit_error_inflation && !self.has_row_error_inflation() {
+            let why = if matches!(self.model, ModelKind::Lasso { .. }) {
+                "lasso keeps no factor to read a row's own leverage from (its gate reads the \
+                 active count over Kish's n instead)"
+            } else {
+                self.no_noise_statistic()
+            };
             return Err(format!(
-                "spec {:?}: emit_error_inflation needs a model with a ridge system to read \
-                 the leverage from (ewridge); {} has none",
+                "spec {:?}: emit_error_inflation needs a model that reads one row's estimation \
+                 variance (ewridge, rls, kalman); {} has none: {why}",
                 self.name,
                 self.model.kind_name()
             ));

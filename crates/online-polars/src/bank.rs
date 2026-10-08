@@ -161,8 +161,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// is refit. **44 since task 202** (the same day): an insensitivity band,
 /// `pa`'s `eps` and `sgd`'s under `epsilon_insensitive`, is in units of the
 /// target's own spread, which each keeps where it kept a residual one; a
-/// file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 44;
+/// file from before it is refit. **45 since task 116** (the same day):
+/// `rls` keeps the squared-weight sum its noise statistic reads Kish's size
+/// from; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 45;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

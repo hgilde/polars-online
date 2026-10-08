@@ -27,14 +27,15 @@ def _frame(n: int = 300) -> pl.DataFrame:
     return pl.DataFrame({"x0": x, "y": 2 * x + 0.1 * rng.standard_normal(n)})
 
 
-#: This file's spec is frozen on its first solve by construction: `min_weight
-#: = 0` solves at one row, where the slope has no variance to read and is
-#: entirely the ridge, and `half_life = 1e9` leaves no solve cadence to refit --
-#: `pred_y` is one constant for all 300 rows. `support_coef` reads 0.00 and the
-#: warning that names it is *correct*; it is simply beside the point here,
-#: where what is under test is the window ring's bookkeeping (`weight_sum`), which
-#: does not depend on the fit (2026-09-21).
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+#: This file's spec was frozen on its first solve once (2026-09-21): `min_weight
+#: = 0` solves at one row, where the slope is entirely the ridge, and
+#: `half_life = 1e9` left no clock cadence to refit, so `support_coef` read
+#: 0.00 and a `ReadinessWarning` named it. The weight-share cadence (task 115
+#: (b)) refits it as its weight grows: at 0.13.0 the last row reads
+#: `support_coef = 1.00` and `coef = [0.006, 1.998]`, and nothing warns
+#: (measured for task 116, 2026-10-07). What is under test here is the window
+#: ring's bookkeeping (`weight_sum`), which does not depend on the fit either
+#: way.
 
 
 def _spec(**kw):

@@ -26,6 +26,24 @@
 //! intercept recovered as `ȳ − m_j · beta`, `m_j` the column means over the
 //! target's rows.
 //!
+//! **Readiness (docs/PLAN.md task 116; docs/WARMUP-AND-CONVERGENCE.md
+//! §2.1).** The noise gate reads, per target and path point,
+//!
+//! ```text
+//! error_inflation = sqrt(1 + df / n_kish),    df = #{j : beta_j != 0} + intercept
+//! ```
+//!
+//! `n_kish = W² / Σw²` from the target's own Gram, inside the window under
+//! one. The active count is the lasso's degrees of freedom (Zou, Hastie and
+//! Tibshirani 2007, "On the degrees of freedom of the lasso"); under
+//! `l1_ratio < 1` the ridge part shrinks the active coefficients, and the
+//! elastic net's degrees of freedom are the trace of a shrinkage matrix
+//! over the active set, at most its count, so the active count bounds them
+//! from above and the gate errs toward withholding. The fit is
+//! post-selection, so `df / n_kish` is the theory's average, not an exact
+//! variance; no factor is kept to read a row's own leverage from, so the
+//! per-row field is not offered.
+//!
 //! Lambda selection is free: predictions for every path point are computed
 //! anyway, so `penalty_selected_j` is the argmin over the path of an EW mean of
 //! squared out-of-sample error with half-life `select_half_life`, over the
@@ -469,6 +487,19 @@ impl Lasso {
         Some(sel_err)
     }
 
+    /// Kish's effective sample size behind each Gram, as it stands before
+    /// the row: the window's where there is one, the live accumulator's
+    /// otherwise -- `EwRidge`'s reading of the same accumulators. `None` for
+    /// a Gram with no weight.
+    fn gram_kish(&self) -> Vec<Option<f64>> {
+        let windowed = self.win.as_ref().and_then(|win| {
+            let (u, old) = win.snaps.boundary()?;
+            let f = self.cfg.decay.factor(win.clock - u);
+            self.acc.window_kish(&old.acc, f)
+        });
+        windowed.unwrap_or_else(|| self.acc.grams.grams.iter().map(EwCov::n_kish).collect())
+    }
+
     /// The window's weights alone, as [`Self::view`] has them: what `predict`
     /// and `n_eff` read on every row, without the view's O(k²) truncation
     /// (review 2026-09-12, P1). `None` where the live accumulators are the
@@ -817,6 +848,39 @@ impl OnlineModel for Lasso {
             }
         }))
     }
+    /// `sqrt(1 + df / n_kish)` per (target, path point), as it stands
+    /// before the row: `df` the coefficients the last solve left active
+    /// plus the intercept where one is fitted, `n_kish` Kish's size behind
+    /// the target's Gram (the module doc). Infinite before the first solve,
+    /// for a slot no solve has fit, and where the Gram has no weight.
+    fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
+        out.clear();
+        out.resize(m * np, f64::INFINITY);
+        let Some(beta) = self.beta.as_deref() else {
+            return true;
+        };
+        let kish = self.gram_kish();
+        let off = usize::from(self.cfg.fit_intercept);
+        for (j, path) in beta.iter().enumerate() {
+            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+                continue;
+            };
+            if n.is_nan() || n <= 0.0 {
+                continue;
+            }
+            for (li, b) in path.iter().enumerate() {
+                if b.iter().any(|v| v.is_nan()) {
+                    continue;
+                }
+                let active = b[off..].iter().filter(|v| **v != 0.0).count();
+                let df = (active + off) as f64;
+                out[j * np + li] = (1.0 + df / n).sqrt();
+            }
+        }
+        true
+    }
+
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
         match self.window_weights() {

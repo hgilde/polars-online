@@ -3736,3 +3736,211 @@ class TestRlsIsPadasips:
             rls.adapt(y[i], z)
         assert np.isnan(got[0]) and np.isfinite(got[1:]).all()
         np.testing.assert_allclose(got[1:], want[1:], rtol=self.TOL, atol=1e-13)
+
+
+def _filterpy_kalman_readiness(
+    kalman: Any,
+    t: np.ndarray,
+    Z: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    half_life: float,
+    *,
+    coef_half_life: float,
+    revert: float | list[float] = float("inf"),
+    obs_var: float | None = None,
+    p0: float = 1.0,
+) -> tuple[np.ndarray, list[np.ndarray | None]]:
+    """filterpy's run of `kalman`'s documented recursion, as
+    `_filterpy_kalman` runs it, with the transition ``F = diag(2^(-d / r))``
+    of `TestAMeanRevertingKalmanIsFilterpy`, returning per row what docs/PLAN.md
+    task 116 reads from it: the readiness statistic ``sqrt(1 + z' P⁻ z / R)``
+    before the row's update -- ``P⁻`` filterpy's ``P`` after ``predict``,
+    ``R`` the noise as the state holds it, ``obs_var`` or else the residual
+    variance, infinite while ``P`` is unsized or the target has no residual
+    variance -- and the posterior ``P`` after the row, ``None`` while unsized."""
+    n, k1 = Z.shape
+    r = np.broadcast_to(np.asarray(revert, dtype=float), (k1,))
+    kf = kalman.KalmanFilter(dim_x=k1, dim_z=1)
+    kf.x = np.zeros((k1, 1))
+    sized = obs_var is not None
+    if obs_var is not None:
+        kf.P = np.eye(k1) * p0 * obs_var
+    sig2 = wsig = wj = 0.0
+    infl = np.full(n, np.inf)
+    posts: list[np.ndarray | None] = []
+    for i in range(n):
+        d = 0.0 if i == 0 else t[i] - t[i - 1]
+        lam = 0.5 ** (d / half_life)
+        kf.F = np.diag(0.5 ** (d / r))
+        z = Z[i]
+        seen = not np.isnan(y[i]) and w[i] > 0.0
+        if obs_var is not None:
+            s2 = obs_var
+        else:
+            first = (y[i] - z @ (kf.F @ kf.x)[:, 0]) ** 2 if seen else 0.0
+            s2 = sig2 if sig2 > 0.0 else first
+        noise = obs_var if obs_var is not None else sig2
+        if sized:
+            kf.predict(Q=np.eye(k1) * s2 * (np.log(2.0) * d / coef_half_life) ** 2)
+            if noise > 0.0:
+                infl[i] = np.sqrt(1.0 + z @ kf.P @ z / noise)
+        elif s2 > 0.0:
+            kf.P, sized = np.eye(k1) * p0 * s2, True
+        pred = z @ kf.x[:, 0] if wj > 0.0 else np.nan
+        if not seen:
+            wj *= lam
+            wsig *= lam
+            posts.append(kf.P.copy() if sized else None)
+            continue
+        if s2 > 0.0:
+            kf.update(y[i], R=s2 / w[i], H=z[None, :])
+        aged = lam * wsig
+        wsig = aged
+        if not np.isnan(pred):
+            res = y[i] - pred
+            sig2 = (aged * sig2 + w[i] * res * res) / (aged + w[i])
+            wsig = aged + w[i]
+        wj = lam * wj + w[i]
+        posts.append(kf.P.copy() if sized else None)
+    return infl, posts
+
+
+class TestKalmansErrorInflationIsFilterpysPrior:
+    """docs/PLAN.md task 116 (A): `kalman`'s ``error_inflation`` is
+    ``sqrt(1 + z' P⁻ z / R)``, the prior predictive variance of the row over
+    its noise: ``P⁻`` the covariance carried through the transition and the
+    process noise the row's clock gap adds, which is filterpy's
+    ``KalmanFilter.predict``, and ``R`` the noise the state holds. Null
+    targets, zero weights, uneven steps and a reversion are the rows
+    `TestKalmanSettingsAreFilterpy` runs; standardized, the rows are
+    `TestAStandardizedKalmanIsFilterpy`'s. Its covariance after the row is the
+    coefficients' (F): ``se_coef**2`` is the diagonal of ``T P Tᵀ``, ``T`` the
+    map `coef` reads the coefficients out by, the identity unstandardized."""
+
+    TOL = 1e-9
+
+    CASES = {
+        "random walk": dict(standardize=False),
+        "a reversion, the intercept a walk": dict(
+            standardize=False, revert_half_life=[float("inf"), 40.0, 40.0]
+        ),
+        "obs_var and p0": dict(standardize=False, obs_var=0.25, p0=4.0),
+        "standardized": dict(standardize=True),
+    }
+
+    @staticmethod
+    def run(case: dict[str, Any], se: bool = False):
+        import filterpy.kalman as kalman
+
+        frame, t, x, y, w = TestKalmanSettingsAreFilterpy.rows(47, scaled=case["standardize"])
+        spec = po.spec.kalman(
+            "k",
+            targets=["y"],
+            features=["x0", "x1"],
+            clock="t",
+            gap_cap=1e9,
+            weight="w",
+            half_life=30.0,
+            min_weight=0.0,
+            coef_half_life=50.0,
+            p0=case.get("p0", 1.0),
+            obs_var=case.get("obs_var"),
+            revert_half_life=case.get("revert_half_life"),
+            standardize=case["standardize"],
+            emit_error_inflation=True,
+            coef_every=0,
+            **({"emit_se_coef": True} if se else {}),
+        )
+        out = po.ModelBank([spec]).fit_predict(frame)["k"].struct.unnest()
+        if case["standardize"]:
+            Z = TestAStandardizedKalmanIsFilterpy.standardized(t, x, w, 30.0)
+            # One row before has no spread, and the filter takes a scale of 1
+            # (`variance_is_usable`), where the sums here leave a variance of
+            # rounding, 1e-34 at these levels, and a scale of 1e-17.
+            Z[1, 1:] = x[1] - x[0]
+        else:
+            Z = np.column_stack([np.ones(len(t)), x])
+        infl, posts = _filterpy_kalman_readiness(
+            kalman,
+            t,
+            Z,
+            y,
+            w,
+            30.0,
+            coef_half_life=50.0,
+            revert=case.get("revert_half_life", float("inf")),
+            obs_var=case.get("obs_var"),
+            p0=case.get("p0", 1.0),
+        )
+        return out, infl, posts, t, x, w
+
+    @pytest.mark.parametrize("case", sorted(CASES))
+    def test_the_row_field_is_the_prior_predictive_variance_over_the_noise(self, case):
+        out, want, _, _, _, _ = self.run(self.CASES[case])
+        got = out["error_inflation_y"].to_numpy()
+        finite = np.isfinite(want)
+        # Infinite until P is sized and the target has a noise: a row or two.
+        assert finite.sum() > len(want) - 5, finite.sum()
+        np.testing.assert_array_equal(np.isfinite(got), finite)
+        np.testing.assert_allclose(got[finite], want[finite], rtol=self.TOL)
+        assert (got[finite] > 1.0).all()
+
+
+class TestRlsErrorInflationIsPadasips:
+    """docs/PLAN.md task 116 (A): `rls`'s per-row ``error_inflation`` is
+    ``sqrt(1 + z' A⁻¹ z · s₂ / s₁)``, the leverage of the row against the
+    decayed information matrix, scaled by the Kish ratio of the rows the fit
+    learned (`rls.rs`'s module doc). padasip's ``FilterRLS`` keeps ``A⁻¹`` as
+    its ``R``, on `TestRlsIsPadasips`'s mapping; ``s₁ = Σ λ^i`` and
+    ``s₂ = Σ λ^(2i)`` are written here from their definition. After the row,
+    ``se_coef = sigma · sqrt(s₂ / s₁ · diag(A⁻¹))`` (F), ``sigma`` the row's
+    own EW residual std. At ``delta`` small and not, decayed and not."""
+
+    CASES = [(50.0, 1.0), (50.0, 1e-6), (float("inf"), 1.0)]
+
+    @staticmethod
+    def run(half_life: float, ridge: float, se: bool):
+        import padasip
+
+        rng = np.random.default_rng(37)
+        n = 400
+        x = rng.normal(size=(n, 2))
+        y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + 0.3 * rng.normal(size=n)
+        spec = po.spec.rls(
+            "r",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=half_life,
+            delta=ridge,
+            min_weight=0.0,
+            emit_error_inflation=True,
+            emit_sigma=True,
+            coef_every=0,
+            **({"emit_se_coef": True} if se else {}),
+        )
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        out = po.ModelBank([spec]).fit_predict(frame)["r"].struct.unnest()
+        mu = 0.5 ** (1.0 / half_life)
+        rls = padasip.filters.FilterRLS(n=3, mu=mu, eps=ridge / mu, w="zeros")
+        return out, x, y, mu, rls
+
+    @staticmethod
+    def kish(mu: float, i: int) -> tuple[float, float]:
+        """The weight and the squared weight of ``i`` unit rows, decayed."""
+        ages = np.arange(i)[::-1]
+        return float((mu**ages).sum()), float((mu ** (2 * ages)).sum())
+
+    @pytest.mark.parametrize(("half_life", "ridge"), CASES)
+    def test_the_row_field_is_padasips_leverage(self, half_life, ridge):
+        out, x, y, mu, rls = self.run(half_life, ridge, se=False)
+        # Infinite before a learned row, which is written as null.
+        got = out["error_inflation_y"].fill_null(np.inf).to_numpy()
+        assert np.isinf(got[0])
+        for i in range(len(y)):
+            z = np.array([1.0, *x[i]])
+            if i > 0:
+                s1, s2 = self.kish(mu, i)
+                want = np.sqrt(1.0 + z @ rls.R @ z * s2 / s1)
+                np.testing.assert_allclose(got[i], want, rtol=1e-9, err_msg=str(i))
+            rls.adapt(y[i], z)
