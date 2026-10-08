@@ -441,3 +441,60 @@ def test_standardize_is_offered_and_on_by_default():
         np.testing.assert_array_equal(_oos(_cc4(scale_x=128.0), **kw)[1], base)
     raw = _oos(_cc4(scale_x=128.0), standardize=False)[1]
     assert not np.array_equal(raw, base, equal_nan=True)
+
+
+def _on_the_crossing(features, frame=None, **kw):
+    """`pa`'s `pred - y` and its coefficients on `test_level_crossing`'s
+    stream: a target falling from 1,000 to -1,000 at 0.5 a row, half-life
+    200, noise 0.3, the level itself the feature `x2`."""
+    from test_level_crossing import build, crossing
+
+    df = crossing() if frame is None else frame
+    spec = build("pa", kw, features=features, coef_every=1)
+    out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+    err = out["pred_y"].to_numpy().astype(float) - df["y"].to_numpy()
+    return err, out["coef"].to_list()
+
+
+def _within_from(err, bound=3.0):
+    """The first row from which every later row is within `bound` of `y`."""
+    bad = np.flatnonzero(~(np.abs(err) < bound))
+    return int(bad[-1]) + 1 if len(bad) else 0
+
+
+def test_a_moving_level_the_docstring_states():
+    """docs/PLAN.md task 216: what the `pa` docstring and the README say of a
+    level that moves, held with room. A `pa1` cap of 1 moves the intercept
+    about one unit a row, so the intercept alone meets a target at 1,000
+    near row 670. With the level as a feature too the fit swings past the
+    level, 1,790 off at row 800, and settles from row 2,795; `c = 10` from
+    row 467 and `c = 1000` from row 11. A drift the intercept carries alone
+    keeps a lag of about 2 at any `c`, about half of it the tube's (1.1 at
+    `eps = 0`). Differenced, the level read back as the last row's `y` plus
+    the predicted change settles from row 12."""
+    from test_level_crossing import crossing
+
+    err, coef = _on_the_crossing(["x0", "x1"])
+    assert 45 < coef[50][0] < 55 and 380 < coef[400][0] < 420, (coef[50][0], coef[400][0])
+    assert abs(err[700]) < 20 < abs(err[600]), (err[600], err[700])
+    assert _within_from(err) == len(err), "the intercept alone keeps a lag past 3"
+    for c in (1.0, 1000.0):
+        lag = np.mean(_on_the_crossing(["x0", "x1"], c=c)[0][800:1600])
+        assert 1.8 < lag < 2.8, (c, lag)
+    no_tube = np.mean(_on_the_crossing(["x0", "x1"], c=1000.0, eps=0.0)[0][800:1600])
+    assert 0.8 < no_tube < 1.4, no_tube
+
+    level = ["x0", "x1", "x2"]
+    err = _on_the_crossing(level)[0]
+    assert abs(err[800]) > 1000.0 and abs(err[1600]) < 5.0, (err[800], err[1600])
+    assert _within_from(err) > 2000
+    assert _within_from(_on_the_crossing(level, c=10.0)[0]) < 600
+    assert _within_from(_on_the_crossing(level, c=1000.0)[0]) < 50
+
+    df = crossing()
+    y = df["y"].to_numpy()
+    diff = df.select(x0=pl.col("x0").diff(), x1=pl.col("x1").diff(), y=pl.col("y").diff())
+    change = _on_the_crossing(["x0", "x1"], frame=diff)[0] + diff["y"].to_numpy()
+    read_back = np.r_[0.0, y[:-1] + change[1:] - y[1:]]
+    assert _within_from(read_back) < 50
+    assert np.sqrt(np.mean(read_back[800:1600] ** 2)) < 1.0

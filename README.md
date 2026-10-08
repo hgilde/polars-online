@@ -3217,6 +3217,26 @@ below are for a target of spread about 2. `pa2`'s `c` sits beside `s` and
 is free of the target's units: under `"pa"` and `"pa2"` a target scaled by
 `k` fits as the unscaled one, scaled by `k`.
 
+**On a level that moves, raise `c` or difference the target.** The fit
+starts from zero coefficients, and a `pa1` cap of 1 moves the intercept
+about one unit a row. On a target falling from 1,000 to −1,000 at 0.5 a
+row, at a half-life of 200 and noise 0.3, the intercept met the level near
+row 670. With the level as a feature too, the capped steps, mapped into the
+caller's units through the scaler, swung the fit far past the level
+instead. A drift the intercept carries alone keeps a lag of about 2 at any
+`c`, half of it the tube's, since `σ` holds the drift. Differencing the
+target and the moving features, `y − y.shift(1)`, takes the level out of
+the fit, and the level is the last row's `y` plus the predicted change.
+Measured as `pred − y` (task 216):
+
+| the run | row 800 | row 1,600 | every row within 3 from row |
+|---|---|---|---|
+| the defaults, the level a feature | 1,790 | −3.2 | 2,795 |
+| `c=10`, the level a feature | 0.67 | 1.1 | 467 |
+| `c=1000`, the level a feature | −0.52 | −0.60 | 11 |
+| the defaults, the level the intercept's alone | 1.3 | 2.1 | never: 2.7 rms over rows 800 to 1,600 |
+| differenced, the level read back | −0.73 | −0.05 | 12 |
+
 **In units of the noise the tube is `eps/√(1 − R²)` wide**, `R²` the
 fit's. A tube well inside the noise damps nothing, so only a cap that binds
 damps. A wider tube damps too, while the cap does not bind: the fit moves

@@ -3085,6 +3085,50 @@ def pa(
     target scaled by ``k`` fits as the unscaled one, scaled by ``k``; under
     ``"pa1"`` only while the cap does not bind.
 
+    **On a level that moves, raise ``c`` or difference the target.** The fit
+    starts from zero coefficients, and a ``pa1`` cap of 1 moves the intercept
+    about one unit a row. On a target falling from 1,000 to -1,000 at 0.5 a
+    row (half-life 200, noise 0.3), the intercept stood at 51.5 at row 50 and
+    401 at row 400, and met the level near row 670. With the level as a
+    feature too, the capped steps, mapped into the caller's units through the
+    scaler, swung the fit far past the level instead. A drift that the
+    intercept carries alone keeps a lag at any ``c``: 2.2 on average over
+    rows 800 to 1,600 at ``c = 1000``. About half of it is the tube,
+    ``eps * sigma``, whose ``sigma`` holds the drift (97 to 143 here); with
+    ``eps = 0`` the lag was 1.1. Differencing the target and the moving
+    features, ``y - y.shift(1)``, takes the level out of the fit: the level
+    is then the last row's ``y`` plus the predicted change, and the change
+    carries noise of 0.42 here. Measured as ``pred - y`` (docs/PLAN.md task
+    216):
+
+    .. list-table::
+       :header-rows: 1
+
+       * - the run
+         - row 800
+         - row 1,600
+         - every row within 3 from row
+       * - the defaults, the level a feature
+         - 1,790
+         - -3.2
+         - 2,795
+       * - ``c = 10``, the level a feature
+         - 0.67
+         - 1.1
+         - 467
+       * - ``c = 1000``, the level a feature
+         - -0.52
+         - -0.60
+         - 11
+       * - the defaults, the level the intercept's alone
+         - 1.3
+         - 2.1
+         - never: 2.7 rms over rows 800 to 1,600
+       * - differenced, the level read back
+         - -0.73
+         - -0.05
+         - 12
+
     In units of the noise, on a target a fit predicts to R², ``sigma`` is the
     noise's standard deviation over ``sqrt(1 - R²)``, so the tube is ``eps /
     sqrt(1 - R²)`` noise standard deviations wide. At the default 0.01:
