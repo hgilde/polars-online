@@ -2366,13 +2366,21 @@ mod tests {
     /// as they print. `huber_delta` stays in units of the residual's
     /// spread: outside its cut the gradient is clipped, not zero, so a fit
     /// from zero still learns from rows the cut holds (docs/PLAN.md task
-    /// 202). The digests are BASE's, task 195's build.
+    /// 202). The digests were BASE's, task 195's build.
+    ///
+    /// No call into the platform's libm is on the stream's path, so the bits
+    /// are every platform's: the decay is a literal factor taken once per
+    /// clock unit (`lam^1` is `lam`, `lam^0` is 1, exactly), and `sqrt` is
+    /// correctly rounded everywhere. Under `Halflife(80)` with irregular
+    /// steps each row's factor was an `exp2`, whose last bit glibc and
+    /// Apple's libm round differently: the digests pinned on macOS failed
+    /// on Linux (CI, 2026-10-08), and were re-pinned here.
     #[test]
     fn the_huber_and_squared_losses_did_not_move() {
         let run = |loss: SgdLoss| {
             let mut cf = cfg(2, loss);
             cf.standardize = true;
-            cf.decay = Decay::Halflife(80.0);
+            cf.decay = Decay::Lam(0.9914);
             cf.learning_rate = 0.05;
             cf.min_weight = 3.0;
             let mut m = Sgd::new(cf).unwrap();
@@ -2384,7 +2392,7 @@ mod tests {
                 let outlier = if i % 41 == 7 { 25.0 } else { 0.0 };
                 let y =
                     (i % 17 != 3).then(|| 5.0 + 2.0 * x[0] - x[1] + 0.3 * lcg(&mut s) + outlier);
-                let d = if i == 0 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+                let d = if i == 0 { 0.0 } else { 1.0 };
                 let w = if i % 23 == 9 {
                     0.0
                 } else {
@@ -2406,12 +2414,12 @@ mod tests {
         assert_ne!(huber.0, squared.0, "the cut binds on the outliers");
         for ((h, got), (digest, picks)) in [huber, squared].into_iter().zip([
             (
-                0xda43_d932_d296_5ec1_u64,
-                [3.7976722379413657, 0.976978012937296, 0.6638305109704488],
+                0x95a9_bba1_2435_1e24_u64,
+                [2.5454166364986803, 0.22878767638248743, 4.291195395028382],
             ),
             (
-                0x3120_f021_8fd9_4f0e_u64,
-                [7.130832799141092, 1.4237372852832841, 0.08038778685063219],
+                0x5948_2068_29a3_3663_u64,
+                [3.8900811448866905, 0.6435315190771895, 4.854641183478482],
             ),
         ]) {
             assert_eq!(h, digest, "picks {got:?}");

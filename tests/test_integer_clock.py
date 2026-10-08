@@ -331,8 +331,12 @@ def test_a_window_holds_what_polars_rolling_holds_on_the_integers(closed):
         df, s=po.ewm_sum("x", half_life=math.inf, window_size=100.0, closed=closed), **CLOCK
     )
     ref = df.select(pl.col("x").rolling_sum_by("t", window_size="100i", closed=closed))["x"]
+    # An empty window sums to 0 from Polars 1.41.1 and to null before it
+    # (`test_windows.py`, measured 2026-10-07; the floor canary of
+    # 2026-10-08 met it here): both sides read an empty window as 0.
+    want = [0.0 if v is None else v for v in ref.to_list()]
     got = [0.0 if v is None else v for v in out["s"].to_list()]
-    assert got == pytest.approx(ref.to_list(), abs=1e-12), closed
+    assert got == pytest.approx(want, abs=1e-12), closed
     off = offsets(150, steps=(0, 1, 7, 100))
     assert sum(1 for i in range(len(off)) for j in range(i) if off[i] - off[j] == 100) > 3
 

@@ -8252,6 +8252,12 @@ tick, and that the series holding it up has a count near 1.
       is now refused (the bank recorded it but never refused it), and a
       `UInt64` past `i64::MAX` by row. No float field of an existing test
       moved; above 2^53 the values are now exact.
+      *Follow-up 2026-10-08*: the floor canary (polars 1.34.0) failed
+      `test_a_window_holds_what_polars_rolling_holds_on_the_integers` under
+      `closed="left"` and `"none"`: before 1.41.1 Polars sums an empty
+      window to null, where it now gives 0 (`test_windows.py`'s record).
+      Both sides now read an empty window as 0; checked on 1.34.0 (1 and 54
+      nulls) and 1.44.2, no other difference.
 - [x] 201. **Relative targets are removed** -- the user, 2026-10-07 ("Since we
       now have polars expressions do we need relative columns?"; then "Yes
       and start task 201"). `po.target(..., relative_to=...)` (task 107a)
@@ -8282,6 +8288,13 @@ tick, and that the series holding it up has a count near 1.
       GOLDEN_PA_BOX and 12 pipeline values re-pinned against `pa_ref` to the
       bit. `eps = 0.1` of the target's spread proved wide on a high-R²
       target: task 203.
+      *Follow-up 2026-10-08*: CI's Linux legs failed
+      `sgd::tests::the_huber_and_squared_losses_did_not_move` (macOS
+      `0.976978012937296`, Linux `0.9769780129372949`): under
+      `Halflife(80)` with irregular steps each row's factor is an `exp2`,
+      which glibc and Apple's libm round differently in the last bit. The
+      stream now decays by a literal factor once per clock unit (`lam^1`
+      is `lam` exactly), so no libm call is on its path; re-pinned.
 - [x] 203. **An insensitivity band defaults to 1% of the target's spread** --
       found by task 202 (in its new unit, `eps = 0.1` is 10% of the target's
       spread and does not shrink as the fit improves: a good fit's errors fall
