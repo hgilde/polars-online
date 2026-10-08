@@ -359,8 +359,8 @@ def test_a_target_is_scored_as_the_bank_scores_it(name):
     t = name or "ret"
     bank = out["m"].struct.unnest().tail(1)
     pred = out["m"].struct.field(f"pred_{t}")
-    # A prediction exactly at 0 is a hit in the bank and a miss here (S6,
-    # not this test's): none may sit there.
+    # A prediction exactly at 0 is left out of `hit_rate` by the bank and by
+    # `po.eval` alike (S6, not this test's rule): none may sit there.
     assert pred.is_not_null().sum() > 500 and not (pred == 0.0).any()
 
     def held(frame: pl.DataFrame) -> None:

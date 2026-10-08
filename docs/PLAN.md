@@ -8056,8 +8056,10 @@ tick, and that the series holding it up has a count near 1.
       new tests (`clock`, `ewclass`, `marginal`, `kalman`, `lasso`,
       `solve`), each checked by hand on its mutant; 7 new equivalent entries
       and 1 tolerated (`kalman.rs:753:22`, rounding in an unsized `P`);
-      TESTING.md counts 168 equivalent in 167 entries and 32 tolerated in
-      28. `solve.rs:281`'s timeout still spins in an unbounded test loop.
+      TESTING.md counts the equivalent mutants (167 entries when this
+      closed; 165 in 165 since tasks 201 and 204 dropped one each, review
+      5 F8) and 32 tolerated in 28. `solve.rs:281`'s timeout still spins in
+      an unbounded test loop.
 - [x] 185. **A loader refuses a damaged state by name** (§18: CA2 CA3 CA4 CA6
       CB2 CB8 CE3 CF4 CD14 PD1 PB4 PA8 CF11 PA2 CF12). Every `restore` runs
       its cfg's `validate()` and checks every shape it will index; the
@@ -8256,8 +8258,10 @@ tick, and that the series holding it up has a count near 1.
       `test_a_window_holds_what_polars_rolling_holds_on_the_integers` under
       `closed="left"` and `"none"`: before 1.41.1 Polars sums an empty
       window to null, where it now gives 0 (`test_windows.py`'s record).
-      Both sides now read an empty window as 0; checked on 1.34.0 (1 and 54
-      nulls) and 1.44.2, no other difference.
+      The test now reads an empty window as 0 on both sides; the operators
+      keep null for one (`min_samples=1`, `ops.py`'s rule), where Polars
+      1.41.1 and later give 0. Checked on 1.34.0 (1 and 54 nulls) and
+      1.44.2, no other difference.
 - [x] 201. **Relative targets are removed** -- the user, 2026-10-07 ("Since we
       now have polars expressions do we need relative columns?"; then "Yes
       and start task 201"). `po.target(..., relative_to=...)` (task 107a)
@@ -12380,7 +12384,7 @@ next row panics, as stated), all 27 Python scripts reproduce. The per-slice
 reports, reproductions and the consolidated list are in the session's
 scratchpad (`review4/`); this section keeps what must outlive it.
 
-The user then: "Do everything that does not need me." Tasks 184-194 carry
+The user then: "Do everything that does not need me." Tasks 183-193 carry
 the findings whose fix the code, the docs, an existing rule or a precedent
 settles; the decisions below wait for the user.
 
