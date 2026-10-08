@@ -160,6 +160,12 @@ A script can tell how a run ended from its exit status:
 **The summary goes to standard output, and everything else to standard
 error.** The summary is the lines a run prints when it ends, such as `wrote
 400 rows (1 chunks) to fitted.parquet` and `saved state to run.state`.
+After `wrote`, a spec whose groups ended the run not ready has a line of
+its own -- the groups whose last row was withheld, counted by
+`withheld_reason`, and those with a coefficient more ridge than data
+(`min_support_coef < 0.5`):
+`spec "ridge": 2 groups whose last row was withheld (below_min_weight 2); 1 group with min_support_coef < 0.5`.
+A spec with neither has none (docs/WARMUP-AND-CONVERGENCE.md §7.9).
 Standard error carries the progress, which `--quiet` turns off, the timings
 `ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
 carries the notices about a model's warm-up, led by `online:` as an error

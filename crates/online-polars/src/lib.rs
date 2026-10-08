@@ -86,7 +86,8 @@ pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::FeatureRows;
 pub use runner::{
     DEFAULT_CHUNK_SIZE, Format, Input, Output, RENAMED_RUN_KEYS, RunConfig, RunOptions, RunStats,
-    name_renamed_run_key, run, run_config, run_config_on,
+    name_renamed_run_key, run, run_config, run_config_on, run_config_on_reported,
+    run_config_reported,
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{

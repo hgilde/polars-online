@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use online_polars::{Format, RunConfig, run_config};
+use online_polars::{Format, RunConfig, run_config_reported};
 
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
 fn parse_format(s: &str) -> Result<Format, String> {
@@ -374,7 +374,7 @@ fn run() -> Result<(), String> {
     }
 
     let quiet = cli.quiet;
-    let stats = run_config(&cfg, |s| {
+    let (stats, readiness) = run_config_reported(&cfg, |s| {
         if !quiet {
             eprint!("\r{} rows in {} chunks", s.rows, s.chunks);
         }
@@ -399,6 +399,13 @@ fn run() -> Result<(), String> {
             stats.chunks,
             cfg.output.display()
         );
+    }
+    // Where each spec's groups stand on readiness after their last row
+    // (docs/WARMUP-AND-CONVERGENCE.md §7.9): the groups whose last row was
+    // withheld, by reason, and those with a coefficient more ridge than
+    // data; nothing for a spec with neither.
+    for line in readiness {
+        println!("{line}");
     }
     if let Some(p) = &cfg.closed_groups {
         println!("wrote closed groups to {}", p.display());

@@ -1004,3 +1004,75 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// docs/PLAN.md task 116 (H; docs/WARMUP-AND-CONVERGENCE.md §7.9): after
+/// "wrote N rows", one line per spec with something to say -- the groups
+/// whose last row was withheld, counted by `withheld_reason`, and the groups
+/// whose smallest data share is below 0.5 -- and none for a spec with
+/// neither. A `min_weight` no stream reaches withholds both groups' every
+/// row; a duplicated feature under a ridge of 0.5 reads `a / (2a + 0.5)`,
+/// 0.29 here, in both groups.
+#[test]
+fn the_run_closes_with_a_line_per_spec_that_is_not_ready() {
+    let dir = fresh_dir("t116h");
+    let (raw, input, output) = (
+        dir.join("raw.parquet"),
+        dir.join("in.parquet"),
+        dir.join("out.parquet"),
+    );
+    write_input(&raw, 200).unwrap();
+    let mut df = ParquetReader::new(std::fs::File::open(&raw).unwrap())
+        .finish()
+        .unwrap();
+    let x2 = df.column("x0").unwrap().clone().with_name("x2".into());
+    df.with_column(x2).unwrap();
+    ParquetWriter::new(std::fs::File::create(&input).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let spec = |name: &str, features: &str, model: &str, top: &str| {
+        format!(
+            r#"
+[[specs]]
+name = "{name}"
+targets = ["y"]
+features = {features}
+clock = "t"
+half_life = 50.0
+gap_cap = 10.0
+group = "group"
+{top}
+
+[specs.model]
+type = "ewridge"
+{model}
+"#
+        )
+    };
+    let toml = format!(
+        "input = \"{}\"\noutput = \"{}\"\nchunk_size = 64\n{}{}{}",
+        toml_path(&input),
+        toml_path(&output),
+        spec("plain", r#"["x0", "x1"]"#, "", ""),
+        spec("held", r#"["x0", "x1"]"#, "", "min_weight = 1e9"),
+        spec("dup", r#"["x0", "x1", "x2"]"#, "ridge = 0.5", ""),
+    );
+    let cfg = dir.join("bank.toml");
+    std::fs::write(&cfg, toml).unwrap();
+    let head = [std::ffi::OsStr::new("--config"), cfg.as_os_str()];
+    let (code, stdout, err) = online_args(&head, &["-q"]);
+    assert_eq!(code, Some(0), "{err}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    let wrote = lines
+        .iter()
+        .position(|l| l.starts_with("wrote 200 rows"))
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert_eq!(
+        &lines[wrote + 1..],
+        [
+            r#"spec "held": 2 groups whose last row was withheld (below_min_weight 2)"#,
+            r#"spec "dup": 2 groups with min_support_coef < 0.5"#,
+        ],
+        "{stdout}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

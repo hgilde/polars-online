@@ -522,13 +522,30 @@ pub fn run_config(
     cfg: &RunConfig,
     progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
+    run_config_reported(cfg, progress).map(|(stats, _)| stats)
+}
+
+/// [`run_config`], with the run's closing lines on readiness
+/// (docs/WARMUP-AND-CONVERGENCE.md §7.9; docs/PLAN.md task 116, H): one per
+/// spec with something to say -- the groups whose last row was withheld,
+/// counted by `withheld_reason`, and the groups whose smallest data share
+/// is below 0.5 -- and none for a spec with neither. What the command line
+/// prints after "wrote N rows".
+///
+/// # Errors
+///
+/// [`run_config`]'s.
+pub fn run_config_reported(
+    cfg: &RunConfig,
+    progress: impl FnMut(RunStats) -> PolarsResult<()>,
+) -> PolarsResult<(RunStats, Vec<String>)> {
     cfg.validate()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
     let format = cfg
         .input_format()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
     // `keep_columns` is applied once, by `run_config_on`.
-    run_config_on(cfg, Input::Lazy(format.scan(&cfg.input)?), progress)
+    run_config_on_reported(cfg, Input::Lazy(format.scan(&cfg.input)?), progress)
 }
 
 /// [`run_config`] over a source of the caller's choosing instead of the
@@ -545,6 +562,19 @@ pub fn run_config_on(
     input: Input<'_>,
     progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
+    run_config_on_reported(cfg, input, progress).map(|(stats, _)| stats)
+}
+
+/// [`run_config_on`], with [`run_config_reported`]'s closing lines.
+///
+/// # Errors
+///
+/// [`run_config_on`]'s.
+pub fn run_config_on_reported(
+    cfg: &RunConfig,
+    input: Input<'_>,
+    progress: impl FnMut(RunStats) -> PolarsResult<()>,
+) -> PolarsResult<(RunStats, Vec<String>)> {
     cfg.validate()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
     // A run with no output has no format to work out (E50).
@@ -617,19 +647,21 @@ pub fn run_config_on(
     // and published with the output, before the state, so a state file
     // always has the closed rows that go with it. A run in which nothing
     // closed writes an empty frame with the schema, as an empty output does.
+    let mut last = LastReasons::default();
     let stats = run_with(
         &mut bank,
         input,
         out,
         closed_target,
         learned.as_ref(),
+        Some(&mut last),
         opts,
         progress,
     )?;
     if let Some(p) = &cfg.save_state {
         bank.save(p).map_err(|e| io_err("saving state", p, e))?;
     }
-    Ok(stats)
+    Ok((stats, readiness_lines(&bank, &last)))
 }
 
 /// The run's error when the writer thread went away mid-run; the writer's
@@ -676,7 +708,7 @@ pub fn run(
     opts: RunOptions,
     progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
-    run_with(bank, input, output, None, None, opts, progress)
+    run_with(bank, input, output, None, None, None, opts, progress)
 }
 
 /// [`run`], with the bank's closed groups (E54) drained after every chunk
@@ -687,13 +719,17 @@ pub fn run(
 /// every row that closed for the length of the run (review 2026-09-12, P5).
 /// With `skip`, each chunk keeps only the rows the loaded state has not
 /// learned before the bank sees it (`--skip-learned`, docs/PLAN.md task
-/// 196), and a chunk with none left is not fed.
+/// 196), and a chunk with none left is not fed. With `last`, each chunk's
+/// output notes each spec's groups' last `withheld_reason` for the run's
+/// closing lines (docs/PLAN.md task 116, H).
+#[allow(clippy::too_many_arguments)]
 fn run_with(
     bank: &mut Bank,
     input: Input<'_>,
     output: Output<'_>,
     closed: Option<(&Path, Format)>,
     skip: Option<&Learned>,
+    mut last: Option<&mut LastReasons>,
     opts: RunOptions,
     mut progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
@@ -782,6 +818,9 @@ fn run_with(
                 // `stats.rows` is the rows fed before this chunk, so an
                 // error names the input's row (task 120).
                 let out = augment(bank, chunk, opts.predict, opts.learn_only, stats.rows)?;
+                if let Some(last) = last.as_deref_mut() {
+                    last.note(bank.specs(), &out)?;
+                }
                 t_bank += t.elapsed();
                 let t = Instant::now();
                 deliver(out)?;
@@ -885,6 +924,104 @@ fn run_with(
         }
         Ok(stats)
     })
+}
+
+/// Each spec's groups' last `withheld_reason` in the run, as the output
+/// carried it (docs/PLAN.md task 116, H): the summary keeps no reason per
+/// group, so the runner reads it off each chunk it writes, `O(groups)`.
+#[derive(Debug, Default)]
+struct LastReasons(Vec<std::collections::HashMap<String, Option<String>>>);
+
+impl LastReasons {
+    /// Note `out`'s rows, the bank's columns among them, in row order: a
+    /// group's last row in the chunk is the one kept. A spec writes its
+    /// first instance's `withheld_reason` first; a group is its key's text,
+    /// the null key "null", and a spec without a group one key, "".
+    fn note(&mut self, specs: &[Spec], out: &DataFrame) -> PolarsResult<()> {
+        if self.0.len() != specs.len() {
+            self.0.resize_with(specs.len(), Default::default);
+        }
+        for (si, spec) in specs.iter().enumerate() {
+            let Some(col) = out.column(&spec.name).ok() else {
+                continue;
+            };
+            let Ok(st) = col.struct_() else {
+                continue;
+            };
+            let Some(field) = st
+                .fields_as_series()
+                .into_iter()
+                .find(|f| f.name().starts_with("withheld_reason"))
+            else {
+                continue;
+            };
+            let reasons = field.cast(&DataType::String)?;
+            let reasons = reasons.str()?;
+            let keys = match &spec.group {
+                Some(g) => Some(
+                    out.column(g)?
+                        .as_materialized_series()
+                        .cast(&DataType::String)?,
+                ),
+                None => None,
+            };
+            let keys = keys.as_ref().map(|k| k.str()).transpose()?;
+            let map = &mut self.0[si];
+            let mut seen = std::collections::HashSet::new();
+            for i in (0..out.height()).rev() {
+                let key = match keys {
+                    Some(k) => k.get(i).unwrap_or("null"),
+                    None => "",
+                };
+                if seen.insert(key) {
+                    map.insert(key.to_string(), reasons.get(i).map(str::to_string));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The run's closing lines (docs/WARMUP-AND-CONVERGENCE.md §7.9): per spec,
+/// the groups whose last row in the run was withheld, counted by reason, and
+/// the groups whose smallest data share (`min_support_coef` in the summary)
+/// is below 0.5; nothing for a spec with neither.
+fn readiness_lines(bank: &Bank, last: &LastReasons) -> Vec<String> {
+    let groups = |n: usize| if n == 1 { "group" } else { "groups" };
+    let mut lines = Vec::new();
+    for (si, spec) in bank.specs().iter().enumerate() {
+        let mut by_reason = std::collections::BTreeMap::<&str, usize>::new();
+        if let Some(map) = last.0.get(si) {
+            for reason in map.values().flatten() {
+                *by_reason.entry(reason.as_str()).or_default() += 1;
+            }
+        }
+        let low = bank
+            .summary(si, None)
+            .ok()
+            .and_then(|df| {
+                let c = df.column("min_support_coef").ok()?.f64().ok()?.clone();
+                Some(c.iter().flatten().filter(|v| *v < 0.5).count())
+            })
+            .unwrap_or(0);
+        let mut parts = Vec::new();
+        if !by_reason.is_empty() {
+            let n: usize = by_reason.values().sum();
+            let each: Vec<String> = by_reason.iter().map(|(r, c)| format!("{r} {c}")).collect();
+            parts.push(format!(
+                "{n} {} whose last row was withheld ({})",
+                groups(n),
+                each.join(", ")
+            ));
+        }
+        if low > 0 {
+            parts.push(format!("{low} {} with min_support_coef < 0.5", groups(low)));
+        }
+        if !parts.is_empty() {
+            lines.push(format!("spec {:?}: {}", spec.name, parts.join("; ")));
+        }
+    }
+    lines
 }
 
 /// The bank's columns appended to `chunk`, aligned for the writers, which
