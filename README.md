@@ -539,8 +539,10 @@ edge and an embargo's release. So an `Int64` column of epoch nanoseconds keeps
 its nanoseconds, where a double near 1.8e18 resolves 256 of them. Its clock
 parameters stay numbers, and a fractional one such as `gap_cap=0.5` is
 compared as the number it is. A `UInt64` value past the largest `Int64` is
-refused by row, and an `Int128` column by name: cast it to `Int64` if its
-values fit, or after subtracting an origin. A later chunk whose clock is a
+refused by row, and an `Int128` or `UInt128` column by name: cast it to
+`Int64` if its values fit, or after subtracting an origin. A `UInt128`
+column is refused wherever it is in the frame, since no frame carrying one
+can reach the bank. A later chunk whose clock is a
 float, or an integer of another width, is refused by name.
 
 **Quantities measured on a temporal clock reach the output in seconds.**

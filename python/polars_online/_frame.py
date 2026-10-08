@@ -47,7 +47,7 @@ import polars as pl
 from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
-from polars_online._bank import ModelBank
+from polars_online._bank import ModelBank, _refuse_uint128
 from polars_online._spec import _renamed_keywords, coef_fields, output_index, target_columns
 
 if TYPE_CHECKING:
@@ -760,6 +760,9 @@ def _source(
     # naming a column the input lacks is reported: while the plan is built,
     # as polars reports its own schema errors, not when it runs.
     bank = make_bank()
+    # Before the empty frame crosses, in this call's own name: a `UInt128`
+    # column cannot cross at all.
+    _refuse_uint128(in_schema, called, bank._clocks())
     schema = run(bank, pl.DataFrame(schema=in_schema), 0).schema
     needed = _spec_columns(bank.specs)
     closed_path = _closed_path(closed_groups, bank.specs)
@@ -1077,7 +1080,8 @@ class LazyFrameOnlineNamespace:
         ``load_state``, for ``chunk_size`` below 1, for a spec the bank refuses, and
         for a spec whose column the plan has not got, is not numeric, or shares the
         spec's name (the checks of :class:`ModelBank` and
-        :meth:`ModelBank.fit_predict`, with the same messages). ``FileNotFoundError``
+        :meth:`ModelBank.fit_predict`, with the same messages), and for a
+        ``UInt128`` column, which no frame can carry into the bank. ``FileNotFoundError``
         for a ``load_state`` that is not there or a ``save_state`` whose directory is
         not. ``ValueError`` for a ``load_state`` that is not a bank this build loads
         or whose specs are not ``specs`` (:meth:`ModelBank.load`). What only the
@@ -1113,9 +1117,10 @@ class LazyFrameOnlineNamespace:
         - ``ValueError`` for a file that is not a bank this build loads
           (:meth:`ModelBank.load`);
         - ``TypeError`` for a ``bank`` that is neither a bank nor a path;
-        - ``ValueError`` for ``chunk_size`` below 1, and for a column the
+        - ``ValueError`` for ``chunk_size`` below 1, for a column the
           bank reads that the plan has not got or that is not numeric (a
-          missing target is fine).
+          missing target is fine), and for a ``UInt128`` column, which no
+          frame can carry into the bank.
 
         A value the bank refuses (a null clock, a negative weight) is
         reported when the plan runs: as polars' ``ComputeError`` carrying

@@ -517,3 +517,73 @@ def test_an_int128_increment_resumes_on_the_integers(tmp_path):
     a = po.stream.with_windows(df[:3], d=d, save_state=state, **CLOCK)
     b = po.stream.with_windows(df[3:], d=d, load_state=state, **CLOCK)
     assert pl.concat([a, b])["d"].to_list() == [None, 1.0, 7.0, 100.0, 0.0, -103.0]
+
+
+# --------------------------------------------------------------------------
+# UInt128: no surface can take one in (task 208's worker)
+
+#: What a ``UInt128`` clock gets: the ``Int128`` clock's words (B3).
+WIDE_UNSIGNED = (
+    r"clock column [\"']t[\"'] is UInt128, wider than the Int64 an integer clock is held "
+    r"in; cast it to Int64 if its values fit, or after subtracting an origin"
+)
+
+#: What any other ``UInt128`` column gets: the column named, and a cast.
+UNSIGNED_128 = (
+    r"column 'c' is UInt128, which polars-online cannot take in; cast it to Int64 if its "
+    r"values fit, or to Float64, or leave it out of the frame"
+)
+
+#: Every surface a frame crosses to the extension on.
+SURFACES = [
+    "fit_predict",
+    "predict",
+    "fit",
+    "fit_predict_batches",
+    "fit_predict_arrow",
+    "predict_arrow",
+    "lf.online.fit_predict",
+    "lf.online.predict",
+    "with_windows",
+    "refresh_time",
+]
+
+
+def _call(surface: str, df: pl.DataFrame):
+    """``surface`` run on ``df``, its clock ``t``, as a callable."""
+    if surface == "with_windows":
+        s = po.ewm_sum("x", half_life=math.inf, window_size=5.0)
+        return lambda: po.stream.with_windows(df, s=s, **CLOCK)
+    if surface == "refresh_time":
+        ticks = df.with_columns(series=pl.Series(["a", "b"] * (df.height // 2) + ["a"]))
+        return lambda: po.stream.refresh_time(
+            ticks, series="series", names=["a", "b"], clock="t", value="x"
+        )
+    if surface == "lf.online.fit_predict":
+        return lambda: df.lazy().online.fit_predict([ridge()]).collect()
+    if surface == "lf.online.predict":
+        return lambda: df.lazy().online.predict(po.ModelBank([ridge()])).collect()
+    if surface == "fit_predict_batches":
+        return lambda: list(po.ModelBank([ridge()]).fit_predict_batches(df))
+    bank = po.ModelBank([ridge()])
+    return lambda: getattr(bank, surface)(df)
+
+
+@pytest.mark.filterwarnings("ignore::polars_online.UnstableWarning")
+@pytest.mark.parametrize("surface", SURFACES)
+@pytest.mark.parametrize("role", ["clock", "other"])
+def test_a_uint128_column_is_refused_by_name(surface, role):
+    """A frame with a ``UInt128`` column panicked in Polars' own conversion as
+    it crossed to the extension (``PanicException: activate 'dtype-u128'
+    feature``), before any of this library's code ran, whether the column
+    was a clock, a feature or one no spec reads (task 208's worker). Every
+    surface a frame crosses on refuses it first, by name, with a cast to
+    make: a clock in the words an ``Int128`` clock gets, any other column in
+    words of its own."""
+    df = frame(n=5, steps=(1, 7))
+    if role == "clock":
+        df, words = df.with_columns(pl.col("t").cast(pl.UInt128)), WIDE_UNSIGNED
+    else:
+        df, words = df.with_columns(c=pl.Series([1, 2, 3, 4, 5], dtype=pl.UInt128)), UNSIGNED_128
+    with pytest.raises(ValueError, match=words):
+        _call(surface, df)()

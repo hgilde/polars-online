@@ -50,6 +50,7 @@ from polars.io.plugins import register_io_source
 
 from polars_online import _formula, _warnings
 from polars_online import _polars_online as _native
+from polars_online._bank import _refuse_uint128
 from polars_online._duration import Duration, clock_nanoseconds, duration_text
 from polars_online._frame import (
     ConsumedSourceWarning,
@@ -488,6 +489,8 @@ def refresh_time(
       refuses one (a boolean and a column of nulls are numbers);
     - a ``value`` column that is not numeric (a boolean and a column of nulls
       are);
+    - a ``UInt128`` column, read or not: the extension cannot take one in, so
+      the column is named with a cast to make;
     - ``chunk_size`` below 1;
     - a ``load_state`` that is not such a state, or was saved with other
       ``names`` or ``pairs``.
@@ -509,6 +512,9 @@ def refresh_time(
         if col not in in_schema:
             msg = f"refresh_time: no keep column {col!r} in the frame; it has {in_schema.names()}"
             raise ValueError(msg)
+    # Every column of a chunk crosses to the extension, which cannot take a
+    # `UInt128` one in.
+    _refuse_uint128(in_schema, "refresh_time", (clock,))
     # A number or a temporal column, as a spec's clock is: a boolean or a
     # column of nulls is a number (task 197, PC7's rule). Read through a
     # non-strict cast, text of digits was taken as a clock.
@@ -856,7 +862,9 @@ def with_windows(
 
     ``ValueError`` for a formula, a clock policy or a column that cannot
     run (a look-ahead under ``group`` with no ``clock`` among them), an
-    output name that collides, and a ``load_state`` another call saved.
+    output name that collides, a ``load_state`` another call saved, and a
+    ``UInt128`` column, read or not: the extension cannot take one in, so
+    the column is named with a cast to make.
     What the run refuses once the plan is running -- a step back,
     naming the row, or a state resumed on another input -- surfaces as
     ``polars.exceptions.ComputeError`` with the message inside under
@@ -922,6 +930,9 @@ def with_windows(
 
     lazy = lf.lazy()
     in_schema = lazy.collect_schema()
+    # Before the empty frame below crosses to the extension, which cannot
+    # take a `UInt128` column in.
+    _refuse_uint128(in_schema, who, (policy.get("clock"),))
     rows = chunk_size if chunk_size is not None else _native.default_chunk_size()
     if rows < 1:
         msg = f"chunk_size must be at least 1, got {rows}"

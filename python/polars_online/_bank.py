@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import warnings
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Any, NoReturn, overload
 
@@ -57,6 +57,32 @@ def _group_keys(group: str | Iterable[str | None] | None) -> list[str | None] | 
             )
             raise TypeError(msg)
     return keys
+
+
+def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] = ()) -> None:
+    """Refuse a ``UInt128`` column by name, before a frame with one crosses
+    to the extension. The extension's Polars is built without 128-bit
+    unsigned integers, and converting such a column panicked there
+    (``PanicException: activate 'dtype-u128' feature``) before any of this
+    library's code ran, whether a spec read the column or not (task 208's
+    worker). A clock is told what an ``Int128`` clock is told (review round
+    5, B3); any other column, the cast to make."""
+    for name, dtype in schema.items():
+        if dtype != pl.UInt128:
+            continue
+        if name in clocks:
+            msg = (
+                f"{who}: clock column {name!r} is UInt128, wider than the Int64 an integer "
+                "clock is held in; cast it to Int64 if its values fit, or after subtracting "
+                "an origin"
+            )
+        else:
+            msg = (
+                f"{who}: column {name!r} is UInt128, which polars-online cannot take in; "
+                "cast it to Int64 if its values fit, or to Float64, or leave it out of the "
+                "frame"
+            )
+        raise ValueError(msg)
 
 
 class ModelBank:
@@ -311,6 +337,9 @@ class ModelBank:
         - a column a spec reads (target, feature, clock, session, weight,
           group) is not in the frame;
         - a target, feature or weight column is not numeric;
+        - a column is ``UInt128``, read or not: the extension cannot take one
+          in, so the column is named with a cast to make, a clock in the
+          words an ``Int128`` clock gets;
         - a clock is not a number, a ``Datetime``, a ``Date`` or a
           ``Duration`` (a ``Time`` is refused: a time of day starts again at
           midnight), or its spec gives it the other kind of clock parameter
@@ -495,9 +524,13 @@ class ModelBank:
         self._check_frame(df, "predict_arrow")
         return self._native.predict_arrow(df)
 
-    @staticmethod
-    def _check_frame(df: object, what: str) -> None:
+    def _clocks(self) -> set[str | None]:
+        """The clock columns this bank's specs read."""
+        return {s.get("clock") for s in self._specs}
+
+    def _check_frame(self, df: object, what: str) -> None:
         if isinstance(df, pl.DataFrame):
+            _refuse_uint128(df.schema, f"ModelBank.{what}", self._clocks())
             return
         # A LazyFrame is the common slip, and the attribute error it used to
         # produce named an internal method.
