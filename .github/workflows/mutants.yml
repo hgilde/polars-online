@@ -51,8 +51,16 @@ on:
 permissions: {}
 
 concurrency:
-  # The event is in the group, so a push cannot cancel the weekly pass.
-  group: mutants-${{ github.event_name }}-${{ github.ref }}
+  # The event is in the group, so a push cannot cancel the weekly pass. A
+  # push's group also takes its commit, so no later push cancels its pass,
+  # or replaces it while it waits: the next push's pass lists only its own
+  # diff, so nothing else would test these lines, and minutes are free (the
+  # user, 2026-10-08). `cancel-in-progress: false` would not do it: GitHub
+  # keeps one pending run a group and cancels an older pending one, so of
+  # three quick pushes the middle one's pass would be lost. A pull request
+  # keeps one group, and its newer commit cancels the older, since it lists
+  # the whole pull request's diff again (task 219).
+  group: mutants-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 env:

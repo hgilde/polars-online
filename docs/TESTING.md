@@ -1544,7 +1544,11 @@ mutants. Each shard stopped at its 100 minutes having tested 51 to 99 of
 its 135, and 698 went untested. At that run's slowest rate, 114 s a
 mutant, forty take 79 of the 100 minutes. The account runs 20 jobs at a
 time, CI's among them, so a pass of more shards runs in waves. That push's
-34 would take two, about two and a half hours.
+34 would take two, about two and a half hours. Each push to `main` has a
+concurrency group of its own, by its commit, so no later push cancels its
+pass or replaces it while it waits: the next pass lists only its own diff.
+A pull request's runs share one group, and a newer commit cancels the
+older, since it lists the whole pull request's diff again.
 
 The whole of `online-core`, 11,138 mutants on 2026-10-03, runs weekly in
 ninety-six shards, sixteen at a time. The weekly pass runs on its schedule only while

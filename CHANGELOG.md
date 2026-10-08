@@ -1478,6 +1478,12 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- The changed-lines mutation job lists its mutants first and takes a shard
+  for every forty (at least one, at most 256), so it tests every mutant a
+  push lists, however large (task 219). Each push to `main` runs that pass
+  in a concurrency group of its own, so no later push cancels it or
+  replaces it while it waits; a pull request's newer commit still cancels
+  its older.
 - `ftrl` does not centre a feature: its error at a feature level `L` is
   about 0.018·L, so standardize or z-score the feature upstream (task 215;
   `ftrl` takes no `standardize`, since its `l1` zeroes a coefficient in the
@@ -1564,10 +1570,10 @@ The output names task 144 renamed:
   (task 199; review round 4, D3).
 - Every release, and the canary each month, run the suite on the Polars
   floor (1.34.0); a test that needs a newer Polars skips there by version,
-  naming it (task 199, D4). The changed-lines mutation job runs in ten
-  shards with one report (D10), a weekly job checks the declared
-  rust-version, 1.95 (D11), and SECURITY.md says which release receives
-  fixes (D12).
+  naming it (task 199, D4). The changed-lines mutation job runs in
+  shards with one report (D10), a shard for every forty mutants since
+  task 219, a weekly job checks the declared rust-version, 1.95 (D11), and
+  SECURITY.md says which release receives fixes (D12).
 - Records nothing outside `docs/` cites moved to `docs/records/`, and every
   document has an index row, held by a test (task 199, D13).
 - Documented: under an embargo `predict` releases nothing (task 194, S3);

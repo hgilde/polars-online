@@ -22,6 +22,7 @@ import pathlib
 import re
 import subprocess
 import tomllib
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -498,6 +499,49 @@ class TestMutationTesting:
 
     def test_a_push_cannot_cancel_the_weekly_pass(self):
         assert "github.event_name" in self.MUT["concurrency"]["group"]
+
+    def _group(self, event: str, ref: str, sha: str) -> str:
+        """The concurrency group mutants.yml gives a run, its expressions
+        evaluated. They use only contexts, quoted strings, `==`, `!=`, `&&`
+        and `||`, which mean what Python's `==`, `!=`, `and` and `or` mean,
+        values and precedence alike."""
+        github = SimpleNamespace(event_name=event, ref=ref, sha=sha)
+
+        def value(m: re.Match[str]) -> str:
+            expr = m.group(1).replace("&&", " and ").replace("||", " or ")
+            assert re.fullmatch(r"[\w.' =!()-]+", expr), expr
+            return str(eval(expr, {"__builtins__": {}}, {"github": github}))
+
+        return re.sub(r"\$\{\{(.*?)\}\}", value, self.MUT["concurrency"]["group"])
+
+    def test_no_push_to_main_cancels_or_replaces_another_pushs_pass(self):
+        """A push's changed-lines pass tests the lines it moved, and no
+        later pass tests them again: the next push lists only its own diff.
+        So no later push may cancel it, or replace it while it waits, and
+        minutes are free (the user, 2026-10-08). `cancel-in-progress: false`
+        would not do: GitHub keeps one pending run a group and cancels an
+        older pending one, so of three quick pushes the middle one's pass
+        would be lost. Each push has a group of its own, by its commit. A
+        pull request's runs share one group and the newer commit cancels the
+        older, since it lists the whole pull request's diff again; the
+        weekly schedule and a dispatch keep one group each (task 219)."""
+        main = "refs/heads/main"
+        shas = ("a1" * 20, "b2" * 20, "c3" * 20)
+        pushes = [self._group("push", main, sha) for sha in shas]
+        assert len(set(pushes)) == 3, pushes
+        assert all(sha in group for sha, group in zip(shas, pushes, strict=True)), pushes
+        pr = "refs/pull/7/merge"
+        prs = {self._group("pull_request", pr, sha) for sha in ("d4" * 20, "e5" * 20)}
+        assert len(prs) == 1, prs
+        assert self.MUT["concurrency"]["cancel-in-progress"] is True
+        others = {
+            self._group(event, main, "f6" * 20)
+            for event in ("schedule", "workflow_dispatch", "pull_request")
+        }
+        assert not others & set(pushes), (others, pushes)
+        assert self._group("schedule", main, "f6" * 20) == f"mutants-schedule-{main}"
+        dispatch = self._group("workflow_dispatch", main, "f6" * 20)
+        assert dispatch == f"mutants-workflow_dispatch-{main}"
 
 
 class TestTheRustTestsLinkNoPython:
