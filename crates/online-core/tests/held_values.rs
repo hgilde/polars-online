@@ -1018,7 +1018,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
 /// read.
 fn no_weight_moves_nothing<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
     let zero = |i: usize| i >= MOVING && i % 7 == 3;
-    for level in [1e3, 1e8, 1e12] {
+    for level in [1e3, 1e8, -1e8, 1e12] {
         for (what, rows) in [("feature", stream(level)), ("target", held_target(level))] {
             let run = |far: bool| -> Vec<Vec<f64>> {
                 let mut m = make();
@@ -1170,6 +1170,11 @@ fn a_row_of_no_weight_moves_no_mean() {
         })
         .unwrap()
     });
+    // Task 209 (b): the regressions the harness left out.
+    no_weight_moves_nothing("quantile", || Robust::new(quantile_cfg()).unwrap());
+    no_weight_moves_nothing("pa", || Pa::new(pa_cfg()).unwrap());
+    no_weight_moves_nothing("rls", || Rls::new(rls_cfg()).unwrap());
+    no_weight_moves_nothing("ftrl", || Ftrl::new(ftrl_cfg(FtrlLoss::Squared)).unwrap());
 }
 
 // --- task 110: the models the week's review left out -----------------------
@@ -1334,7 +1339,7 @@ fn hmm_filters_the_same_at_every_level() {
 /// the bit (hard rule 9; task 110).
 fn no_weight_moves_nothing_unsupervised<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
     let zero = |i: usize| i >= MOVING && i % 7 == 3;
-    for level in [0.5, 1e3, 1e8] {
+    for level in [0.5, 1e3, 1e8, -1e8] {
         let rows = stream_of(level, 400);
         let run = |far: bool| -> Vec<Vec<f64>> {
             let mut m = make();
@@ -1489,6 +1494,12 @@ fn a_row_of_no_weight_moves_nothing_without_a_target() {
         })
         .unwrap()
     });
+    // Task 209 (b): the kinds the harness left out.
+    no_weight_moves_nothing_unsupervised("kmeans", || KMeans::new(kmeans_cfg()).unwrap());
+    no_weight_moves_nothing_unsupervised("micro", || Micro::new(micro_cfg()).unwrap());
+    no_weight_moves_nothing_unsupervised("corrchange", || {
+        CorrChange::new(corrchange_cfg()).unwrap()
+    });
 }
 
 /// Two targets under `pairwise` gaps, the second absent on every third row,
@@ -1570,4 +1581,425 @@ fn two_targets_under_pairwise_gaps_keep_their_slopes() {
             "level {level}: {worst:e} from 0.5's"
         );
     }
+}
+
+// --- task 209 (b): the models the harnesses left out -----------------------
+
+/// `quantile` at the median, standardized as `huber` is above, with the
+/// bank's band (`quantile_eps` 0.2).
+fn quantile_cfg() -> RobustCfg {
+    RobustCfg {
+        n_features: 3,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: decay(),
+        loss: RobustLoss::Quantile { tau: 0.5 },
+        ridge: 1e-6,
+        standardize: true,
+        min_weight: 10.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        solve_share: None,
+        quantile_eps: 0.2,
+    }
+}
+
+/// `pa` at the bank's defaults: PA-I, `c` 1, the band 1% of the target's
+/// spread, standardized.
+fn pa_cfg() -> PaCfg {
+    PaCfg {
+        n_features: 3,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: decay(),
+        mode: PaMode::Pa1,
+        c: 1.0,
+        eps: 0.01,
+        min_weight: 10.0,
+        constraint: None,
+        standardize: true,
+    }
+}
+
+fn rls_cfg() -> RlsCfg {
+    RlsCfg {
+        n_features: 3,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: decay(),
+        delta: 1.0,
+        coef_prior: None,
+        min_weight: 10.0,
+    }
+}
+
+fn ftrl_cfg(loss: FtrlLoss) -> FtrlCfg {
+    FtrlCfg {
+        n_features: 3,
+        n_targets: 1,
+        fit_intercept: true,
+        decay: decay(),
+        alpha: 0.1,
+        beta: 1.0,
+        l1: 0.0,
+        l2: 1.0,
+        min_weight: 10.0,
+        strict_binary: false,
+        loss,
+    }
+}
+
+/// `quantile` keeps the slope it learned on the stopped feature, 0.31 to
+/// 0.61 measured at every level, and the fit at each level predicts what
+/// the fit at 0.5 does from the stop on: 1.8e-15 at -0.37, 1.5e-13 at 1e3,
+/// 1.4e-8 at ±1e8 and 1.4e-4 at 1e12, a hundredth of [`steps_of`].
+#[test]
+fn a_standardized_quantile_keeps_the_slope_it_learned() {
+    holds(
+        "quantile",
+        || Robust::new(quantile_cfg()).unwrap(),
+        Some(|m: &Robust| m.coefficients().map_or(f64::NAN, |c| c[0][3])),
+        FROM_THE_STOP,
+    );
+}
+
+/// `pa` standardizes each row as `sgd` does and holds its fit in the
+/// caller's units past the warm-up (docs/PLAN.md task 206), so, as `sgd`'s,
+/// its slope on the stopped feature moves with the steps it takes (-0.05 to
+/// 0.74 measured, at 0.5 as at every level) and is not held. What it
+/// predicts is, from the stop on: 9.4e-16 at -0.37, 2.2e-13 at 1e3, 2.7e-8
+/// at ±1e8 and 3.2e-4 at 1e12.
+#[test]
+fn pa_predicts_the_same_at_every_level() {
+    holds("pa", || Pa::new(pa_cfg()).unwrap(), None, FROM_THE_STOP);
+}
+
+/// The root mean square of `pred - y` over the rows from `from` on.
+fn rmse_from(pred: &[f64], rows: &[([f64; 3], f64)], from: usize) -> f64 {
+    let n = (pred.len() - from) as f64;
+    let sum: f64 = (from..pred.len())
+        .map(|i| (pred[i] - rows[i].1).powi(2))
+        .sum();
+    (sum / n).sqrt()
+}
+
+/// **`rls` is held to its accuracy, not to the fit at 0.5.** Its prior,
+/// `delta I`, is on the sums and fades with them, the intercept's included
+/// (`rls.rs`), so at a level the intercept the level puts on the fit is
+/// penalized until the rows outweigh the prior. Over rows 200 to 300 its
+/// error is 0.32 to 0.34 at 1e3 and beyond, where it is 0.18 at 0.5. And
+/// once a feature holds a value other than 0, the information that tells its
+/// coefficient from the intercept decays with nothing to renew it, as the
+/// prior's does: some 50 half-lives in it is under a rounding step, and the
+/// slope wanders, to ±1e13 at 0.5, ±5e9 at 1e3, ±3e5 at 1e8 and ±7 at 1e12
+/// within the 150 measured, while held at exactly 0 (-0.37) it stays 0.45 to
+/// 0.50 (docs/PLAN.md task 209's report raises it). The rows that carry the
+/// held value read the sum of the two, which the rows keep in view: every
+/// level's error from the stop on is 0.178 to 0.180, against 0.179 at 0.5,
+/// and here within 2% of it.
+#[test]
+fn rls_predicts_as_well_at_every_level_once_the_feature_stops() {
+    let rows = stream(0.5);
+    let (base, _) = run(Rls::new(rls_cfg()).unwrap(), 0.5, |_: &Rls| f64::NAN);
+    let want = rmse_from(&base, &rows, MOVING);
+    assert!((0.15..0.2).contains(&want), "the case: {want}");
+    for level in LEVELS {
+        let rows = stream(level);
+        let (pred, _) = run(Rls::new(rls_cfg()).unwrap(), level, |_: &Rls| f64::NAN);
+        assert!(
+            pred[MOVING..].iter().all(|p| p.is_finite()),
+            "rls at level {level}: a row with no prediction after the stop"
+        );
+        let got = rmse_from(&pred, &rows, MOVING);
+        println!("rls at level {level}: error {got:.4} from the stop, {want:.4} at 0.5");
+        assert!(
+            (got / want - 1.0).abs() <= 0.02,
+            "rls at level {level}: error {got} from the stop, {want} at 0.5"
+        );
+    }
+}
+
+/// **`ftrl` does not standardize, and its fit depends on a feature's
+/// level** (docs/PLAN.md task 209's report raises it): with the stream's
+/// third feature at a level `L`, the squared loss's error over the rows
+/// after the stop is about `0.018 L`, 18 at 1e3 and 1.8e6 at 1e8, where it
+/// is 0.72 at 0.5. What holds at every level is the sign: each coordinate's
+/// step is odd in its feature, so the fit with the feature at `-L`, the
+/// stream mirrored, `-(L + u)`, predicts to the bit what the fit at `L`
+/// does, under either loss.
+#[test]
+fn ftrl_at_a_level_of_either_sign_is_the_others_mirror() {
+    for loss in [FtrlLoss::Squared, FtrlLoss::Logistic] {
+        for level in [0.5, 1e3, 1e8, 1e12] {
+            let fit = |sign: f64| -> Vec<u64> {
+                let mut m = Ftrl::new(ftrl_cfg(loss)).unwrap();
+                stream(level)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (x, y))| {
+                        let y = match loss {
+                            FtrlLoss::Squared => *y,
+                            FtrlLoss::Logistic => label_of(*y),
+                        };
+                        let x = [x[0], x[1], sign * x[2]];
+                        let p = m.step(&x, &[Some(y)], d(i), 1.0).pred[0];
+                        assert!(
+                            i < MOVING || p.is_finite(),
+                            "{loss:?} at {}: row {i} predicts {p}",
+                            sign * level
+                        );
+                        p.to_bits()
+                    })
+                    .collect()
+            };
+            assert_eq!(fit(1.0), fit(-1.0), "{loss:?} at ±{level}");
+        }
+    }
+}
+
+/// What a model with no target reports at every level is what it reports at
+/// 0.5, slot by slot and row by row through `until(level)`: both a number
+/// within `steps_of(level)` (at least 1e-12) of `1 + |at 0.5|`, or both NaN.
+/// A slot in `shifted` reports in the stopped feature's own units, and is
+/// held less the level, to `shifted_steps` rounding steps of the level.
+fn reports_the_same_at_every_level<M: OnlineModel>(
+    name: &str,
+    make: impl Fn() -> M,
+    (shifted, shifted_steps): (&[usize], f64),
+    until: fn(f64) -> usize,
+) {
+    let run = |level: f64| -> Vec<Vec<f64>> {
+        let mut m = make();
+        stream(level)
+            .iter()
+            .enumerate()
+            .map(|(i, (x, _))| m.step(x, &[], d(i), 1.0).pred)
+            .collect()
+    };
+    let base = run(0.5);
+    for level in LEVELS {
+        let out = run(level);
+        let tol = steps_of(level).max(1e-12);
+        let shifted_tol = (shifted_steps * level.abs() * f64::EPSILON).max(tol);
+        let (mut worst, mut at, mut numbers) = (0.0f64, (0, 0), 0usize);
+        let mut worst_shifted = 0.0f64;
+        for (i, (got, want)) in out.iter().zip(&base).enumerate().take(until(level)) {
+            for (s, (&a, &b)) in got.iter().zip(want).enumerate() {
+                assert_eq!(
+                    a.is_nan(),
+                    b.is_nan(),
+                    "{name} at level {level}, row {i}, slot {s}: {a} against {b} at 0.5"
+                );
+                if a.is_nan() {
+                    continue;
+                }
+                numbers += 1;
+                if shifted.contains(&s) {
+                    let off = ((a - level) - (b - 0.5)).abs();
+                    worst_shifted = worst_shifted.max(off);
+                    assert!(
+                        off <= shifted_tol,
+                        "{name} at level {level}, row {i}, slot {s}: {a} less the level is \
+                         {off:.3e} from 0.5's, past {shifted_tol:.1e}"
+                    );
+                    continue;
+                }
+                let off = (a - b).abs() / (1.0 + b.abs());
+                if off > worst {
+                    (worst, at) = (off, (i, s));
+                }
+            }
+        }
+        println!(
+            "{name} at level {level}: {worst:.1e} from 0.5's (row {}, slot {}), {worst_shifted:.1e} \
+             in the shifted slots, over {numbers} numbers ({tol:.1e}, {shifted_tol:.1e})",
+            at.0, at.1
+        );
+        assert!(
+            numbers > 500,
+            "{name} at level {level}: {numbers} numbers compared"
+        );
+        assert!(
+            worst <= tol,
+            "{name} at level {level}: {worst:.3e} from 0.5's at row {}, slot {}, past {tol:.1e}",
+            at.0,
+            at.1
+        );
+    }
+}
+
+fn kmeans_cfg() -> KMeansCfg {
+    KMeansCfg {
+        n_features: 3,
+        k: 3,
+        decay: decay(),
+        min_weight: 10.0,
+        warm_rows: 40,
+        seed_rule: SeedRule::Lloyd,
+        seed: 0,
+        update_every_rows: 1,
+        split_merge: 0.5,
+        split_merge_every_rows: 50,
+        dead_frac: 0.05,
+        standardize: true,
+        scale_floor: 0.1,
+    }
+}
+
+fn micro_cfg() -> MicroCfg {
+    MicroCfg {
+        n_features: 3,
+        decay: decay(),
+        min_weight: 3.0,
+        eps: 0.6,
+        beta_mu: 2.0,
+        max_clusters: 50,
+        prune_every: f64::INFINITY,
+        max_rows_between_prunes: 10,
+        macro_link: None,
+        standardize: true,
+        scale_floor: 0.1,
+    }
+}
+
+fn corrchange_cfg() -> CorrChangeCfg {
+    CorrChangeCfg {
+        n_features: 3,
+        kind: CorrChangeKind::Monitor,
+        span_rows: 20,
+        alpha: 0.05,
+        alpha_adjust: "bonferroni".into(),
+        bandwidth: None,
+        scalar: false,
+        decay: decay(),
+        crit: None,
+        n_perm: 20,
+        permute_every_rows: 10,
+        perm_block: 1,
+        norm: ChangeNorm::L1,
+        seed: 5,
+        reset: false,
+        monitor_rows: 0,
+        boundary_gamma: 0.0,
+    }
+}
+
+/// Every row of the stream.
+fn every_row(_: f64) -> usize {
+    usize::MAX
+}
+
+/// **The clusters' centres are plain means** (`ClusterSummary::absorb_plain`),
+/// and at 1e12 a centre stalls short of the held value by up to the
+/// rounding step over its step's share, 1.8e-3, a gap the metric's floor
+/// counts `2^(Q/8)` times more as the feature stays quiet for `Q`
+/// half-lives (`scale_floor`, docs/PLAN.md task 102). In exact arithmetic
+/// the gap closes as `2^-Q`; stalled, it grows into the distances, and
+/// `kmeans` reads a different cluster than at 0.5 from 60 half-lives after
+/// the stop (row 1504), `micro` from 40 (row 1105), on 1315 and 1023 of the
+/// 3000 held rows (docs/PLAN.md task 209's report raises it). At 1e12 the
+/// rows through 30 half-lives after the stop are held, the rest at the
+/// other levels: through 1e8 every row is, 5.7e-8 and 4.0e-8 at most.
+fn before_a_centre_stalls(level: f64) -> usize {
+    if level.abs() >= 1e12 {
+        MOVING + 30 * H as usize
+    } else {
+        usize::MAX
+    }
+}
+
+#[test]
+fn kmeans_assigns_the_same_at_every_level() {
+    reports_the_same_at_every_level(
+        "kmeans",
+        || KMeans::new(kmeans_cfg()).unwrap(),
+        (&[], 0.0),
+        before_a_centre_stalls,
+    );
+}
+
+#[test]
+fn micro_assigns_the_same_at_every_level() {
+    reports_the_same_at_every_level(
+        "micro",
+        || Micro::new(micro_cfg()).unwrap(),
+        (&[], 0.0),
+        before_a_centre_stalls,
+    );
+}
+
+/// An equicorrelation reads the rows standardized, which a level leaves
+/// alone: 2.1e-13 at 1e3, 1.6e-8 at ±1e8, 1.6e-4 at 1e12 measured.
+#[test]
+fn deco_reports_the_same_at_every_level() {
+    reports_the_same_at_every_level(
+        "deco",
+        || {
+            Deco::new(DecoCfg {
+                n_features: 3,
+                decay: decay(),
+                dynamics: DecoDynamics::Ew,
+                alpha: None,
+                beta: None,
+                blocks: Vec::new(),
+                min_weight: 3.0,
+            })
+            .unwrap()
+        },
+        (&[], 0.0),
+        every_row,
+    );
+}
+
+/// `bocpd` with its prior read from its own warm-up rows, so that the prior
+/// sits at the level as the data do (a prior mean given at 0 does not, and
+/// a level then is a surprise by design): the run-length posterior and the
+/// row's log density at each level are those at 0.5, 4.3e-8 at ±1e8 and
+/// 3.6e-4 at 1e12 measured. **The predictive mean of the stopped feature
+/// (slot 5), less the level, is 1,040 rounding steps of the level from
+/// 0.5's**, 2.3e-10 at 1e3, 2.3e-5 at 1e8 and 0.23 at 1e12, late in the
+/// hold, and is held to 2,000. It is `Σ pᵣ mᵣ` over the runs, each `mᵣ` at
+/// the level, and the run posterior sums to 1 only to 2.3e-13 there,
+/// measured: that times the level is the whole of it. `Σ pᵣ (mᵣ − m₀) +
+/// m₀` would keep it at the spread's scale (docs/PLAN.md task 209's report
+/// raises it).
+#[test]
+fn bocpd_reports_the_same_at_every_level() {
+    reports_the_same_at_every_level(
+        "bocpd",
+        || {
+            Bocpd::new(BocpdCfg {
+                n_features: 3,
+                hazard: 50.0,
+                hazard_from_row: false,
+                emission: BocpdEmission::Diag,
+                prior_mean: None,
+                prior_kappa: 1.0,
+                prior_nu: None,
+                prior_scale: None,
+                robust_beta: 0.0,
+                prune_below: 1e-6,
+                max_run: 200,
+                min_weight: 0.0,
+                warm_rows: None,
+                hazard_on_clock: false,
+            })
+            .unwrap()
+        },
+        (&[5], 2e3),
+        every_row,
+    );
+}
+
+/// A test of a change in correlation reads the rows centred: its statistic
+/// at each level is the one at 0.5 (3.9e-9 at ±1e8, 3.1e-5 at 1e12
+/// measured), and its flags and counts are the same.
+#[test]
+fn corrchange_tests_the_same_at_every_level() {
+    reports_the_same_at_every_level(
+        "corrchange",
+        || CorrChange::new(corrchange_cfg()).unwrap(),
+        (&[], 0.0),
+        every_row,
+    );
 }

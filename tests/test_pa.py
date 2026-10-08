@@ -218,15 +218,17 @@ def test_a_target_far_from_zero_is_learned_with_or_without_decay(half_life):
     spread, learned from them, was about 100 wide and held every later row;
     without decay nothing narrowed it: R² -52 at a half-life of 1e9, +0.954 at
     500 (task 195's report). The target's own spread is about 2 whatever the
-    fit."""
+    fit. At -1,000 too, the side task 202's trap was never looked for on
+    (task 209 (b))."""
     r2 = {}
-    for level in (0.0, 1000.0):
+    for level in (0.0, 1000.0, -1000.0):
         df = _cc4(n=20_000).with_columns(pl.col("y") + level)
         spec = po.spec.pa("p", targets=["y"], features=["x"], half_life=half_life)
         p = po.ModelBank([spec]).fit_predict(df)["p"].struct.field("pred_y").to_numpy()
         r2[level] = _r2_from(p, df["y"].to_numpy(), 10_000)
-    assert r2[1000.0] > 0.9, r2
-    assert abs(r2[1000.0] - r2[0.0]) < 0.01, r2
+    for level in (1000.0, -1000.0):
+        assert r2[level] > 0.9, r2
+        assert abs(r2[level] - r2[0.0]) < 0.01, r2
 
 
 @pytest.mark.parametrize(

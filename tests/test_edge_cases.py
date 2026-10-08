@@ -615,7 +615,7 @@ class TestNumericalScale:
     obvious.
     """
 
-    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8, 1e10])
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8, -1e8, 1e10])
     def test_standardized_solve_survives_large_offsets(self, offset):
         rng = np.random.default_rng(5)
         n = 2000

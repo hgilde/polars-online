@@ -60,7 +60,7 @@ class TestWindowAtALargeOffset:
     HALFLIFE = 40.0
 
     @pytest.mark.parametrize("window", [None, 25.0, 60.0])
-    @pytest.mark.parametrize("offset", [0.0, 1e8])
+    @pytest.mark.parametrize("offset", [0.0, 1e8, -1e8])
     def test_ew_cov_is_numpy_cov_of_the_rows_inside_the_window(self, offset, window):
         rng = np.random.default_rng(7)
         n = 300
@@ -99,7 +99,7 @@ class TestWindowAtALargeOffset:
             np.testing.assert_allclose(got_cov, cov, rtol=0.0, atol=tol * np.abs(cov).max())
 
     @pytest.mark.parametrize("window", [None, 70.0])
-    @pytest.mark.parametrize("offset", [0.0, 1e8])
+    @pytest.mark.parametrize("offset", [0.0, 1e8, -1e8])
     def test_a_marginal_pair_is_numpy_of_the_rows_inside_the_window(self, offset, window):
         rng = np.random.default_rng(11)
         n, half_life = 400, 25.0
@@ -1156,7 +1156,7 @@ class TestTheCrossMomentsAreCentred:
     on top of ``1e-10``: the data is resolved to ``L·ε`` before either side
     touches it. Offset 0 is the control."""
 
-    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8])
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8, -1e8])
     @pytest.mark.parametrize("standardize", [False, True])
     def test_a_level_regressed_on_levels_is_the_numpy_fit(self, standardize, offset):
         rng = np.random.default_rng(97)
@@ -1184,7 +1184,7 @@ class TestTheCrossMomentsAreCentred:
             ym = w @ y[:t] / w.sum()
             slopes = _wls(x[:t] - xm, y[:t] - ym, w, intercept=False)
             worst = max(worst, abs(pred[t] - (ym + (x[t] - xm) @ slopes)))
-        assert worst <= 1e-10 + 1e-14 * offset, f"worst |pred - numpy| = {worst:.3e}"
+        assert worst <= 1e-10 + 1e-14 * abs(offset), f"worst |pred - numpy| = {worst:.3e}"
 
 
 def _level_rows(n: int, offset: float, seed: int):
@@ -1233,7 +1233,7 @@ class TestTheGramIsCentredToo:
 
     @staticmethod
     def _tol(offset: float) -> float:
-        return 1e-10 + 1e-14 * offset
+        return 1e-10 + 1e-14 * abs(offset)
 
     @staticmethod
     def _same_fit(got, want, x, tol, what):
@@ -1245,7 +1245,7 @@ class TestTheGramIsCentredToo:
         gap = np.max(np.abs((got[0] + x @ got[1:]) - (want[0] + x @ want[1:])))
         assert gap <= tol, (what, "predictions", gap)
 
-    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8])
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8, -1e8])
     @pytest.mark.parametrize("standardize", [False, True])
     def test_solve_on_the_gram_is_the_numpy_fit_at_any_level(self, standardize, offset):
         x, y = _level_rows(600, offset, seed=98)
@@ -1258,7 +1258,7 @@ class TestTheGramIsCentredToo:
         coef = bank.coef("m")["coef"].to_numpy()
         self._same_fit(got, coef, x, self._tol(offset), "coef")
 
-    @pytest.mark.parametrize("offset", [0.0, 1e8])
+    @pytest.mark.parametrize("offset", [0.0, 1e8, -1e8])
     def test_a_merge_a_closed_row_and_the_other_solves_keep_it(self, offset):
         x, y = _level_rows(1200, offset, seed=99)
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
@@ -1291,7 +1291,7 @@ class TestTheGramIsCentredToo:
         z = np.column_stack([np.ones(700), x[:700]])
         resid = y[:700] - z @ want_h
         # The data resolves a variance of 0.01 to about 1e-6 of itself at 1e8.
-        rel = 1e-9 + 1e-12 * offset
+        rel = 1e-9 + 1e-12 * abs(offset)
         assert stats["resid_var"] == pytest.approx(np.mean(resid**2), rel=rel, abs=1e-12)
 
 
@@ -1523,7 +1523,7 @@ class TestBocpdAtALevel:
     as ``1e-14·L`` because the data is resolved to ``L·ε`` before either
     side reads it. Offset 0 is the control."""
 
-    @pytest.mark.parametrize("offset", [0.0, 1e6, 1e8])
+    @pytest.mark.parametrize("offset", [0.0, 1e6, 1e8, -1e8])
     def test_the_run_length_posterior_is_the_packages(self, offset):
         import bayesian_changepoint_detection.online_changepoint_detection as bcd
 
@@ -1550,7 +1550,7 @@ class TestBocpdAtALevel:
             functools.partial(bcd.constant_hazard, hazard),
             bcd.StudentT(nu0 / 2.0, psi0 / 2.0, kappa0, offset),
         )
-        tol = 1e-9 + 1e-14 * offset
+        tol = 1e-9 + 1e-14 * abs(offset)
         np.testing.assert_allclose(
             out.struct.field("p_change").to_numpy(), r[0, 1:] + r[1, 1:], rtol=0.0, atol=tol
         )
@@ -2511,11 +2511,15 @@ class TestPassiveAggressiveIsRivers:
     the two are held at ``eps = 0``, which is no tube in either; and ours on
     the raw features, as river reads them."""
 
+    @pytest.mark.parametrize("level", [0.0, -1e3])
     @pytest.mark.parametrize(("mode", "river_mode"), [("pa", 0), ("pa1", 1), ("pa2", 2)])
-    def test_every_row_is_rivers_without_an_intercept(self, mode, river_mode):
+    def test_every_row_is_rivers_without_an_intercept(self, mode, river_mode, level):
+        """At a level of -1,000 too, both features and the target all
+        negative (docs/PLAN.md task 209 (b)), where the numbers are a
+        thousand times larger and agree to 1e-12 of them."""
         rng = np.random.default_rng(11)
         n, c, eps = 500, 0.3, 0.0
-        x = rng.normal(0.0, 1.0, (n, 2))
+        x = rng.normal(level, 1.0, (n, 2))
         y = 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.3, n)
         spec = po.spec.pa(
             "m",
@@ -2538,7 +2542,9 @@ class TestPassiveAggressiveIsRivers:
         for i in range(n):
             row = {"x0": x[i, 0], "x1": x[i, 1]}
             # The prediction the row is scored with, then the fit it leaves.
-            assert pred[i] == pytest.approx(river.predict_one(row), abs=1e-12), (mode, i)
+            scale = 1.0 + abs(level)
+            want_p = river.predict_one(row)
+            assert pred[i] == pytest.approx(want_p, abs=1e-12 * scale), (mode, i)
             river.learn_one(row, y[i])
             want = [river.weights["x0"], river.weights["x1"]]
             assert coef[i] == pytest.approx(want, abs=1e-12), (mode, i)

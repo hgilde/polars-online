@@ -334,12 +334,14 @@ def test_a_level_costs_the_fit_nothing(standardize):
         return np.array(out["m"].struct.field("coef").to_list()[-1]), _pred(out)
 
     coef0, pred0 = fit(0.0)
-    coef8, pred8 = fit(1e8)
     assert coef0[1:] == pytest.approx([1.5, -0.5], abs=0.05), "the fixture is not what it claims"
-    assert coef8[1:] == pytest.approx(coef0[1:], abs=1e-6), (coef8, coef0)
-    m = np.isfinite(pred0) & np.isfinite(pred8)
-    assert m.sum() > n - 20
-    assert np.max(np.abs((pred8[m] - 1e8) - pred0[m])) < 1e-5
+    # Either sign of the level (docs/PLAN.md task 209 (b)).
+    for level in (1e8, -1e8):
+        coef8, pred8 = fit(level)
+        assert coef8[1:] == pytest.approx(coef0[1:], abs=1e-6), (level, coef8, coef0)
+        m = np.isfinite(pred0) & np.isfinite(pred8)
+        assert m.sum() > n - 20
+        assert np.max(np.abs((pred8[m] - level) - pred0[m])) < 1e-5, level
 
 
 def test_a_level_costs_the_quantile_fit_nothing():
@@ -365,11 +367,13 @@ def test_a_level_costs_the_quantile_fit_nothing():
         return np.array(out["m"].struct.field("coef").to_list()[-1]), _pred(out)
 
     coef0, pred0 = fit(0.0)
-    coef8, pred8 = fit(1e8)
     assert coef0[1] == pytest.approx(2.0, abs=0.1), "the fixture is not what it claims"
-    assert coef8[1] == pytest.approx(coef0[1], abs=1e-6), (coef8, coef0)
-    m = np.isfinite(pred0) & np.isfinite(pred8)
-    assert np.max(np.abs((pred8[m] - 1e8) - pred0[m])) < 1e-5
+    # Either sign of the level (docs/PLAN.md task 209 (b)).
+    for level in (1e8, -1e8):
+        coef8, pred8 = fit(level)
+        assert coef8[1] == pytest.approx(coef0[1], abs=1e-6), (level, coef8, coef0)
+        m = np.isfinite(pred0) & np.isfinite(pred8)
+        assert np.max(np.abs((pred8[m] - level) - pred0[m])) < 1e-5, level
 
 
 class TestTheQuantileFitsDefinition:
