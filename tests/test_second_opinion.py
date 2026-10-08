@@ -3021,7 +3021,9 @@ class TestTheBinsAgainstScipyAndAStump:
 class TestAMeanRevertingKalmanIsFilterpy:
     """T-S5 in full (``docs/REVIEW-2026-09-12.md``): with ``revert_half_life``
     finite the transition is ``F = diag(2^(-d / r_i))`` and the process noise
-    is added after it, which is ``filterpy``'s ``predict`` with that ``F``.
+    is added after it, which is ``filterpy``'s ``predict`` with that ``F``; on
+    a reverting slot the noise of a gap ``d`` is ``q_i ((1 - 2^(-d / r_i)) /
+    theta_i)**2``, ``theta_i = ln 2 / r_i`` (docs/PLAN.md task 214).
     Unstandardized, so the pull is toward zero in the columns' own units and
     ``kf.x`` is our coefficient vector; a scalar ``r`` pulls every slot, and
     ``[inf, r, r]`` leaves the intercept a random walk. Rows one clock unit
@@ -3069,7 +3071,12 @@ class TestAMeanRevertingKalmanIsFilterpy:
             # the prior, p0 = 1 times it.
             s2 = sig2 if sig2 > 0.0 else (y[i] - z @ (kf.F @ kf.x)[:, 0]) ** 2
             if sized:
-                kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) * d / coef_hl) ** 2)
+                # `d` on a walk, and on a reverting slot the gap the
+                # reversion damps, `(1 - 2^(-d/r)) / theta` (task 214).
+                g = np.array(
+                    [d if np.isinf(ri) else (1.0 - 0.5 ** (d / ri)) * ri / np.log(2.0) for ri in r]
+                )
+                kf.predict(Q=np.diag(s2 * (np.log(2.0) / coef_hl) ** 2 * g**2))
             elif s2 > 0.0:
                 kf.P, sized = np.eye(3) * s2, True
             if wj > 0.0:
@@ -3561,7 +3568,8 @@ def _filterpy_run(
     / r)) A``, ``A`` the change of coordinates the row before made (``F[i]``
     here, `_standardizer_moves`; the identity unstandardized), and the
     process noise only on a row that observes the target: ``Q D**2``, ``D``
-    the clock since the last such row, ``Q`` from ``coef_half_life`` --
+    the clock since the last such row (on a reverting slot ``((1 - 2**(-D /
+    r)) / theta)**2`` in place of ``D**2``, task 214), ``Q`` from ``coef_half_life`` --
     ``sigma**2 (ln 2 / h)**2`` per coefficient, 0 at ``inf`` -- or ``q``. The
     noise is ``obs_var``, else the residual variance, else the row's own
     innovation squared, read after the transition. Unstandardized
@@ -3602,6 +3610,13 @@ def _filterpy_run(
         finite = np.where(np.isinf(hl), 1.0, hl)
         return np.where(np.isinf(hl), 0.0, s2 * (np.log(2.0) / finite) ** 2)
 
+    def gap2(g: float) -> np.ndarray:
+        # `D**2`, and on a reverting slot the square of the gap the
+        # reversion damps, `((1 - 2**(-D/r)) / theta)**2` (task 214).
+        finite = np.where(np.isinf(r), 1.0, r)
+        damped = ((1.0 - 0.5 ** (g / finite)) * finite / np.log(2.0)) ** 2
+        return np.where(np.isinf(r), g * g, damped)
+
     for i in range(n):
         d = 0.0 if i == 0 else t[i] - t[i - 1]
         lam = 0.5 ** (d / half_life)
@@ -3616,9 +3631,9 @@ def _filterpy_run(
         s2 = held if obs_var is not None or sig2 > 0.0 else e2
         P_prior = Fi @ kf.P @ Fi.T
         if sized.any() and held > 0.0:
-            prior = P_prior + np.diag(np.where(sized, noise_of(held) * gap * gap, 0.0))
+            prior = P_prior + np.diag(np.where(sized, noise_of(held) * gap2(gap), 0.0))
             infl[i] = np.sqrt(1.0 + z @ prior @ z / held)
-        Q = np.diag(np.where(sized, noise_of(s2) * gap * gap, 0.0)) if seen else 0.0 * P_prior
+        Q = np.diag(np.where(sized, noise_of(s2) * gap2(gap), 0.0)) if seen else 0.0 * P_prior
         kf.predict(Q=Q, F=Fi)
         if seen:
             gap = 0.0
@@ -3651,7 +3666,7 @@ def _filterpy_run(
             # last observation, in the coordinates of the moments after this
             # row, which the next row's transition maps to: here, before it,
             # mapped back by that change.
-            now = np.diag(np.where(sized, noise_of(held) * gap * gap, 0.0)) if held > 0.0 else 0.0
+            now = np.diag(np.where(sized, noise_of(held) * gap2(gap), 0.0)) if held > 0.0 else 0.0
             A = np.linalg.inv(F[i + 1]) if F is not None and i + 1 < n else np.eye(k1)
             posts.append(kf.P + A @ now @ A.T)
             continue

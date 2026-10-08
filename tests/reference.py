@@ -596,7 +596,10 @@ def kalman_ref(
       observes the target adds ``Q * D**2`` to ``P`` -- after the transition
       and before the gain -- and clears it (task 211: the noise is not
       additive over a split gap, so it is charged once for the whole clock);
-      once per shared P;
+      once per shared P. On a slot reverting at ``r``, ``D**2`` is
+      ``((1 - 2**(-D/r)) / theta)**2`` with ``theta = ln 2 / r``: a velocity
+      of variance ``q`` held over the gap while the reversion pulls, ``D**2``
+      for a short gap and ``1/theta**2`` past ``r`` (task 214);
     - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
       observation precision);
     - ``sigma2_j`` is the EW variance of the *out-of-sample* residual, updated
@@ -789,7 +792,13 @@ def kalman_ref(
             informs = seen.any() if share_p else seen[pi]
             if not informs:
                 continue
-            dd = st["D"][pi] ** 2
+            # ``D**2``, and on a slot reverting at ``r`` its bounded form
+            # ``((1 - 2**(-D/r)) / theta)**2``, ``theta = ln 2 / r`` (task 214).
+            gap = st["D"][pi]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                theta = np.log(2.0) / rh
+                bounded = ((1.0 - np.exp2(-gap / rh)) / theta) ** 2
+            dd = np.where(np.isinf(rh), gap**2, bounded)
             st["D"][pi] = 0.0
             sigma2 = noise[0 if share_p else pi]
             qv = (

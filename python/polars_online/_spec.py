@@ -1848,9 +1848,16 @@ def kalman(
         and ``[inf, r, r]`` leaves the intercept a random walk. The pull is toward
         zero in the standardized coordinates when ``standardize`` is on: a slope
         toward "no effect", the intercept toward "the target averages zero". A
-        reverting slot settles, at observations ``D`` apart, at the prior
-        variance ``q_i * D ** 2 / (1 - phi_i ** 2)``, a stationary AR(1) instead
-        of an unbounded walk. The reversion runs on every row, a row that
+        reverting slot's process noise for an observation ``D`` after the last
+        is ``q_i * g_i(D) ** 2`` with ``g_i(D) = (1 - 2 ** (-D / r_i)) /
+        theta_i`` and ``theta_i = ln 2 / r_i``: ``q_i * D ** 2`` for a gap well
+        under ``r_i``, and never more than ``q_i / theta_i ** 2``, so a
+        coefficient's uncertainty stays bounded across a run of rows that
+        observe nothing. At observations one clock unit apart that is short of
+        ``q_i`` by about ``ln 2 / r_i``. A reverting slot settles, at
+        observations ``D`` apart, at the prior variance ``q_i * g_i(D) ** 2 /
+        (1 - phi_i ** 2)``, a stationary AR(1) instead of an unbounded walk.
+        The reversion runs on every row, a row that
         observes nothing included, being the same over a gap however it is
         cut. A prediction propagates the state by the same ``Phi`` over the
         row's clock gap.

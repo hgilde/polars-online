@@ -1551,13 +1551,18 @@ const GOLDEN_RLS: &[f64] = &[
 // the change of coordinates by matrix products, gives the new ones to 1.4e-14.
 // Task 211 (above): `kalman` was 0.08051708612823805, 1.9812568625118254 and
 // -0.06615560201475972, `kalman_revert` 0.3098186122738434, 1.1519113095475324
-// and 0.009601088217273672.
+// and 0.009601088217273672. `kalman_revert` again for task 214 (2026-10-08):
+// a reverting slot's process noise for a gap `D` is `q ((1 − 2^(−D/r)) /
+// θ)²`, bounded, where it was `q D²`; row 40's gap of 25 is three of slope
+// 2's half-lives of 8. `kalman_ref`, rewritten from the module doc, gives
+// the new ones to 8.4e-16, and the old ones, 0.4810076582323497,
+// 1.2730031757113542 and 0.13848333209268554, under the old charge to 1.8e-15.
 const GOLDEN_KALMAN: &[f64] = &[
     0.22526048935963278,
     2.2330040098824835,
     -0.06612869061558382,
 ];
-const GOLDEN_KALMAN_REVERT: &[f64] = &[0.4810076582323497, 1.2730031757113542, 0.13848333209268554];
+const GOLDEN_KALMAN_REVERT: &[f64] = &[0.4810352559516703, 1.1575926629367428, 0.16244017811259087];
 const GOLDEN_LASSO: &[f64] = &[
     0.25359037757905656,
     2.1511829817060866,

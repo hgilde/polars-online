@@ -302,26 +302,22 @@ class TestLargeData:
     def test_reversion_forgets_the_mean_across_a_run_of_nulls(self):
         # A run of null targets: the reversion shrinks the mean by `phi`
         # on every row, and the process noise is charged once, on the next
-        # observation, for the whole clock since the last, `q D**2`
-        # (docs/PLAN.md task 211). Read through the Kalman gain: after 200k
-        # rows of null targets, one observation `y = 5` at `z = e_0` moves
-        # the coefficient by `5 P / (P + R)`, the mean having decayed to
-        # zero under reversion and kept the fitted 1.0 under the walk, and
-        # `P = q (n + 1)**2` either way, the decayed or kept posterior a
-        # rounding of it. Charged per row, the reverting slot's `P` settled
-        # at `q / (1 - phi**2)`, 7.3e-3 here, and the walk's grew to `q n`:
-        # the number a gap gave depended on the rows it was cut into, and a
-        # gap of 200k as one row gave `q (n + 1)**2` already.
-        n = 200_000
-        rng = np.random.default_rng(10)
-        x = rng.normal(size=(300, 2))
-        y = x[:, 0] + rng.normal(0.0, 0.1, 300)
-        head = pl.DataFrame({"y0": y, "x0": x[:, 0], "x1": x[:, 1]})
-        tail = pl.DataFrame(
-            {"y0": np.full(n, np.nan), "x0": rng.normal(size=n), "x1": rng.normal(size=n)}
-        )
-        probe = pl.DataFrame({"y0": [5.0], "x0": [1.0], "x1": [0.0]})
-        q, r_obs = 1e-4, 0.01
+        # observation, for the whole clock since the last (docs/PLAN.md task
+        # 211): `q D**2` on the walk, and on the reverting slot `q ((1 -
+        # 2**(-D/r)) / theta)**2`, `theta = ln 2 / r`, which is bounded by
+        # `q / theta**2` however long the run (task 214). Read through the
+        # Kalman gain: after `n` rows of null targets, one observation `y =
+        # 5` at `z = e_0` moves the coefficient by `5 P / (P + R)`, the mean
+        # having decayed to zero under reversion and kept the fitted 1.0
+        # under the walk, the decayed or kept posterior a rounding of `P`.
+        # The walk's `P` is `q (n + 1)**2` and grows with the run; the
+        # reverting slot's is the bound, to rounding, at runs of
+        # 50 and 100 of its half-lives alike. Charged `q D**2` there too, it
+        # grew without bound (task 211: 1.9e6 times the bound at 200k rows);
+        # charged per row, it settled at `q / (1 - phi**2)`, a number of the
+        # rows the gap was cut into.
+        q, r_obs, r = 1e-4, 0.01, 100.0
+        theta = math.log(2.0) / r
         common = dict(
             targets=["y0"],
             features=["x0", "x1"],
@@ -333,23 +329,36 @@ class TestLargeData:
             standardize=False,
             coef_every=0,
         )
-        got = {}
-        for rh in (INF, 100.0):
-            bank = po.ModelBank([po.spec.kalman("m", revert_half_life=rh, **common)])
-            bank.fit_predict(head)
-            before = _coef(bank.fit_predict(tail))[-1]
-            after = _coef(bank.fit_predict(probe))[-1]
-            got[rh] = (before[0], after[0])
-        p_gap = q * (n + 1.0) ** 2
-        # Reverting: the mean is gone, and the gain is the gap's.
-        assert abs(got[100.0][0]) < 1e-12
-        assert got[100.0][1] == pytest.approx(5.0 * p_gap / (p_gap + r_obs), rel=1e-12)
-        # Random walk: the mean is still the fitted slope, and the gain the
-        # gap's.
-        b_fit = got[INF][0]
-        assert abs(b_fit - 1.0) < 0.05
-        gain = p_gap / (p_gap + r_obs)
-        assert got[INF][1] == pytest.approx(b_fit + gain * (5.0 - b_fit), rel=1e-9)
+        probe = pl.DataFrame({"y0": [5.0], "x0": [1.0], "x1": [0.0]})
+        for n in (5_000, 10_000):
+            rng = np.random.default_rng(10)
+            x = rng.normal(size=(300, 2))
+            y = x[:, 0] + rng.normal(0.0, 0.1, 300)
+            head = pl.DataFrame({"y0": y, "x0": x[:, 0], "x1": x[:, 1]})
+            tail = pl.DataFrame(
+                {"y0": np.full(n, np.nan), "x0": rng.normal(size=n), "x1": rng.normal(size=n)}
+            )
+            got = {}
+            for rh in (INF, r):
+                bank = po.ModelBank([po.spec.kalman("m", revert_half_life=rh, **common)])
+                bank.fit_predict(head)
+                before = _coef(bank.fit_predict(tail))[-1]
+                after = _coef(bank.fit_predict(probe))[-1]
+                got[rh] = (before[0], after[0])
+            gap = n + 1.0
+            p_rev = q * (-math.expm1(-theta * gap) / theta) ** 2
+            bound = q / theta**2
+            assert p_rev == pytest.approx(bound, rel=1e-12), (n, p_rev, bound)
+            # Reverting: the mean is gone, and the gain is the bounded gap's.
+            assert abs(got[r][0]) < 1e-12
+            assert got[r][1] == pytest.approx(5.0 * p_rev / (p_rev + r_obs), rel=1e-12)
+            # Random walk: the mean is still the fitted slope, and the gain
+            # the gap's.
+            p_walk = q * gap**2
+            b_fit = got[INF][0]
+            assert abs(b_fit - 1.0) < 0.05
+            gain = p_walk / (p_walk + r_obs)
+            assert got[INF][1] == pytest.approx(b_fit + gain * (5.0 - b_fit), rel=1e-9)
 
 
 # --- exactness ----------------------------------------------------------------

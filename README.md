@@ -2878,6 +2878,7 @@ variance unless `obs_var` is given:
 ```
 β_j ← Φβ_j    P_j ← ΦP_jΦ              Φ = diag(2^(−Δclock/r_i)), every row
 P_j ← P_j + Q·D_j²,  D_j ← 0           on a row that observes y_j; D_j the clock since the last
+                                       (bounded on a reverting coefficient, below)
 s   = zᵀP_j z + R_j/w                   K   = P_j z / s
 β_j ← β_j + K(y_j − zᵀβ_j)              P_j ← P_j − K zᵀP_j
 ```
@@ -2952,8 +2953,11 @@ the effect is forgotten between its bursts, and cannot persist through a
 run of null targets. For a regressor that is always active, keep the default
 `inf`: the pull would settle a persistent effect below its true size, the
 more so the shorter the reversion half-life. A reverting coefficient's
-long-run prior variance, at observations `D` apart, is `q_i·D²/(1−φ_i²)`,
-where a random walk's grows without bound.
+process noise over a gap `D` is `q_i·g_i(D)²`, with `g_i(D) =
+(1 − 2^(−D/r_i))/θ_i` and `θ_i = ln 2/r_i`. That is `q_i·D²` for a short
+gap, and never more than `q_i/θ_i²`, so the coefficient's uncertainty stays
+bounded across a run of null targets, where a random walk's grows without
+bound.
 
 **Under `standardize`, the default, the reversion pulls toward zero in the
 standardized coordinates:** "no effect" for a slope, and "the target

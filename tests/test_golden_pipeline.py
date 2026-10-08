@@ -475,7 +475,12 @@ def switched_signature() -> dict[str, float | str | None]:
 #: group's clock capped at ``gap_cap`` with a null feature's clock carried,
 #: Hamilton's filter, the states in mean form under the decaying prior --
 #: gives the 15 to 4.8e-16, and under the old reading the old 15 to 2.2e-16;
-#: nothing else moved.
+#: nothing else moved. Task 214 again moved the 6 of ``kalman_revert``: a
+#: reverting slot's process noise for a gap ``D`` is ``q ((1 - 2**(-D/r)) /
+#: theta)**2``, bounded, where it was ``q D**2``. ``kalman_ref``, rewritten
+#: from the new docstring, gives every row, 104, to 1.0e-15, with the same
+#: nulls, and the old 3 ``pred`` under the old charge to 2.8e-16; nothing
+#: else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -672,12 +677,12 @@ GOLDEN: dict[str, float | str | None] = {
     "pa_box.withheld_reason@25": None,
     "pa_box.withheld_reason@60": None,
     "pa_box.withheld_reason@119": None,
-    "kalman_revert.pred_y0@25": -0.08968675020611261,
-    "kalman_revert.pred_y0@60": -1.3392965336030473,
-    "kalman_revert.pred_y0@119": -0.8885065404934901,
-    "kalman_revert.resid_y0@25": -4.7619190740286035,
-    "kalman_revert.resid_y0@60": 0.8672554047859694,
-    "kalman_revert.resid_y0@119": 0.8378077695352613,
+    "kalman_revert.pred_y0@25": -0.0716249205798577,
+    "kalman_revert.pred_y0@60": -1.3455191948799843,
+    "kalman_revert.pred_y0@119": -0.8865687591627956,
+    "kalman_revert.resid_y0@25": -4.779980903654859,
+    "kalman_revert.resid_y0@60": 0.8734780660629063,
+    "kalman_revert.resid_y0@119": 0.8358699882045668,
     "kalman_revert.weight_sum@25": 7.999488060097996,
     "kalman_revert.weight_sum@60": 12.473100285951407,
     "kalman_revert.weight_sum@119": 15.110060335371337,

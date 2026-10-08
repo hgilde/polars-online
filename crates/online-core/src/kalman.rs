@@ -10,7 +10,8 @@
 //! b_j <- Phi b_j                      (transition; Phi = diag(2^(-d/r_i)))
 //! P_j <- Phi P_j Phi                  (every row)
 //! D_j <- D_j + d                      (the clock since P_j last took an observation)
-//! P_j <- P_j + Q * D_j^2, D_j <- 0    (only on a row that observes P_j's target)
+//! P_j <- P_j + Q * D_j^2, D_j <- 0    (only on a row that observes P_j's target;
+//!                                      on a reverting slot D^2 is g_i(D)^2, below)
 //! s    = z' P_j z + R_j / w_row       (innovation variance)
 //! k    = P_j z / s                    (gain)
 //! b_j <- b_j + k (y_j - z' b_j)
@@ -27,12 +28,32 @@
 //! zero"; give the intercept `inf` to leave it a random walk. The transition
 //! runs on every row, the ones that observe nothing included: `Phi` is
 //! multiplicative over a split gap, `2^(-d₁/r) 2^(-d₂/r) = 2^(-(d₁+d₂)/r)`,
-//! so where a gap is cut does not move it. With `Q` from `coef_half_life`
-//! a reverting slot settles, at observations `D` apart, at the prior
-//! variance `q_i D^2 / (1 - phi_i^2)`, a stationary AR(1) instead of an
-//! unbounded walk (for `D` well under `r_i` that is about `q_i D r_i / (2
-//! ln2)`, which grows with the spacing as the gain matching's own variance
-//! does).
+//! so where a gap is cut does not move it.
+//!
+//! **A reverting slot's process noise is bounded in the gap (docs/PLAN.md
+//! task 214).** For an observation `D` after the last it is `q_i g_i(D)²`,
+//!
+//! ```text
+//! g_i(D) = (1 - 2^(-D/r_i)) / theta_i,    theta_i = ln2 / r_i      (g_i(D) = D at r_i = inf)
+//! ```
+//!
+//! the displacement of a velocity of variance `q_i` held over the gap while
+//! the reversion pulls, `db = (u - theta_i b) dt`, which `q_i D²` is without
+//! the pull. It is `q_i D²` for a gap well under `r_i` (0.993 of it at `D =
+//! r_i/100`, 0.933 at `r_i/10`), so the matching below holds there, and it
+//! saturates at `q_i / theta_i²` past `r_i` (0.9998 of it at `20 r_i`):
+//! across a run of rows that observe nothing the coefficient's uncertainty is
+//! bounded, as a mean-reverting coefficient's is. Charged `q_i D²` for the
+//! whole gap (task 211) it grew without bound; charged per row, as before
+//! that, it settled at `q_i / (1 - phi_i²)`, a number of the rows the gap was
+//! cut into. At observations one clock unit apart the noise is `q_i g_i(1)²`,
+//! short of `q_i` by about `ln2 / r_i`: 10.8% at `r_i` = 6, 2.7% at 25, 0.7%
+//! at 100, which moved a prediction by at most 0.26, 0.03 and 0.004 noise
+//! deviations on a dense stream whose slope drifts. With `Q` from `coef_half_life` a reverting
+//! slot settles, at observations `D` apart, at the prior variance `q_i
+//! g_i(D)² / (1 - phi_i²)`, a stationary AR(1) instead of an unbounded walk
+//! (for `D` well under `r_i` that is about `q_i D r_i / (2 ln2)`, which grows
+//! with the spacing as the gain matching's own variance does).
 //!
 //! **Process noise from a per-factor half-life.** On standardized features, the
 //! steady-state gain of a random-walk-beta filter matches EW-RLS with half-life
@@ -477,15 +498,36 @@ impl KalmanCfg {
         self.revert_half_life.iter().any(|h| h.is_finite())
     }
 
-    /// The transition factor of slot `i` over a clock delta `d`,
-    /// `2^(-d/r_i)`, spelled as [`Decay::factor`] is.
-    fn phi(&self, i: usize, d_clock: f64) -> f64 {
-        let r = if self.revert_half_life.len() == 1 {
+    /// Slot `i`'s reversion half-life `r_i`, `inf` for a random walk.
+    fn revert_of(&self, i: usize) -> f64 {
+        if self.revert_half_life.len() == 1 {
             self.revert_half_life[0]
         } else {
             self.revert_half_life[i]
-        };
-        Decay::Halflife(r).factor(d_clock)
+        }
+    }
+
+    /// The transition factor of slot `i` over a clock delta `d`,
+    /// `2^(-d/r_i)`, spelled as [`Decay::factor`] is.
+    fn phi(&self, i: usize, d_clock: f64) -> f64 {
+        Decay::Halflife(self.revert_of(i)).factor(d_clock)
+    }
+
+    /// What slot `i`'s process noise `q_i` is multiplied by for an
+    /// observation a gap of `d` after the last (the module doc): `d²` on a
+    /// random walk, and on a slot reverting at `r_i`, `((1 − 2^(−d/r_i)) /
+    /// θ_i)²` with `θ_i = ln 2 / r_i` -- `d²` for a gap well under `r_i`,
+    /// and `1/θ_i²` past it, where `d²` grew without bound across a run of
+    /// rows that observe nothing (docs/PLAN.md task 214). `1 − 2^(−d/r_i)` is
+    /// `−expm1(−θ_i d)`, whole at a small `d`.
+    fn gap_noise(&self, i: usize, d: f64) -> f64 {
+        let r = self.revert_of(i);
+        if r.is_infinite() {
+            return d * d;
+        }
+        let theta = std::f64::consts::LN_2 / r;
+        let g = -(-(theta * d)).exp_m1() / theta;
+        g * g
     }
 }
 
@@ -1334,10 +1376,11 @@ impl Kalman {
     }
 
     /// `Q D²` for the slots of covariance `pi` that are sized (a variance
-    /// above 0), defined in the current coordinates and carried into the
-    /// anchor's (the module doc): an arrowhead, O(k).
-    fn add_process_noise(&mut self, pi: usize, sigma2: f64, dd: f64) {
-        if dd == 0.0 {
+    /// above 0), `D²` read on a reverting slot as its bounded form
+    /// ([`KalmanCfg::gap_noise`]), defined in the current coordinates and
+    /// carried into the anchor's (the module doc): an arrowhead, O(k).
+    fn add_process_noise(&mut self, pi: usize, sigma2: f64, d: f64) {
+        if d == 0.0 {
             return;
         }
         let k = self.cfg.k_total();
@@ -1347,7 +1390,7 @@ impl Kalman {
         let p = &mut self.p[pi];
         let mut corner = 0.0;
         for i in 0..k {
-            let qd = q[i] * dd;
+            let qd = q[i] * self.cfg.gap_noise(i, d);
             if !self.cfg.standardize {
                 // The whole `P` is sized at once (the caller saw to it).
                 p[i * k + i] += qd;
@@ -1399,9 +1442,8 @@ impl Kalman {
         let (mut a, mut c) = (vec![1.0; k], vec![0.0; k]);
         self.map_into(&live, &mut a, &mut c);
         let mut p = self.p[pi].clone();
-        let dd = d * d;
         for i in 0..k {
-            let qd = q[i] * dd;
+            let qd = q[i] * self.cfg.gap_noise(i, d);
             if qd == 0.0 || (self.cfg.standardize && p[i * k + i] == 0.0) {
                 continue;
             }
@@ -1523,12 +1565,24 @@ impl Kalman {
         let z = self.standardized(x);
         let mut q = vec![0.0; k];
         self.q_into(r, &mut q);
-        let dd = (self.elapsed[pi] + d_clock).powi(2);
+        let gap = self.elapsed[pi] + d_clock;
+        let dd = gap.powi(2);
+        let sized = |i: &usize| p[i * k + i] != 0.0;
+        let walking = |i: &usize| self.cfg.revert_of(*i).is_infinite();
         let noise: f64 = (0..k)
-            .filter(|&i| p[i * k + i] != 0.0)
+            .filter(sized)
+            .filter(walking)
             .map(|i| q[i] * z[i] * z[i])
             .sum();
-        quad + dd * noise
+        // A reverting slot's noise is bounded in the gap (`gap_noise`), so
+        // it is summed apart; with none, the sum is the random walk's alone,
+        // to the bit.
+        let reverting: f64 = (0..k)
+            .filter(sized)
+            .filter(|i| !walking(i))
+            .map(|i| q[i] * self.cfg.gap_noise(i, gap) * z[i] * z[i])
+            .sum();
+        quad + dd * noise + reverting
     }
 
     /// `sqrt(1 + z' P⁻ z / R)` per target for the row `x` at `d_clock`
@@ -1977,11 +2031,11 @@ impl OnlineModel for Kalman {
             if !informs {
                 continue;
             }
-            let dd = self.elapsed[pi] * self.elapsed[pi];
+            let gap = self.elapsed[pi];
             self.elapsed[pi] = 0.0;
             let sigma2 = self.noise[if self.cfg.share_p { 0 } else { pi }];
             if self.cfg.standardize {
-                self.add_process_noise(pi, sigma2, dd);
+                self.add_process_noise(pi, sigma2, gap);
                 if let Some(r) = self.cfg.obs_var.or_else(|| self.basis[pi].noise()) {
                     self.size_slots(pi, r);
                 }
@@ -1997,7 +2051,7 @@ impl OnlineModel for Kalman {
                     }
                 }
             } else {
-                self.add_process_noise(pi, sigma2, dd);
+                self.add_process_noise(pi, sigma2, gap);
             }
         }
 
@@ -3260,10 +3314,23 @@ mod tests {
                     if !informs {
                         continue;
                     }
-                    let dd = elapsed[pi] * elapsed[pi];
+                    let gap = elapsed[pi];
                     elapsed[pi] = 0.0;
                     let q = noise[pi] * (std::f64::consts::LN_2 / hq).powi(2);
                     for a in 0..k {
+                        // `D²`, or on a reverting slot `((1 − 2^(−D/r)) /
+                        // θ)²`, `θ = ln 2 / r` (task 214).
+                        let r = if revert.len() == 1 {
+                            revert[0]
+                        } else {
+                            revert[a]
+                        };
+                        let dd = if r.is_infinite() {
+                            gap * gap
+                        } else {
+                            let theta = std::f64::consts::LN_2 / r;
+                            ((1.0 - phi_of(a, gap)) / theta).powi(2)
+                        };
                         if p[pi][a * k + a] != 0.0 {
                             p[pi][a * k + a] += q * dd;
                         }
@@ -3474,6 +3541,66 @@ mod tests {
         assert_eq!(m.p[0][0], p0[0]);
         // And the state is what `coefficients` reports: unstandardized.
         assert_eq!(m.coefficients()[0], m.beta[0]);
+    }
+
+    /// A reverting slot's process noise for a gap `D` is `q g(D)²`, `g(D) =
+    /// (1 − 2^(−D/r)) / θ`, `θ = ln 2 / r` (the module doc, docs/PLAN.md task
+    /// 214), read through `P` as it stands after a row that observes
+    /// nothing, which carries the noise the next observation will charge:
+    /// `q D²` for a short gap (the random walk's, to 1e-3 at `D = r/1000`),
+    /// and `q / θ²` past many half-lives, however long the gap -- the same
+    /// after 1,000 rows of null targets as after 10,000. Charged `q D²`, as
+    /// task 211 did, it was 769 and then 7.7e4 times that bound there. The
+    /// walk beside it keeps `q D²`. The longhand: the variance after the
+    /// gap less the transition's `phi² P`.
+    #[test]
+    fn a_reverting_slots_gap_noise_is_bounded() {
+        let (q, r) = (1e-3, 25.0);
+        let theta = std::f64::consts::LN_2 / r;
+        let mk = |revert: f64| {
+            let mut c = plain(1.0, f64::INFINITY, Some(0.04));
+            c.decay = Decay::Halflife(f64::INFINITY);
+            c.q = Some(vec![q]);
+            c.revert_half_life = vec![revert];
+            let mut m = Kalman::new(c).unwrap();
+            let mut s = 7u64;
+            for i in 0..200 {
+                let x = [1.0 + 0.3 * lcg(&mut s)];
+                let y = 0.5 * x[0] + 0.2 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m
+        };
+        let var = |m: &Kalman| match m.coef_variance() {
+            Some(crate::CoefVariance::Absolute(v)) => v[0][0],
+            other => panic!("{other:?}"),
+        };
+        let added = |revert: f64, gap: f64, rows: usize| {
+            let mut m = mk(revert);
+            let before = var(&m);
+            for _ in 0..rows {
+                m.step(&[1.0], &[None], gap / rows as f64, 1.0);
+            }
+            let phi = Decay::Halflife(revert).factor(gap);
+            var(&m) - phi * phi * before
+        };
+        let short = r / 1000.0;
+        let got = added(r, short, 1) / (q * short * short);
+        assert!((got - 1.0).abs() < 1e-3, "a short gap: {got} of q D²");
+        let bound = q / (theta * theta);
+        for rows in [1_000, 10_000] {
+            let gap = rows as f64;
+            let got = added(r, gap, rows);
+            assert!(
+                (got - bound).abs() <= 1e-9 * bound,
+                "{rows} rows of null targets: {got} against the bound {bound}"
+            );
+            let walk = added(f64::INFINITY, gap, rows);
+            assert!(
+                (walk - q * gap * gap).abs() <= 1e-9 * q * gap * gap,
+                "the walk: {walk}"
+            );
+        }
     }
 
     #[test]
@@ -4402,11 +4529,19 @@ mod tests {
             }
             // The prior the row's update would start from: `Q (D + d)²` for
             // the clock since the last observation, this row's included,
-            // charged to `P` only if the row observes the target.
+            // charged to `P` only if the row observes the target; on a
+            // reverting slot `(D + d)²` is `((1 − 2^(−(D + d)/r)) / θ)²`,
+            // `θ = ln 2 / r` (task 214).
             elapsed += d;
             let mut prior = p.clone();
             for a in 0..k {
-                prior[a * k + a] += q * elapsed * elapsed;
+                let gap2 = if revert[a].is_infinite() {
+                    elapsed * elapsed
+                } else {
+                    let theta = std::f64::consts::LN_2 / revert[a];
+                    ((1.0 - Decay::Halflife(revert[a]).factor(elapsed)) / theta).powi(2)
+                };
+                prior[a * k + a] += q * gap2;
             }
             let pz: Vec<f64> = (0..k)
                 .map(|a| (0..k).map(|e| prior[a * k + e] * z[e]).sum())
