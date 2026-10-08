@@ -2400,7 +2400,11 @@ fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
         ready > want,
         "{kind}: only {ready} rows had every slot ready"
     );
-    zero_weight_rows_only_advance_the_clock(&build, targets, binary, kind);
+    // Of mixed signs, and all positive and all negative at a level of 1,000
+    // (docs/PLAN.md task 209 (a)'s one-sided streams).
+    for level in [0.0, 1e3, -1e3] {
+        zero_weight_rows_only_advance_the_clock(&build, targets, binary, kind, level);
+    }
     a_zero_weight_row_past_the_underflow_forgets(&build, targets, binary, kind);
     unusable_values_are_refused(&build, targets, binary, kind);
 }
@@ -2545,18 +2549,33 @@ fn lasso_on_a_clock<M: OnlineModel>(m: &M) -> bool {
 /// zero-weight row by up to 0.197 at `coef_half_life` 20 while this test,
 /// which compared `n_eff` and which predictions were null, passed
 /// (docs/PLAN.md task 211).
+///
+/// At a `level` other than 0 the stream is one-sided (docs/PLAN.md task 209
+/// (a)): each feature `v` reads `sign · |v| + level`, the targets follow on
+/// the same side, and so do the two probe rows; a label still reads the
+/// side of 0.5 the mixed-sign row fell on.
 fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
     build: &impl Fn() -> M,
     targets: usize,
     binary: bool,
     kind: &'static str,
+    level: f64,
 ) {
+    let side = |v: f64| {
+        if level == 0.0 {
+            v
+        } else {
+            level.signum() * v.abs() + level
+        }
+    };
     let row = |s: &mut u64, i: usize| {
-        let x: Vec<f64> = (0..K).map(|_| lcg(s) * 3.0).collect();
+        let raw: Vec<f64> = (0..K).map(|_| lcg(s) * 3.0).collect();
+        let x: Vec<f64> = raw.iter().map(|&v| side(v)).collect();
         let y: Vec<Option<f64>> = (0..targets)
             .map(|j| {
+                let label = 0.5 * (j as f64 + 1.0) + raw[0] - 0.5 * raw[1];
                 let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1];
-                Some(if binary { f64::from(lin > 0.5) } else { lin })
+                Some(if binary { f64::from(label > 0.5) } else { lin })
             })
             .collect();
         let d = match i {
@@ -2600,8 +2619,9 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
         carried = 0.0;
         assert!(
             !compare || (a.n_eff - b.n_eff).abs() <= 1e-9 * b.n_eff.abs().max(1.0),
-            "{kind}: row {i}: n_eff {} in the stream with a zero-weight row, {} in the one \
-             without it -- a zero-weight row must advance the clock and nothing else",
+            "{kind} at level {level}: row {i}: n_eff {} in the stream with a zero-weight row, \
+             {} in the one without it -- a zero-weight row must advance the clock and nothing \
+             else",
             a.n_eff,
             b.n_eff
         );
@@ -2610,8 +2630,8 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
         let finite = |p: &[f64]| p.iter().map(|v| v.is_finite()).collect::<Vec<_>>();
         assert!(
             !compare || finite(&a.pred) == finite(&b.pred),
-            "{kind}: row {i}: predictions {:?} in the stream with a zero-weight row, {:?} \
-             in the one without it",
+            "{kind} at level {level}: row {i}: predictions {:?} in the stream with a zero-weight \
+             row, {:?} in the one without it",
             a.pred,
             b.pred
         );
@@ -2629,7 +2649,10 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
         if PARTS_ON_A_SPLIT_GAP.iter().any(|(k, _)| *k == kind) {
             continue;
         }
-        let probes: [Vec<f64>; 2] = [vec![0.7; K], (0..K).map(|f| f as f64 - 0.4).collect()];
+        let probes: [Vec<f64>; 2] = [
+            vec![side(0.7); K],
+            (0..K).map(|f| side(f as f64 - 0.4)).collect(),
+        ];
         let mut theirs = Vec::new();
         if compare {
             theirs.push((String::from("pred"), a.pred.clone(), b.pred.clone()));
@@ -2653,13 +2676,13 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
             variances(&without),
         ));
         for (what, u, v) in theirs {
-            assert_eq!(u.len(), v.len(), "{kind}: row {i}: {what}");
+            assert_eq!(u.len(), v.len(), "{kind} at level {level}: row {i}: {what}");
             for (slot, (p, q)) in u.iter().zip(&v).enumerate() {
                 assert!(
                     !(p.is_finite() && q.is_finite()) || (p - q).abs() <= 1e-9 * (1.0 + q.abs()),
-                    "{kind}: row {i}: {what}, slot {slot}: {p} in the stream with zero-weight \
-                     rows, {q} in the one without them -- a zero-weight row must advance the \
-                     clock and teach nothing"
+                    "{kind} at level {level}: row {i}: {what}, slot {slot}: {p} in the stream \
+                     with zero-weight rows, {q} in the one without them -- a zero-weight row \
+                     must advance the clock and teach nothing"
                 );
             }
         }

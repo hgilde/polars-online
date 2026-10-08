@@ -17,6 +17,8 @@ import pytest
 import polars_online as po
 from test_model_registry import REGRESSIONS
 
+TIER = "essential"
+
 N = 4000
 HALF_LIFE = 200.0
 #: The rows each side of the crossing is scored over: settled, and as far

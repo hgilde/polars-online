@@ -1050,7 +1050,7 @@ fn no_weight_moves_nothing<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
 }
 
 #[test]
-#[ignore = "extended: a second or more (2.0 s); model_contract's per-model tests keep hard rule 9"]
+#[ignore = "extended: a second or more (3.4 s); model_contract's per-model tests keep hard rule 9"]
 fn a_row_of_no_weight_moves_no_mean() {
     no_weight_moves_nothing("ewridge", || EwRidge::new(ridge(true)).unwrap());
     no_weight_moves_nothing("ewridge, blocked", || {

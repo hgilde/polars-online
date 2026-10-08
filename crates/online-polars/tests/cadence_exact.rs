@@ -407,6 +407,7 @@ fn a_number_clock_of_tenths_fires_by_one_subtraction_of_its_raw_values() {
 /// fired on such a row, before the next row's data, and the fit it reported
 /// until the next solve differed from the stream without the row.
 #[test]
+#[ignore = "extended: a second or more (4.1 s); model_contract's per-model tests keep hard rule 9 on a solve schedule (solve_every 5)"]
 fn a_solve_due_on_a_row_of_weight_zero_waits_for_the_next_row_with_weight() {
     let n = 6_100;
     let (t, ns) = millisecond_rows(n, TimeUnit::Microseconds);

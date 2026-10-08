@@ -101,11 +101,17 @@ SIGNS: dict[str, dict[str, float]] = {
 #: How many streams of each sign a property draws for a model. Mixed keeps
 #: the 30 it drew before one-sided streams were added; each one-sided sign
 #: draws 10, so a property runs 50 streams a model where tripling would run
-#: 90 (task 210 keeps this file among the essentials run on every commit).
-#: Every stream draws its clocks, groups, nulls, weights and chunks alike,
-#: whatever its sign, so a one-sided stream adds one dimension, the level,
-#: and a third of mixed's draws covers it.
-EXAMPLES = {"mixed": 30, "positive": 10, "negative": 10}
+#: 90. Every stream draws its clocks, groups, nulls, weights and chunks
+#: alike, whatever its sign, so a one-sided stream adds one dimension, the
+#: level, and a third of mixed's draws covers it. In the essentials (task
+#: 210, which keeps this file among the tests run on every commit) mixed
+#: draws the tier's 10 and each one-sided sign 4, a third of that rounded
+#: up: 18 streams a property and model where the full tier runs 50.
+EXAMPLES = {
+    "mixed": examples(30),
+    "positive": examples(10, essential=4),
+    "negative": examples(10, essential=4),
+}
 
 #: The chunk sizes a property cuts a stream into.
 CHUNKS = st.integers(min_value=1, max_value=13)
