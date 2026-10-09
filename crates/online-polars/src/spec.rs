@@ -2944,8 +2944,10 @@ pub struct Spec {
     /// predictive studentized residual `resid / (sigma · error_inflation)`
     /// -- 1 in place of the inflation on a model without one -- the
     /// standardized CUSUM and CUSUM of squares of those before it at
-    /// `breaks_half_life`, run once the paths of Brown, Durbin and Evans
-    /// (1975) and with a memory moving sums, and the Wald distance between
+    /// `breaks_half_life` (each over its null: the CUSUM of squares by the
+    /// measured `E[z⁴] − 1`, a windowed one by its null's share; task 232
+    /// (4)), run once the CUSUM the path of Brown, Durbin and Evans (1975)
+    /// and with a memory moving sums, and the Wald distance between
     /// two least-squares fits of the target, one at that memory and one at
     /// four times it, null run once.
     #[serde(default)]

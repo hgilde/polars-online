@@ -59,19 +59,21 @@ print("r2_y at rows 2,999, 3,100, 3,300 and 5,999: " + ", ".join(f"{v:.2f}" for 
 ```text
 flag                      rows 1,000-2,999  rows 3,000-5,999  first row after
 calibration_wald > 5.99               0.0%              0.0%                -
-|cusum| > 3                           0.0%              0.0%                -
-|cusum_sq| > 3                        0.0%              0.0%                -
+|cusum| > 3                           0.0%              1.8%             3052
+|cusum_sq| > 3                        0.8%              2.8%             3051
 break_wald > 21.1                     0.0%             77.0%             3051
 r2_y at rows 2,999, 3,100, 3,300 and 5,999: 0.51, 0.43, 0.44, 0.55
 ```
 
-Only `break_wald` sees the flip, 51 rows after it, and it stays past its
+`break_wald` sees the flip 51 rows after it, and it stays past its
 threshold on 77% of the rows after. It is the Wald distance between two
 fits of the same regression, one at the diagnostic's memory and one at four
 times it, and it grows when a coefficient moves. The two CUSUMs watch the
-residuals' mean and spread. A slope that flips on a feature centred at zero
-leaves the residuals' mean at zero, so the CUSUM cannot see it, and the
-spread grows too little here for the CUSUM of squares. The calibration
+residuals' mean and spread, and pass 3 on 1.8% and 2.8% of the rows after
+the flip, near the 0.3% to 0.8% they pass on a stream with no break. A
+slope that flips on a feature centred at zero leaves the residuals' mean at
+zero, so the CUSUM barely sees it, and the spread grows too little here for
+the CUSUM of squares. The calibration
 stays quiet because the fit forgets: within a few half-lives it has learned
 the new slope, and its predictions are scaled right again. The running R²
 falls from 0.51 before the flip to 0.43 a hundred rows after, and is back
@@ -473,15 +475,16 @@ widens their spread only until the fit catches up.
 | field | what it is | sees | with no break |
 |---|---|---|---|
 | `studentized_<t>` | the row's recursive residual over the spread of those before it, `z = (resid / error_inflation) / s`, read once that spread has 10 rows of Kish size | each row's surprise | about `N(0, 1)` |
-| `cusum_<t>` | the weighted sum of the studentized residuals before the row, standardized: `Σωz / sqrt(Σω²)` | a mean in the residuals: an intercept shift | `N(0, 1)` |
-| `cusum_sq_<t>` | their weighted mean square less 1, standardized: `(Σωz² / Σω − 1) · Σω / sqrt(2 Σω²)` | a change in the residuals' spread | `N(0, 1)` for Gaussian residuals |
+| `cusum_<t>` | the weighted sum of the studentized residuals before the row, standardized: `Σωz / sqrt(r Σω²)` | a mean in the residuals: an intercept shift | `N(0, 1)` |
+| `cusum_sq_<t>` | the weighted sum of `z² − 1`, standardized by its measured spread: `Σω(z² − 1) / sqrt(r₂ (m₄ − 1) Σω²)`, `m₄` the mean of `z⁴` at four times the memory | a change in the residuals' spread | `N(0, 1)`, whatever the tails |
 | `break_wald_<t>` | the Wald distance between two least-squares fits of the target on the slot's features, one at the memory and one at four times it; null run once | a coefficient that moved, the slope's or the intercept's | `chi2(k)`, with `k` the coefficients |
 | `drift_<t>` | true on the row a Page-Hinkley detector (Page 1954; Hinkley 1971) on `\|resid\| / sigma` climbs `drift_threshold` above its lowest point | a rise in the residuals' level, beyond `drift_delta` sigmas | false |
 
 `ω` is each row's weight times its decay at `breaks_half_life`, the
-model's half-life by default.
+fit's memory by default. `r` and `r₂` are 1 run once and the windowed
+nulls' shares below.
 
-**Run once, the CUSUMs are Brown, Durbin and Evans' tests.** With unit
+**Run once, the CUSUM is Brown, Durbin and Evans' test.** With unit
 weights `Σω²` is the row count `r`, so `cusum · sqrt(r)` is their CUSUM
 path, read against the 5% boundary `±0.948 (sqrt(T) + 2r / sqrt(T))` over
 a run of `T` rows. `T` is the length of the run being tested, so a monitor
@@ -489,17 +492,50 @@ fixes it in advance as the horizon it will watch. On 200 streams of 3,000
 rows with an intercept break of half a noise sd at row 1,500, the CUSUM
 crossed on every one, 244 rows after the break on the median. It crossed
 on 3.5% of the streams with no break, where statsmodels' own crossed on
-5.0%, and found the breaks 277 rows after. The CUSUM of squares crossed on
-5.0% of streams with no break and on every stream whose noise doubled.
+5.0%, and found the breaks 277 rows after.
+
+**The CUSUM of squares is not Brown, Durbin and Evans' CUSUM of squares.**
+Theirs, `s_r`, is the share of a whole run's squares that fell in its
+first `r` rows, read against a boundary. This one is the sum of `z² − 1`
+over its own standard deviation, which reads the spread the residuals have
+drifted to from the one their studentizing scale held. It divides by the
+measured `E[z⁴] − 1`, the variance of `z²`, where it divided by 2, a
+Gaussian's: on Student's t noise with 3 to 5 degrees of freedom it passed
+1.96 on 11% to 33% of rows windowed and on 28% to 53% of 40 streams' last
+rows run once, and now on 4.7% to 5.5% and 2.5% to 7.5% (Gaussian: 6.3%
+and 2.5%). Run once its mean sits a little above 0, +0.1 to +0.4 at the
+last of 6,000 rows, since the first rows' `z` are read against a young
+scale and spread wider than 1. The fourth moment is read at four times the
+memory, so that a change of spread does not hide itself in it at once.
 
 **With a memory, the CUSUM is a moving sum**, as Chu, Hornik and Kuan's
 (1995) MOSUM is, with an exponential window in place of a rectangular one.
-Beside a fit at a half-life of 200, `|cusum| > 3` found every intercept
-break within 100 rows, and `|cusum_sq| > 3` every variance break within 20.
-`break_wald > 21.1`, `chi2(3)`'s 0.01% value, found every slope break, 94
-rows after it on the median. On 40 streams of 25,000 rows with no
-break, at the same half-life, `|cusum| > 3` held on 0.001% of rows,
-`|cusum_sq| > 3` on 0.01% and `break_wald > 21.1` on 0.003%.
+
+**A windowed CUSUM is over its own null, since the fit absorbs part of
+every level it sums.** A fit that forgets is an EW mean of the shocks
+before each row, so its residual is the shock less that mean, and a sum of
+those residuals at a memory `h` cancels much of itself. In continuous time
+the sum's variance is `r = h_fit / (h_fit + h)` of the plain sum's, whatever
+the rows' rate: one half at equal memories, a standard deviation of 0.71.
+The CUSUM of squares is studentized by a scale at its own memory, which
+absorbs the squares' level the same way, so its share is one half. Each
+is divided by its share. On 30 clean streams beside `ewridge` and `rls`,
+`lasso` and `kalman` at a half-life of 200, the CUSUM's spread was 0.48 to
+0.94 at memories of 800 to 50 and is now 1.04 to 1.08, and the CUSUM of
+squares' 0.72 to 0.79 and is now 1.01 to 1.10. `huber`, `quantile` and the
+gradient fits absorb at a pace of their own, so they keep the plain sum,
+whose spread there read 0.57 to 0.95 (`huber`), 0.78 to 0.97
+(`quantile`) and 0.30 to 0.79 (`sgd`, `pa`, `ftrl`), and `holt` 1.63.
+
+On 200 streams of 3,000 rows with a break at row 1,500, beside a fit at a
+half-life of 200, `|cusum| > 3` found every intercept break, 62 rows after
+it on the median, and `|cusum_sq| > 3` every variance break within 17 rows
+on the median. `break_wald > 21.1`, `chi2(3)`'s 0.01% value, found every
+slope break, 100 rows after it on the median. On 40 streams of 25,000 rows
+with no break, at the same half-life, `|cusum| > 3` held on 0.24% of rows
+and `|cusum_sq| > 3` on 0.22%, near a normal's 0.27%, and `break_wald >
+21.1` on 0.026%. Before each was divided by its null, they held on 0.002%
+and 0.011%, and found the breaks 96 and 20 rows after them.
 
 **The CUSUM cannot see a slope that moves on a feature centred at zero.**
 The residuals of the old fit on the new relationship are `(b_new − b_old)
@@ -640,21 +676,28 @@ print(f"flags on rows 1,000-2,999, before any break: {flagged_before}")
 
 ```text
 break            |cusum| > 3     |cusum_sq| > 3  break_wald > 21.1              drift
-mean                    3106                  -               3137                  -
-variance                   -               3025                  -                  -
-slope                      -               3115               3072                  -
-flags on rows 1,000-2,999, before any break: 0
+mean                    3063                  -               3137                  -
+variance                   -               3024                  -                  -
+slope                      -               3087               3072                  -
+flags on rows 1,000-2,999, before any break: 18
 ```
 
-Each cell is the first row the flag fired after the break. No flag fired
-before row 3,000, and `drift` fired on none of the breaks. Read together,
-the other three flags tell the breaks apart:
+Each cell is the first row the flag fired after the break. Before row
+3,000 the flags fired on 18 of the 18,000 flag-rows of the three streams,
+0.1%, as on any stream with no break, and `drift` fired on none of the
+breaks. Read together, the other three flags tell the breaks apart:
 
 | break | `cusum` | `cusum_sq` | `break_wald` |
 |---|---|---|---|
-| the intercept shifted | fires | quiet | fires, since the intercept is a coefficient |
-| the noise grew | quiet | fires first, within 25 rows | quiet |
-| a slope moved | quiet | fires, while the fit catches up | fires |
+| the intercept shifted | fires | quiet, or late | fires, since the intercept is a coefficient |
+| the noise grew | quiet, or late | fires first, within 25 rows | quiet |
+| a slope moved | quiet, or late | fires, while the fit catches up | fires |
+
+Over 200 streams each of those breaks, "late" means this: after a doubling
+of the noise `|cusum| > 3` fired on half the streams, 120 rows in on the
+median, where `|cusum_sq| > 3` fired on every one within 17; after a slope
+moved, the two CUSUMs fired on a third of the streams, 146 and 501 rows in,
+where `break_wald` fired on every one within 100.
 
 **What to do.** When `cusum` fires alone or with `break_wald`, the level
 moved: restart the fit from the crossing, or let a fit that forgets catch
@@ -718,19 +761,19 @@ forms on the shares after the arrows:
 
 | at a half-life of 200 | `breusch_pagan` | `reset` | `calibration_wald` | `cusum` | `cusum_sq` | `break_wald` |
 |---|---:|---:|---:|---:|---:|---:|
-| AR 0.5 | 20.6% → 4.0% | 10.1% → 3.1% | 7.9% → 0.0% | 23.6% → 0.8% | 12.7% → 0.6% | 47.6% → 2.5% |
-| AR 0.8 | 28.0% → 4.3% | 22.4% → 3.9% | 11.7% → 0.1% | 23.1% → 0.7% | 14.0% → 1.2% | 56.4% → 4.4% |
-| AR 0.95 | 37.9% → 4.7% | 39.2% → 5.2% | 18.6% → 0.0% | 24.9% → 0.8% | 14.7% → 0.9% | 62.5% → 4.7% |
+| AR 0.5 | 20.6% → 4.0% | 10.1% → 3.1% | 7.9% → 0.0% | 23.6% → 7.6% | 12.7% → 6.2% | 47.6% → 2.5% |
+| AR 0.8 | 28.0% → 4.3% | 22.4% → 3.9% | 11.7% → 0.1% | 23.1% → 7.4% | 14.0% → 8.2% | 56.4% → 4.4% |
+| AR 0.95 | 37.9% → 4.7% | 39.2% → 5.2% | 18.6% → 0.0% | 24.9% → 8.1% | 14.7% → 7.1% | 62.5% → 4.7% |
 
 Run once, the plain forms passed on 5% to 68%, and the horizon's on 2.1%
 to 13.2%: Newey and West's estimate errs small on a few thousand rows of a
 persistent feature, and a run-once statistic keeps every row of it. At a
-ten-row horizon the windowed forms passed on 0.0% to 6.0%. `break_wald`'s
+ten-row horizon the windowed forms passed on 0.0% to 8.4%. `break_wald`'s
 factor is exact for a persistent feature and generous for one that is not,
 whose slopes' variance the overlap barely moves: against independent
-features it passed on 1.1% to 2.1%. The windowed CUSUMs read low here
-because the fit absorbs part of every level it sees ([Has it
-broken?](#has-it-broken)), and the windowed calibration because the fit
+features it passed on 1.1% to 2.1%. The CUSUMs read 6% to 9%: Bartlett's
+weights over `2h` lags take in a little less than the overlap's whole
+long-run variance. The windowed calibration reads low because the fit
 absorbs part of a miscalibration ([Is it scaled
 right?](#is-it-scaled-right)), with or without a horizon.
 
@@ -991,15 +1034,16 @@ streams of 25,000 rows at a half-life of 200, read as the mean of
 | Student's t, 4 degrees of freedom | 8.6 | 0.4 | 0 | 0 | 0 |
 | Student's t, 3 degrees of freedom | 36 | 6.3 | 2.1 | 0.4 | 0 |
 
-**The CUSUM of squares assumes Gaussian residuals, and it fires often on
-heavy tails.** It standardizes a squared studentized residual by 2, its
-variance under a Gaussian. Under an excess kurtosis `κ` that variance is
-`2 + κ`. On 40 streams of 25,000 rows at a half-life of 200, `|cusum_sq| > 3`
-held on 0.01% of Gaussian rows, 2.8% of rows of t with 5 degrees of
-freedom, 6.8% with 4 and 19% with 3. Widening its threshold to `3 · sqrt(1 +
-κ / 2)` brought those to 0.5%, 1.1% and 2.8%, still far above the Gaussian
-rate. `|cusum| > 3` and `break_wald > 21.1` held on 0.14% of rows or
-fewer, even with 3 degrees of freedom.
+**The CUSUM of squares reads the tails it is given.** It standardizes
+the sum of `z² − 1` by the measured variance of `z²`, `E[z⁴] − 1`, where
+it once took a Gaussian's 2: under an excess kurtosis `κ` that variance is
+`2 + κ`. On 40 streams of 25,000 rows at a half-life of 200,
+`|cusum_sq| > 3` held on 0.31% of Gaussian rows, 0.49% of rows of t with 5
+degrees of freedom, 0.63% with 4 and 1.0% with 3, where over 2 it held on
+0.01%, 2.8%, 6.8% and 19%. `|cusum| > 3` held on 0.31% to 0.75%, and
+`break_wald > 21.1` on 0.11% or fewer, even with 3 degrees of freedom. The
+price is power: under heavy tails a squared residual varies so much that a
+change of spread takes longer to stand out from it.
 
 **A windowed kurtosis is itself noisy under heavy tails.** The kurtosis of
 Student's t with 3 degrees of freedom is infinite, so a windowed estimate
@@ -1007,9 +1051,9 @@ never settles. Over the rows of those 40 streams its median was 13 and its
 mean 32. Read the mean over a long stable stretch, as the measurements in
 the table did.
 
-The recipe measures the tails over a stretch known to be stable, sets
-`drift_threshold` from them, and counts each detector's flags over 200,000
-stable rows and after a break that triples the noise:
+The recipe measures the tails and `sigma` over a stretch known to be
+stable, sets `drift_threshold` from them, and counts each detector's flags
+over 200,000 stable rows and after a break that triples the noise:
 
 ```python
 import numpy as np
@@ -1027,16 +1071,17 @@ pl.DataFrame({"x0": x0, "x1": x1, "y": 1.0 * x0 + 0.5 * x1 + noise}).write_parqu
 lf = pl.scan_parquet("tails.parquet").with_row_index("row")
 
 # 1. Read the tails over a stretch known to be stable: the mean of kurtosis over rows 1,000-20,000.
-stable = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=200.0, emit_tails=True)
+stable = po.spec.ewridge(
+    "m", targets=["y"], features=["x0", "x1"], half_life=200.0, emit_tails=True, emit_sigma=True,
+)
 tails = lf.head(20_000).online.fit_predict([stable]).online.unnest([stable]).collect()
 kurtosis = tails.filter(pl.col("row") >= 1_000)["kurtosis_y"].mean()
 print(f"excess kurtosis of the residuals: {kurtosis:.1f}")
 
-# 2. The thresholds that kurtosis calls for: drift's from the table above, and the CUSUM of squares'
-#    3 widened by the spread a squared residual has under that kurtosis.
+# 2. The threshold that kurtosis calls for, from the table above, and sigma's level over the stretch.
 threshold = 20.0 if kurtosis < 4 else 30.0 if kurtosis < 10 else 50.0 if kurtosis < 30 else 80.0
-widened = 3.0 * (1.0 + kurtosis / 2.0) ** 0.5
-print(f"drift_threshold {threshold:.0f}; |cusum_sq| past {widened:.1f}")
+level = tails.filter(pl.col("row") >= 1_000)["sigma_y"].median()
+print(f"drift_threshold {threshold:.0f}; sigma over the stretch {level:.2f}")
 
 
 # 3. Count each detector's flags over the 200,000 stable rows, and find the break.
@@ -1049,21 +1094,21 @@ def report(name, out, flag):
 for value in [20.0, threshold]:
     spec = po.spec.ewridge(
         "m", targets=["y"], features=["x0", "x1"], half_life=200.0,
-        emit_drift=True, drift_threshold=value, emit_breaks=True,
+        emit_drift=True, drift_threshold=value, emit_breaks=True, emit_sigma=True,
     )
     out = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
     report(f"drift at {value:.0f}", out, pl.col("drift_y"))
 report("|cusum_sq| > 3", out, pl.col("cusum_sq_y").abs() > 3)
-report(f"|cusum_sq| > {widened:.1f}", out, pl.col("cusum_sq_y").abs() > widened)
+report("sigma past 2x", out, pl.col("sigma_y") > 2.0 * level)
 ```
 
 ```text
 excess kurtosis of the residuals: 16.6
-drift_threshold 50; |cusum_sq| past 9.1
+drift_threshold 50; sigma over the stretch 1.63
 drift at 20            11 flags before the break, first after it 15011 rows in
 drift at 50             1 flags before the break, first after it never
-|cusum_sq| > 3      33422 flags before the break, first after it 18 rows in
-|cusum_sq| > 9.1     6748 flags before the break, first after it 80 rows in
+|cusum_sq| > 3       2044 flags before the break, first after it 4717 rows in
+sigma past 2x        1270 flags before the break, first after it 126 rows in
 ```
 
 The stretch reads an excess kurtosis of 16.6, which calls for a
@@ -1071,15 +1116,19 @@ The stretch reads an excess kurtosis of 16.6, which calls for a
 200,000 stable rows, and at 50 it flagged one. Neither found the break: when
 the noise triples, `sigma` triples with it, and `drift` scores each
 residual against `sigma`. Its first flag after the break at 20 is a false alarm,
-15,011 rows in. The CUSUM of squares found the break 18 rows in, but it
-also flagged 33,422 of the stable rows, 17% of them. Widened to 9.1 it
-flagged 6,748, still 3.4%, and found the break 80 rows in.
+15,011 rows in. The CUSUM of squares flagged 2,044 of the stable rows,
+1.0% of them, and found the break only 4,717 rows in: with an infinite
+fourth moment, the squares' own spread swamps a tripling for a long time.
+Over 2, a Gaussian's variance of `z²`, it had flagged 17% of the stable
+rows and found the break 18 rows in. `sigma` itself, past twice its level
+over the stretch, flagged 0.6% of the stable rows and found the break 126
+rows in.
 
 **What to do.** Measure `kurtosis` over a stable stretch before trusting
 any threshold on the residuals. Set `drift_threshold` from it by the table.
 On residuals with an excess kurtosis past 4, read a change of spread from
-a run of `cusum_sq` above its threshold for many rows, or from `sigma`
-itself, and not from a single crossing. A robust model, `huber` or
+`sigma` against its level over a stable stretch as well as from
+`cusum_sq`, which holds its false-alarm rate there and is slow to fire. A robust model, `huber` or
 `quantile`, limits how far one large residual moves the fit.
 
 ## Which row moved it?

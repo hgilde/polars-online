@@ -123,7 +123,7 @@ pub use audit::{
     MAX_DISTINCT_CAP, NULL, PairReport as AuditPair, is_null,
 };
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
-pub use breaks::{Breaks, TwinFit};
+pub use breaks::{Breaks, TwinFit, cusum_null};
 pub use calibration::Calibration;
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,

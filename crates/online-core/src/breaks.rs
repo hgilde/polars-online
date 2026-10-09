@@ -30,19 +30,33 @@
 //!
 //! ```text
 //! S1 = Σ ω    S2 = Σ ω²    Z1 = Σ ω z    Z2 = Σ ω z²
-//! cusum    = Z1 / sqrt(S2)
-//! cusum_sq = (Z2 / S1 − 1) · S1 / sqrt(2 S2)
+//! m4 = Σ ω_s z⁴ / Σ ω_s        (at four times the memory)
+//! cusum    = Z1 / sqrt(r · S2)
+//! cusum_sq = (Z2 − S1) / sqrt(r₂ · (m4 − 1) · S2)
 //! ```
 //!
-//! Under a constant relationship and Gaussian errors both are about `N(0, 1)`
-//! on every row: `Z1` is a weighted sum of near-independent `N(0, 1)` with
-//! variance `S2`, and `Z2 / S1` a weighted mean of `χ²(1)` with variance
-//! `2 S2 / S1²`. Run once (no decay, unit weights) `S2` is the row count
-//! `r`, so `cusum · sqrt(r)` is the CUSUM path `W_r` of Brown, Durbin and
-//! Evans, read against their boundary `±a (sqrt(T) + 2 r / sqrt(T))` over a
-//! run of `T` rows (`a` = 0.948 at 5%), and `Z2` the numerator of their
-//! CUSUM of squares. With a memory, `cusum` is a moving sum (Chu, Hornik and
-//! Kuan 1995) with an exponential window in place of a rectangular one.
+//! Under a constant relationship both are about `N(0, 1)` on every row:
+//! `Z1` is a weighted sum of near-independent `N(0, 1)` with variance `S2`,
+//! and `Z2 − S1` a weighted sum of `z² − 1`, whose variance is `E[z⁴] − 1`
+//! -- 2 for Gaussian errors, `2 + κ` under an excess kurtosis `κ` -- so the
+//! measured fourth moment stands where a Gaussian's 2 stood (task 232 (4);
+//! task 222's F2: over 2, Student's t with 3 to 5 degrees of freedom passed
+//! 1.96 on 11-33% of rows at a memory of 200 and 28-53% of streams' last
+//! rows run once; over `m4 − 1`, on 4.7-5.5% and 2.5-7.5%). It is read at
+//! four times the memory so that a change of spread does not hide itself in
+//! it at once. `r` and `r₂` are the windowed nulls' shares of the plain
+//! variance ([`cusum_null`]), 1 run once. Run once (no decay, unit weights)
+//! `S2` is the row count `r`, so `cusum · sqrt(r)` is the CUSUM path `W_r`
+//! of Brown, Durbin and Evans, read against their boundary `±a (sqrt(T) + 2
+//! r / sqrt(T))` over a run of `T` rows (`a` = 0.948 at 5%). `cusum_sq` is
+//! not their CUSUM of squares (review round 6, A-7), the share `s_r` of a
+//! whole run's squares in its first `r` rows: it is the sum of `z² − 1`
+//! over its own standard deviation, the spread the residuals have drifted
+//! to from the one their studentizing scale held. Its run-once mean sits a
+//! little above 0 (+0.1 to +0.4 at the last of 6,000 rows): the first rows'
+//! `z` are read against a young scale and spread wider than 1. With a
+//! memory, `cusum` is a moving sum (Chu, Hornik and Kuan 1995) with an
+//! exponential window in place of a rectangular one.
 //!
 //! **Under a horizon** (task 232 (3); review round 6, A-4) a target that
 //! looks ahead `h` rows leaves residuals that share their shocks over `h − 1`
@@ -53,8 +67,8 @@
 //!
 //! ```text
 //! P1_l = Σ ω_t ω_{t−l} z_t z_{t−l}             P2_l = the same of z² − 1
-//! cusum    = Z1 / sqrt(S2 + 2 Σ_l (1 − l/(L+1)) P1_l)
-//! cusum_sq = (Z2 − S1) / sqrt(2 S2 + 2 Σ_l (1 − l/(L+1)) P2_l)
+//! cusum    = Z1 / sqrt(r (S2 + 2 Σ_l (1 − l/(L+1)) P1_l))
+//! cusum_sq = (Z2 − S1) / sqrt(r₂ ((m4 − 1) S2 + 2 Σ_l (1 − l/(L+1)) P2_l))
 //! ```
 //!
 //! and the same long-run factor `1 + 2 Σ_l (1 − l/(L+1)) P1_l / S2` scales
@@ -80,6 +94,13 @@ pub struct Breaks {
     s2: f64,
     z1: f64,
     z2: f64,
+    /// `Σ ω_s z⁴` and `Σ ω_s` at four times the memory (the slow factor,
+    /// [`slow_factor`]): the fourth moment `cusum_sq`'s null reads (task 232
+    /// (4)), slow so that a change of spread does not hide itself in it.
+    #[serde(default)]
+    z4: f64,
+    #[serde(default)]
+    w4: f64,
     /// The recursive residuals' `Σ ω`, `Σ ω²` and `Σ ω v²`.
     v1: f64,
     v2: f64,
@@ -137,13 +158,15 @@ impl Breaks {
                 .chain(&self.ring2)
                 .all(|v| v.is_finite())
             && [
-                self.s1, self.s2, self.z1, self.z2, self.v1, self.v2, self.vq,
+                self.s1, self.s2, self.z1, self.z2, self.z4, self.w4, self.v1, self.v2, self.vq,
             ]
             .iter()
             .all(|v| v.is_finite())
-            && [self.s1, self.s2, self.z2, self.v1, self.v2, self.vq]
-                .iter()
-                .all(|v| *v >= 0.0)
+            && [
+                self.s1, self.s2, self.z2, self.z4, self.w4, self.v1, self.v2, self.vq,
+            ]
+            .iter()
+            .all(|v| *v >= 0.0)
     }
 
     /// The clock moves on by a step whose decay is `lam`, with nothing
@@ -153,6 +176,9 @@ impl Breaks {
         self.s2 *= lam * lam;
         self.z1 *= lam;
         self.z2 *= lam;
+        let slow = slow_factor(lam);
+        self.z4 *= slow;
+        self.w4 *= slow;
         self.v1 *= lam;
         self.v2 *= lam * lam;
         self.vq *= lam;
@@ -200,6 +226,8 @@ impl Breaks {
             self.s2 += w * w;
             self.z1 += w * z;
             self.z2 += w * z * z;
+            self.z4 += w * z * z * z * z;
+            self.w4 += w;
             if self.lags > 0 {
                 let (u1, u2) = (w * z, w * (z * z - 1.0));
                 for (l, (b1, b2)) in self.ring1.iter().zip(&self.ring2).enumerate() {
@@ -238,22 +266,60 @@ impl Breaks {
         (f > 0.0).then_some(f)
     }
 
-    /// `Z1 / sqrt(S2)`, over the long-run variance under a horizon: `None`
-    /// before the first studentized residual.
-    pub fn cusum(&self) -> Option<f64> {
+    /// `Z1 / sqrt(r · S2)`, over the long-run variance under a horizon,
+    /// `r` the windowed null's share of the plain variance
+    /// ([`cusum_null`]; 1 run once): `None` before the first studentized
+    /// residual.
+    pub fn cusum(&self, r: f64) -> Option<f64> {
         let f = self.long_run()?;
-        Some(self.z1 / (self.s2 * f).sqrt())
+        (r > 0.0).then(|| self.z1 / (r * self.s2 * f).sqrt())
     }
 
-    /// `(Z2/S1 − 1) · S1 / sqrt(2 S2)`, over the long-run variance under a
-    /// horizon: `None` before the first studentized residual.
-    pub fn cusum_sq(&self) -> Option<f64> {
-        if self.s1 <= 0.0 || self.s2 <= 0.0 {
+    /// `(Z2 − S1) / sqrt(r · (m4 − 1) · S2)`, `m4` the studentized
+    /// residuals' measured fourth moment at four times the memory, over the
+    /// long-run variance under
+    /// a horizon, `r` the windowed null's share (1/2 under a memory, where
+    /// the scale shares the sums' memory; 1 run once): `None` before the
+    /// first studentized residual, and while `m4` is at most 1.
+    pub fn cusum_sq(&self, r: f64) -> Option<f64> {
+        if self.s1 <= 0.0 || self.s2 <= 0.0 || r <= 0.0 {
             return None;
         }
-        let var = 2.0 * self.s2 + 2.0 * self.bartlett(&self.p2);
-        (var > 0.0).then(|| (self.z2 - self.s1) / var.sqrt())
+        if self.w4 <= 0.0 {
+            return None;
+        }
+        let excess = self.z4 / self.w4 - 1.0;
+        let var = r * (excess * self.s2 + 2.0 * self.bartlett(&self.p2));
+        (excess > 0.0 && var > 0.0).then(|| (self.z2 - self.s1) / var.sqrt())
     }
+}
+
+/// The share of a windowed CUSUM's plain variance its null has (task 232
+/// (4); review round 6, A-5, G-3), from the half-lives of the fit whose
+/// residuals it sums, `h_m`, and of its own sums, `h_c`, in the same clock
+/// units:
+///
+/// ```text
+/// r = h_m / (h_m + h_c)
+/// ```
+///
+/// A fit that forgets absorbs a level at its own pace: its out-of-sample
+/// residual is the shock less the EW mean of the shocks before it, `e_t =
+/// ε_t − κ_m ∫ e^{−κ_m s} ε_{t−s} ds` in continuous time (`κ = ln 2 / h`).
+/// Summed at the rate `κ_c`, shock `ε_{t−x}` enters with the weight `(κ_m
+/// e^{−κ_m x} − κ_c e^{−κ_c x}) / (κ_m − κ_c)`, whose square integrates to
+/// `1 / (2 (κ_m + κ_c))` against the plain sum's `1 / (2 κ_c)`: the ratio is
+/// `κ_c / (κ_m + κ_c)`, whatever the rate of the rows. At equal memories it
+/// is 1/2, a standard deviation of 0.71, as measured; a fit that forgets
+/// nothing (`h_m = inf`) and the run-once sums (`h_c = inf`) read 1. The
+/// CUSUM of squares is studentized by a scale at its own memory, which
+/// absorbs the squares' level the same way, so its share is 1/2 under a
+/// memory.
+pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
+    if !own_half_life.is_finite() || !fit_half_life.is_finite() {
+        return 1.0;
+    }
+    fit_half_life / (fit_half_life + own_half_life)
 }
 
 /// The fast and slow fits of one target, and the weights' cross sum:
@@ -447,6 +513,8 @@ mod tests {
         let mut s = 5u64;
         // (v, z or NaN, weight now)
         let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+        // Each row's weight at the slow memory, aligned with `rows`.
+        let mut slow_w: Vec<f64> = Vec::new();
         let lam = 0.98;
         for i in 0..300 {
             let v = 3.0 * lcg(&mut s);
@@ -467,6 +535,13 @@ mod tests {
             b.update(v, lam, w);
             rows.iter_mut().for_each(|r| r.2 *= lam);
             rows.push((v, z, w));
+            slow_w.iter_mut().for_each(|r| *r *= slow_factor(lam));
+            slow_w.push(w);
+            let (z4, w4) = rows
+                .iter()
+                .zip(&slow_w)
+                .filter(|(r, _)| r.1.is_finite() && r.2 > 0.0)
+                .fold((0.0, 0.0), |a, (r, ws)| (a.0 + ws * r.1.powi(4), a.1 + ws));
             let scored: Vec<&(f64, f64, f64)> = rows
                 .iter()
                 .filter(|r| r.1.is_finite() && r.2 > 0.0)
@@ -476,13 +551,26 @@ mod tests {
             let z1: f64 = scored.iter().map(|r| r.2 * r.1).sum();
             let z2: f64 = scored.iter().map(|r| r.2 * r.1 * r.1).sum();
             if s2 == 0.0 {
-                assert!(b.cusum().is_none() && b.cusum_sq().is_none(), "row {i}");
+                assert!(
+                    b.cusum(1.0).is_none() && b.cusum_sq(1.0).is_none(),
+                    "row {i}"
+                );
                 continue;
             }
             let tol = 1e-10;
-            assert!((b.cusum().unwrap() - z1 / s2.sqrt()).abs() < tol, "row {i}");
-            let want = (z2 / s1 - 1.0) * s1 / (2.0 * s2).sqrt();
-            assert!((b.cusum_sq().unwrap() - want).abs() < tol, "row {i}");
+            assert!(
+                (b.cusum(1.0).unwrap() - z1 / s2.sqrt()).abs() < tol,
+                "row {i}"
+            );
+            // A windowed null's share scales the variance.
+            let got = b.cusum(0.5).unwrap();
+            assert!((got - z1 / (0.5 * s2).sqrt()).abs() < tol, "row {i}");
+            // The measured fourth moment in place of a Gaussian's 3.
+            let m4 = z4 / w4;
+            let want = (z2 - s1) / ((m4 - 1.0) * s2).sqrt();
+            assert!((b.cusum_sq(1.0).unwrap() - want).abs() < tol, "row {i}");
+            let got = b.cusum_sq(0.5).unwrap();
+            assert!((got - want * 2f64.sqrt()).abs() < tol, "row {i}");
         }
         assert!(b.has_shape(0));
     }
@@ -500,6 +588,8 @@ mod tests {
         let lam = 0.97;
         // (z, weight now) of the scored rows, newest last, per run.
         let mut runs: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
+        // The same rows at the slow memory's weights.
+        let mut slow: Vec<(f64, f64)> = Vec::new();
         let mut prev = 0.0;
         for i in 0..400 {
             let v = 0.7 * prev + lcg(&mut s);
@@ -512,8 +602,10 @@ mod tests {
             let z = b.studentized(v);
             b.update(v, lam, w);
             runs.iter_mut().flatten().for_each(|r| r.1 *= lam);
+            slow.iter_mut().for_each(|r| r.1 *= slow_factor(lam));
             if let (Some(z), true) = (z, w > 0.0) {
                 runs.last_mut().unwrap().push((z, w));
+                slow.push((z, w));
             }
             if i < 40 || i % 29 != 0 {
                 continue;
@@ -523,6 +615,8 @@ mod tests {
             let s2: f64 = all.iter().map(|r| r.1 * r.1).sum();
             let z1: f64 = all.iter().map(|r| r.1 * r.0).sum();
             let z2: f64 = all.iter().map(|r| r.1 * r.0 * r.0).sum();
+            let z4: f64 = slow.iter().map(|r| r.1 * r.0.powi(4)).sum();
+            let w4: f64 = slow.iter().map(|r| r.1).sum();
             let (mut p1, mut p2) = (0.0, 0.0);
             for run in &runs {
                 for l in 1..=lags {
@@ -536,9 +630,9 @@ mod tests {
             }
             let tol = 1e-9;
             let want = z1 / (s2 + 2.0 * p1).sqrt();
-            assert!((b.cusum().unwrap() - want).abs() < tol, "row {i}");
-            let want = (z2 - s1) / (2.0 * s2 + 2.0 * p2).sqrt();
-            assert!((b.cusum_sq().unwrap() - want).abs() < tol, "row {i}");
+            assert!((b.cusum(1.0).unwrap() - want).abs() < tol, "row {i}");
+            let want = (z2 - s1) / ((z4 / w4 - 1.0) * s2 + 2.0 * p2).sqrt();
+            assert!((b.cusum_sq(1.0).unwrap() - want).abs() < tol, "row {i}");
             let want = 1.0 + 2.0 * p1 / s2;
             assert!((b.long_run().unwrap() - want).abs() < tol, "row {i}");
         }
@@ -547,6 +641,37 @@ mod tests {
             "the lag carries a long-run variance"
         );
         assert!(b.has_shape(lags) && !b.has_shape(0));
+    }
+
+    /// A windowed CUSUM's null share by its definition: the residuals of an
+    /// EW mean at the fit's half-life, summed at the CUSUM's, on a grid
+    /// fine enough to be the continuous form, against the plain sum's
+    /// weights -- `h_m / (h_m + h_c)`; 1/2 at equal memories, 1 where either
+    /// forgets nothing.
+    #[test]
+    fn a_windowed_cusums_null_share_is_its_absorption() {
+        let dt = 0.01;
+        for (hm, hc) in [(200.0, 200.0), (200.0, 800.0), (200.0, 50.0), (37.0, 91.0)] {
+            let (km, kc) = (std::f64::consts::LN_2 / hm, std::f64::consts::LN_2 / hc);
+            // Shock `x` ago enters the sum with weight `c(x) = e^(−κ_c x) −
+            // κ_m I(x)`: its own weight less what the fit absorbed of it,
+            // `I(x) = ∫_0^x e^(−κ_c (x − y)) e^(−κ_m y) dy`, the fit's weight
+            // on the shock `y` after it, summed into the CUSUM's weights.
+            let n = (60.0 * hm.max(hc) / dt) as usize;
+            let (mut integral, mut num, mut den) = (0.0, 0.0, 0.0);
+            for i in 0..n {
+                let x = (i as f64 + 0.5) * dt;
+                integral = integral * (-kc * dt).exp() + (-km * x).exp() * dt;
+                let c = (-kc * x).exp() - km * integral;
+                num += c * c * dt;
+                den += (-2.0 * kc * x).exp() * dt;
+            }
+            let want = num / den;
+            let got = cusum_null(hm, hc);
+            assert!((got - want).abs() < 2e-3, "{hm} {hc}: {got} vs {want}");
+        }
+        assert_eq!(cusum_null(f64::INFINITY, 50.0), 1.0);
+        assert_eq!(cusum_null(50.0, f64::INFINITY), 1.0);
     }
 
     /// A zero weight, the first included, and a `v` that is not a number
@@ -567,7 +692,7 @@ mod tests {
         assert_eq!(b.z1, before.z1 * 0.5);
         assert_eq!(b.vq, before.vq * 0.5);
         assert_eq!(b.s2, before.s2 * 0.25);
-        assert_eq!(b.cusum(), before.cusum());
+        assert_eq!(b.cusum(1.0), before.cusum(1.0));
     }
 
     /// The fast and slow fits' slopes, intercepts, residual spread and the

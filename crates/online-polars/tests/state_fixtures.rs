@@ -945,6 +945,11 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_diagnosed", "a slot's CUSUM lag products", |p, v| {
             p.contains(".breaks.") && p.contains(".p1.") && v.as_f64().is_some_and(|f| f != 0.0)
         }),
+        // Task 232 (4): the CUSUM of squares' fourth moment at the slow
+        // memory.
+        ("bank_diagnosed", "a slot's fourth moment", |p, v| {
+            p.contains(".breaks.") && p.ends_with(".z4") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
         ("bank_diagnosed", "a slot's CUSUM ring", |p, v| {
             p.contains(".breaks.") && p.contains(".ring2.") && v.as_f64().is_some_and(|f| f != 0.0)
         }),

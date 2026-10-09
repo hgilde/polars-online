@@ -928,3 +928,60 @@ def test_under_a_horizon_each_test_is_near_its_size(phi):
             assert rate < (0.10 if half_life < float("inf") else 0.20), (half_life, field, rate)
         if half_life < float("inf"):
             assert (out["break_wald_y"].drop_nulls() > 7.815).mean() < 0.10
+
+
+# --- the nulls standardized (task 232 (4)) -----------------------------------
+
+
+def _clean(groups: int, n: int, seed: int, df: int | None = None) -> pl.DataFrame:
+    """A stable relation, its noise Gaussian or Student's t with `df` degrees
+    of freedom at unit variance."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((groups * n, 2))
+    if df is None:
+        e = rng.standard_normal(groups * n)
+    else:
+        e = rng.standard_t(df, groups * n) / np.sqrt(df / (df - 2))
+    y = 0.5 + x @ np.array([1.0, -1.0]) + e
+    return pl.DataFrame(
+        {"g": np.repeat(np.arange(groups), n), "x0": x[:, 0], "x1": x[:, 1], "y": y}
+    )
+
+
+def test_a_windowed_cusum_reads_its_own_null():
+    """Windowed, the CUSUM's spread was 0.75 beside a fit at the same memory
+    and 0.48 at four times it -- the fit absorbs part of every level it
+    sums -- and the CUSUM of squares' 0.72, its scale at the same memory
+    absorbing the squares' level (review round 6, A-5, G-3). Each is now
+    over its null's share of the plain variance, `h_fit / (h_fit + h)`
+    and 1/2, and reads a spread of about 1 (task 232 (4))."""
+    df = _clean(20, 5_000, 4)
+    for memory in (None, 800.0):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=200.0,
+            group="g",
+            emit_breaks=True,
+            **({"breaks_half_life": memory} if memory else {}),
+        )
+        out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 2_000)
+        for field in ("cusum_y", "cusum_sq_y"):
+            sd = out[field].drop_nulls().std()
+            assert 0.9 < sd < 1.2, (memory, field, sd)
+
+
+def test_the_cusum_of_squares_reads_the_measured_fourth_moment():
+    """The CUSUM of squares divided by 2, a Gaussian's `E[z⁴] − 1`: on
+    Student's t with 4 degrees of freedom it passed 1.96 on 18.5% of rows
+    windowed and on 32.5% of streams' last rows run once (task 222's F2).
+    Over the measured `E[z⁴] − 1` it passes on about 5% (task 232 (4))."""
+    df = _clean(40, 4_000, 3, df=4)
+    common = dict(targets=["y"], features=["x0", "x1"], group="g", emit_breaks=True)
+    windowed = _run(df, po.spec.ewridge("m", half_life=200.0, **common))
+    late = windowed.filter(pl.int_range(pl.len()).over("g") >= 2_000)
+    assert (late["cusum_sq_y"].drop_nulls().abs() > 1.96).mean() < 0.09
+    once = po.spec.ewridge("m", half_life=float("inf"), min_weight=10.0, **common)
+    last = _run(df, once).group_by("g").last()
+    assert (last["cusum_sq_y"].abs() > 1.96).mean() < 0.15

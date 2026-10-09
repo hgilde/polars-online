@@ -51,6 +51,15 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
     out
 }
 
+/// A decay's half-life in clock units, `inf` for none.
+fn half_life_of(d: Decay) -> f64 {
+    match d {
+        Decay::Halflife(h) => h,
+        Decay::Lam(l) if l < 1.0 => std::f64::consts::LN_2 / -l.ln(),
+        Decay::Lam(_) => f64::INFINITY,
+    }
+}
+
 /// What one instance's diagnostics are configured with, from the spec:
 /// each one's decay -- its own memory, or the instance's -- and, for the
 /// breaks' twin fits, the features each slot's coefficients cover.
@@ -71,6 +80,10 @@ pub struct CheckCfg {
     /// The diagnostics' own Newey-West lags under a horizon, `0` without
     /// one ([`Spec::nw_lags`]; task 232 (3)).
     nw: usize,
+    /// The windowed CUSUM's and CUSUM of squares' null shares of their
+    /// plain variances ([`online_core::cusum_null`]; task 232 (4)).
+    cusum_null: f64,
+    cusum_sq_null: f64,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
     /// reads, as positions in the spec's features: an `ewridge` feature
     /// set's, or every feature.
@@ -105,7 +118,7 @@ impl CheckCfg {
             }
             _ => vec![all; crate::stream::combos(spec).len()],
         };
-        Self {
+        let mut cfg = Self {
             fit: spec.fit_memory(model),
             calibration: spec.diagnostic_decay_of(
                 spec.calibration_half_life.as_ref(),
@@ -144,10 +157,38 @@ impl CheckCfg {
             ),
             lags: spec.robust_se_lags_or_default(),
             nw: spec.nw_lags(),
+            cusum_null: 1.0,
+            cusum_sq_null: 1.0,
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
             width: spec.k() + usize::from(spec.fit_intercept),
+        };
+        // A least-squares fit with an intercept absorbs a level as an EW
+        // mean at its own memory, and takes that part of every mean the
+        // CUSUM would sum; the scale the CUSUM of squares is studentized by
+        // does the same to the squares (task 232 (4)). Measured on clean
+        // streams at a half-life of 200, the CUSUM's spread read 1.04-1.08
+        // beside `ewridge`, `rls`, `lasso` and `kalman` at memories of 50,
+        // 200 and 800. The others absorb at a pace of their own: `huber`'s
+        // and `quantile`'s weights, the gradient fits' learning rates, and
+        // `holt`'s trend. With the share their spreads read 1.07-1.74
+        // (`huber`, `quantile`) and 0.57-1.13 (`sgd`, `pa`, `ftrl`); without
+        // it `huber` reads 0.57-0.95, `quantile` 0.78-0.97 and the gradient
+        // fits 0.30-0.79, conservative, and `holt` 1.63, so they keep the
+        // plain sum.
+        let (h_fit, h_breaks) = (half_life_of(cfg.fit), half_life_of(cfg.breaks));
+        let least_squares = matches!(
+            spec.model,
+            ModelKind::EwRidge { .. }
+                | ModelKind::Rls { .. }
+                | ModelKind::Lasso { .. }
+                | ModelKind::Kalman { .. }
+        );
+        if least_squares && spec.fit_intercept {
+            cfg.cusum_null = online_core::cusum_null(h_fit, h_breaks);
         }
+        cfg.cusum_sq_null = online_core::cusum_null(h_breaks, h_breaks);
+        cfg
     }
 
     /// Whether `se_coef_hac` is written: a lag to weigh.
@@ -395,8 +436,8 @@ impl Checks {
             let nc = cfg.combo_features.len().max(1);
             for (slot, b) in self.breaks.iter().enumerate() {
                 put(v, slot, rec.get(slot).and_then(|&r| b.studentized(r)));
-                put(v + 1, slot, b.cusum());
-                put(v + 2, slot, b.cusum_sq());
+                put(v + 1, slot, b.cusum(cfg.cusum_null));
+                put(v + 2, slot, b.cusum_sq(cfg.cusum_sq_null));
                 // Under a horizon the noise's variance is the long-run one,
                 // read from the slot's own studentized residuals.
                 let long_run = if cfg.nw > 0 { b.long_run() } else { Some(1.0) };

@@ -617,32 +617,44 @@ The diagnostics add, per slot:
        those before it at ``breaks_half_life``, read once that spread has 10
        rows of Kish's size; 1 stands in for the inflation on a model without
        one (all but ``ewridge``, ``rls`` and ``kalman``). ``cusum`` and
-       ``cusum_sq`` are the EW sum of the studentized residuals before the
-       row and the EW mean of their squares less 1, each standardized, so
-       each is about ``N(0, 1)`` with no break. Run once (``inf``) they are
-       Brown, Durbin and Evans' CUSUM and CUSUM of squares, ``cusum *
+       ``cusum_sq`` are the EW sums of the studentized residuals before the
+       row and of their squares less 1, each standardized, so each is about
+       ``N(0, 1)`` with no break: ``cusum_sq`` over the measured variance of
+       a squared residual, ``E[z**4] - 1`` at four times the memory, where a
+       Gaussian's 2 once stood (on Student's t with 3 to 5 degrees of
+       freedom it passed 1.96 on 11-33% of rows, and now on 4.7-5.5%). Run
+       once (``inf``) ``cusum`` is Brown, Durbin and Evans' CUSUM, ``cusum *
        sqrt(r)`` the path over ``r`` rows, read against ``±0.948 * (sqrt(T)
-       + 2 r / sqrt(T))`` over a run of ``T`` (5%). With a memory they are
-       moving sums. ``break_wald`` is the Wald distance between two
+       + 2 r / sqrt(T))`` over a run of ``T`` (5%); ``cusum_sq`` is not
+       their CUSUM of squares but the standardized sum above. With a memory
+       they are moving sums, each over its windowed null: a least-squares
+       fit (``ewridge``, ``rls``, ``lasso``, ``kalman``) with an intercept
+       absorbs a level at its own memory ``h_fit``, so ``cusum``'s variance
+       is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
+       ``cusum_sq``'s scale shares its memory, a half; each is divided by
+       it, and their spreads read 1.01-1.10 on clean streams where they read
+       0.48-0.94. The other fits keep the plain sum, whose spread reads
+       below 1 beside them (0.30-0.97), and ``holt``'s 1.6. ``break_wald`` is the Wald distance between two
        least-squares fits of the target on the slot's features, one at the
        memory and one at four times it, about ``chi2(k)`` with no break and
        null run once. On 200 streams of 3,000 rows with a break at 1,500:
        run once, the CUSUM crossed on 3.5% with no break and on every
        stream whose intercept moved half a noise sd, 244 rows after it
-       (statsmodels' own: 5.0% and 277); the CUSUM of squares on 5.0% and
-       on every stream whose noise doubled. Neither sees a slope that moves
-       on a centred feature, whose residuals keep a zero mean: the CUSUM
-       crossed on 2.5%. Beside a fit at a half-life of 200, ``break_wald``
+       (statsmodels' own: 5.0% and 277). It does not see a slope that moves
+       on a centred feature, whose residuals keep a zero mean: it crossed on
+       2.5%. Beside a fit at a half-life of 200, ``break_wald``
        passed ``chi2(3)``'s 0.01% value, 21.1, on no stream with no break
        and on every slope break, 94 rows after it; ``|cusum| > 3`` found
-       every intercept break in 100 rows and ``|cusum_sq| > 3`` every
-       variance break in 20. ``drift`` found 1.5% of the variance breaks
+       every intercept break in 62 rows on the median and ``|cusum_sq| > 3``
+       every variance break in 17, each passing 3 on 0.2-0.3% of the rows of
+       streams with no break. ``drift`` found 1.5% of the variance breaks
        there and none of the others. Under a horizon each of the CUSUMs is
        over its long-run variance, Bartlett's weights on its terms'
        products over twice the horizon in lags, and ``break_wald``'s noise
        variance is times the studentized residuals' long-run over short-run
-       variance: on a five-row look-ahead target they passed their 5% values
-       on 0.6-4.7% of rows where the plain forms passed on 13-63%.
+       variance: on a five-row look-ahead target the CUSUMs passed their 5%
+       values on 6-9% of rows and ``break_wald`` on 2.5-4.7%, where the
+       plain forms passed on 13-63%.
    * - ``emit_specification``
      - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``reset_<slot>``
      - What the fit is missing, each at ``specification_half_life`` and
