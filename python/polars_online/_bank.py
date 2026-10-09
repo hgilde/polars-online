@@ -1954,8 +1954,9 @@ class ModelBank:
         rows: the hour of the day on minute data, a regime that stays with
         probability 0.99, a price in ticks, a spread in whole ticks, an
         AR(0.9) rounded to integers and a temperature in whole degrees), over
-        ten seeds, an audit of every column raised no error or warning; the one clean shape with information is the target
-        that is NaN on 60% of its rows. Each problem planted was found on
+        ten seeds, an audit of every column raised no error or warning; the
+        one clean shape with information is the target that is NaN on 60% of
+        its rows. Each problem planted was found on
         every seed (``tests/check_streams.py``'s ``AUDIT_PLANTED``):
 
         - ``sentinel``: ``-999`` on 5% of a continuous column's rows reads 3.9%
@@ -1967,8 +1968,9 @@ class ModelBank:
           more), a forward fill every 2, 3, 5 or 10 rows (31.6 or more), and
           30 rows stuck in the middle (5.1) are found; 25 rows stuck are not.
           Clean columns read 0.6 at most (values rounded to two decimals).
-          The six coarse-grid columns of the clean shapes are not tested. A price still for 200 rows at a time and
-          moving by three ticks a row in between reads as frozen: the check
+          The six coarse-grid columns of the clean shapes are silent. A price
+          still for 200 rows at a time and moving by three ticks a row in
+          between reads as frozen: the check
           cannot tell long still stretches from a stale feed.
         - ``random_walk``: random walks of 300 and 2,000 rows read -3.2 at
           most, and the clean shapes -6.5 at least (columns persisting at
