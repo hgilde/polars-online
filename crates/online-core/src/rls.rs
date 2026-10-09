@@ -1248,4 +1248,113 @@ mod tests {
         m.step(&[1.0, 2.0], &[Some(3.0)], 1.0, 1.0);
         assert!(m.error_inflation_into(&mut out) && out[0].is_finite());
     }
+
+    /// `‖R⁻ᵀ z‖²` is infinite where `z` leans on a direction whose pivot is
+    /// 0, and only there (the module doc; docs/PLAN.md task 220). A feature
+    /// held at exactly 0 excites nothing: its column of `R` stays 0 above
+    /// the diagonal, and its pivot, the prior alone, halves each row at `λ =
+    /// 1/4` until it underflows to 0. Before and after, the other
+    /// coefficients' variances and a row with the feature at 0 read what a
+    /// fit without the feature reads on the same rows, to the bit, its
+    /// factor being that fit's; once the pivot is 0, the feature's own
+    /// variance and a row with the feature at 1 read infinite.
+    #[test]
+    fn a_direction_no_row_excites_is_infinite_only_where_a_row_leans_on_it() {
+        let make = |k: usize| {
+            let mut c = rls_cfg(k, 1, 1.0, 1.0);
+            c.decay = Decay::Lam(0.25);
+            Rls::new(c).unwrap()
+        };
+        let (mut m, mut without) = (make(2), make(1));
+        let variances = |m: &Rls| match m.coef_variance() {
+            Some(crate::CoefVariance::PerNoise(v)) => v[0].clone(),
+            other => panic!("{other:?}"),
+        };
+        let (mut s, mut out, mut alone) = (53u64, Vec::new(), Vec::new());
+        let mut rows = 0;
+        loop {
+            let x = lcg(&mut s);
+            let y = Some(1.0 + 2.0 * x + 0.1 * lcg(&mut s));
+            m.step(&[x, 0.0], &[y], 1.0, 1.0);
+            without.step(&[x], &[y], 1.0, 1.0);
+            rows += 1;
+            let (v, w) = (variances(&m), variances(&without));
+            assert_eq!(v[..2], w[..], "row {rows}");
+            m.row_error_inflation_into(&[0.3, 0.0], 1.0, &mut out);
+            without.row_error_inflation_into(&[0.3], 1.0, &mut alone);
+            assert_eq!(out, alone, "row {rows}");
+            if m.r[2 * 3 + 2] == 0.0 {
+                assert!(v[2].is_infinite(), "{v:?}");
+                break;
+            }
+            assert!(rows < 1100, "row {rows}: {v:?}");
+        }
+        assert!(rows > 1000, "the pivot underflowed after {rows} rows");
+        m.row_error_inflation_into(&[0.3, 1.0], 1.0, &mut out);
+        assert!(out[0].is_infinite(), "{out:?}");
+    }
+
+    /// Kish's size is `s₁² / s₂`, and there is none without a learned
+    /// weight and a squared-weight sum both above 0 (the module doc;
+    /// docs/PLAN.md task 220). `s₂` decays by `λ²` where `s₁` decays by
+    /// `λ`, so across a gap of zero-weight rows it underflows to 0 first:
+    /// at `λ = 1/4` after some 270 rows, with `s₁` near `2^-540`. The fit
+    /// then reads as one that has learned nothing, as `ewridge`'s and
+    /// `lasso`'s do where their `Σ w²` is 0 -- infinite, and no variance --
+    /// not as one of infinitely many rows, ready, and of variance 0. A
+    /// state whose learned weight is 0 has none either, whatever its
+    /// squared-weight sum holds.
+    #[test]
+    fn a_squared_weight_sum_faded_to_0_reads_no_kish_size() {
+        let mut c = rls_cfg(1, 1, 1.0, 1.0);
+        c.decay = Decay::Lam(0.25);
+        let mut m = Rls::new(c).unwrap();
+        let mut s = 59u64;
+        for _ in 0..20 {
+            let x = lcg(&mut s);
+            m.step(&[x], &[Some(0.5 - x + 0.1 * lcg(&mut s))], 1.0, 1.0);
+        }
+        let mut out = Vec::new();
+        assert!(m.error_inflation_into(&mut out) && out[0].is_finite());
+        let mut gap = 0;
+        while m.s2 > 0.0 {
+            m.step(&[0.2], &[Some(0.3)], 1.0, 0.0);
+            gap += 1;
+        }
+        assert!(m.w_target[0] > 0.0 && (260..280).contains(&gap), "{gap}");
+        assert!(
+            m.error_inflation_into(&mut out) && out[0].is_infinite(),
+            "{out:?}"
+        );
+        assert!(m.row_error_inflation_into(&[0.2], 1.0, &mut out) && out[0].is_infinite());
+        assert_eq!(m.coef_variance(), None);
+        let mut none = m.clone();
+        (none.w_target[0], none.s2) = (0.0, 1.0);
+        assert!(
+            none.error_inflation_into(&mut out) && out[0].is_infinite(),
+            "{out:?}"
+        );
+        assert!(none.row_error_inflation_into(&[0.2], 1.0, &mut out) && out[0].is_infinite());
+        assert_eq!(none.coef_variance(), None);
+    }
+
+    /// The squared-weight sum a state carries is a finite number of at
+    /// least 0, each break refused alone (docs/PLAN.md task 220): a NaN, a
+    /// number below 0 and an infinity. 0 itself loads.
+    #[test]
+    fn a_squared_weight_sum_below_0_or_not_finite_is_refused() {
+        let m = Rls::new(rls_cfg(1, 1, 50.0, 1.0)).unwrap();
+        for bad in [f64::NAN, -1.0, f64::NEG_INFINITY, f64::INFINITY] {
+            let mut spoiled = m.clone();
+            spoiled.s2 = bad;
+            let s = State::new(ModelState::Rls(Box::new(spoiled)));
+            match Rls::restore(&s) {
+                Err(StateError::Invalid(e)) => {
+                    assert!(e.contains("squared-weight"), "{bad}: {e}");
+                }
+                other => panic!("{bad}: {other:?}"),
+            }
+        }
+        assert!(Rls::restore(&m.state()).is_ok());
+    }
 }
