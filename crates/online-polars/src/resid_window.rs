@@ -27,16 +27,21 @@ use online_core::{
 use serde::{Deserialize, Serialize};
 
 /// The spread before a learned row, decayed to it: per slot, the weight and
-/// the mean of the squared residuals.
+/// the mean of the squared residuals, and the count of residuals of
+/// positive weight folded so far ([`ResidWindow::rows`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Spread {
     w: Vec<f64>,
     var: Vec<f64>,
+    #[serde(default)]
+    n: Vec<u64>,
 }
 
 impl Footprint for Spread {
     fn footprint(&self) -> usize {
-        std::mem::size_of_val(self.w.as_slice()) + std::mem::size_of_val(self.var.as_slice())
+        std::mem::size_of_val(self.w.as_slice())
+            + std::mem::size_of_val(self.var.as_slice())
+            + std::mem::size_of_val(self.n.as_slice())
     }
 }
 
@@ -46,6 +51,16 @@ pub struct ResidWindow {
     /// The clock of the last row learned, summed from the deltas.
     clock: f64,
     snaps: Snapshots<Spread>,
+    /// Per slot, the residuals of positive weight folded so far, which each
+    /// snapshot keeps as it stood before its row: the window holds a slot's
+    /// rows when the count now exceeds the boundary's, exactly, where the
+    /// weights' difference is a remainder that rounding leaves above 0. A
+    /// slot whose target was absent for some 1,060 half-lives kept a weight
+    /// stuck a few subnormal steps above 0, and its window read a `sigma` of
+    /// 0 where a slot never seen reads none (docs/PLAN.md task 217). A row
+    /// of weight 0 is not counted (hard rule 9). Sized at the first row.
+    #[serde(default)]
+    rows: Vec<u64>,
 }
 
 impl ResidWindow {
@@ -61,41 +76,73 @@ impl ResidWindow {
     ) -> Result<Self, String> {
         let mut snaps = Snapshots::with_cadence(window, cadence)?.closed(closed);
         snaps.set_budget(budget);
-        Ok(Self { clock: 0.0, snaps })
+        Ok(Self {
+            clock: 0.0,
+            snaps,
+            rows: Vec::new(),
+        })
     }
 
     /// Slot `slot`'s mean squared residual inside the window, given the whole
     /// history's weight and mean as they stand before the row; `None` when
-    /// nothing is left inside. With no snapshot yet there is nothing to
-    /// subtract.
+    /// nothing is left inside: no residual of positive weight since the
+    /// boundary, counted ([`Self::rows`]), or no weight the subtraction can
+    /// read. With no snapshot yet there is nothing to subtract.
     pub fn inside(&self, decay: Decay, slot: usize, w: f64, var: f64) -> Option<f64> {
         let Some((t, old)) = self.snaps.boundary() else {
             return Some(var);
         };
+        if let Some(&then) = old.n.get(slot)
+            && self.rows.get(slot).is_none_or(|&now| now <= then)
+        {
+            return None;
+        }
         let f = decay.factor(self.clock - t);
         truncated_scalar(w, var, old.w[slot], old.var[slot], f).map(|(_, v)| v)
     }
 
-    /// Before a learned row's residuals are folded: offer the spread as it
-    /// stands, decayed to the row by `lam`, move the clock to the row, and
-    /// drop what can no longer be the boundary, at the row's `stamp` -- the
-    /// one the model's window was handed -- or the summed clock for `None`.
-    pub fn learn(&mut self, d_clock: f64, stamp: Option<Stamp>, lam: f64, w: &[f64], var: &[f64]) {
+    /// A learned row: offer the spread as it stands before the row's
+    /// residuals are folded, decayed to the row by `lam`, move the clock to
+    /// the row, and drop what can no longer be the boundary, at the row's
+    /// `stamp` -- the one the model's window was handed -- or the summed
+    /// clock for `None`. Then count each slot whose residual `resid` the
+    /// row folds at a positive `weight`.
+    pub fn learn(
+        &mut self,
+        d_clock: f64,
+        stamp: Option<Stamp>,
+        lam: f64,
+        (w, var): (&[f64], &[f64]),
+        (resid, weight): (&[f64], f64),
+    ) {
         if let Some(stamp) = stamp {
             self.snaps.stamp_next(stamp);
         }
+        if self.rows.len() != w.len() {
+            self.rows = vec![0; w.len()];
+        }
+        let rows = &self.rows;
         self.snaps.learn(&mut self.clock, d_clock, || Spread {
             w: w.iter().map(|w| w * lam).collect(),
             var: var.to_vec(),
+            n: rows.clone(),
         });
+        if weight > 0.0 {
+            for (n, r) in self.rows.iter_mut().zip(resid) {
+                if r.is_finite() {
+                    *n += 1;
+                }
+            }
+        }
     }
 
-    /// Whether this ring's snapshots are `n_slots` wide: a file written for
-    /// another spec's slots is not restored into this one.
+    /// Whether this ring's snapshots and counts are `n_slots` wide: a file
+    /// written for another spec's slots is not restored into this one.
     pub fn fits(&self, n_slots: usize) -> bool {
-        self.snaps
-            .boundary()
-            .is_none_or(|(_, s)| s.w.len() == n_slots && s.var.len() == n_slots)
+        (self.rows.is_empty() || self.rows.len() == n_slots)
+            && self.snaps.boundary().is_none_or(|(_, s)| {
+                s.w.len() == n_slots && s.var.len() == n_slots && s.n.len() == n_slots
+            })
     }
 
     /// The budget is configuration, which a state does not carry.
@@ -109,6 +156,7 @@ impl ResidWindow {
         WindowShadow::new(self.clock, &self.snaps, || Spread {
             w: vec![0.0; n_slots],
             var: vec![0.0; n_slots],
+            n: vec![0; n_slots],
         })
     }
 
@@ -131,11 +179,64 @@ mod tests {
         let snap = Spread {
             w: vec![1.0; 3],
             var: vec![2.0; 5],
+            n: vec![4; 2],
         };
         let state = serde_json::to_value(&snap).unwrap();
         let values = state.as_object().unwrap().values();
         let numbers: usize = values.map(|v| v.as_array().map_or(1, Vec::len)).sum();
         assert_eq!(snap.footprint(), numbers * std::mem::size_of::<f64>());
+    }
+
+    /// **A window that holds none of a slot's residuals reads none**
+    /// (docs/PLAN.md task 217), by the ring's count against the boundary's.
+    /// Sixty residuals at a weight of `1e-300`, then 300 rows with none at
+    /// `lam = 0.75`: the slot's weight ages into the subnormal range and
+    /// sticks a few steps above 0, and the window of 5 read the remainder
+    /// as a spread (a `sigma` of 0, where a slot never seen reads none). A
+    /// residual at weight 0 is no row of the window; one at `1e-310` is.
+    #[test]
+    fn a_window_holding_none_of_a_slots_residuals_reads_none() {
+        let (lam, decay) = (0.75, Decay::Lam(0.75));
+        for last in [None, Some(0.0), Some(1e-310)] {
+            let mut ring =
+                ResidWindow::new(5.0, Cadence::EVERY_ROW, WindowClosed::Right, None).unwrap();
+            let (mut w, mut var) = (vec![0.0], vec![0.0]);
+            let mut stuck = f64::NAN;
+            for i in 0..361 {
+                if i == 360 {
+                    stuck = w[0];
+                }
+                let (r, weight) = match i {
+                    0..60 => (f64::from(i % 5) - 2.0, 1e-300),
+                    360 => last.map_or((f64::NAN, 1.0), |wt| (1.5, wt)),
+                    _ => (f64::NAN, 1.0),
+                };
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let step = if i == 0 { 1.0 } else { lam };
+                ring.learn(d, None, step, (&w, &var), (&[r], weight));
+                if r.is_finite() {
+                    let w_new = step * w[0] + weight;
+                    if w_new > 0.0 {
+                        var[0] = (step * w[0] * var[0] + weight * r * r) / w_new;
+                        w[0] = w_new;
+                    }
+                } else {
+                    w[0] *= step;
+                }
+            }
+            assert!(
+                stuck > 0.0 && stuck < 1e-320,
+                "the fixture: a stuck weight, {stuck:e}"
+            );
+            let got = ring.inside(decay, 0, w[0], var[0]);
+            match last {
+                Some(wt) if wt > 0.0 => assert!(
+                    got.is_some_and(|v| (v - 2.25).abs() < 1e-6),
+                    "a residual of weight {wt:e} inside: {got:?}"
+                ),
+                _ => assert_eq!(got, None, "the last row's residual {last:?}"),
+            }
+        }
     }
 
     /// The ring's reading is the spread of the residuals inside the window,
@@ -185,7 +286,7 @@ mod tests {
                 );
             }
             let lam = decay.factor(d);
-            ring.learn(d, None, lam, &w, &var);
+            ring.learn(d, None, lam, (&w, &var), (&[r], 1.0));
             clock += d;
             let w_new = lam * w[0] + 1.0;
             var[0] = (lam * w[0] * var[0] + r * r) / w_new;

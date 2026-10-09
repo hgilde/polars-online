@@ -5356,12 +5356,14 @@ fn run_instance(
                 // The spread as the row finds it, before its own residual,
                 // keyed by the stamp the model's window was (task 175).
                 if let Some(ring) = inst.resid_win.as_mut() {
+                    // And counts the slots whose residual the row folds at
+                    // a positive weight (task 217).
                     ring.get_mut().learn(
                         plan.d_clock,
                         plan.stamp,
                         lam,
-                        inst.resid_w.as_slice(),
-                        inst.resid_var.as_slice(),
+                        (inst.resid_w.as_slice(), inst.resid_var.as_slice()),
+                        (sc.r.as_slice(), w),
                     );
                 }
                 for (slot, &rv) in sc.r.iter().enumerate() {

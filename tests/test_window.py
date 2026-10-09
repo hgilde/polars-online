@@ -13,8 +13,10 @@ rows at each row, `O(n·W)` where the accumulator is `O(n)`.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime, timedelta
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -589,3 +591,88 @@ def test_a_windowed_classifier_follows_a_swap_the_full_history_blurs():
 
     assert accuracy(60.0) > 0.95
     assert accuracy(None) < 0.7, "the unwindowed classifier should be near chance"
+
+
+def _absent_then_back(gap: int, fresh: bool, back: float) -> pl.DataFrame:
+    """Sixty rows of both targets (none of ``y1`` where ``fresh``), ``gap``
+    rows without ``y1``, seeded from the return back so every gap ends on
+    the same rows, and forty of both, the first of them, the return, at
+    weight ``back``."""
+
+    def row(seed: int, second: bool, w: float) -> dict[str, float | None]:
+        x0, x1, e0, e1 = np.random.default_rng(seed).uniform(-1.0, 1.0, 4)
+        return {
+            "x0": 3.0 * x0,
+            "x1": 3.0 * x1,
+            "y0": 1.0 + 3.0 * x0 - 1.5 * x1 + 0.1 * e0,
+            "y1": -1.0 + 1.5 * x0 + 6.0 * x1 + 0.1 * e1 if second else None,
+            "w": w,
+        }
+
+    rows = [row(1000 + i, not fresh, 1.0) for i in range(60)]
+    rows += [row(100_000 + k, False, 1.0) for k in reversed(range(gap))]
+    rows += [row(10 + i, True, back if i == 0 else 1.0) for i in range(40)]
+    return pl.DataFrame(rows, schema=dict.fromkeys(["x0", "x1", "y0", "y1", "w"], pl.Float64))
+
+
+@pytest.mark.parametrize("back", [1.0, 0.0])
+@pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
+@pytest.mark.parametrize("model", ["ewridge", "lasso"])
+def test_a_windowed_sigma_with_none_of_the_targets_rows_inside_reads_none(
+    model: str, target_gaps: str, back: float
+):
+    """docs/PLAN.md task 217: a target absent past the window kept its
+    residual spread's weight stuck a few subnormal steps above 0, and the
+    window's spread, that less the boundary's, was a remainder of rounding:
+    after 3,000 absent rows at ``lam = 0.75`` the windowed ``sigma`` read 0
+    on the rows before and after the return, where after 2,500 and for a
+    target never seen it reads null. The ring counts each slot's residuals of
+    positive weight, live and per snapshot, so a window holding none reads
+    none. Returns after 2,500 and 3,000 rows and a target never seen read the
+    same ``pred``, ``sigma`` and ``zscore`` from the last absent row on, and
+    the two returns the same conformal band (the band's own quantile is not
+    the window's: it keeps the history's, where a target never seen has
+    none). The return on a row of weight 0 too, which folds no residual."""
+    common: dict[str, Any] = dict(
+        targets=["y0", "y1"],
+        features=["x0", "x1"],
+        lam=0.75,
+        window_size=5.0,
+        min_weight=0.0,
+        weight="w",
+        emit_sigma=True,
+        emit_zscore=True,
+        conformal=0.9,
+        target_gaps=target_gaps,
+        max_rows_between_solves=1,
+    )
+    if model == "ewridge":
+        spec = po.spec.ewridge(
+            "m", ridge=1e-6, standardize=True, max_error_inflation=math.inf, **common
+        )
+    else:
+        spec = po.spec.lasso("m", lasso_path=[0.1, 0.0], **common)
+
+    def run(gap: int, fresh: bool) -> pl.DataFrame:
+        out = po.ModelBank([spec]).fit_predict(_absent_then_back(gap, fresh, back))
+        return out["m"].struct.unnest().tail(41)
+
+    a, b, never = run(2_500, False), run(3_000, False), run(3_000, True)
+    window_cols = [c for c in a.columns if c.startswith(("pred_y1", "sigma_y1", "zscore_y1"))]
+    band_cols = [c for c in a.columns if c.startswith(("lo_y1", "hi_y1", "coverage_y1"))]
+    assert window_cols and band_cols, a.columns
+
+    def same(u: float | None, v: float | None) -> bool:
+        if u is None or v is None:
+            return u is None and v is None
+        return math.isclose(u, v, rel_tol=1e-9, abs_tol=1e-12)
+
+    for col in window_cols:
+        for i, (u, v, r) in enumerate(zip(a[col], b[col], never[col], strict=True)):
+            assert same(u, r) and same(v, r), (
+                f"{col}, row {i - 1:+d} from the return: {u} and {v} after 2,500 and 3,000 "
+                f"rows absent, {r} where the target was never seen"
+            )
+    for col in band_cols:
+        for i, (u, v) in enumerate(zip(a[col], b[col], strict=True)):
+            assert same(u, v), f"{col}, row {i - 1:+d} from the return: {u} and {v}"

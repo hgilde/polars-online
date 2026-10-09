@@ -151,7 +151,9 @@ fn from_ipc(hex_text: &str) -> DataFrame {
 /// the wait its readiness notice counts (task 208, schema 46): the floor
 /// and the noise gate have withheld every row since the stream was 95%
 /// settled, a half-life not yet past, so the notice comes in the
-/// continuation.
+/// continuation. And a windowed `ewridge` with its residual spread (task
+/// 217, schema 52): the row counts its cross-moments keep, live and in its
+/// window's snapshots, and the spread ring's own, per slot.
 fn specs() -> Vec<Spec> {
     [
         r#"{"name": "dated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "ts", "half_life": "10m", "gap_cap": "1h", "weight": "w"}"#,
@@ -162,6 +164,7 @@ fn specs() -> Vec<Spec> {
         r#"{"name": "uint_clock", "model": {"type": "ew_cov"}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "tu", "half_life": 80.0, "gap_cap": 6.5, "session": "s", "session_gap": 3.5}"#,
         r#"{"name": "sessioned", "model": {"type": "ew_cov", "pca": 1}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "session": "s", "group_close": "session"}"#,
         r#"{"name": "waiting", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "half_life": 16.0, "min_weight": 30.0}"#,
+        r#"{"name": "spread_window", "model": {"type": "ewridge", "window_size": 12.0}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "emit_sigma": true}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -825,6 +828,28 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         ("bank", "the noise gate's gate_since", |p, v| {
             p.contains(".notified.") && p.ends_with(".gate_since") && v.as_f64().is_some()
+        }),
+        // Task 217 (schema 52): the rows of positive weight a windowed
+        // model's cross-moments count per target, in a snapshot of its
+        // window, and the residual spread's ring's counts per slot, live and
+        // in a snapshot.
+        (
+            "bank",
+            "a window snapshot's per-target row count",
+            |p, v| {
+                p.contains(".snaps.ring.")
+                    && p.contains(".cross.nj.")
+                    && v.as_u64().is_some_and(|n| n > 0)
+            },
+        ),
+        ("bank", "the residual ring's row count", |p, v| {
+            p.contains(".resid_win.") && p.contains(".rows.") && v.as_u64().is_some_and(|n| n > 0)
+        }),
+        ("bank", "a residual snapshot's row count", |p, v| {
+            p.contains(".resid_win.")
+                && p.contains(".ring.")
+                && p.contains(".n.")
+                && v.as_u64().is_some_and(|n| n > 0)
         }),
     ];
     for (kind, form, holds) in FORMS {
