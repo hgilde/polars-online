@@ -1094,3 +1094,89 @@ def test_feature_health_is_refused_for_what_it_reads():
     (review round 6, F-8)."""
     with pytest.raises(ValueError, match="watches the features a fit's coefficients lean on"):
         po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, emit_feature_health=True)
+
+
+#: Task 232's new forms, each with the fields it writes: the Newey-West
+#: sums under a horizon, and a quantile fit's coverage and indicator CUSUM.
+FORMS = {
+    "horizon": (
+        lambda **kw: _spec(
+            "emit_calibration",
+            embargo=3.0,
+            emit_breaks=True,
+            emit_specification=True,
+            **kw,
+        ),
+        [
+            "calibration_wald_y",
+            "cusum_y",
+            "cusum_sq_y",
+            "break_wald_y",
+            "breusch_pagan_y",
+            "reset_y",
+        ],
+    ),
+    "quantile": (
+        lambda **kw: po.spec.quantile(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=60.0,
+            weight="w",
+            min_weight=10.0,
+            quantile=0.8,
+            emit_calibration=True,
+            emit_breaks=True,
+            **kw,
+        ),
+        ["calibration_coverage_y", "calibration_wald_y", "cusum_y"],
+    ),
+}
+
+
+@pytest.mark.parametrize("form", FORMS)
+def test_the_new_forms_keep_the_hard_rules(form):
+    """Rules 2, 3 and 9 for task 232's new sums: one chunk or 7 or 600 give
+    the same fields, the state goes on across a save, a row's outcome moves
+    only the rows after it, and two heads of weight zero leave no trace."""
+    build, fields = FORMS[form]
+    df = _frame()
+    whole = _run(df, build()).select(fields)
+    for f in fields:
+        assert whole[f].drop_nulls().len() > 300, (form, f)
+    if form == "horizon":
+        # The forms are on: with the horizon set to 0 every field moves.
+        plain = _run(df, build(horizon_rows=0)).select(fields)
+        for f in fields:
+            assert not plain[f].equals(whole[f], null_equal=True), f"{f} did not move"
+    for chunk in (7, 600):
+        assert _run(df, build(), chunk).select(fields).equals(whole, null_equal=True), chunk
+    bank = po.ModelBank([build()])
+    first = bank.fit_predict(df.slice(0, 500))
+    rest = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(df.slice(500))
+    assert pl.concat([first, rest]).unnest("m").select(fields).equals(whole, null_equal=True)
+    at = 400
+    moved = df.with_columns(
+        pl.when(pl.int_range(pl.len()) == at).then(pl.col("y") + 50.0).otherwise(pl.col("y"))
+    )
+    b = _run(moved, build()).select(fields)
+    for f in fields:
+        assert whole[f][: at + 1].equals(b[f][: at + 1], null_equal=True), (form, f)
+    clocked = df.with_columns(_HEADS_AT_ROW_2)
+    out = _run(
+        clocked,
+        build(clock="t", gap_cap=10.0, horizon_rows=3)
+        if form == "horizon"
+        else build(clock="t", gap_cap=10.0),
+    )
+    rest = _run(
+        clocked.slice(2),
+        build(clock="t", gap_cap=10.0, horizon_rows=3)
+        if form == "horizon"
+        else build(clock="t", gap_cap=10.0),
+    )
+    for f in fields:
+        assert out[f].is_nan().sum() == 0, (form, f)
+        np.testing.assert_allclose(
+            out[f][2:].to_numpy(), rest[f].to_numpy(), rtol=1e-12, atol=0, equal_nan=True
+        )
