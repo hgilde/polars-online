@@ -8835,6 +8835,108 @@ tick, and that the series holding it up has a count near 1.
       coordinator's two designs were reasoned, not measured; the user is
       offered a level-aware G5 bound for D4 and, for D1, documentation now
       with a measured research round on level-free floors to follow.
+- [ ] 217. **The level-aware truncation bound (D4), a sparse target's
+      subnormal history, `rls` windup documented, and the window's exact row
+      count** -- the user, 2026-10-08 ("Your reco on 2-4 and then push";
+      the count chosen 2026-10-08). *Worker `task217-level-bound`, then
+      `task217-count`.* In progress.
+- [ ] 218. **The 105 mutants that survived the push of `103d721`** --
+      tests for each, or an equivalent entry with its reason; and the two
+      defects they showed (an `ewridge` fit with no kept column read
+      differently after a load; the `kalman` loader's message). *Worker
+      `task218-mutants`.* In progress.
+- [ ] 219. **The changed-lines mutation pass sized to the push** -- the
+      user, 2026-10-08: "We don't pay for minutes being open source". A
+      listing job sets a shard for every forty mutants, and each push to
+      `main` gets its own concurrency group. *Worker
+      `task219-mutants-shards`.* In progress.
+- [ ] 220. **The 698 mutants the push of `103d721` left untested** -- run
+      locally with the lines tasks 215-216 changed; 71 survive task 218's
+      tests. Tests or equivalents, and a defect fixed where it has one
+      answer. *Worker `task220-mutants`.* In progress.
+- [ ] 221. **Online diagnostics: the questions today's set does not
+      answer** -- the user, 2026-10-08: "What kinds of online diagnostics
+      should we have? Those could run once for a non ewma regression, or
+      windowed alongside a ewma regression", then "Add the ones we need to
+      the plan". **One rule for both uses:** each diagnostic is one
+      accumulator with its own memory, defaulting to the model's
+      half-life; `inf` is the run-once form, for a fit that does not
+      forget, with the classical test and its critical values; a finite
+      memory is the windowed form beside an EWMA fit, its statistic read
+      at the Kish size `n_kish` in place of `n`. Every input is a residual
+      the row's model has not learned, as for today's switches, so the
+      recursive-residual tests come without a refit. For the ten linear
+      models (the ones that take a residual switch); one field per slot;
+      `docs/OUTPUTS.md` through `scripts/outputs_doc.py`. In order of
+      value:
+      (a) **Calibration** (Mincer and Zarnowitz 1969): `y` on `pred`, its
+      slope and intercept, and the joint test of slope 1 and intercept 0.
+      The slope is the multiplier to put on a prediction (the
+      two-stage reversion example of 2026-10-08: its beta is this calibration). O(1).
+      (b) **Coefficient breaks**: the predictive studentized residual
+      `resid / (sigma * error_inflation)`; its CUSUM and CUSUM of squares
+      against Brown, Durbin and Evans' (1975) boundaries (run once); a
+      moving-sum CUSUM (MOSUM, Chu, Hornik and Kuan 1995) and the Wald
+      distance between a fast and a slow fit's coefficients (windowed).
+      Today's `drift` sees |resid| only: a coefficient break shows first
+      as residuals with a mean. O(1); the Wald O(k²).
+      (c) **Robust standard errors** beside `se_coef`: the
+      heteroskedasticity-consistent sandwich (EW `Σ w x xᵀ e²`, White
+      1980), and Newey and West (1987) with Bartlett weights to a lag of
+      the target's horizon. A target that looks ahead has overlapping
+      labels, so today's `se_coef` overstates its t by about the square
+      root of the horizon in rows. O(k²); Newey-West O(L·k²).
+      (d) **Specification**: Ljung and Box (1978) over lags 1..L (past the
+      horizon for a look-ahead target, whose residuals are correlated
+      within it by construction); Breusch and Pagan (1979), `e²` on the
+      features, `LM = n_kish · R²`; Ramsey's (1969) RESET, `e` on `pred²`
+      and `pred³`. O(L), O(k²), O(1).
+      (e) **Tails**: EW skewness and kurtosis of the studentized residual,
+      and Jarque and Bera's (1980) statistic; the kurtosis is what
+      `drift_threshold` has to be set against (README: heavy tails flag
+      3-10 in 200,000 rows at the default). O(1).
+      (f) **Influence**: each row's move of the coefficients in the fit's
+      own metric (an online DFFITS, Belsley, Kuh and Welsch 1980). O(k²).
+      (g) **Feature health**: each feature's EW spread over its long-run
+      spread, and its mean's shift, flagging a feature that went quiet
+      (task 217's `rls` windup) or drifted. O(k).
+      (h) **Nested comparison**: Clark and West (2007), and Diebold and
+      Mariano (1995) with Newey-West errors, in `po.eval` and as an EW
+      form beside `seqtest`; Diebold-Mariano is biased toward the smaller
+      of two nested models, which is where Clark-West's correction comes
+      in.
+      **Not built:** a sup-Wald break-date test (Andrews 1993), which needs
+      the whole sample (CUSUM and MOSUM are the online forms), and a
+      condition number on every row (an eigendecomposition a row;
+      `po.gram.condition` reads one from a state, and a cadence like
+      `coef_every` can emit one if a need appears). **Method:** each
+      measured before it ships on `po.sim.regimes` streams with planted
+      answers (a coefficient break, a variance break, heteroskedasticity,
+      overlapping labels, a missed curvature, heavy tails, a feature gone
+      quiet): its false-flag rate on a stream with none, run once and
+      windowed, and its power on each; the oracles from statsmodels in
+      `tests/test_second_opinion.py` (`acorr_ljungbox`, `het_breuschpagan`,
+      `linear_reset`, `OLS.fit(cov_type="HC0"/"HAC")`,
+      `recursive_olsresiduals`, `breaks_cusumolsresid`, `jarque_bera`)
+      and from `crate::oracle` in Rust. Build (a)-(c) first; (d)-(h)
+      after, each its own commit.
+- [ ] 222. **A diagnostics section in the docs** -- the user, 2026-10-08.
+      One place that answers "is this model working?": `docs/DIAGNOSTICS.md`,
+      linked from the README's *Diagnostics, selection and evaluation* and
+      from the API reference. Ordered by the question each diagnostic
+      answers (is it scaled right, has it broken, can its t be trusted,
+      what is it missing, are its tails heavy, which row moved it, are its
+      features healthy, is another model better, is it ready), not by
+      switch. For each: the definition with its update equation, the
+      run-once and the windowed form, how to read it and the threshold
+      that means something (measured, with its false-flag rate), its cost
+      a row, the models that take it, and its field names. Covers what
+      exists now (`sigma`, `zscore`, the quantiles, `drift`, the metrics,
+      `autocorr`, `conformal`, `error_inflation`, `se_coef`, readiness,
+      selection, `po.eval`, `po.gram`'s statistics, `marginal`'s
+      `t_serial`) in a first pass, and gains each of task 221's parts as it
+      ships. Written to `docs/WRITING.md`; the README's section shrinks to
+      the table and a link.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
