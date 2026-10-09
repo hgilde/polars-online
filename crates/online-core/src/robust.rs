@@ -4265,4 +4265,179 @@ mod tests {
             );
         }
     }
+
+    /// A stream of `rows` rows whose first and third features are one
+    /// column twice, the second a column of its own; target 1 null
+    /// throughout when `second` is false.
+    fn duplicated(m: &mut Robust, rows: usize, second: bool) {
+        let mut s = 11u64;
+        for i in 0..rows {
+            let a = lcg(&mut s);
+            let x = [a, lcg(&mut s), a];
+            let y = 1.0 + 2.0 * a - x[1] + 0.3 * lcg(&mut s);
+            let y1 = second.then(|| 0.5 - a + 0.3 * lcg(&mut s));
+            let ys: Vec<Option<f64>> = [Some(y), y1][..m.cfg.n_targets].to_vec();
+            m.step(&x, &ys, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+    }
+
+    /// With no ridge, a feature the rows never move leaves a row and a
+    /// column of 0 in the band Gram, whose factor then takes the jitter
+    /// ladder's shift `δ`: the shares are the shifted system's,
+    /// `1 − (ridge + δ) (A⁻¹)_jj` with `A` carrying `δ`
+    /// (`Robust::pending_shares`), so the still feature reads 0, the data
+    /// carrying nothing of it, and the others all but 1, under either loss
+    /// (docs/PLAN.md task 220). Read with the shift taken off, the still
+    /// feature's share was 2, clamped to 1.
+    #[test]
+    fn a_feature_the_rows_never_move_reads_no_share_through_the_jitter() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.345 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ] {
+            let mut c = cfg(3, 1, loss);
+            c.ridge = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 17u64;
+            for i in 0..200 {
+                let x = [lcg(&mut s), 0.25, lcg(&mut s)];
+                let y = 1.0 + 2.0 * x[0] - x[2] + 0.3 * lcg(&mut s);
+                let before = m.solve_failures;
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                if m.solve_failures == before || i < 10 {
+                    continue;
+                }
+                let got = m.support_coef().unwrap();
+                let shares = &got[0][1..];
+                assert!(
+                    shares[1].abs() < 1e-9
+                        && [shares[0], shares[2]]
+                            .iter()
+                            .all(|v| *v > 0.99 && *v <= 1.0),
+                    "{loss:?}, row {i}: {:?}",
+                    got[0]
+                );
+            }
+            assert!(m.solve_failures > 100, "{loss:?}: {}", m.solve_failures);
+        }
+    }
+
+    /// A target whose solve fails keeps its fit and the shares of that fit
+    /// (`Robust::solve`): stored, as the stream leaves them at the end of a
+    /// run, and then a solve that fails at every jitter, the accumulator
+    /// handed a correlation of 2 as `a_standardized_solve_that_fails_outright_is_counted`
+    /// hands it. The shares keep their bits (docs/PLAN.md task 220).
+    #[test]
+    fn a_solve_that_fails_keeps_the_shares_of_the_fit_it_keeps() {
+        let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
+        c.standardize = true;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 103u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        m.settle_readiness();
+        let (beta, shares) = (
+            m.coefficients().unwrap().to_vec(),
+            m.support_coef().unwrap(),
+        );
+        assert!(
+            shares[0][1..].iter().all(|v| *v > 0.0 && *v < 1.0),
+            "{shares:?}"
+        );
+        let before = m.solve_failures;
+        let (w, q) = (m.cov[0].n_eff(), m.cov[0].q_sum());
+        m.cov[0].set_moments(
+            &[1.0, 0.0, 0.0],
+            &[0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 1.0],
+            w,
+            q,
+        );
+        m.solve();
+        assert_eq!(m.solve_failures, before + 1, "every jitter failed");
+        assert_eq!(m.coefficients().unwrap(), beta, "the fit is kept");
+        let bits = |v: &[Vec<f64>]| v.concat().iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&m.support_coef().unwrap()), bits(&shares));
+    }
+
+    /// A target no solve has fit has no shares, NaN, whatever a file held
+    /// for it: one edited to hold numbers there loads, its shape being
+    /// right, and the next solve, which skips the target, clears them
+    /// (`Shares::unfit`; docs/PLAN.md task 220). The fitted target's are
+    /// the solve's.
+    #[test]
+    fn a_target_no_solve_has_fit_holds_no_shares_whatever_a_file_held() {
+        let mut m = Robust::new(cfg(3, 2, RobustLoss::Huber { delta: 1.345 })).unwrap();
+        duplicated(&mut m, 60, false);
+        m.settle_readiness();
+        let mut s = m.state();
+        let ModelState::Robust(inner) = &mut s.model else {
+            unreachable!()
+        };
+        assert!(inner.support.stored[1].iter().all(|v| v.is_nan()));
+        inner.support.stored[1] = vec![0.5; 4];
+        let mut back = Robust::restore(&s).unwrap();
+        back.step(&[0.1, 0.2, 0.1], &[Some(1.0), None], 1.0, 1.0);
+        let got = back.support_coef().unwrap();
+        assert!(got[1].iter().all(|v| v.is_nan()), "{got:?}");
+        assert!(got[0][1..].iter().all(|v| v.is_finite()), "{got:?}");
+    }
+
+    /// Two models are equal only where their shares are, by their bits:
+    /// one share a rounding step apart makes them two (`Shares`'s
+    /// `PartialEq`; docs/PLAN.md task 220).
+    #[test]
+    fn models_whose_shares_differ_are_not_equal() {
+        let mut m = Robust::new(cfg(3, 1, RobustLoss::Huber { delta: 1.345 })).unwrap();
+        duplicated(&mut m, 60, false);
+        m.settle_readiness();
+        assert_eq!(m, m.clone());
+        let mut other = m.clone();
+        other.support.stored[0][2] = other.support.stored[0][2].next_up();
+        assert_ne!(m, other);
+    }
+
+    /// The data shares a state carries are a solve's shape, each break
+    /// refused alone (docs/PLAN.md task 220): after a solve, a target's
+    /// shares a value short, and one target too many with each row of the
+    /// right width; before the first solve, any.
+    #[test]
+    fn a_state_whose_shares_have_the_wrong_shape_is_refused() {
+        let fresh = Robust::new(cfg(3, 2, RobustLoss::Huber { delta: 1.345 })).unwrap();
+        let mut m = fresh.clone();
+        duplicated(&mut m, 60, true);
+        m.settle_readiness();
+        type Spoil = (&'static str, fn(&mut Shares));
+        let cases: [Spoil; 2] = [
+            ("a target's shares a value short", |s| {
+                s.stored[1].pop();
+            }),
+            ("a target too many", |s| s.stored.push(vec![0.5; 4])),
+        ];
+        for (what, spoil) in cases {
+            for base in [&fresh, &m] {
+                let mut s = base.state();
+                let ModelState::Robust(inner) = &mut s.model else {
+                    unreachable!()
+                };
+                if inner.support.stored.is_empty() {
+                    inner.support.stored = vec![vec![0.5; 4]; 2];
+                }
+                spoil(&mut inner.support);
+                match Robust::restore(&s) {
+                    Err(StateError::Invalid(e)) => {
+                        assert!(e.contains("data shares"), "{what}: {e}");
+                    }
+                    other => panic!("{what}: {other:?}"),
+                }
+            }
+        }
+        assert!(Robust::restore(&fresh.state()).is_ok() && Robust::restore(&m.state()).is_ok());
+    }
 }
