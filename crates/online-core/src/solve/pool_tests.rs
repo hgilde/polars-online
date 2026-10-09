@@ -199,6 +199,10 @@ fn factor_bits(k: usize, threads: usize, cut: (usize, usize)) -> Vec<u64> {
     lower_bits(&l)
 }
 
+// Only the tests guarded off x86-64 read it: there the pieces need not
+// match faer's single call (see above), and an unread helper fails
+// `clippy -D warnings` on Linux (CI, 2026-10-09).
+#[cfg(not(target_arch = "x86_64"))]
 fn seq_bits(k: usize) -> Vec<u64> {
     let mut l = lower(k);
     cholesky_seq(l.as_mut()).expect("positive definite");
