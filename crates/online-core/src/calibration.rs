@@ -555,5 +555,117 @@ mod tests {
         assert!((line.slope().unwrap() - 2.0).abs() < 1e-12);
         assert!(line.wald().is_none());
         assert!(line.has_shape(0));
+        // A memory decayed to nothing -- a gap past 1,075 half-lives, whose
+        // factor is 0 -- keeps the means and has no slope to read.
+        let mut gone = line.clone();
+        gone.age(0.0);
+        assert_eq!(gone.n_eff(), 0.0);
+        assert!(gone.slope().is_none() && gone.intercept().is_none());
+    }
+
+    /// A restored calibration is refused unless its sandwich is at the lags
+    /// asked for: none without a horizon, the same count with one.
+    #[test]
+    fn a_restored_calibration_must_be_at_its_lags() {
+        assert!(Calibration::with_lags(0).has_shape(0));
+        assert!(Calibration::with_lags(3).has_shape(3));
+        assert!(!Calibration::with_lags(3).has_shape(2));
+        assert!(!Calibration::with_lags(3).has_shape(0));
+        assert!(!Calibration::with_lags(0).has_shape(3));
+        // A sandwich with no lags where none is asked for is not the shape
+        // a fresh one has.
+        let odd = Calibration {
+            joint: crate::EwCov::new(2).without_runs(),
+            hac: Some(crate::Sandwich::new(1, true, 0)),
+        };
+        assert!(!odd.has_shape(0));
+    }
+
+    /// The rows behind a cleared run are not lags of the rows after it:
+    /// the Wald statistic under a horizon is the definition's with the lag
+    /// products taken within each run, against a calibration fed the same
+    /// rows without the cut.
+    #[test]
+    fn a_cleared_run_pairs_nothing_across_it() {
+        let lags = 3usize;
+        let (mut cut, mut whole) = (Calibration::with_lags(lags), Calibration::with_lags(lags));
+        let mut s = 17u64;
+        let mut prev = 0.0;
+        for i in 0..200 {
+            if i == 120 {
+                cut.clear_lags();
+            }
+            let p = 2.0 * lcg(&mut s) + 5.0;
+            prev = 0.8 * prev + lcg(&mut s);
+            let y = 0.1 + p + prev;
+            cut.update(p, y, 0.99, 1.0);
+            whole.update(p, y, 0.99, 1.0);
+        }
+        let (a, b) = (cut.wald().unwrap(), whole.wald().unwrap());
+        assert!((a - b).abs() > 1e-6 * b, "{a} vs {b}");
+        assert_eq!(cut.slope(), whole.slope(), "the moments do not see it");
+    }
+
+    /// A coverage's cleared run pairs nothing across it: the products of
+    /// the rows on either side are left out of the variance, by the
+    /// definition's double sum within each run.
+    #[test]
+    fn a_coverages_cleared_run_pairs_nothing_across_it() {
+        let (q, lags) = (0.3, 2usize);
+        let mut c = Coverage::new(q, lags);
+        let mut s = 23u64;
+        let mut runs: Vec<Vec<f64>> = vec![Vec::new()];
+        for i in 0..60 {
+            if i == 31 {
+                c.clear_lags();
+                runs.push(Vec::new());
+            }
+            let y = lcg(&mut s);
+            c.update(0.0, y, 1.0, 1.0);
+            runs.last_mut()
+                .unwrap()
+                .push(f64::from(u8::from(y < 0.0)) - q);
+        }
+        let all: Vec<f64> = runs.iter().flatten().copied().collect();
+        let sd: f64 = all.iter().sum();
+        let mut lagged = 0.0;
+        for run in &runs {
+            for l in 1..=lags {
+                let b = 1.0 - l as f64 / (lags as f64 + 1.0);
+                for t in l..run.len() {
+                    lagged += b * run[t] * run[t - l];
+                }
+            }
+        }
+        let want = sd * sd / (q * (1.0 - q) * all.len() as f64 + 2.0 * lagged);
+        let got = c.wald().unwrap();
+        assert!(
+            (got - want).abs() < 1e-12 * want.max(1.0),
+            "{got} vs {want}"
+        );
+    }
+
+    /// An outcome at the prediction is not below it: the indicator is
+    /// `1{y < pred}`, as the coverage's definition reads.
+    #[test]
+    fn an_outcome_at_the_prediction_is_not_below_it() {
+        let mut c = Coverage::new(0.25, 0);
+        c.update(1.0, 1.0, 1.0, 1.0);
+        assert_eq!(c.coverage(), Some(0.0));
+        c.update(1.0, 0.5, 1.0, 1.0);
+        assert_eq!(c.coverage(), Some(0.5));
+    }
+
+    /// A variance that underflows to 0 -- one row whose weight's square is
+    /// the least subnormal, which `q (1 − q)` takes to 0 -- reads no
+    /// statistic, where the division would read `0/0`.
+    #[test]
+    fn a_coverage_with_no_variance_reads_no_statistic() {
+        let mut c = Coverage::new(0.5, 0);
+        let w = 2.3e-162;
+        assert!(w * w > 0.0 && 0.25 * (w * w) == 0.0);
+        c.update(1.0, 0.0, 1.0, w);
+        assert!(c.coverage().is_some());
+        assert!(c.wald().is_none());
     }
 }
