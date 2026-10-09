@@ -10,7 +10,7 @@ impl Spec {
     /// The diagnostics with a memory of their own (docs/PLAN.md task 221):
     /// each memory's key, its switch, whether the switch is on, and the
     /// memory as given.
-    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 6] {
+    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 7] {
         [
             (
                 "calibration_half_life",
@@ -47,6 +47,12 @@ impl Spec {
                 "emit_influence",
                 self.emit_influence,
                 self.influence_half_life.as_ref(),
+            ),
+            (
+                "feature_health_half_life",
+                "emit_feature_health",
+                self.emit_feature_health,
+                self.feature_health_half_life.as_ref(),
             ),
         ]
     }
@@ -134,7 +140,12 @@ impl Spec {
     /// with 5 degrees of freedom at each. The influence's scale too: with
     /// one row in 200 planted at six spreads out and six off the line, its
     /// clean rows' 99.9th percentile read 0.29 at 1x and 4x, and the planted
-    /// rows' median 1.19 and 1.18.
+    /// rows' median 1.19 and 1.18. The feature health keeps 1x for its
+    /// fast memory, its slow one four times that: on docs/DATA-ISSUES.md's
+    /// frozen feed (half-life 20) the held feature's spread ratio fell below
+    /// 0.5 2.9 half-lives in at 1x and 14 at 4x, where `rls`'s slope passed
+    /// 1 at 52.6; and a one-spread move read `|mean_shift| > 0.3` within 190
+    /// rows at 1x (half-life 200) and never at 4x.
     pub fn memory_multiple(key: &str) -> u32 {
         if key == "calibration_half_life" { 4 } else { 1 }
     }

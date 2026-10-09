@@ -2369,6 +2369,7 @@ other model refuses them by name.
 | what the fit is missing | `emit_specification` | `ljung_box_`, `breusch_pagan_`, `reset_` |
 | how heavy the residuals' tails are | `emit_tails` | `skew_`, `kurtosis_`, `jarque_bera_` |
 | which row moved the fit | `emit_influence` | `influence_`: `ewridge`, `rls` and `kalman` |
+| a feature gone quiet or moved | `emit_feature_health` | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance |
 | standard errors robust to the residuals | `emit_robust_se` | `se_coef_hc0`, `se_coef_hac`, once per instance on `coef`'s rows ([Coefficients](#coefficients)) |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
@@ -2403,6 +2404,7 @@ diag = po.spec.ewridge(
     ljung_box_lags=10,           #                   with the features, a missing curvature
     emit_tails=True,             # skew_, kurtosis_, jarque_bera_<slot>: how far the residuals are from Gaussian
     emit_influence=True,         # influence_<slot>: how far this row moved the fit, an online DFFITS
+    emit_feature_health=True,    # spread_ratio_, mean_shift_<feature>: each feature's recent spread and mean
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2446,6 +2448,12 @@ find.
 DFFITS against the fit before it, read in the fit's own metric, so one row
 with a wild feature and a wild target stands out at once: on a fit at a
 half-life of 200, every planted row read above 0.5 and no clean row did.
+
+**`emit_feature_health` watches the features themselves.** A feed that
+stopped and was carried forward reads a `spread_ratio` falling toward 0,
+and a feature that moved reads a `mean_shift` in its own spreads. On a
+frozen feed `spread_ratio` fell below 0.5 within three half-lives, where
+`rls` wound up after fifty ([Detecting data issues](docs/DATA-ISSUES.md)).
 
 **`se_coef_hac` is the standard error to trust when the target looks
 ahead.** A target that sums the next `h` rows overlaps its neighbours, so

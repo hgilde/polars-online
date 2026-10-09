@@ -5174,3 +5174,45 @@ class TestInfluenceIsDffitsAtTheNewestRow:
             np.testing.assert_allclose(out["influence_y"][t], want, rtol=1e-8)
             checked += 1
         assert checked == 59
+
+
+class TestFeatureHealthIsTwoWeightedMoments:
+    """Task 221 (g). ``spread_ratio_<f>`` and ``mean_shift_<f>`` are
+    ``statsmodels``' ``DescrStatsW`` weighted mean and standard deviation
+    (``ddof=0``) of the rows before each row, at the memory and at four
+    times it, each row at its weight times its decay."""
+
+    def test_the_ratio_and_the_shift_are_descrstatsw(self):
+        from statsmodels.stats.weightstats import DescrStatsW
+
+        rng = np.random.default_rng(91)
+        n = 900
+        x = rng.normal(size=(n, 2)) + np.array([50.0, -3.0])
+        x[500:, 1] += 2.0
+        w = rng.uniform(0.5, 1.5, size=n)
+        w[rng.random(n) < 0.05] = 0.0
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x[:, 0] + rng.normal(size=n), "w": w})
+        h = 60.0
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=h,
+            weight="w",
+            emit_feature_health=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        for t in (100, 560, 899):
+            age = (t - 1) - np.arange(t)
+            fast = DescrStatsW(x[:t], weights=w[:t] * 0.5 ** (age / h), ddof=0)
+            slow = DescrStatsW(x[:t], weights=w[:t] * 0.5 ** (age / (4 * h)), ddof=0)
+            for i, f in enumerate(("x0", "x1")):
+                np.testing.assert_allclose(
+                    out[f"spread_ratio_{f}"][t], fast.std[i] / slow.std[i], rtol=1e-9
+                )
+                np.testing.assert_allclose(
+                    out[f"mean_shift_{f}"][t],
+                    (fast.mean[i] - slow.mean[i]) / slow.std[i],
+                    rtol=1e-7,
+                    atol=1e-10,
+                )

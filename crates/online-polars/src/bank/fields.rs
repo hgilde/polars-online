@@ -71,6 +71,9 @@ pub(super) enum Source {
     /// `(which of task 221's values, index)`, laid out like `Metric` with
     /// `n_checks` blocks per instance ([`crate::checks::value_names`]).
     Check(usize, usize),
+    /// `(which of spread_ratio/mean_shift, instance, feature)`, in the
+    /// `health` buffer (task 221 (g)).
+    Health(usize, usize, usize),
     Quantile(usize),
     Autocorr(usize),
     NEff(usize),
@@ -1029,6 +1032,17 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 for (c_i, c) in combos.iter().enumerate() {
                     fields.push(mk(name, t, c, Source::Check(k, dst(t_i, c_i))));
+                }
+            }
+        }
+        if spec.emit_feature_health {
+            for (which, kind) in ["spread_ratio", "mean_shift"].into_iter().enumerate() {
+                for (fi, f) in spec.features.iter().enumerate() {
+                    fields.push(
+                        FieldMeta::new(format!("{kind}_{f}{suffix}"), kind)
+                            .decay(d)
+                            .src(Source::Health(which, mi, fi)),
+                    );
                 }
             }
         }

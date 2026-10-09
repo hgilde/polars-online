@@ -418,3 +418,83 @@ def test_the_calibrations_memory_defaults_to_four_half_lives():
         ]
         == 30.0
     )
+
+
+# --- feature health (task 221 (g)) ------------------------------------------
+
+HEALTH = ["spread_ratio_x0", "spread_ratio_x1", "mean_shift_x0", "mean_shift_x1"]
+
+
+@pytest.mark.parametrize("memory", [None, 150.0])
+def test_feature_health_is_chunk_invariant(memory):
+    df = _frame()
+    kw = {} if memory is None else {"feature_health_half_life": memory}
+    spec = _spec("emit_feature_health", **kw)
+    whole = _run(df, spec).select(HEALTH)
+    assert whole["spread_ratio_x0"].drop_nulls().len() > 800
+    for chunk in (7, 600):
+        assert _run(df, spec, chunk).select(HEALTH).equals(whole, null_equal=True), chunk
+
+
+def test_feature_health_reads_the_rows_before_its_own():
+    """A row's features move the health of the rows after it, never its
+    own; and run once there is no longer run to compare with."""
+    df = _frame()
+    at = 400
+    moved = df.with_columns(
+        pl.when(pl.int_range(pl.len()) == at)
+        .then(pl.col("x0") + 9.0)
+        .otherwise(pl.col("x0"))
+        .alias("x0")
+    )
+    a = _run(df, _spec("emit_feature_health"))
+    b = _run(moved, _spec("emit_feature_health"))
+    for f in HEALTH:
+        assert a[f][: at + 1].equals(b[f][: at + 1], null_equal=True), f
+    assert a["spread_ratio_x0"][at + 1] != b["spread_ratio_x0"][at + 1]
+    once = _run(df, _spec("emit_feature_health", half_life=float("inf")))
+    assert once["spread_ratio_x0"].null_count() == once.height
+
+
+def test_feature_health_zero_weights_and_a_save():
+    df = _frame().with_columns(pl.int_range(pl.len()).cast(pl.Float64).alias("t"))
+    spec = _spec("emit_feature_health", clock="t", gap_cap=10.0)
+    out = _run(df, spec)
+    rest = _run(df.slice(2), spec)
+    for f in HEALTH:
+        assert out[f].is_nan().sum() == 0, f
+        np.testing.assert_allclose(
+            out[f][2:].to_numpy(), rest[f].to_numpy(), rtol=1e-12, atol=0, equal_nan=True
+        )
+    bank = po.ModelBank([spec])
+    first = bank.fit_predict(df.slice(0, 500))
+    resumed = po.ModelBank.load_bytes(bank.save_bytes())
+    got = pl.concat([first, resumed.fit_predict(df.slice(500))]).unnest("m").select(HEALTH)
+    assert got.equals(out.select(HEALTH), null_equal=True)
+
+
+def test_a_held_feature_goes_quiet_long_before_rls_winds_up():
+    """docs/DATA-ISSUES.md's frozen feed: ``x1`` held from row 300 at a
+    half-life of 20. ``spread_ratio_x1`` falls below 0.5 within three
+    half-lives; ``rls``'s slope passes 1 after about fifty."""
+    rng = np.random.default_rng(3)
+    n = 3_500
+    t = np.arange(n, dtype=float)
+    x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+    y = x0 + 0.5 * x1 + 0.2 * rng.standard_normal(n)
+    held = (t >= 300) & (t < 3_300)
+    df = pl.DataFrame({"t": t, "x0": x0, "x1": np.where(held, x1[299], x1), "y": y})
+    spec = po.spec.rls(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        clock="t",
+        gap_cap=5.0,
+        half_life=20.0,
+        coef_every=1,
+        emit_feature_health=True,
+    )
+    out = _run(df, spec)
+    quiet = int(np.flatnonzero((t >= 300) & (out["spread_ratio_x1"].to_numpy() < 0.5))[0])
+    wound = int(np.flatnonzero((t >= 300) & (out["coef"].list.get(2).abs().to_numpy() > 1.0))[0])
+    assert quiet - 300 < 3 * 20 < 40 * 20 < wound - 300, (quiet, wound)

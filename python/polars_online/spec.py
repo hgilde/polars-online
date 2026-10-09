@@ -218,7 +218,8 @@ the diagnostics
     ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
     ``emit_specification`` with ``specification_half_life`` and
     ``ljung_box_lags``, ``emit_tails`` with ``tails_half_life``, ``emit_influence`` with
-    ``influence_half_life``, and ``emit_clocks``. Each adds fields to the
+    ``influence_half_life``, ``emit_feature_health`` with
+    ``feature_health_half_life``, and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: when left out, four times the model instance's half-life
@@ -663,6 +664,22 @@ The diagnostics add, per slot:
        six spreads out and six off the line, beside a fit at a half-life of
        200: ``|influence| > 0.5`` held every planted row and no clean one;
        the clean rows' 99.9th percentile was 0.29.
+   * - ``emit_feature_health``
+     - ``spread_ratio_<feature>``, ``mean_shift_<feature>``, once per
+       instance and feature
+     - Each feature's EW standard deviation at ``feature_health_half_life``
+       over its standard deviation at four times it, and the two means'
+       difference in units of the slower one's deviation, read before the
+       row: about 1 and 0 for a steady feature. A feed that stopped, its
+       last value carried forward, shows as a ratio falling toward 0; a
+       feature that moved, as a shift. Null run once, with no longer run to
+       compare with. On docs/DATA-ISSUES.md's frozen feed (a half-life of
+       20) the held feature's ratio fell below 0.5 2.9 half-lives in, and
+       ``rls``'s slope passed 1, winding up, 52.6 half-lives in. At a
+       half-life of 200, clean features read a ratio outside 0.5 to 2 on no
+       row (independent or AR(1) at 0.95); a move of one spread read
+       ``|mean_shift| > 0.3`` on every stream within 190 rows, where an
+       AR(1) feature at 0.95 read it on 6% of rows and above 0.5 on 0.03%.
 
 .. rubric:: Errors
 

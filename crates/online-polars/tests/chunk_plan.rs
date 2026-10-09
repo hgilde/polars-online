@@ -68,7 +68,7 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
                "calibration_half_life": 200.0, "emit_breaks": true,
                "emit_robust_se": true, "robust_se_lags": 3, "emit_specification": true,
                "ljung_box_lags": 4, "emit_tails": true,
-               "emit_influence": true,"#,
+               "emit_influence": true, "emit_feature_health": true,"#,
         ),
         spec(
             "coupled",

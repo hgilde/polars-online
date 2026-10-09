@@ -626,6 +626,8 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "tails_half_life": (None,),
     "emit_influence": (False,),
     "influence_half_life": (None,),
+    "emit_feature_health": (False,),
+    "feature_health_half_life": (None,),
 }
 
 #: Keys free to hold any value without touching order-freeness: what the fit

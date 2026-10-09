@@ -181,7 +181,7 @@ fn specs() -> Vec<Spec> {
 /// held to.
 fn diagnosed_specs() -> Vec<Spec> {
     [
-        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true}"#,
+        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -927,6 +927,15 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_diagnosed", "a slot's influence scale", |p, v| {
             p.contains(".influence.") && p.ends_with(".q") && v.as_f64().is_some_and(|f| f != 0.0)
         }),
+        (
+            "bank_diagnosed",
+            "the features' fast and slow moments",
+            |p, v| {
+                p.contains(".checks.")
+                    && p.contains(".health.slow.")
+                    && v.as_f64().is_some_and(|f| f != 0.0)
+            },
+        ),
         ("bank_diagnosed", "a slot's calibration moments", |p, v| {
             p.contains(".checks.")
                 && p.contains(".calibration.")

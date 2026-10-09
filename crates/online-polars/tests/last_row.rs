@@ -48,6 +48,7 @@ fn rich_spec() -> Spec {
             "emit_specification": true,
             "emit_tails": true,
             "emit_influence": true,
+            "emit_feature_health": true,
             "min_settled_frac": 0.2
         }"#,
     )

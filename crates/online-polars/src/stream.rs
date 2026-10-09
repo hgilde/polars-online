@@ -2458,6 +2458,10 @@ pub struct ChunkOut {
     /// Task 221's values, `n_checks` per slot, laid out like `metrics`:
     /// `n_models * n_checks * n_slots * n_rows` ([`crate::checks`]).
     pub checks: Vec<f64>,
+    /// Feature health under `emit_feature_health`, per instance and
+    /// feature, not per slot: `n_models * 2 * k * n_rows`, the spread
+    /// ratios' block and then the mean shifts' (task 221 (g)).
+    pub health: Vec<f64>,
     /// Model-major: `n_models * n_levels * n_slots * n_rows`.
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
@@ -2535,6 +2539,11 @@ impl Buffers {
             + 3 * on(spec.emit_metrics)
             + 3 * on(spec.conformal.is_some())
             + crate::checks::value_names(spec).len() * per
+            + if spec.emit_feature_health {
+                n_models * 2 * spec.k()
+            } else {
+                0
+            }
             + self.n_levels * per
             + n_models
             + n_models
@@ -2570,6 +2579,14 @@ impl ChunkOut {
             metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
             conformal: vec![f64::NAN; 3 * on(spec.conformal.is_some())],
             checks: vec![f64::NAN; n_checks * per],
+            health: vec![
+                f64::NAN;
+                if spec.emit_feature_health {
+                    n_models * 2 * spec.k() * n_rows
+                } else {
+                    0
+                }
+            ],
             resid_q: vec![f64::NAN; n_levels * per],
             drift: vec![false; on(spec.emit_drift)],
             n_eff: vec![f64::NAN; n_models * n_rows],
@@ -2694,6 +2711,13 @@ pub struct LastRow {
         with = "online_core::humanfloat::vec_f64_or_tag"
     )]
     pub checks: Vec<f64>,
+    /// Task 221 (g)'s feature health; empty, and not written, without it.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "online_core::humanfloat::vec_f64_or_tag"
+    )]
+    pub health: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
@@ -2752,6 +2776,7 @@ impl LastRow {
         take_row(&mut self.metrics, &out.metrics, n, ri);
         take_row(&mut self.conformal, &out.conformal, n, ri);
         take_row(&mut self.checks, &out.checks, n, ri);
+        take_row(&mut self.health, &out.health, n, ri);
         take_row(&mut self.resid_q, &out.resid_q, n, ri);
         take_row(&mut self.drift, &out.drift, n, ri);
         take_row(&mut self.n_eff, &out.n_eff, n, ri);
@@ -2798,6 +2823,7 @@ impl LastRow {
             out.metrics.len() == self.metrics.len(),
             out.conformal.len() == self.conformal.len(),
             out.checks.len() == self.checks.len(),
+            out.health.len() == self.health.len(),
             out.resid_q.len() == self.resid_q.len(),
             out.drift.len() == self.drift.len(),
             out.n_eff.len() == self.n_eff.len(),
@@ -2829,6 +2855,7 @@ impl LastRow {
         out.metrics.clone_from(&self.metrics);
         out.conformal.clone_from(&self.conformal);
         out.checks.clone_from(&self.checks);
+        out.health.clone_from(&self.health);
         out.resid_q.clone_from(&self.resid_q);
         out.drift.clone_from(&self.drift);
         out.n_eff.clone_from(&self.n_eff);
@@ -4277,6 +4304,12 @@ fn build_instances<'a>(
     let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
     let mut o_conformal = out.conformal.chunks_mut((3 * block).max(1));
     let mut o_checks = out.checks.chunks_mut((out.n_checks * block).max(1));
+    let health_block = if spec.emit_feature_health {
+        2 * spec.k() * n_rows
+    } else {
+        0
+    };
+    let mut o_health = out.health.chunks_mut(health_block.max(1));
     let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
     let mut o_drift = out.drift.chunks_mut(block.max(1));
     let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
@@ -4333,6 +4366,7 @@ fn build_instances<'a>(
                 o_metrics: o_metrics.next().unwrap_or_default(),
                 o_conformal: o_conformal.next().unwrap_or_default(),
                 o_checks: o_checks.next().unwrap_or_default(),
+                o_health: o_health.next().unwrap_or_default(),
                 o_resid_q: o_resid_q.next().unwrap_or_default(),
                 o_drift: o_drift.next().unwrap_or_default(),
                 o_n_eff: o_n_eff.next().unwrap_or_default(),
@@ -4517,6 +4551,7 @@ struct Instance<'a> {
     o_metrics: &'a mut [f64],
     o_conformal: &'a mut [f64],
     o_checks: &'a mut [f64],
+    o_health: &'a mut [f64],
     o_resid_q: &'a mut [f64],
     o_drift: &'a mut [bool],
     o_n_eff: &'a mut [f64],
@@ -5227,6 +5262,7 @@ fn run_instance(
                     ri,
                     inst.o_checks,
                 );
+                c.read_health(xs.len(), n_rows, ri, inst.o_health);
             }
             if learn {
                 c.learn(&inst.check_cfg, plan.d_clock, &row, &sc.z, w);

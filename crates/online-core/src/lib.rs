@@ -85,6 +85,7 @@ mod ftrl;
 mod gaps;
 /// Fits read off an exported Gram, offline (docs/PLAN.md tasks 226-227).
 pub mod gramfit;
+mod health;
 mod hmm;
 mod holt;
 pub mod humanfloat;
@@ -149,6 +150,7 @@ pub use ewlagcov::{EwLagCov, MAX_LAG, check_lag_ceiling};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use gaps::{GramPart, TargetGaps};
+pub use health::FeatureHealth;
 pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
 pub use influence::Influence;

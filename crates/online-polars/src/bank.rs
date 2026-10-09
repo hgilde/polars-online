@@ -4840,6 +4840,11 @@ fn assemble(
                     &ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
                 })
                 .finish_array_boxed(),
+                Source::Health(which, mi, fi) => scatter(n, chunks, false, |ch, nr| {
+                    let k = spec.k();
+                    &ch.health[(mi * 2 * k + which * k + fi) * nr..][..nr]
+                })
+                .finish_array_boxed(),
                 Source::Check(k, i) => scatter(n, chunks, false, |ch, nr| {
                     let (mi, slot) = (i / per_model, i % per_model);
                     let b = block(ch, nr);

@@ -89,6 +89,8 @@ class ExprKwargs(TypedDict, total=False):
     tails_half_life: float | Duration | None
     emit_influence: bool
     influence_half_life: float | Duration | None
+    emit_feature_health: bool
+    feature_health_half_life: float | Duration | None
     embargo: float | Duration | None
 
 

@@ -2136,6 +2136,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "specification_half_life",
             "tails_half_life",
             "influence_half_life",
+            "feature_health_half_life",
         ],
     ),
     (
@@ -3011,6 +3012,18 @@ pub struct Spec {
     /// [`Spec::memory_multiple`]'s), `inf` the run-once form.
     #[serde(default)]
     pub influence_half_life: Option<Span>,
+    /// Emit `spread_ratio_<feature>` and `mean_shift_<feature>`, per
+    /// instance (docs/PLAN.md task 221 (g); [`online_core::FeatureHealth`]
+    /// has the update): each feature's EW spread at
+    /// `feature_health_half_life` over its spread at four times it, and the
+    /// two means' difference in units of the longer one's spread -- a
+    /// feature gone quiet, or moved.
+    #[serde(default)]
+    pub emit_feature_health: bool,
+    /// The feature health's fast memory, in clock units (the default is
+    /// [`Spec::memory_multiple`]'s); its slow memory is four times it.
+    #[serde(default)]
+    pub feature_health_half_life: Option<Span>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -4166,6 +4179,7 @@ impl Spec {
                 ("emit_specification", self.emit_specification),
                 ("emit_tails", self.emit_tails),
                 ("emit_influence", self.emit_influence),
+                ("emit_feature_health", self.emit_feature_health),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];

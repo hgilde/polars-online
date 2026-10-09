@@ -10,7 +10,9 @@
 //! row was scored with. Their per-slot values ride in one output buffer,
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
-use online_core::{Breaks, Calibration, Decay, Influence, Sandwich, Specification, Tails, TwinFit};
+use online_core::{
+    Breaks, Calibration, Decay, FeatureHealth, Influence, Sandwich, Specification, Tails, TwinFit,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{ModelKind, Spec};
@@ -52,6 +54,7 @@ pub struct CheckCfg {
     specification: Decay,
     tails: Decay,
     influence: Decay,
+    health: Decay,
     /// Newey and West's lags, `0` for HC0 alone.
     lags: usize,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
@@ -118,6 +121,11 @@ impl CheckCfg {
                 spec.influence_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("influence_half_life"),
+            ),
+            health: Spec::diagnostic_decay(
+                spec.feature_health_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("feature_health_half_life"),
             ),
             lags: spec.robust_se_lags_or_default(),
             combo_features,
@@ -188,6 +196,10 @@ pub struct Checks {
     /// under `emit_influence`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub influence: Vec<Influence>,
+    /// Each feature's fast and slow moments, under `emit_feature_health`:
+    /// one per instance, not per slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<FeatureHealth>,
 }
 
 impl Checks {
@@ -216,6 +228,9 @@ impl Checks {
             ],
             tails: vec![Tails::new(); on(spec.emit_tails, n_slots)],
             influence: vec![Influence::new(); on(spec.emit_influence, n_slots)],
+            health: spec
+                .emit_feature_health
+                .then(|| FeatureHealth::new(spec.k())),
         }
     }
 
@@ -227,6 +242,7 @@ impl Checks {
             || spec.emit_specification
             || spec.emit_tails
             || spec.emit_influence
+            || spec.emit_feature_health
     }
 
     /// Whether a restored set is shaped as `fresh`, this spec's: the same
@@ -242,6 +258,8 @@ impl Checks {
             && self.tails.iter().all(Tails::has_shape)
             && self.influence.len() == fresh.influence.len()
             && self.influence.iter().all(Influence::has_shape)
+            && self.health.is_some() == fresh.health.is_some()
+            && self.health.as_ref().is_none_or(|h| h.has_shape(k))
             && self
                 .specification
                 .iter()
@@ -381,6 +399,18 @@ impl Checks {
         let _ = v;
     }
 
+    /// Write each feature's health before the row, under
+    /// `emit_feature_health`: the spread ratio of feature `i` at `(i·n_rows
+    /// + ri)` of `out`, its mean shift `k` blocks on.
+    pub fn read_health(&self, k: usize, n_rows: usize, ri: usize, out: &mut [f64]) {
+        let Some(h) = &self.health else { return };
+        for i in 0..k {
+            let (ratio, shift) = h.read(i).unzip();
+            out[i * n_rows + ri] = ratio.unwrap_or(f64::NAN);
+            out[(k + i) * n_rows + ri] = shift.unwrap_or(f64::NAN);
+        }
+    }
+
     /// Fold one learned row: `row` and its recursive residuals `rec`, the
     /// row's clock step and weight. A slot with no prediction or no target,
     /// and a row of weight 0, only age (CLAUDE.md hard rule 9).
@@ -402,6 +432,9 @@ impl Checks {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
                 fit.update(row.xs, y, lam, w);
             }
+        }
+        if let Some(h) = self.health.as_mut() {
+            h.update(row.xs, cfg.health.factor(d_clock), w);
         }
         if !self.influence.is_empty() {
             let lam = cfg.influence.factor(d_clock);
