@@ -769,3 +769,93 @@ fn a_restored_audit_goes_on_where_it_stopped() {
         assert_eq!(b, whole, "cut at {cut}");
     }
 }
+
+/// The values at ranks `p` either side of a column's median, and at `2p`
+/// either side of the median of its deviations from it: the brackets a
+/// digest's median and MAD fall in, at its rank resolution of about one
+/// percent.
+fn rank_brackets(xs: &[f64], p: f64) -> ((f64, f64), (f64, f64)) {
+    let mut s = xs.to_vec();
+    s.sort_by(f64::total_cmp);
+    let q = |v: &[f64], f: f64| v[((v.len() - 1) as f64 * f) as usize];
+    let med = q(&s, 0.5);
+    let mut dev: Vec<f64> = xs.iter().map(|x| (x - med).abs()).collect();
+    dev.sort_by(f64::total_cmp);
+    (
+        (q(&s, 0.5 - p), q(&s, 0.5 + p)),
+        (q(&dev, 0.5 - 2.0 * p), q(&dev, 0.5 + 2.0 * p)),
+    )
+}
+
+/// The MAD past the cap is the smallest `d` with half the rows within `d`
+/// of the median, read to a rank (task 234): however far one value sits
+/// from the rest, where 200 halvings of the bracket stopped short (an
+/// outlier at `1e70` beside a spread of 1 read a MAD of `6e9`, one at
+/// `1e100` a MAD of `6e39`); with an exact 0 at the minimum, or as the
+/// median, where a bracket divided by that 0 would be infinite; and 0
+/// where half the rows or more hold one value, at the minimum or in the
+/// middle.
+#[test]
+fn the_digest_reads_the_mad_to_a_rank_whatever_the_column_holds() {
+    let mut r = SplitMix64::new(29);
+    let read = |xs: &[f64]| {
+        let mut m = Audit::new(AuditCfg {
+            distinct_cap: 8,
+            ..cfg(1)
+        })
+        .unwrap();
+        for &v in xs {
+            m.step(&[v], &[], 1.0, 1.0);
+        }
+        let c = m.column(0);
+        assert_eq!(c.distinct, None, "the digest reads it");
+        c
+    };
+    // `below` of the rows under -1, `share` on 0, the rest over 1.
+    let atom = |r: &mut SplitMix64, below: f64, share: f64| -> Vec<f64> {
+        (0..3000)
+            .map(|_| {
+                let u = r.uniform();
+                if u < below {
+                    -1.0 - u
+                } else if u < below + share {
+                    0.0
+                } else {
+                    1.0 + u
+                }
+            })
+            .collect()
+    };
+    let mut cases: Vec<(String, Vec<f64>)> = Vec::new();
+    for far in [1e60, 1e70, 1e100] {
+        let mut xs: Vec<f64> = (0..3000).map(|_| normal(&mut r)).collect();
+        xs.push(far);
+        cases.push((format!("one value at {far:e}"), xs));
+    }
+    let mut xs: Vec<f64> = (0..3000).map(|_| normal(&mut r).abs()).collect();
+    xs.push(0.0);
+    cases.push(("an exact 0 at the minimum".into(), xs));
+    cases.push((
+        "0 as the median, on 40% of rows".into(),
+        atom(&mut r, 0.3, 0.4),
+    ));
+    for (name, xs) in &cases {
+        let c = read(xs);
+        let ((m_lo, m_hi), (d_lo, d_hi)) = rank_brackets(xs, 0.01);
+        assert!(
+            m_lo <= c.median && c.median <= m_hi,
+            "{name}: median {}",
+            c.median
+        );
+        assert!(
+            d_lo <= c.mad && c.mad <= d_hi,
+            "{name}: MAD {:e} not in [{d_lo:e}, {d_hi:e}]",
+            c.mad
+        );
+    }
+    // Half the rows or more on one value: the MAD is 0, to the bit.
+    for (name, below) in [("at the minimum", 0.0), ("in the middle", 0.2)] {
+        let c = read(&atom(&mut r, below, 0.6));
+        assert_eq!((c.median, c.mad), (0.0, 0.0), "60% of rows on 0, {name}");
+    }
+}

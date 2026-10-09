@@ -123,6 +123,13 @@ pub const COMPRESSION: f64 = 200.0;
 /// Values the t-digest holds before it compresses them into its centroids.
 const DIGEST_BUFFER: usize = 256;
 
+/// Halvings enough to close any bracket `[0, b]` of doubles to two
+/// neighbours: the largest double is under `2^2098` times the smallest
+/// positive one. With 200, a bracket wider than about `2^200` times the MAD
+/// stopped short of it: one value at `1e70` beside a spread of 1 read a MAD
+/// of `6e9` (task 234).
+const BISECTIONS: usize = 2100;
+
 /// The default `distinct_cap`: the counters per column, which bound the
 /// error of the most repeated value's count by `n / 257`.
 pub const DISTINCT_CAP: usize = 256;
@@ -685,7 +692,8 @@ impl Cdf {
     }
 
     /// The median absolute deviation about `m`: the smallest `d` with half
-    /// the rows inside `[m − d, m + d]`, by bisection.
+    /// the rows inside `[m − d, m + d]`, by bisection down to two
+    /// neighbouring doubles ([`BISECTIONS`]).
     fn mad(&self, m: f64) -> f64 {
         let (lo, hi) = (self.points[0].0, self.points[self.points.len() - 1].0);
         let mut b = (hi - m).max(m - lo);
@@ -693,7 +701,7 @@ impl Cdf {
         if self.rank(m) - self.rank_below(m) >= self.n / 2.0 {
             return 0.0;
         }
-        for _ in 0..200 {
+        for _ in 0..BISECTIONS {
             let d = a + (b - a) / 2.0;
             if d <= a || d >= b {
                 break;
