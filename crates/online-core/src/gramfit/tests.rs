@@ -478,6 +478,11 @@ fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
         cross_moments: &cross,
         means_by_target: &mbt,
         cross_centred: &cc,
+        weight_sum: 10.0,
+        target_weights: &[10.0, 10.0],
+        target_means: &[5.0, 2.0],
+        target_vars: &[1.0, 1.0],
+        target_n_kish: &[10.0, 10.0],
     };
     assert_eq!(g.targets(), 2);
     let design = Design::of(&g, &[1, 2], Some(0));

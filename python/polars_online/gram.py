@@ -8,8 +8,9 @@ the columns (:func:`subset`), read a correlation matrix (:func:`correlation`),
 solve a ridge (:func:`solve`), walk a lasso path over a grid of penalties
 (:func:`lasso_path`) or from its start knot by knot (:func:`lars_path`, and
 :func:`lars_paths` for many Grams and targets at once), put standard errors
-on coefficients (:func:`coef_stats`), and diagnose collinearity
-(:func:`vif`, :func:`condition`).
+on coefficients (:func:`coef_stats`), merge and fit many subsets of Grams in
+one call (:func:`solve_subsets`), and diagnose collinearity (:func:`vif`,
+:func:`condition`).
 
 Every function takes the mapping ``gram()`` produces (``columns``,
 ``targets``, ``means``, ``comoments``, ``cross_moments``, ``means_by_target``,
@@ -26,8 +27,8 @@ symmetric eigendecomposition (``numpy.linalg.eigh``) in :func:`solve` and
 :func:`vif`, and an inverse (``numpy.linalg.inv``) in :func:`coef_stats`,
 which round differently in the last place or two. The tests hold the two to
 a relative tolerance, not to equality. :func:`lasso_path` and
-:func:`lars_path` run in Rust, and :func:`lars_paths` on the bank's thread
-pool.
+:func:`lars_path` run in Rust, and :func:`lars_paths` and
+:func:`solve_subsets` on the bank's thread pool.
 
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
@@ -54,6 +55,7 @@ __all__ = [
     "lasso_path",
     "merge",
     "solve",
+    "solve_subsets",
     "subset",
     "vif",
 ]
@@ -807,11 +809,14 @@ def lasso_path(
 
 
 def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
-    """A Gram's arrays as the Rust fits read them: ``k``, then ``means``,
-    ``comoments``, ``cross_moments``, ``means_by_target`` and
-    ``cross_centred``, each C-contiguous float64. A mapping without the
-    last two gets them as :func:`solve` forms them: ``means`` for every
-    target, and ``cross_moments[t] - m * ybar``."""
+    """A Gram's arrays as the Rust fits read them: ``k`` and
+    ``weight_sum``, then ``means``, ``comoments``, ``cross_moments``,
+    ``means_by_target``, ``cross_centred``, ``target_weights``,
+    ``target_means``, ``target_vars`` and ``target_n_kish``, each
+    C-contiguous float64. A mapping without ``means_by_target`` or
+    ``cross_centred`` gets them as :func:`solve` forms them: ``means`` for
+    every target, and ``cross_moments[t] - m * ybar``; one without a target
+    moment gets ``nan`` for it."""
     k = len(_columns(g))
     means = np.ascontiguousarray(g["means"], dtype=np.float64)
     cross = np.ascontiguousarray(np.asarray(g["cross_moments"], dtype=np.float64).reshape(-1, k))
@@ -828,7 +833,26 @@ def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
                 cc[t] = _cross_centred(np, g, t, by_target[t], cross[t][icept])
     cc = np.ascontiguousarray(np.asarray(cc, dtype=np.float64).reshape(m, k))
     como = np.ascontiguousarray(g["comoments"], dtype=np.float64)
-    return (k, means, como, cross, by_target, cc)
+
+    def per_target(key: str) -> Any:
+        v = g.get(key)
+        if v is None:
+            return np.full(m, np.nan)
+        return np.ascontiguousarray(v, dtype=np.float64).reshape(m)
+
+    return (
+        k,
+        float(g["weight_sum"]),
+        means,
+        como,
+        cross,
+        by_target,
+        cc,
+        per_target("target_weights"),
+        per_target("target_means"),
+        per_target("target_vars"),
+        per_target("target_n_kish"),
+    )
 
 
 def _limit(name: str, v: int | None) -> int | None:
@@ -1031,6 +1055,199 @@ def lars_paths(
             for pen, coef, act, stop in per
         ]
         for per in out
+    ]
+
+
+_PATH_KEYS = ("max_steps", "max_active", "penalty_weights")
+
+
+def solve_subsets(
+    grams: Sequence[dict[str, Any]],
+    subsets: Sequence[Sequence[int]],
+    *,
+    targets: Sequence[str | int] | None = None,
+    features: Sequence[str | int] | None = None,
+    ridge: float = 0.0,
+    standardize: bool = False,
+    path: dict[str, Any] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """Merge each subset of the Grams and fit it, for many subsets at once.
+
+    For each subset, a list of positions in ``grams``, the parts are pooled
+    as :func:`merge` pools them and each target is fitted on the pooled
+    Gram: a ridge with its statistics, as :func:`solve` and then
+    :func:`coef_stats` give them, or with ``path`` its lasso path, as
+    :func:`lars_path` gives it. Two uses: the halves of a stability
+    selection, each a merge of about half the blocks; and each block's own
+    fit, its ``t`` saying how stable a coefficient is across blocks.
+
+    The Grams are read once, into memory of the call's own, and every
+    subset is merged and fitted there, on the bank's thread pool, without a
+    Python copy of a matrix per subset. Measured on an M4 Pro under a load
+    of 12, for 38 Grams and 100 subsets of 19: 0.02 s at 200 columns and
+    3.0 s at 2,000, where the loop of :func:`merge`, :func:`solve` and
+    :func:`coef_stats` took 0.43 s and 76 s. The copy is the Grams' size
+    again for the call's length. A subset's merge is formed on the
+    slots and the intercept alone, and dropped when its fits are done; its
+    targets share one factorization. The merge is :func:`merge`'s
+    arithmetic entry for entry, so it agrees with it to the bit. The fit
+    then is
+
+    .. code-block:: text
+
+        (A + ridge * I) b = r_t            A, r_t as solve() forms them
+        b_0       = ybar_t - m_t . b       the intercept, with one
+        resid_var = Var[y] - 2 b' cov_xy + b' C b
+        sigma2    = resid_var * n / (n - p)      n = target_n_kish, p the columns
+        se        = sqrt(diag(inv(C)) * sigma2 / n),   t = b / se
+
+    with ``C`` the slots' centred co-moments. Under ``standardize`` the
+    system is solved in correlation form, as :func:`solve` solves it. Both
+    systems are factorized by Cholesky, where :func:`solve` runs numpy's
+    symmetric eigendecomposition and :func:`coef_stats` its inverse, so the
+    two agree to rounding, the system's condition number times ``1e-16``:
+    measured within ``5e-13`` of each number's size at 2,000 columns. A
+    system whose factorization fails, such as a constant column under a
+    ridge of 0, gives ``nan`` here, where :func:`solve` divides by an
+    eigenvalue of 0 or of rounding size. A nearly singular one gives what
+    any solve of it gives, rounding noise.
+
+    .. rubric:: Parameters
+
+    ``grams``
+        The Grams, each as :meth:`~polars_online.ModelBank.gram` returns
+        it, all with the same ``columns`` and ``targets``.
+    ``subsets``
+        One list of positions in ``grams`` per fit, each naming a Gram at
+        most once: a Gram twice in one merge counts its rows twice. ``[[0],
+        [1], ...]`` fits each Gram alone.
+    ``targets``
+        The targets to fit, by name or position: every target when
+        ``None``.
+    ``features``
+        As for :func:`solve`.
+    ``ridge``, ``standardize``
+        As for :func:`solve`, one ridge.
+    ``path``
+        ``None`` for the ridge fit, or a dict of :func:`lars_path`'s
+        ``max_steps``, ``max_active`` and ``penalty_weights`` (``{}`` for
+        none of them) for each target's lasso path instead. ``ridge`` and
+        ``standardize`` are then not read: a path is in correlation form.
+
+    Returns one list per subset, with one dict per target. A ridge fit's
+    dict has ``coef``, the coefficients over the Gram's columns, and
+    :func:`coef_stats`' ``resid_var``, ``sigma2``, ``r2``, ``n``, ``se`` and
+    ``t``. A path's dict is :func:`lars_path`'s.
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                               half_life=float("inf"), group="stock_id")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        blocks = bank.gram("ridge")                     # one Gram per group
+        each = po.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
+        t_x0 = [fits[0]["t"][1] for fits in each]       # x0's t in every block
+        halves = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
+
+    ``ValueError`` for Grams of different columns or targets, an empty
+    subset, a position out of range or named twice in one subset, a
+    ``ridge`` that is not finite and at least 0, an unknown key in
+    ``path``, and, for a ridge fit, a Gram without target moments (as
+    :func:`coef_stats`) or one without ``means_by_target`` and
+    ``cross_centred``, which :func:`merge` forms after pooling and this
+    does not. Otherwise as :func:`solve` and :func:`lars_path`.
+    """
+    np = _np()
+    parts = list(grams)
+    if not parts:
+        msg = "solve_subsets() needs at least one Gram"
+        raise ValueError(msg)
+    cols = _columns(parts[0])
+    names = list(parts[0].get("targets") or [])
+    for p in parts[1:]:
+        if _columns(p) != cols or list(p.get("targets") or []) != names:
+            msg = "solve_subsets() needs the same columns and targets in every Gram"
+            raise ValueError(msg)
+    picked: list[list[int]] = []
+    for s in subsets:
+        idx = [int(i) for i in s]
+        if not idx:
+            msg = "solve_subsets(): a subset names no Gram"
+            raise ValueError(msg)
+        if any(not 0 <= i < len(parts) for i in idx):
+            msg = f"solve_subsets(): subset {list(s)!r} names a Gram out of range 0..{len(parts)}"
+            raise ValueError(msg)
+        if len(set(idx)) != len(idx):
+            msg = (
+                f"solve_subsets(): subset {list(s)!r} names a Gram twice, which would count "
+                "its rows twice"
+            )
+            raise ValueError(msg)
+        picked.append(idx)
+    slots, icept = _feature_slots(parts[0], features)
+    m = len(parts[0]["target_weights"])
+    tidx = list(range(m)) if targets is None else [_target_index(parts[0], t) for t in targets]
+    for p in parts:
+        for key in ("means_by_target", "cross_centred"):
+            v = p.get(key)
+            if m and (v is None or len(v) == 0):
+                msg = (
+                    f"solve_subsets() needs {key!r} in every Gram, which ModelBank.gram() "
+                    "reports; merge() then solve() forms it from cross_moments instead"
+                )
+                raise ValueError(msg)
+    native = [_native_gram(np, p, icept) for p in parts]
+    ic = None if icept < 0 else icept
+    k = len(cols)
+    if path is not None:
+        unknown = sorted(set(path) - set(_PATH_KEYS))
+        if unknown:
+            msg = f"solve_subsets(): path takes {list(_PATH_KEYS)}, not {unknown}"
+            raise ValueError(msg)
+        steps = _limit("max_steps", path.get("max_steps"))
+        active = _limit("max_active", path.get("max_active"))
+        weights = _lars_weights(np, len(slots), path.get("penalty_weights"))
+        out = _native.gram_path_subsets(native, picked, tidx, slots, ic, weights, steps, active)
+        return [
+            [
+                {
+                    "penalties": np.asarray(pen, dtype=float),
+                    "coef": np.frombuffer(coef, dtype=np.float64).reshape(len(pen), k),
+                    "active": [[cols[i] for i in a] for a in act],
+                    "stop": stop,
+                }
+                for pen, coef, act, stop in per
+            ]
+            for per in out
+        ]
+    if not (math.isfinite(ridge) and ridge >= 0.0):
+        msg = f"solve_subsets: ridge must be finite and >= 0, got {ridge!r}"
+        raise ValueError(msg)
+    for p in parts:
+        if p.get("target_vars") is None or p.get("target_n_kish") is None:
+            msg = (
+                "a Gram here has no target moments, so it has no Var[y] to take a residual "
+                "variance from; a state saved by 0.2.0 or earlier reports None for them"
+            )
+            raise ValueError(msg)
+    fits = _native.gram_ridge_subsets(
+        native, picked, tidx, slots, ic, float(ridge), bool(standardize)
+    )
+    return [
+        [
+            {
+                "coef": np.frombuffer(coef, dtype=np.float64),
+                "resid_var": resid_var,
+                "sigma2": sigma2,
+                "r2": r2,
+                "n": n,
+                "se": np.frombuffer(se, dtype=np.float64),
+                "t": np.frombuffer(t, dtype=np.float64),
+            }
+            for coef, se, t, resid_var, sigma2, r2, n in per
+        ]
+        for per in fits
     ]
 
 

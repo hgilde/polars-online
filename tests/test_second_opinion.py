@@ -4504,3 +4504,45 @@ class TestLarsPathIsSklearns:
         np.testing.assert_allclose(ours[:, 1:] * sd, coefs.T, atol=1e-8)
         # The intercept: the target's mean less the slopes at the column means.
         np.testing.assert_allclose(ours[:, 0], y.mean() - ours[:, 1:] @ x.mean(axis=0), atol=1e-8)
+
+
+class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
+    """``po.gram.solve_subsets`` (docs/PLAN.md task 227) against statsmodels'
+    OLS on the rows of each subset of blocks, pooled: the merge, the solve
+    and the statistics at once. With every row at weight 1 the Kish size is
+    the row count, and ``sigma2 = resid_var * n / (n - p)`` and ``se`` are
+    OLS's ``scale`` and ``bse``. The levels sit at 1,000, where re-centring
+    raw moments would lose six digits."""
+
+    def test_coef_se_t_and_r2_are_ols_on_the_subsets_rows(self):
+        import statsmodels.api as sm
+
+        rng = np.random.default_rng(71)
+        n_blocks, per, k = 5, 300, 3
+        x = rng.standard_normal((n_blocks * per, k)) + 1000.0
+        y = x @ np.array([0.5, -1.0, 0.25]) + 3.0 + rng.standard_normal(n_blocks * per)
+        block = np.repeat(np.arange(n_blocks), per)
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": y, "block": block})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            half_life=float("inf"),
+            group="block",
+            min_weight=5.0,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        grams = bank.gram("m")
+        assert [g["group"] for g in grams] == ["0", "1", "2", "3", "4"]
+        subsets = [[0, 2], [1, 3, 4], [4]]
+        fits = po.gram.solve_subsets(grams, subsets)
+        for subset, (fit,) in zip(subsets, fits, strict=True):
+            rows = np.isin(block, subset)
+            ols = sm.OLS(y[rows], sm.add_constant(x[rows])).fit()
+            np.testing.assert_allclose(fit["coef"], ols.params, rtol=1e-8)
+            np.testing.assert_allclose(fit["se"][1:], ols.bse[1:], rtol=1e-8)
+            np.testing.assert_allclose(fit["t"][1:], ols.tvalues[1:], rtol=1e-8)
+            assert fit["sigma2"] == pytest.approx(ols.scale, rel=1e-8)
+            assert fit["r2"] == pytest.approx(ols.rsquared, rel=1e-8)
+            assert fit["n"] == rows.sum()

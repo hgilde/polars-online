@@ -1,19 +1,27 @@
-//! `polars_online.gram`'s fits in Rust (docs/PLAN.md task 226): the
-//! arrays come in through the buffer protocol, are read once into Rust
+//! `polars_online.gram`'s fits in Rust (docs/PLAN.md tasks 226 and 227):
+//! the arrays come in through the buffer protocol, are read once into Rust
 //! memory, and the fits run on the bank's pool with the GIL released.
 
-use online_polars::gramfit::{FitColumns, GramPath, cd_path_of, lars_paths};
-use online_polars::online_core::gramfit::{GramArrays, LarsLimits, LarsStop};
+use online_polars::gramfit::{
+    FitColumns, GramPath, SubsetFit, SubsetOut, cd_path_of, fit_subsets, lars_paths,
+};
+use online_polars::online_core::gramfit::{GramArrays, LarsLimits, LarsStop, OwnedGram};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 
-/// One Gram as the Python layer hands it over: `k`, then `means`,
-/// `comoments`, `cross_moments`, `means_by_target` and `cross_centred`, each
-/// a C-contiguous float64 buffer (a numpy array).
+/// One Gram as the Python layer hands it over: `k` and `weight_sum`, then
+/// `means`, `comoments`, `cross_moments`, `means_by_target`,
+/// `cross_centred`, `target_weights`, `target_means`, `target_vars` and
+/// `target_n_kish`, each a C-contiguous float64 buffer (a numpy array).
 pub(crate) type GramIn<'py> = (
     usize,
+    f64,
+    Bound<'py, PyAny>,
+    Bound<'py, PyAny>,
+    Bound<'py, PyAny>,
+    Bound<'py, PyAny>,
     Bound<'py, PyAny>,
     Bound<'py, PyAny>,
     Bound<'py, PyAny>,
@@ -31,21 +39,24 @@ type PathOut<'py> = (
     &'static str,
 );
 
+/// A ridge fit as the Python layer reads it: `coef`, `se` and `t` (each the
+/// bytes of `k` native-endian float64s), then `resid_var`, `sigma2`, `r2`
+/// and `n`.
+type RidgeOut<'py> = (
+    Bound<'py, PyByteArray>,
+    Bound<'py, PyByteArray>,
+    Bound<'py, PyByteArray>,
+    f64,
+    f64,
+    f64,
+    f64,
+);
+
 /// `v` as the bytes of native-endian float64s, which numpy reads with
 /// `frombuffer` in one copy, where a list costs a Python float apiece.
 pub(crate) fn float_bytes<'py>(py: Python<'py>, v: &[f64]) -> Bound<'py, PyByteArray> {
     let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_ne_bytes()).collect();
     PyByteArray::new(py, &bytes)
-}
-
-/// A Gram's arrays, read into Rust memory.
-pub(crate) struct OwnedGram {
-    k: usize,
-    means: Vec<f64>,
-    comoments: Vec<f64>,
-    cross_moments: Vec<f64>,
-    means_by_target: Vec<f64>,
-    cross_centred: Vec<f64>,
 }
 
 fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f64>> {
@@ -54,45 +65,45 @@ fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f6
         .map_err(|e| PyValueError::new_err(format!("{what}: {e}")))
 }
 
-impl OwnedGram {
-    pub(crate) fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<Self> {
-        let k = g.0;
-        let out = Self {
-            k,
-            means: floats(py, &g.1, "means")?,
-            comoments: floats(py, &g.2, "comoments")?,
-            cross_moments: floats(py, &g.3, "cross_moments")?,
-            means_by_target: floats(py, &g.4, "means_by_target")?,
-            cross_centred: floats(py, &g.5, "cross_centred")?,
-        };
-        let m = out.cross_moments.len().checked_div(k).unwrap_or(0);
-        let shapes = [
-            ("means", out.means.len(), k),
-            ("comoments", out.comoments.len(), k * k),
-            ("cross_moments", out.cross_moments.len(), m * k),
-            ("means_by_target", out.means_by_target.len(), m * k),
-            ("cross_centred", out.cross_centred.len(), m * k),
-        ];
-        for (what, got, want) in shapes {
-            if got != want {
-                return Err(PyValueError::new_err(format!(
-                    "{what} has {got} entries; a Gram of {k} columns and {m} targets has {want}"
-                )));
-            }
+/// A Gram's arrays read into Rust memory, their lengths checked.
+fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<OwnedGram> {
+    let k = g.0;
+    let out = OwnedGram {
+        k,
+        weight_sum: g.1,
+        means: floats(py, &g.2, "means")?,
+        comoments: floats(py, &g.3, "comoments")?,
+        cross_moments: floats(py, &g.4, "cross_moments")?,
+        means_by_target: floats(py, &g.5, "means_by_target")?,
+        cross_centred: floats(py, &g.6, "cross_centred")?,
+        target_weights: floats(py, &g.7, "target_weights")?,
+        target_means: floats(py, &g.8, "target_means")?,
+        target_vars: floats(py, &g.9, "target_vars")?,
+        target_n_kish: floats(py, &g.10, "target_n_kish")?,
+    };
+    let m = out.target_weights.len();
+    let shapes = [
+        ("means", out.means.len(), k),
+        ("comoments", out.comoments.len(), k * k),
+        ("cross_moments", out.cross_moments.len(), m * k),
+        ("means_by_target", out.means_by_target.len(), m * k),
+        ("cross_centred", out.cross_centred.len(), m * k),
+        ("target_means", out.target_means.len(), m),
+        ("target_vars", out.target_vars.len(), m),
+        ("target_n_kish", out.target_n_kish.len(), m),
+    ];
+    for (what, got, want) in shapes {
+        if got != want {
+            return Err(PyValueError::new_err(format!(
+                "{what} has {got} entries; a Gram of {k} columns and {m} targets has {want}"
+            )));
         }
-        Ok(out)
     }
+    Ok(out)
+}
 
-    pub(crate) fn arrays(&self) -> GramArrays<'_> {
-        GramArrays {
-            k: self.k,
-            means: &self.means,
-            comoments: &self.comoments,
-            cross_moments: &self.cross_moments,
-            means_by_target: &self.means_by_target,
-            cross_centred: &self.cross_centred,
-        }
-    }
+fn read_all(py: Python<'_>, grams: &[GramIn<'_>]) -> PyResult<Vec<OwnedGram>> {
+    grams.iter().map(|g| read(py, g)).collect()
 }
 
 fn stop_name(stop: LarsStop) -> &'static str {
@@ -106,6 +117,10 @@ fn stop_name(stop: LarsStop) -> &'static str {
 fn path_out(py: Python<'_>, p: GramPath) -> PathOut<'_> {
     let coefs = float_bytes(py, &p.coefs);
     (p.penalties, coefs, p.active, stop_name(p.stop))
+}
+
+fn value_err(e: impl std::fmt::Display) -> PyErr {
+    PyValueError::new_err(e.to_string())
 }
 
 /// Each listed target's lasso path on each Gram, by least angle regression
@@ -124,10 +139,7 @@ pub(crate) fn gram_lars_paths<'py>(
     max_steps: Option<usize>,
     max_active: Option<usize>,
 ) -> PyResult<Vec<Vec<PathOut<'py>>>> {
-    let owned = grams
-        .iter()
-        .map(|g| OwnedGram::read(py, g))
-        .collect::<PyResult<Vec<_>>>()?;
+    let owned = read_all(py, &grams)?;
     if targets.len() != owned.len() {
         return Err(PyValueError::new_err(format!(
             "{} target lists for {} Grams",
@@ -146,7 +158,7 @@ pub(crate) fn gram_lars_paths<'py>(
             let views: Vec<GramArrays<'_>> = owned.iter().map(OwnedGram::arrays).collect();
             lars_paths(&views, &targets, &cols, &weights, limits)
         })
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(value_err)?;
     Ok(paths
         .into_iter()
         .map(|per| per.into_iter().map(|p| path_out(py, p)).collect())
@@ -171,7 +183,7 @@ pub(crate) fn gram_cd_path(
     max_iter: usize,
     tol: f64,
 ) -> PyResult<Vec<f64>> {
-    let owned = OwnedGram::read(py, &gram)?;
+    let owned = read(py, &gram)?;
     check_axes(std::slice::from_ref(&owned), &[vec![target]], &slots, icept)?;
     if weights.len() != slots.len() {
         return Err(PyValueError::new_err(format!(
@@ -195,6 +207,131 @@ pub(crate) fn gram_cd_path(
     }))
 }
 
+/// The subsets' merged Grams, checked and fitted on the pool.
+fn subsets_fit(
+    py: Python<'_>,
+    grams: &[GramIn<'_>],
+    subsets: &[Vec<usize>],
+    targets: Vec<usize>,
+    cols: FitColumns,
+    fit: SubsetFit,
+) -> PyResult<Vec<Vec<SubsetOut>>> {
+    let owned = read_all(py, grams)?;
+    let all: Vec<Vec<usize>> = vec![targets.clone(); owned.len()];
+    check_axes(&owned, &all, &cols.slots, cols.icept)?;
+    if let Some(&i) = subsets.iter().flatten().find(|&&i| i >= owned.len()) {
+        return Err(PyValueError::new_err(format!(
+            "subset names Gram {i} of {}",
+            owned.len()
+        )));
+    }
+    if subsets.iter().any(Vec::is_empty) {
+        return Err(PyValueError::new_err("a subset names no Gram"));
+    }
+    py.detach(|| {
+        let views: Vec<GramArrays<'_>> = owned.iter().map(OwnedGram::arrays).collect();
+        fit_subsets(&views, subsets, &targets, &cols, &fit)
+    })
+    .map_err(value_err)
+}
+
+/// Each subset of the Grams merged and each listed target's ridge fit on
+/// it, with its statistics (`online_core::gramfit::ridge_fits`): one list
+/// per subset, one fit per target.
+#[pyfunction]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gram_ridge_subsets<'py>(
+    py: Python<'py>,
+    grams: Vec<GramIn<'_>>,
+    subsets: Vec<Vec<usize>>,
+    targets: Vec<usize>,
+    slots: Vec<usize>,
+    icept: Option<usize>,
+    ridge: f64,
+    standardize: bool,
+) -> PyResult<Vec<Vec<RidgeOut<'py>>>> {
+    let fit = SubsetFit::Ridge { ridge, standardize };
+    let out = subsets_fit(
+        py,
+        &grams,
+        &subsets,
+        targets,
+        FitColumns { slots, icept },
+        fit,
+    )?;
+    Ok(out
+        .into_iter()
+        .map(|per| {
+            per.into_iter()
+                .filter_map(|o| match o {
+                    SubsetOut::Ridge(f) => Some((
+                        float_bytes(py, &f.coef),
+                        float_bytes(py, &f.se),
+                        float_bytes(py, &f.t),
+                        f.resid_var,
+                        f.sigma2,
+                        f.r2,
+                        f.n,
+                    )),
+                    SubsetOut::Path(_) => None,
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// Each subset of the Grams merged and each listed target's lasso path on
+/// it, by least angle regression: one list per subset, one path per target.
+#[pyfunction]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gram_path_subsets<'py>(
+    py: Python<'py>,
+    grams: Vec<GramIn<'_>>,
+    subsets: Vec<Vec<usize>>,
+    targets: Vec<usize>,
+    slots: Vec<usize>,
+    icept: Option<usize>,
+    weights: Vec<f64>,
+    max_steps: Option<usize>,
+    max_active: Option<usize>,
+) -> PyResult<Vec<Vec<PathOut<'py>>>> {
+    if !weights.is_empty() && weights.len() != slots.len() {
+        return Err(PyValueError::new_err(format!(
+            "{} penalty weights for {} features",
+            weights.len(),
+            slots.len()
+        )));
+    }
+    let fit = SubsetFit::Path {
+        weights,
+        limits: LarsLimits {
+            max_steps,
+            max_active,
+        },
+    };
+    let out = subsets_fit(
+        py,
+        &grams,
+        &subsets,
+        targets,
+        FitColumns { slots, icept },
+        fit,
+    )?;
+    Ok(out
+        .into_iter()
+        .map(|per| {
+            per.into_iter()
+                .filter_map(|o| match o {
+                    SubsetOut::Path(p) => Some(path_out(py, p)),
+                    SubsetOut::Ridge(_) => None,
+                })
+                .collect()
+        })
+        .collect())
+}
+
 /// Every slot, the intercept and every target in range of every Gram: the
 /// Python layer resolves names to positions, so this guards the indexing.
 pub(crate) fn check_axes(
@@ -204,7 +341,7 @@ pub(crate) fn check_axes(
     icept: Option<usize>,
 ) -> PyResult<()> {
     for (g, ts) in grams.iter().zip(targets) {
-        let m = g.arrays().targets();
+        let m = g.target_weights.len();
         if let Some(&c) = slots.iter().chain(icept.as_ref()).find(|&&c| c >= g.k) {
             return Err(PyValueError::new_err(format!(
                 "column {c} out of range for a Gram of {} columns",
@@ -216,6 +353,15 @@ pub(crate) fn check_axes(
                 "target {t} out of range for a Gram with {m} targets"
             )));
         }
+    }
+    let first = grams.first().map(|g| (g.k, g.target_weights.len()));
+    if grams
+        .iter()
+        .any(|g| Some((g.k, g.target_weights.len())) != first)
+    {
+        return Err(PyValueError::new_err(
+            "every Gram must have the same columns and targets",
+        ));
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 //! The offline Gram fits of [`online_core::gramfit`], many at once on the
-//! bank's pool (docs/PLAN.md task 226): what `polars_online.gram`'s
-//! `lars_path`, `lars_paths` and `lasso_path` run.
+//! bank's pool (docs/PLAN.md tasks 226 and 227): what `polars_online.gram`'s
+//! `lars_path`, `lars_paths`, `lasso_path` and `solve_subsets` run.
 //!
 //! A path reads only its active columns' rows of the correlation matrix,
 //! formed from the Gram's co-moments as each column enters; a Gram's
@@ -10,8 +10,8 @@
 //! not depend on it.
 
 use online_core::gramfit::{
-    Correlation, Design, GramArrays, GramRows, LarsLimits, LarsStop, Response, cd_path,
-    lars_lasso_weighted,
+    Correlation, Design, GramArrays, GramRows, LarsLimits, LarsStop, Response, RidgeFit, cd_path,
+    lars_lasso_weighted, merge, ridge_fits,
 };
 use polars::prelude::*;
 use rayon::prelude::*;
@@ -142,4 +142,118 @@ pub fn cd_path_of(
         out.extend(resp.coef(&corr.scaling, b, g.k, &cols.slots, cols.icept));
     }
     out
+}
+
+/// What [`fit_subsets`] fits on each merged Gram.
+#[derive(Clone, Debug)]
+pub enum SubsetFit {
+    /// A ridge of this penalty, standardized or not, with its statistics.
+    Ridge { ridge: f64, standardize: bool },
+    /// The lasso path, weighted per slot (empty: 1 for every one), stopped
+    /// at `limits`.
+    Path {
+        weights: Vec<f64>,
+        limits: LarsLimits,
+    },
+}
+
+/// One target's fit on one subset's merged Gram.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SubsetOut {
+    Ridge(RidgeFit),
+    Path(GramPath),
+}
+
+/// Each subset of `grams` merged (`online_core::gramfit::merge`, on the
+/// columns `cols` reads) and fitted for each of `targets`, the subsets
+/// beside each other on the bank's pool: one list per subset, one fit per
+/// target. A subset is a list of positions in `grams`, which share their
+/// columns and targets. The merged Gram is formed once per subset, on the
+/// slots and the intercept alone, and dropped when its fits are done; the
+/// Grams themselves are only read.
+///
+/// # Errors
+///
+/// The pool's, when `POLARS_ONLINE_MAX_THREADS` is set wrong, and a path's
+/// weight that is not finite and above 0 on a column that varies.
+pub fn fit_subsets(
+    grams: &[GramArrays<'_>],
+    subsets: &[Vec<usize>],
+    targets: &[usize],
+    cols: &FitColumns,
+    fit: &SubsetFit,
+) -> PolarsResult<Vec<Vec<SubsetOut>>> {
+    let k = grams.first().map_or(0, |g| g.k);
+    // The merged Gram's columns: the intercept first, then the slots.
+    let all: Vec<usize> = cols
+        .icept
+        .into_iter()
+        .chain(cols.slots.iter().copied())
+        .collect();
+    let offset = usize::from(cols.icept.is_some());
+    let merged_cols = FitColumns {
+        slots: (offset..all.len()).collect(),
+        icept: cols.icept.map(|_| 0),
+    };
+    let weights = match fit {
+        SubsetFit::Path { weights, .. } if weights.is_empty() => vec![1.0; cols.slots.len()],
+        SubsetFit::Path { weights, .. } => weights.clone(),
+        SubsetFit::Ridge { .. } => Vec::new(),
+    };
+    let expand = |v: &[f64], fill: f64| -> Vec<f64> {
+        let mut out = vec![fill; k];
+        for (r, &i) in all.iter().enumerate() {
+            out[i] = v[r];
+        }
+        out
+    };
+    crate::pool()?.install(|| {
+        subsets
+            .par_iter()
+            .map(|subset| {
+                let parts: Vec<GramArrays<'_>> = subset.iter().map(|&i| grams[i]).collect();
+                let merged = merge(&parts, &all, cols.icept);
+                let g = merged.arrays();
+                match fit {
+                    SubsetFit::Ridge { ridge, standardize } => Ok(ridge_fits(
+                        &g,
+                        targets,
+                        &merged_cols.slots,
+                        merged_cols.icept,
+                        *ridge,
+                        *standardize,
+                    )
+                    .into_iter()
+                    .map(|f| {
+                        SubsetOut::Ridge(RidgeFit {
+                            coef: expand(&f.coef, 0.0),
+                            se: expand(&f.se, f64::NAN),
+                            t: expand(&f.t, f64::NAN),
+                            ..f
+                        })
+                    })
+                    .collect()),
+                    SubsetFit::Path { limits, .. } => {
+                        let rows = GramRows::new(g, &merged_cols.slots, merged_cols.icept);
+                        targets
+                            .par_iter()
+                            .map(|&t| {
+                                let p = path_of(&g, t, &rows, &merged_cols, &weights, *limits)?;
+                                let kk = g.k;
+                                let coefs = (0..p.penalties.len())
+                                    .flat_map(|n| expand(&p.coefs[n * kk..(n + 1) * kk], 0.0))
+                                    .collect();
+                                let active = p
+                                    .active
+                                    .iter()
+                                    .map(|a| a.iter().map(|&r| all[r]).collect())
+                                    .collect();
+                                Ok(SubsetOut::Path(GramPath { coefs, active, ..p }))
+                            })
+                            .collect()
+                    }
+                }
+            })
+            .collect()
+    })
 }

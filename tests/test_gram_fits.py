@@ -288,3 +288,150 @@ class TestLarsPaths:
         other = pg.subset(g, ["intercept", "x0"])
         with pytest.raises(ValueError, match="same columns"):
             pg.lars_paths([g, other])
+
+
+def blocks(n_blocks=6, seed=20, gaps=False, **kw) -> list[dict[str, Any]]:
+    """One Gram per block of rows, ``half_life=inf`` so the blocks share a
+    weighting and merge exactly."""
+    df = stream(n=600 * n_blocks, seed=seed, offset=kw.pop("offset", 0.0)).with_columns(
+        block=pl.int_range(pl.len()) // 600
+    )
+    if gaps:
+        df = df.with_columns(
+            y2=pl.when(pl.int_range(pl.len()) % 4 == 0).then(None).otherwise(pl.col("y2"))
+        )
+        kw.setdefault("target_gaps", "pairwise")
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y", "y2"],
+        features=[c for c in df.columns if c.startswith("x")],
+        half_life=float("inf"),
+        group="block",
+        min_weight=5.0,
+        **kw,
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    return bank.gram("m")
+
+
+SUBSETS = [[0], [1, 2], [0, 2, 4], [5, 3, 1], [0, 1, 2, 3, 4, 5]]
+
+
+class TestSolveSubsets:
+    """``solve_subsets`` against ``merge`` then ``solve`` and ``coef_stats``
+    on each subset. The merge is the same arithmetic; the solves are a
+    Cholesky against numpy's eigendecomposition and inverse, so they agree
+    to the system's condition number times the rounding: measured within
+    ``2e-13`` of each number's size here, held at ``1e-10``."""
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            dict(),
+            dict(ridge=0.3, standardize=True),
+            dict(ridge=0.05),
+            dict(features=["x4", "x1"]),
+            dict(fit_intercept=False, offset=2.0),
+            dict(gaps=True, ridge=1e-6),
+            dict(targets=["y2"]),
+        ],
+        ids=lambda c: ",".join(c) or "plain",
+    )
+    def test_each_subset_is_merge_then_solve_and_coef_stats(self, case):
+        case = dict(case)
+        make = {key: case.pop(key) for key in ("fit_intercept", "offset", "gaps") if key in case}
+        grams = blocks(**make)
+        got = pg.solve_subsets(grams, SUBSETS, **case)
+        targets = case.pop("targets", ["y", "y2"])
+        assert [len(per) for per in got] == [len(targets)] * len(SUBSETS)
+        for subset, per in zip(SUBSETS, got, strict=True):
+            merged = pg.merge([grams[i] for i in subset])
+            for t, fit in zip(targets, per, strict=True):
+                coef = pg.solve(merged, target=t, **case)
+                stats = pg.coef_stats(merged, coef, target=t, features=case.get("features"))
+                scale = 1.0 + np.abs(coef).max()
+                assert np.abs(fit["coef"] - coef).max() <= 1e-10 * scale
+                for key in ("resid_var", "sigma2", "r2", "n"):
+                    assert fit[key] == pytest.approx(stats[key], rel=1e-10, abs=1e-14), key
+                for key in ("se", "t"):
+                    assert np.array_equal(np.isnan(fit[key]), np.isnan(stats[key])), key
+                    ok = ~np.isnan(stats[key])
+                    np.testing.assert_allclose(fit[key][ok], stats[key][ok], rtol=1e-10)
+
+    def test_a_path_is_lars_path_on_the_merge_to_the_bit(self):
+        grams = blocks()
+        got = pg.solve_subsets(grams, SUBSETS, path={"max_active": 3})
+        for subset, per in zip(SUBSETS, got, strict=True):
+            merged = pg.merge([grams[i] for i in subset])
+            for t, path in zip(["y", "y2"], per, strict=True):
+                want = pg.lars_path(merged, target=t, max_active=3)
+                assert np.array_equal(path["coef"], want["coef"])
+                assert np.array_equal(path["penalties"], want["penalties"])
+                assert path["active"] == want["active"]
+                assert path["stop"] == want["stop"] == "max_active"
+
+    def test_a_subset_of_one_is_that_gram(self):
+        grams = blocks(n_blocks=3)
+        alone = pg.solve_subsets(grams, [[0], [1], [2]], path={"max_steps": 4})
+        paths = pg.lars_paths(grams, max_steps=4)
+        for a, p in zip(alone, paths, strict=True):
+            for x, y in zip(a, p, strict=True):
+                assert np.array_equal(x["coef"], y["coef"])
+        fits = pg.solve_subsets(grams, [[1]], ridge=0.1, standardize=True)
+        want = pg.solve(grams[1], target="y", ridge=0.1, standardize=True)
+        assert np.abs(fits[0][0]["coef"] - want).max() < 1e-12
+
+    def test_a_system_that_is_not_positive_definite_is_nan(self):
+        """A constant column and no ridge: its pivot is exactly 0, so the
+        factorization fails and every coefficient is ``nan``."""
+        df = stream(n=1200, seed=21).with_columns(
+            x4=pl.lit(3.0), block=pl.int_range(pl.len()) // 600
+        )
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=[f"x{i}" for i in range(5)],
+            half_life=float("inf"),
+            group="block",
+            min_weight=5.0,
+            ridge=1e-3,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        grams = bank.gram("m")
+        (fit,) = pg.solve_subsets(grams, [[0, 1]])[0]
+        assert np.all(np.isnan(fit["coef"]))
+        (fit,) = pg.solve_subsets(grams, [[0, 1]], ridge=0.01)[0]
+        want = pg.solve(pg.merge(grams), ridge=0.01)
+        assert np.abs(fit["coef"] - want).max() < 1e-9
+
+    @pytest.mark.parametrize(
+        ("args", "kw", "match"),
+        [
+            ([[]], {}, "names no Gram"),
+            ([[0, 9]], {}, "out of range"),
+            ([[1, 1]], {}, "names a Gram twice"),
+            ([[0]], dict(ridge=-1.0), "ridge must be finite"),
+            ([[0]], dict(path={"max_iter": 3}), "path takes"),
+            ([[0]], dict(path={"max_steps": 0}), "max_steps must be"),
+            ([[0]], dict(features=["intercept"]), "constant column"),
+        ],
+    )
+    def test_it_refuses(self, args, kw, match):
+        grams = blocks(n_blocks=2)
+        with pytest.raises(ValueError, match=match):
+            pg.solve_subsets(grams, args, **kw)
+
+    def test_it_refuses_grams_that_do_not_share_their_axes_or_lack_the_centred_forms(self):
+        grams = blocks(n_blocks=2)
+        with pytest.raises(ValueError, match="needs at least one Gram"):
+            pg.solve_subsets([], [[0]])
+        with pytest.raises(ValueError, match="same columns and targets"):
+            pg.solve_subsets([grams[0], pg.subset(grams[1], ["intercept", "x0"])], [[0, 1]])
+        bare = dict(grams[1], cross_centred=None)
+        with pytest.raises(ValueError, match="cross_centred"):
+            pg.solve_subsets([grams[0], bare], [[0, 1]])
+        old = dict(grams[1], target_vars=None)
+        with pytest.raises(ValueError, match="no target moments"):
+            pg.solve_subsets([grams[0], old], [[0, 1]])

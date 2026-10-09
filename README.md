@@ -2206,6 +2206,7 @@ po.gram.merge([g, g])                   # pools the Grams of disjoint row sets i
 po.gram.lasso_path(g, [0.1, 0.01])      # the lasso model's coordinate descent, offline
 po.gram.lars_path(g, max_active=2)      # the lasso path's knots, by least angle regression, stopped early
 po.gram.lars_paths([g, g], max_steps=5) # many Grams and targets at once, on the bank's thread pool
+po.gram.solve_subsets([g, g], [[0], [0, 1]], ridge=0.1)   # merge each subset, then its ridge, se and t
 ```
 
 **Before merging two halves of a decayed stream, age the earlier half to

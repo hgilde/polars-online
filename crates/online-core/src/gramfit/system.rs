@@ -35,12 +35,22 @@ pub struct GramArrays<'a> {
     pub means_by_target: &'a [f64],
     /// Per target, `E[(z − m_t)(y − ȳ_t)]`, `m × k`.
     pub cross_centred: &'a [f64],
+    /// The accumulated weight behind the column moments.
+    pub weight_sum: f64,
+    /// Per target, the weight behind its moments, `m`.
+    pub target_weights: &'a [f64],
+    /// Per target, its mean and centred variance, `m` each (NaN where the
+    /// Gram cannot say).
+    pub target_means: &'a [f64],
+    pub target_vars: &'a [f64],
+    /// Per target, Kish's effective sample size, `m` (NaN where it has none).
+    pub target_n_kish: &'a [f64],
 }
 
 impl GramArrays<'_> {
     /// The number of targets.
     pub fn targets(&self) -> usize {
-        self.cross_moments.len().checked_div(self.k).unwrap_or(0)
+        self.target_weights.len()
     }
 }
 

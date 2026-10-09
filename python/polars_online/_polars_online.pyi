@@ -146,10 +146,11 @@ def schema_version() -> int: ...
 def thread_pool_size() -> int: ...
 def model_kinds() -> list[str]: ...
 
-# A Gram as the fits in `polars_online.gram` hand it over: `k`, then `means`,
-# `comoments`, `cross_moments`, `means_by_target` and `cross_centred`, each a
-# C-contiguous float64 numpy array.
-_GramIn = tuple[int, object, object, object, object, object]
+# A Gram as the fits in `polars_online.gram` hand it over: `k` and
+# `weight_sum`, then `means`, `comoments`, `cross_moments`, `means_by_target`,
+# `cross_centred`, `target_weights`, `target_means`, `target_vars` and
+# `target_n_kish`, each a C-contiguous float64 numpy array.
+_GramIn = tuple[int, float, object, object, object, object, object, object, object, object, object]
 # A lasso path: the knots' penalties, their coefficients (the bytes of
 # native-endian float64s, flat), the active columns at each, and why it stopped.
 _PathOut = tuple[list[float], bytearray, list[list[int]], str]
@@ -174,3 +175,27 @@ def gram_cd_path(
     max_iter: int,
     tol: float,
 ) -> list[float]: ...
+
+# A ridge fit: `coef`, `se` and `t` (each the bytes of native-endian float64s),
+# then `resid_var`, `sigma2`, `r2` and `n`.
+_RidgeOut = tuple[bytearray, bytearray, bytearray, float, float, float, float]
+
+def gram_ridge_subsets(
+    grams: list[_GramIn],
+    subsets: list[list[int]],
+    targets: list[int],
+    slots: list[int],
+    icept: int | None,
+    ridge: float,
+    standardize: bool,
+) -> list[list[_RidgeOut]]: ...
+def gram_path_subsets(
+    grams: list[_GramIn],
+    subsets: list[list[int]],
+    targets: list[int],
+    slots: list[int],
+    icept: int | None,
+    weights: list[float],
+    max_steps: int | None,
+    max_active: int | None,
+) -> list[list[_PathOut]]: ...
