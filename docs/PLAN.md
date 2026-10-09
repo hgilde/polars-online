@@ -8937,6 +8937,28 @@ tick, and that the series holding it up has a count near 1.
       `t_serial`) in a first pass, and gains each of task 221's parts as it
       ships. Written to `docs/WRITING.md`; the README's section shrinks to
       the table and a link.
+      **Recipes and theory, both extensive** (the user, 2026-10-08: "Both
+      the sections on diagnostics and detecting data issues should include
+      extensive recipes as well as theoretical underpinnings in prose").
+      *Theory, in prose*: for each diagnostic, the statistics it rests on
+      and why it answers its question -- prequential (out-of-sample)
+      evaluation and why a residual the model has not learned is a
+      recursive residual; what a run-once test assumes and what changes
+      under exponential weights (the Kish size, the windowed statistic's
+      null distribution, how memory trades detection delay for false
+      alarms); overlapping labels and why they need Newey-West; what each
+      test cannot see. With its sources cited. *Recipes*: complete,
+      runnable programs over data the page generates and saves to parquet
+      (WRITING §3: files, not `.lazy()`), one per question and more where a
+      question has several cases -- e.g. checking a fit's calibration and
+      rescaling its predictions; finding when a coefficient broke and
+      restarting from it; trusting a look-ahead target's t; choosing a
+      half-life by out-of-sample error; telling a variance break from a
+      mean break; comparing two nested models; the two-stage reversion beta
+      of 2026-10-08 with its checks -- each with its output shown and read.
+      Every recipe runs in a test, as the README's blocks run in
+      `tests/test_production_hardening.py` (`TestReadmeExamples`), so none
+      goes stale.
 - [ ] 223. **Telling a user their data has a problem, after one pass** --
       the user, 2026-10-08: "What can we do to help a user understand that
       their data has a problem after one pass, ideally something that can
@@ -9014,6 +9036,24 @@ tick, and that the series holding it up has a count near 1.
       Beside task 222's diagnostics section: that one asks whether the
       model is working, this one whether the data can be learned from.
       Written to `docs/WRITING.md`.
+      **Recipes and theory, both extensive** (the user, 2026-10-08, as for
+      task 222). *Theory, in prose*: why each problem harms a fit, from the
+      models' own algebra -- what a missing column does to the rows learned
+      and to bias when it is missing not at random; why a constant or
+      frozen feature is collinear with the intercept and winds a sum-form
+      model up (task 217); floating-point precision at a level and why
+      centring cures it (the compensated means, the level-aware bound);
+      conditioning and scale; spurious regression on a random walk
+      (Granger and Newbold 1974) and why differencing fixes it; heavy tails
+      and what they do to `sigma`, `drift` and the Gaussian interval;
+      leakage and why a look-ahead target needs its embargo; what the
+      clock rules do with steps back, duplicate stamps and gaps. With its
+      sources cited. *Recipes*: complete, runnable programs over data the
+      page generates with the problem planted and saves to parquet, one per
+      problem -- the finding `check` gives, what the model does left alone,
+      the fix in Polars, and the model after it, each with its output shown
+      and read. Every recipe runs in a test, as for task 222, so none goes
+      stale.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
