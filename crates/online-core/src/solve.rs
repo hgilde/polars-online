@@ -1,5 +1,18 @@
 //! Shared dense solves: Cholesky via `faer` with a jittered-diagonal fallback
 //! (docs/PLAN.md §7). Never NaN silently; callers count `solve_failures`.
+//!
+//! Every factorization, solve and eigendecomposition here gives the same
+//! bits in a rayon pool of any size (docs/PLAN.md task 231). faer's own
+//! calls run at its global parallelism, `Par::rayon(0)`, which is the size
+//! of the current pool, and from `k = 512` a solve with one right-hand side
+//! and an eigendecomposition followed it: a wide `ewridge` gave other
+//! coefficients under another `POLARS_ONLINE_MAX_THREADS`, or on a machine
+//! with another core count. So the Cholesky factorization walks faer's own
+//! blocked steps with each step's parallel work cut into
+//! [`crate::pieces`], fixed by `k` alone, and the triangular solves take
+//! their right-hand sides in bands fixed by their count; each piece is one
+//! sequential faer call, on the pool's threads. The eigensolver has no such
+//! cut, and runs at a fixed parallel degree ([`EIGEN_DEGREE`]).
 
 use std::cmp::Ordering;
 use std::sync::OnceLock;
@@ -8,6 +21,9 @@ use faer::Conj;
 use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::llt;
 use faer::prelude::*;
+use faer::reborrow::{Reborrow, ReborrowMut};
+
+use crate::pieces::{LEAF, TILE, col_parts, spread, syrk_lower_cut};
 use serde::{Deserialize, Serialize};
 
 /// The diagonal jitters tried in turn, as multiples of `trace/k`: `A` as
@@ -23,35 +39,24 @@ const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
 /// (review 2026-09-12, D2).
 ///
 /// Each rung is `faer`'s `Mat::llt(Side::Lower)` step for step -- the lower
-/// triangle of the matrix copied over zeros, factorized in place at the
-/// global parallelism, the strict upper triangle zeroed -- so the factor is
-/// that one's to the bit; it is held as a matrix of its own so that
+/// triangle of the matrix copied over zeros, factorized in place, the strict
+/// upper triangle zeroed -- so the factor is faer's sequential one to the
+/// bit on aarch64, cut so that a pool of any size gives the same bits
+/// ([`cholesky_in_place`]); it is held as a matrix of its own so that
 /// [`SpdFactor::updated`] can move it in place, which `faer`'s `Llt` does
 /// not allow.
 fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
     debug_assert_eq!(a.len(), k * k);
     let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
     let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
-    let par = faer::get_global_parallelism();
+    let threads = rayon::current_num_threads();
     for (attempts, &eps) in JITTER.iter().enumerate() {
         let jitter = base * eps;
         let mut l = Mat::from_fn(k, k, |i, j| match i.cmp(&j) {
             Ordering::Less => 0.0,
             _ => a[i * k + j] + if i == j { jitter } else { 0.0 },
         });
-        let mut mem = MemBuffer::new(llt::factor::cholesky_in_place_scratch::<f64>(
-            k,
-            par,
-            Default::default(),
-        ));
-        let factored = llt::factor::cholesky_in_place(
-            l.as_mut(),
-            Default::default(),
-            par,
-            MemStack::new(&mut mem),
-            Default::default(),
-        );
-        if factored.is_ok() {
+        if cholesky_in_place(l.as_mut(), threads, (LEAF, TILE)).is_ok() {
             for j in 1..k {
                 for i in 0..j {
                     l[(i, j)] = 0.0;
@@ -63,16 +68,131 @@ fn factorize(a: &[f64], k: usize) -> Option<(Mat<f64>, u32, f64)> {
     None
 }
 
-/// `X ← A⁻¹ X` from the lower factor `L` of `A`: the two triangular solves
-/// `faer`'s `Llt::solve_in_place` makes, at the same parallelism.
-fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
-    let par = faer::get_global_parallelism();
-    let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
-        l.nrows(),
-        rhs.ncols(),
-        par,
+/// Above this order faer's Cholesky blocks; at or below it, one call.
+const RECURSION_THRESHOLD: usize = 64;
+
+/// faer's block for its right-looking Cholesky.
+const BLOCK: usize = 128;
+
+/// `A = L Lᵀ` in place, the lower triangle read and written: faer's
+/// `cholesky_in_place` step for step, with each step's two parallel calls
+/// cut into pieces fixed by the order alone. faer factorizes a matrix past
+/// [`RECURSION_THRESHOLD`] by blocks of `min(n.next_power_of_two() / 2,
+/// BLOCK)` columns, right-looking: the diagonal block by its own recursion,
+/// the panel below it by a triangular solve, and the trailing matrix by a
+/// symmetric product. Here the diagonal block is faer's own sequential
+/// call, the panel is solved in bands of rows ([`col_parts`]), and the
+/// product is [`syrk_lower_cut`]'s pieces: on aarch64 the calls faer makes,
+/// so the factor is faer's to the bit, at every pool size. `Err` on a
+/// pivot that is not positive, as faer's.
+fn cholesky_in_place(
+    mut a: MatMut<'_, f64>,
+    threads: usize,
+    cut: (usize, usize),
+) -> Result<(), llt::factor::LltError> {
+    let n = a.nrows();
+    if n <= RECURSION_THRESHOLD {
+        return cholesky_seq(a);
+    }
+    let bs = (n.next_power_of_two() / 2).min(BLOCK);
+    let mut j = 0;
+    while j < n {
+        let b = bs.min(n - j);
+        let (mut a00, _, mut a10, a11) = a.rb_mut().get_mut(j.., j..).split_at_mut(b, b);
+        cholesky_seq(a00.rb_mut()).map_err(|e| match e {
+            llt::factor::LltError::NonPositivePivot { index } => {
+                llt::factor::LltError::NonPositivePivot { index: j + index }
+            }
+        })?;
+        let a00 = a00.rb();
+        spread(
+            col_parts(a10.rb_mut().transpose_mut(), cut.1),
+            threads,
+            |band| {
+                faer::linalg::triangular_solve::solve_lower_triangular_in_place(
+                    a00,
+                    band,
+                    Par::Seq,
+                );
+            },
+        );
+        syrk_lower_cut(a11, a10.rb().transpose(), -1.0, threads, cut);
+        j += b;
+    }
+    Ok(())
+}
+
+/// faer's own Cholesky of `a`, sequential.
+fn cholesky_seq(a: MatMut<'_, f64>) -> Result<(), llt::factor::LltError> {
+    let mut mem = MemBuffer::new(llt::factor::cholesky_in_place_scratch::<f64>(
+        a.nrows(),
+        Par::Seq,
+        Default::default(),
     ));
-    llt::solve::solve_in_place_with_conj(l.as_ref(), Conj::No, rhs, par, MemStack::new(&mut mem));
+    llt::factor::cholesky_in_place(
+        a,
+        Default::default(),
+        Par::Seq,
+        MemStack::new(&mut mem),
+        Default::default(),
+    )
+    .map(|_| ())
+}
+
+/// `X ← A⁻¹ X` from the lower factor `L` of `A`: the two triangular solves
+/// `faer`'s `Llt::solve_in_place` makes, sequential, on bands of the
+/// right-hand sides fixed by their count ([`col_parts`]), the bands on the
+/// pool's threads. One band below 256 right-hand sides.
+fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
+    let l = l.as_ref();
+    spread(col_parts(rhs, TILE), rayon::current_num_threads(), |band| {
+        let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
+            l.nrows(),
+            band.ncols(),
+            Par::Seq,
+        ));
+        llt::solve::solve_in_place_with_conj(l, Conj::No, band, Par::Seq, MemStack::new(&mut mem));
+    });
+}
+
+/// The parallel degree [`self_adjoint_eigen`] is called at, fixed. faer
+/// splits its work by the degree it is handed and reads no other count, so
+/// a fixed degree is the same arithmetic in a pool of any size, and eight is
+/// where the pool's speed was (`examples/solve_threads_bench.rs`: at
+/// `k = 1,000`, 67 ms on 8 threads and 64.8 at faer's default on 14,
+/// against 145 on one).
+const EIGEN_DEGREE: usize = 8;
+
+/// The eigendecomposition of the symmetric `a` (its lower triangle read),
+/// as faer's `Mat::self_adjoint_eigen(Side::Lower)` computes it, at the
+/// fixed degree [`EIGEN_DEGREE`] rather than the pool's size: the
+/// eigenvalues nondecreasing, and the eigenvectors as `U`'s columns. At the
+/// pool's size, from `k = 512` its last bits followed the pool; a solver of
+/// tridiagonalizations and rotations has no cut by shape to give it, and a
+/// fixed degree is the next thing to one (docs/PLAN.md task 231). `None`
+/// when it fails.
+pub(crate) fn self_adjoint_eigen(a: MatRef<'_, f64>) -> Option<(Vec<f64>, Mat<f64>)> {
+    use faer::linalg::evd;
+    let n = a.nrows();
+    let mut u = Mat::<f64>::zeros(n, n);
+    let mut s = faer::diag::Diag::<f64>::zeros(n);
+    let mut mem = MemBuffer::new(evd::self_adjoint_evd_scratch::<f64>(
+        n,
+        evd::ComputeEigenvectors::Yes,
+        Par::rayon(EIGEN_DEGREE),
+        Default::default(),
+    ));
+    evd::self_adjoint_evd(
+        a,
+        s.as_mut(),
+        Some(u.as_mut()),
+        Par::rayon(EIGEN_DEGREE),
+        MemStack::new(&mut mem),
+        Default::default(),
+    )
+    .ok()?;
+    let s = (0..n).map(|i| s[i]).collect();
+    Some((s, u))
 }
 
 /// Solve `A x = B` for symmetric positive definite `A` (row-major `k*k`),
@@ -600,6 +720,9 @@ pub(crate) fn dot_aug(beta: &[f64], x: &[f64], fit_intercept: bool) -> f64 {
     }
     acc
 }
+
+#[cfg(test)]
+mod pool_tests;
 
 #[cfg(test)]
 mod tests {

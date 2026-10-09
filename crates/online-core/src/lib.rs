@@ -96,6 +96,7 @@ mod model;
 #[cfg(test)]
 mod oracle;
 mod pa;
+mod pieces;
 mod rcov;
 mod rls;
 mod robust;

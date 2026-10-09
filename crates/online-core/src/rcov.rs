@@ -1072,14 +1072,14 @@ fn correlation(cov: &[f64], k: usize) -> Vec<f64> {
 /// `cov` with its negative eigenvalues clipped at zero, and whether any had
 /// to be. `None` when the decomposition fails.
 fn clip_psd(cov: &[f64], k: usize) -> Option<(Vec<f64>, bool)> {
-    use faer::Side;
     use faer::prelude::*;
     if cov.iter().any(|v| !v.is_finite()) {
         return None;
     }
     let mat = Mat::from_fn(k, k, |i, j| cov[i * k + j]);
-    let evd = mat.self_adjoint_eigen(Side::Lower).ok()?;
-    let (s, u) = (evd.S(), evd.U());
+    // At a fixed degree: faer's own call follows the pool's size in its last bits
+    // (`crate::solve::self_adjoint_eigen`, docs/PLAN.md task 231).
+    let (s, u) = crate::solve::self_adjoint_eigen(mat.as_ref())?;
     let neg = (0..k).any(|i| s[i] < 0.0);
     if !neg {
         return Some((cov.to_vec(), false));

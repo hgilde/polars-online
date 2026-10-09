@@ -69,7 +69,7 @@ number is not what you expected, find what you see here:
 
 | what you see | where the time or memory goes | what moves it | § |
 |---|---|---|---|
-| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge` | §18, §28, §30, §37 |
+| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge` | §18, §28, §30, §37, §38 |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28 |
 | small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_rows`, 100,000 by default | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
@@ -2426,23 +2426,107 @@ already busy, so the bank's pool gains nothing and loses nothing, where a
 pool of its own puts eight more threads on the machine and takes 28%
 longer.
 
-#### What it does not change: the solve
+#### The solve
 
-A solve is faer's Cholesky at faer's global parallelism, `Par::rayon(0)`,
-which is the size of the pool it runs in. From `k = 512` its last bits
-follow that size: a solve in a pool of 1 and one in a pool of 3, 8 or 14
-differ, and the pool of 14 is 2 to 3.4 times as fast at `k` = 1,000 to
-2,000. A bank always runs in its one pool, so this never moves a bit
-between chunkings or thread counts of `gram_threads`. It does move one
-between two values of `POLARS_ONLINE_MAX_THREADS`, or two machines with
-different core counts. That was so before task 225, and is raised with the
-user as a decision.
+When this section was measured, a solve's last bits followed the size of
+the pool it ran in, from `k = 512`. §38 (task 231) has the cause and the
+fix: they no longer do.
 
 ```sh
 # From the repository root.
 cargo run --release -p online-core --example gram_kernel_probe -- 1000 2000
 cargo run --release -p online-core --example gram_threads_bench -- 1000 2000 4000 10000
 MANY_GROUPS=1 cargo run --release -p online-core --example gram_threads_bench -- 256 512 724
+```
+
+### 38. A solve's bits, whatever the pool (task 231, 2026-10-09)
+
+**A wide fit now gives the same bits in a pool of any size, at the pool's
+speed.** Until task 231 it did not. faer runs its own factorizations,
+solves and eigendecompositions at its global parallelism, `Par::rayon(0)`,
+which is the size of the rayon pool they are called in. A bank's pool is
+`POLARS_ONLINE_MAX_THREADS` threads, one per core by default. So from
+`k = 512` a wide `ewridge` reported other predictions, coefficients and
+standard errors under another setting of the variable, or on a machine
+with another core count, and `ew_cov`'s principal components likewise. A
+bank always runs in its one pool, so chunkings and `gram_threads` were
+never affected.
+
+#### What followed the pool
+
+`crates/online-core/src/solve/pool_tests.rs` runs each call in pools of
+1, 3, 8 and 14 threads and compares the results to the bit. On the build
+before the fix:
+
+| call | followed the pool from `k = 512` |
+|---|---|
+| the Cholesky factor | no, at 512, 730 and 1,000, though faer does not promise it |
+| a solve with one right-hand side (`solve_spd`, a factor's `solve` and `quad_forms`) | yes. faer's parallel triangular solve takes another path whenever it is handed a pool, even a pool of one |
+| a solve with two right-hand sides, and the inverse's diagonal | no |
+| the eigendecomposition behind `ew_cov`'s `pca` and `rcov`'s repair | yes |
+
+`ewridge`'s solves read one right-hand side per target, so the
+coefficients and predictions moved. A wide fit in four pools
+(`a_wide_fit_is_the_same_in_every_pool`), and a bank in four child
+interpreters under four settings of the variable
+(`tests/test_solve_pool_size.py`), both failed at every pool size on that
+build.
+
+#### The fix: cut by shape, or a fixed degree
+
+The factorization walks faer's own right-looking Cholesky: blocks of 128
+columns, each diagonal block by faer's sequential call, the panel below it
+by a triangular solve, and the trailing matrix by a symmetric product.
+Each step's parallel work is cut into pieces fixed by `k` alone, as §37
+cuts the Gram's product: the panel in bands of 128 to 255 rows, the
+product in `crate::pieces`. Each piece is one sequential faer call, on the
+pool's threads. On aarch64 the pieces are the calls faer makes, so the
+factor is faer's sequential factor to the bit, which a test holds at
+widths 1 to 1,000. The triangular solves take their right-hand sides in
+bands of 128 to 255, each band one sequential solve. Below 256 right-hand
+sides that is one sequential solve.
+
+An eigensolver of tridiagonalizations and rotations has no cut by shape,
+so it runs at a fixed parallel degree, eight. faer splits its work by the
+degree it is handed and reads no other count, so the arithmetic is the
+same in a pool of any size. That is a property of faer, not a cut of ours:
+the tests hold it at 1, 3, 8 and 14 threads.
+
+#### The measurement
+
+`crates/online-core/examples/solve_threads_bench.rs` times faer's calls
+as they ran before, at the pool's parallelism, against the calls now, in
+milliseconds, the fastest of five (load 7 to 11):
+
+| k | before: 1 thread | 8 | 14 | now: 1 thread | 8 | 14 |
+|---:|---:|---:|---:|---:|---:|---:|
+| the factor and a one-column solve | | | | | | |
+| 512 | 1.42 | 1.01 | 1.03 | 1.43 | 1.18 | 1.13 |
+| 1,000 | 8.51 | 3.53 | 4.62 | 8.77 | 4.54 | 4.32 |
+| 2,000 | 64.4 | 18.0 | 19.2 | 68.4 | 17.6 | 18.3 |
+| 4,000 | 470 | 112 | 106 | 513 | 101 | 99 |
+| the eigendecomposition | | | | | | |
+| 512 | 23.7 | 14.3 | 15.0 | 24.1 | 15.1 | 15.1 |
+| 1,000 | 141 | 67.9 | 64.8 | 145 | 67.1 | 73.3 |
+| 2,000 | 1,017 | 324 | 326 | 1,041 | 327 | 347 |
+
+The speed the pool gave is kept, within the noise of a shared machine.
+One thread pays 6 to 9% for the cut at `k` = 2,000 to 4,000.
+
+#### What moved, once
+
+The factor did not move: it is faer's sequential factor, which every pool
+gave before. The solve with one right-hand side is now faer's sequential
+one, where before it took faer's parallel path. Its result moved by at
+most `1.7e-13` relative at `k = 512`, `7.6e-13` at 1,000, `4.5e-12` at
+2,000 and `1.5e-11` at 4,000, against the old result in every pool. At
+100 and 300 columns faer's parallel solve gave the sequential one's bits,
+and no golden value or frozen fixture moved. The eigendecomposition is
+now the call the old code made in a pool of eight, so a 14-core machine's
+default pool moved once to it, at the widths where the pool mattered.
+
+```sh
+cargo run --release -p online-core --example solve_threads_bench -- 512 1000 2000 4000
 ```
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (task 72, 2026-09-08)

@@ -1421,14 +1421,14 @@ impl Pca {
     /// for continuity with `prev` when it has the component. `None` when
     /// `c` has a non-finite entry or the decomposition fails.
     pub fn of(c: &[f64], k: usize, r: usize, prev: Option<&Pca>) -> Option<Self> {
-        use faer::Side;
         use faer::prelude::*;
         if r == 0 || r > k || c.len() != k * k || c.iter().any(|v| !v.is_finite()) {
             return None;
         }
         let mat = Mat::from_fn(k, k, |i, j| c[i * k + j]);
-        let evd = mat.self_adjoint_eigen(Side::Lower).ok()?;
-        let (s, u) = (evd.S(), evd.U());
+        // At a fixed degree: faer's own call follows the pool's size in its last
+        // bits (`crate::solve::self_adjoint_eigen`, docs/PLAN.md task 231).
+        let (s, u) = crate::solve::self_adjoint_eigen(mat.as_ref())?;
         // Eigenvalues come nondecreasing; take the last `r`, largest first.
         let mut eig = Vec::with_capacity(r);
         let mut loadings = Vec::with_capacity(r * k);

@@ -4918,13 +4918,14 @@ fn gram_threads_moves_no_bit() {
         let coef: Vec<Vec<u64>> = m.coefficients().unwrap().iter().map(|b| bits(b)).collect();
         (preds, grams, coef)
     };
-    // Both counts inside one pool: a solve runs at faer's global
-    // parallelism, `Par::rayon(0)`, which is the current pool's size, and
-    // the factor's last bits follow that size at this width (a pool of 3
-    // and one of 8 part on the coefficients with the Grams equal). That is
-    // the solve's, not the Gram's, and a bank always runs in its one pool.
+    // In pools of different sizes too: the solve's bits no longer follow
+    // the pool (task 231; until then the two counts ran in one pool).
+    let small = rayon::ThreadPoolBuilder::new()
+        .num_threads(3)
+        .build()
+        .unwrap();
     for block in [16, 0] {
-        let one = pool.install(|| run(1, block));
+        let one = small.install(|| run(1, block));
         assert!(
             one.0.iter().any(|&p| !f64::from_bits(p).is_nan()),
             "nothing was predicted"
@@ -4932,4 +4933,55 @@ fn gram_threads_moves_no_bit() {
         let many = pool.install(|| run(8, block));
         assert!(one == many, "block {block}: 8 threads moved a bit");
     }
+}
+
+/// Docs/PLAN.md task 231: a wide fit's coefficients and predictions are the
+/// same bits in a pool of 1, 3, 8 or 14 threads, so whatever
+/// `POLARS_ONLINE_MAX_THREADS` or the machine's core count. faer's solve
+/// with one right-hand side followed the pool's size from `k = 512`, and
+/// this failed on every width here before the solve was cut by shape.
+#[test]
+#[ignore = "extended: fits up to 1,000 wide in four pools, in a debug build"]
+fn a_wide_fit_is_the_same_in_every_pool() {
+    let bits = |v: &[f64]| v.iter().map(|u| u.to_bits()).collect::<Vec<_>>();
+    let pools: Vec<rayon::ThreadPool> = [1usize, 3, 8, 14]
+        .iter()
+        .map(|&n| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap()
+        })
+        .collect();
+    let mut moved = Vec::new();
+    for k in [512usize, 730, 1000] {
+        let run = || {
+            let mut c = cfg(k, 1);
+            c.decay = Decay::Lam(0.995);
+            c.solve_every = f64::MAX;
+            c.max_rows_between_solves = 15;
+            c.ridge = vec![1e-3];
+            c.min_weight = 10.0;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 23u64;
+            let mut out = Vec::new();
+            for _ in 0..40 {
+                let x: Vec<f64> = (0..k).map(|_| 2.0 + lcg(&mut s)).collect();
+                let y = Some(x[0] - x[k - 1] + 0.1 * lcg(&mut s));
+                out.extend(bits(&m.step(&x, &[y], 1.0, 1.0).pred));
+            }
+            for b in m.coefficients().unwrap() {
+                out.extend(bits(b));
+            }
+            out
+        };
+        let one = pools[0].install(run);
+        assert!(one.iter().any(|&p| !f64::from_bits(p).is_nan()));
+        for (p, n) in pools.iter().zip([1, 3, 8, 14]).skip(1) {
+            if p.install(run) != one {
+                moved.push(format!("k = {k}, pool of {n}"));
+            }
+        }
+    }
+    assert!(moved.is_empty(), "moved a bit: {moved:#?}");
 }
