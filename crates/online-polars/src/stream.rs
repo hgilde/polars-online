@@ -4813,13 +4813,14 @@ fn run_instance(
         // Whether the instance is ready for task 221's diagnostics to fold
         // its residuals (task 232 (1); review round 6, F-1), read before the
         // step as the gates are: the model past its own warm-up, and the
-        // stream 95% settled on the fit's memory where it forgets -- the
+        // stream 95% settled on the longest finite memory the model keeps
+        // (task 234: `holt`'s trend, `kalman`'s longest) where it forgets -- the
         // point the readiness notices judge from. Each gate's withholding
         // already keeps a row out, since a row with no prediction has no
         // residual. A stream that forgets nothing never settles and waits
         // on the gates alone.
         let diag_ready = inst.checks.is_some() && {
-            let fit = settled_frac(inst.check_cfg.fit(), *inst.decay_time);
+            let fit = settled_frac(inst.check_cfg.ready(), *inst.decay_time);
             !inst.model.get().scaler_warming() && (fit.is_nan() || settled_enough(fit))
         };
 

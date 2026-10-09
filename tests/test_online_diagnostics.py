@@ -688,6 +688,70 @@ def test_a_diagnostic_folds_from_readiness(build):
     assert settled[int(folded[0]) - 1] >= 0.95
 
 
+_LEVEL = dict(targets=["y"], half_life=20.0)
+_FEATURES = dict(_LEVEL, features=["x0", "x1"])
+
+
+@pytest.mark.parametrize(
+    ("build", "kw", "longest"),
+    [
+        (po.spec.holt, _LEVEL, 80.0),
+        (po.spec.holt, dict(_LEVEL, trend_half_life=50.0), 50.0),
+        (po.spec.holt, dict(_LEVEL, trend_half_life=5.0), 20.0),
+        (po.spec.holt, dict(_LEVEL, trend=False), 20.0),
+        (po.spec.kalman, dict(_FEATURES, coef_half_life=[10.0, 60.0, 10.0]), 60.0),
+        (po.spec.kalman, dict(_FEATURES, coef_half_life=[10.0, float("inf"), 10.0]), 20.0),
+        (
+            po.spec.ewridge,
+            dict(
+                _FEATURES, session="s", session_gap=1000.0, session_shrink=0.5, long_half_life=70.0
+            ),
+            70.0,
+        ),
+        (po.spec.lasso, dict(_FEATURES, lasso_path=[0.01], select_half_life=90.0), 90.0),
+        (po.spec.ewridge, _FEATURES, 20.0),
+    ],
+)
+def test_readiness_reads_the_longest_memory_the_model_keeps(build, kw, longest):
+    """A fit with several memories is settled only once the longest finite
+    one has, so a diagnostic folds from the row 95% settled on it (task
+    234): `holt`'s trend, four times its level's half-life by default;
+    `kalman`'s longest of its `coef_half_life`s and its `half_life`;
+    `ewridge`'s `long_half_life` and `lasso`'s `select_half_life`. On rows
+    one clock unit apart the row past 95% settled is the first `t` with `1
+    - 2^(-t / h) >= 0.95`, and the first row read is the one after it."""
+    df = _at_a_level(1, 600, level=0.5).with_columns(s=pl.lit(0))
+    spec = build("m", emit_tails=True, **kw)
+    out = _run(df, spec)
+    kurtosis = next(c for c in out.columns if c.startswith("kurtosis_y"))
+    first = int(out[kurtosis].is_not_null().arg_true()[0])
+    settled = 1.0 - 2.0 ** (-np.arange(len(out)) / longest)
+    want = int(np.argmax(settled >= 0.95))
+    # Two rows with a spread before a kurtosis: the first read is past the
+    # settled row by a row or two.
+    assert want + 1 <= first <= want + 3, (first, want)
+
+
+def test_holts_cusum_waits_for_its_trend():
+    """`holt`'s trend forgets at four times its level's half-life. Ready
+    on the level alone, its CUSUM spread 1.56 and passed 3 on 6.7% of the
+    500 rows after its diagnostics started, on 20 clean streams at a
+    half-life of 50 (28% at 200); ready on the trend, the CUSUM near a
+    normal's tails from its first row (task 234)."""
+    groups, n = 20, 2_000
+    rng = np.random.default_rng(234)
+    df = pl.DataFrame(
+        {"g": np.repeat(np.arange(groups), n), "y": 0.5 + rng.standard_normal(groups * n)}
+    )
+    spec = po.spec.holt("m", targets=["y"], half_life=50.0, group="g", emit_breaks=True)
+    out = _run(df, spec).with_columns(r=pl.int_range(pl.len()).over("g"))
+    start = out.filter(pl.col("cusum_y").is_not_null())["r"].min()
+    early = out.filter((pl.col("r") >= start) & (pl.col("r") < start + 500))["cusum_y"].drop_nulls()
+    assert early.len() > 9_000
+    assert early.std() < 1.1, early.std()
+    assert (early.abs() > 3).mean() < 0.005
+
+
 def test_a_standardizing_fit_folds_once_its_scaler_has_warmed_up():
     """`sgd` and `pa` under `standardize` run another fit while their
     scaler warms up (22 rows of Kish's size, `online_core::WARMUP_ROWS`):

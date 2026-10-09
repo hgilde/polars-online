@@ -24,6 +24,7 @@ use online_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::spec::diagnostics::half_life_of;
 use crate::spec::{ModelKind, Spec};
 
 /// The values one slot writes, in their order in the `checks` buffer, with
@@ -57,23 +58,17 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
     out
 }
 
-/// A decay's half-life in clock units, `inf` for none.
-fn half_life_of(d: Decay) -> f64 {
-    match d {
-        Decay::Halflife(h) => h,
-        Decay::Lam(l) if l < 1.0 => std::f64::consts::LN_2 / -l.ln(),
-        Decay::Lam(_) => f64::INFINITY,
-    }
-}
-
 /// What one instance's diagnostics are configured with, from the spec:
 /// each one's decay -- its own memory, or the instance's -- and, for the
 /// breaks' twin fits, the features each slot's coefficients cover.
 #[derive(Debug, Clone)]
 pub struct CheckCfg {
-    /// The fit's own memory, which a diagnostic's readiness reads (task 232
-    /// (1)).
+    /// The fit's own memory, which absorbs a level at its pace (the
+    /// CUSUM's windowed null, task 232 (4)).
     fit: Decay,
+    /// The longest finite memory the model keeps, which a diagnostic's
+    /// readiness reads (task 232 (1), task 234; [`Spec::ready_memory`]).
+    ready: Decay,
     calibration: Decay,
     breaks: Decay,
     robust: Decay,
@@ -129,6 +124,7 @@ impl CheckCfg {
         };
         let mut cfg = Self {
             fit: spec.fit_memory(model),
+            ready: spec.ready_memory(model),
             calibration: spec.diagnostic_decay_of(
                 spec.calibration_half_life.as_ref(),
                 model,
@@ -185,9 +181,7 @@ impl CheckCfg {
         // (`huber`, `quantile`) and 0.57-1.13 (`sgd`, `pa`, `ftrl`); without
         // it `huber` reads 0.57-0.95 and the gradient fits 0.30-0.79,
         // conservative, so they keep the plain sum. So does `holt`, which
-        // reads 0.75-0.84 once its trend (four times the level's half-life
-        // by default) has settled, and 3.5 in the 2,000 rows before
-        // (task 234).
+        // reads 0.51-0.94 from its readiness on its trend (task 234).
         let (h_fit, h_breaks) = (half_life_of(cfg.fit), half_life_of(cfg.breaks));
         let least_squares = matches!(
             spec.model,
@@ -214,10 +208,10 @@ impl CheckCfg {
         self.lags > 0
     }
 
-    /// The fit's own memory: the stream is ready for the diagnostics once
-    /// it has settled on it (task 232 (1)).
-    pub fn fit(&self) -> Decay {
-        self.fit
+    /// The longest finite memory the model keeps: the stream is ready for
+    /// the diagnostics once it has settled on it (task 232 (1), task 234).
+    pub fn ready(&self) -> Decay {
+        self.ready
     }
 }
 

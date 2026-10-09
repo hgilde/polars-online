@@ -44,7 +44,7 @@ impl WindowBudgetSpec {
     }
 }
 
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod readiness;
 
 /// A number rendered for a **field name** (`__r{ridge}`, `@h{half_life}`,

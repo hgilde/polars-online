@@ -320,6 +320,62 @@ impl Spec {
         }
     }
 
+    /// The memory a diagnostic's readiness reads (task 232 (1), task 234):
+    /// the longest finite one the model keeps, since a fit with several is
+    /// settled only once the longest has. That is the fit's own
+    /// ([`Self::fit_memory`]) but for the models that keep a second:
+    ///
+    /// - **`holt`**, its trend's `trend_half_life` (default four times the
+    ///   level's) unless `trend = False`. Settled on the level alone, its
+    ///   CUSUM spread 2.7 and passed 3 on 28% of the 2,000 rows after the
+    ///   diagnostics started on clean streams at a half-life of 200.
+    /// - **`kalman`**, the longest of its finite `coef_half_life`s and the
+    ///   `half_life` its standardization and noise statistics read.
+    /// - **`ewridge`**, the long fit's `long_half_life` under
+    ///   `session_shrink`; **`lasso`**, the `select_half_life` its choice of
+    ///   `lambda` reads.
+    ///
+    /// The instance's decay comes back as it was where it is the longest,
+    /// so no platform's logarithm enters a `lam`'s readiness. `inf` where
+    /// nothing forgets: such a stream never settles, and waits on the gates.
+    pub fn ready_memory(&self, model: Decay) -> Decay {
+        let fit = self.fit_memory(model);
+        let mut longest = (half_life_of(fit), fit);
+        let mut take = |h: f64| {
+            if h.is_finite() && !(longest.0.is_finite() && h <= longest.0) {
+                longest = (h, Decay::Halflife(h));
+            }
+        };
+        match &self.model {
+            super::ModelKind::Holt {
+                trend_half_life,
+                trend,
+            } if *trend != Some(false) => {
+                take(
+                    trend_half_life
+                        .as_ref()
+                        .map_or(half_life_of(model) * 4.0, Span::value),
+                );
+            }
+            super::ModelKind::Kalman { coef_half_life, .. } => {
+                take(half_life_of(model));
+                for h in coef_half_life.iter().flat_map(|l| l.to_vec()) {
+                    take(h);
+                }
+            }
+            super::ModelKind::EwRidge {
+                long_half_life: Some(h),
+                ..
+            }
+            | super::ModelKind::Lasso {
+                select_half_life: Some(h),
+                ..
+            } => take(h.value()),
+            _ => {}
+        }
+        longest.1
+    }
+
     /// A diagnostic's default memory, `multiple` of the fit's own
     /// ([`Self::fit_memory`]) for the instance decaying by `model`, or its
     /// own half-life `memory` where given.
@@ -353,6 +409,16 @@ impl Spec {
 /// twice it; a spec that wants more gives `horizon_rows`, or
 /// `robust_se_lags` for `se_coef_hac`'s alone, and a notice says so.
 pub const NW_LAG_CAP: usize = 64;
+
+/// A decay's half-life in clock units, `inf` for none: a `lam`'s by its
+/// logarithm, which is compared and never kept.
+pub(crate) fn half_life_of(d: Decay) -> f64 {
+    match d {
+        Decay::Halflife(h) => h,
+        Decay::Lam(l) if l < 1.0 => std::f64::consts::LN_2 / -l.ln(),
+        Decay::Lam(_) => f64::INFINITY,
+    }
+}
 
 /// The half-life whose exponential weights have the Kish size of a window
 /// of `w` -- rows, or clock units on a clock (`clocked`) -- under the
@@ -428,5 +494,56 @@ mod tests {
         let full =
             kish((0..(40.0 * got / dt) as usize).map(|i| (-rate * i as f64 * dt).exp())) * dt;
         assert!((cut - full).abs() < 1e-3 * cut, "{cut} vs {full}");
+    }
+
+    fn spec(model: &str) -> Spec {
+        let json = format!(
+            r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["a", "b"]}}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    /// Readiness reads the longest finite memory the model keeps (task
+    /// 234): `holt`'s trend, four times its level's by default, the
+    /// longest of `kalman`'s coefficient memories and its `half_life`,
+    /// `ewridge`'s `long_half_life`, `lasso`'s `select_half_life`; a `lam`
+    /// that is the longest comes back as it was, and a stream that forgets
+    /// nothing reads `inf`.
+    #[test]
+    fn readiness_reads_the_longest_memory_the_model_keeps() {
+        let h = Decay::Halflife(20.0);
+        let ready = |model: &str, decay: Decay| spec(model).ready_memory(decay);
+        let holt = r#"{"type": "holt"}"#;
+        assert_eq!(ready(holt, h), Decay::Halflife(80.0));
+        let short = r#"{"type": "holt", "trend_half_life": 5.0}"#;
+        assert_eq!(ready(short, h), h);
+        let flat = r#"{"type": "holt", "trend": false}"#;
+        assert_eq!(ready(flat, h), h);
+        let pinned = r#"{"type": "holt", "trend_half_life": "inf"}"#;
+        assert_eq!(ready(pinned, h), h);
+        // A `lam` whose trend is longer reads the trend, in clock units.
+        assert_eq!(ready(holt, Decay::Lam(0.5)), Decay::Halflife(4.0));
+        assert_eq!(ready(short, Decay::Lam(0.5)), Decay::Halflife(5.0));
+        let shorter = r#"{"type": "holt", "trend_half_life": 0.5}"#;
+        assert_eq!(ready(shorter, Decay::Lam(0.5)), Decay::Lam(0.5));
+        assert_eq!(ready(holt, Decay::Lam(1.0)), Decay::Lam(1.0));
+        let kalman = r#"{"type": "kalman", "coef_half_life": [10.0, 60.0, 10.0]}"#;
+        assert_eq!(ready(kalman, h), Decay::Halflife(60.0));
+        let kalman = r#"{"type": "kalman", "coef_half_life": [10.0, "inf", 10.0]}"#;
+        assert_eq!(ready(kalman, h), h);
+        assert_eq!(
+            ready(kalman, Decay::Lam(1.0)),
+            Decay::Halflife(10.0),
+            "the coefficients forget where the standardization does not"
+        );
+        let long = r#"{"type": "ewridge", "session_shrink": 0.5, "long_half_life": 70.0}"#;
+        assert_eq!(ready(long, h), Decay::Halflife(70.0));
+        let select = r#"{"type": "lasso", "lasso_path": [0.1], "select_half_life": 90.0}"#;
+        assert_eq!(ready(select, h), Decay::Halflife(90.0));
+        let plain = r#"{"type": "ewridge"}"#;
+        assert_eq!(ready(plain, h), h);
+        assert_eq!(ready(plain, Decay::Lam(0.9)), Decay::Lam(0.9));
+        assert_eq!(half_life_of(Decay::Lam(0.5)), 1.0);
+        assert_eq!(half_life_of(Decay::Lam(1.0)), f64::INFINITY);
     }
 }

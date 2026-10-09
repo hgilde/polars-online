@@ -231,8 +231,12 @@ the diagnostics
     ``W / 2.885``, or ``W ln 2 / 2`` clock units on a clock column -- and
     for ``kalman`` its ``coef_half_life``. A diagnostic folds a row
     only once the instance is ready: the row's prediction past every gate,
-    the stream 95% settled on the fit's memory where the fit forgets, and a
-    standardizing ``sgd`` or ``pa`` past its scaler's warm-up. The twin fits
+    the stream 95% settled on the longest finite memory the model keeps
+    where it forgets, and a standardizing ``sgd`` or ``pa`` past its
+    scaler's warm-up. That memory is the fit's, but ``holt``'s trend
+    (``trend_half_life``, four times its level's by default), the longest
+    of ``kalman``'s ``coef_half_life`` and ``half_life``, ``ewridge``'s
+    ``long_half_life`` and ``lasso``'s ``select_half_life``. The twin fits
     of ``break_wald`` and feature health read no prediction, and fold every
     row.
     ``horizon_rows`` is the target's horizon in rows: the rows a target
@@ -646,11 +650,18 @@ The diagnostics add, per slot:
        same way, and its indicators' ``cusum`` is divided by the same share:
        over it, 1.03-1.06 at memories of 50 and 200 and 1.10-1.25 at 800.
        The other fits keep the plain sum, whose spread reads below 1 beside
-       them (0.30-0.95), and ``holt``'s 0.75-0.84 once its trend has
-       settled. Its trend forgets at four times the level's half-life by
-       default, and the diagnostics start once the level has settled: in
-       the 2,000 rows after, ``holt``'s ``cusum`` spread 3.5 and passed 3 on
-       38% of rows with no break. ``break_wald``
+       them, so ``|cusum| > 3`` is conservative there and finds less: on
+       clean streams at a half-life of 200 and memories of 50, 200 and
+       800, ``huber`` 0.95, 0.79, 0.57 (it found every intercept break of
+       half a noise sd), ``holt`` 0.94, 0.77, 0.51 (85%, 75%, 8% of them),
+       ``sgd`` 0.79, 0.53, 0.30 (82%, 47%, 2%), ``ftrl`` 0.77, 0.52, 0.30
+       (93%, 93%, 40%) and ``pa`` 0.51, 0.48, 0.51 (none). A gradient fit
+       absorbs a level at its learning rate, and its CUSUM sees little of
+       the move. ``break_wald``, whose twin fits read the target and the
+       features alone, found 93-100% of the same breaks beside every model
+       with features (``holt``'s level alone: 52-100%), and
+       ``calibration_wald`` found none beside ``sgd`` and ``ftrl``.
+       ``break_wald``
        is the Wald distance between two least-squares fits of the target on
        the slot's features, one at the memory and one at four times it,
        over the exact variance of their difference, about ``chi2(k)`` with

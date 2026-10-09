@@ -212,8 +212,15 @@ break on the median.
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
 forgets, a diagnostic also waits until the stream is 95% settled on the
-fit's memory, 4.3 of its half-lives, the point from which the readiness
-notices judge a stream. And `sgd` and `pa` under `standardize` fold from
+longest finite memory the model keeps, 4.3 of its half-lives, the point
+from which the readiness notices judge a stream. That is the fit's memory,
+but `holt`'s trend (`trend_half_life`, four times its level's by default),
+the longest of `kalman`'s `coef_half_life` and `half_life`, `ewridge`'s
+`long_half_life` and `lasso`'s `select_half_life`: a fit with several
+memories has settled only once the longest has. Ready on its level alone,
+`holt`'s CUSUM spread 2.7 and passed 3 on 28% of the 2,000 rows after its
+diagnostics started, on 20 clean streams at a half-life of 200; ready on
+its trend, 0.74 and on none. And `sgd` and `pa` under `standardize` fold from
 the row their scaler switches the fit to the caller's units, 22 rows of
 Kish's size in. The fields of the twin fits and of feature health read the
 target and the features alone, and fold every row.
@@ -543,19 +550,34 @@ squares' 0.72 to 0.79 and is now 1.01 to 1.10. `quantile` with an
 intercept absorbs its coverage the same way, and its indicators' CUSUM is
 divided by the same share: over it, the spread read 1.03 to 1.06 at
 memories of 50 and 200, and 1.10 to 1.25 at 800, on 30 clean streams at
-`q = 0.5` and `0.9`. `huber` and the gradient fits absorb at a pace of
-their own, so they keep the plain sum, whose spread there read 0.57 to
-0.95 (`huber`) and 0.30 to 0.79 (`sgd`, `pa`, `ftrl`). Below 1, a
-threshold of 3 is conservative beside them.
+`q = 0.5` and `0.9`. `huber`, `holt` and the gradient fits absorb at a
+pace of their own, so they keep the plain sum.
 
-**`holt`'s CUSUM needs its trend settled.** Its trend forgets at four
-times the level's half-life by default, and the diagnostics start once the
-stream has settled on the level's. On 20 clean streams at a half-life of
-200, in the 2,000 rows after they started, the CUSUM's spread read 3.5 and
-`|cusum| > 3` held on 38% of rows. Summed from row 3,460 on, 4.3 of the
-trend's half-lives, its spread read 0.75 to 0.81 and it passed 3 on at
-most 0.05% of rows, and it still found every intercept break of half a
-noise sd, 98 rows after it on the median.
+**Beside a fit that keeps the plain sum, `|cusum| > 3` is conservative and
+finds less.** Its spread reads below 1 there. On 30 clean streams of 6,000
+rows and 60 streams of 3,000 rows whose intercept moved half a noise sd at
+row 1,500, at a half-life of 200 (`holt`: 12,000 and 9,000 rows, the break
+at 6,000, past its trend's readiness):
+
+| model | spread of `cusum`, memory 50 / 200 / 800 | breaks `\|cusum\| > 3` found | `break_wald` found |
+|---|---|---|---|
+| `ewridge`, `rls`, `lasso`, `kalman` | 1.04-1.05 / 1.05-1.06 / 1.07-1.08 | 100% / 100% / 100% | 98% / 100% / 100% |
+| `quantile` | 1.04 / 1.06 / 1.10 | 100% / 100% / 100% | 98% / 100% / 100% |
+| `huber` | 0.95 / 0.79 / 0.57 | 100% / 100% / 100% | 98% / 100% / 100% |
+| `holt` | 0.94 / 0.77 / 0.51 | 85% / 75% / 8% | 52% / 100% / 100% |
+| `ftrl` | 0.77 / 0.52 / 0.30 | 93% / 93% / 40% | 98% / 100% / 100% |
+| `sgd` | 0.79 / 0.53 / 0.30 | 82% / 47% / 2% | 98% / 100% / 100% |
+| `pa` | 0.51 / 0.48 / 0.51 | 0% / 0% / 0% | 98% / 100% / 100% |
+
+A gradient fit absorbs a level at its learning rate, so the residuals the
+CUSUM sums carry little of the move: `pa`'s found no break at any memory,
+and `sgd`'s found 2% to 82% of them by memory. `break_wald` reads the
+target and the features alone, so it finds a break beside every model
+alike; beside `holt` its pair has only the level to compare. On the clean
+streams `|cusum| > 3` held on at most 0.7% of rows beside any model, and
+`break_wald` on at most 0.22%. `calibration_wald` past `chi2(2)`'s 0.01%
+value found none of the breaks beside `sgd` and `ftrl`; beside `pa` it
+held on every clean row, whose predictions here were not calibrated.
 
 On 200 streams of 3,000 rows with a break at row 1,500, beside a fit at a
 half-life of 200, `|cusum| > 3` found every intercept break, 62 rows after
