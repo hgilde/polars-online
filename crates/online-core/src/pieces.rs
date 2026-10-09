@@ -189,3 +189,61 @@ pub(crate) fn spread<T: Send>(items: Vec<T>, threads: usize, f: impl Fn(T) + Syn
         work();
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cut the docs state: `k = 1,000` is 15 pieces at the shipped cut
+    /// ([`LEAF`]) -- four diagonal blocks of 250, a 250 × 250 tile in each
+    /// half, and nine tiles of about 167 on a side for the 500 × 500
+    /// rectangle between them; a rectangle is cut into `len / tile` parts,
+    /// none narrower than `tile`, and one part below `2·tile`; bands of
+    /// right-hand sides follow the same rule.
+    #[test]
+    fn the_cut_is_the_documented_one() {
+        let sides = |k: usize, cut: (usize, usize)| -> Vec<(usize, usize, bool)> {
+            let mut m = vec![0.0; k * k];
+            pieces(MatMut::from_row_major_slice_mut(&mut m, k, k), cut)
+                .into_iter()
+                .map(|p| match p {
+                    Piece::Diag(b, _) => (b.nrows(), b.ncols(), true),
+                    Piece::Tile(b, _, _, _) => (b.nrows(), b.ncols(), false),
+                })
+                .collect()
+        };
+        let cut = sides(1000, (LEAF, TILE));
+        assert_eq!(cut.len(), 15);
+        assert_eq!(cut.iter().filter(|p| p.2).count(), 4);
+        let tiles: Vec<(usize, usize)> = cut.iter().filter(|p| !p.2).map(|p| (p.0, p.1)).collect();
+        assert!(
+            tiles.contains(&(167, 167)) && tiles.contains(&(250, 250)),
+            "{tiles:?}"
+        );
+        assert!(
+            tiles.iter().all(|&(r, c)| r >= TILE && c >= TILE),
+            "{tiles:?}"
+        );
+        assert_eq!(sides(256, (LEAF, TILE)).len(), 1);
+        for (len, want) in [
+            (1, None),
+            (255, None),
+            (256, Some(128)),
+            (300, Some(150)),
+            (383, Some(192)),
+            (384, Some(128)),
+        ] {
+            assert_eq!(first_part(len, TILE), want, "len {len}");
+        }
+        let widths = |n: usize| -> Vec<usize> {
+            let mut m = vec![0.0; 2 * n];
+            col_parts(MatMut::from_row_major_slice_mut(&mut m, 2, n), TILE)
+                .iter()
+                .map(|b| b.ncols())
+                .collect()
+        };
+        assert_eq!(widths(100), vec![100]);
+        assert_eq!(widths(300), vec![150, 150]);
+        assert_eq!(widths(1000), vec![143, 143, 143, 143, 143, 143, 142]);
+    }
+}

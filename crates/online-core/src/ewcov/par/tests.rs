@@ -69,7 +69,6 @@ impl Case {
 
     /// The merge as `EwCov::flush` made it before task 225: four passes
     /// over `C`, the product one faer call on the whole triangle.
-    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
     fn whole(&self) -> Vec<f64> {
         let (k, m) = (self.k, self.merge());
         let mut c = self.c.clone();
@@ -203,6 +202,26 @@ fn the_pieces_are_the_single_product_to_the_bit() {
     }
 }
 
+/// The pieces are the four passes on every architecture, to rounding where
+/// not to the bit: each entry's scale, product and corrections, in both
+/// kinds of piece. The test above is aarch64's alone, so on x86-64 this is
+/// what holds a tile's arithmetic to the definition; the thread-count test
+/// below would pass on a merge that is wrong at every count alike.
+#[test]
+fn the_pieces_are_the_single_product_on_every_architecture() {
+    for (k, n, cut) in [(100, 7, FINE), (61, 2, FINE), (300, 3, (LEAF, TILE))] {
+        let case = Case::new(k, n, 13 + k as u64);
+        let want = case.whole();
+        let got = case.cut(3, cut);
+        let size = want.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let off = got
+            .iter()
+            .zip(&want)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(off <= 1e-13 * size, "k = {k}, n = {n}: {off:e} of {size:e}");
+    }
+}
+
 #[test]
 fn every_thread_count_gives_the_same_bits() {
     let pool = pool(8);
@@ -247,6 +266,35 @@ fn spread_runs_on_several_threads_and_on_one_when_asked() {
     let mut all = all.into_inner().unwrap();
     all.sort_unstable();
     assert_eq!(all, (0..9).collect::<Vec<_>>());
+}
+
+/// The per-row update's work does reach other threads, in bands that give
+/// each row its own index once; and it stays on the calling thread below
+/// the documented floor, `2^19` entries, "so from `k = 725`".
+#[test]
+fn rows_run_in_bands_on_several_threads_from_the_floor() {
+    let pool = pool(4);
+    let k = 24;
+    let mut c: Vec<f64> = (0..k * k).map(|v| v as f64).collect();
+    let seen = Mutex::new(Vec::new());
+    pool.install(|| {
+        rows(&mut c, k, 4, |i, row| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert_eq!(row[0], (i * k) as f64, "row {i} is the matrix's row {i}");
+            row[0] = -1.0;
+            seen.lock().unwrap().push((i, std::thread::current().id()));
+        })
+    });
+    let mut seen = seen.into_inner().unwrap();
+    let threads: std::collections::HashSet<_> = seen.iter().map(|s| s.1).collect();
+    assert!(threads.len() >= 2, "four threads asked, one used");
+    seen.sort_by_key(|s| s.0);
+    assert_eq!(
+        seen.iter().map(|s| s.0).collect::<Vec<_>>(),
+        (0..k).collect::<Vec<_>>()
+    );
+    assert!((0..k).all(|i| c[i * k] == -1.0));
+    const { assert!(724 * 724 < PAR_MIN_ENTRIES && PAR_MIN_ENTRIES <= 725 * 725) };
 }
 
 /// The accumulator's moments over a stream -- a zero-weight first row

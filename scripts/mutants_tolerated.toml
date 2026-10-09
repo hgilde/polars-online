@@ -328,3 +328,33 @@ larger than the mean (`crate::comp::add`), by a rounding step or two of \
 25 rows held such an anchor, all on streams with an outlier every 25 \
 rows, and the intercept's variance moved on 35 readings by at most \
 6.6e-16 of itself"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/ridge.rs"
+function = "ridge_fits"
+mutation = "replace < with <="
+line_has = "if resid_var < 0.0 {"
+kind = "rounding"
+why = """the two part only at a residual variance of exactly 0, where the \
+original keeps its sign and the mutant writes `+0.0`: a `-0.0` (from a \
+target variance of `-0.0`, `−0 − 2·(+0) + (−0)`) stays `-0.0`, as \
+`coef_stats`' `max(resid_var, 0.0)` keeps it. The sign of a zero and no \
+other bit: `sigma2` and the standard errors are a zero either way, `t` \
+NaN either way and `r2` the same"""
+
+[[tolerated]]
+file = "crates/online-core/src/solve.rs"
+function = "cholesky_in_place"
+mutation = "replace / with *"
+line_has = "let bs = (n.next_power_of_two() / 2).min(BLOCK);"
+kind = "rounding"
+why = """the two part only at `65 <= n <= 128`, where the mutant's block is \
+the whole matrix, one sequential faer call, and the original's two \
+blocks are faer's own steps, one piece each. On aarch64 the two are the \
+same bits: the cut factor is faer's sequential one to the bit at every \
+`n` from 65 to 128 (measured 2026-10-09; \
+`the_cut_factor_is_faers_own_to_the_bit` keeps 65 and 100). On x86-64, \
+where a product's pieces need not be the single call's \
+(`crate::pieces`), at most in the last bits: \
+`the_cut_factor_is_faers_own_on_every_architecture` holds the cut \
+within 1e-13 of faer's at 65 and 129"""

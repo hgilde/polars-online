@@ -1924,3 +1924,96 @@ mutation = "replace > with >="
 line_has = "if weight.abs() <= INPUT_BOUND && weight > 0.0 {"
 why = """the mutant adds a weight of `±0` to `n_eff`, which is `>= 0`, and \
 `n_eff + 0`, `n_eff + (−0)` are `n_eff` (`+0 + −0` is `+0`)"""
+
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace > with <"
+line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """the guard only picks between `par::rows` and the loop below it, \
+which run the same expression on each entry in the same order: which \
+branch runs decides whether rows leave the calling thread, never a bit \
+(`an_accumulator_has_the_same_bits_at_every_thread_count`, \
+`gram_threads_moves_no_bit`); `threads < 1` never holds, as \
+`set_threads` takes 0 as 1, so the mutant always takes the loop"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace > with >="
+line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """as `replace > with <` here: at one thread `par::rows` makes one band \
+and runs it in order on the calling thread, the loop's arithmetic"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace && with ||"
+line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """as `replace > with <` here: either branch, the same bits; at one \
+thread `par::rows` runs its one band in order"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace * with +"
+line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """as `replace > with <` here: the size only moves the floor at which \
+rows leave the calling thread, and either branch gives the same bits"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace * with /"
+line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """as `replace * with +` here (`k / k` is 1, below the floor, so the \
+loop always runs: the same bits)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace >= with <"
+line_has = "if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
+why = """as `replace > with <` here: the mutant sends the narrow matrices to \
+`par::rows` and the wide ones to the loop, slower each way and the same \
+bits"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov/par.rs"
+function = "rows"
+mutation = "replace / with %"
+line_has = "let n_rows = c.len() / k;"
+why = """`n_rows` sets only the band, the rows one item of `spread` takes: \
+`c.len() % k` is 0, so each band is one row, still spread over the \
+threads (`rows_run_in_bands_on_several_threads_from_the_floor`), and \
+each row is `f(i, row)` with its own index (`b · band + r`), the same \
+expression whichever thread runs it; `replace / with *`, one band of \
+every row on one thread, is caught"""
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/ridge.rs"
+function = "ridge_fits"
+mutation = "replace > with >="
+line_has = "if sigma2.is_finite() && nkish > 0.0 {"
+why = """the second operand only (`sigma2` is not compared): `sigma2` is \
+finite only where `dof = nkish − p > 0` with `p >= 0` parameters, so \
+wherever the first operand holds `nkish > 0` does too, and `nkish = 0` \
+comes with a NaN `sigma2` that makes the line false either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/ridge.rs"
+function = "ridge_fits"
+mutation = "replace < with <="
+line_has = "let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };"
+why = """`diag[p]` is `inverse_diagonal`'s squared length of a column of \
+`L⁻¹`, a sum of squares, so never below 0 (numpy's `inv` can round one \
+below; a Cholesky inverse cannot), and NaN where `C` is not positive \
+definite, which `<` and `<=` both let through; at exactly 0 both \
+branches give 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/ridge.rs"
+function = "ridge_fits"
+mutation = "replace < with =="
+line_has = "let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };"
+why = """as `replace < with <=` here: no entry is below 0, NaN fails `==` \
+as it fails `<`, and at 0 both branches give 0"""

@@ -163,6 +163,64 @@ fn the_cut_factor_is_faers_own_to_the_bit_wide() {
     }
 }
 
+/// The cut factor is faer's sequential one on every architecture, to
+/// rounding where not to the bit: at the shipped cut where faer blocks
+/// (past 64) and at a fine one, where the trailing products and the
+/// panel's bands are many pieces. The test above is aarch64's alone, so on
+/// x86-64 this is what holds the factor to faer's (and the pool tests
+/// would pass on a factor that is wrong in every pool alike).
+#[test]
+fn the_cut_factor_is_faers_own_on_every_architecture() {
+    let factor = |k: usize, cut: (usize, usize), seq: bool| -> Vec<f64> {
+        let mut l = lower(k);
+        if seq {
+            cholesky_seq(l.as_mut()).expect("positive definite");
+        } else {
+            cholesky_in_place(l.as_mut(), 4, cut).expect("positive definite");
+        }
+        (0..k)
+            .flat_map(|i| (0..=i).map(move |j| (i, j)))
+            .map(|(i, j)| l[(i, j)])
+            .collect()
+    };
+    for (k, cut) in [
+        (65, (LEAF, TILE)),
+        (129, (LEAF, TILE)),
+        (130, (16, 8)),
+        (200, (16, 8)),
+    ] {
+        let want = factor(k, cut, true);
+        let got = factor(k, cut, false);
+        let size = want.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let off = got
+            .iter()
+            .zip(&want)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(
+            off <= 1e-13 * size,
+            "k = {k}, cut {cut:?}: {off:e} of {size:e}"
+        );
+    }
+}
+
+/// A pivot that is not positive is reported where faer reports it, in the
+/// whole matrix's numbering: one in the second of the blocks the cut walks
+/// is at its own row, not at its row within the block.
+#[test]
+fn a_failed_pivot_is_named_as_faer_names_it() {
+    let k = 100;
+    let mut a = lower(k);
+    a[(90, 90)] = -1.0;
+    let mut seq = a.clone();
+    let want = cholesky_seq(seq.as_mut()).unwrap_err();
+    let got = cholesky_in_place(a.as_mut(), 4, (LEAF, TILE)).unwrap_err();
+    let index = |e: llt::factor::LltError| match e {
+        llt::factor::LltError::NonPositivePivot { index } => index,
+    };
+    assert_eq!(index(want), 90);
+    assert_eq!(index(got), 90);
+}
+
 /// A fine cut makes a narrow matrix many pieces and many bands, so a cheap
 /// case shows the thread count deciding nothing (a debug build).
 #[test]
