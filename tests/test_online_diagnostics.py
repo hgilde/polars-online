@@ -60,6 +60,11 @@ def _frame(n: int = 900, seed: int = 221) -> pl.DataFrame:
     )
 
 
+#: A clock in rows whose first two rows -- of weight zero in `_frame` -- sit
+#: at row 2's instant.
+_HEADS_AT_ROW_2 = pl.max_horizontal(pl.int_range(pl.len()), pl.lit(2)).cast(pl.Float64).alias("t")
+
+
 def _spec(switch: str, **kw):
     base = dict(
         targets=["y"],
@@ -128,9 +133,11 @@ def test_a_field_never_reads_its_own_row(switch):
 def test_zero_weight_rows_only_advance_the_clock(switch):
     """Rule 9: the stream opens on two rows of weight zero, which leave no
     trace -- the fields are those of the stream without them -- and no
-    field is NaN."""
+    field is NaN. They share row 2's clock: a diagnostic's readiness reads
+    how far the stream has settled, and the clock a row of weight zero
+    covers counts toward it (task 232 (1))."""
     _, fields = SWITCHES[switch]
-    df = _frame().with_columns(pl.int_range(pl.len()).cast(pl.Float64).alias("t"))
+    df = _frame().with_columns(_HEADS_AT_ROW_2)
     spec = _spec(switch, clock="t", gap_cap=10.0)
     out = _run(df, spec)
     for f in fields:
@@ -303,14 +310,14 @@ def test_robust_se_is_chunk_invariant(memory):
     df = _frame()
     spec = _robust_spec(**({"robust_se_half_life": memory} if memory is not None else {}))
     whole = _run(df, spec).select(ROBUST)
-    assert whole["se_coef_hac"].drop_nulls().len() > 800, "the test reads values"
+    assert whole["se_coef_hac"].drop_nulls().len() > 600, "the test reads values"
     for chunk in (7, 600):
         got = _run(df, spec, chunk).select(ROBUST)
         assert got.equals(whole, null_equal=True), f"{chunk}-row chunks"
 
 
 def test_robust_se_zero_weight_rows_only_advance_the_clock():
-    df = _frame().with_columns(pl.int_range(pl.len()).cast(pl.Float64).alias("t"))
+    df = _frame().with_columns(_HEADS_AT_ROW_2)
     spec = _robust_spec(clock="t", gap_cap=10.0)
     out = _run(df, spec)
     rest = _run(df.slice(2), spec)
@@ -536,13 +543,13 @@ def test_unnest_takes_the_robust_standard_errors_apart():
         assert flat[names[1]].drop_nulls().len() > 400, field
 
 
-def _ew_box_pierce(resid: np.ndarray, lam: float, lags: int) -> float:
+def _ew_box_pierce(resid: np.ndarray, lam: float, lags: int, ready: np.ndarray) -> float:
     """Box and Pierce's ``n sum(rho_l**2)`` over the scored residuals before
-    the last row, each at its present weight ``lam**age``, at Kish's ``n``:
-    a pair is weighed by its later row, and its partner is the ``l``-th
-    scored residual before it."""
+    the last row of the rows ``ready`` holds, each at its present weight
+    ``lam**age``, at Kish's ``n``: a pair is weighed by its later row, and
+    its partner is the ``l``-th scored residual before it."""
     age = len(resid) - 1 - np.arange(len(resid))
-    ok = np.isfinite(resid)
+    ok = np.isfinite(resid) & ready
     ok[-1] = False  # the last row is read before it folds
     e, w = resid[ok], lam ** age[ok].astype(float)
     n = w.sum() ** 2 / (w**2).sum()
@@ -572,7 +579,9 @@ def test_ljung_box_under_a_memory_is_box_pierce_at_kishs_size():
             emit_specification=True,
         )
         out = _run(df, spec)
-        want = _ew_box_pierce(out["resid_y"].to_numpy(), 0.5 ** (1 / half_life), 10)
+        # Folded from the row 95% settled (task 232 (1)).
+        ready = out["settled_frac"].to_numpy() >= 0.95
+        want = _ew_box_pierce(out["resid_y"].to_numpy(), 0.5 ** (1 / half_life), 10, ready)
         got = out["ljung_box_y"][-1]
         assert got == pytest.approx(want, rel=1e-9), half_life
 
@@ -612,3 +621,70 @@ def test_an_embargo_reads_the_scored_fits_inflation():
     (mean_0, rate_0), (mean_50, rate_50) = read
     assert abs(mean_50 - mean_0) < 0.2, read
     assert rate_50 < rate_0 + 0.03, read
+
+
+# --- readiness (task 232 (1); review round 6, F-1) ---------------------------
+
+
+def _at_a_level(groups: int, n: int, level: float = 5_000.0, seed: int = 232) -> pl.DataFrame:
+    """A target at a level far from 0 -- the prior's mean -- on two
+    centred features: `rls` and `kalman` learn the intercept from a prior
+    at 0, so their first predictions are thousands of noise sds off."""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((groups * n, 2))
+    y = level + x @ np.array([0.5, 0.5]) + rng.standard_normal(groups * n)
+    g = np.repeat(np.arange(groups), n)
+    return pl.DataFrame({"g": g, "x0": x[:, 0], "x1": x[:, 1], "y": y})
+
+
+@pytest.mark.parametrize("build", [po.spec.rls, po.spec.kalman])
+def test_a_diagnostic_folds_from_readiness(build):
+    """A diagnostic folds a row only once its instance is ready: its
+    prediction past every gate and the stream 95% settled on the fit's
+    memory (task 232 (1)). Folded from the first prediction the gates let
+    through, the warm-up's residuals -- the prior's bias, thousands of
+    noise sds early on -- held Jarque and Bera's statistic past its 5%
+    value on 81% of rows 1,000-2,000 beside `rls` at a half-life of 50
+    (20-40 half-lives in). The first row a diagnostic reads is the one
+    after the first row past 95% settled."""
+    n = 2_000
+    df = _at_a_level(4, n)
+    kw = dict(targets=["y"], features=["x0", "x1"], half_life=50.0, group="g")
+    if build is po.spec.kalman:
+        kw["coef_half_life"] = 50.0
+    spec = build("m", emit_tails=True, emit_breaks=True, emit_specification=True, **kw)
+    out = _run(df, spec).with_columns(r=pl.int_range(pl.len()).over("g"))
+    late = out.filter(pl.col("r") >= 1_000)
+    assert (late["jarque_bera_y"].drop_nulls() > 5.991).mean() < 0.12
+    assert (late["reset_y"].drop_nulls() > 5.991).mean() < 0.12
+    assert (late["cusum_sq_y"].drop_nulls().abs() > 1.96).mean() < 0.06
+    first = out.filter(pl.col("g") == 0)
+    settled = first["settled_frac"].to_numpy()
+    folded = first["kurtosis_y"].is_not_null().arg_true()
+    assert folded.len() > 0
+    # The first row that reads a value reads the row before it, which was
+    # past 95% settled.
+    assert settled[int(folded[0]) - 1] >= 0.95
+
+
+def test_a_standardizing_fit_folds_once_its_scaler_has_warmed_up():
+    """`sgd` and `pa` under `standardize` run another fit while their
+    scaler warms up (22 rows of Kish's size, `online_core::WARMUP_ROWS`):
+    a diagnostic folds from the row after the switch, not from the first
+    prediction (task 232 (1))."""
+    df = _frame().with_columns(pl.lit(1.0).alias("w"))
+    spec = po.spec.sgd(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=float("inf"),
+        standardize=True,
+        emit_calibration=True,
+        calibration_half_life=float("inf"),
+    )
+    out = _run(df, spec)
+    first_pred = int(out["pred_y"].is_not_null().arg_true()[0])
+    first_read = int(out["calibration_intercept_y"].is_not_null().arg_true()[0])
+    # Two rows with a spread make a slope: without the wait, two rows past
+    # the first prediction.
+    assert first_read >= 22 > first_pred + 2

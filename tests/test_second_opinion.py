@@ -4680,12 +4680,14 @@ class TestCalibrationIsMincerZarnowitz:
         )
         out = po.ModelBank([spec]).fit_predict(df).unnest("m")
         pred, y, w = out["pred_y"].to_numpy(), df["y"].to_numpy(), df["w"].to_numpy()
+        # Folded once the stream is 95% settled (task 232 (1)).
+        ready = out["settled_frac"].to_numpy() >= 0.95
         checked = 0
-        for t in (80, 300, 699):
+        for t in (250, 400, 699):
             s = np.arange(t)
             # Row s folded at its weight, aged by every row after it up to t - 1.
             omega = w[:t] * 0.5 ** ((t - 1 - s) / h_calib)
-            ok = np.isfinite(pred[:t]) & (omega > 0)
+            ok = np.isfinite(pred[:t]) & (omega > 0) & ready[:t]
             X = sm.add_constant(pred[:t][ok])
             fit = sm.WLS(y[:t][ok], X, weights=omega[ok]).fit()
             om = omega[ok]
@@ -4910,11 +4912,15 @@ class TestRobustStandardErrorsAreTheSandwich:
         resid = out["resid_y"].to_numpy()
         w = df["w"].to_numpy() if weighted else np.ones(df.height)
         X = sm.add_constant(df.select("x0", "x1").to_numpy())
+        # Folded once the stream is 95% settled (task 232 (1)); run once it
+        # never settles, and every row folds.
+        settled = out["settled_frac"].fill_null(1.0).fill_nan(1.0).to_numpy()
+        ready = settled >= 0.95
         checked = 0
-        for t in (120, 500, 899):
+        for t in (700, 800, 899):
             age = t - np.arange(t + 1)
             omega = w[: t + 1] * (0.5 ** (age / half_life))
-            keep = np.isfinite(resid[: t + 1]) & (omega > 0)
+            keep = np.isfinite(resid[: t + 1]) & (omega > 0) & ready[: t + 1]
             Xk, ek, om = X[: t + 1][keep], resid[: t + 1][keep], omega[keep]
             bi = np.linalg.inv((Xk * om[:, None]).T @ Xk)
             for nlags, field in ((0, "se_coef_hc0"), (lags, "se_coef_hac")):
@@ -5123,9 +5129,12 @@ class TestTailsAreScipyAndJarqueBera:
         spec = po.spec.ewridge("m", half_life=60.0, tails_half_life=h, weight="w", **common)
         out = po.ModelBank([spec]).fit_predict(df).unnest("m")
         v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
-        for t in (300, 1199):
+        # Folded once the stream is 95% settled on the model's half-life
+        # (task 232 (1)).
+        ready = out["settled_frac"].to_numpy() >= 0.95
+        for t in (400, 1199):
             om = w[:t] * 0.5 ** (((t - 1) - np.arange(t)) / h)
-            keep = np.isfinite(v[:t]) & (om > 0)
+            keep = np.isfinite(v[:t]) & (om > 0) & ready[:t]
             vt, ot = v[:t][keep], om[keep]
             mu = np.average(vt, weights=ot)
             m = [np.average((vt - mu) ** j, weights=ot) for j in (2, 3, 4)]

@@ -190,14 +190,42 @@ sd at row 1,500, the CUSUM at a memory of 200 rows found every break within
 100 rows. Run once over the whole stream, it found each 244 rows after the
 break on the median.
 
-**A run-once diagnostic keeps the first predictions for good, so give the
-model a `min_weight` of a few rows per coefficient.** A fit with three rows
-for three coefficients predicts wildly, and run once those first residuals
-weigh in the statistic forever. On 40 clean streams of 6,000 rows, a
-run-once `reset` beside a run-once `ewridge` at its default `min_weight`
-of 0 passed its 5% value on 26% of rows past row 2,000. At `min_weight=10`
-it passed on 2.6%. The calibration test passed on 19% of rows at 0 and 9.4%
-at 10. A windowed diagnostic forgets the warm-up and needs no such care.
+**A diagnostic folds a row only once the model is ready.** A row whose
+prediction a gate withheld has no residual, so `min_weight`,
+`max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
+forgets, a diagnostic also waits until the stream is 95% settled on the
+fit's memory, 4.3 of its half-lives, the point from which the readiness
+notices judge a stream. And `sgd` and `pa` under `standardize` fold from
+the row their scaler switches the fit to the caller's units, 22 rows of
+Kish's size in. The fields of the twin fits and of feature health read the
+target and the features alone, and fold every row.
+
+**A fit far from its truth carries its warm-up error for many
+half-lives.** `rls` and `kalman` learn the intercept from a prior at 0, so
+on a target at 5,000 their first predictions are thousands of noise sds
+off. Folded from the first prediction, those residuals held Jarque and
+Bera's statistic past its 5% value on 81% of rows 1,000 to 2,000 beside
+`rls` at a half-life of 50, 20 to 40 half-lives in, and the calibration
+test on 100%. Folded from readiness they passed on 4.9% and 24%. What
+remains is the prior's bias itself, which fades only as the fit forgets
+it. At a half-life of 200, `rls`'s mean residual was still +2.1 noise sds
+over rows 400 to 1,000 and +0.16 over rows 1,000 to 2,000, and the
+calibration and the CUSUM flag it there, as they should. `kalman`, whose
+prior is sized from the first rows, read at a level from row 1,000 on as it
+reads on a target at 0, each test past its 5% value on 0.1% to 8.9% of
+rows.
+
+**A fit that forgets nothing never settles, so run once only the gates
+hold back the warm-up: give the model a `min_weight` of a few rows per
+coefficient.** A fit with three rows for three coefficients predicts
+wildly, and run once those first residuals weigh in the statistic forever.
+On 40 clean streams of 6,000 rows, a run-once `reset` beside a run-once
+`ewridge` at its default `min_weight` of 0 passed its 5% value on 26% of
+rows past row 2,000. At `min_weight=10` it passed on 2.6%. The calibration
+test passed on 19% of rows at 0 and 9.4% at 10. Beside a fit at a
+half-life of 200, a run-once `reset` passed on 25.8% of rows 1,000 to
+3,000 when it folded from the first prediction, and on 4.8% from
+readiness.
 
 ### Reading a statistic that is read on every row
 
@@ -394,21 +422,21 @@ for spec in specs:
 
 ```text
 spec      slope  wald > 5.99    mse  mse rescaled
-shrunk     1.99         100%  1.329         1.021
+shrunk     2.00         100%  1.329         1.023
 overfit    0.82          98%  1.278         1.241
-steady     0.99           0%  1.018         1.018
+steady     1.00           0%  1.018         1.021
 ```
 
-The shrunk fit's median slope is 1.99: its ridge halved every
+The shrunk fit's median slope is 2.00: its ridge halved every
 coefficient, so every prediction is half the size it should be. The Wald
 test flags every row, and rescaling by the slope takes its error from
-1.329 to 1.021, the steady fit's level. The overfit fit's slope is 0.82,
+1.329 to 1.023, the steady fit's level. The overfit fit's slope is 0.82,
 flagged on 98% of rows: its predictions are about 22% too large, because
 twenty coefficients estimated on about 87 rows' worth of data add their
 estimation noise to every prediction. Rescaling recovers only a little,
 from 1.278 to 1.241, since most of that noise varies from row to row, and
 no single multiplier removes it. Its fix is a longer half-life or fewer
-features. The steady fit's slope is 0.99, flagged on no row, and
+features. The steady fit's slope is 1.00, flagged on no row, and
 rescaling changes nothing.
 
 **What to do.** When the slope sits away from 1 for many half-lives,
@@ -784,7 +812,8 @@ curvature in a feature the prediction barely uses can hide from it.
 
 The recipe plants one fault in each of three streams, fixes two of them
 with Polars before the bank, and reads each statistic's median over rows
-2,000 to 5,999:
+6,000 to 9,999. The tests fold from row 4,300, once the fit is 95%
+settled at its half-life of 1,000 rows:
 
 ```python
 import numpy as np
@@ -794,7 +823,7 @@ import polars_online as po
 
 # y = 1.0 x0 + 0.5 x1 + noise on every stream, but for one fault each.
 rng = np.random.default_rng(5)
-n = 6_000
+n = 10_000
 x0, x1, e = rng.standard_normal((3, n))
 ar = np.zeros(n)  # noise that carries 0.4 of the row before
 for i in range(1, n):
@@ -832,7 +861,7 @@ specs = [
     spec("lag_fixed", "y_lag", ["x0", "x1", "y_lag_prev"]),
     spec("curve_fixed", "y_curve", ["x0", "x1", "x0_sq"]),
 ]
-out = lf.online.fit_predict(specs).slice(2_000).collect()
+out = lf.online.fit_predict(specs).slice(6_000).collect()
 
 # Each statistic's median. With nothing missing: chi2(10) has a median of 9.3, chi2(2) or chi2(3) of 1.4 or 2.4.
 print(f"{'spec':12} {'ljung_box':>10} {'breusch_pagan':>14} {'reset':>6}")
@@ -848,21 +877,21 @@ for s in specs:
 
 ```text
 spec          ljung_box  breusch_pagan  reset
-clean              14.0            1.0    1.8
-lag               432.4            2.3    1.9
-spread             15.5          419.2    4.8
-curve              12.9            1.6  214.5
-lag_fixed          13.8            3.2    0.7
-curve_fixed        13.8            1.8    1.1
+clean               8.0            1.0    0.7
+lag               447.7            2.5    0.5
+spread              4.9          337.6    1.8
+curve               8.5            0.8  261.5
+lag_fixed           7.8            1.4    1.0
+curve_fixed         8.0            1.7    1.1
 ```
 
-The clean stream reads 14.0, 1.0 and 1.8, each below its 5% value (18.3,
-5.99 and 5.99). Each faulty stream lights one test, by a factor of 30 or
-more over the clean stream: `ljung_box` reads 432.4 for the missing lag,
-`breusch_pagan` 419.2 for the spread, and `reset` 214.5 for the
+The clean stream reads 8.0, 1.0 and 0.7, each below its 5% value (18.3,
+5.99 and 5.99). Each faulty stream lights one test, by a factor of 50 or
+more over the clean stream: `ljung_box` reads 447.7 for the missing lag,
+`breusch_pagan` 337.6 for the spread, and `reset` 261.5 for the
 curvature.
 With last row's error as a feature, the lagged stream's `ljung_box` falls
-back to 13.8, and with `x0²` as a feature the curved stream's `reset`
+back to 7.8, and with `x0²` as a feature the curved stream's `reset`
 falls to 1.1. The spread has no fix in the features.
 Its coefficients are still right, but their `se_coef` is not, so read
 `se_coef_hc0` ([Can its t be trusted?](#can-its-t-be-trusted)), or weight
@@ -972,8 +1001,8 @@ excess kurtosis of the residuals: 16.6
 drift_threshold 50; |cusum_sq| past 9.1
 drift at 20            11 flags before the break, first after it 15011 rows in
 drift at 50             1 flags before the break, first after it never
-|cusum_sq| > 3      33513 flags before the break, first after it 18 rows in
-|cusum_sq| > 9.1     6740 flags before the break, first after it 80 rows in
+|cusum_sq| > 3      33422 flags before the break, first after it 18 rows in
+|cusum_sq| > 9.1     6748 flags before the break, first after it 80 rows in
 ```
 
 The stretch reads an excess kurtosis of 16.6, which calls for a
@@ -982,8 +1011,8 @@ The stretch reads an excess kurtosis of 16.6, which calls for a
 the noise triples, `sigma` triples with it, and `drift` scores each
 residual against `sigma`. Its first flag after the break at 20 is a false alarm,
 15,011 rows in. The CUSUM of squares found the break 18 rows in, but it
-also flagged 33,513 of the stable rows, 17% of them. Widened to 9.1 it
-flagged 6,740, still 3.4%, and found the break 80 rows in.
+also flagged 33,422 of the stable rows, 17% of them. Widened to 9.1 it
+flagged 6,748, still 3.4%, and found the break 80 rows in.
 
 **What to do.** Measure `kurtosis` over a stable stretch before trusting
 any threshold on the residuals. Set `drift_threshold` from it by the table.

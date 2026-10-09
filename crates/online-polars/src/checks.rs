@@ -7,7 +7,15 @@
 //! residual diagnostics do -- before the row folds into it, so a field never
 //! includes the row it describes -- and each folds the row only when the
 //! row is learned: under `embargo` at its release, with the prediction the
-//! row was scored with. Their per-slot values ride in one output buffer,
+//! row was scored with. And only once the instance is ready (task 232 (1);
+//! review round 6, F-1): a row the gates withheld has no residual, and
+//! beside a fit that forgets the stream must also be 95% settled on the
+//! fit's memory, and a standardizing `sgd` or `pa` past its scaler's
+//! warm-up. Folded from the first prediction, `rls`'s warm-up residuals on
+//! a target at 5,000 -- the prior's bias, thousands of noise sds -- held
+//! Jarque and Bera's statistic past its 5% value on 81% of rows 1,000-2,000
+//! at a half-life of 50; from readiness, on 4.9%. The twin fits and the
+//! feature health read no prediction, and fold every row. Their per-slot values ride in one output buffer,
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
 use online_core::{
@@ -48,6 +56,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
 /// breaks' twin fits, the features each slot's coefficients cover.
 #[derive(Debug, Clone)]
 pub struct CheckCfg {
+    /// The fit's own memory, which a diagnostic's readiness reads (task 232
+    /// (1)).
+    fit: Decay,
     calibration: Decay,
     breaks: Decay,
     robust: Decay,
@@ -92,6 +103,7 @@ impl CheckCfg {
             _ => vec![all; crate::stream::combos(spec).len()],
         };
         Self {
+            fit: model,
             calibration: Spec::diagnostic_decay(
                 spec.calibration_half_life.as_ref(),
                 model,
@@ -137,6 +149,12 @@ impl CheckCfg {
     /// Whether `se_coef_hac` is written: a lag to weigh.
     pub fn hac(&self) -> bool {
         self.lags > 0
+    }
+
+    /// The fit's own memory: the stream is ready for the diagnostics once
+    /// it has settled on it (task 232 (1)).
+    pub fn fit(&self) -> Decay {
+        self.fit
     }
 }
 
@@ -419,20 +437,34 @@ impl Checks {
 
     /// Fold one learned row: `row` and its recursive residuals `rec`, the
     /// row's clock step and weight. A slot with no prediction or no target,
-    /// and a row of weight 0, only age (CLAUDE.md hard rule 9).
-    pub fn learn(&mut self, cfg: &CheckCfg, d_clock: f64, row: &RowView<'_>, rec: &[f64], w: f64) {
+    /// and a row of weight 0, only age (CLAUDE.md hard rule 9). Until the
+    /// instance is `ready` (task 232 (1)) a row's residuals only age the
+    /// accumulators that read them; the twin fits and the feature health,
+    /// which read the target and the features alone, fold it.
+    pub fn learn(
+        &mut self,
+        cfg: &CheckCfg,
+        d_clock: f64,
+        row: &RowView<'_>,
+        rec: &[f64],
+        w: f64,
+        ready: bool,
+    ) {
         let nc = row.nc.max(1);
+        // The weight the residuals fold at: none before the instance is
+        // ready, which only ages them.
+        let (wd, w) = (if ready { w } else { 0.0 }, w);
         if !self.calibration.is_empty() {
             let lam = cfg.calibration.factor(d_clock);
             for (slot, c) in self.calibration.iter_mut().enumerate() {
                 let y = row.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
-                c.update(row.preds[slot], y, lam, w);
+                c.update(row.preds[slot], y, lam, wd);
             }
         }
         if !self.breaks.is_empty() {
             let lam = cfg.breaks.factor(d_clock);
             for (slot, b) in self.breaks.iter_mut().enumerate() {
-                b.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, w);
+                b.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, wd);
             }
             for (t, fit) in self.twin.iter_mut().enumerate() {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
@@ -446,20 +478,20 @@ impl Checks {
             let lam = cfg.influence.factor(d_clock);
             for (slot, i) in self.influence.iter_mut().enumerate() {
                 let (e, infl) = row.resid_and_inflation(slot);
-                i.update(e, infl, lam, w);
+                i.update(e, infl, lam, wd);
             }
         }
         if !self.tails.is_empty() {
             let lam = cfg.tails.factor(d_clock);
             for (slot, t) in self.tails.iter_mut().enumerate() {
-                t.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, w);
+                t.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, wd);
             }
         }
         if !self.specification.is_empty() {
             let lam = cfg.specification.factor(d_clock);
             for (slot, s) in self.specification.iter_mut().enumerate() {
                 let e = row.resid.get(slot).copied().unwrap_or(f64::NAN);
-                s.update(row.xs, row.preds[slot], e, lam, w);
+                s.update(row.xs, row.preds[slot], e, lam, wd);
             }
         }
         if !self.sandwich.is_empty() {
@@ -469,7 +501,7 @@ impl Checks {
                     row.xs,
                     row.resid.get(slot).copied().unwrap_or(f64::NAN),
                     lam,
-                    w,
+                    wd,
                 );
             }
         }

@@ -313,6 +313,17 @@ impl AnyModel {
         dispatch!(self, m => m.support_coef())
     }
 
+    /// Whether the model is still in its own warm-up: a standardizing `sgd`
+    /// or `pa` whose scaler has not switched the fit to the caller's units
+    /// ([`online_core::Warmup`]). Every other model has none.
+    pub fn scaler_warming(&self) -> bool {
+        match self {
+            AnyModel::Sgd(m) => m.scaler_warming(),
+            AnyModel::Pa(m) => m.scaler_warming(),
+            _ => false,
+        }
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -4799,6 +4810,18 @@ fn run_instance(
                 .model
                 .get()
                 .row_error_inflation_into(xs, plan.d_clock, &mut sc.row_infl);
+        // Whether the instance is ready for task 221's diagnostics to fold
+        // its residuals (task 232 (1); review round 6, F-1), read before the
+        // step as the gates are: the model past its own warm-up, and the
+        // stream 95% settled on the fit's memory where it forgets -- the
+        // point the readiness notices judge from. Each gate's withholding
+        // already keeps a row out, since a row with no prediction has no
+        // residual. A stream that forgets nothing never settles and waits
+        // on the gates alone.
+        let diag_ready = inst.checks.is_some() && {
+            let fit = settled_frac(inst.check_cfg.fit(), *inst.decay_time);
+            !inst.model.get().scaler_warming() && (fit.is_nan() || settled_enough(fit))
+        };
 
         let mut step = if learn {
             // The row's stamp, for a window to key its snapshot by and
@@ -5298,7 +5321,7 @@ fn run_instance(
                 c.read_health(xs.len(), n_rows, ri, inst.o_health);
             }
             if learn {
-                c.learn(&inst.check_cfg, plan.d_clock, &row, &sc.z, w);
+                c.learn(&inst.check_cfg, plan.d_clock, &row, &sc.z, w, diag_ready);
             }
         }
 

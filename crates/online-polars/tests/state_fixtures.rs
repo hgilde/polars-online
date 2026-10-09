@@ -178,10 +178,11 @@ fn specs() -> Vec<Spec> {
 /// The specs of the second bank file, `bank_diagnosed`: the diagnostics
 /// with a memory of their own (docs/PLAN.md task 221, schema 55), in a file
 /// of their own so that neither file passes the 250 KB a source file is
-/// held to.
+/// held to. A half-life of 10 clock units settles the stream 95% well
+/// before the save, from which the diagnostics fold (task 232 (1)).
 fn diagnosed_specs() -> Vec<Spec> {
     [
-        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
+        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))

@@ -224,7 +224,12 @@ the diagnostics
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: when left out, four times the model instance's half-life
     for the calibration and the instance's half-life for the others; ``inf``
-    is the run-once form, which forgets nothing.
+    is the run-once form, which forgets nothing. A diagnostic folds a row
+    only once the instance is ready: the row's prediction past every gate,
+    the stream 95% settled on the fit's memory where the fit forgets, and a
+    standardizing ``sgd`` or ``pa`` past its scaler's warm-up. The twin fits
+    of ``break_wald`` and feature health read no prediction, and fold every
+    row.
     `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
     orders them by the question each answers, with their thresholds,
     false-alarm rates, costs and the theory behind them, and a recipe for

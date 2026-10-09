@@ -313,6 +313,12 @@ impl Pa {
         &self.warmup
     }
 
+    /// Whether the fit is still the warm-up's: a scaler that has not yet
+    /// switched the fit to the caller's units. `false` without one.
+    pub fn scaler_warming(&self) -> bool {
+        self.scaler.is_some() && !self.warmup.switched()
+    }
+
     pub fn n_eff(&self) -> f64 {
         self.w_sum
     }
