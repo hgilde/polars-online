@@ -1578,17 +1578,6 @@ phi_i z_i` is `phi_i z_i`"""
 [[equivalent]]
 file = "crates/online-core/src/ewridge.rs"
 function = "<impl OnlineModel for EwRidge>::coef_variance"
-mutation = "replace || with &&"
-line_has = "if n.is_nan() || n <= 0.0 {"
-why = """`gram_kish` gives a number above 0 or none: `n_kish` is `W² / Q` \
-only for `Q > 0`, the window's `w² / q` only for `w > 0` and `q > 0`, \
-and `Q ≤ W²` for weights of at least 0, so `W²` is no smaller than a \
-`Q` above 0 and `n` is a positive number. The guard is never true, and \
-neither is its mutant"""
-
-[[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
-function = "<impl OnlineModel for EwRidge>::coef_variance"
 mutation = "replace * with /"
 line_has = "factor.quad_forms(&u, kk, 1)[0] * sys.scale"
 why = """the line runs for a centred system, and every centred system is \

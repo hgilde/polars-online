@@ -687,6 +687,40 @@ fn lasso_reads_infinite_where_the_gram_has_no_weight() {
 
 // ---- coefficient standard errors (docs/PLAN.md task 116, F) ----
 
+/// Where the Gram has no weight, no coefficient has a variance: NaN, not
+/// `1 / 0` (docs/PLAN.md task 220). The faded Gram of
+/// `lasso_reads_infinite_where_the_gram_has_no_weight`: `Q ≤ W²` holds of
+/// the sums but not of their doubles once `W²` underflows to 0 while `Q`
+/// keeps `2^-1074`, so `n_kish` is 0 there, not a number above it.
+#[test]
+fn ewridge_coef_variance_is_none_where_the_gram_has_no_weight() {
+    let mut c = cfg(2, 1.0);
+    c.decay = Decay::Lam(0.9);
+    let mut m = model(c);
+    let mut rng = Rng(37);
+    let variances = |m: &EwRidge| match m.coef_variance() {
+        Some(CoefVariance::PerNoise(v)) => v[0].clone(),
+        other => panic!("{other:?}"),
+    };
+    for i in 0..5050 {
+        let x = rng.row(2);
+        let y = 1.0 + 2.0 * x[0] + 0.5 * rng.normal();
+        let w = if i < 50 { 1.0 } else { 0.0 };
+        m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
+        if i == 49 {
+            let v = variances(&m);
+            assert!(v.iter().all(|v| v.is_finite() && *v > 0.0), "{v:?}");
+        }
+    }
+    assert!(
+        m.n_eff() > 0.0 && m.n_eff() * m.n_eff() == 0.0,
+        "{:e}",
+        m.n_eff()
+    );
+    let v = variances(&m);
+    assert!(v.iter().all(|v| v.is_nan()), "{v:?}");
+}
+
 /// The coefficient variances `ewridge` reports are `M = Σ̂⁻¹ / n_kish`
 /// mapped to `coef`'s units over the noise: with no decay, unit weights and
 /// a vanishing ridge, `(X'X)⁻¹`'s diagonal, the intercept's included, which
