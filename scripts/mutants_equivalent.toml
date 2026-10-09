@@ -1595,3 +1595,18 @@ why = """the line runs for a centred system, and every centred system is \
 built with `scale: 1.0` (`solve_centred`), which the state carries as \
 written: only a raw system under `ridge_scale` holds the Gram's weight \
 there"""
+
+# Task 220 (docs/PLAN.md): the survivors of the 698 mutants the Mutants job
+# of the push to 103d721 never reached, and of the lines tasks 215-216
+# changed, that no input tells from the original. Every other survivor
+# there got a test.
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/micro.rs"
+function = "Micro::link_by_matrix"
+mutation = "replace + with *"
+line_has = "for b in (a + 1)..m {"
+why = """the mutant starts the inner loop at `b = a` and writes a summary's \
+distance to itself on the matrix's diagonal, which nothing reads: the \
+nearest-neighbour spacing skips `b = a` and `components` reads `a < b`. \
+Every pair `a < b` is written as before"""

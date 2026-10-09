@@ -1211,6 +1211,59 @@ mod tests {
         assert_eq!(dist(&[-1.0], &[1.0], &[4.0]), 4.0);
     }
 
+    /// Kahan's step keeps a centre's low part under half a rounding step of
+    /// its high part only while the step is smaller than the centre
+    /// (`crate::comp::add`), so a decaying centre that rows on either side
+    /// of zero pull across it holds its pair unrounded now and then: `hi +
+    /// lo` is not `hi`. On every such pair the centre reported is the pair
+    /// rounded to the nearest double, `hi + lo` (`ClusterSummary::centre`),
+    /// and a row of weight 0, or a batch of none merged in either way,
+    /// leaves every bit of it, as hard rule 9 has it: a step of 0 taken
+    /// would round the pair afresh (`ClusterSummary::step_to`; docs/PLAN.md
+    /// task 220).
+    #[test]
+    fn an_unrounded_pair_reads_rounded_and_a_weightless_row_keeps_its_bits() {
+        let mw = [1.0, 1.0];
+        let mut g = 31u64;
+        let mut lcg = || {
+            g = g
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((g >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        let (mut s, mut plain) = (ClusterSummary::empty(2), ClusterSummary::empty(2));
+        let mut unrounded = 0;
+        for _ in 0..4000 {
+            let z = [lcg(), 1e3 * lcg()];
+            s.decay(0.7);
+            s.absorb(&z, 1.0, &mw);
+            plain.decay(0.7);
+            plain.absorb_plain(&z, 1.0, 0.5);
+            for t in [&s, &plain] {
+                let rounded: Vec<f64> = t.c.iter().zip(&t.c_lo).map(|(h, l)| h + l).collect();
+                if rounded == t.c {
+                    continue;
+                }
+                unrounded += 1;
+                assert_eq!(t.centre(), rounded, "{t:?}");
+                let empty = ClusterSummary::empty(2);
+                let mut after = t.clone();
+                after.absorb(&[0.3, -0.2], 0.0, &mw);
+                after.absorb_plain(&[0.3, -0.2], 0.0, 0.5);
+                after.merge_plain(&empty);
+                after.merge_welford(&empty, &mw);
+                let bits = |u: &ClusterSummary| {
+                    u.c.iter()
+                        .chain(&u.c_lo)
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(&after), bits(t), "{t:?}");
+            }
+        }
+        assert!(unrounded > 20, "{unrounded} unrounded pairs");
+    }
+
     /// The moments' shape check reads both vectors.
     #[test]
     fn the_feature_moments_shape_check_reads_both_vectors() {
