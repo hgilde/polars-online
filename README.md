@@ -1909,7 +1909,7 @@ stood after the last row it learned from.
 
 | to read | call | subsection |
 |---|---|---|
-| what a bank holds, and what it was fed | `repr(bank)`, `bank.groups()`, `bank.summary()`, `bank.describe()`, `bank.last_row()` | [What a bank holds](#what-a-bank-holds) |
+| what a bank holds, what it was fed, and what is wrong with the data | `repr(bank)`, `bank.groups()`, `bank.summary()`, `bank.describe()`, `bank.last_row()`, `bank.check()` | [What a bank holds](#what-a-bank-holds) |
 | any field of the output, by name | `po.spec.output_index`, `po.spec.coef_fields` | [Output field names](#output-field-names) |
 | the coefficients, at the end or row by row | `bank.coef()`, or `coef_every=0` and `.online.unnest` | [Coefficients](#coefficients) |
 | the running sums a fit is solved from, and the algebra on them | `bank.gram(spec)`, `po.gram` | [The running sums behind a fit](#the-running-sums-behind-a-fit) |
@@ -1951,6 +1951,7 @@ last = bank.last_row("ridge")     # one row per group: what fit_predict wrote on
 betas = bank.coef()               # one row per coefficient, with the term it belongs to
 fed = bank.summary("ridge")       # one row per group: what it was fed, and its warm-up readings
 cols = bank.describe("ridge")     # one row per input column per group: column, role, count, null_count, mean, std, min, max
+problems = bank.check()           # one row per problem found in the data, the worst first
 
 # Fit many models, save each in a folder of its own, and compare them in one table:
 from pathlib import Path
@@ -1993,6 +1994,17 @@ an infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
 | `weight_sum`, `clock_min`, `clock_max`, `last_clock` | the weight behind the state, and the clock's range and last value, in the clock column's own dtype |
 | `session_changes`, `clock_backwards`, `resets` | what the clock rules met |
 | `settled_frac`, `weight_sum_settled`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row; `weight_sum_settled` is the weight the stream settles at, which says whether a `min_weight` can be met |
+
+**`check()` reads these tables, and the Gram where a spec keeps one, and
+says what is wrong with the data.** Each row is a finding: its `severity`
+(`error`, `warning` or `info`), a `code` such as `missing`, `constant`,
+`collinear` or `leakage`, the `spec`, `group` and `column`, the measured
+`value` beside its `threshold`, and a `message` that says what to do. It
+costs the run nothing, so call it after a first pass and before trusting a
+fit. Every threshold was measured: on five clean shapes over ten seeds no
+check raised an error or a warning, and each planted problem was found on
+every seed. The docstring of `ModelBank.check` lists the checks with their
+thresholds.
 
 ### Output field names
 

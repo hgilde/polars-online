@@ -734,6 +734,7 @@
 [ModelBank]  # name and signature: a parameter added or a default moved is a diff here
   __init__(self, specs: 'Iterable[dict[str, Any]]') -> 'None'
   __reduce__(self, /)
+  check(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   closed_groups(self, spec: 'str | int | None' = None, *, drop: 'bool' = True) -> 'pl.DataFrame'
   coef(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   describe(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'

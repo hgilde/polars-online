@@ -521,9 +521,16 @@ from `features[0]`, which `ModelKind::is_unsupervised` names in `spec.rs`.
 Add the model to each, and to the names in that function's doc comment,
 which nothing holds.
 
+A regression also goes into `python/polars_online/_check.py`'s
+`_REGRESSIONS`, which `ModelBank.check` reads for `few_rows`. If it does not
+centre its features, measure the level and the spread ratio at which its
+out-of-sample R² falls by 0.05, as the docstring of `check` describes, and add
+them to `_UNCENTRED_LIMITS`.
+
 **Check:** `test_model_registry::test_the_sweeps_cover_every_regression_model`,
-`test_the_release_workload_builds_every_model` and
-`test_unsupervised_is_the_models_the_bank_fills_a_target_for`.
+`test_the_release_workload_builds_every_model`,
+`test_unsupervised_is_the_models_the_bank_fills_a_target_for` and
+`test_check::test_check_places_every_regression`.
 
 ### Step 13 — `tests/test_model_registry.py`
 

@@ -1491,6 +1491,213 @@ class ModelBank:
         idx = None if spec is None else self._spec_index(spec)
         return self._native.closed_groups(idx, drop)
 
+    def check(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
+        """Findings about the data each stream was fed: one row per problem found,
+        the worst first.
+
+        It reads only what the bank keeps anyway (:meth:`summary`,
+        :meth:`describe`, :meth:`solve_failures`, :meth:`last_row`, and
+        :meth:`gram` or :meth:`marginal` where the spec has one). So it costs
+        the run nothing, a bank loaded from its file gives the same findings
+        as the bank that saved it, and the stream's chunking moves none of
+        them. Run it after a first pass, before trusting a fit:
+
+        .. code-block:: python
+
+            bank = po.ModelBank.load("bank.state")
+            problems = bank.check()                       # nothing worse than info: carry on
+            problems.filter(pl.col("severity") != "info")
+
+        ``severity``
+            ``error`` (the model cannot learn), ``warning`` (the fit is
+            unreliable) or ``info``; an ``Enum`` in that order, worst first.
+        ``code``
+            Which check found it, a short name that stays the same across
+            releases. The table below lists them.
+        ``spec``, ``group``
+            The stream, as :meth:`summary` names it. ``group`` is null for
+            ``not_checked``, which is about the spec as a whole.
+        ``column``
+            The input column the finding is about, where there is one.
+        ``value``, ``threshold``
+            The measured number and the line it crossed.
+        ``message``
+            One sentence: what is wrong, and what to do about it.
+
+        Rows come in severity order, then spec order, then :meth:`groups`'
+        order. The checks:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 18 10 72
+
+           * - code
+             - severity
+             - fires when
+           * - ``nothing_learned``
+             - error
+             - a stream was fed rows and learned from none; the column null
+               most often is named
+           * - ``missing``
+             - warning
+             - a feature or the weight column is null, NaN, infinite or past
+               1e100 on 10% of the rows or more, each of them skipped; an
+               error at 100%, and information for a target missing on half the
+               rows or more (sparse labels are a design, not a fault)
+           * - ``few_learned``
+             - warning
+             - half the rows or more were skipped for a missing feature or
+               weight, whichever columns caused it
+           * - ``constant``
+             - error, warning
+             - a target (error) or a feature (warning) took one value on
+               every row
+           * - ``level_over_spread``
+             - warning, info
+             - a feature's ``|mean| / std`` passes the limit of a model that
+               does not centre it (the second table); information past 1e6
+               for the models that do
+           * - ``scales_apart``
+             - warning
+             - the widest feature's spread over the narrowest's passes the
+               limit of a model that takes one step for every column (the
+               second table)
+           * - ``ridge_shrinks``
+             - warning
+             - ``ewridge``, ``huber`` or ``quantile`` without
+               ``standardize``: the smallest ridge is a quarter of a
+               feature's variance or more, so it takes a fifth of that
+               coefficient
+           * - ``collinear``
+             - warning
+             - the largest variance inflation factor or Belsley's condition
+               index over the features passes 30, from the Gram of an
+               ``ewridge`` or ``lasso`` (information for an ``ew_cov``)
+           * - ``leakage``
+             - error
+             - a feature correlates with a target at 0.9999 or more, from
+               the Gram or a ``marginal``
+           * - ``step_back``
+             - warning
+             - the clock stepped back, a restart or a late row under
+               ``restart_after_step_back``
+           * - ``resets``
+             - info
+             - a stream started over at a ``session_gap = "reset"`` or a step
+               back
+           * - ``few_rows``
+             - warning
+             - a regression's stream learned from fewer rows than it has
+               coefficients
+           * - ``group_sizes``
+             - info
+             - the largest group learned from 100 times the rows of the
+               smallest or more
+           * - ``never_settled``
+             - warning
+             - a stream has seen less than one half-life of clock
+               (``settled_frac`` below 0.5)
+           * - ``below_min_weight``
+             - warning
+             - the weight a stream settles at (``weight_sum_settled``) is
+               below the spec's ``min_weight``, so its predictions stay null
+           * - ``withheld``
+             - warning
+             - a stream's last row had its predictions withheld, with the
+               reason
+           * - ``low_support``
+             - warning
+             - the smallest coefficient's data share is below 0.5, the
+               command line's readiness line; not repeated for a column
+               already found constant, collinear or shrunk by the ridge
+           * - ``solve_failures``
+             - warning, info
+             - a solve needed jitter or kept the previous fit; for ``lasso``
+               (information) a coordinate descent ran out of sweeps more than
+               10 times
+           * - ``not_checked``
+             - info
+             - numpy is not installed, so ``collinear`` and ``leakage`` were
+               not checked
+
+        **Every threshold was measured before it shipped.** On five clean
+        shapes (independent features; ten features correlated at 0.8 with an
+        R² of 0.99; five groups; forty groups of 50 rows at a half-life of 5;
+        a target present on 40% of the rows), over ten seeds and fifteen
+        specs, no check raised an error or a warning in 750 runs. Each
+        problem planted in the same streams was found on every seed, for
+        every spec it harms, and for no other (``tests/test_check.py``).
+        Where a line sits:
+
+        - ``collinear``: clean designs reached a VIF of 18.0 and a condition
+          index of 14.8 (ten features correlated at 0.9). A near-duplicate
+          ``x0 + 0.1 * N(0, 1)`` reads 67 or more; at ``0.3`` (a correlation
+          of 0.958) it reads 8.3 and is not flagged.
+        - ``leakage``: clean fits reached 0.991 at an R² of 0.99, and a random
+          walk against its own lag 0.9996. A feature that is the target plus
+          a thousandth of its spread reads 0.999999.
+        - ``ridge_shrinks``: at a quarter of the variance the out-of-sample
+          R² fell by 0.02 to 0.03; at the whole variance by 0.14.
+        - ``solve_failures`` for ``lasso``: its first rows run out of sweeps
+          up to 7 times on clean data.
+        - ``level_over_spread`` and ``scales_apart``: each limit is the
+          largest value at which the model's out-of-sample R² fell by no more
+          than 0.05, at half-lives of 20, 200 and infinite:
+
+        .. list-table::
+           :header-rows: 1
+
+           * - model
+             - level limit
+             - spread-ratio limit
+           * - ``ftrl``
+             - 0.5
+             - 1.5
+           * - ``kalman``, ``standardize=False``
+             - 2
+             - 2
+           * - ``sgd``, ``standardize=False``
+             - 3
+             - 3
+           * - ``pa``, ``standardize=False``
+             - 3
+             - 2
+           * - ``rls``
+             - 10
+             - 30
+
+        The models that centre their features (``ewridge``, ``lasso``,
+        ``huber``, ``quantile``, and ``kalman``, ``sgd`` and ``pa`` at their
+        default ``standardize=True``) lost nothing at a level of 1e14 times
+        the spread. Nor did they at spreads 1e8 apart, except where a narrow
+        feature met an unstandardized ridge, which ``ridge_shrinks`` finds.
+
+        A level or a spread ratio counts only when it is five standard errors
+        from what a centred column, or two of equal spread, would show by
+        chance in that many rows. The Gram's checks wait for ten Kish rows a
+        coefficient. Both guards keep a small group quiet.
+
+        **What it cannot see.** :meth:`describe` keeps every row's moments
+        undecayed, so a feature that drifted slowly can sit far above its
+        recent spread without showing as a level here. The Gram's checks
+        cover the three models that keep one, and ``leakage`` also reads a
+        ``marginal``. Sentinel values (``-999``) counted apart from nulls, a
+        frozen feed or a forward fill, a column of few distinct values, a
+        level fed as a feature (lag-1 autocorrelation near 1), heavy tails,
+        duplicate clock stamps, gaps and irregular spacing need measurements
+        no bank keeps: they wait for ``po.spec.audit`` (docs/PLAN.md task
+        223 (b)).
+
+        ``spec`` and ``group`` narrow the frame as in :meth:`summary`
+        (``KeyError`` / ``IndexError`` for a spec the bank has not got). A
+        bank that has seen no rows has nothing to say: the frame is empty.
+        """
+        from polars_online._check import check
+
+        return check(self, spec, group)
+
     def solve_failures(self) -> dict[str, dict[str | None, int]]:
         """Jittered or failed matrix factorizations so far, per spec and group.
 
