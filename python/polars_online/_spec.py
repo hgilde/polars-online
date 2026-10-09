@@ -268,6 +268,8 @@ _INF_OK: dict[str, frozenset[str]] = {
 #: 2026-10-05, the TB5 leg). ``holt``'s ``trend`` is written only when off.
 _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
     "holt": frozenset({"trend"}),
+    "ewridge": frozenset({"gram_threads"}),
+    "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
         {
             "lags",
@@ -818,6 +820,7 @@ def ewridge(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     gram_block_rows: int | None = None,
+    gram_threads: int | None = None,
     target_gaps: str = "own_rows",
     window_size: float | Duration | None = None,
     closed: str = "right",
@@ -961,6 +964,22 @@ def ewridge(
         sum is the same sum in another order, so a blocked fit agrees with an
         unblocked one to rounding. The held rows travel in the state file, and
         are refused over 256 MiB.
+    ``gram_threads``
+        Run the update of the ``k x k`` matrix on up to that many threads:
+        the block's matrix product under ``gram_block_rows``, and each row's
+        rank-one update without it. Default 1. The output is the same to the
+        bit at every count. Each entry of the matrix is still summed by one
+        thread in one order, because the product is cut into pieces by ``k``
+        alone, never by the count. The threads come from the pool the bank
+        runs its groups on (``POLARS_ONLINE_MAX_THREADS``). So a bank whose
+        groups already keep every core busy gains little, and loses nothing.
+        Measured on 14 cores with ``gram_block_rows=256``: at 2,000 features
+        a bank learned 3.9 times as fast on eight threads, and on eight
+        threads the product alone ran 6 to 7 times as fast from 2,000 to
+        10,000 features. Without a block the update is bound by memory and
+        gains 2 to 3 times. Up to
+        256 features the product is one piece, and below 725 a row's update
+        stays on one thread, so the option changes nothing there.
     ``target_gaps``
         Which rows a target's fit is read from where the target is null on
         some. Target ``j`` keeps its mean ``ybar_j``, the column means ``m_j``
@@ -1147,6 +1166,7 @@ def ewridge(
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
         "gram_block_rows": gram_block_rows,
+        "gram_threads": gram_threads,
         "target_gaps": target_gaps,
         "window_size": window_size,
         "closed": closed,
@@ -1154,6 +1174,9 @@ def ewridge(
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
+    # Written only when given, as the Rust spec skips it when absent.
+    if gram_threads is None:
+        del model["gram_threads"]
     if ridge_scale not in ("mean", "sum"):
         raise ValueError(
             f'spec {json.dumps(name)}: ridge_scale must be "mean" or "sum", got {ridge_scale!r}'
@@ -2485,6 +2508,7 @@ def ew_cov(
     pca_every: float | Duration | None = None,
     max_rows_between_pca: int | None = None,
     lags: list[int] | None = None,
+    gram_threads: int | None = None,
     window_size: float | Duration | None = None,
     closed: str = "right",
     window_every: float | Duration | None = None,
@@ -2601,6 +2625,14 @@ def ew_cov(
         auto terms included. That is ``k²`` slots a lag, since a lagged
         matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
+    ``gram_threads``
+        Run the per-row update of the ``k x k`` co-moments on up to that
+        many threads, as :func:`ewridge`'s ``gram_threads`` does. Default 1.
+        The output is the same to the bit at every count. The update is bound
+        by memory: at 2,000 features a bank learned 2.5 times as fast on eight
+        threads and 3.1 times on fourteen. Below 725 features a row's update
+        stays on one thread, and the lagged cross-moments of ``lags`` always
+        do.
     ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history, in clock units: a row ``window_size``
         old or older contributes nothing at all (``closed="both"`` keeps the
@@ -2723,12 +2755,16 @@ def ew_cov(
         "pca_every": pca_every,
         "max_rows_between_pca": max_rows_between_pca,
         "lags": lags,
+        "gram_threads": gram_threads,
         "window_size": window_size,
         "closed": closed,
         "window_every": window_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
+    # Written only when given, as the Rust spec skips it when absent.
+    if gram_threads is None:
+        del model["gram_threads"]
     targets = _mirror_target(name, "ew_cov", features, common, "its statistics are over")
     return _common(name, model, targets=targets, features=features, **common)
 

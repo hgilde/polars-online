@@ -778,6 +778,13 @@ pub enum ModelKind {
         /// one. Chunk invariance holds either way.
         #[serde(default)]
         gram_block_rows: Option<usize>,
+        /// Threads the Gram's `k²` work runs on (docs/PLAN.md task 225):
+        /// a block's merge under `gram_block_rows`, the per-row update
+        /// otherwise. The same bits at every count; absent is one, and `0`
+        /// is refused. Skipped when absent, so only a spec that sets it
+        /// writes it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gram_threads: Option<usize>,
         /// Which rows a target's fit is read from where the target is null
         /// on some (docs/PLAN.md task 81): `"own_rows"`, the default, fits it
         /// on exactly its rows; `"pairwise"` reads the Gram over every row
@@ -991,6 +998,11 @@ pub enum ModelKind {
         /// by adding `"lag_corr"` to `stats`.
         #[serde(default)]
         lags: Option<Vec<usize>>,
+        /// Threads the per-row update of the `k × k` co-moments runs on
+        /// (docs/PLAN.md task 225), as `EwRidge`'s: the same bits at every
+        /// count, absent is one, `0` is refused, skipped when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gram_threads: Option<usize>,
         /// Clock units of history the statistics see, with a **hard** cutoff:
         /// a row older than this contributes nothing, where the exponential
         /// weight alone would leave `0.5^(age/half_life)` of it. Inside the
@@ -1804,6 +1816,24 @@ impl ModelKind {
                 | ModelKind::CorrChange { .. }
                 | ModelKind::Bocpd { .. }
         )
+    }
+
+    /// `gram_threads` as the spec gives it, for the two kinds that take it
+    /// (docs/PLAN.md task 225); `None` for every other kind.
+    pub fn gram_threads_given(&self) -> Option<usize> {
+        match self {
+            ModelKind::EwRidge { gram_threads, .. } | ModelKind::EwCov { gram_threads, .. } => {
+                *gram_threads
+            }
+            _ => None,
+        }
+    }
+
+    /// The threads a model's Gram update runs on: the spec's
+    /// `gram_threads`, or one. Configuration, not state: the stream sets it
+    /// on every model it builds or restores.
+    pub fn gram_threads(&self) -> usize {
+        self.gram_threads_given().unwrap_or(1)
     }
 
     /// A windowed kind's `window_size` and `window_budget`; `None` for a kind with
@@ -3840,6 +3870,14 @@ impl Spec {
                 ));
             }
         }
+        // A count of no threads (docs/PLAN.md task 225).
+        if self.model.gram_threads_given() == Some(0) {
+            return Err(format!(
+                "spec {:?}: gram_threads must be >= 1 (the threads the Gram's update runs \
+                 on; leave it out for one), got 0",
+                self.name
+            ));
+        }
         // A budget bounds a window's snapshots, so it needs a window, and a
         // budget of no bytes bounds nothing (review 2026-09-12, P4).
         if let Some((window, Some(budget))) = self.model.window_parts() {
@@ -4069,6 +4107,8 @@ impl Spec {
                 pca_every,
                 max_rows_between_pca,
                 lags,
+                // Checked with `ew_ridge`'s (`gram_threads_given`).
+                gram_threads: _,
                 window_size: window,
                 // Checked with every windowed kind's (`window_cadence`).
                 window_every: _,
@@ -5422,64 +5462,4 @@ mod clock_tests {
 }
 
 #[cfg(test)]
-mod sgd_tests {
-    use super::Spec;
-
-    fn sgd(model: &str) -> Spec {
-        serde_json::from_str(&format!(
-            r#"{{"name": "m", "model": {{"type": "sgd"{model}}}, "targets": ["y"],
-                "features": ["x"], "half_life": 10}}"#
-        ))
-        .unwrap()
-    }
-
-    /// Task 160, YA8b: a parameter of a loss or a schedule the spec does not
-    /// use was taken and ignored by every door; the builder refuses it now,
-    /// and so does the validation every spec meets, a dict's or a TOML
-    /// file's, naming the parameter and what reads it. A null is the
-    /// default, not a value given.
-    #[test]
-    fn a_parameter_its_loss_or_schedule_does_not_read_is_refused() {
-        for (model, want) in [
-            (
-                r#", "huber_delta": 0.5"#,
-                r#"sgd huber_delta is for loss "huber"; loss "squared" does not use it"#,
-            ),
-            (
-                r#", "quantile": 0.3"#,
-                r#"sgd quantile is for loss "quantile"; loss "squared" does not use it"#,
-            ),
-            (
-                r#", "loss": "huber", "eps": 0.2"#,
-                r#"sgd eps is for loss "epsilon_insensitive"; loss "huber" does not use it"#,
-            ),
-            (
-                r#", "power": 0.9"#,
-                r#"sgd power is for schedule "inv_scaling"; schedule "constant" does not use it"#,
-            ),
-            (
-                r#", "schedule": "adagrad", "power": 0.9"#,
-                r#"sgd power is for schedule "inv_scaling"; schedule "adagrad" does not use it"#,
-            ),
-        ] {
-            let err = sgd(model).check().unwrap_err();
-            assert!(
-                err.contains(&format!("spec \"m\": {want}")),
-                "{model}: {err}"
-            );
-        }
-        // Each beside what reads it, and every one null, is a spec.
-        for model in [
-            r#", "loss": "huber", "huber_delta": 0.5"#,
-            r#", "loss": "quantile", "quantile": 0.3"#,
-            r#", "loss": "epsilon_insensitive", "eps": 0.2"#,
-            r#", "schedule": "inv_scaling", "power": 0.9"#,
-            r#", "huber_delta": null, "quantile": null, "eps": null, "power": null"#,
-        ] {
-            assert!(sgd(model).check().is_ok(), "{model}");
-        }
-        // An unknown loss is named as unknown, not as the wrong owner.
-        let err = sgd(r#", "loss": "nope", "eps": 0.2"#).check().unwrap_err();
-        assert!(err.contains("unknown sgd loss \"nope\""), "{err}");
-    }
-}
+mod sgd_tests;

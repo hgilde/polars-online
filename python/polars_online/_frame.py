@@ -648,6 +648,9 @@ _ORDER_FREE_ANY = frozenset(
         "emit_drift",
         "drift_delta",
         "drift_threshold",
+        # How many threads the Gram's update runs on: the same bits at every
+        # count (docs/PLAN.md task 225, tests/test_gram_threads.py).
+        "gram_threads",
     }
 )
 

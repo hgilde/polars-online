@@ -235,6 +235,12 @@ impl AnyModel {
         dispatch!(self, m => m.set_window_budget(budget))
     }
 
+    /// Run the model's Gram work on `threads` threads
+    /// ([`OnlineModel::set_gram_threads`]).
+    pub fn set_gram_threads(&mut self, threads: usize) {
+        dispatch!(self, m => m.set_gram_threads(threads))
+    }
+
     /// Set the model's window edge ([`OnlineModel::set_window_closed`]).
     pub fn set_window_closed(&mut self, closed: online_core::WindowClosed) {
         dispatch!(self, m => m.set_window_closed(closed))
@@ -514,6 +520,8 @@ fn constraint(
 fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
     let mut m = build_bare(spec, decay)?;
     m.set_window_budget(spec.model.window_budget());
+    // Threads are configuration too (docs/PLAN.md task 225).
+    m.set_gram_threads(spec.model.gram_threads());
     // The window's edge travels with the state, so it is set once, here,
     // before the first row (docs/PLAN.md task 196, N17).
     m.set_window_closed(spec.model.window_edge());
@@ -555,6 +563,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             solve_every,
             max_rows_between_solves,
             gram_block_rows,
+            gram_threads: _,
             target_gaps,
             window_size: window,
             window_every,
@@ -807,6 +816,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             pca_every,
             max_rows_between_pca,
             lags,
+            gram_threads: _,
             window_size: window,
             window_every,
             max_rows_between_snapshots,
@@ -3353,6 +3363,7 @@ impl Stream {
         let budget = spec.model.window_budget();
         for (_, m) in stream.models.iter_mut() {
             m.set_window_budget(budget);
+            m.set_gram_threads(spec.model.gram_threads());
         }
         let fresh = &stream.persisted;
         let mut p = saved.persisted.clone();

@@ -145,6 +145,7 @@
     pca_every = None
     max_rows_between_pca = None
     lags = None
+    gram_threads = None
     window_size = None
     closed = 'right'
     window_every = None
@@ -165,6 +166,7 @@
     solve_every = None
     max_rows_between_solves = None
     gram_block_rows = None
+    gram_threads = None
     target_gaps = 'own_rows'
     window_size = None
     closed = 'right'
@@ -1810,8 +1812,8 @@
     corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every_rows, reset_on_flag, scalar, seed, span_rows
     deco: alpha, beta, blocks, dynamics
     ew_class: classes, closed, covariance, max_rows_between_snapshots, precision_prior, window_budget, window_every, window_size
-    ew_cov: closed, lags, mahal_quantiles, max_rows_between_pca, max_rows_between_snapshots, pca, pca_every, precision_prior, stats, window_budget, window_every, window_size
-    ewridge: closed, coef_prior, feature_sets, gram_block_rows, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, solve_every, standardize, target_gaps, window_budget, window_every, window_size
+    ew_cov: closed, gram_threads, lags, mahal_quantiles, max_rows_between_pca, max_rows_between_snapshots, pca, pca_every, precision_prior, stats, window_budget, window_every, window_size
+    ewridge: closed, coef_prior, feature_sets, gram_block_rows, gram_threads, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, solve_every, standardize, target_gaps, window_budget, window_every, window_size
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance, covs, exog_tvtp, k, learn, means, precision_prior, seed, seed_rule, transition, transition_prior, tvtp_coef, warm_rows
     holt: trend, trend_half_life

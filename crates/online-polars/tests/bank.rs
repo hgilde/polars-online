@@ -1435,6 +1435,51 @@ fn the_solve_cadence_is_the_specs_on_restore() {
     );
 }
 
+/// Docs/PLAN.md task 225: `gram_threads` is the spec's, as the budget and
+/// the cadence are -- configuration a model's state does not carry -- so
+/// the stream sets it on every model it builds and again on every model it
+/// restores, and a spec that leaves it out runs on one.
+#[test]
+fn the_gram_threads_are_the_specs_on_build_and_on_restore() {
+    use online_polars::AnyModel;
+    let spec = |model: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["x0", "x1"],
+                "half_life": [10.0, 20.0]}}"#
+        ))
+        .unwrap()
+    };
+    let threads = |stream: &Stream| -> Vec<usize> {
+        stream
+            .models
+            .iter()
+            .map(|(_, m)| match m {
+                AnyModel::EwRidge(r) => r.gram_parts().0[0].cov.threads(),
+                AnyModel::EwCov(c) => c.cov().threads(),
+                _ => unreachable!("an ewridge or an ew_cov"),
+            })
+            .collect()
+    };
+    for kind in ["ewridge", "ew_cov"] {
+        let with = spec(&format!(r#"{{"type": "{kind}", "gram_threads": 6}}"#));
+        let without = spec(&format!(r#"{{"type": "{kind}"}}"#));
+        let built = Stream::new(&with).unwrap();
+        assert_eq!(threads(&built), [6, 6], "{kind} built");
+        let saved = built.save();
+        assert_eq!(
+            threads(&Stream::restore(&with, &saved).unwrap()),
+            [6, 6],
+            "{kind}"
+        );
+        assert_eq!(
+            threads(&Stream::restore(&without, &saved).unwrap()),
+            [1, 1],
+            "{kind}"
+        );
+        assert_eq!(threads(&Stream::new(&without).unwrap()), [1, 1], "{kind}");
+    }
+}
+
 /// Six blocks of 40 rows a minute apart, each a cloud along its own
 /// direction, 50 degrees on from the last, so a loading's largest entry
 /// changes sign along the run while continuity keeps its sign: block `j` is
