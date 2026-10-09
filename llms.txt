@@ -141,6 +141,8 @@ Windows alike.
 
 - [State workflow](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md):
   fit, save, serve, learn on — what each step guarantees
+- [Data issues](https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md):
+  each `bank.check()` finding, what it does to a fit, and its fix in Polars
 - [Performance](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md):
   where time and memory go, chunk size, thread count, every measurement
 - [Regimes](https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md): what the

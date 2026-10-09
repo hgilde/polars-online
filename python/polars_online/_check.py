@@ -21,6 +21,48 @@ import polars as pl
 if TYPE_CHECKING:
     from polars_online._bank import ModelBank
 
+#: The page that explains each finding, with a recipe for it: a message ends
+#: with this address and ``#<code>``, the anchor of that code's section
+#: (docs/PLAN.md task 224).
+DATA_ISSUES = "https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md"
+
+#: Every code a finding can carry. ``tests/test_data_issues.py`` holds it to
+#: the docstring's tables and to the anchors of ``docs/DATA-ISSUES.md``.
+CODES = frozenset(
+    [
+        # read from what every bank keeps (task 223 (a))
+        "nothing_learned",
+        "missing",
+        "few_learned",
+        "constant",
+        "level_over_spread",
+        "scales_apart",
+        "ridge_shrinks",
+        "collinear",
+        "leakage",
+        "step_back",
+        "resets",
+        "few_rows",
+        "group_sizes",
+        "never_settled",
+        "below_min_weight",
+        "withheld",
+        "low_support",
+        "solve_failures",
+        "not_checked",
+        # read from an audit (task 223 (b))
+        "sentinel",
+        "frozen",
+        "few_values",
+        "random_walk",
+        "heavy_tails",
+        "duplicate",
+        "duplicate_stamps",
+        "gaps",
+        "irregular_clock",
+    ]
+)
+
 #: The severities, worst first: the dtype of the ``severity`` column.
 SEVERITY = pl.Enum(["error", "warning", "info"])
 
@@ -245,7 +287,7 @@ def _spec_findings(
                 column,
                 value,
                 threshold,
-                message,
+                f"{message}. See {DATA_ISSUES}#{code}",
                 place.get(group, -1),
             )
         )

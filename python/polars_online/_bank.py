@@ -1678,7 +1678,11 @@ class ModelBank:
         ``value``, ``threshold``
             The measured number and the line it crossed.
         ``message``
-            One sentence: what is wrong, and what to do about it.
+            One sentence: what is wrong, and what to do about it. It ends
+            with a link to the code's section of `docs/DATA-ISSUES.md
+            <https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md>`_,
+            which shows what the problem does to each model and how to fix
+            it upstream with Polars, in a program that runs.
 
         Rows come in severity order, then spec order, then :meth:`groups`'
         order. The checks:
