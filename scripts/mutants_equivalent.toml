@@ -1746,3 +1746,181 @@ that are not 0 are, at `j = i + v`, `at(i + v) at(i)` for `i` from `−s` to \
 products that are 0 come first instead of last. A product is the same \
 double either way round, and adding a 0 moves no partial sum, so the \
 two agree to the bit, a zero's sign aside"""
+
+# Task 234 (docs/PLAN.md): the survivors in audit.rs of run 37945116563, over
+# the lines tasks 221-233 changed, that no input tells from the original.
+# Every other survivor there got a test (src/audit/tests.rs).
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "scale_for"
+mutation = "replace > with >="
+line_has = "if e > 64 { pow2(e - 64) } else { 1.0 }"
+why = "at `e = 64` the mutant's scale is `pow2(0)`, 1.0, the original's"
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Moments::skew"
+mutation = "replace || with &&"
+line_has = "if self.n < 2 || self.m2 <= 0.0 {"
+why = """`M2` sums `t = d·e·(n − 1) = d²(n − 1)/n >= 0` (and a merge adds \
+`d²·na·nb/n >= 0`), so it is 0 only where every term is, a deviation's \
+square underflowing; then every `M3` step, `t·e·(n − 2) − 3e·M2`, adds 0 \
+too, and the mutant computes `0 / 0`, the guard's NaN. With `n < 2`, `M2` \
+is 0 and both conditions hold (a state this code writes; a hand-made one \
+with `M2 = 0` and `M3 != 0` would part them)"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Moments::kurtosis"
+mutation = "replace || with &&"
+line_has = "if self.n < 2 || self.m2 <= 0.0 {"
+why = """as in `Moments::skew`: `M2 = 0` only where every deviation's square \
+underflowed, and then `M4` is 0 as well, so the mutant's `n·M4 / M2²` is \
+`0 / 0`, the guard's NaN"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "CoMoments::unit_root_t"
+mutation = "replace || with &&"
+line_has = "if self.n < 3 || self.saa <= 0.0 {"
+why = """with `n >= 3` and `S_aa = 0` the mutant goes on to `se² = ss / ((n − \
+2)·0)`, where `ss` is a number `>= 0` (`max(0.0)` drops a NaN): `0 / 0` or \
+`+inf`, so `se` is NaN or `+inf` and `τ = (ρ̂ − 1) / se` is NaN either way \
+(`ρ̂ = S_ab / 0` is NaN or infinite), the guard's NaN. `S_aa` sums \
+products `da·ea` of one sign, so it is never below 0 in a state this code \
+writes"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Counts::merge"
+mutation = "replace < with <="
+line_has = "(Some(a), Some(b)) if a.0 < b.0 => {"
+why = "the arm above takes `a.0 == b.0`, so here the keys differ and `<`, `<=` agree"
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Counts::top"
+mutation = "replace < with <="
+line_has = "Some((bv, bc)) if c > bc || (c == bc && v < bv) => {"
+why = """two counters never hold equal values: their keys are distinct, and a \
+key is a value's bits with -0 counted as 0, so `v == bv` never holds"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::rank"
+mutation = "replace > with >="
+line_has = "if b.0 > a.0 {"
+why = """`i` is the last point at or below `x` and a point follows it, so \
+`b.0 > x >= a.0`: the points are in order (the digest sorts its \
+centroids, each a mean of its values, between the column's extremes)"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::rank_below"
+mutation = "replace > with >="
+line_has = "if b.0 > a.0 {"
+why = """`i` is the first point at or above `x`, past the first, so `a.0 < x \
+<= b.0`, the points being in order as in `Cdf::rank`"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::quantile"
+mutation = "replace - with +"
+line_has = "let i = p.partition_point(|pt| pt.1 < r).clamp(1, p.len() - 1);"
+why = """the last point is at rank `n`, and `r = q·n` with `q = 0.5`, so \
+the partition point is at most `len − 1` and the upper clamp, `len − 1` \
+or the mutant's `len + 1`, never binds"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::quantile"
+mutation = "replace - with /"
+line_has = "let i = p.partition_point(|pt| pt.1 < r).clamp(1, p.len() - 1);"
+why = "as `replace - with +` here: the mutant's bound, `len`, never binds either"
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::quantile"
+mutation = "replace > with >="
+line_has = "if b.1 > a.1 {"
+why = """the digest holds every usable value and this path runs with one, so \
+`r = n/2 > 0 = p[0].1` and the partition point is past the first point: \
+`a.1 < r <= b.1`, so `b.1 > a.1`"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::mad"
+mutation = "replace - with +"
+line_has = "let mut b = (hi - m).max(m - lo);"
+why = """both columns: either side alone brackets the MAD (half the rows lie \
+at or below the median, every one within `m − lo` of it, and half at or \
+above it, within `hi − m`), so the mutant's `max(hi + m, m − lo)` or \
+`max(hi − m, m + lo)`, at least one side, brackets it too; and the \
+bisection, run to two neighbouring doubles (`BISECTIONS`, task 234), ends \
+on the smallest double that passes wherever it starts. Measured: the \
+original's bracket, both mutants' and `hi − lo` gave the same MAD to the \
+bit on 3,000 digests (levels 0 to 5e15, spreads 1e-12 to 1e3, skewed, \
+atoms, rounded)"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Cdf::mad"
+mutation = "replace || with &&"
+line_has = "if d <= a || d >= b {"
+why = """the break only stops the loop early: once `a` and `b` are \
+neighbours the midpoint `d` is one of them, and the step sets that bound \
+to itself (`a` fails, `b` passes), so the mutant spins to `BISECTIONS` and \
+returns the same `b`"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "weighted_median"
+mutation = "replace - with +"
+line_has = "v[v.len() - 1].0"
+why = """the line after the loop never runs: the loop returns at the first \
+value whose running count passes `r`, and `r <= n/2 < n`, the sum of the \
+counts (`n = 0` returned NaN above)"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "weighted_median"
+mutation = "replace - with /"
+line_has = "v[v.len() - 1].0"
+why = "as `replace - with +` here: the line never runs"
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Audit::clock"
+mutation = "replace > with >="
+line_has = "step_cv: if mean > 0.0 { pop / mean } else { f64::NAN },"
+why = """a regular step is finite and above 0 (a step of 0 is a duplicate), \
+and each Welford step moves the mean between itself and the new value, so \
+the mean of regular steps is above 0 where there is one and NaN before: \
+never 0"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Audit::merge"
+mutation = "replace > with >="
+line_has = "if d.steps > 0 {"
+why = """an audit with no step has `max_step` 0, as `new` made it, and every \
+`max_step` is `>= 0` (a step is taken only at `d_clock >= 0`), so the \
+mutant's `max(c.max_step, 0)`, or 0 into an audit with no step either, \
+changes nothing (a state this code writes)"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "Audit::merge"
+mutation = "replace > with >="
+line_has = "c.max_step = if c.steps > 0 {"
+why = """with no step of its own the audit's `max_step` is 0, so the \
+mutant's `max(0, d.max_step)` is `d.max_step`, `d`'s steps being `>= 0`"""
+
+[[equivalent]]
+file = "crates/online-core/src/audit.rs"
+function = "<impl OnlineModel for Audit>::step"
+mutation = "replace > with >="
+line_has = "if weight.abs() <= INPUT_BOUND && weight > 0.0 {"
+why = """the mutant adds a weight of `±0` to `n_eff`, which is `>= 0`, and \
+`n_eff + 0`, `n_eff + (−0)` are `n_eff` (`+0 + −0` is `+0`)"""
