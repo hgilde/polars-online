@@ -155,6 +155,18 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
         json!(spec.resid_autocorr_lag_or_default()),
     );
     s.insert("average_eta".into(), number(spec.average_eta_or_default()));
+    // Each memory of task 221's diagnostics, as the first instance runs it:
+    // the spec's, or the instance's own half-life, `inf` where it forgets
+    // nothing.
+    let decay = spec
+        .decays()
+        .ok()
+        .and_then(|d| d.first().map(|(_, d)| *d))
+        .unwrap_or(online_core::Decay::Halflife(f64::INFINITY));
+    for (key, _, _, memory) in spec.diagnostic_memories() {
+        let h = crate::stream::half_life_of(Spec::diagnostic_decay(memory, decay));
+        s.insert(key.into(), number(h));
+    }
     s.insert(
         "window_budget".into(),
         spec.model.window_budget().map_or(Value::Null, budget),

@@ -63,6 +63,7 @@ mod audit;
 mod bocpd;
 mod boundary;
 mod budget;
+mod calibration;
 mod clock;
 mod cluster;
 /// Compensated running means, `hi + lo` (docs/PLAN.md task 101): public so
@@ -116,6 +117,7 @@ pub use audit::{
     MAX_DISTINCT_CAP, NULL, PairReport as AuditPair, is_null,
 };
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
+pub use calibration::Calibration;
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
     SessionGap, Stamp, cmp_int_f64, ns_of_seconds, seconds_of_ns,
@@ -612,7 +614,12 @@ pub use window::{
 ///   [`ModelState::Audit`], and a bank's spec may name it. A bank file names
 ///   its specs, so the bank's schema moves with it; pre-1.0 the minimums
 ///   move too and no loader is written.
-pub const SCHEMA_VERSION: u32 = 54;
+/// - 55 (2026-10-09, task 221): a bank's stream keeps the diagnostics with
+///   a memory of their own beside the others, per model instance
+///   (`online_polars`' `Persisted::checks`): `Calibration`'s moments per
+///   slot. A spec that switches none on writes none, and its spec writes
+///   the new keys. Pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 55;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -728,7 +735,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 54;
+pub const MIN_SCHEMA_VERSION: u32 = 55;
 
 #[cfg(test)]
 mod tests {

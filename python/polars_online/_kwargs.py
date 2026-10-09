@@ -75,6 +75,8 @@ class ExprKwargs(TypedDict, total=False):
     drift_delta: float | None
     drift_threshold: float | Duration | None
     drift_action: str
+    emit_calibration: bool
+    calibration_half_life: float | Duration | None
     embargo: float | Duration | None
 
 

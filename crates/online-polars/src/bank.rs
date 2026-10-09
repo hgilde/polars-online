@@ -184,7 +184,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// their rows of positive weight, per target and over every row; a file
 /// from before it is refit. **54 since task 223 (b)** (the same day): a
 /// spec may be an `audit`; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 54;
+/// **55 since task 221** (the same day): a stream
+/// keeps the diagnostics with a memory of their own, and a spec the keys
+/// that switch them on; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 55;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -4833,6 +4836,12 @@ fn assemble(
                 Source::Conformal(k, i) => scatter(n, chunks, false, |ch, nr| {
                     let (mi, slot) = (i / per_model, i % per_model);
                     &ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
+                })
+                .finish_array_boxed(),
+                Source::Check(k, i) => scatter(n, chunks, false, |ch, nr| {
+                    let (mi, slot) = (i / per_model, i % per_model);
+                    let b = block(ch, nr);
+                    &ch.checks[mi * ch.n_checks * b + k * b + slot * nr..][..nr]
                 })
                 .finish_array_boxed(),
                 Source::Quantile(i) => scatter(n, chunks, false, |ch, nr| {

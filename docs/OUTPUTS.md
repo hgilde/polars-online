@@ -89,7 +89,7 @@ The optional outputs are left out: the `emit_*` switches, `conformal`,
 
 | the switch | where the README shows it |
 |---|---|
-| the residual diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, `emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, `conformal` | [Per-row diagnostics](../README.md#per-row-diagnostics), for the models that predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` fit with `loss="poisson"`, whose rate and count have no sign to hit |
+| the residual diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, `emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, `conformal`, `emit_calibration` | [Per-row diagnostics](../README.md#per-row-diagnostics), for the models that predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` fit with `loss="poisson"`, whose rate and count have no sign to hit |
 | `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up](../README.md#warm-up) |
 | `emit_clocks`, every model's | [Labels that arrive late](../README.md#labels-that-arrive-late), and the table below |
 | `ew_cov`'s extra `stats` | its own [section](../README.md#ew_cov--exponentially-weighted-moments) |

@@ -94,6 +94,8 @@ def kitchen_sink_spec(**overrides):
         conformal=0.9,
         emit_selected=True,
         emit_averaged=True,
+        emit_calibration=True,
+        calibration_half_life=600.0,
     )
     d.update(overrides)
     return po.spec.ewridge("m", **d)

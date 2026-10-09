@@ -44,6 +44,7 @@ impl WindowBudgetSpec {
     }
 }
 
+mod diagnostics;
 mod readiness;
 
 /// A number rendered for a **field name** (`__r{ridge}`, `@h{half_life}`,
@@ -2129,6 +2130,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "embargo",
             "drift_threshold",
             "coef_every",
+            "calibration_half_life",
         ],
     ),
     (
@@ -2370,6 +2372,10 @@ impl Spec {
         put(&mut out, "embargo", self.embargo.as_ref());
         put(&mut out, "drift_threshold", self.drift_threshold.as_ref());
         put(&mut out, "coef_every", self.coef_every.as_ref());
+        // The diagnostics' own memories (task 221).
+        for (key, _, _, memory) in self.diagnostic_memories() {
+            put(&mut out, key, memory);
+        }
         // A formula target's operators measure in the same clock (review
         // R1, D7): with them here a number beside durations is refused at
         // the spec, and the embargo check compares like units.
@@ -2912,6 +2918,19 @@ pub struct Spec {
     /// they are released.
     #[serde(default)]
     pub drift_action: Option<String>,
+    /// Emit `calibration_slope_<slot>`, `calibration_intercept_<slot>` and
+    /// `calibration_wald_<slot>`: Mincer and Zarnowitz's (1969) regression
+    /// of the outcome on its out-of-sample prediction, `y = a + b·pred`, and
+    /// Wald's statistic for `a = 0, b = 1` at Kish's size (docs/PLAN.md task
+    /// 221 (a); [`online_core::Calibration`] has the update). The slope is
+    /// the multiplier to put on a prediction. Read before the row, like
+    /// every residual diagnostic, at the memory `calibration_half_life`.
+    #[serde(default)]
+    pub emit_calibration: bool,
+    /// The calibration's memory, in clock units: the model instance's own
+    /// half-life unless set, `inf` the run-once form, which forgets nothing.
+    #[serde(default)]
+    pub calibration_half_life: Option<Span>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -3845,6 +3864,22 @@ impl Spec {
                 self.name
             ));
         }
+        // A diagnostic's own memory (docs/PLAN.md task 221): a half-life
+        // above 0, `inf` the run-once form that forgets nothing; given with
+        // its switch off it does nothing, and is refused as any such knob.
+        for (key, switch, on, memory) in self.diagnostic_memories() {
+            let Some(h) = memory else { continue };
+            if !on {
+                return Err(format!("spec {:?}: {key} needs {switch}", self.name));
+            }
+            if h.value().is_nan() || h.value() <= 0.0 {
+                return Err(format!(
+                    "spec {:?}: {key} must be > 0 (\"inf\" is the run-once form, which \
+                     forgets nothing), got {h}",
+                    self.name
+                ));
+            }
+        }
         if self.session_gap.is_some() && self.session.is_none() {
             return Err(format!("spec {:?}: session_gap needs session", self.name));
         }
@@ -3983,6 +4018,7 @@ impl Spec {
                 ("conformal", self.conformal.is_some()),
                 ("emit_autocorr", self.emit_autocorr),
                 ("emit_drift", self.emit_drift),
+                ("emit_calibration", self.emit_calibration),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];

@@ -4613,3 +4613,117 @@ class TestAuditIsScipyAndStatsmodels:
         dev = np.abs(x - np.median(x))
         dlo, dhi = np.quantile(dev, [0.48, 0.52])
         assert dlo <= got["mad"] <= dhi
+
+def _calibration_rows(n: int, seed: int) -> pl.DataFrame:
+    """A fit whose predictions are miscalibrated in warm-up and drift, with
+    uneven weights and a zero now and then."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 2))
+    y = 0.4 + x @ np.array([1.2, -0.8]) + rng.normal(size=n)
+    w = rng.uniform(0.5, 1.5, size=n)
+    w[rng.random(n) < 0.05] = 0.0
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "w": w})
+
+
+class TestCalibrationIsMincerZarnowitz:
+    """Task 221 (a): ``calibration_*`` is the least-squares regression of
+    ``y`` on the scored ``pred`` (Mincer and Zarnowitz 1969), and its Wald
+    statistic the joint test of slope 1 and intercept 0. Run once
+    (``calibration_half_life=inf``) with unit weights it is ``statsmodels``'
+    ``OLS`` and twice its ``f_test``'s F; with a memory and weights its
+    slope and intercept are ``WLS`` at each scored row's weight times its
+    decay, and the statistic is the definition at Kish's size, written by
+    hand from ``WLS``'s residuals. Each row's fields read the rows before
+    it, never the row."""
+
+    def test_run_once_is_ols_and_its_f_test(self):
+        import statsmodels.api as sm
+
+        df = _calibration_rows(600, 11).drop("w")
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            min_weight=20.0,
+            emit_calibration=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        pred, y = out["pred_y"].to_numpy(), df["y"].to_numpy()
+        checked = 0
+        for t in (60, 250, 599):
+            ok = np.isfinite(pred[:t])
+            fit = sm.OLS(y[:t][ok], sm.add_constant(pred[:t][ok])).fit()
+            f = float(fit.f_test((np.eye(2), np.array([0.0, 1.0]))).fvalue)
+            row = out.row(t, named=True)
+            np.testing.assert_allclose(row["calibration_intercept_y"], fit.params[0], rtol=1e-9)
+            np.testing.assert_allclose(row["calibration_slope_y"], fit.params[1], rtol=1e-9)
+            np.testing.assert_allclose(row["calibration_wald_y"], 2.0 * f, rtol=1e-8)
+            checked += 1
+        assert checked == 3
+
+    def test_a_memory_and_weights_are_wls_at_kish_size(self):
+        import statsmodels.api as sm
+
+        h_model, h_calib = 40.0, 120.0
+        df = _calibration_rows(700, 12)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=h_model,
+            weight="w",
+            min_weight=10.0,
+            emit_calibration=True,
+            calibration_half_life=h_calib,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        pred, y, w = out["pred_y"].to_numpy(), df["y"].to_numpy(), df["w"].to_numpy()
+        checked = 0
+        for t in (80, 300, 699):
+            s = np.arange(t)
+            # Row s folded at its weight, aged by every row after it up to t - 1.
+            omega = w[:t] * 0.5 ** ((t - 1 - s) / h_calib)
+            ok = np.isfinite(pred[:t]) & (omega > 0)
+            X = sm.add_constant(pred[:t][ok])
+            fit = sm.WLS(y[:t][ok], X, weights=omega[ok]).fit()
+            om = omega[ok]
+            n_kish = om.sum() ** 2 / (om**2).sum()
+            s2 = (om * fit.resid**2).sum() / om.sum() * n_kish / (n_kish - 2.0)
+            d = fit.params - np.array([0.0, 1.0])
+            m = (X * om[:, None]).T @ X / om.sum()
+            wald = n_kish * d @ m @ d / s2
+            row = out.row(t, named=True)
+            np.testing.assert_allclose(row["calibration_intercept_y"], fit.params[0], rtol=1e-8)
+            np.testing.assert_allclose(row["calibration_slope_y"], fit.params[1], rtol=1e-8)
+            np.testing.assert_allclose(row["calibration_wald_y"], wald, rtol=1e-7)
+            checked += 1
+        assert checked == 3
+
+    def test_an_embargo_folds_the_prediction_each_row_was_scored_with(self):
+        """Under ``embargo=3`` on a row clock, row ``s`` is released as row
+        ``s + 3`` arrives, before that row is scored: row ``t``'s fields are
+        ``OLS`` over the rows up to ``t - 3``, each at the prediction it was
+        shown (C21), not the one the model gives it at its release."""
+        import statsmodels.api as sm
+
+        df = _calibration_rows(400, 13).drop("w")
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            min_weight=10.0,
+            emit_calibration=True,
+            embargo=3.0,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        pred, y = out["pred_y"].to_numpy(), df["y"].to_numpy()
+        for t in (100, 399):
+            upto = t - 2
+            ok = np.isfinite(pred[:upto])
+            fit = sm.OLS(y[:upto][ok], sm.add_constant(pred[:upto][ok])).fit()
+            np.testing.assert_allclose(out["calibration_slope_y"][t], fit.params[1], rtol=1e-9)
+            np.testing.assert_allclose(
+                out["calibration_intercept_y"][t], fit.params[0], rtol=1e-8, atol=1e-12
+            )

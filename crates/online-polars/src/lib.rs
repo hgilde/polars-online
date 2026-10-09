@@ -41,6 +41,7 @@
 pub mod arrow;
 mod atomic;
 mod bank;
+mod checks;
 mod column;
 mod defaults;
 mod formula;

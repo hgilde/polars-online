@@ -1,6 +1,7 @@
 //! Frozen state fixtures for the files a bank and its helpers write: a bank
 //! file (several specs, a group closed and drained, rows held under an
-//! `embargo`, a temporal clock, a window), a `with_windows` state holding
+//! `embargo`, a temporal clock, a window), a second bank file of the
+//! diagnostics with a memory of their own (`bank_diagnosed`), a `with_windows` state holding
 //! rows for a window that looks ahead, and a `refresh_time` state part-way
 //! through an interval -- each embedded as its bytes beside the input that
 //! follows it and the frames that input gave (docs/PLAN.md task 198; review
@@ -168,6 +169,19 @@ fn specs() -> Vec<Spec> {
         r#"{"name": "waiting", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "half_life": 16.0, "min_weight": 30.0}"#,
         r#"{"name": "spread_window", "model": {"type": "ewridge", "window_size": 12.0}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "emit_sigma": true}"#,
         r#"{"name": "audited", "model": {"type": "audit", "pairs": true}, "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t", "gap_cap": 50.0}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// The specs of the second bank file, `bank_diagnosed`: the diagnostics
+/// with a memory of their own (docs/PLAN.md task 221, schema 53), in a file
+/// of their own so that neither file passes the 250 KB a source file is
+/// held to.
+fn diagnosed_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -380,6 +394,24 @@ fn bank_run(bytes: &[u8], input: &DataFrame) -> Ran {
     ))
 }
 
+fn diagnosed_first() -> (Vec<u8>, DataFrame) {
+    let df = frame();
+    let mut bank = Bank::new(diagnosed_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
+    (
+        bank.save_bytes().unwrap(),
+        df.slice(SPLIT as i64, N - SPLIT),
+    )
+}
+
+fn diagnosed_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&diagnosed_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    Ok((again, vec![("fit_predict".into(), out)]))
+}
+
 fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
     let mut run = WindowsRun::new(config, input.schema()).unwrap();
     run.feed(&input.slice(0, SPLIT), None).unwrap();
@@ -448,6 +480,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank",
             first: bank_first,
             run: bank_run,
+        },
+        Kind {
+            name: "bank_diagnosed",
+            first: diagnosed_first,
+            run: diagnosed_run,
         },
         Kind {
             name: "with_windows",
@@ -853,6 +890,13 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
                 && p.contains(".ring.")
                 && p.contains(".n.")
                 && v.as_u64().is_some_and(|n| n > 0)
+        }),
+        // Task 221 (schema 53): the diagnostics with a memory of their own,
+        // per instance and slot.
+        ("bank_diagnosed", "a slot's calibration moments", |p, v| {
+            p.contains(".checks.")
+                && p.contains(".calibration.")
+                && v.as_f64().is_some_and(|f| f != 0.0)
         }),
     ];
     for (kind, form, holds) in FORMS {

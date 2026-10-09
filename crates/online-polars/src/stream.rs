@@ -15,6 +15,7 @@ use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::ClockCol;
+use crate::checks::{CheckDecays, Checks};
 use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
 use crate::span::{Span, SpanList};
@@ -2301,6 +2302,11 @@ pub struct Persisted {
     pub metrics: Vec<Vec<SlotMetrics>>,
     #[serde(default)]
     pub conformal: Vec<Vec<Conformal>>,
+    /// Per model instance, the diagnostics with a memory of their own
+    /// (docs/PLAN.md task 221): empty, and not written, for a spec that
+    /// switches none of them on, so no other spec's bytes move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<Checks>,
     /// The output row of the last row learned from (docs/PLAN.md task 34).
     /// `None` before the first, and in files written before it existed.
     #[serde(default)]
@@ -2459,7 +2465,7 @@ fn withheld_for(since: &mut Option<f64>, withheld: bool, judged: bool, now: f64)
 
 /// One half-life of `decay`, in the clock units its decay time counts:
 /// infinite where nothing decays.
-fn half_life_of(decay: Decay) -> f64 {
+pub(crate) fn half_life_of(decay: Decay) -> f64 {
     match decay {
         Decay::Halflife(h) => h,
         Decay::Lam(l) if l < 1.0 => -1.0 / l.log2(),
@@ -2905,6 +2911,9 @@ pub struct ChunkOut {
     pub metrics: Vec<f64>,
     /// `(pred_lo, pred_hi, coverage)`, laid out like `metrics`.
     pub conformal: Vec<f64>,
+    /// Task 221's values, `n_checks` per slot, laid out like `metrics`:
+    /// `n_models * n_checks * n_slots * n_rows` ([`crate::checks`]).
+    pub checks: Vec<f64>,
     /// Model-major: `n_models * n_levels * n_slots * n_rows`.
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
@@ -2937,6 +2946,7 @@ pub struct ChunkOut {
     pub n_models: usize,
     pub n_slots: usize,
     pub n_levels: usize,
+    pub n_checks: usize,
 }
 
 /// Which optional buffers a spec fills: read by `ChunkOut::new` to size them
@@ -2976,6 +2986,7 @@ impl Buffers {
             + on(spec.emit_autocorr)
             + 3 * on(spec.emit_metrics)
             + 3 * on(spec.conformal.is_some())
+            + crate::checks::value_names(spec).len() * per
             + self.n_levels * per
             + n_models
             + n_models
@@ -2999,6 +3010,7 @@ impl ChunkOut {
             n_levels,
             is_lasso,
         } = Buffers::of(spec);
+        let n_checks = crate::checks::value_names(spec).len();
         Self {
             rows: Vec::with_capacity(n_rows),
             processed: vec![false; n_rows],
@@ -3009,6 +3021,7 @@ impl ChunkOut {
             autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
             metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
             conformal: vec![f64::NAN; 3 * on(spec.conformal.is_some())],
+            checks: vec![f64::NAN; n_checks * per],
             resid_q: vec![f64::NAN; n_levels * per],
             drift: vec![false; on(spec.emit_drift)],
             n_eff: vec![f64::NAN; n_models * n_rows],
@@ -3031,6 +3044,7 @@ impl ChunkOut {
             n_models,
             n_slots,
             n_levels,
+            n_checks,
         }
     }
 
@@ -3123,6 +3137,13 @@ pub struct LastRow {
     pub metrics: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub conformal: Vec<f64>,
+    /// Task 221's values; empty, and not written, without them.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "online_core::humanfloat::vec_f64_or_tag"
+    )]
+    pub checks: Vec<f64>,
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
@@ -3174,6 +3195,7 @@ impl LastRow {
         take_row(&mut self.autocorr, &out.autocorr, n, ri);
         take_row(&mut self.metrics, &out.metrics, n, ri);
         take_row(&mut self.conformal, &out.conformal, n, ri);
+        take_row(&mut self.checks, &out.checks, n, ri);
         take_row(&mut self.resid_q, &out.resid_q, n, ri);
         take_row(&mut self.drift, &out.drift, n, ri);
         take_row(&mut self.n_eff, &out.n_eff, n, ri);
@@ -3213,6 +3235,7 @@ impl LastRow {
             out.autocorr.len() == self.autocorr.len(),
             out.metrics.len() == self.metrics.len(),
             out.conformal.len() == self.conformal.len(),
+            out.checks.len() == self.checks.len(),
             out.resid_q.len() == self.resid_q.len(),
             out.drift.len() == self.drift.len(),
             out.n_eff.len() == self.n_eff.len(),
@@ -3241,6 +3264,7 @@ impl LastRow {
         out.autocorr.clone_from(&self.autocorr);
         out.metrics.clone_from(&self.metrics);
         out.conformal.clone_from(&self.conformal);
+        out.checks.clone_from(&self.checks);
         out.resid_q.clone_from(&self.resid_q);
         out.drift.clone_from(&self.drift);
         out.n_eff.clone_from(&self.n_eff);
@@ -3317,6 +3341,11 @@ impl Stream {
                         slots.iter().map(|&n| vec![proto.clone(); n]).collect()
                     }
                     None => Vec::new(),
+                },
+                checks: if Checks::any(spec) {
+                    slots.iter().map(|&n| Checks::new(spec, n)).collect()
+                } else {
+                    Vec::new()
                 },
                 last_row: None,
                 summary: Some(DataSummary::new(spec)),
@@ -3505,6 +3534,14 @@ impl Stream {
             &fresh.conformal,
             |_, _| true,
         )?;
+        // Task 221's accumulators, by the same rule: absent, or kept for
+        // another set of switches, they start over; this spec's count but
+        // another shape is damage.
+        if p.checks.len() != fresh.checks.len() {
+            p.checks = fresh.checks.clone();
+        } else if !p.checks.iter().zip(&fresh.checks).all(|(s, l)| s.fits(l)) {
+            return Err("saved state's diagnostics (task 221) do not fit this spec".into());
+        }
         // A file written by a spec with a `embargo` carries the rows it
         // had not learned from yet; one written without a delay has none, and
         // one restored under a spec that has since gained or lost a delay
@@ -4064,6 +4101,7 @@ impl Stream {
             autocorr: &mut self.persisted.autocorr,
             metrics: &mut self.persisted.metrics,
             conformal: &mut self.persisted.conformal,
+            checks: &mut self.persisted.checks,
             scratch: &mut self.scratch,
             score_pred: &mut self.persisted.score_pred,
             decay_time: &mut self.persisted.decay_time,
@@ -4516,6 +4554,7 @@ impl Stream {
             self.persisted.metrics.clone(),
         );
         let mut conformal = self.persisted.conformal.clone();
+        let mut checks = self.persisted.checks.clone();
         let mut scratch: Vec<Scratch> = (0..n).map(|_| Scratch::default()).collect();
         // Scoring buffers nothing and replays nothing, so its queues stay empty.
         let mut score_pred: Vec<std::collections::VecDeque<Vec<f64>>> =
@@ -4533,6 +4572,7 @@ impl Stream {
             autocorr: &mut autocorr,
             metrics: &mut metrics,
             conformal: &mut conformal,
+            checks: &mut checks,
             scratch: &mut scratch,
             score_pred: &mut score_pred,
             decay_time: &mut decay_time,
@@ -4618,6 +4658,7 @@ struct Diagnostics<'a> {
     autocorr: &'a mut [Vec<EwAutoCorr>],
     metrics: &'a mut [Vec<SlotMetrics>],
     conformal: &'a mut [Vec<Conformal>],
+    checks: &'a mut [Checks],
     scratch: &'a mut [Scratch],
     score_pred: &'a mut [std::collections::VecDeque<Vec<f64>>],
     decay_time: &'a mut [f64],
@@ -4652,6 +4693,7 @@ fn build_instances<'a>(
     let mut autocorr = diag.autocorr.iter_mut();
     let mut metrics = diag.metrics.iter_mut();
     let mut conformal = diag.conformal.iter_mut();
+    let mut checks = diag.checks.iter_mut();
     let mut o_pred = out.pred.chunks_mut(block.max(1));
     let mut o_resid = out.resid.chunks_mut(block.max(1));
     let mut o_sigma = out.sigma.chunks_mut(block.max(1));
@@ -4659,6 +4701,7 @@ fn build_instances<'a>(
     let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
     let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
     let mut o_conformal = out.conformal.chunks_mut((3 * block).max(1));
+    let mut o_checks = out.checks.chunks_mut((out.n_checks * block).max(1));
     let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
     let mut o_drift = out.drift.chunks_mut(block.max(1));
     let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
@@ -4683,45 +4726,51 @@ fn build_instances<'a>(
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
     // Instance owns its own piece of everything.
     models
-        .map(|model| Instance {
-            spec,
-            shards: marginal_shards(spec, model.get()),
-            model,
-            resid_win: rings.next().expect("one per instance"),
-            decay: *decays.next().expect("one per instance"),
-            residuals: !spec.model.predicts_no_target(),
-            resid_var: resid_var.next().expect("one per instance"),
-            resid_w: resid_w.next().expect("one per instance"),
-            drift: drift.next(),
-            resid_q: resid_q.next(),
-            autocorr: autocorr.next(),
-            metrics: metrics.next(),
-            conformal: conformal.next(),
-            scratch: scratch.next().expect("one per instance"),
-            score_pred: score_pred.next().expect("one per instance"),
-            n_slots,
-            n_rows,
-            o_pred: o_pred.next().unwrap_or_default(),
-            o_resid: o_resid.next().unwrap_or_default(),
-            o_sigma: o_sigma.next().unwrap_or_default(),
-            o_resid_z: o_resid_z.next().unwrap_or_default(),
-            o_autocorr: o_autocorr.next().unwrap_or_default(),
-            o_metrics: o_metrics.next().unwrap_or_default(),
-            o_conformal: o_conformal.next().unwrap_or_default(),
-            o_resid_q: o_resid_q.next().unwrap_or_default(),
-            o_drift: o_drift.next().unwrap_or_default(),
-            o_n_eff: o_n_eff.next().unwrap_or_default(),
-            o_lam: o_lam.next().unwrap_or_default(),
-            o_coef: o_coef.next().expect("one per instance"),
-            o_settled: o_settled.next().unwrap_or_default(),
-            o_reason: o_reason.next().unwrap_or_default(),
-            o_inflation: o_inflation.next().unwrap_or_default(),
-            o_support_coef: o_support_coef.next().expect("one per instance"),
-            o_se_coef: o_se_coef.next().expect("one per instance"),
-            decay_time: decay_time.next().expect("one per instance"),
-            notified: notified.next().expect("one per instance"),
-            // None without an embargo, which keeps no held rows' clock.
-            pending_clock: pending_clock.next(),
+        .map(|model| {
+            let decay = *decays.next().expect("one per instance");
+            Instance {
+                spec,
+                shards: marginal_shards(spec, model.get()),
+                model,
+                resid_win: rings.next().expect("one per instance"),
+                decay,
+                check_decays: CheckDecays::of(spec, decay),
+                residuals: !spec.model.predicts_no_target(),
+                resid_var: resid_var.next().expect("one per instance"),
+                resid_w: resid_w.next().expect("one per instance"),
+                drift: drift.next(),
+                resid_q: resid_q.next(),
+                autocorr: autocorr.next(),
+                metrics: metrics.next(),
+                conformal: conformal.next(),
+                checks: checks.next(),
+                scratch: scratch.next().expect("one per instance"),
+                score_pred: score_pred.next().expect("one per instance"),
+                n_slots,
+                n_rows,
+                o_pred: o_pred.next().unwrap_or_default(),
+                o_resid: o_resid.next().unwrap_or_default(),
+                o_sigma: o_sigma.next().unwrap_or_default(),
+                o_resid_z: o_resid_z.next().unwrap_or_default(),
+                o_autocorr: o_autocorr.next().unwrap_or_default(),
+                o_metrics: o_metrics.next().unwrap_or_default(),
+                o_conformal: o_conformal.next().unwrap_or_default(),
+                o_checks: o_checks.next().unwrap_or_default(),
+                o_resid_q: o_resid_q.next().unwrap_or_default(),
+                o_drift: o_drift.next().unwrap_or_default(),
+                o_n_eff: o_n_eff.next().unwrap_or_default(),
+                o_lam: o_lam.next().unwrap_or_default(),
+                o_coef: o_coef.next().expect("one per instance"),
+                o_settled: o_settled.next().unwrap_or_default(),
+                o_reason: o_reason.next().unwrap_or_default(),
+                o_inflation: o_inflation.next().unwrap_or_default(),
+                o_support_coef: o_support_coef.next().expect("one per instance"),
+                o_se_coef: o_se_coef.next().expect("one per instance"),
+                decay_time: decay_time.next().expect("one per instance"),
+                notified: notified.next().expect("one per instance"),
+                // None without an embargo, which keeps no held rows' clock.
+                pending_clock: pending_clock.next(),
+            }
         })
         .collect()
 }
@@ -4868,6 +4917,10 @@ struct Instance<'a> {
     autocorr: Option<&'a mut Vec<EwAutoCorr>>,
     metrics: Option<&'a mut Vec<SlotMetrics>>,
     conformal: Option<&'a mut Vec<Conformal>>,
+    /// Task 221's accumulators, and what they decay by: `None` when the
+    /// spec switches none on.
+    checks: Option<&'a mut Checks>,
+    check_decays: CheckDecays,
     scratch: &'a mut Scratch,
     /// This instance's score-time predictions for the rows still waiting
     /// under `embargo`, oldest first (C21).
@@ -4881,6 +4934,7 @@ struct Instance<'a> {
     o_autocorr: &'a mut [f64],
     o_metrics: &'a mut [f64],
     o_conformal: &'a mut [f64],
+    o_checks: &'a mut [f64],
     o_resid_q: &'a mut [f64],
     o_drift: &'a mut [bool],
     o_n_eff: &'a mut [f64],
@@ -4962,6 +5016,9 @@ impl Instance<'_> {
             let rate = spec.conformal_rate_or_default();
             c.iter_mut()
                 .for_each(|e| *e = Conformal::new(level, rate).expect("validated"));
+        }
+        if let Some(c) = self.checks.as_deref_mut() {
+            *c = Checks::new(spec, self.n_slots);
         }
     }
 }
@@ -5554,6 +5611,18 @@ fn run_instance(
                     let shown = shown_radius.as_ref().map(|q| q[slot]);
                     c.update_against(sc.r[slot], sc.sig[slot], lam, w, shown);
                 }
+            }
+        }
+
+        // Task 221's diagnostics, each at its own memory: read before the
+        // row, the row folded only when learned, with the prediction it was
+        // scored with under an embargo (C21).
+        if let Some(c) = inst.checks.as_deref_mut() {
+            if emit {
+                c.read(inst.n_slots, n_rows, ri, inst.o_checks);
+            }
+            if learn {
+                c.learn(&inst.check_decays, plan.d_clock, &step.pred, &sc.ys, nc, w);
             }
         }
 

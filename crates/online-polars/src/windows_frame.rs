@@ -2472,8 +2472,9 @@ mod tests {
         // prior from a median, 51 for task 215's `ftrl` without its
         // penalty scale and the clusters' centres as pairs, 52 for task
         // 217's row counts in `ewridge`'s and `lasso`'s cross-moments, and
-        // 54 for task 223 (b)'s `audit`, the windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 54));
+        // 54 for task 223 (b)'s `audit`, and 55 for task 221's diagnostics
+        // with a memory of their own, the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 55));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

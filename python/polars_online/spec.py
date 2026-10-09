@@ -212,10 +212,13 @@ the diagnostics
     ``emit_sigma``, ``emit_zscore``, ``emit_selected``, ``emit_averaged``
     with ``average_eta``, ``emit_metrics``, ``conformal`` with
     ``conformal_rate`` (default 0.05), ``resid_quantiles``, ``emit_autocorr``
-    with ``resid_autocorr_lag``, and ``emit_drift`` with ``drift_delta``,
-    ``drift_threshold`` and ``drift_action``, and ``emit_clocks``. Each adds
-    fields to the output, listed below. A model with no residual refuses
-    them by name.
+    with ``resid_autocorr_lag``, ``emit_drift`` with ``drift_delta``,
+    ``drift_threshold`` and ``drift_action``, ``emit_calibration`` with
+    ``calibration_half_life``, and ``emit_clocks``. Each adds fields to the
+    output, listed below. A model with no residual refuses them by name.
+    A ``*_half_life`` beside a switch is that diagnostic's own memory, in
+    clock units: the model instance's half-life when left out, and ``inf``
+    the run-once form, which forgets nothing.
 
 ``standardize``, which seven models take, defaults to ``False`` in
 ``ewridge``, ``huber``, ``quantile`` and ``sgd``, and to ``True`` in
@@ -257,7 +260,7 @@ number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
 ``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
-below, and in the models ``window_size``,
+and ``calibration_half_life`` below, and in the models ``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
@@ -527,6 +530,27 @@ The diagnostics add, per slot:
        residual is scored against the ``sigma`` before its row, which
        trails a moving scale further where rows are sparser.
        ``drift_action = "reset"`` also starts the model over there.
+   * - ``emit_calibration``
+     - ``calibration_slope_<slot>``, ``calibration_intercept_<slot>``,
+       ``calibration_wald_<slot>``
+     - Mincer and Zarnowitz's regression of the outcome on the
+       out-of-sample prediction, ``y = a + b * pred``, exponentially
+       weighted at ``calibration_half_life``, and Wald's statistic for
+       ``a = 0, b = 1``:
+       ``(n_kish - 2) * ((mean(y) - mean(pred))**2 + (b - 1)**2 * var(pred)) / s2``,
+       ``s2`` the regression's residual mean square and ``n_kish`` Kish's
+       size of its weights. The slope is the multiplier to put on a
+       prediction. Run once (``inf``) with unit weights, ``wald / 2`` is
+       the least-squares F statistic, ``F(2, n - 2)`` under Gaussian errors,
+       and ``wald`` is ``chi2(2)`` as rows accrue: on calibrated fits it
+       passed 5.99, its 5% value, in 5.0-7.0% of 400 streams. Beside a fit
+       that forgets it is conservative, since the fit absorbs a
+       miscalibration at its own pace: at the model's memory it passed
+       5.99 on under 1% of rows, and on a fit whose slope was 0.7 on 5%.
+       A longer memory gives it back its power: 42% of rows at four times
+       the model's half-life, 89% run once. A run-once calibration keeps
+       the first predictions for good, so give ``min_weight`` a few rows
+       per coefficient: from ``k + 1`` rows they dominated it.
 
 .. rubric:: Errors
 
@@ -547,7 +571,8 @@ value the model refuses:
   or ``n_perm`` past 2^20, ``kmeans``' ``k`` past 2^16 or its warm-up buffer
   past 256 MiB, ``rcov``'s lagged products past 256 MiB;
 - ``inf`` where it means nothing (it is allowed where it does --
-  ``half_life``, ``min_weight``, ``average_eta`` and the model parameters
+  ``half_life``, ``min_weight``, ``average_eta``, ``calibration_half_life``
+  and the model parameters
   that say so);
 - neither ``half_life`` nor ``lam``;
 - ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
@@ -564,6 +589,7 @@ A parameter whose switch is off is refused rather than ignored:
   ``emit_drift``;
 - ``average_eta`` without ``emit_averaged``;
 - ``resid_autocorr_lag`` without ``emit_autocorr``;
+- ``calibration_half_life`` without ``emit_calibration``;
 - ``long_half_life`` without ``session_shrink``;
 - ``session_gap`` without ``session``;
 - ``restart_after_step_back`` without ``clock``;

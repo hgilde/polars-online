@@ -68,6 +68,9 @@ pub(super) enum Source {
     Metric(usize, usize),
     /// `(which of lo/hi/coverage, index)`, laid out like `Metric`.
     Conformal(usize, usize),
+    /// `(which of task 221's values, index)`, laid out like `Metric` with
+    /// `n_checks` blocks per instance ([`crate::checks::value_names`]).
+    Check(usize, usize),
     Quantile(usize),
     Autocorr(usize),
     NEff(usize),
@@ -1000,6 +1003,13 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 for (c_i, c) in combos.iter().enumerate() {
                     fields.push(mk("drift", t, c, Source::Drift(dst(t_i, c_i))));
+                }
+            }
+        }
+        for (k, name) in crate::checks::value_names(spec).into_iter().enumerate() {
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    fields.push(mk(name, t, c, Source::Check(k, dst(t_i, c_i))));
                 }
             }
         }

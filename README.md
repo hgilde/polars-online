@@ -2364,6 +2364,7 @@ other model refuses them by name.
 | breaks | `emit_drift` | `drift_` |
 | running accuracy | `emit_metrics` | `ic_`, `r2_`, `hit_rate_` |
 | residual autocorrelation | `emit_autocorr` | `autocorr_` |
+| calibration | `emit_calibration` | `calibration_slope_`, `calibration_intercept_`, `calibration_wald_` |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
 | clocks, on every model | `emit_clocks` | `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the last row learned, once per spec ([Labels that arrive late](#labels-that-arrive-late)) |
@@ -2387,6 +2388,8 @@ diag = po.spec.ewridge(
     resid_autocorr_lag=1,        #                   away from zero, the model is missing something
     conformal=0.9,               # lo_, hi_, coverage_<slot>: an interval at this coverage, and the coverage delivered
     conformal_rate=0.05,         #                   how fast its radius moves (Conformal intervals)
+    emit_calibration=True,       # calibration_slope_, _intercept_, _wald_<slot>: y regressed on pred, and the
+    calibration_half_life=2000.0,#                   test of slope 1 and intercept 0, at a memory of its own
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2395,6 +2398,16 @@ band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
 **On each row, `sigma`, the interval and its coverage, the quantiles, the
 autocorrelation and the metrics are read before the row updates them.**
 `resid`, `zscore` and `drift` measure the row against them.
+
+**`calibration_slope` is the number to multiply a prediction by.** It is
+the slope of `y` regressed on `pred`, with `calibration_intercept`, and
+`calibration_wald` tests slope 1 and intercept 0 together: past 5.99 is
+the 5% level. Each switch of this kind keeps a memory of its own, its
+`*_half_life`: the model's half-life when left out, and `inf` to run once
+over the whole stream. Run once, the test is the classical F test, `wald /
+2`. Beside a fit that forgets, it is conservative, since the fit absorbs a
+miscalibration at its own pace, so give it a memory several times the
+model's (`po.spec`'s table has the measurements).
 
 **How often `drift` flags a stream that does not change depends on the
 residuals' tails.** At `drift_delta=0.5` and `drift_threshold=20` on a row
