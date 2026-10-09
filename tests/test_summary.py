@@ -157,6 +157,9 @@ def test_summary_is_the_frame_s_count_per_group(fitted):
         )
         got = s.filter(pl.col("spec") == name).sort("group")
         assert got["group"].to_list() == want["g"].to_list()
+        if spec["model"]["type"] == "audit":
+            # It learns from no row: null (review 6, C-7).
+            want = want.with_columns(rows_learned=pl.lit(None, pl.UInt64))
         for c in ("rows_fed", "rows_processed", "rows_learned", "rows_zero_weight"):
             assert got[c].to_list() == want[c].to_list(), f"{name}: {c}"
         assert (

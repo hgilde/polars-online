@@ -399,6 +399,11 @@ pub struct SummaryRow<'a> {
     /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
     /// stream to read them from.
     pub readiness: Option<crate::stream::Readiness>,
+    /// Whether the spec fits a model. An `audit` does not: it reads every
+    /// row and learns from none, so its `rows_learned` and `n_coef` are
+    /// null, where they counted a row with its first column usable and the
+    /// columns plus one (review 6, C-7).
+    pub fits: bool,
 }
 
 /// The `summary` frame for these rows, 19 columns: `group`, `rows_fed`,
@@ -435,7 +440,12 @@ pub fn summary_frame(
                 .map(|r| r.summary.map(|d| d.rows_fed - r.rows_processed))
                 .collect::<Vec<Option<u64>>>(),
         ),
-        Column::new("rows_learned".into(), s(|d| d.rows_learned)),
+        Column::new(
+            "rows_learned".into(),
+            rows.iter()
+                .map(|r| r.summary.filter(|_| r.fits).map(|d| d.rows_learned))
+                .collect::<Vec<Option<u64>>>(),
+        ),
         Column::new("rows_zero_weight".into(), s(|d| d.rows_zero_weight)),
         Column::new(
             "weight_sum".into(),
@@ -511,7 +521,7 @@ pub fn summary_frame(
         Column::new(
             "n_coef".into(),
             rows.iter()
-                .map(|r| r.readiness.as_ref().map(|x| x.n_coef))
+                .map(|r| r.readiness.as_ref().filter(|_| r.fits).map(|x| x.n_coef))
                 .collect::<Vec<Option<u64>>>(),
         ),
     ];

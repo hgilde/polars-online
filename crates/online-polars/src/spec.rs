@@ -4859,6 +4859,9 @@ impl Spec {
                     )
                 } else if self.embargo.is_some() {
                     Some("embargo does not apply to audit: it has no label to wait for")
+                } else if self.min_weight.is_some() {
+                    // Taken and ignored until review 6 (F-10).
+                    Some("min_weight does not apply to audit: it predicts nothing to withhold")
                 } else {
                     None
                 };

@@ -54,7 +54,8 @@ def _fit(c: float) -> pl.DataFrame:
     specs = []
     for name, builder, kw, _ in probe.WORKLOAD:
         kw = dict(kw)
-        if builder != "seqtest":
+        # An audit refuses a min_weight: it predicts nothing to withhold.
+        if builder not in ("seqtest", "audit"):
             kw["min_weight"] = kw.get("min_weight", 4.0) * c
         specs.append(getattr(po.spec, builder)(name, **kw))
     return po.ModelBank(specs).fit_predict(probe.stream().with_columns(pl.col("w") * c))

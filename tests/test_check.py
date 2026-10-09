@@ -268,6 +268,61 @@ class TestAudit:
         row = bank.check().filter(code="random_walk").row(0, named=True)
         assert row["value"] == bank.audit().filter(column="x1")["unit_root_t"][0]
 
+    def test_heavy_tails_reports_the_statistic_that_fired(self):
+        """``heavy_tails`` on a kurtosis alone reports the kurtosis beside
+        its own threshold, and on a robust z the robust z (review 6, G-11:
+        the robust z was reported with its threshold of 10 whichever fired,
+        a value below its own line)."""
+        rng = np.random.default_rng(0)
+        n = cs.N
+        # A unit normal with 3% of its rows at +-8: a kurtosis near 12, and
+        # no value 10 robust standard deviations out.
+        kurt = np.where(rng.random(n) < 0.03, 8.0 * rng.choice([-1.0, 1.0], n), rng.normal(size=n))
+        far = rng.normal(size=n)
+        far[n // 2] = 30.0
+        df = pl.DataFrame({"t": np.arange(n, dtype=float), "kurt": kurt, "far": far})
+        bank = po.ModelBank([cs.audit_spec(df)])
+        bank.fit_predict(df)
+        a = {r["column"]: r for r in bank.audit().iter_rows(named=True)}
+        assert a["kurt"]["kurtosis"] >= _check.HEAVY_KURTOSIS > 0
+        assert a["kurt"]["robust_z"] < _check.HEAVY_ROBUST_Z
+        assert a["far"]["robust_z"] >= _check.HEAVY_ROBUST_Z
+        f = {r["column"]: r for r in bank.check().filter(code="heavy_tails").iter_rows(named=True)}
+        assert (f["kurt"]["value"], f["kurt"]["threshold"]) == (
+            a["kurt"]["kurtosis"],
+            _check.HEAVY_KURTOSIS,
+        )
+        assert (f["far"]["value"], f["far"]["threshold"]) == (
+            a["far"]["robust_z"],
+            _check.HEAVY_ROBUST_Z,
+        )
+
+    def test_an_audit_alone_reports_steps_back_and_restarts(self):
+        """An audit-only bank reports the summary's steps back and restarts
+        as a model's spec does (review 6, F-6 first half: the audit's
+        findings returned before the clock's were read)."""
+        t = np.arange(cs.N, dtype=float)
+        t[1200:] -= 600.0  # a restart
+        df = cs.AUDIT_CLEAN["model_independent"](0).with_columns(t=pl.Series(t))
+        audit = cs.audit_spec(df, restart_after_step_back=100.0)
+        model = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            clock="t",
+            gap_cap=10.0,
+            half_life=50.0,
+            restart_after_step_back=100.0,
+        )
+        alone = cs.findings(df, [audit])
+        beside = cs.findings(df, [audit, model])
+        for spec, f in (("audit", alone), ("audit", beside), ("m", beside)):
+            got = {r["code"]: r["value"] for r in f.filter(spec=spec).iter_rows(named=True)}
+            assert got.get("step_back") == 1.0, (spec, f)
+            assert got.get("resets") == 1.0, (spec, f)
+        msg = alone.filter(code="resets")["message"][0]
+        assert "keeps its counts" in msg, msg
+
     def test_a_column_missing_everywhere_is_an_error_and_partly_information(self):
         df = cs.AUDIT_CLEAN["model_independent"](0).with_columns(
             x1=pl.lit(None, pl.Float64), x2=pl.when(pl.col("t") % 4 == 0).then(None).otherwise("x2")

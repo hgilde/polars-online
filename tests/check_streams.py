@@ -531,6 +531,18 @@ AUDIT_PLANTED: dict[str, tuple[Callable[[int], pl.DataFrame], str, str]] = {
         "x1",
     ),
     "random_walk": (_audit_planted(lambda r, v: np.cumsum(r.normal(size=N))), "random_walk", "x1"),
+    # An exact trend: a fit with no residual, whose Dickey-Fuller statistic
+    # is +inf rather than 0 / 0 (review 6, C-2).
+    "row_counter": (
+        _audit_planted(lambda r, v: np.arange(N, dtype=float)),
+        "random_walk",
+        "x1",
+    ),
+    "epoch_seconds": (
+        _audit_planted(lambda r, v: 1.7e9 + 60.0 * np.arange(N, dtype=float)),
+        "random_walk",
+        "x1",
+    ),
     "student_t3": (_audit_planted(lambda r, v: r.standard_t(3, size=N)), "heavy_tails", "x1"),
     "outlier_at_30": (
         _audit_planted(lambda r, v: np.where(np.arange(N) == N // 2, 30.0, v)),

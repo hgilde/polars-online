@@ -2411,7 +2411,7 @@ depends on the row order:
 | learns by | what the model does with a row | with decay off | order-dependent even so |
 |---|---|---|---|
 | **solve** | keeps running sums and computes its coefficients from them | converges to the batch answer, in any row order | `lasso`'s `penalty_selected`, ranked by out-of-sample error, though its path converges in any order |
-| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate; `audit`'s runs, lag pairs and clock steps |
+| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate; `audit`'s runs, lag pairs and clock steps, and past `distinct_cap` the digest's `median`, `mad` and `robust_z` and the counters' `top_value`, `top_count`, `second_count` and `equal_by_chance`, each within its bound |
 | **reweight** | solves from running sums, but lets the fit before each row decide how that row enters them | depends on the row order | |
 | **step** | moves its coefficients a little on each row | depends on the row order | |
 | **filter** | carries a belief forward from row to row | depends on the row order | |

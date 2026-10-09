@@ -283,7 +283,10 @@ def describe_api(cli: Path | None = None) -> str:
             ),
         ),
     ]:
-        s = getattr(po.spec, model.split(" ")[0])("m", min_weight=2.0, **kw)
+        # An audit predicts nothing to withhold, and refuses a min_weight
+        # (review 6, F-10).
+        gate = {} if model == "audit" else {"min_weight": 2.0}
+        s = getattr(po.spec, model.split(" ")[0])("m", **gate, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")
         for f in po.spec.output_fields(s):
             w(f"    {f}")

@@ -85,7 +85,9 @@ def audit(
            the usable row before it, and the Dickey-Fuller statistic of the
            same regression with a constant, ``(rho - 1) / se(rho)``, as
            statsmodels' ``adfuller`` gives it with no lags. A random walk
-           reads near 0; independent rows read about ``-sqrt(n)``
+           reads near 0; independent rows read about ``-sqrt(n)``; a fit
+           with no residual reads ``+inf`` at a slope of 1 or more (a row
+           counter, a clock in epoch seconds) and ``-inf`` below
        * - location and spread, robustly
          - the median and the median absolute deviation, exact while the
            counts are, and otherwise from a t-digest whose centroids hold at
@@ -101,12 +103,19 @@ def audit(
            a regular step, whose mean, population spread, coefficient of
            variation and largest value are kept
 
-    **Cost.** Each row costs a binary search among ``distinct_cap``
-    counters a column, and a digest compression every 256 rows, amortized
-    to a few comparisons a row; with ``pairs`` it costs ``k(k - 1)/2`` pair
-    updates. Ten columns ran at 1.3 million rows a second, and 1.2 million
-    with their pairs, where an ``ewridge`` on the same columns ran at 4.1
-    million (500,000 rows on an Apple M4 Pro, under a load average of 10).
+    **Cost.** A value already held costs a binary search among a column's
+    ``distinct_cap`` counters. A value not held costs a pass over them,
+    ``O(distinct_cap)``: below the cap the counters after it move to make
+    room, and past it every counter gives up one. A continuous column, whose
+    values are nearly all new, pays that pass on nearly every row: one such
+    column ran at 5.5 to 6.1 million rows a second at 256 counters, 2.4
+    million at 8,192 and 0.31 million at 65,536 (100,000 rows, under a load
+    average of 6 to 12). The digest compresses every 256 rows, a few
+    comparisons a row amortized, and ``pairs`` costs ``k(k - 1)/2`` pair
+    updates a row. Ten columns ran at 1.3 million rows a second, and 1.2
+    million with their pairs, where an ``ewridge`` on the same columns ran
+    at 4.1 million (500,000 rows on an Apple M4 Pro, under a load average
+    of 10).
     Memory does not grow with the rows: about 10 KiB a column at the
     defaults (``distinct_cap`` counters of 16 bytes, a digest of at most
     about 200 centroids and 256 values waiting), and 64 bytes a pair, in
@@ -154,7 +163,8 @@ def audit(
     weight column, list it in ``columns``. (The Rust model takes a weight
     as every model does, into ``weight_sum`` alone, and counts a row of
     weight 0 as any other.) ``embargo`` is refused too, as there is no label
-    to wait for. ``weight_sum`` is the count of rows before this one.
+    to wait for, and ``min_weight``, as there is no prediction to withhold.
+    ``weight_sum`` is the count of rows before this one.
 
     .. rubric:: Output
 
@@ -168,8 +178,8 @@ def audit(
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets`` and for ``features``, which an audit calls ``columns``;
     ``ValueError`` for an empty ``columns``, for ``half_life``/``lam``,
-    ``weight`` or ``embargo``, and for a ``distinct_cap`` outside 1 to
-    65,536.
+    ``weight``, ``embargo`` or ``min_weight``, and for a ``distinct_cap``
+    outside 1 to 65,536.
     """
     if "features" in common:
         msg = f"spec {json.dumps(name)}: audit() takes columns=, not features="

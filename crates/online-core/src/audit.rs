@@ -46,7 +46,9 @@
 //!   autocorrelation `S_ab / √(S_aa·S_bb)` and the Dickey-Fuller statistic of
 //!   the regression of `x_t` on `x_{t-1}` with a constant, `τ = (ρ̂ − 1) /
 //!   se(ρ̂)`, `ρ̂ = S_ab / S_aa`, `se² = (S_bb − S_ab²/S_aa) / ((n − 2)·S_aa)`
-//!   (statsmodels' `adfuller` with no lags and a constant);
+//!   (statsmodels' `adfuller` with no lags and a constant). An exact fit
+//!   has `se = 0`, and reads `+inf` at `ρ̂ ≥ 1` (a counter, a clock in
+//!   epoch seconds), `−inf` below;
 //! - *location and spread, robustly*: the median and the median absolute
 //!   deviation, exact from the counts while they are exact, and otherwise
 //!   from a t-digest (Dunning & Ertl 2019) of uniform rank resolution:
@@ -376,7 +378,9 @@ impl CoMoments {
     }
 
     /// The Dickey-Fuller `τ` of `b` on `a` with a constant: `(ρ̂ − 1) /
-    /// se(ρ̂)`. Infinite where the fit is exact.
+    /// se(ρ̂)`. Where the fit is exact `se(ρ̂)` is 0 and `τ` infinite:
+    /// `+inf` at `ρ̂ ≥ 1` (a counter, a clock in epoch seconds, where `ρ̂ −
+    /// 1` is 0 too and the quotient would be NaN), `−inf` below.
     fn unit_root_t(&self) -> f64 {
         if self.n < 3 || self.saa <= 0.0 {
             return f64::NAN;
@@ -384,6 +388,13 @@ impl CoMoments {
         let rho = self.sab / self.saa;
         let ss = (self.sbb - self.sab * rho).max(0.0);
         let se = (ss / ((self.n as f64 - 2.0) * self.saa)).sqrt();
+        if se == 0.0 {
+            return if rho >= 1.0 {
+                f64::INFINITY
+            } else {
+                f64::NEG_INFINITY
+            };
+        }
         (rho - 1.0) / se
     }
 

@@ -3194,6 +3194,7 @@ impl Bank {
                     last_clock: stream.persisted.clock.last_clock(),
                     summary: stream.summary(),
                     readiness: Some(stream.readiness(&self.specs[spec])),
+                    fits: !self.specs[spec].model.reads_every_row(),
                 }
             })
             .collect();

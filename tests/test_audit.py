@@ -92,6 +92,10 @@ class TestTheBuilder:
             ({"lam": 0.9}, "half_life/lam do not apply to audit"),
             ({"weight": "w"}, "list it in columns"),
             ({"embargo": 3.0, "clock": "t", "gap_cap": 5.0}, "embargo does not apply to audit"),
+            # Review 6, F-10: taken and ignored, the output, `audit()` and
+            # `check()` the same at 0, 5 and 1e9.
+            ({"min_weight": 5.0}, "min_weight does not apply to audit"),
+            ({"min_weight": 0.0}, "min_weight does not apply to audit"),
             ({"distinct_cap": 0}, "distinct_cap must be in 1..=65536"),
             ({"distinct_cap": 70_000}, "distinct_cap must be in 1..=65536"),
         ],
@@ -121,6 +125,15 @@ class TestEveryRowIsRead:
         summary = both.summary()
         processed = dict(zip(summary["spec"], summary["rows_processed"], strict=True))
         assert processed == {"audit": N, "m": N - nulls - nans}
+        # Its summary in its own terms: every row read and none skipped, and
+        # nothing learned and no coefficient, so those are null (review 6,
+        # C-7: a row with its first column usable counted as learned, and
+        # the columns plus one as its coefficients).
+        row = summary.filter(spec="audit").row(0, named=True)
+        assert (row["rows_fed"], row["rows_processed"], row["rows_skipped"]) == (N, N, 0)
+        assert row["rows_learned"] is None and row["n_coef"] is None, row
+        m = summary.filter(spec="m").row(0, named=True)
+        assert m["rows_learned"] == N - nulls - nans and m["n_coef"] == 2, m
 
     def test_predict_counts_nothing(self):
         frame = _frame()

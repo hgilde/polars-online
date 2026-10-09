@@ -300,6 +300,10 @@ def _spec_findings(
     flagged: set[tuple[str | None, str]] = set()
     if kind == "audit":
         _audit_findings(bank, i, spec, keys, add)
+        # The summary's clock counts, as a model's spec reads them (review
+        # 6, F-6: an audit-only bank said nothing of a step back).
+        for row in summary.iter_rows(named=True):
+            _clock_findings(spec, row, add)
         return out
 
     # (1), (3), (6), (7): per input column, from describe.
@@ -524,31 +528,7 @@ def _spec_findings(
                 + (f", {skipper!r} most often" if skipper else "")
                 + ": fill the gaps upstream, or drop the column that causes most",
             )
-        back = row["clock_backwards"]
-        if back:
-            add(
-                "warning",
-                "step_back",
-                g,
-                spec.get("clock"),
-                float(back),
-                0.0,
-                f"the clock stepped back {back} times in {_who(g)}, each a restart "
-                "or a late row under restart_after_step_back: sort the input by "
-                "its clock within each group if that was not meant",
-            )
-        resets = row["resets"]
-        if resets:
-            add(
-                "info",
-                "resets",
-                g,
-                spec.get("clock"),
-                float(resets),
-                0.0,
-                f"{_who(g).capitalize()} started over {resets} times, at a "
-                "session_gap or a step back: each start forgets what came before",
-            )
+        _clock_findings(spec, row, add)
         n_coef = row["n_coef"]
         if kind in _REGRESSIONS and n_coef and 0 < learned < n_coef:
             add(
@@ -782,6 +762,41 @@ def _resolved(bank: ModelBank, i: int) -> dict[str, Any]:
     return out
 
 
+def _clock_findings(spec: dict[str, Any], row: dict[str, Any], add: Any) -> None:
+    """``step_back`` and ``resets`` from one summary row, for any spec."""
+    g = row["group"]
+    back = row["clock_backwards"]
+    if back:
+        add(
+            "warning",
+            "step_back",
+            g,
+            spec.get("clock"),
+            float(back),
+            0.0,
+            f"the clock stepped back {back} times in {_who(g)}, each a restart "
+            "or a late row under restart_after_step_back: sort the input by "
+            "its clock within each group if that was not meant",
+        )
+    resets = row["resets"]
+    if resets:
+        forgets = (
+            "each start begins its runs and its clock steps afresh, and an audit keeps its counts"
+            if spec["model"]["type"] == "audit"
+            else "each start forgets what came before"
+        )
+        add(
+            "info",
+            "resets",
+            g,
+            spec.get("clock"),
+            float(resets),
+            0.0,
+            f"{_who(g).capitalize()} started over {resets} times, at a "
+            f"session_gap or a step back: {forgets}",
+        )
+
+
 def _audit_findings(
     bank: ModelBank,
     i: int,
@@ -981,14 +996,18 @@ def _audit_column(r: dict[str, Any], add: Any) -> None:
             "take its deviation from a moving mean",
         )
     kurt, rz = r["kurtosis"], r["robust_z"]
-    if (kurt is not None and kurt >= HEAVY_KURTOSIS) or (rz is not None and rz >= HEAVY_ROBUST_Z):
+    far = rz is not None and rz >= HEAVY_ROBUST_Z
+    if far or (kurt is not None and kurt >= HEAVY_KURTOSIS):
+        # The statistic that fired, beside its own threshold: the robust z
+        # where it passed, the kurtosis otherwise (review 6, G-11: the robust
+        # z was reported whichever fired).
         add(
             "info",
             "heavy_tails",
             g,
             col,
-            rz,
-            HEAVY_ROBUST_Z,
+            rz if far else kurt,
+            HEAVY_ROBUST_Z if far else HEAVY_KURTOSIS,
             f"column {col!r} has heavy tails in {who}: excess kurtosis "
             f"{'undefined' if kurt is None else _fmt(kurt)}, and a value "
             f"{'undefined' if rz is None else _fmt(rz)} robust standard deviations "

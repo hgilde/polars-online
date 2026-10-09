@@ -531,7 +531,7 @@ print(f"ewridge, left alone:  largest |slope| while held {slope:.3g}, rms error 
 
 ```text
 warning frozen audit x1 0.857
-info heavy_tails audit x1 None
+info heavy_tails audit x1 16.4
 rls, left alone:      largest |slope| while held 5.4e+13, rms error after 3.7e+12
 rls, stale rows null: largest |slope| while held 0.481, rms error after 0.234
 ewridge, left alone:  largest |slope| while held 0.481, rms error after 0.247
@@ -540,7 +540,7 @@ ewridge, left alone:  largest |slope| while held 0.481, rms error after 0.247
 The audit finds `x1` repeating the row before on 86% of the rows. Most of
 its values are one value, so its robust spread is zero and its largest
 robust z is undefined (`None`). `heavy_tails` fires on the column's
-kurtosis, and reports the robust z as its value. Left alone, `rls`'s slope on `x1`, 0.5 in the
+kurtosis, 16.4, and reports it as its value. Left alone, `rls`'s slope on `x1`, 0.5 in the
 data, wandered past 1e13 while the feed was stopped. When `x1` moved
 again, its predictions were off by trillions. With the stale rows made
 null, `rls` skips them, the clock still advances, and `gap_cap` caps the
@@ -703,8 +703,14 @@ ewridge  R² 0.578
 sample spreads 1,020 times apart (5,000 and 1,000 in the generator), for
 both uncentred models. For `ewridge`, which centres,
 it finds only that its default ridge, `1e-6`, is as large as the return's
-variance. Left alone, `rls`'s R² over the last 10,000 rows is 0.005, since
-its prior pins the price's slope, and `sgd` diverges. `ewridge` reads
+variance. Left alone, `rls`'s R² over the last 10,000 rows is 0.005, and
+`sgd` diverges. `rls`'s prior pins both slopes near zero: the price's,
+whose direction apart from the intercept carries little information at a
+level, and the return's, whose information `n·s²` is 0.02 against
+`delta = 1`. A ridge with that prior solved in numpy reads the same
+0.00487, so it is the prior and not lost precision. Measuring the price
+from its first value alone reads 0.435, and the return in thousandths
+alone 0.149: it takes both. `ewridge` reads
 0.541, where the noise allows about 0.576: its ridge takes about half of the
 return's coefficient. With the price measured from its first value and the
 return in thousandths, `check()` finds nothing, and all three models read
@@ -736,10 +742,10 @@ noise does.
 | `duplicate` | warning | from an audit with `pairs=True`: two columns correlate at 0.999 or more |
 | `collinear` | warning | the largest variance inflation factor, or Belsley's condition index, over an `ewridge`'s or `lasso`'s features passes 30; `info` for an `ew_cov`. It is checked once the Gram holds ten Kish rows a coefficient |
 
-Clean designs reached a variance inflation factor of 18.0 and a condition
-index of 14.8, with ten features correlated at 0.9. A near-duplicate
-`x0 + 0.1·N(0, 1)` read 67 or more. At `0.3` it
-read 8.3 and was not flagged. For `duplicate`, a copy, a copy times 100
+Clean designs reached a variance inflation factor of 5.6 and a condition
+index of 7.6, with ten features correlated at 0.8. A near-duplicate
+`x0 + 0.1·N(0, 1)`, a correlation of 0.995, read 92 to 113. At `0.3`, a
+correlation of 0.957 to 0.963, it read 10.9 to 13.7 and was not flagged. For `duplicate`, a copy, a copy times 100
 plus 3, and a copy plus noise of 0.03 of its spread (a correlation of
 0.9995) were found. A copy plus 0.05 was not. Clean columns correlated at
 0.94 at most.
@@ -1006,7 +1012,7 @@ units of `sigma`.
 
 | code | severity | fires when |
 |---|---|---|
-| `heavy_tails` | info | from an audit: an excess kurtosis of 5 or more, or a value 10 robust standard deviations or more from the median (the median absolute deviation, scaled by 1.4826) |
+| `heavy_tails` | info | from an audit: an excess kurtosis of 5 or more, or a value 10 robust standard deviations or more from the median (the median absolute deviation, scaled by 1.4826); its value is the robust z where that fired, the kurtosis otherwise |
 
 Clean columns reached an excess kurtosis of 3.8 (in 50-row groups) and a
 robust z of 5.6. Over 2,000 rows on ten seeds, Student's t with 3 degrees

@@ -341,6 +341,39 @@ fn the_persistence_is_the_regression_of_a_row_on_the_row_before() {
     assert!(c.unit_root_t < -5.0, "an AR(0.9) rejects a unit root");
 }
 
+/// An exact fit has no residual, so `se(ρ̂)` is 0: `τ` is infinite with the
+/// sign of `ρ̂ − 1`, `+inf` at `ρ̂ = 1`, and never the NaN of `0 / 0`. A row
+/// counter or a clock in epoch seconds fed as a column is the common case,
+/// and it is a level the check must flag (review 6, C-2).
+#[test]
+fn an_exact_fit_reads_an_infinite_unit_root_statistic_never_nan() {
+    let ramp = |f: &dyn Fn(f64) -> f64| -> f64 {
+        let mut m = Audit::new(cfg(1)).unwrap();
+        for i in 0..3000 {
+            m.step(&[f(i as f64)], &[], 1.0, 1.0);
+        }
+        m.column(0).unit_root_t
+    };
+    for (name, f) in [
+        ("counter", &(|i: f64| i) as &dyn Fn(f64) -> f64),
+        ("epoch seconds", &|i: f64| 1.7e9 + 60.0 * i),
+        ("epoch milliseconds", &|i: f64| 1.7e12 + 1000.0 * i),
+        ("a tenth", &|i: f64| 0.1 * i),
+        ("falling", &|i: f64| 5.0 - 3.0 * i),
+    ] {
+        let tau = ramp(f);
+        assert_eq!(tau, f64::INFINITY, "{name}");
+    }
+    // An exact fit with ρ̂ < 1: a geometric decay, `x_t = x_{t-1} / 2`.
+    let mut m = Audit::new(cfg(1)).unwrap();
+    let mut x = 1.0;
+    for _ in 0..1000 {
+        m.step(&[x], &[], 1.0, 1.0);
+        x /= 2.0;
+    }
+    assert_eq!(m.column(0).unit_root_t, f64::NEG_INFINITY);
+}
+
 /// Pairs are over the rows where both columns are usable.
 #[test]
 fn pairs_are_over_the_rows_both_columns_hold() {

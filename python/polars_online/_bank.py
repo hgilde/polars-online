@@ -1026,6 +1026,11 @@ class ModelBank:
             The smallest coefficient's data share, the feature it belongs to,
             and the coefficients per target, likewise.
 
+        An ``audit`` (:func:`polars_online.spec.audit`) reads every row and
+        learns from none: its ``rows_processed`` is ``rows_fed`` and its
+        ``rows_skipped`` 0, and its ``rows_learned`` and ``n_coef`` are null.
+        What it counted is :meth:`audit`'s.
+
         ``spec`` narrows to one spec (``KeyError`` / ``IndexError`` for one
         the bank has not got), ``group`` to one group's key or a list of keys,
         ``None`` among them for the null group (``group=None`` is every
@@ -1498,7 +1503,8 @@ class ModelBank:
             The correlation of each usable row with the usable row before it,
             and the Dickey-Fuller statistic of that regression with a
             constant: near 0 for a random walk, about ``-sqrt(n)`` for rows
-            that do not persist.
+            that do not persist, and ``+inf`` for a fit with no residual and
+            a slope of 1, such as a row counter (``-inf`` below 1).
 
         ``table="pairs"``, for a spec built with ``pairs=True``: ``group``,
         ``column_a``, ``column_b``, and over the rows where both are usable,
@@ -1784,7 +1790,9 @@ class ModelBank:
         no other spec keeps, and its findings are about the data whatever a
         model would make of it. It knows no roles, so a column's ``missing``
         share is information (an error at every row), and ``constant`` a
-        warning. Its own checks, read from :meth:`audit`:
+        warning. ``step_back`` and ``resets`` are read from its
+        :meth:`summary` as for any spec. Its own checks, read from
+        :meth:`audit`:
 
         .. list-table::
            :header-rows: 1
@@ -1816,7 +1824,9 @@ class ModelBank:
            * - ``heavy_tails``
              - info
              - an excess kurtosis of 5 or more, or a value 10 robust standard
-               deviations or more from the median
+               deviations or more from the median; ``value`` is the robust z
+               where it fired, the kurtosis otherwise, each beside its own
+               threshold
            * - ``duplicate``
              - warning
              - with ``pairs=True``, two columns correlate at 0.999 or more
@@ -1839,10 +1849,11 @@ class ModelBank:
         every spec it harms, and for no other (``tests/test_check.py``).
         Where a line sits:
 
-        - ``collinear``: clean designs reached a VIF of 18.0 and a condition
-          index of 14.8 (ten features correlated at 0.9). A near-duplicate
-          ``x0 + 0.1 * N(0, 1)`` reads 67 or more; at ``0.3`` (a correlation
-          of 0.958) it reads 8.3 and is not flagged.
+        - ``collinear``: clean designs reached a VIF of 5.6 and a condition
+          index of 7.6 (ten features correlated at 0.8). A near-duplicate
+          ``x0 + 0.1 * N(0, 1)`` (a correlation of 0.995) reads 92 to 113;
+          at ``0.3`` (0.957 to 0.963) it reads 10.9 to 13.7 and is not
+          flagged.
         - ``leakage``: clean fits reached 0.991 at an R² of 0.99, and a random
           walk against its own lag 0.9996. A feature that is the target plus
           a thousandth of its spread reads 0.999999.
@@ -1910,7 +1921,9 @@ class ModelBank:
           most, and the clean shapes -6.5 at least (columns persisting at
           0.95); 50-row groups, which the 100-row guard leaves out, read
           -4.7. A column persisting at 0.99 a row over 2,000 rows reads as a
-          random walk on seven seeds of ten, and at 0.98 on none.
+          random walk on seven seeds of ten, and at 0.98 on none. A row
+          counter and a clock in epoch seconds fed as columns are fits with
+          no residual, and read ``+inf``.
         - ``heavy_tails``: clean columns reached a kurtosis of 3.8 (in
           50-row groups) and a robust z of 5.6; Student's t with 3 degrees
           of freedom reads 10 to 25, and one value at 30 standard deviations
