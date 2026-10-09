@@ -8937,6 +8937,83 @@ tick, and that the series holding it up has a count near 1.
       `t_serial`) in a first pass, and gains each of task 221's parts as it
       ships. Written to `docs/WRITING.md`; the README's section shrinks to
       the table and a link.
+- [ ] 223. **Telling a user their data has a problem, after one pass** --
+      the user, 2026-10-08: "What can we do to help a user understand that
+      their data has a problem after one pass, ideally something that can
+      run as a spec to detect nulls and constants and whatever else is a
+      problem", then "Add all the good options to the plan". Most of the
+      measurements exist (`summary`, `describe`, `solve_failures`, `gram`
+      with `po.gram.condition`/`vif`/`correlation`, `groups`); nothing reads
+      them for the user. Two parts:
+      (a) **`bank.check()`**: findings from what every bank keeps, live or
+      loaded from a state, at no cost to the run. One row per finding:
+      severity, spec, group, column, the check, the measured value, the
+      threshold, and what to do, with a link to the docs (task 224).
+      (b) **`po.spec.audit(name, columns=..., clock=, group=, ...)`**: a spec
+      that reads only its columns, as `marginal` does, and learns nothing;
+      constant memory a column, the same numbers in one chunk or a thousand,
+      sums that merge across groups and files, kept in the state so a run
+      over many files resumes. Run alone before choosing a model, or beside
+      the specs in the same pass (`fit_predict([audit, model])`);
+      `bank.check()` reads its measurements too.
+      **The checks** (E error: the model cannot learn; W warning: the fit is
+      unreliable; I info):
+      (1) *missing*: each column's null share; which column skips the most
+      rows (today's `rows_skipped` gives the union only: a per-column cause
+      count is new); the share of rows a spec learns from (E when 0, W
+      below a measured share).
+      (2) *sentinels*: NaN, ±inf and beyond-1e100 counted apart (today's
+      `null_count` lumps them, as the models do); one value repeated on a
+      large share of rows (-999, 0) (W). New in `audit`.
+      (3) *constant*: a feature with std 0 (W: a dropped column), a target
+      with no spread (E). From `describe`.
+      (4) *frozen*: the longest run of one value and the share of rows
+      equal to the row before, a feed that stopped or a forward fill (W).
+      New, O(1) a column.
+      (5) *few values*: a distinct count, exact up to a cap: a category or a
+      flag stored as numbers (I). New.
+      (6) *a level far above its spread*: |mean| / std past about 1e6, where
+      `rls`, `sgd`, `ftrl` and `pa` lose precision (tasks 209, 215-217);
+      advice: centre, standardize or difference (W for those models, I for
+      the centred ones). From `describe`.
+      (7) *scales apart*: the largest feature std over the smallest, for
+      conditioning and a shared ridge (W past a measured ratio). From
+      `describe`.
+      (8) *a level fed as a feature or a target*: lag-1 autocorrelation near
+      1, a random walk, where a regression of a change on a level is
+      spurious (W). New, O(1) a column.
+      (9) *tails*: kurtosis and the largest robust z (median and MAD from a
+      quantile sketch) (I; ties to task 221(e)). New.
+      (10) *redundancy*: a correlation of 1, VIF and Belsley's condition
+      index (W), from `gram`; in `audit` the pairs are opt-in, O(k²).
+      (11) *leakage*: a feature equal to the target or correlating with it
+      past a measured bound (E), from `gram` / `marginal`.
+      (12) *clock*: steps back (exists in `summary`), duplicate stamps, gaps
+      past `gap_cap`, irregular spacing (the steps' coefficient of
+      variation) (W/I). New, except the steps back.
+      (13) *groups*: groups with fewer rows than coefficients, sizes far
+      apart, groups that never settled or never met `min_weight` (W). From
+      `summary` and `groups`.
+      (14) *the fit*: solve failures, rows withheld by reason, the smallest
+      coefficient's data share (W). These exist.
+      **Method:** each threshold measured before it ships, on `po.sim`
+      streams with the problem planted (its rate of finding it) and on
+      clean ones (its false-alarm rate), as task 221; a value counted as
+      the models count it, so a null in `check` is a row the models
+      skipped; Rust tests for the accumulators (chunk invariance, merge
+      exactness, rule 9), Python tests for each finding. Build (a) first,
+      then (b).
+- [ ] 224. **A section in the docs on detecting data issues** -- the user,
+      2026-10-08. After task 223. `docs/DATA-ISSUES.md`, linked from the
+      README and from each finding's "what to do": per problem, how it
+      shows (the finding, and what it does to each model if left alone,
+      measured: a frozen feature's `rls` windup, a level's lost precision,
+      a column null on most rows), how to fix it upstream with Polars
+      (centre, difference, forward-fill or not, de-duplicate stamps, drop a
+      sentinel), and the threshold `check` uses with its false-alarm rate.
+      Beside task 222's diagnostics section: that one asks whether the
+      model is working, this one whether the data can be learned from.
+      Written to `docs/WRITING.md`.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
