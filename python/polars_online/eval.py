@@ -46,6 +46,8 @@ __all__ = [
     "compare_specs",
     "unpack",
     "seqtest",
+    "diebold_mariano",
+    "clark_west",
     "sums",
     "merge_sums",
     "from_sums",
@@ -942,4 +944,277 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30) -> pl.DataFrame:
             mse.sqrt().alias("rmse"),
         )
         .sort(keys)
+    )
+
+
+def _paired_residuals(
+    df: pl.DataFrame,
+    a: str,
+    b: str,
+    targets: Sequence[str] | None,
+    a_suffix: str,
+    b_suffix: str,
+    who: str,
+) -> dict[str, tuple[pl.Expr, pl.Expr]]:
+    """Per target, ``a``'s and ``b``'s residual fields, resolved as
+    :func:`seqtest` resolves them, NaN, infinities and values past the
+    bank's input bound read as null."""
+    have = {a: _resid_fields(df, a), b: _resid_fields(df, b)}
+    if targets is None:
+        bodies = [f.removeprefix("resid_") for f in have[a] if f.endswith(a_suffix)]
+        stems = [x[: len(x) - len(a_suffix)] for x in bodies]
+        targets = [t for t in stems if f"resid_{t}{b_suffix}" in have[b]]
+        if not targets:
+            msg = (
+                f"{who}: {a!r} and {b!r} share no residual field (with a_suffix "
+                f"{a_suffix!r}, b_suffix {b_suffix!r}); {a!r} has {have[a]}, {b!r} has {have[b]}"
+            )
+            raise ValueError(msg)
+    out: dict[str, tuple[pl.Expr, pl.Expr]] = {}
+    for t in targets:
+        pair = []
+        for side, suffix in ((a, a_suffix), (b, b_suffix)):
+            want = f"resid_{t}{suffix}"
+            if want not in have[side]:
+                msg = (
+                    f"{who}: target {t!r} names no residual of {side!r}: it has no field "
+                    f"{want!r} (its residual fields are {have[side]})"
+                )
+                raise ValueError(msg)
+            r = pl.col(side).struct.field(want).cast(pl.Float64)
+            pair.append(pl.when(r.is_finite() & (r.abs() <= _INPUT_BOUND)).then(r))
+        out[t] = (pair[0], pair[1])
+    return out
+
+
+def _normal_sf(z: float | None) -> float | None:
+    """``P(Z > z)`` for a standard normal ``Z``."""
+    return None if z is None or math.isnan(z) else 0.5 * math.erfc(z / math.sqrt(2.0))
+
+
+def _hac_test(
+    df: pl.DataFrame,
+    values: dict[str, pl.Expr],
+    keys: list[str],
+    lags: int,
+    stat: str,
+    min_samples: int,
+) -> pl.DataFrame:
+    """Per key and target, the mean of each value column and its t
+    statistic against Newey and West's variance: with ``d`` the value and
+    ``d̄`` its mean over the ``n`` rows that have one,
+
+    ``S = Σ (d − d̄)² + 2 Σ_{l ≤ L} (1 − l/(L+1)) Σ_t (d_t − d̄)(d_{t−l} − d̄)``,
+    ``stat = d̄ · n / sqrt(S)``.
+    """
+    frames = []
+    for t, d in values.items():
+        col = "__po_d"
+        while col in df.columns:
+            col = "_" + col
+        rows = df.select(*keys, d.alias(col)).filter(pl.col(col).is_not_null())
+        dd = pl.col(col)
+        dev = dd - dd.mean()
+        s = (dev * dev).sum()
+        for lag in range(1, lags + 1):
+            weight = 1.0 - lag / (lags + 1.0)
+            s = s + 2.0 * weight * (dev * (dd.shift(lag) - dd.mean())).sum()
+        exprs = [
+            pl.len().alias("n"),
+            dd.mean().alias("mean"),
+            pl.when(s > 0).then(dd.mean() * pl.len() / s.sqrt()).alias(stat),
+        ]
+        g = rows.group_by(keys, maintain_order=True).agg(exprs) if keys else rows.select(exprs)
+        frames.append(g.with_columns(pl.lit(t).alias("target")))
+    out = pl.concat(frames).filter(pl.col("n") >= min_samples)
+    return out.select(*keys, "target", pl.col("n").cast(pl.Int64), "mean", stat)
+
+
+def _ew_test(
+    df: pl.DataFrame,
+    values: dict[str, pl.Expr],
+    keys: list[str],
+    lags: int,
+    half_life: float,
+    stat: str,
+    name: str,
+) -> pl.DataFrame:
+    """Per row, the same t statistic with each row before it weighed by
+    ``λ^age``, ``λ = 0.5 ** (1 / half_life)``, one step per row that has a
+    value, the row itself included:
+
+    ``m = Σ ω d / Σ ω``, ``S = Σ ω_t² (d_t − m)² + 2 Σ_l (1 − l/(L+1)) Σ_t ω_t ω_{t−l}
+    (d_t − m)(d_{t−l} − m)``, ``stat = m Σ ω / sqrt(S)``.
+
+    Each double sum is an exponentially weighted sum at ``λ²`` -- of the
+    products, the two sides and the pairs -- read as ``ewm_mean`` times its
+    weights, so the statistic is a few window expressions, not a loop.
+    """
+    lam = 0.5 ** (1.0 / half_life)
+    lam2 = lam * lam
+    idx = "__po_row"
+    while idx in df.columns:
+        idx = "_" + idx
+    base = df.with_row_index(idx)
+    fields = []
+
+    def over(e: pl.Expr) -> pl.Expr:
+        return e.over(keys) if keys else e
+
+    i = over(pl.int_range(pl.len())).cast(pl.Float64)
+    w1 = (1.0 - pl.lit(lam).pow(i + 1.0)) / (1.0 - lam)
+    w2 = (1.0 - pl.lit(lam2).pow(i + 1.0)) / (1.0 - lam2)
+
+    def ew_sum2(e: pl.Expr) -> pl.Expr:
+        """``Σ λ^{2(T−t)} e_t``, the missing terms as zeros."""
+        return over(e.fill_null(0.0).ewm_mean(alpha=1.0 - lam2, adjust=True)) * w2
+
+    for t, d in values.items():
+        col = "__po_d"
+        while col in base.columns:
+            col = "_" + col
+        rows = base.select(idx, *keys, d.alias(col)).filter(pl.col(col).is_not_null())
+        dd = pl.col(col)
+        m = over(dd.ewm_mean(alpha=1.0 - lam, adjust=True))
+        s = ew_sum2(dd * dd) - 2.0 * m * ew_sum2(dd) + m * m * w2
+        for lag in range(1, lags + 1):
+            back = over(dd.shift(lag))
+            has = back.is_not_null().cast(pl.Float64)
+            a_l = ew_sum2(dd * back)
+            b_l = ew_sum2(dd * has)
+            c_l = ew_sum2(back)
+            d_l = ew_sum2(has)
+            weight = 1.0 - lag / (lags + 1.0)
+            s = s + 2.0 * weight * lam**lag * (a_l - m * (b_l + c_l) + m * m * d_l)
+        value = pl.when(s > 0).then(m * w1 / s.sqrt()).alias(f"{stat}_{t}")
+        got = rows.select(idx, value)
+        base = base.join(got, on=idx, how="left")
+        fields.append(f"{stat}_{t}")
+    return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *fields)
+
+
+@renamed_keywords("po.eval.diebold_mariano", _GROUP)
+def diebold_mariano(
+    df: pl.DataFrame,
+    *,
+    a: str,
+    b: str,
+    targets: Sequence[str] | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] = (),
+    half_life: float | None = None,
+    min_samples: int = 30,
+    name: str = "diebold_mariano",
+) -> pl.DataFrame:
+    """Diebold and Mariano's (1995) test of equal squared error between two
+    specs' out-of-sample predictions, with Newey and West's variance.
+
+    Per target ``t``, the loss differential ``d = resid_b**2 - resid_a**2``,
+    positive when ``a`` was closer, over the rows where both have a
+    residual; its mean ``d̄`` over Newey and West's (1987) standard error,
+    Bartlett weights ``1 - l / (lags + 1)`` to ``lags``:
+
+    .. code-block:: text
+
+        S  = Σ (d - d̄)² + 2 Σ_{l ≤ lags} (1 - l/(lags+1)) Σ_t (d_t - d̄)(d_{t-l} - d̄)
+        dm = d̄ · n / sqrt(S)                  ~ N(0, 1) with equal accuracy
+
+    ``lags`` is 0 for one-step predictions, whose differentials are not
+    correlated under the null; for a target looking ``h`` rows ahead give
+    at least ``h - 1``. Between nested models -- ``b`` a restriction of
+    ``a`` -- the test leans toward the smaller one, since the larger pays
+    for estimating a coefficient that is zero: use :func:`clark_west`.
+
+    With ``half_life`` (in rows), the statistic on every row instead, each
+    row before it at ``0.5 ** (age / half_life)``, one step per row that has
+    a differential, the row itself included: ``df`` with a struct column
+    ``name`` of ``dm_<t>``, null where a side has no residual. It is the
+    exponentially weighted form of the same test, read at every row as
+    :func:`seqtest` is.
+
+    Without ``half_life``: one row per (``group``, target) with ``n`` rows
+    and at least ``min_samples``, the ``mean`` differential, ``dm`` and its
+    two-sided ``p_value``. ``a``, ``b``, ``targets``, the suffixes and
+    ``group`` are :func:`seqtest`'s, and raise as it raises.
+
+    .. code-block:: python
+
+        small = po.spec.ewridge("small", targets=["y"], features=["x0"], half_life=500.0)
+        big = po.spec.ewridge("big", targets=["y"], features=["x0", "x1"], half_life=500.0)
+        out = po.ModelBank([small, big]).fit_predict(df)
+        po.eval.diebold_mariano(out, a="big", b="small")   # dm > 1.96: big predicts better
+    """
+    keys = _group_keys(group)
+    pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "diebold_mariano")
+    values = {t: rb * rb - ra * ra for t, (ra, rb) in pairs.items()}
+    if lags < 0:
+        msg = f"diebold_mariano: lags must be >= 0, got {lags}"
+        raise ValueError(msg)
+    if half_life is not None:
+        if not half_life > 0:
+            msg = f"diebold_mariano: half_life must be > 0, got {half_life}"
+            raise ValueError(msg)
+        return _ew_test(df, values, keys, lags, half_life, "dm", name)
+    out = _hac_test(df, values, keys, lags, "dm", min_samples)
+    p = [
+        None if z is None or math.isnan(z) else math.erfc(abs(z) / math.sqrt(2.0))
+        for z in out["dm"].to_list()
+    ]
+    return out.with_columns(pl.Series("p_value", p, dtype=pl.Float64))
+
+
+@renamed_keywords("po.eval.clark_west", _GROUP)
+def clark_west(
+    df: pl.DataFrame,
+    *,
+    big: str,
+    small: str,
+    targets: Sequence[str] | None = None,
+    big_suffix: str = "",
+    small_suffix: str = "",
+    lags: int = 0,
+    group: str | Iterable[str] = (),
+    half_life: float | None = None,
+    min_samples: int = 30,
+    name: str = "clark_west",
+) -> pl.DataFrame:
+    """Clark and West's (2007) test that a larger model nesting a smaller
+    one predicts better, with Newey and West's variance.
+
+    Diebold and Mariano's differential leans toward the smaller of two
+    nested models: under the null the larger one's extra coefficients are
+    zero but estimated, and their noise adds ``(p_small - p_big)²`` to its
+    squared error on average. Clark and West add it back:
+
+    .. code-block:: text
+
+        f  = resid_small² - (resid_big² - (pred_small - pred_big)²)
+           = resid_small² - resid_big² + (resid_big - resid_small)²
+        cw = f̄ · n / sqrt(S)          S as in diebold_mariano, of f
+
+    ``cw`` is about ``N(0, 1)`` under the null that the smaller model is the
+    truth, and the test is one-sided: ``cw > 1.645`` rejects it at 5%.
+    ``pred_small - pred_big`` is ``resid_big - resid_small``, so the two
+    residual fields are all it reads. ``half_life`` gives the per-row
+    exponentially weighted form, a struct ``name`` of ``cw_<t>``, as
+    :func:`diebold_mariano`'s does; without it, one row per (``group``,
+    target) with ``n``, the ``mean`` of ``f``, ``cw`` and its one-sided
+    ``p_value``.
+    """
+    keys = _group_keys(group)
+    pairs = _paired_residuals(df, big, small, targets, big_suffix, small_suffix, "clark_west")
+    values = {t: rs * rs - rb * rb + (rb - rs) * (rb - rs) for t, (rb, rs) in pairs.items()}
+    if lags < 0:
+        msg = f"clark_west: lags must be >= 0, got {lags}"
+        raise ValueError(msg)
+    if half_life is not None:
+        if not half_life > 0:
+            msg = f"clark_west: half_life must be > 0, got {half_life}"
+            raise ValueError(msg)
+        return _ew_test(df, values, keys, lags, half_life, "cw", name)
+    out = _hac_test(df, values, keys, lags, "cw", min_samples)
+    return out.with_columns(
+        pl.Series("p_value", [_normal_sf(z) for z in out["cw"].to_list()], dtype=pl.Float64)
     )

@@ -1223,7 +1223,9 @@
   eval:
     RESERVED
     SUM_FIELDS
+    clark_west(df: 'pl.DataFrame', *, big: 'str', small: 'str', targets: 'Sequence[str] | None' = None, big_suffix: 'str' = '', small_suffix: 'str' = '', lags: 'int' = 0, group: 'str | Iterable[str]' = (), half_life: 'float | None' = None, min_samples: 'int' = 30, name: 'str' = 'clark_west') -> 'pl.DataFrame'
     compare_specs(df: 'pl.DataFrame', spec_names: 'Iterable[str]', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, specs: 'Sequence[dict] | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    diebold_mariano(df: 'pl.DataFrame', *, a: 'str', b: 'str', targets: 'Sequence[str] | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', lags: 'int' = 0, group: 'str | Iterable[str]' = (), half_life: 'float | None' = None, min_samples: 'int' = 30, name: 'str' = 'diebold_mariano') -> 'pl.DataFrame'
     from_sums(s: 'pl.DataFrame', *, min_samples: 'int' = 30) -> 'pl.DataFrame'
     merge_sums(first: 'pl.DataFrame', *rest: 'pl.DataFrame') -> 'pl.DataFrame'
     metrics(df: 'pl.DataFrame', spec_name: 'str', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'

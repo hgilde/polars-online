@@ -2570,9 +2570,21 @@ po.eval.metrics(out, "ridge", group="stock_id")                # R², IC, hit ra
 po.eval.window_metrics(out, "ridge", clock="t", every=3600.0)  # the same, per tumbling clock window
 po.eval.compare_specs(out, ["ridge", "kalman"])                # one table, many specs: which had the lower error
 po.eval.seqtest(out, a="kalman", b="ridge", group="stock_id")  # is kalman closer? evidence per row
+po.eval.diebold_mariano(out, a="kalman", b="ridge", group="stock_id")  # equal squared error? Newey-West t
+po.eval.clark_west(out, big="kalman", small="ridge", group="stock_id")  # the same for a model nesting another
 po.eval.unpack(out, "ridge")                                   # long form: one row per (row, slot), with slot,
                                                                # target, pred and y, for your own group_by
 ```
+
+**Compare two models with `diebold_mariano`, and a model with one it nests
+with `clark_west`.** Each is a t statistic of a loss differential against
+Newey and West's variance (`lags`, 0 for one-step predictions), read
+against the normal. Between nested models, Diebold and Mariano's test leans
+toward the smaller: on 200 streams where the larger model's extra
+coefficient was 0.05 it found the larger better on 1.5-4% of them, Clark
+and West's on 56%; with nothing to find, Clark and West's rejected on
+1.5-2%. With `half_life`, each gives its statistic on every row,
+exponentially weighted, beside `po.eval.seqtest`'s evidence.
 
 **Pass the spec as `spec=` when a target is renamed or looks ahead.** The
 output frame does not record how a target was formed, so without the spec

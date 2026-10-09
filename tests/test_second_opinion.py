@@ -5216,3 +5216,92 @@ class TestFeatureHealthIsTwoWeightedMoments:
                     rtol=1e-7,
                     atol=1e-10,
                 )
+
+
+def _nested_out(n: int, seed: int, beta2: float, groups: int = 1) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+    g = np.repeat(np.arange(groups), n)
+    x = rng.normal(size=(groups * n, 2))
+    y = x[:, 0] + beta2 * x[:, 1] + rng.normal(size=groups * n)
+    df = pl.DataFrame({"g": g, "x0": x[:, 0], "x1": x[:, 1], "y": y})
+    common = dict(targets=["y"], half_life=float("inf"), min_weight=20.0, group="g")
+    small = po.spec.ewridge("small", features=["x0"], **common)
+    big = po.spec.ewridge("big", features=["x0", "x1"], **common)
+    return po.ModelBank([small, big]).fit_predict(df)
+
+
+class TestNestedComparisonsAreTheirPapers:
+    """Task 221 (h). ``po.eval.diebold_mariano`` is Diebold and Mariano's
+    (1995) statistic, the mean squared-error differential over its standard
+    error, and ``po.eval.clark_west`` Clark and West's (2007) adjusted
+    differential, each written here from the paper with Newey and West's
+    variance from ``statsmodels``' ``S_hac_simple``; the ``half_life`` form
+    is the same at each row's present weight, the scores ``ω (d - m)``."""
+
+    @staticmethod
+    def _hac(v: np.ndarray, lags: int, weights: np.ndarray | None = None) -> float:
+        from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+        w = np.ones_like(v) if weights is None else weights
+        m = (w * v).sum() / w.sum()
+        s = float(np.asarray(S_hac_simple(w * (v - m), nlags=lags)).ravel()[0])
+        return m * w.sum() / np.sqrt(s)
+
+    def test_the_statistics_are_their_definitions(self):
+        out = _nested_out(1500, 101, 0.05, groups=2)
+        for lags in (0, 3):
+            dm = po.eval.diebold_mariano(out, a="big", b="small", lags=lags, group="g")
+            cw = po.eval.clark_west(out, big="big", small="small", lags=lags, group="g")
+            for gi in range(2):
+                part = out.filter(pl.col("g") == gi)
+                ra = part["big"].struct.field("resid_y").to_numpy()
+                rb = part["small"].struct.field("resid_y").to_numpy()
+                ok = np.isfinite(ra) & np.isfinite(rb)
+                ra, rb = ra[ok], rb[ok]
+                want_dm = self._hac(rb**2 - ra**2, lags)
+                want_cw = self._hac(rb**2 - ra**2 + (ra - rb) ** 2, lags)
+                got = dm.filter(pl.col("g") == gi)
+                np.testing.assert_allclose(got["dm"][0], want_dm, rtol=1e-9)
+                assert got["n"][0] == ok.sum()
+                np.testing.assert_allclose(
+                    cw.filter(pl.col("g") == gi)["cw"][0], want_cw, rtol=1e-9
+                )
+
+    def test_the_exponentially_weighted_form_at_each_row(self):
+        h, lags = 250.0, 2
+        out = _nested_out(1200, 102, 0.1)
+        ew = po.eval.clark_west(out, big="big", small="small", lags=lags, half_life=h)
+        got = ew["clark_west"].struct.field("cw_y").to_numpy()
+        ra = out["big"].struct.field("resid_y").to_numpy()
+        rb = out["small"].struct.field("resid_y").to_numpy()
+        ok = np.isfinite(ra) & np.isfinite(rb)
+        f = (rb**2 - ra**2 + (ra - rb) ** 2)[ok]
+        rows = np.flatnonzero(ok)
+        lam = 0.5 ** (1 / h)
+        for j in (50, 400, len(f) - 1):
+            om = lam ** (j - np.arange(j + 1))
+            want = self._hac(f[: j + 1], lags, om)
+            np.testing.assert_allclose(got[rows[j]], want, rtol=1e-7)
+        assert np.isnan(got[~ok]).all() or all(v is None for v in got[~ok])
+
+    def test_clark_west_finds_what_diebold_mariano_leans_away_from(self):
+        """A larger model whose extra coefficient is 0.1: Clark and West
+        reject the smaller one at 5% on every one of 20 streams, Diebold and
+        Mariano on fewer; with the coefficient 0, Clark and West on few."""
+        alt = _nested_out(3000, 103, 0.1, groups=20)
+        cw = po.eval.clark_west(alt, big="big", small="small", group="g")["cw"].to_numpy()
+        dm = po.eval.diebold_mariano(alt, a="big", b="small", group="g")["dm"].to_numpy()
+        assert (cw > 1.645).mean() == 1.0
+        assert (dm > 1.645).mean() < (cw > 1.645).mean()
+        null = _nested_out(3000, 104, 0.0, groups=20)
+        cw0 = po.eval.clark_west(null, big="big", small="small", group="g")["cw"].to_numpy()
+        assert (cw0 > 1.645).mean() <= 0.15
+
+    def test_refusals(self):
+        out = _nested_out(200, 105, 0.0)
+        with pytest.raises(ValueError, match="lags must be >= 0"):
+            po.eval.diebold_mariano(out, a="big", b="small", lags=-1)
+        with pytest.raises(ValueError, match="half_life must be > 0"):
+            po.eval.clark_west(out, big="big", small="small", half_life=0.0)
+        with pytest.raises(ValueError, match="names no residual"):
+            po.eval.diebold_mariano(out, a="big", b="small", targets=["nope"])
