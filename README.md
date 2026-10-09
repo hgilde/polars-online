@@ -2368,6 +2368,7 @@ other model refuses them by name.
 | where the relationship broke | `emit_breaks` | `studentized_`, `cusum_`, `cusum_sq_`, `break_wald_` |
 | what the fit is missing | `emit_specification` | `ljung_box_`, `breusch_pagan_`, `reset_` |
 | how heavy the residuals' tails are | `emit_tails` | `skew_`, `kurtosis_`, `jarque_bera_` |
+| which row moved the fit | `emit_influence` | `influence_`: `ewridge`, `rls` and `kalman` |
 | standard errors robust to the residuals | `emit_robust_se` | `se_coef_hc0`, `se_coef_hac`, once per instance on `coef`'s rows ([Coefficients](#coefficients)) |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
@@ -2401,6 +2402,7 @@ diag = po.spec.ewridge(
     emit_specification=True,     # ljung_box_, breusch_pagan_, reset_<slot>: a missing lag, a spread that moves
     ljung_box_lags=10,           #                   with the features, a missing curvature
     emit_tails=True,             # skew_, kurtosis_, jarque_bera_<slot>: how far the residuals are from Gaussian
+    emit_influence=True,         # influence_<slot>: how far this row moved the fit, an online DFFITS
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2439,6 +2441,11 @@ move with the features, and `reset` on 2 when the fit misses no curvature;
 past the 5% value each says which to add. On a target that looks ahead,
 `ljung_box` starts past the horizon, where the overlap leaves nothing to
 find.
+
+**`influence` names the rows that moved the fit.** It is the row's
+DFFITS against the fit before it, read in the fit's own metric, so one row
+with a wild feature and a wild target stands out at once: on a fit at a
+half-life of 200, every planted row read above 0.5 and no clean row did.
 
 **`se_coef_hac` is the standard error to trust when the target looks
 ahead.** A target that sums the next `h` rows overlaps its neighbours, so

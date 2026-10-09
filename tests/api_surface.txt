@@ -83,6 +83,8 @@
   ljung_box_lags = None
   emit_tails = False
   tails_half_life = None
+  emit_influence = False
+  influence_half_life = None
   embargo = None
   group = None
   group_close = None
@@ -414,6 +416,7 @@
     model.pairs = false
     stream.breaks_half_life = "inf"
     stream.calibration_half_life = "inf"
+    stream.influence_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
     stream.robust_se_half_life = "inf"
@@ -439,6 +442,7 @@
     model.warm_rows = null
     stream.breaks_half_life = "inf"
     stream.calibration_half_life = "inf"
+    stream.influence_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [1.0]
     stream.robust_se_half_life = "inf"
@@ -464,6 +468,7 @@
     model.span_rows = 20
     stream.breaks_half_life = "inf"
     stream.calibration_half_life = "inf"
+    stream.influence_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
     stream.robust_se_half_life = "inf"
@@ -479,6 +484,7 @@
     model.n_features = 2
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
     stream.robust_se_half_life = 50.0
@@ -495,6 +501,7 @@
     model.window_every = null
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -515,6 +522,7 @@
     model.window_every = null
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
     stream.robust_se_half_life = 50.0
@@ -542,6 +550,7 @@
     model.window_every = null
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = 1.4142135623730951
     stream.min_weight = [0.0]
     stream.robust_se_half_life = 50.0
@@ -561,6 +570,7 @@
     model.strict_binary = false
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -584,6 +594,7 @@
     model.warm_rows = 50
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
     stream.robust_se_half_life = 50.0
@@ -597,6 +608,7 @@
     model.trend_half_life = 200.0
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [1.0]
     stream.robust_se_half_life = 50.0
@@ -617,6 +629,7 @@
     model.standardize = false
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -637,6 +650,7 @@
     model.standardize = true
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -658,6 +672,7 @@
     model.warm_rows = 500
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
     stream.robust_se_half_life = 50.0
@@ -683,6 +698,7 @@
     model.window_every = null
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -702,6 +718,7 @@
     model.window_every = null
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
     stream.robust_se_half_life = 50.0
@@ -722,6 +739,7 @@
     model.standardize = true
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
     stream.robust_se_half_life = 50.0
@@ -740,6 +758,7 @@
     model.standardize = true
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -760,6 +779,7 @@
     model.standardize = false
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -782,6 +802,7 @@
     model.theta = 1.0
     stream.breaks_half_life = "inf"
     stream.calibration_half_life = "inf"
+    stream.influence_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
     stream.robust_se_half_life = "inf"
@@ -797,6 +818,7 @@
     model.n_targets = 1
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -807,6 +829,7 @@
     model.n_targets = 1
     stream.breaks_half_life = "inf"
     stream.calibration_half_life = "inf"
+    stream.influence_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
     stream.robust_se_half_life = "inf"
@@ -828,6 +851,7 @@
     model.strict_binary = false
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
+    stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
     stream.robust_se_half_life = 50.0
@@ -839,6 +863,7 @@
     model.solve_share = null
     stream.breaks_half_life.lam = 0.99
     stream.calibration_half_life.lam = 0.9974905699336811
+    stream.influence_half_life.lam = 0.99
     stream.robust_se_half_life.lam = 0.99
     stream.specification_half_life.lam = 0.99
     stream.tails_half_life.lam = 0.99
@@ -2010,6 +2035,7 @@
     emit_clocks
     emit_drift
     emit_error_inflation
+    emit_influence
     emit_metrics
     emit_robust_se
     emit_se_coef
@@ -2024,6 +2050,7 @@
     group
     group_close
     half_life
+    influence_half_life
     lam
     ljung_box_lags
     max_error_inflation

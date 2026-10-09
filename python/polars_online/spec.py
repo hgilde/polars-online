@@ -217,8 +217,8 @@ the diagnostics
     ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``,
     ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
     ``emit_specification`` with ``specification_half_life`` and
-    ``ljung_box_lags``, ``emit_tails`` with ``tails_half_life``, and
-    ``emit_clocks``. Each adds fields to the
+    ``ljung_box_lags``, ``emit_tails`` with ``tails_half_life``, ``emit_influence`` with
+    ``influence_half_life``, and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: when left out, four times the model instance's half-life
@@ -648,6 +648,21 @@ The diagnostics add, per slot:
        6 and 5 degrees of freedom), 0.4 rows in 100,000 where it read 8.6
        (t with 4) and none at 30, and 6.3 where it read 36 (t with 3), 2.1
        at 30, 0.4 at 50 and none at 80.
+   * - ``emit_influence``
+     - ``influence_<slot>``
+     - How far the row moves the fit, in the fit's own metric: an online
+       DFFITS, ``(v / s) * sqrt(h)``, ``h = error_inflation**2 - 1`` the
+       row's leverage against the fit before it, ``v`` its recursive
+       residual and ``s`` the spread of those before it at
+       ``influence_half_life``. Its square is the move ``dbeta' A dbeta``
+       over ``s**2``, times ``1 + h``. Run once with no ridge it is
+       statsmodels' ``OLSInfluence.dffits`` at the last row of the rows so
+       far (to 7e-11); it is not the in-sample DFFITS of an earlier row,
+       which reads the rows after it too. ``ewridge``, ``rls`` and
+       ``kalman`` only, which read a row's leverage. With one row in 200 at
+       six spreads out and six off the line, beside a fit at a half-life of
+       200: ``|influence| > 0.5`` held every planted row and no clean one;
+       the clean rows' 99.9th percentile was 0.29.
 
 .. rubric:: Errors
 

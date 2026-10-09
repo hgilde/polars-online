@@ -10,7 +10,7 @@
 //! row was scored with. Their per-slot values ride in one output buffer,
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
-use online_core::{Breaks, Calibration, Decay, Sandwich, Specification, Tails, TwinFit};
+use online_core::{Breaks, Calibration, Decay, Influence, Sandwich, Specification, Tails, TwinFit};
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{ModelKind, Spec};
@@ -35,6 +35,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
     if spec.emit_tails {
         out.extend(["skew", "kurtosis", "jarque_bera"]);
     }
+    if spec.emit_influence {
+        out.push("influence");
+    }
     out
 }
 
@@ -48,6 +51,7 @@ pub struct CheckCfg {
     robust: Decay,
     specification: Decay,
     tails: Decay,
+    influence: Decay,
     /// Newey and West's lags, `0` for HC0 alone.
     lags: usize,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
@@ -110,6 +114,11 @@ impl CheckCfg {
                 model,
                 Spec::memory_multiple("tails_half_life"),
             ),
+            influence: Spec::diagnostic_decay(
+                spec.influence_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("influence_half_life"),
+            ),
             lags: spec.robust_se_lags_or_default(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
@@ -140,6 +149,18 @@ pub struct RowView<'a> {
     pub nc: usize,
 }
 
+impl RowView<'_> {
+    /// Slot `slot`'s residual and error inflation, NaN where missing.
+    fn resid_and_inflation(&self, slot: usize) -> (f64, f64) {
+        let e = self.resid.get(slot).copied().unwrap_or(f64::NAN);
+        let infl = self
+            .inflation
+            .and_then(|v| v.get(slot).copied())
+            .unwrap_or(f64::NAN);
+        (e, infl)
+    }
+}
+
 /// One model instance's task-221 accumulators, empty where their switch is
 /// off. Persisted with the stream ([`crate::stream::Persisted::checks`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -163,6 +184,10 @@ pub struct Checks {
     /// The recursive residuals' tails per slot, under `emit_tails`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tails: Vec<Tails>,
+    /// The recursive residuals' spread the influence reads, per slot,
+    /// under `emit_influence`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub influence: Vec<Influence>,
 }
 
 impl Checks {
@@ -190,6 +215,7 @@ impl Checks {
                 on(spec.emit_specification, n_slots)
             ],
             tails: vec![Tails::new(); on(spec.emit_tails, n_slots)],
+            influence: vec![Influence::new(); on(spec.emit_influence, n_slots)],
         }
     }
 
@@ -200,6 +226,7 @@ impl Checks {
             || spec.emit_robust_se
             || spec.emit_specification
             || spec.emit_tails
+            || spec.emit_influence
     }
 
     /// Whether a restored set is shaped as `fresh`, this spec's: the same
@@ -213,6 +240,8 @@ impl Checks {
             && self.specification.len() == fresh.specification.len()
             && self.tails.len() == fresh.tails.len()
             && self.tails.iter().all(Tails::has_shape)
+            && self.influence.len() == fresh.influence.len()
+            && self.influence.iter().all(Influence::has_shape)
             && self
                 .specification
                 .iter()
@@ -287,9 +316,11 @@ impl Checks {
     /// studentized residual, from its recursive residual `rec`, beside the
     /// sums before it -- value `v` of slot `s` at `(v·n_slots + s)·n_rows +
     /// ri` of `out`, the instance's block.
+    #[allow(clippy::too_many_arguments)]
     pub fn read(
         &self,
         cfg: &CheckCfg,
+        row: &RowView<'_>,
         rec: &[f64],
         n_slots: usize,
         n_rows: usize,
@@ -340,6 +371,13 @@ impl Checks {
             }
             v += 3;
         }
+        if !self.influence.is_empty() {
+            for (slot, i) in self.influence.iter().enumerate() {
+                let (e, infl) = row.resid_and_inflation(slot);
+                put(v, slot, i.of(e, infl));
+            }
+            v += 1;
+        }
         let _ = v;
     }
 
@@ -363,6 +401,13 @@ impl Checks {
             for (t, fit) in self.twin.iter_mut().enumerate() {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
                 fit.update(row.xs, y, lam, w);
+            }
+        }
+        if !self.influence.is_empty() {
+            let lam = cfg.influence.factor(d_clock);
+            for (slot, i) in self.influence.iter_mut().enumerate() {
+                let (e, infl) = row.resid_and_inflation(slot);
+                i.update(e, infl, lam, w);
             }
         }
         if !self.tails.is_empty() {

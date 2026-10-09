@@ -2135,6 +2135,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "robust_se_half_life",
             "specification_half_life",
             "tails_half_life",
+            "influence_half_life",
         ],
     ),
     (
@@ -2998,6 +2999,18 @@ pub struct Spec {
     /// [`Spec::memory_multiple`]'s), `inf` the run-once form.
     #[serde(default)]
     pub tails_half_life: Option<Span>,
+    /// Emit `influence_<slot>` (docs/PLAN.md task 221 (f);
+    /// [`online_core::Influence`] has the update): the row's move of the
+    /// fit in the fit's own metric, an online DFFITS, `(v / s)·sqrt(h)` with
+    /// `h` the row's leverage, `v` its recursive residual and `s` the spread
+    /// of those before it at `influence_half_life`. `ewridge`, `rls` and
+    /// `kalman`, which read a row's leverage.
+    #[serde(default)]
+    pub emit_influence: bool,
+    /// The influence's scale's memory, in clock units (the default is
+    /// [`Spec::memory_multiple`]'s), `inf` the run-once form.
+    #[serde(default)]
+    pub influence_half_life: Option<Span>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -3796,6 +3809,15 @@ impl Spec {
                 self.model.kind_name()
             ));
         }
+        if self.emit_influence && !self.has_row_error_inflation() {
+            return Err(format!(
+                "spec {:?}: emit_influence needs a model that reads one row's leverage \
+                 (ewridge, rls, kalman); {} has none: {}",
+                self.name,
+                self.model.kind_name(),
+                self.no_noise_statistic()
+            ));
+        }
         if self.emit_robust_se && !self.has_robust_se() {
             let why = match self.model {
                 ModelKind::Kalman { .. } => {
@@ -4143,6 +4165,7 @@ impl Spec {
                 ("emit_robust_se", self.emit_robust_se),
                 ("emit_specification", self.emit_specification),
                 ("emit_tails", self.emit_tails),
+                ("emit_influence", self.emit_influence),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];

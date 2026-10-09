@@ -5136,3 +5136,41 @@ class TestTailsAreScipyAndJarqueBera:
             np.testing.assert_allclose(
                 out["jarque_bera_y"][t], n_kish / 6 * (skew**2 + kurt**2 / 4), rtol=1e-8
             )
+
+
+class TestInfluenceIsDffitsAtTheNewestRow:
+    """Task 221 (f). Run once with no ridge, ``influence`` on row ``t`` is
+    ``statsmodels``' ``OLSInfluence(...).dffits`` of the fit over rows
+    ``0..=t`` at its last row: that row's in-sample leverage is ``h/(1+h)``
+    and its externally studentized residual the recursive residual over
+    the recursive residuals' mean square before it, which is the fit
+    without it's ``RSS/(n-k)``. Where the definitions part -- an earlier
+    row's in-sample DFFITS reads the rows after it -- nothing is compared."""
+
+    def test_each_rows_influence_is_its_prefixs_last_dffits(self):
+        import statsmodels.api as sm
+        from statsmodels.stats.outliers_influence import OLSInfluence
+
+        rng = np.random.default_rng(81)
+        n = 300
+        x = rng.normal(size=(n, 2)) + np.array([4.0, -2.0])
+        x[::37, 0] += 5.0  # rows of high leverage
+        y = 0.5 + x @ np.array([1.0, -1.0]) + rng.normal(size=n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            ridge=1e-12,
+            min_weight=3.0,
+            emit_influence=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        X = sm.add_constant(x)
+        checked = 0
+        for t in range(8, n, 5):
+            want = OLSInfluence(sm.OLS(y[: t + 1], X[: t + 1]).fit()).dffits[0][t]
+            np.testing.assert_allclose(out["influence_y"][t], want, rtol=1e-8)
+            checked += 1
+        assert checked == 59

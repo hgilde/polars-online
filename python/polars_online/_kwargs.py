@@ -87,6 +87,8 @@ class ExprKwargs(TypedDict, total=False):
     ljung_box_lags: int | None
     emit_tails: bool
     tails_half_life: float | Duration | None
+    emit_influence: bool
+    influence_half_life: float | Duration | None
     embargo: float | Duration | None
 
 

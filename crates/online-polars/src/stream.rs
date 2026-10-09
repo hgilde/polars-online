@@ -5220,6 +5220,7 @@ fn run_instance(
             if emit {
                 c.read(
                     &inst.check_cfg,
+                    &row,
                     &sc.z,
                     inst.n_slots,
                     n_rows,

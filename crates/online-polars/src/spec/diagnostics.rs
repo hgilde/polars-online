@@ -10,7 +10,7 @@ impl Spec {
     /// The diagnostics with a memory of their own (docs/PLAN.md task 221):
     /// each memory's key, its switch, whether the switch is on, and the
     /// memory as given.
-    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 5] {
+    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 6] {
         [
             (
                 "calibration_half_life",
@@ -42,13 +42,19 @@ impl Spec {
                 self.emit_tails,
                 self.tails_half_life.as_ref(),
             ),
+            (
+                "influence_half_life",
+                "emit_influence",
+                self.emit_influence,
+                self.influence_half_life.as_ref(),
+            ),
         ]
     }
 
     /// Whether a switch reads the row's own error inflation (task 221):
     /// its field, and the recursive residual of the breaks and the tails.
     pub fn reads_row_inflation(&self) -> bool {
-        self.emit_error_inflation || self.emit_breaks || self.emit_tails
+        self.emit_error_inflation || self.emit_breaks || self.emit_tails || self.emit_influence
     }
 
     /// The target's horizon in rows: `embargo`, rounded up, on a spec with
@@ -125,7 +131,10 @@ impl Spec {
     /// they look for on 98-100% of rows at either. So do the tails: Jarque
     /// and Bera's statistic passed 5.99 on 4.7-5.0% of the rows of Gaussian
     /// residuals at 1x, 4x and run once, and on every row of Student's t
-    /// with 5 degrees of freedom at each.
+    /// with 5 degrees of freedom at each. The influence's scale too: with
+    /// one row in 200 planted at six spreads out and six off the line, its
+    /// clean rows' 99.9th percentile read 0.29 at 1x and 4x, and the planted
+    /// rows' median 1.19 and 1.18.
     pub fn memory_multiple(key: &str) -> u32 {
         if key == "calibration_half_life" { 4 } else { 1 }
     }

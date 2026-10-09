@@ -37,8 +37,12 @@ SWITCHES = {
         ["ljung_box_y", "breusch_pagan_y", "reset_y"],
     ),
     "emit_tails": ("tails_half_life", ["skew_y", "kurtosis_y", "jarque_bera_y"]),
+    "emit_influence": ("influence_half_life", ["influence_y"]),
 }
-OWN_ROW = {"studentized_y"}
+#: The switches that read a row's leverage, and so only `ewridge`'s, `rls`'s
+#: and `kalman`'s.
+LEVERAGE = {"emit_influence"}
+OWN_ROW = {"studentized_y", "influence_y"}
 
 
 def _frame(n: int = 900, seed: int = 221) -> pl.DataFrame:
@@ -177,8 +181,9 @@ def test_a_reset_starts_the_diagnostic_over(switch):
     fired = out["drift_y"].fill_null(False).arg_true()
     assert fired.len() > 0, "the break fires the detector"
     after = int(fired[0]) + 1
-    assert out[fields[1]][after - 2] is not None
-    assert out[fields[1]][after] is None
+    f = fields[min(1, len(fields) - 1)]
+    assert out[f][after - 2] is not None
+    assert out[f][after] is None
 
 
 @pytest.mark.parametrize("switch", SWITCHES)
@@ -193,7 +198,8 @@ def test_a_memory_is_refused_without_its_switch_or_out_of_range(switch):
 
 @pytest.mark.parametrize("switch", SWITCHES)
 def test_a_model_with_no_prediction_refuses_the_switch(switch):
-    with pytest.raises(ValueError, match=f"{switch} does not apply to ew_cov"):
+    # A switch that reads a row's leverage is refused for that first.
+    with pytest.raises(ValueError, match=f"{switch} (does not apply to|needs a model).*ew_cov"):
         po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, **{switch: True})
 
 
@@ -213,12 +219,16 @@ def test_a_model_with_no_prediction_refuses_the_switch(switch):
     ],
 )
 def test_every_linear_model_takes_it(switch, build, extra):
-    """The ten linear models (``holt`` below, with no features)."""
+    """The ten linear models (``holt`` below, with no features); a switch
+    that reads a row's leverage, the three that have one."""
     _, fields = SWITCHES[switch]
     df = _frame()
-    spec = build(
-        "m", targets=["y"], features=["x0", "x1"], half_life=60.0, **extra, **{switch: True}
-    )
+    kw = dict(targets=["y"], features=["x0", "x1"], half_life=60.0, **extra, **{switch: True})
+    if switch in LEVERAGE and build not in (po.spec.ewridge, po.spec.rls, po.spec.kalman):
+        with pytest.raises(ValueError, match=f"{switch} needs a model that reads one row"):
+            build("m", **kw)
+        return
+    spec = build("m", **kw)
     out = _run(df, spec)
     for f in fields:
         # `lasso` names its slot by the path point.
@@ -231,6 +241,10 @@ def test_holt_takes_it(switch):
     """`holt` has no features: the twin fits compare its level alone."""
     _, fields = SWITCHES[switch]
     df = _frame()
+    if switch in LEVERAGE:
+        with pytest.raises(ValueError, match="needs a model that reads one row"):
+            po.spec.holt("m", targets=["y"], half_life=60.0, **{switch: True})
+        return
     out = _run(df, po.spec.holt("m", targets=["y"], half_life=60.0, **{switch: True}))
     for f in fields:
         if f == "breusch_pagan_y":

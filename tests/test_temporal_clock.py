@@ -523,6 +523,7 @@ class TestEveryClockParameterTakesADuration:
         "robust_se_half_life": ("20m", {"emit_robust_se": True}),
         "specification_half_life": ("20m", {"emit_specification": True}),
         "tails_half_life": ("20m", {"emit_tails": True}),
+        "influence_half_life": ("20m", {"emit_influence": True}),
     }
 
     def _cases(self):
@@ -560,6 +561,7 @@ class TestEveryClockParameterTakesADuration:
         "robust_se_half_life": float("inf"),
         "specification_half_life": float("inf"),
         "tails_half_life": float("inf"),
+        "influence_half_life": float("inf"),
     }
 
     # The noise gate's notice is about the tiny frame, not about durations.
