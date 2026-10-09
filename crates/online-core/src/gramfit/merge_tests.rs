@@ -336,3 +336,105 @@ fn without_an_intercept_the_system_is_the_raw_moments() {
     close(&fits[0].coef[1..], &b, 1e-12, "slopes");
     assert_eq!(fits[0].coef[0], 0.0);
 }
+
+/// `m` packed: the upper triangle with the diagonal, row by row.
+fn packed(m: &[f64], k: usize) -> Vec<f64> {
+    (0..k)
+        .flat_map(|i| (i..k).map(move |j| m[i * k + j]))
+        .collect()
+}
+
+#[test]
+fn the_packed_index_is_the_upper_triangle_row_by_row_either_way_round() {
+    let k = 5;
+    let mut n = 0;
+    for i in 0..k {
+        for j in i..k {
+            assert_eq!(Comoments::packed_index(k, i, j), n);
+            assert_eq!(Comoments::packed_index(k, j, i), n);
+            n += 1;
+        }
+    }
+    assert_eq!(n, k * (k + 1) / 2);
+}
+
+#[test]
+fn a_packed_or_float32_part_merges_and_fits_as_its_whole_float64_matrix() {
+    let parts: Vec<Rows> = (0..3).map(|s| rows(40 + s, 60, 3, 5.0)).collect();
+    let grams: Vec<OwnedGram> = parts.iter().map(gram_of).collect();
+    let k = 4;
+    for g in &grams {
+        for i in 0..k {
+            for j in 0..k {
+                assert_eq!(g.comoments[i * k + j], g.comoments[j * k + i], "symmetric");
+            }
+        }
+    }
+    let full: Vec<GramArrays<'_>> = grams.iter().map(OwnedGram::arrays).collect();
+    let packs: Vec<Vec<f64>> = grams.iter().map(|g| packed(&g.comoments, k)).collect();
+    let as_packed: Vec<GramArrays<'_>> = full
+        .iter()
+        .zip(&packs)
+        .map(|(g, p)| GramArrays {
+            comoments: Comoments::Packed(p),
+            ..*g
+        })
+        .collect();
+    let cols = [0, 1, 2, 3];
+    let want = merge(&full, &cols, Some(0));
+    assert_eq!(
+        merge(&as_packed, &cols, Some(0)),
+        want,
+        "packed: the same, to the bit"
+    );
+    // float32: the float64 matrices rounded to float32, then the same.
+    let f32s: Vec<Vec<f32>> = grams
+        .iter()
+        .map(|g| g.comoments.iter().map(|&v| v as f32).collect())
+        .collect();
+    let widened: Vec<Vec<f64>> = f32s
+        .iter()
+        .map(|v| v.iter().map(|&x| f64::from(x)).collect())
+        .collect();
+    let as_f32: Vec<GramArrays<'_>> = full
+        .iter()
+        .zip(&f32s)
+        .map(|(g, v)| GramArrays {
+            comoments: Comoments::Full32(v),
+            ..*g
+        })
+        .collect();
+    let as_wide: Vec<GramArrays<'_>> = full
+        .iter()
+        .zip(&widened)
+        .map(|(g, v)| GramArrays {
+            comoments: Comoments::Full(v),
+            ..*g
+        })
+        .collect();
+    let got = merge(&as_f32, &cols, Some(0));
+    assert_eq!(got, merge(&as_wide, &cols, Some(0)));
+    close(
+        &got.comoments,
+        &want.comoments,
+        1e-6,
+        "float32 within its rounding",
+    );
+    let packs32: Vec<f32> = packs[0].iter().map(|&v| v as f32).collect();
+    let p32 = GramArrays {
+        comoments: Comoments::Packed32(&packs32),
+        ..full[0]
+    };
+    assert_eq!(
+        merge(&[p32], &cols, Some(0)).comoments,
+        merge(&as_wide[..1], &cols, Some(0)).comoments
+    );
+    let fits = ridge_fits(&as_packed[0], &[0, 1], &[1, 2, 3], Some(0), 0.1, true);
+    let whole = ridge_fits(&full[0], &[0, 1], &[1, 2, 3], Some(0), 0.1, true);
+    for (a, b) in fits.iter().zip(&whole) {
+        assert_eq!(
+            (&a.coef, &a.se[1..], a.resid_var),
+            (&b.coef, &b.se[1..], b.resid_var)
+        );
+    }
+}

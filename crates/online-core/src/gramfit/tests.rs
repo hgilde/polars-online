@@ -474,7 +474,7 @@ fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
     let g = GramArrays {
         k,
         means: &means,
-        comoments: &como,
+        comoments: Comoments::Full(&como),
         cross_moments: &cross,
         means_by_target: &mbt,
         cross_centred: &cc,
@@ -519,7 +519,7 @@ fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
     // A constant column is dead, its coefficient 0.
     let como0 = [0.0; 9];
     let g0 = GramArrays {
-        comoments: &como0,
+        comoments: Comoments::Full(&como0),
         ..g
     };
     let corr = Correlation::of(&Design::of(&g0, &[1, 2], Some(0)));

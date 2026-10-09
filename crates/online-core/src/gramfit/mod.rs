@@ -28,4 +28,4 @@ pub use lars::{
 };
 pub use merge::{OwnedGram, merge};
 pub use ridge::{RidgeFit, ridge_fits};
-pub use system::{Correlation, Design, GramArrays, GramRows, Response, Scaling};
+pub use system::{Comoments, Correlation, Design, GramArrays, GramRows, Response, Scaling};

@@ -1074,7 +1074,12 @@ class ModelBank:
         return pl.concat(frames)
 
     def gram(
-        self, spec: str | int, group: str | Iterable[str | None] | None = None
+        self,
+        spec: str | int,
+        group: str | Iterable[str | None] | None = None,
+        *,
+        dtype: Any = "float64",
+        layout: str = "full",
     ) -> list[dict[str, Any]]:
         """The running sums behind a spec's fit, per group and instance, as numpy arrays.
 
@@ -1118,7 +1123,9 @@ class ModelBank:
             EW column means, shape ``(k,)``.
         ``comoments``
             Centred co-moments, shape ``(k, k)``: the EW analogue of a centred ``X'X /
-            n``. Centred is what makes it accurate at large offsets.
+            n``. Centred is what makes it accurate at large offsets. Under
+            ``layout="packed"`` its upper triangle, shape ``(k * (k + 1) // 2,)``,
+            and under ``dtype="float32"`` in float32 (see below).
         ``cross_moments``
             Per-target uncentred cross-moments ``E[z*y]`` over the rows each target
             was present on, shape ``(n_targets, k)``. Empty for ``ew_cov``.
@@ -1157,6 +1164,33 @@ class ModelBank:
             before the row. Both ``None`` for a spec without ``lags``. The matrix is
             not symmetric for a lag above zero (``a`` leading ``b`` is not ``b``
             leading ``a``), and lag 0 would be ``comoments`` exactly.
+
+        **A compact Gram.** ``comoments`` is the one array that grows as ``k²``: 800
+        MB a Gram in float64 at 10,000 columns. Two options shrink it, and every
+        function of :mod:`polars_online.gram` takes either, merging and solving in
+        float64 whatever it is given.
+
+        ``dtype="float32"``
+            ``comoments`` and ``lag_comoments`` in float32, half the bytes. Each
+            entry is the float64 rounded to nearest, so it is within ``2**-24`` of it
+            relative, about 6e-8, and a solve read from it carries that error times
+            the system's condition number. The other arrays stay float64: they are
+            ``k`` long, and the means are what a merge's spread term is made of.
+        ``layout="packed"``
+            ``comoments`` as its upper triangle with the diagonal, row by row, a
+            1-D array of ``k * (k + 1) // 2``: about half the bytes. Entry ``(i,
+            j)`` with ``i <= j`` is at ``i * (2 * k - i + 1) // 2 + (j - i)``, the
+            order of ``numpy.triu_indices(k)``, and ``(j, i)`` is the same entry.
+            ``packed[np.triu_indices(k)]`` laid back into a ``k x k`` array and
+            mirrored gives the matrix, its upper triangle bit for bit. Its lower
+            triangle is that mirror, which can differ from the full layout's lower
+            triangle in the last bit: the accumulator updates ``C[i][j]`` and
+            ``C[j][i]`` with the same two products in either order. A closed row's
+            ``comoments`` is packed the same way.
+
+        Both together are a quarter of the bytes. ``lag_comoments`` is never packed,
+        since a lagged matrix is not symmetric. The state itself stays float64 and
+        whole: these shape only what is handed back.
 
         The target moments are what makes the export a complete sufficient statistic:
         with the cross-moments alone there is no residual variance, no R², no
@@ -1219,7 +1253,9 @@ class ModelBank:
         group's key, or to a list of keys with ``None`` among them for the null group
         (``group=None`` is every group), in :meth:`groups`' order. A group the bank
         has never seen gives an empty list, as does a model
-        that keeps no co-moments; neither is an error. Requires numpy, which is not a
+        that keeps no co-moments; neither is an error. ``dtype`` is ``"float64"`` or
+        ``"float32"`` (or a numpy dtype of either), ``layout`` ``"full"`` or
+        ``"packed"``; anything else is a ``ValueError``. Requires numpy, which is not a
         dependency of this package (polars does not require it either): ``pip install
         polars-online[numpy]`` adds it, and without it the call raises
         ``ModuleNotFoundError`` saying so.
@@ -1233,6 +1269,20 @@ class ModelBank:
             )
             raise ModuleNotFoundError(msg) from e
 
+        if layout not in ("full", "packed"):
+            msg = f'gram(): layout must be "full" or "packed", got {layout!r}'
+            raise ValueError(msg)
+        polars_dtypes = {pl.Float64: "float64", pl.Float32: "float32"}
+        try:
+            as_dtype = np.dtype(polars_dtypes.get(dtype, dtype))
+        except TypeError as e:
+            msg = f'gram(): dtype must be "float64" or "float32", got {dtype!r}'
+            raise ValueError(msg) from e
+        if as_dtype not in (np.dtype(np.float64), np.dtype(np.float32)):
+            msg = f'gram(): dtype must be "float64" or "float32", got {dtype!r}'
+            raise ValueError(msg)
+        float32 = as_dtype == np.dtype(np.float32)
+        packed = layout == "packed"
         idx = self._spec_index(spec)
         spec_dict = self._specs[idx]
         # `ew_cov` accumulates over the features alone -- no target, and so no
@@ -1243,7 +1293,8 @@ class ModelBank:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
         out = []
-        for row, lag, (tidx, by_target, centred) in self._native.gram(idx, _group_keys(group)):
+        native = self._native.gram(idx, _group_keys(group), float32, packed)
+        for row, lag, (tidx, by_target, centred) in native:
             g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
             lags = None if lag is None else lag[0]
@@ -1256,7 +1307,9 @@ class ModelBank:
                     "weight_sum": weight_sum,
                     "n_kish": n_kish,
                     "means": np.asarray(means),
-                    "comoments": np.asarray(como).reshape(k, k),
+                    "comoments": np.frombuffer(como, dtype=as_dtype)
+                    if packed
+                    else np.frombuffer(como, dtype=as_dtype).reshape(k, k),
                     "cross_moments": np.asarray(cross).reshape(len(cross), k)
                     if cross
                     else np.zeros((0, k)),
@@ -1278,7 +1331,7 @@ class ModelBank:
                     "lags": None if lags is None else list(lags),
                     "lag_comoments": None
                     if lag is None
-                    else np.asarray(lag[1]).reshape(len(lag[0]), k, k),
+                    else np.frombuffer(lag[1], dtype=as_dtype).reshape(len(lag[0]), k, k),
                 }
             )
         return out

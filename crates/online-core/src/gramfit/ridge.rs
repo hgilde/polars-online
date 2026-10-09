@@ -130,7 +130,7 @@ pub fn ridge_fits(
     let mut c = vec![0.0; n * n];
     for (p, &i) in slots.iter().enumerate() {
         for (q, &j) in slots.iter().enumerate() {
-            c[p * n + q] = g.comoments[i * k + j];
+            c[p * n + q] = g.comoments.get(k, i, j);
         }
     }
     let dof_used = n + usize::from(icept.is_some());

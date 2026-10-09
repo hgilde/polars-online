@@ -745,7 +745,7 @@
   fit_predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
   fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'  # unstable
   fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
-  gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'list[dict[str, Any]]'
+  gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None, *, dtype: 'Any' = 'float64', layout: 'str' = 'full') -> 'list[dict[str, Any]]'
   groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
   last_row(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   load(path: 'str | Path', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'

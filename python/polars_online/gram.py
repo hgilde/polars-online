@@ -17,7 +17,9 @@ Every function takes the mapping ``gram()`` produces (``columns``,
 ``cross_centred``, ``target_weights``, ``target_means``, ``target_vars``,
 ``weight_sum``, ``n_kish``, ``target_n_kish``), and :func:`merge`, :func:`subset`
 and :func:`from_row` return one of the same shape, so a closed group's row
-(:meth:`~polars_online.ModelBank.closed_groups`) is read the same way.
+(:meth:`~polars_online.ModelBank.closed_groups`) is read the same way. The
+compact forms ``gram()`` hands back under ``dtype="float32"`` or
+``layout="packed"`` are taken too, and read in float64.
 
 The arithmetic is the models' own, so :func:`solve` on a spec's Gram
 reproduces that spec's coefficients and :func:`lasso_path` reproduces the
@@ -178,6 +180,29 @@ def _feature_slots(
     return slots, icept
 
 
+def _is_packed(np: Any, g: dict[str, Any]) -> bool:
+    """Whether a Gram's ``comoments`` is the packed upper triangle
+    (``ModelBank.gram(layout="packed")``), one axis, rather than the whole
+    matrix."""
+    return bool(np.ndim(g["comoments"]) == 1)
+
+
+def _unpack(np: Any, v: Any, k: int) -> Any:
+    """The symmetric ``k x k`` float64 matrix whose upper triangle, row by row,
+    is ``v``: its upper triangle and diagonal bit for bit, its lower the mirror."""
+    m = np.zeros((k, k))
+    m[np.triu_indices(k)] = np.asarray(v, dtype=float)
+    return m + np.triu(m, 1).T
+
+
+def _comoments(np: Any, g: dict[str, Any]) -> Any:
+    """``g``'s co-moments as the whole ``k x k`` matrix in float64, whatever
+    form ``ModelBank.gram()`` handed them over in (``dtype``, ``layout``)."""
+    if _is_packed(np, g):
+        return _unpack(np, g["comoments"], len(_columns(g)))
+    return np.asarray(g["comoments"], dtype=float)
+
+
 def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """Pool the Grams of disjoint row sets into the Gram of their union.
 
@@ -252,6 +277,10 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         parts = bank.gram("ridge")                      # one Gram per group
         pooled = po.gram.merge(parts)                   # the Gram of every group's rows together
 
+    Parts in a compact form (``ModelBank.gram(dtype="float32")`` or
+    ``layout="packed"``) merge in float64. When every part is packed the merge
+    is packed too, entry for entry; otherwise it is the whole matrix.
+
     Every part must have the same ``columns`` and ``targets`` (``ValueError``).
     Merging one Gram returns it unchanged; merging none is a ``ValueError``.
     """
@@ -274,9 +303,19 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
             msg = "merge() needs the same targets in every part"
             raise ValueError(msg)
 
+    # Packed parts merge packed, entry for entry; any whole one makes the
+    # merge whole. Float32 parts merge in float64.
+    packed = all(_is_packed(np, p) for p in parts)
+    iu = np.triu_indices(len(cols))
+
+    def matrix(p: dict[str, Any]) -> Any:
+        if packed:
+            return np.asarray(p["comoments"], dtype=float)
+        return _comoments(np, p)
+
     w = float(parts[0]["weight_sum"])
     mean = np.asarray(parts[0]["means"], dtype=float).copy()
-    como = np.asarray(parts[0]["comoments"], dtype=float).copy()
+    como = matrix(parts[0]).copy()
     q = _q_of(parts[0])
     tw = np.asarray(parts[0]["target_weights"], dtype=float).copy()
     cross = np.asarray(parts[0]["cross_moments"], dtype=float).copy()
@@ -294,8 +333,9 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if total > 0.0:
             mb = np.asarray(p["means"], dtype=float)
             d = mb - mean
-            cb = np.asarray(p["comoments"], dtype=float)
-            como = (w * como + wb * cb) / total + (w * wb / total**2) * np.outer(d, d)
+            cb = matrix(p)
+            spread = np.outer(d, d)[iu] if packed else np.outer(d, d)
+            como = (w * como + wb * cb) / total + (w * wb / total**2) * spread
             mean = mean + (wb / total) * d
         w = total
         q = None if q is None else _add_opt(q, _q_of(p))
@@ -527,13 +567,14 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
 
     ``cols`` are names or positions, and the intercept may be selected like any
     other column. Targets are untouched: they index a different axis. Returns a
-    mapping of the same shape. ``KeyError`` for a name the Gram has not got,
+    mapping of the same shape, its ``comoments`` in float64 and packed if
+    ``g``'s is. ``KeyError`` for a name the Gram has not got,
     ``IndexError`` for a position.
     """
     np = _np()
     idx = _col_index(g, cols)
     names = _columns(g)
-    como = np.asarray(g["comoments"], dtype=float)
+    como = _comoments(np, g)
     cross = np.asarray(g["cross_moments"], dtype=float)
     by_target = g.get("means_by_target")
     by_target = None if by_target is None else np.asarray(by_target, dtype=float)
@@ -544,7 +585,9 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
         **g,
         "columns": [names[i] for i in idx],
         "means": np.asarray(g["means"], dtype=float)[idx],
-        "comoments": como[np.ix_(idx, idx)],
+        "comoments": como[np.ix_(idx, idx)][np.triu_indices(len(idx))]
+        if _is_packed(np, g)
+        else como[np.ix_(idx, idx)],
         "cross_moments": cross[:, idx] if cross.size else cross,
         "means_by_target": by_target[:, idx]
         if by_target is not None and by_target.ndim == 2
@@ -565,7 +608,7 @@ def correlation(g: dict[str, Any]) -> Any:
     positive.
     """
     np = _np()
-    c = np.asarray(g["comoments"], dtype=float)
+    c = _comoments(np, g)
     s = np.sqrt(np.clip(np.diag(c), 0.0, None))
     with np.errstate(divide="ignore", invalid="ignore"):
         r = c / np.outer(s, s)
@@ -656,7 +699,7 @@ def solve(
 
     means = np.asarray(g["means"], dtype=float)
     cross = np.asarray(g["cross_moments"], dtype=float)[t]
-    como = np.asarray(g["comoments"], dtype=float)
+    como = _comoments(np, g)
     out = np.zeros((len(ridges), k))
 
     m, ybar = means, 0.0
@@ -832,7 +875,12 @@ def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
             for t in range(m):
                 cc[t] = _cross_centred(np, g, t, by_target[t], cross[t][icept])
     cc = np.ascontiguousarray(np.asarray(cc, dtype=np.float64).reshape(m, k))
-    como = np.ascontiguousarray(g["comoments"], dtype=np.float64)
+    # The co-moments go over as they are, float32 or packed included: the
+    # Rust side reads every form, and a copy here would be the Gram's size.
+    como = np.asarray(g["comoments"])
+    if como.dtype not in (np.float64, np.float32):
+        como = como.astype(np.float64)
+    como = np.ascontiguousarray(como.reshape(-1))
 
     def per_target(key: str) -> Any:
         v = g.get(key)
@@ -1324,7 +1372,7 @@ def coef_stats(
         raise ValueError(msg)
     b = beta[slots]
     cross = np.asarray(g["cross_moments"], dtype=float)[t]
-    como = np.asarray(g["comoments"], dtype=float)
+    como = _comoments(np, g)
     c = como[np.ix_(slots, slots)]
     var_y = float(np.asarray(g["target_vars"], dtype=float)[t])
     n = float(np.asarray(g["target_n_kish"], dtype=float)[t])
@@ -1423,7 +1471,7 @@ def condition(g: dict[str, Any], *, features: Sequence[str | int] | None = None)
     names = _columns(g)
     slots = list(range(len(names))) if features is None else _col_index(g, features)
     means = np.asarray(g["means"], dtype=float)
-    como = np.asarray(g["comoments"], dtype=float)
+    como = _comoments(np, g)
     raw = (como + np.outer(means, means))[np.ix_(slots, slots)]
     scale = np.sqrt(np.clip(np.diag(raw), 0.0, None))
     scale = np.where(scale > 0.0, scale, 1.0)

@@ -1448,8 +1448,9 @@ pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
 /// diagonal, row by row: `k(k+1)/2` numbers instead of `k^2`, which is what
 /// the closed row carries (`po.gram.from_row` expands it). A co-moment
 /// matrix is symmetric to 1e-16 and not to the bit (E48), so the half that
-/// is kept is named: the upper one.
-pub(crate) fn vech(m: &[f64], k: usize) -> Vec<f64> {
+/// is kept is named: the upper one. `ModelBank.gram(layout="packed")`
+/// packs the same way (docs/PLAN.md task 229).
+pub fn vech(m: &[f64], k: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(k * (k + 1) / 2);
     for i in 0..k {
         for j in i..k {

@@ -77,7 +77,7 @@ pub use polars::prelude::PlSmallStr;
 
 pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, Learned, MIN_BANK_SCHEMA_VERSION,
-    PAR_MIN_ROWS, coef_fields, output_fields, output_index,
+    PAR_MIN_ROWS, coef_fields, output_fields, output_index, vech,
 };
 pub use defaults::resolved_defaults;
 pub use formula::{Formula, Literal, Node, OpNode};

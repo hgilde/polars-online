@@ -24,9 +24,10 @@
 //!
 //! with `ȳ` the cross-moment at the intercept (`target_means` without one)
 //! and `Q = w² / n_kish` each part's sum of squared weights. One part is
-//! its own union, returned as it is.
+//! its own union, returned as it is. The parts' co-moments may be float32
+//! or packed ([`Comoments`]); the merge is in float64 either way.
 
-use super::GramArrays;
+use super::{Comoments, GramArrays};
 
 /// A Gram held in Rust memory: what [`merge`] returns, on its columns.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,7 +51,7 @@ impl OwnedGram {
         GramArrays {
             k: self.k,
             means: &self.means,
-            comoments: &self.comoments,
+            comoments: Comoments::Full(&self.comoments),
             cross_moments: &self.cross_moments,
             means_by_target: &self.means_by_target,
             cross_centred: &self.cross_centred,
@@ -104,7 +105,7 @@ pub fn merge(parts: &[GramArrays<'_>], cols: &[usize], icept: Option<usize>) -> 
     };
     let block = |p: &GramArrays<'_>| -> Vec<f64> {
         cols.iter()
-            .flat_map(|&i| cols.iter().map(move |&j| p.comoments[i * k + j]))
+            .flat_map(|&i| cols.iter().map(move |&j| p.comoments.get(k, i, j)))
             .collect()
     };
     let mut g = OwnedGram {
@@ -138,7 +139,7 @@ pub fn merge(parts: &[GramArrays<'_>], cols: &[usize], icept: Option<usize>) -> 
             for (r, &i) in cols.iter().enumerate() {
                 for (c, &j) in cols.iter().enumerate() {
                     let e = &mut g.comoments[r * n + c];
-                    *e = (w * *e + wb * p.comoments[i * k + j]) / total + spread * (d[r] * d[c]);
+                    *e = (w * *e + wb * p.comoments.get(k, i, j)) / total + spread * (d[r] * d[c]);
                 }
             }
             for (mean, dr) in g.means.iter_mut().zip(&d) {

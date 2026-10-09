@@ -5,7 +5,7 @@
 use online_polars::gramfit::{
     FitColumns, GramPath, SubsetFit, SubsetOut, cd_path_of, fit_subsets, lars_paths,
 };
-use online_polars::online_core::gramfit::{GramArrays, LarsLimits, LarsStop, OwnedGram};
+use online_polars::online_core::gramfit::{Comoments, GramArrays, LarsLimits, LarsStop, OwnedGram};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -14,7 +14,8 @@ use pyo3::types::PyByteArray;
 /// One Gram as the Python layer hands it over: `k` and `weight_sum`, then
 /// `means`, `comoments`, `cross_moments`, `means_by_target`,
 /// `cross_centred`, `target_weights`, `target_means`, `target_vars` and
-/// `target_n_kish`, each a C-contiguous float64 buffer (a numpy array).
+/// `target_n_kish`, each a C-contiguous float64 buffer (a numpy array) --
+/// but `comoments`, which may be float32 and whole or packed (task 229).
 pub(crate) type GramIn<'py> = (
     usize,
     f64,
@@ -59,20 +60,85 @@ pub(crate) fn float_bytes<'py>(py: Python<'py>, v: &[f64]) -> Bound<'py, PyByteA
     PyByteArray::new(py, &bytes)
 }
 
+/// `v` as the bytes of native-endian float32s, or float64s: a co-moment
+/// matrix `ModelBank.gram` hands over in the dtype asked for. Each float32
+/// is its float64 rounded to nearest (`as`).
+pub(crate) fn matrix_bytes<'py>(
+    py: Python<'py>,
+    v: &[f64],
+    float32: bool,
+) -> Bound<'py, PyByteArray> {
+    if !float32 {
+        return float_bytes(py, v);
+    }
+    let bytes: Vec<u8> = v.iter().flat_map(|&x| (x as f32).to_ne_bytes()).collect();
+    PyByteArray::new(py, &bytes)
+}
+
 fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f64>> {
     PyBuffer::<f64>::get(obj)
         .and_then(|b| b.to_vec(py))
         .map_err(|e| PyValueError::new_err(format!("{what}: {e}")))
 }
 
-/// A Gram's arrays read into Rust memory, their lengths checked.
-fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<OwnedGram> {
+/// A co-moment matrix as handed over: float64 or float32, whole or packed.
+enum Matrix {
+    F64(Vec<f64>),
+    F32(Vec<f32>),
+}
+
+impl Matrix {
+    fn read(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(b) = PyBuffer::<f64>::get(obj) {
+            return Ok(Self::F64(b.to_vec(py)?));
+        }
+        PyBuffer::<f32>::get(obj)
+            .and_then(|b| b.to_vec(py))
+            .map(Self::F32)
+            .map_err(|e| PyValueError::new_err(format!("comoments: float64 or float32, {e}")))
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::F64(v) => v.len(),
+            Self::F32(v) => v.len(),
+        }
+    }
+}
+
+/// A Gram read into Rust memory: its co-moments as handed over, beside the
+/// rest in float64.
+pub(crate) struct InGram {
+    base: OwnedGram,
+    comoments: Matrix,
+    packed: bool,
+}
+
+impl InGram {
+    fn arrays(&self) -> GramArrays<'_> {
+        let comoments = match (&self.comoments, self.packed) {
+            (Matrix::F64(v), false) => Comoments::Full(v),
+            (Matrix::F64(v), true) => Comoments::Packed(v),
+            (Matrix::F32(v), false) => Comoments::Full32(v),
+            (Matrix::F32(v), true) => Comoments::Packed32(v),
+        };
+        GramArrays {
+            comoments,
+            ..self.base.arrays()
+        }
+    }
+}
+
+/// A Gram's arrays read into Rust memory, their lengths checked. The
+/// co-moments may be float64 or float32, whole (`k²` numbers) or packed
+/// (`k(k+1)/2`).
+fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
     let k = g.0;
-    let out = OwnedGram {
+    let base = OwnedGram {
         k,
         weight_sum: g.1,
         means: floats(py, &g.2, "means")?,
-        comoments: floats(py, &g.3, "comoments")?,
+        comoments: Vec::new(),
         cross_moments: floats(py, &g.4, "cross_moments")?,
         means_by_target: floats(py, &g.5, "means_by_target")?,
         cross_centred: floats(py, &g.6, "cross_centred")?,
@@ -81,16 +147,22 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<OwnedGram> {
         target_vars: floats(py, &g.9, "target_vars")?,
         target_n_kish: floats(py, &g.10, "target_n_kish")?,
     };
-    let m = out.target_weights.len();
+    let comoments = Matrix::read(py, &g.3)?;
+    let m = base.target_weights.len();
+    let packed = comoments.len() != k * k && comoments.len() == k * (k + 1) / 2;
     let shapes = [
-        ("means", out.means.len(), k),
-        ("comoments", out.comoments.len(), k * k),
-        ("cross_moments", out.cross_moments.len(), m * k),
-        ("means_by_target", out.means_by_target.len(), m * k),
-        ("cross_centred", out.cross_centred.len(), m * k),
-        ("target_means", out.target_means.len(), m),
-        ("target_vars", out.target_vars.len(), m),
-        ("target_n_kish", out.target_n_kish.len(), m),
+        ("means", base.means.len(), k),
+        (
+            "comoments",
+            comoments.len(),
+            if packed { k * (k + 1) / 2 } else { k * k },
+        ),
+        ("cross_moments", base.cross_moments.len(), m * k),
+        ("means_by_target", base.means_by_target.len(), m * k),
+        ("cross_centred", base.cross_centred.len(), m * k),
+        ("target_means", base.target_means.len(), m),
+        ("target_vars", base.target_vars.len(), m),
+        ("target_n_kish", base.target_n_kish.len(), m),
     ];
     for (what, got, want) in shapes {
         if got != want {
@@ -99,10 +171,14 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<OwnedGram> {
             )));
         }
     }
-    Ok(out)
+    Ok(InGram {
+        base,
+        comoments,
+        packed,
+    })
 }
 
-fn read_all(py: Python<'_>, grams: &[GramIn<'_>]) -> PyResult<Vec<OwnedGram>> {
+fn read_all(py: Python<'_>, grams: &[GramIn<'_>]) -> PyResult<Vec<InGram>> {
     grams.iter().map(|g| read(py, g)).collect()
 }
 
@@ -155,7 +231,7 @@ pub(crate) fn gram_lars_paths<'py>(
     };
     let paths = py
         .detach(|| {
-            let views: Vec<GramArrays<'_>> = owned.iter().map(OwnedGram::arrays).collect();
+            let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
             lars_paths(&views, &targets, &cols, &weights, limits)
         })
         .map_err(value_err)?;
@@ -229,7 +305,7 @@ fn subsets_fit(
         return Err(PyValueError::new_err("a subset names no Gram"));
     }
     py.detach(|| {
-        let views: Vec<GramArrays<'_>> = owned.iter().map(OwnedGram::arrays).collect();
+        let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
         fit_subsets(&views, subsets, &targets, &cols, &fit)
     })
     .map_err(value_err)
@@ -335,12 +411,12 @@ pub(crate) fn gram_path_subsets<'py>(
 /// Every slot, the intercept and every target in range of every Gram: the
 /// Python layer resolves names to positions, so this guards the indexing.
 pub(crate) fn check_axes(
-    grams: &[OwnedGram],
+    grams: &[InGram],
     targets: &[Vec<usize>],
     slots: &[usize],
     icept: Option<usize>,
 ) -> PyResult<()> {
-    for (g, ts) in grams.iter().zip(targets) {
+    for (g, ts) in grams.iter().map(|g| &g.base).zip(targets) {
         let m = g.target_weights.len();
         if let Some(&c) = slots.iter().chain(icept.as_ref()).find(|&&c| c >= g.k) {
             return Err(PyValueError::new_err(format!(
@@ -354,11 +430,9 @@ pub(crate) fn check_axes(
             )));
         }
     }
-    let first = grams.first().map(|g| (g.k, g.target_weights.len()));
-    if grams
-        .iter()
-        .any(|g| Some((g.k, g.target_weights.len())) != first)
-    {
+    let axes = |g: &InGram| (g.base.k, g.base.target_weights.len());
+    let first = grams.first().map(axes);
+    if grams.iter().any(|g| Some(axes(g)) != first) {
         return Err(PyValueError::new_err(
             "every Gram must have the same columns and targets",
         ));

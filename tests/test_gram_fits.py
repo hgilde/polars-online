@@ -435,3 +435,185 @@ class TestSolveSubsets:
         old = dict(grams[1], target_vars=None)
         with pytest.raises(ValueError, match="no target moments"):
             pg.solve_subsets([grams[0], old], [[0, 1]])
+
+
+class TestCompactGram:
+    """``bank.gram(dtype="float32")`` and ``layout="packed"`` (docs/PLAN.md
+    task 229): the co-moments rounded to float32, or their upper triangle,
+    and every function of ``po.gram`` reading each form in float64."""
+
+    @staticmethod
+    def bank(df=None, **kw):
+        df = stream(n=2000, k=6, seed=30, offset=50.0) if df is None else df
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y", "y2"],
+            features=[c for c in df.columns if c.startswith("x")],
+            half_life=500.0,
+            min_weight=5.0,
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        return bank
+
+    def test_float32_is_the_float64_rounded_to_nearest(self):
+        bank = self.bank()
+        (g64,), (g32,) = bank.gram("m"), bank.gram("m", dtype="float32")
+        c64, c32 = g64["comoments"], g32["comoments"]
+        assert c32.dtype == np.float32 and c32.shape == c64.shape
+        assert np.array_equal(c32, c64.astype(np.float32))
+        live = c64 != 0.0
+        rel = np.abs(c32[live].astype(np.float64) - c64[live]) / np.abs(c64[live])
+        assert rel.max() <= 2.0**-24, rel.max()
+        assert c32.nbytes * 2 == c64.nbytes
+        for key, v in g64.items():
+            if key != "comoments" and isinstance(v, np.ndarray):
+                assert np.array_equal(g32[key], v, equal_nan=True), key
+                assert g32[key].dtype == v.dtype, key
+        # The polars and numpy spellings of the dtype are the same.
+        (gp,) = bank.gram("m", dtype=pl.Float32)
+        (gn,) = bank.gram("m", dtype=np.float32)
+        assert np.array_equal(gp["comoments"], c32) and np.array_equal(gn["comoments"], c32)
+
+    def test_packed_is_the_upper_triangle_and_expands_to_the_matrix(self):
+        bank = self.bank()
+        (g,), (gp,), (gq,) = (
+            bank.gram("m"),
+            bank.gram("m", layout="packed"),
+            bank.gram("m", dtype="float32", layout="packed"),
+        )
+        c = g["comoments"]
+        k = c.shape[0]
+        iu = np.triu_indices(k)
+        assert gp["comoments"].shape == (k * (k + 1) // 2,)
+        assert np.array_equal(gp["comoments"], c[iu]), "the upper triangle, bit for bit"
+        # The index rule: (i, j), i <= j, at i * (2k - i + 1) // 2 + (j - i).
+        for i, j in [(0, 0), (1, 3), (k - 1, k - 1), (2, 2), (0, k - 1)]:
+            assert gp["comoments"][i * (2 * k - i + 1) // 2 + (j - i)] == c[i, j]
+        full = pg._unpack(np, gp["comoments"], k)
+        assert np.array_equal(np.triu(full), np.triu(c))
+        assert np.array_equal(full, full.T)
+        # Its lower triangle is the mirror, which the accumulator's own lower
+        # triangle matches to the last bit or so (E48), not to the bit.
+        assert np.abs(full - c).max() <= 1e-15 * np.abs(c).max()
+        assert np.array_equal(gq["comoments"], c[iu].astype(np.float32))
+        n = c.nbytes
+        assert gp["comoments"].nbytes == n * (k + 1) // (2 * k)
+        assert gq["comoments"].nbytes == n * (k + 1) // (4 * k)
+        # A closed row packs the same way: its expansion reads this.
+        assert np.array_equal(pg._unvech(np, list(gp["comoments"]), k), full)
+
+    def test_a_lagged_matrix_takes_the_dtype_and_is_never_packed(self):
+        df = stream(n=800, k=3, seed=31)
+        spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=0.99, lags=[1, 2])
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        (g,), (h,) = bank.gram("c"), bank.gram("c", dtype="float32", layout="packed")
+        assert h["lag_comoments"].shape == g["lag_comoments"].shape == (2, 3, 3)
+        assert np.array_equal(h["lag_comoments"], g["lag_comoments"].astype(np.float32))
+        assert h["comoments"].shape == (6,)
+
+    @pytest.mark.parametrize(
+        "form",
+        [dict(layout="packed"), dict(dtype="float32"), dict(dtype="float32", layout="packed")],
+    )
+    def test_every_function_reads_each_form(self, form):
+        bank = self.bank(group=None)
+        (g,) = bank.gram("m")
+        (h,) = bank.gram("m", **form)
+        f32 = form.get("dtype") == "float32"
+        # Rounding to float32 moves a solve by about the condition number
+        # times 6e-8; the packed form by the matrix's last-bit asymmetry.
+        tol = 1e-4 if f32 else 1e-10
+        assert pg.solve(h, ridge=0.1) == pytest.approx(pg.solve(g, ridge=0.1), rel=tol)
+        beta = pg.solve(g, ridge=0.1)
+        for key in ("resid_var", "sigma2", "r2"):
+            assert pg.coef_stats(h, beta)[key] == pytest.approx(
+                pg.coef_stats(g, beta)[key], rel=tol
+            )
+        np.testing.assert_allclose(pg.correlation(h), pg.correlation(g), rtol=tol, atol=tol)
+        np.testing.assert_allclose(pg.vif(h), pg.vif(g), rtol=tol)
+        assert pg.condition(h)["kappa"] == pytest.approx(pg.condition(g)["kappa"], rel=tol)
+        np.testing.assert_allclose(
+            pg.lasso_path(h, PENALTIES), pg.lasso_path(g, PENALTIES), rtol=tol, atol=tol
+        )
+        np.testing.assert_allclose(
+            pg.lars_path(h, max_steps=4)["coef"],
+            pg.lars_path(g, max_steps=4)["coef"],
+            rtol=tol,
+            atol=tol,
+        )
+        sub = pg.subset(h, ["intercept", "x3", "x1"])
+        assert np.ndim(sub["comoments"]) == (1 if form.get("layout") == "packed" else 2)
+        assert sub["comoments"].dtype == np.float64
+        np.testing.assert_allclose(
+            pg._comoments(np, sub),
+            pg.subset(g, ["intercept", "x3", "x1"])["comoments"],
+            rtol=tol,
+            atol=tol,
+        )
+
+    def test_merges_and_subset_fits_read_each_form_in_float64(self):
+        bank_forms = {}
+        df = stream(n=1800, seed=20).with_columns(block=pl.int_range(pl.len()) // 600)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y", "y2"],
+            features=[c for c in df.columns if c.startswith("x")],
+            half_life=float("inf"),
+            group="block",
+            min_weight=5.0,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        for name, form in {
+            "full": {},
+            "packed": dict(layout="packed"),
+            "f32": dict(dtype="float32"),
+            "both": dict(dtype="float32", layout="packed"),
+        }.items():
+            bank_forms[name] = bank.gram("m", **form)
+        grams = bank_forms["full"]
+        k = grams[0]["comoments"].shape[0]
+        whole = pg.merge(grams)
+        packed = pg.merge(bank_forms["packed"])
+        assert np.ndim(packed["comoments"]) == 1 and packed["comoments"].dtype == np.float64
+        assert np.array_equal(packed["comoments"], whole["comoments"][np.triu_indices(k)])
+        f32 = pg.merge(bank_forms["f32"])
+        assert f32["comoments"].dtype == np.float64
+        np.testing.assert_allclose(f32["comoments"], whole["comoments"], rtol=2e-7, atol=1e-12)
+        both = pg.merge(bank_forms["both"])
+        np.testing.assert_allclose(
+            pg._comoments(np, both), pg._comoments(np, f32), rtol=1e-15, atol=1e-15
+        )
+        mixed = pg.merge([bank_forms["packed"][0], *grams[1:]])
+        assert np.ndim(mixed["comoments"]) == 2
+        # solve_subsets reads every form; packed is the full form's upper
+        # triangle, so its merge and path are the full one's on a symmetric
+        # matrix, and float32 within its rounding.
+        subsets = [[0, 1], [2], [0, 1, 2]]
+        want = pg.solve_subsets(grams, subsets, ridge=0.01)
+        for name in ("packed", "f32", "both"):
+            got = pg.solve_subsets(bank_forms[name], subsets, ridge=0.01)
+            tol = 1e-10 if name == "packed" else 1e-4
+            for g_per, w_per in zip(got, want, strict=True):
+                for a, b in zip(g_per, w_per, strict=True):
+                    np.testing.assert_allclose(a["coef"], b["coef"], rtol=tol, atol=tol)
+                    np.testing.assert_allclose(a["t"][1:], b["t"][1:], rtol=tol)
+            path = pg.solve_subsets(bank_forms[name], subsets, path={"max_steps": 3})
+            assert len(path) == 3
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            (dict(dtype="float16"), 'dtype must be "float64" or "float32"'),
+            (dict(dtype="int64"), 'dtype must be "float64" or "float32"'),
+            (dict(dtype=[1]), 'dtype must be "float64" or "float32"'),
+            (dict(layout="lower"), 'layout must be "full" or "packed"'),
+        ],
+    )
+    def test_it_refuses(self, kw, match):
+        bank = self.bank()
+        with pytest.raises(ValueError, match=match):
+            bank.gram("m", **kw)

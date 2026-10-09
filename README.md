@@ -2193,6 +2193,8 @@ read from a saved state. Two calls need care:
 
 ```python
 g = po.ModelBank.load("bank.state").gram("ridge")[0]   # the first group's Gram, from a saved state
+# a quarter of the bytes: comoments in float32 and as its upper triangle; po.gram reads it in float64
+small = po.ModelBank.load("bank.state").gram("ridge", dtype="float32", layout="packed")[0]
 
 # residual variance, R², standard errors and t:
 r2 = po.gram.coef_stats(g, po.gram.solve(g, ridge=1e-9))["r2"]

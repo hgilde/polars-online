@@ -27,8 +27,9 @@ pub struct GramArrays<'a> {
     pub k: usize,
     /// The column means, `k`.
     pub means: &'a [f64],
-    /// The centred co-moments, `k × k`.
-    pub comoments: &'a [f64],
+    /// The centred co-moments, `k × k`, in any of the forms
+    /// `ModelBank.gram()` hands them over in.
+    pub comoments: Comoments<'a>,
     /// Per target, `E[z y]` over its rows, `m × k`.
     pub cross_moments: &'a [f64],
     /// Per target, the column means over its rows, `m × k`.
@@ -45,6 +46,58 @@ pub struct GramArrays<'a> {
     pub target_vars: &'a [f64],
     /// Per target, Kish's effective sample size, `m` (NaN where it has none).
     pub target_n_kish: &'a [f64],
+}
+
+/// A Gram's co-moment matrix as `ModelBank.gram()` hands it over: in
+/// float64 or float32 (read back as float64), whole (`k × k` row-major) or
+/// packed. Packed is the upper triangle with the diagonal, row by row,
+/// `k(k+1)/2` numbers: entry `(i, j)` with `i ≤ j` at
+/// `i(2k − i + 1)/2 + (j − i)`, and `(j, i)` reads the same entry
+/// ([`Comoments::packed_index`]). That is numpy's `triu_indices(k)` order,
+/// and a closed row's packing.
+#[derive(Clone, Copy, Debug)]
+pub enum Comoments<'a> {
+    Full(&'a [f64]),
+    Full32(&'a [f32]),
+    Packed(&'a [f64]),
+    Packed32(&'a [f32]),
+}
+
+impl Comoments<'_> {
+    /// Where entry `(i, j)` of a `k`-column matrix sits in its packed
+    /// form, either way round.
+    pub fn packed_index(k: usize, i: usize, j: usize) -> usize {
+        let (i, j) = if i <= j { (i, j) } else { (j, i) };
+        i * (2 * k - i + 1) / 2 + (j - i)
+    }
+
+    /// Entry `(i, j)` of a `k`-column matrix, as float64.
+    pub fn get(&self, k: usize, i: usize, j: usize) -> f64 {
+        match self {
+            Self::Full(v) => v[i * k + j],
+            Self::Full32(v) => f64::from(v[i * k + j]),
+            Self::Packed(v) => v[Self::packed_index(k, i, j)],
+            Self::Packed32(v) => f64::from(v[Self::packed_index(k, i, j)]),
+        }
+    }
+
+    /// The numbers held.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Full(v) | Self::Packed(v) => v.len(),
+            Self::Full32(v) | Self::Packed32(v) => v.len(),
+        }
+    }
+
+    /// Whether none are held.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether this is the packed form.
+    pub fn is_packed(&self) -> bool {
+        matches!(self, Self::Packed(_) | Self::Packed32(_))
+    }
 }
 
 impl GramArrays<'_> {
@@ -107,7 +160,7 @@ impl Design {
         let mut a = vec![0.0; n * n];
         for (p, &i) in slots.iter().enumerate() {
             for (q, &j) in slots.iter().enumerate() {
-                a[p * n + q] = g.comoments[i * k + j];
+                a[p * n + q] = g.comoments.get(k, i, j);
             }
         }
         if icept.is_none() {
@@ -238,7 +291,7 @@ impl<'a> GramRows<'a> {
     /// `A_pq`, as [`Design::of`] forms it.
     fn a(&self, p: usize, q: usize) -> f64 {
         let (i, j) = (self.slots[p], self.slots[q]);
-        let c = self.g.comoments[i * self.g.k + j];
+        let c = self.g.comoments.get(self.g.k, i, j);
         match self.icept {
             Some(_) => c,
             None => c + self.g.means[i] * self.g.means[j],

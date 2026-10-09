@@ -9,7 +9,7 @@ use online_polars::{Bank, GroupKey, Spec, StructArray, chunk_from_frame, export_
 use polars::prelude::PolarsError;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyCapsule;
+use pyo3::types::{PyByteArray, PyCapsule};
 use pyo3_polars::{PyDataFrame, PySeries};
 
 /// Route this extension's allocations through the allocator py-polars is
@@ -113,21 +113,23 @@ fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
 
 /// `(group, instance, k, n_eff, n_kish, means, comoments, cross_moments,
 /// target_weights, target_means, target_vars, target_n_kish)` — the flat
-/// shape `ModelBank.gram` reshapes into numpy arrays. The target moments are
+/// shape `ModelBank.gram` reshapes into numpy arrays. `comoments` comes as
+/// bytes, float64 or float32, whole or packed (docs/PLAN.md task 229), which
+/// numpy reads in one copy where a list costs a Python float an entry. The target moments are
 /// always there: `Bank::gram` gives `None` for them only from a window
 /// snapshot written before task 136 (schema 20), and no file the bank loads
 /// holds one (`MIN_BANK_SCHEMA_VERSION`; the sentences about states written
 /// before task 38 went in review round 4, SF9). A damaged file that still
 /// does reads as NaN, "this state cannot say", as a target with no weighted
 /// row reads in `target_n_kish`.
-type GramRow = (
+type GramRow<'py> = (
     Option<String>,
     String,
     usize,
     f64,
     Option<f64>,
     Vec<f64>,
-    Vec<f64>,
+    Bound<'py, PyByteArray>,
     Vec<Vec<f64>>,
     Vec<f64>,
     Vec<f64>,
@@ -142,9 +144,9 @@ type GramRow = (
 /// into the spec's targets, and one `k`-long list of each per target.
 /// Beside the row rather than in it because pyo3 converts tuples up to
 /// twelve elements and the row is already twelve.
-type GramRowWithLags = (
-    GramRow,
-    Option<(Vec<usize>, Vec<f64>)>,
+type GramRowWithLags<'py> = (
+    GramRow<'py>,
+    Option<(Vec<usize>, Bound<'py, PyByteArray>)>,
     (Vec<usize>, Vec<Vec<f64>>, Vec<Vec<f64>>),
 );
 
@@ -493,14 +495,20 @@ impl PyModelBank {
 
     /// The EW accumulators behind a spec's fit (ENHANCEMENTS E30, E45), as
     /// flat tuples the Python layer reshapes into numpy arrays: see
-    /// [`GramRow`].
-    #[pyo3(signature = (spec, group=None))]
-    fn gram(
-        slf: &Bound<'_, Self>,
+    /// [`GramRow`]. `float32` writes the co-moment matrices (and the lagged
+    /// ones) as float32, and `packed` the co-moments' upper triangle with the
+    /// diagonal, row by row (task 229).
+    #[pyo3(signature = (spec, group=None, float32=false, packed=false))]
+    fn gram<'py>(
+        slf: &Bound<'py, Self>,
         spec: usize,
         group: Option<Vec<Option<String>>>,
-    ) -> PyResult<Vec<GramRowWithLags>> {
+        float32: bool,
+        packed: bool,
+    ) -> PyResult<Vec<GramRowWithLags<'py>>> {
+        let py = slf.py();
         let this = slf.try_borrow().map_err(|_| busy("gram"))?;
+        let bytes = |v: &[f64]| gramfit::matrix_bytes(py, v, float32);
         Ok(this
             .inner
             .gram(spec, keys(group).as_deref())
@@ -508,6 +516,11 @@ impl PyModelBank {
             .into_iter()
             .map(|g| {
                 let m = g.targets.len();
+                let como = if packed {
+                    bytes(&online_polars::vech(&g.comoments, g.k))
+                } else {
+                    bytes(&g.comoments)
+                };
                 (
                     (
                         g.group.0,
@@ -516,14 +529,14 @@ impl PyModelBank {
                         g.n_eff,
                         g.n_kish,
                         g.means,
-                        g.comoments,
+                        como,
                         g.cross_moments,
                         g.target_weights,
                         g.target_means.unwrap_or_else(|| vec![f64::NAN; m]),
                         g.target_vars.unwrap_or_else(|| vec![f64::NAN; m]),
                         g.target_n_kish.unwrap_or_else(|| vec![None; m]),
                     ),
-                    g.lags.zip(g.lag_comoments),
+                    g.lags.zip(g.lag_comoments.map(|l| bytes(&l))),
                     (g.targets, g.means_by_target, g.cross_centred),
                 )
             })

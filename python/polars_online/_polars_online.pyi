@@ -84,7 +84,11 @@ class ModelBank:
     def output_fields(self) -> list[list[str]]: ...
     def solve_failures(self) -> list[list[tuple[str | None, int]]]: ...
     def gram(
-        self, spec: int, group: list[str | None] | None = None
+        self,
+        spec: int,
+        group: list[str | None] | None = None,
+        float32: bool = False,
+        packed: bool = False,
     ) -> list[
         tuple[
             tuple[
@@ -94,15 +98,17 @@ class ModelBank:
                 float,  # weight_sum
                 float | None,  # n_kish
                 list[float],  # means
-                list[float],  # comoments, k*k row-major
+                # comoments: the bytes of k*k row-major, or k(k+1)/2 packed,
+                # float64s or float32s (docs/PLAN.md task 229)
+                bytearray,
                 list[list[float]],  # cross_moments, one row per target
                 list[float],  # target_weights
                 list[float],  # target_means
                 list[float],  # target_vars
                 list[float | None],  # target_n_kish
             ],
-            # (lags, L*k*k cross-moments), or None without lags (E56)
-            tuple[list[int], list[float]] | None,
+            # (lags, L*k*k cross-moments as bytes), or None without lags (E56)
+            tuple[list[int], bytearray] | None,
             # this Gram's targets, as indices into the spec's, each one's
             # column means over its own rows (docs/PLAN.md task 81), and its
             # cross-moments centred at them (review 2026-09-12, N4)
