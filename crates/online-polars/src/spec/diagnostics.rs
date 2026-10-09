@@ -117,9 +117,10 @@ impl Spec {
         }
     }
 
-    /// How many of the instance's half-lives a diagnostic's memory is when
-    /// its `*_half_life` is left out (task 221): 4 for the calibration, 1
-    /// for the others.
+    /// How many of the fit's memories ([`Self::fit_memory`]: the instance's
+    /// half-life but beside a window or a `kalman`) a diagnostic's memory is
+    /// when its `*_half_life` is left out (task 221): 4 for the calibration,
+    /// 1 for the others.
     ///
     /// The calibration's 4: a fit that forgets absorbs a miscalibration at
     /// its own pace, so a calibration read at the fit's memory is
@@ -150,6 +151,58 @@ impl Spec {
         if key == "calibration_half_life" { 4 } else { 1 }
     }
 
+    /// The fit's own memory, which a diagnostic's default memory is a
+    /// multiple of (task 232 (2); review round 6, A-2, A-3, B-4, G-4, F-5):
+    /// the instance's decay `model`, but for two models whose fit forgets
+    /// on another clock.
+    ///
+    /// - **Under `window_size`** the half-life whose exponential weights
+    ///   have the window's Kish size. A window of `W` rows holds `W` rows of
+    ///   Kish's size; weights `λ^i` hold `(1 + λ) / (1 − λ)`, so
+    ///   `λ = (W − 1) / (W + 1)` and the half-life is
+    ///   `ln 2 / ln((W + 1) / (W − 1))`, about `W / 2.885` (`W ln 2 / 2`).
+    ///   Beside a decay `λ` as well, the window's weights `λ^i, i < W`, have
+    ///   Kish's size `n = (1 + λ)(1 − λ^W) / ((1 − λ)(1 + λ^W))`, and the
+    ///   half-life is the one whose weights have `n`. On a clock column the
+    ///   window is `W` clock units and the rows' rate is unknown, so the
+    ///   continuous form is taken: a decay rate `κ` (`ln 2` over the
+    ///   half-life, 0 with none) cut at `W` has the Kish size of the rate
+    ///   `κ / tanh(κ W / 2)`, which is `2 / W` with no decay -- a half-life
+    ///   of `W ln 2 / 2` clock units.
+    /// - **`kalman`** forgets its coefficients at `coef_half_life`, not at
+    ///   the `half_life` its noise statistics read: the shortest finite one
+    ///   where a list gives one per coefficient. A `q` given outright, or
+    ///   every coefficient pinned (`inf`), leaves the instance's decay.
+    pub fn fit_memory(&self, model: Decay) -> Decay {
+        if let super::ModelKind::Kalman {
+            coef_half_life: Some(list),
+            ..
+        } = &self.model
+        {
+            let h = list
+                .to_vec()
+                .into_iter()
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .fold(f64::INFINITY, f64::min);
+            if h.is_finite() {
+                return Decay::Halflife(h);
+            }
+        }
+        match self.model.window_parts() {
+            Some((Some(w), _)) if w.is_finite() && w > 0.0 => {
+                Decay::Halflife(window_half_life(w, model, self.clock.is_some()))
+            }
+            _ => model,
+        }
+    }
+
+    /// A diagnostic's default memory, `multiple` of the fit's own
+    /// ([`Self::fit_memory`]) for the instance decaying by `model`, or its
+    /// own half-life `memory` where given.
+    pub fn diagnostic_decay_of(&self, memory: Option<&Span>, model: Decay, multiple: u32) -> Decay {
+        Self::diagnostic_decay(memory, self.fit_memory(model), multiple)
+    }
+
     /// A diagnostic's decay for the model instance decaying by `model`: its
     /// own half-life where given, else `multiple` of the instance's, `inf`
     /// staying `inf` (task 221). A `lam` decay's multiple of 4 is its fourth
@@ -165,5 +218,82 @@ impl Spec {
             (Decay::Lam(l), 2) => Decay::Lam(l.sqrt()),
             (Decay::Lam(l), m) => Decay::Lam(l.powf(1.0 / f64::from(m))),
         }
+    }
+}
+
+/// The half-life whose exponential weights have the Kish size of a window
+/// of `w` -- rows, or clock units on a clock (`clocked`) -- under the
+/// decay `model` ([`Spec::fit_memory`] has the formulas).
+pub(crate) fn window_half_life(w: f64, model: Decay, clocked: bool) -> f64 {
+    let ln2 = std::f64::consts::LN_2;
+    // The decay rate per clock unit, 0 for none.
+    let kappa = match model {
+        Decay::Halflife(h) if h.is_finite() && h > 0.0 => ln2 / h,
+        Decay::Lam(l) if l > 0.0 && l < 1.0 => -l.ln(),
+        _ => 0.0,
+    };
+    if !clocked {
+        // A window of `w` rows: Kish's size of its weights, exactly.
+        let n = if kappa == 0.0 {
+            w
+        } else {
+            let lam = (-kappa).exp();
+            let lw = lam.powf(w);
+            (1.0 + lam) * (1.0 - lw) / ((1.0 - lam) * (1.0 + lw))
+        };
+        if n > 1.0 {
+            return ln2 / ((n + 1.0) / (n - 1.0)).ln();
+        }
+    }
+    // The continuous form: the rate whose weights have the window's Kish
+    // size, `κ / tanh(κ w / 2)`, `2 / w` with no decay.
+    let rate = if kappa == 0.0 {
+        2.0 / w
+    } else {
+        kappa / (kappa * w / 2.0).tanh()
+    };
+    ln2 / rate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Kish's size of a set of weights.
+    fn kish(w: impl Iterator<Item = f64> + Clone) -> f64 {
+        let s: f64 = w.clone().sum();
+        s * s / w.map(|v| v * v).sum::<f64>()
+    }
+
+    /// The half-life a window resolves to has the window's Kish size, by
+    /// the weights summed one by one: `W` rows, the decayed weights cut at
+    /// `W` rows, and on a clock the continuous weights cut at `W` units.
+    #[test]
+    fn a_windows_half_life_has_its_kish_size() {
+        let inf = Decay::Halflife(f64::INFINITY);
+        for w in [12.0, 100.0, 500.0] {
+            let h = window_half_life(w, inf, false);
+            let lam = 0.5f64.powf(1.0 / h);
+            let n = kish((0..200_000).map(|i| lam.powi(i)));
+            assert!((n - w).abs() < 1e-6 * w, "{w}: {n}");
+            let clocked = window_half_life(w, inf, true);
+            assert!((clocked - w * std::f64::consts::LN_2 / 2.0).abs() < 1e-12 * w);
+        }
+        let (w, h) = (300.0, 100.0);
+        let lam = 0.5f64.powf(1.0 / h);
+        let want = kish((0..300).map(|i| lam.powi(i)));
+        let got = window_half_life(w, Decay::Halflife(h), false);
+        let mu = 0.5f64.powf(1.0 / got);
+        let n = kish((0..200_000).map(|i| mu.powi(i)));
+        assert!((n - want).abs() < 1e-6 * want, "{n} vs {want}");
+        // On a clock: a rate's weights `e^(−κt)` on a fine grid, cut at `w`.
+        let dt = 1e-3;
+        let kappa = std::f64::consts::LN_2 / h;
+        let cut = kish((0..(w / dt) as usize).map(|i| (-kappa * i as f64 * dt).exp())) * dt;
+        let got = window_half_life(w, Decay::Halflife(h), true);
+        let rate = std::f64::consts::LN_2 / got;
+        let full =
+            kish((0..(40.0 * got / dt) as usize).map(|i| (-rate * i as f64 * dt).exp())) * dt;
+        assert!((cut - full).abs() < 1e-3 * cut, "{cut} vs {full}");
     }
 }

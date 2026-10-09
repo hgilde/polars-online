@@ -156,7 +156,9 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
     );
     s.insert("average_eta".into(), number(spec.average_eta_or_default()));
     // Each memory of task 221's diagnostics, as the first instance runs it:
-    // the spec's half-life, or the instance's own decay -- a half-life,
+    // the spec's half-life, or a multiple of the fit's own memory (task 232
+    // (2): a window's, `kalman`'s `coef_half_life`, else the instance's
+    // decay) -- a half-life,
     // `inf` where it forgets nothing, or `{"lam": ...}` as a spec gives it,
     // not a half-life a platform's `log2` would round.
     let decay = spec
@@ -165,7 +167,7 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
         .and_then(|d| d.first().map(|(_, d)| *d))
         .unwrap_or(online_core::Decay::Halflife(f64::INFINITY));
     for (key, _, _, memory) in spec.diagnostic_memories() {
-        let shown = match Spec::diagnostic_decay(memory, decay, Spec::memory_multiple(key)) {
+        let shown = match spec.diagnostic_decay_of(memory, decay, Spec::memory_multiple(key)) {
             online_core::Decay::Halflife(h) => number(h),
             online_core::Decay::Lam(l) => json!({ "lam": number(l) }),
         };

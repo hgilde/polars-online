@@ -2933,9 +2933,9 @@ pub struct Spec {
     /// every residual diagnostic, at the memory `calibration_half_life`.
     #[serde(default)]
     pub emit_calibration: bool,
-    /// The calibration's memory, in clock units: four times the model
-    /// instance's own half-life unless set ([`Spec::memory_multiple`] has the
-    /// measurement), `inf` the run-once form, which forgets nothing.
+    /// The calibration's memory, in clock units: four times the fit's own
+    /// memory unless set ([`Spec::fit_memory`]; [`Spec::memory_multiple`]
+    /// has the measurement), `inf` the run-once form, which forgets nothing.
     #[serde(default)]
     pub calibration_half_life: Option<Span>,
     /// Emit `studentized_<slot>`, `cusum_<slot>`, `cusum_sq_<slot>` and
@@ -2950,8 +2950,8 @@ pub struct Spec {
     /// four times it, null run once.
     #[serde(default)]
     pub emit_breaks: bool,
-    /// The breaks' memory, in clock units: the model instance's own
-    /// half-life unless set, `inf` the run-once form.
+    /// The breaks' memory, in clock units: the fit's own memory unless set
+    /// ([`Spec::fit_memory`]), `inf` the run-once form.
     #[serde(default)]
     pub breaks_half_life: Option<Span>,
     /// Emit `se_coef_hc0` and, with a lag, `se_coef_hac` on `coef`'s rows,
@@ -2964,8 +2964,8 @@ pub struct Spec {
     /// the ridge is left out, as `se_coef` leaves it out.
     #[serde(default)]
     pub emit_robust_se: bool,
-    /// The sandwich's memory, in clock units: the model instance's own
-    /// half-life unless set, `inf` the run-once form.
+    /// The sandwich's memory, in clock units: the fit's own memory unless set
+    /// ([`Spec::fit_memory`]), `inf` the run-once form.
     #[serde(default)]
     pub robust_se_half_life: Option<Span>,
     /// Newey and West's lags, in rows: twice the target's horizon unless
@@ -4202,6 +4202,34 @@ impl Spec {
                 self.name,
                 self.model.kind_name()
             ));
+        }
+        // Run once the fast and the slow memory are both the whole stream,
+        // and every field would be null: refused rather than written null
+        // (task 232 (2); review round 6, B-4).
+        if self.emit_feature_health {
+            let forgets = |d: Decay| match d {
+                Decay::Halflife(h) => h.is_finite(),
+                Decay::Lam(l) => l < 1.0,
+            };
+            let memory = self.feature_health_half_life.as_ref();
+            if self
+                .decays()?
+                .iter()
+                .any(|(_, d)| !forgets(self.diagnostic_decay_of(memory, *d, 1)))
+            {
+                let why = if memory.is_some() {
+                    "feature_health_half_life is inf"
+                } else {
+                    "its memory is the fit's, and the fit forgets nothing (half_life is inf, \
+                     with no window_size)"
+                };
+                return Err(format!(
+                    "spec {:?}: emit_feature_health compares each feature's spread and mean at \
+                     its memory with four times it, and {why}, so both are the whole stream and \
+                     every field would be null: give feature_health_half_life a finite value",
+                    self.name
+                ));
+            }
         }
         if self.emit_selected {
             let n_slots = self.decays()?.len() * crate::combo_labels(self).len();

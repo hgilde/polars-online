@@ -146,9 +146,25 @@ and run once with no ridge each matches statsmodels' test on the same rows
 
 **Each diagnostic keeps one accumulator per slot, with a half-life of its
 own.** Its keyword is the switch's name with `_half_life`, as
-`calibration_half_life`. Left out, it is the model's half-life, except for
-the calibration, whose memory is four times the model's. `inf` runs the
-diagnostic once over the whole stream.
+`calibration_half_life`. Left out, it is the fit's own memory, except for
+the calibration, whose memory is four times it. `inf` runs the diagnostic
+once over the whole stream.
+
+**The fit's own memory is its half-life, but for two fits that forget on
+another clock.** Under `window_size`, it is the half-life whose
+exponential weights have the window's Kish size. A window of `W` rows is
+worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`, so `λ = (W −
+1)/(W + 1)` and the half-life is `ln 2 / ln((W + 1)/(W − 1))` rows, about
+`W / 2.885`. On a clock column the window is in clock units, and the
+half-life is `W ln 2 / 2` of them. A window beside a half-life takes the
+Kish size of the decayed weights cut at the window. `kalman` forgets its
+coefficients at `coef_half_life`, so its diagnostics read at that, the
+shortest finite one where it gives one per coefficient. Beside
+`window_size=400` with no decay, `se_coef_hc0` read the window slope's
+spread over 200 streams, 0.0495 against 0.0498, where at the run-once
+memory it read a third of it. On 30 clean streams beside `window_size=100`,
+`reset` passed its 5% value on 4.8% of rows, where run once it passed on
+51%.
 
 | form | memory | what it is | use it beside |
 |---|---|---|---|
@@ -281,9 +297,9 @@ every = po.spec.ewridge(
     drift_delta=0.5,              #   ... with this tolerance, in units of sigma ...
     drift_threshold=20.0,         #   ... and this threshold, in sigma times clock units
     emit_calibration=True,        # calibration_slope_y, _intercept_y, _wald_y
-    calibration_half_life=800.0,  #   the default: four times the model's half-life
+    calibration_half_life=800.0,  #   the default: four times the fit's memory, here its half-life
     emit_breaks=True,             # studentized_y, cusum_y, cusum_sq_y, break_wald_y
-    breaks_half_life=200.0,       #   the default: the model's half-life, as for each below
+    breaks_half_life=200.0,       #   the default: the fit's memory, as for each below
     emit_specification=True,      # ljung_box_y, breusch_pagan_y, reset_y
     ljung_box_lags=10,            #   the default
     emit_tails=True,              # skew_y, kurtosis_y, jarque_bera_y
@@ -357,7 +373,7 @@ coefficients for its memory follows its own noise.
 | fields | `calibration_slope_<t>`, `calibration_intercept_<t>`, `calibration_wald_<t>`, read before the row |
 | update | exponentially weighted means of `pred`, `y`, `pred²` and `pred · y` at `calibration_half_life`; `b = cov(pred, y) / var(pred)`, `a = ȳ − b · p̄` |
 | statistic | `wald = (n_kish − 2) · ((ȳ − p̄)² + (b − 1)² · var(pred)) / s²`, with `s²` the regression's residual mean square: `chi2(2)` when `a = 0` and `b = 1` |
-| memory | four times the model's half-life; `inf` runs it once, where `wald / 2` is the least-squares F statistic, `F(2, n − 2)` |
+| memory | four times the fit's memory; `inf` runs it once, where `wald / 2` is the least-squares F statistic, `F(2, n − 2)` |
 | threshold | `wald > 5.99`, `chi2(2)`'s 5% value. Run once on calibrated fits it passed on 5.0% to 7.0% of 400 streams; at the default memory, on 0% to 0.3% of rows |
 | cost, models | 20 ns a row; the ten linear models |
 
@@ -1132,7 +1148,7 @@ themselves, before any coefficient moves.
 | fields | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance and feature, read before the row |
 | update | each feature's EW mean and standard deviation at `feature_health_half_life` and at four times it |
 | statistic | `spread_ratio` is the fast standard deviation over the slow one; `mean_shift` the two means' difference in units of the slow standard deviation. A steady feature reads about 1 and 0 |
-| memory | the model's half-life by default; null run once, with no longer run to compare with |
+| memory | the fit's memory by default; refused where that is `inf` (run once, with no window), since both memories would be the whole stream |
 | threshold | `spread_ratio` outside 0.5 to 2: no row of a clean feature at a half-life of 200, independent or AR(1) at 0.95. `\|mean_shift\| > 0.3`: every move of one spread, within 190 rows; 6% of rows of an AR(1) feature at 0.95, and 0.03% above 0.5 |
 | cost, models | 36 ns a row at 5 features; the nine linear models with features |
 

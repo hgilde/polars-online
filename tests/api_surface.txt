@@ -894,6 +894,13 @@
     stream.tails_half_life.lam = 0.99
   ewridge(features=['x0'], half_life=50.0, targets=['y'], window_size=100.0), the lines that differ from ewridge's:
     model.window = 100.0
+    stream.breaks_half_life = 29.99914583364482
+    stream.calibration_half_life = 119.99658333457928
+    stream.feature_health_half_life = 29.99914583364482
+    stream.influence_half_life = 29.99914583364482
+    stream.robust_se_half_life = 29.99914583364482
+    stream.specification_half_life = 29.99914583364482
+    stream.tails_half_life = 29.99914583364482
     stream.window_budget.refuse = 256.0
   sgd(features=['x0'], half_life=50.0, loss='huber', targets=['y']), the lines that differ from sgd's:
     model.loss.huber.delta = 1.345

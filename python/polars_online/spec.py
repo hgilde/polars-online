@@ -222,9 +222,13 @@ the diagnostics
     ``feature_health_half_life``, and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
-    clock units: when left out, four times the model instance's half-life
-    for the calibration and the instance's half-life for the others; ``inf``
-    is the run-once form, which forgets nothing. A diagnostic folds a row
+    clock units: when left out, four times the fit's memory for the
+    calibration and the fit's memory for the others; ``inf`` is the
+    run-once form, which forgets nothing. The fit's memory is the instance's
+    half-life, but under ``window_size`` the half-life whose weights have
+    the window's Kish size -- ``ln 2 / ln((W + 1) / (W - 1))`` rows, about
+    ``W / 2.885``, or ``W ln 2 / 2`` clock units on a clock column -- and
+    for ``kalman`` its ``coef_half_life``. A diagnostic folds a row
     only once the instance is ready: the row's prediction past every gate,
     the stream 95% settled on the fit's memory where the fit forgets, and a
     standardizing ``sgd`` or ``pa`` past its scaler's warm-up. The twin fits
@@ -689,8 +693,9 @@ The diagnostics add, per slot:
        difference in units of the slower one's deviation, read before the
        row: about 1 and 0 for a steady feature. A feed that stopped, its
        last value carried forward, shows as a ratio falling toward 0; a
-       feature that moved, as a shift. Null run once, with no longer run to
-       compare with. On docs/DATA-ISSUES.md's frozen feed (a half-life of
+       feature that moved, as a shift. Refused where its memory is ``inf``
+       (run once, with no window), where both memories would be the whole
+       stream. On docs/DATA-ISSUES.md's frozen feed (a half-life of
        20) the held feature's ratio fell below 0.5 2.9 half-lives in, and
        ``rls``'s slope passed 1, winding up, 52.6 half-lives in. At a
        half-life of 200, clean features read a ratio outside 0.5 to 2 on no

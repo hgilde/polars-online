@@ -103,38 +103,38 @@ impl CheckCfg {
             _ => vec![all; crate::stream::combos(spec).len()],
         };
         Self {
-            fit: model,
-            calibration: Spec::diagnostic_decay(
+            fit: spec.fit_memory(model),
+            calibration: spec.diagnostic_decay_of(
                 spec.calibration_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("calibration_half_life"),
             ),
-            breaks: Spec::diagnostic_decay(
+            breaks: spec.diagnostic_decay_of(
                 spec.breaks_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("breaks_half_life"),
             ),
-            robust: Spec::diagnostic_decay(
+            robust: spec.diagnostic_decay_of(
                 spec.robust_se_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("robust_se_half_life"),
             ),
-            specification: Spec::diagnostic_decay(
+            specification: spec.diagnostic_decay_of(
                 spec.specification_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("specification_half_life"),
             ),
-            tails: Spec::diagnostic_decay(
+            tails: spec.diagnostic_decay_of(
                 spec.tails_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("tails_half_life"),
             ),
-            influence: Spec::diagnostic_decay(
+            influence: spec.diagnostic_decay_of(
                 spec.influence_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("influence_half_life"),
             ),
-            health: Spec::diagnostic_decay(
+            health: spec.diagnostic_decay_of(
                 spec.feature_health_half_life.as_ref(),
                 model,
                 Spec::memory_multiple("feature_health_half_life"),

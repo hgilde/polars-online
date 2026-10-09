@@ -445,7 +445,7 @@ def test_feature_health_is_chunk_invariant(memory):
 
 def test_feature_health_reads_the_rows_before_its_own():
     """A row's features move the health of the rows after it, never its
-    own; and run once there is no longer run to compare with."""
+    own."""
     df = _frame()
     at = 400
     moved = df.with_columns(
@@ -459,8 +459,26 @@ def test_feature_health_reads_the_rows_before_its_own():
     for f in HEALTH:
         assert a[f][: at + 1].equals(b[f][: at + 1], null_equal=True), f
     assert a["spread_ratio_x0"][at + 1] != b["spread_ratio_x0"][at + 1]
-    once = _run(df, _spec("emit_feature_health", half_life=float("inf")))
-    assert once["spread_ratio_x0"].null_count() == once.height
+
+
+def test_feature_health_is_refused_where_it_would_be_null():
+    """Run once the fast and slow memories are both the whole stream and
+    every field would be null, so the switch is refused, naming the way out
+    (task 232 (2); review round 6, B-4). Beside a window it takes the
+    window's memory and reads."""
+    for kw in ({"half_life": float("inf")}, {"feature_health_half_life": float("inf")}):
+        with pytest.raises(ValueError, match="emit_feature_health.*feature_health_half_life"):
+            _spec("emit_feature_health", **kw)
+    windowed = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=float("inf"),
+        window_size=100.0,
+        emit_feature_health=True,
+    )
+    out = _run(_frame(), windowed)
+    assert out["spread_ratio_x0"].drop_nulls().len() > 600
 
 
 def test_feature_health_zero_weights_and_a_save():
@@ -688,3 +706,116 @@ def test_a_standardizing_fit_folds_once_its_scaler_has_warmed_up():
     # Two rows with a spread make a slope: without the wait, two rows past
     # the first prediction.
     assert first_read >= 22 > first_pred + 2
+
+
+# --- the memory from the fit's (task 232 (2)) --------------------------------
+
+
+def _resolved(spec) -> dict:
+    import json
+
+    from polars_online import _polars_online as native
+    from polars_online import _spec
+
+    return json.loads(native.resolved_defaults(_spec._json(spec)))["stream"]
+
+
+def test_a_diagnostics_memory_follows_the_fits():
+    """Left out, a diagnostic's memory is a multiple of the fit's own
+    (task 232 (2); review round 6, A-3, B-4, G-4, F-5): under `window_size`
+    the half-life whose weights have the window's Kish size, `ln 2 / ln((W
+    + 1) / (W - 1))` rows, about `W / 2.885`, and `W ln 2 / 2` clock units
+    on a clock; beside a decay as well, the truncated weights' Kish size;
+    for `kalman`, its `coef_half_life`, the shortest finite one."""
+    import math
+
+    common = dict(targets=["y"], features=["x0"], emit_breaks=True, emit_calibration=True)
+    w = 500.0
+    s = _resolved(po.spec.ewridge("m", half_life=float("inf"), window_size=w, **common))
+    want = math.log(2) / math.log((w + 1) / (w - 1))
+    assert s["breaks_half_life"] == pytest.approx(want, rel=1e-12)
+    assert s["calibration_half_life"] == pytest.approx(4 * want, rel=1e-12)
+    assert want == pytest.approx(w / 2.885, rel=2e-3)
+    clocked = _resolved(
+        po.spec.ewridge(
+            "m", half_life=float("inf"), window_size=w, clock="t", gap_cap=5.0, **common
+        )
+    )
+    assert clocked["breaks_half_life"] == pytest.approx(w * math.log(2) / 2, rel=1e-12)
+    # A window and a decay: the half-life whose weights have the Kish size
+    # of the decay's weights cut at the window.
+    h = 200.0
+    lam = 0.5 ** (1 / h)
+    both = _resolved(po.spec.ewridge("m", half_life=h, window_size=w, **common))
+    i = np.arange(w)
+    n = (lam**i).sum() ** 2 / (lam ** (2 * i)).sum()
+    mu = (n - 1) / (n + 1)
+    assert both["breaks_half_life"] == pytest.approx(-math.log(2) / math.log(mu), rel=1e-9)
+    assert both["breaks_half_life"] < min(h, want)
+    k = _resolved(
+        po.spec.kalman(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            coef_half_life=[float("inf"), 30.0, 80.0],
+            emit_breaks=True,
+            emit_calibration=True,
+        )
+    )
+    assert k["breaks_half_life"] == 30.0
+    assert k["calibration_half_life"] == 120.0
+    plain = _resolved(po.spec.ewridge("m", half_life=60.0, **common))
+    assert plain["breaks_half_life"] == 60.0
+
+
+def test_beside_a_window_the_robust_errors_read_the_windows_spread():
+    """`se_coef_hc0` beside `window_size=400` with no decay read the window
+    slope's true spread, 0.0498 over 200 streams (`1 / sqrt(400)` is 0.05),
+    where at the run-once memory it read a third of it (review round 6,
+    A-2; task 232 (2))."""
+    rng = np.random.default_rng(8)
+    groups, n = 40, 2_000
+    x = rng.standard_normal(groups * n)
+    y = 0.3 * x + rng.standard_normal(groups * n)
+    df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "x0": x, "y": y})
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0"],
+        window_size=400.0,
+        half_life=float("inf"),
+        group="g",
+        emit_robust_se=True,
+        min_weight=10.0,
+        coef_every=0,
+    )
+    last = _run(df, spec).group_by("g").last()
+    se = np.median([v[1] for v in last["se_coef_hc0"].to_list()])
+    assert se == pytest.approx(0.05, rel=0.15)
+
+
+def test_kalmans_diagnostics_forget_at_its_coefficients_memory():
+    """`kalman` at `half_life=inf` with `coef_half_life=50` forgets its
+    coefficients: `break_wald` reads at that memory, where at the run-once
+    memory it had no slow fit and was null on every row (review round 6,
+    A-3)."""
+    rng = np.random.default_rng(11)
+    n = 3_000
+    x = rng.standard_normal((n, 2))
+    b1 = np.where(np.arange(n) >= 1_500, -0.5, 0.5)
+    df = pl.DataFrame(
+        {"x0": x[:, 0], "x1": x[:, 1], "y": x[:, 0] + b1 * x[:, 1] + rng.standard_normal(n)}
+    )
+    spec = po.spec.kalman(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        coef_half_life=50.0,
+        half_life=float("inf"),
+        emit_breaks=True,
+    )
+    out = _run(df, spec)
+    wald = out["break_wald_y"]
+    assert wald.drop_nulls().len() > 2_000
+    assert (wald[1_500:1_800].drop_nulls() > 21.1).any()
