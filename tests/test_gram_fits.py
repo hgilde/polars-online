@@ -282,6 +282,49 @@ class TestLarsPaths:
         assert [len(per) for per in named] == [1, 1, 1, 1]
         assert np.array_equal(named[2][0]["coef"], many[2][1]["coef"])
 
+    def test_grams_with_different_targets_each_run_their_own(self):
+        """Under ``target_gaps="own_rows"`` a group whose rows never hold
+        ``y2`` has a Gram without it, and the others have both. The
+        docstring's example runs on them, and each Gram's paths are its own
+        targets', as documented (review 6, E-4: every Gram had to have the
+        same targets, and the example was refused)."""
+        rng = np.random.default_rng(3)
+        n = 600
+        x = rng.normal(size=(n, 2))
+        block = np.repeat(["a", "b", "c"], 200)
+        y2 = np.where(block == "a", np.nan, x @ [0.5, 0.5] + 0.1 * rng.normal(size=n))
+        df = pl.DataFrame(
+            {
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y": x @ [1.0, -1.0] + 0.1 * rng.normal(size=n),
+                "y2": y2,
+                "stock_id": block,
+            }
+        ).with_columns(pl.col("y2").fill_nan(None))
+        # The docstring's example, with a second target.
+        spec = po.spec.ewridge(
+            "ridge", targets=["y", "y2"], features=["x0", "x1"], half_life=100.0, group="stock_id"
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        grams = bank.gram("ridge")
+        assert len({tuple(g["targets"]) for g in grams}) > 1, [g["targets"] for g in grams]
+        paths = po.gram.lars_paths(bank.gram("ridge"), max_active=1)  # one list per group
+        firsts = [per_gram[0]["active"][-1] for per_gram in paths]
+        assert len(firsts) == len(grams)
+        for g, per in zip(grams, paths, strict=True):
+            assert len(per) == len(g["targets"])
+            for t, path in zip(g["targets"], per, strict=True):
+                one = pg.lars_path(g, target=t, max_active=1)
+                assert np.array_equal(path["coef"], one["coef"])
+        first = pg.lars_paths(grams, targets=[0], max_active=1)
+        assert [len(per) for per in first] == [1] * len(grams)
+        # A target one Gram lacks is named as missing there.
+        lacking = next(t for t in ("y", "y2") if any(t not in g["targets"] for g in grams))
+        with pytest.raises(KeyError, match=f"no target '{lacking}'"):
+            pg.lars_paths(grams, targets=[lacking])
+
     def test_no_grams_is_no_paths_and_mismatched_columns_are_refused(self):
         assert pg.lars_paths([]) == []
         g = gram(stream(seed=16, n=200))
@@ -405,6 +448,17 @@ class TestSolveSubsets:
         (fit,) = pg.solve_subsets(grams, [[0, 1]], ridge=0.01)[0]
         want = pg.solve(pg.merge(grams), ridge=0.01)
         assert np.abs(fit["coef"] - want).max() < 1e-9
+        # The ridge makes the coefficients finite, but the unridged system
+        # the standard errors read is still not positive definite: they are
+        # nan, as ``coef_stats`` gives, and never 0, which reads as an exact
+        # coefficient (review 6, E-1: ``f64::max(NaN, 0)`` is 0).
+        stats = pg.coef_stats(pg.merge(grams), want)
+        for key in ("se", "t"):
+            assert np.isnan(stats[key]).all(), key
+            assert np.isnan(fit[key]).all(), (key, fit[key])
+        for kw in (dict(ridge=0.1, standardize=True), dict(standardize=True)):
+            (fit,) = pg.solve_subsets(grams, [[0, 1]], **kw)[0]
+            assert not np.any(fit["se"] == 0.0), (kw, fit["se"])
 
     @pytest.mark.parametrize(
         ("args", "kw", "match"),

@@ -175,7 +175,12 @@ pub fn ridge_fits(
             if sigma2.is_finite() && nkish > 0.0 {
                 let diag = inv_diag.get_or_insert_with(|| inverse_diagonal(&c, n));
                 for (p, &i) in slots.iter().enumerate() {
-                    let v = (diag[p].max(0.0) * sigma2 / nkish).sqrt();
+                    // A rounding below 0 is 0, but the NaN of a system that
+                    // is not positive definite stays NaN: `f64::max(NaN, 0)`
+                    // is 0, a standard error that reads as an exact
+                    // coefficient (review 6, E-1).
+                    let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };
+                    let v = (d * sigma2 / nkish).sqrt();
                     se[i] = v;
                     tstat[i] = if v > 0.0 { coef[i] / v } else { f64::NAN };
                 }

@@ -475,6 +475,25 @@ def test_epps_invert_recovers_a_lagged_pair():
     assert corr.epps_invert(g, L=1)[0, 1] == pytest.approx(plain, rel=1e-12)
 
 
+@pytest.mark.parametrize("dtype", ["float64", "float32"])
+@pytest.mark.parametrize("layout", ["full", "packed"])
+def test_epps_invert_reads_every_form_of_a_gram(dtype, layout):
+    """Every form ``gram()`` hands a Gram over in reads as the float64 whole
+    matrix does, to float32's rounding (review 6, E-2: a packed Gram's
+    co-moments were read as a matrix, and numpy refused to broadcast)."""
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(3000, 3))
+    df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)})
+    spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=1.0, lags=[1, 2])
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    want = corr.epps_invert(bank.gram("c")[0], L=3)
+    got = corr.epps_invert(bank.gram("c", dtype=dtype, layout=layout)[0], L=3)
+    assert got.shape == (3, 3)
+    tol = 1e-15 if dtype == "float64" else 1e-6
+    assert np.abs(got - want).max() <= tol
+
+
 def test_epps_invert_at_l_one_is_the_plain_correlation():
     """The identity the docstring promises, and the boundary of the lag
     requirement: `L = 1` needs no lags at all (docs/REVIEW-E54-E64.md K3)."""

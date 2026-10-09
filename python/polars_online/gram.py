@@ -966,7 +966,11 @@ def lars_path(
     the active correlation, an active slope reaches 0, or ``l`` reaches 0.
     At ``l = 0`` the fit is least squares on ``A``. A knot's coefficients
     are the lasso's exactly at its penalty, so ``lasso_path(g, [l])`` at a
-    knot's ``l`` gives the same row, to its ``tol``.
+    knot's ``l`` gives the same row where its descent has converged. Its
+    ``tol`` bounds a sweep's largest move, not the distance from the
+    solution: at a condition number of 1e8 a descent at ``tol=1e-14``
+    stopped 0.48 from a knot in the intercept, at an objective above the
+    knot's.
 
     A selection reads only the start of a path, and a step costs
     ``O(k |A|)``, so stop it early: after ``max_steps`` knots past the
@@ -974,7 +978,10 @@ def lars_path(
     that is constant on the Gram's rows never enters. A column that would
     enter collinear with the active set is set aside, since it adds no
     direction: its pivot in the factor of ``R_AA`` is below ``1e-12`` of
-    its variance. Ties go to the column first in ``columns``. Measured on
+    its variance. It takes no step and makes no knot, so each knot but the
+    last at ``l = 0`` is a column entering or leaving. Ties go to the
+    column first in ``features``, which is the Gram's ``columns`` order
+    when ``features`` is ``None``. Measured on
     an M4 Pro, a path takes 9 microseconds whole at 15 columns, and 0.2 ms
     for 40 knots at 200 columns or 3 ms at 2,000.
 
@@ -1428,7 +1435,10 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     slots, _ = _feature_slots(g, features)
     r = correlation(g)[np.ix_(slots, slots)]
     out = np.full(len(slots), np.inf)
-    ok = [i for i in range(len(slots)) if np.isfinite(r[i]).all()]
+    # A constant column's correlations are NaN across its row and its
+    # column, so its diagonal says which it is: a whole row's finiteness
+    # left out every column beside it (review 6, C-4).
+    ok = [i for i in range(len(slots)) if np.isfinite(r[i, i])]
     if not ok:
         return out
     d, v = np.linalg.eigh(r[np.ix_(ok, ok)])

@@ -526,3 +526,101 @@ fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
     assert_eq!(corr.scaling.live, vec![false, false]);
     assert_eq!(corr.r, vec![1.0, 0.0, 0.0, 1.0]);
 }
+
+/// A ridge makes a system with a constant column solvable, but the
+/// standard errors read the centred co-moments without it, which are not
+/// positive definite: they are NaN, as numpy's clip keeps a NaN, never the
+/// 0 `f64::max(NaN, 0)` gives, which reads as an exact coefficient (review
+/// 6, E-1).
+#[test]
+fn a_standard_error_of_a_system_that_is_not_positive_definite_is_nan() {
+    let k = 3;
+    let como = [0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0];
+    let g = GramArrays {
+        k,
+        means: &[1.0, 2.0, 7.0],
+        comoments: Comoments::Full(&como),
+        cross_moments: &[5.0, 11.0, 35.0],
+        means_by_target: &[1.0, 2.0, 7.0],
+        cross_centred: &[0.0, 1.0, 0.0],
+        weight_sum: 50.0,
+        target_weights: &[50.0],
+        target_means: &[5.0],
+        target_vars: &[1.0],
+        target_n_kish: &[50.0],
+    };
+    for standardize in [false, true] {
+        let fit = &ridge_fits(&g, &[0], &[1, 2], Some(0), 0.1, standardize)[0];
+        assert!(fit.coef.iter().all(|c| c.is_finite()), "{:?}", fit.coef);
+        assert!(fit.sigma2.is_finite(), "{}", fit.sigma2);
+        for p in [1, 2] {
+            assert!(fit.se[p].is_nan(), "{standardize}: {:?}", fit.se);
+            assert!(fit.t[p].is_nan(), "{standardize}: {:?}", fit.t);
+        }
+    }
+}
+
+/// A column set aside as collinear takes no step and makes no knot: each
+/// knot but the last is a column entering or leaving (review 6, E-5: the
+/// path moved to where the column would have entered first, and recorded a
+/// knot there with the active set unchanged; past `n` rows every column
+/// left did, 987 of 1,126 knots at 100 rows and 2,000 columns). A column
+/// exactly the sum of two others is collinear within rounding, and more
+/// columns than rows leaves every column past the rank collinear.
+#[test]
+fn a_column_set_aside_makes_no_knot() {
+    let mut rng = SplitMix64::new(77);
+    let mut normal = || {
+        let u = 1.0 - rng.uniform();
+        let v = rng.uniform();
+        (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+    };
+    let mut cases = 0;
+    let mut set_aside = 0;
+    for (n, k, sum) in [(30, 60, false), (200, 9, true), (20, 40, true)] {
+        let width = k + usize::from(sum);
+        let mut x = vec![0.0; n * width];
+        let mut y = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..k {
+                x[i * width + j] = normal();
+            }
+            if sum {
+                x[i * width + k] = x[i * width] + x[i * width + 1];
+            }
+            y[i] = x[i * width] - 0.5 * x[i * width + 2] + normal();
+        }
+        let (r, d) = standardized(&x, &y, n, width);
+        let path = lars_lasso(&r, &d, &vec![true; width], LarsLimits::default());
+        let ends = path.len() - 1;
+        for knot in 1..path.len() {
+            if knot == ends && path.penalties[knot] == 0.0 {
+                continue;
+            }
+            assert_ne!(
+                path.active[knot],
+                path.active[knot - 1],
+                "{n} rows, {width} columns: knot {knot} of {} at {} moves nothing in or out",
+                path.len(),
+                path.penalties[knot]
+            );
+        }
+        // Columns were set aside: more than the path's last active set
+        // were live, and no more than the rank entered.
+        let last = path.active.last().unwrap().len();
+        assert!(last <= n.min(width), "{last}");
+        set_aside += width - last;
+        cases += 1;
+        for knot in 0..path.len() {
+            assert_kkt(
+                &r,
+                &d,
+                &path.coefs[knot * width..(knot + 1) * width],
+                path.penalties[knot],
+                1e-8,
+            );
+        }
+    }
+    assert_eq!(cases, 3);
+    assert!(set_aside > 0);
+}

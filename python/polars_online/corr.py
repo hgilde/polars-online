@@ -743,7 +743,8 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     if L < 1:
         msg = f"corr.epps_invert: L must be >= 1, got {L}"
         raise ValueError(msg)
-    c0 = np.asarray(g["comoments"], dtype=float)
+    # Whatever form `gram()` handed it over in, packed or float32.
+    c0 = _gram._comoments(np, g)
     k = c0.shape[0]
     lags = list(g.get("lags") or [])
     lag_c = g.get("lag_comoments")

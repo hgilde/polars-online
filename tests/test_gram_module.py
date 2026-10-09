@@ -702,6 +702,19 @@ class TestReadingTheMatrix:
         assert 1.0 <= v[1] < 1.1, v
         assert (pg.vif(g, features=["x0", "x1"]) < 1.1).all()
 
+    def test_only_a_constant_column_reads_inf(self):
+        """A constant column's VIF is ``inf``, the others' are theirs as if
+        it were not there (review 6, C-4: its correlations are NaN across
+        its row and its column, every row failed the finiteness check, and
+        every column read ``inf``)."""
+        df, _ = stream(n=2000, k=3, seed=12)
+        df = df.with_columns(x1=pl.lit(3.0))
+        g = fit(df).gram("m")[0]
+        v = pg.vif(g)
+        assert np.isinf(v[1]), v
+        assert np.isfinite(v[[0, 2]]).all(), v
+        np.testing.assert_allclose(v[[0, 2]], pg.vif(g, features=["x0", "x2"]), rtol=1e-12)
+
     def test_condition_names_the_columns_in_the_dependency(self):
         df, _ = stream(n=4000, k=3, seed=11, collinear=True)
         g = fit(df).gram("m")[0]

@@ -203,7 +203,19 @@ pub fn lars_lasso_rows(
                 enter = None;
             }
         }
-        for (&i, &di) in state.cols.iter().zip(&delta) {
+        // A column collinear with the active set adds no direction: it is
+        // set aside before the path moves, and the step is found again
+        // without it. Its pivot reads the active set alone, not `b`, so
+        // the test needs no step; taking the step first made a knot where
+        // nothing entered or left (review 6, E-5).
+        let moving = state.cols.len();
+        if let Some((j, s)) = enter
+            && !state.enter(rows, j, s)
+        {
+            usable[j] = false;
+            continue;
+        }
+        for (&i, &di) in state.cols[..moving].iter().zip(&delta) {
             b[i] += gamma * di;
         }
         lambda -= gamma;
@@ -213,11 +225,7 @@ pub fn lars_lasso_rows(
             let (i, s) = state.leave(pos);
             b[i] = 0.0;
             just_left = Some((i, s));
-        } else if let Some((j, s)) = enter {
-            if !state.enter(rows, j, s) {
-                usable[j] = false;
-            }
-        } else {
+        } else if enter.is_none() {
             // λ reached 0: the least-squares fit on A, the path's end.
             path.record(0.0, &b, &state.cols);
             return path;

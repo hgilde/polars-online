@@ -223,7 +223,7 @@ pub(crate) fn gram_lars_paths<'py>(
             owned.len()
         )));
     }
-    check_axes(&owned, &targets, &slots, icept)?;
+    check_axes(&owned, &targets, &slots, icept, false)?;
     let cols = FitColumns { slots, icept };
     let limits = LarsLimits {
         max_steps,
@@ -260,7 +260,13 @@ pub(crate) fn gram_cd_path(
     tol: f64,
 ) -> PyResult<Vec<f64>> {
     let owned = read(py, &gram)?;
-    check_axes(std::slice::from_ref(&owned), &[vec![target]], &slots, icept)?;
+    check_axes(
+        std::slice::from_ref(&owned),
+        &[vec![target]],
+        &slots,
+        icept,
+        true,
+    )?;
     if weights.len() != slots.len() {
         return Err(PyValueError::new_err(format!(
             "{} penalty weights for {} features",
@@ -294,7 +300,7 @@ fn subsets_fit(
 ) -> PyResult<Vec<Vec<SubsetOut>>> {
     let owned = read_all(py, grams)?;
     let all: Vec<Vec<usize>> = vec![targets.clone(); owned.len()];
-    check_axes(&owned, &all, &cols.slots, cols.icept)?;
+    check_axes(&owned, &all, &cols.slots, cols.icept, true)?;
     if let Some(&i) = subsets.iter().flatten().find(|&&i| i >= owned.len()) {
         return Err(PyValueError::new_err(format!(
             "subset names Gram {i} of {}",
@@ -410,11 +416,16 @@ pub(crate) fn gram_path_subsets<'py>(
 
 /// Every slot, the intercept and every target in range of every Gram: the
 /// Python layer resolves names to positions, so this guards the indexing.
+/// Every Gram has the same columns; with `same_targets`, the same number
+/// of targets too, which a merge needs and a path per Gram does not (review
+/// 6, E-4: `lars_paths` refused Grams whose targets differ, which its
+/// docstring allows).
 pub(crate) fn check_axes(
     grams: &[InGram],
     targets: &[Vec<usize>],
     slots: &[usize],
     icept: Option<usize>,
+    same_targets: bool,
 ) -> PyResult<()> {
     for (g, ts) in grams.iter().map(|g| &g.base).zip(targets) {
         let m = g.target_weights.len();
@@ -430,12 +441,21 @@ pub(crate) fn check_axes(
             )));
         }
     }
-    let axes = |g: &InGram| (g.base.k, g.base.target_weights.len());
+    let axes = |g: &InGram| {
+        let m = if same_targets {
+            g.base.target_weights.len()
+        } else {
+            0
+        };
+        (g.base.k, m)
+    };
     let first = grams.first().map(axes);
     if grams.iter().any(|g| Some(axes(g)) != first) {
-        return Err(PyValueError::new_err(
-            "every Gram must have the same columns and targets",
-        ));
+        return Err(PyValueError::new_err(if same_targets {
+            "every Gram must have the same columns and targets"
+        } else {
+            "every Gram must have the same columns"
+        }));
     }
     Ok(())
 }
