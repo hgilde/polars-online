@@ -467,13 +467,27 @@ fn held(v: &rmpv::Value) -> usize {
 /// clocks are 0, its last row having observed both targets. The clusters'
 /// centres as pairs (51, docs/PLAN.md task 215, D2): each summary in a list
 /// keeps its own low parts, so the check runs through every element, and
-/// some of `kmeans`' centres and of `micro`'s must hold one.
+/// some of `kmeans`' centres and of `micro`'s must hold one. The row counts
+/// of `ewridge`'s and `lasso`'s cross-moments (52, docs/PLAN.md task 217),
+/// per target and over every row, live and in every snapshot a window
+/// holds.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 17] = [
+    const FORMS: [(&str, &[&str]); 25] = [
+        ("ewridge", &["model", "EwRidge", "acc", "cross", "nj"]),
+        ("ewridge", &["model", "EwRidge", "acc", "cross", "n"]),
+        (
+            "ewridge_window",
+            &["model", "EwRidge", "acc", "cross", "nj"],
+        ),
+        ("ewridge_window", &["model", "EwRidge", "acc", "cross", "n"]),
+        ("lasso", &["model", "Lasso", "acc", "cross", "nj"]),
+        ("lasso", &["model", "Lasso", "acc", "cross", "n"]),
+        ("lasso_window", &["model", "Lasso", "acc", "cross", "nj"]),
+        ("lasso_window", &["model", "Lasso", "acc", "cross", "n"]),
         ("sgd", &["model", "Sgd", "warmup"]),
         ("sgd_warming", &["model", "Sgd", "warmup"]),
         ("pa", &["model", "Pa", "warmup"]),
@@ -516,6 +530,34 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                 Some(!name.ends_with("_warming")),
                 "{name}: saved on the wrong side of the switch"
             );
+        }
+    }
+    // Every snapshot a window holds keeps the counts as they stood before
+    // its row; past the first rows, a target's are above 0.
+    for (name, variant) in [("ewridge_window", "EwRidge"), ("lasso_window", "Lasso")] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let ring = at(&v, &["model", variant, "win", "snaps", "ring"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: the state has no window ring"));
+        assert!(!ring.is_empty(), "{name}: the window holds no snapshot");
+        for (i, item) in ring.iter().enumerate() {
+            let moments = item
+                .as_array()
+                .and_then(|t| t.last())
+                .unwrap_or_else(|| panic!("{name}: snapshot {i} is no (clock, stamp, moments)"));
+            for field in ["nj", "n"] {
+                let Some(count) = at(moments, &["acc", "cross", field]) else {
+                    panic!("{name}: snapshot {i} has no acc.cross.{field}");
+                };
+                assert!(
+                    held(count) > 0,
+                    "{name}: snapshot {i}'s acc.cross.{field} is empty"
+                );
+            }
         }
     }
     type Listed<'a> = (&'a str, &'a [&'a str], &'a [&'a str]);

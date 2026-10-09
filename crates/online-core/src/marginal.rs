@@ -900,9 +900,24 @@ impl Marginal {
     /// `W_t`, the weight behind target `t`'s pairs.
     pub fn target_weight(&self, t: usize) -> f64 {
         match self.boundary() {
+            Some((old, _)) if !self.holds_rows_of(old, t) => 0.0,
             Some((old, f)) => empty_or(self.wt[t] - f * old.wt[t], self.wt[t]),
             None => self.wt[t],
         }
+    }
+
+    /// Whether the window since the snapshot `old` holds a row of positive
+    /// weight of target `t`: its learned rows now less the snapshot's, an
+    /// exact count where the weights' difference is a remainder that
+    /// rounding leaves above 0, as a target absent for some 1,060
+    /// half-lives leaves its weight stuck a few subnormal steps above 0
+    /// (docs/PLAN.md task 217; `gaps::Acc::holds_rows_of`). A snapshot with
+    /// no count, from before it, reads as holding rows.
+    fn holds_rows_of(&self, old: &MarginalMoments, t: usize) -> bool {
+        old.rows
+            .as_ref()
+            .and_then(|r| r.get(t))
+            .is_none_or(|&r| self.rows_t[t] > r)
     }
 
     /// The statistics of feature `j` against target `t`. The moments are
@@ -933,8 +948,12 @@ impl Marginal {
                 self.sxy[i],
             ),
             Some((old, f)) => {
+                // A window that holds none of the target's rows is empty for
+                // it, counted (`Self::holds_rows_of`), whatever the weights'
+                // difference leaves.
+                let held = self.holds_rows_of(old, t);
                 let cut = |ms, ms_old, s, s_old| {
-                    Self::cut(self.wt[t], old.wt[t], f, ms, ms_old, s, s_old)
+                    Self::cut(self.wt[t], old.wt[t], f, ms, ms_old, s, s_old).filter(|_| held)
                 };
                 match (
                     cut(

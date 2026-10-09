@@ -594,7 +594,13 @@ pub use window::{
 ///   clock. `kmeans`' and `micro`'s centres are pairs, each summary keeping
 ///   `c_lo` beside `c`. A state from before 51 does not decode, and pre-1.0
 ///   no loader is written.
-pub const SCHEMA_VERSION: u32 = 51;
+/// - 52 (2026-10-08, task 217): `ewridge`'s and `lasso`'s cross-moments
+///   (`gaps::Cross`) keep each target's rows of positive weight, `nj`, and
+///   every row's, `n`, live and in every window snapshot, so a window that
+///   holds none of a target's rows is empty for it by an exact count. A
+///   state from before 52 does not decode, and pre-1.0 no loader is
+///   written.
+pub const SCHEMA_VERSION: u32 = 52;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -618,6 +624,10 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **52 since task 217** (2026-10-08): `ewridge`'s and `lasso`'s
+/// cross-moments keep the rows of positive weight per target and over every
+/// row; a state from before 52 is refused by its number, and the fixtures
+/// are regenerated at 52.
 /// **51 since task 215** (2026-10-08): `ftrl` keeps no penalty scale, and
 /// the clusters' centres are pairs; a state from before 51 is refused by
 /// its number, and the fixtures are regenerated at 51.
@@ -704,7 +714,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 51;
+pub const MIN_SCHEMA_VERSION: u32 = 52;
 
 #[cfg(test)]
 mod tests {

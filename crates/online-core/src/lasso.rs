@@ -559,7 +559,10 @@ impl Lasso {
     /// empty window -- no scored row of this target inside it -- is `None`,
     /// and the choice stands: the whole-history errors it used to fall back
     /// on are the rows the window has dropped (review 2026-09-25).
-    fn window_sel_err(&self, j: usize) -> Option<Vec<f64>> {
+    /// `this_row` says whether the row the step is on, whose error the
+    /// selection has folded in and the accumulators have yet to learn, is
+    /// one of the target's rows of positive weight.
+    fn window_sel_err(&self, j: usize, this_row: bool) -> Option<Vec<f64>> {
         let live = || Some(self.sel_err[j].clone());
         let Some(win) = self.win.as_ref() else {
             return live();
@@ -571,6 +574,12 @@ impl Lasso {
             // Nothing has aged out of the errors: the live ones, to the bit,
             // rather than the same numbers through a subtraction of zero.
             return live();
+        }
+        // A window that holds no row of the target holds no scored row of
+        // it, counted (`gaps::Acc::holds_rows_of`; task 217), where the
+        // errors' weights could leave a subnormal remainder.
+        if !(this_row || self.acc.holds_rows_of(&old.acc, j)) {
+            return None;
         }
         let f = self.select_decay().factor(win.clock - u);
         crate::truncated_mean(
@@ -1000,7 +1009,7 @@ impl OnlineModel for Lasso {
             // choice left standing from the last scored row read errors the
             // window had since dropped (PLAN task 95). Without a window only
             // the common age moved, and the choice is the one it was.
-            if let Some(err) = self.window_sel_err(j) {
+            if let Some(err) = self.window_sel_err(j, y[j].is_some() && weight > 0.0) {
                 let mut best = 0usize;
                 for li in 1..np {
                     if err[li] < err[best] {
@@ -2008,7 +2017,7 @@ mod tests {
                 let want = errs
                     .as_ref()
                     .map_or_else(|| m.sel_err[j].clone(), |e| e[j].clone());
-                if let Some(got) = m.window_sel_err(j) {
+                if let Some(got) = m.window_sel_err(j, false) {
                     assert_eq!(got, want, "row {i} target {j}");
                 }
             }
@@ -2040,7 +2049,7 @@ mod tests {
             }
             if i > 50 + 24 + 2 {
                 assert!(
-                    m.window_sel_err(0).is_none(),
+                    m.window_sel_err(0, false).is_none(),
                     "row {i}: the window has no scored row"
                 );
                 assert_eq!(Some(m.sel_idx[0]), chosen, "row {i}: the choice stands");

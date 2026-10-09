@@ -127,6 +127,19 @@ pub(crate) struct Cross {
     pub(crate) my_lo: Vec<f64>,
     /// What each `mj` leaves out, as `m_lo`.
     pub(crate) mj_lo: Vec<Vec<f64>>,
+    /// Per target, the rows of positive weight it was present on; and the
+    /// rows of positive weight over every row. A window's snapshot holds
+    /// them as they stood before its row, so the rows a window holds of a
+    /// target are the live count less the snapshot's, exactly, where the
+    /// weights' difference is a remainder of rounding: a target absent for
+    /// some 1,060 half-lives keeps a weight stuck a few subnormal steps above
+    /// 0, and its window weight read `5e-324` and predicted (docs/PLAN.md
+    /// task 217). A row of weight 0 advances the clock only and is not
+    /// counted (hard rule 9). Schema 52.
+    #[serde(default)]
+    pub(crate) nj: Vec<u64>,
+    #[serde(default)]
+    pub(crate) n: u64,
 }
 
 impl Cross {
@@ -140,6 +153,8 @@ impl Cross {
             m_lo: vec![0.0; k],
             my_lo: vec![0.0; n_targets],
             mj_lo: vec![vec![0.0; k]; n_targets],
+            nj: vec![0; n_targets],
+            n: 0,
         }
     }
 
@@ -200,6 +215,9 @@ impl Cross {
         // the head of a stream and after a decay that took everything (task
         // 115 (c)).
         self.w = lam * self.w + w;
+        if w > 0.0 {
+            self.n += 1;
+        }
     }
 
     /// Target `j`'s uncentred `E[z·y_j] = c_j + m_j·ȳ_j`.
@@ -303,6 +321,7 @@ impl Cross {
             && self.mj.len() == n_targets
             && self.c.len() == n_targets
             && self.mj.iter().chain(&self.c).all(|v| v.len() == k)
+            && self.nj.len() == n_targets
             && lows
     }
 }
@@ -561,7 +580,11 @@ impl crate::Footprint for Cross {
     /// Every vector a snapshot's copy holds, the means' low parts included:
     /// `Acc::snapshot` clones the whole of it (docs/PLAN.md task 130).
     fn footprint(&self) -> usize {
+        // The weight and the row count over every row, and the counts per
+        // target (task 217).
         std::mem::size_of::<f64>()
+            + std::mem::size_of::<u64>()
+            + std::mem::size_of_val(self.nj.as_slice())
             + crate::window::floats(&self.m)
             + crate::window::floats(&self.my)
             + crate::window::floats(&self.m_lo)
@@ -647,6 +670,9 @@ impl Acc {
                     // what the decay leaves of a history that small is
                     // under a rounding step of the row's weight.
                     let lam = decay_into(lam, *wj, w);
+                    if w > 0.0 {
+                        self.cross.nj[j] += 1;
+                    }
                     let wj_new = lam * *wj + w;
                     let (a, b) = (lam * *wj / wj_new, w / wj_new);
                     self.cross.learn(j, z, yj, a, b);
@@ -702,6 +728,21 @@ impl Acc {
         self.grams.grams.iter_mut().for_each(EwCov::set_runs_off);
     }
 
+    /// Whether the window since the snapshot `old` holds a row of positive
+    /// weight of target `j`: the live count less the snapshot's, exact,
+    /// where the weights' difference is a remainder that rounding leaves
+    /// above 0 (docs/PLAN.md task 217). A window that holds none is empty
+    /// for the target: it predicts and gates as a target never seen does.
+    pub(crate) fn holds_rows_of(&self, old: &AccSnap, j: usize) -> bool {
+        self.cross.nj[j] > old.cross.nj[j]
+    }
+
+    /// Whether the window since the snapshot `old` holds a row of positive
+    /// weight at all ([`Self::holds_rows_of`] over every row).
+    pub(crate) fn holds_rows(&self, old: &AccSnap) -> bool {
+        self.cross.n > old.cross.n
+    }
+
     /// The accumulators with everything before the row the snapshot `old`
     /// precedes removed, `f` the decay since it: `None` when nothing has aged out and
     /// the live accumulators are the answer, and an empty view, all weights
@@ -717,10 +758,12 @@ impl Acc {
         let mut per = vec![None; m];
         for j in 0..m {
             // The truncated weight is what makes a target's moments a mean
-            // again; the test is `crate::truncated_mean`'s.
+            // again; the test is `crate::truncated_mean`'s, and a window that
+            // holds none of the target's rows is empty for it, whatever the
+            // weights' difference leaves ([`Self::holds_rows_of`]).
             let wj_old = f * old.wj[j];
             let w = self.wj[j] - wj_old;
-            if w > EMPTY_FRACTION * self.wj[j] && w.is_finite() {
+            if w > EMPTY_FRACTION * self.wj[j] && w.is_finite() && self.holds_rows_of(old, j) {
                 wj[j] = w;
                 per[j] = Some((wj_old / w, self.wj[j] / w));
             }
@@ -729,7 +772,12 @@ impl Acc {
         // task 136); a snapshot from before has none, and the Gram export
         // then says `None` until the ring has rolled over.
         let tm = old.tm.as_ref().map(|t| self.tm.truncated(t, f, &per));
-        Some(match self.cross.truncated(&old.cross, f, &per) {
+        let cross = if self.holds_rows(old) {
+            self.cross.truncated(&old.cross, f, &per)
+        } else {
+            None
+        };
+        Some(match cross {
             Some(mut cross) => {
                 let grams = self.grams.truncated(&old.grams, f);
                 // A slot with no spread in the window of the Gram a target
@@ -811,8 +859,13 @@ impl Acc {
                     // A Kish sum the subtraction leaves no digit of is no
                     // size (`crate::truncated`; review 2026-10-05, CE6b).
                     let digits = q > 64.0 * f64::EPSILON * q_now;
-                    (w > EMPTY_FRACTION * live.n_eff() && w.is_finite() && digits)
-                        .then(|| w * w / q)
+                    // And a Gram that has learned no row since holds none
+                    // (`Moments::holds_rows`; task 217).
+                    (w > EMPTY_FRACTION * live.n_eff()
+                        && w.is_finite()
+                        && digits
+                        && then.holds_rows(live))
+                    .then(|| w * w / q)
                 })
                 .collect(),
         )
@@ -824,13 +877,14 @@ impl Acc {
         }
         let m = self.wj.len();
         let w = self.cross.w - f * old.cross.w;
-        if w <= EMPTY_FRACTION * self.cross.w || !w.is_finite() {
+        if w <= EMPTY_FRACTION * self.cross.w || !w.is_finite() || !self.holds_rows(old) {
             return Some((0.0, vec![0.0; m]));
         }
         let wj = (0..m)
             .map(|j| {
                 let wj = self.wj[j] - f * old.wj[j];
-                if wj > EMPTY_FRACTION * self.wj[j] && wj.is_finite() {
+                if wj > EMPTY_FRACTION * self.wj[j] && wj.is_finite() && self.holds_rows_of(old, j)
+                {
                     wj
                 } else {
                     0.0
@@ -1393,15 +1447,17 @@ mod tests {
 
     /// A snapshot's copy of the cross-moments counts every vector it holds:
     /// the weight, `k + T` means, `T·k` own means and as many cross-moments,
-    /// and the low parts where they are kept -- a snapshot keeps none.
+    /// the low parts where they are kept -- a snapshot keeps none -- and the
+    /// row counts, one per target and one over every row (task 217).
     #[test]
     fn the_cross_moments_footprint_counts_every_vector() {
         let (t, k) = (2, 3);
         let live = Cross::new(t, k);
         let floats = 1 + k + t + (k + t) + 3 * t * k;
-        assert_eq!(live.footprint(), 8 * floats);
+        let counts = 1 + t;
+        assert_eq!(live.footprint(), 8 * (floats + counts));
         let snap = Acc::new(t, k, 0, true).snapshot(1.0);
-        assert_eq!(snap.cross.footprint(), 8 * (1 + k + t + 2 * t * k));
+        assert_eq!(snap.cross.footprint(), 8 * (1 + k + t + 2 * t * k + counts));
     }
 
     /// The window's weights are each zero below `EMPTY_FRACTION` of the live
@@ -1783,6 +1839,246 @@ mod tests {
                          target was never seen"
                     );
                 }
+            }
+        }
+    }
+
+    /// A row of [`window_stream`]'s, from its seed: two features, the first
+    /// target on every row, the second where `second`, at weight `w`.
+    type CountRow = ([f64; 2], [Option<f64>; 2], f64);
+
+    fn count_row(seed: u64, second: bool, w: f64) -> CountRow {
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5;
+        let x = [3.0 * lcg(&mut s), 3.0 * lcg(&mut s)];
+        let y0 = 1.0 + x[0] - 0.5 * x[1] + 0.1 * lcg(&mut s);
+        let y1 = -1.0 + 0.5 * x[0] + 2.0 * x[1] + 0.1 * lcg(&mut s);
+        (x, [Some(y0), second.then_some(y1)], w)
+    }
+
+    /// Sixty rows of both targets at weight `head` (none of the second where
+    /// `fresh`), `gap` rows without the second, seeded from the return back
+    /// so every gap ends on the same rows, and forty of both, the first of
+    /// them, the return, at weight `back`.
+    fn window_stream(gap: usize, fresh: bool, head: f64, back: f64) -> Vec<CountRow> {
+        let mut v: Vec<CountRow> = (0..60).map(|i| count_row(1000 + i, !fresh, head)).collect();
+        v.extend(
+            (0..gap)
+                .rev()
+                .map(|k| count_row(100_000 + k as u64, false, 1.0)),
+        );
+        v.extend((0..40).map(|i| count_row(10 + i, true, if i == 0 { back } else { 1.0 })));
+        v
+    }
+
+    /// `ewridge` (standardized) and `lasso` under a window of 5, at `lam`
+    /// 0.75 and a clock of 1, so no libm, with no `min_weight`: what the
+    /// window holds of a target is all that decides whether it predicts.
+    fn windowed_models(gaps: TargetGaps) -> (crate::EwRidge, crate::Lasso) {
+        let ridge = crate::EwRidge::new(crate::EwRidgeCfg {
+            n_features: 2,
+            n_targets: 2,
+            fit_intercept: true,
+            decay: crate::Decay::Lam(0.75),
+            ridge: vec![1e-6],
+            feature_sets: vec![],
+            standardize: true,
+            ridge_scale: false,
+            session_shrink: None,
+            long_half_life: None,
+            coef_prior: None,
+            min_weight: 0.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            solve_share: None,
+            gram_block_rows: 0,
+            target_gaps: gaps,
+            window: Some(5.0),
+            window_every: None,
+            max_rows_between_snapshots: None,
+        })
+        .unwrap();
+        let lasso = crate::Lasso::new(crate::LassoCfg {
+            n_features: 2,
+            n_targets: 2,
+            fit_intercept: true,
+            decay: crate::Decay::Lam(0.75),
+            lasso_path: vec![0.1, 0.0],
+            l1_ratio: 1.0,
+            select_half_life: None,
+            min_weight: 0.0,
+            target_min_weight: Vec::new(),
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            solve_share: None,
+            window: Some(5.0),
+            window_every: None,
+            max_rows_between_snapshots: None,
+            max_iter: 100,
+            tol: 1e-10,
+            target_gaps: gaps,
+        })
+        .unwrap();
+        (ridge, lasso)
+    }
+
+    /// The second target's window weight before the return row, and every
+    /// output of it from the return row on: its predictions, and its window
+    /// weight before each row.
+    fn from_the_return<M: crate::OnlineModel>(mut m: M, rows: &[CountRow]) -> (f64, Vec<f64>) {
+        let back = rows.len() - 40;
+        let slots = m.n_outputs() / 2;
+        let (mut own, mut out, mut before) = (Vec::new(), Vec::new(), f64::NAN);
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            m.target_n_eff_into(&mut own);
+            if i == back {
+                before = own[1];
+            }
+            let s = m.step(x, y, if i == 0 { 0.0 } else { 1.0 }, *w);
+            if i >= back {
+                out.push(own[1]);
+                out.extend_from_slice(&s.pred[slots..]);
+            }
+        }
+        (before, out)
+    }
+
+    fn same(u: f64, v: f64) -> bool {
+        (u.is_nan() && v.is_nan()) || (u - v).abs() <= 1e-9 * (1.0 + v.abs())
+    }
+
+    /// Two returns after the window has dropped every row of the target,
+    /// at `gaps` rows each, against a target never seen: the window weight
+    /// before the return, and each output from the return on.
+    fn returns_agree(gap_a: usize, gap_b: usize, head: f64, back: f64) {
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            for which in ["ewridge", "lasso"] {
+                let run = |rows: &[CountRow]| {
+                    let (ridge, lasso) = windowed_models(gaps);
+                    if which == "ewridge" {
+                        from_the_return(ridge, rows)
+                    } else {
+                        from_the_return(lasso, rows)
+                    }
+                };
+                let (wa, a) = run(&window_stream(gap_a, false, head, back));
+                let (wb, b) = run(&window_stream(gap_b, false, head, back));
+                let (wr, never) = run(&window_stream(gap_b, true, head, back));
+                for (what, w) in [("one return", wa), ("the other", wb), ("never seen", wr)] {
+                    assert_eq!(
+                        w.to_bits(),
+                        0f64.to_bits(),
+                        "{which} {gaps:?}, the return at weight {back}: {what}'s window weight \
+                         before the return is {w:e}, from a window holding none of its rows"
+                    );
+                }
+                for (i, ((u, v), r)) in a.iter().zip(&b).zip(&never).enumerate() {
+                    assert!(
+                        same(*u, *r) && same(*v, *r),
+                        "{which} {gaps:?}, the return at weight {back}: output {i} from the \
+                         return, {u} and {v} after gaps of {gap_a} and {gap_b} rows, {r} where \
+                         the target was never seen"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **A window that holds none of a target's rows is empty for it**
+    /// (docs/PLAN.md task 217). A target absent longer than the window, the
+    /// others going on, kept a live weight stuck a few subnormal steps above
+    /// 0 (a subnormal times a decay near 1 rounds back to itself), and the
+    /// window's weight, that less the snapshot's, a remainder of rounding:
+    /// `5e-324`, and the return row predicted from it where a target never
+    /// seen predicts nothing. The window counts the target's rows of positive
+    /// weight now, live and in each snapshot, so it holds none exactly. The
+    /// first rows carry a weight of `1e-300`, so the history is subnormal
+    /// within 100 rows and stuck within 300; the extended test runs the
+    /// 2,500 and 3,000 rows of weight 1 it was found on. Both layouts, both
+    /// models. Measured on the base, the return row: -3.563 after either gap
+    /// under `own_rows` (NaN never seen), 1.607277 and 1.607168 under
+    /// `pairwise`.
+    #[test]
+    fn a_window_holding_none_of_a_targets_rows_is_empty_for_it() {
+        returns_agree(100, 300, 1e-300, 1.0);
+    }
+
+    /// [`a_window_holding_none_of_a_targets_rows_is_empty_for_it`] on the
+    /// stream it was found on: 2,500 and 3,000 rows absent, every weight 1.
+    #[test]
+    #[ignore = "extended: the stream as found, twelve runs of 3,100 rows (0.7 s in a debug build); the short form keeps the rule in the essentials"]
+    fn a_window_holding_none_of_a_targets_rows_is_empty_for_it_as_found() {
+        returns_agree(2_500, 3_000, 1.0, 1.0);
+    }
+
+    /// **A row of weight 0 is no row of the window's** (hard rule 9; task
+    /// 217): a target that returns on a row of weight 0 has still no row in
+    /// the window, on that row and the next, and reads as one never seen.
+    /// And over every row: a window whose rows all have weight 0 holds none,
+    /// and its weight is 0, not the stuck remainder of the history's.
+    #[test]
+    fn a_zero_weight_row_is_no_row_of_the_window() {
+        use crate::OnlineModel;
+        returns_agree(100, 300, 1e-300, 0.0);
+        // Every row after the first sixty at weight 0, 300 of them: the
+        // all-row weight ages into the subnormal range and sticks there.
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            let (mut ridge, mut lasso) = windowed_models(gaps);
+            let mut s = 7u64;
+            for i in 0..360 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let y = [Some(x[0] + 0.1 * lcg(&mut s)), Some(x[1])];
+                let w = if i < 60 { 1e-300 } else { 0.0 };
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let (a, b) = (ridge.step(&x, &y, d, w), lasso.step(&x, &y, d, w));
+                if i > 300 {
+                    for (name, out) in [("ewridge", &a), ("lasso", &b)] {
+                        assert!(
+                            out.n_eff == 0.0 && out.pred.iter().all(|p| p.is_nan()),
+                            "{name} {gaps:?}, row {i}: weight {:e} and {:?} from a window of \
+                             rows of weight 0",
+                            out.n_eff,
+                            out.pred
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// **Rows of subnormal weight inside a window are rows** (task 217):
+    /// the count is of rows of positive weight, whatever their size, where a
+    /// floor on the weight's remainder at the smallest normal double would
+    /// have emptied the window. Every row at `1e-310` fits as every row at
+    /// 1 does: the mean-form moments do not see a common scale.
+    #[test]
+    fn rows_of_subnormal_weight_inside_a_window_are_rows() {
+        use crate::OnlineModel;
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            let fit = |w: f64| {
+                let (mut ridge, mut lasso) = windowed_models(gaps);
+                let mut s = 9u64;
+                let mut out: Vec<f64> = Vec::new();
+                for i in 0..60 {
+                    let x = [lcg(&mut s), lcg(&mut s)];
+                    let y = [
+                        Some(0.5 + x[0] - x[1] + 0.1 * lcg(&mut s)),
+                        Some(2.0 * x[1] + 0.1 * lcg(&mut s)),
+                    ];
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    let (a, b) = (ridge.step(&x, &y, d, w), lasso.step(&x, &y, d, w));
+                    if i > 10 {
+                        out.extend(a.pred.iter().chain(&b.pred));
+                    }
+                }
+                out
+            };
+            let (tiny, unit) = (fit(1e-310), fit(1.0));
+            assert!(tiny.iter().all(|p| p.is_finite()), "{gaps:?}: {tiny:?}");
+            for (i, (u, v)) in tiny.iter().zip(&unit).enumerate() {
+                assert!(
+                    (u - v).abs() <= 1e-6 * (1.0 + v.abs()),
+                    "{gaps:?}: output {i}, {u} at weight 1e-310 and {v} at 1"
+                );
             }
         }
     }

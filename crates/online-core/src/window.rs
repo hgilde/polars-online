@@ -868,6 +868,15 @@ impl Moments {
         }
     }
 
+    /// Whether `cov` has learned a row of positive weight since this
+    /// snapshot of it: what a window from here holds, counted exactly where
+    /// the weights' difference is a remainder of rounding (docs/PLAN.md task
+    /// 217). A snapshot with no count, from before it, reads as holding
+    /// rows, and the weights decide as they did.
+    pub fn holds_rows(&self, cov: &EwCov) -> bool {
+        self.rows.is_none_or(|r| cov.rows_learned() > r)
+    }
+
     /// Whether a snapshot is of an accumulator over `k` slots, with a weight
     /// a subtraction can read: what a restored window must hold before
     /// [`truncated`] indexes `m[i]` and `c[i * k + j]` (review 2026-10-06,
@@ -956,7 +965,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let w_now = cov.n_eff();
     let w_old = f * old.w;
     let w = w_now - w_old;
-    if w <= EMPTY_FRACTION * w_now || !w.is_finite() {
+    if w <= EMPTY_FRACTION * w_now || !w.is_finite() || !old.holds_rows(cov) {
         return None;
     }
     // `ratio = W_u / W_R` and `g = W / W_R`, so `C_R = g·C - ratio·C_u -
@@ -1200,6 +1209,46 @@ mod tests {
             "and its value: {}",
             kept.mean(0)
         );
+    }
+
+    /// **A window that holds no row of positive weight is empty** (docs/PLAN.md
+    /// task 217), by the accumulator's count of the rows it learned against
+    /// the snapshot's. Sixty rows at `1e-300`, then 300 of weight 0, at
+    /// `lam = 0.75` (a literal, so no libm): the weight ages into the
+    /// subnormal range and sticks a few steps above 0, and the window of the
+    /// last four rows read a remainder of `5e-324` as weight. With one row of
+    /// weight `1e-310` among them, a row of a subnormal weight, it holds that
+    /// row.
+    #[test]
+    fn a_window_of_rows_of_weight_zero_is_empty() {
+        let lam = 0.75;
+        for tiny in [false, true] {
+            let mut cov = EwCov::new(1);
+            let mut old = None;
+            for t in 0..360usize {
+                let step = if t == 0 { 1.0 } else { lam };
+                if t == 356 {
+                    old = Some(Moments::of(&cov, step));
+                }
+                let w = match t {
+                    0..60 => 1e-300,
+                    358 if tiny => 1e-310,
+                    _ => 0.0,
+                };
+                cov.update(&[t as f64], step, w);
+            }
+            assert!(cov.n_eff() > 0.0, "the fixture: a stuck weight");
+            let cut = truncated(&cov, &old.unwrap(), lam * lam * lam);
+            if tiny {
+                let cut = cut.expect("a row of weight 1e-310 inside");
+                assert!(
+                    cut.n_eff() > 0.0 && (cut.mean(0) - 358.0).abs() < 1e-6,
+                    "{cut:?}"
+                );
+            } else {
+                assert!(cut.is_none(), "{cut:?}");
+            }
+        }
     }
 
     /// **An ordinary window keeps its spread at any level** (docs/PLAN.md
@@ -2436,6 +2485,8 @@ mod tests {
                 );
                 let mut old = Moments::of(&cov, 1.0);
                 old.w = w_old;
+                // The snapshot precedes the row: the window holds it.
+                old.rows = Some(0);
                 assert_eq!(
                     truncated(&cov, &old, 1.0).is_none(),
                     empty,
@@ -2494,6 +2545,8 @@ mod tests {
             let mut old = Moments::of(&cov, 1.0);
             old.w = 1.0;
             old.q = Some(2.0 - left);
+            // The snapshot precedes the second row, which the window holds.
+            old.rows = Some(1);
             let cut = truncated(&cov, &old, 1.0).expect("the window holds weight");
             let want = if kept { left } else { 0.0 };
             assert_eq!(

@@ -739,9 +739,13 @@ impl EwRidge {
             // The residual variance is one number per target, so the same
             // subtraction on a one-element mean. A target whose residual
             // history is entirely outside the window reports no spread rather
-            // than a stale one.
+            // than a stale one: one with no row inside it, counted
+            // (`gaps::Acc::holds_rows_of`; task 217), has no residual there.
             (0..m)
                 .map(|j| {
+                    if acc.wj[j] == 0.0 {
+                        return 0.0;
+                    }
                     crate::truncated_mean(
                         self.wsig[j],
                         &[self.sig2[j]],

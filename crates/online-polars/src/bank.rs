@@ -179,8 +179,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// `kalman` keeps the first three rows' squared innovations, which its
 /// prior is the median of; a file from before it is refit. **51 since task
 /// 215** (the same day): `ftrl` keeps no penalty scale, and `kmeans`' and
-/// `micro`'s centres are pairs; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 51;
+/// `micro`'s centres are pairs; a file from before it is refit. **52 since
+/// task 217** (the same day): `ewridge`'s and `lasso`'s cross-moments keep
+/// their rows of positive weight, per target and over every row; a file
+/// from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 52;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

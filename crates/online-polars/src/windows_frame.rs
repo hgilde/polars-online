@@ -2469,10 +2469,11 @@ mod tests {
         // standardizing fit, the windows state unchanged; 48 (task 212)
         // with windows state 9, a variance's queue six wide; 49 for task
         // 211's `kalman` anchor and clocks, 50 for task 214's `kalman`
-        // prior from a median and 51 for task 215's `ftrl` without its
-        // penalty scale and the clusters' centres as pairs, the windows
-        // state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 51));
+        // prior from a median, 51 for task 215's `ftrl` without its
+        // penalty scale and the clusters' centres as pairs, and 52 for task
+        // 217's row counts in `ewridge`'s and `lasso`'s cross-moments, the
+        // windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 52));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

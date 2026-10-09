@@ -4131,6 +4131,47 @@ mod generated {
         }
     }
 
+    /// **A windowed `marginal` target with none of its rows inside the window
+    /// reads nothing there** (docs/PLAN.md task 217): its weight 0, its pairs
+    /// empty, as a target never seen. Absent for 300 rows after 60 at a
+    /// weight of `1e-300`, it kept a weight stuck a few subnormal steps above
+    /// 0, and the window's, that less the snapshot's, was a remainder of
+    /// rounding. `marginal` counts each target's learned rows, live and in
+    /// each snapshot, so the window holds none of them exactly.
+    #[test]
+    fn a_windowed_marginal_target_with_no_rows_inside_reads_nothing() {
+        let cfg = MarginalCfg {
+            min_weight: vec![0.0; 2],
+            lags: vec![],
+            decay: Decay::Lam(0.75),
+            window: Some(5.0),
+            ..marginal_cfg()
+        };
+        let mut m = Marginal::new(cfg).unwrap();
+        let mut s = 5u64;
+        for i in 0..360 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y1 = (i < 60).then(|| x[1] + 0.1 * lcg(&mut s));
+            let w = if i < 60 { 1e-300 } else { 1.0 };
+            m.step(&x, &[Some(x[0]), y1], if i == 0 { 0.0 } else { 1.0 }, w);
+        }
+        assert_eq!(m.target_weight(1).to_bits(), 0f64.to_bits(), "the weight");
+        for j in 0..K {
+            let p = m.pair(1, j);
+            assert!(
+                p.n_eff == 0.0 && p.var_x.is_nan() && p.var_y.is_nan() && p.cov.is_nan(),
+                "x{j}: weight {:e}, var_x {:e}, var_y {:e}, cov {:e} from a window holding none \
+                 of the target's rows",
+                p.n_eff,
+                p.var_x,
+                p.var_y,
+                p.cov
+            );
+        }
+        // The target with rows inside the window reads them.
+        assert!(m.target_weight(0) > 0.0 && m.pair(0, 0).var_x > 0.0);
+    }
+
     /// Two rows of weight `1e100` inside a window of 7, their features apart
     /// and their targets equal, after a third has left: the feature has a
     /// spread in the window, the target none the subtraction can resolve.
