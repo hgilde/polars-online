@@ -69,12 +69,12 @@ number is not what you expected, find what you see here:
 
 | what you see | where the time or memory goes | what moves it | § |
 |---|---|---|---|
-| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` for a wide `ewridge` | §18, §28, §30 |
+| a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge` | §18, §28, §30, §37 |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28 |
 | small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_rows`, 100,000 by default | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
-| one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, and `shards` for a wide `marginal` | §12, §25, §31 |
+| one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` | §12, §25, §31, §37 |
 | a window's memory | its ring of snapshots, capped per ring | `window_every`, `max_rows_between_snapshots`, `window_budget` | §16 |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` | §22–§25, §27 |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` | §15 |
@@ -2208,7 +2208,8 @@ product, instead of the rank-1 update §14 tuned. The rank-1 loop touches
 the whole matrix every row, and is bound by memory. The product touches it
 once per block, and is bound by arithmetic. [docs/PLAN.md](PLAN.md) task
 71 has the merge, the two findings its review made, and why the product is
-single-threaded. This section is the measurement.
+single-threaded. This section is the measurement. §37 (task 225) runs the
+product on several threads, to the same bits.
 
 #### The measurement
 
@@ -2281,6 +2282,168 @@ coefficients agree with the per-row fit's to rounding rather than to the
 bit. And the product's kernel follows the CPU's vector width, so a blocked
 Gram's last bits can differ between machines, where the rank-1 path's do
 not. Frozen fixtures stay unblocked.
+
+### 37. One wide Gram on several threads (task 225, 2026-10-08)
+
+Task 225 gave `ewridge` and `ew_cov` a `gram_threads`, which runs the
+`k × k` matrix's update on that many threads of the bank's pool. It was
+asked for a workload of 10,000 features over 9.5 million rows, read as
+`ewridge` blocks with `gram_block_rows = 256` whose Grams are merged and
+solved offline. There one accumulator is the whole job, and §18's product
+ran it on one core. **The output does not move by a bit at any thread
+count, and the bits are the ones a build before the option wrote.**
+[docs/PLAN.md](PLAN.md) task 225 has the request. This section is the
+measurement that chose the design.
+
+The unit is the PLAN's: wall time per Gram entry per row, `t / (k² · rows)`,
+in picoseconds. Every number is from this machine, under another user's
+jobs, with the load average beside it.
+
+#### Where one core's time goes
+
+`crates/online-core/examples/gram_kernel_probe.rs` times one 256-row
+block's product on one thread, by four kernels, with numpy's beside them
+(load 15 to 20; numpy at load 11):
+
+| kernel, one thread | k = 1,000 | k = 2,000 |
+|---|---:|---:|
+| faer's triangular product, which `EwCov::flush` calls | 22.7 | 22.6 |
+| faer's general product, the full square | 40.2 | 41.7 |
+| a hand-written 4×8 register-blocked SYRK, `mul` then `add` | 58.1 | 65.0 |
+| the same with `mul_add` | 57.4 | 64.8 |
+| numpy's `X.T @ X` on Accelerate, `VECLIB_MAXIMUM_THREADS=1` | 3.1 | 4.1 |
+
+**No kernel change closes the gap to numpy, and every one moves the
+bits.** A triangle is half a multiply-add per entry and row, so faer's
+22.6 ps is 22 billion multiply-adds a second. One performance core's
+vector units peak near 36 billion (four 128-bit pipes, two doubles each,
+about 4.5 GHz), so the best possible kernel would reach about 14 ps, 1.6
+times faer. Accelerate's 3 to 4 ps come from Apple's matrix coprocessor,
+which ordinary vector code cannot reach. The hand-written kernels were
+2.5 to 2.9 times slower than faer, and both summed in another order than
+faer does (131,007 of 500,500 entries differed at `k = 1,000` with
+`mul_add`). Linking Accelerate is the one way to that speed, and it would
+be a macOS-only path with bits of its own: a decision for the user, not
+taken here.
+
+#### The design: pieces fixed by `k`
+
+A parallel product whose split depends on the thread count sums an entry
+in another order on another count. faer's own parallel product, at
+`Par::rayon(n)`, gave the sequential bits at 2, 4, 8 and 14 threads in
+the probe, but faer does not promise that. So `crates/online-core/src/ewcov/par.rs`
+cuts the product into pieces that depend on `k` alone. It walks the
+recursion faer's sequential triangular product walks, stops at diagonal
+blocks of 256 columns, and cuts each rectangle into tiles of 128 to 255 on
+a side. Each piece is one sequential faer call on one thread.
+
+On aarch64 the pieces are the calls faer's single product makes, and its
+kernel sums a tile of a rectangle as it sums the whole rectangle. So the
+result is the single call's to the bit. Two checks hold it: a test against
+the single call at widths 1 to 520 and a 600-row block, and a digest of
+the moments against the build before the option, equal at `k` = 300, 700,
+1,000 and 2,000 on both the blocked and the per-row path. A first cut into
+128-wide tiles left a one-row sliver at some widths, which faer sends to a
+matrix-vector kernel, and that summed differently. Hence the 128-to-255
+rule. On x86-64 faer hands the whole triangle to one kernel whose blocking
+the pieces do not reproduce, so there the bits are the pieces' at every
+count and may differ in the last place from the single call's. §18 already
+says a blocked Gram's last bits differ between machines.
+
+The rest of a merge runs inside the same piece while its tile is in cache:
+the history's scale, the two rank-1 corrections and the mirror into the
+upper triangle. That is one pass over the matrix where there were four.
+
+#### The measurement
+
+`crates/online-core/examples/gram_threads_bench.rs` times one `EwCov`
+inside a rayon pool of 14 threads, as a bank's groups run, and compares
+the moments to one thread's bits at every count. All of them were equal.
+A 256-row block, the merge (load 7; `k = 10,000` at load 11):
+
+| k | 1 thread | 2 | 4 | 8 | 14 |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 24.0 | 13.4 (1.8×) | 7.6 (3.2×) | 5.5 (4.4×) | 5.4 (4.5×) |
+| 2,000 | 24.3 | 12.8 (1.9×) | 6.8 (3.6×) | 4.0 (6.1×) | 3.3 (7.4×) |
+| 4,000 | 24.4 | 12.6 (1.9×) | 6.6 (3.7×) | 3.5 (6.9×) | 2.8 (8.6×) |
+| 10,000 | 26.9 | 13.5 (2.0×) | 6.8 (3.9×) | 4.1 (6.5×) | 3.9 (6.9×) |
+
+One thread costs what the single call did: 24.4 to 24.8 ps at `k` = 1,000
+to 4,000, against 24.6 to 25.7 for the build before the option, the two
+run in turn at a load of 12. For the PLAN's workload, 10,000 columns over
+9.5 million rows, the product alone falls from about 7.1 hours on one
+thread to about 1.1 hours on eight.
+
+Without a block, each row's rank-1 update is split by rows. It is bound by
+memory, and a row's dispatch costs microseconds (load 7; `k = 10,000` at
+load 11):
+
+| k | 1 thread | 2 | 4 | 8 | 14 |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 157.8 | 0.8× | 0.6× | 0.4× | 0.3× |
+| 512 | 155.1 | 1.2× | 1.3× | 1.4× | 1.1× |
+| 724 | 155.4 | 1.5× | 1.5× | 2.2× | 2.1× |
+| 1,000 | 156.3 | 1.7× | 1.5× | 2.5× | 3.2× |
+| 2,000 | 153.2 | 1.9× | 2.1× | 3.1× | 3.2× |
+| 4,000 | 157.3 | 1.6× | 1.9× | 2.3× | 2.4× |
+| 10,000 | 196.1 | 1.4× | 1.9× | 2.2× | 2.1× |
+
+So a row's update stays on one thread below 2¹⁹ entries, `k = 725`, where
+every count gained. A merge of 256 columns or fewer is one piece, so the
+option changes nothing for a narrow model.
+
+**Through the bank the gain is smaller, because the rest of a row stays on
+one thread.** A bank fed float32 columns, one target, with the PLAN's
+settings (`half_life=inf`, `solve_every` past the end,
+`target_gaps="pairwise"`, `gram_block_rows=256`), at a load of 16:
+
+| model, k = 2,000 | 1 thread | 8 | 14 |
+|---|---:|---:|---:|
+| `ewridge`, a 256-row block | 28.9 | 7.4 (3.9×) | 7.0 (4.1×) |
+| `ew_cov`, nothing emitted | 161.7 | 65.1 (2.5×) | 51.6 (3.1×) |
+
+The single thread's 28.9 ps is the PLAN's 28 to 38. `ONLINE_TIMING=1`
+puts most of the difference in the models' section: about 5 to 8 µs a row
+beyond the product, the model's own `O(k)` work on each row, which no
+thread count shortens. Reading the columns is another 1.7 µs a row.
+
+#### Many groups share the threads
+
+The threads are the bank's pool's: inside a bank, the product's pieces are
+rayon tasks on the same 14 threads its groups run on. A pool of the
+product's own was the alternative. `MANY_GROUPS=1` on the same example
+runs G accumulators of 1,000 columns at once, with ps of wall time per
+entry and row over all of them (load 7):
+
+| groups | `gram_threads` 1 | 8, in the bank's pool | 8, in a pool of 8 of its own |
+|---:|---:|---:|---:|
+| 1 | 23.0 | 5.6 | 5.4 |
+| 4 | 6.8 | 3.0 | 3.5 |
+| 14 | 2.9 | 2.7 | 3.4 |
+
+With one group the two designs are the same. With fourteen, every core is
+already busy, so the bank's pool gains nothing and loses nothing, where a
+pool of its own puts eight more threads on the machine and takes 28%
+longer.
+
+#### What it does not change: the solve
+
+A solve is faer's Cholesky at faer's global parallelism, `Par::rayon(0)`,
+which is the size of the pool it runs in. From `k = 512` its last bits
+follow that size: a solve in a pool of 1 and one in a pool of 3, 8 or 14
+differ, and the pool of 14 is 2 to 3.4 times as fast at `k` = 1,000 to
+2,000. A bank always runs in its one pool, so this never moves a bit
+between chunkings or thread counts of `gram_threads`. It does move one
+between two values of `POLARS_ONLINE_MAX_THREADS`, or two machines with
+different core counts. That was so before task 225, and is raised with the
+user as a decision.
+
+```sh
+# From the repository root.
+cargo run --release -p online-core --example gram_kernel_probe -- 1000 2000
+cargo run --release -p online-core --example gram_threads_bench -- 1000 2000 4000 10000
+MANY_GROUPS=1 cargo run --release -p online-core --example gram_threads_bench -- 256 512 724
+```
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (task 72, 2026-09-08)
 

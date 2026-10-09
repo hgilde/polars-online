@@ -2687,7 +2687,7 @@ rr = po.spec.ewridge(
 | how the ridge applies | `standardize`, `ridge_scale`, `coef_prior` | `ridge_scale="sum"` is refused beside `standardize`, a ridge or feature-set grid, and a window |
 | a target null on some rows | `target_gaps` | |
 | what the sums remember | `window_size` ([A hard window](#a-hard-window)), `session_shrink` | `session_shrink` needs `session` and `long_half_life`, and is refused beside `session_gap="reset"` and `window_size` |
-| a wide fit | `gram_block_rows` | refused with `window_size=`, and where a solve happens every row |
+| a wide fit | `gram_block_rows`, `gram_threads` | `gram_block_rows` is refused with `window_size=`, and where a solve happens every row |
 
 **A grid of `ridge` values or of `feature_sets`, as in `rr`, adds a solve
 per value and no update of the sums.** Only the named sets are fitted, so
@@ -2782,6 +2782,13 @@ With a solve every 512 rows, each speed-up falls to about 4×, because the
 solve takes the same time either way. Blocking leaves `weight_sum`, the
 timing of every prediction and chunk invariance unchanged, and the
 coefficients agree with the row-by-row fit to rounding.
+
+**To run that product on several cores, give `gram_threads=8` as well.**
+The threads come from the pool the bank runs its groups on, and the output
+is the same to the bit at every thread count. At 2,000 features a bank
+learned 3.9 times as fast on eight threads
+([docs/PERFORMANCE.md](docs/PERFORMANCE.md) §37). A bank whose groups
+already keep every core busy gains nothing from it.
 
 **With decay off and `ridge=0`, `ewridge` fits ordinary least squares over
 every row seen, in any row order.** Its coefficients match
