@@ -87,6 +87,10 @@ pub(super) enum Source {
     SupportCoef(usize),
     /// `se_coef`, per instance, laid out like `Coef` (task 116).
     SeCoef(usize),
+    /// `se_coef_hc0` and `se_coef_hac`, per instance, laid out like `Coef`
+    /// (task 221 (c)).
+    SeCoefHc0(usize),
+    SeCoefHac(usize),
     /// `scored_clock` and `learned_clock`, one pair per spec, in the clock
     /// column's own type (docs/PLAN.md task 152).
     ScoredClock,
@@ -149,9 +153,11 @@ impl FieldMeta {
         match self.src {
             Source::Drift(_) => DataType::Boolean,
             Source::SelName(_) => DataType::String,
-            Source::Coef(_) | Source::SupportCoef(_) | Source::SeCoef(_) => {
-                DataType::List(Box::new(DataType::Float64))
-            }
+            Source::Coef(_)
+            | Source::SupportCoef(_)
+            | Source::SeCoef(_)
+            | Source::SeCoefHc0(_)
+            | Source::SeCoefHac(_) => DataType::List(Box::new(DataType::Float64)),
             Source::Reason(_) => DataType::from_frozen_categories(
                 polars::prelude::FrozenCategories::new(crate::stream::WITHHELD_REASONS)
                     .expect("three distinct names"),
@@ -416,6 +422,19 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                         FieldMeta::new(format!("se_coef{suffix}"), "se_coef")
                             .src(Source::SeCoef(mi)),
                     ));
+                }
+                // The robust ones beside it, opt-in (task 221 (c)).
+                if spec.emit_robust_se && spec.has_robust_se() {
+                    fields.push(like(
+                        FieldMeta::new(format!("se_coef_hc0{suffix}"), "se_coef_hc0")
+                            .src(Source::SeCoefHc0(mi)),
+                    ));
+                    if spec.robust_se_lags_or_default() > 0 {
+                        fields.push(like(
+                            FieldMeta::new(format!("se_coef_hac{suffix}"), "se_coef_hac")
+                                .src(Source::SeCoefHac(mi)),
+                        ));
+                    }
                 }
             }
             _ => {}

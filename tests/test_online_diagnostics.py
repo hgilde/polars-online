@@ -253,3 +253,118 @@ def test_a_feature_set_compares_its_own_coefficients():
     after = out.slice(950, 100)
     assert after["break_wald_y__both"].max() > 21.1
     assert after["break_wald_y__other"].max() < after["break_wald_y__both"].max() / 4
+
+
+# --- robust standard errors (task 221 (c)) ----------------------------------
+
+ROBUST = ["se_coef_hc0", "se_coef_hac"]
+
+
+def _robust_spec(**kw):
+    base = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=60.0,
+        weight="w",
+        min_weight=10.0,
+        emit_robust_se=True,
+        robust_se_lags=3,
+        coef_every=0,
+    )
+    base.update(kw)
+    return po.spec.ewridge("m", **base)
+
+
+@pytest.mark.parametrize("memory", [None, 150.0, float("inf")])
+def test_robust_se_is_chunk_invariant(memory):
+    df = _frame()
+    spec = _robust_spec(**({"robust_se_half_life": memory} if memory is not None else {}))
+    whole = _run(df, spec).select(ROBUST)
+    assert whole["se_coef_hac"].drop_nulls().len() > 800, "the test reads values"
+    for chunk in (7, 600):
+        got = _run(df, spec, chunk).select(ROBUST)
+        assert got.equals(whole, null_equal=True), f"{chunk}-row chunks"
+
+
+def test_robust_se_zero_weight_rows_only_advance_the_clock():
+    df = _frame().with_columns(pl.int_range(pl.len()).cast(pl.Float64).alias("t"))
+    spec = _robust_spec(clock="t", gap_cap=10.0)
+    out = _run(df, spec)
+    rest = _run(df.slice(2), spec)
+    for f in ROBUST:
+        a = np.array([np.nan if v is None else v.to_list() for v in out[f][2:]], dtype=object)
+        b = np.array([np.nan if v is None else v.to_list() for v in rest[f]], dtype=object)
+        assert len(a) == len(b)
+        for x, y in zip(a, b, strict=True):
+            np.testing.assert_allclose(
+                np.asarray(x, float), np.asarray(y, float), rtol=1e-12, equal_nan=True
+            )
+        assert not any(np.isnan(np.asarray(v.to_list(), float)).any() for v in out[f].drop_nulls())
+
+
+def test_robust_se_goes_on_across_a_save():
+    df = _frame()
+    whole = _run(df, _robust_spec()).select(ROBUST)
+    bank = po.ModelBank([_robust_spec()])
+    first = bank.fit_predict(df.slice(0, 500))
+    resumed = po.ModelBank.load_bytes(bank.save_bytes())
+    rest = resumed.fit_predict(df.slice(500))
+    got = pl.concat([first, rest]).unnest("m").select(ROBUST)
+    assert got.equals(whole, null_equal=True)
+
+
+def test_a_session_change_breaks_the_lags():
+    """Newey and West's lag products stay within a run of adjacent rows: a
+    session change starts a new one, as it clears the models' lags. Run
+    once, the meat is ``statsmodels``' kernel summed over the sessions."""
+    import statsmodels.api as sm
+    from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+    df = _frame().drop("w").with_columns((pl.int_range(pl.len()) // 150).alias("s"))
+    spec = _robust_spec(weight=None, half_life=float("inf"), session="s", session_gap=1.0)
+    out = _run(df, spec)
+    resid = out["resid_y"].to_numpy()
+    X = sm.add_constant(df.select("x0", "x1").to_numpy())
+    s = df["s"].to_numpy()
+    ok = np.isfinite(resid)
+    bi = np.linalg.inv(X[ok].T @ X[ok])
+    meat = sum(
+        S_hac_simple(X[ok & (s == v)] * resid[ok & (s == v)][:, None], nlags=3)
+        for v in np.unique(s)
+    )
+    want = np.sqrt(np.diag(bi @ meat @ bi))
+    np.testing.assert_allclose(out["se_coef_hac"][-1].to_numpy(), want, rtol=1e-8)
+
+
+def test_robust_se_lags_default_to_twice_the_embargo_without_a_clock():
+    fields = po.spec.output_fields(_robust_spec(robust_se_lags=None, embargo=5.0))
+    assert "se_coef_hac" in fields
+    assert "se_coef_hac" not in po.spec.output_fields(_robust_spec(robust_se_lags=None))
+    from polars_online import _polars_online as native
+    from polars_online import _spec
+
+    resolved = native.resolved_defaults(_spec._json(_robust_spec(robust_se_lags=None, embargo=5.0)))
+    assert '"robust_se_half_life":60.0' in resolved.replace(" ", "")
+
+
+@pytest.mark.parametrize(
+    ("build", "extra", "why"),
+    [
+        (po.spec.kalman, {"coef_half_life": 100.0}, "random walk"),
+        (po.spec.lasso, {"lasso_path": [0.01]}, "post-selection"),
+        (po.spec.huber, {}, "M-estimator"),
+        (po.spec.sgd, {}, "gradient fit"),
+    ],
+)
+def test_robust_se_is_the_least_squares_fits(build, extra, why):
+    with pytest.raises(ValueError, match=f"emit_robust_se needs a least-squares fit.*{why}"):
+        build("m", targets=["y"], features=["x0"], half_life=60.0, emit_robust_se=True, **extra)
+    for ok in (po.spec.ewridge, po.spec.rls):
+        ok("m", targets=["y"], features=["x0"], half_life=60.0, emit_robust_se=True)
+
+
+def test_robust_se_knobs_need_their_switch():
+    with pytest.raises(ValueError, match="robust_se_lags needs emit_robust_se"):
+        _robust_spec(emit_robust_se=False)
+    with pytest.raises(ValueError, match="robust_se_half_life needs emit_robust_se"):
+        _robust_spec(emit_robust_se=False, robust_se_lags=None, robust_se_half_life=10.0)

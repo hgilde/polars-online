@@ -75,6 +75,9 @@
   calibration_half_life = None
   emit_breaks = False
   breaks_half_life = None
+  emit_robust_se = False
+  robust_se_half_life = None
+  robust_se_lags = None
   embargo = None
   group = None
   group_close = None
@@ -408,6 +411,7 @@
     stream.calibration_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
+    stream.robust_se_half_life = "inf"
   bocpd(features=['x0', 'x1']):
     derived.prior_mean = "data"
     derived.prior_nu = 3.0
@@ -430,6 +434,7 @@
     stream.calibration_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [1.0]
+    stream.robust_se_half_life = "inf"
   corrchange(features=['x0', 'x1'], span_rows=20):
     model.alpha = 0.05
     model.alpha_adjust = "bonferroni"
@@ -452,6 +457,7 @@
     stream.calibration_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
+    stream.robust_se_half_life = "inf"
   deco(features=['x0', 'x1'], half_life=50.0):
     model.alpha = null
     model.beta = null
@@ -464,6 +470,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
+    stream.robust_se_half_life = 50.0
   ew_class(classes=['a', 'b'], features=['x0'], half_life=50.0, label='y', precision_prior=1.0):
     model.covariance = "full"
     model.decay.Halflife = 50.0
@@ -477,6 +484,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   ew_cov(features=['x0', 'x1'], half_life=50.0):
     model.decay.Halflife = 50.0
     model.lags = []
@@ -494,6 +502,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
+    stream.robust_se_half_life = 50.0
   ewridge(features=['x0'], half_life=50.0, targets=['y']):
     model.coef_prior = null
     model.decay.Halflife = 50.0
@@ -518,6 +527,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = 1.4142135623730951
     stream.min_weight = [0.0]
+    stream.robust_se_half_life = 50.0
   ftrl(features=['x0'], half_life=50.0, targets=['y']):
     model.alpha = 0.1
     model.beta = 1.0
@@ -534,6 +544,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   hmm(features=['x0', 'x1'], half_life=50.0, k=2, precision_prior=0.1):
     model.covariance = "full"
     model.covs = null
@@ -554,6 +565,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
+    stream.robust_se_half_life = 50.0
   holt(half_life=50.0, targets=['y']):
     model.level_half_life = 50.0
     model.min_weight = 1.0
@@ -564,6 +576,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [1.0]
+    stream.robust_se_half_life = 50.0
   huber(features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
@@ -581,6 +594,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   kalman(coef_half_life=50.0, features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
@@ -598,6 +612,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   kmeans(features=['x0', 'x1'], half_life=50.0, k=2):
     model.dead_frac = 0.05
     model.decay.Halflife = 50.0
@@ -616,6 +631,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
+    stream.robust_se_half_life = 50.0
   lasso(features=['x0'], half_life=50.0, lasso_path=[0.1, 0.0], targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
@@ -638,6 +654,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   marginal(features=['x0'], half_life=50.0, targets=['y']):
     model.bins = null
     model.cross_lags = null
@@ -654,6 +671,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
+    stream.robust_se_half_life = 50.0
     stream.shards = 1
   micro(eps=0.3, features=['x0', 'x1'], half_life=50.0):
     model.beta_mu = 3.0
@@ -671,6 +689,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
+    stream.robust_se_half_life = 50.0
   pa(features=['x0'], half_life=50.0, targets=['y']):
     model.c = 1.0
     model.constraint = null
@@ -686,6 +705,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   quantile(features=['x0'], half_life=50.0, quantile=0.5, targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
@@ -703,6 +723,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   rcov(block_rows=100, features=['x0', 'x1'], group='g', group_close='monotone'):
     derived.max_bandwidth = 56
     derived.preavg_rows = 16
@@ -722,6 +743,7 @@
     stream.calibration_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
+    stream.robust_se_half_life = "inf"
   rls(features=['x0'], half_life=50.0, targets=['y']):
     model.coef_prior = null
     model.decay.Halflife = 50.0
@@ -734,6 +756,7 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   seqtest(targets=['y']):
     model.min_weight = 0.0
     model.n_targets = 1
@@ -741,6 +764,7 @@
     stream.calibration_half_life = "inf"
     stream.max_error_inflation = "inf"
     stream.min_weight = [0.0]
+    stream.robust_se_half_life = "inf"
   sgd(features=['x0'], half_life=50.0, targets=['y']):
     model.clip_gradient = 1000.0
     model.constraint = null
@@ -759,12 +783,14 @@
     stream.calibration_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [2.0]
+    stream.robust_se_half_life = 50.0
   ewridge(features=['x0'], lam=0.99, targets=['y']), the lines that differ from ewridge's:
     model.decay.Lam = 0.99
     model.solve_every = 0.0
     model.solve_share = null
     stream.breaks_half_life.lam = 0.99
     stream.calibration_half_life.lam = 0.99
+    stream.robust_se_half_life.lam = 0.99
   ewridge(features=['x0'], half_life=50.0, targets=['y'], window_size=100.0), the lines that differ from ewridge's:
     model.window = 100.0
     stream.window_budget.refuse = 256.0
@@ -1934,6 +1960,7 @@
     emit_drift
     emit_error_inflation
     emit_metrics
+    emit_robust_se
     emit_se_coef
     emit_selected
     emit_sigma
@@ -1954,6 +1981,8 @@
     resid_autocorr_lag
     resid_quantiles
     restart_after_step_back
+    robust_se_half_life
+    robust_se_lags
     session
     session_gap
     targets

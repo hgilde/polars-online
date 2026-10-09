@@ -2132,6 +2132,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "coef_every",
             "calibration_half_life",
             "breaks_half_life",
+            "robust_se_half_life",
         ],
     ),
     (
@@ -2948,6 +2949,26 @@ pub struct Spec {
     /// half-life unless set, `inf` the run-once form.
     #[serde(default)]
     pub breaks_half_life: Option<Span>,
+    /// Emit `se_coef_hc0` and, with a lag, `se_coef_hac` on `coef`'s rows,
+    /// laid out like it (docs/PLAN.md task 221 (c); the update is
+    /// [`online_core::Sandwich`]'s): each coefficient's standard error from
+    /// the least-squares sandwich `B⁻¹ M B⁻¹` at `robust_se_half_life`, the
+    /// meat `Σ ω² e² z z'` (White's HC0) and, under `robust_se_lags`, Newey
+    /// and West's Bartlett-weighted lag products, `e` the row's
+    /// out-of-sample residual. `ewridge` and `rls`, the least-squares fits;
+    /// the ridge is left out, as `se_coef` leaves it out.
+    #[serde(default)]
+    pub emit_robust_se: bool,
+    /// The sandwich's memory, in clock units: the model instance's own
+    /// half-life unless set, `inf` the run-once form.
+    #[serde(default)]
+    pub robust_se_half_life: Option<Span>,
+    /// Newey and West's lags, in rows: twice the target's horizon unless
+    /// set -- `embargo` in rows on a spec with no clock column -- and `0`,
+    /// HC0 alone, otherwise ([`Spec::robust_se_lags_or_default`] has the
+    /// measurement behind twice).
+    #[serde(default)]
+    pub robust_se_lags: Option<usize>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -3746,6 +3767,43 @@ impl Spec {
                 self.model.kind_name()
             ));
         }
+        if self.emit_robust_se && !self.has_robust_se() {
+            let why = match self.model {
+                ModelKind::Kalman { .. } => {
+                    "kalman's coefficients follow a random walk whose posterior is its own \
+                     covariance (emit_se_coef), not a weighted least-squares fit's"
+                }
+                ModelKind::Lasso { .. } => {
+                    "lasso's fit is post-selection: its active set is chosen from the same rows, \
+                     and a covariance that ignores the choice understates it"
+                }
+                ModelKind::Huber { .. } | ModelKind::Quantile { .. } => {
+                    "an M-estimator's sandwich weighs each row by its loss's curvature, not the \
+                     least-squares one"
+                }
+                ModelKind::Sgd { .. } | ModelKind::Pa { .. } | ModelKind::Ftrl { .. } => {
+                    "a gradient fit is no weighted least-squares fit, so a least-squares \
+                     sandwich describes other coefficients than its own"
+                }
+                _ => "it has no least-squares coefficients",
+            };
+            return Err(format!(
+                "spec {:?}: emit_robust_se needs a least-squares fit (ewridge, rls); {} is \
+                 none: {why}",
+                self.name,
+                self.model.kind_name()
+            ));
+        }
+        if self.robust_se_lags.is_some() && !self.emit_robust_se {
+            return Err(format!(
+                "spec {:?}: robust_se_lags needs emit_robust_se",
+                self.name
+            ));
+        }
+        if let Some(l) = self.robust_se_lags {
+            online_core::check_lag_ceiling("robust_se_lags", l)
+                .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+        }
         if self.emit_error_inflation && !self.has_row_error_inflation() {
             let why = if matches!(self.model, ModelKind::Lasso { .. }) {
                 "lasso keeps no factor to read a row's own leverage from (its gate reads the \
@@ -4037,6 +4095,7 @@ impl Spec {
                 ("emit_drift", self.emit_drift),
                 ("emit_calibration", self.emit_calibration),
                 ("emit_breaks", self.emit_breaks),
+                ("emit_robust_se", self.emit_robust_se),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];

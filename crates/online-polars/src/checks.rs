@@ -9,7 +9,7 @@
 //! row was scored with. Their per-slot values ride in one output buffer,
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
-use online_core::{Breaks, Calibration, Decay, TwinFit};
+use online_core::{Breaks, Calibration, Decay, Sandwich, TwinFit};
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{ModelKind, Spec};
@@ -38,6 +38,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
 pub struct CheckCfg {
     calibration: Decay,
     breaks: Decay,
+    robust: Decay,
+    /// Newey and West's lags, `0` for HC0 alone.
+    lags: usize,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
     /// reads, as positions in the spec's features: an `ewridge` feature
     /// set's, or every feature.
@@ -45,6 +48,9 @@ pub struct CheckCfg {
     /// Whether the fits carry an intercept: the spec's, and `holt`'s level,
     /// which has no feature to stand on.
     intercept: bool,
+    /// The coefficients per slot, as `coef` lays them out: the features and
+    /// the spec's intercept.
+    width: usize,
 }
 
 impl CheckCfg {
@@ -72,9 +78,17 @@ impl CheckCfg {
         Self {
             calibration: Spec::diagnostic_decay(spec.calibration_half_life.as_ref(), model),
             breaks: Spec::diagnostic_decay(spec.breaks_half_life.as_ref(), model),
+            robust: Spec::diagnostic_decay(spec.robust_se_half_life.as_ref(), model),
+            lags: spec.robust_se_lags_or_default(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
+            width: spec.k() + usize::from(spec.fit_intercept),
         }
+    }
+
+    /// Whether `se_coef_hac` is written: a lag to weigh.
+    pub fn hac(&self) -> bool {
+        self.lags > 0
     }
 }
 
@@ -108,6 +122,9 @@ pub struct Checks {
     /// The fast and slow fits per target, under `emit_breaks`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub twin: Vec<TwinFit>,
+    /// The robust covariances' sums per slot, under `emit_robust_se`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sandwich: Vec<Sandwich>,
 }
 
 impl Checks {
@@ -118,23 +135,69 @@ impl Checks {
             calibration: vec![Calibration::new(); on(spec.emit_calibration, n_slots)],
             breaks: vec![Breaks::new(); on(spec.emit_breaks, n_slots)],
             twin: vec![TwinFit::new(spec.k()); on(spec.emit_breaks, spec.m())],
+            sandwich: vec![
+                Sandwich::new(
+                    spec.k(),
+                    spec.fit_intercept,
+                    spec.robust_se_lags_or_default()
+                );
+                on(spec.emit_robust_se, n_slots)
+            ],
         }
     }
 
     /// Whether any switch is on: a spec with none keeps no `Checks`.
     pub fn any(spec: &Spec) -> bool {
-        spec.emit_calibration || spec.emit_breaks
+        spec.emit_calibration || spec.emit_breaks || spec.emit_robust_se
     }
 
     /// Whether a restored set is shaped as `fresh`, this spec's: the same
     /// accumulators, each shaped to be read and folded.
-    pub fn fits(&self, fresh: &Self, k: usize) -> bool {
+    pub fn fits(&self, fresh: &Self, spec: &Spec) -> bool {
+        let (k, lags) = (spec.k(), spec.robust_se_lags_or_default());
         self.calibration.len() == fresh.calibration.len()
             && self.breaks.len() == fresh.breaks.len()
             && self.twin.len() == fresh.twin.len()
+            && self.sandwich.len() == fresh.sandwich.len()
             && self.calibration.iter().all(Calibration::has_shape)
             && self.breaks.iter().all(Breaks::has_shape)
             && self.twin.iter().all(|t| t.has_shape(k))
+            && self
+                .sandwich
+                .iter()
+                .all(|s| s.has_shape(k, spec.fit_intercept, lags))
+    }
+
+    /// The rows behind this one are no longer adjacent to it -- a capped gap
+    /// or a session change -- so none is a lag of the next.
+    pub fn clear_lags(&mut self) {
+        self.sandwich.iter_mut().for_each(Sandwich::clear_lags);
+    }
+
+    /// Every slot's robust standard errors, flattened in `coef`'s layout,
+    /// HC0's or (`hac`) Newey and West's: `None` until any slot has one.
+    pub fn robust_se(&self, cfg: &CheckCfg, hac: bool) -> Option<Vec<f64>> {
+        if self.sandwich.is_empty() {
+            return None;
+        }
+        let nc = cfg.combo_features.len().max(1);
+        let width = cfg.width;
+        let mut any = false;
+        let mut out = Vec::with_capacity(self.sandwich.len() * width);
+        for (slot, s) in self.sandwich.iter().enumerate() {
+            match cfg
+                .combo_features
+                .get(slot % nc)
+                .and_then(|idx| s.standard_errors(idx, hac))
+            {
+                Some(v) => {
+                    any = true;
+                    out.extend(v);
+                }
+                None => out.extend(std::iter::repeat_n(f64::NAN, width)),
+            }
+        }
+        any.then_some(out)
     }
 
     /// Each slot's recursive residual into `v`, under `emit_breaks`:
@@ -219,6 +282,17 @@ impl Checks {
             for (t, fit) in self.twin.iter_mut().enumerate() {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
                 fit.update(row.xs, y, lam, w);
+            }
+        }
+        if !self.sandwich.is_empty() {
+            let lam = cfg.robust.factor(d_clock);
+            for (slot, s) in self.sandwich.iter_mut().enumerate() {
+                s.update(
+                    row.xs,
+                    row.resid.get(slot).copied().unwrap_or(f64::NAN),
+                    lam,
+                    w,
+                );
             }
         }
     }

@@ -104,6 +104,7 @@ mod rcov;
 mod rls;
 mod robust;
 mod runs;
+mod sandwich;
 mod seqtest;
 mod sgd;
 mod since;
@@ -168,6 +169,7 @@ pub use rcov::{
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
 pub use runs::Runs;
+pub use sandwich::Sandwich;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};

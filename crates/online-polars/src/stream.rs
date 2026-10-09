@@ -2482,6 +2482,10 @@ pub struct ChunkOut {
     /// Each coefficient's standard error under `emit_se_coef`, on `coef`'s
     /// cadence: `[model][row]` (docs/PLAN.md task 116, F).
     pub se_coef: Vec<Vec<Option<Vec<f64>>>>,
+    /// The robust standard errors under `emit_robust_se`, HC0's and Newey
+    /// and West's, laid out like `se_coef` (docs/PLAN.md task 221 (c)).
+    pub se_coef_hc0: Vec<Vec<Option<Vec<f64>>>>,
+    pub se_coef_hac: Vec<Vec<Option<Vec<f64>>>>,
     /// `n_rows` each under `emit_clocks`, else empty: the row's own clock,
     /// and the newest learned row's when it was scored (task 152).
     pub scored_clock: Vec<Option<ClockValue>>,
@@ -2583,6 +2587,8 @@ impl ChunkOut {
             inflation: vec![f64::NAN; on(spec.emit_error_inflation)],
             support_coef: vec![vec![None; n_rows]; n_models],
             se_coef: vec![vec![None; n_rows]; n_models],
+            se_coef_hc0: vec![vec![None; n_rows]; n_models],
+            se_coef_hac: vec![vec![None; n_rows]; n_models],
             scored_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
             learned_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
             n_models,
@@ -2716,6 +2722,12 @@ pub struct LastRow {
     /// Under `emit_se_coef` (task 116): NaN where nothing is estimated.
     #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
     pub se_coef: Vec<Option<Vec<f64>>>,
+    /// Under `emit_robust_se` (task 221 (c)), each instance's, `None` on a
+    /// row that was not a `coef` row and where none is switched on.
+    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
+    pub se_coef_hc0: Vec<Option<Vec<f64>>>,
+    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
+    pub se_coef_hac: Vec<Option<Vec<f64>>>,
 }
 
 /// Row `ri` of a buffer of `n_rows` rows: in every `ChunkOut` buffer the row
@@ -2757,6 +2769,12 @@ impl LastRow {
         self.se_coef.clear();
         self.se_coef
             .extend(out.se_coef.iter().map(|c| c[ri].clone()));
+        self.se_coef_hc0.clear();
+        self.se_coef_hc0
+            .extend(out.se_coef_hc0.iter().map(|c| c[ri].clone()));
+        self.se_coef_hac.clear();
+        self.se_coef_hac
+            .extend(out.se_coef_hac.iter().map(|c| c[ri].clone()));
     }
 
     /// A one-row chunk at absolute row `row`, marked processed, for
@@ -2790,6 +2808,8 @@ impl LastRow {
             out.inflation.len() == self.inflation.len(),
             out.support_coef.len() == self.support_coef.len(),
             out.se_coef.len() == self.se_coef.len(),
+            out.se_coef_hc0.len() == self.se_coef_hc0.len(),
+            out.se_coef_hac.len() == self.se_coef_hac.len(),
             out.scored_clock.len() == self.scored_clock.len(),
             out.learned_clock.len() == self.learned_clock.len(),
         ];
@@ -2825,6 +2845,12 @@ impl LastRow {
             dst[0].clone_from(src);
         }
         for (dst, src) in out.se_coef.iter_mut().zip(&self.se_coef) {
+            dst[0].clone_from(src);
+        }
+        for (dst, src) in out.se_coef_hc0.iter_mut().zip(&self.se_coef_hc0) {
+            dst[0].clone_from(src);
+        }
+        for (dst, src) in out.se_coef_hac.iter_mut().zip(&self.se_coef_hac) {
             dst[0].clone_from(src);
         }
         Ok(out)
@@ -3087,7 +3113,7 @@ impl Stream {
             .checks
             .iter()
             .zip(&fresh.checks)
-            .all(|(s, l)| s.fits(l, spec.k()))
+            .all(|(s, l)| s.fits(l, spec))
         {
             return Err("saved state's diagnostics (task 221) do not fit this spec".into());
         }
@@ -4261,6 +4287,8 @@ fn build_instances<'a>(
     let mut o_inflation = out.inflation.chunks_mut(block.max(1));
     let mut o_support_coef = out.support_coef.iter_mut();
     let mut o_se_coef = out.se_coef.iter_mut();
+    let mut o_se_hc0 = out.se_coef_hc0.iter_mut();
+    let mut o_se_hac = out.se_coef_hac.iter_mut();
 
     let n_slots = out.n_slots;
     let mut decays = decays.iter();
@@ -4315,6 +4343,8 @@ fn build_instances<'a>(
                 o_inflation: o_inflation.next().unwrap_or_default(),
                 o_support_coef: o_support_coef.next().expect("one per instance"),
                 o_se_coef: o_se_coef.next().expect("one per instance"),
+                o_se_hc0: o_se_hc0.next().expect("one per instance"),
+                o_se_hac: o_se_hac.next().expect("one per instance"),
                 decay_time: decay_time.next().expect("one per instance"),
                 notified: notified.next().expect("one per instance"),
                 // None without an embargo, which keeps no held rows' clock.
@@ -4497,6 +4527,8 @@ struct Instance<'a> {
     o_inflation: &'a mut [f64],
     o_support_coef: &'a mut Vec<Option<Vec<f64>>>,
     o_se_coef: &'a mut Vec<Option<Vec<f64>>>,
+    o_se_hc0: &'a mut Vec<Option<Vec<f64>>>,
+    o_se_hac: &'a mut Vec<Option<Vec<f64>>>,
     /// The decay time this instance has seen (docs/WARMUP-AND-CONVERGENCE.md
     /// §2), read before each row and advanced by the rows it learns from.
     decay_time: &'a mut f64,
@@ -4656,6 +4688,10 @@ fn run_instance(
                 // (docs/PLAN.md task 146).
                 if let Some(a) = inst.autocorr.as_deref_mut() {
                     a.iter_mut().for_each(EwAutoCorr::clear_lags);
+                }
+                // And Newey and West's lags (task 221 (c)).
+                if let Some(c) = inst.checks.as_deref_mut() {
+                    c.clear_lags();
                 }
             }
         }
@@ -5295,6 +5331,16 @@ fn run_instance(
             // `sqrt(1 + h)` while estimation error is in it, so the error
             // errs large in warm-up -- or `kalman`'s own, which carries the
             // noise.
+            // The robust standard errors of the fit after the row, as
+            // `se_coef`'s (task 221 (c)).
+            if let Some(c) = inst.checks.as_deref() {
+                if let Some(hc0) = c.robust_se(&inst.check_cfg, false) {
+                    inst.o_se_hc0[ri] = Some(hc0);
+                }
+                if inst.check_cfg.hac() {
+                    inst.o_se_hac[ri] = c.robust_se(&inst.check_cfg, true);
+                }
+            }
             if inst.spec.emit_se_coef {
                 inst.o_se_coef[ri] = inst.model.get().coef_variance().map(|v| {
                     let (per, over_noise) = match v {

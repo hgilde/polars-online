@@ -2366,6 +2366,7 @@ other model refuses them by name.
 | residual autocorrelation | `emit_autocorr` | `autocorr_` |
 | calibration | `emit_calibration` | `calibration_slope_`, `calibration_intercept_`, `calibration_wald_` |
 | where the relationship broke | `emit_breaks` | `studentized_`, `cusum_`, `cusum_sq_`, `break_wald_` |
+| standard errors robust to the residuals | `emit_robust_se` | `se_coef_hc0`, `se_coef_hac`, once per instance on `coef`'s rows ([Coefficients](#coefficients)) |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
 | clocks, on every model | `emit_clocks` | `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the last row learned, once per spec ([Labels that arrive late](#labels-that-arrive-late)) |
@@ -2393,6 +2394,8 @@ diag = po.spec.ewridge(
     calibration_half_life=2000.0,#                   test of slope 1 and intercept 0, at a memory of its own
     emit_breaks=True,            # studentized_, cusum_, cusum_sq_, break_wald_<slot>: CUSUMs of the studentized
     breaks_half_life=500.0,      #                   residuals, and a fast fit's distance from a slow one
+    emit_robust_se=True,         # se_coef_hc0, se_coef_hac: each coefficient's standard error, robust to unequal
+    robust_se_lags=10,           #                   residual spreads, and to overlapping labels this many rows apart
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2422,6 +2425,15 @@ threshold means the same on every stream: beside a fit at a half-life of
 break they see within 20 to 100 rows. Run once, `cusum` and `cusum_sq` are
 Brown, Durbin and Evans' CUSUM tests, whose boundaries `po.spec`'s table
 gives.
+
+**`se_coef_hac` is the standard error to trust when the target looks
+ahead.** A target that sums the next `h` rows overlaps its neighbours, so
+its residuals are correlated `h - 1` rows apart, and `se_coef`, which
+assumes they are not, was 2 to 4 times too small at `h` of 5 to 20 against
+a slowly moving feature. Newey and West's lags put the correlation back;
+they default to twice `embargo` on a stream with no clock column.
+`se_coef_hc0` is robust to residuals whose spread moves with the features.
+Both are `ewridge`'s and `rls`'s.
 
 **How often `drift` flags a stream that does not change depends on the
 residuals' tails.** At `drift_delta=0.5` and `drift_threshold=20` on a row

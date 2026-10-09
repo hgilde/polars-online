@@ -4891,12 +4891,20 @@ fn assemble(
                     }
                     coef_list_array(&support)
                 }
-                Source::SeCoef(mi) => {
+                Source::SeCoef(mi) | Source::SeCoefHc0(mi) | Source::SeCoefHac(mi) => {
+                    fn pick<'a>(src: &Source, ch: &'a ChunkOut) -> &'a [Vec<Option<Vec<f64>>>] {
+                        match src {
+                            Source::SeCoefHc0(_) => &ch.se_coef_hc0,
+                            Source::SeCoefHac(_) => &ch.se_coef_hac,
+                            _ => &ch.se_coef,
+                        }
+                    }
                     let mut se: Vec<Option<&Vec<f64>>> = vec![None; n];
                     for ch in chunks {
+                        let buf = pick(&f.src, ch);
                         for (ri, &row) in ch.rows.iter().enumerate() {
                             if ch.processed[ri]
-                                && let Some(c) = &ch.se_coef[mi][ri]
+                                && let Some(c) = &buf[mi][ri]
                             {
                                 se[row] = Some(c);
                             }

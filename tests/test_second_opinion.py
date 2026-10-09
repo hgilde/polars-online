@@ -4854,3 +4854,132 @@ class TestBreaksAreBrownDurbinAndEvans:
             checked += 1
         assert checked == 3
         assert out["break_wald_y"][650] > 21.1, "the break passes chi2(3)'s 0.01% value"
+
+
+def _sandwich_rows(n: int, seed: int) -> pl.DataFrame:
+    """Two features far from zero and a residual whose spread grows with the
+    first: heteroskedastic, as HC0 is for."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 2)) + np.array([3.0, -1.0])
+    e = rng.normal(size=n) * (0.5 + np.abs(x[:, 0] - 3.0))
+    y = 0.5 + x @ np.array([1.0, -2.0]) + e
+    w = rng.uniform(0.5, 1.5, size=n)
+    w[rng.random(n) < 0.05] = 0.0
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "w": w})
+
+
+class TestRobustStandardErrorsAreTheSandwich:
+    """Task 221 (c). ``se_coef_hc0`` and ``se_coef_hac`` are the
+    least-squares sandwich ``(X'ΩX)⁻¹ S (X'ΩX)⁻¹`` with ``S``
+    ``statsmodels``' own HAC kernel, ``S_hac_simple`` at ``nlags = 0`` and
+    at ``robust_se_lags``, over the scores ``ω e x`` of the bank's
+    out-of-sample residuals: run once, and under a memory and weights, each
+    row at its present weight. Against ``OLS.fit(cov_type="HC0" / "HAC")``,
+    which reads the final fit's in-sample residuals, they agree to the
+    estimation error the out-of-sample residuals carry."""
+
+    @staticmethod
+    def _run(df: pl.DataFrame, lags: int, **kw: Any) -> pl.DataFrame:
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            ridge=1e-12,
+            min_weight=10.0,
+            emit_robust_se=True,
+            robust_se_lags=lags,
+            coef_every=0,
+            **kw,
+        )
+        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    @pytest.mark.parametrize(("half_life", "weighted"), [(float("inf"), False), (150.0, True)])
+    def test_the_sandwich_is_statsmodels_kernel_on_the_out_of_sample_residuals(
+        self, half_life, weighted
+    ):
+        import statsmodels.api as sm
+        from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+        lags = 4
+        df = _sandwich_rows(900, 51)
+        kw: dict[str, Any] = {"half_life": half_life}
+        if weighted:
+            kw["weight"] = "w"
+        out = self._run(df if weighted else df.drop("w"), lags, **kw)
+        resid = out["resid_y"].to_numpy()
+        w = df["w"].to_numpy() if weighted else np.ones(df.height)
+        X = sm.add_constant(df.select("x0", "x1").to_numpy())
+        checked = 0
+        for t in (120, 500, 899):
+            age = t - np.arange(t + 1)
+            omega = w[: t + 1] * (0.5 ** (age / half_life))
+            keep = np.isfinite(resid[: t + 1]) & (omega > 0)
+            Xk, ek, om = X[: t + 1][keep], resid[: t + 1][keep], omega[keep]
+            bi = np.linalg.inv((Xk * om[:, None]).T @ Xk)
+            for nlags, field in ((0, "se_coef_hc0"), (lags, "se_coef_hac")):
+                S = S_hac_simple(Xk * (om * ek)[:, None], nlags=nlags)
+                want = np.sqrt(np.diag(bi @ S @ bi))
+                np.testing.assert_allclose(out[field][t].to_numpy(), want, rtol=1e-8)
+                checked += 1
+        assert checked == 6
+
+    def test_run_once_it_is_statsmodels_robust_fit_to_the_estimation_error(self):
+        import statsmodels.api as sm
+
+        df = _sandwich_rows(1500, 52).drop("w")
+        out = self._run(df, 3, half_life=float("inf"))
+        ok = np.isfinite(out["resid_y"].to_numpy())
+        X = sm.add_constant(df.select("x0", "x1").to_numpy())[ok]
+        y = df["y"].to_numpy()[ok]
+        for cov, kw, field in (
+            ("HC0", {}, "se_coef_hc0"),
+            ("HAC", {"maxlags": 3}, "se_coef_hac"),
+        ):
+            fit = sm.OLS(y, X).fit(cov_type=cov, cov_kwds=kw or None)
+            ratio = out[field][-1].to_numpy() / fit.bse
+            # Out of sample: a little larger, by the estimation error.
+            assert ((ratio > 1.0) & (ratio < 1.03)).all(), (cov, ratio)
+
+    def test_overlapping_labels_put_back_about_the_square_root_of_the_horizon(self):
+        """A target summing the next 10 rows' shocks against an AR(1)
+        feature at 0.95, learned under ``embargo=10``: across 300 streams the
+        coefficient's spread is about ``sqrt(10)`` times ``se_coef``, and
+        ``se_coef_hac`` at its default lags, twice the horizon, reads it to
+        within 15%; HC0, which assumes no correlation, does not."""
+        h, n, g = 10, 3000, 300
+        rng = np.random.default_rng(221)
+        frames = []
+        for gi in range(g):
+            u = rng.normal(size=n + 200)
+            x = np.zeros(n + 200)
+            for t in range(1, n + 200):
+                x[t] = 0.95 * x[t - 1] + np.sqrt(1 - 0.95**2) * u[t]
+            eps = rng.normal(size=n + 200 + h)
+            noise = np.convolve(eps, np.ones(h), "valid")[1 : n + 201]
+            frames.append(
+                pl.DataFrame({"g": np.full(n, gi), "x0": x[200:], "y": 0.2 * x[200:] + noise[200:]})
+            )
+        df = pl.concat(frames)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            half_life=float("inf"),
+            group="g",
+            embargo=float(h),
+            min_weight=20.0,
+            emit_robust_se=True,
+            emit_se_coef=True,
+            emit_sigma=True,
+            coef_every=0,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        last = out.group_by("g", maintain_order=True).last()
+        slope = np.array([c[1] for c in last["coef"].to_list()])
+        se = np.array([c[1] for c in last["se_coef"].to_list()]).mean()
+        hc0 = np.array([c[1] for c in last["se_coef_hc0"].to_list()]).mean()
+        hac = np.array([c[1] for c in last["se_coef_hac"].to_list()]).mean()
+        spread = slope.std(ddof=1)
+        assert 0.6 * np.sqrt(h) < spread / se < 1.2 * np.sqrt(h), spread / se
+        assert abs(hac / spread - 1.0) < 0.15, hac / spread
+        assert hc0 / spread < 0.5, hc0 / spread

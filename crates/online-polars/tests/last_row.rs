@@ -43,6 +43,8 @@ fn rich_spec() -> Spec {
             "emit_error_inflation": true,
             "emit_calibration": true,
             "emit_breaks": true,
+            "emit_robust_se": true,
+            "robust_se_lags": 2,
             "min_settled_frac": 0.2
         }"#,
     )

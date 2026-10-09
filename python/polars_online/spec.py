@@ -214,8 +214,9 @@ the diagnostics
     ``conformal_rate`` (default 0.05), ``resid_quantiles``, ``emit_autocorr``
     with ``resid_autocorr_lag``, ``emit_drift`` with ``drift_delta``,
     ``drift_threshold`` and ``drift_action``, ``emit_calibration`` with
-    ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``, and
-    ``emit_clocks``. Each adds fields to the
+    ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``,
+    ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
+    and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: the model instance's half-life when left out, and ``inf``
@@ -261,7 +262,8 @@ number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
 ``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``,
-``calibration_half_life`` and ``breaks_half_life`` below, and in the models
+``calibration_half_life``, ``breaks_half_life`` and
+``robust_se_half_life`` below, and in the models
 ``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
@@ -380,6 +382,7 @@ target, so their fields take no suffix:
     coef{instance}                     instance = ""             single half-life
     support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
     se_coef{instance}                           emit_se_coef
+    se_coef_hc0{instance}, se_coef_hac{instance}  emit_robust_se
     penalty_selected_{target}{instance}         lasso: the path point in force
     selected_{target}                           emit_selected: the chosen slot
     pred_{target}__selected                     emit_selected: its prediction
@@ -437,6 +440,27 @@ The diagnostics add, per slot:
        Refused for ``lasso`` (post-selection), ``huber`` and ``quantile``
        (an M-estimator's covariance is a sandwich), and the gradient models
        (no second moment).
+   * - ``emit_robust_se``
+     - ``se_coef_hc0``, ``se_coef_hac``
+     - Beside ``se_coef``, on ``coef``'s rows and laid out like it, the
+       standard errors of the least-squares sandwich ``B^-1 M B^-1`` at
+       ``robust_se_half_life``: ``B`` the EW Gram of ``(1, x)``, and ``M``
+       White's ``sum(w**2 * e**2 * z z')`` for ``se_coef_hc0``, with Newey
+       and West's lag products to ``robust_se_lags`` at Bartlett's weights
+       ``1 - l / (L + 1)`` for ``se_coef_hac``, written when there is a
+       lag. ``e`` is the row's out-of-sample residual, which carries its
+       estimation error where the classical sandwich's in-sample residual
+       does not: run once on 1,500 rows it read 0.9-1.3% above
+       statsmodels' ``cov_type="HC0"`` and ``"HAC"``, and on 3,000 rows
+       under a 5- to 20-row embargo 2-9% above. The lags default to twice the
+       target's horizon in rows: ``embargo`` on a spec with no clock
+       column, ``0`` otherwise. On a target summing the next ``h`` rows'
+       shocks against a persistent feature, the coefficient's true spread
+       was 2.1-2.3 times ``se_coef`` at ``h = 5`` and 3.1-4.2 times at
+       ``h = 20`` (``sqrt(h)`` is 2.2 and 4.5), and ``se_coef_hac`` read
+       83-97% of it at ``L = h`` and 90-104% at ``2h``. ``ewridge`` and
+       ``rls`` only, the least-squares fits; the ridge is left out, as
+       ``se_coef`` leaves it out.
    * - ``emit_clocks``
      - ``scored_clock``, ``learned_clock``
      - The row's own clock, and the clock of the newest row the models had
@@ -603,7 +627,7 @@ value the model refuses:
   past 256 MiB, ``rcov``'s lagged products past 256 MiB;
 - ``inf`` where it means nothing (it is allowed where it does --
   ``half_life``, ``min_weight``, ``average_eta``, ``calibration_half_life``,
-  ``breaks_half_life`` and the model parameters
+  ``breaks_half_life``, ``robust_se_half_life`` and the model parameters
   that say so);
 - neither ``half_life`` nor ``lam``;
 - ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
@@ -620,8 +644,9 @@ A parameter whose switch is off is refused rather than ignored:
   ``emit_drift``;
 - ``average_eta`` without ``emit_averaged``;
 - ``resid_autocorr_lag`` without ``emit_autocorr``;
-- ``calibration_half_life`` without ``emit_calibration``, and
-  ``breaks_half_life`` without ``emit_breaks``;
+- ``calibration_half_life`` without ``emit_calibration``,
+  ``breaks_half_life`` without ``emit_breaks``, and ``robust_se_half_life``
+  or ``robust_se_lags`` without ``emit_robust_se``;
 - ``long_half_life`` without ``session_shrink``;
 - ``session_gap`` without ``session``;
 - ``restart_after_step_back`` without ``clock``;

@@ -79,6 +79,9 @@ class ExprKwargs(TypedDict, total=False):
     calibration_half_life: float | Duration | None
     emit_breaks: bool
     breaks_half_life: float | Duration | None
+    emit_robust_se: bool
+    robust_se_half_life: float | Duration | None
+    robust_se_lags: int | None
     embargo: float | Duration | None
 
 
