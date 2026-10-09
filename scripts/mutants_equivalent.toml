@@ -1641,3 +1641,78 @@ function = "standardize_row"
 mutation = "replace * with /"
 line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::prior_quad"
+mutation = "replace > with >="
+line_has = "if coupled && i > 0 {"
+why = """the mutant takes the coupled branch in the intercept's slot too, \
+where it adds `g_0 z_0` to `phi_0 z_0`: `coupling` writes `g_0 = 0` \
+before it can return true, and `z_0` is the intercept's 1, so the term \
+is `+0` and the sum `phi_0 z_0`'s double"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::prior_quad"
+mutation = "replace * with /"
+line_has = "g[i] * za[0] + phi[i] * za[i]"
+why = """the first `*` only (column 30; the second is caught): `za[0]` is \
+the intercept's 1 -- `anchored` passes the intercept's slot through as \
+given, and the coupling exists only with an intercept -- so `g_i / 1` is \
+`g_i · 1`"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::coef_variance_of"
+mutation = "replace * with +"
+line_has = """if i < off {
+                    p[i * k + i]"""
+why = """the branch runs only for `i < off`, the intercept's slot `i = 0`, \
+and with an intercept `out[0]` is written again below, as `v' P v`, \
+before anything reads it; the index the mutant reads, `0 + k + 0`, is \
+inside `P`, which is `k × k` with `k ≥ 2`"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::coef_variance_of"
+mutation = "replace * with /"
+line_has = """if i < off {
+                    p[i * k + i]"""
+why = "as `replace * with +` here: at `i = 0` the index is 0, and `out[0]` is written again below"
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::coef_variance_of"
+mutation = "replace + with *"
+line_has = """if i < off {
+                    p[i * k + i]"""
+why = "as `replace * with +` here: at `i = 0` the index is 0, and `out[0]` is written again below"
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::coef_variance_of"
+mutation = "replace + with -"
+line_has = """if i < off {
+                    p[i * k + i]"""
+why = "as `replace * with +` here: at `i = 0` the index is 0, and `out[0]` is written again below"
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::own_noise_ratio"
+mutation = "replace > with >="
+line_has = "if own > 0.0 && mean > 0.0 {"
+why = """the second operand only (`mean > 0.0`, column 30; `own > 0.0` is \
+caught), as in `pred_var`: `own` is one of the residual variances \
+`mean` averages, so where `own > 0` holds `mean` is a mean of numbers \
+above 0, at least `2^-1074`, and `> 0`, `>= 0` agree; where it fails \
+the line is false either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/kalman.rs"
+function = "<impl OnlineModel for Kalman>::step"
+mutation = "replace > with >="
+line_has = "if n > 0.0 {"
+why = """`n` counts the row's squares; at `n = 0` there are none, their sum \
+is 0, and the mutant hands the shared basis `0 / 0`, NaN, which \
+`NoiseBasis::add` keeps out as it keeps out every square not above 0"""

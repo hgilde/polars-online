@@ -290,3 +290,41 @@ shows the difference, and a gain reads it only on a row whose `p0 σ²` \
 underflows to 0 or overflows though `σ²` is a positive number. From \
 `size_again` (task 214) `P` has just been emptied with `+0.0`, and there \
 the mutant writes the same zeros"""
+
+# Task 220 (docs/PLAN.md): from the 698 mutants the Mutants job of the push
+# to 103d721 never reached.
+
+[[tolerated]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::size_slots"
+mutation = "replace > with >="
+line_has = "if !(v > 0.0 && v.is_finite()) {"
+kind = "rounding"
+why = """at `v = 0`, where `p0` times the noise underflows, the mutant sizes \
+each unsized slot by 0, which moves no number, but marks it as holding \
+something for the rest of the row, setting the anchor of one that held \
+nothing to the moments as they stand. The row's drift then counts it, and \
+where the row moves its moments past `ANCHOR_DRIFT` the re-map runs a row \
+early, a change of coordinates. Measured on a stream built for it \
+(`p0 = 1e-300` sizing one target's covariance while the other's prior, \
+`1e-300` times a noise near `1e-30`, underflows, and a feature turning \
+usable and jumping on a row only that target observes): every \
+prediction, `pred_var` and `se_coef` within 7.6e-16 of its value, every \
+coefficient within 7e-16 (4e-13 of an intercept near 1.7e-3 read out of \
+terms near 1); the saved state holds `b` and `P` in another anchor's \
+coordinates"""
+
+[[tolerated]]
+file = "crates/online-core/src/kalman.rs"
+function = "Kalman::coef_variance_of"
+mutation = "replace + with -"
+line_has = "-(self.anchor_hi[i] + self.anchor_lo[i]) / s[i]"
+kind = "rounding"
+why = """`hi + lo` and `hi − lo` are both `hi` wherever the anchor's mean is \
+rounded, `|lo|` at most half a rounding step of `hi`; they part only on \
+an anchor taken from a pair Kahan's step left unrounded, after a step \
+larger than the mean (`crate::comp::add`), by a rounding step or two of \
+`hi`. Measured over 44,000 rows of eleven streams with features near 0: \
+25 rows held such an anchor, all on streams with an outlier every 25 \
+rows, and the intercept's variance moved on 35 readings by at most \
+6.6e-16 of itself"""

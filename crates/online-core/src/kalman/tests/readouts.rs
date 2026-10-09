@@ -1217,3 +1217,206 @@ fn the_intercept_reads_the_anchors_mean_whole() {
     m.beta[0] = vec![8.0 * hi + 3.0, 4.0];
     assert_eq!(m.coefficients()[0], vec![3.0 - 8.0 * lo, 8.0]);
 }
+
+/// Before a target has a residual variance there is no noise to read its
+/// covariance against (the module doc; docs/PLAN.md task 220). A
+/// covariance its target's first row sized carries no gap noise across the
+/// rows after it that do not observe the target, so its coefficients'
+/// variances are `P`'s own; and the statistics read against the noise are
+/// infinite, not `0 / 0`, where the design has nothing in it: rows at the
+/// origin of an unstandardized fit through it, whose `z' P z` and trace
+/// are 0. Each target's first row comes on a row of its own, the first
+/// at row 0 with the features at 0.
+#[test]
+fn before_a_residual_variance_a_covariance_reads_no_noise() {
+    let mut c = cfg(2, 2, vec![20.0]);
+    c.standardize = false;
+    c.fit_intercept = false;
+    c.decay = Decay::Lam(0.9);
+    c.min_weight = 0.0;
+    c.p0 = 2.0;
+    let mut s = 61u64;
+    let mut rows: Vec<TwinRow> = vec![
+        (vec![0.0, 0.0], vec![Some(1.5), None], 0.0, 1.0),
+        (vec![0.0, 0.0], vec![None, None], 1.0, 1.0),
+        (vec![0.5, -0.5], vec![None, Some(-0.7)], 2.0, 1.0),
+    ];
+    for i in 0..60 {
+        let x = vec![lcg(&mut s), lcg(&mut s)];
+        let y0 = (i % 4 != 1).then(|| 1.0 + x[0] - 0.5 * x[1] + 0.2 * lcg(&mut s));
+        let y1 = (i % 3 != 2).then(|| -x[0] + 0.2 * lcg(&mut s));
+        rows.push((x, vec![y0, y1], 1.0, 1.0));
+    }
+    let mut reached = [false; 2];
+    let compared = against_the_twin(c, &rows, &[0.4, -0.3], "no noise yet", |i, m| {
+        let sized = m.p[0][0] > 0.0 && m.sig2[0] == 0.0;
+        if i == 0 {
+            assert!(sized && m.stats.raw(0) == 0.0, "{:?}", m.p[0]);
+            reached[0] = true;
+        }
+        if i == 1 {
+            assert!(sized && m.elapsed[0] > 0.0, "{:?} {:?}", m.p[0], m.elapsed);
+            reached[1] = true;
+        }
+    });
+    assert_eq!(reached, [true; 2]);
+    assert!(compared > 300, "{compared} numbers compared");
+}
+
+/// A prior that would overflow is never sized (the module doc), whichever
+/// noise it is sized from: the first rows' squared innovations, the
+/// residual variance once there is one, and, standardized, the noise
+/// basis. With `p0 = 1e200` and targets at the input bound each is `p0`
+/// times some `1e200`: every covariance stays unsized, all zero and
+/// finite, its variances none, and `pred_var` reads the residual variance
+/// alone, across the rows without the target too -- the noise of the
+/// clock goes on sized slots only, and there are none (docs/PLAN.md task
+/// 220). An infinite prior is no prior: it would refuse every gain for
+/// good.
+#[test]
+fn a_prior_that_would_overflow_is_never_sized() {
+    for (standardize, fit_intercept) in [(false, false), (false, true), (true, true), (true, false)]
+    {
+        let mut c = cfg(1, 1, vec![20.0]);
+        c.standardize = standardize;
+        c.fit_intercept = fit_intercept;
+        c.decay = Decay::Lam(0.9);
+        c.min_weight = 0.0;
+        c.p0 = 1e200;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 71u64;
+        let what = format!("standardize {standardize}, intercept {fit_intercept}");
+        let mut gaps = 0;
+        for i in 0..15 {
+            let x = 1.0 + lcg(&mut s);
+            let y = (i % 3 != 2).then(|| crate::INPUT_BOUND * lcg(&mut s));
+            m.step(&[x], &[y], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            assert!(
+                m.p[0].iter().all(|v| *v == 0.0),
+                "{what}, row {i}: {:?}",
+                m.p[0]
+            );
+            let Some(crate::CoefVariance::Absolute(v)) = m.coef_variance() else {
+                panic!("kalman's variances are absolute");
+            };
+            assert!(v[0].iter().all(|v| v.is_nan()), "{what}, row {i}: {v:?}");
+            let pv = m.pred_var(&[0.5])[0];
+            assert!(
+                pv == m.sig2[0] || (pv.is_nan() && m.sig2[0] == 0.0),
+                "{what}, row {i}: {pv:e}"
+            );
+            gaps += usize::from(m.elapsed[0] > 0.0 && m.sig2[0] > 0.0);
+        }
+        assert!(
+            m.sig2[0] > 1e190 && m.basis[0].e2.len() == usize::from(standardize) * 3,
+            "{what}"
+        );
+        assert!(gaps >= 4, "{what}: {gaps} rows read across a gap");
+    }
+}
+
+/// The noise basis is what a standardized prior is sized from when no
+/// `obs_var` is given (the module doc): an unstandardized filter sizes
+/// its prior from the noise itself, and one with `obs_var` from that, so
+/// neither keeps a basis, and a state saved from either holds none
+/// (docs/PLAN.md task 220).
+#[test]
+fn only_a_standardized_filter_without_obs_var_keeps_a_noise_basis() {
+    for (standardize, obs_var, kept) in [
+        (false, None, 0),
+        (false, Some(0.3), 0),
+        (true, Some(0.3), 0),
+        (true, None, PRIOR_ROWS),
+    ] {
+        for share_p in [false, true] {
+            let mut c = cfg(1, 2, vec![20.0]);
+            c.standardize = standardize;
+            c.obs_var = obs_var;
+            c.share_p = share_p;
+            c.min_weight = 0.0;
+            let mut m = Kalman::new(c).unwrap();
+            let mut s = 73u64;
+            for i in 0..10 {
+                let x = lcg(&mut s);
+                let ys = [
+                    Some(1.0 + x + 0.1 * lcg(&mut s)),
+                    Some(x - 0.2 * lcg(&mut s)),
+                ];
+                m.step(&[x], &ys, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let what = format!("standardize {standardize}, obs_var {obs_var:?}, share {share_p}");
+            assert!(
+                m.basis.iter().all(|b| b.e2.len() == kept),
+                "{what}: {:?}",
+                m.basis
+            );
+            let back: Kalman = rmp_serde::from_slice(&rmp_serde::to_vec(&m).unwrap()).unwrap();
+            assert!(
+                back.basis
+                    .iter()
+                    .all(|b| b.e2.len() == kept && b.w.len() == kept),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// The noise basis holds each row's squared innovation, the target less
+/// the prediction, `(y − zᵀb)²` (the module doc; docs/PLAN.md task 220).
+/// No stream reaches a basis short of its rows with a coefficient off 0
+/// -- none moves until the basis sizes the prior -- so the state is handed
+/// one, as a file could hold it: an intercept of 0.5 and a target of 2
+/// put `1.5²` in the basis.
+#[test]
+fn the_noise_basis_holds_squared_innovations() {
+    let mut c = cfg(1, 1, vec![20.0]);
+    c.min_weight = 0.0;
+    let mut m = Kalman::new(c).unwrap();
+    m.beta[0] = vec![0.5, 0.0];
+    m.step(&[1.0], &[Some(2.0)], 0.0, 1.0);
+    assert_eq!(m.basis[0].e2, vec![2.25]);
+}
+
+/// The anchor follows the moments after a row that moves them, and only
+/// then (the module doc; docs/PLAN.md task 220): a row of weight 0 moves
+/// no moment, so it re-maps nothing, even where the moments stand past the
+/// drift bound from the anchor. No stream leaves them there -- each row
+/// that moves them is followed -- so the state is handed an anchor three
+/// scales off; the next row that moves the moments re-maps and moves the
+/// anchor to them.
+#[test]
+fn only_a_row_that_moves_the_moments_moves_the_anchor() {
+    let mut c = cfg(1, 1, vec![20.0]);
+    c.min_weight = 0.0;
+    c.decay = Decay::Lam(0.9);
+    let mut m = Kalman::new(c).unwrap();
+    let mut s = 79u64;
+    for i in 0..30 {
+        let x = 2.0 + lcg(&mut s);
+        m.step(
+            &[x],
+            &[Some(1.0 + x + 0.1 * lcg(&mut s))],
+            if i == 0 { 0.0 } else { 1.0 },
+            1.0,
+        );
+    }
+    m.anchor_hi[1] -= 3.0 * m.anchor_scale[1];
+    let held = |m: &Kalman| {
+        (
+            m.anchor_hi.clone(),
+            m.anchor_lo.clone(),
+            m.anchor_scale.clone(),
+            m.beta.clone(),
+            m.p.clone(),
+        )
+    };
+    let before = held(&m);
+    m.step(&[2.5], &[Some(3.4)], 1.0, 0.0);
+    assert_eq!(held(&m), before, "a row of weight 0 re-mapped");
+    m.step(&[2.5], &[Some(3.4)], 1.0, 1.0);
+    assert_eq!(
+        (m.anchor_hi[1], m.anchor_lo[1]),
+        m.stats.mean_pair(1),
+        "the next row re-maps"
+    );
+}
