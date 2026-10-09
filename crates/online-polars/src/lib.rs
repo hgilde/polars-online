@@ -44,6 +44,7 @@ mod bank;
 mod column;
 mod defaults;
 mod formula;
+pub mod gramfit;
 mod pool;
 mod refresh;
 mod resid_window;

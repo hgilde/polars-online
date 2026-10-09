@@ -80,6 +80,8 @@ mod ewlagcov;
 mod ewridge;
 mod ftrl;
 mod gaps;
+/// Fits read off an exported Gram, offline (docs/PLAN.md tasks 226-227).
+pub mod gramfit;
 mod hmm;
 mod holt;
 pub mod humanfloat;

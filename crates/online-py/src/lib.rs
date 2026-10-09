@@ -2,6 +2,8 @@
 //! (Python dicts are serialized by the thin wrapper in
 //! `python/polars_online/`), and frames cross on the Arrow C Data Interface.
 
+mod gramfit;
+
 use online_polars::online_core::ClockValue;
 use online_polars::{Bank, GroupKey, Spec, StructArray, chunk_from_frame, export_struct_to_c};
 use polars::prelude::PolarsError;
@@ -1077,6 +1079,8 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyArrowStruct>()?;
     m.add_class::<PyRefreshTime>()?;
     m.add_class::<PyWindows>()?;
+    m.add_function(wrap_pyfunction!(gramfit::gram_lars_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(gramfit::gram_cd_path, m)?)?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;

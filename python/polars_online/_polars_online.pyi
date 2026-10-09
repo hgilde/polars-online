@@ -145,3 +145,32 @@ def native_version() -> str: ...
 def schema_version() -> int: ...
 def thread_pool_size() -> int: ...
 def model_kinds() -> list[str]: ...
+
+# A Gram as the fits in `polars_online.gram` hand it over: `k`, then `means`,
+# `comoments`, `cross_moments`, `means_by_target` and `cross_centred`, each a
+# C-contiguous float64 numpy array.
+_GramIn = tuple[int, object, object, object, object, object]
+# A lasso path: the knots' penalties, their coefficients (the bytes of
+# native-endian float64s, flat), the active columns at each, and why it stopped.
+_PathOut = tuple[list[float], bytearray, list[list[int]], str]
+
+def gram_lars_paths(
+    grams: list[_GramIn],
+    targets: list[list[int]],
+    slots: list[int],
+    icept: int | None,
+    weights: list[float],
+    max_steps: int | None,
+    max_active: int | None,
+) -> list[list[_PathOut]]: ...
+def gram_cd_path(
+    gram: _GramIn,
+    target: int,
+    slots: list[int],
+    icept: int | None,
+    penalties: list[float],
+    l1_ratio: float,
+    weights: list[float],
+    max_iter: int,
+    tol: float,
+) -> list[float]: ...

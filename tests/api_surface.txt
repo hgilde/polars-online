@@ -969,6 +969,8 @@
     condition(g: 'dict[str, Any]', *, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
     correlation(g: 'dict[str, Any]') -> 'Any'
     from_row(row: 'Any') -> 'dict[str, Any]'
+    lars_path(g: 'dict[str, Any]', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_steps: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'dict[str, Any]'
+    lars_paths(grams: 'Sequence[dict[str, Any]]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, max_steps: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'list[list[dict[str, Any]]]'
     lasso_path(g: 'dict[str, Any]', penalties: 'Sequence[float]', *, l1_ratio: 'float' = 1.0, penalty_weights: 'Sequence[float] | None' = None, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int' = 1000, tol: 'float' = 1e-07) -> 'Any'
     merge(grams: 'Sequence[dict[str, Any]]') -> 'dict[str, Any]'
     solve(g: 'dict[str, Any]', *, ridge: 'float | Sequence[float]' = 0.0, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, standardize: 'bool' = False) -> 'Any'

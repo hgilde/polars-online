@@ -4412,3 +4412,95 @@ class TestVarianceInflation:
         design = np.c_[np.ones(n), x]
         want = [variance_inflation_factor(design, j) for j in (1, 2, 3)]
         np.testing.assert_allclose(got, want, rtol=1e-7)
+
+
+class TestLarsPathIsSklearns:
+    """``po.gram.lars_path`` and ``po.gram.lasso_path`` (docs/PLAN.md task
+    226) against scikit-learn, from the raw rows: ``lars_path_gram`` on the
+    standardized rows' Gram for the knots and their active sets, and
+    ``enet_path`` / ``lasso_path`` for the grid. The rows are standardized
+    by their population spread and the target centred, which is the
+    correlation form the Gram's ``lam=1.0`` accumulator reaches by its own
+    arithmetic; ``n_samples`` puts scikit-learn's ``alpha`` in the same
+    units as the penalty here.
+
+    The designs mix their columns' signs, which is what makes a column
+    leave the path: seeds 0, 1, 3 and 11 have four to seven knots where one
+    does (counted below, so the lasso modification is exercised), seed 2
+    none. scikit-learn leaves a coefficient that has left at a rounding
+    residue (up to ``1.1e-16`` here) where this path writes 0, so a
+    coefficient counts as active above ``1e-12``."""
+
+    N, K = 200, 10
+
+    def rows(self, seed: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+        rng = np.random.default_rng(seed)
+        mix = np.eye(self.K) + rng.standard_normal((self.K, self.K))
+        x = rng.standard_normal((self.N, self.K)) @ mix + 5.0
+        beta = rng.standard_normal(self.K)
+        y = x @ beta + 1.0 + 2.0 * rng.standard_normal(self.N)
+        features = [f"x{i}" for i in range(self.K)]
+        spec = po.spec.ewridge("m", targets=["y"], features=features, lam=1.0, min_weight=5.0)
+        frame = pl.DataFrame({f: x[:, i] for i, f in enumerate(features)}).with_columns(
+            y=pl.Series(y)
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        return x, y, bank.gram("m")[0]
+
+    @staticmethod
+    def standardized(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        sd = x.std(axis=0)
+        return (x - x.mean(axis=0)) / sd, y - y.mean(), sd
+
+    LEAVES = {0: 7, 1: 4, 2: 0, 3: 4, 11: 4}
+
+    @pytest.mark.parametrize("seed", list(LEAVES))
+    def test_the_knots_and_their_active_sets_are_lars_path_grams(self, seed):
+        from sklearn.linear_model import lars_path_gram
+
+        x, y, g = self.rows(seed)
+        xs, yc, sd = self.standardized(x, y)
+        alphas, _, coefs = lars_path_gram(
+            xs.T @ yc, xs.T @ xs, n_samples=self.N, method="lasso", eps=1e-15
+        )
+        path = po.gram.lars_path(g)
+        assert len(path["penalties"]) == len(alphas)
+        np.testing.assert_allclose(path["penalties"], alphas, rtol=1e-9, atol=1e-12)
+        ours = path["coef"][:, 1:] * sd  # back to the standardized basis
+        np.testing.assert_allclose(ours, coefs.T, rtol=1e-8, atol=1e-10)
+        # The same active set at every knot: the nonzero coefficients.
+        support = [list(np.flatnonzero(np.abs(c) > 1e-12)) for c in coefs.T]
+        assert [list(np.flatnonzero(r)) for r in ours] == support
+        sets = path["active"]
+        leaves = sum(len(b) < len(a) for a, b in zip(sets, sets[1:], strict=False))
+        assert leaves == self.LEAVES[seed]
+
+    def test_penalty_weights_are_lars_on_rescaled_columns(self):
+        from sklearn.linear_model import lars_path_gram
+
+        x, y, g = self.rows(3)
+        xs, yc, sd = self.standardized(x, y)
+        w = np.linspace(0.5, 2.0, self.K)
+        xw = xs / w
+        alphas, _, coefs = lars_path_gram(
+            xw.T @ yc, xw.T @ xw, n_samples=self.N, method="lasso", eps=1e-15
+        )
+        path = po.gram.lars_path(g, penalty_weights=w)
+        np.testing.assert_allclose(path["penalties"], alphas, rtol=1e-9, atol=1e-12)
+        np.testing.assert_allclose(path["coef"][:, 1:] * sd, (coefs / w[:, None]).T, atol=1e-10)
+
+    @pytest.mark.parametrize("l1_ratio", [1.0, 0.5])
+    def test_the_grid_is_enet_paths(self, l1_ratio):
+        from sklearn.linear_model import enet_path
+
+        x, y, g = self.rows(7)
+        xs, yc, sd = self.standardized(x, y)
+        penalties = [0.8, 0.4, 0.2, 0.1, 0.05, 0.01]
+        _, coefs, _ = enet_path(
+            xs, yc, l1_ratio=l1_ratio, alphas=penalties, tol=1e-14, max_iter=100_000
+        )
+        ours = po.gram.lasso_path(g, penalties, l1_ratio=l1_ratio, tol=1e-14, max_iter=100_000)
+        np.testing.assert_allclose(ours[:, 1:] * sd, coefs.T, atol=1e-8)
+        # The intercept: the target's mean less the slopes at the column means.
+        np.testing.assert_allclose(ours[:, 0], y.mean() - ours[:, 1:] @ x.mean(axis=0), atol=1e-8)

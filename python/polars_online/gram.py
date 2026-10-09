@@ -5,9 +5,11 @@ them, and put standard errors on a fit.
 against, from one pass over data that is never materialized. This module is
 what to do with them afterwards: pool shards (:func:`merge`), take a subset of
 the columns (:func:`subset`), read a correlation matrix (:func:`correlation`),
-solve a ridge (:func:`solve`), walk a lasso path (:func:`lasso_path`), put
-standard errors on coefficients (:func:`coef_stats`), and diagnose
-collinearity (:func:`vif`, :func:`condition`).
+solve a ridge (:func:`solve`), walk a lasso path over a grid of penalties
+(:func:`lasso_path`) or from its start knot by knot (:func:`lars_path`, and
+:func:`lars_paths` for many Grams and targets at once), put standard errors
+on coefficients (:func:`coef_stats`), and diagnose collinearity
+(:func:`vif`, :func:`condition`).
 
 Every function takes the mapping ``gram()`` produces (``columns``,
 ``targets``, ``means``, ``comoments``, ``cross_moments``, ``means_by_target``,
@@ -23,7 +25,9 @@ models factorize with ``faer``'s Cholesky, and here numpy runs LAPACK's
 symmetric eigendecomposition (``numpy.linalg.eigh``) in :func:`solve` and
 :func:`vif`, and an inverse (``numpy.linalg.inv``) in :func:`coef_stats`,
 which round differently in the last place or two. The tests hold the two to
-a relative tolerance, not to equality.
+a relative tolerance, not to equality. :func:`lasso_path` and
+:func:`lars_path` run in Rust, and :func:`lars_paths` on the bank's thread
+pool.
 
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
@@ -36,6 +40,7 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+from polars_online import _polars_online as _native
 from polars_online._renamed import renamed_keywords
 
 __all__ = [
@@ -44,6 +49,8 @@ __all__ = [
     "condition",
     "correlation",
     "from_row",
+    "lars_path",
+    "lars_paths",
     "lasso_path",
     "merge",
     "solve",
@@ -707,6 +714,13 @@ def lasso_path(
     model's descent reads it; through the origin nothing is centred and the raw
     moments are used, as the model does.
 
+    The descent runs in Rust, about 70 times faster than the Python loop it
+    replaced: on 40 penalties at 15 strongly correlated columns, 1.8 ms where
+    that loop took 129 ms. Each sweep updates the coordinates in the same
+    order, so a row matches that loop's to rounding (``2e-15`` there), not to
+    the bit: the sum over the other columns runs in a different order. For
+    the start of a path, knot by knot and exactly, see :func:`lars_path`.
+
     .. rubric:: Parameters
 
     ``penalties``
@@ -769,34 +783,6 @@ def lasso_path(
     t = _target_index(g, target)
     slots, icept = _feature_slots(g, features)
     k = len(_columns(g))
-    means = np.asarray(g["means"], dtype=float)
-    cross = np.asarray(g["cross_moments"], dtype=float)[t]
-    como = np.asarray(g["comoments"], dtype=float)
-
-    m, ybar = means, 0.0
-    if icept >= 0:
-        # Centred at the target's own means, as the model's descent reads it
-        # (docs/PLAN.md task 81).
-        m = _means_of(np, g, t)
-        ybar = cross[icept]
-        c = como[np.ix_(slots, slots)]
-        rhs = _cross_centred(np, g, t, m, ybar)[slots]
-    else:
-        # Through the origin nothing is centred: raw moments, as the model
-        # has them since the code review's C8.
-        c = como[np.ix_(slots, slots)] + np.outer(means[slots], means[slots])
-        rhs = cross[slots]
-    s = np.sqrt(np.clip(np.diag(c), 0.0, None))
-    live = s > 0.0
-    scale = np.where(live, s, 1.0)
-    # The model writes 1 on the diagonal of a dead column so the descent
-    # divides by something; its coefficient is pinned at 0 regardless.
-    corr = c / np.outer(scale, scale)
-    corr[~live, :] = 0.0
-    corr[:, ~live] = 0.0
-    corr[~live, ~live] = 1.0
-    d = np.where(live, rhs / scale, 0.0)
-
     pw = (
         np.ones(len(slots)) if penalty_weights is None else np.asarray(penalty_weights, dtype=float)
     )
@@ -806,27 +792,246 @@ def lasso_path(
     if not np.all(np.isfinite(pw) & (pw >= 0.0)):
         msg = f"lasso_path: penalty_weights must be finite and >= 0, got {pw.tolist()!r}"
         raise ValueError(msg)
+    flat = _native.gram_cd_path(
+        _native_gram(np, g, icept),
+        t,
+        slots,
+        None if icept < 0 else icept,
+        [float(v) for v in lams],
+        float(l1_ratio),
+        [float(v) for v in pw],
+        int(max_iter),
+        float(tol),
+    )
+    return np.asarray(flat, dtype=float).reshape(len(lams), k)
 
-    out = np.zeros((len(penalties), k))
-    b = np.zeros(len(slots))
-    for li, lam in enumerate(penalties):
-        l1, l2 = lam * l1_ratio * pw, lam * (1.0 - l1_ratio) * pw
-        for _ in range(max_iter):
-            delta = 0.0
-            for i in range(len(slots)):
-                if not live[i]:
-                    b[i] = 0.0
-                    continue
-                rho = d[i] - (corr[i] @ b - corr[i, i] * b[i])
-                new = np.sign(rho) * max(abs(rho) - l1[i], 0.0) / (corr[i, i] + l2[i])
-                delta = max(delta, abs(new - b[i]))
-                b[i] = new
-            if delta < tol:
-                break
-        out[li, slots] = np.where(live, b / scale, 0.0)
+
+def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
+    """A Gram's arrays as the Rust fits read them: ``k``, then ``means``,
+    ``comoments``, ``cross_moments``, ``means_by_target`` and
+    ``cross_centred``, each C-contiguous float64. A mapping without the
+    last two gets them as :func:`solve` forms them: ``means`` for every
+    target, and ``cross_moments[t] - m * ybar``."""
+    k = len(_columns(g))
+    means = np.ascontiguousarray(g["means"], dtype=np.float64)
+    cross = np.ascontiguousarray(np.asarray(g["cross_moments"], dtype=np.float64).reshape(-1, k))
+    m = cross.shape[0]
+    by_target = g.get("means_by_target")
+    if by_target is None or len(by_target) == 0:
+        by_target = np.tile(means, (m, 1))
+    by_target = np.ascontiguousarray(np.asarray(by_target, dtype=np.float64).reshape(m, k))
+    cc = g.get("cross_centred")
+    if cc is None or (len(cc) == 0 and m > 0):
+        cc = np.zeros((m, k))
         if icept >= 0:
-            out[li, icept] = ybar - out[li, slots] @ m[slots]
-    return out
+            for t in range(m):
+                cc[t] = _cross_centred(np, g, t, by_target[t], cross[t][icept])
+    cc = np.ascontiguousarray(np.asarray(cc, dtype=np.float64).reshape(m, k))
+    como = np.ascontiguousarray(g["comoments"], dtype=np.float64)
+    return (k, means, como, cross, by_target, cc)
+
+
+def _limit(name: str, v: int | None) -> int | None:
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        msg = f"{name} must be a whole number >= 1 or None, got {v!r}"
+        raise ValueError(msg)
+    return v
+
+
+def _lars_weights(np: Any, n: int, penalty_weights: Sequence[float] | None) -> list[float]:
+    if penalty_weights is None:
+        return []
+    pw = np.asarray(penalty_weights, dtype=float)
+    if pw.shape != (n,):
+        msg = f"penalty_weights must have one entry per feature ({n}), got {pw.shape}"
+        raise ValueError(msg)
+    if not np.all(np.isfinite(pw) & (pw > 0.0)):
+        msg = (
+            f"lars_path: penalty_weights must be finite and > 0, got {pw.tolist()!r}; a weight "
+            "of 0 leaves a column unpenalized, in the fit at every penalty, which is no point a "
+            "path from the largest penalty can start at: use lasso_path for it"
+        )
+        raise ValueError(msg)
+    return [float(v) for v in pw]
+
+
+def lars_path(
+    g: dict[str, Any],
+    *,
+    target: str | int = 0,
+    features: Sequence[str | int] | None = None,
+    max_steps: int | None = None,
+    max_active: int | None = None,
+    penalty_weights: Sequence[float] | None = None,
+) -> dict[str, Any]:
+    """The lasso path from its start, knot by knot, by least angle regression.
+
+    Efron, Hastie, Johnstone and Tibshirani's LARS (2004) with their lasso
+    modification, on the correlation form :func:`lasso_path` standardizes
+    the Gram to: ``R`` the features' correlation matrix and ``d`` their
+    standardized cross-moments with the target, centred at the target's own
+    means where there is an intercept. The lasso minimizes
+
+    .. code-block:: text
+
+        f(b) = 0.5 * b' R b - d' b + l * sum_j w_j * |b_j|
+
+    and its solution is piecewise linear in the penalty ``l``. The path
+    starts at ``l_max = max_j |d_j| / w_j``, where every slope is 0. Each
+    knot is where a column enters the active set ``A``, or leaves it as its
+    slope crosses 0. Between knots, each active column's correlation with
+    the residual, ``c_j = d_j - (R b)_j``, stays at ``l * w_j`` in size:
+
+    .. code-block:: text
+
+        delta_A = inv(R_AA) (w_A * s_A)       s_j = sign(c_j)
+        b_A    += gamma * delta_A
+        l      -= gamma
+
+    The step ``gamma`` is the first at which a column outside ``A`` reaches
+    the active correlation, an active slope reaches 0, or ``l`` reaches 0.
+    At ``l = 0`` the fit is least squares on ``A``. A knot's coefficients
+    are the lasso's exactly at its penalty, so ``lasso_path(g, [l])`` at a
+    knot's ``l`` gives the same row, to its ``tol``.
+
+    A selection reads only the start of a path, and a step costs
+    ``O(k |A|)``, so stop it early: after ``max_steps`` knots past the
+    first, or at the knot where ``max_active`` columns are active. A column
+    that is constant on the Gram's rows never enters. A column that would
+    enter collinear with the active set is set aside, since it adds no
+    direction: its pivot in the factor of ``R_AA`` is below ``1e-12`` of
+    its variance. Ties go to the column first in ``columns``. Measured on
+    an M4 Pro, a path takes 9 microseconds whole at 15 columns, and 0.2 ms
+    for 40 knots at 200 columns or 3 ms at 2,000.
+
+    .. rubric:: Parameters
+
+    ``target``, ``features``
+        As for :func:`solve`.
+    ``max_steps``, ``max_active``
+        Where to stop: knots past the first, and columns active at once.
+        ``None`` is no limit, and the path runs to ``l = 0``.
+    ``penalty_weights``
+        A scale ``w_j`` on the penalty per feature, as for
+        :func:`lasso_path`, but each finite and above 0. A weight of 0
+        leaves a column unpenalized, in the fit at every penalty, which is
+        no point a path from ``l_max`` can start at. Use :func:`lasso_path`
+        for that, and for an elastic net, whose path is not piecewise
+        linear.
+
+    Returns a dict:
+
+    ``penalties``
+        The penalty ``l`` at each knot, falling, in the units of
+        :func:`lasso_path` and of the ``lasso`` model.
+    ``coef``
+        Shape ``(n_knots, k)``: each knot's coefficients over the Gram's
+        columns, in the features' original units with the intercept
+        recovered, as a row of :func:`lasso_path`.
+    ``active``
+        The active set below each knot, by name, in the order its columns
+        entered. A column entering at a knot is in that knot's set with its
+        coefficient still 0, growing from there; one leaving is out of it.
+        So the first knot's set holds the first column to enter, and a
+        knot's nonzero coefficients are the set before it, less any column
+        leaving at it.
+    ``stop``
+        ``"max_steps"``, ``"max_active"``, or ``"end"``: ``l`` reached 0,
+        or no column can enter.
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("ridge")[0]
+        path = po.gram.lars_path(g, target="y", max_active=1)
+        first = path["active"][-1]              # [the column that enters first]
+
+    ``ValueError`` for a limit that is not a whole number of at least 1, and
+    for ``penalty_weights`` of the wrong length or not finite and above 0.
+    ``KeyError`` / ``IndexError`` as for :func:`solve`.
+    """
+    return lars_paths(
+        [g],
+        targets=[target],
+        features=features,
+        max_steps=max_steps,
+        max_active=max_active,
+        penalty_weights=penalty_weights,
+    )[0][0]
+
+
+def lars_paths(
+    grams: Sequence[dict[str, Any]],
+    *,
+    targets: Sequence[str | int] | None = None,
+    features: Sequence[str | int] | None = None,
+    max_steps: int | None = None,
+    max_active: int | None = None,
+    penalty_weights: Sequence[float] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """:func:`lars_path` for many Grams and targets at once, on the bank's
+    thread pool.
+
+    Returns one list per Gram, with one path per target. The targets are
+    every target of each Gram when ``targets`` is ``None``, else those
+    named, by name or position, in each. Each Gram's correlation matrix is
+    formed once, and its targets' paths run beside each other on it. The
+    Grams run beside each other too, on the pool ``POLARS_ONLINE_MAX_THREADS``
+    sizes. A path is the same arithmetic on one thread whatever the pool's
+    size, so its numbers are those of :func:`lars_path` to the bit. The
+    other parameters are those of :func:`lars_path`, applied to every path.
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                               half_life=100.0, group="stock_id")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        paths = po.gram.lars_paths(bank.gram("ridge"), max_active=1)   # one list per group
+        firsts = [per_gram[0]["active"][-1] for per_gram in paths]
+
+    Every Gram must have the same ``columns`` (``ValueError``), as for
+    :func:`merge`. Otherwise it raises as :func:`lars_path` does.
+    """
+    np = _np()
+    parts = list(grams)
+    if not parts:
+        return []
+    cols = _columns(parts[0])
+    for p in parts[1:]:
+        if _columns(p) != cols:
+            msg = f"lars_paths() needs the same columns in every Gram: {cols} vs {_columns(p)}"
+            raise ValueError(msg)
+    slots, icept = _feature_slots(parts[0], features)
+    steps, active = _limit("max_steps", max_steps), _limit("max_active", max_active)
+    weights = _lars_weights(np, len(slots), penalty_weights)
+    tidx = [
+        list(range(len(p["cross_moments"])))
+        if targets is None
+        else [_target_index(p, t) for t in targets]
+        for p in parts
+    ]
+    native = [_native_gram(np, p, icept) for p in parts]
+    out = _native.gram_lars_paths(
+        native, tidx, slots, None if icept < 0 else icept, weights, steps, active
+    )
+    k = len(cols)
+    return [
+        [
+            {
+                "penalties": np.asarray(pen, dtype=float),
+                "coef": np.frombuffer(coef, dtype=np.float64).reshape(len(pen), k),
+                "active": [[cols[i] for i in a] for a in act],
+                "stop": stop,
+            }
+            for pen, coef, act, stop in per
+        ]
+        for per in out
+    ]
 
 
 def coef_stats(
