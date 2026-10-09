@@ -1298,6 +1298,15 @@ position, as a lag does, empties them. On an irregular clock, a half-life
 in clock units weighs rows by time, as it should. A lag or a window counted
 in rows means a different span of time on each row.
 
+**An audit counts the clock as it ran.** Its clock table, `bank.audit(table="clock")`,
+takes each step as the time that passed, uncapped, so `max_step` is the
+longest quiet spell, not `gap_cap`. On a `Datetime` clock the step columns
+are `Duration`s in the column's unit. An audit reads the stream's clock,
+so it refuses a step back as a model does. To count the steps back
+instead, give it `restart_after_step_back=0.0`: each step back then
+restarts its runs and its steps, keeps its counts, and shows in `step_back`
+and `resets`.
+
 The recipe makes trades at random times, stamped in whole milliseconds. The
 feed sent 1% of them twice, and delivered 0.5% a few rows late.
 

@@ -13,6 +13,8 @@ the reader's narrowing. ``check()``'s findings from an audit are
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import numpy as np
 import polars as pl
 import pytest
@@ -204,6 +206,60 @@ class TestTheChunkingAndTheState:
         )
         steps = plain.audit(table="clock")["steps"][0], reset.audit(table="clock")["steps"][0]
         assert steps == (N - 1, N - 3)
+
+
+class TestTheClock:
+    """The clock table (review 6, C-5 and F-6): each step as it elapsed, not
+    as ``gap_cap`` capped it for the models, and in the clock's own terms."""
+
+    def test_a_step_is_the_time_that_passed(self):
+        """A step of 998 past a ``gap_cap`` of 30 is a gap, and the largest
+        step is 998, where it read 30, the cap."""
+        df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 1000.0, 1001.0, 1002.0], "x": np.arange(6.0)})
+        bank = _fed(po.spec.audit("a", columns=["x"], clock="t", gap_cap=30.0), df)
+        row = bank.audit(table="clock").row(0, named=True)
+        assert (row["steps"], row["gaps"], row["regular"]) == (5, 1, 4)
+        assert (row["max_step"], row["step_mean"], row["step_std"]) == (998.0, 1.0, 0.0)
+        schema = bank.audit(table="clock").schema
+        assert all(schema[c] == pl.Float64 for c in ("step_mean", "step_std", "max_step"))
+
+    @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+    def test_a_temporal_clock_reads_its_steps_as_durations(self, unit):
+        """A ``Datetime`` clock's steps come back as ``Duration`` in the
+        column's unit, where they read as seconds in a plain number."""
+        t0 = datetime(2024, 1, 1)
+        stamps = [t0 + timedelta(minutes=5 * i) for i in range(10)]
+        stamps[6:] = [s + timedelta(hours=2) for s in stamps[6:]]
+        df = pl.DataFrame({"t": stamps, "x": np.arange(10.0)}).with_columns(
+            pl.col("t").cast(pl.Datetime(unit))
+        )
+        spec = po.spec.audit("a", columns=["x"], clock="t", gap_cap="1h")
+        clock = _fed(spec, df).audit(table="clock")
+        for c in ("step_mean", "step_std", "max_step"):
+            assert clock.schema[c] == pl.Duration(unit), (c, clock.schema)
+        row = clock.row(0, named=True)
+        assert row["max_step"] == timedelta(hours=2, minutes=5)
+        assert row["step_mean"] == timedelta(minutes=5)
+        assert row["step_std"] == timedelta(0)
+        assert (row["gaps"], row["regular"]) == (1, 8)
+        assert row["step_cv"] == 0.0
+
+    def test_a_step_back_is_refused_unless_it_restarts_the_stream(self):
+        """The audit's clock is the stream's: a step back is refused, as for
+        every spec, and ``restart_after_step_back`` counts each one as a
+        restart instead, which ``summary()`` and ``check()`` report."""
+        df = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0, 2.5, 4.0, 5.0], "x": np.arange(7.0)})
+        with pytest.raises(ValueError, match="clock"):
+            _fed(po.spec.audit("a", columns=["x"], clock="t", gap_cap=10.0), df)
+        spec = po.spec.audit(
+            "a", columns=["x"], clock="t", gap_cap=10.0, restart_after_step_back=0.0
+        )
+        bank = _fed(spec, df)
+        row = bank.summary().row(0, named=True)
+        assert (row["clock_backwards"], row["resets"]) == (1, 1)
+        assert set(bank.check()["code"]) >= {"step_back", "resets"}
+        clock = bank.audit(table="clock").row(0, named=True)
+        assert (clock["steps"], clock["max_step"]) == (5, 1.5)
 
 
 class TestGroupsMerge:

@@ -3392,6 +3392,7 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                elapsed_step: adv.elapsed,
                 stamp: adv.stamp,
                 elapsed: adv.elapsed_stamp,
                 clock: shown,
@@ -3839,6 +3840,7 @@ impl Stream {
             i: usize::MAX,
             pending: slot,
             d_clock: row.d_clock,
+            elapsed_step: row.d_clock,
             stamp: row.stamp,
             elapsed: None,
             clock: row.clock,
@@ -4030,6 +4032,7 @@ impl Stream {
                 i,
                 pending: usize::MAX,
                 d_clock: adv.d_clock,
+                elapsed_step: adv.d_clock,
                 // Scored, never learned: no window moves, no row is held.
                 stamp: None,
                 elapsed: None,
@@ -4438,6 +4441,12 @@ struct RowPlan {
     /// for a row read from the columns.
     pending: usize,
     d_clock: f64,
+    /// The time that passed since the previous accepted row, uncapped
+    /// ([`online_core::ClockAdvance::elapsed`]): what an `audit` counts a
+    /// step as (review 6, C-5), where every model decays by `d_clock`, the
+    /// step after `gap_cap`. `d_clock` for a replayed or a scored row,
+    /// which no audit reads.
+    elapsed_step: f64,
     /// The row's place on the decayed clock, held exactly, which a window
     /// decides its edge from ([`online_core::Stamp`], docs/PLAN.md task
     /// 175): `None` for a skipped row and a row only scored.
@@ -4797,9 +4806,16 @@ fn run_instance(
             if let Some(stamp) = plan.stamp {
                 inst.model.get_mut().stamp_next(stamp);
             }
+            // An audit counts the step as it elapsed, which no decay reads
+            // (review 6, C-5: its largest step read `gap_cap`).
+            let d_clock = if matches!(inst.model.get(), AnyModel::Audit(_)) {
+                plan.elapsed_step
+            } else {
+                plan.d_clock
+            };
             inst.model
                 .get_mut()
-                .step_sharded(xs, &sc.ys, plan.d_clock, w, inst.shards)
+                .step_sharded(xs, &sc.ys, d_clock, w, inst.shards)
         } else {
             inst.model.get().predict(xs, &sc.ys, plan.d_clock)
         };

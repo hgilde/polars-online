@@ -103,10 +103,11 @@ def audit(
          - for every pair of columns, over the rows where both are usable,
            the correlation and the rows on which the two are equal
        * - the clock, with a ``clock`` column
-         - each step between consecutive rows is a duplicate stamp (0), a
-           gap (at or past ``gap_cap``, which caps the step a model sees) or
-           a regular step, whose mean, population spread, coefficient of
-           variation and largest value are kept
+         - each step between consecutive rows, the time that passed,
+           uncapped, is a duplicate stamp (0), a gap (at or past
+           ``gap_cap``, which caps the step a model ages by) or a regular
+           step, whose mean, population spread, coefficient of variation and
+           largest value are kept, as ``Duration`` on a temporal clock
 
     **Cost.** A value already held costs a binary search among a column's
     ``distinct_cap`` counters. A value not held costs a pass over them,
@@ -130,7 +131,12 @@ def audit(
     usable; an audit counts it, which is the point. A restart, at a session
     gap set to ``"reset"`` or a step back past ``restart_after_step_back``,
     starts its runs and its clock steps over and keeps its counts: an audit
-    is a record of what the stream held, not a fit. :meth:`~polars_online.ModelBank.predict`
+    is a record of what the stream held, not a fit. A step back of the
+    clock is refused, as for every spec: to count the steps back instead,
+    set ``restart_after_step_back`` (``0`` restarts at each), and
+    :meth:`~polars_online.ModelBank.summary`'s ``clock_backwards`` and
+    ``check()``'s ``step_back`` count them.
+    :meth:`~polars_online.ModelBank.predict`
     counts nothing, as it teaches nothing. The counts are the same whether
     the stream comes in one chunk or a thousand (hard rule 3), and are kept
     in the state, so an audit saved after one file goes on over the next.

@@ -6,7 +6,7 @@ use polars::prelude::*;
 
 use super::{Bank, GroupKey};
 use crate::spec::ModelKind;
-use crate::stream::AnyModel;
+use crate::stream::{AnyModel, ClockDtype, ClockUnit};
 
 /// Which of an audit's frames to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +52,11 @@ impl Bank {
     /// `column_b`, `count`, `corr`, `equal`. `Clock`: `group`, `steps`,
     /// `duplicates`, `gaps` (null without `gap_cap`), `regular`,
     /// `step_mean`, `step_std`, `step_cv`, `max_step`; no rows for a stream
-    /// without a clock column.
+    /// without a clock column. Each step is the time that passed, uncapped
+    /// (review 6, C-5); on a temporal clock `step_mean`, `step_std` and
+    /// `max_step` are `Duration`s in the column's unit (milliseconds for a
+    /// `Date`), and plain numbers on a number clock or before a chunk has
+    /// said which.
     ///
     /// # Errors
     ///
@@ -104,7 +108,7 @@ impl Bank {
         let mut cols = match table {
             AuditTable::Columns => columns_frame(&audits, &s.features),
             AuditTable::Pairs => pairs_frame(&audits, &s.features),
-            AuditTable::Clock => clock_frame(&audits),
+            AuditTable::Clock => clock_frame(&audits, self.clock_dtypes[spec].as_ref()),
         };
         if pooled {
             cols.remove(0);
@@ -196,7 +200,23 @@ fn pairs_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Column
     ]
 }
 
-fn clock_frame(audits: &[(Option<&str>, Audit)]) -> Vec<Column> {
+/// Nanoseconds in one unit of a `Duration` column for a temporal clock's
+/// steps, and that column's unit: the clock column's own, milliseconds for a
+/// `Date` (polars' `Date - Date`). `None` for a clock that is a number.
+fn duration_unit(dtype: Option<&ClockDtype>) -> Option<(f64, TimeUnit)> {
+    let unit = |u: &ClockUnit| match u {
+        ClockUnit::Ms => (1e6, TimeUnit::Milliseconds),
+        ClockUnit::Us => (1e3, TimeUnit::Microseconds),
+        ClockUnit::Ns => (1.0, TimeUnit::Nanoseconds),
+    };
+    match dtype? {
+        ClockDtype::Date => Some(unit(&ClockUnit::Ms)),
+        ClockDtype::Datetime { unit: u, .. } | ClockDtype::Duration { unit: u } => Some(unit(u)),
+        ClockDtype::Rows | ClockDtype::Numeric | ClockDtype::Int(_) => None,
+    }
+}
+
+fn clock_frame(audits: &[(Option<&str>, Audit)], dtype: Option<&ClockDtype>) -> Vec<Column> {
     let mut group: Vec<Option<&str>> = Vec::new();
     let mut reps = Vec::new();
     for (g, a) in audits {
@@ -209,6 +229,23 @@ fn clock_frame(audits: &[(Option<&str>, Audit)]) -> Vec<Column> {
     let num = |f: fn(&online_core::AuditClock) -> f64| -> Vec<Option<f64>> {
         reps.iter().map(|r| opt(f(r))).collect()
     };
+    // A step in the clock's own terms: a temporal clock's steps are kept in
+    // seconds, and read back as a `Duration` of its unit, rounded once to
+    // it; a number clock's as the number (review 6, C-5).
+    let span = |name: &str, f: fn(&online_core::AuditClock) -> f64| -> Column {
+        match duration_unit(dtype) {
+            None => Column::new(name.into(), num(f)),
+            Some((ns, unit)) => {
+                let v: Vec<Option<i64>> = reps
+                    .iter()
+                    .map(|r| opt(f(r)).map(|s| (s * 1e9 / ns).round() as i64))
+                    .collect();
+                Column::new(name.into(), v)
+                    .cast(&DataType::Duration(unit))
+                    .expect("an i64 column casts to a Duration")
+            }
+        }
+    };
     vec![
         Column::new("group".into(), group),
         Column::new("steps".into(), int(|r| r.steps)),
@@ -218,9 +255,9 @@ fn clock_frame(audits: &[(Option<&str>, Audit)]) -> Vec<Column> {
             reps.iter().map(|r| r.gaps).collect::<Vec<Option<u64>>>(),
         ),
         Column::new("regular".into(), int(|r| r.regular)),
-        Column::new("step_mean".into(), num(|r| r.step_mean)),
-        Column::new("step_std".into(), num(|r| r.step_std)),
+        span("step_mean", |r| r.step_mean),
+        span("step_std", |r| r.step_std),
         Column::new("step_cv".into(), num(|r| r.step_cv)),
-        Column::new("max_step".into(), num(|r| r.max_step)),
+        span("max_step", |r| r.max_step),
     ]
 }

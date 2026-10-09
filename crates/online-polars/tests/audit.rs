@@ -113,6 +113,61 @@ fn a_null_and_a_nan_are_counted_apart_and_every_row_is_read() {
         (count(&clock, "gaps", 0), count(&clock, "duplicates", 0)),
         (gaps, dups)
     );
+    // The largest step is the gap as it elapsed, 20, not the 5 `gap_cap`
+    // ages a model by (review 6, C-5).
+    let max_step = clock.column("max_step").unwrap().f64().unwrap().get(0);
+    assert_eq!(max_step, Some(20.0));
+}
+
+/// A temporal clock's steps come back as `Duration`s in the column's unit,
+/// the step as it elapsed (review 6, C-5): five minutes a row, and a gap of
+/// two hours past a `gap_cap` of one.
+#[test]
+fn a_temporal_clocks_steps_are_durations_as_they_elapsed() {
+    let minute = 60_000_000_000i64;
+    let ts: Vec<i64> = (0..10)
+        .map(|i| i * 5 * minute + if i >= 6 { 120 * minute } else { 0 })
+        .collect();
+    for unit in [
+        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
+        TimeUnit::Nanoseconds,
+    ] {
+        let t = Series::new("t".into(), ts.clone())
+            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+            .unwrap()
+            .cast(&DataType::Datetime(unit, None))
+            .unwrap();
+        let df = DataFrame::new(
+            10,
+            vec![
+                t.into(),
+                Column::new("x".into(), (0..10).map(f64::from).collect::<Vec<_>>()),
+                Column::new("z".into(), vec![1.0; 10]),
+            ],
+        )
+        .unwrap();
+        let spec: Spec = serde_json::from_str(
+            r#"{"name": "a", "model": {"type": "audit"}, "targets": ["x"],
+                "features": ["x", "z"], "clock": "t", "gap_cap": "1h"}"#,
+        )
+        .unwrap();
+        let mut bank = Bank::new(vec![spec]).unwrap();
+        bank.fit_predict(&df).unwrap();
+        let clock = read(&bank, AuditTable::Clock);
+        let per_unit = match unit {
+            TimeUnit::Milliseconds => 1_000_000,
+            TimeUnit::Microseconds => 1_000,
+            TimeUnit::Nanoseconds => 1,
+        };
+        for (col, want) in [("max_step", 125 * minute), ("step_mean", 5 * minute)] {
+            let c = clock.column(col).unwrap();
+            assert_eq!(c.dtype(), &DataType::Duration(unit), "{col}");
+            let got = c.cast(&DataType::Int64).unwrap().i64().unwrap().get(0);
+            assert_eq!(got, Some(want / per_unit), "{col} in {unit:?}");
+        }
+        assert_eq!(count(&clock, "gaps", 0), 1);
+    }
 }
 
 #[test]

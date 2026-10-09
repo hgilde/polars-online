@@ -1530,7 +1530,17 @@ class ModelBank:
         ``gap_cap``, which a clock requires), ``regular`` (the rest), and
         the regular steps' ``step_mean``, ``step_std`` (population) and
         ``step_cv``, and ``max_step`` over every step. No rows for a spec
-        without a ``clock``.
+        without a ``clock``. A step is the time that passed between the two
+        rows, uncapped: a model ages by at most ``gap_cap`` of it, and the
+        audit counts all of it (across a session change under a numeric
+        ``session_gap``, that gap). On a temporal clock ``step_mean``,
+        ``step_std`` and ``max_step`` are ``Duration`` in the clock column's
+        unit (milliseconds for a ``Date``), on a number clock numbers in its
+        units, and ``Float64`` before a chunk has said which. A step back is
+        refused, as for every spec; with ``restart_after_step_back`` each one
+        restarts the audit's steps instead (``0`` restarts at every one), and
+        :meth:`summary`'s ``clock_backwards`` and ``check``'s ``step_back``
+        count them.
 
         ``pooled=True`` merges the groups the frame covers into one audit,
         as if they were one stream, and drops ``group``: the counts and

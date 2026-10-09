@@ -74,10 +74,13 @@
 //! correlation, and the rows on which the two are equal.
 //!
 //! **The clock**, when the stream has one: each step between consecutive
-//! rows (`d_clock`, which the stream has capped at `gap_cap`) is a
-//! *duplicate stamp* at 0, a *gap* at or past `gap_cap`, and otherwise a
-//! *regular* step, whose mean, spread, coefficient of variation and largest
-//! value are kept.
+//! rows is a *duplicate stamp* at 0, a *gap* at or past `gap_cap`, and
+//! otherwise a *regular* step, whose mean, spread, coefficient of variation
+//! and largest value are kept. The step is the time that passed, uncapped:
+//! the plumbing hands an audit the stream's elapsed step where it hands a
+//! model `d_clock`, the step after `gap_cap`, which an audit's largest step
+//! read as the cap (review 6, C-5). Nothing decays, so nothing else reads
+//! it.
 //!
 //! **A row's weight** goes into `n_eff`, the accumulated weight before the
 //! row, undecayed (CLAUDE.md hard rule 8; `audit` has no decay). Nothing
@@ -144,7 +147,8 @@ pub struct AuditCfg {
     /// values, and the most repeated value's count within `n / (cap + 1)`
     /// past it. At least 1 and at most [`MAX_DISTINCT_CAP`].
     pub distinct_cap: usize,
-    /// The stream's `gap_cap`: a step at it is a gap. `None` counts none.
+    /// The stream's `gap_cap`: a step at or past it is a gap. `None` counts
+    /// none.
     pub gap_cap: Option<f64>,
     /// Whether the stream has a clock column; without one every step is 1
     /// and nothing is said about the clock.
