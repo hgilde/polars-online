@@ -4299,10 +4299,15 @@ impl Bank {
             // count given here is the one the bank runs with, whatever the
             // file was saved under, so it is left out of the comparison
             // (review 2026-09-26, F3: it was compared, and a bank could not
-            // resume under another count).
+            // resume under another count). `gram_threads` is the same kind of
+            // setting (task 225: the same bits at every count), and was
+            // compared until review 6 (D-1).
             let unsharded = |mut s: Spec| {
-                if let ModelKind::Marginal { shards, .. } = &mut s.model {
-                    *shards = None;
+                match &mut s.model {
+                    ModelKind::Marginal { shards, .. } => *shards = None,
+                    ModelKind::EwRidge { gram_threads, .. }
+                    | ModelKind::EwCov { gram_threads, .. } => *gram_threads = None,
+                    _ => {}
                 }
                 s
             };
@@ -4319,7 +4324,8 @@ impl Bank {
             }
         }
         // The caller's specs where given, the file's otherwise: the same
-        // specs but for the shard count, which is the caller's to set.
+        // specs but for the shard and thread counts, which are the caller's
+        // to set.
         let specs = expected_specs.map_or_else(|| file.specs.clone(), <[Spec]>::to_vec);
         // One list of groups per spec. A file with another count was read
         // by index and panicked, or lost every group of a spec it had no

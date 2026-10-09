@@ -176,6 +176,47 @@ def test_a_save_carries_the_setting_and_resumes_to_the_bit(tmp_path):
     assert rest.equals(whole.slice(301), null_equal=True)
 
 
+@pytest.mark.parametrize("kind", ["ewridge", "ew_cov"])
+def test_a_save_resumes_under_another_count_to_the_bit(tmp_path, kind):
+    """The count is configuration, not state: a bank saved at 8 threads
+    resumes at 2, or with the key left out, through ``load(specs=)`` and the
+    lazy frame's ``load_state``, to the bit of the unbroken run, and runs
+    the caller's count (review 6, D-1: the load compared it, as review
+    2026-09-26 F3 found for marginal's ``shards``, and refused the specs).
+    The command line's door is ``crates/online-cli/tests/run.rs``."""
+    make = (lambda t: ridge(t, 64)) if kind == "ewridge" else (lambda t: cov(t, k=K))
+    df = stream(K, 600)
+    head, tail = df.slice(0, 301), df.slice(301)
+    whole, want = run(make(None), df)
+    a = po.ModelBank([make(8)])
+    a.fit_predict(head)
+    a.save(tmp_path / "threads.state")
+    tail.write_parquet(tmp_path / "tail.parquet")
+    for threads in (2, None):
+        b = po.ModelBank.load(tmp_path / "threads.state", specs=[make(threads)])
+        assert b.specs[0]["model"].get("gram_threads") == threads
+        rest = b.fit_predict(tail).select("m").unnest("m")
+        assert rest.equals(whole.slice(301), null_equal=True), threads
+        assert gram_bits(b) == gram_bits(want), threads
+        lazy = (
+            pl.scan_parquet(tmp_path / "tail.parquet")
+            .online.fit_predict([make(threads)], load_state=tmp_path / "threads.state")
+            .collect()
+        )
+        assert lazy.select("m").unnest("m").equals(whole.slice(301), null_equal=True), threads
+    kept = po.ModelBank.load(tmp_path / "threads.state")
+    assert kept.specs[0]["model"]["gram_threads"] == 8
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_the_builder_names_the_floor_rust_holds(value):
+    """The builder's floor is the one Rust refuses below, 1 (review 6, D-3:
+    it said ``>= 0``, and 0 was then refused by Rust as ``>= 1``)."""
+    for make in (lambda: ridge(value, 64), lambda: cov(value)):
+        with pytest.raises(ValueError, match="gram_threads must be >= 1"):
+            make()
+
+
 def test_a_spec_without_it_writes_nothing_new():
     """Left out, the key is not written: a state that does not use it has
     the bytes it had before the option existed (no schema change)."""

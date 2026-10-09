@@ -322,6 +322,7 @@ _AT_LEAST_ONE = frozenset(
         "lags",
         "cross_lags",
         "shards",
+        "gram_threads",
         "update_every_rows",
         "split_merge_every_rows",
         "max_clusters",
@@ -1032,7 +1033,10 @@ def ewridge(
         10,000 features. Without a block the update is bound by memory and
         gains 2 to 3 times. Up to
         256 features the product is one piece, and below 725 a row's update
-        stays on one thread, so the option changes nothing there.
+        stays on one thread, so the option changes nothing there. Being the
+        same to the bit at every count, it is a setting and not part of the
+        state: a saved bank resumes under the count of the specs given to
+        ``load``, or under the saved one when given none.
     ``target_gaps``
         Which rows a target's fit is read from where the target is null on
         some. Target ``j`` keeps its mean ``ybar_j``, the column means ``m_j``
