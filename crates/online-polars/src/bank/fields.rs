@@ -1038,11 +1038,13 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         if spec.emit_feature_health {
             for (which, kind) in ["spread_ratio", "mean_shift"].into_iter().enumerate() {
                 for (fi, f) in spec.features.iter().enumerate() {
-                    fields.push(
-                        FieldMeta::new(format!("{kind}_{f}{suffix}"), kind)
-                            .decay(d)
-                            .src(Source::Health(which, mi, fi)),
-                    );
+                    // The feature it reads, so the index tells the fields
+                    // apart (review round 6, F-9).
+                    let mut m = FieldMeta::new(format!("{kind}_{f}{suffix}"), kind)
+                        .decay(d)
+                        .src(Source::Health(which, mi, fi));
+                    m.columns = Some(vec![f.clone()]);
+                    fields.push(m);
                 }
             }
         }

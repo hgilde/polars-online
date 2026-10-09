@@ -176,7 +176,7 @@ fn specs() -> Vec<Spec> {
 }
 
 /// The specs of the second bank file, `bank_diagnosed`: the diagnostics
-/// with a memory of their own (docs/PLAN.md task 221, schema 53), in a file
+/// with a memory of their own (docs/PLAN.md task 221, schema 55), in a file
 /// of their own so that neither file passes the 250 KB a source file is
 /// held to.
 fn diagnosed_specs() -> Vec<Spec> {
@@ -891,7 +891,7 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
                 && p.contains(".n.")
                 && v.as_u64().is_some_and(|n| n > 0)
         }),
-        // Task 221 (schema 53): the diagnostics with a memory of their own,
+        // Task 221 (schema 55): the diagnostics with a memory of their own,
         // per instance and slot.
         ("bank_diagnosed", "a slot's CUSUM sums", |p, v| {
             p.contains(".checks.") && p.contains(".breaks.") && v.as_f64().is_some_and(|f| f != 0.0)
@@ -921,8 +921,22 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_diagnosed", "a slot's RESET origin", |p, v| {
             p.contains(".specification.") && p.ends_with(".origin") && v.as_f64().is_some()
         }),
-        ("bank_diagnosed", "a slot's tails' power sums", |p, v| {
-            p.contains(".tails.") && p.contains(".s.") && v.as_f64().is_some_and(|f| f != 0.0)
+        // Schema 57 (review round 6, B-5): the tails' central sums and
+        // mean, where raw power sums were.
+        ("bank_diagnosed", "a slot's tails' central sums", |p, v| {
+            p.contains(".tails.") && p.contains(".m.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "a slot's tails' mean", |p, v| {
+            p.contains(".tails.") && p.ends_with(".mean") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        // Schema 57 (review round 6, A-6): a held row's score record keeps
+        // the row's error inflation after its prediction -- the spec has
+        // one slot and no conformal interval, so it is the record's second
+        // value.
+        ("bank_diagnosed", "a held row's scored inflation", |p, v| {
+            p.contains(".score_pred.")
+                && p.ends_with(".1")
+                && v.as_f64().is_some_and(f64::is_finite)
         }),
         ("bank_diagnosed", "a slot's influence scale", |p, v| {
             p.contains(".influence.") && p.ends_with(".q") && v.as_f64().is_some_and(|f| f != 0.0)

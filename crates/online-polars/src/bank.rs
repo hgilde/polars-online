@@ -188,8 +188,11 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// keeps the diagnostics with a memory of their own, and a spec the keys
 /// that switch them on; a file from before it is refit. **56 since task
 /// 221 (d)-(h)** (the same day): those diagnostics gain the specification
-/// tests and the parts after them; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 56;
+/// tests and the parts after them; a file from before it is refit. **57
+/// since review round 6** (2026-10-09, B-5 and A-6): the tails keep central
+/// sums, and a held row's score record its error inflation; a file from
+/// before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 57;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

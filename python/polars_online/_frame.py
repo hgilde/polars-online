@@ -960,6 +960,11 @@ def _specs_of(specs: Specs | ModelBank | State, what: str) -> list[dict[str, Any
     return out
 
 
+#: The fields laid out like ``coef``, one value per coefficient, longest
+#: prefix first.
+_BESIDE_COEF = ("support_coef", "se_coef_hc0", "se_coef_hac", "se_coef")
+
+
 def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Expr]:
     """The columns of ``schema`` with each spec's struct replaced, in place, by
     its fields -- the ``coef`` lists as one column per coefficient, named by
@@ -998,11 +1003,13 @@ def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Exp
         lists = set(idx.filter(pl.col("kind") == "coef")["field"]) & set(coefs["field"])
         for field in fields:
             col = pl.col(column).struct.field(field)
-            # `support_coef` and `se_coef` are laid out like `coef` -- one
-            # value per coefficient (docs/WARMUP-AND-CONVERGENCE.md §2.2,
-            # docs/PLAN.md task 116) -- so they unnest the same way,
-            # `support_coef_<t>_<term>` and `se_coef_<t>_<term>`.
-            beside = next((b for b in ("support_coef", "se_coef") if field.startswith(b)), "")
+            # `support_coef`, `se_coef` and the robust `se_coef_hc0` and
+            # `se_coef_hac` are laid out like `coef` -- one value per
+            # coefficient (docs/WARMUP-AND-CONVERGENCE.md §2.2, docs/PLAN.md
+            # tasks 116 and 221 (c)) -- so they unnest the same way,
+            # `support_coef_<t>_<term>`, `se_coef_<t>_<term>` and
+            # `se_coef_hc0_<t>_<term>`. The longer prefixes are tried first.
+            beside = next((b for b in _BESIDE_COEF if field.startswith(b)), "")
             base = "coef" + field.removeprefix(beside) if beside else field
             if base not in lists:
                 exprs.append(col)
@@ -1163,10 +1170,11 @@ class LazyFrameOnlineNamespace:
         (``coef_y_intercept``, ``coef_y_x1__r0.5@h500``) as
         :func:`polars_online.spec.coef_fields` lists them. ``support_coef``
         -- one data share per coefficient, on the same rows -- goes the same
-        way, as ``support_coef_{target}_{term}...``, and so does ``se_coef``,
-        as ``se_coef_{target}_{term}...``. The columns take the
-        struct's place; the rest of the frame, and any spec column not named,
-        are left as they are. ``specs`` is the spec dicts, a
+        way, as ``support_coef_{target}_{term}...``. So do ``se_coef``, as
+        ``se_coef_{target}_{term}...``, and the robust ``se_coef_hc0`` and
+        ``se_coef_hac``, as ``se_coef_hc0_{target}_{term}...``. The columns
+        take the struct's place; the rest of the frame, and any spec column
+        not named, are left as they are. ``specs`` is the spec dicts, a
         :class:`ModelBank` (its specs), or the path of a saved bank (which
         carries them). So a scored plan, or a parquet the CLI wrote, comes
         back flat:

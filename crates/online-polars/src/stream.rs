@@ -5020,25 +5020,42 @@ fn run_instance(
         // slot's interval was shown with, after the predictions, so the
         // release scores the interval the row was shown rather than the one
         // the radius has reached since (C21's other half; docs/PLAN.md task
-        // 112). A record without it -- a state saved before it was kept --
-        // is scored against the radius at release, as it was.
+        // 112).
+        //
+        // Where a diagnostic reads the row's own error inflation -- the
+        // breaks' and the tails' recursive residual, the influence -- the
+        // record keeps that too, last, as the fit that scored the row gave
+        // it: the scored residual over the release-time fit's inflation, a
+        // fit that has learned the rows released since, read the residuals
+        // too small, and the CUSUM of squares sat at −0.70 on iid labels
+        // under an embargo of 50 (review round 6, A-6; schema 57).
         let mut shown_radius: Option<Vec<f64>> = None;
         if plan.buffered {
             let mut record = step.pred.clone();
             if let Some(cs) = inst.conformal.as_deref() {
                 record.extend(cs.iter().map(|c| c.radius().unwrap_or(f64::NAN)));
             }
+            if has_row_infl {
+                record.extend_from_slice(&sc.row_infl);
+            }
             inst.score_pred.push_back(record);
         } else if !plan.direct() {
             let n = step.pred.len();
+            let conformal = inst.conformal.is_some();
+            let parts = 1 + usize::from(conformal) + usize::from(has_row_infl);
             match inst.score_pred.pop_front() {
-                Some(p) if p.len() == n => step.pred = p,
-                Some(p) if p.len() == 2 * n && inst.conformal.is_some() => {
-                    shown_radius = Some(p[n..].to_vec());
+                Some(p) if p.len() == parts * n => {
                     step.pred.copy_from_slice(&p[..n]);
+                    if conformal {
+                        shown_radius = Some(p[n..2 * n].to_vec());
+                    }
+                    if has_row_infl {
+                        sc.row_infl.clear();
+                        sc.row_infl.extend_from_slice(&p[(parts - 1) * n..]);
+                    }
                 }
-                // No record of the score -- a state saved before it was kept:
-                // fold nothing rather than the prediction that peeks.
+                // No record of the score: fold nothing rather than the
+                // prediction that peeks.
                 _ => step.pred.fill(f64::NAN),
             }
         }

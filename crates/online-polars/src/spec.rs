@@ -4192,6 +4192,17 @@ impl Spec {
                 ));
             }
         }
+        // Feature health reads the features alone: a model with none would
+        // write no field, so the switch is refused rather than ignored
+        // (review round 6, F6).
+        if self.emit_feature_health && self.k() == 0 {
+            return Err(format!(
+                "spec {:?}: emit_feature_health reads each feature's spread and mean, and {} \
+                 has no features",
+                self.name,
+                self.model.kind_name()
+            ));
+        }
         if self.emit_selected {
             let n_slots = self.decays()?.len() * crate::combo_labels(self).len();
             if n_slots < 2 {

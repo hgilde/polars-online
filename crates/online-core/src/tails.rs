@@ -6,16 +6,29 @@
 //! [`crate::Breaks`]) is the residual with the fit's estimation error taken
 //! out; skewness and kurtosis are ratios of its moments, so its scale does
 //! not enter them. With `ω` each scored row's weight times the decay since
-//! it, the power sums `S_j = Σ ω (v − c)^j` about an origin `c` (the first
-//! residual, which keeps them small) give the central moments
+//! it, `W = Σω`, the weighted mean `μ` and the central sums
+//! `M_j = Σ ω (v − μ)^j` give the central moments `m_j = M_j / W` and
 //!
 //! ```text
-//! μ  = S_1/S_0      m_2 = S_2/S_0 − μ²
-//! m_3 = S_3/S_0 − 3μ S_2/S_0 + 2μ³
-//! m_4 = S_4/S_0 − 4μ S_3/S_0 + 6μ² S_2/S_0 − 3μ⁴
 //! skew = m_3 / m_2^{3/2}       kurtosis = m_4 / m_2² − 3   (excess, as Polars')
 //! JB   = n/6 · (skew² + kurtosis²/4)                       ~ χ²(2)
 //! ```
+//!
+//! The sums are kept central by Pébay's weighted one-pass updates (Pébay,
+//! Terriberry, Kolla and Bennett 2016): a decay scales `W` and each `M_j`
+//! and leaves `μ`, and a row `v` at weight `w` merges the set so far with a
+//! set of one. With `δ = v − μ`, `W' = W + w`, `q = W/W'` and `r = w/W'`,
+//!
+//! ```text
+//! M_4' = M_4 + δ⁴ W r (q² − q r + r²) + 6 δ² r² M_2 − 4 δ r M_3
+//! M_3' = M_3 + δ³ W r (q − r) − 3 δ r M_2
+//! M_2' = M_2 + δ² W r                    μ' = μ + δ r
+//! ```
+//!
+//! Raw power sums about a fixed origin, the first residual, cancelled
+//! catastrophically once that origin sat far from where the residuals
+//! settled: after a first residual of `+1e5`, a memory of 50 rows read a
+//! kurtosis of −129,065 where two passes read 0.99 (review round 6, B-5).
 //!
 //! `n` Kish's size. Run once with unit weights these are the biased
 //! moments of `scipy.stats.skew` and `kurtosis` and `statsmodels`'
@@ -26,10 +39,13 @@ use serde::{Deserialize, Serialize};
 /// The tails of one slot's recursive residuals. See the module docs.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tails {
-    /// `S_0 .. S_4`, and `Σ ω²` for Kish's size.
-    s: [f64; 5],
+    /// `W = Σω`, and `Σω²` for Kish's size.
+    w: f64,
     w2: f64,
-    origin: Option<f64>,
+    /// The weighted mean `μ`.
+    mean: f64,
+    /// The central sums `M_2`, `M_3`, `M_4`.
+    m: [f64; 3],
 }
 
 impl Tails {
@@ -39,17 +55,21 @@ impl Tails {
 
     /// Whether a restored accumulator can be read and folded.
     pub fn has_shape(&self) -> bool {
-        self.s.iter().chain([&self.w2]).all(|v| v.is_finite())
-            && self.s[0] >= 0.0
+        [self.w, self.w2, self.mean]
+            .iter()
+            .chain(&self.m)
+            .all(|v| v.is_finite())
+            && self.w >= 0.0
             && self.w2 >= 0.0
-            && self.origin.is_none_or(f64::is_finite)
+            && self.m[0] >= 0.0
     }
 
     /// The clock moves on by a step whose decay is `lam`, with nothing
     /// scored.
     pub fn age(&mut self, lam: f64) {
-        self.s.iter_mut().for_each(|v| *v *= lam);
+        self.w *= lam;
         self.w2 *= lam * lam;
+        self.m.iter_mut().for_each(|v| *v *= lam);
     }
 
     /// One recursive residual `v` at weight `w`, after the step's decay
@@ -60,29 +80,36 @@ impl Tails {
         if !(v.is_finite() && w > 0.0) {
             return;
         }
-        let d = v - *self.origin.get_or_insert(v);
-        let mut p = w;
-        for s in &mut self.s {
-            *s += p;
-            p *= d;
-        }
+        // The merge of the set so far, weight `a`, with the row alone. No
+        // term divides by `w`, so a tiny weight cannot overflow one; at
+        // `a = 0` (the first row, or a memory decayed to nothing) every
+        // term but the mean's is 0 and the mean is `v`.
+        let a = self.w;
+        let total = a + w;
+        let (q, r) = (a / total, w / total);
+        let d = v - self.mean;
+        let (d2, ar) = (d * d, a * r);
+        let [m2, m3, m4] = self.m;
+        self.m = [
+            m2 + d2 * ar,
+            m3 + d2 * d * ar * (q - r) - 3.0 * d * r * m2,
+            m4 + d2 * d2 * ar * (q * q - q * r + r * r) + 6.0 * d2 * r * r * m2 - 4.0 * d * r * m3,
+        ];
+        self.mean += d * r;
+        self.w = total;
         self.w2 += w * w;
     }
 
     /// The central moments `(m_2, m_3, m_4)`; `None` before a spread.
     fn moments(&self) -> Option<(f64, f64, f64)> {
-        let w = self.s[0];
+        let w = self.w;
         if w <= 0.0 {
             return None;
         }
-        let [_, a, b, c, d] = self.s.map(|v| v / w);
-        let mu = a;
-        let m2 = b - mu * mu;
+        let [m2, m3, m4] = self.m.map(|v| v / w);
         if m2.is_nan() || m2 <= 0.0 {
             return None;
         }
-        let m3 = c - 3.0 * mu * b + 2.0 * mu.powi(3);
-        let m4 = d - 4.0 * mu * c + 6.0 * mu * mu * b - 3.0 * mu.powi(4);
         Some((m2, m3, m4))
     }
 
@@ -99,7 +126,7 @@ impl Tails {
     /// Jarque and Bera's statistic at Kish's size: `None` before a spread.
     pub fn jarque_bera(&self) -> Option<f64> {
         let (s, k) = (self.skew()?, self.kurtosis()?);
-        let n = self.s[0] * self.s[0] / self.w2;
+        let n = self.w * self.w / self.w2;
         Some(n / 6.0 * (s * s + k * k / 4.0))
     }
 }
@@ -157,6 +184,51 @@ mod tests {
         assert!(t.has_shape());
     }
 
+    /// A first residual far from the rest -- a bad first print -- leaves the
+    /// moments as a two-pass reading gives them, whether the memory keeps it
+    /// or has all but forgotten it (review round 6, B-5). Raw power sums
+    /// about that first residual read a kurtosis of −129,065 at `+1e5`
+    /// where the two passes read 0.99.
+    #[test]
+    fn a_far_first_residual_does_not_cancel_the_moments() {
+        for (first, lam) in [
+            (1e3, 0.986),
+            (1e4, 0.986),
+            (1e5, 0.986),
+            (1e5, 1.0),
+            (1e7, 1.0),
+        ] {
+            let mut t = Tails::new();
+            let mut st = 23u64;
+            let mut rows: Vec<(f64, f64)> = Vec::new();
+            for i in 0..3_000 {
+                let v = if i == 0 {
+                    first
+                } else {
+                    lcg(&mut st) + lcg(&mut st) + lcg(&mut st)
+                };
+                let w = 0.5 + lcg(&mut st) + 0.5;
+                t.update(v, lam, w);
+                rows.iter_mut().for_each(|r| r.1 *= lam);
+                rows.push((v, w));
+            }
+            let sw: f64 = rows.iter().map(|r| r.1).sum();
+            let mu = rows.iter().map(|r| r.1 * r.0).sum::<f64>() / sw;
+            let m = |j: i32| rows.iter().map(|r| r.1 * (r.0 - mu).powi(j)).sum::<f64>() / sw;
+            let skew = m(3) / m(2).powf(1.5);
+            let kurt = m(4) / m(2).powi(2) - 3.0;
+            let (gs, gk) = (t.skew().unwrap(), t.kurtosis().unwrap());
+            assert!(
+                (gs - skew).abs() < 1e-6 * skew.abs().max(1.0),
+                "first {first}, lam {lam}: skew {gs} vs {skew}"
+            );
+            assert!(
+                (gk - kurt).abs() < 1e-6 * kurt.abs().max(1.0),
+                "first {first}, lam {lam}: kurtosis {gk} vs {kurt}"
+            );
+        }
+    }
+
     #[test]
     fn zero_weights_and_missing_values_only_age() {
         let mut t = Tails::new();
@@ -165,5 +237,11 @@ mod tests {
         assert_eq!(t, Tails::new());
         t.update(1.0, 0.9, 1.0);
         assert!(t.skew().is_none(), "one value has no spread");
+        // A weight too small to square, beside rows of weight 1, leaves
+        // every sum finite: no term divides by it.
+        t.update(1e5, 0.9, 1e-300);
+        t.update(-1.0, 0.9, 1.0);
+        t.update(0.5, 0.9, 1.0);
+        assert!(t.has_shape() && t.kurtosis().is_some_and(f64::is_finite));
     }
 }

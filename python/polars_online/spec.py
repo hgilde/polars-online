@@ -618,11 +618,14 @@ The diagnostics add, per slot:
    * - ``emit_specification``
      - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``reset_<slot>``
      - What the fit is missing, each at ``specification_half_life`` and
-       Kish's size ``n``. ``ljung_box``: Ljung and Box's ``Q`` over
-       ``ljung_box_lags`` lags of the residuals (default 10), ``chi2(L)``
-       with nothing missing: a missing lag or a half-life too long. For a
-       target that looks ahead ``h`` rows (``embargo`` on a spec with no
-       clock column) it tests lags ``h`` to ``h + L - 1``, against
+       Kish's size ``n``. ``ljung_box``: Box and Pierce's ``Q = n *
+       sum(rho_l**2)`` over ``ljung_box_lags`` lags of the residuals
+       (default 10), and run once Ljung and Box's, ``chi2(L)`` with nothing
+       missing: a missing lag or a half-life too long. Ljung and Box's
+       ``(n + 2) / (n - l)`` at Kish's ``n`` passed its 5% value on 15.8%
+       of iid streams at a half-life of 10 rows, Box and Pierce's on 4.8%.
+       For a target that looks ahead ``h`` rows (``embargo`` on a spec with
+       no clock column) it tests lags ``h`` to ``h + L - 1``, against
        Bartlett's covariance for autocorrelations past the residuals'
        built-in ``MA(h - 1)``; the plain ``Q`` passed its 5% value on 61% of
        the rows of five-row look-ahead streams with nothing missing, this one
@@ -664,10 +667,15 @@ The diagnostics add, per slot:
        statsmodels' ``OLSInfluence.dffits`` at the last row of the rows so
        far (to 7e-11); it is not the in-sample DFFITS of an earlier row,
        which reads the rows after it too. ``ewridge``, ``rls`` and
-       ``kalman`` only, which read a row's leverage. With one row in 200 at
-       six spreads out and six off the line, beside a fit at a half-life of
-       200: ``|influence| > 0.5`` held every planted row and no clean one;
-       the clean rows' 99.9th percentile was 0.29.
+       ``kalman`` only, which read a row's leverage. On clean rows its
+       scale is ``sqrt((k + 1) / weight_sum)``, ``k`` the features: the
+       99.9th percentile of ``|influence|`` read 2.5 to 3.2 times it, at
+       half-lives of 20 to 1,000 rows and 2 to 10 features, so a cutoff of
+       0.5 suits only some fits. ``|influence| > 4 * sqrt((k + 1) /
+       weight_sum)`` held 0.001-0.014% of the clean rows there, and every
+       row planted at six spreads out and six off the line, one in 200. At
+       a half-life of 200 with 2 features that cutoff is 0.41, and the
+       clean rows' 99.9th percentile was 0.29.
    * - ``emit_feature_health``
      - ``spread_ratio_<feature>``, ``mean_shift_<feature>``, once per
        instance and feature

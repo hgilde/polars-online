@@ -637,7 +637,13 @@ pub use window::{
 ///   specification tests' sums per slot (`Specification`), and later
 ///   parts' accumulators beside them. A spec that switches none on writes
 ///   none. Pre-1.0 no loader is written.
-pub const SCHEMA_VERSION: u32 = 56;
+/// - 57 (2026-10-09, review round 6, B-5 and A-6): `Tails` keeps its
+///   weighted mean and central sums (Pébay's updates) where it kept raw
+///   power sums about the first residual, and under `embargo` a held row's
+///   score record keeps the row's own error inflation after its prediction
+///   (and its interval's radius) where a diagnostic reads one. Pre-1.0 no
+///   loader is written.
+pub const SCHEMA_VERSION: u32 = 57;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -661,6 +667,13 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **57 since review round 6** (2026-10-09, B-5 and A-6): the tails'
+/// central sums and a held row's scored error inflation; a state from
+/// before 57 is refused by its number, and the fixtures are regenerated at
+/// 57. **56 since task 221 (d)-(h)** and **55 since task 221** (2026-10-09):
+/// a bank's stream keeps the diagnostics with a memory of their own; each
+/// raised the minimum with the schema, and the fixtures were regenerated
+/// at it.
 /// **54 since task 223 (b)** (2026-10-08): the `audit` model; the
 /// fixtures are regenerated at 54, an `audit` among them.
 /// **52 since task 217** (2026-10-08): `ewridge`'s and `lasso`'s
@@ -753,7 +766,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 56;
+pub const MIN_SCHEMA_VERSION: u32 = 57;
 
 #[cfg(test)]
 mod tests {

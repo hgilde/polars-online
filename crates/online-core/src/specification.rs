@@ -18,18 +18,31 @@
 //! by the later row's `ω`. Run once with unit weights it is
 //! `statsmodels`' `acorr_ljungbox` over those lags.
 //!
+//! **Under a finite memory it is Box and Pierce's (1970) `Q = n Σ_l ρ_l²`**
+//! at Kish's `n` (review round 6, B-3). Ljung and Box's `(n + 2)/(n − l)`
+//! corrects the variance of `ρ_l` in a sample of `n` rows, of which `n − l`
+//! have a partner; under exponential weights every row but the oldest has
+//! one, and `Var(ρ_l)` is `Σω²/(Σω)² = 1/n` itself. At Kish's size the
+//! factor inflated `Q`: on iid residuals over 2,000 streams 20 half-lives
+//! long, with 10 lags, Ljung and Box's form passed its 5% value on 15.8%,
+//! 9.7%, 6.6%, 6.7% and 4.8% of streams at half-lives of 10, 20, 50, 100
+//! and 200 rows, and Box and Pierce's on 4.8%, 5.7%, 5.3%, 6.0% and 4.6%.
+//! Run once, Ljung and Box's held (5.3-7.7% at 30 to 1,000 rows) where Box
+//! and Pierce's fell to 2.7% at 30, so the run-once form keeps it.
+//!
 //! Past a horizon the autocorrelations are read against Bartlett's (1946)
 //! covariance for them beyond a moving average's order: a target summing
 //! the next `s + 1` rows' shocks leaves an MA(`s`) residual, whose
 //! autocorrelations past `s` are zero but spread wider than `1/n` and move
-//! together. With `r_l = ρ_l sqrt((n + 2)/(n − l))` over the tested lags,
+//! together. With `r_l = ρ_l sqrt((n + 2)/(n − l))` over the tested lags
+//! run once, and `r_l = ρ_l` under a finite memory,
 //!
 //! ```text
 //! γ(v)  = Σ_{|j| ≤ s} ρ_j ρ_{j+v}        (ρ_0 = 1, ρ_{−j} = ρ_j, 0 past s)
 //! Q     = n r' C⁻¹ r,   C_{kl} = γ(|k − l|)                    ~ χ²(L)
 //! ```
 //!
-//! which is Ljung and Box's `Q` when `s = 0`. On a five-row look-ahead
+//! which is the `Q` above when `s = 0`. On a five-row look-ahead
 //! target with nothing missing, the plain `Q` over lags 5-14 passed its 5%
 //! value on 61% of the rows of 200 streams, `Q` over Bartlett's variance
 //! alone on 13-14%, and this one on the figures in `po.spec`'s table
@@ -169,9 +182,11 @@ impl Specification {
         (self.w2 > 0.0).then(|| self.w * self.w / self.w2)
     }
 
-    /// Ljung and Box's `Q` over the tested lags: `None` until each has a
-    /// pair, the residuals a spread, and Kish's size passes the largest lag.
-    pub fn ljung_box(&self) -> Option<f64> {
+    /// Ljung and Box's `Q` over the tested lags, or Box and Pierce's where
+    /// the sums `forget` (a finite memory; the module docs): `None` until
+    /// each lag has a pair, the residuals a spread, and Kish's size passes
+    /// the largest lag.
+    pub fn ljung_box(&self, forget: bool) -> Option<f64> {
         let n = self.n_kish()?;
         if self.lags == 0 || n <= (self.skip + self.lags) as f64 {
             return None;
@@ -192,7 +207,11 @@ impl Specification {
         let r: Vec<f64> = (0..lags)
             .map(|j| {
                 let l = skip + j + 1;
-                rho[l - 1] * ((n + 2.0) / (n - l as f64)).sqrt()
+                if forget {
+                    rho[l - 1]
+                } else {
+                    rho[l - 1] * ((n + 2.0) / (n - l as f64)).sqrt()
+                }
             })
             .collect();
         if skip == 0 {
@@ -330,22 +349,67 @@ mod tests {
             };
             let sk = skip as isize;
             let gamma = |v: usize| -> f64 { (-sk..=sk).map(|j| at(j) * at(j + v as isize)).sum() };
-            let r: Vec<f64> = (skip + 1..=skip + lags)
-                .map(|l| rho(l) * ((n + 2.0) / (n - l as f64)).sqrt())
-                .collect();
             let c: Vec<f64> = (0..lags)
                 .flat_map(|k| (0..lags).map(move |l| gamma(k.abs_diff(l))))
                 .collect();
-            let x = crate::oracle::solve(&c, &r);
-            let want = n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>();
-            let got = s.ljung_box().unwrap();
-            assert!(
-                (got - want).abs() < 1e-8 * want.max(1.0),
-                "row {i}: {got} vs {want}"
-            );
+            // Ljung and Box's factor run once; Box and Pierce's plain
+            // autocorrelations under a memory that forgets.
+            for forget in [false, true] {
+                let r: Vec<f64> = (skip + 1..=skip + lags)
+                    .map(|l| {
+                        let f = if forget {
+                            1.0
+                        } else {
+                            (n + 2.0) / (n - l as f64)
+                        };
+                        rho(l) * f.sqrt()
+                    })
+                    .collect();
+                let x = crate::oracle::solve(&c, &r);
+                let want = n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>();
+                let got = s.ljung_box(forget).unwrap();
+                assert!(
+                    (got - want).abs() < 1e-8 * want.max(1.0),
+                    "row {i}, forget {forget}: {got} vs {want}"
+                );
+            }
         }
-        assert!(s.ljung_box().unwrap().is_finite());
+        assert!(s.ljung_box(false).unwrap() > s.ljung_box(true).unwrap());
         assert!(s.has_shape(1, skip, lags));
+    }
+
+    /// With no horizon and a memory that forgets, the statistic is Box and
+    /// Pierce's `n Σ ρ_l²` at Kish's size, by its definition (review round
+    /// 6, B-3).
+    #[test]
+    fn box_pierce_under_a_memory() {
+        let (lags, lam) = (4usize, 0.97);
+        let mut s = Specification::new(1, 0, lags);
+        let mut st = 5u64;
+        let mut rows: Vec<(f64, f64)> = Vec::new();
+        for _ in 0..300 {
+            let e = lcg(&mut st) + 0.1;
+            let w = 0.5 + lcg(&mut st) + 0.5;
+            s.update(&[lcg(&mut st)], 1.0, e, lam, w);
+            rows.iter_mut().for_each(|r| r.1 *= lam);
+            rows.push((e, w));
+        }
+        let sw: f64 = rows.iter().map(|r| r.1).sum();
+        let n = sw * sw / rows.iter().map(|r| r.1 * r.1).sum::<f64>();
+        let mean = rows.iter().map(|r| r.1 * r.0).sum::<f64>() / sw;
+        let den: f64 = rows.iter().map(|r| r.1 * (r.0 - mean).powi(2)).sum();
+        let want = n
+            * (1..=lags)
+                .map(|l| {
+                    let rho = (l..rows.len())
+                        .map(|t| rows[t].1 * (rows[t].0 - mean) * (rows[t - l].0 - mean))
+                        .sum::<f64>()
+                        / den;
+                    rho * rho
+                })
+                .sum::<f64>();
+        let got = s.ljung_box(true).unwrap();
+        assert!((got - want).abs() < 1e-10 * want, "{got} vs {want}");
     }
 
     /// Breusch and Pagan's and RESET's statistics by their definitions:
@@ -414,6 +478,6 @@ mod tests {
         s.clear_lags();
         s.update(&[2.0], 1.5, -0.5, 0.9, 1.0);
         assert_eq!(s.pairs[0][3], 0.0, "no pair across a break");
-        assert!(s.ljung_box().is_none() && s.breusch_pagan(&[0]).is_none());
+        assert!(s.ljung_box(true).is_none() && s.breusch_pagan(&[0]).is_none());
     }
 }

@@ -168,11 +168,11 @@ rows. Windowed, the specification tests and Jarque-Bera passed their 5%
 values on 2% to 7% of the rows of clean streams, as they did run once.
 
 **A fit that forgets absorbs a miscalibration at its own pace, so a
-diagnostic at the fit's own memory sees only part of it.** If a fit's
-predictions are 30% too large, the fit drifts toward the truth as it
-learns. Over one half-life it has moved halfway, so the residuals a
-diagnostic at the same memory reads have had half the error taken out of
-them. That diagnostic is conservative. Measured on a fit whose calibration
+diagnostic at the fit's own memory sees only part of it.** A calibration
+slope of 0.7 says the predictions are 43% too large (`1 / 0.7` is 1.43).
+The fit drifts toward the truth as it learns. Over one half-life it has
+moved halfway, so the residuals a diagnostic at the same memory reads have
+had half the error taken out of them. That diagnostic is conservative. Measured on a fit whose calibration
 slope was 0.7, the calibration test passed its 5% value on 5% of rows at
 the model's memory, on 42% at four times it, and on 89% run once. On
 calibrated fits it passed on 0.3% to 0.6% of rows at the model's memory
@@ -281,8 +281,8 @@ studentized_y cusum_y cusum_sq_y break_wald_y ljung_box_y breusch_pagan_y
 reset_y skew_y kurtosis_y jarque_bera_y influence_y spread_ratio_x0
 spread_ratio_x1 mean_shift_x0 mean_shift_x1 weight_sum settled_frac withheld_reason
 coef_y_intercept coef_y_x0 coef_y_x1 support_coef_y_intercept support_coef_y_x0 support_coef_y_x1
-se_coef_y_intercept se_coef_y_x0 se_coef_y_x1 se_coef_hc0 se_coef_hac scored_clock
-learned_clock
+se_coef_y_intercept se_coef_y_x0 se_coef_y_x1 se_coef_hc0_y_intercept se_coef_hc0_y_x0 se_coef_hc0_y_x1
+se_coef_hac_y_intercept se_coef_hac_y_x0 se_coef_hac_y_x1 scored_clock learned_clock
 ```
 
 ### What each costs, and which models take it
@@ -403,7 +403,7 @@ The shrunk fit's median slope is 1.99: its ridge halved every
 coefficient, so every prediction is half the size it should be. The Wald
 test flags every row, and rescaling by the slope takes its error from
 1.329 to 1.021, the steady fit's level. The overfit fit's slope is 0.82,
-flagged on 98% of rows: its predictions are about 20% too large, because
+flagged on 98% of rows: its predictions are about 22% too large, because
 twenty coefficients estimated on about 87 rows' worth of data add their
 estimation noise to every prediction. Rescaling recovers only a little,
 from 1.278 to 1.241, since most of that noise varies from row to row, and
@@ -740,7 +740,7 @@ correlation look for what is left.
 
 | field | statistic | with nothing missing | sees |
 |---|---|---|---|
-| `ljung_box_<t>` | Ljung and Box's (1978) `Q = n(n + 2) Σ_{l=1..L} ρ̂_l² / (n − l)` over `ljung_box_lags` lags (default 10), at Kish's `n` | `chi2(L)`: 18.3 at 5% for 10 lags | a lag the fit is missing, or a half-life too long |
+| `ljung_box_<t>` | Box and Pierce's (1970) `Q = n Σ_{l=1..L} ρ̂_l²` over `ljung_box_lags` lags (default 10), at Kish's `n`; run once, Ljung and Box's (1978) `n(n + 2) Σ ρ̂_l² / (n − l)` | `chi2(L)`: 18.3 at 5% for 10 lags | a lag the fit is missing, or a half-life too long |
 | `breusch_pagan_<t>` | Koenker's (1981) form of Breusch and Pagan's (1979) test: `n R²` of `resid²` regressed on the slot's features | `chi2(k)` for `k` features | a spread that moves with a feature, linearly |
 | `reset_<t>` | Ramsey's (1969) RESET as a Lagrange multiplier: `n R²` of `resid` on `pred²` and `pred³` beside `pred` | `chi2(2)`: 5.99 at 5% | a curvature the fit is missing |
 | `autocorr_<t>` (`emit_autocorr`) | the EW correlation of each residual with the one `resid_autocorr_lag` scored rows back (default 1) | near 0 | one lag, read as a correlation |
@@ -754,6 +754,17 @@ windowed. Each passed on 98% to 100% of the rows of streams missing what it
 looks for: an AR(1) at 0.3, a spread linear in a feature, a square of one.
 `emit_autocorr` reads at the model's half-life, and a gap capped by
 `gap_cap` or a session change starts a new run of lags.
+
+**Under a memory, `ljung_box` drops Ljung and Box's small-sample
+factor.** Their `(n + 2)/(n − l)` corrects for the `l` rows of a sample
+that have no partner `l` rows back. Under exponential weights every row
+but the oldest has one, and the factor only inflates `Q` at Kish's `n`.
+On iid residuals with 10 lags, Ljung and Box's form passed its 5% value
+on 15.8% of streams at a half-life of 10 rows and 9.7% at 20, where Box
+and Pierce's passed on 4.8% and 5.7%. From a half-life of 50 to 200 the
+two read 4.6% to 6.7%. Run once, Ljung and Box's held at 5.3% to 7.7%
+from 30 to 1,000 rows, where Box and Pierce's fell to 2.7% at 30, so the
+run-once form keeps it.
 
 **On a target that looks ahead `h` rows, `ljung_box` tests lags `h` to
 `h + L − 1`.** Its residuals are correlated within the horizon by
@@ -838,7 +849,7 @@ for s in specs:
 ```text
 spec          ljung_box  breusch_pagan  reset
 clean              14.0            1.0    1.8
-lag               432.9            2.3    1.9
+lag               432.4            2.3    1.9
 spread             15.5          419.2    4.8
 curve              12.9            1.6  214.5
 lag_fixed          13.8            3.2    0.7
@@ -847,7 +858,7 @@ curve_fixed        13.8            1.8    1.1
 
 The clean stream reads 14.0, 1.0 and 1.8, each below its 5% value (18.3,
 5.99 and 5.99). Each faulty stream lights one test, by a factor of 30 or
-more over the clean stream: `ljung_box` reads 432.9 for the missing lag,
+more over the clean stream: `ljung_box` reads 432.4 for the missing lag,
 `breusch_pagan` 419.2 for the spread, and `reset` 214.5 for the
 curvature.
 With last row's error as a feature, the lagged stream's `ljung_box` falls
@@ -1057,6 +1068,18 @@ reads 0.55 and the 99.9th percentile 0.30. On a fit at a half-life of 200,
 The first rows of a stream move the fit by much more, because a fit on a
 handful of rows has little to resist with, so read `influence` once the
 fit has settled.
+
+**A cutoff scales with the fit: `4 · sqrt((k + 1) / weight_sum)` for `k`
+features.** A clean row's influence is about its leverage's square root,
+and a leverage is about `(k + 1) / weight_sum`, so a fit with more
+features or a shorter memory reads larger on every row. On clean rows at
+half-lives of 20 to 1,000 rows and 2 to 10 features, the 99.9th
+percentile of `|influence|` read 2.5 to 3.2 times `sqrt((k + 1) /
+weight_sum)`. Four times it held 0.001% to 0.014% of the clean rows, and
+every row planted six spreads out and six off the line, one in 200. For
+the recipe's fit, at a half-life of 200 with two features, that cutoff is
+0.41. A fixed 0.5 held 7.3% of the clean rows of a fit at a half-life of
+20 with three features.
 
 **What to do.** Find the rows, then decide what they are: a print error
 to drop with a filter in the query before the bank, or a real event the
@@ -1769,7 +1792,7 @@ Each check reads one part of the answer:
 | calibration | `revert`'s slope 0.99 | the predictions `−0.450 · resid_A` are scaled right, so the beta needs no rescaling |
 | the Wald beside it | 72.7 | inflated by the overlap: 150 rows share each window, and the calibration has no Newey-West form. Read the slope |
 | Newey-West | t of −107.7 by `se_coef`, −15.8 by `se_coef_hac` | the beta is real either way, but the plain t is 6.8 times too large: each residual shares its 150-second window with 149 others |
-| `joint` | one stage, `A` and the factors together: `A`'s coefficient −0.444, calibration slope 0.80 | `A`'s coefficient matches `resid_A`'s, since the factors absorb the fair value. Its predictions are 20% too large, so the one-stage fit needs rescaling where the two-stage does not |
+| `joint` | one stage, `A` and the factors together: `A`'s coefficient −0.444, calibration slope 0.80 | `A`'s coefficient matches `resid_A`'s, since the factors absorb the fair value. The 0.80 is the warm-up's, not the settled fit's. Run once, the calibration keeps every row, and over rows 1,000 to 15,000 four coefficients learned from overlapping labels read a slope of 0.56. Over the stream's second half, regressed by hand, the one-stage slope is 0.99 and the two-stage's 1.07, so neither needs rescaling. At `calibration_half_life="4h"` their median slopes over that half read 0.94 and 1.11 |
 | `both` | `resid_A` beside the factors: the factors' t are +6.8, −15.8 and +5.1 by `se_coef`, and +0.7, −1.7 and +0.5 by `se_coef_hac` | once `resid_A` is in, the factors add nothing that Newey-West believes. By `se_coef` alone, all three would look significant |
 
 **What the example shows.** The two-stage beta is right, and its

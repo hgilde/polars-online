@@ -2473,9 +2473,10 @@ mod tests {
         // penalty scale and the clusters' centres as pairs, 52 for task
         // 217's row counts in `ewridge`'s and `lasso`'s cross-moments, and
         // 54 for task 223 (b)'s `audit`, 55 for task 221's diagnostics
-        // with a memory of their own and 56 for its parts (d)-(h), the
-        // windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 56));
+        // with a memory of their own, 56 for its parts (d)-(h) and 57 for
+        // review round 6's tails and scored inflation, the windows state
+        // unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 57));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

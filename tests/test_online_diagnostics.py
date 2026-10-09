@@ -498,3 +498,117 @@ def test_a_held_feature_goes_quiet_long_before_rls_winds_up():
     quiet = int(np.flatnonzero((t >= 300) & (out["spread_ratio_x1"].to_numpy() < 0.5))[0])
     wound = int(np.flatnonzero((t >= 300) & (out["coef"].list.get(2).abs().to_numpy() > 1.0))[0])
     assert quiet - 300 < 3 * 20 < 40 * 20 < wound - 300, (quiet, wound)
+
+
+def test_feature_health_fields_name_their_feature():
+    """``output_index`` tells the health fields apart by the feature each
+    reads (review round 6, F-9): ``columns`` holds it."""
+    idx = po.spec.output_index(_spec("emit_feature_health"))
+    rows = idx.filter(pl.col("kind").is_in(["spread_ratio", "mean_shift"]))
+    assert rows.height == 4
+    for field, columns in rows.select("field", "columns").iter_rows():
+        assert columns == [field.split("_")[-1]], (field, columns)
+
+
+def test_feature_health_is_refused_on_a_model_with_no_features():
+    """``holt`` has no features, so the switch would write no field: it is
+    refused by name rather than ignored (review round 6, F6)."""
+    with pytest.raises(ValueError, match="emit_feature_health.*holt"):
+        po.spec.holt("m", targets=["y"], half_life=60.0, emit_feature_health=True)
+
+
+def test_unnest_takes_the_robust_standard_errors_apart():
+    """``se_coef_hc0`` and ``se_coef_hac`` are laid out like ``coef``, so
+    ``online.unnest`` takes them apart per coefficient as it does
+    ``se_coef`` (review round 6, F4)."""
+    df = _frame()
+    spec = _robust_spec(emit_se_coef=True, coef_every=1)
+    out = _run(df, spec)
+    flat = df.lazy().online.fit_predict([spec]).online.unnest([spec]).collect()
+    for field in ("se_coef", *ROBUST):
+        names = [f"{field}_y_{term}" for term in ("intercept", "x0", "x1")]
+        assert set(names) <= set(flat.columns), (field, flat.columns)
+        assert field not in flat.columns
+        for position, name in enumerate(names):
+            assert flat.schema[name] == pl.Float64
+            want = out[field].list.get(position, null_on_oob=True)
+            assert flat[name].equals(want, null_equal=True), name
+        assert flat[names[1]].drop_nulls().len() > 400, field
+
+
+def _ew_box_pierce(resid: np.ndarray, lam: float, lags: int) -> float:
+    """Box and Pierce's ``n sum(rho_l**2)`` over the scored residuals before
+    the last row, each at its present weight ``lam**age``, at Kish's ``n``:
+    a pair is weighed by its later row, and its partner is the ``l``-th
+    scored residual before it."""
+    age = len(resid) - 1 - np.arange(len(resid))
+    ok = np.isfinite(resid)
+    ok[-1] = False  # the last row is read before it folds
+    e, w = resid[ok], lam ** age[ok].astype(float)
+    n = w.sum() ** 2 / (w**2).sum()
+    d = e - (w * e).sum() / w.sum()
+    den = (w * d * d).sum()
+    rho = np.array([(w[lag:] * d[lag:] * d[:-lag]).sum() / den for lag in range(1, lags + 1)])
+    return float(n * (rho**2).sum())
+
+
+def test_ljung_box_under_a_memory_is_box_pierce_at_kishs_size():
+    """Under a finite memory the statistic is ``n sum(rho_l**2)`` at Kish's
+    ``n``. Ljung and Box's ``(n + 2)/(n - l)`` corrects a count of rows; at
+    Kish's size it read 15.8% of iid streams past the 5% value at a
+    half-life of 10, where this form reads 4.8% (review round 6, B-3). Run
+    once it stays Ljung and Box's, statsmodels' ``acorr_ljungbox``
+    (``tests/test_second_opinion.py``)."""
+    rng = np.random.default_rng(6)
+    n = 2_000
+    x = rng.normal(size=(n, 2))
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": x @ [0.5, -0.3] + rng.normal(size=n)})
+    for half_life in (10.0, 20.0, 200.0):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=half_life,
+            emit_specification=True,
+        )
+        out = _run(df, spec)
+        want = _ew_box_pierce(out["resid_y"].to_numpy(), 0.5 ** (1 / half_life), 10)
+        got = out["ljung_box_y"][-1]
+        assert got == pytest.approx(want, rel=1e-9), half_life
+
+
+def test_an_embargo_reads_the_scored_fits_inflation():
+    """Under an embargo a held row is folded at its release with the
+    prediction it was scored with, and with the error inflation of the fit
+    that scored it (review round 6, A-6). Divided by the release-time fit's
+    inflation -- a fit that has since learned the rows released before it
+    -- the recursive residuals read too small: on iid labels, where an
+    embargo of 50 rows only delays learning, the CUSUM of squares at each
+    group's last row sat at a mean of -0.70 where the stream without the
+    embargo sat at +0.09, and passed 1.96 on 14.7% of 300 groups where it
+    passed on 4.3%."""
+    rng = np.random.default_rng(6)
+    groups, n, k = 300, 1_500, 5
+    x = rng.standard_normal((groups * n, k))
+    y = 0.5 + x.sum(1) + rng.standard_normal(groups * n)
+    cols = {f"x{j}": x[:, j] for j in range(k)}
+    df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "y": y} | cols)
+    read = []
+    for embargo in (None, 50.0):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=list(cols),
+            half_life=float("inf"),
+            group="g",
+            emit_breaks=True,
+            min_weight=12.0,
+            ridge=1e-12,
+            **({"embargo": embargo} if embargo else {}),
+        )
+        last = _run(df, spec).group_by("g").last()
+        cusum_sq = last["cusum_sq_y"]
+        read.append((cusum_sq.mean(), (cusum_sq.abs() > 1.96).mean()))
+    (mean_0, rate_0), (mean_50, rate_50) = read
+    assert abs(mean_50 - mean_0) < 0.2, read
+    assert rate_50 < rate_0 + 0.03, read

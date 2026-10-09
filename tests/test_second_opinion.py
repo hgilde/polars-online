@@ -5137,6 +5137,36 @@ class TestTailsAreScipyAndJarqueBera:
                 out["jarque_bera_y"][t], n_kish / 6 * (skew**2 + kurt**2 / 4), rtol=1e-8
             )
 
+    def test_under_an_embargo_each_row_keeps_its_scored_inflation(self):
+        """Under an embargo of ``E`` rows, row ``t`` reads the rows up to
+        ``t - E``, each as it was scored: its residual over the error
+        inflation of the fit that scored it, both as the row's own fields
+        show them (review round 6, A-6)."""
+        from scipy import stats
+
+        rng = np.random.default_rng(4)
+        n, embargo = 400, 7
+        x = rng.normal(size=(n, 2))
+        y = x @ np.array([1.0, -0.5]) + rng.standard_t(5, size=n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            embargo=float(embargo),
+            min_weight=5.0,
+            emit_tails=True,
+            emit_error_inflation=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
+        for t in (60, 61, 200, 399):
+            released = v[: t - embargo + 1]
+            vt = released[np.isfinite(released)]
+            np.testing.assert_allclose(out["skew_y"][t], stats.skew(vt), rtol=1e-9)
+            np.testing.assert_allclose(out["kurtosis_y"][t], stats.kurtosis(vt), rtol=1e-9)
+
 
 class TestInfluenceIsDffitsAtTheNewestRow:
     """Task 221 (f). Run once with no ridge, ``influence`` on row ``t`` is

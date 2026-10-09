@@ -373,8 +373,14 @@ impl Checks {
         }
         if !self.specification.is_empty() {
             let nc = cfg.combo_features.len().max(1);
+            // Box and Pierce's form under a memory that forgets, Ljung and
+            // Box's run once (review round 6, B-3).
+            let forget = match cfg.specification {
+                Decay::Halflife(h) => h.is_finite(),
+                Decay::Lam(l) => l < 1.0,
+            };
             for (slot, s) in self.specification.iter().enumerate() {
-                put(v, slot, s.ljung_box());
+                put(v, slot, s.ljung_box(forget));
                 let idx = cfg.combo_features.get(slot % nc);
                 put(v + 1, slot, idx.and_then(|idx| s.breusch_pagan(idx)));
                 put(v + 2, slot, s.reset());
