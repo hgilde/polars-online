@@ -8,7 +8,7 @@ kept during a pass and lists what is wrong with the data, and an `audit`
 spec counts what no model keeps. For each problem, the fix is made with
 Polars, in the query before the bank.
 
-The [diagnostics](../README.md#diagnostics-selection-and-evaluation) ask
+The [diagnostics](DIAGNOSTICS.md) ask
 whether a model is working. This page asks whether the data can be learned
 from at all.
 

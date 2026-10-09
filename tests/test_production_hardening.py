@@ -991,9 +991,10 @@ class TestReadmeExamples:
         """A README block runs on the names the README itself built
         (`_built_by_the_readme`), but the API reference's examples still
         read the namespace's copies (TC4), so each copy is what the README
-        block it copies builds. `out` copies two at once: the evaluation
-        section's ``ridge`` and ``kalman`` columns and the field-names
-        section's ``m``; `bank` is `po.ModelBank([spec])` before any row,
+        block it copies builds. `out` copies two at once: the ``ridge`` and
+        ``kalman`` columns of ``seqtest``'s two-spec block (the evaluation
+        section that built them moved to docs/DIAGNOSTICS.md, task 222) and
+        the field-names section's ``m``; `bank` is `po.ModelBank([spec])` before any row,
         as the README's blocks start it. The fixture's `grid` had a
         `min_weight` and its `now` was 400.0, where the README's have none
         and 399.0; and `spec` was checked against nothing (review
@@ -1017,7 +1018,7 @@ class TestReadmeExamples:
 
         for name, which in self.COPIES.items():
             assert same(built(name, which)[name], ns[name]), name
-        evaluated = built("out", "first", "fit_predict([ridge, kalman])")["out"]
+        evaluated = built("out", "first", "po.ModelBank([ridge, kalman, closer])")["out"]
         assert ns["out"].select("ridge", "kalman").equals(evaluated.select("ridge", "kalman"))
         fields = built("grid", "last")["out"]
         assert ns["out"].select("m").equals(fields.select("m"))

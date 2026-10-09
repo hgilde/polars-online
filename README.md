@@ -17,7 +17,7 @@ ahead. Rust core, Python API, and a standalone command line.
 | [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [outside Python](#outside-a-live-python-process) · [output as Arrow](#output-as-arrow) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [the running sums](#the-running-sums-behind-a-fit) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
-| [Diagnostics, selection and evaluation](#diagnostics-selection-and-evaluation) | [per-row diagnostics](#per-row-diagnostics) · [conformal intervals](#conformal-intervals) · [choosing among a grid's settings](#choosing-among-a-grids-settings) · [evaluating an output](#evaluating-an-output-frame) · [evaluating a stream too large to hold](#evaluating-a-stream-too-large-to-hold) · [simulated data](#data-whose-truth-is-known) |
+| [Diagnostics, selection and evaluation](#diagnostics-selection-and-evaluation) | is the model working, one question at a time: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) |
 | [Models](#models) | [linear models](#linear-models) · [moments and correlation](#moments-and-correlation) · [clustering and classification](#clustering-and-classification) · [sequential tests and regimes](#sequential-tests-and-regimes) |
 | [Performance](#performance) | [throughput](#throughput) · [parallelism](#parallelism) · [chunk size](#chunk-size) · [memory](#memory) · [tuning memory](#tuning-memory-with-polars-own-settings) · [window operators](#window-operators) · [against scikit-learn](#against-scikit-learn) |
 | [Scope and integrations](#scope-and-integrations) | [what this is not](#what-this-is-not) · [DuckDB and ADBC](#databases-duckdb-and-adbc) · [Pathway](#pathway) |
@@ -419,8 +419,8 @@ moves = flows.online.fit_predict([ahead_5m]).online.unnest([ahead_5m]).collect()
 
 `pred`, `resid`, `sigma` and the metrics are on the target's scale, so
 `pred + mid` predicts the mean trade price itself. `hit_rate` asks whether
-prediction and outcome fall on the same side of zero ([Per-row
-diagnostics](#per-row-diagnostics)), so write a ratio target to sit about
+prediction and outcome fall on the same side of zero ([Is another model
+better?](docs/DIAGNOSTICS.md#is-another-model-better)), so write a ratio target to sit about
 zero, as the quotient less 1 or as its `.log()`:
 
 ```python
@@ -1869,8 +1869,8 @@ from_file = later.online.predict("bank.state").collect() # a path, read when the
 
 **Row *i* of `scored` carries what `fit_predict` would have reported had it
 been the next row of its group's stream:** `pred`, `weight_sum`, `sigma`,
-`zscore`, the selection and the metrics, field for field ([Per-row
-diagnostics](#per-row-diagnostics)). Two fields differ: `drift` never
+`zscore`, the selection and the metrics, field for field
+([docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)). Two fields differ: `drift` never
 fires, and `coef` is filled on each group's last accepted row only, since
 the same coefficients score every row. How `predict` reads a row:
 
@@ -1974,8 +1974,8 @@ The fields of `last_row()` differ between specs, so stack it with
 `"diagonal_relaxed"`, which fills a missing field with nulls.
 
 **`last_row()` matches `fit_predict` field for field:** `pred`, `sigma`,
-the metrics and the interval when the spec asks for them ([Per-row
-diagnostics](#per-row-diagnostics)), `weight_sum`, and `coef` when that row
+the metrics and the interval when the spec asks for them
+([docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)), `weight_sum`, and `coef` when that row
 carried it. Until a group learns from a row, its record is all nulls.
 
 **`summary()`'s counts and `describe()` cover every row fed to the group,
@@ -2339,316 +2339,32 @@ Judge a model as the stream runs, by switching diagnostics on in its spec,
 or after the run, by passing its output to `po.eval`. A spec's diagnostics
 and selection measure each row against what the models learned before it,
 never against the row's own outcome. Their memory does not grow with the
-stream.
+stream. Every switch but `emit_clocks` reads the residuals, so only the ten
+[linear models](#linear-models), which predict a target, take them, and
+any other model refuses them by name. A switch adds its fields to the
+spec's output, one per *slot*: one prediction of one target, at one point
+of a grid.
 
-| kind | switch or call | what it gives | subsection |
-|---|---|---|---|
-| diagnostics | `emit_sigma`, `emit_drift`, `emit_metrics` and others, in a spec | residual spread, break detection and running accuracy, row by row | [Per-row diagnostics](#per-row-diagnostics) |
-| | `conformal`, in a spec | an interval that assumes no distribution | [Conformal intervals](#conformal-intervals) |
-| selection | `emit_selected`, `emit_averaged`, in a spec | a choice among a grid's settings, as the stream runs | [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
-| evaluation | `po.eval`, after the run | metrics and comparisons over a frame in memory | [Evaluating an output frame](#evaluating-an-output-frame) |
-| | `po.eval.sums`, per chunk | the same metrics, without holding the output | [Evaluating a stream too large to hold](#evaluating-a-stream-too-large-to-hold) |
-| simulation | `po.sim.regimes` | a stream whose regimes are known, and the truth beside it | [Data whose truth is known](#data-whose-truth-is-known) |
+[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) answers "is this model
+working?" one question at a time. For each diagnostic it gives the
+definition and its update, the threshold that means something with its
+false-alarm rate as measured, its cost a row, the theory it rests on, and a
+recipe that runs with its output shown:
 
-### Per-row diagnostics
-
-Switch a diagnostic on with its keyword in the spec, and the output gains
-its fields, one per *slot*: one prediction of one target, at one point of a
-grid. Every switch but `emit_clocks` reads the residuals, so only the ten
-[linear models](#linear-models), which predict a target, take them. Any
-other model refuses them by name.
-
-| kind | switches | fields |
+| question | switch or call | fields, per slot `<t>` |
 |---|---|---|
-| spread and surprise | `emit_sigma`, `emit_zscore`, `resid_quantiles` | `sigma_`, `zscore_`, `abs_resid_q<p>_` |
-| breaks | `emit_drift` | `drift_` |
-| running accuracy | `emit_metrics` | `ic_`, `r2_`, `hit_rate_` |
-| residual autocorrelation | `emit_autocorr` | `autocorr_` |
-| calibration | `emit_calibration` | `calibration_slope_`, `calibration_intercept_`, `calibration_wald_` |
-| where the relationship broke | `emit_breaks` | `studentized_`, `cusum_`, `cusum_sq_`, `break_wald_` |
-| what the fit is missing | `emit_specification` | `ljung_box_`, `breusch_pagan_`, `reset_` |
-| how heavy the residuals' tails are | `emit_tails` | `skew_`, `kurtosis_`, `jarque_bera_` |
-| which row moved the fit | `emit_influence` | `influence_`: `ewridge`, `rls` and `kalman` |
-| a feature gone quiet or moved | `emit_feature_health` | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance |
-| standard errors robust to the residuals | `emit_robust_se` | `se_coef_hc0`, `se_coef_hac`, once per instance on `coef`'s rows ([Coefficients](#coefficients)) |
-| an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
-| a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
-| clocks, on every model | `emit_clocks` | `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the last row learned, once per spec ([Labels that arrive late](#labels-that-arrive-late)) |
-
-This code uses `df` from [Example data](#example-data):
-
-```python
-diag = po.spec.ewridge(
-    "diag", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=500.0,
-    ridge=[1e-6, 0.1],           # a grid of two ridge values: two slots for the one target
-    # EW: exponentially weighted. A switch's tuning keywords sit under it, each at its default if it has one.
-    emit_sigma=True,             # sigma_<slot>:     EW standard deviation of that slot's out-of-sample residuals
-    emit_zscore=True,            # zscore_<slot>:    resid / sigma: how surprising the row was, in units of recent error
-    emit_drift=True,             # drift_<slot>:     Page-Hinkley break detection on |resid| ...
-    drift_delta=0.5,             #                   ... with this tolerance, in units of the slot's sigma ...
-    drift_threshold=20.0,        #                   ... and this threshold, in sigma times clock units: required with a clock
-    drift_action="flag",         #                   "reset" also starts the model over at a break
-    emit_metrics=True,           # ic_, r2_, hit_rate_<slot>: EW IC (the correlation of prediction with target), R², hit rate
-    resid_quantiles=[0.5, 0.9],  # abs_resid_q<p>_<slot>: EW quantiles of |resid|, within 0.78% of the exact ones
-    emit_autocorr=True,          # autocorr_<slot>:  EW correlation of each residual with the one this many back:
-    resid_autocorr_lag=1,        #                   away from zero, the model is missing something
-    conformal=0.9,               # lo_, hi_, coverage_<slot>: an interval at this coverage, and the coverage delivered
-    conformal_rate=0.05,         #                   how fast its radius moves (Conformal intervals)
-    emit_calibration=True,       # calibration_slope_, _intercept_, _wald_<slot>: y regressed on pred, and the
-    calibration_half_life=2000.0,#                   test of slope 1 and intercept 0, at a memory of its own
-    emit_breaks=True,            # studentized_, cusum_, cusum_sq_, break_wald_<slot>: CUSUMs of the studentized
-    breaks_half_life=500.0,      #                   residuals, and a fast fit's distance from a slow one
-    emit_robust_se=True,         # se_coef_hc0, se_coef_hac: each coefficient's standard error, robust to unequal
-    robust_se_lags=10,           #                   residual spreads, and to overlapping labels this many rows apart
-    emit_specification=True,     # ljung_box_, breusch_pagan_, reset_<slot>: a missing lag, a spread that moves
-    ljung_box_lags=10,           #                   with the features, a missing curvature
-    emit_tails=True,             # skew_, kurtosis_, jarque_bera_<slot>: how far the residuals are from Gaussian
-    emit_influence=True,         # influence_<slot>: how far this row moved the fit, an online DFFITS
-    emit_feature_health=True,    # spread_ratio_, mean_shift_<feature>: each feature's recent spread and mean
-    emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
-)
-band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
-```
-
-**On each row, `sigma`, the interval and its coverage, the quantiles, the
-autocorrelation and the metrics are read before the row updates them.**
-`resid`, `zscore` and `drift` measure the row against them.
-
-**`calibration_slope` is the number to multiply a prediction by.** It is
-the slope of `y` regressed on `pred`, with `calibration_intercept`, and
-`calibration_wald` tests slope 1 and intercept 0 together: past 5.99 is
-the 5% level. Each switch of this kind keeps a memory of its own, its
-`*_half_life`, and `inf` runs it once over the whole stream. Run once, the
-test is the classical F test, `wald / 2`. Beside a fit that forgets, it is
-conservative, since the fit absorbs a miscalibration at its own pace, so
-the calibration's memory defaults to four times the model's half-life: on
-a fit whose slope was 0.7 it flagged 42% of rows there and 5% at the
-model's own (`po.spec`'s table has the measurements).
-
-**`emit_breaks` says which part of the relationship broke.** `cusum`
-moves when the residuals take a mean, as when the intercept shifts;
-`cusum_sq` when their spread changes; `break_wald` when a slope changes,
-which leaves the residuals' mean at zero and the CUSUMs blind to it. Each of
-the three is a standard normal or a chi-squared with no break, so a
-threshold means the same on every stream: beside a fit at a half-life of
-200, `|cusum| > 3`, `|cusum_sq| > 3` and `break_wald > 21.1` found each
-break they see within 20 to 100 rows. Run once, `cusum` and `cusum_sq` are
-Brown, Durbin and Evans' CUSUM tests, whose boundaries `po.spec`'s table
-gives.
-
-**`emit_specification` asks what the fit is missing.** `ljung_box` is
-chi-squared on `ljung_box_lags` degrees of freedom when the residuals carry
-no lag, `breusch_pagan` on the feature count when their spread does not
-move with the features, and `reset` on 2 when the fit misses no curvature;
-past the 5% value each says which to add. On a target that looks ahead,
-`ljung_box` starts past the horizon, where the overlap leaves nothing to
-find.
-
-**`influence` names the rows that moved the fit.** It is the row's
-DFFITS against the fit before it, read in the fit's own metric, so one row
-with a wild feature and a wild target stands out at once: on a fit at a
-half-life of 200, every planted row read above 0.5 and no clean row did.
-
-**`emit_feature_health` watches the features themselves.** A feed that
-stopped and was carried forward reads a `spread_ratio` falling toward 0,
-and a feature that moved reads a `mean_shift` in its own spreads. On a
-frozen feed `spread_ratio` fell below 0.5 within three half-lives, where
-`rls` wound up after fifty ([Detecting data issues](docs/DATA-ISSUES.md)).
-
-**`se_coef_hac` is the standard error to trust when the target looks
-ahead.** A target that sums the next `h` rows overlaps its neighbours, so
-its residuals are correlated `h - 1` rows apart, and `se_coef`, which
-assumes they are not, was 2 to 4 times too small at `h` of 5 to 20 against
-a slowly moving feature. Newey and West's lags put the correlation back;
-they default to twice `embargo` on a stream with no clock column.
-`se_coef_hc0` is robust to residuals whose spread moves with the features.
-Both are `ewridge`'s and `rls`'s.
-
-**How often `drift` flags a stream that does not change depends on the
-residuals' tails, which `emit_tails`' `kurtosis` measures.** At
-`drift_delta=0.5` and `drift_threshold=20` on a row clock, residuals whose
-`kurtosis` read under 4 flagged no row in a million. Where it read about 9
-they flagged 0.4 in 100,000, and none at a threshold of 30. Where it read
-in the tens, as Student's t with three degrees of freedom does, they
-flagged 6 in 100,000, none at 80. So set `drift_threshold` by the
-`kurtosis` of a stretch you know to be stable: leave 20 under 4, use 30
-near 10, 80 past 30. A threshold that high is slow to see a break; for a
-change of spread `cusum_sq` from `emit_breaks` is the faster detector.
-
-**`hit_rate`, in `emit_metrics` and in `po.eval.metrics`, asks whether
-prediction and outcome fall on the same side of zero.** A row where either
-is exactly zero is on neither side, and both leave it out. So on a target
-that is always positive, such as a plain ratio, every row counts as a hit.
-[Relative and look-ahead targets](#relative-and-look-ahead-targets) says
-how to write a return about zero with Polars expressions. An `sgd` fit
-with `loss="poisson"` has no side to be on, a positive rate against a
-count, and its `hit_rate` is null.
-
-On an `sgd` or `ftrl` fit with `loss="logistic"`, `pred` is a probability
-and `y` a 0/1 label, so the three metrics mean something else under the
-same names:
-
-| field | on a logistic `sgd` or `ftrl` fit |
-|---|---|
-| `hit_rate` | the accuracy at a 0.5 threshold |
-| `r2` | the Brier skill score against the running base rate |
-| `ic` | the point-biserial correlation between the probability and the label |
-| a log loss | not streamed: `po.eval` computes one over a frame in memory ([Evaluating an output frame](#evaluating-an-output-frame)) |
-
-### Conformal intervals
-
-**Use `conformal` for an interval when the residuals are not Gaussian.**
-It tracks the `conformal` quantile of `|resid|` directly, so its long-run
-coverage is the number you asked for, whatever the residuals do. Under a
-`weight` column that coverage is weighted by `w/w̄`, each row's weight over
-the mean weight, so a heavy row's miss counts for more, and the share of
-rows covered can sit on either side of the number. On
-Gaussian residuals the interval `pred ± z·sigma`, built from `emit_sigma`'s
-field with Polars expressions after the bank, covers equally well. On
-fat-tailed or heteroskedastic residuals, that Gaussian interval over-covers
-by several points.
-
-**The radius moves by `conformal_rate`, 0.05 by default.** It widens on a
-miss, by rate·sigma·coverage, and narrows on a hit, by rate·sigma·(1 −
-coverage). Each step is scaled by the row's weight over the mean weight.
-This code uses `df` from [Example data](#example-data):
-
-```python
-ci = po.spec.ewridge("ci", targets=["y"], features=["x0", "x1"], clock="t",
-                     gap_cap=300.0, half_life=500.0, conformal=0.9)
-band = po.ModelBank([ci]).fit_predict(df).unnest("ci")   # lo_y, hi_y: the interval; coverage_y: the coverage delivered
-held = band.select(pl.col("y").is_between(pl.col("lo_y"), pl.col("hi_y")).mean())   # the realized coverage
-```
-
-### Choosing among a grid's settings
-
-Two switches choose among a grid's slots (one prediction per target and
-point) as the stream runs, by each slot's exponentially weighted
-out-of-sample error so far. `emit_selected` commits to the best slot, and
-a spec with one slot per target refuses it. `emit_averaged` hedges across
-all of them. To compare whole specs after the run, pass the output to
-`po.eval.compare_specs` ([Evaluating an output
-frame](#evaluating-an-output-frame)).
-This code uses `df` from [Example data](#example-data):
-
-```python
-pick = po.spec.ewridge(
-    "pick", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=500.0,
-    ridge=[1e-6, 0.1],           # a grid, so there is something to select among
-    emit_selected=True,          # selected_y, pred_y__selected
-    emit_averaged=True,          # pred_y__averaged
-    average_eta=1.0,             # the default
-)
-chosen = po.ModelBank([pick]).fit_predict(df).unnest("pick")
-chosen.select("selected_y", "pred_y__selected", "pred_y__averaged")
-```
-
-| switch | fields, one per target | what it gives |
-|---|---|---|
-| `emit_selected` | `selected_<target>`, `pred_<target>__selected` | the ridge value, feature set or half_life with the lowest EW out-of-sample error so far, each slot at its own half_life |
-| `emit_averaged` | `pred_<target>__averaged` | every slot's prediction, weighted by `exp(-eta * (mse / best_mse - 1))`, with `mse` the slot's EW squared error and `best_mse` the best slot's; `average_eta` is `eta`, and `inf` gives `emit_selected`'s choice |
-
-### Evaluating an output frame
-
-After the run, pass the output frame to `po.eval`: its calls score a spec,
-compare specs, or unpack the frame to long form. `po.eval.seqtest`
-runs the [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting)
-model's test on the frame. On a 0/1 label,
-`po.eval.metrics(..., binary=True)` reads `pred` as a probability and adds
-the log loss.
-This code uses `df` from [Example data](#example-data):
-
-```python
-ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
-                        gap_cap=300.0, half_life=500.0, group="stock_id")
-kalman = po.spec.kalman("kalman", targets=["y"], features=["x0", "x1"], clock="t",
-                        gap_cap=300.0, half_life=500.0, group="stock_id",
-                        coef_half_life=100.0)   # how fast a coefficient may drift, as a half-life on the clock
-out = df.online.fit_predict([ridge, kalman])    # df's columns, plus one column per spec
-
-po.eval.metrics(out, "ridge", group="stock_id")                # R², IC, hit rate, MSE
-po.eval.window_metrics(out, "ridge", clock="t", every=3600.0)  # the same, per tumbling clock window
-po.eval.compare_specs(out, ["ridge", "kalman"])                # one table, many specs: which had the lower error
-po.eval.seqtest(out, a="kalman", b="ridge", group="stock_id")  # is kalman closer? evidence per row
-po.eval.diebold_mariano(out, a="kalman", b="ridge", group="stock_id")  # equal squared error? Newey-West t
-po.eval.clark_west(out, big="kalman", small="ridge", group="stock_id")  # the same for a model nesting another
-po.eval.unpack(out, "ridge")                                   # long form: one row per (row, slot), with slot,
-                                                               # target, pred and y, for your own group_by
-```
-
-**Compare two models with `diebold_mariano`, and a model with one it nests
-with `clark_west`.** Each is a t statistic of a loss differential against
-Newey and West's variance (`lags`, 0 for one-step predictions), read
-against the normal. Between nested models, Diebold and Mariano's test leans
-toward the smaller: on 200 streams where the larger model's extra
-coefficient was 0.05 it found the larger better on 1.5-4% of them, Clark
-and West's on 56%; with nothing to find, Clark and West's rejected on
-1.5-2%. With `half_life`, each gives its statistic on every row,
-exponentially weighted, beside `po.eval.seqtest`'s evidence.
-
-**Pass the spec as `spec=` when a target is renamed or looks ahead.** The
-output frame does not record how a target was formed, so without the spec
-each slot is scored against the column named after it. A target renamed
-with `name=` names no column, and the call asks for `spec=`. A target
-expression looking ahead is scored against a column of its own name, which
-`po.stream.with_windows` makes.
-`metrics`, `window_metrics`, `sums` and `unpack` take `spec=`, and
-`compare_specs` takes the list as `specs=`.
-
-### Evaluating a stream too large to hold
-
-`po.eval.metrics` needs the whole output in one frame. When the output is
-too large to hold, say fifty slots over a billion rows, reduce each chunk
-to ten numbers per key with `po.eval.sums`. Add the parts with
-`po.eval.merge_sums`, which is exact whatever the split, and turn the total
-into the metrics with `po.eval.from_sums`.
-
-**The sums are centred, so a target far from zero keeps its variance.** Raw
-`Σy` and `Σy²` would lose all of it for a target around 1e8 with unit
-spread.
-This code uses `lf` from [Example data](#example-data):
-
-```python
-ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                        clock="t", gap_cap=300.0, half_life=500.0, group="stock_id")
-
-running = None
-for out in po.ModelBank([ridge]).fit_predict_batches(lf, chunk_size=100):   # the output, 100 rows at a time
-    part = po.eval.sums(out, "ridge", group="stock_id")   # weight= names a column to weight the rows by
-    running = part if running is None else po.eval.merge_sums(running, part)
-
-po.eval.from_sums(running, min_samples=10)   # R², IC, hit rate and MSE, as metrics() gives them, and the RMSE
-```
-
-### Data whose truth is known
-
-To test a model that claims to find a changing correlation structure, fit
-it on the `rows` of
-[`po.sim.regimes`](https://hgilde.github.io/polars-online/sim.html#polars_online.sim.regimes)
-and compare what it finds with `truth_rows` and `truth_blocks`, the truth
-returned beside them. The measurements in [docs/REGIMES.md](docs/REGIMES.md)
-show what `hmm`, `corrchange` and `bocpd` find on such streams, and what
-they miss.
-
-```python
-sim = po.sim.regimes(
-    4, states=[0.2, 0.7],                     # four series; two regimes, at these equicorrelations
-    transition=[[0.98, 0.02], [0.02, 0.98]],  # how the regimes switch
-    n_blocks=8, rows_per_block=500,
-    durations=None,                           # or a block count per state: each state lasts exactly as long as it says
-    design="step", smooth_rows=0,             # or "smooth": interpolate the matrix over smooth_rows rows at a boundary
-    phi=0.3, noise=0.01,                      # returns correlated with their own past; observation noise
-    async_rates=[1.0, 1.0, 0.4, 0.4],         # two series observed less often; a series with no observation is null
-    seed=0,                                   # the same seed twice is byte-identical, under one numpy version
-)
-rows, truth_rows, truth_blocks = sim["rows"], sim["truth_rows"], sim["truth_blocks"]
-```
-
-| frame | what it holds |
-|---|---|
-| `rows` | what a consumer sees: an entity, the row's index `t`, a clock and a session, levels `x_1` .. `x_m`, and `activity`, null unless `activity=(mean, shape)` is given. For returns, `unpivot` the levels into the long input of [`refresh_time`](#series-that-tick-at-their-own-times), and apply `.diff()` to the grid it builds |
-| `truth_rows` | per row `t`: the block, state, volatility multiplier and interpolation fraction |
-| `truth_blocks` | each block's true correlation matrix, as the upper triangle in a list |
+| [is it scaled right?](docs/DIAGNOSTICS.md#is-it-scaled-right) | `emit_calibration` | `calibration_slope_<t>`, `calibration_intercept_<t>`, `calibration_wald_<t>` |
+| [has it broken?](docs/DIAGNOSTICS.md#has-it-broken) | `emit_breaks`, `emit_drift` | `studentized_<t>`, `cusum_<t>`, `cusum_sq_<t>`, `break_wald_<t>`, `drift_<t>` |
+| [can its t be trusted?](docs/DIAGNOSTICS.md#can-its-t-be-trusted) | `emit_se_coef`, `emit_robust_se` | `se_coef`, `se_coef_hc0`, `se_coef_hac`, on `coef`'s rows ([Coefficients](#coefficients)) |
+| [what is it missing?](docs/DIAGNOSTICS.md#what-is-it-missing) | `emit_specification`, `emit_autocorr` | `ljung_box_<t>`, `breusch_pagan_<t>`, `reset_<t>`, `autocorr_<t>` |
+| [are its tails heavy?](docs/DIAGNOSTICS.md#are-its-tails-heavy) | `emit_tails` | `skew_<t>`, `kurtosis_<t>`, `jarque_bera_<t>`; `drift_threshold` is set against the kurtosis |
+| [which row moved it?](docs/DIAGNOSTICS.md#which-row-moved-it) | `emit_influence` | `influence_<t>`: `ewridge`, `rls` and `kalman` |
+| [are its features healthy?](docs/DIAGNOSTICS.md#are-its-features-healthy) | `emit_feature_health` | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance |
+| [is another model better?](docs/DIAGNOSTICS.md#is-another-model-better) | `emit_metrics`, `emit_selected`, `emit_averaged`; `po.eval.metrics`, `window_metrics`, `compare_specs`, `diebold_mariano`, `clark_west`, `seqtest`, and `po.eval.sums` for an output too large to hold | `ic_<t>`, `r2_<t>`, `hit_rate_<t>`; `selected_<t>`, `pred_<t>__selected`, `pred_<t>__averaged`, one per target |
+| [is it ready?](docs/DIAGNOSTICS.md#is-it-ready) | `min_weight`, `min_settled_frac`, `max_error_inflation`, `emit_error_inflation` ([Warm-up](#warm-up)) | `weight_sum`, `settled_frac`, `withheld_reason`, `error_inflation_<t>` |
+| [how wide is its error?](docs/DIAGNOSTICS.md#how-wide-is-its-error) | `emit_sigma`, `emit_zscore`, `resid_quantiles`, `conformal` | `sigma_<t>`, `zscore_<t>`, `abs_resid_q<p>_<t>`, `lo_<t>`, `hi_<t>`, `coverage_<t>` |
+| when was a row scored, and from what? | `emit_clocks`, on every model | `scored_clock`, `learned_clock`, once per spec ([Labels that arrive late](#labels-that-arrive-late)) |
+| [does a model find a truth it was given?](docs/DIAGNOSTICS.md#data-whose-truth-is-known) | `po.sim.regimes` | a stream whose regimes are known, and the truth beside it |
 
 ## Models
 
@@ -3510,8 +3226,8 @@ single precision.
 
 `holt` is the only linear model that takes no features: it extrapolates the
 target's own level and trend. To measure what a model's features add, run
-`holt` in the same bank, then compare the two models' `sigma` ([Per-row
-diagnostics](#per-row-diagnostics)), or let a
+`holt` in the same bank, then compare the two models' `sigma` ([How wide
+is its error?](docs/DIAGNOSTICS.md#how-wide-is-its-error)), or let a
 [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting) with `a` and
 `b` say which predicts closer.
 This code uses `df` from [Example data](#example-data):

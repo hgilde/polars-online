@@ -26,6 +26,10 @@ them. ``min_samples`` is the fewest rows a key is reported on, Polars' name
 for that count. Before 1.0 they were ``by`` and ``min_obs``, and
 :func:`window_metrics` was ``rolling_metrics``. An old name is refused, and
 the error names the new one.
+
+`docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
+says which question each call and each diagnostic switch answers, with its
+threshold, its false-alarm rate as measured, and a recipe that runs.
 """
 
 from __future__ import annotations

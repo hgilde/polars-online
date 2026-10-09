@@ -285,7 +285,7 @@ OPTIONAL: list[tuple[str, str]] = [
         "`conformal`, `emit_calibration`, `emit_breaks`, `emit_specification`, "
         "`emit_tails`, `emit_influence` (`ewridge`'s, `rls`'s and `kalman`'s), "
         "`emit_feature_health`",
-        "[Per-row diagnostics](../README.md#per-row-diagnostics), for the models that "
+        "[Is the model working?](DIAGNOSTICS.md), for the models that "
         "predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` "
         'fit with `loss="poisson"`, whose rate and count have no sign to hit',
     ),
@@ -404,7 +404,7 @@ Four fields appear in nearly every table below, and are defined here once:
 The optional outputs are left out: the `emit_*` switches, `conformal`,
 `resid_quantiles` and extra `stats`. Each is shown where the README sets it:
 
-{table(("the switch", "where the README shows it"), OPTIONAL)}
+{table(("the switch", "where the docs show it"), OPTIONAL)}
 
 `emit_clocks` is the one switch every model takes, and it adds two fields:
 

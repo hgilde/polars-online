@@ -225,6 +225,10 @@ the diagnostics
     clock units: when left out, four times the model instance's half-life
     for the calibration and the instance's half-life for the others; ``inf``
     is the run-once form, which forgets nothing.
+    `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
+    orders them by the question each answers, with their thresholds,
+    false-alarm rates, costs and the theory behind them, and a recipe for
+    each.
 
 ``standardize``, which seven models take, defaults to ``False`` in
 ``ewridge``, ``huber``, ``quantile`` and ``sgd``, and to ``True`` in

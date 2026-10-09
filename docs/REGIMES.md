@@ -3,7 +3,7 @@
 A regime detector makes a claim about a stream: that its correlation has
 changed, how long the current regime has lasted, or which state a row
 belongs to. A claim like that can only be checked on a stream whose answer
-is written down. [`po.sim.regimes`](../README.md#data-whose-truth-is-known)
+is written down. [`po.sim.regimes`](DIAGNOSTICS.md#data-whose-truth-is-known)
 generates one from a seed and returns the truth beside the rows. This page
 reports what the detectors find on such streams, and on Monte-Carlo draws
 whose null distribution is published: where each is right, and what it

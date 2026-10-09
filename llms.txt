@@ -141,6 +141,10 @@ Windows alike.
 
 - [State workflow](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md):
   fit, save, serve, learn on — what each step guarantees
+- [Diagnostics](https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md):
+  is the model working, one question at a time -- calibration, breaks, robust standard
+  errors, specification tests, tails, influence, feature health, model comparison,
+  readiness, intervals -- each with its thresholds, cost, theory and a recipe that runs
 - [Data issues](https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md):
   each `bank.check()` finding, what it does to a fit, and its fix in Polars
 - [Performance](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md):
