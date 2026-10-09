@@ -471,6 +471,7 @@ BUILDERS = {
     po.spec.hmm: dict(features=["x0", "y"], targets=None, k=2, precision_prior=0.1),
     po.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, span_rows=20),
     po.spec.bocpd: dict(features=["x0", "y"], targets=None, half_life=None),
+    po.spec.audit: dict(columns=["x0", "y"], features=None, targets=None, half_life=None),
 }
 
 

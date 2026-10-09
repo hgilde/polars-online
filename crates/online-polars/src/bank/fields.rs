@@ -210,6 +210,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
             | crate::ModelKind::Rcov { .. }
             | crate::ModelKind::CorrChange { .. }
             | crate::ModelKind::Bocpd { .. }
+            | crate::ModelKind::Audit { .. }
     ) {
         return Vec::new();
     }
@@ -362,13 +363,15 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
 /// model that writes a row: `settled_frac` and `withheld_reason` follow
 /// each instance's `n_eff`, and `support_coef` follows `coef` where the
 /// model has one -- inserted here, once, rather than in each model's own
-/// layout. The state-only models (`marginal`, `rcov`) write no row and
-/// get none.
+/// layout. The state-only models (`marginal`, `rcov`, `audit`) write no
+/// row and get none.
 pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     let base = output_index_base(spec);
     if matches!(
         spec.model,
-        crate::ModelKind::Marginal { .. } | crate::ModelKind::Rcov { .. }
+        crate::ModelKind::Marginal { .. }
+            | crate::ModelKind::Rcov { .. }
+            | crate::ModelKind::Audit { .. }
     ) {
         return with_clocks(spec, base);
     }
@@ -877,12 +880,15 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         fields.push(FieldMeta::new("weight_sum".into(), "weight_sum").src(Source::NEff(0)));
         return fields;
     }
-    // rcov and marginal emit nothing per row but `n_eff`, one per instance:
-    // rcov's value is the block it emits at the group's close, marginal's
-    // are the pairs `Bank::marginal` reads from the state.
+    // rcov, marginal and audit emit nothing per row but `n_eff`, one per
+    // instance: rcov's value is the block it emits at the group's close,
+    // marginal's the pairs `Bank::marginal` reads from the state, audit's
+    // the counts `Bank::audit` reads.
     if matches!(
         spec.model,
-        crate::ModelKind::Marginal { .. } | crate::ModelKind::Rcov { .. }
+        crate::ModelKind::Marginal { .. }
+            | crate::ModelKind::Rcov { .. }
+            | crate::ModelKind::Audit { .. }
     ) {
         return decays
             .iter()

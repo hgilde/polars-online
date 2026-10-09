@@ -593,9 +593,14 @@ def _kind_spec(kind: str) -> dict:
 
 def _state(bank: po.ModelBank, kind: str) -> pl.DataFrame | None:
     """What a kind that reports through its state reports: `marginal`'s
-    pairs and `rcov`'s closed blocks."""
+    pairs, `rcov`'s closed blocks and `audit`'s counts."""
     if kind == "marginal":
         return bank.marginal("m")
+    if kind == "audit":
+        return pl.concat(
+            [bank.audit("m"), bank.audit("m", pooled=True).with_columns(group=pl.lit("*"))],
+            how="diagonal_relaxed",
+        )
     if kind == "rcov":
         return bank.closed_groups("m", drop=False)
     return None
@@ -661,7 +666,8 @@ class TestEveryOtherKind:
             fields = one.select("m").unnest("m")
             _finite_or_null(fields)
             cond = pl.lit(False)
-            for f in spec["features"]:
+            # An audit reads every row: what the others skip is what it counts.
+            for f in [] if kind == "audit" else spec["features"]:
                 cond = cond | _missing(f)
             for i, skip in enumerate(df.select(cond).to_series().to_list()):
                 if skip:
@@ -676,7 +682,8 @@ class TestEveryOtherKind:
         regressions to it; these eleven were held to it nowhere (task 209
         (e)). A weight of ``-0.0`` is not below zero, and is taken.
         `seqtest` takes no weight column at all: every learned row is one
-        trial, and the bank refuses the spec."""
+        trial, and the bank refuses the spec; nor does `audit`, which counts
+        every row whatever it weighs."""
         n = 12
         rng = np.random.default_rng(9)
         df = pl.DataFrame(
@@ -693,8 +700,8 @@ class TestEveryOtherKind:
                 y=pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
             )
         spec = {**_kind_spec(kind), "weight": "w"}
-        if kind == "seqtest":
-            with pytest.raises(ValueError, match="weight does not apply to seqtest"):
+        if kind in ("seqtest", "audit"):
+            with pytest.raises(ValueError, match=f"weight does not apply to {kind}"):
                 po.ModelBank([spec])
             return
         po.ModelBank([spec]).fit_predict(df)

@@ -73,6 +73,41 @@ SUPPORT = 0.5
 #: The largest group's learned rows over the smallest's (``group_sizes``).
 GROUP_SIZES = 100.0
 
+# -- the thresholds of the checks that read an ``audit`` (task 223 (b)) -------
+
+#: The most repeated value's share of a column's usable values at or past
+#: which it may be a sentinel (``sentinel``) ...
+SENTINEL_SHARE = 0.01
+#: ... when its count is at least this many times the next value's upper
+#: bound, the next count plus the counters' error.
+SENTINEL_RATIO = 5.0
+#: The share of rows equal to the row before, beyond what independent rows
+#: of the column's frequencies give, at or past which a column is frozen
+#: (``frozen``) ...
+FROZEN_EXCESS = 0.05
+#: ... or a run of one value this many times the longest run independent
+#: rows would show, and at least ``FROZEN_RUN_MIN`` rows.
+FROZEN_RUN_FACTOR = 4.0
+FROZEN_RUN_MIN = 10
+#: At most this many distinct values over at least ``FEW_VALUES_ROWS`` usable
+#: rows: a category or a flag stored as numbers (``few_values``).
+FEW_VALUES = 10
+FEW_VALUES_ROWS = 100
+#: The Dickey-Fuller statistic above which a column cannot be told from a
+#: random walk (``random_walk``), over at least ``RANDOM_WALK_ROWS`` pairs of
+#: consecutive rows: past the 1% critical value with a constant, -3.43.
+RANDOM_WALK_TAU = -3.5
+RANDOM_WALK_ROWS = 100
+#: The excess kurtosis, or the largest robust z, at or past which a column's
+#: tails are heavy (``heavy_tails``).
+HEAVY_KURTOSIS = 5.0
+HEAVY_ROBUST_Z = 10.0
+#: ``|corr|`` of two columns at or past which they are one (``duplicate``).
+DUPLICATE = 0.999
+#: The regular steps' coefficient of variation at or past which the clock
+#: is irregular (``irregular_clock``).
+IRREGULAR_CV = 0.5
+
 #: The regressions: the models that fit coefficients to targets. A new one
 #: joins here (``tests/test_check.py`` holds the list to the registry's), and
 #: is measured for ``_UNCENTRED_LIMITS`` if it does not centre its features.
@@ -221,6 +256,9 @@ def _spec_findings(
     wanted = set(groups)
     place = {g: j for j, g in enumerate(groups)}
     flagged: set[tuple[str | None, str]] = set()
+    if kind == "audit":
+        _audit_findings(bank, i, spec, keys, add)
+        return out
 
     # (1), (3), (6), (7): per input column, from describe.
     cols_by_group: dict[str | None, list[dict[str, Any]]] = {}
@@ -700,3 +738,218 @@ def _resolved(bank: ModelBank, i: int) -> dict[str, Any]:
 
     out: dict[str, Any] = json.loads(native.resolved_defaults(_json(bank._specs[i])))
     return out
+
+
+def _audit_findings(
+    bank: ModelBank,
+    i: int,
+    spec: dict[str, Any],
+    keys: list[str | None] | None,
+    add: Any,
+) -> None:
+    """An ``audit`` spec's findings: what its columns and its clock hold, for
+    any model that would read them (task 223 (b)). An audit knows no roles,
+    so a column's missing share is information unless it is every row."""
+    for r in bank._native.audit(i, keys, "columns", False).iter_rows(named=True):
+        _audit_column(r, add)
+    if spec["model"].get("pairs"):
+        for r in bank._native.audit(i, keys, "pairs", False).iter_rows(named=True):
+            corr = r["corr"]
+            if corr is None or abs(corr) < DUPLICATE:
+                continue
+            same = r["equal"] / r["count"] if r["count"] else 0.0
+            add(
+                "warning",
+                "duplicate",
+                r["group"],
+                r["column_b"],
+                abs(corr),
+                DUPLICATE,
+                f"columns {r['column_a']!r} and {r['column_b']!r} correlate at "
+                f"{corr:.6f} in {_who(r['group'])}"
+                + (f" and are equal on {same:.1%} of the rows" if same else "")
+                + ": one is the other, rescaled; a model reading both splits one "
+                "effect between them, so drop one",
+            )
+    clock = spec.get("clock")
+    for r in bank._native.audit(i, keys, "clock", False).iter_rows(named=True):
+        g, steps = r["group"], r["steps"]
+        if not steps:
+            continue
+        if r["duplicates"]:
+            add(
+                "info",
+                "duplicate_stamps",
+                g,
+                clock,
+                r["duplicates"] / steps,
+                0.0,
+                f"{r['duplicates']} rows of {_who(g)} share the clock of the row "
+                "before: no decay passes between them, and a window holds them "
+                "together; if a row was fed twice, deduplicate it upstream",
+            )
+        if r["gaps"]:
+            add(
+                "info",
+                "gaps",
+                g,
+                clock,
+                float(r["gaps"]),
+                0.0,
+                f"{r['gaps']} steps of {_who(g)} reach gap_cap: each is a break, "
+                "across which a model forgets only gap_cap of clock and drops its "
+                "lags",
+            )
+        cv = r["step_cv"]
+        if cv is not None and cv >= IRREGULAR_CV:
+            add(
+                "info",
+                "irregular_clock",
+                g,
+                clock,
+                cv,
+                IRREGULAR_CV,
+                f"the clock's steps in {_who(g)} vary by {cv:.2f} of their mean: a "
+                "half-life in clock units weighs rows by time, as it should, but a "
+                "lag or a window counted in rows means a different time on each row",
+            )
+
+
+def _audit_column(r: dict[str, Any], add: Any) -> None:
+    """One column's findings, from its row of ``ModelBank.audit``."""
+    g, col, rows, n = r["group"], r["column"], r["rows"], r["count"]
+    if rows == 0:
+        return
+    who = _who(g)
+    share = (rows - n) / rows
+    if share >= MISSING_SHARE:
+        add(
+            "error" if share == 1.0 else "info",
+            "missing",
+            g,
+            col,
+            share,
+            MISSING_SHARE,
+            f"column {col!r} is null, NaN, infinite or past 1e100 on {share:.1%} of "
+            f"the rows of {who}: a model reading it as a feature skips each such "
+            "row, and as a target predicts it without learning",
+        )
+    odd = r["pos_inf"] + r["neg_inf"] + r["beyond_bound"]
+    if odd:
+        add(
+            "warning",
+            "sentinel",
+            g,
+            col,
+            float(odd),
+            0.0,
+            f"column {col!r} holds +inf on {r['pos_inf']}, -inf on {r['neg_inf']} "
+            f"and a value past 1e100 on {r['beyond_bound']} rows of {who}, which a "
+            "model skips as it skips a null: a division by zero, or a sentinel "
+            "such as 1e308, upstream; make them null, or fix the arithmetic",
+        )
+    if r["nan"]:
+        add(
+            "info",
+            "sentinel",
+            g,
+            col,
+            float(r["nan"]),
+            0.0,
+            f"column {col!r} is NaN, not null, on {r['nan']} rows of {who}: the "
+            "models read it as missing, and Polars' fill_null, drop_nulls and "
+            "null_count do not; fill_nan(None) makes them null",
+        )
+    if n < 2:
+        return
+    if r["std"] == 0.0:
+        add(
+            "warning",
+            "constant",
+            g,
+            col,
+            0.0,
+            0.0,
+            f"column {col!r} took one value ({_fmt(r['mean'])}) on every usable row "
+            f"of {who}: as a feature it is collinear with the intercept, and as a "
+            "target there is nothing to learn",
+        )
+        return
+    distinct = r["distinct"]
+    few = distinct is not None and distinct <= FEW_VALUES
+    adjacent = r["adjacent"]
+    repeats = r["equal_prev"] / adjacent if adjacent else 0.0
+    chance = r["equal_by_chance"] or 0.0
+    top = r["top_count"] / n
+    expected_run = math.log(n) / -math.log(top) if 0.0 < top < 1.0 else 1.0
+    run_limit = max(FROZEN_RUN_MIN, FROZEN_RUN_FACTOR * expected_run)
+    frozen = repeats - chance >= FROZEN_EXCESS or r["longest_run"] >= run_limit
+    if frozen:
+        add(
+            "warning",
+            "frozen",
+            g,
+            col,
+            repeats,
+            chance + FROZEN_EXCESS,
+            f"column {col!r} repeats the row before on {repeats:.1%} of the rows of "
+            f"{who}, where its values' frequencies give {chance:.1%}, and holds one "
+            f"value for {r['longest_run']} rows at most: a feed that stopped, or a "
+            "forward fill; null the stale rows, or join on the time each value was "
+            "observed",
+        )
+    bound = max(r["second_count"] + r["count_error"], 1)
+    if not (few or frozen) and top >= SENTINEL_SHARE and r["top_count"] >= SENTINEL_RATIO * bound:
+        add(
+            "warning",
+            "sentinel",
+            g,
+            col,
+            top,
+            SENTINEL_SHARE,
+            f"column {col!r} is {_fmt(r['top_value'])} on {top:.1%} of the usable "
+            f"rows of {who}, at least {SENTINEL_RATIO:g} times as often as any "
+            "other value: if it stands for missing, make it null; if it is real, a "
+            "model may want an indicator for it",
+        )
+    if few and n >= FEW_VALUES_ROWS:
+        add(
+            "info",
+            "few_values",
+            g,
+            col,
+            float(distinct),
+            float(FEW_VALUES),
+            f"column {col!r} takes {distinct} distinct values over {n} rows of {who}: "
+            "a category or a flag stored as numbers, which a linear model reads as "
+            "a quantity; one-hot encode a category",
+        )
+    tau = r["unit_root_t"]
+    if tau is not None and adjacent >= RANDOM_WALK_ROWS and tau > RANDOM_WALK_TAU:
+        add(
+            "warning",
+            "random_walk",
+            g,
+            col,
+            tau,
+            RANDOM_WALK_TAU,
+            f"column {col!r} cannot be told from a random walk in {who} (lag-1 "
+            f"autocorrelation {_fmt(r['autocorr'])}, Dickey-Fuller {_fmt(tau)}): a "
+            "regression of one level on another is spurious; difference it, or "
+            "take its deviation from a moving mean",
+        )
+    kurt, rz = r["kurtosis"], r["robust_z"]
+    if (kurt is not None and kurt >= HEAVY_KURTOSIS) or (rz is not None and rz >= HEAVY_ROBUST_Z):
+        add(
+            "info",
+            "heavy_tails",
+            g,
+            col,
+            rz,
+            HEAVY_ROBUST_Z,
+            f"column {col!r} has heavy tails in {who}: excess kurtosis "
+            f"{'undefined' if kurt is None else _fmt(kurt)}, and a value "
+            f"{'undefined' if rz is None else _fmt(rz)} robust standard deviations "
+            "from the median; a squared loss follows the largest rows, so huber or "
+            "quantile resist them, or winsorize upstream",
+        )

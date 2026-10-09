@@ -790,12 +790,13 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 52 since
-    2026-10-08 (task 217: `ewridge`'s and `lasso`'s cross-moments keep their
-    rows of positive weight, per target and over every row; the bank refuses
-    51 and older), after 51 the same day (task 215: `ftrl` keeps no penalty
-    scale, and `kmeans`' and `micro`'s centres are pairs), after 50
-    the same day (task 214: a standardizing `kalman`
+    """The version a bank file names, held to the library's: 54 since
+    2026-10-09 (task 223 (b): a spec may be an `audit`; the bank refuses 53
+    and older), after 52 since 2026-10-08 (task 217: `ewridge`'s and
+    `lasso`'s cross-moments keep their rows of positive weight, per target
+    and over every row; the bank refuses 51 and older), after 51 the same
+    day (task 215: `ftrl` keeps no penalty scale, and `kmeans`' and
+    `micro`'s centres are pairs), after 50 the same day (task 214: a standardizing `kalman`
     keeps the first three rows' squared innovations, which its prior is the
     median of; the bank refuses 49 and older), after 49 the same day (task 211: `kalman` keeps
     an anchor, its clocks since an observation and its prior's squared
@@ -870,7 +871,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 52
+    assert po.schema_version() == 54
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

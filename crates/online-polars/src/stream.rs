@@ -103,6 +103,7 @@ pub enum AnyModel {
     Hmm(Box<Hmm>),
     CorrChange(Box<CorrChange>),
     Bocpd(Box<Bocpd>),
+    Audit(Box<online_core::Audit>),
 }
 
 /// A flush's shards, run on whichever pool the caller is in: the bank's
@@ -148,6 +149,7 @@ macro_rules! dispatch {
             AnyModel::Hmm($m) => $body,
             AnyModel::CorrChange($m) => $body,
             AnyModel::Bocpd($m) => $body,
+            AnyModel::Audit($m) => $body,
         }
     };
 }
@@ -339,7 +341,8 @@ impl AnyModel {
             | AnyModel::Marginal(_)
             | AnyModel::Deco(_)
             | AnyModel::Rcov(_)
-            | AnyModel::CorrChange(_) => 0,
+            | AnyModel::CorrChange(_)
+            | AnyModel::Audit(_) => 0,
         }
     }
 
@@ -407,6 +410,9 @@ impl AnyModel {
             AnyModel::CorrChange(_) => None,
             // bocpd has none either: its value is the run-length posterior.
             AnyModel::Bocpd(_) => None,
+            // audit has none: its value is what it counted, read by
+            // `Bank::audit`.
+            AnyModel::Audit(_) => None,
         }
     }
 
@@ -446,6 +452,7 @@ impl AnyModel {
                 Ok(AnyModel::CorrChange(Box::new(CorrChange::restore(s)?)))
             }
             ModelState::Bocpd(_) => Ok(AnyModel::Bocpd(Box::new(Bocpd::restore(s)?))),
+            ModelState::Audit(_) => Ok(AnyModel::Audit(Box::new(online_core::Audit::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -1192,7 +1199,32 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         }
         // No decay: the run-length posterior is what forgets.
         ModelKind::Bocpd { .. } => Ok(AnyModel::Bocpd(Box::new(Bocpd::new(bocpd_cfg(spec)?)?))),
+        // No decay: an audit counts every row.
+        ModelKind::Audit { .. } => Ok(AnyModel::Audit(Box::new(online_core::Audit::new(
+            audit_cfg(spec)?,
+        )?))),
     }
+}
+
+/// An `audit` spec's [`online_core::AuditCfg`]: its columns are the spec's
+/// features, and the clock's `gap_cap` is the stream's.
+pub fn audit_cfg(spec: &Spec) -> Result<online_core::AuditCfg, String> {
+    let ModelKind::Audit {
+        pairs,
+        distinct_cap,
+    } = &spec.model
+    else {
+        return Err("not an audit spec".into());
+    };
+    let cfg = online_core::AuditCfg {
+        n_columns: spec.features.len(),
+        pairs: pairs.unwrap_or(false),
+        distinct_cap: distinct_cap.unwrap_or(online_core::DISTINCT_CAP),
+        gap_cap: spec.gap_cap.as_ref().map(Span::value),
+        has_clock: spec.clock.is_some(),
+    };
+    cfg.validate()?;
+    Ok(cfg)
 }
 
 /// A `bocpd` spec's [`BocpdCfg`]; every parameter check is the model's.
@@ -1715,7 +1747,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Rcov { .. }
         | ModelKind::Hmm { .. }
         | ModelKind::CorrChange { .. }
-        | ModelKind::Bocpd { .. } => vec![Combo::default()],
+        | ModelKind::Bocpd { .. }
+        | ModelKind::Audit { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {
@@ -3672,7 +3705,9 @@ impl Stream {
             // Null arrives as NaN from extraction, so one `usable` covers
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
-            let accept = accepts(features, weight, i);
+            // An `audit` reads every row: what is not usable is what it
+            // counts (docs/PLAN.md task 223 (b)).
+            let accept = spec.model.reads_every_row() || accepts(features, weight, i);
             let c = clock.map(|c| c.at(i));
             // A clock below the previous row's, before the schedule decides
             // what to do about it; the summary counts them (task 35).
@@ -4879,6 +4914,13 @@ impl Instance<'_> {
     /// does, applied to one instance rather than the whole stream.
     fn reset(&mut self) {
         let spec = self.spec;
+        // An audit is a record of what the stream held, not a fit: a
+        // restart breaks its runs and its clock steps and keeps the rest
+        // (docs/PLAN.md task 223 (b)).
+        if let AnyModel::Audit(m) = self.model.get_mut() {
+            m.restart();
+            return;
+        }
         // This instance alone, at its own decay: `build_models` built every
         // instance of the grid to keep one (review 2026-09-12, P2).
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");

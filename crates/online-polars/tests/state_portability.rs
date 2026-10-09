@@ -39,6 +39,11 @@ use polars::prelude::*;
 /// the registry.
 const SPECS: &[(&str, &str, &str)] = &[
     (
+        "audit",
+        r#"{"type": "audit", "pairs": true}"#,
+        r#""targets": ["x0"], "features": ["x0", "x1"]"#,
+    ),
+    (
         "bocpd",
         r#"{"type": "bocpd", "hazard": 250.0, "emission": "diag"}"#,
         r#""targets": ["x0"], "features": ["x0", "x1"]"#,

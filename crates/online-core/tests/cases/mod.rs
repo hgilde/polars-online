@@ -90,6 +90,36 @@ impl Run for Accumulator {
     }
 }
 
+/// An `audit` fed each feature times `2^100`: values past `2^65`, whose
+/// moments it keeps over a power of two (docs/PLAN.md task 223 (b)), so the
+/// fixture writes a `scale` above 1. A power of two, so the stream is the
+/// case's own, exactly, at another size.
+struct ScaledAudit(Audit);
+
+const AUDIT_SCALE: f64 = 1_267_650_600_228_229_401_496_703_205_376.0; // 2^100
+
+impl Run for ScaledAudit {
+    fn step(&mut self, r: &Row) -> Out {
+        let x: Vec<f64> = r.x.iter().map(|v| v * AUDIT_SCALE).collect();
+        let s = self.0.step(&x, &r.y, r.d, r.w);
+        Out {
+            pred: s.pred,
+            n_eff: s.n_eff,
+            extra: Vec::new(),
+        }
+    }
+
+    fn state(&self) -> State {
+        self.0.state()
+    }
+}
+
+fn restore_scaled_audit(s: &State) -> Result<Box<dyn Run>, String> {
+    Audit::restore(s)
+        .map(|m| Box::new(ScaledAudit(m)) as Box<dyn Run>)
+        .map_err(|e| e.to_string())
+}
+
 fn restore_accumulator(s: &State) -> Result<Box<dyn Run>, String> {
     check_schema(s).map_err(|e| e.to_string())?;
     match &s.model {
@@ -953,6 +983,65 @@ pub fn all() -> Vec<Case> {
             "Bocpd",
             Bocpd,
             Bocpd::new(bocpd_cfg()).unwrap(),
+            K,
+            Targets::None,
+            40
+        ),
+        // Saved past its cap and past a digest compression (256 values), so
+        // the counters are a summary and the digest holds centroids beside
+        // its buffer; with pairs, and gaps at `gap_cap` (docs/PLAN.md task
+        // 223 (b)).
+        case!(
+            "audit",
+            "Audit",
+            Audit,
+            Audit::new(AuditCfg {
+                n_columns: K,
+                pairs: true,
+                distinct_cap: 8,
+                gap_cap: Some(5.0),
+                has_clock: true,
+            })
+            .unwrap(),
+            K,
+            Targets::None,
+            300
+        ),
+        // The same audit over values past 2^65: its moments kept over a
+        // power of two.
+        Case {
+            name: "audit_scaled",
+            variant: "Audit",
+            build: || {
+                Box::new(ScaledAudit(
+                    Audit::new(AuditCfg {
+                        n_columns: K,
+                        pairs: true,
+                        distinct_cap: 8,
+                        gap_cap: Some(5.0),
+                        has_clock: true,
+                    })
+                    .unwrap(),
+                ))
+            },
+            restore: restore_scaled_audit,
+            n_features: K,
+            targets: Targets::None,
+            before: 40,
+        },
+        // Saved with its counts exact: fewer distinct values than its cap.
+        case!(
+            "audit_exact",
+            "Audit",
+            Audit,
+            Audit::new(AuditCfg {
+                n_columns: K,
+                pairs: false,
+                distinct_cap: 512,
+                gap_cap: None,
+                has_clock: false,
+            })
+            .unwrap(),
             K,
             Targets::None,
             40

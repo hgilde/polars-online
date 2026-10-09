@@ -285,6 +285,7 @@ _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
             "feature_moments",
         }
     ),
+    "audit": frozenset({"pairs", "distinct_cap"}),
 }
 
 
@@ -527,6 +528,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 
 __all__ = [
+    "audit",
     "bocpd",
     "corrchange",
     "deco",
@@ -5191,10 +5193,11 @@ def rcov(
 # The changepoint detectors' builders live in a file of their own (the 250 KB
 # cap); read back here, after everything they use, for `__all__`, the key
 # tables below and `polars_online.spec`.
+from polars_online._spec_audit import audit  # noqa: E402
 from polars_online._spec_changepoint import bocpd, corrchange  # noqa: E402
 
 UNSUPERVISED = frozenset(
-    {"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm", "corrchange", "bocpd"}
+    {"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm", "corrchange", "bocpd", "audit"}
 )
 
 _NUMERIC_KEYS = _numeric_keys()

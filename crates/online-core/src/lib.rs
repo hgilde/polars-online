@@ -59,6 +59,7 @@
 //! into capped, session-aware deltas, and every model decays by them.
 //! See `docs/PLAN.md` §2 and §4.
 
+mod audit;
 mod bocpd;
 mod boundary;
 mod budget;
@@ -110,6 +111,10 @@ mod stats;
 mod warmup;
 mod window;
 
+pub use audit::{
+    Audit, AuditCfg, ClockReport as AuditClock, ColumnReport as AuditColumn, DISTINCT_CAP,
+    MAX_DISTINCT_CAP, NULL, PairReport as AuditPair, is_null,
+};
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
@@ -603,7 +608,11 @@ pub use window::{
 ///   holds none of a target's rows is empty for it by an exact count. A
 ///   state from before 52 does not decode, and pre-1.0 no loader is
 ///   written.
-pub const SCHEMA_VERSION: u32 = 52;
+/// - 54 (2026-10-08, task 223 (b)): a new model, `audit`, whose state is
+///   [`ModelState::Audit`], and a bank's spec may name it. A bank file names
+///   its specs, so the bank's schema moves with it; pre-1.0 the minimums
+///   move too and no loader is written.
+pub const SCHEMA_VERSION: u32 = 54;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -627,6 +636,8 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **54 since task 223 (b)** (2026-10-08): the `audit` model; the
+/// fixtures are regenerated at 54, an `audit` among them.
 /// **52 since task 217** (2026-10-08): `ewridge`'s and `lasso`'s
 /// cross-moments keep the rows of positive weight per target and over every
 /// row; a state from before 52 is refused by its number, and the fixtures
@@ -717,7 +728,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 52;
+pub const MIN_SCHEMA_VERSION: u32 = 54;
 
 #[cfg(test)]
 mod tests {

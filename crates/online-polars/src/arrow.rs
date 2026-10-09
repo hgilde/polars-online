@@ -502,14 +502,17 @@ impl ArrowChunk {
 ///
 /// Plain `f64` with NaN for null, not `Option<f64>` (docs/PERFORMANCE.md P3):
 /// every consumer already collapses the two, since a feature or weight is
-/// taken only when finite and a target only when finite.
+/// taken only when finite and a target only when finite. The NaN is
+/// [`online_core::NULL`], whose payload tells it from a NaN the data holds:
+/// an `audit` counts the two apart (docs/PLAN.md task 223 (b)), and every
+/// other consumer reads either as the NaN it is.
 pub fn f64_values(a: &Float64Array) -> std::borrow::Cow<'_, [f64]> {
     match a.validity() {
         Some(v) if v.unset_bits() > 0 => std::borrow::Cow::Owned(
             a.values()
                 .iter()
                 .zip(v.iter())
-                .map(|(&x, ok)| if ok { x } else { f64::NAN })
+                .map(|(&x, ok)| if ok { x } else { online_core::NULL })
                 .collect(),
         ),
         _ => std::borrow::Cow::Borrowed(a.values().as_slice()),

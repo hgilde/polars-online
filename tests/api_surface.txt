@@ -34,7 +34,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 52
+  schema_version = 54
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -76,6 +76,12 @@
   group_close = None
 
 [spec constructors]  # keyword names AND defaults are API
+  audit:
+    name
+    columns
+    pairs = False
+    distinct_cap = None
+    common
   bocpd:
     name
     features
@@ -388,6 +394,14 @@
     stream.min_settled_frac = 0.0
     stream.resid_autocorr_lag = 1
     stream.window_budget = null
+  audit(columns=['x0', 'x1']):
+    model.distinct_cap = 256
+    model.gap_cap = null
+    model.has_clock = false
+    model.n_columns = 2
+    model.pairs = false
+    stream.max_error_inflation = "inf"
+    stream.min_weight = [0.0]
   bocpd(features=['x0', 'x1']):
     derived.prior_mean = "data"
     derived.prior_nu = 3.0
@@ -736,6 +750,7 @@
 [ModelBank]  # name and signature: a parameter added or a default moved is a diff here
   __init__(self, specs: 'Iterable[dict[str, Any]]') -> 'None'
   __reduce__(self, /)
+  audit(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None, *, table: 'str' = 'columns', pooled: 'bool' = False) -> 'pl.DataFrame'
   check(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   closed_groups(self, spec: 'str | int | None' = None, *, drop: 'bool' = True) -> 'pl.DataFrame'
   coef(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
@@ -880,6 +895,82 @@
     split_gain: Float64
     split_at: Float64
     split_gain_t: Float64
+  ModelBank.audit():
+    group: String
+    column: String
+    rows: UInt64
+    null: UInt64
+    nan: UInt64
+    pos_inf: UInt64
+    neg_inf: UInt64
+    beyond_bound: UInt64
+    count: UInt64
+    mean: Float64
+    std: Float64
+    skew: Float64
+    kurtosis: Float64
+    min: Float64
+    max: Float64
+    median: Float64
+    mad: Float64
+    robust_z: Float64
+    distinct: UInt64
+    top_value: Float64
+    top_count: UInt64
+    second_count: UInt64
+    count_error: UInt64
+    longest_run: UInt64
+    equal_prev: UInt64
+    adjacent: UInt64
+    equal_by_chance: Float64
+    autocorr: Float64
+    unit_root_t: Float64
+  ModelBank.audit(table='pairs'):
+    group: String
+    column_a: String
+    column_b: String
+    count: UInt64
+    corr: Float64
+    equal: UInt64
+  ModelBank.audit(table='clock'):
+    group: String
+    steps: UInt64
+    duplicates: UInt64
+    gaps: UInt64
+    regular: UInt64
+    step_mean: Float64
+    step_std: Float64
+    step_cv: Float64
+    max_step: Float64
+  ModelBank.audit(pooled=True):
+    column: String
+    rows: UInt64
+    null: UInt64
+    nan: UInt64
+    pos_inf: UInt64
+    neg_inf: UInt64
+    beyond_bound: UInt64
+    count: UInt64
+    mean: Float64
+    std: Float64
+    skew: Float64
+    kurtosis: Float64
+    min: Float64
+    max: Float64
+    median: Float64
+    mad: Float64
+    robust_z: Float64
+    distinct: UInt64
+    top_value: Float64
+    top_count: UInt64
+    second_count: UInt64
+    count_error: UInt64
+    longest_run: UInt64
+    equal_prev: UInt64
+    adjacent: UInt64
+    equal_by_chance: Float64
+    autocorr: Float64
+    unit_root_t: Float64
   po.spec.output_index():
     field: String
     kind: String
@@ -1476,6 +1567,8 @@
     settled_frac
     withheld_reason
     coef
+  audit minimal:
+    weight_sum
   deco blocked:
     u_a
     u_b
@@ -1502,6 +1595,7 @@
     clock_min: Float64
     clock_max: Float64
     coef: List[Float64]
+  audit: the shared columns only
   bocpd: the shared columns only
   corrchange: the shared columns only
   deco: the shared columns only
@@ -1811,6 +1905,7 @@
     targets
     weight
   [specs.model], by type:
+    audit: distinct_cap, pairs
     bocpd: emission, hazard, hazard_col, max_run, prior_kappa, prior_mean, prior_nu, prior_scale, prune_below, robust_beta, warm_rows
     corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every_rows, reset_on_flag, scalar, seed, span_rows
     deco: alpha, beta, blocks, dynamics

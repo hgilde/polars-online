@@ -369,7 +369,7 @@ fn variants() -> Vec<String> {
 /// name here, and a fixture.
 #[test]
 fn the_variant_names_are_frozen() {
-    const FROZEN: [&str; 21] = [
+    const FROZEN: [&str; 22] = [
         "EwCov",
         "EwRidge",
         "Rls",
@@ -391,6 +391,7 @@ fn the_variant_names_are_frozen() {
         "Hmm",
         "CorrChange",
         "Bocpd",
+        "Audit",
     ];
     assert_eq!(
         variants(),
@@ -470,13 +471,17 @@ fn held(v: &rmpv::Value) -> usize {
 /// some of `kmeans`' centres and of `micro`'s must hold one. The row counts
 /// of `ewridge`'s and `lasso`'s cross-moments (52, docs/PLAN.md task 217),
 /// per target and over every row, live and in every snapshot a window
-/// holds.
+/// holds. `audit`'s state (54, docs/PLAN.md task 223 (b)): its pairs, its
+/// clock's regular steps, and per column its lag pairs and a digest with
+/// both centroids and values waiting; its counters' two forms, and its
+/// moments over a power of two (`audit_scaled`), are
+/// `an_audits_counters_are_written_in_both_forms`'.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 25] = [
+    const FORMS: [(&str, &[&str]); 27] = [
         ("ewridge", &["model", "EwRidge", "acc", "cross", "nj"]),
         ("ewridge", &["model", "EwRidge", "acc", "cross", "n"]),
         (
@@ -508,6 +513,8 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
         ("rls", &["model", "Rls", "s2"]),
         ("huber", &["model", "Robust", "support"]),
         ("quantile", &["model", "Robust", "support"]),
+        ("audit", &["model", "Audit", "pairs"]),
+        ("audit", &["model", "Audit", "clock", "regular"]),
     ];
     for (name, path) in FORMS {
         let f = frozen::ALL
@@ -561,9 +568,25 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
         }
     }
     type Listed<'a> = (&'a str, &'a [&'a str], &'a [&'a str]);
-    const LISTED: [Listed; 2] = [
+    const LISTED: [Listed; 6] = [
         ("kmeans", &["model", "KMeans", "clusters"], &["c_lo"]),
         ("micro", &["model", "Micro", "mc"], &["s", "c_lo"]),
+        (
+            "audit",
+            &["model", "Audit", "columns"],
+            &["digest", "centroids"],
+        ),
+        (
+            "audit",
+            &["model", "Audit", "columns"],
+            &["digest", "buffer"],
+        ),
+        ("audit", &["model", "Audit", "columns"], &["lag"]),
+        (
+            "audit_exact",
+            &["model", "Audit", "columns"],
+            &["digest", "buffer"],
+        ),
     ];
     for (name, list, inner) in LISTED {
         let f = frozen::ALL
@@ -590,6 +613,56 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             "{name}: no {} in {} holds a number, so the fixture holds nothing of the layout",
             inner.join("."),
             list.join(".")
+        );
+    }
+}
+
+/// `audit`'s counters in both of their forms (schema 54, docs/PLAN.md task
+/// 223 (b)): a summary past the cap, with decrements, and exact counts below
+/// it. Integers, which [`held`] does not count, so read here.
+#[test]
+fn an_audits_counters_are_written_in_both_forms() {
+    if regenerating() {
+        return;
+    }
+    for (name, over) in [("audit", true), ("audit_exact", false)] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let columns = at(&v, &["model", "Audit", "columns"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: the state has no columns"));
+        for c in columns {
+            let counts = at(c, &["counts"]).unwrap();
+            assert_eq!(
+                at(counts, &["over"]).and_then(rmpv::Value::as_bool),
+                Some(over),
+                "{name}"
+            );
+            let held_counts = at(counts, &["counts"])
+                .and_then(rmpv::Value::as_array)
+                .map_or(0, Vec::len);
+            assert!(held_counts > 0, "{name}: no counter is held");
+            let decrements = at(counts, &["decrements"]).and_then(rmpv::Value::as_u64);
+            assert_eq!(decrements.is_some_and(|d| d > 0), over, "{name}");
+        }
+    }
+    // And its moments over a power of two above 1, for values past 2^65.
+    let f = frozen::ALL
+        .iter()
+        .find(|f| f.name == "audit_scaled")
+        .expect("audit_scaled: no fixture; add the case and regenerate");
+    let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+    let columns = at(&v, &["model", "Audit", "columns"])
+        .and_then(rmpv::Value::as_array)
+        .expect("audit_scaled: the state has no columns");
+    for c in columns {
+        let scale = at(c, &["moments", "scale"]).and_then(rmpv::Value::as_f64);
+        assert!(
+            scale.is_some_and(|s| s > 1.0),
+            "audit_scaled: scale {scale:?}"
         );
     }
 }

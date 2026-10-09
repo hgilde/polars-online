@@ -233,6 +233,93 @@ class TestValues:
         assert set(f["code"]) == {"constant"}
 
 
+class TestAudit:
+    """An ``audit`` spec's findings (task 223 (b)): silent, but for
+    information, on every clean shape of ``cs.AUDIT_CLEAN``, and each problem
+    of ``cs.AUDIT_PLANTED`` found on its column with no other error or
+    warning. ``TestAuditTenSeeds`` is the sweep the docstring's rates come
+    from."""
+
+    @pytest.mark.parametrize("shape", sorted(cs.AUDIT_CLEAN))
+    def test_a_clean_shape_raises_no_error_or_warning(self, shape):
+        f = cs.audit_findings(cs.AUDIT_CLEAN[shape](0))
+        assert f.filter(pl.col("severity") != "info").is_empty(), f
+
+    @pytest.mark.parametrize("name", sorted(cs.AUDIT_PLANTED))
+    def test_each_planted_problem_is_found_on_its_column(self, name):
+        make, code, column = cs.AUDIT_PLANTED[name]
+        f = cs.audit_findings(make(0))
+        assert not f.filter(code=code, column=column).is_empty(), f
+        others = f.filter(pl.col("severity") != "info", pl.col("code") != code)
+        assert others.is_empty(), others
+
+    def test_the_value_is_the_audits_own_number(self):
+        df = cs.AUDIT_PLANTED["minus_999_on_5pct"][0](0)
+        bank = po.ModelBank([cs.audit_spec(df)])
+        bank.fit_predict(df)
+        row = bank.check().filter(code="sentinel", column="x1").row(0, named=True)
+        a = bank.audit().filter(column="x1").row(0, named=True)
+        assert row["value"] == a["top_count"] / a["count"]
+        assert row["threshold"] == _check.SENTINEL_SHARE
+        assert "-999" in row["message"]
+        df = cs.AUDIT_PLANTED["random_walk"][0](0)
+        bank = po.ModelBank([cs.audit_spec(df)])
+        bank.fit_predict(df)
+        row = bank.check().filter(code="random_walk").row(0, named=True)
+        assert row["value"] == bank.audit().filter(column="x1")["unit_root_t"][0]
+
+    def test_a_column_missing_everywhere_is_an_error_and_partly_information(self):
+        df = cs.AUDIT_CLEAN["model_independent"](0).with_columns(
+            x1=pl.lit(None, pl.Float64), x2=pl.when(pl.col("t") % 4 == 0).then(None).otherwise("x2")
+        )
+        f = cs.audit_findings(df).filter(code="missing")
+        got = {r["column"]: r["severity"] for r in f.iter_rows(named=True)}
+        assert got == {"x1": "error", "x2": "info"}
+
+    @pytest.mark.parametrize("chunks", [7, 600])
+    def test_the_findings_do_not_depend_on_the_chunking(self, chunks):
+        df = cs.AUDIT_PLANTED["stuck_50_rows"][0](0).with_columns(
+            x2=pl.Series(np.where(np.arange(cs.N) % 9 == 0, np.inf, np.arange(cs.N) % 7))
+        )
+        one = cs.audit_findings(df)
+        assert {"frozen", "sentinel", "few_values"} <= set(one["code"])
+        assert cs.audit_findings(df, chunks=chunks).equals(one)
+
+    def test_an_audit_beside_the_models_moves_none_of_their_findings(self):
+        df, specs = cs.planted_collinear(0)
+        alone = cs.findings(df, specs)
+        beside = cs.findings(df, [*specs, cs.audit_spec(df)])
+        assert beside.filter(pl.col("spec") != "audit").equals(alone)
+        assert set(beside.filter(spec="audit")["code"]) <= {"duplicate"}
+
+    def test_every_code_is_in_the_docstring(self):
+        doc = po.ModelBank.check.__doc__ or ""
+        codes = {code for _, code, _ in cs.AUDIT_PLANTED.values()}
+        assert {f"``{c}``" for c in codes | {"missing", "constant"}} <= {
+            w for w in doc.split() if w.startswith("``")
+        }
+
+
+class TestAuditTenSeeds:
+    """The measurement the docstring quotes: no error or warning on any of the
+    eleven clean shapes over ten seeds, and every planted problem found on
+    every seed, on its column. Fast enough for the essentials, as
+    ``TestTenSeeds`` is."""
+
+    @pytest.mark.parametrize("shape", sorted(cs.AUDIT_CLEAN))
+    def test_no_false_alarm(self, shape):
+        for seed in range(10):
+            f = cs.audit_findings(cs.AUDIT_CLEAN[shape](seed))
+            assert f.filter(pl.col("severity") != "info").is_empty(), (seed, f)
+
+    @pytest.mark.parametrize("name", sorted(cs.AUDIT_PLANTED))
+    def test_every_seed_finds_it(self, name):
+        make, code, column = cs.AUDIT_PLANTED[name]
+        for seed in range(1, 10):
+            f = cs.audit_findings(make(seed))
+            assert not f.filter(code=code, column=column).is_empty(), (seed, f)
+
+
 def test_check_places_every_regression():
     """A new regression joins ``_check._REGRESSIONS`` (``few_rows``), and is
     measured for ``_UNCENTRED_LIMITS`` if it does not centre its features.

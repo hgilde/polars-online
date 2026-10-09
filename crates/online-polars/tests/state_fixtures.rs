@@ -153,7 +153,9 @@ fn from_ipc(hex_text: &str) -> DataFrame {
 /// settled, a half-life not yet past, so the notice comes in the
 /// continuation. And a windowed `ewridge` with its residual spread (task
 /// 217, schema 52): the row counts its cross-moments keep, live and in its
-/// window's snapshots, and the spread ring's own, per slot.
+/// window's snapshots, and the spread ring's own, per slot. And an `audit`
+/// with its pairs (task 223 (b), schema 54): a spec the bank's file names,
+/// which reads every row.
 fn specs() -> Vec<Spec> {
     [
         r#"{"name": "dated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "ts", "half_life": "10m", "gap_cap": "1h", "weight": "w"}"#,
@@ -165,6 +167,7 @@ fn specs() -> Vec<Spec> {
         r#"{"name": "sessioned", "model": {"type": "ew_cov", "pca": 1}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "session": "s", "group_close": "session"}"#,
         r#"{"name": "waiting", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "half_life": 16.0, "min_weight": 30.0}"#,
         r#"{"name": "spread_window", "model": {"type": "ewridge", "window_size": 12.0}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "emit_sigma": true}"#,
+        r#"{"name": "audited", "model": {"type": "audit", "pairs": true}, "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t", "gap_cap": 50.0}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))

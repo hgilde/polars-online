@@ -416,3 +416,149 @@ def findings(df: pl.DataFrame, specs: list[dict[str, Any]], chunks: int = 1) -> 
         for part in df.iter_slices(size):
             bank.fit_predict(part)
     return bank.check()
+
+
+# -- an ``audit`` spec's streams (task 223 (b)) --------------------------------
+
+
+def audit_spec(df: pl.DataFrame, **kw: Any) -> dict[str, Any]:
+    """An audit of every column of ``df`` but the clock and the group, with
+    its pairs, on the clock ``t`` with a ``gap_cap`` of 10."""
+    cols = [c for c in df.columns if c not in ("t", "g")]
+    if "g" in df.columns:
+        kw.setdefault("group", "g")
+    return po.spec.audit("audit", columns=cols, clock="t", gap_cap=10.0, pairs=True, **kw)
+
+
+def audit_findings(df: pl.DataFrame, chunks: int = 1, **kw: Any) -> pl.DataFrame:
+    """``check()`` of an audit of ``df`` (:func:`audit_spec`), fed in
+    ``chunks`` slices."""
+    return findings(df, [audit_spec(df, **kw)], chunks)
+
+
+def _ar(rng: np.random.Generator, phi: float, n: int = N) -> np.ndarray:
+    e = rng.normal(size=n)
+    out = np.empty(n)
+    v = 0.0
+    for i in range(n):
+        v = phi * v + e[i]
+        out[i] = v
+    return out
+
+
+def _clean(make_x: Callable[[np.random.Generator], np.ndarray]) -> Callable[[int], pl.DataFrame]:
+    def make(seed: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        return _frame(make_x(rng), rng.normal(size=N))
+
+    return make
+
+
+def _jittered(seed: int) -> pl.DataFrame:
+    rng = np.random.default_rng(seed)
+    df = _frame(rng.normal(size=(N, 3)), rng.normal(size=N))
+    return df.with_columns(t=np.cumsum(rng.uniform(0.5, 1.5, size=N)))
+
+
+def _model_frame(make: Callable[[int], Any]) -> Callable[[int], pl.DataFrame]:
+    return lambda seed: make(seed)[0]
+
+
+#: Clean shapes for an audit: ``CLEAN``'s five, and persistent columns that
+#: are not random walks, bounded, integer and rounded values, and a clock with
+#: jitter. The audit reads every column of each frame.
+AUDIT_CLEAN: dict[str, Callable[[int], pl.DataFrame]] = {
+    **{f"model_{k}": _model_frame(f) for k, f in CLEAN.items()},
+    "ar_0.9": _clean(lambda r: np.c_[_ar(r, 0.9), _ar(r, 0.9), r.normal(size=N)]),
+    "ar_0.95": _clean(lambda r: np.c_[_ar(r, 0.95), _ar(r, 0.95), r.normal(size=N)]),
+    "uniform": _clean(lambda r: r.uniform(size=(N, 3))),
+    "poisson_50": _clean(lambda r: r.poisson(50, size=(N, 3)).astype(float)),
+    "rounded": _clean(lambda r: np.round(r.normal(100.0, 1.0, size=(N, 3)), 2)),
+    "jittered_clock": _jittered,
+}
+
+
+Edit = Callable[[np.random.Generator, np.ndarray], np.ndarray | None]
+
+
+def _audit_planted(edit: Edit, col: int = 1) -> Callable[[int], pl.DataFrame]:
+    """Three unit normal columns and a target on a unit clock, ``x<col>``
+    edited (``col = -1`` edits the clock's steps instead, from ones)."""
+
+    def make(seed: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        x = rng.normal(size=(N, 3))
+        df = _frame(x, rng.normal(size=N))
+        r = np.random.default_rng(seed + 1000)
+        if col < 0:
+            return df.with_columns(t=np.cumsum(edit(r, np.ones(N))))
+        # ``x2`` is made from ``x0``: a copy, rescaled or not.
+        x[:, col] = edit(r, x[:, 0 if col == 2 else col].copy())
+        return df.with_columns(pl.Series(f"x{col}", x[:, col]))
+
+    return make
+
+
+def _share(share: float, value: float) -> Edit:
+    def edit(r: np.random.Generator, v: np.ndarray) -> np.ndarray:
+        v[r.random(N) < share] = value
+        return v
+
+    return edit
+
+
+def _hold(start: int, stop: int) -> Edit:
+    def edit(r: np.random.Generator, v: np.ndarray) -> np.ndarray:
+        v[start:stop] = v[start - 1]
+        return v
+
+    return edit
+
+
+#: Each problem an audit finds, planted in ``x1`` (``x2`` for a copy of
+#: ``x0``, the clock ``t`` for the clock's), and the code it raises there.
+AUDIT_PLANTED: dict[str, tuple[Callable[[int], pl.DataFrame], str, str]] = {
+    "minus_999_on_5pct": (_audit_planted(_share(0.05, -999.0)), "sentinel", "x1"),
+    "zero_on_20pct": (_audit_planted(_share(0.2, 0.0)), "sentinel", "x1"),
+    "inf_on_1pct": (_audit_planted(_share(0.01, np.inf)), "sentinel", "x1"),
+    "nan_on_5pct": (_audit_planted(_share(0.05, np.nan)), "sentinel", "x1"),
+    "stopped_feed": (_audit_planted(_hold(N - N // 10, N)), "frozen", "x1"),
+    "forward_fill": (_audit_planted(lambda r, v: np.repeat(v[::10], 10)[:N]), "frozen", "x1"),
+    "stuck_50_rows": (_audit_planted(_hold(1000, 1050)), "frozen", "x1"),
+    "five_values": (
+        _audit_planted(lambda r, v: r.integers(0, 5, size=N).astype(float)),
+        "few_values",
+        "x1",
+    ),
+    "random_walk": (_audit_planted(lambda r, v: np.cumsum(r.normal(size=N))), "random_walk", "x1"),
+    "student_t3": (_audit_planted(lambda r, v: r.standard_t(3, size=N)), "heavy_tails", "x1"),
+    "outlier_at_30": (
+        _audit_planted(lambda r, v: np.where(np.arange(N) == N // 2, 30.0, v)),
+        "heavy_tails",
+        "x1",
+    ),
+    "copy": (_audit_planted(lambda r, v: v, col=2), "duplicate", "x2"),
+    "rescaled_copy": (_audit_planted(lambda r, v: 100.0 * v + 3.0, col=2), "duplicate", "x2"),
+    "near_copy": (
+        _audit_planted(lambda r, v: v + 0.01 * r.normal(size=N), col=2),
+        "duplicate",
+        "x2",
+    ),
+    "repeated_stamps": (
+        _audit_planted(lambda r, s: np.where(r.random(N) < 0.05, 0.0, s), col=-1),
+        "duplicate_stamps",
+        "t",
+    ),
+    "gaps": (
+        _audit_planted(
+            lambda r, s: np.where(np.isin(np.arange(N), [500, 1000, 1500]), 100.0, s), col=-1
+        ),
+        "gaps",
+        "t",
+    ),
+    "random_arrivals": (
+        _audit_planted(lambda r, s: r.exponential(size=N), col=-1),
+        "irregular_clock",
+        "t",
+    ),
+}

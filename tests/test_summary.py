@@ -124,6 +124,8 @@ def test_summary_is_the_frame_s_count_per_group(fitted):
         features = spec.get("features", [])
         weight = spec.get("weight")
         needed = [usable(c) for c in features] + ([usable(weight)] if weight else [])
+        if spec["model"]["type"] == "audit":
+            needed = []  # an audit reads every row: what the others skip, it counts
         accept = pl.all_horizontal(needed) if needed else pl.lit(True)
         if spec["model"]["type"] == "ew_class":
             has_target = pl.col(spec["targets"][0]).is_not_null()

@@ -108,7 +108,7 @@ Windows alike.
 - [How a bank sees a stream](https://github.com/hgilde/polars-online#how-a-bank-sees-a-stream):
   clock, decay, groups, weights, warm-up, nulls, row order — the semantics every model
   shares
-- [Models](https://github.com/hgilde/polars-online#models): all 21, each with its
+- [Models](https://github.com/hgilde/polars-online#models): all 22, each with its
   recursion, its builder and its Rust source
 - [Against scikit-learn](https://github.com/hgilde/polars-online#against-scikit-learn):
   `SGDRegressor` measured beside `sgd` and `ewridge`. It covers accuracy (the same, to

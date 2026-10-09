@@ -189,6 +189,13 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         dict(features=["x1", "x2"], group="block", group_close="monotone", block_rows=30),
         [],
     ),
+    # No `weight`: an audit counts every row whatever it weighs.
+    (
+        "audit",
+        "audit",
+        dict(columns=["x0", "x1", "y"], group="g", pairs=True, clock="t", gap_cap=6.0),
+        [],
+    ),
 ]
 
 

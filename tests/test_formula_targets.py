@@ -953,18 +953,19 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     for `kalman`'s anchor and clocks (48 refused); 50 since task 214, for
     `kalman`'s prior from a median (49 refused); 51 since task 215, for
     `ftrl` without its penalty scale and the clusters' centres as pairs (50
-    refused); and 52 since task 217, for the row counts in `ewridge`'s and
-    `lasso`'s cross-moments (51 refused)."""
+    refused); 52 since task 217, for the row counts in `ewridge`'s and
+    `lasso`'s cross-moments (51 refused); and 54 since task 223 (b), for the
+    `audit` model (53 refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 52, state[i]
-    for before in range(25, 52):
+    assert state[i] == 54, state[i]
+    for before in range(25, 54):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 52"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 54"
         ):
             po.ModelBank.load_bytes(old)
 

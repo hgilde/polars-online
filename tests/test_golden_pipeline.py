@@ -253,6 +253,17 @@ def specs() -> list[dict]:
         po.spec.seqtest(
             "seqtest", targets=["y0"], clock="t", gap_cap=6.0, group="g", min_weight=4.0
         ),
+        # What the columns hold: every row read, the null feature and the
+        # null target among them; its counts are pinned below, since nothing
+        # but `weight_sum` is emitted per row (docs/PLAN.md task 223 (b)).
+        po.spec.audit(
+            "audit",
+            columns=["x0", "x1", "y0"],
+            pairs=True,
+            clock="t",
+            gap_cap=6.0,
+            group="g",
+        ),
         # The two-phase bank: reads the ridge grid's `resid_y0__r0.5` and
         # kalman's `resid_y0` from the structs assembled above it.
         po.spec.seqtest(
@@ -267,6 +278,22 @@ def specs() -> list[dict]:
             min_weight=4.0,
         ),
     ]
+
+
+#: An audit's column statistics the golden pins: every one that is not a
+#: count, and the null count, which the extraction's null marker sets.
+AUDIT_FIELDS = (
+    "null",
+    "mean",
+    "std",
+    "skew",
+    "kurtosis",
+    "median",
+    "mad",
+    "robust_z",
+    "autocorr",
+    "unit_root_t",
+)
 
 
 def signature() -> dict[str, float | str | None]:
@@ -296,6 +323,18 @@ def signature() -> dict[str, float | str | None]:
             stats = out[name].struct.field("stat").drop_nulls().to_list()
             for i, v in enumerate(stats):
                 sig[f"{name}.stat#{i}"] = v
+        # An `audit`'s value is its counts, read after the last row.
+        if spec["model"]["type"] == "audit":
+            for row in bank.audit(name).iter_rows(named=True):
+                where = f"[{row['group']}/{row['column']}]@end"
+                for field in AUDIT_FIELDS:
+                    sig[f"{name}.{field}{where}"] = row[field]
+            for row in bank.audit(name, table="pairs").iter_rows(named=True):
+                where = f"[{row['group']}/{row['column_a']}/{row['column_b']}]@end"
+                sig[f"{name}.corr{where}"] = row["corr"]
+            for row in bank.audit(name, table="clock").iter_rows(named=True):
+                for field in ("steps", "gaps", "step_cv"):
+                    sig[f"{name}.{field}[{row['group']}]@end"] = row[field]
     # `rcov` emits nothing per row: its value is the block a group close
     # produces, so that is what is pinned.
     for row in bank.closed_groups(drop=False).iter_rows(named=True):
@@ -492,6 +531,10 @@ def switched_signature() -> dict[str, float | str | None]:
 #: ``embargo`` and 2 of ``formula``, ``kalman`` under an embargo and a
 #: formula target, moved by the same prior; ``test_kalman.py`` holds the
 #: native embargo to the doubled stream, whose ``kalman`` is the one above.
+#: Task 223 (b) (2026-10-09) added the 75 lines of ``audit``, a new spec in
+#: the same bank; nothing else moved. Its statistics are held to their
+#: definitions in ``audit/tests.rs`` and to scipy and statsmodels in
+#: ``tests/test_audit.py``.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -998,6 +1041,81 @@ GOLDEN: dict[str, float | str | None] = {
     "rcov.rcov0[rcov/b/m]": 20.168462820112076,
     "rcov.rcov1[rcov/b/m]": 17.798995434502125,
     "rcov.rcov2[rcov/b/m]": 762.0001389768797,
+    "audit.weight_sum@25": 12.0,
+    "audit.weight_sum@60": 30.0,
+    "audit.weight_sum@119": 59.0,
+    "audit.null[a/x0]@end": 0,
+    "audit.mean[a/x0]@end": -0.05920251622435196,
+    "audit.std[a/x0]@end": 0.9988981969991507,
+    "audit.skew[a/x0]@end": 0.13864597746050802,
+    "audit.kurtosis[a/x0]@end": -0.734244442222745,
+    "audit.median[a/x0]@end": -0.14356864736528313,
+    "audit.mad[a/x0]@end": 0.6667477795461205,
+    "audit.robust_z[a/x0]@end": 2.1270987873532996,
+    "audit.autocorr[a/x0]@end": 0.09770051087628484,
+    "audit.unit_root_t[a/x0]@end": -6.858639292134699,
+    "audit.null[a/x1]@end": 2,
+    "audit.mean[a/x1]@end": 1.6517307535456187,
+    "audit.std[a/x1]@end": 2.958047090531065,
+    "audit.skew[a/x1]@end": 0.25324789230021644,
+    "audit.kurtosis[a/x1]@end": 0.6037690197199805,
+    "audit.median[a/x1]@end": 1.1125136851972806,
+    "audit.mad[a/x1]@end": 1.2737272275987532,
+    "audit.robust_z[a/x1]@end": 4.311271312254894,
+    "audit.autocorr[a/x1]@end": 0.04326963466135358,
+    "audit.unit_root_t[a/x1]@end": -7.132496744305026,
+    "audit.null[a/y0]@end": 2,
+    "audit.mean[a/y0]@end": -0.993750609157754,
+    "audit.std[a/y0]@end": 2.504101694345906,
+    "audit.skew[a/y0]@end": -0.3844424563052659,
+    "audit.kurtosis[a/y0]@end": 0.8468352430326291,
+    "audit.median[a/y0]@end": -0.8132594552093853,
+    "audit.mad[a/y0]@end": 1.7696047336914082,
+    "audit.robust_z[a/y0]@end": 2.9855581334344583,
+    "audit.autocorr[a/y0]@end": -0.08827084053020935,
+    "audit.unit_root_t[a/y0]@end": -8.282069035756278,
+    "audit.null[b/x0]@end": 0,
+    "audit.mean[b/x0]@end": -0.08019820859367618,
+    "audit.std[b/x0]@end": 1.0515509249696167,
+    "audit.skew[b/x0]@end": 0.03396262324185014,
+    "audit.kurtosis[b/x0]@end": -0.7350138196069129,
+    "audit.median[b/x0]@end": -0.19159033498205036,
+    "audit.mad[b/x0]@end": 0.7995416464065114,
+    "audit.robust_z[b/x0]@end": 1.9807723637366774,
+    "audit.autocorr[b/x0]@end": -0.15252340094189235,
+    "audit.unit_root_t[b/x0]@end": -8.899008930439052,
+    "audit.null[b/x1]@end": 2,
+    "audit.mean[b/x1]@end": 2.201318262427008,
+    "audit.std[b/x1]@end": 2.9255292136086797,
+    "audit.skew[b/x1]@end": -0.0060740594311637225,
+    "audit.kurtosis[b/x1]@end": -0.7910259946808611,
+    "audit.median[b/x1]@end": 1.820191974869697,
+    "audit.mad[b/x1]@end": 2.0908731101936437,
+    "audit.robust_z[b/x1]@end": 2.0020486182498627,
+    "audit.autocorr[b/x1]@end": 0.24878649113730708,
+    "audit.unit_root_t[b/x1]@end": -5.978771997283295,
+    "audit.null[b/y0]@end": 2,
+    "audit.mean[b/y0]@end": -1.5358445438235244,
+    "audit.std[b/y0]@end": 2.5880709572361855,
+    "audit.skew[b/y0]@end": 0.18698486798685254,
+    "audit.kurtosis[b/y0]@end": 0.6515582812145997,
+    "audit.median[b/y0]@end": -1.2662916919638518,
+    "audit.mad[b/y0]@end": 1.4750412267800674,
+    "audit.robust_z[b/y0]@end": 3.1993145732429586,
+    "audit.autocorr[b/y0]@end": 0.2718740592527968,
+    "audit.unit_root_t[b/y0]@end": -5.462773009999813,
+    "audit.corr[a/x0/x1]@end": 0.12818066217510068,
+    "audit.corr[a/x0/y0]@end": 0.4545212384397137,
+    "audit.corr[a/x1/y0]@end": -0.8096767137391814,
+    "audit.corr[b/x0/x1]@end": 0.08501624143787098,
+    "audit.corr[b/x0/y0]@end": 0.5484719648960178,
+    "audit.corr[b/x1/y0]@end": -0.7982751217163684,
+    "audit.steps[a]@end": 59,
+    "audit.gaps[a]@end": 6,
+    "audit.step_cv[a]@end": 0.0,
+    "audit.steps[b]@end": 59,
+    "audit.gaps[b]@end": 7,
+    "audit.step_cv[b]@end": 0.0,
 }
 
 #: Produced by `uv run python tests/test_golden_pipeline.py`, as `GOLDEN` is.

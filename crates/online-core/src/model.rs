@@ -80,6 +80,7 @@ pub enum ModelState {
     Hmm(Box<crate::Hmm>),
     CorrChange(Box<crate::CorrChange>),
     Bocpd(Box<crate::Bocpd>),
+    Audit(Box<crate::Audit>),
 }
 
 #[derive(Debug, Error)]
@@ -156,6 +157,7 @@ impl ModelState {
             ModelState::Hmm(_) => "hmm",
             ModelState::CorrChange(_) => "corrchange",
             ModelState::Bocpd(_) => "bocpd",
+            ModelState::Audit(_) => "audit",
         }
     }
 }
@@ -293,9 +295,9 @@ pub fn check_schema(state: &State) -> Result<(), StateError> {
 
 /// The largest magnitude of a feature, target or weight a model has to cope
 /// with. Any value beyond it is missing, like a null or a NaN ([`usable`]):
-/// to the plumbing (`online-polars`), which never hands a model one, and to
-/// every model itself, which refuses one by the rule [`OnlineModel`] states
-/// (docs/PLAN.md task 183).
+/// to the plumbing (`online-polars`), which hands one to no model but
+/// [`crate::Audit`], and to every model itself, which refuses one by the rule
+/// [`OnlineModel`] states (docs/PLAN.md task 183) -- `audit` counts it.
 ///
 /// Every model must keep a finite state, and go on learning, through any row
 /// within the bound -- including a weight of `1e100` and a feature of `1e100`
@@ -493,7 +495,8 @@ fn refuse_reading_with<M: OnlineModel>(m: &M, x: &[f64], y: &[Option<f64>], d_cl
 ///
 /// **A value that is not [`usable`]** -- not a number, infinite, or beyond
 /// [`INPUT_BOUND`] -- is refused, by every model the same way
-/// (docs/PLAN.md task 183):
+/// (docs/PLAN.md task 183), but [`crate::Audit`], which counts it
+/// (task 223 (b)):
 ///
 /// 1. A target that is not usable is absent: predict-only for that target.
 ///    So is a number read out of the targets slot (`bocpd`'s hazard,

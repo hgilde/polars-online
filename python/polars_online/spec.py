@@ -594,6 +594,7 @@ config each fill its defaults and build its models.
 """
 
 from polars_online._spec import (
+    audit,
     bocpd,
     coef_fields,
     coef_index,
@@ -622,6 +623,7 @@ from polars_online._spec import (
 )
 
 __all__ = [
+    "audit",
     "ew_class",
     "ew_cov",
     "ewridge",

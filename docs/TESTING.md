@@ -57,7 +57,7 @@ The words this ledger uses:
 | T-S numbers | the second opinions `docs/REVIEW-2026-09-12.md` proposes under "Second opinions", T-S1 to T-S17, and T-S18 from its pass 10; the tests in `tests/test_second_opinion.py` cite them |
 | R1 to R9 | the nine review rounds of the window operators and formula targets, all on 2026-10-03, recorded in `docs/PLAN.md` §14. A finding's ID, such as R5-C1, names its round |
 | hard rule N | the numbered hard rules in `CLAUDE.md` |
-| a kind | one of the 21 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
+| a kind | one of the 22 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
 | the ten regression models | the models the per-model sweeps run: `ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` and `holt`, which `REGRESSIONS` in `tests/test_model_registry.py` lists |
 | the window operators | exponentially weighted means, variances, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_var` and `po.ewm_std` look back, and `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate` look ahead |
 | a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.rewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed (`docs/PLAN.md` task 104) |
@@ -172,6 +172,7 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `marginal`'s bins and best split | scipy's `binned_statistic`; a scikit-learn `DecisionTreeRegressor` stump, whose gain bounds the split's from above (`TestTheBinsAgainstScipyAndAStump`) | 1e-9 | T-S12 |
 | `marginal`'s serial count | statsmodels' `acf` and `weights_bartlett` (`TestTheBartlettSerialFactor`) | 0.02 | T-S11 |
 | `bocpd` | the `bayesian_changepoint_detection` package, at levels up to 1e8 (`TestBocpdAtALevel`) | 1e-9, and `run_mode` exactly | T-S15 |
+| `audit`'s column statistics | scipy's `skew` and `kurtosis`, statsmodels' `adfuller` with no lags and a constant, numpy's lag-1 `corrcoef`, `median` and median absolute deviation (`TestAuditIsScipyAndStatsmodels`) | 1e-8; the median and MAD exact from exact counts, and within ranks 49% to 51% (48% to 52% for the MAD) from the digest | |
 | `kmeans`, `micro` | `tests/reference_cluster.py`, a transcription of the Rust held bit for bit: a regression check, which can share a mistake with the code | bit for bit | |
 | `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: each checkpoint's centres, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay (review 2026-10-05, TB1) | 1e-9; the partition at ARI 0.99995 and the centres to 5.4e-4 | |
 | `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | 1e-12 to 1e-9: `deco`'s pair sum, `hmm`'s probabilities, `corrchange`'s statistic and `bocpd`'s posterior to 1e-12; `hmm`'s log-likelihood and `rcov`'s three estimators to 1e-9, relative | |
@@ -1500,7 +1501,7 @@ space after the sign, a `pl.duration` past 292 years wrapped, and a
 invariance in `settled_frac`'s last bit.
 
 **T-D2 in Rust, 2026-09-25** (task 121). `model_contract.rs`'s module
-`generated` holds all 21 kinds to three clauses of the contract, over streams
+`generated` holds every kind (21 then, `audit` the 22nd since task 223 (b)) to three clauses of the contract, over streams
 `proptest` generates and shrinks. First, `predict_with` is the step without the
 update. Second, a state saved and restored at any row continues exactly as
 the model that was not. Third, nothing is infinite, with values up to `1e50`,

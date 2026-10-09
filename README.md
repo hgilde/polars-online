@@ -943,7 +943,7 @@ per target, give `min_weight` a list. The default depends on the model:
 | the feature count plus one (1 for `holt`) | `ew_cov`, `ew_class`, `kmeans`, `micro`, `holt` |
 | 3 | `marginal`, `deco` |
 | 1 | `bocpd` |
-| 0, each having a gate of its own | `ewridge`, `seqtest`, `rcov`, `hmm`, `corrchange` |
+| 0, each having a gate of its own or nothing to gate | `ewridge`, `seqtest`, `rcov`, `hmm`, `corrchange`, `audit` |
 
 **`min_settled_frac` is off by default**, because a fit kept as weighted
 means is unbiased from its first row when the process is stationary. Set it
@@ -1909,7 +1909,7 @@ stood after the last row it learned from.
 
 | to read | call | subsection |
 |---|---|---|
-| what a bank holds, what it was fed, and what is wrong with the data | `repr(bank)`, `bank.groups()`, `bank.summary()`, `bank.describe()`, `bank.last_row()`, `bank.check()` | [What a bank holds](#what-a-bank-holds) |
+| what a bank holds, what it was fed, and what is wrong with the data | `repr(bank)`, `bank.groups()`, `bank.summary()`, `bank.describe()`, `bank.last_row()`, `bank.check()`, `bank.audit()` | [What a bank holds](#what-a-bank-holds) |
 | any field of the output, by name | `po.spec.output_index`, `po.spec.coef_fields` | [Output field names](#output-field-names) |
 | the coefficients, at the end or row by row | `bank.coef()`, or `coef_every=0` and `.online.unnest` | [Coefficients](#coefficients) |
 | the running sums a fit is solved from, and the algebra on them | `bank.gram(spec)`, `po.gram` | [The running sums behind a fit](#the-running-sums-behind-a-fit) |
@@ -2004,7 +2004,9 @@ costs the run nothing, so call it after a first pass and before trusting a
 fit. Every threshold was measured: on five clean shapes over ten seeds no
 check raised an error or a warning, and each planted problem was found on
 every seed. The docstring of `ModelBank.check` lists the checks with their
-thresholds.
+thresholds. A bank keeps no count of sentinel values, frozen feeds,
+duplicated columns or the clock's gaps; an [`audit`](#audit--what-a-streams-columns-hold)
+spec does, and `check()` reads it.
 
 ### Output field names
 
@@ -2563,7 +2565,7 @@ rows, truth_rows, truth_blocks = sim["rows"], sim["truth_rows"], sim["truth_bloc
 
 ## Models
 
-polars-online has twenty-one models in four families. A spec's clock,
+polars-online has twenty-two models in four families. A spec's clock,
 grouping and warm-up mean the same whichever model it names, and its
 half-life is always a half-life on the clock ([How a bank sees a
 stream](#how-a-bank-sees-a-stream)). To look up a model's keywords and
@@ -2589,6 +2591,7 @@ against.
 | [`marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) · [math](#marginal--every-pairs-moments-kept-in-the-state) | accumulate | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t, for a wide set of columns, kept in the state and read back as a table; optionally at a set of lags, and with binned target moments for the relations a correlation cannot see |
 | [`deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) · [math](#deco--one-correlation-for-the-whole-matrix) | accumulate | one correlation for the whole matrix: Engle & Kelly's equicorrelation, or one per block and per pair of blocks |
 | [`rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) · [math](#rcov--a-blocks-realised-covariance-robust-to-noise) | accumulate | a block's realised covariance, robust to microstructure noise: the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, reported when a group closes |
+| [`audit`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.audit) · [math](#audit--what-a-streams-columns-hold) | accumulate | what each column holds, counted in one pass: nulls, NaNs and infinities apart, repeated values, runs, persistence, tails and duplicated columns, and the clock's duplicate stamps and gaps, read back as a table and by `bank.check()` |
 | **[Clustering and classification](#clustering-and-classification)** | | put labels on rows |
 | [`kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) · [math](#kmeans--exponentially-weighted-k-means) | step | exponentially weighted k-means: cluster labels assigned before the row is learned from, with a split–merge move that finds a cluster born after seeding |
 | [`micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) · [math](#micro--density-based-clustering-any-shape) | step | density-based clustering: DenStream micro-clusters linked into clusters of any shape and number, flagging the rows that belong to none |
@@ -2605,7 +2608,7 @@ depends on the row order:
 | learns by | what the model does with a row | with decay off | order-dependent even so |
 |---|---|---|---|
 | **solve** | keeps running sums and computes its coefficients from them | converges to the batch answer, in any row order | `lasso`'s `penalty_selected`, ranked by out-of-sample error, though its path converges in any order |
-| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate |
+| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate; `audit`'s runs, lag pairs and clock steps |
 | **reweight** | solves from running sums, but lets the fit before each row decide how that row enters them | depends on the row order | |
 | **step** | moves its coefficients a little on each row | depends on the row order | |
 | **filter** | carries a belief forward from row to row | depends on the row order | |
@@ -3969,6 +3972,59 @@ given.
 
 **A clock gap past `gap_cap`, or a session change, splits a block into
 stretches**, and no product pairs two returns across the break.
+
+#### `audit` — what a stream's columns hold
+
+*API:* [`po.spec.audit`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.audit) — *Rust:* [`audit.rs`](crates/online-core/src/audit.rs) — *Outputs:* [fields](docs/OUTPUTS.md#audit)
+
+Reach for `audit` before choosing a model, to find out what is wrong with the
+data. It learns nothing. Per column it counts the nulls, the NaNs, the
+infinities and the values past `1e100` apart, and measures what makes a
+column hard to learn from: a value repeated far more often than any other,
+a run of one value, persistence like a random walk's, and heavy tails. Per
+stream it measures the clock's duplicate stamps, gaps and spread of steps.
+Each row writes only `weight_sum`, and `bank.audit()` reads the counts from
+the state as a table after the run. `bank.check()` reads them too, and says
+what they mean.
+
+An audit reads every row, where a model skips a row with a feature that is
+not a usable number. Its memory does not grow with the rows: about 10 KiB a
+column at the defaults. Its counts are the same in one chunk or a thousand.
+Each statistic, its definition and its cost are in the builder's docstring.
+
+| measured per column | read as |
+|---|---|
+| `null`, `nan`, `pos_inf`, `neg_inf`, `beyond_bound` | what a model reads as missing, each kind counted apart |
+| `mean`, `std`, `skew`, `kurtosis`, `min`, `max` | the moments of the usable values, in one pass |
+| `distinct`, `top_value`, `top_count` | the distinct values, exact up to `distinct_cap` (default 256), and the most repeated one |
+| `longest_run`, `equal_prev`, `equal_by_chance` | the longest run of one value, and the rows equal to the row before beside what independent rows would give |
+| `autocorr`, `unit_root_t` | the lag-1 autocorrelation and the Dickey-Fuller statistic, near 0 for a random walk |
+| `median`, `mad`, `robust_z` | the median and median absolute deviation, from exact counts or a t-digest, and the largest robust z |
+
+With `pairs=True` it keeps each pair of columns' correlation, which finds a
+duplicated column. Groups merge into one audit with `pooled=True`: the
+counts exactly, the moments to rounding, and the repeats past
+`distinct_cap` and the median within the bounds the docstring gives.
+
+This code uses `df` from [Example data](#example-data):
+
+```python
+audit = po.spec.audit("audit", columns=["x0", "x1", "x2", "y"], clock="t", gap_cap=300.0,
+                      pairs=True, group="stock_id")
+bank = po.ModelBank([audit])
+bank.fit_predict(df)                              # the output record holds weight_sum alone
+columns = bank.audit()                            # one row per (group, column)
+pairs = bank.audit(table="pairs")                 # one row per (group, pair of columns)
+clock = bank.audit(table="clock")                 # one row per group: duplicate stamps, gaps, the steps' spread
+everything = bank.audit(pooled=True)              # the four groups as one stream
+problems = bank.check()                           # sentinel, frozen, few_values, random_walk, heavy_tails, ...
+```
+
+**Run it beside the models in the same pass** (`po.ModelBank([audit,
+model])`) to check the data a fit was made from, at the cost of one more
+spec. `check()` lists an audit's findings with the models' own, and the
+docstring of `ModelBank.check` gives each threshold with the rate at which
+it found a planted problem and stayed silent on clean data.
 
 ### Clustering and classification
 

@@ -41,7 +41,7 @@ FAMILIES: dict[str, tuple[str, ...]] = {
         "ftrl",
         "holt",
     ),
-    "Moments and correlation": ("ew_cov", "marginal", "deco", "rcov"),
+    "Moments and correlation": ("ew_cov", "marginal", "deco", "rcov", "audit"),
     "Clustering and classification": ("kmeans", "micro", "ew_class"),
     "Sequential tests and regimes": ("seqtest", "corrchange", "bocpd", "hmm"),
 }
@@ -185,6 +185,10 @@ ALSO_NULL_BY_MODEL: dict[tuple[str, str], str] = {
 
 #: What a model writes when it writes nothing per row.
 STATE_ONLY = {
+    "audit": (
+        "`audit` writes nothing per row but `weight_sum`, the rows before this one. Its product "
+        "is the state, and `ModelBank.audit()` reads what it counted from it."
+    ),
     "marginal": (
         "`marginal` writes nothing per row but `weight_sum`. Its product is the state, and "
         "`ModelBank.marginal()` reads the pairs from it."

@@ -273,6 +273,7 @@ def describe_api(cli: Path | None = None) -> str:
             dict(features=["x0", "x1"], group="g", group_close="monotone", block_rows=500),
         ),
         ("deco", dict(features=["x0", "x1", "x2"], half_life=100.0)),
+        ("audit", dict(columns=["x0", "x1"], pairs=True)),
         (
             "deco blocked",
             dict(
@@ -494,8 +495,11 @@ def frame_columns_section() -> list[str]:
     pairs_lags_bins = po.spec.marginal(
         "pairs_lags_bins", lags=[1], serial_rule="bartlett", bins=4, **common
     )
-    bank = po.ModelBank([ridge, pairs, pairs_lags_bins])
-    bank.fit_predict(df)
+    audit = po.spec.audit("audit", columns=["x0", "x1"], group="g", pairs=True)
+    bank = po.ModelBank([ridge, pairs, pairs_lags_bins, audit])
+    bank.fit_predict(df.with_columns(t=pl.int_range(n).cast(pl.Float64)))
+    timed = po.ModelBank([po.spec.audit("audit", columns=["x0"], clock="t", gap_cap=5.0)])
+    timed.fit_predict(df.with_columns(t=pl.int_range(n).cast(pl.Float64)))
     frames = [
         ("ModelBank.groups()", bank.groups()),
         ("ModelBank.summary()", bank.summary()),
@@ -504,6 +508,10 @@ def frame_columns_section() -> list[str]:
         ("ModelBank.last_row() of an ewridge spec", bank.last_row("ridge")),
         ("ModelBank.marginal()", bank.marginal("pairs")),
         ("ModelBank.marginal() with lags, serial_rule and bins", bank.marginal("pairs_lags_bins")),
+        ("ModelBank.audit()", bank.audit("audit")),
+        ("ModelBank.audit(table='pairs')", bank.audit("audit", table="pairs")),
+        ("ModelBank.audit(table='clock')", timed.audit(table="clock")),
+        ("ModelBank.audit(pooled=True)", bank.audit("audit", pooled=True)),
         ("po.spec.output_index()", po.spec.output_index(ridge)),
         ("po.spec.coef_index()", po.spec.coef_index(ridge)),
         ("po.spec.coef_fields()", po.spec.coef_fields(ridge)),

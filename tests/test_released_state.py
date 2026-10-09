@@ -4,7 +4,7 @@ says it will (docs/PLAN.md tasks 109 and 198).
 Each release is installed from PyPI into the cache
 ``scripts/compare_release.py`` keeps (``.cache/release-compare/<version>``),
 and ``scripts/release_probe.py --states`` runs under it: every spec of the
-release comparison's workload -- all twenty-one kinds -- fitted on the first
+release comparison's workload -- every kind the release has -- fitted on the first
 half of its stream and saved.
 
 **Before 1.0, a released file is refused by its version.** The bank's minimum
@@ -61,6 +61,25 @@ def _major(version: str) -> int:
 
 #: The releases before 1.0, whose files are refused by their version.
 REFUSED = [v for v in RELEASES if _major(v) < 1]
+
+#: The workload's kinds newer than a release, by the first version that has
+#: each: a release before it has no builder for one, and its probe records
+#: the refusal (`audit`, task 223 (b), after 0.13.0).
+INTRODUCED = {"audit": "0.14.0"}
+
+
+def _version(v: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in v.split("."))
+
+
+def _buildable(version: str) -> list[str]:
+    """The workload's specs a release can build: every one, for this build."""
+    return [
+        name
+        for name, builder, *_ in probe.WORKLOAD
+        if version == THIS_BUILD or _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
+    ]
+
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
 #: own files stand in until 1.0.0 is listed and run beside them after.
@@ -143,8 +162,11 @@ def loaded(request, tmp_path_factory):
 def test_every_spec_was_saved_by_the_release_at_an_older_schema(refused):
     version, manifest, _ = refused
     assert manifest["version"] == version
-    assert manifest["refused"] == {}
-    assert manifest["saved"] == [name for name, *_ in probe.WORKLOAD]
+    assert manifest["saved"] == _buildable(version)
+    newer = {name for name, *_ in probe.WORKLOAD} - set(manifest["saved"])
+    assert set(manifest["refused"]) == newer
+    for name, why in manifest["refused"].items():
+        assert why.startswith("AttributeError") and name in why, (name, why)
     # An older schema: the refusal below is by the version, not the layout.
     assert manifest["schema"] < po.schema_version()
 
@@ -153,6 +175,8 @@ def test_a_pre_1_0_state_is_refused_by_its_version(refused):
     version, manifest, states = refused
     built = {name: getattr(po.spec, b)(name, **kw) for name, b, kw, _ in probe.WORKLOAD}
     for name, _, _, reads in probe.WORKLOAD:
+        if name not in manifest["saved"]:
+            continue
         specs = [built[r] for r in reads] + [built[name]]
         with pytest.raises(ValueError) as e:
             po.ModelBank.load(states / f"{name}.state", specs=specs)

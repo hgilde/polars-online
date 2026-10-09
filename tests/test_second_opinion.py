@@ -4546,3 +4546,70 @@ class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
             assert fit["sigma2"] == pytest.approx(ols.scale, rel=1e-8)
             assert fit["r2"] == pytest.approx(ols.rsquared, rel=1e-8)
             assert fit["n"] == rows.sum()
+
+
+class TestAuditIsScipyAndStatsmodels:
+    """An ``audit``'s column statistics against the libraries that compute
+    them from the raw values (task 223 (b)): scipy's biased skew and excess
+    kurtosis, statsmodels' Dickey-Fuller statistic with a constant and no
+    lags, numpy's correlation of a column with its own lag, and numpy's
+    median and median absolute deviation, exact from exact counts and to a
+    rank of about 1% from the digest past the cap."""
+
+    @staticmethod
+    def _audit(x: np.ndarray, **kw: Any) -> dict[str, Any]:
+        frame = pl.DataFrame({"t": np.arange(len(x), dtype=float), "x": x})
+        spec = po.spec.audit("a", columns=["x"], clock="t", gap_cap=10.0, **kw)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        return bank.audit().row(0, named=True)
+
+    @pytest.mark.parametrize("level", [0.0, 1e4])
+    def test_the_moments_are_scipys(self, level):
+        from scipy.stats import kurtosis, skew
+
+        rng = np.random.default_rng(71)
+        x = level + rng.standard_t(5, size=3000)
+        got = self._audit(x)
+        assert got["mean"] == pytest.approx(np.mean(x), rel=1e-14, abs=1e-12)
+        assert got["std"] == pytest.approx(np.std(x, ddof=1), rel=1e-10)
+        assert got["skew"] == pytest.approx(skew(x), rel=1e-8)
+        assert got["kurtosis"] == pytest.approx(kurtosis(x), rel=1e-8)
+        assert (got["min"], got["max"]) == (x.min(), x.max())
+
+    @pytest.mark.parametrize("phi", [0.0, 0.9, 1.0])
+    def test_the_persistence_is_statsmodels_dickey_fuller(self, phi):
+        from statsmodels.tsa.stattools import adfuller
+
+        rng = np.random.default_rng(72)
+        e = rng.normal(size=2000)
+        x = np.empty_like(e)
+        v = 0.0
+        for i, ei in enumerate(e):
+            v = phi * v + ei
+            x[i] = v
+        got = self._audit(x)
+        tau = adfuller(x, maxlag=0, autolag=None, regression="c", result_object=False)[0]
+        assert got["unit_root_t"] == pytest.approx(tau, rel=1e-8)
+        assert got["autocorr"] == pytest.approx(np.corrcoef(x[:-1], x[1:])[0, 1], rel=1e-10)
+
+    def test_the_median_and_mad_are_numpys_from_exact_counts(self):
+        rng = np.random.default_rng(73)
+        x = rng.integers(-20, 30, size=1001).astype(float)
+        got = self._audit(x)
+        med = np.median(x)
+        assert got["median"] == med
+        assert got["mad"] == np.median(np.abs(x - med))
+        assert got["distinct"] == len(np.unique(x))
+
+    @pytest.mark.parametrize("level", [0.0, 1e6])
+    def test_the_digest_reads_the_median_and_mad_to_a_rank(self, level):
+        rng = np.random.default_rng(74)
+        x = level + rng.lognormal(size=20_000)
+        got = self._audit(x)
+        assert got["distinct"] is None, "past the cap: the digest answers"
+        lo, hi = np.quantile(x, [0.49, 0.51])
+        assert lo <= got["median"] <= hi
+        dev = np.abs(x - np.median(x))
+        dlo, dhi = np.quantile(dev, [0.48, 0.52])
+        assert dlo <= got["mad"] <= dhi

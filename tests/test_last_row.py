@@ -109,7 +109,8 @@ def test_predict_leaves_it_and_skipped_rows_step_back():
     # weight: a spec that reads either skips them all, so "a" keeps its row,
     # while "b" moves on to the chunk's last learned row. A spec that reads
     # neither (`seqtest`: a target, no weight) learns from them, and its "a"
-    # moves on too -- the frame says which, and the row is the frame's.
+    # moves on too, as does an `audit`, which reads every row -- the frame
+    # says which, and the row is the frame's.
     tail = df.slice(90, 30).with_columns(
         pl.when(pl.col("g") == "a").then(None).otherwise(pl.col(c)).alias(c) for c in ("x1", "w")
     )
@@ -128,7 +129,9 @@ def test_predict_leaves_it_and_skipped_rows_step_back():
             else:
                 want = frame_row(out2, name, i)
             assert want.equals(bank_row(after, name, g, want.columns)), f"{name} / {g}"
-    assert kept == len(specs()) - 2, "every spec but the two seqtests skipped a's rows"
+    assert kept == len(specs()) - 3, (
+        "every spec but the two seqtests and the audit skipped a's rows"
+    )
     # The first frame is untouched by any of this, as it should be.
     assert out.height == 90
 

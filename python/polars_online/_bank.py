@@ -1437,6 +1437,107 @@ class ModelBank:
         """
         return self._native.marginal(self._spec_index(spec), _group_keys(group))
 
+    def audit(
+        self,
+        spec: str | int | None = None,
+        group: str | Iterable[str | None] | None = None,
+        *,
+        table: str = "columns",
+        pooled: bool = False,
+    ) -> pl.DataFrame:
+        """What an ``audit`` spec counted (:func:`polars_online.spec.audit`): one row
+        per column, per pair of columns, or per clock.
+
+        The counts are read from the state, so a bank loaded from its file
+        reports what the bank that saved it would, and the stream's chunking
+        moves none of them. ``check`` reads these frames for its findings.
+
+        .. code-block:: python
+
+            audit = po.spec.audit(
+                "audit", columns=["x0", "x1"], clock="t", gap_cap=300.0, pairs=True
+            )
+            bank = po.ModelBank([audit])
+            bank.fit_predict(df)
+            columns = bank.audit()                    # one row per (group, column)
+            pairs = bank.audit(table="pairs")         # one row per (group, pair of columns)
+            clock = bank.audit(table="clock")         # one row per group
+            everything = bank.audit(pooled=True)      # every group as one stream, no group column
+
+        ``table="columns"`` (the default) has ``group`` and ``column``, then:
+
+        ``rows``, ``null``, ``nan``, ``pos_inf``, ``neg_inf``, ``beyond_bound``, ``count``
+            The rows read, then each kind of value a model cannot learn from,
+            counted apart (``beyond_bound`` is finite but past ``1e100`` in
+            magnitude), and ``count``, the usable values. The six add up to
+            ``rows``.
+        ``mean``, ``std``, ``skew``, ``kurtosis``, ``min``, ``max``
+            Over the usable values: ``std`` with ``ddof = 1``; ``skew`` and
+            the excess ``kurtosis`` scipy's biased estimators. Null where
+            undefined (no usable value, one, or no spread).
+        ``median``, ``mad``, ``robust_z``
+            The median and the median absolute deviation, exact while
+            ``distinct`` is not null and from a t-digest past the cap
+            (about 1% of the rows in rank), and the largest robust z,
+            ``max(max - median, median - min) / (1.4826 mad)``.
+        ``distinct``
+            The distinct usable values, ``-0`` read as ``0``; null past the
+            spec's ``distinct_cap``.
+        ``top_value``, ``top_count``, ``second_count``, ``count_error``
+            The most repeated value, its count and the next value's: exact
+            while ``distinct`` is, and each at most ``count_error`` short of
+            the truth past the cap, where a value not held has a count of at
+            most ``count_error``.
+        ``longest_run``, ``equal_prev``, ``adjacent``, ``equal_by_chance``
+            The longest run of one value on consecutive rows; the rows equal
+            to the row before, out of ``adjacent``, the rows whose row before
+            was usable too; and ``sum p_v^2`` over the values' shares, the
+            share of ``adjacent`` rows independent rows would make equal
+            (a lower bound past the cap).
+        ``autocorr``, ``unit_root_t``
+            The correlation of each usable row with the usable row before it,
+            and the Dickey-Fuller statistic of that regression with a
+            constant: near 0 for a random walk, about ``-sqrt(n)`` for rows
+            that do not persist.
+
+        ``table="pairs"``, for a spec built with ``pairs=True``: ``group``,
+        ``column_a``, ``column_b``, and over the rows where both are usable,
+        ``count``, ``corr`` and ``equal``, the rows on which the two are
+        equal.
+
+        ``table="clock"``: ``group``, ``steps`` (between consecutive rows),
+        ``duplicates`` (steps of 0), ``gaps`` (steps at or past
+        ``gap_cap``, which a clock requires), ``regular`` (the rest), and
+        the regular steps' ``step_mean``, ``step_std`` (population) and
+        ``step_cv``, and ``max_step`` over every step. No rows for a spec
+        without a ``clock``.
+
+        ``pooled=True`` merges the groups the frame covers into one audit,
+        as if they were one stream, and drops ``group``: the counts and
+        moments merge exactly, up to rounding, and the counters past the cap
+        and the digests approximately, as the spec's docstring says.
+
+        ``spec`` is a name or a position, and may be left out when the bank
+        holds one audit (``ValueError`` when it holds none or several);
+        ``group`` narrows the frame as in :meth:`summary`. A spec that is
+        not an ``audit``, ``table="pairs"`` of one without pairs and an
+        unknown ``table`` are refused (``ValueError``).
+        """
+        if spec is None:
+            audits = [i for i, s in enumerate(self._specs) if s["model"]["type"] == "audit"]
+            if len(audits) != 1:
+                names = [self._specs[i]["name"] for i in audits]
+                msg = (
+                    f"the bank has {len(audits)} audit specs {names}: name the one to read"
+                    if audits
+                    else "the bank has no audit spec: add po.spec.audit(...) to its specs"
+                )
+                raise ValueError(msg)
+            idx = audits[0]
+        else:
+            idx = self._spec_index(spec)
+        return self._native.audit(idx, _group_keys(group), table, pooled)
+
     def closed_groups(self, spec: str | int | None = None, *, drop: bool = True) -> pl.DataFrame:
         """The groups that have finished and not yet been read, oldest first, as one long
         frame.
@@ -1675,6 +1776,56 @@ class ModelBank:
              - numpy is not installed, so ``collinear`` and ``leakage`` were
                not checked
 
+        An ``audit`` spec (:func:`polars_online.spec.audit`) has the counts
+        no other spec keeps, and its findings are about the data whatever a
+        model would make of it. It knows no roles, so a column's ``missing``
+        share is information (an error at every row), and ``constant`` a
+        warning. Its own checks, read from :meth:`audit`:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 18 10 72
+
+           * - code
+             - severity
+             - fires when
+           * - ``sentinel``
+             - warning, info
+             - a column holds ``+inf``, ``-inf`` or a value past ``1e100``
+               (warning); holds NaN rather than null (information); or one
+               value is 1% of its usable rows or more, at least 5 times as
+               often as any other can be (warning), unless the column has 10
+               values or fewer or is frozen
+           * - ``frozen``
+             - warning
+             - the share of rows equal to the row before passes what the
+               column's frequencies give by 0.05, or a run of one value is 10
+               rows or more and 4 times the longest run independent rows
+               would show
+           * - ``few_values``
+             - info
+             - 10 distinct values or fewer over 100 usable rows or more
+           * - ``random_walk``
+             - warning
+             - the Dickey-Fuller statistic is above -3.5 (the 1% critical
+               value is -3.43) over 100 pairs of rows or more
+           * - ``heavy_tails``
+             - info
+             - an excess kurtosis of 5 or more, or a value 10 robust standard
+               deviations or more from the median
+           * - ``duplicate``
+             - warning
+             - with ``pairs=True``, two columns correlate at 0.999 or more
+           * - ``duplicate_stamps``
+             - info
+             - a row shares the clock of the row before
+           * - ``gaps``
+             - info
+             - a step reaches ``gap_cap``
+           * - ``irregular_clock``
+             - info
+             - the regular steps' coefficient of variation is 0.5 or more
+
         **Every threshold was measured before it shipped.** On five clean
         shapes (independent features; ten features correlated at 0.8 with an
         R² of 0.99; five groups; forty groups of 50 rows at a half-life of 5;
@@ -1732,16 +1883,49 @@ class ModelBank:
         chance in that many rows. The Gram's checks wait for ten Kish rows a
         coefficient. Both guards keep a small group quiet.
 
+        **An audit's thresholds were measured the same way.** On the five
+        clean shapes above and six more (two columns persisting at 0.9 and
+        at 0.95 a row, uniform values, Poisson counts about 50, values
+        rounded to two decimals at 100, and a clock whose steps vary between
+        0.5 and 1.5), over ten seeds, an audit of every column raised no
+        error or warning; the one clean shape with information is the target
+        that is NaN on 60% of its rows. Each problem planted was found on
+        every seed (``tests/check_streams.py``'s ``AUDIT_PLANTED``):
+
+        - ``sentinel``: ``-999`` on 5% of a continuous column's rows reads 3.9%
+          to 5.8% at 9.8 to 12 times the next count's bound; on 3% it was
+          found on ten seeds of ten, on 2% on one (on ten at
+          ``distinct_cap=1024``). Poisson counts about 50, whose commonest
+          value is 6% of the rows, read 1.23 times the next at most.
+        - ``frozen``: a feed stopped for the last 10% of the rows, a forward
+          fill every 2, 3, 5 or 10 rows, and 10 rows stuck in the middle are
+          found; 5 rows stuck are not. Clean columns repeated the row before
+          0.6 points past chance at most (Poisson counts), and ran 4 rows at
+          most.
+        - ``random_walk``: random walks of 300 and 2,000 rows read -3.2 at
+          most, and the clean shapes -6.5 at least (columns persisting at
+          0.95); 50-row groups, which the 100-row guard leaves out, read
+          -4.7. A column persisting at 0.99 a row over 2,000 rows reads as a
+          random walk on seven seeds of ten, and at 0.98 on none.
+        - ``heavy_tails``: clean columns reached a kurtosis of 3.8 (in
+          50-row groups) and a robust z of 5.6; Student's t with 3 degrees
+          of freedom reads 10 to 25, and one value at 30 standard deviations
+          29.
+        - ``duplicate``: a copy, a copy times 100 plus 3, and a copy plus noise
+          of 0.03 of its spread (a correlation of 0.9995) are found; plus 0.05
+          is not. Clean columns correlated at 0.94 at most.
+        - ``irregular_clock``: steps drawn from an exponential, arrivals at
+          random, read 0.96 to 1.04; the jittered clock 0.29.
+
         **What it cannot see.** :meth:`describe` keeps every row's moments
         undecayed, so a feature that drifted slowly can sit far above its
         recent spread without showing as a level here. The Gram's checks
         cover the three models that keep one, and ``leakage`` also reads a
-        ``marginal``. Sentinel values (``-999``) counted apart from nulls, a
-        frozen feed or a forward fill, a column of few distinct values, a
-        level fed as a feature (lag-1 autocorrelation near 1), heavy tails,
-        duplicate clock stamps, gaps and irregular spacing need measurements
-        no bank keeps: they wait for ``po.spec.audit`` (docs/PLAN.md task
-        223 (b)).
+        ``marginal``. Sentinel values counted apart from nulls, a frozen feed,
+        a column of few distinct values, a level fed as a feature, heavy
+        tails, duplicate columns and the clock's duplicate stamps, gaps and
+        irregular spacing are an ``audit``'s to measure: without one in the
+        bank, nothing is said about them.
 
         ``spec`` and ``group`` narrow the frame as in :meth:`summary`
         (``KeyError`` / ``IndexError`` for a spec the bank has not got). A

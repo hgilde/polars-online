@@ -8,7 +8,7 @@ the same question at runtime, for the exact spec you built.
 | family | models |
 |---|---|
 | [Linear models](../README.md#linear-models) | [`ewridge`](#ewridge) · [`rls`](#rls) · [`lasso`](#lasso) · [`kalman`](#kalman) · [`huber`](#huber) · [`quantile`](#quantile) · [`sgd`](#sgd) · [`pa`](#pa) · [`ftrl`](#ftrl) · [`holt`](#holt) |
-| [Moments and correlation](../README.md#moments-and-correlation) | [`ew_cov`](#ew_cov) · [`marginal`](#marginal) · [`deco`](#deco) · [`rcov`](#rcov) |
+| [Moments and correlation](../README.md#moments-and-correlation) | [`ew_cov`](#ew_cov) · [`marginal`](#marginal) · [`deco`](#deco) · [`rcov`](#rcov) · [`audit`](#audit) |
 | [Clustering and classification](../README.md#clustering-and-classification) | [`kmeans`](#kmeans) · [`micro`](#micro) · [`ew_class`](#ew_class) |
 | [Sequential tests and regimes](../README.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`bocpd`](#bocpd) · [`hmm`](#hmm) |
 
@@ -263,6 +263,14 @@ hand: change the generator, then run
 ## `rcov`
 
 `rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the row `ModelBank.closed_groups()` gives when a group closes (`group_close`). That row's `rcov_psd_repaired` is null where the repair could not run, on an estimate with an entry that is not finite.
+
+| field | dtype | what it holds | also null |
+|---|---|---|---|
+| `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
+
+## `audit`
+
+`audit` writes nothing per row but `weight_sum`, the rows before this one. Its product is the state, and `ModelBank.audit()` reads what it counted from it.
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|

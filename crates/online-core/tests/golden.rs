@@ -647,6 +647,51 @@ fn rcov_golden() {
     check("rcov", &[cov[0], cov[1], cov[3]], GOLDEN_RCOV);
 }
 
+/// `audit` on the same stream, its first feature null on one row and
+/// infinite on another, past a cap of 16 counters: every statistic of the
+/// first column that is not a count, the pair's correlation and the clock's
+/// spread of regular steps (docs/PLAN.md task 223 (b)).
+#[test]
+fn audit_golden() {
+    let mut m = Audit::new(AuditCfg {
+        n_columns: 2,
+        pairs: true,
+        distinct_cap: 16,
+        // Past the stream's one long step, so it is a regular step.
+        gap_cap: Some(30.0),
+        has_clock: true,
+    })
+    .unwrap();
+    for (i, (mut x, y, d, w)) in stream().into_iter().enumerate() {
+        match i {
+            5 => x[0] = NULL,
+            6 => x[0] = f64::INFINITY,
+            // A run of three, for the frozen counts.
+            11..=13 => x[0] = 0.25,
+            _ => {}
+        }
+        m.step(&x, &y, d, w);
+    }
+    let c = m.column(0);
+    let k = m.clock().unwrap();
+    let got = [
+        c.mean,
+        c.std,
+        c.skew,
+        c.kurtosis,
+        c.median,
+        c.mad,
+        c.robust_z,
+        c.autocorr,
+        c.unit_root_t,
+        c.equal_by_chance,
+        m.pair(0, 1).unwrap().corr,
+        k.step_cv,
+        (c.null + 10 * c.pos_inf + 100 * c.longest_run + 1000 * c.count_error) as f64,
+    ];
+    check("audit", &got, GOLDEN_AUDIT);
+}
+
 /// The pre-averaged estimate on the same stream: the other arithmetic.
 #[test]
 fn rcov_preavg_golden() {
@@ -1435,6 +1480,23 @@ fn ew_class_windowed_golden() {
 }
 
 // --- generated; see the module docs ---
+// Frozen 2026-10-09 (docs/PLAN.md task 223 (b)); the moments, the lag
+// pairs and the median are held to their definitions in `audit/tests.rs`.
+const GOLDEN_AUDIT: &[f64] = &[
+    0.007351359111987893,
+    0.6172135907442536,
+    -0.21888805190556487,
+    -1.297830470011374,
+    0.10337402765025028,
+    0.5182677744840106,
+    1.4146505816120811,
+    -0.10763359428819168,
+    -8.230048359338621,
+    0.002080856123662307,
+    -0.11940372649057979,
+    2.202151259526913,
+    3311.0,
+];
 const GOLDEN_BOCPD: &[f64] = &[
     0.04617202802926437,
     0.05977980779859338,

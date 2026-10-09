@@ -303,9 +303,9 @@ class TestMaxErrorInflation:
         assert reasons(both)[:21] == ["below_min_weight"] * 20 + [None]
 
 
-#: The kinds that write a row: `marginal` and `rcov` report through the
-#: state alone.
-ROW_KINDS = sorted(set(MINIMAL) - {"marginal", "rcov"})
+#: The kinds that write a row: `marginal`, `rcov` and `audit` report through
+#: the state alone.
+ROW_KINDS = sorted(set(MINIMAL) - {"marginal", "rcov", "audit"})
 
 
 @pytest.mark.parametrize("name", ROW_KINDS)
@@ -560,7 +560,8 @@ class TestInvariants:
 
     def test_every_per_row_model_says_how_settled_it_is(self):
         """The two per-row readiness fields ride on every model that writes a
-        row; only the state-only models (`marginal`, `rcov`) have no row."""
+        row; only the state-only models (`marginal`, `rcov`, `audit`) have no
+        row."""
         import sys
 
         sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
@@ -568,7 +569,7 @@ class TestInvariants:
 
         for name in sorted(MINIMAL):
             fields = po.spec.output_fields(_build(name))
-            if name in ("marginal", "rcov"):
+            if name in ("marginal", "rcov", "audit"):
                 assert "settled_frac" not in fields
             else:
                 assert "settled_frac" in fields, name

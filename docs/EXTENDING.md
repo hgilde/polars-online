@@ -101,6 +101,7 @@ Each such case overrides a method, and each has its check:
 | is windowed and predicts a target | an entry in `ModelKind::window_and_every`, so the stream cuts its `sigma` and `zscore` at the fit's window (review 2026-09-12, S1) | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
 | keeps a weight per target: the rows each target was present on | **`target_n_eff_into`** (review 2026-09-12, S2) | `test_a_sparse_target_warms_up_on_its_own_weight` in `tests/test_bank.py`, to which it is added |
 | reads a number out of `y` rather than regressing it | **`predict_with(x, y, d_clock)`** (docs/REVIEW-E54-E64.md C1) | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
+| counts a value that is not usable rather than refusing it, as `audit` does (docs/PLAN.md task 223 (b)) | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a restart must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
 | solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share` (docs/PLAN.md task 115 (b)). The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
 | reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (docs/WARMUP-AND-CONVERGENCE.md §2). Only `ewridge` does today: `Spec::has_error_inflation` in `crates/online-polars/src/spec.rs` refuses `max_error_inflation` and `emit_error_inflation` for every other model, and names a new one that reports them | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
 
@@ -364,6 +365,7 @@ combo, and are the cases in `output_index`:
 | `ew_class` | a class and its posteriors |
 | `seqtest` | two log e-values and two counts per target, no `coef` |
 | `marginal` | `weight_sum` alone: its pairs are state, read by `Bank::marginal` as a frame, and a spec that is not a `marginal` is refused there by name |
+| `audit` | `weight_sum` alone: its counts are state, read by `Bank::audit` (`bank/audit.rs`) as three frames, and a spec that is not an `audit` is refused there by name |
 | `lasso` | a path |
 | `deco` | `u`, `rho` and a `loglik`, per block and per pair of blocks |
 | `rcov` | `weight_sum` alone: its block leaves through `Bank::closed_groups` |
@@ -376,7 +378,7 @@ combo, and are the cases in `output_index`:
 | model | its `coef` slots |
 |---|---|
 | `holt` | `level`, `trend` |
-| `ew_cov`, `seqtest` and `marginal` | none |
+| `ew_cov`, `seqtest`, `marginal` and `audit` | none |
 | `kmeans` | `k` slots `cluster{j}` in place of the targets, one coordinate per feature |
 | `ew_class` | one slot per class, named by the class, one coordinate per feature |
 | `micro` | none: its `coef` is one row per *live* summary, so the length is not a property of the spec, and `coef_index` refuses it by name |
@@ -416,7 +418,11 @@ holds to every builder `coef_index` lays out.
 **`crates/online-cli` needs nothing, and `crates/online-py` nothing for a
 model whose product is its output**: both build from the spec. A model
 whose product is read from its state needs a binding, as `marginal`'s
-pairs have (`ModelBank.marginal`).
+pairs have (`ModelBank.marginal`) and `audit`'s counts (`ModelBank.audit`).
+A model whose state says something about the data goes into
+`python/polars_online/_check.py` too, as `audit` does (`_audit_findings`),
+with each threshold measured on `tests/check_streams.py`'s clean and
+planted streams.
 
 ## The Python surface — `python/polars_online`
 
@@ -498,7 +504,7 @@ One entry each in `test_semantics_all_models.MODELS`,
 **The sweeps assert on `pred` and `resid`, so a model with no prediction sits
 them out**, through `test_model_registry.REGRESSIONS`. Those models are
 `ew_cov`, `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`, `deco`,
-`rcov`, `hmm`, `corrchange` and `bocpd`. Each gets its own schema test
+`rcov`, `hmm`, `corrchange`, `bocpd` and `audit`. Each gets its own schema test
 instead, such as
 `test_portability.TestOutputSchemaStability.test_kmeans_names_match_the_realized_struct`,
 `test_micro_names_match_the_realized_struct`,

@@ -182,6 +182,12 @@ fn probe_with<M: OnlineModel + Clone>(
 /// decay bug three chunks later (docs/PLAN.md task 47).
 const KEEPS_LAGS: &[&str] = &["rcov", "corrchange", "ew_cov", "marginal"];
 
+/// The model that counts a value that is not usable rather than refusing
+/// it: `audit`, whose counts of nulls, NaNs and infinities are what it is for
+/// (docs/PLAN.md task 223 (b)). `refuses_unusable_values` passes it by, and
+/// its own tests (`audit/tests.rs`) hold what it does with each.
+const COUNTS_UNUSABLE: &[&str] = &["audit"];
+
 /// Models that report on some rows and not others by design -- a span-based
 /// test writes its statistic where the span closes -- so the predict-parity
 /// helper cannot ask for 300 rows with every slot ready.
@@ -643,6 +649,7 @@ fn every_state_kind_is_distinct_and_named() {
         "hmm",
         "corrchange",
         "bocpd",
+        "audit",
     ];
     let mut seen = std::collections::HashSet::new();
     for k in kinds {
@@ -674,6 +681,7 @@ fn every_state_kind_is_distinct_and_named() {
         Hmm::new(hmm_cfg()).unwrap().state(),
         CorrChange::new(corrchange_cfg()).unwrap().state(),
         Bocpd::new(bocpd_cfg()).unwrap().state(),
+        Audit::new(audit_cfg()).unwrap().state(),
     ];
     let from_states: Vec<&str> = states.iter().map(|s| s.model.kind()).collect();
     assert_eq!(from_states, kinds);
@@ -1191,7 +1199,7 @@ fn set_cfg(v: &mut rmpv::Value, key: &str, value: rmpv::Value) {
 /// row, as a panic or a NaN for good (review 2026-10-06, CF4, CA6, CD14).
 /// Each model's state with one cfg field set, in the named msgpack a bank
 /// writes, to a value its `validate` refuses: a half-life of 0 for the
-/// seventeen with a `Decay`, a field of its own for the four without.
+/// seventeen with a `Decay`, a field of its own for the five without.
 #[test]
 fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
     fn refused<M: OnlineModel>(m: M, key: &str, value: rmpv::Value, says: &str) -> String {
@@ -1278,8 +1286,15 @@ fn every_model_refuses_at_restore_a_configuration_its_new_refuses() {
             0.5.into(),
             "must be finite and > 1",
         ),
+        refused(
+            Audit::new(audit_cfg()).unwrap(),
+            "distinct_cap",
+            0.into(),
+            "distinct_cap must be in 1..=",
+        ),
     ];
-    // Every model's `restore`: the twenty kinds, `robust` under both losses.
+    // Every model's `restore`: the twenty-one kinds, `robust` under both
+    // losses.
     let mut seen: Vec<&str> = kinds.iter().map(String::as_str).collect();
     seen.dedup();
     let models = PROBED.len() - 1;
@@ -1686,6 +1701,7 @@ fn exactly_the_scheduled_solvers_report_a_solve_share() {
             share(CorrChange::new(corrchange_cfg()).unwrap()),
         ),
         ("bocpd", share(Bocpd::new(bocpd_cfg()).unwrap())),
+        ("audit", share(Audit::new(audit_cfg()).unwrap())),
     ];
     let reporting: Vec<&str> = shares
         .iter()
@@ -1729,6 +1745,7 @@ const PROBED: &[(&str, &str)] = &[
     ("Hmm", "hmm"),
     ("CorrChange", "corrchange"),
     ("Bocpd", "bocpd"),
+    ("Audit", "audit"),
 ];
 
 #[test]
@@ -2723,8 +2740,9 @@ fn reports_nothing(s: &Step) -> bool {
 /// - **A weight**: the row reports what `predict_with` does, and leaves the
 ///   state a row with a feature that is not usable leaves.
 ///
-/// No model is excepted: no model's zero-weight row takes anything from the
-/// row's features into its state -- no ring slot, warm-up row or likelihood
+/// One model is excepted, by design: `audit` counts such a value
+/// ([`COUNTS_UNUSABLE`]). No other model's zero-weight row takes anything
+/// from the row's features into its state -- no ring slot, warm-up row or likelihood
 /// -- so the refused row, which takes none of it, leaves that row's state.
 /// A blocked `ewridge` Gram, which holds a zero-weight row in its block, is
 /// the one place one does, and is tested in `ewridge`'s own file.
@@ -2735,6 +2753,9 @@ fn refuses_unusable_values<M: OnlineModel + Clone>(
     kind: &str,
     n_eff_of: Option<&dyn Fn(&M) -> f64>,
 ) {
+    if COUNTS_UNUSABLE.contains(&kind) {
+        return;
+    }
     let d = *d;
     // The same row at weight 0, and the rows after it from there.
     let mut reference = m.clone();
@@ -3276,6 +3297,41 @@ fn hmm_recovers_from_bounded_extremes() {
 }
 
 #[test]
+fn audit_predict_is_the_step() {
+    // No slots, so this holds `n_eff` and that `predict` moved nothing; the
+    // zero-weight rows are held to add no weight, which is all a weight does
+    // here (the values on them are counted, by design).
+    predict_is_the_step_without_the_step(|| Audit::new(audit_cfg()).unwrap(), 0, false);
+}
+
+fn audit_cfg() -> AuditCfg {
+    AuditCfg {
+        n_columns: K,
+        pairs: true,
+        distinct_cap: 16,
+        gap_cap: Some(5.0),
+        has_clock: true,
+    }
+}
+
+#[test]
+fn audit() {
+    // A record of the rows: no targets, no output slots, no decay. `n_eff`
+    // is every row's weight summed, so a clock gap changes nothing, and the
+    // values that are not usable are counted, not refused.
+    let m = Audit::new(audit_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 0);
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 0, "audit reports nothing per row");
+    let r = probe_with(m, 0, Some(&Audit::n_eff));
+    assert_eq!(r.kind, "audit");
+    assert_eq!(r.pred_len, 0);
+    assert_eq!(r.n_eff, vec![0.0, 1.0, 2.0, 40.0]);
+    assert_eq!(r.after_gap, r.before_gap + 1.0, "no decay over a gap");
+    assert!(r.roundtrips);
+}
+
+#[test]
 fn rcov_predict_is_the_step() {
     // No slots, so this holds `n_eff` and that `predict` moved nothing.
     predict_is_the_step_without_the_step(|| Rcov::new(rcov_cfg()).unwrap(), 0, false);
@@ -3510,6 +3566,10 @@ fn every_model_refuses_a_state_without_the_low_parts() {
             "bocpd",
             refuses_without_low_parts(|| Bocpd::new(bocpd_cfg()).unwrap(), &none),
         ),
+        (
+            "audit",
+            refuses_without_low_parts(|| Audit::new(audit_cfg()).unwrap(), &none),
+        ),
     ];
     // Each model that keeps a mean had parts to drop, so its refusal is of
     // a real state: a model that lost its means, or a renamed field, shows
@@ -3531,6 +3591,7 @@ fn every_model_refuses_a_state_without_the_low_parts() {
         "hmm",
         "corrchange",
         "bocpd",
+        "audit",
     ];
     for (name, (stripped, refused)) in &results {
         if keeps_means.contains(name) {
@@ -4509,6 +4570,11 @@ mod generated {
         #[test]
         fn deco(rows in stream(0, false), split in 0usize..60) {
             contract(|| Deco::new(deco_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn audit(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Audit::new(audit_cfg()).unwrap(), &rows, split)?;
         }
     }
 }

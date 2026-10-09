@@ -662,6 +662,7 @@ N_EFF_EXEMPT = {
     "seqtest": "an e-process does not forget",
     "bocpd": "the run-length posterior is what forgets",
     "rcov": "a realised covariance is a sum over a block",
+    "audit": "it counts every row, undecayed",
 }
 
 #: What a kind needs on this file's frame besides `MINIMAL`'s arguments:

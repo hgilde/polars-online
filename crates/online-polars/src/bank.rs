@@ -182,8 +182,9 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// `micro`'s centres are pairs; a file from before it is refit. **52 since
 /// task 217** (the same day): `ewridge`'s and `lasso`'s cross-moments keep
 /// their rows of positive weight, per target and over every row; a file
-/// from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 52;
+/// from before it is refit. **54 since task 223 (b)** (the same day): a
+/// spec may be an `audit`; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 54;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -4477,6 +4478,9 @@ use fields::{Source, slot_labels};
 
 mod learned;
 pub use learned::Learned;
+
+mod audit;
+pub use audit::AuditTable;
 
 /// Scatter one value per processed row of every chunk into a column:
 /// `run(chunk, n_rows)` is the field's `n_rows` values for that chunk in row

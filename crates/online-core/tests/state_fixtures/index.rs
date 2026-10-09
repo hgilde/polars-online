@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 52;
+pub const SCHEMA: u32 = 54;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");
@@ -118,6 +118,15 @@ pub mod bocpd_warming {
 pub mod bocpd {
     include!("bocpd.rs");
 }
+pub mod audit {
+    include!("audit.rs");
+}
+pub mod audit_scaled {
+    include!("audit_scaled.rs");
+}
+pub mod audit_exact {
+    include!("audit_exact.rs");
+}
 
 /// Every fixture, in the cases' order.
 pub const ALL: &[&crate::cases::Fixture] = &[
@@ -159,4 +168,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &corrchange_sequential::FIXTURE,
     &bocpd_warming::FIXTURE,
     &bocpd::FIXTURE,
+    &audit::FIXTURE,
+    &audit_scaled::FIXTURE,
+    &audit_exact::FIXTURE,
 ];

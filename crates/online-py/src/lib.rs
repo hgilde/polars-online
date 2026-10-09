@@ -642,6 +642,24 @@ impl PyModelBank {
             .map_err(PyValueError::new_err)
     }
 
+    /// An `audit` spec's counts (`Bank::audit`): `table` is `"columns"`,
+    /// `"pairs"` or `"clock"`, and `pooled` merges the groups into one.
+    #[pyo3(signature = (spec, group=None, table="columns", pooled=false))]
+    fn audit(
+        slf: &Bound<'_, Self>,
+        spec: usize,
+        group: Option<Vec<Option<String>>>,
+        table: &str,
+        pooled: bool,
+    ) -> PyResult<PyDataFrame> {
+        let this = slf.try_borrow().map_err(|_| busy("audit"))?;
+        let table = online_polars::AuditTable::parse(table).map_err(PyValueError::new_err)?;
+        this.inner
+            .audit(spec, keys(group).as_deref(), table, pooled)
+            .map(PyDataFrame)
+            .map_err(PyValueError::new_err)
+    }
+
     fn spec_names(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
         let this = slf.try_borrow().map_err(|_| busy("spec_names"))?;
         Ok(this.inner.specs().iter().map(|s| s.name.clone()).collect())

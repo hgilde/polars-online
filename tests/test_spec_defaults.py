@@ -34,7 +34,7 @@ RULES = {
     "the feature count plus one (1 for `holt`)": lambda k, intercept: k + 1,
     "3": lambda k, intercept: 3,
     "1": lambda k, intercept: 1,
-    "0, each having a gate of its own": lambda k, intercept: 0,
+    "0, each having a gate of its own or nothing to gate": lambda k, intercept: 0,
 }
 
 
@@ -90,8 +90,9 @@ def test_the_readme_min_weight_table_is_what_the_bank_resolves():
                 assert got == [want] * len(got) and got, (name, k, intercept, got, want)
                 checked += 1
     # 8 models by the first rule at 2 counts x 2 intercepts, 11 others at
-    # 2 counts, and `holt` and `seqtest`, which take no features, at one.
-    assert checked == 8 * 4 + 11 * 2 + 2
+    # 2 counts, and `holt`, `seqtest` and `audit`, which take no features
+    # (an audit's are its `columns`), at one.
+    assert checked == 8 * 4 + 11 * 2 + 3
 
 
 def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():

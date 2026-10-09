@@ -1034,6 +1034,13 @@ fn every_kind_refuses_or_loads_corruption(prefix_step: usize, flip_step: usize) 
             r#"["x0", "x1"]"#,
             false,
         ),
+        (
+            "audit",
+            r#"{"type": "audit", "pairs": true, "distinct_cap": 8}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            false,
+        ),
     ];
     let mut seen = Vec::new();
     for &(kind, model, targets, features, half_life) in kinds {
@@ -1048,9 +1055,10 @@ fn every_kind_refuses_or_loads_corruption(prefix_step: usize, flip_step: usize) 
         } else {
             ""
         };
-        // `seqtest` counts every learned row as one trial, and `rcov` sums
-        // returns: neither takes a weight that moves.
-        let weight = if matches!(kind, "seqtest" | "rcov") {
+        // `seqtest` counts every learned row as one trial, `rcov` sums
+        // returns and `audit` counts every row: none takes a weight that
+        // moves.
+        let weight = if matches!(kind, "seqtest" | "rcov" | "audit") {
             ""
         } else {
             r#", "weight": "w""#
