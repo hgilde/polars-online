@@ -691,6 +691,17 @@ class TestReadingTheMatrix:
         r2 = 1 - resid @ resid / (target @ target)
         assert v[2] == pytest.approx(1 / (1 - r2), rel=1e-3)
 
+    def test_an_exact_duplicate_has_an_infinite_vif(self):
+        """Task 223: a pseudo-inverse dropped the dependency's direction and
+        read an exact duplicate at 0.25, below the floor of 1."""
+        df, _ = stream(n=2000, k=3, seed=12)
+        df = df.with_columns(x2=pl.col("x0"))
+        g = fit(df).gram("m")[0]
+        v = pg.vif(g)
+        assert np.isinf(v[0]) and np.isinf(v[2]), v
+        assert 1.0 <= v[1] < 1.1, v
+        assert (pg.vif(g, features=["x0", "x1"]) < 1.1).all()
+
     def test_condition_names_the_columns_in_the_dependency(self):
         df, _ = stream(n=4000, k=3, seed=11, collinear=True)
         g = fit(df).gram("m")[0]
@@ -880,8 +891,10 @@ class TestItWorksOnEveryGramItIsGiven:
     def test_the_module_names_the_factorizations_it_uses(self):
         """Review round 4 (YB18): the module said numpy solves "with LAPACK's
         LU"; ``solve`` runs a symmetric eigendecomposition, ``coef_stats`` an
-        inverse and ``vif`` a pseudo-inverse."""
+        inverse and ``vif`` a pseudo-inverse; ``vif`` reads an
+        eigendecomposition since task 223."""
         doc = " ".join((pg.__doc__ or "").split())
         assert "LAPACK's LU" not in doc
-        for call in ("numpy.linalg.eigh", "numpy.linalg.inv", "numpy.linalg.pinv"):
+        assert "pinv" not in doc
+        for call in ("numpy.linalg.eigh", "numpy.linalg.inv"):
             assert call in doc, call

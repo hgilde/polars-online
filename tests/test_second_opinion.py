@@ -4389,3 +4389,26 @@ class TestEwRidgeSeCoefIsStatsmodels:
             np.testing.assert_allclose(np.asarray(se[i]) / sigma[i], want, rtol=1e-6)
             checked += 1
         assert checked == 3
+
+
+class TestVarianceInflation:
+    """``po.gram.vif`` against statsmodels' ``variance_inflation_factor``, which
+    regresses each column on the rest and the constant (task 223: the
+    ``collinear`` check reads it)."""
+
+    @pytest.mark.parametrize("noise", [1e-3, 0.1, 1.0])
+    def test_vif_is_statsmodels(self, noise):
+        from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+        rng = np.random.default_rng(61)
+        n = 1500
+        x = rng.normal(size=(n, 3)) * np.array([1.0, 4.0, 0.2]) + np.array([5.0, -1.0, 0.0])
+        x[:, 2] = x[:, 0] + noise * rng.normal(size=n)
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y": rng.normal(size=n)})
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"], lam=1.0)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        got = po.gram.vif(bank.gram("m")[0])
+        design = np.c_[np.ones(n), x]
+        want = [variance_inflation_factor(design, j) for j in (1, 2, 3)]
+        np.testing.assert_allclose(got, want, rtol=1e-7)

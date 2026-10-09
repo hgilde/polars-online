@@ -20,11 +20,10 @@ The arithmetic is the models' own, so :func:`solve` on a spec's Gram
 reproduces that spec's coefficients and :func:`lasso_path` reproduces the
 ``lasso`` model's path. It is not the same arithmetic to the last bit: the
 models factorize with ``faer``'s Cholesky, and here numpy runs LAPACK's
-symmetric eigendecomposition (``numpy.linalg.eigh``) in :func:`solve`, an
-inverse (``numpy.linalg.inv``) in :func:`coef_stats` and a pseudo-inverse
-(``numpy.linalg.pinv``) in :func:`vif`, which round differently in the last
-place or two. The tests hold the two to a relative tolerance, not to
-equality.
+symmetric eigendecomposition (``numpy.linalg.eigh``) in :func:`solve` and
+:func:`vif`, and an inverse (``numpy.linalg.inv``) in :func:`coef_stats`,
+which round differently in the last place or two. The tests hold the two to
+a relative tolerance, not to equality.
 
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
@@ -942,21 +941,33 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
 
     An array over ``features`` (the Gram's columns without the intercept by
     default: a constant is perfectly explained by any other constant, so its VIF
-    is undefined). A column the stream found constant reports ``inf``. Above about
-    10 the coefficient of that column is mostly noise; the fix is a ridge, a
-    subset, or a feature set the spec already knows how to fit beside the full
-    one.
+    is undefined). A column the stream found constant reports ``inf``, and so
+    does a column that is an exact linear combination of the others, where
+    ``R2_j`` is 1. Above about 10 the coefficient of that column is mostly
+    noise; the fix is a ridge, a subset, or a feature set the spec already
+    knows how to fit beside the full one.
+
+    The diagonal is read from the eigendecomposition ``R = V diag(d) V'`` as
+    ``VIF_j = sum_i V_ji^2 / d_i``. An eigenvalue at or below numpy's rank
+    tolerance, ``d_max * k * eps``, is a dependency: a column with a weight
+    past ``sqrt(eps)`` in its direction reports ``inf``. A pseudo-inverse
+    drops that direction instead and read an exact duplicate at 0.25, below
+    the floor of 1 a VIF cannot go under (docs/PLAN.md task 223).
     """
     np = _np()
     slots, _ = _feature_slots(g, features)
     r = correlation(g)[np.ix_(slots, slots)]
-    if not np.all(np.isfinite(r)):
-        out = np.full(len(slots), np.inf)
-        ok = [i for i in range(len(slots)) if np.isfinite(r[i]).all()]
-        if ok:
-            out[ok] = np.diag(np.linalg.pinv(r[np.ix_(ok, ok)]))
+    out = np.full(len(slots), np.inf)
+    ok = [i for i in range(len(slots)) if np.isfinite(r[i]).all()]
+    if not ok:
         return out
-    return np.diag(np.linalg.pinv(r))
+    d, v = np.linalg.eigh(r[np.ix_(ok, ok)])
+    null = d <= d.max() * len(ok) * np.finfo(float).eps
+    w = v**2
+    inflated = (w[:, ~null] / d[~null]).sum(axis=1)
+    inflated[w[:, null].sum(axis=1) > math.sqrt(np.finfo(float).eps)] = np.inf
+    out[ok] = inflated
+    return out
 
 
 def condition(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> dict[str, Any]:
