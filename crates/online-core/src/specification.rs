@@ -578,4 +578,333 @@ mod tests {
         assert_eq!(s.pairs[0][3], 0.0, "no pair across a break");
         assert!(s.ljung_box(true).is_none() && s.breusch_pagan(&[0]).is_none());
     }
+
+    /// The weighted least-squares slopes of `y` on `cols` over `rows` at
+    /// their present weights `w`, centred by hand and solved by faer's LU.
+    fn wls_slopes(cols: &[Vec<f64>], y: &[f64], w: &[f64]) -> Vec<f64> {
+        let k = cols[0].len();
+        let sw: f64 = w.iter().sum();
+        let mx: Vec<f64> = (0..k)
+            .map(|j| cols.iter().zip(w).map(|(c, w)| w * c[j]).sum::<f64>() / sw)
+            .collect();
+        let my = y.iter().zip(w).map(|(y, w)| w * y).sum::<f64>() / sw;
+        let mut a = vec![0.0; k * k];
+        let mut b = vec![0.0; k];
+        for ((c, y), w) in cols.iter().zip(y).zip(w) {
+            for i in 0..k {
+                b[i] += w * (c[i] - mx[i]) * (y - my);
+                for j in 0..k {
+                    a[i * k + j] += w * (c[i] - mx[i]) * (c[j] - mx[j]);
+                }
+            }
+        }
+        crate::oracle::solve(&a, &b)
+    }
+
+    /// Wald's statistic for the slopes at `pick` (positions in `z = (1,
+    /// cols)`) against 0, `V` the sandwich of the regression with residual
+    /// `u` and Newey and West's meat at `lags` lags at Bartlett's weights,
+    /// by its definition over every folded row, inverted by faer's LU.
+    fn hac_wald(
+        cols: &[Vec<f64>],
+        u: &[f64],
+        w: &[f64],
+        lags: usize,
+        pick: &[usize],
+        d: &[f64],
+    ) -> f64 {
+        let n = cols.len();
+        let p = cols[0].len() + 1;
+        let z: Vec<Vec<f64>> = cols
+            .iter()
+            .map(|c| std::iter::once(1.0).chain(c.iter().copied()).collect())
+            .collect();
+        let (mut b, mut m) = (vec![0.0; p * p], vec![0.0; p * p]);
+        for t in 0..n {
+            for i in 0..p {
+                for j in 0..p {
+                    b[i * p + j] += w[t] * z[t][i] * z[t][j];
+                }
+            }
+            for l in 0..=lags.min(t) {
+                let s = t - l;
+                let k = 1.0 - l as f64 / (lags as f64 + 1.0);
+                for i in 0..p {
+                    for j in 0..p {
+                        let a = k * w[t] * u[t] * z[t][i] * w[s] * u[s] * z[s][j];
+                        m[i * p + j] += a;
+                        if l > 0 {
+                            m[j * p + i] += a;
+                        }
+                    }
+                }
+            }
+        }
+        let bi = crate::oracle::inverse(&b);
+        let mut v = vec![0.0; p * p];
+        for i in 0..p {
+            for j in 0..p {
+                for a in 0..p {
+                    for c in 0..p {
+                        v[i * p + j] += bi[i * p + a] * m[a * p + c] * bi[c * p + j];
+                    }
+                }
+            }
+        }
+        let sub: Vec<f64> = pick
+            .iter()
+            .flat_map(|&i| pick.iter().map(|&j| v[i * p + j]).collect::<Vec<_>>())
+            .collect();
+        let x = crate::oracle::solve(&sub, d);
+        x.iter().zip(d).map(|(a, b)| a * b).sum()
+    }
+
+    /// Under a horizon, Breusch and Pagan's and RESET's statistics are
+    /// Wald's tests with Newey and West's variance (module docs), by their
+    /// definitions on every folded row: the slopes of `e²` on `x` and of `e`
+    /// on `(q, q², q³)`, `q` the prediction about the first one scored, each
+    /// sandwich's meat built from the residual under the null -- `e²` less
+    /// its EW mean before the row, `e − ē − b (q − q̄)` from the EW fit on
+    /// `q` before the row, and 0 on the first row, which has none before it
+    /// -- under a decay, uneven weights, zeros, a row that is not a number,
+    /// and residuals that carry a lag.
+    #[test]
+    fn breusch_pagan_and_reset_under_a_horizon_are_their_definitions() {
+        let (nw, lam) = (2usize, 0.99);
+        let mut s = Specification::new(2, 0, 1, nw);
+        let mut st = 19u64;
+        // (x, q, e, present weight, BP's null residual, RESET's), folded
+        // rows only.
+        type Row = ([f64; 2], f64, f64, f64, f64, f64);
+        let mut rows: Vec<Row> = Vec::new();
+        let mut first: Option<f64> = None;
+        let mut prev = 0.0;
+        for i in 0..260 {
+            let x = [lcg(&mut st) * 2.0 + 5.0, lcg(&mut st)];
+            let p = 40.0 + x[0] - 3.0 * x[1] + lcg(&mut st);
+            let shock = (0.5 + (x[0] - 5.0).abs()) * lcg(&mut st);
+            let e = 0.5 * prev + shock + (p - 40.0).powi(2);
+            prev = e;
+            let w = if i % 17 == 4 {
+                0.0
+            } else {
+                0.5 + lcg(&mut st) + 0.5
+            };
+            let e_in = if i % 29 == 11 { f64::NAN } else { e };
+            s.update(&x, p, e_in, lam, w);
+            rows.iter_mut().for_each(|r| r.3 *= lam);
+            if w > 0.0 && e_in.is_finite() {
+                let q = p - *first.get_or_insert(p);
+                let (u, r) = if rows.is_empty() {
+                    (0.0, 0.0)
+                } else {
+                    let sw: f64 = rows.iter().map(|r| r.3).sum();
+                    let mean =
+                        |f: &dyn Fn(&Row) -> f64| rows.iter().map(|r| r.3 * f(r)).sum::<f64>() / sw;
+                    let (e2, mq, me) = (mean(&|r| r.2 * r.2), mean(&|r| r.1), mean(&|r| r.2));
+                    let var_q = mean(&|r| (r.1 - mq).powi(2));
+                    let cov = mean(&|r| (r.1 - mq) * (r.2 - me));
+                    let b = if var_q > 0.0 { cov / var_q } else { 0.0 };
+                    (e * e - e2, e - me - b * (q - mq))
+                };
+                rows.push((x, q, e, w, u, r));
+            }
+            if i < 30 || i % 37 != 0 {
+                continue;
+            }
+            let w: Vec<f64> = rows.iter().map(|r| r.3).collect();
+            let xs: Vec<Vec<f64>> = rows.iter().map(|r| r.0.to_vec()).collect();
+            let e2: Vec<f64> = rows.iter().map(|r| r.2 * r.2).collect();
+            let u: Vec<f64> = rows.iter().map(|r| r.4).collect();
+            let gamma = wls_slopes(&xs, &e2, &w);
+            let bp = hac_wald(&xs, &u, &w, nw, &[1, 2], &gamma);
+            let got = s.breusch_pagan(&[0, 1]).unwrap();
+            assert!((got - bp).abs() < 1e-7 * bp, "row {i}: {got} vs {bp}");
+            let qs: Vec<Vec<f64>> = rows
+                .iter()
+                .map(|r| vec![r.1, r.1 * r.1, r.1.powi(3)])
+                .collect();
+            let es: Vec<f64> = rows.iter().map(|r| r.2).collect();
+            let rs: Vec<f64> = rows.iter().map(|r| r.5).collect();
+            let beta = wls_slopes(&qs, &es, &w);
+            let want = hac_wald(&qs, &rs, &w, nw, &[2, 3], &beta[1..]);
+            let got = s.reset().unwrap();
+            assert!((got - want).abs() < 1e-7 * want, "row {i}: {got} vs {want}");
+        }
+        // The meat is built under the null, so the curvature it carries
+        // widens `V`: RESET reads 2.65 here, Breusch and Pagan 32.
+        assert!(
+            s.breusch_pagan(&[0, 1]).unwrap() > 20.0,
+            "a spread the fit missed"
+        );
+        assert!(s.has_shape(2, 0, 1, nw));
+    }
+
+    /// RESET reads the prediction about the first one scored (module docs),
+    /// so its powers keep their spread at any level: predictions 10,000
+    /// above the same ones give the same statistic, plain and under a
+    /// horizon.
+    #[test]
+    fn reset_does_not_see_the_predictions_level() {
+        for nw in [0, 2] {
+            let (mut low, mut high) = (
+                Specification::new(1, 0, 1, nw),
+                Specification::new(1, 0, 1, nw),
+            );
+            let mut st = 31u64;
+            for _ in 0..200 {
+                let x = [lcg(&mut st)];
+                let p = 1.0 + 2.0 * x[0];
+                let e = 0.4 * (p - 1.0).powi(2) + 0.3 * lcg(&mut st);
+                low.update(&x, p, e, 0.995, 1.0);
+                high.update(&x, p + 1e4, e, 0.995, 1.0);
+            }
+            let (a, b) = (low.reset().unwrap(), high.reset().unwrap());
+            assert!(a > 10.0 && (a - b).abs() < 1e-6 * a, "nw {nw}: {a} vs {b}");
+        }
+    }
+
+    /// The shape a restored set must hold, one part broken at a time: the
+    /// configuration it was made for, the Newey-West sandwiches there or
+    /// not as `nw` says (none at `nw = 0`, not even one at no lags), each
+    /// sum's size, the ring's depth, the moments'
+    /// `Σω²`, and every number finite. A set with no lag skipped holds it
+    /// with its ring full.
+    #[test]
+    fn each_part_of_the_shape_is_checked_alone() {
+        let mut s = Specification::new(2, 1, 2, 3);
+        let mut plain = Specification::new(2, 0, 2, 0);
+        let mut st = 37u64;
+        for _ in 0..20 {
+            let x = [lcg(&mut st), lcg(&mut st)];
+            let (p, e) = (lcg(&mut st), lcg(&mut st));
+            s.update(&x, p, e, 0.95, 1.0);
+            plain.update(&x, p, e, 0.95, 1.0);
+        }
+        assert_eq!((s.ring.len(), plain.ring.len()), (3, 2));
+        assert!(s.has_shape(2, 1, 2, 3) && plain.has_shape(2, 0, 2, 0));
+        assert!(!s.has_shape(2, 1, 2, 4), "a sandwich at other lags");
+        assert!(!s.has_shape(2, 1, 2, 0) && !plain.has_shape(2, 0, 2, 3));
+        let mut stray = plain.clone();
+        stray.het_hac = Some(crate::Sandwich::new(2, true, 0));
+        assert!(!stray.has_shape(2, 0, 2, 0), "a sandwich at no lags");
+        type Edit<'a> = (&'a str, &'a dyn Fn(&mut Specification));
+        let broken: [Edit; 14] = [
+            ("het sandwich", &|s| s.het_hac = None),
+            ("reset sandwich", &|s| s.reset_hac = None),
+            ("het sandwich's shape", &|s| {
+                s.het_hac = Some(crate::Sandwich::new(1, true, 3));
+            }),
+            ("skip", &|s| s.skip = 2),
+            ("lags", &|s| s.lags = 1),
+            ("pairs", &|s| {
+                s.pairs.pop();
+            }),
+            ("ring", &|s| s.ring.push_back(0.0)),
+            ("het", &|s| s.het = crate::EwCov::new(2)),
+            ("reset", &|s| s.reset = crate::EwCov::new(3)),
+            ("het's Σω²", &|s| {
+                let (m, c, w) = (
+                    s.het.means().to_vec(),
+                    s.het.comoments().to_vec(),
+                    s.het.n_eff(),
+                );
+                s.het.set_moments(&m, &c, w, None);
+            }),
+            ("reset's Σω²", &|s| {
+                let (m, c, w) = (
+                    s.reset.means().to_vec(),
+                    s.reset.comoments().to_vec(),
+                    s.reset.n_eff(),
+                );
+                s.reset.set_moments(&m, &c, w, None);
+            }),
+            ("w2 NaN", &|s| s.w2 = f64::NAN),
+            ("pair inf", &|s| s.pairs[2][1] = f64::INFINITY),
+            ("ring NaN", &|s| s.ring[1] = f64::NAN),
+        ];
+        for (what, edit) in broken {
+            let mut t = s.clone();
+            edit(&mut t);
+            assert!(!t.has_shape(2, 1, 2, 3), "{what}");
+        }
+    }
+
+    /// Each statistic is `None`, never a number read from nothing: Ljung
+    /// and Box's with no lag tested, while Kish's size has not passed the
+    /// largest lag though the rows have, with residuals of no spread, and
+    /// once the memory has faded past what a double holds of `Σω²`;
+    /// Breusch and Pagan's with no feature, at Kish's size of one more than
+    /// the features, and with squared residuals of no spread; RESET's with
+    /// a prediction on two values, whose powers have one direction between
+    /// them, and with a residual that is the prediction's line, which
+    /// leaves the powers nothing to explain.
+    #[test]
+    fn each_statistic_refuses_what_it_cannot_read() {
+        let mut st = 41u64;
+        let mut feed = |s: &mut Specification, rows: &[f64], e: &dyn Fn(f64, usize) -> f64| {
+            for (i, &w) in rows.iter().enumerate() {
+                let x = [lcg(&mut st), lcg(&mut st)];
+                let p = lcg(&mut st);
+                s.update(&x, p, e(p, i), 1.0, w);
+            }
+        };
+        let noise: Vec<f64> = {
+            let mut st = 43u64;
+            (0..64).map(|_| lcg(&mut st)).collect()
+        };
+        let e = |_: f64, i: usize| noise[i];
+        let mut none = Specification::new(2, 0, 0, 0);
+        feed(&mut none, &[1.0; 30], &e);
+        assert!(
+            none.ljung_box(false).is_none() && none.ljung_box(true).is_none(),
+            "no lag"
+        );
+        // Five rows past two lags, one carrying nearly all the weight.
+        let mut heavy = Specification::new(2, 0, 2, 0);
+        feed(&mut heavy, &[1.0, 1.0, 1.0, 1.0, 100.0], &e);
+        assert!(heavy.n_kish().unwrap() < 2.0 && heavy.pairs[1][3] > 0.0);
+        assert!(
+            heavy.ljung_box(false).is_none() && heavy.ljung_box(true).is_none(),
+            "Kish"
+        );
+        let mut flat = Specification::new(2, 0, 2, 0);
+        feed(&mut flat, &[1.0; 30], &|_, _| 0.5);
+        assert!(flat.ljung_box(true).is_none(), "no spread");
+        assert!(flat.breusch_pagan(&[0, 1]).is_none(), "e² of no spread");
+        let mut faded = Specification::new(2, 0, 2, 0);
+        feed(&mut faded, &[1.0; 30], &e);
+        assert!(faded.ljung_box(true).is_some());
+        faded.age(1e-170);
+        assert!(faded.w > 0.0 && faded.w2 == 0.0, "Σω² underflows first");
+        assert!(
+            faded.ljung_box(true).is_none() && faded.ljung_box(false).is_none(),
+            "faded"
+        );
+        let mut bp = Specification::new(2, 0, 1, 0);
+        feed(&mut bp, &[1.0; 3], &e);
+        assert!(bp.breusch_pagan(&[]).is_none(), "no feature");
+        assert!(
+            bp.breusch_pagan(&[0, 1]).is_none(),
+            "Kish's size 3, two features"
+        );
+        feed(&mut bp, &[1.0], &e);
+        assert!(bp.breusch_pagan(&[0, 1]).is_some(), "Kish's size 4");
+        let mut two = Specification::new(1, 0, 1, 0);
+        for (i, &e) in noise.iter().enumerate().take(40) {
+            let p = if i % 2 == 0 { 1.0 } else { 2.0 };
+            two.update(&[lcg(&mut st)], p, e, 1.0, 1.0);
+        }
+        assert!(two.reset().is_none(), "a prediction on two values");
+        let mut line = Specification::new(1, 0, 1, 0);
+        for i in 0..40 {
+            let p = (i % 7) as f64;
+            line.update(&[lcg(&mut st)], p, 2.0 * p, 1.0, 1.0);
+        }
+        assert_eq!(Specification::r2(&line.reset, &[0], 3), Some(1.0));
+        assert!(
+            line.reset().is_none(),
+            "a residual on the prediction's line"
+        );
+    }
 }
