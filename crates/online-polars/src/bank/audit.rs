@@ -47,7 +47,8 @@ impl Bank {
     /// `skew`, `kurtosis`, `min`, `max`, `median`, `mad`, `robust_z`,
     /// `distinct` (null past the cap), `top_value`, `top_count`,
     /// `second_count`, `count_error`, `longest_run`, `equal_prev`,
-    /// `adjacent`, `equal_by_chance`, `autocorr`, `unit_root_t`. `Pairs`: `group`, `column_a`,
+    /// `adjacent`, `equal_by_chance`, `min_change`, `min_change_count`,
+    /// `autocorr`, `unit_root_t`. `Pairs`: `group`, `column_a`,
     /// `column_b`, `count`, `corr`, `equal`. `Clock`: `group`, `steps`,
     /// `duplicates`, `gaps` (null without `gap_cap`), `regular`,
     /// `step_mean`, `step_std`, `step_cv`, `max_step`; no rows for a stream
@@ -161,6 +162,8 @@ fn columns_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Colu
         Column::new("equal_prev".into(), int(|r| r.equal_prev)),
         Column::new("adjacent".into(), int(|r| r.adjacent)),
         Column::new("equal_by_chance".into(), num(|r| r.equal_by_chance)),
+        Column::new("min_change".into(), num(|r| r.min_change)),
+        Column::new("min_change_count".into(), int(|r| r.min_change_count)),
         Column::new("autocorr".into(), num(|r| r.autocorr)),
         Column::new("unit_root_t".into(), num(|r| r.unit_root_t)),
     ]

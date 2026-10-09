@@ -475,7 +475,8 @@ fn held(v: &rmpv::Value) -> usize {
 /// clock's regular steps, and per column its lag pairs and a digest with
 /// both centroids and values waiting; its counters' two forms, and its
 /// moments over a power of two (`audit_scaled`), are
-/// `an_audits_counters_are_written_in_both_forms`'.
+/// `an_audits_counters_are_written_in_both_forms`'. Its smallest change per
+/// column and the changes at it (59, task 233).
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
@@ -568,8 +569,20 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
         }
     }
     type Listed<'a> = (&'a str, &'a [&'a str], &'a [&'a str]);
-    const LISTED: [Listed; 6] = [
+    const LISTED: [Listed; 8] = [
         ("kmeans", &["model", "KMeans", "clusters"], &["c_lo"]),
+        // Schema 59 (task 233, C-1): each column's smallest change and the
+        // changes at it, continuous values and a few values both.
+        (
+            "audit",
+            &["model", "Audit", "columns"],
+            &["min_change_count"],
+        ),
+        (
+            "audit_exact",
+            &["model", "Audit", "columns"],
+            &["min_change_count"],
+        ),
         ("micro", &["model", "Micro", "mc"], &["s", "c_lo"]),
         (
             "audit",

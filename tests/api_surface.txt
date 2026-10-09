@@ -34,7 +34,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 57
+  schema_version = 59
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -1100,6 +1100,8 @@
     equal_prev: UInt64
     adjacent: UInt64
     equal_by_chance: Float64
+    min_change: Float64
+    min_change_count: UInt64
     autocorr: Float64
     unit_root_t: Float64
   ModelBank.audit(table='pairs'):
@@ -1146,6 +1148,8 @@
     equal_prev: UInt64
     adjacent: UInt64
     equal_by_chance: Float64
+    min_change: Float64
+    min_change_count: UInt64
     autocorr: Float64
     unit_root_t: Float64
   po.spec.output_index():

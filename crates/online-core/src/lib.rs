@@ -643,7 +643,11 @@ pub use window::{
 ///   score record keeps the row's own error inflation after its prediction
 ///   (and its interval's radius) where a diagnostic reads one. Pre-1.0 no
 ///   loader is written.
-pub const SCHEMA_VERSION: u32 = 57;
+/// - 59 (2026-10-09, task 233, review round 6, C-1): `audit` keeps, per
+///   column, its smallest nonzero change between consecutive rows and the
+///   changes at it, which `frozen` weighs its repeats against. Pre-1.0 no
+///   loader is written. (58 is task 232's, built beside it.)
+pub const SCHEMA_VERSION: u32 = 59;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -766,7 +770,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 57;
+pub const MIN_SCHEMA_VERSION: u32 = 59;
 
 #[cfg(test)]
 mod tests {

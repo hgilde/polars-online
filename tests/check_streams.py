@@ -496,6 +496,38 @@ def _model_frame(make: Callable[[int], Any]) -> Callable[[int], pl.DataFrame]:
     return lambda seed: make(seed)[0]
 
 
+def _persistent_discrete(seed: int) -> pl.DataFrame:
+    """Columns that hold their value for many rows and move on a coarse grid,
+    each one a clean feed (review 6, C-1: every one read as ``frozen``): the
+    hour of day on minute data, a two-state regime that stays with
+    probability 0.99, a price in ticks of 0.01 that moves by 0.4 of a tick a
+    row and reverts, a spread in whole ticks, an AR(0.9) rounded to
+    integers, and a temperature in whole degrees on minute data. Ten
+    thousand rows, a week of minutes, so that the hour wraps often enough to
+    be told from a random walk; the tick price reverts so that it is not
+    one."""
+    n = 10_000
+    rng = np.random.default_rng(seed)
+    i = np.arange(n)
+    stay = rng.random(n) < 0.99
+    regime = np.zeros(n)
+    for j in range(1, n):
+        regime[j] = regime[j - 1] if stay[j] else 1.0 - regime[j - 1]
+    return pl.DataFrame(
+        {
+            "t": i.astype(float),
+            "hour": ((i // 60) % 24).astype(float),
+            "regime": regime,
+            "tick_price": np.round((100.0 + 0.004 * _ar(rng, 0.95, n)) / 0.01) * 0.01,
+            "spread_ticks": np.clip(np.round(1.0 + 0.42 * _ar(rng, 0.8, n)), 1.0, None),
+            "rounded_ar": np.round(_ar(rng, 0.9, n)),
+            "temperature": np.round(
+                15.0 + 5.0 * np.sin(2 * np.pi * i / 1440) + 0.65 * _ar(rng, 0.9, n)
+            ),
+        }
+    )
+
+
 #: Clean shapes for an audit: ``CLEAN``'s five, and persistent columns that
 #: are not random walks, bounded, integer and rounded values, and a clock with
 #: jitter. The audit reads every column of each frame.
@@ -507,6 +539,7 @@ AUDIT_CLEAN: dict[str, Callable[[int], pl.DataFrame]] = {
     "poisson_50": _clean(lambda r: r.poisson(50, size=(N, 3)).astype(float)),
     "rounded": _clean(lambda r: np.round(r.normal(100.0, 1.0, size=(N, 3)), 2)),
     "jittered_clock": _jittered,
+    "persistent_discrete": _persistent_discrete,
 }
 
 

@@ -137,7 +137,7 @@ present on a third of the rows by design.
 **Every threshold was measured, both for how often it finds a planted
 problem and for how often it fires on clean data.** On five clean shapes
 over ten seeds and fifteen specs, no model-side check gave an error or a
-warning in 750 runs. On eleven clean shapes over ten seeds, an audit of
+warning in 750 runs. On twelve clean shapes over ten seeds, an audit of
 every column gave none either. Each planted problem was found on every
 seed, for every spec it harms, and for no other. The docstring of
 [`ModelBank.check`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.check)
@@ -438,15 +438,38 @@ constant over a stretch, which is the same problem in time.
 |---|---|---|
 | `constant` | error | a target took one value on every row: there is nothing to learn |
 | `constant` | warning | a feature, or an audited column, took one value on every row |
-| `frozen` | warning | from an audit: the share of rows equal to the row before exceeds by 0.05 what independent rows with the column's value frequencies would give, or a run of one value is 10 rows or more and 4 times the longest run that independent rows would show |
+| `frozen` | warning | from an audit: the rows equal to the row before, less those its values' frequencies give by chance, outnumber the changes at the column's smallest step by five standard errors, in a column whose smallest step is less than half its moves |
 | `low_support` | warning | more than half of the smallest coefficient comes from the ridge rather than the data; not repeated for a column already found constant, collinear or shrunk by the ridge |
 | `solve_failures` | warning | a solve needed jitter, or failed and kept the previous fit: constant or collinear features, or too few rows for their number. For `lasso` (`info`) its coordinate descent ran out of sweeps more than 10 times; clean data runs out up to 7 times on its first rows |
 
-`frozen`'s thresholds were set by measurement. A feed stopped for the last 10% of the
-rows was found, as were a forward fill every 2, 3, 5 or 10 rows and 10 rows
-stuck in the middle. Five rows stuck were not. Clean columns repeated the
-row before 0.6 points past chance at most (Poisson counts), and ran 4 rows
-at most.
+**How `frozen` tells a stale feed from a column that holds still.** A
+column that moves smoothly, seen at its own resolution, repeats the row
+before about half as often as it moves by its smallest step, either way: a
+change of 0 is one more step of the grid its values sit on. A stale feed
+adds changes of 0 that the column has no step for, an atom at zero. So the
+audit keeps, per column, its smallest nonzero change and how many changes
+sit at it, beside the rows equal to the row before. `frozen` fires when
+the repeats, less the ones its values' frequencies give by chance (a
+sentinel on a fifth of the rows repeats on 4% of them), outnumber the
+changes at the smallest step by five standard errors:
+`(repeats − chance − at_step) / sqrt(repeats + at_step) ≥ 5`.
+
+A column whose smallest step is half its moves or more moves on a coarse
+grid. The hour of the day on minute data, a regime that stays put, a price
+in ticks, a spread in whole ticks, a count, a temperature in whole degrees:
+each holds still for long stretches as a matter of course, its repeats are
+its own steps, and no atom can be told there. So `frozen` says nothing of
+such a column, a stale one included. Nor can it tell a stale feed from a
+column that is still for long stretches and moves finely in between. A
+price that moved by a tenth of a tick a row for 200 rows and by three ticks
+a row for the next 200 read as frozen on ten seeds of ten.
+
+The thresholds were set by measurement, over ten seeds. A feed stopped for
+the last 10% of the rows was found, at 12.6 or more, as were a forward fill
+every 2, 3, 5 or 10 rows, at 31.6 or more, and 50 rows stuck in the middle,
+at 6.7. Thirty rows stuck were found, at 5.1, and 25 were not. Clean
+columns read 0.6 at most (values rounded to two decimals), and the six
+coarse-grid columns above were left untested, as they should be.
 
 **Why `rls` winds up on a frozen feature.** `rls` keeps `A`, the decayed
 sum of each row's `z zᵀ` (`z` is the intercept's 1 and the features), and
@@ -533,16 +556,17 @@ print(f"ewridge, left alone:  largest |slope| while held {slope:.3g}, rms error 
 ```
 
 ```text
-warning frozen audit x1 0.857
+warning frozen audit x1 7.79
 info heavy_tails audit x1 16.4
 rls, left alone:      largest |slope| while held 5.4e+13, rms error after 3.7e+12
 rls, stale rows null: largest |slope| while held 0.481, rms error after 0.234
 ewridge, left alone:  largest |slope| while held 0.481, rms error after 0.247
 ```
 
-The audit finds `x1` repeating the row before on 86% of the rows. Most of
-its values are one value, so its robust spread is zero and its largest
-robust z is undefined (`None`). `heavy_tails` fires on the column's
+The audit finds `x1` repeating the row before on 86% of the rows, 7.79
+standard errors past what chance and its smallest step give. Most of its
+values are one value, so its robust spread is zero and its largest robust
+z is undefined (`None`). `heavy_tails` fires on the column's
 kurtosis, 16.4, and reports it as its value. Left alone, `rls`'s slope on `x1`, 0.5 in the
 data, wandered past 1e13 while the feed was stopped. When `x1` moved
 again, its predictions were off by trillions. With the stale rows made

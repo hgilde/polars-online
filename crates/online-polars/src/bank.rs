@@ -191,8 +191,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// tests and the parts after them; a file from before it is refit. **57
 /// since review round 6** (2026-10-09, B-5 and A-6): the tails keep central
 /// sums, and a held row's score record its error inflation; a file from
-/// before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 57;
+/// before it is refit. **59 since task 233** (the same day, C-1): an
+/// audit keeps each column's smallest change and the changes at it; a file
+/// from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 59;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

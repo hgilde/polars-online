@@ -123,14 +123,20 @@ SENTINEL_SHARE = 0.01
 #: ... when its count is at least this many times the next value's upper
 #: bound, the next count plus the counters' error.
 SENTINEL_RATIO = 5.0
-#: The share of rows equal to the row before, beyond what independent rows
-#: of the column's frequencies give, at or past which a column is frozen
-#: (``frozen``) ...
-FROZEN_EXCESS = 0.05
-#: ... or a run of one value this many times the longest run independent
-#: rows would show, and at least ``FROZEN_RUN_MIN`` rows.
-FROZEN_RUN_FACTOR = 4.0
-FROZEN_RUN_MIN = 10
+#: ``frozen`` weighs the rows equal to the row before, ``repeats``, against
+#: the changes at the column's smallest nonzero step, ``at_step`` (review 6,
+#: C-1). A column that moves smoothly at that resolution repeats about half
+#: as often as it takes the step either way; a stale feed adds repeats it
+#: has no step for. Less the repeats its values' frequencies give by chance,
+#: ``chance = adjacent * equal_by_chance``, a column is frozen when
+#: ``(repeats - chance - at_step) / sqrt(repeats + at_step)``, a standard
+#: score of the repeats against the step's count, is this many or more ...
+FROZEN_SIGMAS = 5.0
+#: ... and its smallest step is less than this share of its moves. A column
+#: whose smallest step is half its moves or more moves on a coarse grid (an
+#: hour, a regime, a price in ticks, a count), where a repeat is one of its
+#: steps and an atom cannot be told.
+FROZEN_GRID = 0.5
 #: At most this many distinct values over at least ``FEW_VALUES_ROWS`` usable
 #: rows: a category or a flag stored as numbers (``few_values``).
 FEW_VALUES = 10
@@ -998,26 +1004,34 @@ def _audit_column(r: dict[str, Any], add: Any) -> None:
     distinct = r["distinct"]
     few = distinct is not None and distinct <= FEW_VALUES
     adjacent = r["adjacent"]
-    repeats = r["equal_prev"] / adjacent if adjacent else 0.0
-    chance = r["equal_by_chance"] or 0.0
-    top = r["top_count"] / n
-    expected_run = math.log(n) / -math.log(top) if 0.0 < top < 1.0 else 1.0
-    run_limit = max(FROZEN_RUN_MIN, FROZEN_RUN_FACTOR * expected_run)
-    frozen = repeats - chance >= FROZEN_EXCESS or r["longest_run"] >= run_limit
+    # The zero-change atom (review 6, C-1): the repeats against the changes
+    # at the smallest step, where the column moves finely enough to tell.
+    # A value the column holds often repeats by chance too, ``sum p_v^2`` of
+    # the rows (a sentinel on a fifth of them, 4%), and is no atom of time.
+    repeats, at_step = r["equal_prev"], r["min_change_count"]
+    chance = adjacent * (r["equal_by_chance"] or 0.0)
+    moves = adjacent - repeats
+    frozen = False
+    if moves > 0 and at_step < FROZEN_GRID * moves:
+        z = (repeats - chance - at_step) / math.sqrt(repeats + at_step)
+        frozen = z >= FROZEN_SIGMAS
     if frozen:
         add(
             "warning",
             "frozen",
             g,
             col,
-            repeats,
-            chance + FROZEN_EXCESS,
-            f"column {col!r} repeats the row before on {repeats:.1%} of the rows of "
-            f"{who}, where its values' frequencies give {chance:.1%}, and holds one "
-            f"value for {r['longest_run']} rows at most: a feed that stopped, or a "
-            "forward fill; null the stale rows, or join on the time each value was "
-            "observed",
+            z,
+            FROZEN_SIGMAS,
+            f"column {col!r} repeats the row before on {repeats} rows of {who} "
+            f"({repeats / adjacent:.1%}, {chance:.0f} of them by chance) and moves "
+            f"by its smallest step ({_fmt(r['min_change'])}) on {at_step}, where a "
+            "column that moves smoothly repeats about half as often as it takes "
+            f"that step; it holds one value for {r['longest_run']} rows at most: a "
+            "feed that stopped, or a forward fill; null the stale rows, or join on "
+            "the time each value was observed",
         )
+    top = r["top_count"] / n
     bound = max(r["second_count"] + r["count_error"], 1)
     if not (few or frozen) and top >= SENTINEL_SHARE and r["top_count"] >= SENTINEL_RATIO * bound:
         add(

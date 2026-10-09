@@ -142,6 +142,23 @@ class TestEveryRowIsRead:
         m = summary.filter(spec="m").row(0, named=True)
         assert m["rows_learned"] == N - nulls - nans and m["n_coef"] == 2, m
 
+    def test_the_smallest_change_is_numpys(self):
+        """``min_change`` and ``min_change_count`` (review 6, C-1), held to
+        numpy's differences of consecutive usable rows: over ``a``, whose
+        nulls and NaNs break the chain, the smallest nonzero ``|diff|``,
+        once; over ``b``, five integers, a step of 1, as often as numpy
+        counts it."""
+        frame = _frame()
+        cols = _fed(_spec(), frame).audit()
+        a, b = cols.row(0, named=True), cols.row(1, named=True)
+        x = frame["a"].fill_nan(None).to_numpy()
+        d = np.abs(np.diff(x))
+        d = d[np.isfinite(d) & (d > 0)]
+        assert (a["min_change"], a["min_change_count"]) == (d.min(), 1)
+        db = np.abs(np.diff(frame["b"].to_numpy()))
+        assert (b["min_change"], b["min_change_count"]) == (1.0, int((db == 1).sum()))
+        assert b["equal_prev"] == int((db == 0).sum())
+
     def test_predict_counts_nothing(self):
         frame = _frame()
         bank = _fed(_spec(), frame.head(1000))

@@ -80,6 +80,11 @@ def audit(
            usable), beside ``sum p_v^2`` over the values' shares, which is
            what independent rows would give. A row that is not usable ends
            a run
+       * - the smallest change
+         - the smallest nonzero change between two consecutive usable rows,
+           and how many changes sit at it, to the rounding two changes of
+           one step of a grid differ by: whether the column's repeats are
+           one of its steps or an atom a stale feed adds
        * - persistence
          - the lag-1 autocorrelation, the correlation of each usable row with
            the usable row before it, and the Dickey-Fuller statistic of the

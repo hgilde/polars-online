@@ -207,6 +207,66 @@ fn runs_end_at_a_change_or_a_value_that_is_not_usable() {
     assert_eq!(c.distinct, Some(4), "1, 2, 0 and 5: -0 is 0");
 }
 
+/// The smallest nonzero change between consecutive usable rows, and how
+/// many changes sit at it (review 6, C-1): over a decimal grid, held to the
+/// grid's integers, where two changes of one step differ in their doubles
+/// by the rounding of the values; over continuous values, the smallest
+/// difference, once. A row that is not usable has no change into it, nor
+/// the row after it.
+#[test]
+fn the_smallest_change_and_its_count_are_their_definitions() {
+    let mut r = SplitMix64::new(3);
+    // A price on a grid of 0.01 near 1,000, walking by whole ticks.
+    let mut ticks: i64 = 100_000;
+    let mut grid = Vec::new();
+    for _ in 0..5000 {
+        ticks += (r.next_u64() % 5) as i64 - 2;
+        grid.push(ticks);
+    }
+    let mut m = Audit::new(cfg(2)).unwrap();
+    let mut cont = Vec::new();
+    for (i, &t) in grid.iter().enumerate() {
+        let c = if i % 97 == 50 { NULL } else { normal(&mut r) };
+        cont.push(c);
+        m.step(&[t as f64 * 0.01, c], &[], 1.0, 1.0);
+    }
+    // The oracle, in integers: every step is -2..2 ticks.
+    let steps: Vec<i64> = grid.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+    let smallest = *steps.iter().filter(|&&s| s > 0).min().unwrap();
+    let at = steps.iter().filter(|&&s| s == smallest).count() as u64;
+    let c = m.column(0);
+    assert_eq!(smallest, 1);
+    assert_eq!(
+        c.min_change_count, at,
+        "every one-tick step, whatever its double"
+    );
+    assert!(close(c.min_change, 0.01, 1e-9), "{}", c.min_change);
+    assert_eq!(
+        c.equal_prev,
+        steps.iter().filter(|&&s| s == 0).count() as u64
+    );
+    // Continuous values: the smallest difference between two usable
+    // neighbours, which no other difference equals.
+    let diffs: Vec<f64> = cont
+        .windows(2)
+        .filter(|w| !is_null(w[0]) && !is_null(w[1]))
+        .map(|w| (w[1] - w[0]).abs())
+        .filter(|&d| d > 0.0)
+        .collect();
+    let least = diffs.iter().copied().fold(f64::INFINITY, f64::min);
+    let c = m.column(1);
+    assert_eq!((c.min_change, c.min_change_count), (least, 1));
+    // No change before two usable rows: NaN and 0, and a held value moves
+    // nothing.
+    let mut m = Audit::new(cfg(1)).unwrap();
+    for v in [3.0, NULL, 3.0, 3.0] {
+        m.step(&[v], &[], 1.0, 1.0);
+    }
+    let c = m.column(0);
+    assert!(c.min_change.is_nan() && c.min_change_count == 0);
+    assert_eq!(c.equal_prev, 1);
+}
+
 /// The distinct count and every count are exact up to the cap; past it each
 /// count is within the decrements of its truth, and the decrements within
 /// `n / (cap + 1)` (Misra & Gries' bound).
@@ -535,6 +595,11 @@ fn a_merge_is_the_audit_of_both_streams() {
             )
         );
         assert_eq!((x.equal_prev, x.adjacent), (y.equal_prev, y.adjacent));
+        assert_eq!(
+            (x.min_change.to_bits(), x.min_change_count),
+            (y.min_change.to_bits(), y.min_change_count),
+            "column {j}: the smallest change merges exactly"
+        );
         for (u, v) in [
             (x.mean, y.mean),
             (x.std, y.std),
@@ -610,7 +675,13 @@ fn a_state_of_the_wrong_shape_is_refused() {
         ..cfg(3)
     })
     .unwrap();
-    let edits: [fn(&mut Audit); 6] = [
+    let edits: [fn(&mut Audit); 9] = [
+        |a| a.columns[0].min_change = -1.0,
+        |a| a.columns[0].min_change = f64::NAN,
+        |a| {
+            a.columns[1].min_change = 0.0;
+            a.columns[1].min_change_count = 3;
+        },
         |a| {
             a.columns.pop();
         },

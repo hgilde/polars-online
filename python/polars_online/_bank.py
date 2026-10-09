@@ -1506,6 +1506,13 @@ class ModelBank:
             was usable too; and ``sum p_v^2`` over the values' shares, the
             share of ``adjacent`` rows independent rows would make equal
             (a lower bound past the cap).
+        ``min_change``, ``min_change_count``
+            The smallest nonzero change ``|x_t - x_(t-1)|`` between two
+            consecutive usable rows (null before one), and how many changes
+            sit at it, to the rounding two changes of one step of a grid
+            differ by (``8 eps`` of the largest magnitude seen). Beside
+            ``equal_prev``, the changes at 0: ``check``'s ``frozen`` weighs
+            the two.
         ``autocorr``, ``unit_root_t``
             The correlation of each usable row with the usable row before it,
             and the Dickey-Fuller statistic of that regression with a
@@ -1822,10 +1829,14 @@ class ModelBank:
                values or fewer or is frozen
            * - ``frozen``
              - warning
-             - the share of rows equal to the row before passes what the
-               column's frequencies give by 0.05, or a run of one value is 10
-               rows or more and 4 times the longest run independent rows
-               would show
+             - the rows equal to the row before, less those the column's
+               value frequencies give by chance, outnumber the changes at its
+               smallest step by five standard errors,
+               ``(repeats - chance - at_step) / sqrt(repeats + at_step)``,
+               where that step is less than half the column's moves: an
+               atom of changes at zero, which a stale feed adds and a column
+               on a coarse grid (an hour, a regime, a price in ticks) does
+               not show
            * - ``few_values``
              - info
              - 10 distinct values or fewer over 100 usable rows or more
@@ -1926,11 +1937,14 @@ class ModelBank:
         coefficient. Both guards keep a small group quiet.
 
         **An audit's thresholds were measured the same way.** On the five
-        clean shapes above and six more (two columns persisting at 0.9 and
+        clean shapes above and seven more (two columns persisting at 0.9 and
         at 0.95 a row, uniform values, Poisson counts about 50, values
-        rounded to two decimals at 100, and a clock whose steps vary between
-        0.5 and 1.5), over ten seeds, an audit of every column raised no
-        error or warning; the one clean shape with information is the target
+        rounded to two decimals at 100, a clock whose steps vary between 0.5
+        and 1.5, and six columns that hold still on a coarse grid over 10,000
+        rows: the hour of the day on minute data, a regime that stays with
+        probability 0.99, a price in ticks, a spread in whole ticks, an
+        AR(0.9) rounded to integers and a temperature in whole degrees), over
+        ten seeds, an audit of every column raised no error or warning; the one clean shape with information is the target
         that is NaN on 60% of its rows. Each problem planted was found on
         every seed (``tests/check_streams.py``'s ``AUDIT_PLANTED``):
 
@@ -1939,11 +1953,13 @@ class ModelBank:
           found on ten seeds of ten, on 2% on one (on ten at
           ``distinct_cap=1024``). Poisson counts about 50, whose commonest
           value is 6% of the rows, read 1.23 times the next at most.
-        - ``frozen``: a feed stopped for the last 10% of the rows, a forward
-          fill every 2, 3, 5 or 10 rows, and 10 rows stuck in the middle are
-          found; 5 rows stuck are not. Clean columns repeated the row before
-          0.6 points past chance at most (Poisson counts), and ran 4 rows at
-          most.
+        - ``frozen``: a feed stopped for the last 10% of the rows (12.6 or
+          more), a forward fill every 2, 3, 5 or 10 rows (31.6 or more), and
+          30 rows stuck in the middle (5.1) are found; 25 rows stuck are not.
+          Clean columns read 0.6 at most (values rounded to two decimals).
+          The six coarse-grid columns of the clean shapes are not tested. A price still for 200 rows at a time and
+          moving by three ticks a row in between reads as frozen: the check
+          cannot tell long still stretches from a stale feed.
         - ``random_walk``: random walks of 300 and 2,000 rows read -3.2 at
           most, and the clean shapes -6.5 at least (columns persisting at
           0.95); 50-row groups, which the 100-row guard leaves out, read

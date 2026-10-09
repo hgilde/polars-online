@@ -41,6 +41,16 @@
 //!   was usable too, beside `Σ p_v²` over the counted values' shares, the
 //!   share independent rows would give. A row that is not usable ends a
 //!   run;
+//! - *the smallest change*: the smallest nonzero `|x_t − x_{t−1}|` over
+//!   consecutive usable rows, and how many changes sit at it (review 6,
+//!   C-1). Two changes of one step of a grid differ in their doubles by
+//!   the rounding of the values they are taken between, at most `2ε` of
+//!   the larger magnitude each, so a change within `8ε·S` of the smallest
+//!   ([`STEP_ROUNDING`]), `S` the largest magnitude seen, counts at it.
+//!   Beside `equal_prev`, the changes at 0, it says whether a column's
+//!   repeats are one of its steps (a value on a coarse grid, whose smallest
+//!   step is common) or an atom a smooth column does not have (a stale
+//!   feed, whose smallest change is one of a kind);
 //! - *persistence*: the moments of the pairs `(x_{t-1}, x_t)` of consecutive
 //!   usable rows, a bivariate Welford update, read back as the lag-1
 //!   autocorrelation `S_ab / √(S_aa·S_bb)` and the Dickey-Fuller statistic of
@@ -119,6 +129,11 @@ pub const MAX_DISTINCT_CAP: usize = 1 << 16;
 
 /// `1 / Φ⁻¹(3/4)`: the MAD of a normal sample over its standard deviation.
 const MAD_SCALE: f64 = 1.482_602_218_505_602;
+
+/// A change within this many `ε` of the largest magnitude a column has
+/// held of its smallest change counts at it: the rounding of two pairs of
+/// values on a grid, `2ε` of each value's magnitude, four values.
+pub const STEP_ROUNDING: f64 = 8.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditCfg {
@@ -749,9 +764,34 @@ pub struct ColumnAudit {
     pub equal_prev: u64,
     pub adjacent: u64,
     pub lag: CoMoments,
+    /// The smallest nonzero change between consecutive usable rows; 0
+    /// before one.
+    #[serde(default)]
+    pub min_change: f64,
+    /// The changes at `min_change`, to the rounding of a grid's values.
+    #[serde(default)]
+    pub min_change_count: u64,
 }
 
 impl ColumnAudit {
+    /// The rounding two changes of one grid step can differ by, at the
+    /// largest magnitude the column has held.
+    fn step_rounding(&self) -> f64 {
+        STEP_ROUNDING * f64::EPSILON * self.min.abs().max(self.max.abs())
+    }
+
+    /// Count a nonzero change `d` at the smallest one, or start the count
+    /// over at it when it is smaller by more than the rounding.
+    fn add_change(&mut self, d: f64) {
+        let tol = self.step_rounding();
+        if self.min_change_count == 0 || d < self.min_change - tol {
+            (self.min_change, self.min_change_count) = (d, 1);
+        } else if d <= self.min_change + tol {
+            self.min_change = self.min_change.min(d);
+            self.min_change_count += 1;
+        }
+    }
+
     fn add(&mut self, v: f64, cap: usize) {
         if !crate::usable(v) {
             if is_null(v) {
@@ -786,6 +826,7 @@ impl ColumnAudit {
                     self.run += 1;
                 } else {
                     self.run = 1;
+                    self.add_change((v - p).abs());
                 }
                 self.lag.add(p, v);
             }
@@ -816,6 +857,16 @@ impl ColumnAudit {
         self.equal_prev += o.equal_prev;
         self.adjacent += o.adjacent;
         self.lag.merge(&o.lag);
+        // The min and max have merged, so the rounding is the two streams'.
+        if o.min_change_count > 0 {
+            let tol = self.step_rounding();
+            if self.min_change_count == 0 || o.min_change < self.min_change - tol {
+                (self.min_change, self.min_change_count) = (o.min_change, o.min_change_count);
+            } else if o.min_change <= self.min_change + tol {
+                self.min_change = self.min_change.min(o.min_change);
+                self.min_change_count += o.min_change_count;
+            }
+        }
         // The two were not one stream: no run goes on across them.
         self.prev = None;
         self.run = 0;
@@ -869,6 +920,12 @@ impl ColumnAudit {
             equal_prev: self.equal_prev,
             adjacent: self.adjacent,
             equal_by_chance: self.counts.equal_by_chance(m.n),
+            min_change: if self.min_change_count > 0 {
+                self.min_change
+            } else {
+                f64::NAN
+            },
+            min_change_count: self.min_change_count,
             autocorr: self.lag.corr(),
             unit_root_t: self.lag.unit_root_t(),
         }
@@ -884,6 +941,10 @@ impl ColumnAudit {
             && self.prev.is_none_or(|p| p.abs() <= INPUT_BOUND)
             && self.run <= self.longest_run
             && self.equal_prev <= self.adjacent
+            && self.min_change.is_finite()
+            && self.min_change >= 0.0
+            && (self.min_change_count > 0) == (self.min_change > 0.0)
+            && self.min_change_count <= self.adjacent - self.equal_prev
     }
 }
 
@@ -926,6 +987,12 @@ pub struct ColumnReport {
     /// would equal the row before by chance, were the rows independent.
     /// Exact while `distinct` is; past the cap a lower bound.
     pub equal_by_chance: f64,
+    /// The smallest nonzero change between consecutive usable rows; NaN
+    /// before one.
+    pub min_change: f64,
+    /// The changes at it, to the rounding of a grid's values: beside
+    /// `equal_prev`, the changes at 0.
+    pub min_change_count: u64,
     pub autocorr: f64,
     pub unit_root_t: f64,
 }

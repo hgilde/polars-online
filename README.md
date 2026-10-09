@@ -2411,7 +2411,7 @@ depends on the row order:
 | learns by | what the model does with a row | with decay off | order-dependent even so |
 |---|---|---|---|
 | **solve** | keeps running sums and computes its coefficients from them | converges to the batch answer, in any row order | `lasso`'s `penalty_selected`, ranked by out-of-sample error, though its path converges in any order |
-| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate; `audit`'s runs, lag pairs and clock steps, and past `distinct_cap` the digest's `median`, `mad` and `robust_z` and the counters' `top_value`, `top_count`, `second_count` and `equal_by_chance`, each within its bound |
+| **accumulate** | keeps running sums and reports them | converges to the batch answer, in any row order | a lag, in `ew_cov` or `marginal`, which counts learned rows; `rcov`'s block and `deco`'s per-row estimate; `audit`'s runs, smallest change, lag pairs and clock steps, and past `distinct_cap` the digest's `median`, `mad` and `robust_z` and the counters' `top_value`, `top_count`, `second_count` and `equal_by_chance`, each within its bound |
 | **reweight** | solves from running sums, but lets the fit before each row decide how that row enters them | depends on the row order | |
 | **step** | moves its coefficients a little on each row | depends on the row order | |
 | **filter** | carries a belief forward from row to row | depends on the row order | |
@@ -3801,6 +3801,7 @@ Each statistic, its definition and its cost are in the builder's docstring.
 | `mean`, `std`, `skew`, `kurtosis`, `min`, `max` | the moments of the usable values, in one pass |
 | `distinct`, `top_value`, `top_count` | the distinct values, exact up to `distinct_cap` (default 256), and the most repeated one |
 | `longest_run`, `equal_prev`, `equal_by_chance` | the longest run of one value, and the rows equal to the row before beside what independent rows would give |
+| `min_change`, `min_change_count` | the smallest nonzero change between consecutive rows, and how many changes sit at it: whether repeats are a step of the column's grid or a stale feed's |
 | `autocorr`, `unit_root_t` | the lag-1 autocorrelation and the Dickey-Fuller statistic, near 0 for a random walk |
 | `median`, `mad`, `robust_z` | the median and median absolute deviation, from exact counts or a t-digest, and the largest robust z |
 

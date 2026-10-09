@@ -362,6 +362,34 @@ class TestAudit:
         row = bank.check().filter(code="random_walk").row(0, named=True)
         assert row["value"] == bank.audit().filter(column="x1")["unit_root_t"][0]
 
+    def test_frozen_is_an_atom_of_changes_at_zero(self):
+        """``frozen`` weighs the rows equal to the row before against the
+        changes at the column's smallest nonzero step (review 6, C-1), less
+        the repeats its values' frequencies give by chance: its value is
+        ``(repeats - chance - at_step) / sqrt(repeats + at_step)``, against
+        five. A column that moves on a coarse grid, its smallest step half
+        its moves or more, repeats as one of its own steps, and is not
+        told; nor is a sentinel on a fifth of the rows, whose repeats are
+        chance's."""
+        df = cs.AUDIT_PLANTED["stuck_50_rows"][0](0)
+        bank = po.ModelBank([cs.audit_spec(df)])
+        bank.fit_predict(df)
+        row = bank.check().filter(code="frozen").row(0, named=True)
+        a = bank.audit().filter(column="x1").row(0, named=True)
+        repeats, at_step = a["equal_prev"], a["min_change_count"]
+        assert (repeats, at_step) == (50, 1)
+        chance = a["adjacent"] * a["equal_by_chance"]
+        assert row["value"] == (repeats - chance - at_step) / math.sqrt(repeats + at_step)
+        assert row["threshold"] == _check.FROZEN_SIGMAS
+        df = cs.AUDIT_CLEAN["persistent_discrete"](0)
+        bank = po.ModelBank([cs.audit_spec(df)])
+        bank.fit_predict(df)
+        moves = bank.audit().select(
+            "column", share=pl.col("min_change_count") / (pl.col("adjacent") - pl.col("equal_prev"))
+        )
+        assert (moves["share"] >= _check.FROZEN_GRID).all(), moves
+        assert bank.check().filter(code="frozen").is_empty()
+
     def test_heavy_tails_reports_the_statistic_that_fired(self):
         """``heavy_tails`` on a kurtosis alone reports the kurtosis beside
         its own threshold, and on a robust z the robust z (review 6, G-11:
@@ -451,7 +479,7 @@ class TestAudit:
 
 class TestAuditTenSeeds:
     """The measurement the docstring quotes: no error or warning on any of the
-    eleven clean shapes over ten seeds, and every planted problem found on
+    twelve clean shapes over ten seeds, and every planted problem found on
     every seed, on its column. Fast enough for the essentials, as
     ``TestTenSeeds`` is."""
 
