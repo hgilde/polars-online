@@ -227,6 +227,7 @@ def _spec_findings(
     for row in describe.iter_rows(named=True):
         cols_by_group.setdefault(row["group"], []).append(row)
     uncentred = _uncentred(spec)
+    resolved = _resolved(bank, i)
     for g, rows in cols_by_group.items():
         feats = []
         for r in rows:
@@ -355,20 +356,12 @@ def _spec_findings(
                     + (", or set standardize=True" if kind in ("kalman", "sgd", "pa") else ""),
                 )
         # (7) a shared ridge as large as a feature's variance.
-        model = spec["model"]
-        if (
-            kind in _RIDGED
-            and not model.get("standardize")
-            and model.get("ridge_scale", "mean") == "mean"
-        ):
+        model = resolved["model"]
+        # `ridge_scale` resolves to whether the ridge sits on the decaying sum
+        # scale ("sum", where it fades), so `false` is "mean".
+        if kind in _RIDGED and not model.get("standardize") and not model.get("ridge_scale"):
             ridges = model.get("ridge")
-            ridge = (
-                1e-6
-                if ridges is None
-                else min(ridges)
-                if isinstance(ridges, list)
-                else float(ridges)
-            )
+            ridge = min(ridges) if isinstance(ridges, list) else float(ridges)
             for r in feats:
                 var = r["std"] ** 2
                 if ridge > 0 and ridge / var >= RIDGE_OVER_VAR:
@@ -412,7 +405,7 @@ def _spec_findings(
 
     # (1) the rows learned, (12) the clock, (13) groups, (14) the fit: per group.
     learned_by_group = {}
-    need = _min_weight(bank, i)
+    need = float(max(resolved["stream"].get("min_weight") or [0.0]))
     worst_missing = _worst_missing(cols_by_group, ("feature", "weight", "target"))
     worst_skipping = _worst_missing(cols_by_group, ("feature", "weight"))
     for row in summary.iter_rows(named=True):
@@ -698,14 +691,12 @@ def _worst_missing(
     return out
 
 
-def _min_weight(bank: ModelBank, i: int) -> float:
-    """The largest of a spec's per-target ``min_weight`` thresholds, as the
-    bank resolved them (its defaults included)."""
+def _resolved(bank: ModelBank, i: int) -> dict[str, Any]:
+    """A spec's parameters as the bank resolved them, its defaults included."""
     import json
 
     from polars_online import _polars_online as native
     from polars_online._spec import _json
 
-    resolved = json.loads(native.resolved_defaults(_json(bank._specs[i])))
-    weights = resolved.get("stream", {}).get("min_weight") or [0.0]
-    return float(max(weights))
+    out: dict[str, Any] = json.loads(native.resolved_defaults(_json(bank._specs[i])))
+    return out

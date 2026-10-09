@@ -205,6 +205,24 @@ class TestValues:
         assert ("missing", "error") in got
         assert ("nothing_learned", "error") in got
 
+    def test_the_ridge_read_is_the_one_the_fit_uses(self):
+        """The resolved ridge, its smallest value under a grid; a ridge on the
+        decaying sum scale fades, and a standardized one is scale-free."""
+        df, _ = cs.clean_independent(0)
+        c = dict(targets=["y"], features=cs.FEATURES, half_life=200.0)
+        specs = [
+            po.spec.ewridge("big", ridge=1.0, **c),
+            po.spec.ewridge("grid", ridge=[1e-6, 1.0], **c),
+            po.spec.ewridge("sum", ridge=1.0, ridge_scale="sum", **c),
+            po.spec.ewridge("std", ridge=1.0, standardize=True, **c),
+            po.spec.huber("huber", ridge=1.0, **c),
+        ]
+        f = cs.findings(df, specs)
+        assert _codes(f, "ridge_shrinks") == {"big", "huber"}
+        row = f.filter(code="ridge_shrinks", spec="big", column="x0").row(0, named=True)
+        var = df["x0"].var()
+        assert row["value"] == pytest.approx(1.0 / var, rel=1e-12)
+
     def test_low_support_is_not_repeated_for_a_constant_feature(self):
         df, specs = cs.planted_constant_feature(0)
         bank = po.ModelBank(specs[:1])
