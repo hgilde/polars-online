@@ -384,13 +384,30 @@ add the intercept.** The fields on a row are read before the row, so
 `calibration_intercept + calibration_slope · pred` is still out of sample,
 and it can serve the row.
 
-**The Wald statistic assumes independent residuals, so it overstates on a
-target that looks ahead.** Overlapping labels correlate the residuals, as
-[Can its t be trusted?](#can-its-t-be-trusted) explains, and the
-calibration has no Newey-West form. On the two-stage example's look-ahead
-target, a slope of 0.99 came with a `wald` of 72.7
-([A worked example](#a-worked-example-the-two-stage-reversion-beta)). Read
-the slope there, and not the Wald.
+**On a target that looks ahead, the Wald statistic takes Newey and West's
+variance.** Overlapping labels correlate the residuals, as [Can its t be
+trusted?](#can-its-t-be-trusted) explains. Under a horizon of `h` rows the
+test of `a = 0, b = 1` is Wald's with the regression's sandwich at `2h`
+lags, built from the residual under the null, `y − pred`. On the two-stage
+example's look-ahead target, a slope of 0.99 came with a `wald` of 72.7
+read as independent, and of 1.1 under `horizon_rows=150` ([A worked
+example](#a-worked-example-the-two-stage-reversion-beta)).
+
+**A quantile fit's calibration is its coverage.** A prediction of the
+`q`-th quantile is calibrated when the outcome falls below it on a share
+`q` of rows; Mincer and Zarnowitz's regression asks whether it is the mean,
+and on a stable fit at `q = 0.9` passed its 5% value on every row. On
+`quantile` and on `sgd` under `loss="quantile"`, `emit_calibration` writes
+`calibration_coverage_<t>`, the EW share of rows below the prediction, and
+`calibration_wald_<t>`, the binomial test of that share at Kish's size,
+`(Σω d)² / (q (1 − q) Σω²)` with `d = 1{y < pred} − q`, `chi2(1)` at a
+calibrated quantile, with Newey and West's lag products under a horizon.
+On 30 clean streams the coverage's median read 0.499-0.500 at `q = 0.5`
+and 0.895-0.900 at `q = 0.9`; at the default memory the test passed 3.84
+on 0% to 1.7% of rows, conservative as the slope's is beside a fit that
+absorbs what it reads. `cusum` sums `d / sqrt(q (1 − q))` there in place of
+the studentized residual, which flagged every row at `q = 0.9`: a quantile's
+residuals do not have a zero mean.
 
 **It cannot see a fit that is wrong but calibrated.** A model missing a
 feature still predicts `E[y | its features]`, whose calibration slope is 1.
@@ -1891,7 +1908,8 @@ fair = po.spec.ewridge("fair", targets=["A"], features=["x1", "x2", "x3"], half_
 fwd = (po.rewm_mean("mid", half_life="30s", window_size="150s") - pl.col("mid")).alias("B")
 stage2 = dict(
     targets=[fwd], half_life=float("inf"), embargo="150s", min_weight=1_000.0,
-    emit_se_coef=True, emit_robust_se=True, robust_se_lags=300,  # Newey-West to twice the window
+    emit_se_coef=True, emit_robust_se=True,
+    horizon_rows=150,  # the window in rows: Newey-West to twice it, for se_coef_hac and the calibration
     emit_calibration=True,  # B on pred: a slope of 1 says the beta needs no rescaling
     **clock,
 )
@@ -1922,14 +1940,14 @@ print(f"planted beta on u itself: {(w * phi**j).sum() / w.sum() - 1:.3f}")
 ```
 
 ```text
-revert: calibration slope 0.99, wald 72.7
+revert: calibration slope 0.99, wald 1.1
   resid_A  coef -0.450, t  -107.7 by se_coef and  -15.8 by se_coef_hac
-joint: calibration slope 0.80, wald 616.4
+joint: calibration slope 0.80, wald 8.3
   A        coef -0.444, t  -105.4 by se_coef and  -15.5 by se_coef_hac
   x1       coef +0.124, t   +27.7 by se_coef and   +3.0 by se_coef_hac
   x2       coef -0.011, t    -2.0 by se_coef and   -0.2 by se_coef_hac
   x3       coef +0.258, t   +57.3 by se_coef and   +6.1 by se_coef_hac
-both: calibration slope 0.84, wald 348.4
+both: calibration slope 0.84, wald 5.4
   resid_A  coef -0.446, t  -105.2 by se_coef and  -15.6 by se_coef_hac
   x1       coef +0.029, t    +6.8 by se_coef and   +0.7 by se_coef_hac
   x2       coef -0.083, t   -15.8 by se_coef and   -1.7 by se_coef_hac
@@ -1943,7 +1961,7 @@ Each check reads one part of the answer:
 |---|---|---|
 | the beta | `revert`'s coefficient on `resid_A`, −0.450 | close to the −0.490 planted on `u`. `resid_A` is `u` plus the fair value's own error, which attenuates the beta toward zero, as noise in a regressor does |
 | calibration | `revert`'s slope 0.99 | the predictions `−0.450 · resid_A` are scaled right, so the beta needs no rescaling |
-| the Wald beside it | 72.7 | inflated by the overlap: 150 rows share each window, and the calibration has no Newey-West form. Read the slope |
+| the Wald beside it | 1.1 | under `horizon_rows=150` it takes Newey and West's variance at 300 lags; read as independent, the 150 rows that share each window put it at 72.7 |
 | Newey-West | t of −107.7 by `se_coef`, −15.8 by `se_coef_hac` | the beta is real either way, but the plain t is 6.8 times too large: each residual shares its 150-second window with 149 others |
 | `joint` | one stage, `A` and the factors together: `A`'s coefficient −0.444, calibration slope 0.80 | `A`'s coefficient matches `resid_A`'s, since the factors absorb the fair value. The 0.80 is the warm-up's, not the settled fit's. Run once, the calibration keeps every row, and over rows 1,000 to 15,000 four coefficients learned from overlapping labels read a slope of 0.56. Over the stream's second half, regressed by hand, the one-stage slope is 0.99 and the two-stage's 1.07, so neither needs rescaling. At `calibration_half_life="4h"` their median slopes over that half read 0.94 and 1.11 |
 | `both` | `resid_A` beside the factors: the factors' t are +6.8, −15.8 and +5.1 by `se_coef`, and +0.7, −1.7 and +0.5 by `se_coef_hac` | once `resid_A` is in, the factors add nothing that Newey-West believes. By `se_coef` alone, all three would look significant |

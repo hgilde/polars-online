@@ -119,6 +119,13 @@ pub struct Breaks {
     ring1: VecDeque<f64>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     ring2: VecDeque<f64>,
+    /// On a quantile fit the CUSUM sums each row's standardized indicator
+    /// `(1{y < pred} − q) / sqrt(q (1 − q))` (task 232 (6)), and `c2` is its
+    /// `Σ ω²`; `false` and 0 otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    indicator: bool,
+    #[serde(default)]
+    c2: f64,
 }
 
 fn is_zero(v: &usize) -> bool {
@@ -141,6 +148,13 @@ impl Breaks {
         }
     }
 
+    /// The same, whose CUSUM sums a quantile fit's indicators where `on`
+    /// (task 232 (6)).
+    pub fn with_indicator(mut self, on: bool) -> Self {
+        self.indicator = on;
+        self
+    }
+
     /// Whether a restored accumulator can be read and folded at `lags`:
     /// finite sums, the weights' and the squares' not negative, a product
     /// per lag and no more scores than lags.
@@ -149,7 +163,9 @@ impl Breaks {
             && self.p1.len() == lags
             && self.p2.len() == lags
             && self.ring1.len() <= lags
-            && self.ring2.len() == self.ring1.len()
+            && self.ring2.len() <= lags
+            && self.c2.is_finite()
+            && self.c2 >= 0.0
             && self
                 .p1
                 .iter()
@@ -182,6 +198,7 @@ impl Breaks {
         self.v1 *= lam;
         self.v2 *= lam * lam;
         self.vq *= lam;
+        self.c2 *= lam * lam;
         let lam2 = lam * lam;
         self.p1
             .iter_mut()
@@ -213,36 +230,56 @@ impl Breaks {
 
     /// One recursive residual `v` at weight `w`, after the step's decay
     /// `lam`: its studentized residual joins the sums, then `v` the spread.
-    /// A `v` that is not finite, or a weight of 0, only ages (CLAUDE.md hard
-    /// rule 9).
-    pub fn update(&mut self, v: f64, lam: f64, w: f64) {
+    /// On a quantile fit (`with_indicator`) the CUSUM sums `c`, the row's
+    /// standardized indicator `(1{y < pred} − q) / sqrt(q (1 − q))`, in
+    /// place of the studentized residual. A `v` that is not finite, or a
+    /// weight of 0, only ages (CLAUDE.md hard rule 9).
+    pub fn update(&mut self, v: f64, lam: f64, w: f64, c: Option<f64>) {
         let z = self.studentized(v);
         self.age(lam);
         if !(v.is_finite() && w > 0.0) {
             return;
         }
+        // The CUSUM's term: the indicator on a quantile fit, else `z`.
+        let term = if self.indicator { c } else { z };
+        if let Some(t) = term {
+            self.z1 += w * t;
+            if self.indicator {
+                self.c2 += w * w;
+            }
+            if self.lags > 0 {
+                let u1 = w * t;
+                for (l, b1) in self.ring1.iter().enumerate() {
+                    self.p1[l] += u1 * b1;
+                }
+                self.ring1.push_front(u1);
+                self.ring1.truncate(self.lags);
+            }
+        }
         if let Some(z) = z {
             self.s1 += w;
             self.s2 += w * w;
-            self.z1 += w * z;
             self.z2 += w * z * z;
             self.z4 += w * z * z * z * z;
             self.w4 += w;
             if self.lags > 0 {
-                let (u1, u2) = (w * z, w * (z * z - 1.0));
-                for (l, (b1, b2)) in self.ring1.iter().zip(&self.ring2).enumerate() {
-                    self.p1[l] += u1 * b1;
+                let u2 = w * (z * z - 1.0);
+                for (l, b2) in self.ring2.iter().enumerate() {
                     self.p2[l] += u2 * b2;
                 }
-                self.ring1.push_front(u1);
                 self.ring2.push_front(u2);
-                self.ring1.truncate(self.lags);
                 self.ring2.truncate(self.lags);
             }
         }
         self.v1 += w;
         self.v2 += w * w;
         self.vq += w * v * v;
+    }
+
+    /// The CUSUM's `Σ ω²`: of the indicators on a quantile fit, else of the
+    /// studentized residuals.
+    fn cusum_s2(&self) -> f64 {
+        if self.indicator { self.c2 } else { self.s2 }
     }
 
     /// `Σ_l (1 − l/(L+1)) P_l` over the lags: Bartlett's weights.
@@ -259,10 +296,11 @@ impl Breaks {
     /// with no horizon, `None` before the first studentized residual and
     /// where the lag products leave it at or below 0.
     pub fn long_run(&self) -> Option<f64> {
-        if self.s2 <= 0.0 {
+        let s2 = self.cusum_s2();
+        if s2 <= 0.0 {
             return None;
         }
-        let f = 1.0 + 2.0 * self.bartlett(&self.p1) / self.s2;
+        let f = 1.0 + 2.0 * self.bartlett(&self.p1) / s2;
         (f > 0.0).then_some(f)
     }
 
@@ -272,7 +310,7 @@ impl Breaks {
     /// residual.
     pub fn cusum(&self, r: f64) -> Option<f64> {
         let f = self.long_run()?;
-        (r > 0.0).then(|| self.z1 / (r * self.s2 * f).sqrt())
+        (r > 0.0).then(|| self.z1 / (r * self.cusum_s2() * f).sqrt())
     }
 
     /// `(Z2 − S1) / sqrt(r · (m4 − 1) · S2)`, `m4` the studentized
@@ -690,7 +728,7 @@ mod tests {
             if let Some(g) = got {
                 assert!((g - z).abs() < 1e-12 * z.abs().max(1.0), "row {i}");
             }
-            b.update(v, lam, w);
+            b.update(v, lam, w, None);
             rows.iter_mut().for_each(|r| r.2 *= lam);
             rows.push((v, z, w));
             slow_w.iter_mut().for_each(|r| *r *= slow_factor(lam));
@@ -758,7 +796,7 @@ mod tests {
                 runs.push(Vec::new());
             }
             let z = b.studentized(v);
-            b.update(v, lam, w);
+            b.update(v, lam, w, None);
             runs.iter_mut().flatten().for_each(|r| r.1 *= lam);
             slow.iter_mut().for_each(|r| r.1 *= slow_factor(lam));
             if let (Some(z), true) = (z, w > 0.0) {
@@ -837,16 +875,16 @@ mod tests {
     #[test]
     fn zero_weight_and_missing_rows_only_age() {
         let mut b = Breaks::new();
-        b.update(2.0, 0.9, 0.0);
-        b.update(f64::NAN, 0.9, 1.0);
+        b.update(2.0, 0.9, 0.0, None);
+        b.update(f64::NAN, 0.9, 1.0, None);
         assert_eq!(b, Breaks::new());
         for v in [
             1.0, -0.5, 0.3, 2.0, -1.0, 0.7, -0.2, 1.1, -0.9, 0.4, 0.8, -0.6,
         ] {
-            b.update(v, 0.9, 1.0);
+            b.update(v, 0.9, 1.0, None);
         }
         let before = b.clone();
-        b.update(5.0, 0.5, 0.0);
+        b.update(5.0, 0.5, 0.0, None);
         assert_eq!(b.z1, before.z1 * 0.5);
         assert_eq!(b.vq, before.vq * 0.5);
         assert_eq!(b.s2, before.s2 * 0.25);

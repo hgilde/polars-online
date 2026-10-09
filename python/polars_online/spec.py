@@ -608,7 +608,14 @@ The diagnostics add, per slot:
        per coefficient: from ``k + 1`` rows they dominated it. Under a
        horizon it is Wald's test of ``a = 0, b = 1`` with Newey and West's
        variance at twice it in lags, from the residual under the null,
-       ``y - pred``.
+       ``y - pred``. On a quantile fit (``quantile``, and ``sgd`` under
+       ``loss="quantile"``) the fields are ``calibration_coverage_<slot>``,
+       the EW share of rows whose outcome fell below the prediction, and
+       ``calibration_wald_<slot>``, its binomial test against the level
+       ``q`` at Kish's size, ``chi2(1)``; and ``cusum`` sums ``(1{y < pred}
+       - q) / sqrt(q (1 - q))``. Read as a mean's, a stable fit at ``q =
+       0.9`` flagged both on every row; as a quantile's, on 0-1.7% and
+       0.4-6.7% of rows at their 5% values.
    * - ``emit_breaks``
      - ``studentized_<slot>``, ``cusum_<slot>``, ``cusum_sq_<slot>``,
        ``break_wald_<slot>``

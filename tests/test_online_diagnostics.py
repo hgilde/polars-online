@@ -237,6 +237,9 @@ def test_every_linear_model_takes_it(switch, build, extra):
         return
     spec = build("m", **kw)
     out = _run(df, spec)
+    if build is po.spec.quantile and switch == "emit_calibration":
+        # A quantile fit's calibration is its coverage (task 232 (6)).
+        fields = ["calibration_coverage_y", "calibration_wald_y"]
     for f in fields:
         # `lasso` names its slot by the path point.
         (name,) = [c for c in out.columns if c.startswith(f)]
@@ -1023,3 +1026,37 @@ def test_a_feature_gone_quiet_is_no_break():
     assert hit < 0.1, hit
     after = out.filter(pl.col("r") >= at + 600)["break_wald_y"].drop_nulls()
     assert after.mean() < 4.0, after.mean()
+
+
+# --- quantile forms (task 232 (6)) -------------------------------------------
+
+
+@pytest.mark.parametrize("q", [0.5, 0.9])
+@pytest.mark.parametrize("build", ["quantile", "sgd"])
+def test_a_quantile_fits_calibration_is_its_coverage(q, build):
+    """A prediction of the `q`-th quantile is calibrated when the outcome
+    falls below it on a share `q` of rows. Mincer and Zarnowitz's test of a
+    mean, and a CUSUM of residuals whose mean is not 0, flagged 100% of the
+    rows of a stable fit at `q = 0.9` (review round 6, G-1, F-2). The
+    calibration is now `calibration_coverage`, the EW share below the
+    prediction, with its binomial Wald test at Kish's size, and the CUSUM
+    sums `1{y < pred} − q` over its spread (task 232 (6))."""
+    df = _clean(10, 4_000, 7)
+    common = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        emit_calibration=True,
+        emit_breaks=True,
+    )
+    if build == "quantile":
+        spec = po.spec.quantile("m", quantile=q, **common)
+    else:
+        spec = po.spec.sgd("m", loss="quantile", quantile=q, **common)
+    out = _run(df, spec)
+    assert "calibration_slope_y" not in out.columns
+    late = out.filter(pl.int_range(pl.len()).over("g") >= 2_000)
+    assert late["calibration_coverage_y"].median() == pytest.approx(q, abs=0.03)
+    assert (late["calibration_wald_y"].drop_nulls() > 3.841).mean() < 0.1
+    assert (late["cusum_y"].drop_nulls().abs() > 1.96).mean() < 0.1

@@ -43,6 +43,8 @@
 //! residual under the null, `y − pred` (`a = 0, b = 1` leave nothing else),
 //! so it needs no fit of its own.
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 /// Mincer–Zarnowitz calibration of one prediction slot. See the module docs.
@@ -166,6 +168,133 @@ impl Calibration {
         let mean_resid = self.joint.mean(1) - self.joint.mean(0);
         let d = mean_resid * mean_resid + (b - 1.0) * (b - 1.0) * c_pp;
         Some((n - 2.0) * d / s2)
+    }
+}
+
+/// The calibration of a quantile fit (task 232 (6); review round 6, G-1,
+/// F-2): a prediction of the `q`-th quantile is calibrated when the outcome
+/// falls below it on a share `q` of rows, which Mincer and Zarnowitz's
+/// regression of the outcome on the prediction -- a mean's calibration --
+/// does not test. Each scored row's indicator `d = 1{y < pred} − q` joins EW
+/// sums at weight `ω`:
+///
+/// ```text
+/// coverage = q + Σ ω d / Σ ω                     (the share below the prediction)
+/// wald     = (Σ ω d)² / (q (1 − q) Σ ω²)          ~ χ²(1)
+/// ```
+///
+/// the binomial test of the share at Kish's size: `d` has mean 0 and
+/// variance `q (1 − q)` at a calibrated quantile, and `(Σ ω d)²/Σ ω²` is
+/// `n_kish (coverage − q)²`. Under a horizon the indicators overlap as the
+/// residuals do, and the variance takes Newey and West's Bartlett-weighted
+/// lag products of `ω d` over `L` lags, as [`crate::Breaks`]' does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Coverage {
+    /// The quantile level, in `(0, 1)`.
+    q: f64,
+    /// `Σ ω`, `Σ ω²` and `Σ ω d` over the scored rows.
+    w: f64,
+    w2: f64,
+    d: f64,
+    /// Newey and West's lags, the products per lag and the last `ω d`
+    /// newest first; 0 and empty without a horizon.
+    #[serde(default)]
+    lags: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    p: Vec<f64>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    ring: VecDeque<f64>,
+}
+
+impl Coverage {
+    /// An empty coverage of the `q`-th quantile at `lags` Newey-West lags.
+    pub fn new(q: f64, lags: usize) -> Self {
+        Self {
+            q,
+            w: 0.0,
+            w2: 0.0,
+            d: 0.0,
+            lags,
+            p: vec![0.0; lags],
+            ring: VecDeque::with_capacity(lags),
+        }
+    }
+
+    /// Whether a restored accumulator is shaped for `q` and `lags`.
+    pub fn has_shape(&self, q: f64, lags: usize) -> bool {
+        self.q == q
+            && self.lags == lags
+            && self.p.len() == lags
+            && self.ring.len() <= lags
+            && [self.w, self.w2, self.d]
+                .iter()
+                .chain(&self.p)
+                .chain(&self.ring)
+                .all(|v| v.is_finite())
+            && self.w >= 0.0
+            && self.w2 >= 0.0
+    }
+
+    /// The clock moves on by a step whose decay is `lam`, with nothing
+    /// scored.
+    pub fn age(&mut self, lam: f64) {
+        self.w *= lam;
+        self.w2 *= lam * lam;
+        self.d *= lam;
+        self.p.iter_mut().for_each(|v| *v *= lam * lam);
+        self.ring.iter_mut().for_each(|v| *v *= lam);
+    }
+
+    /// The rows behind this one are no longer adjacent to it -- a capped gap
+    /// or a session change -- so none is a lag of the next.
+    pub fn clear_lags(&mut self) {
+        self.ring.clear();
+    }
+
+    /// One scored row: its prediction, its outcome, the step's decay and its
+    /// weight. A value that is not finite, or a weight of 0, only ages
+    /// (CLAUDE.md hard rule 9).
+    pub fn update(&mut self, pred: f64, y: f64, lam: f64, w: f64) {
+        self.age(lam);
+        if !(pred.is_finite() && y.is_finite() && w > 0.0) {
+            return;
+        }
+        let d = f64::from(u8::from(y < pred)) - self.q;
+        self.w += w;
+        self.w2 += w * w;
+        self.d += w * d;
+        if self.lags > 0 {
+            let u = w * d;
+            for (l, back) in self.ring.iter().enumerate() {
+                self.p[l] += u * back;
+            }
+            self.ring.push_front(u);
+            self.ring.truncate(self.lags);
+        }
+    }
+
+    /// The EW share of rows whose outcome fell below the prediction: `None`
+    /// before the first scored row.
+    pub fn coverage(&self) -> Option<f64> {
+        (self.w > 0.0).then(|| self.q + self.d / self.w)
+    }
+
+    /// The binomial Wald statistic of `coverage = q` at Kish's size, over
+    /// the long-run variance under a horizon: `None` before the first scored
+    /// row, and where the lag products leave no variance.
+    pub fn wald(&self) -> Option<f64> {
+        if self.w2 <= 0.0 {
+            return None;
+        }
+        let l1 = self.lags as f64 + 1.0;
+        let lagged: f64 = self
+            .p
+            .iter()
+            .enumerate()
+            .map(|(l, v)| (1.0 - (l + 1) as f64 / l1) * v)
+            .sum();
+        let var = self.q * (1.0 - self.q) * self.w2 + 2.0 * lagged;
+        (var > 0.0).then(|| self.d * self.d / var)
     }
 }
 
@@ -341,6 +470,63 @@ mod tests {
             );
         }
         assert!(c.has_shape(lags) && !c.has_shape(0));
+    }
+
+    /// A quantile fit's coverage and its Wald statistic by their definition,
+    /// from every scored row at its present weight -- the share below the
+    /// prediction, and `(Σωd)² / (q(1−q)Σω² + 2 Σ_l b_l Σ ω_t ω_{t−l} d_t
+    /// d_{t−l})` -- under a decay, uneven weights, zeros, a row with no
+    /// outcome and indicators that carry a lag.
+    #[test]
+    fn coverage_is_its_definition() {
+        let (q, lags, lam) = (0.8, 3usize, 0.98);
+        let mut c = Coverage::new(q, lags);
+        let mut s = 41u64;
+        // (d, weight now), scored rows only.
+        let mut rows: Vec<(f64, f64)> = Vec::new();
+        let mut prev = 0.0;
+        for i in 0..300 {
+            let shock = 0.7 * prev + lcg(&mut s);
+            prev = shock;
+            let (pred, y) = (0.3, shock + 0.6);
+            let w = if i % 11 == 5 { 0.0 } else { 1.0 + lcg(&mut s) };
+            let y = if i % 17 == 9 { f64::NAN } else { y };
+            c.update(pred, y, lam, w);
+            rows.iter_mut().for_each(|r| r.1 *= lam);
+            if w > 0.0 && y.is_finite() {
+                rows.push((f64::from(u8::from(y < pred)) - q, w));
+            }
+            if i < 20 || i % 23 != 0 {
+                continue;
+            }
+            let sw: f64 = rows.iter().map(|r| r.1).sum();
+            let sw2: f64 = rows.iter().map(|r| r.1 * r.1).sum();
+            let sd: f64 = rows.iter().map(|r| r.1 * r.0).sum();
+            let mut lagged = 0.0;
+            for l in 1..=lags {
+                let b = 1.0 - l as f64 / (lags as f64 + 1.0);
+                for t in l..rows.len() {
+                    lagged += b * rows[t].1 * rows[t - l].1 * rows[t].0 * rows[t - l].0;
+                }
+            }
+            let tol = 1e-10;
+            assert!(
+                (c.coverage().unwrap() - (q + sd / sw)).abs() < tol,
+                "row {i}"
+            );
+            let want = sd * sd / (q * (1.0 - q) * sw2 + 2.0 * lagged);
+            assert!(
+                (c.wald().unwrap() - want).abs() < tol * want.max(1.0),
+                "row {i}"
+            );
+        }
+        assert!(c.has_shape(q, lags) && !c.has_shape(0.5, lags));
+        let mut z = Coverage::new(q, 0);
+        z.update(1.0, 0.0, 0.9, 0.0);
+        assert!(
+            z.coverage().is_none() && z.wald().is_none(),
+            "a zero weight only ages"
+        );
     }
 
     /// A zero-weight row, the first included, and a row with a value not a

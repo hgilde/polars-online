@@ -145,6 +145,20 @@ impl Spec {
             .collect()
     }
 
+    /// The level a quantile fit predicts -- `quantile`'s, or `sgd`'s under
+    /// `loss="quantile"` -- whose calibration is a coverage and whose CUSUM
+    /// sums indicators (task 232 (6); review round 6, G-1, F-2). `None` for
+    /// a fit of the mean.
+    pub fn quantile_level(&self) -> Option<f64> {
+        match &self.model {
+            super::ModelKind::Quantile { quantile, .. } => Some(*quantile),
+            super::ModelKind::Sgd { loss, quantile, .. } if loss.as_deref() == Some("quantile") => {
+                *quantile
+            }
+            _ => None,
+        }
+    }
+
     /// The lags Ljung and Box skip: the horizon's `h − 1`, inside which a
     /// look-ahead target's residuals share their shocks (task 221 (d)).
     pub fn ljung_box_skip(&self) -> usize {

@@ -124,7 +124,7 @@ pub use audit::{
 };
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
 pub use breaks::{Breaks, TwinFit, cusum_null};
-pub use calibration::Calibration;
+pub use calibration::{Calibration, Coverage};
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
     SessionGap, Stamp, cmp_int_f64, ns_of_seconds, seconds_of_ns,

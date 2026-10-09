@@ -19,7 +19,8 @@
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
 use online_core::{
-    Breaks, Calibration, Decay, FeatureHealth, Influence, Sandwich, Specification, Tails, TwinFit,
+    Breaks, Calibration, Coverage, Decay, FeatureHealth, Influence, Sandwich, Specification, Tails,
+    TwinFit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,11 +31,16 @@ use crate::spec::{ModelKind, Spec};
 pub fn value_names(spec: &Spec) -> Vec<&'static str> {
     let mut out = Vec::new();
     if spec.emit_calibration {
-        out.extend([
-            "calibration_slope",
-            "calibration_intercept",
-            "calibration_wald",
-        ]);
+        if spec.quantile_level().is_some() {
+            // A quantile fit's calibration is its coverage (task 232 (6)).
+            out.extend(["calibration_coverage", "calibration_wald"]);
+        } else {
+            out.extend([
+                "calibration_slope",
+                "calibration_intercept",
+                "calibration_wald",
+            ]);
+        }
     }
     if spec.emit_breaks {
         out.extend(["studentized", "cusum", "cusum_sq", "break_wald"]);
@@ -84,6 +90,9 @@ pub struct CheckCfg {
     /// plain variances ([`online_core::cusum_null`]; task 232 (4)).
     cusum_null: f64,
     cusum_sq_null: f64,
+    /// A quantile fit's level: its calibration is a coverage and its CUSUM
+    /// sums indicators (task 232 (6)).
+    quantile: Option<f64>,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
     /// reads, as positions in the spec's features: an `ewridge` feature
     /// set's, or every feature.
@@ -159,6 +168,7 @@ impl CheckCfg {
             nw: spec.nw_lags(),
             cusum_null: 1.0,
             cusum_sq_null: 1.0,
+            quantile: spec.quantile_level(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
             width: spec.k() + usize::from(spec.fit_intercept),
@@ -184,7 +194,13 @@ impl CheckCfg {
                 | ModelKind::Lasso { .. }
                 | ModelKind::Kalman { .. }
         );
-        if least_squares && spec.fit_intercept {
+        // `quantile` absorbs its coverage the same way: its indicators' CUSUM
+        // (task 232 (6)) read a spread of 0.75 at its memory and 0.49-0.56
+        // at four times it, the shares' 0.71 and 0.45, and over the share
+        // 1.06 and 1.10-1.24. `sgd`'s quantile loss keeps the gradient fits'
+        // plain sum: over the share it read 0.98-1.51.
+        let quantile_fit = matches!(spec.model, ModelKind::Quantile { .. });
+        if (least_squares || quantile_fit) && spec.fit_intercept {
             cfg.cusum_null = online_core::cusum_null(h_fit, h_breaks);
         }
         cfg.cusum_sq_null = online_core::cusum_null(h_breaks, h_breaks);
@@ -239,6 +255,10 @@ pub struct Checks {
     /// Mincer–Zarnowitz per slot, under `emit_calibration`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calibration: Vec<Calibration>,
+    /// A quantile fit's coverage per slot, under `emit_calibration`, in
+    /// place of Mincer–Zarnowitz (task 232 (6)).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<Coverage>,
     /// The studentized residuals' CUSUM sums per slot, under `emit_breaks`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub breaks: Vec<Breaks>,
@@ -269,12 +289,20 @@ impl Checks {
     /// Fresh accumulators for `n_slots` slots, as `spec` switches them on.
     pub fn new(spec: &Spec, n_slots: usize) -> Self {
         let on = |flag: bool, n: usize| if flag { n } else { 0 };
+        let quantile = spec.quantile_level();
         Self {
             calibration: vec![
                 Calibration::with_lags(spec.nw_lags());
-                on(spec.emit_calibration, n_slots)
+                on(spec.emit_calibration && quantile.is_none(), n_slots)
             ],
-            breaks: vec![Breaks::with_lags(spec.nw_lags()); on(spec.emit_breaks, n_slots)],
+            coverage: vec![
+                Coverage::new(quantile.unwrap_or(0.5), spec.nw_lags());
+                on(spec.emit_calibration && quantile.is_some(), n_slots)
+            ],
+            breaks: vec![
+                Breaks::with_lags(spec.nw_lags()).with_indicator(quantile.is_some());
+                on(spec.emit_breaks, n_slots)
+            ],
             twin: vec![TwinFit::new(spec.k()); on(spec.emit_breaks, spec.m())],
             sandwich: vec![
                 Sandwich::new(
@@ -317,6 +345,11 @@ impl Checks {
     pub fn fits(&self, fresh: &Self, spec: &Spec) -> bool {
         let (k, lags, nw) = (spec.k(), spec.robust_se_lags_or_default(), spec.nw_lags());
         self.calibration.len() == fresh.calibration.len()
+            && self.coverage.len() == fresh.coverage.len()
+            && self
+                .coverage
+                .iter()
+                .all(|c| c.has_shape(spec.quantile_level().unwrap_or(0.5), nw))
             && self.breaks.len() == fresh.breaks.len()
             && self.twin.len() == fresh.twin.len()
             && self.sandwich.len() == fresh.sandwich.len()
@@ -354,6 +387,7 @@ impl Checks {
         self.calibration
             .iter_mut()
             .for_each(Calibration::clear_lags);
+        self.coverage.iter_mut().for_each(Coverage::clear_lags);
         self.breaks.iter_mut().for_each(Breaks::clear_lags);
     }
 
@@ -431,6 +465,13 @@ impl Checks {
                 put(v + 2, slot, c.wald());
             }
             v += 3;
+        }
+        if !self.coverage.is_empty() {
+            for (slot, c) in self.coverage.iter().enumerate() {
+                put(v, slot, c.coverage());
+                put(v + 1, slot, c.wald());
+            }
+            v += 2;
         }
         if !self.breaks.is_empty() {
             let nc = cfg.combo_features.len().max(1);
@@ -520,10 +561,24 @@ impl Checks {
                 c.update(row.preds[slot], y, lam, wd);
             }
         }
+        if !self.coverage.is_empty() {
+            let lam = cfg.calibration.factor(d_clock);
+            for (slot, c) in self.coverage.iter_mut().enumerate() {
+                let y = row.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
+                c.update(row.preds[slot], y, lam, wd);
+            }
+        }
         if !self.breaks.is_empty() {
             let lam = cfg.breaks.factor(d_clock);
             for (slot, b) in self.breaks.iter_mut().enumerate() {
-                b.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, wd);
+                // A quantile fit's CUSUM sums its standardized indicator.
+                let c = cfg.quantile.and_then(|q| {
+                    let y = row.ys.get(slot / nc).copied().flatten()?;
+                    let p = row.preds[slot];
+                    (p.is_finite() && y.is_finite())
+                        .then(|| (f64::from(u8::from(y < p)) - q) / (q * (1.0 - q)).sqrt())
+                });
+                b.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, wd, c);
             }
             for (t, fit) in self.twin.iter_mut().enumerate() {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
