@@ -9054,6 +9054,85 @@ tick, and that the series holding it up has a count near 1.
       the fix in Polars, and the model after it, each with its output shown
       and read. Every recipe runs in a test, as for task 222, so none goes
       stale.
+- [ ] 225. **A multithreaded product for one wide Gram** -- requested
+      2026-10-08 (the user: "Fold those into the current plan additions"),
+      for a workload of 10,000 features over 9.5 million rows, read as
+      weekly blocks of `ewridge` accumulators (`half_life=inf`,
+      `solve_every` past the end, `target_gaps="pairwise"`,
+      `gram_block_rows=256`) whose Grams are merged with `po.gram.merge`
+      and solved offline. **Today** `EwCov::flush` runs faer's triangular
+      product sequentially (its comment: the bank runs its groups on a pool
+      of its own, and a parallel product's summation order is not a
+      function of the row sequence), so one wide accumulator uses one
+      core. **Measured** on 0.13.0, an M4 Pro (14 cores), float32 inputs,
+      one target, a load of 8-25: one accumulator costs 28-38 ps per Gram
+      entry per row, flat from 1,000 columns (about 7.4 h at 10,000 columns
+      over 9.5M rows); eight banks of 3,000 columns on eight Python threads
+      17 ps of wall time; numpy's `X.T @ X` in float64 2.65 ps on one
+      thread (Apple's matrix coprocessor, so the single-thread gap is
+      likely much smaller on x86) and 1.44 ps on four or fourteen. **The
+      ask:** an opt-in `gram_threads=n` on `ewridge` and `ew_cov` (and
+      `lasso` with task 118's `gram_block_rows`), tiling the *output*, not
+      the rows: `C` split into column tiles, each tile's `X_iᵀ X_j` summed
+      by one thread over the block's rows in row order, so every entry is
+      summed in one order by one thread and the bits do not depend on the
+      thread count (hard rule 3's spirit across thread counts). Measure
+      first whether the single-thread kernel itself can close on the
+      10x gap (faer's triangular product against a SYRK-shaped kernel), and
+      how the threads share the bank's group pool. **Check:** the Gram at
+      `gram_threads=1` and `=8` the same bits; wall time per entry-row
+      falling with the threads up to the cores. No state change.
+- [ ] 226. **The lasso path from a Gram, in Rust** -- requested 2026-10-08.
+      `po.gram.lasso_path` runs coordinate descent in Python: 0.13-0.4 s a
+      path at 15 columns and 40 penalties (a profile: 6.6 million calls to
+      Python's `max` and `abs` for 12 paths), where scikit-learn's
+      `lars_path_gram` takes 33 ms at 2,000 columns and 40 steps. Stability
+      selection runs a path on each of 100 halves of the blocks for each of
+      10 targets at up to 2,000 columns. **The ask:** a path from a Gram in
+      Rust -- LARS-lasso, or coordinate descent with an active set -- that
+      stops early after a given number of steps or once a given number of
+      columns are active (only the start of the path is read), and runs
+      many Grams or targets at once on the bank's pool. **Check:** the same
+      active sets as `lars_path_gram` at every knot on a Gram from known
+      rows (`tests/test_second_opinion.py`), and today's `lasso_path`
+      where both are defined. No state change.
+- [ ] 227. **Merge and solve many subsets of Grams in one call** --
+      requested 2026-10-08. Each half of the blocks is a `po.gram.merge` of
+      about 19 Grams, then a correlation matrix and a solve in numpy; a
+      block's Gram is 32 MB at 2,000 columns and 800 MB at 10,000, and a
+      hundred halves copy them through Python dicts and numpy for each
+      merge. **The ask:** one call that takes the Grams once, a list of
+      subsets and the targets, and returns per subset the merged Gram's
+      ridge solution with its t, or its path (task 226). Two uses: the
+      halves of a stability selection, and each block's own joint ridge
+      fit and t, which say how stable a coefficient is. **Check:** the same
+      numbers as `po.gram.merge` then `po.gram.solve` on each subset. No
+      state change.
+- [ ] 228. **Missing values per column in a Gram** -- requested 2026-10-08.
+      A row with one missing feature is skipped for every column of the
+      accumulator: measured on 0.12.0, gaps in 30% of one feature's rows
+      drop 30% of the rows for all of them; at 1,000 to 2,000 columns in one
+      Gram, every row where any one is missing is lost. **The ask:** an
+      option for a pairwise-complete Gram: each co-moment over the rows
+      where both its columns are present, with the weight per pair (the
+      question `marginal(feature_moments="shared")`, task 125, answered for
+      the pairs). **Needs a decision before it is built:** a pairwise
+      matrix need not be positive semi-definite, so a solve needs a guard
+      (refuse, jitter, or project to the nearest PSD matrix) and the
+      readiness statistics a definition; and each pair's weight is `k²`
+      more state (a layout change). Measure the bias against listwise
+      deletion on data missing at random and not at random.
+- [ ] 229. **A compact Gram** -- requested 2026-10-08. `bank.gram()`
+      returns the full matrix in float64: 800 MB a block at 10,000 columns,
+      30 GB for 38 weekly blocks. **The ask:** an option for `gram()` to
+      return float32, or the lower triangle only (each halves it; both
+      quarter it). float32 is enough where the Grams are merged and solved
+      in float64 afterwards. **The state stays float64** (hard rule 6, and
+      a state must continue to the bit); keeping only the lower triangle in
+      the state is lossless and halves it, a layout change to weigh
+      separately. **Check:** float32 output within float32 rounding of the
+      float64; the triangle form expands to today's matrix exactly;
+      `po.gram.merge`/`solve` take either form.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
