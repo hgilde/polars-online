@@ -76,9 +76,18 @@ pub(crate) fn row_share(decayed: f64, w: f64) -> f64 {
 /// history of no weight has nothing to forget, and a row of none learns
 /// nothing, so both keep `lam`: the decay the prior's scale and the
 /// weights then age by.
+///
+/// The share is below the smallest normal double exactly where `lam·W ≤
+/// w·2^-1022`: at equality it is `2^-1022 / (1 + 2^-1022)`, below it, so
+/// that history is forgotten; the next double above has a share above it
+/// (`decay_into_forgets_a_share_below_the_normal_range`).
 pub(crate) fn decay_into(lam: f64, history: f64, w: f64) -> f64 {
+    // A row of no weight learns nothing, and keeps the decay.
+    if w <= 0.0 {
+        return lam;
+    }
     let carried = lam * history;
-    if w > 0.0 && carried > 0.0 && carried < w * f64::MIN_POSITIVE {
+    if carried > 0.0 && carried <= w * f64::MIN_POSITIVE {
         0.0
     } else {
         lam
@@ -1162,6 +1171,30 @@ mod tests {
         assert_eq!(row_share(0.0, 2.0), 1.0);
         // No weight carried and none added: 0, not 0/0 (hard rule 9).
         assert_eq!(row_share(0.0, 0.0), 0.0);
+    }
+
+    /// **`decay_into` forgets a history whose share of the row's weight is
+    /// below the smallest normal double, and only that** (task 217), at
+    /// the edge: `lam = 0.5` carries `2^-1021` to `2^-1022`, exactly the
+    /// row's weight 1 times `2^-1022`, a share of `2^-1022 / (1 + 2^-1022)`,
+    /// below it, so forgotten; the next double above is kept, and so is the
+    /// same history into a row of weight 0, which learns nothing, or a
+    /// history of none. The largest subnormal is forgotten.
+    #[test]
+    fn decay_into_forgets_a_share_below_the_normal_range() {
+        let edge = 2f64.powi(-1021);
+        assert_eq!(0.5 * edge, f64::MIN_POSITIVE, "the fixture");
+        assert_eq!(decay_into(0.5, edge, 1.0), 0.0, "at the edge");
+        let above = edge * (1.0 + f64::EPSILON);
+        assert_eq!(decay_into(0.5, above, 1.0), 0.5, "a double above it");
+        let below = 2.0 * (f64::MIN_POSITIVE - f64::from_bits(1));
+        assert!(0.5 * below < f64::MIN_POSITIVE && 0.5 * below > 0.0);
+        assert_eq!(decay_into(0.5, below, 1.0), 0.0, "the largest subnormal");
+        assert_eq!(decay_into(0.5, edge, 0.0), 0.5, "a row of weight 0");
+        assert_eq!(decay_into(0.5, 0.0, 1.0), 0.5, "no history");
+        // And relative to the row: a weight of 4 moves the edge with it.
+        assert_eq!(decay_into(0.5, 4.0 * edge, 4.0), 0.0);
+        assert_eq!(decay_into(0.5, 4.0 * above, 4.0), 0.5);
     }
 
     /// PLAN §13 for the cross-moments: the accumulators with a snapshot

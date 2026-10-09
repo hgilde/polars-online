@@ -2024,6 +2024,62 @@ mod tests {
         }
     }
 
+    /// **The selection's window counts the row it folds and no other**
+    /// (docs/PLAN.md task 217; the mutants of 2026-10-08 widened the row
+    /// `window_sel_err` is told of, to a target's row at weight 0 and to a
+    /// row of weight without the target, and no test told). The second
+    /// target is scored on sixty rows at a weight of `1e-300`, then absent
+    /// for 300: its selection weight sticks a few subnormal steps above 0,
+    /// and the window holds none of its rows. A row with the target at
+    /// weight 0, and one without it at weight 1, fold no error of it, so the
+    /// choice stands, 0.0 (the lighter penalty, which the errors favour).
+    /// Told of either row, the window read its errors from the stuck
+    /// weights, `[0, 0]`, a tie, and chose the first penalty, 0.05.
+    #[test]
+    fn a_row_that_folds_no_error_leaves_an_empty_selection_window_empty() {
+        let mut c = cfg(2, 2, vec![0.05, 0.0]);
+        c.decay = Decay::Lam(0.75);
+        c.window = Some(5.0);
+        c.min_weight = 0.0;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 21u64;
+        let row = |s: &mut u64| {
+            let x = [lcg(s), lcg(s)];
+            let y0 = 0.5 + x[0] - x[1] + 0.1 * lcg(s);
+            let y1 = -0.2 + 0.8 * x[0] + 0.6 * x[1] + 0.05 * lcg(s);
+            (x, y0, y1)
+        };
+        for i in 0..60 {
+            let (x, y0, y1) = row(&mut s);
+            m.step(
+                &x,
+                &[Some(y0), Some(y1)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1e-300,
+            );
+        }
+        for _ in 0..300 {
+            let (x, y0, _) = row(&mut s);
+            m.step(&x, &[Some(y0), None], 1.0, 1.0);
+        }
+        assert_eq!(m.lam_selected()[1], 0.0, "the fixture: the choice before");
+        assert!(
+            m.sel_w[1] > 0.0 && m.sel_w[1] < 1e-320,
+            "the fixture: {:e}",
+            m.sel_w[1]
+        );
+        let (x, y0, y1) = row(&mut s);
+        m.step(&x, &[Some(y0), Some(y1)], 1.0, 0.0);
+        assert_eq!(m.lam_selected()[1], 0.0, "the target at weight 0");
+        let (x, y0, _) = row(&mut s);
+        m.step(&x, &[Some(y0), None], 1.0, 1.0);
+        assert_eq!(
+            m.lam_selected()[1],
+            0.0,
+            "a row of weight without the target"
+        );
+    }
+
     /// A window with no scored row of a target keeps the lambda that target
     /// last chose: the whole-history errors the choice used to fall back on
     /// are the rows the window has dropped (review 2026-09-25, tasks 94-97,

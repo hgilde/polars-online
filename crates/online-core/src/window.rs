@@ -1211,6 +1211,44 @@ mod tests {
         );
     }
 
+    /// **`truncated`'s bound held at its edge** (docs/PLAN.md task 217; the
+    /// mutants of 2026-10-08 changed `ratio·g` to `ratio/g` and `|m| + |m_u|`
+    /// to their difference, and no test told): a variance left exactly at
+    /// `64 ε (terms + level)` is no spread, and ones 2% either side of it are
+    /// none and one. Every term is in play and binary, so the arithmetic is
+    /// exact: a weight of 6 and a snapshot of 2 (`ratio = 0.5`, `g = 1.5`),
+    /// the means 3 and 4 (`d = 1`), the co-moments `C = 1.5 + m·2^-50` and
+    /// `C_u = 3 − 3m·2^-50`, which move the remainder, `3m·2^-50`, and leave
+    /// `terms` at 3.75; `level = 0.75·7 = 5.25`, so the bound is `9·2^-46 =
+    /// 144·2^-50`, met at `m = 48`. Either change moves it by a third or
+    /// more.
+    #[test]
+    fn the_truncation_bound_holds_at_its_edge() {
+        let unit = 2f64.powi(-50);
+        for (m, kept) in [(47.0, false), (48.0, false), (49.0, true)] {
+            let mut cov = EwCov::new(1);
+            cov.set_moments(&[3.0], &[1.5 + m * unit], 6.0, None);
+            let old = Moments {
+                w: 2.0,
+                m: vec![4.0],
+                c: vec![3.0 - 3.0 * m * unit],
+                rows: None,
+                q: None,
+            };
+            let cut = truncated(&cov, &old, 1.0).expect("a window");
+            assert_eq!(cut.n_eff(), 4.0);
+            let bound = 64.0 * f64::EPSILON * 9.0;
+            assert_eq!(bound, 144.0 * unit, "the bound is exact");
+            let want = if kept { 3.0 * m * unit } else { 0.0 };
+            assert_eq!(
+                cut.cov(0, 0).to_bits(),
+                want.to_bits(),
+                "a remainder of {} times the bound",
+                3.0 * m * unit / bound
+            );
+        }
+    }
+
     /// **A window that holds no row of positive weight is empty** (docs/PLAN.md
     /// task 217), by the accumulator's count of the rows it learned against
     /// the snapshot's. Sixty rows at `1e-300`, then 300 of weight 0, at

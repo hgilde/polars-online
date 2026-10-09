@@ -4397,3 +4397,34 @@ fn the_windows_snapshots_are_spaced_on_the_stamps_it_is_handed() {
         }
     }
 }
+
+/// **`cut`'s bound held at its edge** (docs/PLAN.md task 217; the mutants
+/// of 2026-10-08 changed each of its operators and no test told): a
+/// co-moment whose remainder is exactly the bound, `64 ε (terms + level)`,
+/// is no spread, and ones 1.5% either side of it are none and one. Every
+/// term is in play and binary, so the arithmetic is exact: `w = 6`, a
+/// snapshot of 2 (`ratio = 0.5`, `g = 1.5`), the means 3 and 4 (`d_a = 1`)
+/// and 5 and 7 (`d_b = 2`), and the moments `s = 1.5 − m·2^-50` and
+/// `s_u = 1.5 + 3m·2^-50`, which move the remainder, `3m·2^-50`, and leave
+/// `terms` at 3; `level = 0.5·ratio·g·(1·12 + 2·7) = 9.75`, so the bound is
+/// `12.75·2^-46 = 204·2^-50`, met at `m = 68`. A change to any operator of
+/// the bound moves it by 3.3% or more.
+#[test]
+fn the_cut_bound_holds_at_its_edge() {
+    let unit = 2f64.powi(-50);
+    for (m, resolved) in [(67.0, false), (68.0, false), (69.0, true)] {
+        let (s, s_old) = (1.5 - m * unit, 1.5 + 3.0 * m * unit);
+        let (wn, _, _, cut, got) =
+            Marginal::cut(6.0, 2.0, 1.0, (3.0, 5.0), (4.0, 7.0), s, s_old).expect("a window");
+        assert_eq!(wn, 4.0);
+        assert_eq!(cut.abs(), 3.0 * m * unit, "the remainder is exact");
+        let bound = 64.0 * f64::EPSILON * 12.75;
+        assert_eq!(bound, 204.0 * unit, "the bound is exact");
+        assert_eq!(
+            got,
+            resolved,
+            "a remainder {} times the bound: resolved {got}",
+            cut.abs() / bound
+        );
+    }
+}
