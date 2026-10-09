@@ -1,6 +1,7 @@
 //! Task 221's diagnostics for one model instance: the accumulators that keep
-//! a memory of their own, defaulting to the instance's half-life, `inf` the
-//! run-once form (docs/PLAN.md task 221).
+//! a memory of their own, defaulting to a multiple of the instance's
+//! half-life ([`Spec::memory_multiple`]: 4 for the calibration, 1 for the
+//! others), `inf` the run-once form (docs/PLAN.md task 221).
 //!
 //! Each reads the row's out-of-sample prediction and residual as the other
 //! residual diagnostics do -- before the row folds into it, so a field never
@@ -76,9 +77,21 @@ impl CheckCfg {
             _ => vec![all; crate::stream::combos(spec).len()],
         };
         Self {
-            calibration: Spec::diagnostic_decay(spec.calibration_half_life.as_ref(), model),
-            breaks: Spec::diagnostic_decay(spec.breaks_half_life.as_ref(), model),
-            robust: Spec::diagnostic_decay(spec.robust_se_half_life.as_ref(), model),
+            calibration: Spec::diagnostic_decay(
+                spec.calibration_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("calibration_half_life"),
+            ),
+            breaks: Spec::diagnostic_decay(
+                spec.breaks_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("breaks_half_life"),
+            ),
+            robust: Spec::diagnostic_decay(
+                spec.robust_se_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("robust_se_half_life"),
+            ),
             lags: spec.robust_se_lags_or_default(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,

@@ -165,7 +165,7 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
         .and_then(|d| d.first().map(|(_, d)| *d))
         .unwrap_or(online_core::Decay::Halflife(f64::INFINITY));
     for (key, _, _, memory) in spec.diagnostic_memories() {
-        let shown = match Spec::diagnostic_decay(memory, decay) {
+        let shown = match Spec::diagnostic_decay(memory, decay, Spec::memory_multiple(key)) {
             online_core::Decay::Halflife(h) => number(h),
             online_core::Decay::Lam(l) => json!({ "lam": number(l) }),
         };

@@ -368,3 +368,30 @@ def test_robust_se_knobs_need_their_switch():
         _robust_spec(emit_robust_se=False)
     with pytest.raises(ValueError, match="robust_se_half_life needs emit_robust_se"):
         _robust_spec(emit_robust_se=False, robust_se_lags=None, robust_se_half_life=10.0)
+
+
+def test_the_calibrations_memory_defaults_to_four_half_lives():
+    """Left out, the calibration reads at four times the model's half-life
+    (a `lam` decay's fourth root, by two square roots) and the others at
+    the model's; `inf` stays `inf`."""
+    import json
+    import math
+
+    from polars_online import _polars_online as native
+    from polars_online import _spec
+
+    def stream(**kw):
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], **kw)
+        return json.loads(native.resolved_defaults(_spec._json(spec)))["stream"]
+
+    s = stream(half_life=60.0)
+    assert s["calibration_half_life"] == 240.0
+    assert s["breaks_half_life"] == s["robust_se_half_life"] == 60.0
+    assert stream(half_life=float("inf"))["calibration_half_life"] == "inf"
+    assert stream(lam=0.99)["calibration_half_life"] == {"lam": math.sqrt(math.sqrt(0.99))}
+    assert (
+        stream(half_life=60.0, emit_calibration=True, calibration_half_life=30.0)[
+            "calibration_half_life"
+        ]
+        == 30.0
+    )

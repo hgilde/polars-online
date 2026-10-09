@@ -2409,11 +2409,12 @@ autocorrelation and the metrics are read before the row updates them.**
 the slope of `y` regressed on `pred`, with `calibration_intercept`, and
 `calibration_wald` tests slope 1 and intercept 0 together: past 5.99 is
 the 5% level. Each switch of this kind keeps a memory of its own, its
-`*_half_life`: the model's half-life when left out, and `inf` to run once
-over the whole stream. Run once, the test is the classical F test, `wald /
-2`. Beside a fit that forgets, it is conservative, since the fit absorbs a
-miscalibration at its own pace, so give it a memory several times the
-model's (`po.spec`'s table has the measurements).
+`*_half_life`, and `inf` runs it once over the whole stream. Run once, the
+test is the classical F test, `wald / 2`. Beside a fit that forgets, it is
+conservative, since the fit absorbs a miscalibration at its own pace, so
+the calibration's memory defaults to four times the model's half-life: on
+a fit whose slope was 0.7 it flagged 42% of rows there and 5% at the
+model's own (`po.spec`'s table has the measurements).
 
 **`emit_breaks` says which part of the relationship broke.** `cusum`
 moves when the residuals take a mean, as when the intercept shifts;

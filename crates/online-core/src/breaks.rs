@@ -161,6 +161,24 @@ impl Breaks {
 /// `χ²(k)` on each row, `k` the coefficients compared. The slow factor is
 /// the fast one's fourth root, two square roots, which are exact in every
 /// libm: no platform's last bit enters the state.
+///
+/// Four, measured against two and eight beside `ewridge` at a half-life of
+/// 200 (200 streams of 3,000 rows, a break at row 1,500, the fast fit at
+/// the model's memory; first passage of `chi2(3)`'s 0.01% value, 21.1, as
+/// a median delay in rows):
+///
+/// ```text
+///              no break               intercept +0.5 sd       slope 1.0 -> 1.6
+///  slow   rows>5%  rows>1%  >21.1   rows>1%  >21.1 (delay)   rows>1%  >21.1 (delay)
+///   2x    4.60%    0.91%    0%      74%      100% (116)      82%      100% (88)
+///   4x    4.63%    0.86%    0%      92%      100% (122)      95%      100% (94)
+///   8x    4.70%    0.83%    0%      94%      100% (125)      96%      100% (96)
+/// ```
+///
+/// Each is calibrated with no break. Twice flags a break first by a few
+/// rows but holds it on fewer rows after it, and passed `chi2(3)`'s 0.1%
+/// value somewhere in 13% of the no-break streams against 9% at four and
+/// eight times; eight is four within the noise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TwinFit {
     /// EW moments of `(x_0, ..., x_{k-1}, y)` at the fast memory.

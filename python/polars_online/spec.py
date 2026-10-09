@@ -219,8 +219,9 @@ the diagnostics
     and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
-    clock units: the model instance's half-life when left out, and ``inf``
-    the run-once form, which forgets nothing.
+    clock units: when left out, four times the model instance's half-life
+    for the calibration and the instance's half-life for the others; ``inf``
+    is the run-once form, which forgets nothing.
 
 ``standardize``, which seven models take, defaults to ``False`` in
 ``ewridge``, ``huber``, ``quantile`` and ``sgd``, and to ``True`` in
@@ -571,10 +572,12 @@ The diagnostics add, per slot:
        and ``wald`` is ``chi2(2)`` as rows accrue: on calibrated fits it
        passed 5.99, its 5% value, in 5.0-7.0% of 400 streams. Beside a fit
        that forgets it is conservative, since the fit absorbs a
-       miscalibration at its own pace: at the model's memory it passed
-       5.99 on under 1% of rows, and on a fit whose slope was 0.7 on 5%.
-       A longer memory gives it back its power: 42% of rows at four times
-       the model's half-life, 89% run once. A run-once calibration keeps
+       miscalibration at its own pace, which is why its memory defaults to
+       four times the model's half-life. On a fit whose slope was 0.7 it
+       passed 5.99 on 5% of rows at the model's memory, on 42% at four
+       times it and on 89% run once; on calibrated fits, on 0.3-0.6% of
+       rows at the model's memory and 0-0.3% at four times. A run-once
+       calibration keeps
        the first predictions for good, so give ``min_weight`` a few rows
        per coefficient: from ``k + 1`` rows they dominated it.
    * - ``emit_breaks``

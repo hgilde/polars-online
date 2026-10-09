@@ -620,9 +620,11 @@ pub use window::{
 ///   move too and no loader is written.
 /// - 55 (2026-10-09, task 221): a bank's stream keeps the diagnostics with
 ///   a memory of their own beside the others, per model instance
-///   (`online_polars`' `Persisted::checks`): `Calibration`'s moments per
-///   slot. A spec that switches none on writes none, and its spec writes
-///   the new keys. Pre-1.0 no loader is written.
+///   (`online_polars`' `Persisted::checks`): `Calibration`'s moments and
+///   `Breaks`' sums per slot, `TwinFit`'s two fits per target, and
+///   `Sandwich`'s bread, meat, lag products and ring per slot. A spec that
+///   switches none on writes none, and its spec writes the new keys.
+///   Pre-1.0 no loader is written.
 pub const SCHEMA_VERSION: u32 = 55;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`

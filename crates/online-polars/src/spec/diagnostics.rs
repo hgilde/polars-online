@@ -64,9 +64,39 @@ impl Spec {
         }
     }
 
+    /// How many of the instance's half-lives a diagnostic's memory is when
+    /// its `*_half_life` is left out (task 221): 4 for the calibration, 1
+    /// for the others.
+    ///
+    /// The calibration's 4: a fit that forgets absorbs a miscalibration at
+    /// its own pace, so a calibration read at the fit's memory is
+    /// conservative. Measured beside `ewridge` at half-lives of 50 and 200
+    /// (400 streams of 3,000 rows), Wald's statistic passed 5.99, its 5%
+    /// value, on 0.3-0.6% of the rows of calibrated fits at 1x and on 0-0.3%
+    /// at 4x; on a weak fit whose slope was 0.7, on 5% of rows at 1x and
+    /// 42% at 4x (89% run once), and on one at 0.91, 2% and 4%. The breaks keep 1x: at 4x their `cusum`
+    /// passed 1.96 on 0.03% of rows with no break (0.6% at 1x) and found an
+    /// intercept break in 224 rows rather than 100, and `cusum_sq` a
+    /// variance break in 36 rather than 20 -- a longer memory only slowed
+    /// them.
+    pub fn memory_multiple(key: &str) -> u32 {
+        if key == "calibration_half_life" { 4 } else { 1 }
+    }
+
     /// A diagnostic's decay for the model instance decaying by `model`: its
-    /// own half-life where given, else the instance's (task 221).
-    pub fn diagnostic_decay(memory: Option<&Span>, model: Decay) -> Decay {
-        memory.map_or(model, |h| Decay::Halflife(h.value()))
+    /// own half-life where given, else `multiple` of the instance's, `inf`
+    /// staying `inf` (task 221). A `lam` decay's multiple of 4 is its fourth
+    /// root, two square roots, which every libm rounds exactly.
+    pub fn diagnostic_decay(memory: Option<&Span>, model: Decay, multiple: u32) -> Decay {
+        if let Some(h) = memory {
+            return Decay::Halflife(h.value());
+        }
+        match (model, multiple) {
+            (_, 1) => model,
+            (Decay::Halflife(h), m) => Decay::Halflife(h * f64::from(m)),
+            (Decay::Lam(l), 4) => Decay::Lam(l.sqrt().sqrt()),
+            (Decay::Lam(l), 2) => Decay::Lam(l.sqrt()),
+            (Decay::Lam(l), m) => Decay::Lam(l.powf(1.0 / f64::from(m))),
+        }
     }
 }

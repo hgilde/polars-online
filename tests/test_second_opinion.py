@@ -4614,6 +4614,7 @@ class TestAuditIsScipyAndStatsmodels:
         dlo, dhi = np.quantile(dev, [0.48, 0.52])
         assert dlo <= got["mad"] <= dhi
 
+
 def _calibration_rows(n: int, seed: int) -> pl.DataFrame:
     """A fit whose predictions are miscalibrated in warm-up and drift, with
     uneven weights and a zero now and then."""

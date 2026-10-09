@@ -2929,8 +2929,9 @@ pub struct Spec {
     /// every residual diagnostic, at the memory `calibration_half_life`.
     #[serde(default)]
     pub emit_calibration: bool,
-    /// The calibration's memory, in clock units: the model instance's own
-    /// half-life unless set, `inf` the run-once form, which forgets nothing.
+    /// The calibration's memory, in clock units: four times the model
+    /// instance's own half-life unless set ([`Spec::memory_multiple`] has the
+    /// measurement), `inf` the run-once form, which forgets nothing.
     #[serde(default)]
     pub calibration_half_life: Option<Span>,
     /// Emit `studentized_<slot>`, `cusum_<slot>`, `cusum_sq_<slot>` and
