@@ -742,14 +742,14 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file names 176
-equivalent mutants, in 174 entries, each with the reason no input can tell it from the
+`scripts/mutants_equivalent.toml` does not list. That file names 189
+equivalent mutants, in 187 entries, each with the reason no input can tell it from the
 original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
 **A survivor a test could tell apart only by a difference no caller can act
 on is tolerated, and listed apart** (task 158).
-`scripts/mutants_tolerated.toml` names 32, in 28 entries, each with its kind and the
+`scripts/mutants_tolerated.toml` names 34, in 30 entries, each with its kind and the
 measured size of the difference: last-bit rounding, a difference below the
 computation's own error (most are `boundary`'s solver stopping a settled
 solve, under 1e-7 where its grid error is 3e-5), an exact tie no input can
@@ -780,6 +780,7 @@ has the count by file. The triage, newest first:
 
 | scope | date | missed at the start | at the end |
 |---|---|---|---|
+| the 698 mutants the push to `103d721` left untested at the job's time limit, and the lines tasks 215 and 216 changed, in `kalman.rs`, `sgd.rs`, `pa.rs`, `rls.rs`, `robust.rs`, `stats.rs`, `lasso.rs` and the cluster summaries | 2026-10-08 (docs/PLAN.md task 220) | 71, run locally on the essentials tier | 55 caught by twenty-one new tests, 14 equivalent, 2 tolerated (rounding); and one of task 218's equivalents, `ewridge`'s `coef_variance` guard, was not: `Q ≤ W²` fails in doubles once `W²` underflows while `λ > 1/2` keeps `Q` at `2^-1074`, and a test now catches it |
 | the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 (docs/PLAN.md task 218) | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent; two of those went with the code that left a fit with no kept column NaN and `inf` live, where a resumed stream read its documented values |
 | `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 (docs/PLAN.md task 113) | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
 | the lines task 112 changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
