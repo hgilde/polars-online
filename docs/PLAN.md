@@ -9175,7 +9175,15 @@ tick, and that the series holding it up has a count near 1.
       (refuse, jitter, or project to the nearest PSD matrix) and the
       readiness statistics a definition; and each pair's weight is `k²`
       more state (a layout change). Measure the bias against listwise
-      deletion on data missing at random and not at random.
+      deletion on data missing at random and not at random. **Decided 2026-10-08** (the user: "Ok follow your reco on this",
+      without waiting for them): one guard in the stream, not every guard
+      as an option -- `refuse` (report the matrix as not positive
+      semi-definite, solve nothing) by default, plus the one repair that
+      measures best as a single opt-in value; the repairs that do not win
+      (nearest PSD, eigenvalue clipping, shrinkage) as `po.gram` functions
+      over an exported Gram, which cost the stream nothing; EM/FIML only as
+      the reference; and no pairwise Gram at all if listwise deletion
+      beats it on bias. The research round's numbers choose the repair.
 - [ ] 229. **A compact Gram** -- requested 2026-10-08. `bank.gram()`
       returns the full matrix in float64: 800 MB a block at 10,000 columns,
       30 GB for 38 weekly blocks. **The ask:** an option for `gram()` to
