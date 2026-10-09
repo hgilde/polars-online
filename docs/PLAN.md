@@ -9087,6 +9087,9 @@ tick, and that the series holding it up has a count near 1.
       a column null on most rows), how to fix it upstream with Polars
       (centre, difference, forward-fill or not, de-duplicate stamps, drop a
       sentinel), and the threshold `check` uses with its false-alarm rate.
+      Includes task 228's result: a missing feature drops the row for every
+      column of an accumulator; a running-mean fill is biased by 0.4-6
+      standard errors; why a pairwise-complete Gram was not built.
       Beside task 222's diagnostics section: that one asks whether the
       model is working, this one whether the data can be learned from.
       Written to `docs/WRITING.md`.
@@ -9162,7 +9165,7 @@ tick, and that the series holding it up has a count near 1.
       fit and t, which say how stable a coefficient is. **Check:** the same
       numbers as `po.gram.merge` then `po.gram.solve` on each subset. No
       state change.
-- [ ] 228. **Missing values per column in a Gram** -- requested 2026-10-08.
+- [x] 228. **Missing values per column in a Gram** -- requested 2026-10-08.
       A row with one missing feature is skipped for every column of the
       accumulator: measured on 0.12.0, gaps in 30% of one feature's rows
       drop 30% of the rows for all of them; at 1,000 to 2,000 columns in one
@@ -9184,6 +9187,25 @@ tick, and that the series holding it up has a count near 1.
       over an exported Gram, which cost the stream nothing; EM/FIML only as
       the reference; and no pairwise Gram at all if listwise deletion
       beats it on bias. The research round's numbers choose the repair.
+      *Closed 2026-10-08, not built, by that rule* (research round,
+      read-only; tables in the session scratchpad `w9/r228/`). Listwise
+      deletion is unbiased whenever the gap does not depend on `y`; the
+      pairwise Gram is biased on the gapped feature's slope by 0.6-19
+      standard errors whenever the gap depends on another feature, the
+      target or the feature itself (at 30% missing, ρ 0.9: -4.6 sd when
+      driven by another feature at p 3, -5.8 when by its own value, -14.2
+      when by `y`). It is indefinite in 62-100% of wide, correlated cells
+      (p 20-200, ρ 0.9, 30% in every feature); every guard that keeps it
+      usable is a ridge (a floor of 0.1 in correlation form; a repair to
+      the PSD boundary alone gave risk ~2e3), and it moves no bias; and
+      `error_inflation` and `edf` cannot see any of it (1.03-1.05 shown
+      against 13.5 realized). Cost: 3.6-6.1 times a row, 1.5-3.5 times the
+      state. Its gain is real only under MCAR at width (risk 1.03-1.4 at
+      p 1,000), where listwise keeps no rows. What follows: the docs say a
+      missing feature drops the row for every column and that a running-
+      mean fill is biased (0.4-6 sd) -- in task 224's page and task 223's
+      `missing` finding; an online-EM imputation, the one option that
+      measured unbiased under MAR, is task 230, the user's call.
 - [ ] 229. **A compact Gram** -- requested 2026-10-08. `bank.gram()`
       returns the full matrix in float64: 800 MB a block at 10,000 columns,
       30 GB for 38 weekly blocks. **The ask:** an option for `gram()` to
@@ -9195,6 +9217,17 @@ tick, and that the series holding it up has a count near 1.
       separately. **Check:** float32 output within float32 rounding of the
       float64; the triangle form expands to today's matrix exactly;
       `po.gram.merge`/`solve` take either form.
+- [ ] 230. **Online-EM imputation for missing features -- an idea, the
+      user's call** (from task 228's research, 2026-10-08). Impute
+      `E[x_M | x_O] = μ_M − Λ_MM⁻¹ Λ_MO (x_O − μ_O)` from the Gram's own
+      precision matrix `Λ`, refreshed on a schedule, and add `Λ_MM⁻¹` to the
+      missing block (Cappé and Moulines 2009): a plain Gram of imputed
+      rows, PSD by construction, unbiased under MAR in the limit. A Python
+      replica measured risk 1.0-1.2 at p 200 (unguarded pairwise 885) but a
+      warm-up bias of 0.5-3.9 sd; `Λ` in the state is `k²` more, and the
+      refresh a cadence to choose. Next step if wanted: a measured Rust
+      replica (warm-up bias, cadence, cost at k 1,000-2,000) before any
+      design.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
