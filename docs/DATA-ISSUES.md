@@ -743,7 +743,7 @@ noise does.
 | code | severity | fires when |
 |---|---|---|
 | `duplicate` | warning | from an audit with `pairs=True`: two columns correlate at 0.999 or more |
-| `collinear` | warning | the largest variance inflation factor, or Belsley's condition index, over an `ewridge`'s or `lasso`'s features passes 30; `info` for an `ew_cov`. It is checked once the Gram holds ten Kish rows a coefficient |
+| `collinear` | warning | the largest variance inflation factor, or the condition index of the design the model solves, over an `ewridge`'s or `lasso`'s features passes 30; `info` for an `ew_cov`. It is checked once the Gram holds ten Kish rows a coefficient |
 
 Clean designs reached a variance inflation factor of 5.6 and a condition
 index of 7.6, with ten features correlated at 0.8. A near-duplicate
@@ -761,8 +761,15 @@ coefficient's standard error is 22 times what it would be alone.
 Belsley's condition indexes find a dependency among three or more columns
 that no single pair shows (Belsley, Kuh and Welsch 1980). Each is the
 square root of the ratio of the scaled design's largest eigenvalue to one
-of the others. `po.gram.vif` and `po.gram.condition` compute both
-from a saved Gram.
+of the others. `check()` reads the design each model solves. A model with
+an intercept centres its features, so its design is their correlation
+matrix, and two independent features that share a level are not
+collinear: two at 5,000 and 3,000 read 1.0 where the uncentred index read
+5,061. A model fitted through the origin (`fit_intercept=False`) solves
+the raw design, where those two are nearly proportional, so it reads
+Belsley's uncentred index, which `po.gram.condition` computes, since
+centring would hide a dependency on the constant. `po.gram.vif` computes
+the factors from a saved Gram.
 
 The recipe records one quantity twice, in dollars as `x0` and in cents as
 `x2`, with a little noise of its own in `x2`.

@@ -11,6 +11,7 @@ from.
 from __future__ import annotations
 
 import builtins
+import warnings
 
 import numpy as np
 import polars as pl
@@ -20,6 +21,7 @@ import check_streams as cs
 import polars_online as po
 from polars_online import _check
 from polars_online import _polars_online as _native
+from polars_online import gram as pg
 
 TIER = "essential"
 
@@ -209,6 +211,48 @@ class TestValues:
         assert set(f["spec"]) == {"ridge", "pairs"}, f
         assert set(f["severity"]) == {"warning"}, f
         assert "random walk" in f["message"][0]
+
+    def test_collinear_reads_the_design_the_model_solves(self):
+        """Two independent features at levels of 5,000 and 3,000: a model
+        that centres them solves the correlation matrix, condition index 1,
+        and is told nothing (review 6, G-2: the uncentred index without the
+        intercept read 5,061 and warned). A model with no intercept solves
+        the raw design, where the two are nearly proportional, and is told.
+        The value is the index the model's design reads."""
+        rng = np.random.default_rng(0)
+        n = 20_000
+        p1, p2 = 5000 + rng.standard_normal(n), 3000 + rng.standard_normal(n)
+        df = pl.DataFrame({"p1": p1, "p2": p2, "y": 0.5 * (p1 - 5000) + rng.standard_normal(n)})
+        c = dict(targets=["y"], features=["p1", "p2"], half_life=500.0)
+        specs = [
+            po.spec.ewridge("ewridge", **c),
+            po.spec.lasso("lasso", lasso_path=[1e-3], **c),
+            po.spec.ew_cov("ew_cov", features=["p1", "p2"], half_life=500.0),
+            po.spec.ewridge("through_origin", fit_intercept=False, **c),
+        ]
+        bank = po.ModelBank(specs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            bank.fit(df)
+        f = bank.check().filter(code="collinear")
+        assert set(f["spec"]) == {"through_origin"}, f
+        g = bank.gram("through_origin")[0]
+        want = max(pg.condition(g, features=["p1", "p2"])["kappa"], *pg.vif(g))
+        assert f["value"][0] == pytest.approx(want, rel=1e-12)
+        assert f["value"][0] > _check.COLLINEAR
+
+    def test_collinear_in_a_centring_model_is_the_correlations_condition(self):
+        """For a model that centres, the condition index is the square root of
+        the correlation matrix's largest eigenvalue over its smallest:
+        Belsley's index of the centred, column-scaled design."""
+        df, _ = cs.planted_collinear(0)
+        bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=cs.FEATURES, lam=1.0)])
+        bank.fit(df)
+        row = bank.check().filter(code="collinear").row(0, named=True)
+        g = bank.gram("m")[0]
+        d = np.linalg.eigvalsh(pg.correlation(pg.subset(g, cs.FEATURES)))
+        want = max(float(np.sqrt(d[-1] / d[0])), *pg.vif(g))
+        assert row["value"] == pytest.approx(want, rel=1e-9)
 
     def test_a_target_missing_by_design_is_information_only(self):
         df, specs = cs.clean_sparse_target(0)

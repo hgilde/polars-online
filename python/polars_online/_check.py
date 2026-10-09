@@ -681,6 +681,12 @@ def _gram_findings(
 
     kind = spec["model"]["type"]
     features = list(spec["features"])
+    # The condition index of the design the model solves (review 6, G-2): a
+    # model that centres its features solves their correlation matrix, so
+    # its index is Belsley's of the centred design, and a level two columns
+    # share is no collinearity; one with no intercept solves the raw
+    # design, Belsley's uncentred index.
+    centres = kind == "ew_cov" or spec.get("fit_intercept", True)
     worst_vif: dict[str | None, tuple[float, str, str]] = {}
     worst_leak: dict[tuple[str | None, str, str], float] = {}
     for g in bank.gram(i, keys):
@@ -691,7 +697,11 @@ def _gram_findings(
             continue
         if len(live) >= 2:
             vif = np.asarray(pg.vif(g, features=live), dtype=float)
-            kappa = pg.condition(g, features=live)["kappa"]
+            if centres:
+                d = np.linalg.eigvalsh(pg.correlation(pg.subset(g, live)))
+                kappa = math.sqrt(d[-1] / d[0]) if d[0] > 0.0 else math.inf
+            else:
+                kappa = pg.condition(g, features=live)["kappa"]
             j = int(np.argmax(vif))
             stat = max(float(vif[j]), float(kappa))
             if stat > COLLINEAR:

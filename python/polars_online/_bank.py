@@ -1736,9 +1736,13 @@ class ModelBank:
                coefficient
            * - ``collinear``
              - warning
-             - the largest variance inflation factor or Belsley's condition
-               index over the features passes 30, from the Gram of an
-               ``ewridge`` or ``lasso`` (information for an ``ew_cov``)
+             - the largest variance inflation factor, or the condition index
+               of the design the model solves, over the features passes 30,
+               from the Gram of an ``ewridge`` or ``lasso`` (information for
+               an ``ew_cov``). A model with an intercept centres, so its index
+               is the features' correlation matrix's, ``sqrt(d_max / d_min)``;
+               one fitted through the origin reads Belsley's uncentred index
+               (:func:`polars_online.gram.condition`)
            * - ``leakage``
              - warning
              - a feature correlates with a target at 0.9999 or more, from
@@ -1851,7 +1855,9 @@ class ModelBank:
         Where a line sits:
 
         - ``collinear``: clean designs reached a VIF of 5.6 and a condition
-          index of 7.6 (ten features correlated at 0.8). A near-duplicate
+          index of 7.6 (ten features correlated at 0.8). Two independent
+          features at levels of 5,000 and 3,000 read 1.0 in a model that
+          centres, where the uncentred index reads 5,061. A near-duplicate
           ``x0 + 0.1 * N(0, 1)`` (a correlation of 0.995) reads 92 to 113;
           at ``0.3`` (0.957 to 0.963) it reads 10.9 to 13.7 and is not
           flagged.
