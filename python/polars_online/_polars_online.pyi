@@ -89,6 +89,7 @@ class ModelBank:
         group: list[str | None] | None = None,
         float32: bool = False,
         packed: bool = False,
+        columns: list[str] | None = None,
     ) -> list[
         tuple[
             tuple[

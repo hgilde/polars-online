@@ -1181,6 +1181,13 @@ class ModelBank:
             relative, about 6e-8, and a solve read from it carries that error times
             the system's condition number. The other arrays stay float64: they are
             ``k`` long, and the means are what a merge's spread term is made of.
+            An entry float32 cannot hold to that precision is refused with a
+            ``ValueError`` naming its column: one past float32's largest number,
+            about 3.4e38, which would read ``inf``, and a nonzero one below its
+            smallest normal number, about 1.2e-38, which would read 0 or keep
+            fewer digits. A column spread 1e20 wide, or 1e-20, gets there, as
+            its variance squares the scale. Rescale it upstream, or read the
+            Gram in float64.
         ``layout="packed"``
             ``comoments`` as its upper triangle with the diagonal, row by row, a
             1-D array of ``k * (k + 1) // 2``: about half the bytes. Entry ``(i,
@@ -1298,7 +1305,7 @@ class ModelBank:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
         out = []
-        native = self._native.gram(idx, _group_keys(group), float32, packed)
+        native = self._native.gram(idx, _group_keys(group), float32, packed, columns)
         for row, lag, (tidx, by_target, centred) in native:
             g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]

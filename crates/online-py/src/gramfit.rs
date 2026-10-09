@@ -75,6 +75,77 @@ pub(crate) fn matrix_bytes<'py>(
     PyByteArray::new(py, &bytes)
 }
 
+/// What float32 makes of `x`, where it is not the float64 to float32's
+/// precision: `Some("past ...")` for a finite value that rounds to
+/// infinity, `Some("below ...")` for a nonzero one that rounds below
+/// float32's smallest normal number, to a subnormal or to zero; `None`
+/// otherwise (review 6, E-3).
+fn f32_trouble(x: f64) -> Option<&'static str> {
+    if x == 0.0 || !x.is_finite() {
+        return None;
+    }
+    let f = x as f32;
+    if f.is_infinite() {
+        Some("past float32's largest number, 3.4e38, where it reads inf")
+    } else if f.abs() < f32::MIN_POSITIVE {
+        Some(
+            "below float32's smallest normal number, 1.2e-38, where it keeps fewer \
+             digits, or none",
+        )
+    } else {
+        None
+    }
+}
+
+/// Refuse a co-moment matrix `ModelBank.gram(dtype="float32")` would hand
+/// over wrong (review 6, E-3): an entry float32 rounds to infinity, or below
+/// its normal range, where it is no longer the float64 to within `2^-24`
+/// relative. `v` is `k × k` row-major, or `lags.len()` such matrices one
+/// after another for a lagged one; `names` are the Gram's columns, which
+/// the message names.
+pub(crate) fn check_float32(
+    v: &[f64],
+    k: usize,
+    lags: Option<&[usize]>,
+    names: &[String],
+) -> PyResult<()> {
+    let Some((at, why)) = v
+        .iter()
+        .enumerate()
+        .find_map(|(at, &x)| f32_trouble(x).map(|why| (at, why)))
+    else {
+        return Ok(());
+    };
+    let (i, j) = ((at / k) % k, at % k);
+    let name = |c: usize| {
+        names
+            .get(c)
+            .map_or_else(|| format!("column {c}"), |n| format!("'{n}'"))
+    };
+    let pair = if i == j {
+        format!("{} with itself", name(i))
+    } else {
+        format!("{} and {}", name(i), name(j))
+    };
+    let what = match lags {
+        None => format!("the co-moment of {pair}"),
+        Some(l) => format!(
+            "the lag-{} co-moment of {pair}",
+            l.get(at / (k * k)).copied().unwrap_or_default()
+        ),
+    };
+    let fix = if i == j {
+        name(i)
+    } else {
+        "those columns".to_string()
+    };
+    Err(PyValueError::new_err(format!(
+        "gram(dtype=\"float32\"): {what} is {:.3e}, {why}: rescale {fix} upstream, or read the \
+         Gram in float64",
+        v[at]
+    )))
+}
+
 fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f64>> {
     PyBuffer::<f64>::get(obj)
         .and_then(|b| b.to_vec(py))

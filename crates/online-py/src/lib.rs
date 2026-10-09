@@ -497,22 +497,35 @@ impl PyModelBank {
     /// flat tuples the Python layer reshapes into numpy arrays: see
     /// [`GramRow`]. `float32` writes the co-moment matrices (and the lagged
     /// ones) as float32, and `packed` the co-moments' upper triangle with the
-    /// diagonal, row by row (task 229).
-    #[pyo3(signature = (spec, group=None, float32=false, packed=false))]
+    /// diagonal, row by row (task 229). Under `float32` an entry float32
+    /// would round to infinity or below its normal range is refused,
+    /// naming the column from `columns`, the Gram's axes (review 6, E-3).
+    #[pyo3(signature = (spec, group=None, float32=false, packed=false, columns=None))]
     fn gram<'py>(
         slf: &Bound<'py, Self>,
         spec: usize,
         group: Option<Vec<Option<String>>>,
         float32: bool,
         packed: bool,
+        columns: Option<Vec<String>>,
     ) -> PyResult<Vec<GramRowWithLags<'py>>> {
         let py = slf.py();
         let this = slf.try_borrow().map_err(|_| busy("gram"))?;
         let bytes = |v: &[f64]| gramfit::matrix_bytes(py, v, float32);
-        Ok(this
+        let grams = this
             .inner
             .gram(spec, keys(group).as_deref())
-            .map_err(PyValueError::new_err)?
+            .map_err(PyValueError::new_err)?;
+        if float32 {
+            let names = columns.unwrap_or_default();
+            for g in &grams {
+                gramfit::check_float32(&g.comoments, g.k, None, &names)?;
+                if let (Some(lags), Some(l)) = (&g.lags, &g.lag_comoments) {
+                    gramfit::check_float32(l, g.k, Some(lags), &names)?;
+                }
+            }
+        }
+        Ok(grams
             .into_iter()
             .map(|g| {
                 let m = g.targets.len();

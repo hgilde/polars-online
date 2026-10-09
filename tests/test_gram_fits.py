@@ -659,6 +659,52 @@ class TestCompactGram:
             assert len(path) == 3
 
     @pytest.mark.parametrize(
+        ("scale", "says"),
+        [
+            (1e-25, "below float32's smallest normal number"),
+            (1e20, "past float32's largest number"),
+        ],
+    )
+    @pytest.mark.parametrize("layout", ["full", "packed"])
+    def test_an_entry_outside_float32s_range_is_refused_by_name(self, scale, says, layout):
+        """A co-moment that float32 would flush to zero, or below its normal
+        range, or round to infinity is refused, naming the column (review 6,
+        E-3: a column at 1e-25 read a variance of 0, one at 1e20 inf, and
+        the solves went on silently wrong). float64 hands it over."""
+        rng = np.random.default_rng(0)
+        n = 500
+        x = rng.normal(size=(n, 2)) * [scale, 1.0]
+        df = pl.DataFrame({"x0": x[:, 1], "x1": x[:, 0], "y": x[:, 1] + rng.normal(size=n)})
+        bank = po.ModelBank([po.spec.ewridge("r", targets=["y"], features=["x0", "x1"], lam=1.0)])
+        bank.fit_predict(df)
+        (g,) = bank.gram("r", layout=layout)
+        assert np.isfinite(g["comoments"]).all()
+        with pytest.raises(ValueError, match=f"'x1'.*{says}"):
+            bank.gram("r", dtype="float32", layout=layout)
+        lagged = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
+        lagged.fit_predict(df)
+        with pytest.raises(ValueError, match=says):
+            lagged.gram("c", dtype="float32")
+
+    def test_a_lagged_entry_outside_float32s_range_is_refused_by_name(self):
+        """A lagged co-moment is held to the same range: at 3e-19, ``x1``'s
+        variance, 8.7e-38, is a float32 normal number and its lag-1
+        co-moment, 3.8e-39, is not."""
+        rng = np.random.default_rng(0)
+        x = rng.normal(size=(500, 2)) * [1.0, 3e-19]
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
+        bank = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0, lags=[1])])
+        bank.fit_predict(df)
+        (g,) = bank.gram("c")
+        assert np.float32(g["comoments"][1, 1]) >= np.finfo(np.float32).tiny
+        with pytest.raises(ValueError, match="lag-1 co-moment of 'x1' with itself"):
+            bank.gram("c", dtype="float32")
+        no_lags = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], lam=1.0)])
+        no_lags.fit_predict(df)
+        (h,) = no_lags.gram("c", dtype="float32")
+        assert h["comoments"][1, 1] == np.float32(g["comoments"][1, 1])
+
+    @pytest.mark.parametrize(
         ("kw", "match"),
         [
             (dict(dtype="float16"), 'dtype must be "float64" or "float32"'),
