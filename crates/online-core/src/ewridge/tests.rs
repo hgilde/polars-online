@@ -4878,6 +4878,30 @@ fn a_fit_with_no_kept_column_reads_as_the_intercept_alone_live_and_resumed() {
 
 // ---- gram_threads (docs/PLAN.md task 225) ----
 
+/// The Grams' threads reach every Gram the model keeps: each of the main
+/// accumulator's (two, under `own_rows` with a target missing) and the slow
+/// twin's under `session_shrink`. `gram_threads_moves_no_bit` holds that
+/// they move nothing, which a count that never arrived would pass too.
+#[test]
+fn gram_threads_reach_every_gram_the_slow_twins_too() {
+    let mut c = cfg(2, 2);
+    c.decay = Decay::Halflife(50.0);
+    c.session_shrink = Some(0.5);
+    c.long_half_life = Some(1_000.0);
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    m.step(&[1.0, 2.0], &[Some(1.0), None], 1.0, 1.0);
+    m.set_gram_threads(4);
+    let slow = m.slow.as_ref().expect("a slow twin");
+    let grams: Vec<&EwCov> = m.acc.grams.grams.iter().chain(&slow.grams.grams).collect();
+    assert!(m.acc.grams.grams.len() >= 2, "own_rows split no Gram off");
+    assert!(
+        grams.iter().all(|g| g.threads() == 4),
+        "{:?}",
+        grams.iter().map(|g| g.threads()).collect::<Vec<_>>()
+    );
+}
+
 /// The Grams' threads move no bit of anything the model reports: each
 /// row's predictions, the coefficients and every Gram, blocked and per row,
 /// under `own_rows` with two targets missing on different rows (so a Gram

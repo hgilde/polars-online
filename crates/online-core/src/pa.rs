@@ -1691,6 +1691,7 @@ mod tests {
             m.step(&x, &[Some(x[0] - x[1])], 1.0, w);
             let now = w2 > 0.0 && w1 * w1 / w2 >= crate::WARMUP_ROWS;
             assert_eq!(m.warmup().switched(), now, "row {i}");
+            assert_eq!(m.scaler_warming(), !now, "row {i}");
             if now && switch.is_none() {
                 switch = Some(i);
             }
@@ -1702,6 +1703,7 @@ mod tests {
         let mut raw = Pa::new(c).unwrap();
         raw.step(&[1.0, 2.0], &[Some(1.0)], 0.0, 1.0);
         assert_eq!(raw.warmup(), &Warmup::default());
+        assert!(!raw.scaler_warming(), "no scaler, no warm-up");
     }
 
     /// A step held in the caller's units is formed whole before anything

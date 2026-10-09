@@ -2455,7 +2455,13 @@ mod tests {
                 }
             }
             assert_eq!(m.warmup().switched(), held, "row {i}");
+            assert_eq!(m.scaler_warming(), !held, "row {i}");
         }
+        let mut raw_cfg = cfg(3, SgdLoss::Squared);
+        raw_cfg.standardize = false;
+        let mut raw = Sgd::new(raw_cfg).unwrap();
+        raw.step(&[1.0, 2.0, 3.0], &[Some(1.0)], 0.0, 1.0);
+        assert!(!raw.scaler_warming(), "no scaler, no warm-up");
         let got = &m.coefficients()[0];
         for f in 0..3 {
             assert!(
