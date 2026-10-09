@@ -86,9 +86,45 @@ impl Spec {
 
     /// Newey and West's lags for the diagnostics under a horizon: twice it,
     /// as `se_coef_hac`'s default ([`Self::robust_se_lags_or_default`] has
-    /// the measurement behind twice), `0` without one (task 232 (3)).
+    /// the measurement behind twice), `0` without one (task 232 (3)). A
+    /// horizon read from `embargo` gives at most [`NW_LAG_CAP`] (task 232
+    /// (14)); `horizon_rows`, given, gives twice it whatever it costs.
     pub fn nw_lags(&self) -> usize {
-        (2 * self.horizon()).min(online_core::MAX_LAG)
+        let lags = (2 * self.horizon()).min(online_core::MAX_LAG);
+        if self.horizon_rows.is_some() {
+            lags
+        } else {
+            lags.min(NW_LAG_CAP)
+        }
+    }
+
+    /// The Newey-West lags a horizon read from `embargo` asks for, and the
+    /// notice that they were capped at [`NW_LAG_CAP`] (task 232 (14); review
+    /// round 6, F-7), where a diagnostic reads them.
+    pub fn lag_cap_notices(&self) -> Vec<String> {
+        if self.horizon_rows.is_some() || self.horizon_readers().is_empty() {
+            return Vec::new();
+        }
+        let asked = 2 * self.horizon();
+        // `robust_se_lags` given sets `se_coef_hac`'s own lags: alone, it
+        // leaves nothing capped.
+        let robust_only = self.robust_se_lags.is_some()
+            && self
+                .horizon_readers()
+                .iter()
+                .all(|(n, _)| *n == "emit_robust_se");
+        if asked <= NW_LAG_CAP || robust_only {
+            return Vec::new();
+        }
+        vec![format!(
+            "embargo reads as a horizon of {} rows, whose Newey-West lags would be {asked}: \
+             the diagnostics take {NW_LAG_CAP}, the cap on lags read from embargo, since each \
+             slot keeps a sum of (k + 1)^2 numbers per lag (at {asked} lags and 10 features, \
+             {:.1} MB a slot for each of se_coef_hac and Breusch-Pagan). Give horizon_rows to \
+             take them all, or robust_se_lags for se_coef_hac's alone (docs/DIAGNOSTICS.md).",
+            self.horizon(),
+            (asked * 121 * 8) as f64 / 1e6
+        )]
     }
 
     /// The diagnostics that read the horizon and are on: each switch's
@@ -199,7 +235,7 @@ impl Spec {
         }
         match (&self.clock, &self.embargo) {
             (None, Some(Span::Units(h))) if h.is_finite() && *h > 0.0 => {
-                ((2.0 * h).ceil() as usize).min(online_core::MAX_LAG)
+                ((2.0 * h).ceil() as usize).min(NW_LAG_CAP)
             }
             _ => 0,
         }
@@ -308,6 +344,15 @@ impl Spec {
         }
     }
 }
+
+/// The most Newey-West lags a horizon read from `embargo` gives (task 232
+/// (14); review round 6, F-7): each lag costs a slot a sum of `(k + 1)²`
+/// numbers in `se_coef_hac`'s sandwich and Breusch and Pagan's, 16 in
+/// RESET's, 4 in the calibration's and 2 in each CUSUM's, so an embargo of
+/// 5,000 rows asked 40 MB a slot. 64 lags cover a horizon of 32 rows at
+/// twice it; a spec that wants more gives `horizon_rows`, or
+/// `robust_se_lags` for `se_coef_hac`'s alone, and a notice says so.
+pub const NW_LAG_CAP: usize = 64;
 
 /// The half-life whose exponential weights have the Kish size of a window
 /// of `w` -- rows, or clock units on a clock (`clocked`) -- under the

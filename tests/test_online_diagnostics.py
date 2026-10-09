@@ -1060,3 +1060,37 @@ def test_a_quantile_fits_calibration_is_its_coverage(q, build):
     assert late["calibration_coverage_y"].median() == pytest.approx(q, abs=0.03)
     assert (late["calibration_wald_y"].drop_nulls() > 3.841).mean() < 0.1
     assert (late["cusum_y"].drop_nulls().abs() > 1.96).mean() < 0.1
+
+
+# --- the rest (task 232 (14)) -------------------------------------------------
+
+
+def test_lags_read_from_an_embargo_are_capped():
+    """An embargo of 100 rows asked Newey and West's 200 lags, and each lag
+    costs a slot a sum of `(k + 1)²` numbers: an embargo of 5,000 rows
+    asked 40 MB a slot (review round 6, F-7). Lags read from `embargo` stop
+    at 64, with a notice that names the way to more; `horizon_rows`, given,
+    takes them all, and `robust_se_lags` sets `se_coef_hac`'s alone."""
+    kw = dict(targets=["y"], features=["x0", "x1"], half_life=60.0, emit_robust_se=True)
+    capped = po.spec.ewridge("m", embargo=100.0, emit_breaks=True, **kw)
+    assert _resolved(capped)["robust_se_lags"] == 64
+    with pytest.warns(po.ReadinessWarning, match="horizon_rows to take them all"):
+        po.ModelBank([capped]).fit_predict(_frame().drop("w"))
+    full = po.spec.ewridge("m", embargo=100.0, horizon_rows=100, **kw)
+    assert _resolved(full)["robust_se_lags"] == 200
+    import warnings
+
+    for quiet in (full, po.spec.ewridge("m", embargo=30.0, **kw)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            po.ModelBank([quiet]).fit_predict(_frame().drop("w"))
+    own = po.spec.ewridge("m", embargo=100.0, robust_se_lags=150, **kw)
+    assert _resolved(own)["robust_se_lags"] == 150
+
+
+def test_feature_health_is_refused_for_what_it_reads():
+    """Feature health reads no residual, so its refusal on a model with no
+    prediction says what it does read, where it said "no residuals"
+    (review round 6, F-8)."""
+    with pytest.raises(ValueError, match="watches the features a fit's coefficients lean on"):
+        po.spec.ew_cov("c", features=["x0", "x1"], half_life=10.0, emit_feature_health=True)

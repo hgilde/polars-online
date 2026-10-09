@@ -785,6 +785,14 @@ so once, in a `ReadinessWarning`. Under a horizon of `h` rows:
 | `ljung_box` | tests lags `h` to `h + L − 1` against Bartlett's covariance past an `MA(h − 1)` |
 | `breusch_pagan`, `reset` | Wald's test of the same coefficients with Newey and West's variance at `2h` lags, from the residual under each null |
 
+**Lags read from `embargo` stop at 64.** Each lag costs a slot a sum of
+`(k + 1)²` numbers in `se_coef_hac`'s sandwich and in Breusch and Pagan's,
+16 in RESET's, 4 in the calibration's and 2 in each CUSUM's, so an embargo
+of 5,000 rows asked 40 MB a slot. 64 lags cover a horizon of 32 rows at
+twice it; past that a `ReadinessWarning` says so, and `horizon_rows`, given,
+takes twice its value in lags whatever they cost (`robust_se_lags` sets
+`se_coef_hac`'s alone).
+
 On a five-row look-ahead target against two AR(1) features at 0.5 to 0.95,
 with nothing missing, over 30 streams of 4,000 rows, the plain forms passed
 their 5% values on these shares of rows 1,500 to 3,999, and the horizon's
@@ -1182,7 +1190,10 @@ recursive residual, and `s` the spread of those before it at
 `OLSInfluence.dffits` at the last row of the rows so far, to 7e-11. It is
 not the in-sample DFFITS of an earlier row, which reads the rows after it
 too. It costs 145 ns a row at 5 features, and only `ewridge`, `rls` and
-`kalman` take it, the models that read a row's leverage.
+`kalman` take it, the models that read a row's leverage. Under `embargo` a
+row is folded at its release with the residual and the error inflation it
+was scored with, so its influence is the move it made against the fit that
+predicted it.
 
 The recipe plants three bad prints in 10,000 rows, each with `x0` six
 spreads out and `y` six noise sds off the line:
@@ -1276,6 +1287,11 @@ themselves, before any coefficient moves.
 | memory | the fit's memory by default; refused where that is `inf` (run once, with no window), since both memories would be the whole stream |
 | threshold | `spread_ratio` outside 0.5 to 2: no row of a clean feature at a half-life of 200, independent or AR(1) at 0.95. `\|mean_shift\| > 0.3`: every move of one spread, within 190 rows; 6% of rows of an AR(1) feature at 0.95, and 0.03% above 0.5 |
 | cost, models | 36 ns a row at 5 features; the nine linear models with features |
+
+Under `embargo` the features fold when their row is released, with the
+row's target, so the fields lag the feed by the embargo: on a feed frozen
+at row 1,500 at a half-life of 20, the ratio fell below 0.5 at row 1,547,
+and at row 1,646 under an embargo of 100 rows.
 
 The recipe holds `x1` at its last value for 3,000 rows, as a feed that
 stopped would, and fits `rls`:

@@ -481,7 +481,8 @@ The diagnostics add, per slot:
        statsmodels' ``cov_type="HC0"`` and ``"HAC"``, and on 3,000 rows
        under a 5- to 20-row embargo 2-9% above. The lags default to twice the
        target's horizon in rows: ``horizon_rows``, or ``embargo`` on a spec
-       with no clock column, ``0`` otherwise. On a target summing the next ``h`` rows'
+       with no clock column (then at most 64, with a notice past it: each
+       lag costs a slot ``(k + 1)**2`` numbers), ``0`` otherwise. On a target summing the next ``h`` rows'
        shocks against a persistent feature, the coefficient's true spread
        was 2.1-2.3 times ``se_coef`` at ``h = 5`` and 3.1-4.2 times at
        ``h = 20`` (``sqrt(h)`` is 2.2 and 4.5), and ``se_coef_hac`` read

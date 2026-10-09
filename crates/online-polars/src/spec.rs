@@ -4212,9 +4212,18 @@ impl Spec {
                 ("emit_selected", self.emit_selected),
             ];
             if let Some((flag, _)) = asked.iter().find(|(_, on)| *on) {
+                // Feature health reads no residual: it watches the features
+                // a fit's coefficients lean on (task 232 (14); review round
+                // 6, F-8).
+                let why = if *flag == "emit_feature_health" {
+                    "it watches the features a fit's coefficients lean on, and this model fits \
+                     no target; a feature's own health is ModelBank.check()'s and \
+                     po.spec.audit's"
+                } else {
+                    "it has no predictions, so no residuals"
+                };
                 return Err(format!(
-                    "spec {:?}: {flag} does not apply to {} (it has no predictions, so no \
-                     residuals)",
+                    "spec {:?}: {flag} does not apply to {} ({why})",
                     self.name,
                     self.model.kind_name()
                 ));

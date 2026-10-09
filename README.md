@@ -2339,9 +2339,10 @@ Judge a model as the stream runs, by switching diagnostics on in its spec,
 or after the run, by passing its output to `po.eval`. A spec's diagnostics
 and selection measure each row against what the models learned before it,
 never against the row's own outcome. Their memory does not grow with the
-stream. Every switch but `emit_clocks` reads the residuals, so only the ten
-[linear models](#linear-models), which predict a target, take them, and
-any other model refuses them by name. A switch adds its fields to the
+stream. Every switch but `emit_clocks` and `emit_feature_health` reads the
+residuals, and feature health reads the features a fit's coefficients lean
+on, so only the ten [linear models](#linear-models), which predict a
+target, take them, and any other model refuses them by name. A switch adds its fields to the
 spec's output, one per *slot*: one prediction of one target, at one point
 of a grid.
 
