@@ -2040,3 +2040,28 @@ line_has = "let x: Vec<f64> = if w > 0.0 {"
 why = """at `w = 0` the mutant passes the row as it came where the original \
 passes zeros; `EwDiag::update` takes no step at a weight of 0 (`b = 0`) \
 and reads no value of the row, so both leave the same moments"""
+
+[[equivalent]]
+file = "crates/online-core/src/breaks.rs"
+function = "Breaks::update"
+mutation = "replace > with >="
+line_has = "if self.lags > 0 {"
+why = """both lines: at `lags = 0` the mutant pushes the row's term onto its \
+ring and truncates the ring to 0 at once; the ring is empty before the \
+loop over it, so no product is added and the ring stays empty"""
+
+[[equivalent]]
+file = "crates/online-core/src/breaks.rs"
+function = "TwinFit::gram"
+mutation = "replace * with +"
+line_has = "g[a + 1] = w * dev[a];"
+why = """the Gram's first row, above the diagonal: `inverse` hands the Gram \
+to `solve_spd`, whose factorization reads the lower triangle alone \
+(`solve.rs`, `factorize`), where the line below writes the same value"""
+
+[[equivalent]]
+file = "crates/online-core/src/breaks.rs"
+function = "TwinFit::gram"
+mutation = "replace * with /"
+line_has = "g[a + 1] = w * dev[a];"
+why = "as `replace * with +` here: the upper triangle is never read"

@@ -1051,4 +1051,273 @@ mod tests {
         assert!(u.wald(&[0], false, 1.0).unwrap() > 10.0);
         assert!(u.wald(&[], false, 1.0).is_none(), "nothing to compare");
     }
+
+    /// On a quantile fit the CUSUM by its definition: `Σ ω c / sqrt(Σ ω²)`
+    /// over the rows with an indicator `c`, from every such row at its
+    /// present weight, under a decay, uneven weights, zeros and rows with no
+    /// indicator -- read from the first indicator, before the studentized
+    /// residuals' scale is ready.
+    #[test]
+    fn a_quantile_fits_cusum_sums_its_indicators() {
+        let mut b = Breaks::new().with_indicator(true);
+        let mut s = 31u64;
+        let lam = 0.97;
+        // (c, weight now) of the summed rows.
+        let mut rows: Vec<(f64, f64)> = Vec::new();
+        let q = 0.3f64;
+        for i in 0..200 {
+            let v = lcg(&mut s);
+            let below = lcg(&mut s) < q - 0.5;
+            let c =
+                (i % 13 != 6).then(|| (f64::from(u8::from(below)) - q) / (q * (1.0 - q)).sqrt());
+            let w = if i % 7 == 3 { 0.0 } else { 1.0 + lcg(&mut s) };
+            b.update(v, lam, w, c);
+            rows.iter_mut().for_each(|r| r.1 *= lam);
+            if let (Some(c), true) = (c, w > 0.0) {
+                rows.push((c, w));
+            }
+            let z1: f64 = rows.iter().map(|r| r.1 * r.0).sum();
+            let c2: f64 = rows.iter().map(|r| r.1 * r.1).sum();
+            if c2 == 0.0 {
+                assert!(b.cusum(1.0).is_none(), "row {i}");
+                continue;
+            }
+            let got = b.cusum(1.0).unwrap();
+            assert!((got - z1 / c2.sqrt()).abs() < 1e-10, "row {i}");
+        }
+        // The indicators' long-run variance reads their own weights.
+        assert_eq!(b.long_run(), Some(1.0));
+    }
+
+    /// The lag products of the indicators can cancel the variance outright
+    /// (`c = 2` then `c = −1` one lag apart, Bartlett's weight 1/2): then
+    /// there is no long-run variance and no CUSUM, where dividing would
+    /// read infinity.
+    #[test]
+    fn a_long_run_variance_of_zero_reads_nothing() {
+        let mut b = Breaks::with_lags(1).with_indicator(true);
+        b.update(1.0, 1.0, 1.0, Some(2.0));
+        b.update(1.0, 1.0, 1.0, Some(-1.0));
+        assert!(b.long_run().is_none());
+        assert!(b.cusum(1.0).is_none());
+    }
+
+    /// No studentized residual for a residual that is not a number, nor
+    /// against a spread of 0, which is what a fit that has predicted every
+    /// row exactly leaves; and no CUSUM over a null share that is not
+    /// positive.
+    #[test]
+    fn no_studentized_residual_without_a_number_or_a_spread() {
+        let mut b = Breaks::new();
+        for _ in 0..20 {
+            b.update(0.0, 0.9, 1.0, None);
+        }
+        assert!(b.studentized(1.0).is_none(), "a spread of 0");
+        for v in [1.0, -0.5, 0.7, -1.2] {
+            b.update(v, 0.9, 1.0, None);
+        }
+        assert!(b.studentized(1.0).is_some());
+        assert!(b.studentized(f64::NAN).is_none());
+        assert!(b.studentized(f64::INFINITY).is_none());
+        assert!(b.cusum(1.0).is_some() && b.cusum(0.0).is_none());
+    }
+
+    /// The CUSUM of squares by its guards, on restored sums: nothing
+    /// without a weight, nor over a null share that is not positive, nor
+    /// while the fourth moment is at most 1, nor where the lag products
+    /// leave a variance that is not positive -- each a case where the
+    /// division would read a number that is not the statistic.
+    #[test]
+    fn the_cusum_of_squares_reads_only_a_positive_variance() {
+        // m4 = 3, excess 2.
+        let base = Breaks {
+            s1: 1.0,
+            s2: 1.0,
+            z2: 2.0,
+            z4: 3.0,
+            w4: 1.0,
+            ..Breaks::default()
+        };
+        assert!(base.has_shape(0));
+        let got = base.cusum_sq(1.0).unwrap();
+        assert!((got - 1.0 / 2f64.sqrt()).abs() < 1e-15);
+        // No weight, though a sum of squared weights is restored beside it.
+        let no_weight = Breaks {
+            s1: 0.0,
+            ..base.clone()
+        };
+        assert!(no_weight.cusum_sq(1.0).is_none());
+        // A share below 0 against lag products below 0: their product is
+        // positive, and no variance.
+        let lagged = |p2: f64, z4: f64| Breaks {
+            lags: 1,
+            p1: vec![0.0],
+            p2: vec![p2],
+            z4,
+            ..base.clone()
+        };
+        assert!(lagged(-10.0, 3.0).has_shape(1));
+        assert!(lagged(-10.0, 3.0).cusum_sq(-1.0).is_none());
+        // A fourth moment of 1, beside lag products that would leave a
+        // positive variance.
+        assert!(lagged(4.0, 1.0).cusum_sq(1.0).is_none());
+        // Lag products that cancel the variance exactly: 2 + 2·(1/2)·(−2).
+        assert!(lagged(-2.0, 3.0).cusum_sq(1.0).is_none());
+        assert!(lagged(-1.0, 3.0).cusum_sq(1.0).is_some());
+    }
+
+    /// A restored accumulator at the right lags is still refused for a sum
+    /// that is not finite, or a weight's that is negative.
+    #[test]
+    fn a_restored_accumulator_must_be_finite() {
+        let mut b = Breaks::with_lags(2);
+        for v in [
+            1.0, -0.5, 0.7, -1.2, 0.3, 0.9, -0.1, 0.4, -0.8, 1.1, 0.2, -0.6,
+        ] {
+            b.update(v, 0.9, 1.0, None);
+        }
+        assert!(b.has_shape(2) && !b.has_shape(1));
+        let bad = |edit: fn(&mut Breaks)| {
+            let mut c = b.clone();
+            edit(&mut c);
+            !c.has_shape(2)
+        };
+        assert!(bad(|c| c.z1 = f64::NAN));
+        assert!(bad(|c| c.s2 = -1.0));
+        assert!(bad(|c| c.vq = f64::INFINITY));
+        assert!(bad(|c| c.c2 = -1.0));
+        assert!(bad(|c| c.p2[1] = f64::NAN));
+    }
+
+    /// A horizon-free accumulator writes none of the horizon's fields, so
+    /// its state keeps the form it had before they existed; one under a
+    /// horizon writes them and reads back the same.
+    #[test]
+    fn the_horizons_fields_are_written_only_under_one() {
+        let named = |b: &Breaks| rmp_serde::to_vec_named(b).unwrap();
+        let has = |bytes: &[u8], key: &[u8]| bytes.windows(key.len()).any(|w| w == key);
+        let plain = named(&Breaks::new());
+        assert!(!has(&plain, b"lags") && !has(&plain, b"ring1"));
+        let mut h = Breaks::with_lags(3);
+        for v in [
+            1.0, -0.5, 0.7, -1.2, 0.3, 0.9, -0.1, 0.4, -0.8, 1.1, 0.2, -0.6,
+        ] {
+            h.update(v, 0.9, 1.0, None);
+        }
+        let bytes = named(&h);
+        assert!(has(&bytes, b"lags"));
+        let back: Breaks = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(back, h);
+        assert!(back.has_shape(3));
+    }
+
+    /// The slow memory's factor is the fast one's fourth root: a half-life
+    /// four times as long, exactly where the root is a double.
+    #[test]
+    fn the_slow_factor_is_the_fourth_root() {
+        assert_eq!(slow_factor(0.0625), 0.5);
+        assert_eq!(slow_factor(1.0), 1.0);
+        let lam = 0.97f64;
+        assert!((slow_factor(lam).powi(4) - lam).abs() < 1e-15);
+    }
+
+    /// `mat_mul` is the matrix product, against the definition's sums.
+    #[test]
+    fn mat_mul_is_the_product() {
+        let a = [1.0, 2.0, -1.0, 0.5, 3.0, 1.5, -2.0, 0.0, 4.0];
+        let b = [2.0, -1.0, 0.0, 1.0, 1.0, 3.0, 0.5, -0.5, 2.0];
+        let got = mat_mul(&a, &b, 3);
+        for i in 0..3 {
+            for j in 0..3 {
+                let want: f64 = (0..3).map(|k| a[i * 3 + k] * b[k * 3 + j]).sum();
+                assert_eq!(got[i * 3 + j], want, "({i}, {j})");
+            }
+        }
+    }
+
+    /// A restored pair is refused unless it is shaped for the features and
+    /// every kept number is finite.
+    #[test]
+    fn a_restored_pair_must_be_shaped_and_finite() {
+        let mut t = TwinFit::new(2);
+        let mut s = 4u64;
+        for _ in 0..30 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            t.update(&x, x[0] + lcg(&mut s), 0.9, 1.0);
+        }
+        assert!(t.has_shape(2) && !t.has_shape(1) && !t.has_shape(3));
+        let bad = |edit: fn(&mut TwinFit)| {
+            let mut c = t.clone();
+            edit(&mut c);
+            !c.has_shape(2)
+        };
+        assert!(bad(|c| c.hff[4] = f64::NAN));
+        assert!(bad(|c| c.hfs[0] = f64::INFINITY));
+        assert!(bad(|c| c.origin[1] = f64::NAN));
+        assert!(bad(|c| c.origin = vec![0.0]));
+        assert!(bad(|c| c.hss.pop().map_or((), |_| ())));
+        assert!(bad(|c| c.fast = crate::EwCov::new(2).without_runs()));
+        assert!(bad(|c| c.slow = crate::EwCov::new(4).without_runs()));
+    }
+
+    /// A row with a weight of 0 -- the first included -- or a target or a
+    /// feature that is not a number only ages the pair: it sets no origin
+    /// and moves no sum.
+    #[test]
+    fn a_row_the_fits_cannot_learn_only_ages_them() {
+        let mut t = TwinFit::new(2);
+        let mut aged = TwinFit::new(2);
+        t.update(&[1.0, 2.0], 3.0, 0.9, 0.0);
+        aged.age(0.9);
+        assert_eq!(t, aged);
+        let mut s = 8u64;
+        for _ in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = x[0] + lcg(&mut s);
+            t.update(&x, y, 0.9, 1.0);
+            aged.update(&x, y, 0.9, 1.0);
+        }
+        t.update(&[1.0, 2.0], f64::NAN, 0.8, 1.0);
+        t.update(&[f64::NAN, 2.0], 3.0, 0.8, 1.0);
+        t.update(&[1.0, 2.0], 3.0, 0.8, 0.0);
+        for _ in 0..3 {
+            aged.age(0.8);
+        }
+        assert_eq!(t, aged);
+    }
+
+    /// The distance waits for each fit to have more than `k` rows of Kish's
+    /// size: at a fast factor of 1/2 the fast fit never has more than 3,
+    /// while the slow one has about 11.
+    #[test]
+    fn the_distance_waits_for_the_fast_fit() {
+        let mut t = TwinFit::new(2);
+        let mut s = 6u64;
+        for _ in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            t.update(&x, x[0] - x[1] + lcg(&mut s), 0.5, 1.0);
+        }
+        assert!(t.fast.n_kish().unwrap() <= 3.0 && t.slow.n_kish().unwrap() > 3.0);
+        assert!(t.wald(&[0, 1], true, 1.0).is_none());
+        assert!(t.wald(&[0], true, 1.0).is_some(), "two coefficients");
+    }
+
+    /// No distance where the slow fit leaves no residual -- a constant
+    /// target -- nor for a long-run factor that is not positive.
+    #[test]
+    fn no_distance_without_a_residual_or_a_long_run_variance() {
+        let mut flat = TwinFit::new(1);
+        let mut t = TwinFit::new(1);
+        let mut s = 12u64;
+        for _ in 0..300 {
+            let x = [lcg(&mut s)];
+            flat.update(&x, 2.0, 0.95, 1.0);
+            t.update(&x, 2.0 * x[0] + lcg(&mut s), 0.95, 1.0);
+        }
+        assert!(flat.wald(&[0], true, 1.0).is_none());
+        assert!(t.wald(&[0], true, 1.0).is_some());
+        assert!(t.wald(&[0], true, 0.0).is_none());
+        assert!(t.wald(&[0], true, -1.0).is_none());
+        assert!(t.wald(&[0], true, f64::NAN).is_none());
+    }
 }
