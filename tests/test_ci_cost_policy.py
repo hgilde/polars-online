@@ -56,6 +56,13 @@ class TestEveryJobIsBounded:
     #: backstop for a slow week (task 155).
     LONGER = {("mutants.yml", "weekly"): 240}
 
+    #: Jobs allowed past two hours on every push, on Linux: the changed
+    #: lines' mutation shards, whose stop is 160 minutes since 2026-10-09
+    #: (the user: "Yes mutants sharding"). The repository is public, so a
+    #: longer job costs nothing; a shard stopped short leaves mutants
+    #: untested and fails its report.
+    LONGER_ON_PUSH = {("mutants.yml", "changed"): 180}
+
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_job_has_a_timeout(self, name):
         for job, spec in ALL[name].get("jobs", {}).items():
@@ -64,8 +71,12 @@ class TestEveryJobIsBounded:
             if "uses" in spec:
                 continue
             assert "timeout-minutes" in spec, f"{name}:{job} has no timeout-minutes"
-            cap = self.LONGER.get((name, job), 120)
+            cap = {**self.LONGER, **self.LONGER_ON_PUSH}.get((name, job), 120)
             assert 0 < spec["timeout-minutes"] <= cap, f"{name}:{job} timeout is not sane"
+
+    def test_a_longer_job_on_every_push_runs_on_linux(self):
+        for name, job in self.LONGER_ON_PUSH:
+            assert ALL[name]["jobs"][job]["runs-on"] == "ubuntu-latest", (name, job)
 
     def test_a_longer_job_runs_only_on_linux_while_public_or_by_hand(self):
         for (name, job), _ in self.LONGER.items():

@@ -1593,6 +1593,10 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- The changed-lines mutation job takes a shard for every thirty mutants,
+  not forty, and stops each at 160 minutes, not 100: the slowest shard of
+  the last push took 83 of its 100, and the suite every mutant runs grew
+  from 146 s to 209 s.
 - **`docs/DIAGNOSTICS.md` and `docs/DATA-ISSUES.md`** (tasks 222 and 224):
   is the model working, and can the data be learned from -- each ordered
   by question or by `check()` code, with the theory in prose and its

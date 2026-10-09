@@ -76,7 +76,7 @@ env:
 
 jobs:
   # Lists the changed lines' mutants, which builds nothing, and sizes their
-  # pass from the count: a shard for every forty (scripts/mutants_shards.py).
+  # pass from the count: a shard for every thirty (scripts/mutants_shards.py).
   # At least one, so a change with nothing to mutate still reports; at most
   # 256, GitHub's limit on a matrix, so past 10,240 mutants a shard is dealt
   # more (all of online-core, 11,138, would be 44 a shard). It needs neither
@@ -121,19 +121,19 @@ jobs:
         run: |
           read -ra scope <<< "$CHANGED_SCOPE"
           cargo mutants --list "${scope[@]}" > listed.txt
-          python3 scripts/mutants_shards.py listed.txt --per-shard 40 >> "$GITHUB_OUTPUT"
+          python3 scripts/mutants_shards.py listed.txt --per-shard 30 >> "$GITHUB_OUTPUT"
 
   changed:
     name: mutants on the changed lines, shard ${{ matrix.shard }} of ${{ needs.changed-list.outputs.shards }}
     needs: changed-list
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        # A shard for every forty of the change's mutants, so every one is
+        # A shard for every thirty of the change's mutants, so every one is
         # tested: the repo is public, and GitHub's runners cost it nothing
         # (the user, 2026-10-08: "We don't pay for minutes being open
         # source"). Ten fixed shards could not hold a large push: the push
@@ -145,6 +145,11 @@ jobs:
         # minutes, and the mean shard 63. The account runs 20 jobs at a time
         # (GitHub Free), CI's among them, so more shards run in waves: that
         # push's 34 would run in two, about two and a half hours in all.
+        # Thirty since 2026-10-09 (the user: "Yes mutants sharding"), with
+        # the stop at 160 minutes: the push of f54d1e5's slowest shard of
+        # forty took 83 of the 100, and the suite every mutant runs had
+        # grown from 146 s to 209 s, so the margin was thinning. A longer
+        # stop costs nothing on a public repository and lets the suite grow.
         shard: ${{ fromJSON(needs.changed-list.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -182,9 +187,9 @@ jobs:
           # A listing that failed would read as a shard dealt nothing.
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           if [ -s listed.txt ]; then
-            # Stopped inside the job's 120 minutes, setup included, so the
+            # Stopped inside the job's 180 minutes, setup included, so the
             # report still runs and counts what a large diff left untested.
-            timeout --signal=INT --kill-after=2m 100m cargo mutants "${args[@]}" \
+            timeout --signal=INT --kill-after=2m 160m cargo mutants "${args[@]}" \
               --cargo-test-arg=--tests --timeout-multiplier 10 \
               -j 2 --minimum-test-timeout 30 --output mutants-out -- -- --include-ignored
             code=$?
