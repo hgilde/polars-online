@@ -188,7 +188,27 @@ class TestValues:
         # lam = 1 weighs every row alike, so numpy's correlation is the oracle.
         want = np.corrcoef(df["leak"].to_numpy(), df["y"].to_numpy())[0, 1]
         assert row["value"] == pytest.approx(abs(want), abs=1e-12)
-        assert row["severity"] == "error"
+        assert row["severity"] == "warning"
+
+    def test_leakage_is_a_warning_as_a_long_random_walk_reads_as_it(self):
+        """A random walk against its own previous row passes the line once
+        the stream is long (review 6, G-7: on five seeds of ten at 30,000
+        rows, nine at 100,000), and so does a relation measured with little
+        noise. Neither stops a model learning, so ``leakage`` is a warning,
+        from a Gram and from a ``marginal`` alike."""
+        rng = np.random.default_rng(0)
+        walk = np.cumsum(rng.standard_normal(100_001))
+        df = pl.DataFrame({"y": walk[1:], "lag": walk[:-1]})
+        specs = [
+            po.spec.ewridge("ridge", targets=["y"], features=["lag"], half_life=float("inf")),
+            po.spec.marginal("pairs", targets=["y"], features=["lag"], half_life=float("inf")),
+        ]
+        bank = po.ModelBank(specs)
+        bank.fit(df)
+        f = bank.check().filter(code="leakage")
+        assert set(f["spec"]) == {"ridge", "pairs"}, f
+        assert set(f["severity"]) == {"warning"}, f
+        assert "random walk" in f["message"][0]
 
     def test_a_target_missing_by_design_is_information_only(self):
         df, specs = cs.clean_sparse_target(0)

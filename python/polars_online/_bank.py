@@ -1740,9 +1740,10 @@ class ModelBank:
                index over the features passes 30, from the Gram of an
                ``ewridge`` or ``lasso`` (information for an ``ew_cov``)
            * - ``leakage``
-             - error
+             - warning
              - a feature correlates with a target at 0.9999 or more, from
-               the Gram or a ``marginal``
+               the Gram or a ``marginal``: it contains the target, both are
+               one random walk, or the fit's R² is 0.9998 or more
            * - ``step_back``
              - warning
              - the clock stepped back, a restart or a late row under
@@ -1854,9 +1855,13 @@ class ModelBank:
           ``x0 + 0.1 * N(0, 1)`` (a correlation of 0.995) reads 92 to 113;
           at ``0.3`` (0.957 to 0.963) it reads 10.9 to 13.7 and is not
           flagged.
-        - ``leakage``: clean fits reached 0.991 at an R² of 0.99, and a random
-          walk against its own lag 0.9996. A feature that is the target plus
-          a thousandth of its spread reads 0.999999.
+        - ``leakage``: clean fits reached 0.991 at an R² of 0.99. A feature
+          that is the target plus a thousandth of its spread reads 0.999999.
+          The line is a correlation, so it is a warning: a fit whose R² is
+          0.9998 or more passes it, as ``y = 2x + 0.01 N(0, 1)`` does at
+          0.99999, and so does a random walk against its own previous row
+          once the stream is long, on one seed of ten at 10,000 rows, five at
+          30,000 and nine at 100,000 (with no decay).
         - ``ridge_shrinks``: at a quarter of the variance the out-of-sample
           R² fell by 0.02 to 0.03; at the whole variance by 0.14.
         - ``solve_failures`` for ``lasso``: its first rows run out of sweeps

@@ -651,16 +651,20 @@ def _spec_findings(
 def _leak(
     g: str | None, feat: str, tgt: str, corr: float
 ) -> tuple[str, str, str | None, str, float, float, str]:
+    # A warning, not an error (review 6, G-7): a long random walk against
+    # its own previous row passes the line, and so does a relation measured
+    # with little noise, and neither stops a model learning.
     return (
-        "error",
+        "warning",
         "leakage",
         g,
         feat,
         corr,
         LEAKAGE,
         f"feature {feat!r} correlates with target {tgt!r} at {corr:.6f} in "
-        f"{_who(g)}: it contains the target, or both are the same random walk; "
-        "build the feature from rows before the target's, or difference both",
+        f"{_who(g)}: it contains the target, both are the same random walk, or "
+        "the relation is nearly exact; build the feature from rows before the "
+        "target's, or difference both",
     )
 
 

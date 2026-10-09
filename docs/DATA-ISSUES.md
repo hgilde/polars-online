@@ -1116,12 +1116,18 @@ learned, and the spec's `embargo` is its fix.
 
 | code | severity | fires when |
 |---|---|---|
-| `leakage` | error | a feature correlates with a target at 0.9999 or more, from an `ewridge`'s, `lasso`'s or `ew_cov`'s Gram, or a `marginal`'s pairs |
+| `leakage` | warning | a feature correlates with a target at 0.9999 or more, from an `ewridge`'s, `lasso`'s or `ew_cov`'s Gram, or a `marginal`'s pairs |
 
-Clean fits reached a correlation of 0.991 at an R² of 0.99, and a random
-walk against its own previous row 0.9996. A feature that is the target
-plus a thousandth of its spread read 0.999999. So the line catches a
-feature that is the target, and not one that merely predicts it well.
+Clean fits reached a correlation of 0.991 at an R² of 0.99. A feature
+that is the target plus a thousandth of its spread read 0.999999. So the
+line catches a feature that is the target, and not one that merely
+predicts it well. It is a warning, not an error, because a correlation
+cannot tell a copy of the target from two other things. A relation
+measured with little noise passes it: any fit with an R² of 0.9998 or
+more, such as `y = 2x + 0.01 N(0, 1)` at 0.99999. So does a random walk
+against its own previous row once the stream is long. With no decay it
+passed on one seed of ten at 10,000 rows, five at 30,000 and nine at
+100,000.
 
 **Why a look-ahead target needs its embargo.** A target that looks `k`
 rows ahead, such as the mean return of the next ten rows, is known only
@@ -1182,14 +1188,14 @@ run("past", embargo=10.0)  # learn each row ten rows later, when its target is k
 ```
 
 ```text
-error leakage m past_bad 1.0
+warning leakage m past_bad 1.0
 past_bad, no embargo: R² 1.000
 past, no embargo: R² 0.061
 past, embargo 10: R² -0.114
 ```
 
-`check()` finds `past_bad` correlating with the target at 1.0, an error,
-and the R² of 1.000 confirms it. With the feature fixed to look back, and
+`check()` finds `past_bad` correlating with the target at 1.0, and the
+R² of 1.000 confirms it. With the feature fixed to look back, and
 no embargo, a stream with nothing to predict shows an R² of 0.061, which
 is leakage that no check can see. With `embargo=10.0`, the R² is −0.114:
 a model chasing noise at a half-life of 50 rows predicts worse than the
