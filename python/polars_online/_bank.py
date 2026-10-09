@@ -1942,7 +1942,10 @@ class ModelBank:
         a column of few distinct values, a level fed as a feature, heavy
         tails, duplicate columns and the clock's duplicate stamps, gaps and
         irregular spacing are an ``audit``'s to measure: without one in the
-        bank, nothing is said about them.
+        bank, nothing is said about them. A group a spec closes
+        (``group_close``) leaves the bank with its stream, so nothing is said
+        about it either: the findings cover the groups still open. An
+        ``audit`` refuses ``group_close`` for that reason.
 
         ``spec`` and ``group`` narrow the frame as in :meth:`summary`
         (``KeyError`` / ``IndexError`` for a spec the bank has not got). A

@@ -96,6 +96,13 @@ class TestTheBuilder:
             # `check()` the same at 0, 5 and 1e9.
             ({"min_weight": 5.0}, "min_weight does not apply to audit"),
             ({"min_weight": 0.0}, "min_weight does not apply to audit"),
+            # Review 6, C-3 and F-3: a closed group's counts left the bank
+            # with it, so `audit()` and `check()` said nothing of them.
+            ({"group": "g", "group_close": "monotone"}, "group_close does not apply to audit"),
+            (
+                {"group": "g", "session": "s", "group_close": "session"},
+                "group_close does not apply to audit",
+            ),
             ({"distinct_cap": 0}, "distinct_cap must be in 1..=65536"),
             ({"distinct_cap": 70_000}, "distinct_cap must be in 1..=65536"),
         ],

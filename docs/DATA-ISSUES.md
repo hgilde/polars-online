@@ -114,7 +114,10 @@ keeps anyway.** That is `summary()`, `describe()`, `solve_failures()`,
 `last_row()`, the Gram (the matrix of running sums) of an `ewridge`,
 `lasso` or `ew_cov`, and a `marginal`'s pairs. So a bank loaded from a state file gives the same
 findings as the bank that saved it, and the chunking of the stream moves
-none of them. Call it after a first pass and before trusting a fit.
+none of them. Call it after a first pass and before trusting a fit. A
+group closed under `group_close` has left the bank with its sums, so
+`check()` sees only the groups still open, and an audit refuses
+`group_close`.
 
 **An audit counts what a model does not keep.** A model skips a row whose
 feature is missing, so it never sees the row. An audit reads every row of

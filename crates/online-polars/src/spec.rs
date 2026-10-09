@@ -4873,6 +4873,15 @@ impl Spec {
                 } else if self.min_weight.is_some() {
                     // Taken and ignored until review 6 (F-10).
                     Some("min_weight does not apply to audit: it predicts nothing to withhold")
+                } else if self.group_close.is_some() {
+                    // A closed group's counts left the bank with its stream,
+                    // so `audit()` and `check()` never saw them (review 6,
+                    // C-3 and F-3).
+                    Some(
+                        "group_close does not apply to audit: a closed group's counts would \
+                         leave the bank with it, and audit() and check() could not read them; \
+                         audit the groups without group_close",
+                    )
                 } else {
                     None
                 };

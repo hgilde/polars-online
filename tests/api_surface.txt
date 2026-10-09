@@ -1774,7 +1774,6 @@
     clock_min: Float64
     clock_max: Float64
     coef: List[Float64]
-  audit: the shared columns only
   bocpd: the shared columns only
   corrchange: the shared columns only
   deco: the shared columns only

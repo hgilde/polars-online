@@ -307,7 +307,9 @@ def describe_api(cli: Path | None = None) -> str:
     )
     from test_model_registry import MINIMAL  # it imports this module
 
-    variants = [(name, dict(MINIMAL[name])) for name in sorted(MINIMAL)] + [
+    # An audit refuses `group_close`: a closed group's counts would leave
+    # the bank unread (review 6, C-3).
+    variants = [(name, dict(MINIMAL[name])) for name in sorted(MINIMAL) if name != "audit"] + [
         ("ew_cov with pca", {**MINIMAL["ew_cov"], "pca": 2}),
         ("marginal with lags and bins", {**MINIMAL["marginal"], "lags": [1], "bins": 4}),
     ]

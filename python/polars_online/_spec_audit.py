@@ -164,6 +164,9 @@ def audit(
     as every model does, into ``weight_sum`` alone, and counts a row of
     weight 0 as any other.) ``embargo`` is refused too, as there is no label
     to wait for, and ``min_weight``, as there is no prediction to withhold.
+    So is ``group_close``: a closed group leaves the bank with its stream,
+    and its counts with it, so :meth:`~polars_online.ModelBank.audit` and
+    :meth:`~polars_online.ModelBank.check` could not read them.
     ``weight_sum`` is the count of rows before this one.
 
     .. rubric:: Output
@@ -178,8 +181,8 @@ def audit(
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets`` and for ``features``, which an audit calls ``columns``;
     ``ValueError`` for an empty ``columns``, for ``half_life``/``lam``,
-    ``weight``, ``embargo`` or ``min_weight``, and for a ``distinct_cap``
-    outside 1 to 65,536.
+    ``weight``, ``embargo``, ``min_weight`` or ``group_close``, and for a
+    ``distinct_cap`` outside 1 to 65,536.
     """
     if "features" in common:
         msg = f"spec {json.dumps(name)}: audit() takes columns=, not features="
