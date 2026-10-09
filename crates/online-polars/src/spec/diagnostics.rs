@@ -10,13 +10,21 @@ impl Spec {
     /// The diagnostics with a memory of their own (docs/PLAN.md task 221):
     /// each memory's key, its switch, whether the switch is on, and the
     /// memory as given.
-    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 1] {
-        [(
-            "calibration_half_life",
-            "emit_calibration",
-            self.emit_calibration,
-            self.calibration_half_life.as_ref(),
-        )]
+    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 2] {
+        [
+            (
+                "calibration_half_life",
+                "emit_calibration",
+                self.emit_calibration,
+                self.calibration_half_life.as_ref(),
+            ),
+            (
+                "breaks_half_life",
+                "emit_breaks",
+                self.emit_breaks,
+                self.breaks_half_life.as_ref(),
+            ),
+        ]
     }
 
     /// A diagnostic's decay for the model instance decaying by `model`: its

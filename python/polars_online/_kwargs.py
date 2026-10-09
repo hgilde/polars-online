@@ -77,6 +77,8 @@ class ExprKwargs(TypedDict, total=False):
     drift_action: str
     emit_calibration: bool
     calibration_half_life: float | Duration | None
+    emit_breaks: bool
+    breaks_half_life: float | Duration | None
     embargo: float | Duration | None
 
 

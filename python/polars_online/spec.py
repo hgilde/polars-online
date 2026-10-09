@@ -214,7 +214,8 @@ the diagnostics
     ``conformal_rate`` (default 0.05), ``resid_quantiles``, ``emit_autocorr``
     with ``resid_autocorr_lag``, ``emit_drift`` with ``drift_delta``,
     ``drift_threshold`` and ``drift_action``, ``emit_calibration`` with
-    ``calibration_half_life``, and ``emit_clocks``. Each adds fields to the
+    ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``, and
+    ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: the model instance's half-life when left out, and ``inf``
@@ -259,8 +260,9 @@ durations; the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the
 number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
-``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
-and ``calibration_half_life`` below, and in the models ``window_size``,
+``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``,
+``calibration_half_life`` and ``breaks_half_life`` below, and in the models
+``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
@@ -551,6 +553,35 @@ The diagnostics add, per slot:
        the model's half-life, 89% run once. A run-once calibration keeps
        the first predictions for good, so give ``min_weight`` a few rows
        per coefficient: from ``k + 1`` rows they dominated it.
+   * - ``emit_breaks``
+     - ``studentized_<slot>``, ``cusum_<slot>``, ``cusum_sq_<slot>``,
+       ``break_wald_<slot>``
+     - Where the relationship broke. ``studentized`` is the row's
+       recursive residual, ``resid / error_inflation``, over the spread of
+       those before it at ``breaks_half_life``, read once that spread has 10
+       rows of Kish's size; 1 stands in for the inflation on a model without
+       one (all but ``ewridge``, ``rls`` and ``kalman``). ``cusum`` and
+       ``cusum_sq`` are the EW sum of the studentized residuals before the
+       row and the EW mean of their squares less 1, each standardized, so
+       each is about ``N(0, 1)`` with no break. Run once (``inf``) they are
+       Brown, Durbin and Evans' CUSUM and CUSUM of squares, ``cusum *
+       sqrt(r)`` the path over ``r`` rows, read against ``±0.948 * (sqrt(T)
+       + 2 r / sqrt(T))`` over a run of ``T`` (5%). With a memory they are
+       moving sums. ``break_wald`` is the Wald distance between two
+       least-squares fits of the target on the slot's features, one at the
+       memory and one at four times it, about ``chi2(k)`` with no break and
+       null run once. On 200 streams of 3,000 rows with a break at 1,500:
+       run once, the CUSUM crossed on 3.5% with no break and on every
+       stream whose intercept moved half a noise sd, 244 rows after it
+       (statsmodels' own: 5.0% and 277); the CUSUM of squares on 5.0% and
+       on every stream whose noise doubled. Neither sees a slope that moves
+       on a centred feature, whose residuals keep a zero mean: the CUSUM
+       crossed on 2.5%. Beside a fit at a half-life of 200, ``break_wald``
+       passed ``chi2(3)``'s 0.01% value, 21.1, on no stream with no break
+       and on every slope break, 94 rows after it; ``|cusum| > 3`` found
+       every intercept break in 100 rows and ``|cusum_sq| > 3`` every
+       variance break in 20. ``drift`` found 1.5% of the variance breaks
+       there and none of the others.
 
 .. rubric:: Errors
 
@@ -571,8 +602,8 @@ value the model refuses:
   or ``n_perm`` past 2^20, ``kmeans``' ``k`` past 2^16 or its warm-up buffer
   past 256 MiB, ``rcov``'s lagged products past 256 MiB;
 - ``inf`` where it means nothing (it is allowed where it does --
-  ``half_life``, ``min_weight``, ``average_eta``, ``calibration_half_life``
-  and the model parameters
+  ``half_life``, ``min_weight``, ``average_eta``, ``calibration_half_life``,
+  ``breaks_half_life`` and the model parameters
   that say so);
 - neither ``half_life`` nor ``lam``;
 - ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
@@ -589,7 +620,8 @@ A parameter whose switch is off is refused rather than ignored:
   ``emit_drift``;
 - ``average_eta`` without ``emit_averaged``;
 - ``resid_autocorr_lag`` without ``emit_autocorr``;
-- ``calibration_half_life`` without ``emit_calibration``;
+- ``calibration_half_life`` without ``emit_calibration``, and
+  ``breaks_half_life`` without ``emit_breaks``;
 - ``long_half_life`` without ``session_shrink``;
 - ``session_gap`` without ``session``;
 - ``restart_after_step_back`` without ``clock``;

@@ -181,7 +181,7 @@ fn specs() -> Vec<Spec> {
 /// held to.
 fn diagnosed_specs() -> Vec<Spec> {
     [
-        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0}"#,
+        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -893,6 +893,12 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         }),
         // Task 221 (schema 53): the diagnostics with a memory of their own,
         // per instance and slot.
+        ("bank_diagnosed", "a slot's CUSUM sums", |p, v| {
+            p.contains(".checks.") && p.contains(".breaks.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "a target's twin fits", |p, v| {
+            p.contains(".checks.") && p.contains(".twin.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
         ("bank_diagnosed", "a slot's calibration moments", |p, v| {
             p.contains(".checks.")
                 && p.contains(".calibration.")

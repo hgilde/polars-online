@@ -247,6 +247,7 @@ _INF_OK: dict[str, frozenset[str]] = {
             "window_budget",
             # A diagnostic's memory at `inf` is the run-once form (task 221).
             "calibration_half_life",
+            "breaks_half_life",
         }
     ),
     "ewridge": frozenset({"long_half_life"}),
@@ -741,6 +742,8 @@ def _common(
     drift_action: str = "flag",
     emit_calibration: bool = False,
     calibration_half_life: float | Duration | None = None,
+    emit_breaks: bool = False,
+    breaks_half_life: float | Duration | None = None,
     embargo: float | Duration | None = None,
     group: str | None = None,
     group_close: str | None = None,
@@ -788,6 +791,8 @@ def _common(
         "drift_action": drift_action,
         "emit_calibration": emit_calibration,
         "calibration_half_life": calibration_half_life,
+        "emit_breaks": emit_breaks,
+        "breaks_half_life": breaks_half_life,
         "embargo": embargo,
         "group": group,
         "group_close": group_close,

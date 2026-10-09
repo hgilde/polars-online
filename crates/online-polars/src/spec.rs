@@ -2131,6 +2131,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "drift_threshold",
             "coef_every",
             "calibration_half_life",
+            "breaks_half_life",
         ],
     ),
     (
@@ -2931,6 +2932,22 @@ pub struct Spec {
     /// half-life unless set, `inf` the run-once form, which forgets nothing.
     #[serde(default)]
     pub calibration_half_life: Option<Span>,
+    /// Emit `studentized_<slot>`, `cusum_<slot>`, `cusum_sq_<slot>` and
+    /// `break_wald_<slot>` (docs/PLAN.md task 221 (b); the update is
+    /// [`online_core::Breaks`]'s and [`online_core::TwinFit`]'s): the row's
+    /// predictive studentized residual `resid / (sigma · error_inflation)`
+    /// -- 1 in place of the inflation on a model without one -- the
+    /// standardized CUSUM and CUSUM of squares of those before it at
+    /// `breaks_half_life`, run once the paths of Brown, Durbin and Evans
+    /// (1975) and with a memory moving sums, and the Wald distance between
+    /// two least-squares fits of the target, one at that memory and one at
+    /// four times it, null run once.
+    #[serde(default)]
+    pub emit_breaks: bool,
+    /// The breaks' memory, in clock units: the model instance's own
+    /// half-life unless set, `inf` the run-once form.
+    #[serde(default)]
+    pub breaks_half_life: Option<Span>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -4019,6 +4036,7 @@ impl Spec {
                 ("emit_autocorr", self.emit_autocorr),
                 ("emit_drift", self.emit_drift),
                 ("emit_calibration", self.emit_calibration),
+                ("emit_breaks", self.emit_breaks),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];

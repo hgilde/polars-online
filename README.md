@@ -2365,6 +2365,7 @@ other model refuses them by name.
 | running accuracy | `emit_metrics` | `ic_`, `r2_`, `hit_rate_` |
 | residual autocorrelation | `emit_autocorr` | `autocorr_` |
 | calibration | `emit_calibration` | `calibration_slope_`, `calibration_intercept_`, `calibration_wald_` |
+| where the relationship broke | `emit_breaks` | `studentized_`, `cusum_`, `cusum_sq_`, `break_wald_` |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
 | clocks, on every model | `emit_clocks` | `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the last row learned, once per spec ([Labels that arrive late](#labels-that-arrive-late)) |
@@ -2390,6 +2391,8 @@ diag = po.spec.ewridge(
     conformal_rate=0.05,         #                   how fast its radius moves (Conformal intervals)
     emit_calibration=True,       # calibration_slope_, _intercept_, _wald_<slot>: y regressed on pred, and the
     calibration_half_life=2000.0,#                   test of slope 1 and intercept 0, at a memory of its own
+    emit_breaks=True,            # studentized_, cusum_, cusum_sq_, break_wald_<slot>: CUSUMs of the studentized
+    breaks_half_life=500.0,      #                   residuals, and a fast fit's distance from a slow one
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2408,6 +2411,17 @@ over the whole stream. Run once, the test is the classical F test, `wald /
 2`. Beside a fit that forgets, it is conservative, since the fit absorbs a
 miscalibration at its own pace, so give it a memory several times the
 model's (`po.spec`'s table has the measurements).
+
+**`emit_breaks` says which part of the relationship broke.** `cusum`
+moves when the residuals take a mean, as when the intercept shifts;
+`cusum_sq` when their spread changes; `break_wald` when a slope changes,
+which leaves the residuals' mean at zero and the CUSUMs blind to it. Each of
+the three is a standard normal or a chi-squared with no break, so a
+threshold means the same on every stream: beside a fit at a half-life of
+200, `|cusum| > 3`, `|cusum_sq| > 3` and `break_wald > 21.1` found each
+break they see within 20 to 100 rows. Run once, `cusum` and `cusum_sq` are
+Brown, Durbin and Evans' CUSUM tests, whose boundaries `po.spec`'s table
+gives.
 
 **How often `drift` flags a stream that does not change depends on the
 residuals' tails.** At `drift_delta=0.5` and `drift_threshold=20` on a row

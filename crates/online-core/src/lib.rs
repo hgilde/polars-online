@@ -62,6 +62,7 @@
 mod audit;
 mod bocpd;
 mod boundary;
+mod breaks;
 mod budget;
 mod calibration;
 mod clock;
@@ -117,6 +118,7 @@ pub use audit::{
     MAX_DISTINCT_CAP, NULL, PairReport as AuditPair, is_null,
 };
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
+pub use breaks::{Breaks, TwinFit};
 pub use calibration::Calibration;
 pub use clock::{
     ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,

@@ -4727,3 +4727,130 @@ class TestCalibrationIsMincerZarnowitz:
             np.testing.assert_allclose(
                 out["calibration_intercept_y"][t], fit.params[0], rtol=1e-8, atol=1e-12
             )
+
+
+def _break_rows(n: int, seed: int, shift: float = 0.0, at: int | None = None) -> pl.DataFrame:
+    """Two features and a target; the intercept moves by ``shift`` noise
+    standard deviations from row ``at`` on."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 2))
+    level = 0.5 + (shift * (np.arange(n) >= at) if at is not None else 0.0)
+    y = level + x @ np.array([1.0, -1.0]) + rng.normal(size=n)
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+
+
+class TestBreaksAreBrownDurbinAndEvans:
+    """Task 221 (b). Run once with no ridge, ``resid / error_inflation`` is
+    the recursive residual of Brown, Durbin and Evans (1975), which
+    ``statsmodels``' ``recursive_olsresiduals`` computes by its own update of
+    the inverse Gram; ``studentized`` is it over the spread of those before
+    it, so ``statsmodels``' residuals give it back through the definition.
+    ``cusum`` on row ``t`` is the CUSUM path of the studentized residuals
+    before ``t`` over the square root of their count, and
+    ``breaks_cusumolsresid`` reads the same statistic from both libraries'
+    recursive residuals. ``break_wald``'s two fits are ``WLS`` at the two
+    memories."""
+
+    @staticmethod
+    def _run(df: pl.DataFrame, **kw: Any) -> pl.DataFrame:
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            ridge=1e-12,
+            emit_breaks=True,
+            emit_error_inflation=True,
+            **{"half_life": float("inf"), **kw},
+        )
+        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    def test_the_studentized_residual_is_the_recursive_residual_over_its_spread(self):
+        import statsmodels.api as sm
+        from statsmodels.stats.diagnostic import breaks_cusumolsresid, recursive_olsresiduals
+
+        df = _break_rows(500, 21)
+        out = self._run(df)
+        X = sm.add_constant(df.select("x0", "x1").to_numpy())
+        ols = sm.OLS(df["y"].to_numpy(), X).fit()
+        scaled = recursive_olsresiduals(ols, skip=3)[4]
+        mine = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
+        np.testing.assert_allclose(mine[3:], scaled[3:], rtol=0, atol=1e-8)
+        # Each studentized residual against the spread of those before it,
+        # once that spread has ten rows.
+        z = out["studentized_y"].to_numpy().astype(float)
+        checked = 0
+        for t in range(3 + 10, 500):
+            want = scaled[t] / np.sqrt(np.mean(scaled[3:t] ** 2))
+            np.testing.assert_allclose(z[t], want, rtol=1e-7)
+            checked += 1
+        assert np.isnan(z[: 3 + 10]).all()
+        assert checked == 487
+        # `cusum` on row t: the path before t over its count's square root.
+        cusum = out["cusum_y"].to_numpy().astype(float)
+        ok = np.isfinite(z)
+        path, count = np.cumsum(np.where(ok, z, 0.0)), np.cumsum(ok)
+        np.testing.assert_allclose(
+            cusum[15:], path[14:-1] / np.sqrt(count[14:-1]), rtol=1e-10, atol=1e-12
+        )
+        # Ploberger and Kramer's statistic, from either library's residuals.
+        theirs = breaks_cusumolsresid(scaled[3:], ddof=0)[0]
+        ours = breaks_cusumolsresid(mine[3:], ddof=0)[0]
+        np.testing.assert_allclose(ours, theirs, rtol=1e-8)
+
+    def test_the_cusum_crosses_where_statsmodels_does(self):
+        """An intercept break of a noise sd at row 400 of 800, and none: the
+        CUSUM path crosses Brown, Durbin and Evans' 5% boundary on the same
+        streams as ``statsmodels``' ``rcusum`` does against its
+        ``rcusumci`` -- every break stream, and the one stream with none of
+        the five that both flag, a false alarm at the 5% level."""
+        import statsmodels.api as sm
+        from statsmodels.stats.diagnostic import recursive_olsresiduals
+
+        flagged = []
+        for seed, shift in (
+            (31, 1.0),
+            (34, 1.0),
+            (32, 0.0),
+            (33, 0.0),
+            (35, 0.0),
+            (36, 0.0),
+            (37, 0.0),
+        ):
+            df = _break_rows(800, seed, shift, 400)
+            z = self._run(df)["studentized_y"].to_numpy().astype(float)
+            ok = np.isfinite(z)
+            path, r = np.cumsum(np.where(ok, z, 0.0)), np.cumsum(ok)
+            t = r[-1]
+            ours = bool((ok & (np.abs(path) > 0.948 * (np.sqrt(t) + 2 * r / np.sqrt(t)))).any())
+            X = sm.add_constant(df.select("x0", "x1").to_numpy())
+            rr = recursive_olsresiduals(sm.OLS(df["y"].to_numpy(), X).fit(), skip=3)
+            theirs = bool((np.abs(rr[5][1:]) > rr[6][1]).any())
+            assert ours == theirs, (seed, ours, theirs)
+            flagged.append(ours)
+        assert flagged == [True, True, False, True, False, False, False]
+
+    def test_the_wald_distance_is_two_wls_fits(self):
+        import statsmodels.api as sm
+
+        h = 60.0
+        df = _break_rows(900, 41, 1.0, 600)
+        out = self._run(df, half_life=h)
+        x = df.select("x0", "x1").to_numpy()
+        y = df["y"].to_numpy()
+        X = sm.add_constant(x)
+        checked = 0
+        for t in (300, 650, 899):
+            age = (t - 1) - np.arange(t)
+            wf, ws = 0.5 ** (age / h), 0.5 ** (age / (4 * h))
+            fast = sm.WLS(y[:t], X[:t], weights=wf).fit()
+            slow = sm.WLS(y[:t], X[:t], weights=ws).fit()
+            nf, ns = wf.sum() ** 2 / (wf**2).sum(), ws.sum() ** 2 / (ws**2).sum()
+            c = 1 / nf + 1 / ns - 2 * (wf * ws).sum() / (wf.sum() * ws.sum())
+            s2 = (ws * slow.resid**2).sum() / ws.sum() * ns / (ns - 3)
+            d = fast.params - slow.params
+            g = (X[:t] * ws[:, None]).T @ X[:t] / ws.sum()
+            want = d @ g @ d / (s2 * c)
+            np.testing.assert_allclose(out["break_wald_y"][t], want, rtol=1e-6)
+            checked += 1
+        assert checked == 3
+        assert out["break_wald_y"][650] > 21.1, "the break passes chi2(3)'s 0.01% value"

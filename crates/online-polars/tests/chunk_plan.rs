@@ -65,14 +65,15 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
                "resid_quantiles": [0.5, 0.9], "emit_autocorr": true, "conformal": 0.9,
                "emit_drift": true, "drift_threshold": 20.0, "emit_selected": true,
                "emit_averaged": true, "emit_calibration": true,
-               "calibration_half_life": 200.0,"#,
+               "calibration_half_life": 200.0, "emit_breaks": true,"#,
         ),
         spec(
             "coupled",
             Some(group),
             "[30.0, 120.0]",
             r#""session_gap": "reset", "coef_every": 0, "emit_drift": true,
-               "drift_action": "reset", "drift_threshold": 2.0, "emit_calibration": true,"#,
+               "drift_action": "reset", "drift_threshold": 2.0, "emit_calibration": true,
+               "emit_breaks": true,"#,
         ),
     ]
 }

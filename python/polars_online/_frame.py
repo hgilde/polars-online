@@ -614,6 +614,8 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     # is unmeasured: denied until it is.
     "emit_calibration": (False,),
     "calibration_half_life": (None,),
+    "emit_breaks": (False,),
+    "breaks_half_life": (None,),
 }
 
 #: Keys free to hold any value without touching order-freeness: what the fit

@@ -42,6 +42,7 @@ fn rich_spec() -> Spec {
             "drift_threshold": 20.0,
             "emit_error_inflation": true,
             "emit_calibration": true,
+            "emit_breaks": true,
             "min_settled_frac": 0.2
         }"#,
     )
