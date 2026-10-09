@@ -3038,4 +3038,82 @@ mod tests {
         assert!(seen.len() > 150, "{} rows taught it", seen.len());
         assert!(m.sigma2().is_empty(), "no residual scale under this loss");
     }
+
+    /// A step held in the caller's units is formed whole before anything
+    /// moves (`Sgd::step_mapped`; docs/PLAN.md task 220): one that would
+    /// make any coefficient infinite -- a slope's `Δβ_i / s_i`, or the
+    /// intercept's -- teaches nothing, leaves every coefficient's bits and
+    /// says so; one that leaves each finite is taken, however large; and
+    /// under AdaGrad a gradient whose square is not finite teaches nothing
+    /// and leaves the sums, which a decay never empties, where they were.
+    /// The row's map is written in by hand: `z`, the means (0 here) and the
+    /// scales (1); the rate is 1, the clip off, the row at weight 1.
+    #[test]
+    fn a_mapped_step_that_would_make_a_coefficient_infinite_teaches_nothing() {
+        let make = |schedule: LearningRate| {
+            let mut c = cfg(1, SgdLoss::Squared);
+            c.standardize = true;
+            c.learning_rate = 1.0;
+            c.clip_gradient = f64::INFINITY;
+            c.schedule = schedule;
+            let mut m = Sgd::new(c).unwrap();
+            m.ensure_buffers();
+            m.mbuf.fill(0.0);
+            m.sbuf.fill(1.0);
+            m
+        };
+        let mut m = make(LearningRate::Constant);
+        let big = 1.5e308;
+        // (what, b, z, d, taken, b after): `Δb = −d z` and `Δb_0 = −d`.
+        type Case = (&'static str, [f64; 2], [f64; 2], f64, bool, [f64; 2]);
+        let cases: [Case; 4] = [
+            (
+                "a slope past the range",
+                [0.0, big],
+                [1.0, 1.0],
+                -1e308,
+                false,
+                [0.0, big],
+            ),
+            (
+                "a slope down past it",
+                [0.0, -big],
+                [1.0, 1.0],
+                1e308,
+                false,
+                [0.0, -big],
+            ),
+            (
+                "the intercept past it",
+                [big, 1.0],
+                [1.0, 0.0],
+                -1e308,
+                false,
+                [big, 1.0],
+            ),
+            (
+                "large and finite",
+                [1e200, 1e200],
+                [1.0, 1.0],
+                -1e200,
+                true,
+                [2e200, 2e200],
+            ),
+        ];
+        for (what, b, z, d, taken, after) in cases {
+            m.beta[0] = b.to_vec();
+            m.zbuf.copy_from_slice(&z);
+            assert_eq!(m.step_mapped(0, d, 1.0, Some(1.0)), taken, "{what}");
+            assert_eq!(m.beta[0], after, "{what}");
+        }
+        let mut m = make(LearningRate::AdaGrad);
+        m.g2[0] = vec![4.0, 9.0];
+        m.zbuf.copy_from_slice(&[1.0, 1.0]);
+        // A gradient of 1e160, whose square is past the range and whose
+        // double is not.
+        assert!(!m.step_mapped(0, 1e160, 1.0, None), "an infinite square");
+        assert_eq!((&m.beta[0], &m.g2[0]), (&vec![0.0, 0.0], &vec![4.0, 9.0]));
+        assert!(m.step_mapped(0, 2.0, 1.0, None), "a usable one");
+        assert_eq!(m.g2[0], vec![8.0, 13.0]);
+    }
 }

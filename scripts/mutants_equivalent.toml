@@ -1610,3 +1610,45 @@ why = """the mutant starts the inner loop at `b = a` and writes a summary's \
 distance to itself on the matrix's diagonal, which nothing reads: the \
 nearest-neighbour spacing skips `b = a` and `components` reads `a < b`. \
 Every pair `a < b` is written as before"""
+
+[[equivalent]]
+file = "crates/online-core/src/pa.rs"
+function = "<impl OnlineModel for Pa>::step"
+mutation = "replace match guard held with true"
+line_has = "Some(sc) if held => standardize_row("
+why = """before the switch the mutant forms `z` with `standardize_row` \
+where the original takes `standardized`, and the first writes the \
+second's `z` to the bit (the two compute it in the same expressions, \
+the doc of `standardize_row` says so, and \
+`the_rows_up_to_the_switch_are_the_old_builds_to_the_bit` holds those \
+rows to the build before task 206); the mean and scale it writes beside \
+`z` are read only by a fit held in the caller's units, after the switch"""
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardize_row"
+mutation = "replace + with -"
+line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
+why = """the mutant is inside the second argument, which `variance_is_usable` \
+ignores (it tests the variance alone), as in `standardized`"""
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardize_row"
+mutation = "replace + with *"
+line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
+why = "as above: the second argument of `variance_is_usable` is ignored"
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardize_row"
+mutation = "replace * with +"
+line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
+why = "as above: the second argument of `variance_is_usable` is ignored"
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "standardize_row"
+mutation = "replace * with /"
+line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
+why = "as above: the second argument of `variance_is_usable` is ignored"

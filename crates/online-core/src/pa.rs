@@ -1697,4 +1697,64 @@ mod tests {
         raw.step(&[1.0, 2.0], &[Some(1.0)], 0.0, 1.0);
         assert_eq!(raw.warmup(), &Warmup::default());
     }
+
+    /// A step held in the caller's units is formed whole before anything
+    /// moves: one that would make any coefficient infinite -- a slope's
+    /// `Δβ_i / s_i`, or the intercept's -- teaches nothing, leaves every
+    /// coefficient's bits and says so; one that leaves each finite is
+    /// taken, however large (`Pa::step_mapped`; docs/PLAN.md task 220).
+    /// The row's map is written in by hand: `z`, the means (0 here) and
+    /// the scales (1).
+    #[test]
+    fn a_mapped_step_that_would_make_a_coefficient_infinite_teaches_nothing() {
+        let mut c = cfg(2, PaMode::Pa);
+        c.standardize = true;
+        let mut m = Pa::new(c).unwrap();
+        m.ensure_buffers();
+        m.mbuf.fill(0.0);
+        m.sbuf.fill(1.0);
+        let big = 1.5e308;
+        // (what, b, z, step, taken, b after)
+        type Case = (&'static str, [f64; 3], [f64; 3], f64, bool, [f64; 3]);
+        let cases: [Case; 4] = [
+            (
+                "a slope past the range",
+                [0.0, big, 0.0],
+                [1.0, 1.0, 0.0],
+                1e308,
+                false,
+                [0.0, big, 0.0],
+            ),
+            (
+                "the intercept past it",
+                [big, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                1e308,
+                false,
+                [big, 1.0, 0.0],
+            ),
+            (
+                "a slope down past it",
+                [0.0, -big, 0.0],
+                [1.0, 1.0, 0.0],
+                -1e308,
+                false,
+                [0.0, -big, 0.0],
+            ),
+            (
+                "large and finite",
+                [1e200, 1e200, 0.0],
+                [1.0, 1.0, 0.0],
+                1e200,
+                true,
+                [2e200, 2e200, 0.0],
+            ),
+        ];
+        for (what, b, z, step, taken, after) in cases {
+            m.beta[0] = b.to_vec();
+            m.zbuf.copy_from_slice(&z);
+            assert_eq!(m.step_mapped(0, 1, step), taken, "{what}");
+            assert_eq!(m.beta[0], after, "{what}");
+        }
+    }
 }
