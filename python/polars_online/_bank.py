@@ -1874,7 +1874,16 @@ class ModelBank:
           up to 7 times on clean data.
         - ``level_over_spread`` and ``scales_apart``: each limit is the
           largest value at which the model's out-of-sample R² fell by no more
-          than 0.05, at half-lives of 20, 200 and infinite:
+          than 0.05, at half-lives of 20, 200 and infinite. ``rls``'s level
+          limit is ``0.9 sqrt(W / delta_left)``, from the summary: a level
+          costs it only through the prior ``delta I`` it still holds,
+          ``delta_left = delta (1 - settled_frac)`` (all of ``delta`` without
+          decay), against the weight its fit holds, ``W``
+          (``settled_frac * weight_sum_settled``, or ``weight_sum`` without
+          decay). The R² it lost over a stream's last tenth was one curve in
+          ``(|mean| / std) sqrt(delta_left / W)`` at half-lives of 200, 2,000
+          and infinite, at most 0.05 up to 0.9. So a decaying ``rls`` that
+          has forgotten its prior is told nothing, at any level:
 
         .. list-table::
            :header-rows: 1
@@ -1895,7 +1904,7 @@ class ModelBank:
              - 3
              - 2
            * - ``rls``
-             - 10
+             - ``0.9 sqrt(W / delta_left)``
              - 30
 
         The models that centre their features (``ewridge``, ``lasso``,

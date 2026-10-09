@@ -159,6 +159,16 @@ def planted_level(seed: int):
     return _frame(x, y), every_model(FEATURES)
 
 
+def planted_level_no_decay(seed: int):
+    """``planted_level`` with no decay: ``rls``'s prior then never fades, and
+    at 100 standard deviations over 2,000 rows it costs the fit 0.11 of R²
+    (review 6, G-8). With a half-life of 200 the prior has faded by the end,
+    and ``rls`` is silent."""
+    x, y = _base(seed)
+    x[:, 0] += 100.0
+    return _frame(x, y), every_model(FEATURES, half_life=float("inf"))
+
+
 def planted_level_far(seed: int):
     """x0 at 1e7 standard deviations: the centred models' info line."""
     x, y = _base(seed)
@@ -309,8 +319,30 @@ PLANTED: dict[str, tuple[Callable[[int], Any], str, frozenset[str] | None, froze
         ),
         frozenset(["ew_cov"]),
     ),
+    # `rls`'s prior fades under a half-life of 200: by the end of 2,000 rows
+    # a level of 100 costs it nothing it can be told of (review 6, G-8).
     "level": (
         planted_level,
+        "level_over_spread",
+        frozenset(["kalman_raw", "sgd_raw", "pa_raw", "ftrl"]),
+        frozenset(
+            [
+                "ewridge",
+                "ewridge_std",
+                "lasso",
+                "huber",
+                "quantile",
+                "kalman",
+                "sgd",
+                "pa",
+                "rls",
+                "marginal",
+                "ew_cov",
+            ]
+        ),
+    ),
+    "level_no_decay": (
+        planted_level_no_decay,
         "level_over_spread",
         frozenset(["kalman_raw", "rls", "sgd_raw", "pa_raw", "ftrl"]),
         frozenset(

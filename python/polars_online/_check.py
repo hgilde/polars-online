@@ -172,8 +172,17 @@ _UNCENTRED_LIMITS: dict[str, tuple[float, float]] = {
     "kalman": (2.0, 2.0),
     "sgd": (3.0, 3.0),
     "pa": (3.0, 2.0),
-    "rls": (10.0, 30.0),
+    "rls": (math.inf, 30.0),
 }
+#: ``rls``'s level limit is this times ``sqrt(W / delta_left)``, ``W`` the
+#: weight its fit holds and ``delta_left`` the part of its prior ``delta I``
+#: that has not decayed: ``delta (1 - settled_frac)``, all of ``delta``
+#: without decay. A level costs ``rls`` only through that prior, which pulls
+#: the slope and the intercept in raw units; the R^2 it lost over a stream's
+#: last tenth was one curve in ``(|mean| / std) sqrt(delta_left / W)`` at
+#: half-lives of 200, 2,000 and infinite, over 2,000 and 20,000 rows, and at
+#: most 0.05 at 0.9 (review 6, G-8).
+RLS_LEVEL = 0.9
 
 
 @dataclass(frozen=True)
@@ -312,6 +321,7 @@ def _spec_findings(
         cols_by_group.setdefault(row["group"], []).append(row)
     uncentred = _uncentred(spec)
     resolved = _resolved(bank, i)
+    prior_limit = _rls_level_limits(summary, resolved) if kind == "rls" else {}
     for g, rows in cols_by_group.items():
         feats = []
         for r in rows:
@@ -387,8 +397,26 @@ def _spec_findings(
             feats.append(r)
             ratio = abs(mean) / std
             limit = uncentred[0] if uncentred else LEVEL_INFO
+            if kind == "rls":
+                limit = prior_limit.get(g, math.inf)
             if ratio > limit and ratio * math.sqrt(r["count"]) >= SIGMAS:
-                if uncentred:
+                if kind == "rls":
+                    add(
+                        "warning",
+                        "level_over_spread",
+                        g,
+                        col,
+                        ratio,
+                        limit,
+                        f"feature {col!r} sits {_fmt(ratio)} standard deviations "
+                        f"from zero in {_who(g)}, and rls does not centre it, so "
+                        "the part of its prior delta that has not decayed holds "
+                        f"its slope in raw units; past {_fmt(limit)} here, 0.9 "
+                        "sqrt(weight / prior left), that costs it accuracy: "
+                        "subtract its mean or difference it upstream, lower "
+                        "delta, or set a half_life so the prior fades",
+                    )
+                elif uncentred:
                     add(
                         "warning",
                         "level_over_spread",
@@ -645,6 +673,27 @@ def _spec_findings(
                 "use yet",
             )
 
+    return out
+
+
+def _rls_level_limits(summary: pl.DataFrame, resolved: dict[str, Any]) -> dict[str | None, float]:
+    """Per group, an ``rls`` spec's level limit, ``RLS_LEVEL sqrt(W /
+    delta_left)`` (review 6, G-8): ``W`` the weight its fit holds and
+    ``delta_left`` its prior that has not decayed. Without decay
+    ``settled_frac`` is null, the prior is all there and ``W`` is
+    ``weight_sum``; with it, ``W`` is ``settled_frac`` of the weight it
+    settles at and ``delta_left`` the rest of ``delta``. ``inf`` where no
+    prior is left or no weight is held."""
+    delta = float(resolved["model"]["delta"])
+    out: dict[str | None, float] = {}
+    for row in summary.iter_rows(named=True):
+        settled = row["settled_frac"]
+        if settled is None:
+            held, left = row["weight_sum"], delta
+        else:
+            held, left = settled * (row["weight_sum_settled"] or 0.0), delta * (1.0 - settled)
+        ok = held is not None and held > 0.0 and left > 0.0
+        out[row["group"]] = RLS_LEVEL * math.sqrt(held / left) if ok else math.inf
     return out
 
 

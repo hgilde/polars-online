@@ -585,7 +585,10 @@ passes a limit measured for it.
 | `ridge_shrinks` | warning | `ewridge`, `huber` or `quantile` without `standardize`: the smallest ridge is a quarter of a feature's variance or more, so it takes a fifth of that coefficient or more |
 
 Each limit is the largest value at which the model's out-of-sample R² fell
-by no more than 0.05, at half-lives of 20, 200 and infinite. A level or a
+by no more than 0.05, at half-lives of 20, 200 and infinite. `rls`'s level
+limit is not a constant, for a reason the next paragraphs give: it is
+`0.9·sqrt(W/delta_left)`, `W` the weight its fit holds and `delta_left`
+the part of its prior that has not decayed. A level or a
 spread ratio counts only when it is five standard errors from chance:
 from what a centred column, or two of equal spread, would show in that
 many rows. That guard keeps a small group quiet. At a quarter of the variance, the
@@ -597,7 +600,7 @@ ridge took 0.02 to 0.03 off the R², and at the whole variance 0.14.
 | `kalman`, `standardize=False` | 2 | 2 |
 | `sgd`, `standardize=False` | 3 | 3 |
 | `pa`, `standardize=False` | 3 | 2 |
-| `rls` | 10 | 30 |
+| `rls` | `0.9·sqrt(W/delta_left)` | 30 |
 
 The models that centre their features (`ewridge`, `lasso`, `huber`,
 `quantile`, and `kalman`, `sgd` and `pa` at their default
@@ -626,7 +629,21 @@ it outweighs the data in that direction and pins the slope near zero.
 Measured at 20,000 rows and no decay, a level of 100 spreads kept an R² of
 0.42 against 0.51, and 1,000 spreads kept 0.015. With `delta=1e-6`, both
 read 0.51. Under a decay the prior fades with the sums, so the same levels
-left `rls`'s R² where `ewridge`'s was at half-lives of 20 and 200.
+left `rls`'s R² where `ewridge`'s was at half-lives of 20 and 200. A short
+stream at a long half-life is still in the prior's shadow: over 2,000 rows
+at a half-life of 200, a thousandth of `delta` is left beside a weight of
+289, and a level of 10,000 spreads cost 0.16 of R² over the last tenth.
+
+So the check reads `r = (L/s)·sqrt(delta_left/W)` at the end of the
+stream. `delta_left` is `delta·(1 − settled_frac)`, all of `delta` without
+decay, and `W` the weight the fit holds, `settled_frac` times
+`weight_sum_settled`, or `weight_sum` without decay. It is the weight and
+not the Kish size: weights 100 times larger moved the harm to levels 10
+times higher. The R² lost over the last tenth of a stream was one curve in
+`r`, at half-lives of 200, 2,000 and infinite and over 2,000 and 20,000
+rows: 0.007 to 0.018 at 0.55 to 0.71, 0.013 to 0.037 at 0.8, 0.10 to 0.11
+at 1.8 to 2.2, and all of the feature's share past 5. It stays at or below
+0.05 up to 0.9, the limit.
 
 **Why a step size needs a scale.** `sgd`, `pa` and `ftrl` move the
 coefficients a step along the gradient on each row. Least mean squares

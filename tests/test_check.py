@@ -11,6 +11,7 @@ from.
 from __future__ import annotations
 
 import builtins
+import math
 import warnings
 
 import numpy as np
@@ -253,6 +254,35 @@ class TestValues:
         d = np.linalg.eigvalsh(pg.correlation(pg.subset(g, cs.FEATURES)))
         want = max(float(np.sqrt(d[-1] / d[0])), *pg.vif(g))
         assert row["value"] == pytest.approx(want, rel=1e-9)
+
+    def test_rls_is_told_of_a_level_by_the_prior_it_still_holds(self):
+        """``rls``'s level limit is ``0.9 sqrt(W / delta_left)``: the prior
+        ``delta I`` it still holds, ``delta (1 - settled_frac)`` (all of it
+        without decay), against the weight its fit holds. Review 6, G-8's
+        decaying streams, levels of 100 to 10,000 over 20,000 rows at
+        half-lives of 20 and 200, lost nothing and are not told; the same
+        rows with no decay are, at the limit the summary gives."""
+        rng = np.random.default_rng(5)
+        n = 20_000
+        for level in (100.0, 1e3, 1e4):
+            x = level + rng.standard_normal(n)
+            x2 = rng.standard_normal(n)
+            y = 0.5 * (x - level) + 0.5 * x2 + rng.standard_normal(n)
+            df = pl.DataFrame({"x": x, "x2": x2, "y": y})
+            c = dict(targets=["y"], features=["x", "x2"])
+            specs = [po.spec.rls(f"rls_{hl:g}", half_life=hl, **c) for hl in (20.0, 200.0)]
+            specs.append(po.spec.rls("rls_inf", half_life=float("inf"), delta=4.0, **c))
+            bank = po.ModelBank(specs)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                bank.fit(df)
+            f = bank.check().filter(code="level_over_spread")
+            assert set(f["spec"]) == {"rls_inf"}, (level, f)
+            row = f.row(0, named=True)
+            w = bank.summary().filter(spec="rls_inf")["weight_sum"][0]
+            assert row["threshold"] == pytest.approx(_check.RLS_LEVEL * math.sqrt(w / 4.0))
+            d = bank.describe("rls_inf").filter(column="x").row(0, named=True)
+            assert row["value"] == abs(d["mean"]) / d["std"]
 
     def test_a_target_missing_by_design_is_information_only(self):
         df, specs = cs.clean_sparse_target(0)
