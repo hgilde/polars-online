@@ -34,7 +34,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 59
+  schema_version = 60
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -81,6 +81,7 @@
   emit_specification = False
   specification_half_life = None
   ljung_box_lags = None
+  horizon_rows = None
   emit_tails = False
   tails_half_life = None
   emit_influence = False
@@ -407,8 +408,11 @@
     stream.drift_action = "flag"
     stream.drift_delta = 0.5
     stream.drift_threshold = 20.0
+    stream.horizon_rows = 0
+    stream.ljung_box_lags = 10
     stream.min_settled_frac = 0.0
     stream.resid_autocorr_lag = 1
+    stream.robust_se_lags = 0
     stream.window_budget = null
   audit(columns=['x0', 'x1']):
     model.distinct_cap = 256
@@ -2089,6 +2093,7 @@
     group
     group_close
     half_life
+    horizon_rows
     influence_half_life
     lam
     ljung_box_lags
