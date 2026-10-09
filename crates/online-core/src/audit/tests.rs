@@ -1158,16 +1158,16 @@ fn counters_merge_as_misra_gries_summaries_do() {
 /// never displaces a larger one, however small its value.
 #[test]
 fn the_most_repeated_value_takes_a_tie_to_the_smaller_value() {
-    let cases: [(&[f64], (f64, u64, u64)); 3] = [
-        (&[2.0, 1.0, 2.0, 1.0, 1.0, 2.0], (1.0, 3, 3)),
-        (&[-1.0, -2.0, -1.0, -2.0, -2.0, -1.0], (-2.0, 3, 3)),
+    let cases = [
+        (vec![2.0, 1.0, 2.0, 1.0, 1.0, 2.0], (1.0, 3, 3)),
+        (vec![-1.0, -2.0, -1.0, -2.0, -2.0, -1.0], (-2.0, 3, 3)),
         (
-            &[1.0, -1.0, 1.0, -2.0, 1.0, -1.0, 1.0, -2.0, 1.0],
+            vec![1.0, -1.0, 1.0, -2.0, 1.0, -1.0, 1.0, -2.0, 1.0],
             (1.0, 5, 2),
         ),
     ];
     for (xs, want) in cases {
-        let c = audit_of(&cfg(1), xs).column(0);
+        let c = audit_of(&cfg(1), &xs).column(0);
         assert_eq!((c.top_value, c.top_count, c.second_count), want, "{xs:?}");
     }
 }
