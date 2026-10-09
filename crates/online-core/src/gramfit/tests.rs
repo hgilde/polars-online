@@ -86,6 +86,15 @@ fn every_knot_meets_the_lasso_conditions_and_the_active_set_solve() {
     assert_eq!(path.stop, LarsStop::End);
     assert_eq!(*path.penalties.last().unwrap(), 0.0);
     assert!(path.len() >= 9, "eight columns enter: {}", path.len());
+    assert!(!path.is_empty());
+    let none = LarsPath {
+        penalties: Vec::new(),
+        coefs: Vec::new(),
+        active: Vec::new(),
+        stop: LarsStop::End,
+    };
+    assert!(none.is_empty(), "a path built with no knot");
+    assert_eq!(none.len(), 0);
     for w in path.penalties.windows(2) {
         assert!(w[1] < w[0], "λ falls along the path: {w:?}");
     }
@@ -462,6 +471,108 @@ fn weighted_knots_meet_the_weighted_conditions() {
     assert!(err.contains("column 1"), "{err}");
 }
 
+/// With no weight at 1 the weights still apply: the knots meet the
+/// weighted conditions, and the path is not the plain one.
+#[test]
+fn weights_none_of_which_is_one_meet_the_weighted_conditions() {
+    let (r, d) = design(19, 300, 5, 0.5, &[1.0, -0.6, 0.4, 0.0, 0.3]);
+    let live = [true; 5];
+    let w = [2.0, 0.5, 3.0, 1.5, 0.25];
+    let path = lars_lasso_weighted(
+        &DenseRows { r: &r, k: 5 },
+        &d,
+        &live,
+        &w,
+        LarsLimits::default(),
+    )
+    .unwrap();
+    assert!(path.len() > 2);
+    for (n, &lambda) in path.penalties.iter().enumerate() {
+        let b = &path.coefs[n * 5..(n + 1) * 5];
+        for j in 0..5 {
+            let c = d[j] - (0..5).map(|i| r[j * 5 + i] * b[i]).sum::<f64>();
+            if b[j] != 0.0 {
+                assert!((c - lambda * w[j] * b[j].signum()).abs() < 1e-12, "{n} {j}");
+            } else {
+                assert!(c.abs() <= lambda * w[j] + 1e-12, "{n} {j}");
+            }
+        }
+    }
+    assert_ne!(path, lars_lasso(&r, &d, &live, LarsLimits::default()));
+}
+
+/// The lasso is the same problem on `(c R, c d)` at `c λ`: `f(b)` is `c`
+/// times the original, so the path's knots fall at `c λ` with the same
+/// coefficients and active sets. `c` a power of 4 scales every operation
+/// exactly, the factor's square roots too, so the two agree to the bit. A
+/// diagonal of `c` in place of 1 is where a collinearity floor not taken as
+/// a share of the diagonal would set every column aside, or none.
+#[test]
+fn the_path_scales_with_the_gram() {
+    let (r, d) = design(23, 200, 6, 0.7, &[1.0, -0.5, 0.0, 0.4, 0.0, 0.2]);
+    let live = [true; 6];
+    let base = lars_lasso(&r, &d, &live, LarsLimits::default());
+    assert_eq!(base.active.last().unwrap().len(), 6);
+    for c in [2f64.powi(-40), 2f64.powi(40)] {
+        let rc: Vec<f64> = r.iter().map(|v| v * c).collect();
+        let dc: Vec<f64> = d.iter().map(|v| v * c).collect();
+        let got = lars_lasso(&rc, &dc, &live, LarsLimits::default());
+        let want: Vec<u64> = base.penalties.iter().map(|v| (v * c).to_bits()).collect();
+        let pen: Vec<u64> = got.penalties.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(pen, want, "c = {c:e}");
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&got.coefs), bits(&base.coefs), "c = {c:e}");
+        assert_eq!(got.active, base.active, "c = {c:e}");
+    }
+}
+
+/// A path read a row at a time from a Gram ([`GramRows`]) is the path on
+/// the correlation matrix formed whole, to the bit, with the intercept and
+/// through the origin, on columns of unequal spread.
+#[test]
+fn a_path_read_from_a_gram_is_the_path_on_its_correlation_matrix() {
+    let (r, d) = mixed_design(4, 120, 5);
+    // Column 0 the intercept; columns 1..=5 scaled by `s`, means off 0.
+    let k = 6;
+    let s = [0.5, 3.0, 1.0, 7.0, 0.2];
+    let mut como = vec![0.0; k * k];
+    let mut cc = vec![0.0; k];
+    for i in 0..5 {
+        for j in 0..5 {
+            como[(i + 1) * k + j + 1] = r[i * 5 + j] * s[i] * s[j];
+        }
+        cc[i + 1] = d[i] * s[i];
+    }
+    let means = [1.0, 0.3, -2.0, 1.5, 0.0, 4.0];
+    let cross: Vec<f64> = (0..k).map(|i| 0.7 * means[i] + cc[i]).collect();
+    let g = GramArrays {
+        k,
+        means: &means,
+        comoments: Comoments::Full(&como),
+        cross_moments: &cross,
+        means_by_target: &means,
+        cross_centred: &cc,
+        weight_sum: 120.0,
+        target_weights: &[120.0],
+        target_means: &[0.7],
+        target_vars: &[2.0],
+        target_n_kish: &[120.0],
+    };
+    let slots = [1, 2, 3, 4, 5];
+    for icept in [Some(0), None] {
+        let corr = Correlation::of(&Design::of(&g, &slots, icept));
+        let resp = Response::of(&g, 0, &slots, icept);
+        let dd = corr.scaling.d(&resp);
+        let rows = GramRows::new(g, &slots, icept);
+        let path = lars_lasso_rows(&rows, &dd, &corr.scaling.live, LarsLimits::default());
+        assert_eq!(
+            path,
+            lars_lasso(&corr.r, &dd, &corr.scaling.live, LarsLimits::default())
+        );
+        assert!(path.len() > 5, "{icept:?}: {} knots", path.len());
+    }
+}
+
 #[test]
 fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
     // Two targets over three columns, the intercept at 0.
@@ -524,7 +635,62 @@ fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
     };
     let corr = Correlation::of(&Design::of(&g0, &[1, 2], Some(0)));
     assert_eq!(corr.scaling.live, vec![false, false]);
+    assert_eq!(
+        corr.scaling.scale,
+        vec![1.0, 1.0],
+        "a dead column's scale is 1"
+    );
     assert_eq!(corr.r, vec![1.0, 0.0, 0.0, 1.0]);
+}
+
+/// A dead column's row and column of `R` are 0 but for its 1 on the
+/// diagonal whatever its co-moments with the others: a variance rounded to
+/// just below 0 beside a covariance that is not 0 (as a Gram streamed in
+/// float32, or a column nearly constant, can hold) reads as no correlation.
+#[test]
+fn a_dead_columns_correlations_are_zero_whatever_its_comoments() {
+    let design = Design {
+        a: vec![4.0, 1e-9, 0.5, 1e-9, -1e-18, 2e-9, 0.5, 2e-9, 9.0],
+        n: 3,
+    };
+    let corr = Correlation::of(&design);
+    assert_eq!(corr.scaling.live, vec![true, false, true]);
+    assert_eq!(corr.scaling.scale, vec![2.0, 1.0, 3.0]);
+    let third = 0.5 / 6.0;
+    assert_eq!(
+        corr.r,
+        vec![1.0, 0.0, third, 0.0, 1.0, 0.0, third, 0.0, 1.0]
+    );
+}
+
+/// The co-moments' size and form, in each of the four forms
+/// `ModelBank.gram()` hands them over in.
+#[test]
+fn the_comoments_say_their_size_and_form() {
+    let (f64s, f32s) = ([1.0, 2.0, 2.0, 5.0], [1.0f32, 2.0, 5.0]);
+    let forms = [
+        (Comoments::Full(&f64s), 4, false),
+        (Comoments::Full32(&[1.0f32, 2.0, 2.0, 5.0]), 4, false),
+        (Comoments::Packed(&[1.0, 2.0, 5.0]), 3, true),
+        (Comoments::Packed32(&f32s), 3, true),
+    ];
+    for (c, len, packed) in forms {
+        assert_eq!(
+            (c.len(), c.is_empty(), c.is_packed()),
+            (len, false, packed),
+            "{c:?}"
+        );
+        assert_eq!(c.get(2, 1, 0), 2.0, "{c:?}");
+    }
+    for c in [
+        Comoments::Full(&[]),
+        Comoments::Full32(&[]),
+        Comoments::Packed(&[]),
+        Comoments::Packed32(&[]),
+    ] {
+        assert!(c.is_empty(), "{c:?}");
+        assert_eq!(c.len(), 0, "{c:?}");
+    }
 }
 
 /// A ridge makes a system with a constant column solvable, but the
@@ -623,4 +789,43 @@ fn a_column_set_aside_makes_no_knot() {
     }
     assert_eq!(cases, 3);
     assert!(set_aside > 0);
+}
+
+/// A sweep that moves no coefficient by `tol` or more ends the descent
+/// (the module doc): the path at `tol` is the sweeps run one at a time --
+/// at `tol = 0`, where none ends early -- up to the first whose largest
+/// move is under `tol`. A sweep that moves one by exactly `tol` does not
+/// end it.
+#[test]
+fn coordinate_descent_stops_at_the_first_sweep_that_moves_less_than_tol() {
+    let (r, d) = design(3, 100, 4, 0.9, &[1.0, -1.0, 0.5, 1.0]);
+    let live = [true; 4];
+    let run =
+        |max_iter: usize, tol: f64| cd_path(&r, &d, &live, &[0.01], 1.0, &[1.0; 4], max_iter, tol);
+    // Sweep m's coefficients and its largest move, by definition.
+    let mut after = vec![vec![0.0; 4]];
+    let mut moves = vec![f64::INFINITY];
+    for m in 1..=60 {
+        let b = run(m, 0.0);
+        let moved = b
+            .iter()
+            .zip(&after[m - 1])
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
+        after.push(b);
+        moves.push(moved);
+    }
+    // A sweep whose move is below every earlier one, and one later that
+    // moves less still.
+    let m0 = (5..40)
+        .find(|&m| moves[..m].iter().all(|&v| v > moves[m]))
+        .expect("the moves fall");
+    let tol = moves[m0];
+    let stop = (m0 + 1..=60)
+        .find(|&m| moves[m] < tol)
+        .expect("a sweep moves less");
+    assert_ne!(after[stop], after[60], "the stop is not the converged fit");
+    assert_eq!(run(10_000, tol), after[stop], "tol = sweep {m0}'s move");
+    // Just above that move, the sweep that made it is the last.
+    assert_eq!(run(10_000, tol * (1.0 + 1e-12)), after[m0]);
 }

@@ -438,3 +438,180 @@ fn a_packed_or_float32_part_merges_and_fits_as_its_whole_float64_matrix() {
         );
     }
 }
+
+/// `g` with its columns in the order `perm`: column `p` of the result is
+/// column `perm[p]` of `g`.
+fn permuted(g: &OwnedGram, perm: &[usize]) -> OwnedGram {
+    let k = g.k;
+    let per_target = |v: &[f64]| -> Vec<f64> {
+        (0..v.len() / k)
+            .flat_map(|t| perm.iter().map(move |&i| v[t * k + i]))
+            .collect()
+    };
+    OwnedGram {
+        means: perm.iter().map(|&i| g.means[i]).collect(),
+        comoments: perm
+            .iter()
+            .flat_map(|&i| perm.iter().map(move |&j| g.comoments[i * k + j]))
+            .collect(),
+        cross_moments: per_target(&g.cross_moments),
+        means_by_target: per_target(&g.means_by_target),
+        cross_centred: per_target(&g.cross_centred),
+        ..g.clone()
+    }
+}
+
+/// The intercept need not be the first column: with it last, a merge and a
+/// ridge fit are the same numbers, to the bit, column for column. Every
+/// other test puts it first, where `t·k + c` and `t·k − c` read the same
+/// entry for the first target.
+#[test]
+fn the_intercept_may_be_any_column() {
+    let parts: Vec<Rows> = (0..2).map(|s| rows(50 + s, 70, 3, 2.0)).collect();
+    let grams: Vec<OwnedGram> = parts.iter().map(gram_of).collect();
+    let k = 4;
+    // Old column i at position (i + 3) % 4: the intercept last.
+    let perm = [1, 2, 3, 0];
+    let pos = |i: usize| (i + k - 1) % k;
+    let moved: Vec<OwnedGram> = grams.iter().map(|g| permuted(g, &perm)).collect();
+    let views: Vec<GramArrays<'_>> = grams.iter().map(OwnedGram::arrays).collect();
+    let moved_views: Vec<GramArrays<'_>> = moved.iter().map(OwnedGram::arrays).collect();
+    let want = merge(&views, &[0, 1, 2, 3], Some(0));
+    let cols: Vec<usize> = (0..k).map(pos).collect();
+    assert_eq!(merge(&moved_views, &cols, Some(pos(0))), want);
+    for standardize in [false, true] {
+        let a = ridge_fits(&views[0], &[0, 1], &[1, 2, 3], Some(0), 0.2, standardize);
+        let b = ridge_fits(
+            &moved_views[0],
+            &[0, 1],
+            &[0, 1, 2],
+            Some(pos(0)),
+            0.2,
+            standardize,
+        );
+        for (x, y) in a.iter().zip(&b) {
+            let back = |v: &[f64]| (0..k).map(|i| v[pos(i)].to_bits()).collect::<Vec<_>>();
+            let bits = |v: &[f64]| v.iter().map(|u| u.to_bits()).collect::<Vec<_>>();
+            assert_eq!(back(&y.coef), bits(&x.coef));
+            assert_eq!(back(&y.se), bits(&x.se));
+            assert_eq!(
+                (y.resid_var, y.sigma2, y.r2, y.n),
+                (x.resid_var, x.sigma2, x.r2, x.n)
+            );
+        }
+    }
+}
+
+/// A target's Kish size where the parts give none: a part with no weight
+/// and a Kish size of 0, rather than NaN, adds nothing to the sum of
+/// squared weights; parts that carry weight but no Kish size pool to none
+/// (NaN), never to an infinite size; and parts with no weight at all pool
+/// to finite moments, `α` and `β` both 0 (the module doc).
+#[test]
+fn a_part_without_a_kish_size_adds_none() {
+    let g = gram_of(&rows(21, 60, 3, 1.0));
+    let mut empty = g.clone();
+    empty.weight_sum = 0.0;
+    empty.target_weights = vec![0.0, 0.0];
+    empty.target_n_kish = vec![0.0, 0.0];
+    let got = merge(&[g.arrays(), empty.arrays()], &[0, 1, 2, 3], Some(0));
+    assert_eq!(got.target_n_kish, g.target_n_kish);
+    let none = merge(&[empty.arrays(), empty.arrays()], &[0, 1, 2, 3], Some(0));
+    for (what, v) in [
+        ("target_vars", &none.target_vars),
+        ("target_means", &none.target_means),
+        ("cross_moments", &none.cross_moments),
+        ("cross_centred", &none.cross_centred),
+        ("means_by_target", &none.means_by_target),
+    ] {
+        assert!(v.iter().all(|x| x.is_finite()), "{what}: {v:?}");
+    }
+    let mut unknown = g.clone();
+    unknown.target_n_kish = vec![f64::NAN, f64::NAN];
+    let pooled = merge(
+        &[unknown.arrays(), unknown.arrays()],
+        &[0, 1, 2, 3],
+        Some(0),
+    );
+    assert!(pooled.target_weights.iter().all(|&w| w > 0.0));
+    assert!(
+        pooled.target_n_kish.iter().all(|v| v.is_nan()),
+        "{:?}",
+        pooled.target_n_kish
+    );
+}
+
+/// One slot beside the intercept, its co-moment 1 and its covariance with
+/// the target 1, so the ridge-0 slope is 1: a Gram built by hand for the
+/// statistics' edges.
+fn one_slot(var_y: f64, n_kish: f64) -> OwnedGram {
+    OwnedGram {
+        k: 2,
+        weight_sum: n_kish,
+        means: vec![1.0, 0.0],
+        comoments: vec![0.0, 0.0, 0.0, 1.0],
+        cross_moments: vec![3.0, 1.0],
+        means_by_target: vec![1.0, 0.0],
+        cross_centred: vec![0.0, 1.0],
+        target_weights: vec![n_kish],
+        target_means: vec![3.0],
+        target_vars: vec![var_y],
+        target_n_kish: vec![n_kish],
+    }
+}
+
+/// The statistics at their edges, as `coef_stats` computes them: a
+/// residual variance below 0 (a target with gaps reads its own rows'
+/// covariances beside the Gram's co-moments, which need not agree) is 0,
+/// so `r2` is 1, the standard error 0 and its t NaN, not infinite; at a
+/// Kish size no larger than the parameters there is no `sigma2`, not an
+/// infinite one; and a `sigma2` that overflows gives no standard errors.
+#[test]
+fn the_statistics_at_their_edges() {
+    let fit = |g: &OwnedGram| ridge_fits(&g.arrays(), &[0], &[1], Some(0), 0.0, false).remove(0);
+    // 0.5 − 2·1 + 1 = −0.5.
+    let low = fit(&one_slot(0.5, 10.0));
+    assert_eq!(low.coef, vec![3.0, 1.0]);
+    assert_eq!((low.resid_var, low.sigma2, low.r2), (0.0, 0.0, 1.0));
+    assert_eq!(low.se[1], 0.0);
+    assert!(low.t[1].is_nan(), "{:?}", low.t);
+    // Two rows of Kish's count for a slope and an intercept: 2 − 2 = 0.
+    let tight = fit(&one_slot(2.0, 2.0));
+    assert_eq!(tight.resid_var, 1.0);
+    assert!(tight.sigma2.is_nan(), "{}", tight.sigma2);
+    assert!(tight.se[1].is_nan() && tight.t[1].is_nan());
+    // f64::MAX · 10 / 8 overflows.
+    let huge = fit(&one_slot(f64::MAX, 10.0));
+    assert_eq!(huge.sigma2, f64::INFINITY);
+    assert!(
+        huge.se[1].is_nan() && huge.t[1].is_nan(),
+        "{:?} {:?}",
+        huge.se,
+        huge.t
+    );
+}
+
+/// A constant target has no `r2`, whatever its residual variance. Through
+/// the origin the slope is the raw moments' and the residual variance is
+/// read about the means, so a target constant at 5 on a column with mean 2
+/// keeps a residual variance of 4: `E[x²] = 5`, `E[x y] = 10`, `b = 2`,
+/// `0 − 2·2·0 + 2·1·2 = 4`.
+#[test]
+fn a_constant_target_has_no_r2() {
+    let g = OwnedGram {
+        k: 1,
+        weight_sum: 10.0,
+        means: vec![2.0],
+        comoments: vec![1.0],
+        cross_moments: vec![10.0],
+        means_by_target: vec![2.0],
+        cross_centred: vec![0.0],
+        target_weights: vec![10.0],
+        target_means: vec![5.0],
+        target_vars: vec![0.0],
+        target_n_kish: vec![10.0],
+    };
+    let fit = ridge_fits(&g.arrays(), &[0], &[0], None, 0.0, false).remove(0);
+    assert_eq!((fit.coef[0], fit.resid_var), (2.0, 4.0));
+    assert!(fit.r2.is_nan(), "{}", fit.r2);
+}
