@@ -112,6 +112,7 @@ mod solve;
 mod specification;
 mod spread;
 mod stats;
+mod tails;
 mod warmup;
 mod window;
 
@@ -176,6 +177,7 @@ pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use specification::Specification;
 pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, SlotMetrics};
+pub use tails::Tails;
 pub use warmup::{WARMUP_ROWS, Warmup};
 pub use window::{
     At, Bytes, Cadence, Footprint, Moments, Snapshots, WindowBudget, WindowClosed, WindowShadow,

@@ -5083,3 +5083,56 @@ class TestSpecificationTestsAreStatsmodels:
             fit = sm.OLS(df["y"].to_numpy(), X).fit()
             theirs = linear_reset(fit, power=3, test_type="fitted", use_f=False).statistic > 5.991
             assert ours == theirs == (curve > 0), (seed, ours, theirs)
+
+
+class TestTailsAreScipyAndJarqueBera:
+    """Task 221 (e). Run once, the tails of the recursive residuals before
+    each row, ``resid / error_inflation``, are ``scipy.stats``' biased
+    ``skew`` and ``kurtosis`` and ``statsmodels``' ``jarque_bera``; with a
+    memory and weights, the same definitions at each row's present weight
+    and Kish's size, written by hand from ``numpy.average``."""
+
+    def test_run_once_and_windowed(self):
+        from scipy import stats
+        from statsmodels.stats.stattools import jarque_bera
+
+        rng = np.random.default_rng(71)
+        n = 1200
+        x = rng.normal(size=(n, 2))
+        w = rng.uniform(0.5, 1.5, size=n)
+        w[rng.random(n) < 0.05] = 0.0
+        y = x @ np.array([1.0, -1.0]) + rng.standard_t(5, size=n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "w": w})
+        common = dict(
+            targets=["y"],
+            features=["x0", "x1"],
+            ridge=1e-12,
+            min_weight=3.0,
+            emit_tails=True,
+            emit_error_inflation=True,
+        )
+        once = po.ModelBank([po.spec.ewridge("m", half_life=float("inf"), **common)])
+        out = once.fit_predict(df.drop("w")).unnest("m")
+        v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
+        for t in (200, 1199):
+            vt = v[:t][np.isfinite(v[:t])]
+            np.testing.assert_allclose(out["skew_y"][t], stats.skew(vt), rtol=1e-9)
+            np.testing.assert_allclose(out["kurtosis_y"][t], stats.kurtosis(vt), rtol=1e-9)
+            np.testing.assert_allclose(out["jarque_bera_y"][t], jarque_bera(vt)[0], rtol=1e-9)
+        h = 150.0
+        spec = po.spec.ewridge("m", half_life=60.0, tails_half_life=h, weight="w", **common)
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        v = (out["resid_y"] / out["error_inflation_y"]).to_numpy()
+        for t in (300, 1199):
+            om = w[:t] * 0.5 ** (((t - 1) - np.arange(t)) / h)
+            keep = np.isfinite(v[:t]) & (om > 0)
+            vt, ot = v[:t][keep], om[keep]
+            mu = np.average(vt, weights=ot)
+            m = [np.average((vt - mu) ** j, weights=ot) for j in (2, 3, 4)]
+            skew, kurt = m[1] / m[0] ** 1.5, m[2] / m[0] ** 2 - 3
+            n_kish = ot.sum() ** 2 / (ot**2).sum()
+            np.testing.assert_allclose(out["skew_y"][t], skew, rtol=1e-8)
+            np.testing.assert_allclose(out["kurtosis_y"][t], kurt, rtol=1e-8)
+            np.testing.assert_allclose(
+                out["jarque_bera_y"][t], n_kish / 6 * (skew**2 + kurt**2 / 4), rtol=1e-8
+            )

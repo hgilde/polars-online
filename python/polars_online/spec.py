@@ -217,7 +217,8 @@ the diagnostics
     ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``,
     ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
     ``emit_specification`` with ``specification_half_life`` and
-    ``ljung_box_lags``, and ``emit_clocks``. Each adds fields to the
+    ``ljung_box_lags``, ``emit_tails`` with ``tails_half_life``, and
+    ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: when left out, four times the model instance's half-life
@@ -631,6 +632,22 @@ The diagnostics add, per slot:
        streams missing nothing, run once or windowed, and on 98-100% of
        those missing what it looks for: an AR(1) at 0.3, a spread linear in
        a feature, a square of one.
+   * - ``emit_tails``
+     - ``skew_<slot>``, ``kurtosis_<slot>``, ``jarque_bera_<slot>``
+     - The EW skewness and excess kurtosis of the recursive residuals,
+       ``resid / error_inflation`` (``resid`` on a model without one), at
+       ``tails_half_life``, and Jarque and Bera's statistic, ``n / 6 *
+       (skew**2 + kurtosis**2 / 4)`` at Kish's size, ``chi2(2)`` for
+       Gaussian residuals. Run once they are ``scipy.stats``' ``skew`` and
+       ``kurtosis`` and statsmodels' ``jarque_bera``. On 200 streams it
+       passed 5.99 on 4.7-5.0% of the rows of Gaussian residuals, run once
+       or windowed, and on every row of Student's t with 5 degrees of
+       freedom. The kurtosis is what ``drift_threshold`` is set against:
+       on 40 streams of 25,000 rows at a half-life of 200, the default 20
+       flagged no row where the kurtosis read under 4 (Gaussian, t with 10,
+       6 and 5 degrees of freedom), 0.4 rows in 100,000 where it read 8.6
+       (t with 4) and none at 30, and 6.3 where it read 36 (t with 3), 2.1
+       at 30, 0.4 at 50 and none at 80.
 
 .. rubric:: Errors
 

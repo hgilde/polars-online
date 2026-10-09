@@ -10,7 +10,7 @@
 //! row was scored with. Their per-slot values ride in one output buffer,
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
-use online_core::{Breaks, Calibration, Decay, Sandwich, Specification, TwinFit};
+use online_core::{Breaks, Calibration, Decay, Sandwich, Specification, Tails, TwinFit};
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{ModelKind, Spec};
@@ -32,6 +32,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
     if spec.emit_specification {
         out.extend(["ljung_box", "breusch_pagan", "reset"]);
     }
+    if spec.emit_tails {
+        out.extend(["skew", "kurtosis", "jarque_bera"]);
+    }
     out
 }
 
@@ -44,6 +47,7 @@ pub struct CheckCfg {
     breaks: Decay,
     robust: Decay,
     specification: Decay,
+    tails: Decay,
     /// Newey and West's lags, `0` for HC0 alone.
     lags: usize,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
@@ -101,6 +105,11 @@ impl CheckCfg {
                 model,
                 Spec::memory_multiple("specification_half_life"),
             ),
+            tails: Spec::diagnostic_decay(
+                spec.tails_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("tails_half_life"),
+            ),
             lags: spec.robust_se_lags_or_default(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
@@ -151,6 +160,9 @@ pub struct Checks {
     /// under `emit_specification`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub specification: Vec<Specification>,
+    /// The recursive residuals' tails per slot, under `emit_tails`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tails: Vec<Tails>,
 }
 
 impl Checks {
@@ -177,12 +189,17 @@ impl Checks {
                 );
                 on(spec.emit_specification, n_slots)
             ],
+            tails: vec![Tails::new(); on(spec.emit_tails, n_slots)],
         }
     }
 
     /// Whether any switch is on: a spec with none keeps no `Checks`.
     pub fn any(spec: &Spec) -> bool {
-        spec.emit_calibration || spec.emit_breaks || spec.emit_robust_se || spec.emit_specification
+        spec.emit_calibration
+            || spec.emit_breaks
+            || spec.emit_robust_se
+            || spec.emit_specification
+            || spec.emit_tails
     }
 
     /// Whether a restored set is shaped as `fresh`, this spec's: the same
@@ -194,6 +211,8 @@ impl Checks {
             && self.twin.len() == fresh.twin.len()
             && self.sandwich.len() == fresh.sandwich.len()
             && self.specification.len() == fresh.specification.len()
+            && self.tails.len() == fresh.tails.len()
+            && self.tails.iter().all(Tails::has_shape)
             && self
                 .specification
                 .iter()
@@ -249,7 +268,7 @@ impl Checks {
     /// is [`Breaks::studentized`]'s, against the spread before the row.
     pub fn recursive(&self, row: &RowView<'_>, v: &mut Vec<f64>) {
         v.clear();
-        if self.breaks.is_empty() {
+        if self.breaks.is_empty() && self.tails.is_empty() {
             return;
         }
         v.extend(row.resid.iter().enumerate().map(|(slot, &r)| {
@@ -313,6 +332,14 @@ impl Checks {
             }
             v += 3;
         }
+        if !self.tails.is_empty() {
+            for (slot, t) in self.tails.iter().enumerate() {
+                put(v, slot, t.skew());
+                put(v + 1, slot, t.kurtosis());
+                put(v + 2, slot, t.jarque_bera());
+            }
+            v += 3;
+        }
         let _ = v;
     }
 
@@ -336,6 +363,12 @@ impl Checks {
             for (t, fit) in self.twin.iter_mut().enumerate() {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
                 fit.update(row.xs, y, lam, w);
+            }
+        }
+        if !self.tails.is_empty() {
+            let lam = cfg.tails.factor(d_clock);
+            for (slot, t) in self.tails.iter_mut().enumerate() {
+                t.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, w);
             }
         }
         if !self.specification.is_empty() {

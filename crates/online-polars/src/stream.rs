@@ -632,7 +632,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             // The per-row leverage needs the factors kept (§2.1), and so do
             // the coefficients' standard errors (task 116, F).
             // So does the breaks' studentized residual (task 221 (b)).
-            m.set_keep_factor(spec.emit_error_inflation || spec.emit_se_coef || spec.emit_breaks);
+            m.set_keep_factor(spec.emit_se_coef || spec.reads_row_inflation());
             // Each target's own threshold, for its own first solve (task
             // 195, S9b); left out, every target's is the model's.
             if spec.min_weight.is_some() {
@@ -4750,7 +4750,7 @@ fn run_instance(
                 .error_inflation_gate_into(xs, plan.d_clock, &mut sc.infl, max_infl);
         // The row's own error inflation: its field, and the breaks'
         // studentized residual, read it (task 221 (b)).
-        let has_row_infl = (inst.spec.emit_error_inflation || inst.spec.emit_breaks)
+        let has_row_infl = inst.spec.reads_row_inflation()
             && inst
                 .model
                 .get()

@@ -100,6 +100,7 @@ def kitchen_sink_spec(**overrides):
         emit_robust_se=True,
         robust_se_lags=2,
         emit_specification=True,
+        emit_tails=True,
     )
     d.update(overrides)
     return po.spec.ewridge("m", **d)

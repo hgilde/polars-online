@@ -36,6 +36,7 @@ SWITCHES = {
         "specification_half_life",
         ["ljung_box_y", "breusch_pagan_y", "reset_y"],
     ),
+    "emit_tails": ("tails_half_life", ["skew_y", "kurtosis_y", "jarque_bera_y"]),
 }
 OWN_ROW = {"studentized_y"}
 

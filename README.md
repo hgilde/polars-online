@@ -2367,6 +2367,7 @@ other model refuses them by name.
 | calibration | `emit_calibration` | `calibration_slope_`, `calibration_intercept_`, `calibration_wald_` |
 | where the relationship broke | `emit_breaks` | `studentized_`, `cusum_`, `cusum_sq_`, `break_wald_` |
 | what the fit is missing | `emit_specification` | `ljung_box_`, `breusch_pagan_`, `reset_` |
+| how heavy the residuals' tails are | `emit_tails` | `skew_`, `kurtosis_`, `jarque_bera_` |
 | standard errors robust to the residuals | `emit_robust_se` | `se_coef_hc0`, `se_coef_hac`, once per instance on `coef`'s rows ([Coefficients](#coefficients)) |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
@@ -2399,6 +2400,7 @@ diag = po.spec.ewridge(
     robust_se_lags=10,           #                   residual spreads, and to overlapping labels this many rows apart
     emit_specification=True,     # ljung_box_, breusch_pagan_, reset_<slot>: a missing lag, a spread that moves
     ljung_box_lags=10,           #                   with the features, a missing curvature
+    emit_tails=True,             # skew_, kurtosis_, jarque_bera_<slot>: how far the residuals are from Gaussian
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2448,11 +2450,15 @@ they default to twice `embargo` on a stream with no clock column.
 Both are `ewridge`'s and `rls`'s.
 
 **How often `drift` flags a stream that does not change depends on the
-residuals' tails.** At `drift_delta=0.5` and `drift_threshold=20` on a row
-clock, Gaussian residuals flagged no row in 600,000. Residuals drawn from
-Student's t with three degrees of freedom flagged 3 to 10 in every 200,000.
-So on heavy-tailed data, increase `drift_threshold` until a stretch you know
-to be stable stays unflagged.
+residuals' tails, which `emit_tails`' `kurtosis` measures.** At
+`drift_delta=0.5` and `drift_threshold=20` on a row clock, residuals whose
+`kurtosis` read under 4 flagged no row in a million. Where it read about 9
+they flagged 0.4 in 100,000, and none at a threshold of 30. Where it read
+in the tens, as Student's t with three degrees of freedom does, they
+flagged 6 in 100,000, none at 80. So set `drift_threshold` by the
+`kurtosis` of a stretch you know to be stable: leave 20 under 4, use 30
+near 10, 80 past 30. A threshold that high is slow to see a break; for a
+change of spread `cusum_sq` from `emit_breaks` is the faster detector.
 
 **`hit_rate`, in `emit_metrics` and in `po.eval.metrics`, asks whether
 prediction and outcome fall on the same side of zero.** A row where either

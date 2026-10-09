@@ -2134,6 +2134,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "breaks_half_life",
             "robust_se_half_life",
             "specification_half_life",
+            "tails_half_life",
         ],
     ),
     (
@@ -2986,6 +2987,17 @@ pub struct Spec {
     /// Ljung and Box's lags, `L`, counted past the horizon: 10 unless set.
     #[serde(default)]
     pub ljung_box_lags: Option<usize>,
+    /// Emit `skew_<slot>`, `kurtosis_<slot>` and `jarque_bera_<slot>`
+    /// (docs/PLAN.md task 221 (e); [`online_core::Tails`] has the update):
+    /// the EW skewness, excess kurtosis and Jarque and Bera's statistic of
+    /// the recursive residuals, `resid / error_inflation`, at
+    /// `tails_half_life` and Kish's size.
+    #[serde(default)]
+    pub emit_tails: bool,
+    /// The tails' memory, in clock units (the default is
+    /// [`Spec::memory_multiple`]'s), `inf` the run-once form.
+    #[serde(default)]
+    pub tails_half_life: Option<Span>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -4130,6 +4142,7 @@ impl Spec {
                 ("emit_breaks", self.emit_breaks),
                 ("emit_robust_se", self.emit_robust_se),
                 ("emit_specification", self.emit_specification),
+                ("emit_tails", self.emit_tails),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];
