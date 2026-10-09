@@ -395,4 +395,96 @@ mod tests {
         assert_eq!(s.gammas[0], before, "no lag product across a break");
         assert!(s.has_shape(2, false, 1));
     }
+
+    /// A sandwich over `k` rows of `(1, x)` at `lags` lags, its ring full.
+    fn folded(k: usize, lags: usize, rows: usize, seed: u64) -> Sandwich {
+        let mut s = Sandwich::new(k, true, lags);
+        let mut st = seed;
+        for _ in 0..rows {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut st) + 3.0).collect();
+            s.update(&x, lcg(&mut st), 0.95, 1.0);
+        }
+        s
+    }
+
+    /// The shape a restored sandwich must hold, one part broken at a time:
+    /// the configuration it was made for, each sum's size, the ring's depth
+    /// and width, and every number finite. A fresh one and one with its
+    /// ring full both hold it.
+    #[test]
+    fn each_part_of_the_shape_is_checked_alone() {
+        assert!(Sandwich::new(2, true, 2).has_shape(2, true, 2));
+        let s = folded(2, 2, 6, 17);
+        assert_eq!((s.origin.len(), s.ring.len()), (2, 2));
+        assert!(s.has_shape(2, true, 2));
+        type Edit<'a> = (&'a str, &'a dyn Fn(&mut Sandwich));
+        let broken: [Edit; 15] = [
+            ("k", &|s| s.k = 3),
+            ("intercept", &|s| s.intercept = false),
+            ("lags", &|s| s.lags = 3),
+            ("origin", &|s| {
+                s.origin.pop();
+            }),
+            ("bread", &|s| {
+                s.bread.pop();
+            }),
+            ("meat", &|s| {
+                s.meat.pop();
+            }),
+            ("gammas", &|s| {
+                s.gammas.pop();
+            }),
+            ("a gamma", &|s| {
+                s.gammas[1].pop();
+            }),
+            ("ring depth", &|s| s.ring.push_back(vec![0.0; 3])),
+            ("ring width", &|s| s.ring[1].push(0.0)),
+            ("bread NaN", &|s| s.bread[4] = f64::NAN),
+            ("meat inf", &|s| s.meat[8] = f64::INFINITY),
+            ("gamma NaN", &|s| s.gammas[1][3] = f64::NAN),
+            ("ring NaN", &|s| s.ring[1][2] = f64::NAN),
+            ("origin NaN", &|s| s.origin[1] = f64::NAN),
+        ];
+        for (what, edit) in broken {
+            let mut t = s.clone();
+            edit(&mut t);
+            assert!(!t.has_shape(2, true, 2), "{what}");
+        }
+        assert!(!s.has_shape(2, true, 3) && !s.has_shape(2, false, 2));
+    }
+
+    /// Wald's statistic is `d' V⁻¹ d` over the picked block of the
+    /// covariance, solved by faer's LU (`crate::oracle`); it refuses an
+    /// empty pick, a distance of another length, a position outside the
+    /// covariance, and a block that does not factorize -- a fit whose
+    /// residuals were all 0, so the meat is.
+    #[test]
+    fn wald_is_its_definition_and_refuses_what_it_cannot_test() {
+        let s = folded(2, 2, 40, 23);
+        let idx = [0, 1];
+        let v = s.covariance(&idx, true).unwrap();
+        let pick = [1, 2];
+        let d = [0.3, -0.2];
+        let v = &v;
+        let sub: Vec<f64> = pick
+            .iter()
+            .flat_map(|&i| pick.iter().map(move |&j| v[i * 3 + j]))
+            .collect();
+        let x = crate::oracle::solve(&sub, &d);
+        let want: f64 = x.iter().zip(&d).map(|(a, b)| a * b).sum();
+        let got = s.wald(&idx, true, &pick, &d).unwrap();
+        assert!((got - want).abs() < 1e-10 * want, "{got} vs {want}");
+        assert!(s.wald(&idx, true, &[], &[]).is_none(), "nothing picked");
+        assert!(s.wald(&idx, true, &pick, &d[..1]).is_none(), "d too short");
+        assert!(s.wald(&idx, true, &[0, 3], &d).is_none(), "outside");
+        let mut quiet = Sandwich::new(2, true, 2);
+        let mut st = 29u64;
+        for _ in 0..40 {
+            let x = [lcg(&mut st), lcg(&mut st)];
+            quiet.update(&x, 0.0, 0.95, 1.0);
+        }
+        let v = quiet.covariance(&idx, true).unwrap();
+        assert!(v.iter().all(|&a| a == 0.0), "no residual, no meat");
+        assert!(quiet.wald(&idx, true, &pick, &d).is_none());
+    }
 }
