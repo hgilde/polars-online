@@ -2250,7 +2250,17 @@ def _var_ops(**kw: Any) -> dict[str, pl.Expr]:
     return {"v": po.ewm_var("x", **kw), "s": po.ewm_std("x", **kw)}
 
 
-@pytest.mark.parametrize("bias", [False, True])
+#: Polars' ``ewm_var``/``ewm_std`` under ``bias=False`` give the first row
+#: null from 1.44 (measured: 0.0 on 1.42.0, null on 1.44.1 and 2.0.0; 1.43
+#: does not install on Python 3.12 to narrow it), the definition
+#: ``po.ewm_var`` follows; the canary's floor leg met the old 0.0 on
+#: 2026-10-09.
+NEEDS_UNBIASED_FIRST_NULL = needs_polars(
+    "1.44.1", "Polars' ewm_var(bias=False), the reference, gives the first row null from 1.44"
+)
+
+
+@pytest.mark.parametrize("bias", [pytest.param(False, marks=NEEDS_UNBIASED_FIRST_NULL), True])
 @pytest.mark.parametrize("clock", [True, False])
 def test_var_and_std_on_a_row_clock_are_polars_ewm_var_and_ewm_std(bias: bool, clock: bool) -> None:
     """On a clock that steps by 1 a row, with ``half_life`` in rows, the
@@ -2429,6 +2439,7 @@ def test_bias_is_a_variances_own_and_a_boolean() -> None:
     assert tree[1][2]["bias"] is True
 
 
+@NEEDS_UNBIASED_FIRST_NULL
 def test_the_readmes_zscore_recipe_runs_and_is_polars_own_on_a_row_clock(
     tmp_path: Any, monkeypatch: Any
 ) -> None:
