@@ -155,6 +155,17 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
         json!(spec.resid_autocorr_lag_or_default()),
     );
     s.insert("average_eta".into(), number(spec.average_eta_or_default()));
+    // The target's horizon in rows, and the lags the diagnostics read under
+    // it (task 232 (3)).
+    s.insert("horizon_rows".into(), json!(spec.horizon()));
+    s.insert(
+        "robust_se_lags".into(),
+        json!(spec.robust_se_lags_or_default()),
+    );
+    s.insert(
+        "ljung_box_lags".into(),
+        json!(spec.ljung_box_lags_or_default()),
+    );
     // Each memory of task 221's diagnostics, as the first instance runs it:
     // the spec's half-life, or a multiple of the fit's own memory (task 232
     // (2): a window's, `kalman`'s `coef_half_life`, else the instance's

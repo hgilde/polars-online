@@ -140,7 +140,7 @@ toward zero. The denominator is the model's `error_inflation`, so
 factor, and on the other models 1 stands in. The CUSUM, the CUSUM of squares,
 Ljung-Box, Breusch-Pagan, RESET and Jarque-Bera all read these residuals,
 and run once with no ridge each matches statsmodels' test on the same rows
-(`tests/test_second_opinion.py`).
+(`tests/test_second_opinion_diagnostics.py`).
 
 ### One memory per diagnostic: run once or windowed
 
@@ -688,11 +688,51 @@ All three sit on `coef`'s rows, laid out like `coef`, the intercept first.
 estimation error that a sandwich over in-sample residuals leaves out. Run
 once on 1,500 rows, it read 0.9% to 1.3% above statsmodels'
 `cov_type="HC0"` and `"HAC"`. The lags default to twice the target's
-horizon in rows, `2 × embargo` on a spec with no clock column, and 0 with
-one. Give `robust_se_lags` when the clock is a time. The memory is
-`robust_se_half_life`, the model's by default. It costs 350 ns a row at 5
-features and 10 lags, and only `ewridge` and `rls` take it, the
-least-squares fits.
+horizon in rows. The memory is `robust_se_half_life`, the fit's by default.
+It costs 350 ns a row at 5 features and 10 lags, and only `ewridge` and
+`rls` take it, the least-squares fits.
+
+**The horizon is one number in rows, and every diagnostic that needs it
+reads it.** On a spec with no clock column it is `embargo`, rounded up,
+since a row is a unit there. On a clock column `embargo` is in clock units,
+and the rows it spans are not known before the stream, so the spec gives
+`horizon_rows`, the rows the target looks ahead. It is a count of rows,
+named as `warm_rows` and `span_rows` are, because the residuals overlap by
+rows whatever the clock. A spec with a clock column, an `embargo` and no
+`horizon_rows` has a horizon of 0, and each diagnostic that reads one says
+so once, in a `ReadinessWarning`. Under a horizon of `h` rows:
+
+| diagnostic | under a horizon |
+|---|---|
+| `se_coef_hac` | its lags default to `2h` |
+| `calibration_wald` | Wald's test of `a = 0, b = 1` with Newey and West's variance at `2h` lags, from the residual under the null, `y − pred` |
+| `cusum`, `cusum_sq` | each sum over its long-run variance: Bartlett's weights on its terms' products over `2h` lags |
+| `break_wald` | the noise variance times the studentized residuals' long-run over short-run variance |
+| `ljung_box` | tests lags `h` to `h + L − 1` against Bartlett's covariance past an `MA(h − 1)` |
+| `breusch_pagan`, `reset` | Wald's test of the same coefficients with Newey and West's variance at `2h` lags, from the residual under each null |
+
+On a five-row look-ahead target against two AR(1) features at 0.5 to 0.95,
+with nothing missing, over 30 streams of 4,000 rows, the plain forms passed
+their 5% values on these shares of rows 1,500 to 3,999, and the horizon's
+forms on the shares after the arrows:
+
+| at a half-life of 200 | `breusch_pagan` | `reset` | `calibration_wald` | `cusum` | `cusum_sq` | `break_wald` |
+|---|---:|---:|---:|---:|---:|---:|
+| AR 0.5 | 20.6% → 4.0% | 10.1% → 3.1% | 7.9% → 0.0% | 23.6% → 0.8% | 12.7% → 0.6% | 47.6% → 2.5% |
+| AR 0.8 | 28.0% → 4.3% | 22.4% → 3.9% | 11.7% → 0.1% | 23.1% → 0.7% | 14.0% → 1.2% | 56.4% → 4.4% |
+| AR 0.95 | 37.9% → 4.7% | 39.2% → 5.2% | 18.6% → 0.0% | 24.9% → 0.8% | 14.7% → 0.9% | 62.5% → 4.7% |
+
+Run once, the plain forms passed on 5% to 68%, and the horizon's on 2.1%
+to 13.2%: Newey and West's estimate errs small on a few thousand rows of a
+persistent feature, and a run-once statistic keeps every row of it. At a
+ten-row horizon the windowed forms passed on 0.0% to 6.0%. `break_wald`'s
+factor is exact for a persistent feature and generous for one that is not,
+whose slopes' variance the overlap barely moves: against independent
+features it passed on 1.1% to 2.1%. The windowed CUSUMs read low here
+because the fit absorbs part of every level it sees ([Has it
+broken?](#has-it-broken)), and the windowed calibration because the fit
+absorbs part of a miscalibration ([Is it scaled
+right?](#is-it-scaled-right)), with or without a horizon.
 
 The recipe fits 100 streams in one pass, one group each. Each target sums
 the next 10 shocks, which the feature knows nothing about, so the true
@@ -815,7 +855,12 @@ run-once form keeps it.
 construction, so lags 1 to `h − 1` would find the overlap and nothing else.
 The plain `Q` passed its 5% value on 61% of the rows of five-row look-ahead
 streams with nothing missing, and the shifted one on 6.0% to 6.7%. The
-horizon is `embargo` on a spec with no clock column.
+horizon is `embargo` on a spec with no clock column and `horizon_rows` on
+one with ([Can its t be trusted?](#can-its-t-be-trusted)). There
+`breusch_pagan` and `reset` become Wald's tests of the same coefficients
+with Newey and West's variance: beside an AR(1) feature at 0.95, their
+`n R²` forms passed their 5% values on 38% and 39% of the rows of streams
+missing nothing, and the Wald forms on 4.7% and 5.2%.
 
 **Each test sees only its own shape.** Breusch-Pagan regresses `resid²` on
 the features themselves, so a spread symmetric in a feature, as `|x0|`, is

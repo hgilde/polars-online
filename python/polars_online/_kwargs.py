@@ -85,6 +85,7 @@ class ExprKwargs(TypedDict, total=False):
     emit_specification: bool
     specification_half_life: float | Duration | None
     ljung_box_lags: int | None
+    horizon_rows: int | None
     emit_tails: bool
     tails_half_life: float | Duration | None
     emit_influence: bool

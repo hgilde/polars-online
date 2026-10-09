@@ -256,7 +256,7 @@ class ReadinessWarning(UserWarning):
 
     Raised once per (spec, group) by the learning calls -- :meth:`ModelBank.fit`,
     :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and the
-    plan form -- never by ``predict``, for three findings
+    plan form -- never by ``predict``, for four findings
     (`docs/WARMUP-AND-CONVERGENCE.md
     <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_):
 
@@ -287,6 +287,13 @@ class ReadinessWarning(UserWarning):
       (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
       A target no row has given a value with a positive weight has no rate
       to project from, so its message says that instead, with no ceiling.
+    - **A diagnostic has no horizon**: a spec with a ``clock``, an
+      ``embargo`` and no ``horizon_rows``, beside a diagnostic that reads
+      the target's horizon (``emit_calibration``, ``emit_breaks``,
+      ``emit_specification``, ``emit_robust_se``). ``embargo`` is in clock
+      units there, so the horizon is 0 and a target that looks ahead flags
+      the test on most rows. Said once per diagnostic when the bank is built,
+      on its first learning call, naming ``horizon_rows``.
 
     Both wait a half-life during which their gate withholds every row, on
     the clock the learned rows have covered; a row the gate lets through
@@ -622,6 +629,7 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     "emit_specification": (False,),
     "specification_half_life": (None,),
     "ljung_box_lags": (None,),
+    "horizon_rows": (None,),
     "emit_tails": (False,),
     "tails_half_life": (None,),
     "emit_influence": (False,),

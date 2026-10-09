@@ -62,6 +62,26 @@
 //!
 //! `R²_p` the residual's on `p` alone. Run once it is `statsmodels`'
 //! `compare_lm_test` of the two regressions.
+//!
+//! **Under a horizon** (task 232 (3); review round 6, B-1) the residuals
+//! of a target that looks ahead `h` rows overlap, and against a persistent
+//! feature `n R²` reads their shared shocks as a spread or a curvature:
+//! beside an AR(1) feature at 0.95 and a five-row horizon, Breusch and
+//! Pagan's form passed its 5% value on 26% of the rows of streams missing
+//! nothing and RESET's on 41% (28% and 54% run once). So each becomes
+//! Wald's test of the same coefficients with Newey and West's variance at
+//! `L = 2h` lags, as `se_coef_hac` reads them ([`crate::Sandwich`]):
+//!
+//! ```text
+//! Breusch-Pagan   γ' V_γ⁻¹ γ            γ the slopes of e² on x       ~ χ²(k)
+//! RESET           β' V_β⁻¹ β            β those of p², p³ in e on
+//!                                         (p, p², p³)                ~ χ²(2)
+//! ```
+//!
+//! each `V` the sandwich of its regression, its meat built from the
+//! residual under the null: `e² − ē²`, the squared residual less its EW mean
+//! before the row, and `e − ē − b (p − p̄)`, the residual less its EW fit
+//! on `p` alone before the row.
 
 use std::collections::VecDeque;
 
@@ -88,12 +108,19 @@ pub struct Specification {
     /// EW moments of `(p, p², p³, e)`, `p` about `origin`, for RESET.
     reset: crate::EwCov,
     origin: Option<f64>,
+    /// Under a horizon, the sandwiches of Breusch and Pagan's and RESET's
+    /// regressions at Newey and West's lags (module docs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    het_hac: Option<crate::Sandwich>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reset_hac: Option<crate::Sandwich>,
 }
 
 impl Specification {
     /// Empty tests over `k` features, skipping `skip` lags and testing
-    /// `lags`.
-    pub fn new(k: usize, skip: usize, lags: usize) -> Self {
+    /// `lags`, Breusch and Pagan's and RESET's at `nw` Newey-West lags
+    /// (their plain forms at 0).
+    pub fn new(k: usize, skip: usize, lags: usize, nw: usize) -> Self {
         Self {
             skip,
             lags,
@@ -106,12 +133,20 @@ impl Specification {
             het: crate::EwCov::new(k + 1).without_runs(),
             reset: crate::EwCov::new(4).without_runs(),
             origin: None,
+            het_hac: (nw > 0).then(|| crate::Sandwich::new(k, true, nw)),
+            reset_hac: (nw > 0).then(|| crate::Sandwich::new(3, true, nw)),
         }
     }
 
     /// Whether a restored set is shaped for `k` features and these lags.
-    pub fn has_shape(&self, k: usize, skip: usize, lags: usize) -> bool {
-        self.skip == skip
+    pub fn has_shape(&self, k: usize, skip: usize, lags: usize, nw: usize) -> bool {
+        let hac = |h: &Option<crate::Sandwich>, d: usize| match h {
+            None => nw == 0,
+            Some(h) => nw > 0 && h.has_shape(d, true, nw),
+        };
+        hac(&self.het_hac, k)
+            && hac(&self.reset_hac, 3)
+            && self.skip == skip
             && self.lags == lags
             && self.pairs.len() == skip + lags
             && self.ring.len() <= skip + lags
@@ -136,12 +171,24 @@ impl Specification {
         self.pairs.iter_mut().flatten().for_each(|v| *v *= lam);
         self.het.decay(lam);
         self.reset.decay(lam);
+        for h in [&mut self.het_hac, &mut self.reset_hac]
+            .into_iter()
+            .flatten()
+        {
+            h.age(lam);
+        }
     }
 
     /// The rows behind this one are no longer adjacent to it -- a capped gap
     /// or a session change -- so none is a lag of the next.
     pub fn clear_lags(&mut self) {
         self.ring.clear();
+        for h in [&mut self.het_hac, &mut self.reset_hac]
+            .into_iter()
+            .flatten()
+        {
+            h.clear_lags();
+        }
     }
 
     /// One scored row: its features, prediction and out-of-sample residual,
@@ -169,12 +216,36 @@ impl Specification {
             self.ring.push_front(e);
             self.ring.truncate(self.skip + self.lags);
         }
+        let c = *self.origin.get_or_insert(p);
+        let q = p - c;
+        // The residuals under each null, from the sums before the row.
+        if let Some(h) = self.het_hac.as_mut() {
+            let k = self.het.k() - 1;
+            let u = if self.het.n_eff() > 0.0 {
+                e * e - self.het.mean(k)
+            } else {
+                0.0
+            };
+            h.update(x, u, lam, w);
+        }
+        if let Some(h) = self.reset_hac.as_mut() {
+            let r = if self.reset.n_eff() > 0.0 {
+                let var_q = self.reset.var(0);
+                let b = if var_q > 0.0 {
+                    self.reset.cov(0, 3) / var_q
+                } else {
+                    0.0
+                };
+                e - self.reset.mean(3) - b * (q - self.reset.mean(0))
+            } else {
+                0.0
+            };
+            h.update(&[q, q * q, q * q * q], r, lam, w);
+        }
         let mut row = Vec::with_capacity(x.len() + 1);
         row.extend_from_slice(x);
         row.push(e * e);
         self.het.update(&row, lam, w);
-        let c = *self.origin.get_or_insert(p);
-        let q = p - c;
         self.reset.update(&[q, q * q, q * q * q, e], lam, w);
     }
 
@@ -235,6 +306,20 @@ impl Specification {
         (attempts == 0).then(|| n * x.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>())
     }
 
+    /// The slopes of column `y` of `m` regressed on the columns `xs`, from
+    /// the centred moments; `None` where they do not factorize.
+    fn slopes(m: &crate::EwCov, xs: &[usize], y: usize) -> Option<Vec<f64>> {
+        let p = xs.len();
+        let a: Vec<f64> = xs
+            .iter()
+            .flat_map(|&i| xs.iter().map(move |&j| (i, j)))
+            .map(|(i, j)| m.cov(i, j))
+            .collect();
+        let b: Vec<f64> = xs.iter().map(|&i| m.cov(i, y)).collect();
+        let (beta, attempts) = crate::solve_spd(&a, &b, p, 1)?;
+        (attempts == 0).then_some(beta)
+    }
+
     /// The `R²` of column `y` of `m` regressed on the columns `xs`, from the
     /// centred moments; `None` where the regressors' moments do not
     /// factorize or `y` has no spread.
@@ -270,6 +355,13 @@ impl Specification {
         if idx.is_empty() || n <= (idx.len() + 1) as f64 {
             return None;
         }
+        if let Some(h) = &self.het_hac {
+            // Wald's test of the slopes with Newey and West's variance
+            // (module docs): the slopes sit after the intercept.
+            let gamma = Self::slopes(&self.het, idx, k)?;
+            let pick: Vec<usize> = (1..=idx.len()).collect();
+            return h.wald(idx, true, &pick, &gamma);
+        }
         Some(n * Self::r2(&self.het, idx, k)?)
     }
 
@@ -280,6 +372,12 @@ impl Specification {
         let n = self.reset.n_kish()?;
         if n <= 4.0 {
             return None;
+        }
+        if let Some(h) = &self.reset_hac {
+            // Wald's test of `p²`'s and `p³`'s coefficients with Newey and
+            // West's variance (module docs), after the intercept and `p`'s.
+            let beta = Self::slopes(&self.reset, &[0, 1, 2], 3)?;
+            return h.wald(&[0, 1, 2], true, &[2, 3], &beta[1..]);
         }
         let full = Self::r2(&self.reset, &[0, 1, 2], 3)?;
         let base = Self::r2(&self.reset, &[0], 3)?;
@@ -304,7 +402,7 @@ mod tests {
     #[test]
     fn ljung_box_is_its_definition() {
         let (skip, lags, lam) = (2usize, 3usize, 0.99);
-        let mut s = Specification::new(1, skip, lags);
+        let mut s = Specification::new(1, skip, lags, 0);
         let mut st = 7u64;
         let mut rows: Vec<(f64, f64)> = Vec::new(); // (e, present weight), scored only
         let mut prev = 0.0;
@@ -375,7 +473,7 @@ mod tests {
             }
         }
         assert!(s.ljung_box(false).unwrap() > s.ljung_box(true).unwrap());
-        assert!(s.has_shape(1, skip, lags));
+        assert!(s.has_shape(1, skip, lags, 0));
     }
 
     /// With no horizon and a memory that forgets, the statistic is Box and
@@ -384,7 +482,7 @@ mod tests {
     #[test]
     fn box_pierce_under_a_memory() {
         let (lags, lam) = (4usize, 0.97);
-        let mut s = Specification::new(1, 0, lags);
+        let mut s = Specification::new(1, 0, lags, 0);
         let mut st = 5u64;
         let mut rows: Vec<(f64, f64)> = Vec::new();
         for _ in 0..300 {
@@ -417,7 +515,7 @@ mod tests {
     /// by hand, at Kish's size.
     #[test]
     fn breusch_pagan_and_reset_are_their_definitions() {
-        let mut s = Specification::new(2, 0, 1);
+        let mut s = Specification::new(2, 0, 1, 0);
         let mut st = 11u64;
         let mut rows: Vec<([f64; 2], f64, f64)> = Vec::new(); // (x, p, e)
         for _ in 0..300 {
@@ -469,7 +567,7 @@ mod tests {
     /// number only age; a cleared ring pairs nothing across the break.
     #[test]
     fn zero_weights_missing_values_and_breaks() {
-        let mut s = Specification::new(1, 0, 2);
+        let mut s = Specification::new(1, 0, 2, 0);
         s.update(&[1.0], 1.0, 0.5, 0.9, 0.0);
         s.update(&[1.0], 1.0, f64::NAN, 0.9, 1.0);
         assert_eq!((s.w, s.w2, s.e1, s.e2), (0.0, 0.0, 0.0, 0.0));

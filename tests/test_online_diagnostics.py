@@ -18,7 +18,7 @@ import pytest
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 #: Each switch, its memory's key, and the fields it writes for target `y`.
 #: `studentized` is the row's own, as `zscore` is: its scale is read before
@@ -819,3 +819,112 @@ def test_kalmans_diagnostics_forget_at_its_coefficients_memory():
     wald = out["break_wald_y"]
     assert wald.drop_nulls().len() > 2_000
     assert (wald[1_500:1_800].drop_nulls() > 21.1).any()
+
+
+# --- one horizon (task 232 (3)) ----------------------------------------------
+
+
+def _look_ahead(groups: int, n: int, h: int, phi: float, seed: int, clock: bool = False):
+    """A target that sums the next `h` rows' shocks against two AR(1)
+    features at `phi`: residuals that overlap by construction, with nothing
+    missing."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for g in range(groups):
+        e = rng.standard_normal((n + 200, 2))
+        x = np.zeros_like(e)
+        for t in range(1, n + 200):
+            x[t] = phi * x[t - 1] + np.sqrt(1 - phi**2) * e[t]
+        x = x[200:]
+        u = rng.standard_normal(n + h)
+        fwd = np.convolve(u, np.ones(h), "valid")[1 : n + 1] / np.sqrt(h)
+        cols = {"g": g, "x0": x[:, 0], "x1": x[:, 1], "y": 0.5 + x @ [1.0, -0.5] + fwd}
+        if clock:
+            cols["t"] = np.arange(n, dtype=float)
+        frames.append(pl.DataFrame(cols))
+    return pl.concat(frames)
+
+
+def test_horizon_rows_gives_a_clocked_spec_its_horizon():
+    """On a clock column `embargo` is in clock units and says nothing of the
+    rows it spans, so the horizon was 0: Ljung-Box tested lags 1-10 of a
+    five-row look-ahead target and passed its 5% value on 100% of rows
+    (review round 6, B-2). `horizon_rows` gives it, as `embargo` does
+    without a clock, and `se_coef_hac` is written."""
+    df = _look_ahead(8, 3_000, 5, 0.0, 2)
+    df = df.with_columns(pl.int_range(pl.len()).over("g").cast(pl.Float64).alias("t"))
+    kw = dict(targets=["y"], features=["x0", "x1"], half_life=200.0, group="g", clock="t")
+    kw |= dict(gap_cap=10.0, embargo=5.0, emit_specification=True, emit_robust_se=True)
+    clocked = po.spec.ewridge("m", horizon_rows=5, **kw)
+    plain = po.spec.ewridge("m", **{k: v for k, v in kw.items() if k not in ("clock", "gap_cap")})
+    a, b = _run(df, clocked), _run(df.drop("t"), plain)
+    assert a["ljung_box_y"].equals(b["ljung_box_y"], null_equal=True)
+    late = a.filter(pl.int_range(pl.len()).over("g") >= 1_000)
+    assert (late["ljung_box_y"].drop_nulls() > 18.307).mean() < 0.1
+    assert "se_coef_hac" in a.columns
+
+
+def test_a_clocked_embargo_without_a_horizon_says_so():
+    """A spec with a clock column, an `embargo` and no `horizon_rows` has a
+    horizon of 0: each diagnostic that reads one says so, once, naming
+    `horizon_rows` (review round 6, B-2, A-8)."""
+    df = pl.DataFrame({"t": np.arange(50.0), "x0": np.arange(50.0) % 7, "y": np.arange(50.0) % 5})
+    kw = dict(targets=["y"], features=["x0"], half_life=20.0, clock="t", gap_cap=5.0, embargo=3.0)
+    spec = po.spec.ewridge("m", emit_specification=True, emit_breaks=True, **kw)
+    with pytest.warns(po.ReadinessWarning) as caught:
+        po.ModelBank([spec]).fit_predict(df)
+    said = [str(w.message) for w in caught if "horizon_rows" in str(w.message)]
+    assert len(said) == 2, said
+    assert any("emit_specification" in m for m in said) and any("emit_breaks" in m for m in said)
+    import warnings
+
+    for quiet in (dict(horizon_rows=3), dict(embargo=None), dict(clock=None, gap_cap=None)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            po.ModelBank([po.spec.ewridge("m", emit_breaks=True, **(kw | quiet))]).fit_predict(df)
+
+
+def test_horizon_rows_is_refused_without_a_diagnostic_that_reads_it():
+    with pytest.raises(ValueError, match="horizon_rows needs a diagnostic that reads it"):
+        po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=20.0, horizon_rows=5)
+    with pytest.raises(ValueError, match="horizon_rows must be"):
+        _spec("emit_breaks", horizon_rows=2**19 + 1)
+    assert _resolved(_spec("emit_breaks", horizon_rows=4))["horizon_rows"] == 4
+    assert _resolved(_spec("emit_breaks", embargo=2.5))["horizon_rows"] == 3
+
+
+@pytest.mark.extended(reason="40 streams of 3,000 rows per case, eight cases")
+@pytest.mark.parametrize("phi", [0.5, 0.95])
+def test_under_a_horizon_each_test_is_near_its_size(phi):
+    """On a five-row look-ahead target against a persistent feature, with
+    nothing missing, Breusch-Pagan's and RESET's `n R²` passed their 5%
+    values on 12-36% of rows windowed and 27-75% run once (review round 6,
+    B-1); under the horizon each is Wald's with Newey and West's variance,
+    and the CUSUMs and `break_wald` read the long-run variance (task 232
+    (3)). Windowed each passes on about its size here, under 10%; run
+    once, under 20%: Newey and West's estimate errs small on a few thousand
+    rows of a persistent feature, and a run-once statistic keeps it."""
+    df = _look_ahead(30, 3_000, 5, phi, 21)
+    for half_life in (200.0, float("inf")):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=half_life,
+            group="g",
+            embargo=5.0,
+            min_weight=10.0,
+            emit_calibration=True,
+            emit_specification=True,
+            emit_breaks=True,
+        )
+        out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 1_500)
+        for field, crit in (
+            ("breusch_pagan_y", 5.991),
+            ("reset_y", 5.991),
+            ("calibration_wald_y", 5.991),
+        ):
+            rate = (out[field].drop_nulls() > crit).mean()
+            assert rate < (0.10 if half_life < float("inf") else 0.20), (half_life, field, rate)
+        if half_life < float("inf"):
+            assert (out["break_wald_y"].drop_nulls() > 7.815).mean() < 0.10

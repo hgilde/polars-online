@@ -217,7 +217,8 @@ the diagnostics
     ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``,
     ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
     ``emit_specification`` with ``specification_half_life`` and
-    ``ljung_box_lags``, ``emit_tails`` with ``tails_half_life``, ``emit_influence`` with
+    ``ljung_box_lags``, ``horizon_rows`` beside any of those four,
+    ``emit_tails`` with ``tails_half_life``, ``emit_influence`` with
     ``influence_half_life``, ``emit_feature_health`` with
     ``feature_health_half_life``, and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
@@ -234,6 +235,16 @@ the diagnostics
     standardizing ``sgd`` or ``pa`` past its scaler's warm-up. The twin fits
     of ``break_wald`` and feature health read no prediction, and fold every
     row.
+    ``horizon_rows`` is the target's horizon in rows: the rows a target
+    that looks ahead shares its shocks over, so that its residuals overlap.
+    Without a clock column it defaults to ``embargo``, rounded up; with
+    one it is 0 unless given, since ``embargo`` is in clock units there, and
+    each diagnostic that reads it says so once in a
+    :class:`polars_online.ReadinessWarning`. Under it the calibration's,
+    Breusch and Pagan's and RESET's tests take Newey and West's variance at
+    twice it in lags, the CUSUMs and ``break_wald`` the long-run variance,
+    Ljung and Box skip the lags inside it, and ``se_coef_hac``'s lags
+    default to twice it.
     `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
     orders them by the question each answers, with their thresholds,
     false-alarm rates, costs and the theory behind them, and a recipe for
@@ -469,8 +480,8 @@ The diagnostics add, per slot:
        does not: run once on 1,500 rows it read 0.9-1.3% above
        statsmodels' ``cov_type="HC0"`` and ``"HAC"``, and on 3,000 rows
        under a 5- to 20-row embargo 2-9% above. The lags default to twice the
-       target's horizon in rows: ``embargo`` on a spec with no clock
-       column, ``0`` otherwise. On a target summing the next ``h`` rows'
+       target's horizon in rows: ``horizon_rows``, or ``embargo`` on a spec
+       with no clock column, ``0`` otherwise. On a target summing the next ``h`` rows'
        shocks against a persistent feature, the coefficient's true spread
        was 2.1-2.3 times ``se_coef`` at ``h = 5`` and 3.1-4.2 times at
        ``h = 20`` (``sqrt(h)`` is 2.2 and 4.5), and ``se_coef_hac`` read
@@ -594,7 +605,10 @@ The diagnostics add, per slot:
        rows at the model's memory and 0-0.3% at four times. A run-once
        calibration keeps
        the first predictions for good, so give ``min_weight`` a few rows
-       per coefficient: from ``k + 1`` rows they dominated it.
+       per coefficient: from ``k + 1`` rows they dominated it. Under a
+       horizon it is Wald's test of ``a = 0, b = 1`` with Newey and West's
+       variance at twice it in lags, from the residual under the null,
+       ``y - pred``.
    * - ``emit_breaks``
      - ``studentized_<slot>``, ``cusum_<slot>``, ``cusum_sq_<slot>``,
        ``break_wald_<slot>``
@@ -623,7 +637,12 @@ The diagnostics add, per slot:
        and on every slope break, 94 rows after it; ``|cusum| > 3`` found
        every intercept break in 100 rows and ``|cusum_sq| > 3`` every
        variance break in 20. ``drift`` found 1.5% of the variance breaks
-       there and none of the others.
+       there and none of the others. Under a horizon each of the CUSUMs is
+       over its long-run variance, Bartlett's weights on its terms'
+       products over twice the horizon in lags, and ``break_wald``'s noise
+       variance is times the studentized residuals' long-run over short-run
+       variance: on a five-row look-ahead target they passed their 5% values
+       on 0.6-4.7% of rows where the plain forms passed on 13-63%.
    * - ``emit_specification``
      - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``reset_<slot>``
      - What the fit is missing, each at ``specification_half_life`` and
@@ -633,8 +652,9 @@ The diagnostics add, per slot:
        missing: a missing lag or a half-life too long. Ljung and Box's
        ``(n + 2) / (n - l)`` at Kish's ``n`` passed its 5% value on 15.8%
        of iid streams at a half-life of 10 rows, Box and Pierce's on 4.8%.
-       For a target that looks ahead ``h`` rows (``embargo`` on a spec with
-       no clock column) it tests lags ``h`` to ``h + L - 1``, against
+       For a target that looks ahead ``h`` rows (``horizon_rows``, or
+       ``embargo`` on a spec with no clock column) it tests lags ``h`` to
+       ``h + L - 1``, against
        Bartlett's covariance for autocorrelations past the residuals'
        built-in ``MA(h - 1)``; the plain ``Q`` passed its 5% value on 61% of
        the rows of five-row look-ahead streams with nothing missing, this one
@@ -648,7 +668,11 @@ The diagnostics add, per slot:
        3,000 rows, each passed its 5% value on 2.0-7.0% of the rows of
        streams missing nothing, run once or windowed, and on 98-100% of
        those missing what it looks for: an AR(1) at 0.3, a spread linear in
-       a feature, a square of one.
+       a feature, a square of one. Under a horizon ``breusch_pagan`` and
+       ``reset`` are Wald's tests of the same coefficients with Newey and
+       West's variance at twice it in lags: beside a five-row look-ahead
+       target and AR(1) features at 0.5-0.95 their ``n R2`` forms passed
+       their 5% values on 10-39% of rows, the Wald forms on 3.1-5.2%.
    * - ``emit_tails``
      - ``skew_<slot>``, ``kurtosis_<slot>``, ``jarque_bera_<slot>``
      - The EW skewness and excess kurtosis of the recursive residuals,

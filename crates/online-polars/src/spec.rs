@@ -2989,6 +2989,17 @@ pub struct Spec {
     /// Ljung and Box's lags, `L`, counted past the horizon: 10 unless set.
     #[serde(default)]
     pub ljung_box_lags: Option<usize>,
+    /// The rows a look-ahead target's residuals overlap, its horizon `h`
+    /// ([`Spec::horizon`]; task 232 (3)): `embargo` in rows unless set on a
+    /// spec with no clock column, and 0 unless set on one with a clock.
+    /// Under it the calibration's, Breusch and Pagan's and RESET's tests
+    /// take Newey and West's variance at `2h` lags, the CUSUMs and
+    /// `break_wald` the long-run variance, Ljung and Box skip the lags
+    /// inside it, and `se_coef_hac`'s lags default to `2h`. A count of
+    /// rows, named `*_rows` as `warm_rows` and `span_rows` are: a row
+    /// count is what the residuals overlap by, whatever the clock.
+    #[serde(default)]
+    pub horizon_rows: Option<usize>,
     /// Emit `skew_<slot>`, `kurtosis_<slot>` and `jarque_bera_<slot>`
     /// (docs/PLAN.md task 221 (e); [`online_core::Tails`] has the update):
     /// the EW skewness, excess kurtosis and Jarque and Bera's statistic of
@@ -3873,6 +3884,21 @@ impl Spec {
             }
             online_core::check_lag_ceiling("ljung_box_lags", l + self.ljung_box_skip())
                 .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+        }
+        if self.horizon_rows.is_some() && self.horizon_readers().is_empty() {
+            return Err(format!(
+                "spec {:?}: horizon_rows needs a diagnostic that reads it (emit_calibration, \
+                 emit_breaks, emit_specification, emit_robust_se)",
+                self.name
+            ));
+        }
+        if let Some(h) = self.horizon_rows.filter(|h| *h > online_core::MAX_LAG / 2) {
+            return Err(format!(
+                "spec {:?}: horizon_rows must be at most {} (2^19), got {h}: Newey and West's \
+                 lags are twice it, and a ring of that many rows is sized before the first row",
+                self.name,
+                online_core::MAX_LAG / 2
+            ));
         }
         if self.robust_se_lags.is_some() && !self.emit_robust_se {
             return Err(format!(

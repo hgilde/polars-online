@@ -63,10 +63,19 @@ impl Spec {
         self.emit_error_inflation || self.emit_breaks || self.emit_tails || self.emit_influence
     }
 
-    /// The target's horizon in rows: `embargo`, rounded up, on a spec with
-    /// no clock column, and 0 otherwise -- the rows a look-ahead target's
-    /// residuals are correlated over by construction (task 221).
-    pub fn horizon_rows(&self) -> usize {
+    /// The target's horizon in rows, `h`: the rows a look-ahead target's
+    /// residuals are correlated over by construction (task 221). One number
+    /// for every diagnostic that reads it (task 232 (3); review round 6,
+    /// B-1, B-2, A-4, A-8, F-4, G-5): `horizon_rows` where given; else
+    /// `embargo`, rounded up, on a spec with no clock column, where a row is
+    /// a unit; else 0. On a clock column `embargo` is in clock units and the
+    /// rows it spans are not known before the stream, so a spec there gives
+    /// `horizon_rows` itself, and a notice says so where it does not
+    /// ([`Self::horizon_notices`]).
+    pub fn horizon(&self) -> usize {
+        if let Some(h) = self.horizon_rows {
+            return h.min(online_core::MAX_LAG);
+        }
         match (&self.clock, &self.embargo) {
             (None, Some(Span::Units(h))) if h.is_finite() && *h > 0.0 => {
                 (h.ceil() as usize).min(online_core::MAX_LAG)
@@ -75,10 +84,71 @@ impl Spec {
         }
     }
 
+    /// Newey and West's lags for the diagnostics under a horizon: twice it,
+    /// as `se_coef_hac`'s default ([`Self::robust_se_lags_or_default`] has
+    /// the measurement behind twice), `0` without one (task 232 (3)).
+    pub fn nw_lags(&self) -> usize {
+        (2 * self.horizon()).min(online_core::MAX_LAG)
+    }
+
+    /// The diagnostics that read the horizon and are on: each switch's
+    /// name and what it does with the horizon (task 232 (3)).
+    pub fn horizon_readers(&self) -> Vec<(&'static str, &'static str)> {
+        [
+            (
+                self.emit_calibration,
+                "emit_calibration",
+                "the calibration's Wald test takes Newey and West's variance",
+            ),
+            (
+                self.emit_breaks,
+                "emit_breaks",
+                "the CUSUMs and break_wald take the long-run variance",
+            ),
+            (
+                self.emit_specification,
+                "emit_specification",
+                "Ljung-Box skips the lags inside it, and Breusch-Pagan and RESET take Newey \
+                 and West's variance",
+            ),
+            (
+                self.emit_robust_se,
+                "emit_robust_se",
+                "se_coef_hac's lags default to twice it",
+            ),
+        ]
+        .into_iter()
+        .filter(|(on, _, _)| *on)
+        .map(|(_, name, what)| (name, what))
+        .collect()
+    }
+
+    /// What a spec on a clock column with an `embargo` and no
+    /// `horizon_rows` is told, once per diagnostic that reads the horizon
+    /// (task 232 (3); review round 6, B-2, A-8, F-4, G-5): its horizon is
+    /// 0, so a look-ahead target's overlapping residuals read as a fault.
+    pub fn horizon_notices(&self) -> Vec<String> {
+        if self.clock.is_none() || self.embargo.is_none() || self.horizon_rows.is_some() {
+            return Vec::new();
+        }
+        self.horizon_readers()
+            .into_iter()
+            .map(|(name, what)| {
+                format!(
+                    "{name} reads the target's horizon -- the rows a look-ahead target's \
+                     residuals overlap -- and on a clock column it cannot be read from embargo, \
+                     which is in clock units, so it is 0: under a horizon {what}, and without it \
+                     a target that looks ahead flags the test on most rows. Give horizon_rows, \
+                     the rows the target looks ahead (0 if it does not; docs/DIAGNOSTICS.md)."
+                )
+            })
+            .collect()
+    }
+
     /// The lags Ljung and Box skip: the horizon's `h − 1`, inside which a
     /// look-ahead target's residuals share their shocks (task 221 (d)).
     pub fn ljung_box_skip(&self) -> usize {
-        self.horizon_rows().saturating_sub(1)
+        self.horizon().saturating_sub(1)
     }
 
     /// Ljung and Box's lags past the skipped ones: 10 unless set.
@@ -96,9 +166,10 @@ impl Spec {
     }
 
     /// Newey and West's lags: `robust_se_lags` where given; else twice the
-    /// target's horizon in rows -- `embargo`, rounded up, on a spec with no
-    /// clock column, where a row is a unit (a look-ahead target in a fit
-    /// needs an embargo as long as its window); else `0`, HC0 alone.
+    /// target's horizon in rows ([`Self::horizon`]: `horizon_rows`, or
+    /// `embargo` rounded up on a spec with no clock column, where a row is a
+    /// unit -- a look-ahead target in a fit needs an embargo as long as its
+    /// window); else `0`, HC0 alone.
     ///
     /// Twice, not once: a horizon of `h` rows correlates the residuals up
     /// to `h − 1` rows apart, and Bartlett's weights `1 − l/(L+1)` count a
@@ -108,6 +179,9 @@ impl Spec {
     pub fn robust_se_lags_or_default(&self) -> usize {
         if let Some(l) = self.robust_se_lags {
             return l;
+        }
+        if self.horizon_rows.is_some() {
+            return self.nw_lags();
         }
         match (&self.clock, &self.embargo) {
             (None, Some(Span::Units(h))) if h.is_finite() && *h > 0.0 => {

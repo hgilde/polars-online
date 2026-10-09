@@ -162,14 +162,13 @@ impl Sandwich {
         }
     }
 
-    /// The standard errors of the coefficients over the features `idx`
-    /// (positions in `x`), in the layout `coef` reads -- the intercept
-    /// first where there is one, then each of the `k` features, NaN for one
-    /// outside `idx` -- with Newey and West's lags (`hac`) or HC0's
-    /// diagonal alone. `None` until a row is folded, and while the bread
-    /// over `idx` does not factorize: fewer rows than coefficients, or a
-    /// feature with no spread.
-    pub fn standard_errors(&self, idx: &[usize], hac: bool) -> Option<Vec<f64>> {
+    /// The covariance of the coefficients over the features `idx`
+    /// (positions in `x`), in the features' own units -- the intercept
+    /// first where there is one, then each of `idx` -- with Newey and
+    /// West's lags (`hac`) or HC0's diagonal alone, `p × p` row-major.
+    /// `None` until a row is folded, and while the bread over `idx` does not
+    /// factorize: fewer rows than coefficients, or a feature with no spread.
+    pub fn covariance(&self, idx: &[usize], hac: bool) -> Option<Vec<f64>> {
         let d = self.dim();
         let off = usize::from(self.intercept);
         let pos: Vec<usize> = (0..off).chain(idx.iter().map(|&i| i + off)).collect();
@@ -204,26 +203,74 @@ impl Sandwich {
         let left_t: Vec<f64> = (0..p * p).map(|n| left[(n % p) * p + n / p]).collect();
         let v = factor.solve(&left_t, p, p);
         // Column-major `v`: entry (i, j) at `j·p + i`; symmetric.
-        let at = |i: usize, j: usize| 0.5 * (v[j * p + i] + v[i * p + j]);
+        let mut out: Vec<f64> = (0..p * p)
+            .map(|n| {
+                let (i, j) = (n / p, n % p);
+                0.5 * (v[j * p + i] + v[i * p + j])
+            })
+            .collect();
+        if self.intercept {
+            // The intercept in the features' own units is `β₀ − c'β_x`:
+            // `T V T'` with `T = [[1, −c'], [0, I]]`.
+            let c: Vec<f64> = std::iter::once(0.0)
+                .chain(
+                    idx.iter()
+                        .map(|&i| self.origin.get(i).copied().unwrap_or(0.0)),
+                )
+                .collect();
+            // Row 0 of `T V`: `v_0j − Σ_a c_a v_aj`.
+            let row0: Vec<f64> = (0..p)
+                .map(|j| out[j] - (1..p).map(|a| c[a] * out[a * p + j]).sum::<f64>())
+                .collect();
+            let v00 = row0[0] - (1..p).map(|b| c[b] * row0[b]).sum::<f64>();
+            for j in 1..p {
+                out[j] = row0[j];
+                out[j * p] = row0[j];
+            }
+            out[0] = v00;
+        }
+        Some(out)
+    }
+
+    /// The standard errors of the coefficients over the features `idx`
+    /// (positions in `x`), in the layout `coef` reads -- the intercept
+    /// first where there is one, then each of the `k` features, NaN for one
+    /// outside `idx` -- with Newey and West's lags (`hac`) or HC0's
+    /// diagonal alone. `None` as [`Self::covariance`] is.
+    pub fn standard_errors(&self, idx: &[usize], hac: bool) -> Option<Vec<f64>> {
+        let v = self.covariance(idx, hac)?;
+        let off = usize::from(self.intercept);
+        let p = idx.len() + off;
         let mut out = vec![f64::NAN; self.k + off];
         for (a, &i) in idx.iter().enumerate() {
-            out[off + i] = at(a + off, a + off).max(0.0).sqrt();
+            out[off + i] = v[(a + off) * p + a + off].max(0.0).sqrt();
         }
         if self.intercept {
-            let c: Vec<f64> = idx
-                .iter()
-                .map(|&i| self.origin.get(i).copied().unwrap_or(0.0))
-                .collect();
-            let mut var = at(0, 0);
-            for (a, ca) in c.iter().enumerate() {
-                var -= 2.0 * ca * at(0, a + 1);
-                for (b, cb) in c.iter().enumerate() {
-                    var += ca * cb * at(a + 1, b + 1);
-                }
-            }
-            out[0] = var.max(0.0).sqrt();
+            out[0] = v[0].max(0.0).sqrt();
         }
         out.iter().any(|v| v.is_finite()).then_some(out)
+    }
+
+    /// Wald's statistic `d' V⁻¹ d` for the coefficients at `pick` --
+    /// positions in [`Self::covariance`]'s layout over `idx` -- against the
+    /// distance `d` of their estimates from the null, `V` the covariance
+    /// with Newey and West's lags (`hac`). `None` where the covariance is
+    /// not there, or its part over `pick` does not factorize.
+    pub fn wald(&self, idx: &[usize], hac: bool, pick: &[usize], d: &[f64]) -> Option<f64> {
+        let v = self.covariance(idx, hac)?;
+        let p = idx.len() + usize::from(self.intercept);
+        let q = pick.len();
+        if q == 0 || d.len() != q || pick.iter().any(|&i| i >= p) {
+            return None;
+        }
+        let v = &v;
+        let sub: Vec<f64> = pick
+            .iter()
+            .flat_map(|&i| pick.iter().map(move |&j| v[i * p + j]))
+            .collect();
+        let (x, attempts) = crate::solve_spd(&sub, d, q, 1)?;
+        let w: f64 = x.iter().zip(d).map(|(a, b)| a * b).sum();
+        (attempts == 0 && w.is_finite()).then_some(w.max(0.0))
     }
 }
 

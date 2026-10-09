@@ -372,6 +372,8 @@ _CEILING = {
     "resid_autocorr_lag": 2**20,
     "robust_se_lags": 2**20,
     "ljung_box_lags": 2**20,
+    # Newey and West's lags are twice it.
+    "horizon_rows": 2**19,
     "n_perm": 2**20,
 }
 
@@ -763,6 +765,7 @@ def _common(
     emit_specification: bool = False,
     specification_half_life: float | Duration | None = None,
     ljung_box_lags: int | None = None,
+    horizon_rows: int | None = None,
     emit_tails: bool = False,
     tails_half_life: float | Duration | None = None,
     emit_influence: bool = False,
@@ -824,6 +827,7 @@ def _common(
         "emit_specification": emit_specification,
         "specification_half_life": specification_half_life,
         "ljung_box_lags": ljung_box_lags,
+        "horizon_rows": horizon_rows,
         "emit_tails": emit_tails,
         "tails_half_life": tails_half_life,
         "emit_influence": emit_influence,

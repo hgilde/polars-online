@@ -182,7 +182,7 @@ fn specs() -> Vec<Spec> {
 /// before the save, from which the diagnostics fold (task 232 (1)).
 fn diagnosed_specs() -> Vec<Spec> {
     [
-        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
+        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "horizon_rows": 2, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -938,6 +938,29 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
             p.contains(".score_pred.")
                 && p.ends_with(".1")
                 && v.as_f64().is_some_and(f64::is_finite)
+        }),
+        // Schema 60 (task 232 (3)): under a horizon, the CUSUMs' lag products
+        // and ring, and the calibration's, Breusch and Pagan's and RESET's
+        // sandwiches.
+        ("bank_diagnosed", "a slot's CUSUM lag products", |p, v| {
+            p.contains(".breaks.") && p.contains(".p1.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "a slot's CUSUM ring", |p, v| {
+            p.contains(".breaks.") && p.contains(".ring2.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "a calibration's sandwich", |p, v| {
+            p.contains(".calibration.")
+                && p.contains(".hac.")
+                && p.contains(".gammas.")
+                && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "Breusch and Pagan's sandwich", |p, v| {
+            p.contains(".het_hac.") && p.contains(".meat.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "RESET's sandwich", |p, v| {
+            p.contains(".reset_hac.")
+                && p.contains(".ring.")
+                && v.as_f64().is_some_and(|f| f != 0.0)
         }),
         ("bank_diagnosed", "a slot's influence scale", |p, v| {
             p.contains(".influence.") && p.ends_with(".q") && v.as_f64().is_some_and(|f| f != 0.0)

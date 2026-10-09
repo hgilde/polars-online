@@ -34,6 +34,14 @@
 //! weights are uneven and the variance of a weighted mean is `1/n_kish` of
 //! one row's, so the same form is approximately `χ²(2)` on each row; the
 //! rows' values are then correlated over about a half-life.
+//!
+//! **Under a horizon** (a target that looks ahead `h` rows; task 232 (3))
+//! the residuals overlap and the form above reads them as independent, so
+//! the test is Wald's with Newey and West's variance in place of `s²/n`:
+//! `wald = d' V⁻¹ d` with `V` the sandwich [`crate::Sandwich`] of the
+//! regression on `(1, pred)` at `L = 2h` lags, its meat built from the
+//! residual under the null, `y − pred` (`a = 0, b = 1` leave nothing else),
+//! so it needs no fit of its own.
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +50,10 @@ use serde::{Deserialize, Serialize};
 pub struct Calibration {
     /// The EW moments of `(pred, y)`, never windowed: no runs.
     joint: crate::EwCov,
+    /// Under a horizon, the sandwich of the regression on `(1, pred)` at
+    /// Newey and West's lags, its meat from `y − pred` (module docs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hac: Option<crate::Sandwich>,
 }
 
 impl Default for Calibration {
@@ -52,15 +64,36 @@ impl Default for Calibration {
 
 impl Calibration {
     pub fn new() -> Self {
+        Self::with_lags(0)
+    }
+
+    /// A calibration whose Wald statistic reads Newey and West's variance
+    /// at `lags` lags (module docs), the plain form at 0.
+    pub fn with_lags(lags: usize) -> Self {
         Self {
             joint: crate::EwCov::new(2).without_runs(),
+            hac: (lags > 0).then(|| crate::Sandwich::new(1, true, lags)),
         }
     }
 
-    /// Whether a restored accumulator is shaped as a fresh one: its moments
-    /// two wide, with the sum of squared weights Kish's size reads.
-    pub fn has_shape(&self) -> bool {
-        self.joint.has_shape(2) && self.joint.q_sum().is_some()
+    /// Whether a restored accumulator is shaped as a fresh one at `lags`:
+    /// its moments two wide, with the sum of squared weights Kish's size
+    /// reads, and the sandwich at those lags.
+    pub fn has_shape(&self, lags: usize) -> bool {
+        self.joint.has_shape(2)
+            && self.joint.q_sum().is_some()
+            && match &self.hac {
+                None => lags == 0,
+                Some(h) => lags > 0 && h.has_shape(1, true, lags),
+            }
+    }
+
+    /// The rows behind this one are no longer adjacent to it -- a capped gap
+    /// or a session change -- so none is a lag of the next.
+    pub fn clear_lags(&mut self) {
+        if let Some(h) = self.hac.as_mut() {
+            h.clear_lags();
+        }
     }
 
     /// The EW weight of the scored rows.
@@ -78,6 +111,9 @@ impl Calibration {
     /// scored: the means stay, the weights shrink.
     pub fn age(&mut self, lam: f64) {
         self.joint.decay(lam);
+        if let Some(h) = self.hac.as_mut() {
+            h.age(lam);
+        }
     }
 
     /// One scored row: its prediction, its outcome, the step's decay and its
@@ -89,6 +125,9 @@ impl Calibration {
             return self.age(lam);
         }
         self.joint.update(&[pred, y], lam, w);
+        if let Some(h) = self.hac.as_mut() {
+            h.update(&[pred], y - pred, lam, w);
+        }
     }
 
     /// `b`, the slope of `y` on `pred`: `None` until the predictions have a
@@ -113,6 +152,10 @@ impl Calibration {
         let n = self.n_kish()?;
         if n <= 2.0 {
             return None;
+        }
+        if let Some(h) = &self.hac {
+            let a = self.joint.mean(1) - b * self.joint.mean(0);
+            return h.wald(&[0], true, &[0, 1], &[a, b - 1.0]);
         }
         let (c_pp, c_py, c_yy) = (self.joint.var(0), self.joint.cov(0, 1), self.joint.var(1));
         let s2 = c_yy - c_py * c_py / c_pp;
@@ -223,6 +266,83 @@ mod tests {
         }
     }
 
+    /// Under a horizon, Wald's statistic of `a = 0, b = 1` with Newey and
+    /// West's variance by its definition: `B = Σ ω z z'`, `z = (1, pred)`,
+    /// the meat's double sum of `u_t = ω_t (y_t − pred_t) z_t` over pairs at
+    /// most `L` rows apart at Bartlett's weights, `B⁻¹ S B⁻¹` and its
+    /// inverse by faer's LU (`crate::oracle`), under a decay, uneven weights
+    /// and zeros, with residuals that carry a lag.
+    #[test]
+    fn under_a_horizon_the_wald_is_newey_and_wests() {
+        let lags = 4usize;
+        let lam = 0.995;
+        let mut c = Calibration::with_lags(lags);
+        let mut s = 31u64;
+        // (pred, y, weight now), folded rows only.
+        let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+        let mut prev = 0.0;
+        for i in 0..300 {
+            let p = 2.0 * lcg(&mut s) + 5.0;
+            let shock = 0.6 * prev + lcg(&mut s);
+            prev = shock;
+            let y = 0.2 + 0.9 * p + shock;
+            let w = if i % 13 == 6 { 0.0 } else { 1.0 + lcg(&mut s) };
+            c.update(p, y, lam, w);
+            rows.iter_mut().for_each(|r| r.2 *= lam);
+            if w > 0.0 {
+                rows.push((p, y, w));
+            }
+            if i < 30 || i % 41 != 0 {
+                continue;
+            }
+            let mut bread = [0.0; 4];
+            let mut meat = [0.0; 4];
+            let u: Vec<[f64; 2]> = rows
+                .iter()
+                .map(|&(p, y, w)| [w * (y - p), w * (y - p) * p])
+                .collect();
+            for &(p, _, w) in &rows {
+                let z = [1.0, p];
+                for a in 0..2 {
+                    for b in 0..2 {
+                        bread[a * 2 + b] += w * z[a] * z[b];
+                    }
+                }
+            }
+            for t in 0..u.len() {
+                for l in 0..=lags.min(t) {
+                    let bw = if l == 0 {
+                        1.0
+                    } else {
+                        1.0 - l as f64 / (lags as f64 + 1.0)
+                    };
+                    for a in 0..2 {
+                        for b in 0..2 {
+                            let pair = u[t][a] * u[t - l][b];
+                            let back = u[t - l][a] * u[t][b];
+                            meat[a * 2 + b] += if l == 0 { pair } else { bw * (pair + back) };
+                        }
+                    }
+                }
+            }
+            let bi = crate::oracle::inverse(&bread);
+            let mul = |x: &[f64], y: &[f64]| -> Vec<f64> {
+                (0..4)
+                    .map(|n| (0..2).map(|k| x[(n / 2) * 2 + k] * y[k * 2 + n % 2]).sum())
+                    .collect()
+            };
+            let v = mul(&mul(&bi, &meat), &bi);
+            let d = [c.intercept().unwrap(), c.slope().unwrap() - 1.0];
+            let want = crate::oracle::quad_form(&v, &d);
+            let got = c.wald().unwrap();
+            assert!(
+                (got - want).abs() < 1e-7 * want.max(1.0),
+                "row {i}: {got} vs {want}"
+            );
+        }
+        assert!(c.has_shape(lags) && !c.has_shape(0));
+    }
+
     /// A zero-weight row, the first included, and a row with a value not a
     /// number only age the moments; until two rows with a spread there is
     /// no slope, and with no residual spread no statistic.
@@ -248,6 +368,6 @@ mod tests {
         }
         assert!((line.slope().unwrap() - 2.0).abs() < 1e-12);
         assert!(line.wald().is_none());
-        assert!(line.has_shape());
+        assert!(line.has_shape(0));
     }
 }

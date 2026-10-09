@@ -193,8 +193,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// sums, and a held row's score record its error inflation; a file from
 /// before it is refit. **59 since task 233** (the same day, C-1): an
 /// audit keeps each column's smallest change and the changes at it; a file
-/// from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 59;
+/// from before it is refit. **60 since task 232** (the same day): under a
+/// horizon the diagnostics keep Newey and West's sums; a file from before
+/// it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 60;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -2689,6 +2691,17 @@ impl Bank {
                 })
             })
             .collect();
+        // A clocked spec with an embargo and no horizon_rows: each diagnostic
+        // that reads the horizon says it has none, once per bank (task 232
+        // (3)); the first learning call surfaces it as the others are.
+        let notices = specs
+            .iter()
+            .flat_map(|s| {
+                s.horizon_notices()
+                    .into_iter()
+                    .map(move |n| format!("spec {:?}: {n}", s.name))
+            })
+            .collect();
         Ok(Self {
             resolvers: specs.iter().map(|_| TargetWindows::default()).collect(),
             short_embargo,
@@ -2704,7 +2717,7 @@ impl Bank {
             clock_dtypes,
             broken: None,
             window_prepass: true,
-            notices: Vec::new(),
+            notices,
         })
     }
 
@@ -3296,7 +3309,10 @@ impl Bank {
     /// (docs/WARMUP-AND-CONVERGENCE.md §3), each once per (spec, group,
     /// instance) for the life of the stream: a coefficient more ridge than
     /// data, named; the noise gate found unreachable at steady state, with
-    /// the way out. Learning raises them; scoring never does.
+    /// the way out. Learning raises them; scoring never does. And once per
+    /// bank, from its construction, each diagnostic of a clocked spec with
+    /// an `embargo` and no `horizon_rows` that has no horizon to read (task
+    /// 232 (3)).
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
     }

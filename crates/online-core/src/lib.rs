@@ -646,8 +646,14 @@ pub use window::{
 /// - 59 (2026-10-09, task 233, review round 6, C-1): `audit` keeps, per
 ///   column, its smallest nonzero change between consecutive rows and the
 ///   changes at it, which `frozen` weighs its repeats against. Pre-1.0 no
-///   loader is written. (58 is task 232's, built beside it.)
-pub const SCHEMA_VERSION: u32 = 59;
+///   loader is written.
+/// - 60 (2026-10-09, task 232): under a horizon the diagnostics read Newey
+///   and West's variance: `Calibration` keeps the sandwich of its
+///   regression, `Specification` the sandwiches of Breusch and Pagan's and
+///   RESET's, and `Breaks` the lag products of its studentized residuals
+///   and their ring. Without a horizon none is written. Pre-1.0 no loader
+///   is written.
+pub const SCHEMA_VERSION: u32 = 60;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -671,6 +677,9 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums
+/// under a horizon; a state from before 60 is refused by its number, and
+/// the fixtures are regenerated at 60.
 /// **57 since review round 6** (2026-10-09, B-5 and A-6): the tails'
 /// central sums and a held row's scored error inflation; a state from
 /// before 57 is refused by its number, and the fixtures are regenerated at
@@ -770,7 +779,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 59;
+pub const MIN_SCHEMA_VERSION: u32 = 60;
 
 #[cfg(test)]
 mod tests {

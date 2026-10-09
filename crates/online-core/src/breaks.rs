@@ -43,6 +43,25 @@
 //! run of `T` rows (`a` = 0.948 at 5%), and `Z2` the numerator of their
 //! CUSUM of squares. With a memory, `cusum` is a moving sum (Chu, Hornik and
 //! Kuan 1995) with an exponential window in place of a rectangular one.
+//!
+//! **Under a horizon** (task 232 (3); review round 6, A-4) a target that
+//! looks ahead `h` rows leaves residuals that share their shocks over `h − 1`
+//! rows, and the sums' variance is the long-run one. Each denominator takes
+//! Newey and West's (1987) Bartlett-weighted lag products of the terms it
+//! sums, over `L = 2h` lags of the studentized residuals scored before the
+//! row:
+//!
+//! ```text
+//! P1_l = Σ ω_t ω_{t−l} z_t z_{t−l}             P2_l = the same of z² − 1
+//! cusum    = Z1 / sqrt(S2 + 2 Σ_l (1 − l/(L+1)) P1_l)
+//! cusum_sq = (Z2 − S1) / sqrt(2 S2 + 2 Σ_l (1 − l/(L+1)) P2_l)
+//! ```
+//!
+//! and the same long-run factor `1 + 2 Σ_l (1 − l/(L+1)) P1_l / S2` scales
+//! `break_wald`'s noise variance ([`TwinFit::wald`]). With no horizon `L` is
+//! 0 and they are the forms above.
+
+use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +84,24 @@ pub struct Breaks {
     v1: f64,
     v2: f64,
     vq: f64,
+    /// Under a horizon, Newey and West's lags `L`, and per lag the products
+    /// `P1_l` and `P2_l` (module docs); 0 and empty without one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    lags: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    p1: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    p2: Vec<f64>,
+    /// The last `L` scored rows' `ω z` and `ω (z² − 1)` at their present
+    /// weights, newest first.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    ring1: VecDeque<f64>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    ring2: VecDeque<f64>,
+}
+
+fn is_zero(v: &usize) -> bool {
+    *v == 0
 }
 
 impl Breaks {
@@ -72,14 +109,38 @@ impl Breaks {
         Self::default()
     }
 
-    /// Whether a restored accumulator can be read and folded: finite sums,
-    /// the weights' and the squares' not negative.
-    pub fn has_shape(&self) -> bool {
-        [
-            self.s1, self.s2, self.z1, self.z2, self.v1, self.v2, self.vq,
-        ]
-        .iter()
-        .all(|v| v.is_finite())
+    /// Sums whose denominators read Newey and West's `lags` lags (module
+    /// docs), the plain forms at 0.
+    pub fn with_lags(lags: usize) -> Self {
+        Self {
+            lags,
+            p1: vec![0.0; lags],
+            p2: vec![0.0; lags],
+            ..Self::default()
+        }
+    }
+
+    /// Whether a restored accumulator can be read and folded at `lags`:
+    /// finite sums, the weights' and the squares' not negative, a product
+    /// per lag and no more scores than lags.
+    pub fn has_shape(&self, lags: usize) -> bool {
+        self.lags == lags
+            && self.p1.len() == lags
+            && self.p2.len() == lags
+            && self.ring1.len() <= lags
+            && self.ring2.len() == self.ring1.len()
+            && self
+                .p1
+                .iter()
+                .chain(&self.p2)
+                .chain(&self.ring1)
+                .chain(&self.ring2)
+                .all(|v| v.is_finite())
+            && [
+                self.s1, self.s2, self.z1, self.z2, self.v1, self.v2, self.vq,
+            ]
+            .iter()
+            .all(|v| v.is_finite())
             && [self.s1, self.s2, self.z2, self.v1, self.v2, self.vq]
                 .iter()
                 .all(|v| *v >= 0.0)
@@ -95,6 +156,22 @@ impl Breaks {
         self.v1 *= lam;
         self.v2 *= lam * lam;
         self.vq *= lam;
+        let lam2 = lam * lam;
+        self.p1
+            .iter_mut()
+            .chain(&mut self.p2)
+            .for_each(|v| *v *= lam2);
+        self.ring1
+            .iter_mut()
+            .chain(&mut self.ring2)
+            .for_each(|v| *v *= lam);
+    }
+
+    /// The rows behind this one are no longer adjacent to it -- a capped gap
+    /// or a session change -- so none is a lag of the next.
+    pub fn clear_lags(&mut self) {
+        self.ring1.clear();
+        self.ring2.clear();
     }
 
     /// The studentized residual of a recursive residual `v` against the
@@ -123,22 +200,59 @@ impl Breaks {
             self.s2 += w * w;
             self.z1 += w * z;
             self.z2 += w * z * z;
+            if self.lags > 0 {
+                let (u1, u2) = (w * z, w * (z * z - 1.0));
+                for (l, (b1, b2)) in self.ring1.iter().zip(&self.ring2).enumerate() {
+                    self.p1[l] += u1 * b1;
+                    self.p2[l] += u2 * b2;
+                }
+                self.ring1.push_front(u1);
+                self.ring2.push_front(u2);
+                self.ring1.truncate(self.lags);
+                self.ring2.truncate(self.lags);
+            }
         }
         self.v1 += w;
         self.v2 += w * w;
         self.vq += w * v * v;
     }
 
-    /// `Z1 / sqrt(S2)`: `None` before the first studentized residual.
-    pub fn cusum(&self) -> Option<f64> {
-        (self.s2 > 0.0).then(|| self.z1 / self.s2.sqrt())
+    /// `Σ_l (1 − l/(L+1)) P_l` over the lags: Bartlett's weights.
+    fn bartlett(&self, p: &[f64]) -> f64 {
+        let l1 = self.lags as f64 + 1.0;
+        p.iter()
+            .enumerate()
+            .map(|(l, v)| (1.0 - (l + 1) as f64 / l1) * v)
+            .sum()
     }
 
-    /// `(Z2/S1 − 1) · S1 / sqrt(2 S2)`: `None` before the first studentized
-    /// residual.
+    /// The long-run variance of the studentized residuals over their
+    /// short-run one, `1 + 2 Σ_l (1 − l/(L+1)) P1_l / S2` (module docs): 1
+    /// with no horizon, `None` before the first studentized residual and
+    /// where the lag products leave it at or below 0.
+    pub fn long_run(&self) -> Option<f64> {
+        if self.s2 <= 0.0 {
+            return None;
+        }
+        let f = 1.0 + 2.0 * self.bartlett(&self.p1) / self.s2;
+        (f > 0.0).then_some(f)
+    }
+
+    /// `Z1 / sqrt(S2)`, over the long-run variance under a horizon: `None`
+    /// before the first studentized residual.
+    pub fn cusum(&self) -> Option<f64> {
+        let f = self.long_run()?;
+        Some(self.z1 / (self.s2 * f).sqrt())
+    }
+
+    /// `(Z2/S1 − 1) · S1 / sqrt(2 S2)`, over the long-run variance under a
+    /// horizon: `None` before the first studentized residual.
     pub fn cusum_sq(&self) -> Option<f64> {
-        (self.s1 > 0.0 && self.s2 > 0.0)
-            .then(|| (self.z2 / self.s1 - 1.0) * self.s1 / (2.0 * self.s2).sqrt())
+        if self.s1 <= 0.0 || self.s2 <= 0.0 {
+            return None;
+        }
+        let var = 2.0 * self.s2 + 2.0 * self.bartlett(&self.p2);
+        (var > 0.0).then(|| (self.z2 - self.s1) / var.sqrt())
     }
 }
 
@@ -244,8 +358,10 @@ impl TwinFit {
     /// `intercept`: `None` until both fits are determined -- each with more
     /// than `k` rows of Kish's size and a Gram that factorizes -- and while
     /// the memories coincide (no decay: the run-once form has no slow fit)
-    /// or the slow fit leaves no residual.
-    pub fn wald(&self, idx: &[usize], intercept: bool) -> Option<f64> {
+    /// or the slow fit leaves no residual. `long_run` scales the noise's
+    /// variance by the residuals' long-run over short-run variance under a
+    /// horizon ([`Breaks::long_run`]), 1 without one.
+    pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
         let kx = self.fast.k() - 1;
         let k = idx.len() + usize::from(intercept);
         if k == 0 {
@@ -303,10 +419,10 @@ impl TwinFit {
             .map(|(&i, b)| b * moment(&self.slow, i, kx))
             .sum();
         let s2 = (moment(&self.slow, kx, kx) - fitted) * ns / (ns - k as f64);
-        if s2.is_nan() || s2 <= 0.0 {
+        if s2.is_nan() || s2 <= 0.0 || long_run.is_nan() || long_run <= 0.0 {
             return None;
         }
-        Some(quad / (s2 * c))
+        Some(quad / (s2 * long_run * c))
     }
 }
 
@@ -368,7 +484,69 @@ mod tests {
             let want = (z2 / s1 - 1.0) * s1 / (2.0 * s2).sqrt();
             assert!((b.cusum_sq().unwrap() - want).abs() < tol, "row {i}");
         }
-        assert!(b.has_shape());
+        assert!(b.has_shape(0));
+    }
+
+    /// Under a horizon, the denominators by their definition: Bartlett's
+    /// weights on the lag products of the scored rows' `ω z` and `ω (z² −
+    /// 1)`, each at its present weight, a pair `l` scored rows apart --
+    /// under a decay, uneven weights, zeros, and studentized residuals that
+    /// carry a lag; a cleared run pairs nothing across it.
+    #[test]
+    fn under_a_horizon_the_variance_is_newey_and_wests() {
+        let lags = 3usize;
+        let mut b = Breaks::with_lags(lags);
+        let mut s = 21u64;
+        let lam = 0.97;
+        // (z, weight now) of the scored rows, newest last, per run.
+        let mut runs: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
+        let mut prev = 0.0;
+        for i in 0..400 {
+            let v = 0.7 * prev + lcg(&mut s);
+            prev = v;
+            let w = if i % 9 == 4 { 0.0 } else { 1.0 + lcg(&mut s) };
+            if i == 250 {
+                b.clear_lags();
+                runs.push(Vec::new());
+            }
+            let z = b.studentized(v);
+            b.update(v, lam, w);
+            runs.iter_mut().flatten().for_each(|r| r.1 *= lam);
+            if let (Some(z), true) = (z, w > 0.0) {
+                runs.last_mut().unwrap().push((z, w));
+            }
+            if i < 40 || i % 29 != 0 {
+                continue;
+            }
+            let all: Vec<&(f64, f64)> = runs.iter().flatten().collect();
+            let s1: f64 = all.iter().map(|r| r.1).sum();
+            let s2: f64 = all.iter().map(|r| r.1 * r.1).sum();
+            let z1: f64 = all.iter().map(|r| r.1 * r.0).sum();
+            let z2: f64 = all.iter().map(|r| r.1 * r.0 * r.0).sum();
+            let (mut p1, mut p2) = (0.0, 0.0);
+            for run in &runs {
+                for l in 1..=lags {
+                    let bw = 1.0 - l as f64 / (lags as f64 + 1.0);
+                    for t in l..run.len() {
+                        let (a, c) = (run[t], run[t - l]);
+                        p1 += bw * a.1 * c.1 * a.0 * c.0;
+                        p2 += bw * a.1 * c.1 * (a.0 * a.0 - 1.0) * (c.0 * c.0 - 1.0);
+                    }
+                }
+            }
+            let tol = 1e-9;
+            let want = z1 / (s2 + 2.0 * p1).sqrt();
+            assert!((b.cusum().unwrap() - want).abs() < tol, "row {i}");
+            let want = (z2 - s1) / (2.0 * s2 + 2.0 * p2).sqrt();
+            assert!((b.cusum_sq().unwrap() - want).abs() < tol, "row {i}");
+            let want = 1.0 + 2.0 * p1 / s2;
+            assert!((b.long_run().unwrap() - want).abs() < tol, "row {i}");
+        }
+        assert!(
+            b.long_run().unwrap() > 1.5,
+            "the lag carries a long-run variance"
+        );
+        assert!(b.has_shape(lags) && !b.has_shape(0));
     }
 
     /// A zero weight, the first included, and a `v` that is not a number
@@ -459,14 +637,14 @@ mod tests {
                 .map(|(a, b)| d[a] * gs[a * 3 + b] / ws * d[b])
                 .sum();
             let want = quad / (s2 * c);
-            let got = t.wald(&[0, 1], true).unwrap();
+            let got = t.wald(&[0, 1], true, 1.0).unwrap();
             assert!(
                 (got - want).abs() < 1e-7 * want.max(1.0),
                 "row {i}: {got} vs {want}"
             );
         }
         // After the break the slow fit lags the fast one.
-        assert!(t.wald(&[0, 1], true).unwrap() > 30.0);
+        assert!(t.wald(&[0, 1], true, 1.0).unwrap() > 30.0);
         assert!(t.has_shape(2));
     }
 
@@ -480,14 +658,14 @@ mod tests {
             let x = lcg(&mut s) + 2.0;
             t.update(&[x], 3.0 * x + 0.1 * lcg(&mut s), 1.0, 1.0);
         }
-        assert!(t.wald(&[0], true).is_none());
+        assert!(t.wald(&[0], true, 1.0).is_none());
         let mut u = TwinFit::new(1);
         for i in 0..300 {
             let x = lcg(&mut s) + 2.0;
             let slope = if i < 200 { 3.0 } else { 3.5 };
             u.update(&[x], slope * x + 0.1 * lcg(&mut s), 0.95, 1.0);
         }
-        assert!(u.wald(&[0], false).unwrap() > 10.0);
-        assert!(u.wald(&[], false).is_none(), "nothing to compare");
+        assert!(u.wald(&[0], false, 1.0).unwrap() > 10.0);
+        assert!(u.wald(&[], false, 1.0).is_none(), "nothing to compare");
     }
 }

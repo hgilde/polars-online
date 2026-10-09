@@ -68,6 +68,9 @@ pub struct CheckCfg {
     health: Decay,
     /// Newey and West's lags, `0` for HC0 alone.
     lags: usize,
+    /// The diagnostics' own Newey-West lags under a horizon, `0` without
+    /// one ([`Spec::nw_lags`]; task 232 (3)).
+    nw: usize,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
     /// reads, as positions in the spec's features: an `ewridge` feature
     /// set's, or every feature.
@@ -140,6 +143,7 @@ impl CheckCfg {
                 Spec::memory_multiple("feature_health_half_life"),
             ),
             lags: spec.robust_se_lags_or_default(),
+            nw: spec.nw_lags(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
             width: spec.k() + usize::from(spec.fit_intercept),
@@ -225,8 +229,11 @@ impl Checks {
     pub fn new(spec: &Spec, n_slots: usize) -> Self {
         let on = |flag: bool, n: usize| if flag { n } else { 0 };
         Self {
-            calibration: vec![Calibration::new(); on(spec.emit_calibration, n_slots)],
-            breaks: vec![Breaks::new(); on(spec.emit_breaks, n_slots)],
+            calibration: vec![
+                Calibration::with_lags(spec.nw_lags());
+                on(spec.emit_calibration, n_slots)
+            ],
+            breaks: vec![Breaks::with_lags(spec.nw_lags()); on(spec.emit_breaks, n_slots)],
             twin: vec![TwinFit::new(spec.k()); on(spec.emit_breaks, spec.m())],
             sandwich: vec![
                 Sandwich::new(
@@ -240,7 +247,8 @@ impl Checks {
                 Specification::new(
                     spec.k(),
                     spec.ljung_box_skip(),
-                    spec.ljung_box_lags_or_default()
+                    spec.ljung_box_lags_or_default(),
+                    spec.nw_lags()
                 );
                 on(spec.emit_specification, n_slots)
             ],
@@ -266,7 +274,7 @@ impl Checks {
     /// Whether a restored set is shaped as `fresh`, this spec's: the same
     /// accumulators, each shaped to be read and folded.
     pub fn fits(&self, fresh: &Self, spec: &Spec) -> bool {
-        let (k, lags) = (spec.k(), spec.robust_se_lags_or_default());
+        let (k, lags, nw) = (spec.k(), spec.robust_se_lags_or_default(), spec.nw_lags());
         self.calibration.len() == fresh.calibration.len()
             && self.breaks.len() == fresh.breaks.len()
             && self.twin.len() == fresh.twin.len()
@@ -278,12 +286,16 @@ impl Checks {
             && self.influence.iter().all(Influence::has_shape)
             && self.health.is_some() == fresh.health.is_some()
             && self.health.as_ref().is_none_or(|h| h.has_shape(k))
-            && self
-                .specification
-                .iter()
-                .all(|s| s.has_shape(k, spec.ljung_box_skip(), spec.ljung_box_lags_or_default()))
-            && self.calibration.iter().all(Calibration::has_shape)
-            && self.breaks.iter().all(Breaks::has_shape)
+            && self.specification.iter().all(|s| {
+                s.has_shape(
+                    k,
+                    spec.ljung_box_skip(),
+                    spec.ljung_box_lags_or_default(),
+                    nw,
+                )
+            })
+            && self.calibration.iter().all(|c| c.has_shape(nw))
+            && self.breaks.iter().all(|b| b.has_shape(nw))
             && self.twin.iter().all(|t| t.has_shape(k))
             && self
                 .sandwich
@@ -298,6 +310,10 @@ impl Checks {
         self.specification
             .iter_mut()
             .for_each(Specification::clear_lags);
+        self.calibration
+            .iter_mut()
+            .for_each(Calibration::clear_lags);
+        self.breaks.iter_mut().for_each(Breaks::clear_lags);
     }
 
     /// Every slot's robust standard errors, flattened in `coef`'s layout,
@@ -381,10 +397,12 @@ impl Checks {
                 put(v, slot, rec.get(slot).and_then(|&r| b.studentized(r)));
                 put(v + 1, slot, b.cusum());
                 put(v + 2, slot, b.cusum_sq());
-                let wald = self
-                    .twin
-                    .get(slot / nc)
-                    .and_then(|t| t.wald(cfg.combo_features.get(slot % nc)?, cfg.intercept));
+                // Under a horizon the noise's variance is the long-run one,
+                // read from the slot's own studentized residuals.
+                let long_run = if cfg.nw > 0 { b.long_run() } else { Some(1.0) };
+                let wald = self.twin.get(slot / nc).and_then(|t| {
+                    t.wald(cfg.combo_features.get(slot % nc)?, cfg.intercept, long_run?)
+                });
                 put(v + 3, slot, wald);
             }
             v += 4;
