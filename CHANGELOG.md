@@ -273,7 +273,7 @@ reinterpreted parameter, an output's dtype or a file to refit.
   row** (task 209), as scikit-learn's `PoissonRegressor` does and as
   `strict_binary` refuses a logistic label. A count is never negative, and
   the gradient `p - y` drove the prediction to the link's floor, e^-30.
-- **Every saved bank must be refit.** A bank file now carries schema 51,
+- **Every saved bank must be refit.** A bank file now carries schema 52,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -304,7 +304,10 @@ reinterpreted parameter, an output's dtype or a file to refit.
   target (task 211). Schema 50 sizes `kalman`'s prior from a median of its
   first innovations (task 214). Schema 51 drops `ftrl`'s penalty scale and
   keeps `kmeans`'s and `micro`'s centres as compensated pairs (task 215).
-  It refuses 50 and older, and so do the models' own states.
+  Schema 52 counts each target's rows of positive weight, and all rows, in
+  a windowed model's state and in each of its snapshots, and each slot's
+  residuals in the residual spread's window (task 217). It refuses 51 and
+  older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -618,6 +621,10 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **A `kalman` state with a damaged noise basis is refused with a message
+  that says what the basis must hold** (task 218): at most 3 rows, as many
+  weights as squared innovations, each finite and above 0; a bad clock
+  since an observation has a message of its own.
 - **Under a half-life `ftrl`'s penalties no longer carry the per-target
   scale `W/W*`** (task 215; task 115(d)'s scale). A zero-weight row is now
   clock alone for `ftrl` as for every model (hard rule 9 holds for every
@@ -1073,6 +1080,40 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **A windowed `lasso` or `ewridge` at a level of ±1,000 or more no longer
+  reads the means' rounding as spread once a dominant row leaves the
+  window** (task 217, D4). A `lasso` diverged to `inf` and an `ewridge`
+  held slopes of -6.6e41 where the rows inside give 4.5e-49. The
+  truncation's bound now includes the rounding the subtraction of two
+  means at a level leaves, `64ε·(g·C + ratio·C_u + ratio·g·|d|·(|m| +
+  |m_u|))`, and such a window reads what it reads at level 0, to the bit;
+  ordinary windowed streams do not move.
+- **A windowed `marginal` pair no longer reads a truncation's rounding as
+  moments** (task 217). With a dominant row leaving the window, `var_y`
+  read 6.1e82 where the rows inside give 4e-4, and `beta` and `corr` had
+  the wrong sign, at level 0 as well. `cut` takes the same bound.
+- **A windowed `ewridge` or `lasso` fit has no slope on a target with no
+  spread in the window** (task 217): the slope came from the target's mean
+  rounded at its level, 6.6e-4 at a level of 1e8.
+- **A window holding none of a target's rows reads nothing for it, as for
+  a target never seen** (task 217; `ewridge`, `lasso`, `marginal`,
+  `ew_cov`, `ew_class`, and the residual spread behind `sigma`, `zscore`
+  and the conformal band). A target absent for some 1,060 half-lives, or a
+  window of zero-weight rows, read a weight of 5e-324 that per-row decay
+  never takes to 0, predicted from it on its return, and read a `sigma` of
+  0 or 1; two such returns parted under `pairwise`. The window now counts
+  each target's rows of positive weight, and all rows (schema 52).
+- **A target absent for some 1,060 half-lives while the others go on no
+  longer keeps its own history at a subnormal weight** (task 217;
+  `ewridge` and `lasso`, `target_gaps="own_rows"`): the solve on its return
+  read the old fit back from it, and two returns parted by up to 7.6e-2.
+  Such a history is forgotten, as a decay that underflows forgets it.
+- **An `ewridge` fit whose every feature the standardizer dropped reads as
+  the intercept alone** (task 218), with `emit_error_inflation` or
+  `emit_se_coef` on: the documented `error_inflation`, `sqrt(1 +
+  1/n_kish)`, and the intercept's standard error, where it read `inf` and
+  null live and other values after a save and load until the next solve.
+  A resumed stream now matches the uninterrupted one.
 - **`kmeans` and `micro` centres are compensated pairs** (task 215): a
   value held at 1e12 is reached to the bit, where the centres stalled
   short of it and mis-assigned rows 40-60 half-lives later.
@@ -1478,6 +1519,19 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **`rls` winds up on a feature held at one value other than 0** (task
+  217, documented): its slope wanders to ±3e13 from about 43-54
+  half-lives held, after the feature has moved or from its first row, and
+  predictions are off by up to 4.4e12 once it moves. `ewridge`, whose
+  ridge does not fade, does not; use it for a long stream whose features
+  can go quiet. A research round measured two level-free fixes for `rls`;
+  neither passed every regime without a cost, so none was built.
+- Every mutant that survived the push to `103d721` is caught by a test or
+  listed with its reason (tasks 218 and 220): 105 on its changed lines (86
+  caught by ten new tests, 19 equivalent) and the 698 its Mutants job left
+  untested (71 survived the first pass: 55 caught by 21 new tests, 14
+  equivalent, 2 tolerated as rounding). One equivalent entry was wrong, and
+  a test now catches it.
 - The changed-lines mutation job lists its mutants first and takes a shard
   for every forty (at least one, at most 256), so it tests every mutant a
   push lists, however large (task 219). Each push to `main` runs that pass

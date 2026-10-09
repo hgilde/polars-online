@@ -8835,25 +8835,79 @@ tick, and that the series holding it up has a count near 1.
       coordinator's two designs were reasoned, not measured; the user is
       offered a level-aware G5 bound for D4 and, for D1, documentation now
       with a measured research round on level-free floors to follow.
-- [ ] 217. **The level-aware truncation bound (D4), a sparse target's
+- [x] 217. **The level-aware truncation bound (D4), a sparse target's
       subnormal history, `rls` windup documented, and the window's exact row
       count** -- the user, 2026-10-08 ("Your reco on 2-4 and then push";
       the count chosen 2026-10-08). *Worker `task217-level-bound`, then
-      `task217-count`.* In progress.
-- [ ] 218. **The 105 mutants that survived the push of `103d721`** --
+      `task217-count`.* *Done 2026-10-08* (schema 52). **D4:** the briefed
+      bound on the raw second moments was wrong by measurement (it read a
+      unit variance at 1e8 as none, failing C17, and moved 48 of 120
+      ordinary windowed configurations by up to 3.8 spreads); the bound
+      built takes the rounding the subtraction leaves, `64ε·(g·C +
+      ratio·C_u + ratio·g·|d|·(|m| + |m_u|))`, `d` a difference of two
+      means rounded at the level: the D4 rows read level 0's coefficients
+      to the bit at ±1e3 and ±1e8, and 0 of the 120 configurations move.
+      The same rule in `marginal`'s `cut` (which had none: `var_y` 6.1e82
+      against 4e-4, at level 0 too), and a target with no spread in a
+      window has no cross-moment there (`TargetMoments::truncated` keeps
+      hi+lo means and did not reproduce). `lasso_windowed` draws one-sided
+      streams again. **Sparse target:** a target's own history whose share
+      of the row it meets falls to the smallest normal double or below is
+      forgotten (`gaps::decay_into`, shared with task 215's `lasso` rule;
+      the boundary itself forgets). **The window's row count** (the user
+      chose it over a threshold or a flush): each target's rows of positive
+      weight, and all rows, live and in every snapshot, and each slot's in
+      the residual spread's window; a window holding none of a target's
+      rows reads as a never-seen target, exactly, for legal rows of
+      subnormal weight too. **`rls` windup:** documented with the measured
+      table (±3e13 from 43-54 half-lives held; a feature constant from its
+      first row too); the research round's derived floor passed the named
+      regimes at 1.3-1.6 times a row but not a feature constant from the
+      start, and was not built. Its 18 surviving mutants are caught by
+      tests that pin each bound at its edge.
+- [x] 218. **The 105 mutants that survived the push of `103d721`** --
       tests for each, or an equivalent entry with its reason; and the two
       defects they showed (an `ewridge` fit with no kept column read
       differently after a load; the `kalman` loader's message). *Worker
-      `task218-mutants`.* In progress.
-- [ ] 219. **The changed-lines mutation pass sized to the push** -- the
+      `task218-mutants`.* *Done 2026-10-08:* 86 caught by ten new tests
+      (81 in `kalman`, from a replica of the filter written from its module
+      doc that checks every readout on seven configurations; 4 in
+      `ewridge`'s `coef_variance`; 1 in `lasso`), 19 equivalent with their
+      reasons (`Decay::factor`'s two guards among them: `pow(l, 1) == l` and
+      `pow(l, ±0) == 1` held over 100,063,203 values on this libm, and on
+      glibc the bit-pinned `sgd` stream already ran through them). An
+      `ewridge` fit with no kept column now reads its documented values
+      (`1/n_kish`, `sqrt(1 + 1/n)`) live, as a resumed stream did; task
+      113's test, which had pinned `inf`, now pins the leverage. The
+      `kalman` loader's two checks each say what they require.
+- [x] 219. **The changed-lines mutation pass sized to the push** -- the
       user, 2026-10-08: "We don't pay for minutes being open source". A
       listing job sets a shard for every forty mutants, and each push to
       `main` gets its own concurrency group. *Worker
-      `task219-mutants-shards`.* In progress.
-- [ ] 220. **The 698 mutants the push of `103d721` left untested** -- run
+      `task219-mutants-shards`.* *Done 2026-10-08:* `changed-list` lists
+      the pass (no build) and sets `min(max(1, ceil(n/40)), 256)` shards
+      (`scripts/mutants_shards.py`); the shards and the report read the
+      count from it; the arguments live once, in `CHANGED_SCOPE`. Sized from
+      run 37834489097: 59.5-113.6 s a mutant at `-j 2`, so 40 a shard is
+      about 79 minutes at the slowest rate; `103d721`'s 1,346 mutants would
+      take 34 shards, in two waves at 20 jobs at a time. A push's group is
+      keyed by its sha, so no later push cancels or replaces its pass. Held
+      by `tests/test_ci_cost_policy.py`, `test_mutants_report.py` and
+      `test_tiers.py`; GitHub's own evaluation is seen on the next push.
+- [x] 220. **The 698 mutants the push of `103d721` left untested** -- run
       locally with the lines tasks 215-216 changed; 71 survive task 218's
       tests. Tests or equivalents, and a defect fixed where it has one
-      answer. *Worker `task220-mutants`.* In progress.
+      answer. *Worker `task220-mutants`.* *Done 2026-10-08:* the local pass
+      (968 mutants, essentials tier, 2 h) left 140; on task 218's tests 71;
+      now 55 caught by 21 new tests (`pa` and `sgd`'s mapped steps held to
+      a twin written from their module docs, `tests/mapped_step.rs`;
+      `rls`'s leverage and Kish ratio at underflow; `robust`'s shares;
+      `lasso`'s readiness per slot; the cluster summary's compensated
+      centre; ten in `kalman`), 14 equivalent, 2 tolerated as rounding
+      (measured: at most 7.6e-16). Task 218's entry for `ewridge`'s
+      `n <= 0` guard was wrong (with `λ > ½` the smallest subnormal sticks,
+      so `W²` underflows while `Q` does not) and is a test now. No model
+      defect.
 - [ ] 221. **Online diagnostics: the questions today's set does not
       answer** -- the user, 2026-10-08: "What kinds of online diagnostics
       should we have? Those could run once for a non ewma regression, or
