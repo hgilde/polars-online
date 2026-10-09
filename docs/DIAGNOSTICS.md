@@ -61,11 +61,11 @@ flag                      rows 1,000-2,999  rows 3,000-5,999  first row after
 calibration_wald > 5.99               0.0%              0.0%                -
 |cusum| > 3                           0.0%              1.8%             3052
 |cusum_sq| > 3                        0.8%              2.8%             3051
-break_wald > 21.1                     0.0%             77.0%             3051
+break_wald > 21.1                     0.0%             76.8%             3059
 r2_y at rows 2,999, 3,100, 3,300 and 5,999: 0.51, 0.43, 0.44, 0.55
 ```
 
-`break_wald` sees the flip 51 rows after it, and it stays past its
+`break_wald` sees the flip 59 rows after it, and it stays past its
 threshold on 77% of the rows after. It is the Wald distance between two
 fits of the same regression, one at the diagnostic's memory and one at four
 times it, and it grows when a coefficient moves. The two CUSUMs watch the
@@ -477,7 +477,7 @@ widens their spread only until the fit catches up.
 | `studentized_<t>` | the row's recursive residual over the spread of those before it, `z = (resid / error_inflation) / s`, read once that spread has 10 rows of Kish size | each row's surprise | about `N(0, 1)` |
 | `cusum_<t>` | the weighted sum of the studentized residuals before the row, standardized: `Σωz / sqrt(r Σω²)` | a mean in the residuals: an intercept shift | `N(0, 1)` |
 | `cusum_sq_<t>` | the weighted sum of `z² − 1`, standardized by its measured spread: `Σω(z² − 1) / sqrt(r₂ (m₄ − 1) Σω²)`, `m₄` the mean of `z⁴` at four times the memory | a change in the residuals' spread | `N(0, 1)`, whatever the tails |
-| `break_wald_<t>` | the Wald distance between two least-squares fits of the target on the slot's features, one at the memory and one at four times it; null run once | a coefficient that moved, the slope's or the intercept's | `chi2(k)`, with `k` the coefficients |
+| `break_wald_<t>` | the Wald distance between two least-squares fits of the target on the slot's features, one at the memory and one at four times it, over the exact variance of their difference; null run once | a coefficient that moved, the slope's or the intercept's | `chi2(k)`, with `k` the coefficients |
 | `drift_<t>` | true on the row a Page-Hinkley detector (Page 1954; Hinkley 1971) on `\|resid\| / sigma` climbs `drift_threshold` above its lowest point | a rise in the residuals' level, beyond `drift_delta` sigmas | false |
 
 `ω` is each row's weight times its decay at `breaks_half_life`, the
@@ -531,10 +531,23 @@ On 200 streams of 3,000 rows with a break at row 1,500, beside a fit at a
 half-life of 200, `|cusum| > 3` found every intercept break, 62 rows after
 it on the median, and `|cusum_sq| > 3` every variance break within 17 rows
 on the median. `break_wald > 21.1`, `chi2(3)`'s 0.01% value, found every
-slope break, 100 rows after it on the median. On 40 streams of 25,000 rows
+slope break, 102 rows after it on the median. On 40 streams of 25,000 rows
 with no break, at the same half-life, `|cusum| > 3` held on 0.24% of rows
 and `|cusum_sq| > 3` on 0.22%, near a normal's 0.27%, and `break_wald >
-21.1` on 0.026%. Before each was divided by its null, they held on 0.002%
+21.1` on 0.025%.
+
+**`break_wald` reads the exact variance of the two fits' difference.**
+Each fit is `β = G⁻¹ Σ ω z y` over `z = (1, x)`, so with noise of variance
+`σ²` the difference has the variance `σ² (A_f H_ff A_f + A_s H_ss A_s −
+A_f H_fs A_s − A_s H_fs A_f)`, `A = G⁻¹` and `H` the sums of `ω_f² z z'`,
+`ω_s² z z'` and `ω_f ω_s z z'`, which the diagnostic keeps. It once read
+the slow fit's Gram for both fits, which is right only while the design
+holds still: when a feature's spread fell tenfold with nothing broken, it
+passed 21.1 after the change on 85% of 100 streams, and now on none. On
+streams with no break it passed `chi2(3)`'s 5% value on 4.5% to 5.0% of
+rows, and beside AR(1) features at 0.99 and 0.999 on 3.4% and 3.1%, with
+means of 2.9 and 2.7 for `chi2(3)`'s 3; with 20 features at a half-life of
+20 its mean was 20.7 for `chi2(21)`'s 21. Before each was divided by its null, they held on 0.002%
 and 0.011%, and found the breaks 96 and 20 rows after them.
 
 **The CUSUM cannot see a slope that moves on a feature centred at zero.**
@@ -676,8 +689,8 @@ print(f"flags on rows 1,000-2,999, before any break: {flagged_before}")
 
 ```text
 break            |cusum| > 3     |cusum_sq| > 3  break_wald > 21.1              drift
-mean                    3063                  -               3137                  -
-variance                   -               3024                  -                  -
+mean                    3063                  -               3135                  -
+variance                   -               3024               3313                  -
 slope                      -               3087               3072                  -
 flags on rows 1,000-2,999, before any break: 18
 ```
@@ -690,12 +703,13 @@ breaks. Read together, the other three flags tell the breaks apart:
 | break | `cusum` | `cusum_sq` | `break_wald` |
 |---|---|---|---|
 | the intercept shifted | fires | quiet, or late | fires, since the intercept is a coefficient |
-| the noise grew | quiet, or late | fires first, within 25 rows | quiet |
+| the noise grew | quiet, or late | fires first, within 25 rows | quiet, or late |
 | a slope moved | quiet, or late | fires, while the fit catches up | fires |
 
 Over 200 streams each of those breaks, "late" means this: after a doubling
 of the noise `|cusum| > 3` fired on half the streams, 120 rows in on the
-median, where `|cusum_sq| > 3` fired on every one within 17; after a slope
+median, and `break_wald > 21.1` on 18%, 155 rows in, where `|cusum_sq| >
+3` fired on every one within 17; after a slope
 moved, the two CUSUMs fired on a third of the streams, 146 and 501 rows in,
 where `break_wald` fired on every one within 100.
 

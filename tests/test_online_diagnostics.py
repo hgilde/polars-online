@@ -985,3 +985,41 @@ def test_the_cusum_of_squares_reads_the_measured_fourth_moment():
     once = po.spec.ewridge("m", half_life=float("inf"), min_weight=10.0, **common)
     last = _run(df, once).group_by("g").last()
     assert (last["cusum_sq_y"].abs() > 1.96).mean() < 0.15
+
+
+# --- break_wald's exact sandwich (task 232 (5)) ------------------------------
+
+
+def test_a_feature_gone_quiet_is_no_break():
+    """With nothing broken, `x1`'s spread falls tenfold at row 1,500. The
+    slow fit's Gram stood in for both fits' in `break_wald`'s variance, so
+    the fast fit's quieter design read as a moved coefficient: past
+    `chi2(3)`'s 0.01% value, 21.1, after the change on 85% of 100 streams
+    (review round 6, A-1). With the exact variance of the difference, on
+    few (task 232 (5))."""
+    rng = np.random.default_rng(4)
+    groups, n, at = 40, 3_000, 1_500
+    x = rng.standard_normal((groups * n, 2))
+    r = np.tile(np.arange(n), groups)
+    x[r >= at, 1] *= 0.1
+    y = 0.5 + x @ np.array([1.0, -1.0]) + rng.standard_normal(groups * n)
+    df = pl.DataFrame({"g": np.repeat(np.arange(groups), n), "x0": x[:, 0], "x1": x[:, 1], "y": y})
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        emit_breaks=True,
+        min_weight=10.0,
+    )
+    out = _run(df, spec).with_columns(r=pl.int_range(pl.len()).over("g"))
+    hit = (
+        out.filter(pl.col("r") >= at)
+        .group_by("g")
+        .agg((pl.col("break_wald_y") > 21.1).any().alias("hit"))["hit"]
+        .mean()
+    )
+    assert hit < 0.1, hit
+    after = out.filter(pl.col("r") >= at + 600)["break_wald_y"].drop_nulls()
+    assert after.mean() < 4.0, after.mean()

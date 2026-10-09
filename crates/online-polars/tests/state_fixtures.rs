@@ -945,6 +945,14 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("bank_diagnosed", "a slot's CUSUM lag products", |p, v| {
             p.contains(".breaks.") && p.contains(".p1.") && v.as_f64().is_some_and(|f| f != 0.0)
         }),
+        // Task 232 (5): the twin fits' weighted sums of `z z'` -- fast,
+        // slow and crossed -- and their origin.
+        ("bank_diagnosed", "a target's twin cross sums", |p, v| {
+            p.contains(".twin.") && p.contains(".hfs.") && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "a target's twin origin", |p, v| {
+            p.contains(".twin.") && p.contains(".origin.") && v.as_f64().is_some()
+        }),
         // Task 232 (4): the CUSUM of squares' fourth moment at the slow
         // memory.
         ("bank_diagnosed", "a slot's fourth moment", |p, v| {

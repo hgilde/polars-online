@@ -634,10 +634,13 @@ The diagnostics add, per slot:
        ``cusum_sq``'s scale shares its memory, a half; each is divided by
        it, and their spreads read 1.01-1.10 on clean streams where they read
        0.48-0.94. The other fits keep the plain sum, whose spread reads
-       below 1 beside them (0.30-0.97), and ``holt``'s 1.6. ``break_wald`` is the Wald distance between two
-       least-squares fits of the target on the slot's features, one at the
-       memory and one at four times it, about ``chi2(k)`` with no break and
-       null run once. On 200 streams of 3,000 rows with a break at 1,500:
+       below 1 beside them (0.30-0.97), and ``holt``'s 1.6. ``break_wald``
+       is the Wald distance between two least-squares fits of the target on
+       the slot's features, one at the memory and one at four times it,
+       over the exact variance of their difference, about ``chi2(k)`` with
+       no break and null run once (over the slow fit's Gram for both, a
+       feature whose spread fell tenfold with nothing broken passed 21.1 on
+       85% of streams; now on none). On 200 streams of 3,000 rows with a break at 1,500:
        run once, the CUSUM crossed on 3.5% with no break and on every
        stream whose intercept moved half a noise sd, 244 rows after it
        (statsmodels' own: 5.0% and 277). It does not see a slope that moves

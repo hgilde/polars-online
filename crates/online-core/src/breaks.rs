@@ -322,30 +322,42 @@ pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
     fit_half_life / (fit_half_life + own_half_life)
 }
 
-/// The fast and slow fits of one target, and the weights' cross sum:
-/// two exponentially weighted least-squares fits of the target on the
-/// features, one at the diagnostic's memory (fast) and one at four times it
-/// (slow), each as EW means and centred co-moments ([`crate::EwCov`]), and
-/// the Wald distance between their coefficients:
+/// The fast and slow fits of one target, and the sums their difference's
+/// variance reads: two exponentially weighted least-squares fits of the
+/// target on the features, one at the diagnostic's memory (fast) and one at
+/// four times it (slow), each as EW means and centred co-moments
+/// ([`crate::EwCov`]), and the Wald distance between their coefficients
+/// with the exact variance of their difference (task 232 (5); review round
+/// 6, A-1).
+///
+/// Each fit is `β = G⁻¹ Σ ω z y` over `z = (1, x − c)`, `c` the first row's
+/// features, `G = Σ ω z z'`, so under a constant relationship with noise
+/// of variance `σ²` the difference is `Δ = Σ_t (A_f ω_{f,t} − A_s ω_{s,t})
+/// z_t ε_t`, `A = G⁻¹`, and
 ///
 /// ```text
-/// Δ        = β_fast − β_slow           (the intercept and the slopes)
-/// Var(Δ)  ≈ σ² G⁻¹ c,   c = 1/n_fast + 1/n_slow − 2 Σω_f ω_s / (Σω_f · Σω_s)
-/// wald     = Δ' G Δ / (σ² c)
+/// Var(Δ) = σ² (A_f H_ff A_f + A_s H_ss A_s − A_f H_fs A_s − A_s H_fs A_f)
+/// H_ff = Σ ω_f² z z'    H_ss = Σ ω_s² z z'    H_fs = Σ ω_f ω_s z z'
+/// wald   = Δ' Var(Δ)⁻¹ Δ                       ~ χ²(k) under no break
 /// ```
 ///
-/// `G` is the slow fit's EW second moments of `(1, x)`, `σ²` its residual
-/// mean square at Kish's degrees of freedom, `n_*` each fit's Kish size and
-/// `Σω_f ω_s` the weights' cross sum, decayed by both factors. Under a
-/// constant relationship, with `G` and `σ²` steady, `wald` is approximately
-/// `χ²(k)` on each row, `k` the coefficients compared. The slow factor is
-/// the fast one's fourth root, two square roots, which are exact in every
-/// libm: no platform's last bit enters the state.
+/// `σ²` is the slow fit's residual mean square at Kish's degrees of
+/// freedom, times the residuals' long-run over short-run variance under a
+/// horizon ([`Breaks::long_run`]). Through the origin the same sums are
+/// read in `x = c + (x − c)`'s coordinates. The slow factor is the fast
+/// one's fourth root, two square roots, which are exact in every libm: no
+/// platform's last bit enters the state.
+///
+/// Until task 232 the variance was `σ² G_s⁻¹ (1/n_f + 1/n_s − 2Σω_fω_s /
+/// (Σω_f Σω_s))`, the slow fit's Gram for both: a design whose spread
+/// changes reads its fast Gram far from its slow one, and a feature gone
+/// quiet with nothing broken passed `chi2(3)`'s 0.01% value on 85% of 100
+/// streams (A-1).
 ///
 /// Four, measured against two and eight beside `ewridge` at a half-life of
 /// 200 (200 streams of 3,000 rows, a break at row 1,500, the fast fit at
 /// the model's memory; first passage of `chi2(3)`'s 0.01% value, 21.1, as
-/// a median delay in rows):
+/// a median delay in rows), under the old variance:
 ///
 /// ```text
 ///              no break               intercept +0.5 sd       slope 1.0 -> 1.6
@@ -365,8 +377,16 @@ pub struct TwinFit {
     fast: crate::EwCov,
     /// The same at the slow memory.
     slow: crate::EwCov,
-    /// `Σ ω_f ω_s`: each row's weight squared, decayed by both factors.
-    cross: f64,
+    /// The origin `c`, the first folded row's features; empty before it.
+    #[serde(default)]
+    origin: Vec<f64>,
+    /// `H_ff`, `H_ss` and `H_fs`, row-major over `z = (1, x − c)`.
+    #[serde(default)]
+    hff: Vec<f64>,
+    #[serde(default)]
+    hss: Vec<f64>,
+    #[serde(default)]
+    hfs: Vec<f64>,
 }
 
 /// The slow memory's factor from the fast one's: its fourth root, a half-life
@@ -375,23 +395,52 @@ pub fn slow_factor(lam: f64) -> f64 {
     lam.sqrt().sqrt()
 }
 
+/// `a b`, both `p × p` row-major.
+fn mat_mul(a: &[f64], b: &[f64], p: usize) -> Vec<f64> {
+    let mut out = vec![0.0; p * p];
+    for i in 0..p {
+        for k in 0..p {
+            let aik = a[i * p + k];
+            for j in 0..p {
+                out[i * p + j] += aik * b[k * p + j];
+            }
+        }
+    }
+    out
+}
+
 impl TwinFit {
     /// Two empty fits over `k` features.
     pub fn new(k: usize) -> Self {
+        let d = (k + 1) * (k + 1);
         Self {
             fast: crate::EwCov::new(k + 1).without_runs(),
             slow: crate::EwCov::new(k + 1).without_runs(),
-            cross: 0.0,
+            origin: Vec::new(),
+            hff: vec![0.0; d],
+            hss: vec![0.0; d],
+            hfs: vec![0.0; d],
         }
     }
 
     /// Whether a restored pair is shaped for `k` features.
     pub fn has_shape(&self, k: usize) -> bool {
+        let d = (k + 1) * (k + 1);
         self.fast.has_shape(k + 1)
             && self.slow.has_shape(k + 1)
             && self.fast.q_sum().is_some()
             && self.slow.q_sum().is_some()
-            && self.cross.is_finite()
+            && (self.origin.is_empty() || self.origin.len() == k)
+            && [&self.hff, &self.hss, &self.hfs]
+                .iter()
+                .all(|h| h.len() == d)
+            && self
+                .hff
+                .iter()
+                .chain(&self.hss)
+                .chain(&self.hfs)
+                .chain(&self.origin)
+                .all(|v| v.is_finite())
     }
 
     /// The clock moves on by a step whose fast decay is `lam`, with nothing
@@ -400,7 +449,10 @@ impl TwinFit {
         let slow = slow_factor(lam);
         self.fast.decay(lam);
         self.slow.decay(slow);
-        self.cross *= lam * slow;
+        let (ff, ss, fs) = (lam * lam, slow * slow, lam * slow);
+        self.hff.iter_mut().for_each(|v| *v *= ff);
+        self.hss.iter_mut().for_each(|v| *v *= ss);
+        self.hfs.iter_mut().for_each(|v| *v *= fs);
     }
 
     /// One row: its features, its target and its weight, after the step's
@@ -416,80 +468,186 @@ impl TwinFit {
         row.push(y);
         self.fast.update(&row, lam, w);
         self.slow.update(&row, slow, w);
-        self.cross = lam * slow * self.cross + w * w;
+        if self.origin.is_empty() {
+            self.origin = x.to_vec();
+        }
+        let z: Vec<f64> = std::iter::once(1.0)
+            .chain(x.iter().zip(&self.origin).map(|(v, c)| v - c))
+            .collect();
+        let d = z.len();
+        let (ff, ss, fs, w2) = (lam * lam, slow * slow, lam * slow, w * w);
+        for i in 0..d {
+            for j in 0..d {
+                let zz = w2 * z[i] * z[j];
+                let at = i * d + j;
+                self.hff[at] = ff * self.hff[at] + zz;
+                self.hss[at] = ss * self.hss[at] + zz;
+                self.hfs[at] = fs * self.hfs[at] + zz;
+            }
+        }
     }
 
     /// The Wald distance between the two fits' coefficients over the
     /// features `idx` (positions in `x`), with the intercept when
     /// `intercept`: `None` until both fits are determined -- each with more
-    /// than `k` rows of Kish's size and a Gram that factorizes -- and while
-    /// the memories coincide (no decay: the run-once form has no slow fit)
-    /// or the slow fit leaves no residual. `long_run` scales the noise's
-    /// variance by the residuals' long-run over short-run variance under a
-    /// horizon ([`Breaks::long_run`]), 1 without one.
+    /// than `k` rows of Kish's size and a Gram that factorizes -- while the
+    /// memories coincide (no decay: the run-once form has no slow fit, and
+    /// the difference no variance) or the slow fit leaves no residual.
+    /// `long_run` scales the noise's variance by the residuals' long-run
+    /// over short-run variance under a horizon ([`Breaks::long_run`]), 1
+    /// without one.
     pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
         let kx = self.fast.k() - 1;
         let k = idx.len() + usize::from(intercept);
-        if k == 0 {
+        if k == 0 || self.origin.len() != kx {
             return None;
         }
         let (nf, ns) = (self.fast.n_kish()?, self.slow.n_kish()?);
         if nf <= k as f64 || ns <= k as f64 {
             return None;
         }
-        let (wf, ws) = (self.fast.n_eff(), self.slow.n_eff());
-        let c = 1.0 / nf + 1.0 / ns - 2.0 * self.cross / (wf * ws);
-        if c.is_nan() || c <= 1e-12 * (1.0 / nf + 1.0 / ns) {
-            return None;
-        }
-        // The second moments a fit reads: centred with an intercept, raw
-        // through the origin.
-        let moment = |m: &crate::EwCov, i: usize, j: usize| {
-            if intercept { m.cov(i, j) } else { m.raw(i, j) }
-        };
-        let solve = |m: &crate::EwCov| -> Option<Vec<f64>> {
-            let p = idx.len();
-            if p == 0 {
-                return Some(Vec::new());
-            }
-            let a: Vec<f64> = idx
-                .iter()
-                .flat_map(|&i| idx.iter().map(move |&j| (i, j)))
-                .map(|(i, j)| moment(m, i, j))
-                .collect();
-            let b: Vec<f64> = idx.iter().map(|&i| moment(m, i, kx)).collect();
-            crate::solve_spd(&a, &b, p, 1)
-                .filter(|(_, attempts)| *attempts == 0)
-                .map(|(beta, _)| beta)
-        };
-        let (bf, bs) = (solve(&self.fast)?, solve(&self.slow)?);
-        let delta: Vec<f64> = bf.iter().zip(&bs).map(|(f, s)| f - s).collect();
-        // `Δβ' C_s Δβ`, the slopes' part, in the slow fit's moments.
-        let mut quad = 0.0;
-        for (a, &i) in idx.iter().enumerate() {
-            for (b, &j) in idx.iter().enumerate() {
-                quad += delta[a] * moment(&self.slow, i, j) * delta[b];
-            }
-        }
+        let (bf, bs) = (
+            self.slopes(&self.fast, idx, intercept)?,
+            self.slopes(&self.slow, idx, intercept)?,
+        );
+        let mut delta = Vec::with_capacity(k);
         if intercept {
-            // `Δα + m_s'Δβ = (m_yf − m_ys) − β_f'(m_xf − m_xs)`.
-            let mut level = self.fast.mean(kx) - self.slow.mean(kx);
-            for (a, &i) in idx.iter().enumerate() {
-                level -= bf[a] * (self.fast.mean(i) - self.slow.mean(i));
-            }
-            quad += level * level;
+            delta.push(self.level(&self.fast, idx, &bf) - self.level(&self.slow, idx, &bs));
         }
+        delta.extend(bf.iter().zip(&bs).map(|(f, s)| f - s));
+        let (af, a_s) = (
+            inverse(&self.gram(&self.fast, idx, intercept), k)?,
+            inverse(&self.gram(&self.slow, idx, intercept), k)?,
+        );
+        let hff = self.pick(&self.hff, idx, intercept);
+        let hss = self.pick(&self.hss, idx, intercept);
+        let hfs = self.pick(&self.hfs, idx, intercept);
+        let ff = mat_mul(&mat_mul(&af, &hff, k), &af, k);
+        let ss = mat_mul(&mat_mul(&a_s, &hss, k), &a_s, k);
+        let fs = mat_mul(&mat_mul(&af, &hfs, k), &a_s, k);
+        let var: Vec<f64> = (0..k * k)
+            .map(|n| ff[n] + ss[n] - fs[n] - fs[(n % k) * k + n / k])
+            .collect();
         let fitted: f64 = idx
             .iter()
             .zip(&bs)
-            .map(|(&i, b)| b * moment(&self.slow, i, kx))
+            .map(|(&i, b)| b * moment(&self.slow, intercept, i, kx))
             .sum();
-        let s2 = (moment(&self.slow, kx, kx) - fitted) * ns / (ns - k as f64);
+        let s2 = (moment(&self.slow, intercept, kx, kx) - fitted) * ns / (ns - k as f64);
         if s2.is_nan() || s2 <= 0.0 || long_run.is_nan() || long_run <= 0.0 {
             return None;
         }
-        Some(quad / (s2 * long_run * c))
+        // A variance that does not factorize -- the memories coincide, or
+        // nothing tells the fits apart -- has no distance to read.
+        let (x, attempts) = crate::solve_spd(&var, &delta, k, 1)?;
+        if attempts > 0 {
+            return None;
+        }
+        let quad: f64 = x.iter().zip(&delta).map(|(a, b)| a * b).sum();
+        quad.is_finite().then(|| quad.max(0.0) / (s2 * long_run))
     }
+
+    /// A fit's slopes over `idx`, from its centred moments under an
+    /// intercept and its raw ones through the origin.
+    fn slopes(&self, m: &crate::EwCov, idx: &[usize], intercept: bool) -> Option<Vec<f64>> {
+        let kx = m.k() - 1;
+        let p = idx.len();
+        if p == 0 {
+            return Some(Vec::new());
+        }
+        let mut a = Vec::with_capacity(p * p);
+        for &i in idx {
+            for &j in idx {
+                a.push(moment(m, intercept, i, j));
+            }
+        }
+        let b: Vec<f64> = idx.iter().map(|&i| moment(m, intercept, i, kx)).collect();
+        crate::solve_spd(&a, &b, p, 1)
+            .filter(|(_, attempts)| *attempts == 0)
+            .map(|(beta, _)| beta)
+    }
+
+    /// A fit's intercept at the origin `c`: `m_y − β'(m_x − c)`.
+    fn level(&self, m: &crate::EwCov, idx: &[usize], b: &[f64]) -> f64 {
+        let kx = m.k() - 1;
+        let mut out = m.mean(kx);
+        for (&i, bi) in idx.iter().zip(b) {
+            out -= bi * (m.mean(i) - self.origin[i]);
+        }
+        out
+    }
+
+    /// A fit's Gram in the coefficients' coordinates, from its moments: `W`
+    /// times the second moments of `(1, x − c)` under an intercept, of `x`
+    /// through the origin.
+    fn gram(&self, m: &crate::EwCov, idx: &[usize], intercept: bool) -> Vec<f64> {
+        let w = m.n_eff();
+        let k = idx.len() + usize::from(intercept);
+        let mut g = vec![0.0; k * k];
+        if intercept {
+            let dev: Vec<f64> = idx.iter().map(|&i| m.mean(i) - self.origin[i]).collect();
+            g[0] = w;
+            for (a, &i) in idx.iter().enumerate() {
+                g[a + 1] = w * dev[a];
+                g[(a + 1) * k] = w * dev[a];
+                for (b, &j) in idx.iter().enumerate() {
+                    g[(a + 1) * k + b + 1] = w * (m.cov(i, j) + dev[a] * dev[b]);
+                }
+            }
+        } else {
+            for (a, &i) in idx.iter().enumerate() {
+                for (b, &j) in idx.iter().enumerate() {
+                    g[a * k + b] = w * m.raw(i, j);
+                }
+            }
+        }
+        g
+    }
+
+    /// A kept sum over `z = (1, x − c)` in the coefficients' coordinates:
+    /// `z` itself under an intercept, `x = c + (x − c)` through the origin.
+    fn pick(&self, h: &[f64], idx: &[usize], intercept: bool) -> Vec<f64> {
+        let d = self.origin.len() + 1;
+        let rows: Vec<Vec<(usize, f64)>> = if intercept {
+            std::iter::once(vec![(0, 1.0)])
+                .chain(idx.iter().map(|&i| vec![(1 + i, 1.0)]))
+                .collect()
+        } else {
+            idx.iter()
+                .map(|&i| vec![(0, self.origin[i]), (1 + i, 1.0)])
+                .collect()
+        };
+        let k = rows.len();
+        let mut out = vec![0.0; k * k];
+        for (a, ta) in rows.iter().enumerate() {
+            for (b, tb) in rows.iter().enumerate() {
+                let mut v = 0.0;
+                for &(i, u) in ta {
+                    for &(j, t) in tb {
+                        v += u * t * h[i * d + j];
+                    }
+                }
+                out[a * k + b] = v;
+            }
+        }
+        out
+    }
+}
+
+/// The second moment a fit reads: centred with an intercept, raw through
+/// the origin.
+fn moment(m: &crate::EwCov, intercept: bool, i: usize, j: usize) -> f64 {
+    if intercept { m.cov(i, j) } else { m.raw(i, j) }
+}
+
+/// `g⁻¹` for a `k × k` Gram, `None` where it does not factorize unjittered.
+fn inverse(g: &[f64], k: usize) -> Option<Vec<f64>> {
+    let identity: Vec<f64> = (0..k * k)
+        .map(|n| if n / k == n % k { 1.0 } else { 0.0 })
+        .collect();
+    crate::solve_spd(g, &identity, k, k)
+        .filter(|(_, attempts)| *attempts == 0)
+        .map(|(v, _)| v)
 }
 
 #[cfg(test)]
@@ -709,7 +867,10 @@ mod tests {
         let slow = slow_factor(lam);
         let mut rows: Vec<Row> = Vec::new();
         for i in 0..400 {
-            let x = [lcg(&mut s) * 2.0 + 3.0, lcg(&mut s)];
+            // The second feature goes quiet at row 150, the first's slope
+            // breaks at 250.
+            let quiet = if i < 150 { 1.0 } else { 0.1 };
+            let x = [lcg(&mut s) * 2.0 + 3.0, quiet * lcg(&mut s)];
             let shift = if i < 250 { 0.0 } else { 1.0 };
             let y = 1.0 + (0.5 + shift) * x[0] - x[1] + 0.3 * lcg(&mut s);
             let w = if i % 9 == 4 {
@@ -726,53 +887,112 @@ mod tests {
             if i < 30 || i % 37 != 0 {
                 continue;
             }
-            let fit = |pick: fn(&Row) -> f64| {
-                let (mut g, mut r, mut sw, mut sw2) = (vec![0.0; 9], vec![0.0; 3], 0.0, 0.0);
+            for intercept in [true, false] {
+                let zs = |row: &Row| -> Vec<f64> {
+                    if intercept {
+                        vec![1.0, row.0[0], row.0[1]]
+                    } else {
+                        vec![row.0[0], row.0[1]]
+                    }
+                };
+                let p = if intercept { 3 } else { 2 };
+                // Each fit by weighted least squares, faer's LU, in the
+                // features' own units.
+                let fit = |pick: fn(&Row) -> f64| {
+                    let (mut g, mut r, mut sw, mut sw2) =
+                        (vec![0.0; p * p], vec![0.0; p], 0.0, 0.0);
+                    for row in &rows {
+                        let om = pick(row);
+                        let z = zs(row);
+                        for a in 0..p {
+                            r[a] += om * z[a] * row.1;
+                            for b in 0..p {
+                                g[a * p + b] += om * z[a] * z[b];
+                            }
+                        }
+                        sw += om;
+                        sw2 += om * om;
+                    }
+                    let beta = crate::oracle::solve(&g, &r);
+                    let ssr: f64 = rows
+                        .iter()
+                        .map(|row| {
+                            let z = zs(row);
+                            let e = row.1 - (0..p).map(|a| beta[a] * z[a]).sum::<f64>();
+                            pick(row) * e * e
+                        })
+                        .sum();
+                    (beta, g, sw, sw2, ssr)
+                };
+                let (bf, gf, _, _, _) = fit(|r| r.3);
+                let (bs, gs, ws, ws2, ssr_s) = fit(|r| r.4);
+                // The difference is `Σ_t d_t ε_t`, `d_t = (A_f ω_f,t − A_s
+                // ω_s,t) z_t`: its variance over the noise's is `Σ d_t d_t'`,
+                // each row's `d_t` built from the inverses outright.
+                let (af, a_s) = (crate::oracle::inverse(&gf), crate::oracle::inverse(&gs));
+                let mut var = vec![0.0; p * p];
                 for row in &rows {
-                    let om = pick(row);
-                    let z = [1.0, row.0[0], row.0[1]];
-                    for a in 0..3 {
-                        r[a] += om * z[a] * row.1;
-                        for b in 0..3 {
-                            g[a * 3 + b] += om * z[a] * z[b];
+                    let z = zs(row);
+                    let d: Vec<f64> = (0..p)
+                        .map(|a| {
+                            (0..p)
+                                .map(|b| (af[a * p + b] * row.3 - a_s[a * p + b] * row.4) * z[b])
+                                .sum()
+                        })
+                        .collect();
+                    for a in 0..p {
+                        for b in 0..p {
+                            var[a * p + b] += d[a] * d[b];
                         }
                     }
-                    sw += om;
-                    sw2 += om * om;
                 }
-                let beta = crate::oracle::solve(&g, &r);
-                let ssr: f64 = rows
-                    .iter()
-                    .map(|row| {
-                        let e = row.1 - beta[0] - beta[1] * row.0[0] - beta[2] * row.0[1];
-                        pick(row) * e * e
-                    })
-                    .sum();
-                (beta, g, sw, sw2, ssr)
-            };
-            let (bf, _, wf, wf2, _) = fit(|r| r.3);
-            let (bs, gs, ws, ws2, ssr_s) = fit(|r| r.4);
-            let cross: f64 = rows.iter().map(|r| r.3 * r.4).sum();
-            let (nf, ns) = (wf * wf / wf2, ws * ws / ws2);
-            let c = 1.0 / nf + 1.0 / ns - 2.0 * cross / (wf * ws);
-            let s2 = ssr_s / ws * ns / (ns - 3.0);
-            let d: Vec<f64> = (0..3).map(|a| bf[a] - bs[a]).collect();
-            let quad: f64 = (0..3)
-                .flat_map(|a| (0..3).map(move |b| (a, b)))
-                .map(|(a, b)| d[a] * gs[a * 3 + b] / ws * d[b])
-                .sum();
-            let want = quad / (s2 * c);
-            let got = t.wald(&[0, 1], true, 1.0).unwrap();
-            assert!(
-                (got - want).abs() < 1e-7 * want.max(1.0),
-                "row {i}: {got} vs {want}"
-            );
+                let ns = ws * ws / ws2;
+                let s2 = ssr_s / ws * ns / (ns - p as f64);
+                let delta: Vec<f64> = (0..p).map(|a| bf[a] - bs[a]).collect();
+                let want = crate::oracle::quad_form(&var, &delta) / s2;
+                let got = t.wald(&[0, 1], intercept, 1.0).unwrap();
+                assert!(
+                    (got - want).abs() < 1e-6 * want.max(1.0),
+                    "row {i}, intercept {intercept}: {got} vs {want}"
+                );
+                // A long-run factor divides it.
+                let half = t.wald(&[0, 1], intercept, 2.0).unwrap();
+                assert!((half - got / 2.0).abs() < 1e-12 * got.max(1.0));
+            }
         }
         // After the break the slow fit lags the fast one.
         assert!(t.wald(&[0, 1], true, 1.0).unwrap() > 30.0);
         assert!(t.has_shape(2));
     }
 
+    /// The null by simulation, sharing nothing of the implementation's
+    /// formula but its definition: a feature goes quiet with nothing
+    /// broken, and over 300 seeds the statistic's mean is the `chi2(3)`'s
+    /// 3, and it passes its 5% value on about 5% of them -- where the slow
+    /// fit's Gram for both read a mean of 19.3 (review round 6, A-1).
+    #[test]
+    fn a_feature_gone_quiet_breaks_nothing() {
+        let lam = 0.5f64.powf(1.0 / 50.0);
+        let (mut sum, mut past) = (0.0, 0usize);
+        let seeds = 300u64;
+        for seed in 0..seeds {
+            let mut t = TwinFit::new(2);
+            let mut s = 1_000 + seed;
+            for i in 0..600 {
+                let quiet = if i < 400 { 1.0 } else { 0.1 };
+                let x = [2.0 * lcg(&mut s), quiet * 2.0 * lcg(&mut s)];
+                let e = (lcg(&mut s) + lcg(&mut s) + lcg(&mut s)) * 2.0;
+                t.update(&x, 0.5 + x[0] - x[1] + e, lam, 1.0);
+            }
+            let w = t.wald(&[0, 1], true, 1.0).unwrap();
+            sum += w;
+            past += usize::from(w > 7.815);
+        }
+        let mean = sum / seeds as f64;
+        assert!((mean - 3.0).abs() < 0.5, "mean {mean}");
+        let rate = past as f64 / seeds as f64;
+        assert!(rate < 0.09, "rate {rate}");
+    }
     /// Run once (no decay) the two memories coincide and there is no
     /// distance to read; through the origin the raw moments are read.
     #[test]

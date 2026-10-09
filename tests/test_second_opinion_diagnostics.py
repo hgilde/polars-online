@@ -256,12 +256,16 @@ class TestBreaksAreBrownDurbinAndEvans:
             wf, ws = 0.5 ** (age / h), 0.5 ** (age / (4 * h))
             fast = sm.WLS(y[:t], X[:t], weights=wf).fit()
             slow = sm.WLS(y[:t], X[:t], weights=ws).fit()
-            nf, ns = wf.sum() ** 2 / (wf**2).sum(), ws.sum() ** 2 / (ws**2).sum()
-            c = 1 / nf + 1 / ns - 2 * (wf * ws).sum() / (wf.sum() * ws.sum())
+            ns = ws.sum() ** 2 / (ws**2).sum()
             s2 = (ws * slow.resid**2).sum() / ws.sum() * ns / (ns - 3)
             d = fast.params - slow.params
-            g = (X[:t] * ws[:, None]).T @ X[:t] / ws.sum()
-            want = d @ g @ d / (s2 * c)
+            # The difference is `D ε`, `D = A_f X'W_f − A_s X'W_s`: its exact
+            # variance over the noise's is `D D'` (task 232 (5)).
+            Xt = X[:t]
+            D = np.linalg.solve((Xt * wf[:, None]).T @ Xt, (Xt * wf[:, None]).T) - np.linalg.solve(
+                (Xt * ws[:, None]).T @ Xt, (Xt * ws[:, None]).T
+            )
+            want = d @ np.linalg.solve(D @ D.T, d) / s2
             np.testing.assert_allclose(out["break_wald_y"][t], want, rtol=1e-6)
             checked += 1
         assert checked == 3
