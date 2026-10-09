@@ -13583,14 +13583,39 @@ all fourteen as recommended. Built as task 232 (the diagnostics: 1-6 and
 14's diagnostic parts) and task 233 (`check`, `audit` and the Gram: 7-13
 and `vif`'s docstring).
 
-- [ ] 232. **Review 6's diagnostic decisions** (§20, 1-6 and 14): fold from
+- [x] 232. **Review 6's diagnostic decisions** (§20, 1-6 and 14): fold from
       readiness; the memory from the fit's (window, `coef_half_life`); one
       horizon with Newey-West forms under it; nulls standardized
       (`cusum_sq` by the measured fourth moment); `break_wald`'s exact
       sandwich; quantile forms; the Newey-West lag cap, the embargo notes,
       feature health's refusal.
-- [ ] 233. **Review 6's data-check decisions** (§20, 7-13, C-6): `frozen`'s
+      *Done 2026-10-09* (schema 60). (1) `min_weight` already gated every
+      fold, so a diagnostic also waits for the stream to be 95% settled on
+      the fit's memory, and `sgd`/`pa` for their scaler: `rls` at a level,
+      Jarque-Bera 100% -> 3.2%, run-once RESET beside a decaying fit 25.8% ->
+      4.8%; what remains is the prior's real bias, which the calibration
+      rightly flags. (2) the memory from the fit's: a window's Kish half-life
+      (`ln 2 / ln((W+1)/(W-1))` rows), `kalman`'s `coef_half_life`;
+      `se_coef_hc0` beside a window 0.0495 against a true 0.0498 (3.1x too
+      small before). (3) `horizon_rows`; Newey-West Wald forms of the
+      calibration, Breusch-Pagan and RESET, the long-run variance in the
+      CUSUMs and `break_wald`: 4-5% where 10-63% before. (4) `cusum_sq` over
+      the measured fourth moment, windowed CUSUMs over their derived null
+      (spread 1.04-1.10). (5) `break_wald`'s exact sandwich: a feature going
+      quiet 85% -> 0%. (6) quantile fits: `calibration_coverage` and a CUSUM
+      over indicators, 100% -> 0% at q 0.9. (14) Newey-West lags from
+      `embargo` capped at 64.
+- [x] 233. **Review 6's data-check decisions** (§20, 7-13, C-6): `frozen`'s
       zero-change atom; `group_close` refused on `audit`; the centred
       `collinear`; `leakage` a warning; `level_over_spread` for `rls`
       without decay; float32 refused out of range; the audit's clock in
       uncapped Durations; `vif`'s docstring.
+      *Done 2026-10-09* (schema 59). `frozen` a zero-change atom test (the
+      six persistent-discrete clean columns silent, every planted case found;
+      25 stuck rows no longer); `audit` refuses `group_close`; `collinear`
+      centred for the centring models (G-2's pair 5,061 -> 1.004); `leakage`
+      a warning; `rls`'s level limit `0.9*sqrt(W/delta_left)` from the prior
+      it still holds (the measured R² loss falls on one curve in that ratio;
+      wider than the brief's no-decay rule, which missed a short stream under
+      a long half-life); float32 refused out of range; the audit's clock
+      uncapped, in Durations; `vif`'s docstring.

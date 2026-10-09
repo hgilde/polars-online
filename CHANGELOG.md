@@ -310,7 +310,7 @@ reinterpreted parameter, an output's dtype or a file to refit.
   row** (task 209), as scikit-learn's `PoissonRegressor` does and as
   `strict_binary` refuses a logistic label. A count is never negative, and
   the gradient `p - y` drove the prediction to the link's floor, e^-30.
-- **Every saved bank must be refit.** A bank file now carries schema 57,
+- **Every saved bank must be refit.** A bank file now carries schema 60,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -345,8 +345,10 @@ reinterpreted parameter, an output's dtype or a file to refit.
   a windowed model's state and in each of its snapshots, and each slot's
   residuals in the residual spread's window (task 217). Schema 54 adds
   `audit` (task 223), schema 56 the diagnostics' accumulators (task 221),
-  and schema 57 the error inflation a held row was scored with (review
-  round 6). It refuses 56 and older, and so do the models' own states.
+  schema 57 the error inflation a held row was scored with (review
+  round 6), schema 59 the audit's smallest change and schema 60 the
+  diagnostics' sums under a horizon and the twin fits' cross sums (tasks
+  233 and 232). It refuses 59 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -660,6 +662,20 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **The diagnostics, after review round 6** (tasks 232 and 233): each
+  folds a row only once its instance is settled on the fit's memory; its
+  default memory follows the fit's (a window's Kish half-life, `kalman`'s
+  `coef_half_life`); a new `horizon_rows` puts the calibration,
+  Breusch-Pagan and RESET under a Newey-West variance and the CUSUMs and
+  `break_wald` under the long-run variance; `cusum_sq` reads the measured
+  fourth moment and the windowed CUSUMs their derived null, so a threshold
+  means what the docs say; `break_wald` uses the exact variance of the two
+  fits' difference; quantile fits report `calibration_coverage` and a
+  CUSUM over indicators. `check()`: `frozen` is a zero-change atom test,
+  `collinear` reads the centred index for the centring models, `leakage`
+  is a warning, `rls`'s level limit follows the prior it still holds;
+  `audit` refuses `group_close`, and its clock reports uncapped steps in
+  Durations; `gram(dtype="float32")` refuses an entry out of range.
 - **A `kalman` state with a damaged noise basis is refused with a message
   that says what the basis must hold** (task 218): at most 3 rows, as many
   weights as squared innovations, each finite and above 0; a bad clock
