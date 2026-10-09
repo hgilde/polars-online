@@ -612,6 +612,13 @@ pub trait OnlineModel: Sized {
     /// hence the default.
     fn set_window_budget(&mut self, _budget: Option<crate::WindowBudget>) {}
 
+    /// Run the model's `k²` co-moment work on up to `threads` threads of
+    /// the current rayon pool ([`crate::EwCov::set_threads`]; docs/PLAN.md
+    /// task 225), to the same bits as on one. Configuration, not state: a
+    /// caller sets it after building or restoring the model, and a model
+    /// with no such work ignores it -- hence the default.
+    fn set_gram_threads(&mut self, _threads: usize) {}
+
     /// Which edge of this model's window holds a row exactly one window old
     /// ([`crate::WindowClosed`]; docs/PLAN.md task 196): `Right`, the
     /// default a window is built with, or `Both`. Configuration that travels

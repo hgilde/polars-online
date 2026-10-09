@@ -27,6 +27,8 @@ use crate::Runs;
 use crate::since::Since;
 use serde::{Deserialize, Serialize};
 
+mod par;
+
 /// Is a centered variance large enough to standardize by, given the raw second
 /// moment it was computed from?
 ///
@@ -60,6 +62,25 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
 struct Scratch(Vec<f64>);
 
 impl PartialEq for Scratch {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// How many threads the `k²` work runs on ([`EwCov::set_threads`]):
+/// configuration, not state. A state file carries none of it, and two
+/// accumulators with the same moments are the same accumulator whatever
+/// threads each runs on, so [`PartialEq`] ignores it. One by default.
+#[derive(Debug, Clone, Copy)]
+struct Threads(usize);
+
+impl Default for Threads {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+impl PartialEq for Threads {
     fn eq(&self, _: &Self) -> bool {
         true
     }
@@ -152,6 +173,11 @@ pub struct EwCov {
     /// this makes the prior fade as data accumulates.
     #[serde(default)]
     precision_scale: f64,
+    /// Threads the `k²` work runs on ([`Self::set_threads`]). Not state:
+    /// serde skips it, a restored accumulator runs on one until its owner
+    /// sets it again, and [`PartialEq`] ignores it.
+    #[serde(skip)]
+    threads: Threads,
     /// Per feature, the value it has held on every row learned since it last
     /// changed, and the learned row that started the run ([`crate::Runs`]):
     /// what lets a window say that a feature held one value over it, which
@@ -203,6 +229,7 @@ impl EwCov {
             dev: Scratch(Vec::with_capacity(k)),
             precision_prior: 0.0,
             precision_scale: 1.0,
+            threads: Threads::default(),
             runs: Runs::new(k),
             rows_learned: 0,
             m_lo: vec![0.0; k],
@@ -526,6 +553,22 @@ impl EwCov {
         self.pending.block_rows
     }
 
+    /// Run the `k²` work -- the per-row rank-1 update, a block's merge in
+    /// [`Self::flush`] -- on up to `threads` threads of the current rayon
+    /// pool (`0` is taken as `1`). The moments are the same bits at every
+    /// count: the rank-1 update is one expression per entry, and a merge's
+    /// product is cut into pieces fixed by `k` alone, each summed by one
+    /// sequential call (the `par` module's doc). Configuration, not state:
+    /// a restored accumulator runs on one thread until it is set again.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = Threads(threads.max(1));
+    }
+
+    /// The thread count [`Self::set_threads`] set; `1` unless it did.
+    pub fn threads(&self) -> usize {
+        self.threads.0
+    }
+
     pub fn has_pending(&self) -> bool {
         !self.pending.lam.is_empty()
     }
@@ -604,22 +647,21 @@ impl EwCov {
     /// term is formed from a difference of two means -- which is what the
     /// rank-1 recursion does too, one row at a time.
     ///
-    /// The product is `faer`'s, sequential, on the lower triangle only, then
-    /// mirrored: a symmetric rank-B update is half a GEMM. Sequential
-    /// because the bank already runs its groups on a pool of its own, and
-    /// because a parallel product's summation order is not a function of
-    /// the row sequence. Measured against the shipped rank-1 loop, single
-    /// threaded, 256-row block: 6.6× at `k = 1,000` and `k = 2,000`, 4.6× at
-    /// `k = 256`; a 64-row block gives 4.9×, 4.5× and 2.9×. The design probe's
-    /// 9.5×/11.2× was a multithreaded product against a single-threaded
-    /// baseline, and is not the number (docs/PLAN.md task 71).
+    /// The product is `faer`'s, on the lower triangle only, then mirrored: a
+    /// symmetric rank-B update is half a GEMM. Measured against the shipped
+    /// rank-1 loop, single threaded, 256-row block: 6.6× at `k = 1,000` and
+    /// `k = 2,000`, 4.6× at `k = 256`; a 64-row block gives 4.9×, 4.5× and
+    /// 2.9×. The design probe's 9.5×/11.2× was a multithreaded product
+    /// against a single-threaded baseline, and is not the number
+    /// (docs/PLAN.md task 71). It runs on [`Self::set_threads`] threads, cut
+    /// into pieces fixed by `k` alone, each summed by one sequential call, so
+    /// the bits are the same at every count: a parallel product whose split
+    /// followed the thread count would sum an entry in another order on
+    /// another count (the `par` module, docs/PLAN.md task 225).
     ///
     /// `W'` is read from `w_sum`, which the per-row scalars already carried,
     /// so the merge cannot disagree with the count that was reported.
     pub fn flush(&mut self) {
-        use faer::linalg::matmul::triangular::{BlockStructure, matmul};
-        use faer::{Accum, MatMut, MatRef, Par};
-
         let n = self.pending.len();
         if n == 0 {
             return;
@@ -725,39 +767,21 @@ impl EwCov {
         let big: Vec<f64> = d_hi.iter().zip(&delta).map(|(h, d)| h + d).collect();
 
         // C' on the lower triangle: scale the history, add the product,
-        // then the two rank-1 corrections, then mirror.
-        let scale = w_a / w_new;
-        for i in 0..k {
-            for j in 0..=i {
-                self.c[i * k + j] *= scale;
-            }
-        }
-        let d = MatRef::from_row_major_slice(x.as_slice(), n, k);
-        let c = MatMut::from_row_major_slice_mut(self.c.as_mut_slice(), k, k);
-        matmul(
-            c,
-            BlockStructure::TriangularLower,
-            Accum::Add,
-            d.transpose(),
-            BlockStructure::Rectangular,
-            d,
-            BlockStructure::Rectangular,
-            1.0 / w_new,
-            Par::Seq,
-        );
+        // then the two rank-1 corrections, then mirror -- each entry in that
+        // order, one piece of the triangle at a time (`par::merge_lower`).
         let within = u_sum / w_new;
         let between = w_a * u_sum / (w_new * w_new);
-        for i in 0..k {
-            let (wi, bi) = (within * delta[i], between * big[i]);
-            for j in 0..=i {
-                self.c[i * k + j] += bi * big[j] - wi * delta[j];
-            }
-        }
-        for i in 0..k {
-            for j in 0..i {
-                self.c[j * k + i] = self.c[i * k + j];
-            }
-        }
+        let wi: Vec<f64> = delta.iter().map(|&di| within * di).collect();
+        let bi: Vec<f64> = big.iter().map(|&gi| between * gi).collect();
+        let merge = par::Merge {
+            scale: w_a / w_new,
+            alpha: 1.0 / w_new,
+            bi: &bi,
+            wi: &wi,
+            big: &big,
+            delta: &delta,
+        };
+        par::merge_lower(&mut self.c, k, x.as_slice(), n, &merge, self.threads.0);
         let share = u_sum / w_new;
         for ((i, mi), lo) in self.m.iter_mut().enumerate().zip(self.m_lo.iter_mut()) {
             crate::comp::add(mi, lo, share * d_hi[i]);
@@ -834,11 +858,23 @@ impl EwCov {
                 .zip(&self.m_lo)
                 .map(|((&xi, &mi), &li)| crate::comp::dev(xi, mi, li)),
         );
-        for i in 0..k {
-            let ab_di = a * b * d[i];
-            let row = &mut self.c[i * k..(i + 1) * k];
-            for (cj, &dj) in row.iter_mut().zip(d.iter()) {
-                *cj = a * *cj + ab_di * dj;
+        if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {
+            // The same expression per entry, rows split across threads
+            // ([`Self::set_threads`]).
+            let d = &*d;
+            par::rows(&mut self.c, k, self.threads.0, |i, row| {
+                let ab_di = a * b * d[i];
+                for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+                    *cj = a * *cj + ab_di * dj;
+                }
+            });
+        } else {
+            for i in 0..k {
+                let ab_di = a * b * d[i];
+                let row = &mut self.c[i * k..(i + 1) * k];
+                for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+                    *cj = a * *cj + ab_di * dj;
+                }
             }
         }
         // The precision prior decays with the co-moments. `a == 0` only on
@@ -1907,6 +1943,12 @@ impl crate::OnlineModel for EwCovModel {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_budget(budget);
         }
+    }
+
+    /// The co-moments' per-row update; the lagged cross-moments stay on
+    /// one thread.
+    fn set_gram_threads(&mut self, threads: usize) {
+        self.cov.set_threads(threads);
     }
 
     fn set_window_closed(&mut self, closed: crate::WindowClosed) {

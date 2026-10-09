@@ -732,6 +732,15 @@ impl Acc {
         self.grams.grams.iter().all(EwCov::keeps_runs)
     }
 
+    /// Run every Gram's `k²` work on `threads` threads
+    /// ([`EwCov::set_threads`]). A Gram split off later under `own_rows` is
+    /// a clone, so it keeps the count.
+    pub(crate) fn set_threads(&mut self, threads: usize) {
+        for g in &mut self.grams.grams {
+            g.set_threads(threads);
+        }
+    }
+
     /// Keep no runs in any Gram from here (review 2026-09-26, C4).
     pub(crate) fn set_runs_off(&mut self) {
         self.grams.grams.iter_mut().for_each(EwCov::set_runs_off);

@@ -8,9 +8,9 @@
 //! first solve is taken in the warm-up and none comes due in the timed
 //! rows), which is what the block changes; `solve /512` puts a solve every
 //! 512 rows back in, which is the same `O(k^3)` on both sides and dilutes
-//! the ratio -- that is the number a real cadence sees. The product is
-//! `faer`'s, sequential, so these are one core's numbers; the bank's own
-//! pool parallelises across groups, not inside a step.
+//! the ratio -- that is the number a real cadence sees. The product runs
+//! on one thread here, `gram_threads` left at one, so these are one core's
+//! numbers; `gram_threads_bench` has the product on several.
 //!
 //! Widths and row counts may be given as pairs on the command line, for a
 //! width the table does not have:

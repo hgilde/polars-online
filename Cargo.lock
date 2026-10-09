@@ -1992,6 +1992,7 @@ version = "0.13.0"
 dependencies = [
  "faer",
  "proptest",
+ "rayon",
  "rmp-serde",
  "rmpv",
  "serde",

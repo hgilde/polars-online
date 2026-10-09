@@ -4875,3 +4875,61 @@ fn a_fit_with_no_kept_column_reads_as_the_intercept_alone_live_and_resumed() {
         assert_eq!(checked, 12);
     }
 }
+
+// ---- gram_threads (docs/PLAN.md task 225) ----
+
+/// The Grams' threads move no bit of anything the model reports: each
+/// row's predictions, the coefficients and every Gram, blocked and per row,
+/// under `own_rows` with two targets missing on different rows (so a Gram
+/// is split off, a clone that keeps the count), with a zero-weight first
+/// row. Wide enough that the merge is many pieces and the per-row update
+/// leaves the calling thread; `lam` a literal, so no libm is on the stream.
+#[test]
+#[ignore = "extended: a 730-wide fit in a debug build"]
+fn gram_threads_moves_no_bit() {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .unwrap();
+    let k = 730;
+    let bits = |v: &[f64]| v.iter().map(|u| u.to_bits()).collect::<Vec<_>>();
+    let run = |threads: usize, block: usize| {
+        let mut c = cfg(k, 2);
+        c.decay = Decay::Lam(0.995);
+        c.gram_block_rows = block;
+        c.solve_every = f64::MAX;
+        c.max_rows_between_solves = 40;
+        c.ridge = vec![1e-3];
+        c.min_weight = 30.0;
+        let mut m = EwRidge::new(c).unwrap();
+        m.set_gram_threads(threads);
+        let mut s = 17u64;
+        let mut preds = Vec::new();
+        for r in 0..85 {
+            let x: Vec<f64> = (0..k).map(|_| 5.0 + lcg(&mut s)).collect();
+            let y = (r % 7 != 3).then(|| x[0] - x[k - 1] + 0.1 * lcg(&mut s));
+            let z = (r % 5 != 1).then(|| x[1] + 0.1 * lcg(&mut s));
+            let w = if r == 0 { 0.0 } else { 1.0 };
+            preds.extend(bits(&m.step(&x, &[y, z], 1.0, w).pred));
+        }
+        let (parts, _) = m.gram_parts();
+        assert!(parts.len() >= 2, "own_rows split no Gram off");
+        let grams: Vec<Vec<u64>> = parts.iter().map(|p| bits(p.cov.comoments())).collect();
+        let coef: Vec<Vec<u64>> = m.coefficients().unwrap().iter().map(|b| bits(b)).collect();
+        (preds, grams, coef)
+    };
+    // Both counts inside one pool: a solve runs at faer's global
+    // parallelism, `Par::rayon(0)`, which is the current pool's size, and
+    // the factor's last bits follow that size at this width (a pool of 3
+    // and one of 8 part on the coefficients with the Grams equal). That is
+    // the solve's, not the Gram's, and a bank always runs in its one pool.
+    for block in [16, 0] {
+        let one = pool.install(|| run(1, block));
+        assert!(
+            one.0.iter().any(|&p| !f64::from_bits(p).is_nan()),
+            "nothing was predicted"
+        );
+        let many = pool.install(|| run(8, block));
+        assert!(one == many, "block {block}: 8 threads moved a bit");
+    }
+}

@@ -1796,6 +1796,15 @@ impl OnlineModel for EwRidge {
         }
     }
 
+    /// Every Gram's, the slow twin's too: a block's merge under
+    /// `gram_block_rows`, the per-row update otherwise.
+    fn set_gram_threads(&mut self, threads: usize) {
+        self.acc.set_threads(threads);
+        if let Some(slow) = self.slow.as_mut() {
+            slow.set_threads(threads);
+        }
+    }
+
     fn set_window_closed(&mut self, closed: crate::WindowClosed) {
         if let Some(win) = self.win.as_mut() {
             win.snaps.set_closed(closed);

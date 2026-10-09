@@ -22,6 +22,9 @@ unsafe_code = "forbid"
 
 [dependencies]
 faer.workspace = true
+# The Gram product's own tiles across threads (`gram_threads`, docs/PLAN.md
+# task 225); already linked, through faer and online-polars.
+rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
