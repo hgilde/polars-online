@@ -13577,3 +13577,20 @@ the zero-change atom test; (8) `group_close` (C-3, F-3): refuse on `audit`;
 float32's range (E-3): refuse; (13) the audit's clock (C-5, F-6): uncapped
 steps, Durations; (14) Newey-West lag cost, embargo notes, feature health's
 refusal, `vif`'s docstring (F-7, B-6, B-7, F-8, C-6).
+
+**Decided 2026-10-09** (the user: "Your suggestion for all the fixes"):
+all fourteen as recommended. Built as task 232 (the diagnostics: 1-6 and
+14's diagnostic parts) and task 233 (`check`, `audit` and the Gram: 7-13
+and `vif`'s docstring).
+
+- [ ] 232. **Review 6's diagnostic decisions** (§20, 1-6 and 14): fold from
+      readiness; the memory from the fit's (window, `coef_half_life`); one
+      horizon with Newey-West forms under it; nulls standardized
+      (`cusum_sq` by the measured fourth moment); `break_wald`'s exact
+      sandwich; quantile forms; the Newey-West lag cap, the embargo notes,
+      feature health's refusal.
+- [ ] 233. **Review 6's data-check decisions** (§20, 7-13, C-6): `frozen`'s
+      zero-change atom; `group_close` refused on `audit`; the centred
+      `collinear`; `leakage` a warning; `level_over_spread` for `rls`
+      without decay; float32 refused out of range; the audit's clock in
+      uncapped Durations; `vif`'s docstring.
