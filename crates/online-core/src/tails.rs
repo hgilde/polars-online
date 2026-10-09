@@ -244,4 +244,25 @@ mod tests {
         t.update(0.5, 0.9, 1.0);
         assert!(t.has_shape() && t.kurtosis().is_some_and(f64::is_finite));
     }
+
+    /// A restored accumulator is refused unless every sum and the mean are
+    /// finite and the weights and the second central sum are not negative.
+    #[test]
+    fn a_restored_accumulator_must_be_finite_and_not_negative() {
+        let mut good = Tails::new();
+        for v in [1.0, -0.5, 2.0, 0.3] {
+            good.update(v, 0.9, 1.0);
+        }
+        assert!(good.has_shape());
+        let bad = |edit: fn(&mut Tails)| {
+            let mut t = good.clone();
+            edit(&mut t);
+            !t.has_shape()
+        };
+        assert!(bad(|t| t.mean = f64::NAN));
+        assert!(bad(|t| t.m[2] = f64::INFINITY));
+        assert!(bad(|t| t.w = -1.0));
+        assert!(bad(|t| t.w2 = -1.0));
+        assert!(bad(|t| t.m[0] = -1.0));
+    }
 }
