@@ -18,6 +18,43 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **Online diagnostics: calibration, breaks, robust standard errors,
+  specification, tails, influence and feature health** (task 221), each a
+  spec switch with its own memory (`*_half_life`; `inf` is the run-once
+  form, read at Kish's size): `emit_calibration` (Mincer-Zarnowitz slope,
+  intercept and Wald; default memory four times the model's half-life),
+  `emit_breaks` (the recursive residual over its own spread, its CUSUM and
+  CUSUM of squares, and the Wald distance between fits at one and four
+  memories), `emit_robust_se` (`se_coef_hc0`, `se_coef_hac` beside
+  `se_coef`; `ewridge` and `rls`), `emit_specification` (Ljung-Box, past a
+  look-ahead horizon by Bartlett's covariance; Breusch-Pagan; RESET),
+  `emit_tails` (skew, kurtosis, Jarque-Bera; the README sets
+  `drift_threshold` by the kurtosis), `emit_influence` (an online DFFITS),
+  `emit_feature_health` (each feature's spread ratio and mean shift), and
+  `po.eval.diebold_mariano` and `po.eval.clark_west` with Newey-West
+  variance. Each measured on planted streams and held to statsmodels or
+  scipy.
+- **`ModelBank.check()`** (task 223): findings about what each stream was
+  fed, with severity, value, threshold and a link to its section of
+  `docs/DATA-ISSUES.md`; free, the same from a state file and at any
+  chunking; no error or warning on 750 clean runs, every planted problem
+  found.
+- **`po.spec.audit`** (task 223): what a stream's columns hold, in one pass
+  and constant memory per column -- nulls, NaN, ±inf and out-of-bound
+  values apart, moments, distinct values and the most repeated one, runs,
+  lag-1 autocorrelation and Dickey-Fuller, median/MAD/robust z, optional
+  pair correlations, and the clock's duplicate stamps, gaps and spacing;
+  read with `ModelBank.audit()`, and by `check()` for nine more codes.
+- **`gram_threads` on `ewridge` and `ew_cov`** (task 225): the Gram's
+  update on up to n threads of the bank's pool, the same bits at every
+  count; 6-7 times the merge on 8 threads at 2,000-10,000 features.
+- **`po.gram.lars_path`, `po.gram.lars_paths` and `po.gram.solve_subsets`**
+  (tasks 226 and 227): the exact lasso path by least angle regression,
+  stopped early, many Grams at once; and many subsets of Grams merged and
+  fitted in one call (3.0 s against 76 s at 2,000 columns). `lasso_path`
+  runs in Rust, about 70 times faster.
+- **`ModelBank.gram(dtype="float32", layout="packed")`** (task 229): half
+  or a quarter of the bytes; every `po.gram` function reads every form.
 - **`po.ewm_var` and `po.ewm_std`, streaming on the clock** (task 212),
   beside `po.ewm_mean`, taking Polars' parameters with `bias` (default
   False). On a clock that steps by 1 they equal Polars' `ewm_var` and
@@ -273,7 +310,7 @@ reinterpreted parameter, an output's dtype or a file to refit.
   row** (task 209), as scikit-learn's `PoissonRegressor` does and as
   `strict_binary` refuses a logistic label. A count is never negative, and
   the gradient `p - y` drove the prediction to the link's floor, e^-30.
-- **Every saved bank must be refit.** A bank file now carries schema 52,
+- **Every saved bank must be refit.** A bank file now carries schema 57,
   and one saved by 0.13.0 (schema 20) or any earlier release is refused by
   its version, naming the way out: refit from the input. Ten changes
   moved the layout: the stream's diagnostics (task 146), the names the
@@ -306,8 +343,10 @@ reinterpreted parameter, an output's dtype or a file to refit.
   keeps `kmeans`'s and `micro`'s centres as compensated pairs (task 215).
   Schema 52 counts each target's rows of positive weight, and all rows, in
   a windowed model's state and in each of its snapshots, and each slot's
-  residuals in the residual spread's window (task 217). It refuses 51 and
-  older, and so do the models' own states.
+  residuals in the residual spread's window (task 217). Schema 54 adds
+  `audit` (task 223), schema 56 the diagnostics' accumulators (task 221),
+  and schema 57 the error inflation a held row was scored with (review
+  round 6). It refuses 56 and older, and so do the models' own states.
 - **A state is loaded whole or refused, never mended** (task 198; review
   round 4, D1, CC8). A state missing a field written since an older layout,
   or holding a vector of the wrong length, such as a mean's low part, is
@@ -1080,6 +1119,25 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **A wide fit is the same to the bit whatever the thread count** (task
+  231): from 512 columns, `ewridge`'s one-column solves and the
+  eigendecomposition behind `ew_cov`'s `pca` and `rcov`'s repair followed
+  the pool's size in their last bits. One-column solves moved once, by at
+  most 1.5e-11 relative at 4,000 columns.
+- **Review round 6** (PLAN §20): the windowed `ljung_box` is Box-Pierce at
+  Kish's size (Ljung-Box's factor passed 15.8% of clean streams at
+  half-life 10); the tails keep central moments (a far first residual read
+  a kurtosis of -129,065); under `embargo` a row is folded with the error
+  inflation it was scored with; `po.gram.vif` reports `inf` only for a
+  constant column, and an exact duplicate no longer reads 0.25;
+  `solve_subsets` reports NaN, not 0, standard errors where the system is
+  not positive definite; `po.corr.epps_invert` reads packed and float32
+  Grams; `lars_paths` takes Grams whose targets differ; a column LARS sets
+  aside makes no knot; `audit`'s Dickey-Fuller is ±inf for an exact trend;
+  a bank saved under one `gram_threads` resumes under another;
+  `online.unnest` expands the robust standard errors; `check()` reports
+  steps back for an audit-only bank and the statistic that fired for
+  `heavy_tails`.
 - **A windowed `lasso` or `ewridge` at a level of ±1,000 or more no longer
   reads the means' rounding as spread once a dominant row leaves the
   window** (task 217, D4). A `lasso` diverged to `inf` and an `ewridge`
@@ -1519,6 +1577,13 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **`docs/DIAGNOSTICS.md` and `docs/DATA-ISSUES.md`** (tasks 222 and 224):
+  is the model working, and can the data be learned from -- each ordered
+  by question or by `check()` code, with the theory in prose and its
+  sources, and runnable recipes (18 and 12) whose printed output a test
+  holds. Task 228's result is in the second: a pairwise-complete Gram was
+  measured and not built (biased by 0.6-19 standard errors where listwise
+  deletion is not).
 - **`rls` winds up on a feature held at one value other than 0** (task
   217, documented): its slope wanders to ±3e13 from about 43-54
   half-lives held, after the feature has moved or from its first row, and

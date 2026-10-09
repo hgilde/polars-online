@@ -8908,7 +8908,7 @@ tick, and that the series holding it up has a count near 1.
       `n <= 0` guard was wrong (with `λ > ½` the smallest subnormal sticks,
       so `W²` underflows while `Q` does not) and is a test now. No model
       defect.
-- [ ] 221. **Online diagnostics: the questions today's set does not
+- [x] 221. **Online diagnostics: the questions today's set does not
       answer** -- the user, 2026-10-08: "What kinds of online diagnostics
       should we have? Those could run once for a non ewma regression, or
       windowed alongside a ewma regression", then "Add the ones we need to
@@ -8974,7 +8974,22 @@ tick, and that the series holding it up has a count near 1.
       `recursive_olsresiduals`, `breaks_cusumolsresid`, `jarque_bera`)
       and from `crate::oracle` in Rust. Build (a)-(c) first; (d)-(h)
       after, each its own commit.
-- [ ] 222. **A diagnostics section in the docs** -- the user, 2026-10-08.
+      *Done 2026-10-09* (schemas 55-57). (a)-(c): `emit_calibration`
+      (Mincer-Zarnowitz, Wald at Kish's size; default memory 4x the model's
+      half-life, measured 4.9% -> 42% of rows on a miscalibrated fit),
+      `emit_breaks` (the recursive residual over its own spread -- `sigma`
+      counted the estimation error twice and flagged 47% run once; CUSUM,
+      CUSUM of squares, `break_wald` between fits at 1x and 4x, 2x/8x
+      measured), `emit_robust_se` (HC0, Newey-West, lags 2h by default,
+      ewridge and rls). (d)-(h): `emit_specification` (Ljung-Box past a
+      horizon by Bartlett's covariance, Breusch-Pagan, RESET), `emit_tails`,
+      `emit_influence` (ewridge, rls, kalman), `emit_feature_health` (fires
+      2.9 half-lives after a feed freezes, where `rls` winds up at 52.6),
+      `po.eval.diebold_mariano`/`clark_west` (the EW form in `po.eval`, not
+      the bank). statsmodels/scipy oracles throughout. Review round 6 (§20)
+      found the diagnostics' limits under warm-up, windows, look-ahead
+      targets and quantile fits.
+- [x] 222. **A diagnostics section in the docs** -- the user, 2026-10-08.
       One place that answers "is this model working?": `docs/DIAGNOSTICS.md`,
       linked from the README's *Diagnostics, selection and evaluation* and
       from the API reference. Ordered by the question each diagnostic
@@ -9013,7 +9028,10 @@ tick, and that the series holding it up has a count near 1.
       Every recipe runs in a test, as the README's blocks run in
       `tests/test_production_hardening.py` (`TestReadmeExamples`), so none
       goes stale.
-- [ ] 223. **Telling a user their data has a problem, after one pass** --
+      *Done 2026-10-09:* `docs/DIAGNOSTICS.md`, 18 recipes held to their
+      output by `tests/test_diagnostics_page.py`, 22 sources, a cost table;
+      the README's section is a question table and a link.
+- [x] 223. **Telling a user their data has a problem, after one pass** --
       the user, 2026-10-08: "What can we do to help a user understand that
       their data has a problem after one pass, ideally something that can
       run as a spec to detect nulls and constants and whatever else is a
@@ -9079,7 +9097,16 @@ tick, and that the series holding it up has a count near 1.
       skipped; Rust tests for the accumulators (chunk invariance, merge
       exactness, rule 9), Python tests for each finding. Build (a) first,
       then (b).
-- [ ] 224. **A section in the docs on detecting data issues** -- the user,
+      *Done 2026-10-09.* (a) `ModelBank.check()`: 19 codes, no error or
+      warning on 750 clean runs, every planted problem on 10/10 seeds; (6)'s
+      1e6 line was wrong -- the centring models lose nothing at 1e14 -- so
+      per-model limits (ftrl 0.5, kalman 2, pa 3/2, sgd 3, rls 10);
+      `po.gram.vif` read a duplicate at 0.25, fixed. (b) `po.spec.audit`
+      (schema 54): the counts and statistics of (2)-(12), null told from NaN
+      by a payload, moments scaled by a power of two, a t-digest and
+      Misra-Gries past `distinct_cap`; nine more codes. Review round 6 found
+      `frozen` firing on clean persistent-discrete columns (§20).
+- [x] 224. **A section in the docs on detecting data issues** -- the user,
       2026-10-08. After task 223. `docs/DATA-ISSUES.md`, linked from the
       README and from each finding's "what to do": per problem, how it
       shows (the finding, and what it does to each model if left alone,
@@ -9111,7 +9138,10 @@ tick, and that the series holding it up has a count near 1.
       the fix in Polars, and the model after it, each with its output shown
       and read. Every recipe runs in a test, as for task 222, so none goes
       stale.
-- [ ] 225. **A multithreaded product for one wide Gram** -- requested
+      *Done 2026-10-09:* `docs/DATA-ISSUES.md`, one section per `check()`
+      code (each message links its section), 12 recipes held to their output
+      by `tests/test_data_issues.py`, 16 sources, task 228's result.
+- [x] 225. **A multithreaded product for one wide Gram** -- requested
       2026-10-08 (the user: "Fold those into the current plan additions"),
       for a workload of 10,000 features over 9.5 million rows, read as
       weekly blocks of `ewridge` accumulators (`half_life=inf`,
@@ -9139,7 +9169,16 @@ tick, and that the series holding it up has a count near 1.
       how the threads share the bank's group pool. **Check:** the Gram at
       `gram_threads=1` and `=8` the same bits; wall time per entry-row
       falling with the threads up to the cores. No state change.
-- [ ] 226. **The lasso path from a Gram, in Rust** -- requested 2026-10-08.
+      *Done 2026-10-09:* `gram_threads` on `ewridge` and `ew_cov`: the merge
+      cut into pieces fixed by the shape (`crate::pieces`), the same bits at
+      every thread count and as the sequential call; 6-7x the merge on 8
+      threads at 2,000-10,000 columns, 3.9x a bank at 2,000. A single-thread
+      kernel cannot close the 10x gap to numpy (Apple's matrix coprocessor;
+      faer runs at ~60% of NEON's peak); linking Accelerate not done (a
+      macOS-only path whose bits differ). `lasso` has no `gram_block_rows`,
+      so no `gram_threads`. PERFORMANCE §37. Configuration, not state (review
+      6, D-1).
+- [x] 226. **The lasso path from a Gram, in Rust** -- requested 2026-10-08.
       `po.gram.lasso_path` runs coordinate descent in Python: 0.13-0.4 s a
       path at 15 columns and 40 penalties (a profile: 6.6 million calls to
       Python's `max` and `abs` for 12 paths), where scikit-learn's
@@ -9153,7 +9192,11 @@ tick, and that the series holding it up has a count near 1.
       active sets as `lars_path_gram` at every knot on a Gram from known
       rows (`tests/test_second_opinion.py`), and today's `lasso_path`
       where both are defined. No state change.
-- [ ] 227. **Merge and solve many subsets of Grams in one call** --
+      *Done 2026-10-09:* `po.gram.lars_path`/`lars_paths` (LARS-lasso in
+      Rust, chosen by measurement over coordinate descent; 3.4 ms at 2,000
+      columns against scikit-learn's 8.2), `lasso_path` in Rust with its
+      signature (4e-15 of the 0.13 loop, ~70x faster).
+- [x] 227. **Merge and solve many subsets of Grams in one call** --
       requested 2026-10-08. Each half of the blocks is a `po.gram.merge` of
       about 19 Grams, then a correlation matrix and a solve in numpy; a
       block's Gram is 32 MB at 2,000 columns and 800 MB at 10,000, and a
@@ -9165,6 +9208,9 @@ tick, and that the series holding it up has a count near 1.
       fit and t, which say how stable a coefficient is. **Check:** the same
       numbers as `po.gram.merge` then `po.gram.solve` on each subset. No
       state change.
+      *Done 2026-10-09:* `po.gram.solve_subsets` (ridge with `coef_stats`'
+      statistics, or a path; 3.0 s against 76 s at 2,000 columns, 38 Grams,
+      100 subsets).
 - [x] 228. **Missing values per column in a Gram** -- requested 2026-10-08.
       A row with one missing feature is skipped for every column of the
       accumulator: measured on 0.12.0, gaps in 30% of one feature's rows
@@ -9206,7 +9252,7 @@ tick, and that the series holding it up has a count near 1.
       mean fill is biased (0.4-6 sd) -- in task 224's page and task 223's
       `missing` finding; an online-EM imputation, the one option that
       measured unbiased under MAR, is task 230, the user's call.
-- [ ] 229. **A compact Gram** -- requested 2026-10-08. `bank.gram()`
+- [x] 229. **A compact Gram** -- requested 2026-10-08. `bank.gram()`
       returns the full matrix in float64: 800 MB a block at 10,000 columns,
       30 GB for 38 weekly blocks. **The ask:** an option for `gram()` to
       return float32, or the lower triangle only (each halves it; both
@@ -9217,6 +9263,10 @@ tick, and that the series holding it up has a count near 1.
       separately. **Check:** float32 output within float32 rounding of the
       float64; the triangle form expands to today's matrix exactly;
       `po.gram.merge`/`solve` take either form.
+      *Done 2026-10-09:* `gram(dtype="float32", layout="packed")` (the upper
+      triangle, numpy's `triu_indices` order); every `po.gram` reader takes
+      every form; matrices cross as bytes. The triangle cannot reproduce both
+      halves exactly (the accumulator's last-bit asymmetry, E48).
 - [ ] 230. **Online-EM imputation for missing features -- an idea, the
       user's call** (from task 228's research, 2026-10-08). Impute
       `E[x_M | x_O] = μ_M − Λ_MM⁻¹ Λ_MO (x_O − μ_O)` from the Gram's own
@@ -9228,6 +9278,15 @@ tick, and that the series holding it up has a count near 1.
       refresh a cadence to choose. Next step if wanted: a measured Rust
       replica (warm-up bias, cadence, cost at k 1,000-2,000) before any
       design.
+- [x] 231. **A wide fit's bits whatever the thread count** -- from task
+      225's measurement (2026-10-09): from 512 columns the one-column
+      triangular solve and the eigensolver followed the pool's size, so two
+      machines, or two `POLARS_ONLINE_MAX_THREADS`, gave different last
+      bits. *Done 2026-10-09:* the Cholesky and its solves cut into pieces
+      fixed by the shape, the eigensolver at a fixed parallel degree of 8;
+      the pool's speed kept (18 ms on 8 threads against 68 on 1 at 2,000
+      columns); one-column solves moved once, by at most 1.5e-11 relative
+      at 4,000 columns; no golden or fixture moved. PERFORMANCE §38.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -13478,3 +13537,43 @@ The coordinator's own correction, recorded here: the eps review of
 2026-10-07 said "nothing else in the eps chain needs reopening"; G3's
 measurements and the 0.5-band probe (`review5/verify/bands_h.py`) show the
 theory the docs state is wrong for PA at `c = 1`, and the chain is open.
+
+## 20. Review round 6 (2026-10-09): tasks 221-231, code and concepts
+
+The user, 2026-10-08: "After implementing everything do a code and concepts
+review and fix any obvious bugs." Seven read-only reviewers over
+`f54d1e5..integ23` (A: 221 (a)-(c); B: 221 (d)-(h); C: `check` and `audit`;
+D: tasks 225 and 231; E: tasks 226/227/229; F: cross-cutting; G: concepts
+and the two pages), every finding shown by a probe; task 222's recipes had
+found F1-F6 first. Findings and probes: the session scratchpad,
+`review6/FINDINGS.md`.
+
+**Fixed (one right answer), each with a test that failed on the base:**
+B-3 (the windowed Ljung-Box is Box-Pierce at Kish's size; Ljung-Box's
+factor passed 15.8% of clean streams at half-life 10), B-5 (the tails keep
+central moments: kurtosis read -129,065 after a far first residual), A-6
+(under `embargo` a row keeps the inflation it was scored with, schema 57),
+F4, F6, F-9, F5 and G-6/G-10 (docs), F-12; C-2 (an exact trend's
+Dickey-Fuller is ±inf, not null), C-4 (`vif` inf only for the constant
+column), C-7, C-8, D-1 (`gram_threads` is configuration: a save resumes
+under another count), D-3, E-1 (NaN, not 0, standard errors where the
+system is not positive definite), E-2, E-4, E-5 (no knot for a column set
+aside), E-6, E-7, F-6 (first half), F-10, F-11, G-9, G-11, G-12.
+
+**Decisions put to the user (14, merged across reviewers), with the
+coordinator's recommendation:** (1) warm-up residuals dominate the
+diagnostics on `rls`/`kalman` at a level (F1, F-1, G-6): fold from
+readiness; (2) the memory beside `window_size`/`kalman` (A-2, A-3, B-4, G-4,
+F-5): derive it from the fit's; (3) look-ahead targets (B-1, A-4, F3, B-2,
+G-5, F-4, A-8): one horizon, Newey-West forms under it; (4) the windowed
+nulls and `cusum_sq`'s Gaussian assumption (A-5, G-3, F2, A-7): standardize
+by the measured fourth moment, rescale; (5) `break_wald`'s shared Gram
+(A-1): the exact sandwich; (6) quantile fits (G-1, F-2): coverage and a
+CUSUM of `1{y<pred}-q`; (7) `frozen` on persistent-discrete columns (C-1):
+the zero-change atom test; (8) `group_close` (C-3, F-3): refuse on `audit`;
+(9) `collinear` uncentred (G-2): the centred index for the centring models;
+(10) `leakage` on a long random walk (G-7): a warning; (11)
+`level_over_spread` on a decaying `rls` (G-8): no decay only, scaled; (12)
+float32's range (E-3): refuse; (13) the audit's clock (C-5, F-6): uncapped
+steps, Durations; (14) Newey-West lag cost, embargo notes, feature health's
+refusal, `vif`'s docstring (F-7, B-6, B-7, F-8, C-6).

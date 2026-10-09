@@ -58,9 +58,11 @@ TOOL_OUTPUT_DIRS = {"mutants.out", "mutants.out.old", "target", ".venv", "htmlco
 MAX_SOURCE_BYTES = 250_000
 
 #: Prose gets more room: `docs/PLAN.md` is the design log and passed 200 KB
-#: when tasks 45-56 were prepared (2026-09-05). A data file renamed `.md`
-#: would still be caught by the cap below, only later.
-MAX_DOC_BYTES = 1_000_000
+#: when tasks 45-56 were prepared (2026-09-05), and 1 MB with tasks 221-231
+#: (2026-10-09); its review sections are cited by number (PLAN §18 D1 in
+#: CLAUDE.md), so it stays one file. A data file renamed `.md` would still
+#: be caught by the cap below, only later.
+MAX_DOC_BYTES = 2_000_000
 
 #: Lockfiles are generated but must be tracked, and grow with every wheel a
 #: dependency publishes (mypy alone added 65 KB); their size says nothing
