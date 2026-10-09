@@ -183,10 +183,158 @@ fn a_constant_column_reads_no_spread() {
     let c = m.column(0);
     assert_eq!(c.std, 0.0);
     assert!(c.kurtosis.is_nan() && c.skew.is_nan() && c.autocorr.is_nan());
+    assert!(
+        c.unit_root_t.is_nan(),
+        "no regression on a row without spread"
+    );
     assert_eq!((c.distinct, c.top_value, c.top_count), (Some(1), 0.1, 1000));
     assert_eq!((c.median, c.mad), (0.1, 0.0));
     assert!(c.robust_z.is_nan());
     assert_eq!((c.longest_run, c.equal_prev, c.adjacent), (1000, 999, 999));
+}
+
+/// Each statistic is defined from the fewest rows its formula needs: a
+/// spread, a skew, a kurtosis and a correlation from two, the
+/// Dickey-Fuller `τ` from three pairs (a slope and a constant, and one
+/// degree of freedom left); and nothing is defined from no usable value,
+/// not even a smallest or largest one.
+#[test]
+fn each_statistic_is_defined_from_the_fewest_rows_it_needs() {
+    let mut m = Audit::new(AuditCfg {
+        pairs: true,
+        ..cfg(3)
+    })
+    .unwrap();
+    m.step(&[1.0, 2.0, NULL], &[], 1.0, 1.0);
+    m.step(&[4.0, -1.0, NULL], &[], 1.0, 1.0);
+    let c = m.column(0);
+    assert_eq!(c.std, 3.0 / 2f64.sqrt(), "|4 - 1| / √2");
+    // Two values: no third moment, and n·M4/M2² = 2·2a⁴/(2a²)² = 1.
+    assert_eq!((c.skew, c.kurtosis), (0.0, -2.0));
+    assert_eq!(m.pair(0, 1).unwrap().corr, -1.0);
+    let none = m.column(2);
+    assert_eq!((none.rows, none.count), (2, 0));
+    for v in [
+        none.mean,
+        none.std,
+        none.min,
+        none.max,
+        none.median,
+        none.mad,
+    ] {
+        assert!(v.is_nan(), "{v}");
+    }
+    // Four rows, three lag pairs: (1, 3), (3, 2), (2, 5).
+    let mut m = Audit::new(cfg(1)).unwrap();
+    for v in [1.0, 3.0, 2.0, 5.0] {
+        m.step(&[v], &[], 1.0, 1.0);
+    }
+    let (a, b) = ([1.0, 3.0, 2.0], [3.0, 2.0, 5.0]);
+    let (ma, mb) = (2.0, 10.0 / 3.0);
+    let saa: f64 = a.iter().map(|v| (v - ma) * (v - ma)).sum();
+    let sab: f64 = a.iter().zip(&b).map(|(u, v)| (u - ma) * (v - mb)).sum();
+    let rho = sab / saa;
+    let resid: f64 = a
+        .iter()
+        .zip(&b)
+        .map(|(u, v)| (v - mb - rho * (u - ma)).powi(2))
+        .sum();
+    let tau = (rho - 1.0) / (resid / (3.0 - 2.0) / saa).sqrt();
+    let c = m.column(0);
+    assert!(close(c.unit_root_t, tau, 1e-12), "{} {tau}", c.unit_root_t);
+}
+
+/// The mean is the exact mean wherever that is a double: the compensated
+/// pair's low part is added back, not taken away. These four values' mean
+/// is -128, and Welford's steps leave it as `-128` with a low part of
+/// `-2^-46`, half a step of `-128`, which the sum rounds away and a
+/// difference would not.
+#[test]
+fn the_mean_is_exact_where_the_exact_mean_is_a_double() {
+    let xs = [212.0, -1200.0, 390.5, 85.5];
+    let mut m = Audit::new(cfg(1)).unwrap();
+    for v in xs {
+        m.step(&[v], &[], 1.0, 1.0);
+    }
+    assert_eq!(xs.iter().sum::<f64>() / 4.0, -128.0, "the sum is exact");
+    assert_eq!(m.column(0).mean, -128.0);
+    assert_ne!(m.columns[0].moments.mean_lo, 0.0, "the low part holds");
+}
+
+/// A rescale mid-stream, when the first value past `2^65` arrives, moves
+/// no bit: the moments of values already read, over the new power of two,
+/// are the ones read over it from the start (the type's doc), at that row
+/// and every row after it. The values sit just under `2^65` and one just
+/// past it, so no later value swamps what the rescale kept.
+#[test]
+fn a_rescale_mid_stream_moves_no_bit() {
+    let mut r = SplitMix64::new(31);
+    let below = |r: &mut SplitMix64| 2f64.powi(64) * (0.2 + normal(r).abs().powi(3)).min(1.9);
+    let mut xs: Vec<f64> = (0..300).map(|_| below(&mut r)).collect();
+    xs.push(1.5 * 2f64.powi(65));
+    xs.extend((0..100).map(|_| below(&mut r)));
+    let mut fixed = Moments::default();
+    fixed.rescale(2.0);
+    let mut grown = Moments::default();
+    for (i, &x) in xs.iter().enumerate() {
+        grown.add(x);
+        fixed.add(x);
+        if i < 300 {
+            assert_eq!(grown.scale, 1.0);
+        } else {
+            assert_eq!(grown, fixed, "row {i}");
+        }
+    }
+    assert!(grown.m3 != 0.0 && grown.m4 != 0.0);
+}
+
+/// The clock's steps keep their size past `2^65`: the spread of regular
+/// steps of `1e25` is read over a power of two and scaled back.
+#[test]
+fn the_clock_reads_steps_past_two_to_the_sixty_fifth() {
+    let mut m = Audit::new(cfg(1)).unwrap();
+    m.step(&[1.0], &[], 0.0, 1.0);
+    for d in [1e25, 3e25, 2e25, 4e25] {
+        m.step(&[1.0], &[], d, 1.0);
+    }
+    let c = m.clock().unwrap();
+    assert!(close(c.step_mean, 2.5e25, 1e-15), "{}", c.step_mean);
+    // Deviations ±0.5e25 and ±1.5e25: a population variance of 1.25e50.
+    assert!(
+        close(c.step_std, 1.25f64.sqrt() * 1e25, 1e-15),
+        "{}",
+        c.step_std
+    );
+    assert_eq!(c.max_step, 4e25);
+}
+
+/// A column whose spread squares to below the smallest double holds no
+/// spread a double can: its deviations from the mean square to 0, and its
+/// correlation with another column reads NaN, never the ±1 of a nonzero
+/// co-moment over a zero spread.
+#[test]
+fn a_spread_that_squares_to_nothing_has_no_correlation() {
+    let mut m = Audit::new(AuditCfg {
+        pairs: true,
+        ..cfg(2)
+    })
+    .unwrap();
+    m.step(&[0.0, 0.0], &[], 1.0, 1.0);
+    m.step(&[1e-200, 1.0], &[], 1.0, 1.0);
+    let p = &m.pairs[0].moments;
+    assert!(p.saa == 0.0 && p.sab != 0.0 && p.sbb > 0.0, "{p:?}");
+    assert!(m.pair(0, 1).unwrap().corr.is_nan());
+    assert_eq!(m.column(0).std, 0.0);
+    let mut m = Audit::new(AuditCfg {
+        pairs: true,
+        ..cfg(2)
+    })
+    .unwrap();
+    m.step(&[0.0, 0.0], &[], 1.0, 1.0);
+    m.step(&[1.0, 1e-200], &[], 1.0, 1.0);
+    let p = &m.pairs[0].moments;
+    assert!(p.sbb == 0.0 && p.sab != 0.0 && p.saa > 0.0, "{p:?}");
+    assert!(m.pair(0, 1).unwrap().corr.is_nan());
 }
 
 /// Runs and the rows equal to the row before: a value that is not usable
@@ -613,6 +761,19 @@ fn a_merge_is_the_audit_of_both_streams() {
     // Column 1 has nine values: exact counts merge exactly.
     assert_eq!(a.columns[1].counts, both.columns[1].counts);
     assert_eq!(a.column(1).median, both.column(1).median);
+    // Column 0's are past the cap: the merged digest reads the median and
+    // the MAD of both streams to a rank.
+    let vals: Vec<f64> = s1
+        .iter()
+        .chain(&s2)
+        .map(|x| x[0])
+        .filter(|v| !is_null(*v))
+        .collect();
+    let ((m_lo, m_hi), (d_lo, d_hi)) = rank_brackets(&vals, 0.01);
+    let x = a.column(0);
+    assert_eq!(x.distinct, None);
+    assert!(m_lo <= x.median && x.median <= m_hi, "median {}", x.median);
+    assert!(d_lo <= x.mad && x.mad <= d_hi, "MAD {}", x.mad);
     for (i, j) in [(0, 1), (0, 2), (1, 2)] {
         let (p, q) = (a.pair(i, j).unwrap(), b.pair(i, j).unwrap());
         let w = both.pair(i, j).unwrap();
@@ -666,8 +827,13 @@ fn a_merge_past_the_cap_keeps_the_bound() {
     assert_eq!(all.column(0).top_value, 7.0);
 }
 
-/// `restore` refuses a state whose vectors are not the cfg's, and one whose
-/// cfg `new` refuses.
+/// `restore` refuses a state whose vectors are not the cfg's, one whose cfg
+/// `new` refuses, and one holding what no stream writes: a scale that is
+/// not a power of two at least 1, a moment or a co-moment that is not
+/// finite, more equal rows than rows, a largest step that is not a number,
+/// an extreme past the input bound, more changes at the smallest than
+/// changes, counters out of order, at 0, at a value no column takes or at
+/// -0, and a centroid lighter than a row or at infinity.
 #[test]
 fn a_state_of_the_wrong_shape_is_refused() {
     let m = Audit::new(AuditCfg {
@@ -699,6 +865,49 @@ fn a_state_of_the_wrong_shape_is_refused() {
         match Audit::restore(&State::new(ModelState::Audit(Box::new(bad)))) {
             Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
             other => panic!("{other:?}"),
+        }
+    }
+    // An audit that has read rows, so its moments, counters, digest, pairs
+    // and clock hold something to damage.
+    let mut fed = m.clone();
+    for (i, v) in [1.0, 1.0, 2.0, 2.0, 2.0, 4.0, 3.0].into_iter().enumerate() {
+        fed.step(&[v, -v, v * 0.5], &[], i as f64, 1.0);
+    }
+    assert!(Audit::restore(&fed.state()).is_ok());
+    let edits: [fn(&mut Audit); 16] = [
+        |a| a.columns[0].moments.scale = 3.0,
+        |a| a.clock.regular.scale = 0.5,
+        |a| a.columns[1].moments.m4 = f64::INFINITY,
+        |a| a.columns[0].lag.sab = f64::NAN,
+        |a| a.pairs[2].moments.saa = f64::NAN,
+        |a| a.pairs[0].equal = a.pairs[0].moments.n + 1,
+        |a| a.clock.max_step = f64::NAN,
+        |a| a.columns[0].max = f64::INFINITY,
+        |a| a.columns[2].min = -2e100,
+        // Six rows after a usable one, three equal to it: three changes.
+        |a| a.columns[0].min_change_count = 6,
+        |a| a.columns[0].counts.counts = vec![(key(1.0), 2), (key(1.0), 3)],
+        |a| a.columns[0].counts.counts.push((key(9.0), 0)),
+        |a| {
+            a.columns[0]
+                .counts
+                .counts
+                .push((f64::INFINITY.to_bits(), 1))
+        },
+        // Every 0 is counted at the key of 0, never at -0's.
+        |a| a.columns[0].counts.counts = vec![((-0.0f64).to_bits(), 1)],
+        |a| a.columns[0].digest.centroids = vec![(1.0, 0.5)],
+        |a| a.columns[0].digest.centroids = vec![(f64::INFINITY, 1.0)],
+    ];
+    let c = &fed.columns[0];
+    assert_eq!((c.adjacent, c.equal_prev, c.min_change_count), (6, 3, 2));
+    for (i, edit) in edits.into_iter().enumerate() {
+        let mut bad = fed.clone();
+        edit(&mut bad);
+        assert_ne!(bad, fed, "edit {i} changes nothing");
+        match Audit::restore(&State::new(ModelState::Audit(Box::new(bad)))) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("edit {i}: {other:?}"),
         }
     }
     let mut zero = m.clone();
@@ -858,4 +1067,360 @@ fn the_digest_reads_the_mad_to_a_rank_whatever_the_column_holds() {
         let c = read(&atom(&mut r, below, 0.6));
         assert_eq!((c.median, c.mad), (0.0, 0.0), "60% of rows on 0, {name}");
     }
+}
+
+fn audit_of(c: &AuditCfg, xs: &[f64]) -> Audit {
+    let mut m = Audit::new(c.clone()).unwrap();
+    for &v in xs {
+        m.step(&[v], &[], 1.0, 1.0);
+    }
+    m
+}
+
+/// Agarwal et al.'s merge of two Misra-Gries summaries, by hand: the
+/// counters are added, and past the cap the `(cap + 1)`-th largest count
+/// is taken from every counter and added to the decrements. Counters of
+/// interleaved values merge in order, whichever side ends last; and a
+/// summary past its cap is one still when merged into an audit of nothing.
+#[test]
+fn counters_merge_as_misra_gries_summaries_do() {
+    let capped = |cap: usize| AuditCfg {
+        distinct_cap: cap,
+        ..cfg(1)
+    };
+    let s1 = [1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
+    let s2 = [2.0, 2.0, 3.0, 3.0, 3.0, 3.0];
+    // Under a cap of 3 the three values are counted exactly.
+    let mut a = audit_of(&capped(3), &s1);
+    a.merge(&audit_of(&capped(3), &s2)).unwrap();
+    let exact = vec![(key(1.0), 5), (key(2.0), 5), (key(3.0), 4)];
+    assert_eq!(
+        a.columns[0].counts,
+        Counts {
+            counts: exact,
+            decrements: 0,
+            over: false
+        }
+    );
+    assert_eq!(a.column(0).distinct, Some(3));
+    // Under a cap of 2: counts 5, 5 and 4, the third largest, 4, taken
+    // from each; the value counted 4 times goes, at most 4 short.
+    let mut a = audit_of(&capped(2), &s1);
+    a.merge(&audit_of(&capped(2), &s2)).unwrap();
+    assert_eq!(
+        a.columns[0].counts,
+        Counts {
+            counts: vec![(key(1.0), 1), (key(2.0), 1)],
+            decrements: 4,
+            over: true
+        }
+    );
+    let c = a.column(0);
+    assert_eq!(
+        (
+            c.distinct,
+            c.top_value,
+            c.top_count,
+            c.second_count,
+            c.count_error
+        ),
+        (None, 1.0, 1, 1, 4)
+    );
+    // A third value past a cap of 2 decrements both counters to nothing;
+    // the summary holds one counter, under the cap, and is past it still.
+    let over = audit_of(&capped(2), &[1.0, 2.0, 3.0, 1.0]);
+    assert!(over.columns[0].counts.over && over.columns[0].counts.counts.len() == 1);
+    for (mut into, from) in [
+        (Audit::new(capped(2)).unwrap(), over.clone()),
+        (over.clone(), Audit::new(capped(2)).unwrap()),
+    ] {
+        into.merge(&from).unwrap();
+        let c = into.column(0);
+        assert_eq!((c.distinct, c.count_error), (None, 1));
+    }
+    // Interleaved values, under the cap: the merge is the sorted union,
+    // the audit of both streams', whichever side holds the last value.
+    let (odd, even) = ([1.0, 3.0, 5.0, 9.0], [2.0, 4.0, 6.0]);
+    let wide = capped(DISTINCT_CAP);
+    let mut both = audit_of(&wide, &odd);
+    for v in even {
+        both.step(&[v], &[], 1.0, 1.0);
+    }
+    for (x, y) in [(&odd[..], &even[..]), (&even[..], &odd[..])] {
+        let mut a = audit_of(&wide, x);
+        a.merge(&audit_of(&wide, y)).unwrap();
+        assert_eq!(a.columns[0].counts, both.columns[0].counts, "{x:?} + {y:?}");
+    }
+}
+
+/// The most repeated value: a tie goes to the smaller value, among
+/// negative values too (whose bits run the other way), and a smaller count
+/// never displaces a larger one, however small its value.
+#[test]
+fn the_most_repeated_value_takes_a_tie_to_the_smaller_value() {
+    let cases: [(&[f64], (f64, u64, u64)); 3] = [
+        (&[2.0, 1.0, 2.0, 1.0, 1.0, 2.0], (1.0, 3, 3)),
+        (&[-1.0, -2.0, -1.0, -2.0, -2.0, -1.0], (-2.0, 3, 3)),
+        (
+            &[1.0, -1.0, 1.0, -2.0, 1.0, -1.0, 1.0, -2.0, 1.0],
+            (1.0, 5, 2),
+        ),
+    ];
+    for (xs, want) in cases {
+        let c = audit_of(&cfg(1), xs).column(0);
+        assert_eq!((c.top_value, c.top_count, c.second_count), want, "{xs:?}");
+    }
+}
+
+/// Merging adds every count the module's doc lists -- each kind of value
+/// that is not usable, the equal rows of a pair, the duplicate stamps and
+/// the gaps -- and keeps the larger of the two largest steps, whichever
+/// side holds it. Merged with an audit of nothing, an audit keeps its
+/// extremes, its smallest change and its largest step; an audit of nothing
+/// merged with one takes them.
+#[test]
+fn a_merge_adds_every_count_and_keeps_the_largest_step() {
+    let c = AuditCfg {
+        pairs: true,
+        gap_cap: Some(10.0),
+        ..cfg(2)
+    };
+    let (inf, nan) = (f64::NEG_INFINITY, f64::NAN);
+    // (column 0, column 1, step)
+    let s1 = [
+        (1.0, 1.0, 0.0),
+        (nan, 2.0, 0.0),
+        (inf, 3.0, 50.0),
+        (2e100, 2e100, 1.0),
+        (3.0, 3.0, 2.0),
+        (NULL, 1.0, 0.0),
+        (4.0, 5.0, 3.0),
+    ];
+    let s2 = [
+        (2.0, 2.0, 0.0),
+        (nan, nan, 7.0),
+        (nan, 1.0, 0.0),
+        (inf, 4.0, 12.0),
+        (-3e100, 1.0, 0.0),
+        (5.0, 5.0, 4.0),
+        (7.0, 7.0, 0.0),
+        (2e100, 6.0, 1.0),
+    ];
+    let run = |m: &mut Audit, s: &[(f64, f64, f64)]| {
+        for &(x, y, d) in s {
+            m.step(&[x, y], &[], d, 1.0);
+        }
+    };
+    let (mut a, mut b, mut both) = (
+        Audit::new(c.clone()).unwrap(),
+        Audit::new(c.clone()).unwrap(),
+        Audit::new(c.clone()).unwrap(),
+    );
+    run(&mut a, &s1);
+    run(&mut b, &s2);
+    run(&mut both, &s1);
+    both.restart();
+    run(&mut both, &s2);
+    let counts = |m: &Audit| {
+        let (x, y) = (m.column(0), m.column(1));
+        let k = m.clock().unwrap();
+        (
+            [x.null, x.nan, x.neg_inf, x.beyond, x.rows, y.nan, y.beyond],
+            m.pair(0, 1).unwrap().equal,
+            (k.steps, k.duplicates, k.gaps, k.regular, k.max_step),
+        )
+    };
+    let want = ([1, 3, 2, 3, 15, 1, 1], 5, (13, 5, Some(2), 6, 50.0));
+    assert_eq!(counts(&both), want);
+    for (x, y) in [(&a, &b), (&b, &a)] {
+        let mut m = x.clone();
+        m.merge(y).unwrap();
+        assert_eq!(counts(&m), want);
+    }
+    let nothing = Audit::new(c.clone()).unwrap();
+    let mut kept = a.clone();
+    kept.merge(&nothing).unwrap();
+    let mut took = nothing.clone();
+    took.merge(&a).unwrap();
+    for m in [&kept, &took] {
+        let (x, y) = (m.column(0), m.column(1));
+        assert_eq!((x.min, x.max), (1.0, 4.0));
+        // 1 -> 2 -> 3 | 3 -> 1 -> 5: two changes of 1.
+        assert_eq!((y.min_change, y.min_change_count), (1.0, 2));
+        assert_eq!(m.clock().unwrap().max_step, 50.0);
+    }
+}
+
+/// A weight that is not usable -- past the input bound, infinite or NaN --
+/// adds nothing to `n_eff`, as no model counts one ([`OnlineModel`], rule
+/// 2); the row's values are counted all the same.
+#[test]
+fn a_weight_that_is_not_usable_adds_no_weight() {
+    let mut m = Audit::new(cfg(1)).unwrap();
+    for w in [2e100, f64::INFINITY, f64::NAN, 1.5] {
+        m.step(&[1.0], &[], 1.0, w);
+    }
+    assert_eq!((m.n_eff(), m.column(0).count), (1.5, 4));
+}
+
+/// Each pair of columns reads its own slot: of five columns, `pair(i, j)`
+/// counts the rows on which `i` and `j` alone held a value, a number
+/// different for every pair; `pair(i, i)` and `pair(j, i)` read nothing.
+#[test]
+fn each_pair_of_columns_reads_its_own_slot() {
+    let k = 5;
+    let mut m = Audit::new(AuditCfg {
+        pairs: true,
+        ..cfg(k)
+    })
+    .unwrap();
+    let mut want = Vec::new();
+    for i in 0..k {
+        for j in (i + 1)..k {
+            let n = want.len() as u64 + 1;
+            for _ in 0..n {
+                let mut x = vec![NULL; k];
+                (x[i], x[j]) = (1.0, 2.0);
+                m.step(&x, &[], 1.0, 1.0);
+            }
+            want.push((i, j, n));
+        }
+    }
+    for (i, j, n) in want {
+        assert_eq!(m.pair(i, j).map(|p| p.count), Some(n), "({i}, {j})");
+        assert!(m.pair(j, i).is_none() && m.pair(i, i).is_none());
+    }
+}
+
+/// Before its first step the clock has no largest step, nor a mean or a
+/// spread of one: NaN, not the 0 the state starts from. The first row has
+/// no step before it.
+#[test]
+fn the_clock_reads_nothing_before_its_first_step() {
+    let mut m = Audit::new(cfg(1)).unwrap();
+    assert!(m.clock().unwrap().max_step.is_nan());
+    m.step(&[1.0], &[], 5.0, 1.0);
+    let c = m.clock().unwrap();
+    assert_eq!(c.steps, 0);
+    assert!(c.max_step.is_nan() && c.step_mean.is_nan() && c.step_cv.is_nan());
+}
+
+/// The robust z is NaN where the MAD is 0, whether the column has a spread
+/// or not; and the rows read are every kind counted.
+#[test]
+fn a_mad_of_zero_reads_no_robust_z() {
+    let xs = [1.0, NULL, 1.0, NULL, 1.0, NULL, f64::NAN, 2.0];
+    let c = audit_of(&cfg(1), &xs).column(0);
+    assert_eq!((c.median, c.mad, c.max), (1.0, 0.0, 2.0));
+    assert!(c.robust_z.is_nan());
+    assert_eq!((c.rows, c.null, c.nan, c.count), (8, 3, 1, 4));
+}
+
+/// A change exactly the rounding below the smallest counts at it --
+/// *within* [`STEP_ROUNDING`] `ε·S` of it, the bound included -- in one
+/// stream and across a merge: over the values 0, 1 and `2^-49`, the changes
+/// 1 and `1 − 2^-49` sit `8ε·1` apart.
+#[test]
+fn a_change_the_rounding_below_the_smallest_counts_at_it() {
+    let t = 2f64.powi(-49);
+    assert_eq!(STEP_ROUNDING * f64::EPSILON, t);
+    let c = audit_of(&cfg(1), &[0.0, 1.0, t]).column(0);
+    assert_eq!((c.min_change, c.min_change_count), (1.0 - t, 2));
+    let mut a = audit_of(&cfg(1), &[0.0, 1.0]);
+    a.merge(&audit_of(&cfg(1), &[1.0, t])).unwrap();
+    let c = a.column(0);
+    assert_eq!((c.min_change, c.min_change_count), (1.0 - t, 2));
+}
+
+/// The digest holds `DIGEST_BUFFER` values as they came, and folds them
+/// into its centroids at the next.
+#[test]
+fn the_digest_folds_its_values_at_the_buffer_size() {
+    let c = AuditCfg {
+        distinct_cap: 1,
+        ..cfg(1)
+    };
+    let xs: Vec<f64> = (0..DIGEST_BUFFER).map(|i| i as f64).collect();
+    let m = audit_of(&c, &xs[..DIGEST_BUFFER - 1]);
+    let d = &m.columns[0].digest;
+    assert_eq!((d.centroids.len(), d.buffer.len()), (0, DIGEST_BUFFER - 1));
+    let m = audit_of(&c, &xs);
+    let d = &m.columns[0].digest;
+    assert!(d.buffer.is_empty());
+    assert_eq!(
+        d.centroids.iter().map(|c| c.1).sum::<f64>(),
+        DIGEST_BUFFER as f64
+    );
+}
+
+/// A merge keeps each mean's low part, and a merged audit goes on as one
+/// audit of every stream would (the module's doc): at a level of `1e8`,
+/// two columns on the grid of doubles there, a few steps of it apart,
+/// three streams at offsets of their own, two merged and the third read
+/// after. The oracle is in whole steps of the grid, where every sum is
+/// exact.
+#[test]
+fn a_merged_audit_at_a_level_goes_on_as_one_audit_of_every_stream() {
+    let (level, u) = (1e8, 2f64.powi(-26));
+    assert_eq!((level + u) - level, u, "the grid's step at the level");
+    let mut r = SplitMix64::new(37);
+    let mut stream = |n: usize, shift: i64| -> Vec<(i64, i64)> {
+        (0..n)
+            .map(|_| {
+                let a = shift + (r.next_u64() % 7) as i64 - 3;
+                (a, a + (r.next_u64() % 5) as i64 - 2)
+            })
+            .collect()
+    };
+    let streams = [stream(1000, 0), stream(800, 3), stream(600, -2)];
+    let rows = |s: &[(i64, i64)]| -> Vec<Vec<f64>> {
+        s.iter()
+            .map(|&(a, b)| vec![level + a as f64 * u, level + b as f64 * u])
+            .collect()
+    };
+    let c = AuditCfg {
+        pairs: true,
+        ..cfg(2)
+    };
+    let (mut m, mut second) = (Audit::new(c.clone()).unwrap(), Audit::new(c).unwrap());
+    feed(&mut m, &rows(&streams[0]));
+    feed(&mut second, &rows(&streams[1]));
+    m.merge(&second).unwrap();
+    for x in rows(&streams[2]) {
+        m.step(&x, &[], 1.0, 1.0);
+    }
+    let corr = |p: &[(f64, f64)]| {
+        let n = p.len() as f64;
+        let mx = p.iter().map(|q| q.0).sum::<f64>() / n;
+        let my = p.iter().map(|q| q.1).sum::<f64>() / n;
+        let sxy: f64 = p.iter().map(|q| (q.0 - mx) * (q.1 - my)).sum();
+        let sxx: f64 = p.iter().map(|q| (q.0 - mx).powi(2)).sum();
+        let syy: f64 = p.iter().map(|q| (q.1 - my).powi(2)).sum();
+        sxy / (sxx * syy).sqrt()
+    };
+    let all: Vec<(f64, f64)> = streams
+        .iter()
+        .flatten()
+        .map(|&(a, b)| (a as f64, b as f64))
+        .collect();
+    // A lag pair never spans two streams.
+    let lags: Vec<(f64, f64)> = streams
+        .iter()
+        .flat_map(|s| s.windows(2).map(|w| (w[0].0 as f64, w[1].0 as f64)))
+        .collect();
+    let n = all.len() as f64;
+    let mean = all.iter().map(|q| q.0).sum::<f64>() / n;
+    let mk = |p: i32| all.iter().map(|q| (q.0 - mean).powi(p)).sum::<f64>() / n;
+    let col = m.column(0);
+    assert!(
+        (col.mean - (level + mean * u)).abs() <= 1e-6 * u,
+        "{}",
+        col.mean
+    );
+    assert!(close(col.std, (mk(2) * n / (n - 1.0)).sqrt() * u, 1e-12));
+    assert!((col.skew - mk(3) / mk(2).powf(1.5)).abs() < 1e-10);
+    assert!((col.kurtosis - (mk(4) / (mk(2) * mk(2)) - 3.0)).abs() < 1e-10);
+    assert!(close(col.autocorr, corr(&lags), 1e-12), "{}", col.autocorr);
+    let p = m.pair(0, 1).unwrap();
+    assert!(close(p.corr, corr(&all), 1e-12), "{}", p.corr);
 }
