@@ -13,6 +13,8 @@ below measure the gap; it is ~1e-16 relative on a well-conditioned system,
 and the assertions are set an order or two looser than that, not at 1e-3.
 """
 
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -701,6 +703,36 @@ class TestReadingTheMatrix:
         assert np.isinf(v[0]) and np.isinf(v[2]), v
         assert 1.0 <= v[1] < 1.1, v
         assert (pg.vif(g, features=["x0", "x1"]) < 1.1).all()
+
+    def test_where_the_rule_reads_a_dependency_short_of_inf(self):
+        """What the docstring says of an exact dependency (review 6, C-6):
+        each column in it reads ``inf`` or past 1e10 -- rounding can leave
+        the smallest eigenvalue just past the tolerance, where it reads
+        about 1e14 -- and a column whose weight in it is below ``sqrt(eps)``
+        in correlation units reads near 1, as if it stood apart."""
+        rng = np.random.default_rng(5)
+        n = 5000
+        x0, x1, z = rng.normal(size=(3, n))
+        f0, f1 = 1e3 * x0 + 7.0, 1e-3 * x1
+        cases = {
+            # (columns, which are in the dependency, which reads near 1)
+            "scaled copy": ({"a": x0, "b": 100.0 * x0 + 3.0}, ["a", "b"], []),
+            "three that sum": ({"a": x0, "b": x1, "c": x0 + x1}, ["a", "b", "c"], []),
+            "a tiny part": ({"a": f0, "b": f1, "c": f0 + f1}, ["a", "c"], ["b"]),
+        }
+        for name, (cols, inside, tiny) in cases.items():
+            for lam in (1.0, 0.999):
+                feats = [*cols, "z"]
+                df = pl.DataFrame({**cols, "z": z, "y": x0 + rng.normal(size=n)})
+                spec = po.spec.ewridge("m", features=feats, targets=["y"], lam=lam)
+                bank = po.ModelBank([spec])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    bank.fit(df)
+                v = dict(zip(feats, pg.vif(bank.gram("m")[0]), strict=True))
+                assert all(v[c] > 1e10 for c in inside), (name, lam, v)
+                assert all(1.0 <= v[c] < 1.1 for c in tiny), (name, lam, v)
+                assert 1.0 <= v["z"] < 1.1, (name, lam, v)
 
     def test_only_a_constant_column_reads_inf(self):
         """A constant column's VIF is ``inf``, the others' are theirs as if

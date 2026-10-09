@@ -1418,11 +1418,10 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
 
     An array over ``features`` (the Gram's columns without the intercept by
     default: a constant is perfectly explained by any other constant, so its VIF
-    is undefined). A column the stream found constant reports ``inf``, and so
-    does a column that is an exact linear combination of the others, where
-    ``R2_j`` is 1. Above about 10 the coefficient of that column is mostly
-    noise; the fix is a ridge, a subset, or a feature set the spec already
-    knows how to fit beside the full one.
+    is undefined). A column the stream found constant reports ``inf``. Above
+    about 10 the coefficient of a column is mostly noise; the fix is a
+    ridge, a subset, or a feature set the spec already knows how to fit
+    beside the full one.
 
     The diagonal is read from the eigendecomposition ``R = V diag(d) V'`` as
     ``VIF_j = sum_i V_ji^2 / d_i``. An eigenvalue at or below numpy's rank
@@ -1430,6 +1429,21 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     past ``sqrt(eps)`` in its direction reports ``inf``. A pseudo-inverse
     drops that direction instead and read an exact duplicate at 0.25, below
     the floor of 1 a VIF cannot go under (docs/PLAN.md task 223).
+
+    So a column that is an exact linear combination of the others, where
+    ``R2_j`` is 1, reads ``inf`` or a number past 1e10, not always ``inf``.
+    Rounding in the accumulated moments can leave the dependency's
+    eigenvalue just above the tolerance, and the column then reads about
+    1e14. A copy times 100 plus 3 read 2.2e14 at ``lam = 0.999`` and
+    ``inf`` at ``lam = 1``; three columns where the third is the sum of the
+    first two read 1.2e14 to 2.4e14 at ``lam = 1`` and ``inf`` at 0.999
+    (5,000 rows). Read anything past 1e10 as a dependency. A column whose
+    part in a dependency is tiny reads near 1, as if it stood apart: in
+    ``c = a + b`` with ``a`` spread a million times as wide as ``b``, ``b``'s
+    weight in the dependency's direction, in correlation units, is 5e-13,
+    far below ``sqrt(eps)``, and it read 1.0002 where ``a`` and ``c`` read
+    ``inf``. A large VIF says a column is in a dependency; a VIF near 1 does
+    not say it is in none.
     """
     np = _np()
     slots, _ = _feature_slots(g, features)
