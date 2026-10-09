@@ -282,7 +282,7 @@ OPTIONAL: list[tuple[str, str]] = [
     (
         "the residual diagnostics: `emit_sigma`, `emit_zscore`, `emit_selected`, "
         "`emit_averaged`, `emit_drift`, `emit_metrics`, `emit_autocorr`, `resid_quantiles`, "
-        "`conformal`, `emit_calibration`, `emit_breaks`",
+        "`conformal`, `emit_calibration`, `emit_breaks`, `emit_specification`",
         "[Per-row diagnostics](../README.md#per-row-diagnostics), for the models that "
         "predict a target. `emit_metrics`' `hit_rate_<t>` is null throughout on an `sgd` "
         'fit with `loss="poisson"`, whose rate and count have no sign to hit',

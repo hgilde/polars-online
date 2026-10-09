@@ -216,7 +216,8 @@ the diagnostics
     ``drift_threshold`` and ``drift_action``, ``emit_calibration`` with
     ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``,
     ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
-    and ``emit_clocks``. Each adds fields to the
+    ``emit_specification`` with ``specification_half_life`` and
+    ``ljung_box_lags``, and ``emit_clocks``. Each adds fields to the
     output, listed below. A model with no residual refuses them by name.
     A ``*_half_life`` beside a switch is that diagnostic's own memory, in
     clock units: when left out, four times the model instance's half-life
@@ -262,9 +263,8 @@ durations; the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the
 number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
-``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``,
-``calibration_half_life``, ``breaks_half_life`` and
-``robust_se_half_life`` below, and in the models
+``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
+and each diagnostic's own ``*_half_life`` below, and in the models
 ``window_size``,
 ``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
@@ -609,6 +609,28 @@ The diagnostics add, per slot:
        every intercept break in 100 rows and ``|cusum_sq| > 3`` every
        variance break in 20. ``drift`` found 1.5% of the variance breaks
        there and none of the others.
+   * - ``emit_specification``
+     - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``reset_<slot>``
+     - What the fit is missing, each at ``specification_half_life`` and
+       Kish's size ``n``. ``ljung_box``: Ljung and Box's ``Q`` over
+       ``ljung_box_lags`` lags of the residuals (default 10), ``chi2(L)``
+       with nothing missing: a missing lag or a half-life too long. For a
+       target that looks ahead ``h`` rows (``embargo`` on a spec with no
+       clock column) it tests lags ``h`` to ``h + L - 1``, against
+       Bartlett's covariance for autocorrelations past the residuals'
+       built-in ``MA(h - 1)``; the plain ``Q`` passed its 5% value on 61% of
+       the rows of five-row look-ahead streams with nothing missing, this one
+       on 6.0-6.7%. ``breusch_pagan``: ``n R2`` of ``resid**2`` on the
+       slot's features (Koenker's form), ``chi2(k)``: a spread that moves
+       with them. ``reset``: Ramsey's test, the Lagrange multiplier for
+       ``pred**2`` and ``pred**3`` beside ``pred`` in a regression of the
+       residual, ``chi2(2)``: a curvature the fit is missing. Run once they
+       are statsmodels' ``acorr_ljungbox``, ``het_breuschpagan`` and
+       ``compare_lm_test`` on the out-of-sample residuals. On 200 streams of
+       3,000 rows, each passed its 5% value on 2.0-7.0% of the rows of
+       streams missing nothing, run once or windowed, and on 98-100% of
+       those missing what it looks for: an AR(1) at 0.3, a spread linear in
+       a feature, a square of one.
 
 .. rubric:: Errors
 
@@ -629,9 +651,8 @@ value the model refuses:
   or ``n_perm`` past 2^20, ``kmeans``' ``k`` past 2^16 or its warm-up buffer
   past 256 MiB, ``rcov``'s lagged products past 256 MiB;
 - ``inf`` where it means nothing (it is allowed where it does --
-  ``half_life``, ``min_weight``, ``average_eta``, ``calibration_half_life``,
-  ``breaks_half_life``, ``robust_se_half_life`` and the model parameters
-  that say so);
+  ``half_life``, ``min_weight``, ``average_eta``, each diagnostic's
+  ``*_half_life`` and the model parameters that say so);
 - neither ``half_life`` nor ``lam``;
 - ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
 - ``emit_drift`` with a ``clock`` and no ``drift_threshold``;
@@ -647,9 +668,8 @@ A parameter whose switch is off is refused rather than ignored:
   ``emit_drift``;
 - ``average_eta`` without ``emit_averaged``;
 - ``resid_autocorr_lag`` without ``emit_autocorr``;
-- ``calibration_half_life`` without ``emit_calibration``,
-  ``breaks_half_life`` without ``emit_breaks``, and ``robust_se_half_life``
-  or ``robust_se_lags`` without ``emit_robust_se``;
+- a diagnostic's ``*_half_life``, or its lags (``robust_se_lags``,
+  ``ljung_box_lags``), without its switch;
 - ``long_half_life`` without ``session_shrink``;
 - ``session_gap`` without ``session``;
 - ``restart_after_step_back`` without ``clock``;

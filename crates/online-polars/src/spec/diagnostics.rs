@@ -10,7 +10,7 @@ impl Spec {
     /// The diagnostics with a memory of their own (docs/PLAN.md task 221):
     /// each memory's key, its switch, whether the switch is on, and the
     /// memory as given.
-    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 3] {
+    pub fn diagnostic_memories(&self) -> [(&'static str, &'static str, bool, Option<&Span>); 4] {
         [
             (
                 "calibration_half_life",
@@ -30,7 +30,36 @@ impl Spec {
                 self.emit_robust_se,
                 self.robust_se_half_life.as_ref(),
             ),
+            (
+                "specification_half_life",
+                "emit_specification",
+                self.emit_specification,
+                self.specification_half_life.as_ref(),
+            ),
         ]
+    }
+
+    /// The target's horizon in rows: `embargo`, rounded up, on a spec with
+    /// no clock column, and 0 otherwise -- the rows a look-ahead target's
+    /// residuals are correlated over by construction (task 221).
+    pub fn horizon_rows(&self) -> usize {
+        match (&self.clock, &self.embargo) {
+            (None, Some(Span::Units(h))) if h.is_finite() && *h > 0.0 => {
+                (h.ceil() as usize).min(online_core::MAX_LAG)
+            }
+            _ => 0,
+        }
+    }
+
+    /// The lags Ljung and Box skip: the horizon's `h − 1`, inside which a
+    /// look-ahead target's residuals share their shocks (task 221 (d)).
+    pub fn ljung_box_skip(&self) -> usize {
+        self.horizon_rows().saturating_sub(1)
+    }
+
+    /// Ljung and Box's lags past the skipped ones: 10 unless set.
+    pub fn ljung_box_lags_or_default(&self) -> usize {
+        self.ljung_box_lags.unwrap_or(10)
     }
 
     /// Whether this spec's model takes `emit_robust_se`: the least-squares
@@ -78,7 +107,10 @@ impl Spec {
     /// passed 1.96 on 0.03% of rows with no break (0.6% at 1x) and found an
     /// intercept break in 224 rows rather than 100, and `cusum_sq` a
     /// variance break in 36 rather than 20 -- a longer memory only slowed
-    /// them.
+    /// them. The specification tests keep 1x: they read the residuals'
+    /// second moments, which a fit does not absorb, and passed their 5%
+    /// values on 4.2-6.1% of no-break rows at 1x and 4x alike, finding what
+    /// they look for on 98-100% of rows at either.
     pub fn memory_multiple(key: &str) -> u32 {
         if key == "calibration_half_life" { 4 } else { 1 }
     }

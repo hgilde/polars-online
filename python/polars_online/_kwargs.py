@@ -82,6 +82,9 @@ class ExprKwargs(TypedDict, total=False):
     emit_robust_se: bool
     robust_se_half_life: float | Duration | None
     robust_se_lags: int | None
+    emit_specification: bool
+    specification_half_life: float | Duration | None
+    ljung_box_lags: int | None
     embargo: float | Duration | None
 
 

@@ -790,8 +790,10 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 55 since
-    2026-10-09 (task 221: a stream keeps the diagnostics with a memory of
+    """The version a bank file names, held to the library's: 56 since
+    2026-10-09 (task 221 (d)-(h): the specification tests and the parts
+    after them; the bank refuses 55 and older), after 55 the same day
+    (task 221: a stream keeps the diagnostics with a memory of
     their own, and a spec the keys that switch them on; the bank refuses 54
     and older), after 54 the same day (task 223 (b): a spec may be an
     `audit`), after 52 since 2026-10-08 (task 217: `ewridge`'s and
@@ -873,7 +875,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 55
+    assert po.schema_version() == 56
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

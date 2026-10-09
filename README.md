@@ -2366,6 +2366,7 @@ other model refuses them by name.
 | residual autocorrelation | `emit_autocorr` | `autocorr_` |
 | calibration | `emit_calibration` | `calibration_slope_`, `calibration_intercept_`, `calibration_wald_` |
 | where the relationship broke | `emit_breaks` | `studentized_`, `cusum_`, `cusum_sq_`, `break_wald_` |
+| what the fit is missing | `emit_specification` | `ljung_box_`, `breusch_pagan_`, `reset_` |
 | standard errors robust to the residuals | `emit_robust_se` | `se_coef_hc0`, `se_coef_hac`, once per instance on `coef`'s rows ([Coefficients](#coefficients)) |
 | an interval | `conformal` | `lo_`, `hi_`, `coverage_`: [Conformal intervals](#conformal-intervals) |
 | a choice among the slots | `emit_selected`, `emit_averaged` | one per target: [Choosing among a grid's settings](#choosing-among-a-grids-settings) |
@@ -2396,6 +2397,8 @@ diag = po.spec.ewridge(
     breaks_half_life=500.0,      #                   residuals, and a fast fit's distance from a slow one
     emit_robust_se=True,         # se_coef_hc0, se_coef_hac: each coefficient's standard error, robust to unequal
     robust_se_lags=10,           #                   residual spreads, and to overlapping labels this many rows apart
+    emit_specification=True,     # ljung_box_, breusch_pagan_, reset_<slot>: a missing lag, a spread that moves
+    ljung_box_lags=10,           #                   with the features, a missing curvature
     emit_clocks=True,            # scored_clock, learned_clock: on every model, since it reads no residual
 )
 band = po.ModelBank([diag]).fit_predict(df).unnest("diag")
@@ -2426,6 +2429,14 @@ threshold means the same on every stream: beside a fit at a half-life of
 break they see within 20 to 100 rows. Run once, `cusum` and `cusum_sq` are
 Brown, Durbin and Evans' CUSUM tests, whose boundaries `po.spec`'s table
 gives.
+
+**`emit_specification` asks what the fit is missing.** `ljung_box` is
+chi-squared on `ljung_box_lags` degrees of freedom when the residuals carry
+no lag, `breusch_pagan` on the feature count when their spread does not
+move with the features, and `reset` on 2 when the fit misses no curvature;
+past the 5% value each says which to add. On a target that looks ahead,
+`ljung_box` starts past the horizon, where the overlap leaves nothing to
+find.
 
 **`se_coef_hac` is the standard error to trust when the target looks
 ahead.** A target that sums the next `h` rows overlaps its neighbours, so

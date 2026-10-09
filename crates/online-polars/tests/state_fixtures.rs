@@ -181,7 +181,7 @@ fn specs() -> Vec<Spec> {
 /// held to.
 fn diagnosed_specs() -> Vec<Spec> {
     [
-        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0}"#,
+        r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 30.0, "gap_cap": 50.0, "embargo": 2.0, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -911,6 +911,15 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ),
         ("bank_diagnosed", "a sandwich's origin", |p, v| {
             p.contains(".sandwich.") && p.contains(".origin.") && v.as_f64().is_some()
+        }),
+        // Schema 56: the specification tests' lag sums and ring.
+        ("bank_diagnosed", "a slot's Ljung-Box pairs", |p, v| {
+            p.contains(".specification.")
+                && p.contains(".pairs.")
+                && v.as_f64().is_some_and(|f| f != 0.0)
+        }),
+        ("bank_diagnosed", "a slot's RESET origin", |p, v| {
+            p.contains(".specification.") && p.ends_with(".origin") && v.as_f64().is_some()
         }),
         ("bank_diagnosed", "a slot's calibration moments", |p, v| {
             p.contains(".checks.")

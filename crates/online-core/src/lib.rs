@@ -109,6 +109,7 @@ mod seqtest;
 mod sgd;
 mod since;
 mod solve;
+mod specification;
 mod spread;
 mod stats;
 mod warmup;
@@ -173,6 +174,7 @@ pub use sandwich::Sandwich;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
+pub use specification::Specification;
 pub use stats::{EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, SlotMetrics};
 pub use warmup::{WARMUP_ROWS, Warmup};
 pub use window::{
@@ -625,7 +627,11 @@ pub use window::{
 ///   `Sandwich`'s bread, meat, lag products and ring per slot. A spec that
 ///   switches none on writes none, and its spec writes the new keys.
 ///   Pre-1.0 no loader is written.
-pub const SCHEMA_VERSION: u32 = 55;
+/// - 56 (2026-10-09, task 221 (d)-(h)): the same diagnostics gain the
+///   specification tests' sums per slot (`Specification`), and later
+///   parts' accumulators beside them. A spec that switches none on writes
+///   none. Pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 56;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -741,7 +747,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 55;
+pub const MIN_SCHEMA_VERSION: u32 = 56;
 
 #[cfg(test)]
 mod tests {

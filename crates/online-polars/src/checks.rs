@@ -10,7 +10,7 @@
 //! row was scored with. Their per-slot values ride in one output buffer,
 //! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
 
-use online_core::{Breaks, Calibration, Decay, Sandwich, TwinFit};
+use online_core::{Breaks, Calibration, Decay, Sandwich, Specification, TwinFit};
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{ModelKind, Spec};
@@ -29,6 +29,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
     if spec.emit_breaks {
         out.extend(["studentized", "cusum", "cusum_sq", "break_wald"]);
     }
+    if spec.emit_specification {
+        out.extend(["ljung_box", "breusch_pagan", "reset"]);
+    }
     out
 }
 
@@ -40,6 +43,7 @@ pub struct CheckCfg {
     calibration: Decay,
     breaks: Decay,
     robust: Decay,
+    specification: Decay,
     /// Newey and West's lags, `0` for HC0 alone.
     lags: usize,
     /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
@@ -92,6 +96,11 @@ impl CheckCfg {
                 model,
                 Spec::memory_multiple("robust_se_half_life"),
             ),
+            specification: Spec::diagnostic_decay(
+                spec.specification_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("specification_half_life"),
+            ),
             lags: spec.robust_se_lags_or_default(),
             combo_features,
             intercept: spec.fit_intercept || spec.k() == 0,
@@ -138,6 +147,10 @@ pub struct Checks {
     /// The robust covariances' sums per slot, under `emit_robust_se`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sandwich: Vec<Sandwich>,
+    /// Ljung and Box's, Breusch and Pagan's and RESET's sums per slot,
+    /// under `emit_specification`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub specification: Vec<Specification>,
 }
 
 impl Checks {
@@ -156,12 +169,20 @@ impl Checks {
                 );
                 on(spec.emit_robust_se, n_slots)
             ],
+            specification: vec![
+                Specification::new(
+                    spec.k(),
+                    spec.ljung_box_skip(),
+                    spec.ljung_box_lags_or_default()
+                );
+                on(spec.emit_specification, n_slots)
+            ],
         }
     }
 
     /// Whether any switch is on: a spec with none keeps no `Checks`.
     pub fn any(spec: &Spec) -> bool {
-        spec.emit_calibration || spec.emit_breaks || spec.emit_robust_se
+        spec.emit_calibration || spec.emit_breaks || spec.emit_robust_se || spec.emit_specification
     }
 
     /// Whether a restored set is shaped as `fresh`, this spec's: the same
@@ -172,6 +193,11 @@ impl Checks {
             && self.breaks.len() == fresh.breaks.len()
             && self.twin.len() == fresh.twin.len()
             && self.sandwich.len() == fresh.sandwich.len()
+            && self.specification.len() == fresh.specification.len()
+            && self
+                .specification
+                .iter()
+                .all(|s| s.has_shape(k, spec.ljung_box_skip(), spec.ljung_box_lags_or_default()))
             && self.calibration.iter().all(Calibration::has_shape)
             && self.breaks.iter().all(Breaks::has_shape)
             && self.twin.iter().all(|t| t.has_shape(k))
@@ -185,6 +211,9 @@ impl Checks {
     /// or a session change -- so none is a lag of the next.
     pub fn clear_lags(&mut self) {
         self.sandwich.iter_mut().for_each(Sandwich::clear_lags);
+        self.specification
+            .iter_mut()
+            .for_each(Specification::clear_lags);
     }
 
     /// Every slot's robust standard errors, flattened in `coef`'s layout,
@@ -272,7 +301,19 @@ impl Checks {
                     .and_then(|t| t.wald(cfg.combo_features.get(slot % nc)?, cfg.intercept));
                 put(v + 3, slot, wald);
             }
+            v += 4;
         }
+        if !self.specification.is_empty() {
+            let nc = cfg.combo_features.len().max(1);
+            for (slot, s) in self.specification.iter().enumerate() {
+                put(v, slot, s.ljung_box());
+                let idx = cfg.combo_features.get(slot % nc);
+                put(v + 1, slot, idx.and_then(|idx| s.breusch_pagan(idx)));
+                put(v + 2, slot, s.reset());
+            }
+            v += 3;
+        }
+        let _ = v;
     }
 
     /// Fold one learned row: `row` and its recursive residuals `rec`, the
@@ -295,6 +336,13 @@ impl Checks {
             for (t, fit) in self.twin.iter_mut().enumerate() {
                 let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
                 fit.update(row.xs, y, lam, w);
+            }
+        }
+        if !self.specification.is_empty() {
+            let lam = cfg.specification.factor(d_clock);
+            for (slot, s) in self.specification.iter_mut().enumerate() {
+                let e = row.resid.get(slot).copied().unwrap_or(f64::NAN);
+                s.update(row.xs, row.preds[slot], e, lam, w);
             }
         }
         if !self.sandwich.is_empty() {

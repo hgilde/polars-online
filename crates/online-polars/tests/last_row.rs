@@ -45,6 +45,7 @@ fn rich_spec() -> Spec {
             "emit_breaks": true,
             "emit_robust_se": true,
             "robust_se_lags": 2,
+            "emit_specification": true,
             "min_settled_frac": 0.2
         }"#,
     )

@@ -2133,6 +2133,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "calibration_half_life",
             "breaks_half_life",
             "robust_se_half_life",
+            "specification_half_life",
         ],
     ),
     (
@@ -2970,6 +2971,21 @@ pub struct Spec {
     /// measurement behind twice).
     #[serde(default)]
     pub robust_se_lags: Option<usize>,
+    /// Emit `ljung_box_<slot>`, `breusch_pagan_<slot>` and `reset_<slot>`
+    /// (docs/PLAN.md task 221 (d); [`online_core::Specification`] has the
+    /// update): Ljung and Box's `Q` over the residuals' lags past the
+    /// target's horizon, Breusch and Pagan's `n R²` of `e²` on the slot's
+    /// features, and RESET's Lagrange multiplier for `p²` and `p³`, each at
+    /// `specification_half_life` and Kish's size.
+    #[serde(default)]
+    pub emit_specification: bool,
+    /// The specification tests' memory, in clock units (the default is
+    /// [`Spec::memory_multiple`]'s), `inf` the run-once form.
+    #[serde(default)]
+    pub specification_half_life: Option<Span>,
+    /// Ljung and Box's lags, `L`, counted past the horizon: 10 unless set.
+    #[serde(default)]
+    pub ljung_box_lags: Option<usize>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
     /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
     /// each slot's EW squared error as a ratio to the best slot's
@@ -3795,6 +3811,22 @@ impl Spec {
                 self.model.kind_name()
             ));
         }
+        if self.ljung_box_lags.is_some() && !self.emit_specification {
+            return Err(format!(
+                "spec {:?}: ljung_box_lags needs emit_specification",
+                self.name
+            ));
+        }
+        if let Some(l) = self.ljung_box_lags {
+            if l == 0 {
+                return Err(format!(
+                    "spec {:?}: ljung_box_lags must be >= 1, got 0",
+                    self.name
+                ));
+            }
+            online_core::check_lag_ceiling("ljung_box_lags", l + self.ljung_box_skip())
+                .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+        }
         if self.robust_se_lags.is_some() && !self.emit_robust_se {
             return Err(format!(
                 "spec {:?}: robust_se_lags needs emit_robust_se",
@@ -4097,6 +4129,7 @@ impl Spec {
                 ("emit_calibration", self.emit_calibration),
                 ("emit_breaks", self.emit_breaks),
                 ("emit_robust_se", self.emit_robust_se),
+                ("emit_specification", self.emit_specification),
                 ("emit_averaged", self.emit_averaged),
                 ("emit_selected", self.emit_selected),
             ];

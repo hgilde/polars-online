@@ -32,6 +32,10 @@ SWITCHES = {
         "breaks_half_life",
         ["studentized_y", "cusum_y", "cusum_sq_y", "break_wald_y"],
     ),
+    "emit_specification": (
+        "specification_half_life",
+        ["ljung_box_y", "breusch_pagan_y", "reset_y"],
+    ),
 }
 OWN_ROW = {"studentized_y"}
 
@@ -228,6 +232,10 @@ def test_holt_takes_it(switch):
     df = _frame()
     out = _run(df, po.spec.holt("m", targets=["y"], half_life=60.0, **{switch: True}))
     for f in fields:
+        if f == "breusch_pagan_y":
+            # No feature for a spread to move with.
+            assert out[f].null_count() == out.height
+            continue
         assert out[f].drop_nulls().len() > 400, f
 
 

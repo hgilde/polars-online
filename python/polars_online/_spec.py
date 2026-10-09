@@ -249,6 +249,7 @@ _INF_OK: dict[str, frozenset[str]] = {
             "calibration_half_life",
             "breaks_half_life",
             "robust_se_half_life",
+            "specification_half_life",
         }
     ),
     "ewridge": frozenset({"long_half_life"}),
@@ -322,6 +323,7 @@ _AT_LEAST_ONE = frozenset(
         "split_merge_every_rows",
         "max_clusters",
         "resid_autocorr_lag",
+        "ljung_box_lags",
         "k",
         # A lasso of no sweeps never descends: every solve is a failure, and
         # the coefficients read like a fit (review 2026-10-05, PB7).
@@ -361,7 +363,13 @@ _U32 = frozenset(
 #: permutation draws held for a quantile -- and Rust refuses past it too
 #: (``online_core::MAX_LAG``, ``MAX_PERM``; review 2026-10-06, CD10). For a
 #: list of counts, each entry's ceiling.
-_CEILING = {"lags": 2**20, "resid_autocorr_lag": 2**20, "robust_se_lags": 2**20, "n_perm": 2**20}
+_CEILING = {
+    "lags": 2**20,
+    "resid_autocorr_lag": 2**20,
+    "robust_se_lags": 2**20,
+    "ljung_box_lags": 2**20,
+    "n_perm": 2**20,
+}
 
 #: A ceiling one builder's count has under a name another builder shares:
 #: ``hmm``'s ``k`` sizes its transition matrix, ``k^2`` cells, and its states
@@ -748,6 +756,9 @@ def _common(
     emit_robust_se: bool = False,
     robust_se_half_life: float | Duration | None = None,
     robust_se_lags: int | None = None,
+    emit_specification: bool = False,
+    specification_half_life: float | Duration | None = None,
+    ljung_box_lags: int | None = None,
     embargo: float | Duration | None = None,
     group: str | None = None,
     group_close: str | None = None,
@@ -800,6 +811,9 @@ def _common(
         "emit_robust_se": emit_robust_se,
         "robust_se_half_life": robust_se_half_life,
         "robust_se_lags": robust_se_lags,
+        "emit_specification": emit_specification,
+        "specification_half_life": specification_half_life,
+        "ljung_box_lags": ljung_box_lags,
         "embargo": embargo,
         "group": group,
         "group_close": group_close,

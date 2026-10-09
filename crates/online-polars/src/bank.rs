@@ -186,8 +186,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// spec may be an `audit`; a file from before it is refit.
 /// **55 since task 221** (the same day): a stream
 /// keeps the diagnostics with a memory of their own, and a spec the keys
-/// that switch them on; a file from before it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 55;
+/// that switch them on; a file from before it is refit. **56 since task
+/// 221 (d)-(h)** (the same day): those diagnostics gain the specification
+/// tests and the parts after them; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 56;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

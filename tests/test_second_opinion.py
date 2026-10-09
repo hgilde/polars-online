@@ -4984,3 +4984,102 @@ class TestRobustStandardErrorsAreTheSandwich:
         assert 0.6 * np.sqrt(h) < spread / se < 1.2 * np.sqrt(h), spread / se
         assert abs(hac / spread - 1.0) < 0.15, hac / spread
         assert hc0 / spread < 0.5, hc0 / spread
+
+
+def _spec_rows(
+    n: int, seed: int, curve: float = 0.0, lookahead: int = 0, hetero: bool = True
+) -> pl.DataFrame:
+    """Two features; noise whose spread grows with the first; a square of
+    it the fit may miss; and, with ``lookahead``, a target summing that many
+    rows' shocks."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n, 2))
+    u = rng.normal(size=n + max(lookahead, 1))
+    e = np.convolve(u, np.ones(lookahead), "valid")[1 : n + 1] if lookahead else u[:n]
+    if hetero:
+        e = e * np.maximum(0.2, 1.0 + 0.6 * x[:, 0])
+    y = 0.5 + x @ np.array([1.0, -1.0]) + curve * x[:, 0] ** 2 + e
+    return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+
+
+class TestSpecificationTestsAreStatsmodels:
+    """Task 221 (d). Run once, on the bank's out-of-sample residuals of the
+    rows before each row: ``ljung_box`` is ``acorr_ljungbox``,
+    ``breusch_pagan`` is ``het_breuschpagan``'s ``n R2``, and ``reset`` is
+    ``compare_lm_test`` of the residual on ``p, p2, p3`` against ``p``.
+    Past a horizon ``ljung_box`` is the definition with Bartlett's
+    covariance, from ``statsmodels``' ``acf``; on planted curvature it
+    decides as ``linear_reset`` does on the in-sample fit."""
+
+    @staticmethod
+    def _run(df: pl.DataFrame, **kw: Any) -> pl.DataFrame:
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=float("inf"),
+            min_weight=10.0,
+            emit_specification=True,
+            ljung_box_lags=6,
+            **kw,
+        )
+        return po.ModelBank([spec]).fit_predict(df).unnest("m")
+
+    def test_the_three_statistics_are_statsmodels(self):
+        import statsmodels.api as sm
+        from statsmodels.stats.diagnostic import acorr_ljungbox, het_breuschpagan
+
+        df = _spec_rows(700, 61, curve=0.2)
+        out = self._run(df)
+        r, p = out["resid_y"].to_numpy(), out["pred_y"].to_numpy()
+        x = df.select("x0", "x1").to_numpy()
+        for t in (150, 699):
+            ok = np.isfinite(r[:t])
+            rt, pt = r[:t][ok], p[:t][ok]
+            lb = acorr_ljungbox(rt, lags=[6])["lb_stat"].iloc[0]
+            np.testing.assert_allclose(out["ljung_box_y"][t], lb, rtol=1e-9)
+            bp = het_breuschpagan(rt, sm.add_constant(x[:t][ok]))[0]
+            np.testing.assert_allclose(out["breusch_pagan_y"][t], bp, rtol=1e-8)
+            q = pt - pt[0]
+            full = sm.OLS(rt, sm.add_constant(np.column_stack([q, q**2, q**3]))).fit()
+            base = sm.OLS(rt, sm.add_constant(q)).fit()
+            np.testing.assert_allclose(out["reset_y"][t], full.compare_lm_test(base)[0], rtol=1e-7)
+
+    def test_past_a_horizon_it_reads_bartletts_covariance(self):
+        from statsmodels.tsa.stattools import acf
+
+        h = 4
+        df = _spec_rows(900, 62, lookahead=h)
+        out = self._run(df, embargo=float(h))
+        r = out["resid_y"].to_numpy()
+        t = 899
+        # Under the embargo, row t has learned the rows up to t - h.
+        released = r[: t - h + 1]
+        rt = released[np.isfinite(released)]
+        n = len(rt)
+        rho = acf(rt, nlags=h - 1 + 6, fft=False)
+        lags = np.arange(h, h + 6)
+        rr = rho[lags] * np.sqrt((n + 2) / (n - lags))
+        s = h - 1
+
+        def at(j: int) -> float:
+            return float(rho[abs(j)]) if abs(j) <= s else 0.0
+
+        def gamma(v: int) -> float:
+            return sum(at(j) * at(j + v) for j in range(-s, s + 1))
+
+        c = np.array([[gamma(abs(a - b)) for b in range(6)] for a in range(6)])
+        want = n * rr @ np.linalg.solve(c, rr)
+        np.testing.assert_allclose(out["ljung_box_y"][t], want, rtol=1e-8)
+
+    def test_reset_decides_as_linear_reset(self):
+        import statsmodels.api as sm
+        from statsmodels.stats.diagnostic import linear_reset
+
+        for seed, curve in ((63, 0.4), (64, 0.0), (65, 0.4), (66, 0.0)):
+            df = _spec_rows(1500, seed, curve=curve, hetero=False)
+            ours = self._run(df)["reset_y"][-1] > 5.991
+            X = sm.add_constant(df.select("x0", "x1").to_numpy())
+            fit = sm.OLS(df["y"].to_numpy(), X).fit()
+            theirs = linear_reset(fit, power=3, test_type="fitted", use_f=False).statistic > 5.991
+            assert ours == theirs == (curve > 0), (seed, ours, theirs)
