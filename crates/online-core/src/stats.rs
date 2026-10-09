@@ -1503,6 +1503,53 @@ mod metric_tests {
         );
     }
 
+    /// The shape a restored slot must hold to score the next row (review
+    /// round 5, C2; docs/PLAN.md task 220), one part broken at a time: a
+    /// slot this module made holds it, fresh and after rows; joint moments
+    /// a mean short, as the file C2 found, or over another width, and each
+    /// scalar that is not a finite number, are each caught alone.
+    #[test]
+    fn a_slot_holds_its_shape_and_each_break_is_caught() {
+        let mut m = SlotMetrics::new();
+        assert!(m.has_shape(), "a fresh slot");
+        let mut s = 13u64;
+        for _ in 0..50 {
+            let y = lcg(&mut s);
+            m.update(y + 0.3 * lcg(&mut s), y, 0.9, 1.0, false);
+            assert!(m.has_shape(), "{m:?}");
+        }
+        let mut short = serde_json::to_value(&m.joint).unwrap();
+        assert!(short["m"].as_array_mut().unwrap().pop().is_some());
+        let short: crate::EwCov = serde_json::from_value(short).unwrap();
+        type Break = (&'static str, Box<dyn Fn(&mut SlotMetrics)>);
+        let breaks: [Break; 7] = [
+            (
+                "joint moments a mean short",
+                Box::new(move |m| m.joint = short.clone()),
+            ),
+            (
+                "joint moments over one column",
+                Box::new(|m| m.joint = crate::EwCov::new(1)),
+            ),
+            (
+                "joint moments over three",
+                Box::new(|m| m.joint = crate::EwCov::new(3)),
+            ),
+            ("a NaN mean squared error", Box::new(|m| m.mse = f64::NAN)),
+            ("an infinite hit rate", Box::new(|m| m.hits = f64::INFINITY)),
+            ("a NaN hit rate", Box::new(|m| m.hits = f64::NAN)),
+            (
+                "an infinite hit weight",
+                Box::new(|m| m.hit_w = f64::INFINITY),
+            ),
+        ];
+        for (what, f) in &breaks {
+            let mut broken = m.clone();
+            f(&mut broken);
+            assert!(!broken.has_shape(), "{what}");
+        }
+    }
+
     /// The hit is the side of zero both fall on, and a target on zero ages
     /// the weight without scoring. Every target's test is about zero: task
     /// 201 removed the ratio target whose test was about 1 (review
