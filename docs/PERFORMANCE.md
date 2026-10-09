@@ -2515,8 +2515,13 @@ One thread pays 6 to 9% for the cut at `k` = 2,000 to 4,000.
 
 #### What moved, once
 
-The factor did not move: it is faer's sequential factor, which every pool
-gave before. The solve with one right-hand side is now faer's sequential
+On aarch64, where this was measured, the factor did not move: it is
+faer's sequential factor, which every pool gave before. On x86-64 a
+product's pieces need not be faer's single kernel call (§37), so there the
+factor may differ from the old one in the last place; that is not measured
+here, and the test of faer's bits is guarded off x86-64. The tests that
+hold the factor the same in every pool run on both. The solve with one
+right-hand side is now faer's sequential
 one, where before it took faer's parallel path. Its result moved by at
 most `1.7e-13` relative at `k = 512`, `7.6e-13` at 1,000, `4.5e-12` at
 2,000 and `1.5e-11` at 4,000, against the old result in every pool. At

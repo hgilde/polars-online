@@ -279,6 +279,30 @@ works unchanged.
 (and `test_micro`'s and `test_ew_class`'s twins) pin the refusal, for every
 flag.
 
+#### What a model reads for the diagnostics
+
+Five predicates on `Spec` say which per-model readings a model has. Each is
+a `matches!` over a list of models, in `src/spec/readiness.rs` and
+`src/spec/diagnostics.rs`, so a new model has none of them until it is
+added to the lists it belongs in:
+
+| predicate | the models today | what it decides |
+|---|---|---|
+| `has_error_inflation` | `ewridge`, `rls`, `kalman`, `lasso` | the noise gate, `max_error_inflation` |
+| `has_row_error_inflation` | `ewridge`, `rls`, `kalman` | `emit_error_inflation` and `emit_influence`; the recursive residual of `emit_breaks` and `emit_tails` stands 1 in for the inflation without it |
+| `has_se_coef` | `ewridge`, `rls`, `kalman` | `emit_se_coef` |
+| `has_robust_se` | `ewridge`, `rls` | `emit_robust_se`, the least-squares sandwich (task 221 (c)) |
+| `has_support_coef` | `ewridge`, `huber`, `quantile` | the `support_coef` field beside `coef` |
+
+A model refused one of these says why in the refusal: `no_noise_statistic`
+and the `match` arms beside each refusal in `Spec::validate` name a reason
+per family, and a new family needs its own arm.
+
+**Check:** `test_model_registry::test_each_kind_takes_the_per_model_readings_its_predicates_say`
+fails on a builder missing from its `DIAGNOSTIC_READS` table, and on a
+model that takes a reading the table does not give it, or is refused one
+the table does.
+
 #### Three arms nothing is exhaustive over
 
 Three more arms in the same file are easy to miss, because nothing is

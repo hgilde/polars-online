@@ -290,9 +290,12 @@ OPTIONAL: list[tuple[str, str]] = [
         'fit with `loss="poisson"`, whose rate and count have no sign to hit',
     ),
     (
-        "`emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s; "
-        "`emit_robust_se`, `ewridge`'s and `rls`'s",
+        "`emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s",
         "[Warm-up](../README.md#warm-up)",
+    ),
+    (
+        "`emit_robust_se`, `ewridge`'s and `rls`'s",
+        "[Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted)",
     ),
     (
         "`emit_clocks`, every model's",

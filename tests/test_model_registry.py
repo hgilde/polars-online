@@ -156,6 +156,82 @@ def test_coef_every_is_taken_exactly_where_there_is_a_coef():
                 raise AssertionError(f"{name} has no coef and took coef_every")
 
 
+#: The per-model readings each builder takes, by the predicates on `Spec`
+#: that decide them (docs/EXTENDING.md, "What a model reads for the
+#: diagnostics"): `has_error_inflation`'s `max_error_inflation`,
+#: `has_row_error_inflation`'s `emit_error_inflation` and `emit_influence`,
+#: `has_se_coef`'s `emit_se_coef`, `has_robust_se`'s `emit_robust_se`, and
+#: `has_support_coef`'s `support_coef` field. Each predicate is a list of
+#: models that no match makes exhaustive, so a new model is refused all of
+#: them until someone decides; a builder missing here fails the test below.
+_LEAST_SQUARES = {
+    "max_error_inflation",
+    "emit_error_inflation",
+    "emit_influence",
+    "emit_se_coef",
+    "emit_robust_se",
+}
+DIAGNOSTIC_READS: dict[str, set[str]] = {
+    "ewridge": _LEAST_SQUARES | {"support_coef"},
+    "rls": _LEAST_SQUARES,
+    "kalman": _LEAST_SQUARES - {"emit_robust_se"},
+    "lasso": {"max_error_inflation"},
+    "huber": {"support_coef"},
+    "quantile": {"support_coef"},
+    **{
+        name: set()
+        for name in (
+            "ftrl",
+            "ew_cov",
+            "sgd",
+            "pa",
+            "holt",
+            "kmeans",
+            "micro",
+            "ew_class",
+            "seqtest",
+            "marginal",
+            "deco",
+            "corrchange",
+            "bocpd",
+            "hmm",
+            "rcov",
+            "audit",
+        )
+    },
+}
+
+
+def test_each_kind_takes_the_per_model_readings_its_predicates_say():
+    """A new model is decided for each per-model reading of task 221 and the
+    readiness statistics, not left refused by default (review round 6,
+    F-12)."""
+    switches = {
+        "max_error_inflation": 2.0,
+        "emit_error_inflation": True,
+        "emit_influence": True,
+        "emit_se_coef": True,
+        "emit_robust_se": True,
+    }
+    for name in sorted(MINIMAL):
+        assert name in DIAGNOSTIC_READS, f"{name}: add it to DIAGNOSTIC_READS"
+        want = DIAGNOSTIC_READS[name]
+        kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
+        kw.update(MINIMAL[name])
+        kw = {k: v for k, v in kw.items() if v is not None}
+        builder = getattr(po.spec, name)
+        for switch, value in switches.items():
+            try:
+                builder("m", **kw, **{switch: value})
+            except ValueError:
+                took = False
+            else:
+                took = True
+            assert took == (switch in want), (name, switch, took)
+        has_support = any(f.startswith("support_coef") for f in po.spec.output_fields(_build(name)))
+        assert has_support == ("support_coef" in want), (name, has_support)
+
+
 def _float_leaves(hint: object) -> set[object]:
     leaves = {hint, *typing.get_args(hint)}
     for _ in range(2):
