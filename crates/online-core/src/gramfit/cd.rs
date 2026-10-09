@@ -68,13 +68,42 @@ pub fn cd_path(
     out
 }
 
-/// numpy's `sign`: 0 at 0, NaN at NaN.
+/// numpy's `sign`: `+0` at either zero, NaN at NaN. At `-0.0` it once
+/// returned `v`, so a coordinate whose `ρ` was `-0.0` came out `-0.0` where
+/// numpy's soft-threshold, and the `lasso` model's, give `+0.0` (task 234).
 fn sign(v: f64) -> f64 {
     if v > 0.0 {
         1.0
     } else if v < 0.0 {
         -1.0
+    } else if v == 0.0 {
+        0.0
     } else {
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sign;
+
+    /// numpy's `sign`, to the bit: `1` above 0, `-1` below, `+0` at either
+    /// zero (`np.sign(-0.0)` is `0.0`, numpy 2.5), NaN at NaN.
+    #[test]
+    fn sign_is_numpys_at_every_kind_of_input() {
+        let bits = |v: f64| v.to_bits();
+        for (v, want) in [
+            (2.5, 1.0),
+            (f64::MIN_POSITIVE, 1.0),
+            (f64::INFINITY, 1.0),
+            (-2.5, -1.0),
+            (-f64::MIN_POSITIVE, -1.0),
+            (f64::NEG_INFINITY, -1.0),
+            (0.0, 0.0),
+            (-0.0, 0.0),
+        ] {
+            assert_eq!(bits(sign(v)), bits(want), "sign({v:?})");
+        }
+        assert!(sign(f64::NAN).is_nan());
     }
 }
