@@ -642,8 +642,15 @@ The diagnostics add, per slot:
        is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
        ``cusum_sq``'s scale shares its memory, a half; each is divided by
        it, and their spreads read 1.01-1.10 on clean streams where they read
-       0.48-0.94. The other fits keep the plain sum, whose spread reads
-       below 1 beside them (0.30-0.97), and ``holt``'s 1.6. ``break_wald``
+       0.48-0.94. ``quantile`` with an intercept absorbs its coverage the
+       same way, and its indicators' ``cusum`` is divided by the same share:
+       over it, 1.03-1.06 at memories of 50 and 200 and 1.10-1.25 at 800.
+       The other fits keep the plain sum, whose spread reads below 1 beside
+       them (0.30-0.95), and ``holt``'s 0.75-0.84 once its trend has
+       settled. Its trend forgets at four times the level's half-life by
+       default, and the diagnostics start once the level has settled: in
+       the 2,000 rows after, ``holt``'s ``cusum`` spread 3.5 and passed 3 on
+       38% of rows with no break. ``break_wald``
        is the Wald distance between two least-squares fits of the target on
        the slot's features, one at the memory and one at four times it,
        over the exact variance of their difference, about ``chi2(k)`` with

@@ -539,10 +539,23 @@ absorbs the squares' level the same way, so its share is one half. Each
 is divided by its share. On 30 clean streams beside `ewridge` and `rls`,
 `lasso` and `kalman` at a half-life of 200, the CUSUM's spread was 0.48 to
 0.94 at memories of 800 to 50 and is now 1.04 to 1.08, and the CUSUM of
-squares' 0.72 to 0.79 and is now 1.01 to 1.10. `huber`, `quantile` and the
-gradient fits absorb at a pace of their own, so they keep the plain sum,
-whose spread there read 0.57 to 0.95 (`huber`), 0.78 to 0.97
-(`quantile`) and 0.30 to 0.79 (`sgd`, `pa`, `ftrl`), and `holt` 1.63.
+squares' 0.72 to 0.79 and is now 1.01 to 1.10. `quantile` with an
+intercept absorbs its coverage the same way, and its indicators' CUSUM is
+divided by the same share: over it, the spread read 1.03 to 1.06 at
+memories of 50 and 200, and 1.10 to 1.25 at 800, on 30 clean streams at
+`q = 0.5` and `0.9`. `huber` and the gradient fits absorb at a pace of
+their own, so they keep the plain sum, whose spread there read 0.57 to
+0.95 (`huber`) and 0.30 to 0.79 (`sgd`, `pa`, `ftrl`). Below 1, a
+threshold of 3 is conservative beside them.
+
+**`holt`'s CUSUM needs its trend settled.** Its trend forgets at four
+times the level's half-life by default, and the diagnostics start once the
+stream has settled on the level's. On 20 clean streams at a half-life of
+200, in the 2,000 rows after they started, the CUSUM's spread read 3.5 and
+`|cusum| > 3` held on 38% of rows. Summed from row 3,460 on, 4.3 of the
+trend's half-lives, its spread read 0.75 to 0.81 and it passed 3 on at
+most 0.05% of rows, and it still found every intercept break of half a
+noise sd, 98 rows after it on the median.
 
 On 200 streams of 3,000 rows with a break at row 1,500, beside a fit at a
 half-life of 200, `|cusum| > 3` found every intercept break, 62 rows after

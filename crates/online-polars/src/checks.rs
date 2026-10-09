@@ -183,9 +183,11 @@ impl CheckCfg {
         // and `quantile`'s weights, the gradient fits' learning rates, and
         // `holt`'s trend. With the share their spreads read 1.07-1.74
         // (`huber`, `quantile`) and 0.57-1.13 (`sgd`, `pa`, `ftrl`); without
-        // it `huber` reads 0.57-0.95, `quantile` 0.78-0.97 and the gradient
-        // fits 0.30-0.79, conservative, and `holt` 1.63, so they keep the
-        // plain sum.
+        // it `huber` reads 0.57-0.95 and the gradient fits 0.30-0.79,
+        // conservative, so they keep the plain sum. So does `holt`, which
+        // reads 0.75-0.84 once its trend (four times the level's half-life
+        // by default) has settled, and 3.5 in the 2,000 rows before
+        // (task 234).
         let (h_fit, h_breaks) = (half_life_of(cfg.fit), half_life_of(cfg.breaks));
         let least_squares = matches!(
             spec.model,
