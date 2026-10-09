@@ -458,15 +458,15 @@ break, at the same half-life, `|cusum| > 3` held on 0.001% of rows,
 `|cusum_sq| > 3` on 0.01% and `break_wald > 21.1` on 0.003%.
 
 **The CUSUM cannot see a slope that moves on a feature centred at zero.**
-The residuals of the old fit on the new relationship are `(b_old − b_new)
+The residuals of the old fit on the new relationship are `(b_new − b_old)
 · x + noise`, whose mean is zero when `x`'s mean is. Run once over 200
 streams, the CUSUM crossed on 2.5% of streams whose slope moved, the same
 as with no break. `break_wald` exists for this case.
 
 **`drift` sees a rise in the residuals' level, and little else.** It is
 scaled by `sigma`, which adapts to a larger spread within a half-life. Beside
-a fit at a half-life of 200 it found 1.5% of the variance breaks above and
-none of the others. Its false-alarm rate depends on the residuals' tails,
+a fit at a half-life of 200 it found 1.5% of the variance breaks on those
+200 streams and none of the others. Its false-alarm rate depends on the residuals' tails,
 which [Are its tails heavy?](#are-its-tails-heavy) measures.
 
 The first recipe runs the CUSUM once over a stream whose intercept rises
@@ -533,9 +533,9 @@ from the crossing on:   intercept 0.69, x0 0.98, x1 0.48
 The path reads 30 at row 1,000 and −9 at row 2,000, the wandering of a
 sum of independent residuals. Then it climbs, to 70 by row 2,200, because
 each new row's residual carries part of the half-unit shift the fit has
-not yet absorbed. It crosses the boundary at row 2,310, 310 rows after the break. A crossing is
-a detection, so it comes after the break, by a delay that shrinks as the
-break grows. The fit over every row mixes the two regimes and puts the
+not yet absorbed. It crosses the boundary at row 2,310, 310 rows after
+the break. A crossing is a detection, so it comes after the break, by a
+delay that shrinks as the break grows. The fit over every row mixes the two regimes and puts the
 intercept at 0.44, between 0.2 and 0.7. Restarted from the crossing, the
 fit reads 0.69, the new regime's intercept. Every row from the crossing on
 belongs to the new regime, so restarting there loses rows but mixes
@@ -602,16 +602,15 @@ slope                      -               3115               3072              
 flags on rows 1,000-2,999, before any break: 0
 ```
 
-Each cell is the first row the flag fired after the break. Read together,
-they tell the three breaks apart:
+Each cell is the first row the flag fired after the break. No flag fired
+before row 3,000, and `drift` fired on none of the breaks. Read together,
+the other three flags tell the breaks apart:
 
 | break | `cusum` | `cusum_sq` | `break_wald` |
 |---|---|---|---|
 | the intercept shifted | fires | quiet | fires, since the intercept is a coefficient |
 | the noise grew | quiet | fires first, within 25 rows | quiet |
 | a slope moved | quiet | fires, while the fit catches up | fires |
-
-`drift` fired on none of them. No flag fired before row 3,000.
 
 **What to do.** When `cusum` fires alone or with `break_wald`, the level
 moved: restart the fit from the crossing, or let a fit that forgets catch
@@ -647,8 +646,8 @@ once on 1,500 rows, it read 0.9% to 1.3% above statsmodels'
 `cov_type="HC0"` and `"HAC"`. The lags default to twice the target's
 horizon in rows, `2 × embargo` on a spec with no clock column, and 0 with
 one. Give `robust_se_lags` when the clock is a time. The memory is
-`robust_se_half_life`, the model's by default. It costs 350 ns a
-row at 5 features and 10 lags, and only `ewridge` and `rls` take it, the
+`robust_se_half_life`, the model's by default. It costs 350 ns a row at 5
+features and 10 lags, and only `ewridge` and `rls` take it, the
 least-squares fits.
 
 The recipe fits 100 streams in one pass, one group each. Each target sums
