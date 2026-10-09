@@ -580,6 +580,111 @@ fn lasso_reads_the_active_count_over_kish_n() {
     assert_eq!(gate, out);
 }
 
+/// A `lasso` of `n_targets` targets over two features, solved every row,
+/// at a literal `λ`.
+fn lasso(n_targets: usize, fit_intercept: bool, path: Vec<f64>, lam: f64) -> Lasso {
+    Lasso::new(LassoCfg {
+        n_features: 2,
+        n_targets,
+        fit_intercept,
+        decay: Decay::Lam(lam),
+        lasso_path: path,
+        l1_ratio: 1.0,
+        select_half_life: None,
+        min_weight: 0.0,
+        target_min_weight: Vec::new(),
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        solve_share: None,
+        window: None,
+        window_every: None,
+        max_rows_between_snapshots: None,
+        target_gaps: TargetGaps::OwnRows,
+        max_iter: 500,
+        tol: 1e-12,
+    })
+    .unwrap()
+}
+
+/// Each (target, path point) reads its own `sqrt(1 + df / n_kish)` in its
+/// own slot, target-major: two targets over three path points, the
+/// second target's fit unlike the first's, each slot held to its own
+/// fit's active count over Kish's size of unit rows (docs/PLAN.md task
+/// 220). With one target, as above, a slot read as another target's could
+/// not show.
+#[test]
+fn lasso_reads_each_target_and_path_point_in_its_own_slot() {
+    let lam = 0.97;
+    let mut m = lasso(2, true, vec![0.8, 0.1, 0.0], lam);
+    let mut rng = Rng(23);
+    let (mut out, mut differ) = (Vec::new(), 0);
+    for i in 0..300 {
+        let x = rng.row(2);
+        let y0 = 1.0 + 2.0 * x[0] + 0.5 * rng.normal();
+        let y1 = -0.5 * x[1] + 0.5 * rng.normal();
+        m.step(
+            &x,
+            &[Some(y0), Some(y1)],
+            if i == 0 { 0.0 } else { 1.0 },
+            1.0,
+        );
+        let s1: f64 = (0..=i).map(|a| lam.powi(a)).sum();
+        let s2: f64 = (0..=i).map(|a| lam.powi(2 * a)).sum();
+        let n_kish = s1 * s1 / s2;
+        assert!(m.error_inflation_into(&mut out));
+        assert_eq!(out.len(), 6, "row {i}");
+        let fits = m.coefficients().unwrap();
+        for (j, path) in fits.iter().enumerate() {
+            for (li, b) in path.iter().enumerate() {
+                let active = b[1..].iter().filter(|v| **v != 0.0).count();
+                let want = (1.0 + (active + 1) as f64 / n_kish).sqrt();
+                let got = out[j * 3 + li];
+                assert!(
+                    (got - want).abs() <= 1e-12 * want,
+                    "row {i}, target {j}, point {li}: {got} against {want}"
+                );
+            }
+        }
+        differ += usize::from(out[..3] != out[3..]);
+    }
+    assert!(differ > 100, "the targets' slots differed on {differ} rows");
+}
+
+/// Where the Gram has no weight, every path point reads infinite (the
+/// module doc), the one whose fit has no column through the origin
+/// included, whose `df` is 0 (docs/PLAN.md task 220). Across 5,000 rows of
+/// weight 0 at `λ = 0.9` both of Kish's sums fade until each holds only
+/// the smallest doubles, where `λ` above one half keeps them: `W` some
+/// `2.5e-323`, whose square is 0, and `Σ w²` one `2^-1074`, so `n_kish`
+/// is 0 -- and `0 / 0` is no statistic.
+#[test]
+fn lasso_reads_infinite_where_the_gram_has_no_weight() {
+    let mut m = lasso(1, false, vec![1e6, 0.0], 0.9);
+    let mut rng = Rng(29);
+    let mut out = Vec::new();
+    for i in 0..5050 {
+        let x = rng.row(2);
+        let y = 2.0 * x[0] + 0.5 * rng.normal();
+        let w = if i < 50 { 1.0 } else { 0.0 };
+        m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
+        assert!(m.error_inflation_into(&mut out));
+        if i == 49 {
+            assert!(out.iter().all(|v| v.is_finite()), "{out:?}");
+        }
+    }
+    let fit = &m.coefficients().unwrap()[0];
+    assert!(
+        fit[0] == [0.0, 0.0] && fit[1].iter().all(|v| *v != 0.0),
+        "{fit:?}"
+    );
+    assert!(
+        m.n_eff() > 0.0 && m.n_eff() * m.n_eff() == 0.0,
+        "{:e}",
+        m.n_eff()
+    );
+    assert!(out.iter().all(|v| *v == f64::INFINITY), "{out:?}");
+}
+
 // ---- coefficient standard errors (docs/PLAN.md task 116, F) ----
 
 /// The coefficient variances `ewridge` reports are `M = Σ̂⁻¹ / n_kish`
