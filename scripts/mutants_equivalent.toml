@@ -2018,3 +2018,25 @@ mutation = "replace < with =="
 line_has = "let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };"
 why = """as `replace < with <=` here: no entry is below 0, NaN fails `==` \
 as it fails `<`, and at 0 both branches give 0"""
+
+# Task 234 (docs/PLAN.md): the survivors of run 37945116563 over the lines
+# of the push to 5cb8f7e that no input tells from the original. Every other
+# survivor there got a test.
+
+[[equivalent]]
+file = "crates/online-core/src/influence.rs"
+function = "Influence::update"
+mutation = "replace > with >="
+line_has = "if e.is_finite() && infl.is_finite() && infl >= 1.0 && w > 0.0 {"
+why = """at `w = 0` the mutant adds `0` to the weight and `0 · v²` to the \
+squares, `v` finite by the line's own tests, which leaves both sums \
+as they were"""
+
+[[equivalent]]
+file = "crates/online-core/src/health.rs"
+function = "FeatureHealth::update"
+mutation = "replace > with >="
+line_has = "let x: Vec<f64> = if w > 0.0 {"
+why = """at `w = 0` the mutant passes the row as it came where the original \
+passes zeros; `EwDiag::update` takes no step at a weight of 0 (`b = 0`) \
+and reads no value of the row, so both leave the same moments"""

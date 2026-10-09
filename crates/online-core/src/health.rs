@@ -133,4 +133,81 @@ mod tests {
         assert!(once.read(0).is_none(), "run once there is no longer run");
         assert!(f.has_shape(1));
     }
+
+    /// The shift by its definition where the means' low parts carry it: a
+    /// feature at `1e8` whose spread is `1e-3`, where a mean's rounding is
+    /// `1e-5` of its spread. Each value is `1e8` plus a multiple of `2⁻²⁶`,
+    /// exact in a double, and the moments are taken on the offsets.
+    #[test]
+    fn the_shift_reads_each_means_low_part() {
+        let lam = 0.97_f64;
+        let slow = crate::breaks::slow_factor(lam);
+        let mut f = FeatureHealth::new(1);
+        let mut st = 11u64;
+        let step = 2f64.powi(-26);
+        let mut rows: Vec<(f64, f64, f64)> = Vec::new(); // (offset, fast weight, slow weight)
+        for i in 0..300 {
+            let level = if i < 200 { 0.0 } else { 3e-4 };
+            let d = ((lcg(&mut st) * 1e-3 + level) / step).round() * step;
+            f.update(&[1e8 + d], lam, 1.0);
+            rows.iter_mut().for_each(|r| {
+                r.1 *= lam;
+                r.2 *= slow;
+            });
+            rows.push((d, 1.0, 1.0));
+        }
+        let moments = |pick: fn(&(f64, f64, f64)) -> f64| {
+            let sw: f64 = rows.iter().map(pick).sum();
+            let m = rows.iter().map(|r| pick(r) * r.0).sum::<f64>() / sw;
+            let v = rows
+                .iter()
+                .map(|r| pick(r) * (r.0 - m).powi(2))
+                .sum::<f64>()
+                / sw;
+            (m, v)
+        };
+        let ((mf, _), (ms, vs)) = (moments(|r| r.1), moments(|r| r.2));
+        let want = (mf - ms) / vs.sqrt();
+        let (_, shift) = f.read(0).unwrap();
+        assert!((shift - want).abs() < 1e-6, "{shift} vs {want}");
+    }
+
+    /// A feature with no spread has no ratio and no shift to read, and a
+    /// row with a feature that is not finite only ages: the moments are
+    /// those of the rows without it.
+    #[test]
+    fn a_constant_feature_reads_nothing_and_a_missing_one_only_ages() {
+        let mut f = FeatureHealth::new(2);
+        let mut g = FeatureHealth::new(2);
+        let mut st = 5u64;
+        for i in 0..50 {
+            let x = [3.0, lcg(&mut st)];
+            f.update(&x, 0.9, 1.0);
+            g.update(&x, 0.9, 1.0);
+            if i % 10 == 4 {
+                f.update(&[f64::NAN, 1.0], 0.9, 1.0);
+                g.update(&[0.0, 0.0], 0.9, 0.0);
+            }
+        }
+        assert!(f.read(0).is_none(), "a constant feature");
+        assert!(f.read(1).is_some());
+        assert_eq!(f, g);
+    }
+
+    /// A restored pair is refused unless both are shaped for the features.
+    #[test]
+    fn a_restored_pair_must_be_shaped_for_the_features() {
+        assert!(FeatureHealth::new(2).has_shape(2));
+        assert!(!FeatureHealth::new(2).has_shape(3));
+        let fast_only = FeatureHealth {
+            fast: crate::EwDiag::new(2),
+            slow: crate::EwDiag::new(3),
+        };
+        assert!(!fast_only.has_shape(2));
+        let slow_only = FeatureHealth {
+            fast: crate::EwDiag::new(3),
+            slow: crate::EwDiag::new(2),
+        };
+        assert!(!slow_only.has_shape(2));
+    }
 }
