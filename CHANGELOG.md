@@ -18,6 +18,17 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **`po.gbdt` (unstable): XGBoost and LightGBM inputs built from Arrow, as
+  fast as they go** (task 242). `xgboost_matrix` returns an
+  `xgboost.QuantileDMatrix` and `lightgbm_dataset` a constructed
+  `lightgbm.Dataset`, built in Rust from Arrow IPC or Parquet files or a
+  `LazyFrame`, streamed, through the libraries' C APIs loaded from the
+  user's installed packages (nothing linked); `xgb.train` and `lgb.train`
+  run unchanged, evaluation sets and callbacks included. XGBoost's cuts
+  come from a 200,000-row sample (`sample_rows=None` for its own sketch).
+  At 1e7 rows x 50 features XGBoost reaches its first round in 4.0 s
+  against 7.0 s from numpy, and LightGBM builds in 1.45 s at 2.9 GB
+  against 1.54 s at 8.9 GB from a collected frame.
 - **`po.gram.merge(..., within=True)` and `solve_subsets(..., within=True)`:
   pooling within parts** (task 240). Each part's moments are pooled about
   its own means, without the between-part term: the Gram of the rows

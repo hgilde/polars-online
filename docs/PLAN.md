@@ -9553,7 +9553,7 @@ tick, and that the series holding it up has a count near 1.
       halves at 200 columns take 0.08 s with the real run (a Python loop
       about 0.08 s a draw). GRAM.md *A null for the selection, by sign
       flips*.
-- [ ] 242. **The GBDT input component**
+- [x] 242. **The GBDT input component**
       (`docs/GBDT-ADAPTER.md` §6, task 235). Recommended: one Rust component,
       loading XGBoost's and LightGBM's shared libraries from the user's
       installed wheels at runtime (`libloading`; nothing linked, rule 12;
@@ -9575,6 +9575,25 @@ tick, and that the series holding it up has a count near 1.
       hand-off prototyped first on both libraries and shape (a) where (b)
       cannot be done cleanly; the Python form of option C as the engine
       when the native one cannot load. Before task 239 and task 238.
+      *Done 2026-10-10* (unstable): `po.gbdt.xgboost_matrix` and
+      `lightgbm_dataset`, shape (b) for both -- XGBoost through
+      `QuantileDMatrix`'s public handle branch, LightGBM by setting
+      `_handle` (refused by name where a version lacks it); dataset
+      parameters go in `lightgbm_dataset(params=)`, as for any constructed
+      dataset. The native engine in `online-polars/src/gbdt/` (`libloading`,
+      the library from the user's installed package, C-API versions checked;
+      Arrow IPC read natively, Parquet and a LazyFrame through
+      `collect_batches`; a bottom-k sample whatever the batching), a Python
+      engine to fall back on. 1e7x50: XGBoost 4.04 s to the first round
+      (its own `DataIter` over Polars batches 8.71, numpy 7.04), LightGBM
+      1.45 s in memory at 2.9 GB (a collected Polars frame 1.54 at 8.9 GB)
+      and 1.68 s streamed at 1.7 GB; 1e8x50: XGBoost 48.6 s, LightGBM
+      18.8 s. One tree hash per library whatever the source or engine;
+      `sample_rows=None` grows XGBoost's own trees. `collect_batches` holds
+      Polars' read-ahead (the whole of a 1 GB Parquet source before the
+      first batch), which is why IPC is read natively. Dev group:
+      `xgboost` (macOS) or `xgboost-cpu`, and `lightgbm`; macOS CI installs
+      libomp. Windows and Linux are first exercised by CI.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
