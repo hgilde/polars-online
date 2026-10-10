@@ -99,7 +99,7 @@ class ModelBank:
 
     The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
     (:mod:`polars_online._frame`), and as a file-to-file job, the ``online``
-    command line; this class is the in-process form, for a plan you hand it to
+    command line. This class is the in-process form, for a plan you hand it to
     chunk (:meth:`fit_predict_batches`, :meth:`fit`) or frames you already have.
 
     .. code-block:: python
@@ -119,7 +119,7 @@ class ModelBank:
     that finds the bank in use on another thread raises ``RuntimeError`` rather
     than interleave with it (:meth:`fit_predict` releases the GIL while it works).
     :meth:`predict` learns nothing, so any number of ``predict`` calls may
-    overlap; only a ``fit_predict`` in flight refuses them, and they refuse it.
+    overlap. Only a ``fit_predict`` in flight refuses them, and they refuse it.
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
@@ -140,10 +140,10 @@ class ModelBank:
         The dicts the builders made, with what a hand-written dict may leave out
         filled in (``targets`` for a model with no target, ``drift_action``). A state
         file carries them, so a bank loaded from one reports its specs without being
-        told what they are, every field included; that is what makes a state file
-        self-describing, and with :meth:`groups`, :meth:`output_fields` and the
-        diagnostic tables a file can be walked by a caller who knows nothing about it
-        in advance.
+        told what they are, every field included. That is what makes a state file
+        self-describing: with :meth:`groups`, :meth:`output_fields` and the
+        diagnostic tables, a caller who knows nothing about a file in advance can
+        walk it.
 
         A copy, and read-only. The bank's behaviour comes from the Rust state built at
         construction, not from this list, so a mutation here could only disagree with
@@ -158,10 +158,13 @@ class ModelBank:
         return f"ModelBank([{names}], groups={n_groups}, rows_fed={self.rows_fed()})"
 
     def rows_fed(self) -> int:
-        """Rows fed so far, over every chunk and group.
+        """Rows fed so far, over every chunk and group, each counted once however
+        many specs the bank holds.
 
-        Skipped rows and dropped groups are counted too, so this is not the sum of
-        :meth:`summary`'s ``rows_fed``, the same count per group.
+        Skipped rows count, as they do in :meth:`summary`'s ``rows_fed``, the same
+        count per (spec, group). So do the rows of groups since dropped
+        (:meth:`drop_groups`) or closed (``group_close``), which :meth:`summary`
+        no longer lists.
         """
         return self._native.rows_fed()
 
@@ -272,6 +275,7 @@ class ModelBank:
         - no spec reads a clock (a row-count clock has no position to resume
           from);
         - a spec's clock or group column is not in the frame;
+        - a clock column is neither numeric nor temporal;
         - a clock is temporal in the frame and was numeric in the bank, or
           the other way round.
         """
@@ -342,9 +346,10 @@ class ModelBank:
           words an ``Int128`` clock gets;
         - a clock is not a number, a ``Datetime``, a ``Date`` or a
           ``Duration`` (a ``Time`` is refused: a time of day starts again at
-          midnight), or its spec gives it the other kind of clock parameter
-          -- a plain number to a temporal clock, a duration to a numeric one
-          (*Clock units* in :mod:`polars_online.spec`);
+          midnight);
+        - a spec gives its clock the other kind of clock parameter: a plain
+          number to a temporal clock, or a duration to a numeric one (*Clock
+          units* in :mod:`polars_online.spec`);
         - the clock has a null or non-finite value;
         - a weight is negative (a null weight skips the row);
         - a spec is named like an input column, which the struct would
@@ -352,20 +357,20 @@ class ModelBank:
         - a group's clock runs backwards with ``restart_after_step_back``
           unset, the default, or by no more than it, where that is a late
           row rather than a new start. A chunk that overlaps what a loaded
-          state has learned is refused the same way; :meth:`skip_learned`
+          state has learned is refused the same way, and :meth:`skip_learned`
           drops the overlap.
 
         A chunk that would take a window past a refusing ``window_budget``
         is refused too (``ValueError``, naming the ring's size and its
         cadence, ``window_every`` and ``max_rows_between_snapshots``), found
         by replaying the chunk's clock schedule on the rings before any row
-        is learned. A refused chunk leaves the bank
-        exactly as it was, so the corrected chunk can be fed. The exception
-        is a window past its budget under ``drift_action="reset"``, whose
-        resets the replay cannot foresee. That is found as the rows are
-        learned, so the chunk is refused after some of it has been. The bank
-        then refuses every later ``fit_predict``, ``predict`` and ``save``
-        rather than go on from there; rebuild it from its last save.
+        is learned. A refused chunk leaves the bank exactly as it was, so the
+        corrected chunk can be fed. One refusal comes too late for that: a
+        window past its budget under ``drift_action="reset"``, whose resets
+        the replay cannot foresee. That is found as the rows are learned, so
+        the chunk is refused after some of it has been. The bank then refuses
+        every later ``fit_predict``, ``predict`` and ``save`` rather than go
+        on from there: rebuild it from its last save.
 
         ``RuntimeError`` when the bank is in use on another thread (class
         docstring).
@@ -409,29 +414,48 @@ class ModelBank:
 
         The frame needs each spec's feature and clock columns. Target columns are
         optional: present, they give ``resid`` and the standardized residual; absent,
-        those are null. The session column is optional and feeds ``session_gap``; a
+        those are null. The session column is optional and feeds ``session_gap``. A
         weight column is not read. A trend model (``holt``) extrapolates over the
         clock distance from the row it last learned, capped by ``gap_cap``, and a
         ``kalman`` with ``revert_half_life`` shrinks its coefficients over that
         distance exactly as the next ``fit_predict`` row would. The other coefficient
         models predict from their current coefficients regardless of the clock.
 
-        Per field: ``weight_sum``, ``penalty_selected``, ``sigma``, the residual quantiles,
-        autocorrelation and the metrics are the values the bank holds, frozen.
-        ``coef`` is filled on the last accepted row, since the same coefficients score
-        every row. ``drift`` never fires. Rows of a group the bank has never seen, or
-        without usable features, are null throughout, as a skipped row is in
-        ``fit_predict``. Under ``group_close = "session"``, a row from a session other
-        than the group's current one is scored as the first row of a fresh stream,
-        null with ``weight_sum`` 0, because ``fit_predict`` would restart the stream there.
-        A row that ``session_gap = "reset"`` would restart on is scored the same way.
-        A row before the group's last learned clock is scored against the state as it
-        stands, whatever ``restart_after_step_back`` says: scoring learns nothing,
-        so it neither refuses the row nor starts over. Under an ``embargo``,
-        ``predict`` releases nothing: a held row whose delay has passed by the scored
-        row's clock is still held, and learned by the next ``fit_predict``, so every
-        row is scored against the model the last ``fit_predict`` left, its
-        ``weight_sum`` and ``learned_clock`` included.
+        Per field and per kind of row:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 40 60
+
+           * - the field or the row
+             - what ``predict`` gives
+           * - ``weight_sum``, ``penalty_selected``, ``sigma``, the residual
+               quantiles, the autocorrelation and the metrics
+             - the values the bank holds, frozen
+           * - ``coef``
+             - filled on the last accepted row, since the same coefficients
+               score every row
+           * - ``drift``
+             - never fires
+           * - a row of a group the bank has never seen, or without usable
+               features
+             - null throughout, as a skipped row is in ``fit_predict``
+           * - under ``group_close = "session"``, a row from a session other
+               than the group's current one
+             - the first row of a fresh stream, null with ``weight_sum`` 0,
+               because ``fit_predict`` would restart the stream there
+           * - a row that ``session_gap = "reset"`` would restart on
+             - the same
+           * - a row before the group's last learned clock
+             - scored against the state as it stands, whatever
+               ``restart_after_step_back`` says: scoring learns nothing, so
+               it neither refuses the row nor starts over
+
+        Under an ``embargo``, ``predict`` releases nothing. A held row whose
+        delay has passed by the scored row's clock is still held, and learned
+        by the next ``fit_predict``. So every row is scored against the model
+        the last ``fit_predict`` left, its ``weight_sum`` and ``learned_clock``
+        included.
 
         .. code-block:: python
 
@@ -561,7 +585,11 @@ class ModelBank:
         it when that is given. An iterator of frames is fed as it comes, and
         ``chunk_size`` does not re-chunk it. Whatever
         ``fit_predict`` raises for a chunk, this raises there; the chunks before it
-        have been learned from.
+        have been learned from. Its own arguments are checked when it is called,
+        before a row moves: ``ValueError`` for ``chunk_size`` below 1, and for a
+        ``closed_groups`` whose extension names no format or beside specs none of
+        which has ``group_close``; ``FileNotFoundError`` for a ``closed_groups``
+        whose directory is not there.
 
         A plan runs through polars' streaming engine, and an online model learns
         in row order, so the order the engine delivers is part of the result. A
@@ -744,24 +772,25 @@ class ModelBank:
         The plan runs through polars' streaming engine, whose row order for a
         ``join``, ``group_by`` or ``unique`` without an order guarantee is not
         the order ``lf.collect()`` gives. An online model learns in row order.
-        Give a join ``maintain_order="left"`` or sort before the bank; such a
+        Give a join ``maintain_order="left"`` or sort before the bank. Such a
         plan raises :class:`polars_online.OrderNotGuaranteedWarning` naming the
         node (:meth:`fit_predict_batches` says more).
 
-        **With one exception, and it is this method's alone.** A fit whose
-        every spec is an accumulator with no decay -- ``ewridge`` or ``rls``
-        at ``lam=1.0`` or ``half_life=inf``, no ``window_size``, no session,
-        no drift reset -- reaches the same coefficients whatever order the
-        rows arrived in, because its sums commute. Measured to rounding, not
-        to the bit: 3.3e-16 over 200 rows. Since :meth:`fit` returns nothing
-        and keeps only the state, the order genuinely does not matter there,
-        and no warning is raised. It still is for :meth:`fit_predict_batches` over
-        the same specs, whose predictions are out-of-sample and so move with
-        the order (1.33 on those same rows). It is for every model whose
-        update does not commute: ``sgd``, ``pa``, ``ftrl``, ``quantile`` and a
-        reweighting ``huber`` differ materially with no decay at all. And it
-        is for a model that selects by an out-of-sample error, as ``lasso``
-        does its penalty.
+        **An order-free fit is spared the warning, in this method alone.** A
+        fit whose every spec is an accumulator with no decay -- ``ewridge`` or
+        ``rls`` at ``lam=1.0`` or ``half_life=inf``, with no ``window_size``,
+        no session and no drift reset -- reaches the same coefficients
+        whatever order the rows arrived in, because its sums commute. Measured
+        to rounding, not to the bit: 6.7e-16 for ``ewridge`` and 1.4e-15 for
+        ``rls`` over 200 rows. Since :meth:`fit` returns nothing and keeps
+        only the state, the order genuinely does not matter there, and no
+        warning is raised. The warning stays for :meth:`fit_predict_batches`
+        over the same specs, whose predictions are out-of-sample and so move
+        with the order (by up to 0.087 for ``ewridge`` on those same rows). It
+        stays for every model whose update does not commute: ``sgd``, ``pa``,
+        ``ftrl``, ``quantile`` and a reweighting ``huber`` differ materially
+        with no decay at all. And it stays for a model that selects by an
+        out-of-sample error, as ``lasso`` does its penalty.
 
         .. code-block:: python
 
@@ -774,7 +803,8 @@ class ModelBank:
         over the same rows, byte for byte. What it saves is the result, not
         the work: each row is still predicted before it is learned from,
         because that is what makes the fit out-of-sample. The output columns
-        are still built before they are dropped.
+        are still built before they are dropped. It raises what
+        :meth:`fit_predict_batches` raises.
         """
         # A formula target's window need not fit the embargo here: the run
         # keeps the state alone, and each row is learned once its window
@@ -812,7 +842,7 @@ class ModelBank:
             reports. The solve schedule decides when a stream first solves, not
             ``min_weight``. ``pred`` waits for ``min_weight`` and ``coef`` does not,
             so a fit with ``weight_sum`` below it is over fewer rows than the spec asks
-            for; a solve over fewer rows than terms is a jittered one, counted by
+            for. A solve over fewer rows than terms is a jittered one, counted by
             :meth:`solve_failures`.
         ``position``, ``target``, ``ridge``, ``feature_set``, ``penalty``, ``term``
             :func:`polars_online.spec.coef_index`'s columns: ``position`` indexes the
@@ -998,19 +1028,20 @@ class ModelBank:
             ``restart_after_step_back`` restarted the stream.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
-            last row (docs/WARMUP-AND-CONVERGENCE.md): how full the decay
-            window is -- the fraction the next row's ``settled_frac`` reads,
-            which under ``embargo`` counts the clock the held rows have
-            covered too -- and the largest noise-gate ratio over its slots --
-            ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
-            ``sqrt(1 + k_total / n_kish)``, ``lasso``'s
-            ``sqrt(1 + df / n_kish)``, and for ``kalman``, whose gate reads
-            each row's own value, its mean field over the design,
+            last row (docs/WARMUP-AND-CONVERGENCE.md). ``settled_frac`` is
+            how full the decay window is: the fraction the next row's
+            ``settled_frac`` reads, which under ``embargo`` counts the clock
+            the held rows have covered too. ``error_inflation`` is the
+            largest noise-gate ratio over its slots: ``ewridge``'s
+            ``sqrt(1 + edf / n_kish)``, ``rls``'s
+            ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
+            ``sqrt(1 + df / n_kish)``. ``kalman``'s gate reads each row's own
+            value, so its reading is the gate's mean field over the design,
             ``sqrt(1 + sum_i P_ii E[z_i^2] / R)``. Null where the model has
             no such reading.
         ``weight_sum_settled``
             The weight the stream settles at, read from where it stands:
-            ``(W - w1 * (1 - s)) / s``, ``W`` the accumulated weight a next
+            ``(W - w1 * (1 - s)) / s``. ``W`` is the accumulated weight a next
             row would report as ``weight_sum``, ``w1`` a row's weight (1
             without a weight column, the rows' mean with one), and ``s`` the
             fraction the learned rows have settled. That is ``settled_frac``
@@ -1064,9 +1095,9 @@ class ModelBank:
         An unsupervised model lists no targets, an ``ew_class`` label column has its
         counts only, and a comparison's target is the difference of residuals it
         tests, named as the spec names it. A window expression given as a target
-        counts the value each row is learned from, when the row is learned: it is
-        a null until the row's window closes and its ``embargo`` passes, and stays
-        one for a row still held when the input ends. ``spec`` and ``group``
+        counts the value each row is learned from, when the row is learned. That
+        value is a null until the row's window closes and its ``embargo`` passes,
+        and stays one for a row still held when the input ends. ``spec`` and ``group``
         narrow the frame as in :meth:`summary`.
         """
         names = self._native.spec_names()
@@ -1114,7 +1145,7 @@ class ModelBank:
             Kish's effective sample size, ``weight_sum**2 / sum(w**2)``: the number of
             equally weighted rows these moments are worth, and what a standard error
             computed from them divides by. ``weight_sum`` counts weight, not rows, so it is
-            not a sample size; ``(1 + lam**d) / (1 - lam**d)`` is the Kish size of
+            not a sample size. ``(1 + lam**d) / (1 - lam**d)`` is the Kish size of
             an exponentially weighted window of unit rows ``d`` clock units apart,
             ``lam = 0.5 ** (1 / half_life)``. It is
             scale-free: decay divides ``weight_sum`` and ``sum(w**2)`` by the same factor,
@@ -1182,10 +1213,10 @@ class ModelBank:
             the system's condition number. The other arrays stay float64: they are
             ``k`` long, and the means are what a merge's spread term is made of.
             An entry float32 cannot hold to that precision is refused with a
-            ``ValueError`` naming its column: one past float32's largest number,
-            about 3.4e38, which would read ``inf``, and a nonzero one below its
-            smallest normal number, about 1.2e-38, which would read 0 or keep
-            fewer digits. A column spread 1e20 wide, or 1e-20, gets there, as
+            ``ValueError`` naming its column. That is an entry past float32's
+            largest number, about 3.4e38, which would read ``inf``, or a nonzero
+            one below its smallest normal number, about 1.2e-38, which would
+            read 0 or keep fewer digits. A column spread 1e20 wide, or 1e-20, gets there, as
             its variance squares the scale. Rescale it upstream, or read the
             Gram in float64.
         ``layout="packed"``
@@ -1261,12 +1292,12 @@ class ModelBank:
         comfortably faster.
 
         ``spec`` is a spec name or position (``KeyError`` / ``IndexError`` for one the
-        bank has not got, as for :meth:`groups`); ``group`` narrows the list to one
+        bank has not got, as for :meth:`groups`). ``group`` narrows the list to one
         group's key, or to a list of keys with ``None`` among them for the null group
         (``group=None`` is every group), in :meth:`groups`' order. A group the bank
         has never seen gives an empty list, as does a model
         that keeps no co-moments; neither is an error. ``dtype`` is ``"float64"`` or
-        ``"float32"`` (or a numpy dtype of either), ``layout`` ``"full"`` or
+        ``"float32"`` (or a numpy or polars dtype of either), ``layout`` ``"full"`` or
         ``"packed"``; anything else is a ``ValueError``. Requires numpy, which is not a
         dependency of this package (polars does not require it either): ``pip install
         polars-online[numpy]`` adds it, and without it the call raises
@@ -1442,8 +1473,8 @@ class ModelBank:
 
         ``group`` narrows the frame to one group's key, or to a list of keys with
         ``None`` among them for the null group (``group=None`` is every group). A
-        group the bank has never seen gives an empty frame; a spec that is not a
-        ``marginal`` is refused (``ValueError``); an ``ew_cov``'s moments are read
+        group the bank has never seen gives an empty frame. A spec that is not a
+        ``marginal`` is refused (``ValueError``): an ``ew_cov``'s moments are read
         with :meth:`gram`. ``spec`` is a name or position (``KeyError`` /
         ``IndexError`` for one the bank has not got).
         """
@@ -1501,10 +1532,11 @@ class ModelBank:
             the truth past the cap, where a value not held has a count of at
             most ``count_error``.
         ``longest_run``, ``equal_prev``, ``adjacent``, ``equal_by_chance``
-            The longest run of one value on consecutive rows; the rows equal
-            to the row before, out of ``adjacent``, the rows whose row before
-            was usable too; and ``sum p_v^2`` over the values' shares, the
-            share of ``adjacent`` rows independent rows would make equal
+            ``longest_run`` is the longest run of one value on consecutive
+            rows. ``equal_prev`` counts the rows equal to the row before, out
+            of ``adjacent``, the rows whose row before was usable too.
+            ``equal_by_chance`` is ``sum p_v^2`` over the values' shares, the
+            share of ``adjacent`` rows that independent rows would make equal
             (a lower bound past the cap).
         ``min_change``, ``min_change_count``
             The smallest nonzero change ``|x_t - x_(t-1)|`` between two
@@ -1514,11 +1546,12 @@ class ModelBank:
             ``equal_prev``, the changes at 0: ``check``'s ``frozen`` weighs
             the two.
         ``autocorr``, ``unit_root_t``
-            The correlation of each usable row with the usable row before it,
-            and the Dickey-Fuller statistic of that regression with a
-            constant: near 0 for a random walk, about ``-sqrt(n)`` for rows
-            that do not persist, and ``+inf`` for a fit with no residual and
-            a slope of 1, such as a row counter (``-inf`` below 1).
+            ``autocorr`` is the correlation of each usable row with the usable
+            row before it. ``unit_root_t`` is the Dickey-Fuller statistic of
+            that regression with a constant. It reads near 0 for a random
+            walk, about ``-sqrt(n)`` for rows that do not persist, and
+            ``+inf`` for a fit with no residual and a slope of 1, such as a
+            row counter (``-inf`` below 1).
 
         ``table="pairs"``, for a spec built with ``pairs=True``: ``group``,
         ``column_a``, ``column_b``, and over the rows where both are usable,
@@ -1548,7 +1581,7 @@ class ModelBank:
         and the digests approximately, as the spec's docstring says.
 
         ``spec`` is a name or a position, and may be left out when the bank
-        holds one audit (``ValueError`` when it holds none or several);
+        holds one audit (``ValueError`` when it holds none or several).
         ``group`` narrows the frame as in :meth:`summary`. A spec that is
         not an ``audit``, ``table="pairs"`` of one without pairs and an
         unknown ``table`` are refused (``ValueError``).
@@ -1683,10 +1716,10 @@ class ModelBank:
 
         It reads only what the bank keeps anyway (:meth:`summary`,
         :meth:`describe`, :meth:`solve_failures`, :meth:`last_row`, and
-        :meth:`gram` or :meth:`marginal` where the spec has one). So it costs
-        the run nothing, a bank loaded from its file gives the same findings
-        as the bank that saved it, and the stream's chunking moves none of
-        them. Run it after a first pass, before trusting a fit:
+        :meth:`gram`, :meth:`marginal` or :meth:`audit` where the spec has
+        one). So it adds no work to the run, a bank loaded from its file gives
+        the same findings as the bank that saved it, and the stream's chunking
+        moves none of them. Run it after a first pass, before trusting a fit:
 
         .. code-block:: python
 
@@ -1736,7 +1769,7 @@ class ModelBank:
                rows or more (sparse labels are a design, not a fault)
            * - ``few_learned``
              - warning
-             - half the rows or more were skipped for a missing feature or
+             - more than half the rows were skipped for a missing feature or
                weight, whichever columns caused it
            * - ``constant``
              - error, warning
@@ -1755,9 +1788,9 @@ class ModelBank:
            * - ``ridge_shrinks``
              - warning
              - ``ewridge``, ``huber`` or ``quantile`` without
-               ``standardize``: the smallest ridge is a quarter of a
-               feature's variance or more, so it takes a fifth of that
-               coefficient
+               ``standardize``, at ``ridge_scale="mean"`` (the default): the
+               smallest ridge is a quarter of a feature's variance or more,
+               so it takes a fifth of that coefficient
            * - ``collinear``
              - warning
              - the largest variance inflation factor, or the condition index
@@ -1874,13 +1907,13 @@ class ModelBank:
              - the regular steps' coefficient of variation is 0.5 or more
 
         **Every threshold was measured before it shipped.** On five clean
-        shapes (independent features; ten features correlated at 0.8 with an
-        R² of 0.99; five groups; forty groups of 50 rows at a half-life of 5;
-        a target present on 40% of the rows), over ten seeds and fifteen
-        specs, no check raised an error or a warning in 750 runs. Each
-        problem planted in the same streams was found on every seed, for
-        every spec it harms, and for no other (``tests/test_check.py``).
-        Where a line sits:
+        shapes, over ten seeds and fifteen specs, no check raised an error or
+        a warning in 750 runs. The shapes are independent features; ten
+        features correlated at 0.8 with an R² of 0.99; five groups; forty
+        groups of 50 rows at a half-life of 5; and a target present on 40% of
+        the rows. Each problem planted in the same streams was found on every
+        seed, for every spec it harms, and for no other
+        (``tests/test_check.py``). Where a line sits:
 
         - ``collinear``: clean designs reached a VIF of 5.6 and a condition
           index of 7.6 (ten features correlated at 0.8). Two independent
@@ -1891,10 +1924,10 @@ class ModelBank:
           flagged.
         - ``leakage``: clean fits reached 0.991 at an R² of 0.99. A feature
           that is the target plus a thousandth of its spread reads 0.999999.
-          The line is a correlation, so it is a warning: a fit whose R² is
+          The line is a correlation, so it is a warning. A fit whose R² is
           0.9998 or more passes it, as ``y = 2x + 0.01 N(0, 1)`` does at
-          0.99999, and so does a random walk against its own previous row
-          once the stream is long, on one seed of ten at 10,000 rows, five at
+          0.99999. So does a random walk against its own previous row once
+          the stream is long: on one seed of ten at 10,000 rows, five at
           30,000 and nine at 100,000 (with no decay).
         - ``ridge_shrinks``: at a quarter of the variance the out-of-sample
           R² fell by 0.02 to 0.03; at the whole variance by 0.14.
@@ -1903,12 +1936,12 @@ class ModelBank:
         - ``level_over_spread`` and ``scales_apart``: each limit is the
           largest value at which the model's out-of-sample R² fell by no more
           than 0.05, at half-lives of 20, 200 and infinite. ``rls``'s level
-          limit is ``0.9 sqrt(W / delta_left)``, from the summary: a level
-          costs it only through the prior ``delta I`` it still holds,
-          ``delta_left = delta (1 - settled_frac)`` (all of ``delta`` without
-          decay), against the weight its fit holds, ``W``
-          (``settled_frac * weight_sum_settled``, or ``weight_sum`` without
-          decay). The R² it lost over a stream's last tenth was one curve in
+          limit is ``0.9 sqrt(W / delta_left)``, read from the summary. A
+          level lowers its accuracy only through the prior ``delta I`` it
+          still holds, ``delta_left = delta (1 - settled_frac)`` (all of
+          ``delta`` without decay), set against the weight its fit holds,
+          ``W`` (``settled_frac * weight_sum_settled``, or ``weight_sum``
+          without decay). The R² it lost over a stream's last tenth was one curve in
           ``(|mean| / std) sqrt(delta_left / W)`` at half-lives of 200, 2,000
           and infinite, at most 0.05 up to 0.9. So a decaying ``rls`` that
           has forgotten its prior is told nothing, at any level:
@@ -1946,18 +1979,24 @@ class ModelBank:
         chance in that many rows. The Gram's checks wait for ten Kish rows a
         coefficient. Both guards keep a small group quiet.
 
-        **An audit's thresholds were measured the same way.** On the five
-        clean shapes above and seven more (two columns persisting at 0.9 and
-        at 0.95 a row, uniform values, Poisson counts about 50, values
-        rounded to two decimals at 100, a clock whose steps vary between 0.5
-        and 1.5, and six columns that hold still on a coarse grid over 10,000
-        rows: the hour of the day on minute data, a regime that stays with
-        probability 0.99, a price in ticks, a spread in whole ticks, an
-        AR(0.9) rounded to integers and a temperature in whole degrees), over
-        ten seeds, an audit of every column raised no error or warning; the
-        one clean shape with information is the target that is NaN on 60% of
-        its rows. Each problem planted was found on
-        every seed (``tests/check_streams.py``'s ``AUDIT_PLANTED``):
+        **An audit's thresholds were measured the same way.** Over ten
+        seeds, an audit of every column raised no error or warning on the
+        five clean shapes above and on seven more:
+
+        - columns persisting at 0.9 a row;
+        - columns persisting at 0.95 a row;
+        - uniform values;
+        - Poisson counts about 50;
+        - values rounded to two decimals at 100;
+        - a clock whose steps vary between 0.5 and 1.5;
+        - six columns that hold still on a coarse grid over 10,000 rows: the
+          hour of the day on minute data, a regime that stays with
+          probability 0.99, a price in ticks, a spread in whole ticks, an
+          AR(0.9) rounded to integers and a temperature in whole degrees.
+
+        The one clean shape with information is the target that is NaN on
+        60% of its rows. Each problem planted was found on every seed
+        (``tests/check_streams.py``'s ``AUDIT_PLANTED``):
 
         - ``sentinel``: ``-999`` on 5% of a continuous column's rows reads 3.9%
           to 5.8% at 9.8 to 12 times the next count's bound; on 3% it was
@@ -1993,11 +2032,11 @@ class ModelBank:
         undecayed, so a feature that drifted slowly can sit far above its
         recent spread without showing as a level here. The Gram's checks
         cover the three models that keep one, and ``leakage`` also reads a
-        ``marginal``. Sentinel values counted apart from nulls, a frozen feed,
-        a column of few distinct values, a level fed as a feature, heavy
-        tails, duplicate columns and the clock's duplicate stamps, gaps and
-        irregular spacing are an ``audit``'s to measure: without one in the
-        bank, nothing is said about them. A group a spec closes
+        ``marginal``. An ``audit`` measures what no model keeps: sentinel
+        values counted apart from nulls, a frozen feed, a column of few
+        distinct values, a level fed as a feature, heavy tails, duplicate
+        columns, and the clock's duplicate stamps, gaps and irregular spacing.
+        Without one in the bank, nothing is said about them. A group a spec closes
         (``group_close``) leaves the bank with its stream, so nothing is said
         about it either: the findings cover the groups still open. An
         ``audit`` refuses ``group_close`` for that reason.
@@ -2059,14 +2098,16 @@ class ModelBank:
 
         Written to a temporary sibling and renamed into place, so an interrupted save
         leaves the previous state where it was rather than truncating it. The rename
-        is preceded by a filesystem sync, which is what a resumable file costs: about
-        4 ms on macOS, against about 0.5 ms for serializing 500 groups. Save every
-        chunk and the sync dominates; save every hundredth and it disappears.
+        is preceded by a filesystem sync, so a power loss cannot replace a good state
+        file with an empty one. The sync takes about 4 ms on macOS, against about 0.5 ms for
+        serializing 500 groups. Save every chunk and the sync dominates; save every
+        hundredth and it disappears.
 
         Raises the ``OSError`` for what went wrong, with the path in the message:
         ``FileNotFoundError`` for a directory that is not there, ``PermissionError``
         for one that cannot be written. The file, if it existed, is untouched.
-        ``RuntimeError`` while a ``fit_predict`` is in flight on another thread.
+        ``RuntimeError`` while a ``fit_predict`` is in flight on another thread, and
+        ``ValueError`` for a bank a refused chunk left broken (:meth:`fit_predict`).
 
         .. warning::
             A spec's formula target (:func:`polars_online.target` over a window
@@ -2126,8 +2167,8 @@ class ModelBank:
         """Write :meth:`to_json` to ``path``.
 
         A plain ``write_text``, not :meth:`save`'s atomic rename: this is an export of
-        a state that lives elsewhere, so a half-written one costs nothing but a
-        re-run.
+        a state that lives elsewhere, so a half-written one is mended by writing it
+        again.
         """
         Path(path).write_text(self.to_json(pretty=pretty), encoding="utf-8")
 
@@ -2135,7 +2176,7 @@ class ModelBank:
     def load(cls, path: str | Path, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
         """A bank from a file :meth:`save` wrote, on this or any other OS.
 
-        The file carries the specs, so none need be given; passing ``specs`` asserts
+        The file carries the specs, so none need be given. Passing ``specs`` asserts
         they are the file's, which is how a resuming job checks that the state it
         found is the state of the bank it is about to run.
 

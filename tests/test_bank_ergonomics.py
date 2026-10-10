@@ -69,6 +69,25 @@ def test_rows_fed_counts_fed_rows_and_groups_count_processed_ones():
     assert bank.groups()["rows_processed"].to_list() == [18, 18, 18]
 
 
+def test_rows_fed_is_one_specs_summary_count_until_a_group_is_dropped():
+    """The docstring (task 239): skipped rows count in both ``rows_fed()``
+    and ``summary()``'s ``rows_fed``, each row once however many specs read
+    it, and a dropped group's rows stay in ``rows_fed()`` only."""
+    bank = po.ModelBank(
+        [po.spec.ewridge("m", group="g", **BASE), po.spec.rls("r", group="g", **BASE)]
+    )
+    df = _df(60).with_columns(
+        pl.when(pl.col("t") < 6).then(None).otherwise(pl.col("x0")).alias("x0")
+    )
+    bank.fit_predict(df)
+    per_spec = bank.summary().group_by("spec").agg(pl.col("rows_fed").sum())
+    assert sorted(per_spec["rows_fed"].to_list()) == [60, 60]
+    assert bank.rows_fed() == 60
+    bank.drop_groups(["a"])
+    assert bank.summary("m")["rows_fed"].sum() == 40
+    assert bank.rows_fed() == 60
+
+
 # --- groups() ----------------------------------------------------------------
 
 

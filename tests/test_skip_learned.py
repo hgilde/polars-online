@@ -148,6 +148,11 @@ def test_what_it_refuses():
     temporal = frame().with_columns(t=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"))
     with pytest.raises(ValueError, match="temporal in the frame and was numeric in the bank"):
         bank.skip_learned(temporal)
+    # The docstring's third refusal (task 239): a clock column that is
+    # neither numeric nor temporal.
+    text = frame().with_columns(t=pl.col("t").cast(pl.String))
+    with pytest.raises(ValueError, match="clock column 't' has dtype String, which is not a clock"):
+        bank.skip_learned(text)
 
 
 def test_an_empty_bank_keeps_everything():

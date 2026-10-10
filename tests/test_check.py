@@ -317,6 +317,27 @@ class TestValues:
         var = df["x0"].var()
         assert row["value"] == pytest.approx(1.0 / var, rel=1e-12)
 
+    def test_few_learned_fires_on_more_than_half_skipped_and_not_at_half(self):
+        """The docstring's line: more than half the rows skipped for a missing
+        feature. At exactly half, ``rows_processed / rows_fed`` is 0.5, which
+        is not below ``PROCESSED_SHARE``, so it stays quiet (task 239: the
+        docstring said "half the rows or more")."""
+        df, _ = cs.clean_independent(0)
+        df = df.head(200)
+        spec = po.spec.ewridge("m", targets=["y"], features=cs.FEATURES, half_life=50.0)
+        row = pl.int_range(pl.len())
+        for skipped, fires in ((100, False), (101, True)):
+            holed = df.with_columns(
+                pl.when(row < skipped).then(None).otherwise(pl.col("x0")).alias("x0")
+            )
+            f = cs.findings(holed, [spec])
+            assert (not f.filter(code="few_learned").is_empty()) is fires, (skipped, f)
+            summary = po.ModelBank([spec])
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                summary.fit_predict(holed)
+            assert summary.summary()["rows_skipped"][0] == skipped
+
     def test_low_support_is_not_repeated_for_a_constant_feature(self):
         df, specs = cs.planted_constant_feature(0)
         bank = po.ModelBank(specs[:1])
