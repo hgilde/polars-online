@@ -3704,9 +3704,9 @@ over a hundred features, lifts the one-target figures.
 | layout | bytes a pair | bytes a feature | state at `p = 10,000`, T = 1 | T = 10 | T = 30 |
 |---|---:|---:|---:|---:|---:|
 | `"per_target"` | 32 | — | 0.32 MB | 3.2 MB | 9.6 MB |
-| `"per_target"`, 3 lags | 104 | 40, the ring | 1.0 MB | 10 MB | 31 MB |
+| `"per_target"`, 3 lags | 104 | 40, the ring | 1.4 MB | 11 MB | 32 MB |
 | `"shared"` | 8 | 24 | 0.32 MB | 1.0 MB | 2.6 MB |
-| `"shared"`, 3 lags | 56 | 88 | 1.0 MB | 6.1 MB | 17 MB |
+| `"shared"`, 3 lags | 56 | 88 | 1.4 MB | 6.5 MB | 18 MB |
 
 Every learned row reads and writes all of it once, beside the row's `8p`
 bytes of features. L1 holds the 32 bytes of 4,096 pairs. The table above
@@ -3723,7 +3723,7 @@ or more targets share each row's features. At one target it takes
 afresh. Past 9,000 pairs, with the state streamed, it takes 0.57–0.61 ns.
 9.6 MB of state, inside L2, and 29 MB, past it, cost the same.
 
-| layout | resident (at most 104 KB) | streamed | the traffic's share |
+| layout | resident (at most 108 KB) | streamed | the traffic's share |
 |---|---:|---:|---:|
 | `"per_target"` | 0.49–0.53 | 0.57–0.61 | about 14% |
 | `"per_target"`, 3 lags | 1.97–2.08 | 2.45–2.62 | about 20% |
@@ -3742,8 +3742,8 @@ run of one, per pair and row:
 | `"per_target"`, `p = 100`, T = 30 | 96 KB | 2.06 | 16.3 | 7.9 |
 | `"per_target"`, `p = 10,000`, T = 30 | 9.6 MB | 2.37 | 14.6 | 6.2 |
 | `"per_target"`, `p = 30,000`, T = 30 | 29 MB | 2.36 | 14.6 | 6.2 |
-| 3 lags, `p = 100`, T = 10 | 104 KB | 8.0 | 62.5 | 7.8 |
-| 3 lags, `p = 10,000`, T = 30 | 31 MB | 10.0 | 55.4 | 5.6 |
+| 3 lags, `p = 100`, T = 10 | 108 KB | 8.0 | 62.5 | 7.8 |
+| 3 lags, `p = 10,000`, T = 30 | 32 MB | 10.0 | 55.4 | 5.6 |
 
 **The floor is the arithmetic.** A copy of the pair loop, `pair_kernel`'s
 expressions compiled alone, is 25 instructions per two pairs: five vector
@@ -3781,9 +3781,8 @@ rounds:
 | registers: 4, 8 and 32 features | 1.28, 0.84, 0.72 | 1.11, 0.67, 0.62 | 1.14, 0.67, 0.59 |
 
 **E74's order is about 5% faster at best, and half as fast at its
-narrowest.**
-With the state in registers and the rows innermost, each row's update
-waits on the one before. A pair's mean feeds its deviation, which feeds
+narrowest.** With the state in registers and the rows innermost, each
+row's update waits on the one before. A pair's mean feeds its deviation, which feeds
 its mean again, seven dependent operations a row. Sixteen features keep
 enough of those chains in flight to cover the wait, but their state then
 fills the registers, and thirty-two spill. **A tile that keeps one
@@ -3832,8 +3831,8 @@ moved. The unsplit model runs none of this code, and its time did not move.
 
 Through the bank, `ModelBank.fit_predict` at 10,000 features with the two
 builds' extensions swapped in turn, three rounds of three calls, the best
-of each build, in milliseconds. The pairs' frame was equal to the byte in every
-shape:
+of each build, in milliseconds. The pairs' frame was equal to the byte
+in every shape:
 
 | shape | threads | `shards` | before | after | ratio |
 |---|---:|---|---:|---:|---:|
