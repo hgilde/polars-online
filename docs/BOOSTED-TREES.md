@@ -881,8 +881,7 @@ plumbing is a day by the `EXTENDING.md` list; the measurement on real data
 ## 11. Reproducing the numbers
 
 ```
-uv run python scripts/ogbt_experiments.py all                  # without XGBoost rows
-uv run --with xgboost python scripts/ogbt_experiments.py all   # with them
+uv run python scripts/ogbt_experiments.py all   # XGBoost is in the dev group (task 242)
 ```
 
 On macOS the `xgboost` wheel needs `libomp`, which scikit-learn's wheel

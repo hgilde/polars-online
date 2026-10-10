@@ -413,9 +413,7 @@ def test_every_source_and_engine_gives_lightgbm_the_same_trees(data, files):
 def test_categorical_names_the_categorical_features(data, valid, engine):
     """An integer column named categorical is one; an Enum left out goes in
     as its codes. A validation set takes its training set's, named or not."""
-    ds = gbdt.lightgbm_dataset(
-        data, label="y", categorical=["i0"], params=LGB_DATA, engine=engine
-    )
+    ds = gbdt.lightgbm_dataset(data, label="y", categorical=["i0"], params=LGB_DATA, engine=engine)
     assert ds.categorical_feature == [FEATURES.index("i0")]
     own = lgb.Dataset(
         numpy_x(data, np.float32),

@@ -5130,7 +5130,9 @@ pass, and with it XGBoost's own trees. `po.gbdt.lightgbm_dataset` returns a
 constructed `lgb.Dataset`, binned on LightGBM's own sample, and holds the
 data in memory only when it fits. On 10 million rows of 50 features, the
 first round began after 4.0 seconds for XGBoost, against 8.7 for its own
-iterator over Polars batches, and after 1.5 seconds for LightGBM.
+iterator over Polars batches. For LightGBM it began after 1.7 seconds
+streamed and 1.5 in memory, against 1.5 for its own route from a collected
+frame at three times the memory.
 [GBDT-ADAPTER §7](docs/GBDT-ADAPTER.md#7-built-task-242) has the
 measurements, and the docstrings have every parameter.
 
