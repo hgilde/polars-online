@@ -943,3 +943,199 @@ class TestItWorksOnEveryGramItIsGiven:
         assert "pinv" not in doc
         for call in ("numpy.linalg.eigh", "numpy.linalg.inv"):
             assert call in doc, call
+
+
+def _exact_sums(z, y):
+    """The exact sums behind a Gram over rows ``z`` (the intercept's 1
+    first) and target ``y``, in rational arithmetic: the row count, ``sum
+    z``, ``sum z z'``, ``sum z y``, ``sum y`` and ``sum y**2``."""
+    from fractions import Fraction
+
+    k = z.shape[1]
+    sz, szy = [Fraction(0)] * k, [Fraction(0)] * k
+    szz = [[Fraction(0)] * k for _ in range(k)]
+    sy = syy = Fraction(0)
+    for row, value in zip(z.tolist(), y.tolist(), strict=True):
+        f = [Fraction(v) for v in row]
+        fy = Fraction(value)
+        for i in range(k):
+            sz[i] += f[i]
+            szy[i] += f[i] * fy
+            for j in range(i, k):
+                szz[i][j] += f[i] * f[j]
+        sy += fy
+        syy += fy * fy
+    return [len(y), sz, szz, szy, sy, syy]
+
+
+def _add_sums(a, b):
+    k = len(a[1])
+    return [
+        a[0] + b[0],
+        [a[1][i] + b[1][i] for i in range(k)],
+        [[a[2][i][j] + b[2][i][j] for j in range(k)] for i in range(k)],
+        [a[3][i] + b[3][i] for i in range(k)],
+        a[4] + b[4],
+        a[5] + b[5],
+    ]
+
+
+def _exact_comoments(s):
+    """The co-moments of the sums ``s``, exactly: ``sum z z' / n - m m'``."""
+    n, sz, szz = s[0], s[1], s[2]
+    k = len(sz)
+    m = [v / n for v in sz]
+    return [[szz[min(i, j)][max(i, j)] / n - m[i] * m[j] for j in range(k)] for i in range(k)]
+
+
+def _gram_of_sums(s, columns):
+    """The sums ``s`` as the mapping ``ModelBank.gram()`` gives, each entry
+    exact and rounded once to float64."""
+    n, sz, _, szy, sy, syy = s
+    k = len(sz)
+    m = [v / n for v in sz]
+    c = _exact_comoments(s)
+    ybar = sy / n
+    cross = [v / n for v in szy]
+    centred = [cross[i] - m[i] * ybar for i in range(k)]
+    return {
+        "columns": columns,
+        "targets": ["y"],
+        "weight_sum": float(n),
+        "n_kish": float(n),
+        "means": np.array([float(v) for v in m]),
+        "comoments": np.array([[float(v) for v in r] for r in c]),
+        "cross_moments": np.array([[float(v) for v in cross]]),
+        "means_by_target": np.array([[float(v) for v in m]]),
+        "cross_centred": np.array([[float(v) for v in centred]]),
+        "target_weights": np.array([float(n)]),
+        "target_means": np.array([float(ybar)]),
+        "target_vars": np.array([float(syy / n - ybar * ybar)]),
+        "target_n_kish": np.array([float(n)]),
+    }
+
+
+class TestTheDocstringsMeasuredClaims:
+    """Task 239: what the docstrings measured, held to the code."""
+
+    @pytest.mark.extended(reason="rational arithmetic over 100,000 rows, 2 s at a load of 10")
+    def test_merge_rounds_as_its_docstring_measures(self):
+        """``merge``'s docstring said pooling a thousand shards loses no more
+        precision than pooling two, unmeasured. Measured against the exact
+        union, in rational arithmetic: the rounding grows with the number of
+        parts, about tenfold from 2 to 1,000, and stays far below raw sums
+        pooled and centred afterwards. Every step is IEEE arithmetic with no
+        library function, so the figures are the same on every platform."""
+        from fractions import Fraction
+
+        n, level = 100_000, 1e4
+        rng = np.random.default_rng(0)
+        x = level + rng.standard_normal((n, 3))
+        y = 2.0 * level + x @ np.array([0.5, -0.2, 1.0]) + rng.standard_normal(n)
+        z = np.column_stack([np.ones(n), x])
+        columns = [pg.INTERCEPT, "x0", "x1", "x2"]
+        chunks = [_exact_sums(z[i], y[i]) for i in np.array_split(np.arange(n), 1000)]
+
+        def pooled(m):
+            out = []
+            for group in np.array_split(np.arange(1000), m):
+                s = chunks[group[0]]
+                for j in group[1:]:
+                    s = _add_sums(s, chunks[j])
+                out.append(s)
+            return out
+
+        want = _exact_comoments(pooled(1)[0])
+
+        def error(comoments):
+            """The largest error of the features' co-moments, relative to
+            the spread, ``sqrt(C_ii C_jj)``."""
+            return max(
+                float(abs(Fraction(float(comoments[i][j])) - want[i][j]))
+                / float(want[i][i] * want[j][j]) ** 0.5
+                for i in range(1, 4)
+                for j in range(1, 4)
+            )
+
+        merged = {
+            m: error(pg.merge([_gram_of_sums(s, columns) for s in pooled(m)])["comoments"])
+            for m in (2, 1000)
+        }
+
+        def raw_then_centred(m):
+            grams = [_gram_of_sums(s, columns) for s in pooled(m)]
+            w = sum(g["weight_sum"] for g in grams)
+            raw = (
+                sum(
+                    g["weight_sum"] * (g["comoments"] + np.outer(g["means"], g["means"]))
+                    for g in grams
+                )
+                / w
+            )
+            mean = sum(g["weight_sum"] * g["means"] for g in grams) / w
+            return error(raw - np.outer(mean, mean))
+
+        raw = {m: raw_then_centred(m) for m in (2, 1000)}
+        df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)}).with_columns(y=pl.Series(y))
+        accumulator = error(fit(df, half_life=float("inf")).gram("m")[0]["comoments"])
+        got = {
+            "2 parts": f"{merged[2]:.1e}",
+            "1,000 parts": f"{merged[1000]:.1e}",
+            "raw sums, 2 parts": f"{raw[2]:.1e}",
+            "raw sums, 1,000 parts": f"{raw[1000]:.1e}",
+            "one accumulator": f"{accumulator:.1e}",
+        }
+        doc = " ".join((pg.merge.__doc__ or "").split())
+        for label, figure in got.items():
+            assert figure in doc, (label, figure, got)
+        assert merged[2] < merged[1000] < 1e-12 < 1e-9 < raw[2] < raw[1000], got
+
+    def test_coef_stats_reads_the_centred_moments_without_an_intercept(self):
+        """``coef_stats``' docstring: on a Gram without an intercept column
+        the statistics read the centred moments, so ``resid_var`` is the
+        residual's variance about its mean and ``se`` a centred fit's, which
+        differ from least squares through the origin on a column far from
+        0."""
+        import statsmodels.api as sm
+
+        n = 4000
+        rng = np.random.default_rng(3)
+        x0 = 5.0 + rng.standard_normal(n)
+        x1 = -2.0 + 2.0 * rng.standard_normal(n)
+        y = 1.5 + 0.7 * x0 - 0.3 * x1 + rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x0, "x1": x1, "y": y})
+        g = pg.subset(fit(df, half_life=float("inf")).gram("m")[0], ["x0", "x1"])
+        assert pg.INTERCEPT not in g["columns"]
+        b = pg.solve(g)
+        st = pg.coef_stats(g, b)
+        X = np.column_stack([x0, x1])
+        ols = sm.OLS(y, X).fit()
+        assert b == pytest.approx(ols.params, rel=1e-9), "the slopes go through the origin"
+        resid = y - X @ b
+        assert st["resid_var"] == pytest.approx(resid.var(), rel=1e-9)
+        assert st["resid_var"] < np.mean(resid**2) * (1 - 1e-4), "not the mean square"
+        doc = " ".join((pg.coef_stats.__doc__ or "").split())
+        assert f"OLS gave {ols.bse[0]:.2g} where this gives {st['se'][0]:.2g}" in doc
+
+    def test_the_correlation_diagonal_is_one_to_rounding(self):
+        """``correlation``'s docstring: the diagonal is 1 to rounding, within
+        2.2e-16 on 200 random matrices."""
+        worst = 0.0
+        for seed in range(200):
+            rng = np.random.default_rng(seed)
+            a = rng.standard_normal((50, 4)) * rng.uniform(0.1, 10.0, 4)
+            r = pg.correlation({"columns": ["a", "b", "c", "d"], "comoments": np.cov(a.T)})
+            worst = max(worst, float(np.max(np.abs(np.diag(r) - 1.0))))
+        assert 0.0 < worst <= 2.3e-16, worst
+        assert "within 2.2e-16" in " ".join((pg.correlation.__doc__ or "").split())
+
+    def test_features_narrow_a_fit_over_every_column(self):
+        """``solve``'s ``features``: the fit on a subset of those columns and
+        the intercept, returned over all the Gram's columns with 0 for a
+        column left out."""
+        df, _ = stream(n=1000, k=3, seed=21)
+        g = fit(df).gram("m")[0]
+        narrow = pg.solve(g, features=["x0", "x2"], ridge=0.1)
+        sub = pg.solve(pg.subset(g, [pg.INTERCEPT, "x0", "x2"]), ridge=0.1)
+        assert narrow.shape == (4,) and narrow[2] == 0.0
+        assert narrow[[0, 1, 3]] == pytest.approx(sub, rel=1e-12)
