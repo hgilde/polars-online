@@ -9287,6 +9287,50 @@ tick, and that the series holding it up has a count near 1.
       the pool's speed kept (18 ms on 8 threads against 68 on 1 at 2,000
       columns); one-column solves moved once, by at most 1.5e-11 relative
       at 4,000 columns; no golden or fixture moved. PERFORMANCE §38.
+- [ ] 234. **The mutants that survived the push of `5cb8f7e`** -- its
+      Mutants job ran complete (3,088 mutants on the changed lines, 111
+      shards): 342 survived, 4 timed out. Tests or equivalent entries per
+      file, a defect fixed where it has one answer (found so far: `audit`'s
+      MAD past `distinct_cap` stopped bisecting after 200 halvings, so one
+      value at 1e70 beside a spread of 1 read a MAD of 6.2e9); the
+      measured CUSUM null for the non-least-squares fits was measured and
+      dropped (it dulled detection); readiness on the longest finite memory
+      (`holt`'s trend). In progress, four workers.
+- [ ] 235. **Research: an adapter for faster LightGBM and XGBoost training
+      from Polars/Arrow chunks** -- the user, 2026-10-10: "Add a plan item to
+      research whether we can add an adapter to enable faster training of
+      lightgbm and xgboost by converting data chunks better from
+      polars/arrow". Research first, measured; nothing built without the
+      user's word (it sits beside the integration the user parked on
+      2026-09-25, below). Questions:
+      (a) **Where the time and memory go today.** For a parquet larger than
+      memory and one that fits (rows 1e7-1e8, features 50-500, some nulls
+      and a categorical), each library's usual paths from Polars --
+      `collect()` then numpy or pandas, its own Arrow input, and its
+      streaming interfaces (XGBoost's `DataIter` into a `QuantileDMatrix`
+      or external memory; LightGBM's `Dataset` from Arrow and its
+      `Sequence` construction) -- split into conversion, binning
+      (quantile sketch / histogram construction) and boosting, with peak
+      memory. Verify each interface against the libraries' current docs
+      and source, not recall.
+      (b) **What an adapter could take off.** Zero-copy Arrow buffers to the
+      libraries' batch interfaces from a `LazyFrame` streamed with
+      `collect_batches`: nulls by Arrow validity rather than a NaN copy,
+      dtype casts (float32), layout (column- against row-major per
+      library), categoricals; and whether a one-pass streaming quantile
+      sketch here (the library has a t-digest and `EwQuantile`) could hand
+      either library its cuts, so the binning pass reads the data once.
+      (c) **Measure** a prototype against (a): wall time and peak memory on
+      both libraries, with the model's accuracy unchanged, and say whether
+      the gain is in conversion, binning or neither.
+      **Constraints:** the package's dependencies stay `polars` (CLAUDE.md:
+      LightGBM and XGBoost only in the dev group, or an optional extra --
+      say which); no new static linking (rule 12: an adapter calls their
+      public Python or C data interfaces, it links neither's C++ into the
+      wheel); `docs/BOOSTED-TREES.md` (the online trees, task 21) is the
+      related work, not this. **Output:** a doc with the measurements and a
+      recommendation -- build, the shape of the adapter, or not worth it --
+      for the user to decide.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
