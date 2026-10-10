@@ -9396,13 +9396,20 @@ tick, and that the series holding it up has a count near 1.
       Checked against closed-form paths (an orthogonal design's
       soft-thresholding, an equicorrelated design's, duplicate columns),
       KKT at every knot, and random designs unchanged to rounding.
-- [ ] 237. **`docs/GRAM.md`: wide fits from Grams** -- the user,
+- [x] 237. **`docs/GRAM.md`: wide fits from Grams** -- the user,
       2026-10-10 ("Yes" to a page for the offline Gram tools on the pattern
-      of DIAGNOSTICS and DATA-ISSUES): the theory (a Gram as a sufficient
-      statistic, exact merges, the ridge and its t, LARS and coordinate
-      descent, stability selection, what a compact export loses,
-      `gram_threads`) and recipes held to their output by a test. In
-      progress.
+      of DIAGNOSTICS and DATA-ISSUES). *Done 2026-10-10:* twelve recipes held
+      by `tests/test_gram_page.py` (weekly blocks from one pass, pooling and
+      a held-out score from a Gram, aging decayed blocks, a ridge grid with
+      t, conditioning, LARS against coordinate descent, stability selection
+      over 100 complementary halves, Fama-MacBeth per-week coefficients,
+      saved files read with numpy alone, compact forms, `gram_threads`);
+      the theory cited (18 sources); linked from the README, `docs/README.md`,
+      `llms.txt` and the `po.gram` docstrings. For task 239: `subset`
+      without `"intercept"` fits through the origin with no word of it;
+      `coef_stats` does not say its se for a ridge fit is least squares'
+      covariance at the ridge's residual variance; `merge`'s claim that
+      pooling 1,000 shards loses no more than pooling 2 is unmeasured.
 - [ ] 238. **A rewrite of the docs** -- the user, 2026-10-10: "After the
       merge to main do a rewrite of the docs, make a plan and reorganize
       sections if needed, go through every section of every doc following

@@ -1609,6 +1609,10 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **`docs/GRAM.md`, wide fits from Grams** (task 237): the offline Gram
+  tools with the theory and twelve runnable recipes, from one pass's
+  weekly Grams to stability selection, per-week coefficients, compact
+  exports and `gram_threads`.
 - The memory checks (`tests/test_ffi_memory.py`) fail only when both the
   median gap between blocks and Theil and Sen's slope over every pair pass
   the limit: under load the machine compresses or swaps memory and RSS
