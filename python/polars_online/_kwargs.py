@@ -1,28 +1,30 @@
 """The shared keyword parameters of every spec, as ``TypedDict`` classes (PEP 692).
 
-The builders in ``_spec.py`` take the shared parameters as ``**common``; with
-``**kwargs: Any`` an editor shows nothing and a typo is found at runtime.
-Annotating them as ``Unpack[...]`` of the classes below gives completion and
-type checking without changing a call (docs/IMPROVEMENTS.md U4).
-
-``CommonKwargs`` is pinned to the shared parameters by
-``tests/test_kwargs_typing.py``: same keys, same annotations, same required
-set. Change a shared parameter and the test says so. Defaults are not repeated
-here -- a TypedDict has none; the builder's signature is where they live.
-
-There were once 21 further classes here, one per model, mirroring each
-builder's *own* parameters to type the expression namespace's ``**kwargs``.
-Task 85 removed that namespace, and the test that held each class to its
-builder went with it. What was left was 21 unconsumed copies of builder
-signatures with nothing holding them to the originals -- which is exactly the
-drift the paragraph above exists to prevent. They were deleted on 2026-09-17
-rather than left to rot; rebuild them from the builders if a typed keyword
-surface is ever wanted again.
-
-No ``from __future__ import annotations`` here: under it ``Required[...]`` is
-a string the TypedDict machinery does not look inside, so every key would be
-optional at runtime and the test below could not see the required ones.
+The builders in :mod:`polars_online.spec` take the shared parameters as
+``**common``, annotated as ``Unpack[CommonKwargs]``. So an editor completes
+them and a type checker finds a misspelled one, where ``**kwargs: Any``
+would show nothing and leave a typo to be found when the call runs. A
+``TypedDict`` has no defaults: each builder's signature gives them, and
+:mod:`polars_online.spec` describes each parameter.
 """
+
+# Notes for whoever changes this file (docs/IMPROVEMENTS.md U4):
+#
+# `CommonKwargs` is pinned to the shared parameters by
+# tests/test_kwargs_typing.py: same keys, same annotations, same required
+# set. Change a shared parameter and the test says so.
+#
+# There were once 21 further classes here, one per model, mirroring each
+# builder's *own* parameters to type the expression namespace's `**kwargs`.
+# Task 85 removed that namespace, and the test that held each class to its
+# builder went with it. What was left was 21 unconsumed copies of builder
+# signatures with nothing holding them to the originals -- the drift the
+# test above exists to prevent. They were deleted on 2026-09-17; rebuild
+# them from the builders if a typed keyword surface is ever wanted again.
+#
+# No `from __future__ import annotations` here: under it `Required[...]` is
+# a string the TypedDict machinery does not look inside, so every key would
+# be optional at runtime and the test could not see the required ones.
 
 from typing import TypedDict
 
