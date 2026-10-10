@@ -1925,6 +1925,7 @@ line_has = "if weight.abs() <= INPUT_BOUND && weight > 0.0 {"
 why = """the mutant adds a weight of `±0` to `n_eff`, which is `>= 0`, and \
 `n_eff + 0`, `n_eff + (−0)` are `n_eff` (`+0 + −0` is `+0`)"""
 
+[[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
 function = "EwCov::update"
 mutation = "replace > with <"
