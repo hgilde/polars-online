@@ -149,9 +149,9 @@ Windows alike.
   each `bank.check()` finding, what it does to a fit, and its fix in Polars
 - [Wide fits from Grams](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md):
   one pass leaves a Gram per week; `po.gram` pools weeks, with or without their weekly
-  levels, fits a ridge with its t, walks
-  the lasso path, selects features over halves of the weeks, and reads compact exports --
-  each with its theory and a recipe that runs
+  levels, fits a ridge with its t, walks the lasso path, selects features over halves of
+  the weeks against a null by sign flips, and reads compact exports -- each with its
+  theory and a recipe that runs
 - [Performance](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md):
   where time and memory go, chunk size, thread count, every measurement
 - [Regimes](https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md): what the

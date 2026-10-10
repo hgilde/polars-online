@@ -1358,12 +1358,13 @@ def solve_subsets(
     standardize: bool = False,
     path: dict[str, Any] | None = None,
     within: bool = False,
-) -> list[list[dict[str, Any]]]:
+    target_signs: Any = None,
+) -> list[Any]:
     """Merge each subset of the Grams and fit it, for many subsets at once.
 
     For each subset, a list of positions in ``grams``, the parts are pooled
-    as :func:`merge` pools them (``within`` as there) and each target is fitted on the pooled
-    Gram: a ridge with its statistics, as :func:`solve` and then
+    as :func:`merge` pools them, ``within`` as there, and each target is
+    fitted on the pooled Gram: a ridge with its statistics, as :func:`solve` and then
     :func:`coef_stats` give them, or with ``path`` its lasso path, as
     :func:`lars_path` gives it. Two uses: the halves of a stability
     selection, each a merge of about half the blocks; and each block's own
@@ -1425,11 +1426,26 @@ def solve_subsets(
         Pool each subset within its parts, as :func:`merge` with
         ``within=True``: each fit's intercept is ``nan``, and a ridge fit's
         degrees of freedom lose one per part.
+    ``target_signs``
+        ``None``, or an array of shape ``(len(grams), draws)``, each entry
+        +1 or -1, and only with ``within=True``. Column ``d`` is a draw: a
+        sign ``s_i`` for each Gram, multiplying its targets' centred
+        cross-moments before each subset is pooled,
+        ``c = sum T_i s_i c_i / T``. That is what negating Gram ``i``'s
+        target rows gives, since its co-moments, its target weights and its
+        target variances do not move, so a draw needs no second merge of the
+        co-moments. Every subset is fitted once per draw, which makes a
+        draw of random signs a null run of a selection: what it chooses
+        where no column's effect keeps its sign across the Grams. Under a
+        union merge a negated Gram's target mean moves the gaps between the
+        parts' means too, and the shortcut does not hold, so it is refused
+        there.
 
     Returns one list per subset, with one dict per target. A ridge fit's
     dict has ``coef``, the coefficients over the Gram's columns, and
     :func:`coef_stats`' ``resid_var``, ``sigma2``, ``r2``, ``n``, ``se`` and
-    ``t``. A path's dict is :func:`lars_path`'s.
+    ``t``. A path's dict is :func:`lars_path`'s. With ``target_signs``, one
+    such list per draw.
 
     .. code-block:: python
 
@@ -1441,18 +1457,23 @@ def solve_subsets(
         each = po.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
         t_x0 = [fits[0]["t"][1] for fits in each]       # x0's t in every block
         halves = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
+        signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(len(blocks), 20))
+        null = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
+                                     within=True, target_signs=signs)   # a list per draw
 
     ``ValueError`` for Grams of different columns or targets, an empty
     subset, a position out of range or named twice in one subset, a
     Gram pooled within parts in a subset of several without ``within``
-    (as :func:`merge`), a ``ridge`` that is not finite and at least 0, an unknown key in
-    ``path``, and, for a ridge fit, a Gram without target moments (as
+    (as :func:`merge`), ``target_signs`` without ``within``, of another
+    shape, or with an entry other than +1 or -1, a ``ridge`` that is not
+    finite and at least 0, an unknown key in ``path``, and, for a ridge
+    fit, a Gram without target moments (as
     :func:`coef_stats`) or one without ``means_by_target`` and
     ``cross_centred``, which :func:`merge` forms after pooling and this
     does not. Otherwise as :func:`solve` and :func:`lars_path`.
 
-    See *Stability selection over halves of the weeks*, *Per-block coefficients* and
-    *Pooling within blocks* in
+    See *Stability selection over halves of the weeks*, *Per-block coefficients*,
+    *Pooling within blocks* and *A null for the selection, by sign flips* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
     for the theory and a recipe of each use.
     """
@@ -1497,9 +1518,15 @@ def solve_subsets(
                     "reports; merge() then solve() forms it from cross_moments instead"
                 )
                 raise ValueError(msg)
+    signs = _target_signs(np, target_signs, len(parts), within)
     native = [_native_gram(np, p, icept) for p in parts]
     ic = None if icept < 0 else icept
     k = len(cols)
+
+    def per_draw(out: list[Any]) -> list[Any]:
+        # One list per draw from the native call; without signs, its one.
+        return out if target_signs is not None else out[0]
+
     if path is not None:
         unknown = sorted(set(path) - set(_PATH_KEYS))
         if unknown:
@@ -1509,20 +1536,25 @@ def solve_subsets(
         active = _limit("max_active", path.get("max_active"))
         weights = _lars_weights(np, len(slots), path.get("penalty_weights"))
         out = _native.gram_path_subsets(
-            native, picked, tidx, slots, ic, weights, steps, active, bool(within)
+            native, picked, tidx, slots, ic, weights, steps, active, bool(within), signs
         )
-        return [
+        return per_draw(
             [
-                {
-                    "penalties": np.asarray(pen, dtype=float),
-                    "coef": np.frombuffer(coef, dtype=np.float64).reshape(len(pen), k),
-                    "active": [[cols[i] for i in a] for a in act],
-                    "stop": stop,
-                }
-                for pen, coef, act, stop in per
+                [
+                    [
+                        {
+                            "penalties": np.asarray(pen, dtype=float),
+                            "coef": np.frombuffer(coef, dtype=np.float64).reshape(len(pen), k),
+                            "active": [[cols[i] for i in a] for a in act],
+                            "stop": stop,
+                        }
+                        for pen, coef, act, stop in per
+                    ]
+                    for per in draw
+                ]
+                for draw in out
             ]
-            for per in out
-        ]
+        )
     if not (math.isfinite(ridge) and ridge >= 0.0):
         msg = f"solve_subsets: ridge must be finite and >= 0, got {ridge!r}"
         raise ValueError(msg)
@@ -1534,23 +1566,60 @@ def solve_subsets(
             )
             raise ValueError(msg)
     fits = _native.gram_ridge_subsets(
-        native, picked, tidx, slots, ic, float(ridge), bool(standardize), bool(within)
+        native, picked, tidx, slots, ic, float(ridge), bool(standardize), bool(within), signs
     )
-    return [
+    return per_draw(
         [
-            {
-                "coef": np.frombuffer(coef, dtype=np.float64),
-                "resid_var": resid_var,
-                "sigma2": sigma2,
-                "r2": r2,
-                "n": n,
-                "se": np.frombuffer(se, dtype=np.float64),
-                "t": np.frombuffer(t, dtype=np.float64),
-            }
-            for coef, se, t, resid_var, sigma2, r2, n in per
+            [
+                [
+                    {
+                        "coef": np.frombuffer(coef, dtype=np.float64),
+                        "resid_var": resid_var,
+                        "sigma2": sigma2,
+                        "r2": r2,
+                        "n": n,
+                        "se": np.frombuffer(se, dtype=np.float64),
+                        "t": np.frombuffer(t, dtype=np.float64),
+                    }
+                    for coef, se, t, resid_var, sigma2, r2, n in per
+                ]
+                for per in draw
+            ]
+            for draw in fits
         ]
-        for per in fits
-    ]
+    )
+
+
+def _target_signs(np: Any, target_signs: Any, n_grams: int, within: bool) -> list[list[float]]:
+    """``solve_subsets``' ``target_signs`` checked and turned to one list of
+    signs per draw, or ``[]`` for none (docs/PLAN.md task 241)."""
+    if target_signs is None:
+        return []
+    if not within:
+        msg = (
+            "solve_subsets(): target_signs needs within=True: under the union merge a negated "
+            "Gram's target mean moves the gaps between the parts' means as well, which a sign "
+            "on its cross-moments does not"
+        )
+        raise ValueError(msg)
+    s = np.asarray(target_signs, dtype=float)
+    if s.ndim != 2:
+        msg = f"solve_subsets(): target_signs is parts x draws, a 2-d array; got shape {s.shape}"
+        raise ValueError(msg)
+    if s.shape[0] != n_grams:
+        msg = (
+            f"solve_subsets(): target_signs needs a row per Gram ({n_grams}) and a column per "
+            f"draw; got shape {s.shape}"
+        )
+        raise ValueError(msg)
+    if s.shape[1] < 1:
+        msg = "solve_subsets(): target_signs needs at least one draw, a column of signs"
+        raise ValueError(msg)
+    if not np.all((s == 1.0) | (s == -1.0)):
+        bad = s[~((s == 1.0) | (s == -1.0))][0]
+        msg = f"solve_subsets(): each entry of target_signs is +1 or -1, got {bad!r}"
+        raise ValueError(msg)
+    return [[float(v) for v in col] for col in s.T]
 
 
 def coef_stats(

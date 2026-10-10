@@ -378,7 +378,7 @@ fn subsets_fit(
     cols: FitColumns,
     fit: SubsetFit,
     pooling: Pooling,
-) -> PyResult<Vec<Vec<SubsetOut>>> {
+) -> PyResult<Vec<Vec<Vec<SubsetOut>>>> {
     let owned = read_all(py, grams)?;
     let all: Vec<Vec<usize>> = vec![targets.clone(); owned.len()];
     check_axes(&owned, &all, &cols.slots, cols.icept, true)?;
@@ -391,19 +391,29 @@ fn subsets_fit(
     if subsets.iter().any(Vec::is_empty) {
         return Err(PyValueError::new_err("a subset names no Gram"));
     }
+    if let Pooling::Within { signs } = &pooling
+        && let Some(draw) = signs.iter().find(|d| d.len() != owned.len())
+    {
+        return Err(PyValueError::new_err(format!(
+            "a draw of target_signs has {} signs for {} Grams",
+            draw.len(),
+            owned.len()
+        )));
+    }
     py.detach(|| {
         let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
-        fit_subsets(&views, subsets, &targets, &cols, &fit, pooling)
+        fit_subsets(&views, subsets, &targets, &cols, &fit, &pooling)
     })
     .map_err(value_err)
 }
 
 /// Each subset of the Grams merged (pooled within each part under
-/// `within`) and each listed target's ridge fit on it, with its statistics
-/// (`online_core::gramfit::ridge_fits`): one list per subset, one fit per
-/// target.
+/// `within`, once per draw of `signs`) and each listed target's ridge fit
+/// on it, with its statistics (`online_core::gramfit::ridge_fits`): one
+/// list per draw (one without signs), one list per subset in it, one fit
+/// per target.
 #[pyfunction]
-#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize, within))]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize, within, signs))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_ridge_subsets<'py>(
     py: Python<'py>,
@@ -415,7 +425,8 @@ pub(crate) fn gram_ridge_subsets<'py>(
     ridge: f64,
     standardize: bool,
     within: bool,
-) -> PyResult<Vec<Vec<RidgeOut<'py>>>> {
+    signs: Vec<Vec<f64>>,
+) -> PyResult<Vec<Vec<Vec<RidgeOut<'py>>>>> {
     let fit = SubsetFit::Ridge { ridge, standardize };
     let out = subsets_fit(
         py,
@@ -424,23 +435,27 @@ pub(crate) fn gram_ridge_subsets<'py>(
         targets,
         FitColumns { slots, icept },
         fit,
-        pooling(within),
+        pooling(within, signs),
     )?;
     Ok(out
         .into_iter()
-        .map(|per| {
-            per.into_iter()
-                .filter_map(|o| match o {
-                    SubsetOut::Ridge(f) => Some((
-                        float_bytes(py, &f.coef),
-                        float_bytes(py, &f.se),
-                        float_bytes(py, &f.t),
-                        f.resid_var,
-                        f.sigma2,
-                        f.r2,
-                        f.n,
-                    )),
-                    SubsetOut::Path(_) => None,
+        .map(|draw| {
+            draw.into_iter()
+                .map(|per| {
+                    per.into_iter()
+                        .filter_map(|o| match o {
+                            SubsetOut::Ridge(f) => Some((
+                                float_bytes(py, &f.coef),
+                                float_bytes(py, &f.se),
+                                float_bytes(py, &f.t),
+                                f.resid_var,
+                                f.sigma2,
+                                f.r2,
+                                f.n,
+                            )),
+                            SubsetOut::Path(_) => None,
+                        })
+                        .collect()
                 })
                 .collect()
         })
@@ -448,10 +463,11 @@ pub(crate) fn gram_ridge_subsets<'py>(
 }
 
 /// Each subset of the Grams merged (pooled within each part under
-/// `within`) and each listed target's lasso path on it, by least angle
-/// regression: one list per subset, one path per target.
+/// `within`, once per draw of `signs`) and each listed target's lasso path
+/// on it, by least angle regression: one list per draw (one without
+/// signs), one list per subset in it, one path per target.
 #[pyfunction]
-#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active, within))]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active, within, signs))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_path_subsets<'py>(
     py: Python<'py>,
@@ -464,7 +480,8 @@ pub(crate) fn gram_path_subsets<'py>(
     max_steps: Option<usize>,
     max_active: Option<usize>,
     within: bool,
-) -> PyResult<Vec<Vec<PathOut<'py>>>> {
+    signs: Vec<Vec<f64>>,
+) -> PyResult<Vec<Vec<Vec<PathOut<'py>>>>> {
     if !weights.is_empty() && weights.len() != slots.len() {
         return Err(PyValueError::new_err(format!(
             "{} penalty weights for {} features",
@@ -486,24 +503,30 @@ pub(crate) fn gram_path_subsets<'py>(
         targets,
         FitColumns { slots, icept },
         fit,
-        pooling(within),
+        pooling(within, signs),
     )?;
     Ok(out
         .into_iter()
-        .map(|per| {
-            per.into_iter()
-                .filter_map(|o| match o {
-                    SubsetOut::Path(p) => Some(path_out(py, p)),
-                    SubsetOut::Ridge(_) => None,
+        .map(|draw| {
+            draw.into_iter()
+                .map(|per| {
+                    per.into_iter()
+                        .filter_map(|o| match o {
+                            SubsetOut::Path(p) => Some(path_out(py, p)),
+                            SubsetOut::Ridge(_) => None,
+                        })
+                        .collect()
                 })
                 .collect()
         })
         .collect())
 }
 
-fn pooling(within: bool) -> Pooling {
+/// The pooling `within` asks for, with its draws of signs (only within:
+/// the Python layer refuses them beside a union).
+fn pooling(within: bool, signs: Vec<Vec<f64>>) -> Pooling {
     if within {
-        Pooling::Within
+        Pooling::Within { signs }
     } else {
         Pooling::Union
     }

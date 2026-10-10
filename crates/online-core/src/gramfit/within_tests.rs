@@ -326,3 +326,62 @@ fn a_gram_pooled_within_recovers_no_intercept() {
     };
     assert_eq!(Response::of(&plain, 0, &[1, 2, 3], Some(0)).ybar, 0.0);
 }
+
+/// `parts` with every target's value negated on the rows of each part whose
+/// sign is −1.
+fn negated(parts: &[Rows], signs: &[f64]) -> Vec<Rows> {
+    parts
+        .iter()
+        .zip(signs)
+        .map(|(p, &s)| Rows {
+            z: p.z.clone(),
+            y: p.y
+                .iter()
+                .map(|y| y.map(|v| v.map(|x| if s < 0.0 { -x } else { x })))
+                .collect(),
+        })
+        .collect()
+}
+
+/// A sign per part on the target is what negating the part's target rows
+/// gives, to the bit: the centred cross-moments negate, and the
+/// co-moments, the target's weight and its variance do not move. Every
+/// sign +1 is no signs.
+#[test]
+fn a_sign_per_part_is_the_part_with_its_target_negated() {
+    let parts = parts(2e3);
+    let grams: Vec<OwnedGram> = parts.iter().map(gram_of).collect();
+    let views: Vec<GramArrays<'_>> = grams.iter().map(OwnedGram::arrays).collect();
+    let g = merge_within(&views, &ALL, Some(0));
+    for signs in [[1.0, -1.0, -1.0], [-1.0, 1.0, 1.0], [-1.0, -1.0, 1.0]] {
+        let flipped: Vec<OwnedGram> = negated(&parts, &signs).iter().map(gram_of).collect();
+        let flipped_views: Vec<GramArrays<'_>> = flipped.iter().map(OwnedGram::arrays).collect();
+        let want = merge_within(&flipped_views, &ALL, Some(0));
+        let cc = within_cross(&views, &ALL, &signs);
+        assert_eq!(cc, want.cross_centred, "{signs:?}");
+        assert_eq!(
+            (&g.comoments, &g.target_vars, &g.target_weights),
+            (&want.comoments, &want.target_vars, &want.target_weights)
+        );
+        // And so are the fits on it.
+        let signed = GramArrays {
+            cross_moments: &cc,
+            cross_centred: &cc,
+            ..g.arrays()
+        };
+        let a = ridge_fits(&signed, &[0, 1], &[1, 2, 3], Some(0), 0.1, true);
+        let b = ridge_fits(&want.arrays(), &[0, 1], &[1, 2, 3], Some(0), 0.1, true);
+        assert_eq!(a.len(), 2);
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!(x.coef[1..], y.coef[1..]);
+            assert_eq!((x.resid_var, x.sigma2), (y.resid_var, y.sigma2));
+        }
+    }
+    let all_plus = within_cross(&views, &ALL, &[1.0, 1.0, 1.0]);
+    assert_eq!(all_plus, within_cross(&views, &ALL, &[]));
+    assert_eq!(all_plus, g.cross_centred);
+    // Negating every part negates the pooled cross-moments, exactly.
+    let all_minus = within_cross(&views, &ALL, &[-1.0, -1.0, -1.0]);
+    let neg: Vec<f64> = g.cross_centred.iter().map(|v| -v).collect();
+    assert_eq!(all_minus, neg);
+}

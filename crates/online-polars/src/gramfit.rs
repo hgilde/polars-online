@@ -11,7 +11,7 @@
 
 use online_core::gramfit::{
     Correlation, Design, GramArrays, GramRows, LarsLimits, LarsStop, Response, RidgeFit, cd_path,
-    lars_lasso_weighted, merge, merge_within, ridge_fits,
+    lars_lasso_weighted, merge, merge_within, ridge_fits, within_cross,
 };
 use polars::prelude::*;
 use rayon::prelude::*;
@@ -159,14 +159,17 @@ pub enum SubsetFit {
 }
 
 /// How [`fit_subsets`] pools each subset's Grams.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Pooling {
     /// Into the Gram of their union (`online_core::gramfit::merge`).
     #[default]
     Union,
     /// Within each part, about its own means (`merge_within`): a fit with
     /// an intercept per part, which recovers none (docs/PLAN.md task 240).
-    Within,
+    /// Each of `signs` is a draw, a sign per Gram (in `grams`' order) on its
+    /// targets' centred cross-moments (`within_cross`, task 241), and every
+    /// subset is fitted once per draw; no draws is one, every sign +1.
+    Within { signs: Vec<Vec<f64>> },
 }
 
 /// One target's fit on one subset's merged Gram.
@@ -177,12 +180,14 @@ pub enum SubsetOut {
 }
 
 /// Each subset of `grams` merged as `pooling` says (on the columns `cols`
-/// reads) and fitted for each of `targets`, the subsets
-/// beside each other on the bank's pool: one list per subset, one fit per
-/// target. A subset is a list of positions in `grams`, which share their
-/// columns and targets. The merged Gram is formed once per subset, on the
-/// slots and the intercept alone, and dropped when its fits are done; the
-/// Grams themselves are only read.
+/// reads) and fitted for each of `targets`, the subsets beside each other
+/// on the bank's pool: one list per draw of signs (one for a union, or
+/// within without signs), in it one list per subset, one fit per target. A
+/// subset is a list of positions in `grams`, which share their columns and
+/// targets. The merged Gram is formed once per subset, on the slots and the
+/// intercept alone, and dropped when its fits are done; a draw of signs
+/// re-pools only its targets' cross-moments. The Grams themselves are only
+/// read.
 ///
 /// # Errors
 ///
@@ -194,8 +199,8 @@ pub fn fit_subsets(
     targets: &[usize],
     cols: &FitColumns,
     fit: &SubsetFit,
-    pooling: Pooling,
-) -> PolarsResult<Vec<Vec<SubsetOut>>> {
+    pooling: &Pooling,
+) -> PolarsResult<Vec<Vec<Vec<SubsetOut>>>> {
     let k = grams.first().map_or(0, |g| g.k);
     // The merged Gram's columns: the intercept first, then the slots.
     let all: Vec<usize> = cols
@@ -213,6 +218,10 @@ pub fn fit_subsets(
         SubsetFit::Path { weights, .. } => weights.clone(),
         SubsetFit::Ridge { .. } => Vec::new(),
     };
+    let draws: Vec<&[f64]> = match pooling {
+        Pooling::Within { signs } if !signs.is_empty() => signs.iter().map(Vec::as_slice).collect(),
+        _ => vec![&[]],
+    };
     let expand = |v: &[f64], fill: f64| -> Vec<f64> {
         let mut out = vec![fill; k];
         for (r, &i) in all.iter().enumerate() {
@@ -220,56 +229,86 @@ pub fn fit_subsets(
         }
         out
     };
-    crate::pool()?.install(|| {
+    // Every target's fit on one merged Gram.
+    let fit_one = |g: &GramArrays<'_>| -> PolarsResult<Vec<SubsetOut>> {
+        match fit {
+            SubsetFit::Ridge { ridge, standardize } => Ok(ridge_fits(
+                g,
+                targets,
+                &merged_cols.slots,
+                merged_cols.icept,
+                *ridge,
+                *standardize,
+            )
+            .into_iter()
+            .map(|f| {
+                SubsetOut::Ridge(RidgeFit {
+                    coef: expand(&f.coef, 0.0),
+                    se: expand(&f.se, f64::NAN),
+                    t: expand(&f.t, f64::NAN),
+                    ..f
+                })
+            })
+            .collect()),
+            SubsetFit::Path { limits, .. } => {
+                let rows = GramRows::new(*g, &merged_cols.slots, merged_cols.icept);
+                targets
+                    .par_iter()
+                    .map(|&t| {
+                        let p = path_of(g, t, &rows, &merged_cols, &weights, *limits)?;
+                        let kk = g.k;
+                        let coefs = (0..p.penalties.len())
+                            .flat_map(|n| expand(&p.coefs[n * kk..(n + 1) * kk], 0.0))
+                            .collect();
+                        let active = p
+                            .active
+                            .iter()
+                            .map(|a| a.iter().map(|&r| all[r]).collect())
+                            .collect();
+                        Ok(SubsetOut::Path(GramPath { coefs, active, ..p }))
+                    })
+                    .collect()
+            }
+        }
+    };
+    let by_subset: Vec<Vec<Vec<SubsetOut>>> = crate::pool()?.install(|| {
         subsets
             .par_iter()
             .map(|subset| {
                 let parts: Vec<GramArrays<'_>> = subset.iter().map(|&i| grams[i]).collect();
-                let merged = match pooling {
-                    Pooling::Union => merge(&parts, &all, cols.icept),
-                    Pooling::Within => merge_within(&parts, &all, cols.icept),
-                };
-                let g = merged.arrays();
-                match fit {
-                    SubsetFit::Ridge { ridge, standardize } => Ok(ridge_fits(
-                        &g,
-                        targets,
-                        &merged_cols.slots,
-                        merged_cols.icept,
-                        *ridge,
-                        *standardize,
-                    )
-                    .into_iter()
-                    .map(|f| {
-                        SubsetOut::Ridge(RidgeFit {
-                            coef: expand(&f.coef, 0.0),
-                            se: expand(&f.se, f64::NAN),
-                            t: expand(&f.t, f64::NAN),
-                            ..f
-                        })
-                    })
-                    .collect()),
-                    SubsetFit::Path { limits, .. } => {
-                        let rows = GramRows::new(g, &merged_cols.slots, merged_cols.icept);
-                        targets
+                match pooling {
+                    Pooling::Union => Ok(vec![fit_one(&merge(&parts, &all, cols.icept).arrays())?]),
+                    Pooling::Within { .. } => {
+                        let merged = merge_within(&parts, &all, cols.icept);
+                        draws
                             .par_iter()
-                            .map(|&t| {
-                                let p = path_of(&g, t, &rows, &merged_cols, &weights, *limits)?;
-                                let kk = g.k;
-                                let coefs = (0..p.penalties.len())
-                                    .flat_map(|n| expand(&p.coefs[n * kk..(n + 1) * kk], 0.0))
-                                    .collect();
-                                let active = p
-                                    .active
-                                    .iter()
-                                    .map(|a| a.iter().map(|&r| all[r]).collect())
-                                    .collect();
-                                Ok(SubsetOut::Path(GramPath { coefs, active, ..p }))
+                            .map(|signs| {
+                                if signs.is_empty() {
+                                    return fit_one(&merged.arrays());
+                                }
+                                let own: Vec<f64> = subset.iter().map(|&i| signs[i]).collect();
+                                let cc = within_cross(&parts, &all, &own);
+                                fit_one(&GramArrays {
+                                    cross_moments: &cc,
+                                    cross_centred: &cc,
+                                    ..merged.arrays()
+                                })
                             })
                             .collect()
                     }
                 }
             })
-            .collect()
-    })
+            .collect::<PolarsResult<Vec<_>>>()
+    })?;
+    // One list per subset, a fit per draw in each: turned to one per draw.
+    let mut out: Vec<Vec<Vec<SubsetOut>>> = draws
+        .iter()
+        .map(|_| Vec::with_capacity(subsets.len()))
+        .collect();
+    for per in by_subset {
+        for (d, fits) in per.into_iter().enumerate() {
+            out[d].push(fits);
+        }
+    }
+    Ok(out)
 }

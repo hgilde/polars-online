@@ -360,3 +360,95 @@ class TestSolveSubsetsWithin:
         within = pg.solve_subsets(grams, [[0, 1, 2]], within=True)[0][0]
         assert np.isfinite(union["coef"][0]) and np.isnan(within["coef"][0])
         assert abs(union["coef"][1] - within["coef"][1]) > 0.1
+
+
+def negated(df: pl.DataFrame, signs: np.ndarray) -> pl.DataFrame:
+    """``df`` with both targets negated on the rows of each block whose
+    sign is -1."""
+    flip = pl.Series(signs[df["block"].to_numpy()])
+    return df.with_columns(
+        y=pl.when(flip < 0).then(-pl.col("y")).otherwise(pl.col("y")),
+        y2=pl.when(flip < 0).then(-pl.col("y2")).otherwise(pl.col("y2")),
+    )
+
+
+def same(fit: dict[str, Any], want: dict[str, Any]) -> bool:
+    """Whether two fits are the same numbers, to the bit, ``nan`` where
+    the other is ``nan``."""
+    assert fit.keys() == want.keys()
+    for key, value in want.items():
+        got = fit[key]
+        if isinstance(value, np.ndarray):
+            if not np.array_equal(got, value, equal_nan=True):
+                return False
+        elif isinstance(value, float) and np.isnan(value):
+            if not np.isnan(got):
+                return False
+        elif got != value:
+            return False
+    return True
+
+
+class TestTargetSigns:
+    """``solve_subsets(..., within=True, target_signs=...)`` (docs/PLAN.md
+    task 241): a sign per Gram on its targets, a column of them per draw,
+    each draw a run of every subset. Held to negating each block's target
+    rows, a pass over them, and the same call without signs."""
+
+    SIGNS = np.array(
+        [[1, -1, 1], [-1, -1, 1], [1, 1, -1], [-1, 1, 1], [1, -1, -1], [1, 1, -1]], dtype=float
+    )
+
+    @pytest.mark.parametrize(
+        "case",
+        [dict(), dict(ridge=0.3, standardize=True), dict(path={"max_active": 3})],
+        ids=["ridge", "standardized", "path"],
+    )
+    def test_each_draw_is_the_blocks_with_their_targets_negated(self, case):
+        df = frame(seed=15)
+        got = pg.solve_subsets(blocks(df), SUBSETS, within=True, target_signs=self.SIGNS, **case)
+        assert len(got) == self.SIGNS.shape[1]
+        for d, draw in enumerate(got):
+            flipped = blocks(negated(df, self.SIGNS[:, d]))
+            want = pg.solve_subsets(flipped, SUBSETS, within=True, **case)
+            assert len(draw) == len(SUBSETS)
+            for per, want_per in zip(draw, want, strict=True):
+                for fit, w in zip(per, want_per, strict=True):
+                    assert same(fit, w), (d, case)
+
+    def test_every_sign_plus_one_is_no_signs(self):
+        grams = blocks(frame(seed=16))
+        for case in (dict(ridge=0.1), dict(path={"max_steps": 4})):
+            plain = pg.solve_subsets(grams, SUBSETS, within=True, **case)
+            (signed,) = pg.solve_subsets(
+                grams, SUBSETS, within=True, target_signs=np.ones((6, 1)), **case
+            )
+            for per, want_per in zip(signed, plain, strict=True):
+                for fit, w in zip(per, want_per, strict=True):
+                    assert same(fit, w), case
+
+    def test_negating_every_block_negates_every_slope(self):
+        grams = blocks(frame(seed=17))
+        (minus,) = pg.solve_subsets(grams, SUBSETS, within=True, target_signs=-np.ones((6, 1)))
+        plus = pg.solve_subsets(grams, SUBSETS, within=True)
+        for per, want_per in zip(minus, plus, strict=True):
+            for fit, w in zip(per, want_per, strict=True):
+                assert np.array_equal(fit["coef"][1:], -w["coef"][1:])
+                assert fit["resid_var"] == w["resid_var"]
+
+    @pytest.mark.parametrize(
+        ("kw", "match"),
+        [
+            (dict(target_signs=np.ones((6, 2))), r"target_signs needs within=True"),
+            (dict(within=True, target_signs=np.ones(6)), r"parts x draws.*\(6,\)"),
+            (dict(within=True, target_signs=np.ones((5, 2))), r"a row per Gram \(6\).*\(5, 2\)"),
+            (dict(within=True, target_signs=np.ones((6, 0))), r"at least one draw"),
+            (dict(within=True, target_signs=np.zeros((6, 1))), r"\+1 or -1"),
+            (dict(within=True, target_signs=np.full((6, 1), 0.5)), r"\+1 or -1"),
+            (dict(within=True, target_signs=np.full((6, 1), np.nan)), r"\+1 or -1"),
+        ],
+    )
+    def test_it_refuses(self, kw, match):
+        grams = blocks(frame(seed=18))
+        with pytest.raises(ValueError, match=match):
+            pg.solve_subsets(grams, [[0, 1]], **kw)

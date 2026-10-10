@@ -37,7 +37,10 @@
 //! ```
 //!
 //! folded in order as the union is, so where the parts' means are equal the
-//! two are the same numbers. The result is the Gram of the rows demeaned
+//! two are the same numbers. [`within_cross`] takes a sign `s_i = ±1` per
+//! part on its target (task 241): `cc_t = Σ w_i s_i cc_i / w_t`, what
+//! negating each part's target rows gives, since that negates the part's
+//! centred cross-moments and leaves its weight and variance as they are. The result is the Gram of the rows demeaned
 //! part by part: its means are 0 (the intercept's 1 aside), its
 //! cross-moments its centred ones, each target's mean 0, and it records per
 //! target the parts it has rows in ([`OwnedGram::within`]). A regression on
@@ -283,7 +286,7 @@ pub fn merge_within(parts: &[GramArrays<'_>], cols: &[usize], icept: Option<usiz
         .iter()
         .map(|&i| if Some(i) == icept { 1.0 } else { 0.0 })
         .collect();
-    let cross_centred = within_cross(parts, cols);
+    let cross_centred = within_cross(parts, cols, &[]);
     OwnedGram {
         k: n,
         weight_sum,
@@ -301,16 +304,24 @@ pub fn merge_within(parts: &[GramArrays<'_>], cols: &[usize], icept: Option<usiz
 }
 
 /// Each target's centred cross-moments pooled within the parts, `m × n` on
-/// the columns `cols`: `Σ w_i cc_i / w_t`, folded in order as [`merge`]
-/// folds them.
-pub fn within_cross(parts: &[GramArrays<'_>], cols: &[usize]) -> Vec<f64> {
+/// the columns `cols`: `Σ w_i s_i cc_i / w_t`, folded in order as [`merge`]
+/// folds them. `signs` is empty (every `s_i` +1) or one sign per part. A
+/// draw of signs is a selection's null run: it needs no second merge of the
+/// co-moments, which no sign moves (docs/PLAN.md task 241).
+pub fn within_cross(parts: &[GramArrays<'_>], cols: &[usize], signs: &[f64]) -> Vec<f64> {
     let first = &parts[0];
     let (k, n, m) = (first.k, cols.len(), first.targets());
+    let sign = |p: usize| if signs.is_empty() { 1.0 } else { signs[p] };
+    let s0 = sign(0);
     let mut cc: Vec<f64> = (0..m)
-        .flat_map(|t| cols.iter().map(move |&i| first.cross_centred[t * k + i]))
+        .flat_map(|t| {
+            cols.iter()
+                .map(move |&i| s0 * first.cross_centred[t * k + i])
+        })
         .collect();
     let mut tw = first.target_weights.to_vec();
-    for p in &parts[1..] {
+    for (pi, p) in parts.iter().enumerate().skip(1) {
+        let s = sign(pi);
         for (t, w) in tw.iter_mut().enumerate() {
             let wb = p.target_weights[t];
             let ttotal = *w + wb;
@@ -321,7 +332,7 @@ pub fn within_cross(parts: &[GramArrays<'_>], cols: &[usize]) -> Vec<f64> {
             };
             for (r, &i) in cols.iter().enumerate() {
                 let e = t * n + r;
-                cc[e] = a * cc[e] + b * p.cross_centred[t * k + i];
+                cc[e] = a * cc[e] + b * (s * p.cross_centred[t * k + i]);
             }
             *w = ttotal;
         }

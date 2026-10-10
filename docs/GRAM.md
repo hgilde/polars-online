@@ -150,6 +150,7 @@ What you can do with a set of Grams, and the calls that do it:
 | know whether a fit is determined | `po.gram.condition`, `po.gram.vif`, `po.gram.correlation` | [Is the fit determined?](#is-the-fit-determined) |
 | choose columns | `po.gram.lars_path`, `po.gram.lasso_path` | [Choosing columns on the lasso path](#choosing-columns-on-the-lasso-path) |
 | choose columns that hold across the weeks | `po.gram.lars_paths`, `po.gram.solve_subsets(..., path=...)` | [Stability selection over halves of the weeks](#stability-selection-over-halves-of-the-weeks) |
+| know how often a selection chooses a column with no effect of one sign | `po.gram.solve_subsets(..., within=True, target_signs=...)` | [A null for the selection, by sign flips](#a-null-for-the-selection-by-sign-flips) |
 | see whether a coefficient holds from week to week | `po.gram.solve_subsets` | [Per-block coefficients](#per-block-coefficients) |
 | read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Reading Grams from saved files](#reading-grams-from-saved-files) |
 | halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [A compact Gram](#a-compact-gram) |
@@ -1125,6 +1126,118 @@ this draw's holds none. `solve_subsets`
 chooses the same columns on every half. It took 0.01 s, where the merges
 and `lars_paths` took 0.19 s, at a load average near 14 on 14 cores.
 
+### A null for the selection, by sign flips
+
+**Negate each week's target at random and run the selection again, to see
+what it chooses where no effect keeps its sign across the weeks.**
+Stability selection's bound assumes that the columns with no effect are
+chosen exchangeably, and no better than at random. A path that always
+stops at eight columns, among columns that share families, need not meet
+that. A null run measures the selection instead. Draw a sign for each
+week, negate that week's target, and rerun every half. A column whose
+effect keeps its sign across the weeks loses that in a null run. The run
+keeps everything else: each week's columns, their correlations, and the
+size of each week's effects. Over many draws, the largest selection
+frequency in each null run gives a threshold. Only 5% of the null runs
+choose any column on more halves than its 95th percentile. That is the
+maximum statistic of a permutation test by sign flips (Winkler et al.
+2014), with a week as the unit that is flipped.
+
+**Pooled within weeks, a negated target changes only the cross-moments,
+so a null run needs no new merge of the co-moments.** Negating a week's
+target negates its centred cross-moments `c_i`. Its co-moments, its target
+weight and its variance stay as they were. So a draw of signs `s_i` gives
+`c = Σ T_i · s_i · c_i / T`, and nothing else in the pooled Gram moves.
+`po.gram.solve_subsets(..., within=True, target_signs=signs)` takes the
+signs as an array of weeks by draws, and returns one run of every subset
+per draw. Pooled as a union, a negated week's target mean would also move
+the gaps between the weeks' means, so `target_signs` is refused without
+`within=True`. A hundred null runs of the hundred halves below, at 200
+columns, took 0.08 s with the real run. A Python loop of `merge` and
+`lars_paths` took about 0.08 s a draw, at a load average near 4 on 14
+cores.
+
+```python
+from datetime import datetime, timedelta
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
+# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
+# drawn again each week, 0.15 on average.
+rng = np.random.default_rng(7)
+n_weeks, per_week, k = 40, 504, 200
+n = n_weeks * per_week
+x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
+b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
+y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
+y += rng.standard_normal(n)
+features = [f"x{j}" for j in range(k)]
+start = datetime(2025, 1, 6)  # a Monday
+ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
+pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
+
+# One pass over the file leaves a Gram per week. The week is a column made in the query.
+lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
+spec = po.spec.ewridge(
+    "blocks", targets=["y"], features=features, group="week",
+    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+)
+bank = po.ModelBank([spec])
+bank.fit(lf)  # learns from every row, and keeps only the state
+blocks = bank.gram("blocks")  # one dict per week, oldest first
+
+halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
+splitter = np.random.default_rng(1)
+for _ in range(50):
+    order = splitter.permutation(n_weeks)
+    halves += [sorted(order[:20]), sorted(order[20:])]
+
+
+def frequencies(run):
+    """The share of the halves that chose each column: active at any knot of its path."""
+    chosen = np.zeros(k)
+    for (path,) in run:
+        chosen[[features.index(c) for c in set().union(*path["active"])]] += 1
+    return chosen / len(run)
+
+
+signs = np.random.default_rng(2).choice([-1.0, 1.0], size=(n_weeks, 100))  # a sign per week, 100 draws
+real = po.gram.solve_subsets(blocks, halves, path={"max_active": 8}, within=True)
+null = po.gram.solve_subsets(blocks, halves, path={"max_active": 8}, within=True, target_signs=signs)
+
+freq = dict(zip(features, frequencies(real)))
+null_max = np.array([frequencies(run).max() for run in null])  # each null run's most chosen column
+threshold = np.quantile(null_max, 0.95)
+planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
+print("planted: " + ", ".join(f"{c} {freq[c]:.2f}" for c in planted))
+rest = sorted((f for f in features if f not in planted), key=lambda f: -freq[f])
+print("the most chosen of the rest: " + ", ".join(f"{c} {freq[c]:.2f}" for c in rest[:4]))
+print(f"the most chosen column of a null run: {np.median(null_max):.2f} of the halves at the median draw, {threshold:.2f} at the 95th percentile")
+print(f"chosen on more halves than {threshold:.2f}: {' '.join(f for f in features if freq[f] > threshold)}")
+```
+
+```text
+planted: x0 1.00, x5 1.00, x10 1.00, x15 1.00, x20 1.00, x25 1.00
+the most chosen of the rest: x4 0.49, x11 0.25, x86 0.20, x14 0.16
+the most chosen column of a null run: 0.81 of the halves at the median draw, 0.95 at the 95th percentile
+chosen on more halves than 0.95: x0 x5 x10 x15 x20 x25
+```
+
+With each week's sign drawn at random, the most chosen column of a null
+run is still chosen on 0.81 of the halves at the median draw. Each half
+chooses eight columns whatever the signs, and a column with a large
+effect in some weeks keeps being chosen when its sign changes from week
+to week. The threshold of 0.75 that
+[Stability selection over halves of the weeks](#stability-selection-over-halves-of-the-weeks)
+used passes such a column in 73 of the 100 null runs. The null runs'
+95th percentile, 0.95, is the threshold this selection earns on these
+weeks. The six planted columns pass it, and the most chosen of the rest,
+`x4`, is at 0.49.
+
 ## Per-block coefficients
 
 Fitted alone, each week's Gram gives that week's coefficients. A pooled t
@@ -1526,5 +1639,6 @@ Each claim above that is not measured here rests on one of these.
 | Welford, B. P. (1962). Note on a method for calculating corrected sums of squares and products. *Technometrics* 4(3), 419–420. | the centred update of each row |
 | West, D. H. D. (1979). Updating mean and variance estimates: an improved method. *Communications of the ACM* 22(9), 532–535. | the same update with weights |
 | Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
+| Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M. and Nichols, T. E. (2014). Permutation inference for the general linear model. *NeuroImage* 92, 381–397. | sign flipping as a permutation test, flipping whole blocks, and the maximum statistic over many tests |
 | Zou, H. and Hastie, T. (2005). Regularization and variable selection via the elastic net. *Journal of the Royal Statistical Society, Series B* 67(2), 301–320. | the elastic net |
 | [PERFORMANCE §37 and §38](PERFORMANCE.md#37-one-wide-gram-on-several-threads-task-225-2026-10-08), [PLAN](PLAN.md) tasks 225 to 229 and 231 | `gram_threads`, a solve's bits in any pool, `lars_path`, `solve_subsets` and the compact forms, as measured when they were built |

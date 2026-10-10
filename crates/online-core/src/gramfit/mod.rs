@@ -10,7 +10,8 @@
 //!   descent, over a grid of penalties;
 //! - [`merge`]: Grams of disjoint row sets pooled, on a subset of columns;
 //!   [`merge_within`]: pooled within the parts, each about its own means
-//!   (block fixed effects);
+//!   (block fixed effects), with a sign per part on the target
+//!   ([`within_cross`]);
 //! - [`ridge_fits`]: a ridge fit of each target with its standard errors.
 
 mod cd;

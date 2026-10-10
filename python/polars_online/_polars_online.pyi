@@ -218,7 +218,8 @@ def gram_ridge_subsets(
     ridge: float,
     standardize: bool,
     within: bool,
-) -> list[list[_RidgeOut]]: ...
+    signs: list[list[float]],
+) -> list[list[list[_RidgeOut]]]: ...
 def gram_path_subsets(
     grams: list[_GramIn],
     subsets: list[list[int]],
@@ -229,4 +230,5 @@ def gram_path_subsets(
     max_steps: int | None,
     max_active: int | None,
     within: bool,
-) -> list[list[_PathOut]]: ...
+    signs: list[list[float]],
+) -> list[list[list[_PathOut]]]: ...

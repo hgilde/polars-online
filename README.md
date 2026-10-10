@@ -2190,8 +2190,8 @@ reference states every array and the identities that relate them.
 [Wide fits from Grams](docs/GRAM.md) is the guide to fitting from Grams,
 with the theory and a recipe that runs for each task: a Gram per week
 from one pass, pooling weeks with or without their weekly levels, a ridge
-with its t, the lasso path, stability selection, compact exports and
-`gram_threads`.
+with its t, the lasso path, stability selection and its null by sign
+flips, compact exports and `gram_threads`.
 
 **`po.gram` does the same algebra in one call**, on any Gram, such as one
 read from a saved state. Two calls need care:
@@ -2221,6 +2221,7 @@ po.gram.lars_path(g, max_active=2)      # the lasso path's knots, by least angle
 po.gram.lars_paths([g, g], max_steps=5) # many Grams and targets at once, on the bank's thread pool
 po.gram.solve_subsets([g, g], [[0], [0, 1]], ridge=0.1)   # merge each subset, then its ridge, se and t
 po.gram.solve_subsets([g, g], [[0, 1]], within=True)      # each subset pooled within its parts
+po.gram.solve_subsets([g, g], [[0, 1]], within=True, target_signs=[[1.0], [-1.0]])   # a run with the second Gram's target negated
 ```
 
 **Before merging two halves of a decayed stream, age the earlier half to
