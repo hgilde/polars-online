@@ -18,7 +18,9 @@
 //! the raw second moments, with `C` the co-moments and `μ` the column
 //! means. The slopes `b` solve `(A + penalty) b = r_t`, and the intercept
 //! is `ȳ_t − m_t · b`. `A` does not depend on the target: the co-moments
-//! are the Gram's, and only the cross-moments are each target's.
+//! are the Gram's, and only the cross-moments are each target's. A Gram
+//! pooled within parts ([`GramArrays::within`]) has an intercept per part
+//! and none of its own, so its `ȳ_t` is NaN, and so is the intercept.
 
 /// The arrays of one Gram, as `ModelBank.gram()` exports them, borrowed:
 /// `k` columns and `m` targets, every matrix row-major.
@@ -46,6 +48,11 @@ pub struct GramArrays<'a> {
     pub target_vars: &'a [f64],
     /// Per target, Kish's effective sample size, `m` (NaN where it has none).
     pub target_n_kish: &'a [f64],
+    /// Per target, the parts this Gram was pooled within
+    /// ([`super::merge_within`]), `m`; `None` for a Gram that was not. Each
+    /// part had an intercept of its own, so a fit on it recovers none (NaN)
+    /// and its degrees of freedom lose one per part.
+    pub within: Option<&'a [usize]>,
 }
 
 /// A Gram's co-moment matrix as `ModelBank.gram()` hands it over: in
@@ -183,7 +190,11 @@ impl Response {
             Some(c) => Self {
                 rhs: row(g.cross_centred),
                 means: row(g.means_by_target),
-                ybar: g.cross_moments[t * k + c],
+                ybar: if g.within.is_some() {
+                    f64::NAN
+                } else {
+                    g.cross_moments[t * k + c]
+                },
             },
             None => Self {
                 rhs: row(g.cross_moments),

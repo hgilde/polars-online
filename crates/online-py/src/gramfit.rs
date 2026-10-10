@@ -3,7 +3,7 @@
 //! memory, and the fits run on the bank's pool with the GIL released.
 
 use online_polars::gramfit::{
-    FitColumns, GramPath, SubsetFit, SubsetOut, cd_path_of, fit_subsets, lars_paths,
+    FitColumns, GramPath, Pooling, SubsetFit, SubsetOut, cd_path_of, fit_subsets, lars_paths,
 };
 use online_polars::online_core::gramfit::{Comoments, GramArrays, LarsLimits, LarsStop, OwnedGram};
 use pyo3::buffer::PyBuffer;
@@ -15,7 +15,9 @@ use pyo3::types::PyByteArray;
 /// `means`, `comoments`, `cross_moments`, `means_by_target`,
 /// `cross_centred`, `target_weights`, `target_means`, `target_vars` and
 /// `target_n_kish`, each a C-contiguous float64 buffer (a numpy array) --
-/// but `comoments`, which may be float32 and whole or packed (task 229).
+/// but `comoments`, which may be float32 and whole or packed (task 229) --
+/// and last `target_within_parts`, per target the parts a Gram pooled
+/// within holds (task 240), or `None`.
 pub(crate) type GramIn<'py> = (
     usize,
     f64,
@@ -28,6 +30,7 @@ pub(crate) type GramIn<'py> = (
     Bound<'py, PyAny>,
     Bound<'py, PyAny>,
     Bound<'py, PyAny>,
+    Option<Vec<usize>>,
 );
 
 /// A path as the Python layer reads it: the knots' penalties, their
@@ -217,6 +220,7 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
         target_means: floats(py, &g.8, "target_means")?,
         target_vars: floats(py, &g.9, "target_vars")?,
         target_n_kish: floats(py, &g.10, "target_n_kish")?,
+        within: g.11.clone(),
     };
     let comoments = Matrix::read(py, &g.3)?;
     let m = base.target_weights.len();
@@ -234,6 +238,11 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
         ("target_means", base.target_means.len(), m),
         ("target_vars", base.target_vars.len(), m),
         ("target_n_kish", base.target_n_kish.len(), m),
+        (
+            "target_within_parts",
+            base.within.as_ref().map_or(m, Vec::len),
+            m,
+        ),
     ];
     for (what, got, want) in shapes {
         if got != want {
@@ -368,6 +377,7 @@ fn subsets_fit(
     targets: Vec<usize>,
     cols: FitColumns,
     fit: SubsetFit,
+    pooling: Pooling,
 ) -> PyResult<Vec<Vec<SubsetOut>>> {
     let owned = read_all(py, grams)?;
     let all: Vec<Vec<usize>> = vec![targets.clone(); owned.len()];
@@ -383,16 +393,17 @@ fn subsets_fit(
     }
     py.detach(|| {
         let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
-        fit_subsets(&views, subsets, &targets, &cols, &fit)
+        fit_subsets(&views, subsets, &targets, &cols, &fit, pooling)
     })
     .map_err(value_err)
 }
 
-/// Each subset of the Grams merged and each listed target's ridge fit on
-/// it, with its statistics (`online_core::gramfit::ridge_fits`): one list
-/// per subset, one fit per target.
+/// Each subset of the Grams merged (pooled within each part under
+/// `within`) and each listed target's ridge fit on it, with its statistics
+/// (`online_core::gramfit::ridge_fits`): one list per subset, one fit per
+/// target.
 #[pyfunction]
-#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize))]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize, within))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_ridge_subsets<'py>(
     py: Python<'py>,
@@ -403,6 +414,7 @@ pub(crate) fn gram_ridge_subsets<'py>(
     icept: Option<usize>,
     ridge: f64,
     standardize: bool,
+    within: bool,
 ) -> PyResult<Vec<Vec<RidgeOut<'py>>>> {
     let fit = SubsetFit::Ridge { ridge, standardize };
     let out = subsets_fit(
@@ -412,6 +424,7 @@ pub(crate) fn gram_ridge_subsets<'py>(
         targets,
         FitColumns { slots, icept },
         fit,
+        pooling(within),
     )?;
     Ok(out
         .into_iter()
@@ -434,10 +447,11 @@ pub(crate) fn gram_ridge_subsets<'py>(
         .collect())
 }
 
-/// Each subset of the Grams merged and each listed target's lasso path on
-/// it, by least angle regression: one list per subset, one path per target.
+/// Each subset of the Grams merged (pooled within each part under
+/// `within`) and each listed target's lasso path on it, by least angle
+/// regression: one list per subset, one path per target.
 #[pyfunction]
-#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active))]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active, within))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_path_subsets<'py>(
     py: Python<'py>,
@@ -449,6 +463,7 @@ pub(crate) fn gram_path_subsets<'py>(
     weights: Vec<f64>,
     max_steps: Option<usize>,
     max_active: Option<usize>,
+    within: bool,
 ) -> PyResult<Vec<Vec<PathOut<'py>>>> {
     if !weights.is_empty() && weights.len() != slots.len() {
         return Err(PyValueError::new_err(format!(
@@ -471,6 +486,7 @@ pub(crate) fn gram_path_subsets<'py>(
         targets,
         FitColumns { slots, icept },
         fit,
+        pooling(within),
     )?;
     Ok(out
         .into_iter()
@@ -483,6 +499,14 @@ pub(crate) fn gram_path_subsets<'py>(
                 .collect()
         })
         .collect())
+}
+
+fn pooling(within: bool) -> Pooling {
+    if within {
+        Pooling::Within
+    } else {
+        Pooling::Union
+    }
 }
 
 /// Every slot, the intercept and every target in range of every Gram: the

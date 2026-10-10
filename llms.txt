@@ -148,7 +148,8 @@ Windows alike.
 - [Data quality](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md):
   each `bank.check()` finding, what it does to a fit, and its fix in Polars
 - [Wide fits from Grams](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md):
-  one pass leaves a Gram per week; `po.gram` pools weeks, fits a ridge with its t, walks
+  one pass leaves a Gram per week; `po.gram` pools weeks, with or without their weekly
+  levels, fits a ridge with its t, walks
   the lasso path, selects features over halves of the weeks, and reads compact exports --
   each with its theory and a recipe that runs
 - [Performance](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md):

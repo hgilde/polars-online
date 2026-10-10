@@ -163,8 +163,23 @@ def model_kinds() -> list[str]: ...
 # A Gram as the fits in `polars_online.gram` hand it over: `k` and
 # `weight_sum`, then `means`, `comoments`, `cross_moments`, `means_by_target`,
 # `cross_centred`, `target_weights`, `target_means`, `target_vars` and
-# `target_n_kish`, each a C-contiguous float64 numpy array.
-_GramIn = tuple[int, float, object, object, object, object, object, object, object, object, object]
+# `target_n_kish`, each a C-contiguous float64 numpy array, and last
+# `target_within_parts`, per target the parts a Gram pooled within holds, or
+# None (docs/PLAN.md task 240).
+_GramIn = tuple[
+    int,
+    float,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    object,
+    list[int] | None,
+]
 # A lasso path: the knots' penalties, their coefficients (the bytes of
 # native-endian float64s, flat), the active columns at each, and why it stopped.
 _PathOut = tuple[list[float], bytearray, list[list[int]], str]
@@ -202,6 +217,7 @@ def gram_ridge_subsets(
     icept: int | None,
     ridge: float,
     standardize: bool,
+    within: bool,
 ) -> list[list[_RidgeOut]]: ...
 def gram_path_subsets(
     grams: list[_GramIn],
@@ -212,4 +228,5 @@ def gram_path_subsets(
     weights: list[float],
     max_steps: int | None,
     max_active: int | None,
+    within: bool,
 ) -> list[list[_PathOut]]: ...

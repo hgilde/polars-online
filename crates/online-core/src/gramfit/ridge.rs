@@ -10,7 +10,8 @@
 //!
 //! ```text
 //! resid_var = Var[y] − 2 b' cov_xy + b' C b          (at least 0)
-//! sigma2    = resid_var · n / (n − p)                 p: the slots, and the intercept
+//! sigma2    = resid_var · n / (n − p)                 p: the slots, and the intercept,
+//!                                                     or the parts pooled within
 //! se        = √(diag(C⁻¹) · sigma2 / n)               t = b / se
 //! r2        = 1 − resid_var / Var[y]
 //! ```
@@ -133,7 +134,12 @@ pub fn ridge_fits(
             c[p * n + q] = g.comoments.get(k, i, j);
         }
     }
-    let dof_used = n + usize::from(icept.is_some());
+    // A Gram pooled within parts spent an intercept on each part it holds
+    // the target's rows of, and has none of its own (docs/PLAN.md task 240).
+    let dof_used = |t: usize| match g.within {
+        Some(parts) => n + parts[t],
+        None => n + usize::from(icept.is_some()),
+    };
     targets
         .iter()
         .zip(&resps)
@@ -164,7 +170,7 @@ pub fn ridge_fits(
             if resid_var < 0.0 {
                 resid_var = 0.0;
             }
-            let dof = nkish - dof_used as f64;
+            let dof = nkish - dof_used(t) as f64;
             let sigma2 = if dof > 0.0 {
                 resid_var * nkish / dof
             } else {

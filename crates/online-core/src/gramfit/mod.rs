@@ -9,6 +9,8 @@
 //! - [`cd_path`]: the elastic-net path by the `lasso` model's coordinate
 //!   descent, over a grid of penalties;
 //! - [`merge`]: Grams of disjoint row sets pooled, on a subset of columns;
+//!   [`merge_within`]: pooled within the parts, each about its own means
+//!   (block fixed effects);
 //! - [`ridge_fits`]: a ridge fit of each target with its standard errors.
 
 mod cd;
@@ -22,12 +24,14 @@ mod ridge;
 mod system;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod within_tests;
 
 pub use cd::cd_path;
 pub use lars::{
     CorrRows, DenseRows, LarsLimits, LarsPath, LarsStop, lars_lasso, lars_lasso_rows,
     lars_lasso_weighted,
 };
-pub use merge::{OwnedGram, merge};
+pub use merge::{OwnedGram, merge, merge_within, within_cross};
 pub use ridge::{RidgeFit, ridge_fits};
 pub use system::{Comoments, Correlation, Design, GramArrays, GramRows, Response, Scaling};

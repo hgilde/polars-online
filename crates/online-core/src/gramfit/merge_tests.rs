@@ -8,12 +8,12 @@ use crate::oracle;
 
 /// Rows: `z` with the intercept's 1 in front of `k` features, and two
 /// targets, the second missing on a share of the rows.
-struct Rows {
-    z: Vec<Vec<f64>>,
-    y: Vec<[Option<f64>; 2]>,
+pub(super) struct Rows {
+    pub(super) z: Vec<Vec<f64>>,
+    pub(super) y: Vec<[Option<f64>; 2]>,
 }
 
-fn rows(seed: u64, n: usize, k: usize, level: f64) -> Rows {
+pub(super) fn rows(seed: u64, n: usize, k: usize, level: f64) -> Rows {
     let mut rng = SplitMix64::new(seed);
     let mut normal = || {
         let u = 1.0 - rng.uniform();
@@ -40,8 +40,9 @@ fn rows(seed: u64, n: usize, k: usize, level: f64) -> Rows {
 }
 
 /// The Gram of `rows`, every row at weight 1, two-pass: centre, then
-/// multiply.
-fn gram_of(r: &Rows) -> OwnedGram {
+/// multiply. A target absent from every row has the moments the bank
+/// reports for it: 0, and no Kish size.
+pub(super) fn gram_of(r: &Rows) -> OwnedGram {
     let k = r.z[0].len();
     let n = r.z.len() as f64;
     let mean = |idx: &[usize], f: &dyn Fn(usize) -> f64| -> f64 {
@@ -67,6 +68,7 @@ fn gram_of(r: &Rows) -> OwnedGram {
         target_means: Vec::new(),
         target_vars: Vec::new(),
         target_n_kish: Vec::new(),
+        within: None,
     };
     for t in 0..2 {
         let own: Vec<usize> = all
@@ -74,6 +76,16 @@ fn gram_of(r: &Rows) -> OwnedGram {
             .copied()
             .filter(|&i| r.y[i][t].is_some())
             .collect();
+        if own.is_empty() {
+            g.cross_moments.extend(vec![0.0; k]);
+            g.cross_centred.extend(vec![0.0; k]);
+            g.means_by_target.extend(vec![0.0; k]);
+            g.target_weights.push(0.0);
+            g.target_means.push(0.0);
+            g.target_vars.push(0.0);
+            g.target_n_kish.push(f64::NAN);
+            continue;
+        }
         let y = |i: usize| r.y[i][t].unwrap();
         let ybar = mean(&own, &y);
         let m: Vec<f64> = (0..k).map(|a| mean(&own, &|i| r.z[i][a])).collect();
@@ -91,14 +103,14 @@ fn gram_of(r: &Rows) -> OwnedGram {
     g
 }
 
-fn joined(parts: &[&Rows]) -> Rows {
+pub(super) fn joined(parts: &[&Rows]) -> Rows {
     Rows {
         z: parts.iter().flat_map(|p| p.z.clone()).collect(),
         y: parts.iter().flat_map(|p| p.y.clone()).collect(),
     }
 }
 
-fn close(a: &[f64], b: &[f64], tol: f64, what: &str) {
+pub(super) fn close(a: &[f64], b: &[f64], tol: f64, what: &str) {
     assert_eq!(a.len(), b.len(), "{what}");
     for (i, (x, y)) in a.iter().zip(b).enumerate() {
         assert!(
@@ -557,6 +569,7 @@ fn one_slot(var_y: f64, n_kish: f64) -> OwnedGram {
         target_means: vec![3.0],
         target_vars: vec![var_y],
         target_n_kish: vec![n_kish],
+        within: None,
     }
 }
 
@@ -610,6 +623,7 @@ fn a_constant_target_has_no_r2() {
         target_means: vec![5.0],
         target_vars: vec![0.0],
         target_n_kish: vec![10.0],
+        within: None,
     };
     let fit = ridge_fits(&g.arrays(), &[0], &[0], None, 0.0, false).remove(0);
     assert_eq!((fit.coef[0], fit.resid_var), (2.0, 4.0));

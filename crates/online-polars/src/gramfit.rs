@@ -11,7 +11,7 @@
 
 use online_core::gramfit::{
     Correlation, Design, GramArrays, GramRows, LarsLimits, LarsStop, Response, RidgeFit, cd_path,
-    lars_lasso_weighted, merge, ridge_fits,
+    lars_lasso_weighted, merge, merge_within, ridge_fits,
 };
 use polars::prelude::*;
 use rayon::prelude::*;
@@ -158,6 +158,17 @@ pub enum SubsetFit {
     },
 }
 
+/// How [`fit_subsets`] pools each subset's Grams.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pooling {
+    /// Into the Gram of their union (`online_core::gramfit::merge`).
+    #[default]
+    Union,
+    /// Within each part, about its own means (`merge_within`): a fit with
+    /// an intercept per part, which recovers none (docs/PLAN.md task 240).
+    Within,
+}
+
 /// One target's fit on one subset's merged Gram.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SubsetOut {
@@ -165,8 +176,8 @@ pub enum SubsetOut {
     Path(GramPath),
 }
 
-/// Each subset of `grams` merged (`online_core::gramfit::merge`, on the
-/// columns `cols` reads) and fitted for each of `targets`, the subsets
+/// Each subset of `grams` merged as `pooling` says (on the columns `cols`
+/// reads) and fitted for each of `targets`, the subsets
 /// beside each other on the bank's pool: one list per subset, one fit per
 /// target. A subset is a list of positions in `grams`, which share their
 /// columns and targets. The merged Gram is formed once per subset, on the
@@ -183,6 +194,7 @@ pub fn fit_subsets(
     targets: &[usize],
     cols: &FitColumns,
     fit: &SubsetFit,
+    pooling: Pooling,
 ) -> PolarsResult<Vec<Vec<SubsetOut>>> {
     let k = grams.first().map_or(0, |g| g.k);
     // The merged Gram's columns: the intercept first, then the slots.
@@ -213,7 +225,10 @@ pub fn fit_subsets(
             .par_iter()
             .map(|subset| {
                 let parts: Vec<GramArrays<'_>> = subset.iter().map(|&i| grams[i]).collect();
-                let merged = merge(&parts, &all, cols.icept);
+                let merged = match pooling {
+                    Pooling::Union => merge(&parts, &all, cols.icept),
+                    Pooling::Within => merge_within(&parts, &all, cols.icept),
+                };
                 let g = merged.arrays();
                 match fit {
                     SubsetFit::Ridge { ridge, standardize } => Ok(ridge_fits(

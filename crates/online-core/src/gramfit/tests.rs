@@ -563,6 +563,7 @@ fn a_path_read_from_a_gram_is_the_path_on_its_correlation_matrix() {
         target_means: &[0.7],
         target_vars: &[2.0],
         target_n_kish: &[120.0],
+        within: None,
     };
     let slots = [1, 2, 3, 4, 5];
     for icept in [Some(0), None] {
@@ -600,6 +601,7 @@ fn a_system_centres_at_the_targets_means_and_recovers_the_intercept() {
         target_means: &[5.0, 2.0],
         target_vars: &[1.0, 1.0],
         target_n_kish: &[10.0, 10.0],
+        within: None,
     };
     assert_eq!(g.targets(), 2);
     let design = Design::of(&g, &[1, 2], Some(0));
@@ -720,6 +722,7 @@ fn a_standard_error_of_a_system_that_is_not_positive_definite_is_nan() {
         target_means: &[5.0],
         target_vars: &[1.0],
         target_n_kish: &[50.0],
+        within: None,
     };
     for standardize in [false, true] {
         let fit = &ridge_fits(&g, &[0], &[1, 2], Some(0), 0.1, standardize)[0];

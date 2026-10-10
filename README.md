@@ -2189,8 +2189,9 @@ The [`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html
 reference states every array and the identities that relate them.
 [Wide fits from Grams](docs/GRAM.md) is the guide to fitting from Grams,
 with the theory and a recipe that runs for each task: a Gram per week
-from one pass, pooling weeks, a ridge with its t, the lasso path,
-stability selection, compact exports and `gram_threads`.
+from one pass, pooling weeks with or without their weekly levels, a ridge
+with its t, the lasso path, stability selection, compact exports and
+`gram_threads`.
 
 **`po.gram` does the same algebra in one call**, on any Gram, such as one
 read from a saved state. Two calls need care:
@@ -2214,10 +2215,12 @@ po.gram.correlation(g)                  # the correlation matrix
 po.gram.vif(g)                          # variance inflation factors
 po.gram.subset(g, ["x0", "x1"])         # the Gram of some of the columns: a sub-block, not a recomputation
 po.gram.merge([g, g])                   # pools the Grams of disjoint row sets into the Gram of their union
+po.gram.merge([g, g], within=True)      # pools each part about its own means: a fit with an intercept per part
 po.gram.lasso_path(g, [0.1, 0.01])      # the lasso model's coordinate descent, offline
 po.gram.lars_path(g, max_active=2)      # the lasso path's knots, by least angle regression, stopped early
 po.gram.lars_paths([g, g], max_steps=5) # many Grams and targets at once, on the bank's thread pool
 po.gram.solve_subsets([g, g], [[0], [0, 1]], ridge=0.1)   # merge each subset, then its ridge, se and t
+po.gram.solve_subsets([g, g], [[0, 1]], within=True)      # each subset pooled within its parts
 ```
 
 **Before merging two halves of a decayed stream, age the earlier half to

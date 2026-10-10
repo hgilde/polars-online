@@ -206,8 +206,9 @@ def _comoments(np: Any, g: dict[str, Any]) -> Any:
     return np.asarray(g["comoments"], dtype=float)
 
 
-def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """Pool the Grams of disjoint row sets into the Gram of their union.
+def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str, Any]:
+    """Pool the Grams of disjoint row sets into the Gram of their union, or,
+    with ``within=True``, within each part.
 
     Chan, Golub and LeVeque's update: the pooled co-moments are the weighted
     average of the parts' plus the spread between their means, and every quantity
@@ -287,16 +288,64 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     Every part must have the same ``columns`` and ``targets`` (``ValueError``).
     Merging one Gram returns it unchanged; merging none is a ``ValueError``.
 
-    See *Pooling blocks* in
+    .. rubric:: Pooling within parts
+
+    ``within=True`` pools each part's moments about its own means, averaged
+    by its weight, and leaves out the terms in the gaps between the parts'
+    means. For parts ``i`` with weights ``W_i``, co-moments ``C_i``, and for
+    each target its weights ``T_i``, centred cross-moments ``c_i`` and
+    variances ``V_i``:
+
+    .. code-block:: text
+
+        W = sum W_i          C = sum W_i C_i / W
+        T = sum T_i          c = sum T_i c_i / T          V = sum T_i V_i / T
+        n_kish = W**2 / sum(W_i**2 / n_kish_i),   target_n_kish likewise
+
+    folded in the parts' order as the union is, so where the parts' means
+    are equal the two forms are the same numbers. The result is the Gram of
+    the rows demeaned part by part: each feature less its part's mean (over
+    the target's rows for that target's moments), each target less its
+    part's mean. Its ``means`` and ``means_by_target`` are 0, the
+    intercept's 1 aside, its ``cross_moments`` are its ``cross_centred``,
+    and its ``target_means`` are 0. A regression on it is one with an
+    intercept per part, which Wooldridge (2010, chapter 10) calls the
+    within or fixed-effects estimator: the slopes ask how the columns and
+    the target move together inside each part, and the parts' levels drop
+    out. A part with no weight for a target (``T_i = 0``) adds to ``C``
+    and not to that target's moments.
+
+    It records what it is in two keys of its own. ``within_parts`` counts
+    the parts with weight, and ``target_within_parts`` counts, per target,
+    the parts with weight for it. A part already pooled within adds its own
+    counts. The fits read them: :func:`solve`, :func:`lasso_path`,
+    :func:`lars_path` and :func:`solve_subsets` give the slopes and ``nan``
+    for the intercept, since each part had one of its own and the pooled
+    Gram holds none of them, and :func:`coef_stats` takes one degree of
+    freedom per part in place of the intercept's one. A merge of several
+    parts without ``within`` refuses a part pooled within (``ValueError``):
+    its means are 0, and pooled as a union it would add the gap from 0 to
+    the other parts' means as if its rows had not been demeaned.
+
+    .. code-block:: python
+
+        spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                               half_life=float("inf"), group="stock_id")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        pooled = po.gram.merge(bank.gram("ridge"), within=True)  # each stock's levels left out
+        slopes = po.gram.solve(pooled)[1:]                       # its intercept is nan
+
+    See *Pooling blocks* and *Pooling within blocks* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
-    for the theory and a recipe that runs.
+    for the theory and a recipe of each.
     """
     np = _np()
     parts = list(grams)
     if not parts:
         msg = "merge() needs at least one Gram"
         raise ValueError(msg)
-    if len(parts) == 1:
+    if len(parts) == 1 and not within:
         # Nothing to pool: the part is its own union, its group, instance and
         # lags included, which the pooled form drops (review 2026-10-05, YB8).
         return dict(parts[0])
@@ -309,6 +358,9 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if list(p.get("targets") or []) != targets:
             msg = "merge() needs the same targets in every part"
             raise ValueError(msg)
+    if within:
+        return _merge_within(np, parts, cols, targets)
+    _refuse_within_union("merge()", parts)
 
     # Packed parts merge packed, entry for entry; any whole one makes the
     # merge whole. Float32 parts merge in float64.
@@ -411,6 +463,133 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         # reports none rather than a plausible wrong one (E56).
         "lags": None,
         "lag_comoments": None,
+    }
+
+
+def _is_within(g: dict[str, Any]) -> bool:
+    """Whether ``g`` was pooled within parts (``merge(within=True)``)."""
+    return g.get("within_parts") is not None
+
+
+def _refuse_within_union(what: str, parts: Sequence[dict[str, Any]]) -> None:
+    """Refuse to pool a Gram pooled within parts as a union beside others:
+    its means are 0, the demeaned rows', so the union would add the gap
+    from 0 to the other parts' means (docs/PLAN.md task 240)."""
+    for i, p in enumerate(parts):
+        if _is_within(p):
+            msg = (
+                f"{what}: part {i} was pooled within parts (within_parts={p['within_parts']}), so "
+                "its rows are demeaned and its means are 0, and a union would add the gap from 0 "
+                "to the other parts' means as if they were not; pass within=True to pool it "
+                "within parts too"
+            )
+            raise ValueError(msg)
+
+
+def _target_parts(np: Any, g: dict[str, Any]) -> Any:
+    """Per target, the parts ``g`` holds: its ``target_within_parts`` if it
+    was pooled within, else 1 for each target with weight and 0 for one
+    without."""
+    if _is_within(g):
+        return np.asarray(g["target_within_parts"], dtype=np.int64)
+    return (np.asarray(g["target_weights"], dtype=float) > 0.0).astype(np.int64)
+
+
+def _centred_rows(np: Any, g: dict[str, Any], icept: int, m: int, k: int) -> Any:
+    """Every target's centred cross-moments, ``m x k``: ``cross_centred``,
+    or in a mapping without it, as :func:`solve` forms them."""
+    cc = g.get("cross_centred")
+    if cc is not None and len(cc):
+        return np.asarray(cc, dtype=float).reshape(m, k).copy()
+    if m == 0:
+        return np.zeros((0, k))
+    ybar = _ybar_of(np, g, icept)
+    if ybar is None:
+        msg = (
+            "merge(within=True) needs each target's cross-moments about its means: this part "
+            "has no cross_centred, and no intercept or target_means to centre them at"
+        )
+        raise ValueError(msg)
+    return np.stack([_cross_centred(np, g, t, _means_of(np, g, t), ybar[t]) for t in range(m)])
+
+
+def _merge_within(
+    np: Any, parts: list[dict[str, Any]], cols: list[str], targets: list[str]
+) -> dict[str, Any]:
+    """:func:`merge` with ``within=True``: the parts' moments about their
+    own means, folded in order, and the Gram of the rows demeaned part by
+    part around them (docs/PLAN.md task 240). The fold is
+    ``online_core::gramfit::merge_within``'s, entry for entry, so
+    :func:`solve_subsets` agrees with it to the bit."""
+    packed = all(_is_packed(np, p) for p in parts)
+    k = len(cols)
+    _, icept = _feature_slots(parts[0], None)
+
+    def matrix(p: dict[str, Any]) -> Any:
+        if packed:
+            return np.asarray(p["comoments"], dtype=float)
+        return _comoments(np, p)
+
+    w = float(parts[0]["weight_sum"])
+    como = matrix(parts[0]).copy()
+    q = _q_of(parts[0])
+    for p in parts[1:]:
+        wb = float(p["weight_sum"])
+        total = w + wb
+        if total > 0.0:
+            como = (w * como + wb * matrix(p)) / total
+        w = total
+        q = None if q is None else _add_opt(q, _q_of(p))
+
+    tw = np.asarray(parts[0]["target_weights"], dtype=float).copy()
+    m = len(tw)
+    tvar = _opt(np, parts[0]["target_vars"])
+    tq = _target_q(np, parts[0])
+    cc = _centred_rows(np, parts[0], icept, m, k)
+    for p in parts[1:]:
+        twb = np.asarray(p["target_weights"], dtype=float)
+        ttotal = tw + twb
+        live = ttotal > 0.0
+        a = np.divide(tw, ttotal, out=np.zeros_like(ttotal), where=live)
+        b = np.divide(twb, ttotal, out=np.zeros_like(ttotal), where=live)
+        tvb = _opt(np, p["target_vars"])
+        tvar = None if tvar is None or tvb is None else a * tvar + b * tvb
+        tq = None if tq is None else _add_opt(tq, _target_q(np, p))
+        cc = a[:, None] * cc + b[:, None] * _centred_rows(np, p, icept, m, k)
+        tw = ttotal
+
+    # The demeaned rows' means: 0 for every feature, and the intercept's
+    # constant 1.
+    means = np.zeros(k)
+    if icept >= 0:
+        means[icept] = 1.0
+    return {
+        "group": None,
+        "instance": None,
+        "columns": cols,
+        "targets": targets,
+        "weight_sum": w,
+        "n_kish": None if q is None or q <= 0.0 else w * w / q,
+        "means": means,
+        "comoments": como,
+        "cross_moments": cc.copy(),
+        "means_by_target": np.tile(means, (m, 1)),
+        "cross_centred": cc,
+        "target_weights": tw,
+        "target_means": np.zeros(m),
+        "target_vars": tvar,
+        "target_n_kish": None
+        if tq is None
+        else np.divide(tw * tw, tq, out=np.full_like(tq, np.nan), where=tq > 0.0),
+        "lags": None,
+        "lag_comoments": None,
+        "within_parts": sum(
+            int(p["within_parts"]) if _is_within(p) else int(float(p["weight_sum"]) > 0.0)
+            for p in parts
+        ),
+        "target_within_parts": sum(
+            (_target_parts(np, p) for p in parts[1:]), _target_parts(np, parts[0])
+        ),
     }
 
 
@@ -686,7 +865,10 @@ def solve(
 
     Returns a vector over the Gram's columns, starting with the intercept when
     there is one, in :func:`polars_online.spec.coef_index` order; with a sequence
-    of ridges, one row per value.
+    of ridges, one row per value. On a Gram pooled within parts
+    (``merge(within=True)``) the slopes are the within estimator's and the
+    intercept is ``nan``: each part had an intercept of its own, and the
+    pooled Gram holds none of them.
 
     .. code-block:: python
 
@@ -748,7 +930,7 @@ def solve(
         for i, r in enumerate(ridges):
             out[i, cols] = (v @ (vb / (d + r))) / s[keep]
     if icept >= 0:
-        out[:, icept] = ybar - out[:, slots] @ m[slots]
+        out[:, icept] = np.nan if _is_within(g) else ybar - out[:, slots] @ m[slots]
     return out[0] if scalar else out
 
 
@@ -812,7 +994,9 @@ def lasso_path(
         The model's ``max_iter`` and ``tol``.
 
     Returns an array of shape ``(len(penalties), k)`` over the Gram's columns, the
-    intercept first when there is one.
+    intercept first when there is one, and ``nan`` on a Gram pooled within
+    parts (``merge(within=True)``), which has an intercept per part and none
+    of its own.
 
     .. code-block:: python
 
@@ -883,7 +1067,8 @@ def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
     ``weight_sum``, then ``means``, ``comoments``, ``cross_moments``,
     ``means_by_target``, ``cross_centred``, ``target_weights``,
     ``target_means``, ``target_vars`` and ``target_n_kish``, each
-    C-contiguous float64. A mapping without ``means_by_target`` or
+    C-contiguous float64, and last ``target_within_parts`` as a list for a
+    Gram pooled within parts, else ``None``. A mapping without ``means_by_target`` or
     ``cross_centred`` gets them as :func:`solve` forms them: ``means`` for
     every target, and ``cross_moments[t] - m * ybar``; one without a target
     moment gets ``nan`` for it."""
@@ -927,6 +1112,7 @@ def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
         per_target("target_means"),
         per_target("target_vars"),
         per_target("target_n_kish"),
+        [int(v) for v in g["target_within_parts"]] if _is_within(g) else None,
     )
 
 
@@ -1048,7 +1234,8 @@ def lars_path(
     ``coef``
         Shape ``(n_knots, k)``: each knot's coefficients over the Gram's
         columns, in the features' original units with the intercept
-        recovered, as a row of :func:`lasso_path`.
+        recovered, as a row of :func:`lasso_path` (``nan`` on a Gram pooled
+        within parts).
     ``active``
         The active set below each knot, by name, in the order its columns
         entered, those entering at one knot in ``features`` order. A column
@@ -1105,6 +1292,9 @@ def lars_paths(
     sizes. A path is the same arithmetic on one thread whatever the pool's
     size, so its numbers are those of :func:`lars_path` to the bit. The
     other parameters are those of :func:`lars_path`, applied to every path.
+    It merges nothing: each Gram is fitted as it is, a Gram pooled within
+    parts with its intercept ``nan``. To pool subsets and walk their paths
+    in one call, see :func:`solve_subsets`.
 
     .. code-block:: python
 
@@ -1167,11 +1357,12 @@ def solve_subsets(
     ridge: float = 0.0,
     standardize: bool = False,
     path: dict[str, Any] | None = None,
+    within: bool = False,
 ) -> list[list[dict[str, Any]]]:
     """Merge each subset of the Grams and fit it, for many subsets at once.
 
     For each subset, a list of positions in ``grams``, the parts are pooled
-    as :func:`merge` pools them and each target is fitted on the pooled
+    as :func:`merge` pools them (``within`` as there) and each target is fitted on the pooled
     Gram: a ridge with its statistics, as :func:`solve` and then
     :func:`coef_stats` give them, or with ``path`` its lasso path, as
     :func:`lars_path` gives it. Two uses: the halves of a stability
@@ -1230,6 +1421,10 @@ def solve_subsets(
         ``max_steps``, ``max_active`` and ``penalty_weights`` (``{}`` for
         none of them) for each target's lasso path instead. ``ridge`` and
         ``standardize`` are then not read: a path is in correlation form.
+    ``within``
+        Pool each subset within its parts, as :func:`merge` with
+        ``within=True``: each fit's intercept is ``nan``, and a ridge fit's
+        degrees of freedom lose one per part.
 
     Returns one list per subset, with one dict per target. A ridge fit's
     dict has ``coef``, the coefficients over the Gram's columns, and
@@ -1249,13 +1444,15 @@ def solve_subsets(
 
     ``ValueError`` for Grams of different columns or targets, an empty
     subset, a position out of range or named twice in one subset, a
-    ``ridge`` that is not finite and at least 0, an unknown key in
+    Gram pooled within parts in a subset of several without ``within``
+    (as :func:`merge`), a ``ridge`` that is not finite and at least 0, an unknown key in
     ``path``, and, for a ridge fit, a Gram without target moments (as
     :func:`coef_stats`) or one without ``means_by_target`` and
     ``cross_centred``, which :func:`merge` forms after pooling and this
     does not. Otherwise as :func:`solve` and :func:`lars_path`.
 
-    See *Stability selection over halves of the weeks* and *Per-block coefficients* in
+    See *Stability selection over halves of the weeks*, *Per-block coefficients* and
+    *Pooling within blocks* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
     for the theory and a recipe of each use.
     """
@@ -1286,6 +1483,8 @@ def solve_subsets(
             )
             raise ValueError(msg)
         picked.append(idx)
+        if not within and len(idx) > 1:
+            _refuse_within_union("solve_subsets()", [parts[i] for i in idx])
     slots, icept = _feature_slots(parts[0], features)
     m = len(parts[0]["target_weights"])
     tidx = list(range(m)) if targets is None else [_target_index(parts[0], t) for t in targets]
@@ -1309,7 +1508,9 @@ def solve_subsets(
         steps = _limit("max_steps", path.get("max_steps"))
         active = _limit("max_active", path.get("max_active"))
         weights = _lars_weights(np, len(slots), path.get("penalty_weights"))
-        out = _native.gram_path_subsets(native, picked, tidx, slots, ic, weights, steps, active)
+        out = _native.gram_path_subsets(
+            native, picked, tidx, slots, ic, weights, steps, active, bool(within)
+        )
         return [
             [
                 {
@@ -1333,7 +1534,7 @@ def solve_subsets(
             )
             raise ValueError(msg)
     fits = _native.gram_ridge_subsets(
-        native, picked, tidx, slots, ic, float(ridge), bool(standardize)
+        native, picked, tidx, slots, ic, float(ridge), bool(standardize), bool(within)
     )
     return [
         [
@@ -1371,6 +1572,11 @@ def coef_stats(
         sigma2    = resid_var * n / (n - k)          # n = target_n_kish
         se        = sqrt(diag(inv(C)) * sigma2 / n)
         t         = b / se
+
+    ``k`` counts the features and the intercept. On a Gram pooled within
+    parts (``merge(within=True)``) it counts the features and one intercept
+    per part the target has rows in (``target_within_parts``), and ``r2``
+    is the share of the variance inside the parts that the fit explains.
 
     Returns a dict:
 
@@ -1440,7 +1646,13 @@ def coef_stats(
 
     resid_var = var_y - 2.0 * b @ cov_xy + b @ c @ b
     resid_var = max(resid_var, 0.0)
-    dof = n - (len(slots) + (1 if icept >= 0 else 0))
+    # A Gram pooled within parts spent an intercept on each part, and has
+    # none of its own (docs/PLAN.md task 240).
+    if _is_within(g):
+        absorbed = int(np.asarray(g["target_within_parts"])[t])
+    else:
+        absorbed = 1 if icept >= 0 else 0
+    dof = n - (len(slots) + absorbed)
     sigma2 = resid_var * n / dof if dof > 0.0 else np.nan
     se = np.full(k, np.nan)
     tstat = np.full(k, np.nan)

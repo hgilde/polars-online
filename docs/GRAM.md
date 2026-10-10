@@ -145,6 +145,7 @@ What you can do with a set of Grams, and the calls that do it:
 | collect a Gram per week in one pass | `po.spec.ewridge(..., group="week")`, `bank.gram()` | [Weekly blocks from one pass](#weekly-blocks-from-one-pass) |
 | fit on some of the columns | `po.gram.subset`, or `features=` on any fit | [Every least-squares fit is a function of the Gram](#every-least-squares-fit-is-a-function-of-the-gram) |
 | pool any weeks, and score a fit on others | `po.gram.merge` | [Pooling blocks](#pooling-blocks) |
+| pool weeks and leave their levels out | `po.gram.merge(..., within=True)` | [Pooling within blocks](#pooling-within-blocks) |
 | fit a ridge and read its t | `po.gram.solve`, `po.gram.coef_stats` | [A ridge and its t](#a-ridge-and-its-t) |
 | know whether a fit is determined | `po.gram.condition`, `po.gram.vif`, `po.gram.correlation` | [Is the fit determined?](#is-the-fit-determined) |
 | choose columns | `po.gram.lars_path`, `po.gram.lasso_path` | [Choosing columns on the lasso path](#choosing-columns-on-the-lasso-path) |
@@ -524,6 +525,124 @@ for how, parts in [("as they are", blocks), ("aged", aged)]:
 Pooled as they are, the decayed weeks weigh the first week as much as the
 last, and a coefficient lands 0.085 from the whole stream's. Aged before
 they are pooled, they give the whole stream's own coefficients.
+
+### Pooling within blocks
+
+**`po.gram.merge(blocks, within=True)` pools each block's moments about
+its own means, and leaves out the spread between the blocks' means.** The
+union above adds `(W_a · W_b / W²) · Δ Δ'`, the co-moment of the gaps
+between the parts' means. The within form drops that term, so the pooled
+co-moments are the blocks' own, averaged by weight:
+
+```text
+W = Σ W_i        C = Σ W_i · C_i / W
+T = Σ T_i        c = Σ T_i · c_i / T        V = Σ T_i · V_i / T
+```
+
+Each target's weights `T_i`, centred cross-moments `c_i` and variances
+`V_i` pool over the rows it was present on. A week with no rows of a
+target adds to `C` and not to that target's moments. Where the blocks'
+means are equal, the two forms give the same numbers.
+
+**The pooled Gram is that of the rows less their week's means, and a fit
+on it has an intercept for each week.** A regression on the rows less
+their weekly means gives the slopes that the raw rows give with a constant
+column for each week (Frisch and Waugh 1933, Lovell 1963). That is the
+within, or fixed-effects, estimator (Wooldridge 2010, chapter 10). It asks
+only how the columns and the target move together inside each week, as
+each week's own fit does, and the weekly levels drop out of it.
+
+**So the fit has no intercept of its own, and loses a degree of freedom
+for each week.** The pooled Gram's `means` are 0, beside the intercept's
+1, and it counts its weeks in `within_parts` and, per target, in
+`target_within_parts`. `po.gram.solve` and every other fit return `nan`
+for the intercept, since each week had one and the pooled Gram holds none
+of them. `po.gram.coef_stats` divides by `n − p − B`, with `p` the
+features and `B` the weeks the target has rows in.
+`po.gram.solve_subsets(..., within=True)` pools each subset the same way.
+A union of several parts refuses a Gram pooled within, since its means
+are 0 and the union would add the gap from 0 to the others' means.
+
+**Pooled as one union, a chance correlation of the weekly means reads as
+a correlation of the rows.** Take a feature whose level wanders from week
+to week, such as an exponentially weighted mean at a half-life near a
+week, and a target whose weekly level wanders apart from it. Their forty
+weekly means correlate by chance, at about ±1/√40 = ±0.16 for independent
+series. The union's co-moments hold that correlation, and its standard
+errors divide by the 20,160 rows, as if each row had confirmed it. It
+rests on forty weekly means.
+
+**Pool within weeks to ask how a feature moves the target inside a week,
+and keep the union to ask how their levels move together.** The second
+question has forty observations, one a week, and
+[Per-block coefficients](#per-block-coefficients) or the weekly means
+answer it with forty.
+
+The recipe makes `slow`, whose weekly level wanders, and `quick`, which
+moves `y` inside each week. `y`'s weekly level wanders too, apart from
+both:
+
+```python
+from datetime import datetime, timedelta
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# 40 weeks, a row every 20 minutes. slow is an exponentially weighted mean of noise at a half-life
+# of a week, so its weekly level wanders. y's weekly level wanders apart from it, drawn for each
+# week. Only quick moves y inside a week, by 0.05.
+rng = np.random.default_rng(7)
+n_weeks, per_week = 40, 504
+n = n_weeks * per_week
+slow = pl.Series(rng.standard_normal(n)).ewm_mean(half_life=per_week).to_numpy()
+slow = slow / slow.std()
+quick = rng.standard_normal(n)
+level = 0.3 * rng.standard_normal(n_weeks)  # y's level in each week
+y = 0.05 * quick + level.repeat(per_week) + rng.standard_normal(n)
+start = datetime(2025, 1, 6)  # a Monday
+ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
+pl.DataFrame({"ts": ts, "slow": slow, "quick": quick, "y": y}).write_parquet("levels.parquet")
+
+# One pass over the file leaves a Gram per week.
+lf = pl.scan_parquet("levels.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
+spec = po.spec.ewridge(
+    "blocks", targets=["y"], features=["slow", "quick"], group="week",
+    half_life=float("inf"), solve_every=1e18,
+)
+bank = po.ModelBank([spec])
+bank.fit(lf)
+blocks = bank.gram("blocks")
+
+weekly = np.array([[g["means"][1], g["target_means"][0]] for g in blocks])  # each week's mean of slow and of y
+print(f"the weekly means of slow and y correlate at {np.corrcoef(weekly.T)[0, 1]:.2f} over {n_weeks} weeks")
+print(f"{'pooled':>12} {'slow':>7} {'t':>5} {'quick':>7} {'t':>5}")
+for how, pooled in [("as a union", po.gram.merge(blocks)), ("within weeks", po.gram.merge(blocks, within=True))]:
+    coef = po.gram.solve(pooled)  # within weeks, coef[0], the intercept, is nan
+    t = po.gram.coef_stats(pooled, coef)["t"]
+    print(f"{how:>12} {coef[1]:>7.3f} {t[1]:>5.1f} {coef[2]:>7.3f} {t[2]:>5.1f}")
+
+each = po.gram.solve_subsets(blocks, [[i] for i in range(n_weeks)])  # each week alone
+weekly_slow = np.array([fits[0]["coef"][1] for fits in each])
+t_weeks = weekly_slow.mean() / (weekly_slow.std(ddof=1) / np.sqrt(n_weeks))  # Fama and MacBeth's t
+print(f"each week alone: slow's mean coefficient {weekly_slow.mean():.3f}, its t from the weeks {t_weeks:.1f}")
+```
+
+```text
+the weekly means of slow and y correlate at -0.10 over 40 weeks
+      pooled    slow     t   quick     t
+  as a union  -0.025  -3.4   0.047   6.4
+within weeks  -0.004  -0.3   0.046   6.5
+each week alone: slow's mean coefficient 0.006, its t from the weeks 0.2
+```
+
+The weekly means of `slow` and `y` correlate at −0.10, inside the ±0.16
+that chance gives forty weeks. Pooled as a union, that correlation gives
+`slow` a coefficient of −0.025 and a t of −3.4. Pooled within weeks,
+`slow`'s t is −0.3. Each week alone agrees: the forty weekly coefficients
+average 0.006, with a t of 0.2 from their spread. `quick` moves `y` inside
+each week, and both forms find it, with a t of 6.4 and of 6.5.
 
 ## A ridge and its t
 
@@ -1393,10 +1512,12 @@ Each claim above that is not measured here rests on one of these.
 | Fama, E. F. and MacBeth, J. D. (1973). Risk, return, and equilibrium: empirical tests. *Journal of Political Economy* 81(3), 607–636. | a coefficient's t from its estimates period by period |
 | Fisher, R. A. (1922). On the mathematical foundations of theoretical statistics. *Philosophical Transactions of the Royal Society of London, Series A* 222, 309–368. | sufficiency |
 | Friedman, J., Hastie, T. and Tibshirani, R. (2010). Regularization paths for generalized linear models via coordinate descent. *Journal of Statistical Software* 33(1), 1–22. | coordinate descent for the lasso and the elastic net, warm-started along a path |
+| Frisch, R. and Waugh, F. V. (1933). Partial time regressions as compared with individual trends. *Econometrica* 1(4), 387–401. | a regression's slopes with a constant per block, from the rows less their block's means |
 | Higham, N. J. (2002). *Accuracy and Stability of Numerical Algorithms*, 2nd ed. SIAM. | the error a perturbation of a linear system's entries carries into its solution |
 | Hoerl, A. E. and Kennard, R. W. (1970). Ridge regression: biased estimation for nonorthogonal problems. *Technometrics* 12(1), 55–67. | the ridge |
 | IEEE (2019). *IEEE Standard for Floating-Point Arithmetic*, IEEE Std 754-2019. | float32's rounding and range |
 | Kish, L. (1965). *Survey Sampling*. Wiley. | the effective sample size of unequal weights |
+| Lovell, M. C. (1963). Seasonal adjustment of economic time series and multiple regression analysis. *Journal of the American Statistical Association* 58(304), 993–1010. | the general form of that theorem: the slopes with any set of columns partialled out first |
 | Marquardt, D. W. (1970). Generalized inverses, ridge regression, biased linear estimation, and nonlinear estimation. *Technometrics* 12(3), 591–612. | the variance inflation factor |
 | Meinshausen, N. and Bühlmann, P. (2010). Stability selection. *Journal of the Royal Statistical Society, Series B* 72(4), 417–473. | stability selection and its bound on false selections |
 | Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. *Econometrica* 55(3), 703–708. | the variance of a series of weekly coefficients that drift |
@@ -1404,5 +1525,6 @@ Each claim above that is not measured here rests on one of these.
 | Tibshirani, R. (1996). Regression shrinkage and selection via the lasso. *Journal of the Royal Statistical Society, Series B* 58(1), 267–288. | the lasso |
 | Welford, B. P. (1962). Note on a method for calculating corrected sums of squares and products. *Technometrics* 4(3), 419–420. | the centred update of each row |
 | West, D. H. D. (1979). Updating mean and variance estimates: an improved method. *Communications of the ACM* 22(9), 532–535. | the same update with weights |
+| Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
 | Zou, H. and Hastie, T. (2005). Regularization and variable selection via the elastic net. *Journal of the Royal Statistical Society, Series B* 67(2), 301–320. | the elastic net |
 | [PERFORMANCE §37 and §38](PERFORMANCE.md#37-one-wide-gram-on-several-threads-task-225-2026-10-08), [PLAN](PLAN.md) tasks 225 to 229 and 231 | `gram_threads`, a solve's bits in any pool, `lars_path`, `solve_subsets` and the compact forms, as measured when they were built |
