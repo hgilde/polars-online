@@ -9383,6 +9383,43 @@ tick, and that the series holding it up has a count near 1.
       Checked against closed-form paths (an orthogonal design's
       soft-thresholding, an equicorrelated design's, duplicate columns),
       KKT at every knot, and random designs unchanged to rounding.
+- [ ] 237. **`docs/GRAM.md`: wide fits from Grams** -- the user,
+      2026-10-10 ("Yes" to a page for the offline Gram tools on the pattern
+      of DIAGNOSTICS and DATA-ISSUES): the theory (a Gram as a sufficient
+      statistic, exact merges, the ridge and its t, LARS and coordinate
+      descent, stability selection, what a compact export loses,
+      `gram_threads`) and recipes held to their output by a test. In
+      progress.
+- [ ] 238. **A rewrite of the docs** -- the user, 2026-10-10: "After the
+      merge to main do a rewrite of the docs, make a plan and reorganize
+      sections if needed, go through every section of every doc following
+      the guidelines and ensuring that we prefer to have recipes as examples
+      of capabilities." After tasks 127 and 235-237 merge to `main`.
+      **Scope:** the README and every guide `docs/README.md` lists (RUNNER,
+      STATE-WORKFLOW, DIAGNOSTICS, DATA-ISSUES, GRAM, OUTPUTS through its
+      generator, REGIMES, PERFORMANCE's guide part, EXTENDING, TESTING,
+      RELEASE-READINESS, WRITING), `docs/README.md` itself, CONTRIBUTING and
+      `llms.txt`; the records stay as written (`docs/README.md`: "A record
+      is not rewritten when the code moves on"), and VALIDATION.md is
+      generated. **First a plan:** a map of every doc and section -- what
+      each is for, its reader, what belongs elsewhere (README sections that
+      have grown into guides, guides that duplicate each other), every
+      capability shown by prose or a fragment that should be a recipe -- and
+      the reorganization it implies, logged in `docs/README-ITERATIONS.md`
+      (the prompt verbatim, as every README pass is). **Then every
+      section**, to `docs/WRITING.md`: facts checked against the code,
+      recipes as the examples of capabilities -- complete, runnable,
+      generating their data and reading it from parquet, their printed
+      output shown and held by a test (`tests/doc_recipes.py`) -- and links
+      and anchors kept working (`tests/test_doc_structure.py`).
+- [ ] 239. **A review of every API doc** -- the user, 2026-10-10, after
+      task 238: every public docstring (the Python package, the builders in
+      `_spec*.py`, `ModelBank`, `po.gram`, `po.eval`, `po.stream`, `po.corr`,
+      `po.sim`, `ops`) read against the code (each parameter, default, unit,
+      refusal and field it names), `docs/WRITING.md`'s rules (the docstring
+      pass rules of task 149), the math stated for every model (CLAUDE.md),
+      and the Sphinx reference (`-W`, every page rendering); findings fixed
+      where they have one answer, raised where they have options.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
