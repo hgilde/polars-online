@@ -1145,6 +1145,14 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`po.gram.lars_path`: columns that tie are settled at one knot** (task
+  236). A column whose correlation tied the active set's never entered, so
+  an identity Gram with `d = [1, 1]` ended at `[1, 0]` rather than least
+  squares `[1, 1]`. Steps within 64 ulps of `λ_max` of the smallest are now
+  one knot, entering or leaving as the lasso admits; `max_steps` counts
+  knots, and `max_active` can be passed at a tie. A non-finite `d_j` never
+  enters (an infinite one hung the walk). Paths without ties are unchanged
+  to the bit.
 - **`audit`'s MAD past `distinct_cap` reaches the median absolute
   deviation however far the column's range** (task 234): its bisection
   stopped after 200 halvings, so one value at 1e70 beside a spread of 1

@@ -9373,7 +9373,7 @@ tick, and that the series holding it up has a count near 1.
       related work, not this. **Output:** a doc with the measurements and a
       recommendation -- build, the shape of the adapter, or not worth it --
       for the user to decide.
-- [ ] 236. **LARS on exact ties -- the user's call** (task 234). A column
+- [x] 236. **LARS on exact ties -- the user's call** (task 234). A column
       whose correlation exactly ties the active set's never enters (the
       entry test needs a positive root, and a tie's is 0), so the path ends
       at the wrong fit: on an identity Gram with `d = [1, 1]` it ends at
@@ -9396,6 +9396,17 @@ tick, and that the series holding it up has a count near 1.
       Checked against closed-form paths (an orthogonal design's
       soft-thresholding, an equicorrelated design's, duplicate columns),
       KKT at every knot, and random designs unchanged to rounding.
+      *Done 2026-10-10:* ties read to within `TIE` = 64 ulps of `λ_max` (the
+      path's own arithmetic parts a tie by 31 at most; ties exact only
+      before the Gram's own rounding, up to 1,925 apart, stay two knots a
+      hair apart, the exact path of the Gram as stored, KKT held), the lasso
+      choosing among tied columns by Murty's least-index LCP (a tied column
+      can stay out: on `R = 0.6I - 0.4·11'`, `d = [1, 1, -1]`, it enters at
+      λ = 1/7 with the other sign), the staying columns re-solved at a knot
+      where several change (a 5.3-ulp merge had left KKT off by 4.5e-8), a
+      non-finite `d_j` never entering (an infinite one hung the walk).
+      Tie-free paths unchanged to the bit (2,370 designs x 3 limit settings
+      and 339 weighted); 3,000 all-tied designs match a brute-force LCP.
 - [x] 237. **`docs/GRAM.md`: wide fits from Grams** -- the user,
       2026-10-10 ("Yes" to a page for the offline Gram tools on the pattern
       of DIAGNOSTICS and DATA-ISSUES). *Done 2026-10-10:* twelve recipes held
