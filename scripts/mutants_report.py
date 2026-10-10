@@ -79,11 +79,14 @@ def source_line(root: Path, file: str, line: int, before: int = 0) -> str:
 def matching_entry(mutant: dict, entries: list[dict], root: Path) -> dict | None:
     """The first entry of an equivalent or tolerated list that names the mutant."""
     start = mutant["span"]["start"]
+    # A mutant outside any function (a constant's value) has none, and no
+    # entry names it.
+    function = (mutant.get("function") or {}).get("function_name")
     for e in entries:
         before = e["line_has"].count("\n")
         if (
             e["file"] == mutant["file"]
-            and e["function"] == mutant["function"]["function_name"]
+            and e["function"] == function
             and e["mutation"] == mutation_of(mutant["name"])
             and e["line_has"] in source_line(root, mutant["file"], start["line"], before)
             and start["column"] in e.get("columns", [start["column"]])

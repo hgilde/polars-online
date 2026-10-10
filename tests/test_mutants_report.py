@@ -140,6 +140,22 @@ def test_an_equivalent_is_not_counted_and_follows_its_line(tmp_path):
     assert "w is positive here" in text
 
 
+def test_a_survivor_outside_any_function_is_reported_beside_list_entries(tmp_path):
+    """A mutant cargo-mutants makes outside a function -- a constant's value,
+    as `PAR_MIN_ENTRIES`' -- has no `function` in its outcome. In a file the
+    lists name, the report read `function_name` from it and crashed (task
+    234); it is a survivor no entry can name."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/m.rs").write_text("a\n    if w > 0.0 {\nconst N: u32 = 1 << 3;\n")
+    run = _run(tmp_path, [("", 3, "replace << with >>")])
+    data = json.loads((run / "outcomes.json").read_text(encoding="utf-8"))
+    data["outcomes"][-1]["scenario"]["Mutant"]["function"] = None
+    (run / "outcomes.json").write_text(json.dumps(data), encoding="utf-8")
+    text, missed = report_mod.report([run], root=tmp_path, equivalents=[EQUIVALENT])
+    assert missed == 1
+    assert "src/m.rs:3:9" in text
+
+
 def test_an_equivalent_lapses_when_its_line_changes(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/m.rs").write_text("a\n    if w >= 1.0 {\n")
