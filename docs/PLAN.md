@@ -9338,7 +9338,7 @@ tick, and that the series holding it up has a count near 1.
       (`pa`'s finds no intercept break; `break_wald` finds 93-100% beside
       every model with features). Four survivors in `gramfit/lars.rs` show
       a defect whose fix has options: task 236.
-- [ ] 235. **Research: an adapter for faster LightGBM and XGBoost training
+- [x] 235. **Research: an adapter for faster LightGBM and XGBoost training
       from Polars/Arrow chunks** -- the user, 2026-10-10: "Add a plan item to
       research whether we can add an adapter to enable faster training of
       lightgbm and xgboost by converting data chunks better from
@@ -9373,6 +9373,21 @@ tick, and that the series holding it up has a count near 1.
       related work, not this. **Output:** a doc with the measurements and a
       recommendation -- build, the shape of the adapter, or not worth it --
       for the user to decide.
+      The user, 2026-10-10: the goal is to "read from the arrow files and
+      maximize training speed by dynamically constructing inputs as
+      needed", and "We are not worried about upkeep". *Done 2026-10-10*
+      (research; nothing built in the package): `docs/GBDT-ADAPTER.md`,
+      `scripts/gbdt_adapter.py`, `scripts/gbdt_driver/` (a standalone crate,
+      its own workspace). Options A-E measured on 1e7x50, 2e6x500 and
+      1e8x50 (larger than memory) with XGBoost 3.4.1 and LightGBM 4.7.0:
+      XGBoost's time before boosting is half its sketch pass, and cuts from
+      a 200k-row sample handed over by `ref`, with Rust reading the Arrow
+      and driving its C API (loaded at runtime), reached the first round
+      2.1x (1e7) to 2.8x (1e8) sooner than Polars batches, trees
+      bit-identical where the bins agree and within LightGBM's own seed
+      spread where not; LightGBM: its Arrow frame when the data fits, Rust
+      float32 rows otherwise (-18% at 1e8). XGBoost's external memory bounds
+      memory but boosts 3-40x slower. The build, and its shape, is task 242.
 - [x] 236. **LARS on exact ties -- the user's call** (task 234). A column
       whose correlation exactly ties the active set's never enters (the
       entry test needs a positive root, and a tie's is 0), so the path ends
@@ -9519,6 +9534,19 @@ tick, and that the series holding it up has a count near 1.
       merge a negated part also moves the between-part term, so it is
       refused there, by name. Checks: against negating each part's target
       rows and refitting; one draw of all +1 equals no signs.
+- [ ] 242. **The GBDT input component -- the user's call**
+      (`docs/GBDT-ADAPTER.md` §6, task 235). Recommended: one Rust component,
+      loading XGBoost's and LightGBM's shared libraries from the user's
+      installed wheels at runtime (`libloading`; nothing linked, rule 12;
+      the package's dependencies stay `polars`), feeding XGBoost Arrow
+      columns with cuts from a sample (`ref`) and LightGBM float32 rows past
+      memory; a Python fallback (`DataIter` over Polars batches with a sample
+      `ref`, about 50 lines) 12-66% slower. The shape to choose: (a) train
+      through the C API and return a `Booster` (measured; loses the Python
+      callbacks and evaluation sets), or (b) wrap the native handle in the
+      library's Python class (not prototyped; leans on private attributes).
+      About 1,200 lines of Rust; both libraries in the dev group (XGBoost's
+      Linux wheel pulls `nvidia-nccl-cu13`; macOS CI needs libomp).
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

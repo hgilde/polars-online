@@ -1617,6 +1617,10 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- `docs/GBDT-ADAPTER.md`: how to train LightGBM and XGBoost from Arrow
+  files as fast as they go, five options measured (task 235);
+  `scripts/gbdt_adapter.py` and `scripts/gbdt_driver` are the measurement
+  tools, not part of the package.
 - **`docs/GRAM.md`, wide fits from Grams** (task 237): the offline Gram
   tools with the theory and twelve runnable recipes, from one pass's
   weekly Grams to stability selection, per-week coefficients, compact
