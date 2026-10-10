@@ -385,3 +385,40 @@ fn a_sign_per_part_is_the_part_with_its_target_negated() {
     let neg: Vec<f64> = g.cross_centred.iter().map(|v| -v).collect();
     assert_eq!(all_minus, neg);
 }
+
+/// A target no part has weight for pools to finite moments (`α` and `β`
+/// both 0, not 0/0) and no Kish size; parts that carry its weight but no
+/// Kish size pool to none (NaN), never to an infinite one -- as the union
+/// does (`a_part_without_a_kish_size_adds_none`).
+#[test]
+fn a_target_without_weight_or_kish_size_pools_to_finite_moments_and_none() {
+    let g = gram_of(&rows(22, 60, 3, 1.0));
+    let mut empty = g.clone();
+    empty.weight_sum = 0.0;
+    empty.target_weights = vec![0.0, 0.0];
+    empty.target_n_kish = vec![f64::NAN, f64::NAN];
+    let none = merge_within(&[empty.arrays(), empty.arrays()], &ALL, Some(0));
+    for (what, v) in [
+        ("target_vars", &none.target_vars),
+        ("cross_centred", &none.cross_centred),
+        ("comoments", &none.comoments),
+    ] {
+        assert!(v.iter().all(|x| x.is_finite()), "{what}: {v:?}");
+    }
+    assert!(none.target_n_kish.iter().all(|v| v.is_nan()));
+    assert_eq!(none.within, Some(vec![0, 0]));
+    // A part with no weight beside one with all of it: that part's moments.
+    let one = merge_within(&[g.arrays(), empty.arrays()], &ALL, Some(0));
+    assert_eq!(one.target_vars, g.target_vars);
+    assert_eq!(one.cross_centred, g.cross_centred);
+    assert_eq!(one.target_n_kish, g.target_n_kish);
+    let mut unknown = g.clone();
+    unknown.target_n_kish = vec![f64::NAN, f64::NAN];
+    let pooled = merge_within(&[unknown.arrays(), unknown.arrays()], &ALL, Some(0));
+    assert!(pooled.target_weights.iter().all(|&w| w > 0.0));
+    assert!(
+        pooled.target_n_kish.iter().all(|v| v.is_nan()),
+        "{:?}",
+        pooled.target_n_kish
+    );
+}

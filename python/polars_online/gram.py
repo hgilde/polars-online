@@ -19,7 +19,9 @@ Every function takes the mapping ``gram()`` produces (``columns``,
 and :func:`from_row` return one of the same shape, so a closed group's row
 (:meth:`~polars_online.ModelBank.closed_groups`) is read the same way. The
 compact forms ``gram()`` hands back under ``dtype="float32"`` or
-``layout="packed"`` are taken too, and read in float64.
+``layout="packed"`` are taken too, and read in float64. :func:`merge` with
+``within=True`` returns two keys more, ``within_parts`` and
+``target_within_parts``, which every fit reads.
 
 The arithmetic is the models' own, so :func:`solve` on a spec's Gram
 reproduces that spec's coefficients and :func:`lasso_path` reproduces the
@@ -304,28 +306,28 @@ def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str,
 
     folded in the parts' order as the union is, so where the parts' means
     are equal the two forms are the same numbers. The result is the Gram of
-    the rows demeaned part by part: each feature less its part's mean (over
-    the target's rows for that target's moments), each target less its
-    part's mean. Its ``means`` and ``means_by_target`` are 0, the
+    the rows demeaned part by part. Each feature is less its part's mean,
+    over the target's rows for that target's moments, and each target less
+    its part's mean. So its ``means`` and ``means_by_target`` are 0, the
     intercept's 1 aside, its ``cross_moments`` are its ``cross_centred``,
-    and its ``target_means`` are 0. A regression on it is one with an
-    intercept per part, which Wooldridge (2010, chapter 10) calls the
-    within or fixed-effects estimator: the slopes ask how the columns and
-    the target move together inside each part, and the parts' levels drop
-    out. A part with no weight for a target (``T_i = 0``) adds to ``C``
-    and not to that target's moments.
+    and its ``target_means`` are 0. A regression on it has an intercept per
+    part: Wooldridge (2010, chapter 10) calls it the within, or
+    fixed-effects, estimator. Its slopes say how the columns and the target
+    move together inside each part, and the parts' levels drop out. A part
+    with no weight for a target (``T_i = 0``) adds to ``C`` and not to that
+    target's moments.
 
     It records what it is in two keys of its own. ``within_parts`` counts
     the parts with weight, and ``target_within_parts`` counts, per target,
     the parts with weight for it. A part already pooled within adds its own
-    counts. The fits read them: :func:`solve`, :func:`lasso_path`,
+    counts. The fits read them. :func:`solve`, :func:`lasso_path`,
     :func:`lars_path` and :func:`solve_subsets` give the slopes and ``nan``
     for the intercept, since each part had one of its own and the pooled
-    Gram holds none of them, and :func:`coef_stats` takes one degree of
-    freedom per part in place of the intercept's one. A merge of several
-    parts without ``within`` refuses a part pooled within (``ValueError``):
-    its means are 0, and pooled as a union it would add the gap from 0 to
-    the other parts' means as if its rows had not been demeaned.
+    Gram holds none of them. :func:`coef_stats` takes one degree of freedom
+    per part, in place of the intercept's one. A merge of several parts
+    without ``within`` refuses a part pooled within (``ValueError``). Its
+    means are 0, so a union would add the gap from 0 to the other parts'
+    means, as if its rows had not been demeaned.
 
     .. code-block:: python
 

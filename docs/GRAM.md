@@ -531,7 +531,7 @@ they are pooled, they give the whole stream's own coefficients.
 
 **`po.gram.merge(blocks, within=True)` pools each block's moments about
 its own means, and leaves out the spread between the blocks' means.** The
-union above adds `(W_a · W_b / W²) · Δ Δ'`, the co-moment of the gaps
+union's update adds `(W_a · W_b / W²) · Δ Δ'`, the co-moment of the gaps
 between the parts' means. The within form drops that term, so the pooled
 co-moments are the blocks' own, averaged by weight:
 
@@ -1152,7 +1152,7 @@ weight and its variance stay as they were. So a draw of signs `s_i` gives
 signs as an array of weeks by draws, and returns one run of every subset
 per draw. Pooled as a union, a negated week's target mean would also move
 the gaps between the weeks' means, so `target_signs` is refused without
-`within=True`. A hundred null runs of the hundred halves below, at 200
+`within=True`. A hundred null runs of the recipe's hundred halves, at 200
 columns, took 0.08 s with the real run. A Python loop of `merge` and
 `lars_paths` took about 0.08 s a draw, at a load average near 4 on 14
 cores.
