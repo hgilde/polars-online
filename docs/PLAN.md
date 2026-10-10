@@ -9468,6 +9468,14 @@ tick, and that the series holding it up has a count near 1.
       STATE-WORKFLOW, REGIMES, PERFORMANCE and OUTPUTS, and any page that
       lands later (task 235's GBDT-ADAPTER if built); a test holds it, each
       guide in `docs/README.md`'s table linked from its own README section.
+      *Map 2026-10-10* (`3176294`): logged as I8 in
+      `docs/README-ITERATIONS.md` -- the map, the moves, a README section per
+      feature page held by two new tests (V4, V5), the recipes, a writer
+      split by README line range and file, and the counts before; its five
+      choices decided by the coordinator (the user: "Your call"): the model
+      entries to `docs/MODELS.md`, the windows to `docs/WINDOWS.md`,
+      `po.gbdt`'s guide `docs/GBDT.md`, a truth planted in *Example data*,
+      the headings as proposed.
       Measured 2026-10-10 before the pass: GRAM is linked from the README
       once, DATA-ISSUES and STATE-WORKFLOW twice.
       **Renamed 2026-10-10** (the user: "Instead of data issues we need a

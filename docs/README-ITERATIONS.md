@@ -47,7 +47,7 @@ with its map, oldest first:
 | I5, rewrite | 2026-10-04 | write all the rules, then rewrite the README by them as a test | `21b84a4` (task 157, 2026-10-05), inside I7, which built on it | *each exception is named* reads as a Python exception; the first fit is "much better", and wants brief comments in its code; relative targets should be Polars expressions, built with `with_columns` and with forward windows |
 | I6, rewrite | 2026-10-04 | rewrite the README with the latest updates | `21b84a4` (task 157, 2026-10-05), inside I7, which built on it; rendered at claude.ai/artifact/QkEc6s4eAiY171WtgVzkqY | write procedures as procedures: name the tool, the method and the step; both branches of a condition; no definition by negation or aphorism; anchor every relative word |
 | I7, rewrite | 2026-10-04 | start the next README, rewriting phrasing completely under the procedural rules | `21b84a4` (task 157, 2026-10-05), then the fixes of task 158 in `20c5e5f` and `a7a8f3c`; rendered at claude.ai/artifact/P6o4QeGH2bBpVnwVT6yQRT | in progress: *The examples from here on read two frames* is out of context and very hard to understand; why did the reviewers miss it, and how will they catch it in future; the `po.target` paragraph should be a code example with comments; every example on the example data says so just above it, with a link |
-| I8, task 238 | 2026-10-10 | rewrite every reader-facing document, with recipes as the examples of capabilities and a README section for every feature page: first the map | the map on `task238-map`, unmerged; the rewrite after task 239 | pending |
+| I8, task 238 | 2026-10-10 | rewrite every reader-facing document, with recipes as the examples of capabilities and a README section for every feature page: first the map | the map merged to `main` (`3176294`), C1-C5 decided by the coordinator (the user: "Your call"); the rewrite after task 239 | pending |
 
 ### I1, task 89 (2026-09-23)
 
@@ -847,136 +847,22 @@ Every idea the reviews and the verdicts raised, grouped by kind. A status
 names the rewrite that applies it, such as *I4* or *I5*, or is *later* with
 the reason it waits.
 
-### Principles
+**Decided 2026-10-10 by the coordinator** (the user, on proceeding with the
+plan without stopping for approval: "Your call"):
 
-The nine principles of WRITING's preamble, each the generalization of
-several verdicts. Every idea below serves one of them.
-
-| id | principle | from | status |
-|---|---|---|---|
-| P1 | every sentence is about the library or the reader's task, never about the document | the contents-like openers, *The paragraphs below* | I5 |
-| P2 | concrete first: show it working, then explain | first fit first, the ticks' schema, `half_life="10m"` | I5 |
-| P3 | show what is distinctive about the library early | the forward target in the first fit, both out-of-sample claims up front | I5 |
-| P4 | say what it means for the reader, with the reason | *Because this is a local regression, remember …* | I5 |
-| P5 | plain spoken English, not compressed or literary phrasing | *is used to name the output column*, *clunky*, *Terminology* | I5 |
-| P6 | one topic, one place, led by the point to remember | the far *too*, the semicolon join, nothing tacked on | I5 |
-| P7 | fewer ideas per paragraph, not shorter sentences: I5 aims to come in shorter than I4 | the user's rewrite, 93 words for 124 | I5 |
-| P8 | an example is complete: input, output and every part of its claim | the inputs and outputs of each line, the missing forward target | I5 |
-| P9 | the opening is read hardest, and one instance stands for a pattern | every note in the first 250 lines, each with siblings | I5 |
-| P10 | a reader can act on every how-to sentence without inferring a step or a tool | I6's verdict: *a column made first*, *a target that needs no window* | I7 |
-
-### Structure
-
-How the README is divided, ordered and opened.
-
-| id | idea | from | status |
-|---|---|---|---|
-| S1 | every section and subsection opens with one to three sentences naming what it holds; sixteen headings had none | R2 | I4; its openers mapped their subsections, which S11 corrects |
-| S2 | name the kinds of functionality first, then give each a subsection or a bold-led paragraph; split every paragraph that introduces two parameters, modes or outputs | R2 | I4 |
-| S3 | pull every important detail tacked on at the end of a section or paragraph into the paragraph whose topic it is, or into the opener | R2 | I4 |
-| S4 | state what every subsection obeys in the parent, before the first subsection: the window rules, the family rules, "after the last row each group learned from" | R2 | I4 |
-| S5 | the most important information first: the release refusal in Saving's opener, the selection switches in a subsection of their own | R1, R2 | I4 |
-| S6 | within-section order: *Output field names* before *Coefficients*; *Row order* after the forgetting subsections; windowed means before refresh time; the regime family as `seqtest`, `corrchange`, `bocpd`, `hmm`; Performance as Throughput, Parallelism, Chunk size, Memory, Tuning memory, Window operators, scikit-learn; Versioning with the action first; Databases before Pathway | R1, R2 | I4 |
-| S7 | a model entry's template: when to reach for it, symbols before the rule, one-line comments, checks last | R1, R2 | I4 |
-| S8 | move *What this is not* into the Introduction | R1 | later: R2 kept it in place with an opener |
-| S9 | fold *Pathway* and *Databases* into *Running a bank* | R1 | later: R2 kept *Scope and integrations* with an opener |
-| S10 | move most of *Testing* to TESTING.md, since WRITING §1 keeps how it is tested out of the guide | R1 | later: R2 restructured it in place; an altitude question for its own pass |
-| S11 | a section opens with a table of its contents when that table explains a lot about the subsections or adds information, and otherwise with a short introduction that summarizes, as "here is a first model fit and an introduction to the library". It never lists what follows in a sentence: the contents table at the top already lists the subsections. Seventeen of I4's openers did: *Introduction*, *The idea*, *What a spec names*, *Time and decay*, *A hard window*, *Row order and the two guarantees*, *Labels that arrive late*, *Reading the fit*, *Performance*, *Throughput*, *Parallelism*, *Memory*, *Window operators*, *Scope and integrations*, *Versions, testing and development*, *Versioning and the Polars pin*, *Testing*. Nine open with a table of their subsections, each to judge by the test: *How a bank sees a stream*, *Preparing a stream*, *Windowed means*, *Running a bank*, *Reading the fit*, *Diagnostics, selection and evaluation*, *Models*, *Linear models*, and *Performance*, whose only column beside the subsection describes it | I4's verdict | I5 |
-| S12 | the *Introduction* opens with the first fit, before *The idea*, *Terminology* and the rest | I4's verdict | I5 |
-| S13 | *The idea*'s *The diagnostics are out-of-sample too* merges into *Every prediction is out-of-sample*, four paragraphs above, as one simpler paragraph led by the user's words, *Every prediction and diagnostic is out-of-sample*: both are read from what the models had learned before the row | I4's verdict | I5 |
-| S14 | *The idea*'s lead-in to its bold-led points says what they are for, in the user's words: *here are a few points to remember about fitting models with polars-online*, in place of *The paragraphs below say what that pass guarantees, when row order matters, and how a bank is run, saved and checked* | I4's verdict | I5 |
-| S15 | every feature with a page of its own has a README section a casual reader finds: a heading named by what the reader wants to do, a short recipe, and the link. On `899606d` DIAGNOSTICS had a table there and no recipe, DATA-QUALITY and GRAM no section of their own, and `po.gbdt` no row in the contents | the user, 2026-10-10: "We want to make sure that features with their own doc pages have a section in the main readme so a casual user can find" | I8, planned in its map, and held by V4 |
-| S16 | a README section grown into its guide becomes a summary, a recipe and the link, and its detail moves to the guide: *The running sums behind a fit* to GRAM, *Testing*'s tables to TESTING, *How the pin moves* to RELEASE-READINESS, *Against scikit-learn* to PERFORMANCE §19, and, on the user's word, the windows and the model entries to pages of their own (I8's C1 and C2) | I8's map | I8, planned |
-| S17 | one map of the documents: the README's *Development* table, which lists 7 of the 13 guides, gives way to a link to `docs/README.md` | I8's map | I8, planned |
-
-### Terms and words
-
-Which words the README defines, and where.
-
-| id | idea | from | status |
-|---|---|---|---|
-| T1 | define *model bank* where it first appears, in *The idea* | R1, R2 | I4 |
-| T2 | define a term before using it: *stamp*, *stretch*, *break*, *Gram*, *slot*, *grid*, IC, vech, ARI, TVTP | R1, R2 | I4 |
-| T3 | one word, one meaning: Parallelism's unit of work is a *task*, not a *stream*; `hmm`'s regime is a *hidden state*; a list of parameter values is a *grid* only where it is introduced as one | R1, R2 | I4 |
-
-### Wording
-
-How a sentence is built and phrased.
-
-| id | idea | from | status |
-|---|---|---|---|
-| W1 | a semicolon joins the halves of one idea, never two: *What a spec names*' opener joined what a spec describes to what its name is for; I4 has 29 prose sentences with a semicolon, each to be read | I4's verdict | I5 |
-| W2 | say what a parameter is used for, plainly, then show it: "the name of the spec (the first parameter) is used to name the output column, for example …"; I4 has the inverted *which its … takes* twice, in *What a spec names* and in the null-target row of *Nulls, and three ways to hold a row back* | I4's verdict | I5 |
-| W3 | an aside inside a list goes in parentheses: *a clock (timestamp column ts) and half_life="10m"*, not *a clock, the timestamp column ts, and a finite half_life*, which reads as three things | the user's rewrite | I5 |
-| W4 | give the value the example uses, as code, rather than a description of it: `half_life="10m"`, not *a finite half_life* | the user's rewrite | I5 |
-| W5 | turn a mechanism into the advice it implies, reason first: *Because this is a local regression, remember that saving the final state may be of limited value* | the user's rewrite | I5 |
-| W6 | lead with the setting and what it produces, in a plain verb, and call the result by its short name: *using coef_every=1 produces a time series of the betas at every row* | the user's rewrite | I5 |
-| W7 | a back-reference points at most at the paragraph before; farther back, the two passages merge. I4 has 38 prose sentences with one (17 *too* meaning *also*, 17 *also*, 3 *the same way*, 1 *as well*), each to be read | I4's verdict | I5 |
-| W8 | a word with a Python meaning keeps it: *exception* and *raise* mean an error raised, so the everyday senses become *except*, *apart from*, *a model that does not take it*, *increase*. I5 has seven such *exception*s and five *raise*s meaning *increase* | I5's verdict | I6 |
-| W9 | explain how something is done in procedural sentences that name the tool, the method and the point in the pipeline, as the user's *made with Polars expressions and chained before the model*, never *a column made first* | I6's verdict | I7 |
-| W10 | state a condition with both branches: *X requires Y; otherwise, do Z with [tool] at [step]* | I6's verdict | I7 |
-| W11 | no definition by negation (*a target that needs no window*) and no *An X that is Y is a Z*: I6 leads eight paragraphs with that form and defines one noun by negation | I6's verdict | I7 |
-| W12 | a relative word (*first*, *later*, *earlier*, *upstream*, *downstream*) says what it is relative to: about ten in I6 do not, such as *difference upstream* and *made first* | I6's verdict | I7 |
-| W13 | a position in the document is not a reference: *from here on*, *below* and *above* say where the writer stands, which a reader who jumped in does not share; name what they point at, or link to it | I7's verdict | I7, applied after the note |
-| W14 | a term used before the section that introduces it links there, or says in a few words what it is: V2 found about twenty, most in *How a bank sees a stream*, which names diagnostics, models and warm-up readings before their sections | V2 on I7 | the next README rewrite, on the user's word (2026-10-05): a term-by-term pass would reorder sections a rewrite will move anyway |
-
-### Code and examples
-
-What the examples show, and how.
-
-| id | idea | from | status |
-|---|---|---|---|
-| C1 | a comment longer than its line is a concept: move it into prose or a table | R1, R2 | I4 |
-| C2 | introduce every frame an example reads: `df`, `lf`, `out`, `spec` and `bank` come from the test namespace, unseen | R1, R2 | I4, by a description of `df`'s columns, which C11 replaces |
-| C3 | no name that collides: a spec named `"w"` beside a weight column `w`, `out` as a frame and later a dict | R1, R2 | I4 |
-| C4 | an example shows what goes in and what comes out: its input as a few rows or its schema, and the table each line returns, with what each line takes and gives; a test holds each printed table to the code. First the first fit; the `refresh_time` example was the first instance | I3's and I4's verdicts | I5 |
-| C5 | the first fit includes a forward `po.rewm_mean` target: a window expression that looks ahead, learned under an `embargo` of at least its `window_size` | I4's verdict | I5 |
-| C6 | *The idea*'s windows paragraph names a feature that looks back and a target that looks ahead, each as what it is, such as the last minute's time-weighted mean of the mid as a feature and the next minute's VWAP less the mid as the target; I4 gave both windows but never said which was the target | I4's verdict | I5 |
-| C7 | *A first fit*'s paragraph on the local fit becomes the user's rewrite, in the user's words, with code formatting added and E10 corrected; its code writes `half_life="10m"` to match | the user's rewrite | I5 |
-| C8 | a long example names its steps in brief one-line comments and leaves the detail to the prose: the first fit's four steps, numbered | I5's verdict | I5, applied after the note |
-| C9 | a relative target is a Polars expression: a window that looks ahead less a column of the row, `(po.rewm_mean("price", ...) - pl.col("mid")).alias("fwd_move")`, with `/` for a ratio and `.log()` for a log ratio. A plain expression with no look-ahead is refused as a target, so such a target is a column made with Polars' `with_columns`. `po.target` comes second, if at all. In I5: *Relative and look-ahead targets* and the ratio in *Per-row diagnostics* | I5's verdict | I6 |
-| C10 | show both ways to build a target, each in a running example: a window that looks ahead, less a column of the row, as an expression in `targets`, and a column made first with Polars' `with_columns` and named as the target | I5's verdict | I6 |
-| C11 | build every frame an example reads in code before its first use: a frame several sections share is built once, in *Example data* after *Install*, and a section that runs on it links there. A prose list of a frame's columns is not a way to build it: *The examples from here on read two frames* was one, at the end of a section about parameters | I7's verdict | I7, applied after the note |
-| C12 | a paragraph that walks through a call's forms becomes an example with comments: `po.target`'s three scales, each named with `name=`, the ratio's `hit_rate`, the null rule and the TOML table, in one spec on `trades`. WRITING §6 counts such paragraphs (V3) | I7's verdict | I7, applied after the note |
-| C13 | the five paragraphs V3 judged code become examples with comments: the rate of a cumulative volume through `po.increment`, with an operator's output windowed in a second `with_windows` call; `refresh_time` in two runs, with an `assert` that the two grids are one run's; the Pathway operator as a class with `snapshot` and `restore`; `session_shrink` in one spec; and `chunk_rows` on a query, a frame and a frame chunked. Running them corrected one rule: a blend also needs a numeric `session_gap`, which the lead had left out | V3 | I7, applied on the user's word: 'All three' |
-| C14 | the fifteen paragraphs the judging pass found become examples with comments, each run and its comments checked: the ratio target about zero (`fwd_return`, `fwd_log`); the command line's TOML, run through the built `online` to the same predictions as Python, bit for bit; a grid's `coef` blocks; the decayed-halves merge, with an `assert` against one run's Gram; `holt` grouped on the hour; the window target fed back as a column, whose predictions equal the native form's on all 2,891 scored rows; a DuckDB feed; every operator keyword in one call; the functions for a type checker; a dated state file per batch; `unnest` on a saved output; a model against `holt` with `emit_sigma` and a `seqtest`; `rcov`'s carried-forward, pre-averaged variant; reading a `seqtest` at the 5% level and as an e-value; and `corrchange`'s five fields, `since_flag` explained for the first time | V3's judging pass | I7, applied on the user's word: 'All' |
-| C15 | every example on the example data says so in the line just above it, with a link: *This code uses … from [Example data](../README.md#example-data):*, naming what the block reads. 57 blocks, held by `test_an_example_on_the_example_data_says_so_just_above_it` | I7's verdict | I7, applied after the note. Decided 2026-10-05, the user's word: a block that reads only a frame built from the example data, such as `flows` or `by_block`, takes no such line; the block or the prose before it builds that frame, and the line above the building block is the link |
-| C16 | no `.lazy()` in any example: *Example data* saves `df`, `today` and `trades` to parquet, `lf` and `later` become `pl.scan_parquet` of those files, and every query reads a file back (`pl.scan_parquet("trades.parquet")`, `pl.scan_parquet("prices.parquet")` in the first fit), as a stream too large to hold is read; WRITING §3, held by `test_no_example_calls_lazy` | the user, 2026-10-06: "We don't want the example code in the readme or anywhere else to be sprinkled with calls to .lazy(), show the example by saving tables to disk and then reading them from a lazy frame" | task 167 |
-| C17 | recipes as the examples of capabilities: complete, runnable, generating their data or reading the files *Example data* writes, their printed output shown in a ```` ```text ```` block and held by a test (`tests/doc_recipes.py`). On `899606d` two of the README's 84 python blocks show their output, while DIAGNOSTICS, DATA-QUALITY and GRAM are recipes throughout. WRITING has no rule that defines one | the user, 2026-10-10: "ensuring that we prefer to have recipes as examples of capabilities" | I8, planned |
-| C18 | *Example data* carries a planted truth, so a recipe that reads it prints a capability working. Its `df` is noise today | I8's map | the user's call (I8's C4) |
-| C19 | an output shown is an output a program printed: the step-back error in *How a bank detects rows out of order* is typed by hand, and so are the outputs in the comments of `repr(bank)` and `bank.groups()` | I8's map | I8, planned |
-
-### Review
-
-How a pass checks itself, beyond the counts.
-
-| id | idea | from | status |
-|---|---|---|---|
-| V1 | read the examples as a reader runs them: in order, from nothing. `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one` parses each block and fails on a name no block before it builds, since the README test's namespace hands every block its frames ready-made | I7's verdict | I7: fails on the I7 README with six names, passes on the fix |
-| V2 | a cold read: after the counts and the gate, a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top, and marks each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run. WRITING §6, step 9 | I7's verdict | tried on the I7 README before the fix: 32 findings, the `df` paragraph ranked first; every pass from now on |
-| V3 | find the paragraphs that should be code: list the prose that names three or more of the library's own names (parameters, calls, output fields, quoted values, read from the package's signatures and docs/OUTPUTS.md) that no code block under the same heading shows, each in its code form; then a reader judges each against WRITING §3's three forms, with the `po.target` before and after as the example. The detector cannot see a procedure told without the library's names, so the judging pass also reads the whole page | the user, after C12: "How can we find more paragraphs that should be code?" | built 2026-10-04, and in `scripts/doc_review.py` as count 10: ranks the `po.target` paragraph third of 25 on I7; on the fixed README, 24 listed, five judged code and converted (C13), three to look at, sixteen rules or lists. The judging pass ran on the whole page the same day: 15 findings, 7 strong (the ratio target written only in prose, the command line with no example, a grid's `coef` blocks, the decayed-halves merge in a table cell, `holt` grouped on the phase, a window target fed back as a column, the database feed) and 8 borderline, for the user's call; it also caught a pointer that said a section *builds* what it only describes, fixed |
-| V4 | a test that every guide under *Using the library* in `docs/README.md` has its own README section, listed in the contents table, with a recipe, and that every guide under *Changing the library* is linked: `test_every_guide_has_a_readme_section` | PLAN task 238: "a test holds it" | I8, planned |
-| V5 | the README's recipes held: a python block followed by a ```` ```text ```` block runs in the namespace the README's own *Example data* builds, and what it prints is compared by `doc_recipes.differences`. RUNNER's shell blocks gain the same form, through the built `online` | I8's map | I8, planned |
-
-### Errors
-
-Facts the README got wrong, each checked against the code.
-
-| id | where | the error | status |
-|---|---|---|---|
-| E1 | *Which interfaces carry a promise* | "The third narrows the exposure" means the fourth row, the Arrow interface | I4 |
-| E2 | *Windows as columns* | a VWAP's two sums do not hold decayed time to cancel | I4 |
-| E3 | `holt` | "the one model that takes no features": `seqtest` takes none either | I4 |
-| E4 | `kalman` | `obs_var / w` is a variance, not a precision | I4 |
-| E5 | `kmeans` | the move frees the emptier of the two nearest centres, not the closer | I4 |
-| E6 | *One row per finished group* | a closed group writes a row per half-life and per Gram, not one | I4 |
-| E7 | *Preparing a stream* | `refresh_time` takes only `clock` and `group`, not a spec's clock keywords | I4 |
-| E8 | *Versioning* | the two copies of Polars share a process; data crosses through the Arrow interface | I4 |
-| E9 | *Install* | the wheel sizes are 0.12.0's | fixed 2026-10-05 (task 158): 0.13.0's six wheels measured from PyPI, 8.01 to 10.24 MB to download and 25.90 to 37.44 MB installed (the sum of each archive's entries), so the rounded figures stand and only the version moved |
-| E10 | *A first fit* | a row's betas are said to be the fit *before* that row; they are the fit after learning it, as *Coefficients* says and a three-row `rls` shows. In the README since `9f6a5f9`, and carried into the user's rewrite | I5 |
-| E11 | `_spec.py`, `formula_target` (code, not the README) | a target expression with no operator looking ahead is refused with "add it as a column with po.stream.with_windows", which refuses the same expression; the advice should be Polars' `with_columns` | fixed in `fc51308` on the user's word: the refusal now names `with_columns` for a formula with no operator, and `with_windows` for one that only looks back |
-| E12 | `gram.py`, `po.gram.merge`'s docstring (code, not the README) | to merge two halves of a decayed stream it decays only the earlier half's `weight_sum`; its `target_weights` need the same factor, `0.5 ** (dt / half_life)`, or the target moments come out 34% off (I7's writer for *Reading the fit*, measured; both scaled, the merge matches the whole stream to 1e-15) | fixed in `bc06b6c` on the user's word: the docstring gives both factors as steps, with a runnable example, and `tests/test_gram_module.py` holds every field of the merge to the whole stream |
-| E13 | `po.stream.with_windows` resumed with `load_state=` (code) | after a state saved without a slice, an input whose first row repeats the last row read, at the same stamp, is accepted and that row comes out twice: `trades.head(2000)` saved, then `trades.slice(1999)` resumed, gives 3,001 rows against one run's 3,000. A state saved under a slice refuses the same input. Found by I7's writer for *Preparing a stream*, reproduced | fixed 2026-10-05 (task 158), the user's choice of the two: any resumed run now refuses, naming `another input`, an input whose first row is at the last stamp the state read and starts no new session, as a sliced state did. The next file starts after that stamp. Without a clock column there is no stamp, and a repeat is not caught; the docstring and README say so. Held by `test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row` and its Rust twin |
-| E14 | docstrings (code, not the README), found by I7's writers | ten claims the code contradicts or leaves short: `spec.py:91`, per-target weights; `spec.py:80`, `session_gap`'s bound; `holt`'s "the one model that takes no features" (`_spec.py:2478`, E3's twin); `bocpd`'s dating of a correlation break; `kalman`'s "a prediction far past the data is the intercept alone" (`_spec.py:1508`), true only where `gap_cap` spans several reversion half-lives; `OrderNotGuaranteedWarning`'s steps leave out `sort` (`_frame.py:216`); `po.target` leaves `sgd` with a logistic or Poisson loss out of the models that refuse it (`_spec.py:511`); `refresh_time`'s step back arrives as a `ComputeError`, not a `ValueError` (`stream.py:344`); `with_windows`' "Refused by name" holds only for a state saved under a slice (`stream.py:672`, E13); `ew_cov(stats=[])` writes `settled_frac` and `withheld_reason` beside `weight_sum` (`_spec.py:1967`) | fixed 2026-10-05 (task 158), on the user's word, each against the code or a measurement. The first was a code defect too: `sgd`, `pa`, `ftrl` and `rls` checked a `min_weight` list against the shared weight, now each target's own (CHANGELOG, *Fixed*). `with_windows`' list now says which refusals follow any state and which a sliced one (E13). `refresh_time`'s error is named for both Polars majors, since py-polars 2.0 lets a source's `ValueError` through unwrapped |
-| E15 | documents outside the README, found by I7's writers | `docs/PERFORMANCE.md:92` says the README calls a unit of work a "stream", where it has said "task" since I4; `docs/ARROW-SOURCES.md` §2 lacks that closing an ADBC SQLite cursor while `pl.scan_arrow_c_stream` has read only part of its stream segfaults the process (3 of 3 runs at 200,000 rows, adbc 1.12.0, polars 1.44.2; the example's 20,000 rows do not), and its "no error and no warning" holds only when no spec with a `clock` reads the older query; `tests/test_model_registry.py:192` quotes a README sentence that is gone, and nothing asserts it | fixed 2026-10-05 (task 158), on the user's word. The crash reproduced (exit 139, 3 of 3) and is wider than the trap: a plan whose bank raises partway through an ADBC stream, or polars' own `collect_batches()` stopped after one batch, crashes on `cur.close()` the same way; a 3 s wait before the close avoided it, so §2 now has the measured cases as a table and calls the race inferred, not traced. The quote names the current sentence, and the test asserts it |
-| E16 | *Outside a live Python process* | the TOML mirrors the Python `spec` of *As a query: `lf.online.fit_predict`* and says the command line gives "the numbers the bank gives in Python", but it left out `standardize = true`, so its predictions differed. C14's hand check, which called the two bit for bit the same, missed it. Found by the new `test_the_readme_config_gives_the_numbers_its_python_spec_gives`, which runs the block through the built `online` | fixed 2026-10-05 (task 158): the key added; the test now holds every prediction, residual and weight to Python's, bit for bit |
+- **C1:** the 21 model entries move to a new guide, `docs/MODELS.md`; the
+  README keeps the model table and one recipe per family.
+- **C2:** the windows move to a new guide, `docs/WINDOWS.md`; the README
+  keeps a summary, a recipe and the link.
+- **C3:** `po.gbdt` gets a guide of its own, `docs/GBDT.md`, with recipes;
+  `docs/GBDT-ADAPTER.md` stays the record of the research.
+- **C4:** *Example data* plants a truth (C18), so a recipe's printed output
+  shows something working; frames are still built once, each block naming
+  the frames it reads (C11, C15).
+- **C5:** the headings as proposed, with the user's *Checking your data's
+  quality*.
+- I7's open point on saving in *The idea*: restored if it states a
+  guarantee the README no longer shows elsewhere, by writer A.
+- WRITING §2's rule that maps go in PLAN.md is aligned with practice: a
+  README pass's map goes in this file, beside its prompt (the assembler
+  edits WRITING).
