@@ -1,0 +1,21 @@
+[package]
+name = "gbdt-driver"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Measurement driver for docs/GBDT-ADAPTER.md: Arrow IPC in Rust, cuts in Rust, XGBoost and LightGBM through their C APIs loaded at run time"
+
+# Its own workspace: not a member of the repository's, and never built by the gate.
+[workspace]
+
+[dependencies]
+arrow-array = "60"
+arrow-buffer = "60"
+arrow-schema = "60"
+arrow-ipc = { version = "60", default-features = false }
+libloading = "0.9"
+rayon = "1.12"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
