@@ -1,25 +1,47 @@
 """Scoring a bank's output: out-of-sample R², IC and hit rate per (spec, group,
-target), overall or in windows, and the sums that give them one chunk at a
-time.
+target), overall or in windows, the sums that give them one chunk at a time,
+and tests of one spec's errors against another's.
 
 Everything here consumes the frame a :class:`~polars_online.ModelBank`
-returns: the original columns plus one struct column per spec. The functions
-are polars aggregations over collected output, so they need the whole frame; a
-spec's ``emit_metrics`` keeps the same numbers beside the model, O(state), for
-a stream too long to hold, and :func:`sums`, :func:`merge_sums` and
-:func:`from_sums` reduce each chunk to ten numbers per key and add them up
-exactly.
+returns: the original columns plus one struct column per spec. Four kinds of
+call read it:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 40 36
+
+   * - kind
+     - the calls
+     - what they hold
+   * - scores over a frame
+     - :func:`metrics`, :func:`window_metrics`, :func:`compare_specs`
+     - the whole frame, collected
+   * - scores one chunk at a time
+     - :func:`sums`, :func:`merge_sums`, :func:`from_sums`
+     - ten numbers per key
+   * - one spec against another
+     - :func:`diebold_mariano`, :func:`clark_west`, :func:`seqtest`
+     - the whole frame, collected
+   * - the long form they read
+     - :func:`unpack`
+     - the whole frame, collected
+
+The scores over a frame are polars aggregations, so they need the whole
+frame. For a stream too long to hold, a spec's ``emit_metrics`` keeps the same
+numbers beside the model, in memory the size of its state. Or reduce each
+chunk with :func:`sums`, add the chunks with :func:`merge_sums` and read the
+scores with :func:`from_sums`.
 
 A target that is not a column under its own name -- a column renamed with
 :func:`polars_online.target`, or a window expression looking ahead -- is
 read through the spec that wrote the output: pass it as ``spec`` (see
 :func:`unpack`).
 
-What each function raises is what :func:`unpack` raises, since each starts
-there: ``KeyError`` for a ``spec_name`` the frame has not got, ``TypeError``
-for a column that is not a model's prediction struct, ``ValueError`` for a
-slot whose target column cannot be found. A ``group`` or ``clock`` column
-the frame has not got is polars' ``ColumnNotFoundError``.
+The scores start from :func:`unpack` and raise what it raises: ``KeyError``
+for a ``spec_name`` the frame has not got, ``TypeError`` for a column that is
+not a model's prediction struct, ``ValueError`` for a slot whose target column
+cannot be found. A ``group`` or ``clock`` column the frame has not got is
+polars' ``ColumnNotFoundError``.
 
 ``group`` names one key column, as a spec's ``group`` does, or a list of
 them. ``min_samples`` is the fewest rows a key is reported on, Polars' name
@@ -70,8 +92,8 @@ _MIN_SAMPLES = {"min_obs": "min_samples"}
 _BOTH = {"by": "group", "min_obs": "min_samples"}
 _WINDOW = {"by": "group", "min_obs": "min_samples", "window_size": "every"}
 
-#: The columns :func:`sums` produces beside the keys, in order. Ten doubles
-#: per (key, slot) is the whole memory cost of evaluating a stream.
+#: The columns :func:`sums` produces beside the keys, in order: ten numbers
+#: per (key, slot) are all the memory evaluating a stream takes.
 SUM_FIELDS = (
     "n",
     "w",
@@ -157,8 +179,8 @@ def unpack(
 
     - ``KeyError`` for a ``spec_name`` the frame has not got;
     - ``TypeError`` for a column that is not a struct, or a struct with no
-      ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro`` or ``ew_class``
-      output);
+      ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro``, ``ew_class``
+      or ``seqtest`` output);
     - ``ValueError`` when a slot's target column cannot be found (the frame
       has not got it, or ``targets`` does not name it, or without ``spec`` no
       column is named after the slot) and, with ``spec``, whatever
@@ -404,11 +426,13 @@ def metrics(
     ``binary=True`` reads ``pred`` as a probability and ``y`` as a 0/1 label, the
     output of a ``sgd`` or ``ftrl`` fit with ``loss = "logistic"``. ``hit_rate``
     becomes accuracy at a 0.5 threshold and every row scores. A ``log_loss``
-    column is added, ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged. ``r2`` and ``ic``
-    keep their formulas under names that mean something different on a 0/1
-    target, the Brier skill score and the point-biserial correlation. Nothing here
-    reads the target's values to decide which reading applies; name it explicitly,
-    the way you chose the loss.
+    column is added, ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged, with ``p``
+    clipped to ``[1e-15, 1 - 1e-15]`` so a confident miss is a large number
+    and not an infinity. ``r2`` and ``ic`` keep their formulas under names
+    that mean something different on a 0/1 target, the Brier skill score and
+    the point-biserial correlation. Nothing here reads the target's values to
+    decide which reading applies: name it explicitly, the way you chose the
+    loss.
 
     .. code-block:: python
 
@@ -458,13 +482,14 @@ def window_metrics(
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        by_hour = po.eval.window_metrics(out, "ridge", clock="t", every=100.0)
+        windows = po.eval.window_metrics(out, "ridge", clock="t", every=100.0)  # 100 units of t
         # on a Datetime clock: every=pl.duration(hours=1), timedelta(hours=1) or "1h"
 
     Raises as :func:`unpack` does, and:
 
     - ``ValueError`` for an ``every`` that is not finite and above 0, of the
-      wrong kind for the clock, or not a whole number on an integer clock;
+      wrong kind for the clock, or not a whole number on an integer clock,
+      and for a ``Time`` clock, which starts again at midnight;
     - ``TypeError`` for a ``clock`` column that is neither numeric nor
       temporal;
     - polars' ``ColumnNotFoundError`` for a ``clock`` or ``group`` column the
@@ -607,12 +632,15 @@ def seqtest(
     The sign tested is that of ``|resid_b| - |resid_a|``, positive when
     ``a`` was closer.
 
-    Per target, with ``s`` the sign and the counts before the row:
+    Per target, with ``s`` the row's sign (+1, -1 or 0) and the counts
+    before the row:
 
     .. code-block:: text
 
         lam_pos = max(0, (n_pos - n_neg) / (n_pos + n_neg + 1))
-        log_e_pos += log1p(lam_pos * s)         (lam_neg, log_e_neg likewise)
+        lam_neg = max(0, (n_neg - n_pos) / (n_pos + n_neg + 1))
+        log_e_pos += log1p(lam_pos * s)
+        log_e_neg += log1p(-lam_neg * s)
 
     Returns ``df`` with a struct column ``name`` holding, per target ``t``
     and read before the row, as the bank writes them:
@@ -627,8 +655,9 @@ def seqtest(
         until it reaches ``min_weight``.
 
     ``group`` runs one process per group, in row order (``.over(group)``):
-    one key column, as a spec's ``group`` is, or a list of them. A null,
-    zero or NaN value bets nothing and counts nothing, as in the bank. What
+    one key column, as a spec's ``group`` is, or a list of them. A value of
+    zero bets nothing and counts nothing, and so does one the bank would not
+    learn from: null, NaN, infinite, or past its input bound of 1e100. What
     the bank adds is the clock (``session``, ``restart_after_step_back``),
     which a frame in memory has not got. The bank's struct is held to this
     one to the last bit; the difference is that the bank is O(state) over a
@@ -646,10 +675,13 @@ def seqtest(
     Raises:
 
     - ``ValueError`` for ``a`` without ``b`` (or the reverse), for column
-      mode without ``targets``, and for a target neither side has a residual
-      for (naming the fields it does have);
+      mode without ``targets``, for two specs that share no residual field,
+      and for a target one side has no residual for (naming the fields it
+      does have);
     - ``KeyError`` for a spec the frame has not got;
-    - ``TypeError`` for one that is not a struct.
+    - ``TypeError`` for one that is not a struct;
+    - polars' ``ColumnNotFoundError`` for a column-mode target or a
+      ``group`` column the frame has not got.
     """
     keys = _group_keys(group)
     if (a is None) != (b is None):
@@ -761,9 +793,9 @@ def sums(
     """Reduce a chunk of output to the sufficient statistics of its metrics.
 
     :func:`metrics` needs the whole frame. This needs one chunk at a time: ten
-    doubles per ``(slot, target, *group)``, which :func:`merge_sums` adds together
+    numbers per ``(slot, target, *group)``, which :func:`merge_sums` adds together
     and :func:`from_sums` turns back into the same numbers. A run that compares
-    fifty slots over a billion rows then keeps ten doubles per key instead of
+    fifty slots over a billion rows then keeps ten numbers per key instead of
     writing the rows out to evaluate them later. The columns beside the keys are
     :data:`SUM_FIELDS`:
 
@@ -782,23 +814,26 @@ def sums(
         at a 0.5 threshold and ``signed`` every row, since every row scores.
         With ``spec`` naming a Poisson ``sgd`` fit, which has no sign to hit,
         both are 0, and :func:`from_sums` gives the null the bank gives.
+        **Do not merge chunks reduced with different ``binary`` settings**:
+        :func:`merge_sums` sums whatever is in ``hits`` and ``signed``
+        without knowing which reading produced it.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
     mean is large relative to the spread. A unit-variance target around 1e8 has
     ``var / E[y**2]`` of about 1e-16, and the subtraction has nothing left. The
-    centring takes :func:`merge_sums` a parallel-axis term, which is a multiply,
-    and keeps every digit. Chunks reduced with different ``binary``
-    settings must not be merged: :func:`merge_sums` sums whatever is in ``hits``
-    and ``signed`` without knowing which reading produced it.
+    centring adds a parallel-axis term to :func:`merge_sums`, a multiply, and
+    keeps the variance to rounding (its docstring has the measurement).
 
     Rows where the prediction or the target is missing are dropped, as
     :func:`metrics` drops them: null, NaN, infinite or past the bank's input
-    bound. ``weight`` names a column to weight rows by; a row whose weight
-    the bank would not learn from -- null, NaN, infinite, past the input
-    bound, or negative -- is dropped too, and a zero weight is kept, counted
-    in ``n`` and not in ``w``. Without ``weight`` every row counts 1 and ``w``
-    equals ``n``. ``group`` is :func:`metrics`'s; ``spec``, ``targets`` and the
+    bound.
+
+    ``weight`` names a column to weight rows by. A row whose weight the bank
+    would not learn from -- null, NaN, infinite, past the input bound, or
+    negative -- is dropped too, and a zero weight is kept, counted in ``n``
+    and not in ``w``. Without ``weight`` every row counts 1 and ``w`` equals
+    ``n``. ``group`` is :func:`metrics`'s; ``spec``, ``targets`` and the
     errors are :func:`unpack`'s.
 
     .. code-block:: python
@@ -807,7 +842,7 @@ def sums(
         out = po.ModelBank([spec]).fit_predict(df)
         part = po.eval.sums(out.head(200), "ridge", group="stock_id")   # ten numbers per key
         rest = po.eval.sums(out.tail(200), "ridge", group="stock_id")
-        running = po.eval.merge_sums(part, rest)                     # exact, whatever the split
+        running = po.eval.merge_sums(part, rest)                     # any split, to rounding
         scores = po.eval.from_sums(running, min_samples=10)          # r2, ic, hit_rate, mse, rmse
 
     """
@@ -854,9 +889,9 @@ def sums(
 def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     """Add the sufficient statistics of disjoint row sets.
 
-    Exact, whatever the split: the means are pooled by weight and the centred sums
-    pick up the parallel-axis term for the distance between each part's mean and
-    the pooled one:
+    The same statistics whatever the split, to rounding: the means are pooled
+    by weight and the centred sums pick up the parallel-axis term for the
+    distance between each part's mean and the pooled one:
 
     .. code-block:: text
 
@@ -865,12 +900,16 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
         m2   = sum(m2_g + w_g * (mean_g - mean)**2)
         cov  = sum(cov_g + w_g * (mean_y_g - mean_y) * (mean_p_g - mean_p))
 
-    That is the n-way form of Chan, Golub and LeVeque's merge: every part enters
-    as a sum, never as a difference of running totals, so merging a thousand
-    chunks loses no more than merging two. Returns a frame with the same columns.
-    Keys present in one part and not another are carried through as they are;
-    merging one frame returns it unchanged. ``ValueError`` for parts whose key
-    columns differ.
+    That is the n-way form of Chan, Golub and LeVeque's merge. Every part
+    enters as one term of a sum, never as a difference of running totals, so
+    merging a thousand chunks loses about as much as merging two. Measured on
+    100,000 rows at a level of 1e4 standard deviations, against the exact
+    sums in rational arithmetic: 2 chunks and 1,000 each merged within 3e-15
+    of the exact ``m2_y``, ``m2_pred`` and ``cov``, relative to each.
+
+    Returns a frame with the same columns. Keys present in one part and not
+    another are carried through as they are; merging one frame returns it
+    unchanged. ``ValueError`` for parts whose key columns differ.
     """
     frames = [first, *rest]
     keys = [c for c in frames[0].columns if c not in SUM_FIELDS]
@@ -915,13 +954,14 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30) -> pl.DataFrame:
 
     Same columns and same numbers: ``n``, ``r2`` (out-of-sample against the
     realized mean), ``ic`` (correlation of prediction with target), ``hit_rate``,
-    ``mse``, and ``rmse`` beside it. Which reading ``hit_rate`` is (sign
-    agreement, or accuracy at 0.5) was fixed when the sums were built
-    (:func:`sums`'s ``binary``); this divides ``hits`` by ``signed``, so there is
-    nothing to choose here. There is no ``log_loss`` column (:func:`metrics`'s
-    ``binary=True`` has it): :data:`SUM_FIELDS` would need a mean and a weight for
-    it, not added since nothing has asked for the chunked form yet. A key with
-    fewer than ``min_samples`` rows is dropped, as :func:`metrics` drops it.
+    ``mse``, and ``rmse`` beside it. Sums built with :func:`sums`' ``weight``
+    give each one weighted, ``mse`` as ``sse / w``. Which reading ``hit_rate``
+    is (sign agreement, or accuracy at 0.5) was fixed when the sums were built
+    (:func:`sums`'s ``binary``). This divides ``hits`` by ``signed``, so there
+    is nothing to choose here. There is no ``log_loss`` column, which
+    :func:`metrics`' ``binary=True`` computes over a frame in memory:
+    :data:`SUM_FIELDS` carries no sum for it. A key with fewer than
+    ``min_samples`` rows is dropped, as :func:`metrics` drops it.
 
     ``r2`` and ``ic`` are null where they are undefined: a key whose target or
     prediction never varied has no correlation to report, and dividing by its zero
@@ -1097,6 +1137,21 @@ def _ew_test(
     return base.with_columns(pl.struct(fields).alias(name)).drop(idx, *fields)
 
 
+def _check_half_life(who: str, half_life: float) -> None:
+    """The per-row form's ``half_life``: above 0, and finite. An infinite
+    one reached polars' ``ewm_mean`` as ``alpha = 0``, which it refuses
+    with no word of the parameter (task 239)."""
+    if not half_life > 0:
+        msg = f"{who}: half_life must be > 0, got {half_life}"
+        raise ValueError(msg)
+    if math.isinf(half_life):
+        msg = (
+            f"{who}: half_life must be finite, got {half_life}: it weighs each row before the "
+            "present at 0.5 ** (age / half_life); leave it None for one statistic over every row"
+        )
+        raise ValueError(msg)
+
+
 @renamed_keywords("po.eval.diebold_mariano", _GROUP)
 def diebold_mariano(
     df: pl.DataFrame,
@@ -1127,28 +1182,33 @@ def diebold_mariano(
 
     ``lags`` is 0 for one-step predictions, whose differentials are not
     correlated under the null; for a target looking ``h`` rows ahead give
-    at least ``h - 1``. Between nested models -- ``b`` a restriction of
-    ``a`` -- the test leans toward the smaller one, since the larger pays
-    for estimating a coefficient that is zero: use :func:`clark_west`.
+    at least ``h - 1``. **Between nested models, use** :func:`clark_west`.
+    When ``b`` is a restriction of ``a``, this test leans toward the smaller
+    one: the larger one's squared error carries the noise of estimating a
+    coefficient that is zero.
 
-    With ``half_life`` (in rows), the statistic on every row instead, each
-    row before it at ``0.5 ** (age / half_life)``, one step per row that has
-    a differential, the row itself included: ``df`` with a struct column
-    ``name`` of ``dm_<t>``, null where a side has no residual. It is the
-    exponentially weighted form of the same test, read at every row as
-    :func:`seqtest` is.
+    Without ``half_life``, it returns one row per (``group``, target) with
+    ``n`` rows and at least ``min_samples``: the ``mean`` differential,
+    ``dm`` and its two-sided ``p_value``.
 
-    Without ``half_life``: one row per (``group``, target) with ``n`` rows
-    and at least ``min_samples``, the ``mean`` differential, ``dm`` and its
-    two-sided ``p_value``. ``a``, ``b``, ``targets``, the suffixes and
-    ``group`` are :func:`seqtest`'s, and raise as it raises.
+    With ``half_life`` (in rows), it returns the statistic on every row
+    instead, each row before it at ``0.5 ** (age / half_life)``, one step per
+    row that has a differential, the row itself included. That is ``df`` with
+    a struct column ``name`` of ``dm_<t>``, null where a side has no
+    residual: the exponentially weighted form of the same test, read at every
+    row as :func:`seqtest` is.
+
+    ``a``, ``b``, ``targets``, the suffixes and ``group`` are
+    :func:`seqtest`'s, and raise as it raises. ``ValueError`` too for
+    ``lags`` below 0 and for a ``half_life`` that is not finite and above 0.
 
     .. code-block:: python
 
-        small = po.spec.ewridge("small", targets=["y"], features=["x0"], half_life=500.0)
-        big = po.spec.ewridge("big", targets=["y"], features=["x0", "x1"], half_life=500.0)
-        out = po.ModelBank([small, big]).fit_predict(df)
-        po.eval.diebold_mariano(out, a="big", b="small")   # dm > 1.96: big predicts better
+        x0_only = po.spec.ewridge("x0_only", targets=["y"], features=["x0"], half_life=500.0)
+        x1_only = po.spec.ewridge("x1_only", targets=["y"], features=["x1"], half_life=500.0)
+        out = po.ModelBank([x0_only, x1_only]).fit_predict(df)
+        test = po.eval.diebold_mariano(out, a="x0_only", b="x1_only")
+        # dm above 1.96: x0_only predicted y better, at 5%; below -1.96, x1_only did
     """
     keys = _group_keys(group)
     pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "diebold_mariano")
@@ -1157,9 +1217,7 @@ def diebold_mariano(
         msg = f"diebold_mariano: lags must be >= 0, got {lags}"
         raise ValueError(msg)
     if half_life is not None:
-        if not half_life > 0:
-            msg = f"diebold_mariano: half_life must be > 0, got {half_life}"
-            raise ValueError(msg)
+        _check_half_life("diebold_mariano", half_life)
         return _ew_test(df, values, keys, lags, half_life, "dm", name)
     out = _hac_test(df, values, keys, lags, "dm", min_samples)
     p = [
@@ -1201,11 +1259,26 @@ def clark_west(
     ``cw`` is about ``N(0, 1)`` under the null that the smaller model is the
     truth, and the test is one-sided: ``cw > 1.645`` rejects it at 5%.
     ``pred_small - pred_big`` is ``resid_big - resid_small``, so the two
-    residual fields are all it reads. ``half_life`` gives the per-row
-    exponentially weighted form, a struct ``name`` of ``cw_<t>``, as
-    :func:`diebold_mariano`'s does; without it, one row per (``group``,
-    target) with ``n``, the ``mean`` of ``f``, ``cw`` and its one-sided
-    ``p_value``.
+    residual fields are all it reads.
+
+    Without ``half_life``, it returns one row per (``group``, target) with
+    ``n``, the ``mean`` of ``f``, ``cw`` and its one-sided ``p_value``. With
+    ``half_life`` (in rows), it returns the per-row exponentially weighted
+    form, a struct ``name`` of ``cw_<t>``, as :func:`diebold_mariano`'s does.
+
+    ``big`` and ``small`` name the two specs' output structs, and
+    ``big_suffix`` and ``small_suffix`` their residual fields' suffixes, as
+    :func:`diebold_mariano`'s ``a`` and ``b`` do. ``targets``, ``lags``,
+    ``group``, ``min_samples`` and ``name`` are :func:`diebold_mariano`'s,
+    and so are the errors.
+
+    .. code-block:: python
+
+        small = po.spec.ewridge("small", targets=["y"], features=["x0"], half_life=500.0)
+        big = po.spec.ewridge("big", targets=["y"], features=["x0", "x1"], half_life=500.0)
+        out = po.ModelBank([small, big]).fit_predict(df)
+        test = po.eval.clark_west(out, big="big", small="small")
+        # cw above 1.645: x1 improves the forecast, at 5%
     """
     keys = _group_keys(group)
     pairs = _paired_residuals(df, big, small, targets, big_suffix, small_suffix, "clark_west")
@@ -1214,9 +1287,7 @@ def clark_west(
         msg = f"clark_west: lags must be >= 0, got {lags}"
         raise ValueError(msg)
     if half_life is not None:
-        if not half_life > 0:
-            msg = f"clark_west: half_life must be > 0, got {half_life}"
-            raise ValueError(msg)
+        _check_half_life("clark_west", half_life)
         return _ew_test(df, values, keys, lags, half_life, "cw", name)
     out = _hac_test(df, values, keys, lags, "cw", min_samples)
     return out.with_columns(

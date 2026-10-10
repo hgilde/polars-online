@@ -835,5 +835,13 @@ class TestNestedComparisonsAreTheirPapers:
             po.eval.diebold_mariano(out, a="big", b="small", lags=-1)
         with pytest.raises(ValueError, match="half_life must be > 0"):
             po.eval.clark_west(out, big="big", small="small", half_life=0.0)
+        # An infinite half-life reached polars' `ewm_mean` as `alpha = 0`,
+        # refused there with no word of the parameter (task 239).
+        for test, sides in (
+            (po.eval.diebold_mariano, {"a": "big", "b": "small"}),
+            (po.eval.clark_west, {"big": "big", "small": "small"}),
+        ):
+            with pytest.raises(ValueError, match="half_life must be finite, got inf"):
+                test(out, half_life=float("inf"), **sides)
         with pytest.raises(ValueError, match="names no residual"):
             po.eval.diebold_mariano(out, a="big", b="small", targets=["nope"])

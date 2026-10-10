@@ -218,3 +218,52 @@ class TestTheShape:
             po.eval.sums(out, "nope")
         with pytest.raises(TypeError, match="not a model-output struct"):
             po.eval.sums(out, "x0")
+
+
+@pytest.mark.extended(reason="rational arithmetic over 100,000 rows, 2 s at a load of 10")
+def test_merge_sums_rounds_as_its_docstring_measures():
+    """Task 239: ``merge_sums``' docstring said merging a thousand chunks
+    loses no more than merging two, unmeasured. Against the exact sums in
+    rational arithmetic, at a level of 1e4 standard deviations: 2 chunks and
+    1,000 each merge within 3e-15 of the exact ``m2_y``, ``m2_pred`` and
+    ``cov``, relative to each."""
+    from fractions import Fraction
+
+    n, level = 100_000, 1e4
+    rng = np.random.default_rng(1)
+    yv = level + rng.standard_normal(n)
+    pv = level + 0.5 * (yv - level) + rng.standard_normal(n)
+    fy = [Fraction(v) for v in yv.tolist()]
+    fp = [Fraction(v) for v in pv.tolist()]
+
+    def exact(lo, hi):
+        ys, ps = fy[lo:hi], fp[lo:hi]
+        my = sum(ys, Fraction(0)) / (hi - lo)
+        mp = sum(ps, Fraction(0)) / (hi - lo)
+        return {
+            "n": hi - lo,
+            "mean_y": my,
+            "mean_pred": mp,
+            "m2_y": sum(((v - my) ** 2 for v in ys), Fraction(0)),
+            "m2_pred": sum(((v - mp) ** 2 for v in ps), Fraction(0)),
+            "cov": sum(((a - my) * (b - mp) for a, b in zip(ys, ps, strict=True)), Fraction(0)),
+        }
+
+    whole = exact(0, n)
+    worst = {}
+    for chunks in (2, 1000):
+        edges = np.linspace(0, n, chunks + 1).astype(int)
+        frames = []
+        for lo, hi in zip(edges[:-1], edges[1:], strict=True):
+            e = exact(int(lo), int(hi))
+            row = {"slot": "pred_y", "target": "y", "n": e["n"], "w": float(e["n"])}
+            row |= {k: float(e[k]) for k in ("mean_y", "mean_pred", "m2_y", "m2_pred", "cov")}
+            row |= {"sse": 0.0, "hits": 0.0, "signed": 0.0}
+            frames.append(pl.DataFrame([row]).select("slot", "target", *po.eval.SUM_FIELDS))
+        got = po.eval.merge_sums(*frames).row(0, named=True)
+        worst[chunks] = max(
+            float(abs(Fraction(got[k]) - whole[k]) / whole[k]) for k in ("m2_y", "m2_pred", "cov")
+        )
+    assert max(worst.values()) < 3e-15, worst
+    doc = " ".join((po.eval.merge_sums.__doc__ or "").split())
+    assert "2 chunks and 1,000 each merged within 3e-15" in doc
