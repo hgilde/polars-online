@@ -61,7 +61,11 @@ def assert_plateaus(fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks
     the ubuntu marks below show -- put it halfway up a step: two 3.4 MB
     steps at 240 iterations a block read a median of 7 KB/iter with no leak,
     the shape of `test_many_tiny_groups`' one failure in a gate (review
-    round 4, SF8; `TestThePlateauStatistic` holds both cases).
+    round 4, SF8; `TestThePlateauStatistic` holds both cases). Under load,
+    RSS also swings both ways as the machine compresses or swaps memory, and
+    the median gap reads that as growth; Theil and Sen's slope over every
+    pair of blocks does not, so the check fails only when both statistics
+    pass the limit (2026-10-10), which a leak's every gap and pair do.
 
     Two earlier versions got this wrong, both by measuring the ramp:
 
@@ -101,14 +105,27 @@ def assert_plateaus(fn, *, blocks=7, per_block=120, kb_per_iter=4.0, warm_blocks
 
     marks = [block() for _ in range(blocks)]
 
-    # Growth per iteration, block against block.
+    # Growth per iteration, block against block, and over every pair of
+    # blocks. Each statistic is robust to one kind of noise: the median gap
+    # to a one-off allocator step, which moves one gap; Theil and Sen's slope,
+    # the median of every pair's, to RSS swinging both ways when the machine
+    # compresses or swaps memory under load, which cancels across pairs (two
+    # flakes of 2026-10-08/09: a median gap of 6.33 KB/iter, a Theil-Sen
+    # slope of 0.15). A leak grows in every block, so both read its rate,
+    # and the check fails only when both pass the limit.
     gaps = [(b - a) / per_block for a, b in zip(marks, marks[1:], strict=False)]
     per_iter = statistics.median(gaps)
-    assert per_iter < kb_per_iter, (
+    pairs = [
+        (marks[j] - marks[i]) / ((j - i) * per_block)
+        for i in range(len(marks))
+        for j in range(i + 1, len(marks))
+    ]
+    theil_sen = statistics.median(pairs)
+    assert per_iter < kb_per_iter or theil_sen < kb_per_iter, (
         f"RSS still climbing after the ramp: {per_iter:.2f} KB/iter, the "
-        f"median of {[round(g, 2) for g in gaps]} (marks, KB: "
-        f"{[round(m) for m in marks]}). A plateau is expected; a slope means "
-        "something is not being released."
+        f"median of {[round(g, 2) for g in gaps]}, and a Theil-Sen slope of "
+        f"{theil_sen:.2f} (marks, KB: {[round(m) for m in marks]}). A plateau "
+        "is expected; a slope means something is not being released."
     )
 
 
@@ -137,6 +154,20 @@ class TestThePlateauStatistic:
         quiet = [1000.0] * 3
         self._script(monkeypatch, [*quiet, 1000, 1000, 4400, 4400, 7800, 7800, 7800])
         assert_plateaus(lambda: None, per_block=240)
+
+    def test_rss_that_swings_both_ways_under_load_is_not_a_leak(self, monkeypatch):
+        """Two flakes of 2026-10-08/09 under a load of about 28, when macOS
+        compresses and swaps memory: gaps of [6.93, -26.8, 25.53, -12.2,
+        6.93, 5.73] KB/iter (`test_many_tiny_groups`), a median of 6.33
+        against a limit of 4, where the window's net growth was about 1.
+        Their Theil-Sen slope, the median of every pair's, is 0.15."""
+        quiet = [1000.0] * 3
+        marks, at = [], 100_000.0
+        for g in (0.0, 6.93, -26.8, 25.53, -12.2, 6.93, 5.73):
+            at += g * 120
+            marks.append(at)
+        self._script(monkeypatch, [*quiet, *marks])
+        assert_plateaus(lambda: None, per_block=120)
 
     def test_a_leak_still_fails(self, monkeypatch):
         """A slope never has two quiet blocks, runs out of warm-up, and its
