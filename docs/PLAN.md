@@ -9287,15 +9287,28 @@ tick, and that the series holding it up has a count near 1.
       the pool's speed kept (18 ms on 8 threads against 68 on 1 at 2,000
       columns); one-column solves moved once, by at most 1.5e-11 relative
       at 4,000 columns; no golden or fixture moved. PERFORMANCE §38.
-- [ ] 234. **The mutants that survived the push of `5cb8f7e`** -- its
+- [x] 234. **The mutants that survived the push of `5cb8f7e`** -- its
       Mutants job ran complete (3,088 mutants on the changed lines, 111
-      shards): 342 survived, 4 timed out. Tests or equivalent entries per
-      file, a defect fixed where it has one answer (found so far: `audit`'s
-      MAD past `distinct_cap` stopped bisecting after 200 halvings, so one
-      value at 1e70 beside a spread of 1 read a MAD of 6.2e9); the
-      measured CUSUM null for the non-least-squares fits was measured and
-      dropped (it dulled detection); readiness on the longest finite memory
-      (`holt`'s trend). In progress, four workers.
+      shards): 342 survived, 4 timed out. *Done 2026-10-10* (four workers):
+      tests for 316, 35 more listed equivalent and 2 tolerated (with
+      reasons), the 4 timeouts infinite loops the mutants make. Defects
+      fixed: `audit`'s MAD past `distinct_cap` stopped bisecting after 200
+      halvings (one value at 1e70 beside a spread of 1 read a MAD of 6.2e9,
+      at 1e100 6.2e39; it now bisects to neighbouring doubles); `lasso_path`
+      gave -0.0 where numpy and `lasso` give +0.0; `mutants_report.py`
+      crashed on a survivor outside any function. The cut factor and the
+      Gram merge are held to faer's on every architecture (they were on
+      aarch64 only, and CI runs x86-64). The measured CUSUM null proposed
+      for the non-least-squares fits was measured and dropped (it cost
+      `huber` and `quantile` 20-55 points of detection and `holt` all of
+      it); `holt`'s spread of 1.6 was its trend's warm-up, so readiness now
+      reads the longest finite memory a model keeps (`holt`'s trend,
+      `kalman`'s longest, `ewridge`'s `long_half_life`, `lasso`'s
+      `select_half_life`): `holt`'s early spread 2.70 -> 0.74. The
+      diagnostics page gives each model's CUSUM spread and detection share
+      (`pa`'s finds no intercept break; `break_wald` finds 93-100% beside
+      every model with features). Four survivors in `gramfit/lars.rs` show
+      a defect whose fix has options: task 236.
 - [ ] 235. **Research: an adapter for faster LightGBM and XGBoost training
       from Polars/Arrow chunks** -- the user, 2026-10-10: "Add a plan item to
       research whether we can add an adapter to enable faster training of
@@ -9331,6 +9344,17 @@ tick, and that the series holding it up has a count near 1.
       related work, not this. **Output:** a doc with the measurements and a
       recommendation -- build, the shape of the adapter, or not worth it --
       for the user to decide.
+- [ ] 236. **LARS on exact ties -- the user's call** (task 234). A column
+      whose correlation exactly ties the active set's never enters (the
+      entry test needs a positive root, and a tie's is 0), so the path ends
+      at the wrong fit: on an identity Gram with `d = [1, 1]` it ends at
+      `[1, 0]`, least squares `[1, 1]`. scikit-learn's `lars_path_gram`
+      gets these cases wrong too (it ends at `[2, 1]`). Options: (a) a step
+      of 0 to a tied column -- a knot at the same penalty, one column per
+      knot as `max_steps` and `active` document (recommended); (b) every
+      tied column at one knot -- penalties fall strictly, a knot may add
+      several; (c) a relative tie tolerance, as scikit-learn's -- moves
+      paths at rounding on data with no tie.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

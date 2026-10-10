@@ -662,6 +662,11 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **Diagnostics wait for the longest finite memory a model keeps** (task
+  234): `holt`'s trend, `kalman`'s longest, `ewridge`'s
+  `long_half_life`, `lasso`'s `select_half_life`. Settled on its level
+  alone, `holt`'s CUSUM spread 2.7 and passed 3 on 28% of the rows after
+  its diagnostics started; now 0.74 and on none.
 - **The diagnostics, after review round 6** (tasks 232 and 233): each
   folds a row only once its instance is settled on the fit's memory; its
   default memory follows the fit's (a window's Kish half-life, `kalman`'s
@@ -1135,6 +1140,12 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **`audit`'s MAD past `distinct_cap` reaches the median absolute
+  deviation however far the column's range** (task 234): its bisection
+  stopped after 200 halvings, so one value at 1e70 beside a spread of 1
+  read a MAD of 6.2e9 (true 0.7), and the robust z meant for that outlier
+  read nothing. `po.gram.lasso_path` gives +0.0 where numpy and `lasso` do,
+  not -0.0.
 - **A wide fit is the same to the bit whatever the thread count** (task
   231): from 512 columns, `ewridge`'s one-column solves and the
   eigendecomposition behind `ew_cov`'s `pca` and `rcov`'s repair followed
@@ -1593,6 +1604,12 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- Every mutant that survived the push to `5cb8f7e` is caught by a test or
+  listed with its reason (task 234): 342 survivors, 316 caught by tests,
+  35 equivalent and 2 tolerated; the cut Cholesky factor and the threaded
+  Gram merge are held to faer's on every architecture, not only aarch64.
+  The diagnostics page gives each model's CUSUM spread and the share of
+  breaks it finds.
 - The changed-lines mutation job takes a shard for every thirty mutants,
   not forty, and stops each at 160 minutes, not 100: the slowest shard of
   the last push took 83 of its 100, and the suite every mutant runs grew
