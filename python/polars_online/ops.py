@@ -1,10 +1,10 @@
 """The window operators (docs/PLAN.md task 143): exponentially weighted
 means, sums and rates over a stream's clock, looking back or ahead, a
-variance and a standard deviation looking back (task 212), and the
-increment of a running sum. Each returns a ``pl.Expr`` that composes with
-Polars' own -- ``pl.col`` is the current row -- and is computed by
-:func:`polars_online.stream.with_windows` one pass, O(window) memory, or
-learned as a target under an embargo (task 104).
+variance and a standard deviation looking back, and the increment of a
+running sum. Each returns a ``pl.Expr`` that composes with Polars' own --
+``pl.col`` is the current row. It is computed by
+:func:`polars_online.stream.with_windows` in one pass, in O(window) memory,
+or learned as a spec's target under an embargo (docs/PLAN.md task 104).
 
 Every operator is defined once, by the library that has it, and held to it
 in the tests. For row *t* at policy time ``tau_t`` with ``lam = 2 ** (-1 /
@@ -98,7 +98,7 @@ nothing, since its interval ends at its row, and a mean with no other value
 in the window is null.
 
 **A weighted mean is a ratio of two sums.** A VWAP is decayed notional over
-decayed volume, the time mass cancelling; a side's VWAP puts ``when/then``
+decayed volume, the time mass cancelling. A side's VWAP puts ``when/then``
 inside both sums. There is no ``weight=``:
 
 .. code-block:: python
@@ -120,7 +120,7 @@ operator.** ``(x - ewm_mean(x)) / ewm_std(x)`` is the feature's z-score: a
 model fitted on it has a coefficient per standard deviation of the feature
 as its spread stands on each row, where a model on ``x`` has one per unit.
 Where a target responds to a feature relative to its volatility, fit on the
-z-score; every model reads it as a column (README, *Features in units of
+z-score. Every model reads it as a column (README, *Features in units of
 their spread*, with the measured gain):
 
 .. code-block:: python
@@ -173,7 +173,27 @@ over an operator's output is a second call. ``half_life`` and
 ``window_size`` are in the clock's units: numbers on a numeric clock, and
 durations (``"10s"``, a ``timedelta``, ``pl.duration``) on a temporal one.
 ``half_life=float("inf")`` weighs the window evenly, and needs a
-``window_size`` for a mean.
+``window_size`` for a mean, a variance or a standard deviation.
+
+An operator checks its own arguments when it is called, and names the one
+it refuses:
+
+- ``TypeError`` for an input that is neither a column name nor a
+  ``pl.Expr``, a ``half_life`` or ``window_size`` that is neither a number
+  nor a duration, and a ``bias`` that is not a bool;
+- ``ValueError`` for a ``half_life`` or ``window_size`` that is NaN or not
+  above 0, an infinite ``window_size``, a ``closed`` or ``partial`` it does
+  not know, ``partial`` without ``window_size``, and a ``min_samples``
+  below 1 or above ``2**32 - 1``;
+- ``ValueError`` for an input expression that holds another window
+  operator, or a node that is not element-wise, or that reads a column
+  whose name starts with ``@po:``, the prefix the operators' own columns
+  carry.
+
+:func:`polars_online.stream.with_windows` refuses the rest while its plan is
+built: ``half_life=float("inf")`` with no ``window_size`` for a mean, a
+variance or a standard deviation, and a window looking ahead under
+``group`` with no clock column.
 """
 
 from __future__ import annotations
@@ -260,10 +280,10 @@ def ewm_sum(
     partial: str | None = None,
 ) -> pl.Expr:
     """``sum lam ** (tau_t - t_j) * x_j`` over the rows at or before each row,
-    less than ``window_size`` older: Polars' ``ewm_sum_by``, each value
-    counted once at its own time, on distinct stamps; at a repeated stamp
-    every row carries the stamp's total, where ``ewm_sum_by``'s is a running
-    sum. Two sums make a weighted mean."""
+    less than ``window_size`` older. On distinct stamps it is Polars'
+    ``ewm_sum_by``, each value counted once at its own time. At a repeated
+    stamp every row carries the stamp's total, where ``ewm_sum_by``'s is a
+    running sum. Two sums make a weighted mean."""
     return operator(
         "ewm_sum",
         input,
@@ -307,9 +327,9 @@ def ewm_rate(
     partial: str | None = None,
 ) -> pl.Expr:
     """:func:`ewm_sum` over the decayed time the window covers, ``half_life /
-    ln 2 * (1 - 2 ** (-T / half_life))`` with ``T`` the window's span inside
-    the stretch: a quantity per unit of clock, such as a volume rate from
-    :func:`increment` of a running volume."""
+    ln 2 * (1 - 2 ** (-T / half_life))``, with ``T`` the window's span inside
+    the stretch. It is a quantity per unit of clock, such as a volume rate
+    from :func:`increment` of a running volume."""
     return operator(
         "ewm_rate",
         input,
@@ -369,8 +389,9 @@ def ewm_var(
     Polars' ``ewm_var(half_life=..., adjust=False, bias=...)``.
     ``adjust=False`` is the form :func:`ewm_mean` already mirrors: it is
     ``ewm_mean_by``, which holds a stretch's first value from before it. So
-    the first row weighs ``(1 - alpha) ** (n - 1)``, as ``adjust=False``
-    weighs it. A window that holds one value gives 0 exactly, at any level.
+    the first row weighs ``(1 - alpha) ** (n - 1)``, with
+    ``alpha = 1 - lam``, as ``adjust=False`` weighs it. A window that holds
+    one value gives 0 exactly, at any level.
     """
     return operator(
         "ewm_var",
