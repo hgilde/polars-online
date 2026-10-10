@@ -5246,7 +5246,7 @@ is not, since the model alone has `0.0` and `3.5` there.
       changed with no flush between, `p = 1` with two shards, a total gap
       with rows held, all-absent targets after a wipe.
 
-- [ ] 127. **E74: a chunk run pair-major — not as specified.** Its reason
+- [x] 127. **E74: a chunk run pair-major — not as specified.** Its reason
       is the intercept, which is not the model's (task 124, which took it
       from 13.1 to 2.8 ns per feature per row); the bank
       already hands the model one contiguous row (`feature_rows`), so
@@ -5258,7 +5258,20 @@ is not, since the model alone has `0.0` and `3.5` there.
       and out of cache on every row: measure it after 122, 123 and 125,
       before designing a loop order that every clock event, reset, window
       snapshot, group close and `label_delay` replay would have to split.
-      *Recommended: wait for that measurement.*
+      *Recommended: wait for that measurement.* **Done 2026-10-10**
+      (PERFORMANCE §39): the slope is the model's (0.58 ns a pair-row,
+      moments, `p = 10,000`) and the intercept the stream's; the state's
+      traffic is about 14% of the slope (20% with lags): resident against
+      streamed, 2.06 against 2.37 cycles a pair-row, against a floor of
+      1.75. E74's register-resident run measured about 5% faster at best
+      and half as fast narrow: not built. An L1 tile in the unsplit `step`
+      (+16% at T >= 10, -5% at T = 1, tuned to this machine's 128 KB L1
+      where many x86 cores have 32-48 KB) not built either; a user who wants
+      the tiled order gets it by setting `shards` to a count, even on one
+      thread. Built, bit for bit: a sharded flush steps one target at a
+      time (`run_by_target`, 0.76-0.81 of the time on one thread at 30
+      targets) and cuts its ranges on even features (`shard_cuts`,
+      0.85-0.91).
 
 - [x] 128. **`EwCov` keeps its runs without a window** (found by task 124,
       PERFORMANCE §24). S–M, a confirmed regression of task 94, unreleased.

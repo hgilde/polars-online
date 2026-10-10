@@ -1072,6 +1072,11 @@ The output names task 144 renamed:
 
 ### Performance
 
+- **A sharded `marginal` (`shards=`) steps each target through a held
+  batch in turn, and cuts its feature ranges on even features** (task
+  127): on one thread up to 24% faster at thirty targets, and 9-16% where
+  the equal shares fell on odd features; the numbers are unchanged to the
+  bit. E74's pair-major run was measured and not built (PERFORMANCE §39).
 - **A standardizing `kalman` holds its state at an anchor and re-maps it
   only when the moments drift past a factor of 2 in scale or one scale in
   mean** (task 211): the same filter to rounding, 277 to 221 ns a row at
