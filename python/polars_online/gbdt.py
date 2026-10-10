@@ -6,15 +6,18 @@ puts every value into one; *boosting* grows trees from per-bin sums and never
 reads a raw value again. This module does the first stage from data that
 streams, in Rust, and hands back the library's own training object, so that
 ``xgb.train`` and ``lgb.train`` run unchanged, with their evaluation sets,
-early stopping and callbacks::
+early stopping and callbacks. Here the training rows are the example data's
+two parquet files, read by a glob:
 
-    import polars_online as po
+.. code-block:: python
+
     import xgboost as xgb
 
-    train = po.gbdt.xgboost_matrix("train/*.arrow", label="y")
-    valid = po.gbdt.xgboost_matrix("valid.parquet", label="y", ref=train)
+    features = ["x0", "x1", "x2", "signal_a", "signal_b"]
+    train = po.gbdt.xgboost_matrix("ticks/*.parquet", label="y", features=features)
+    valid = po.gbdt.xgboost_matrix("today.parquet", label="y", features=features, ref=train)
     booster = xgb.train({"tree_method": "hist", "max_bin": 256}, train, 500,
-                        evals=[(valid, "valid")], early_stopping_rounds=20)
+                        evals=[(valid, "valid")], early_stopping_rounds=20, verbose_eval=False)
 
 - :func:`xgboost_matrix` returns an ``xgboost.QuantileDMatrix``. XGBoost reads
   its input four times, and the second pass sketches every feature's
@@ -342,12 +345,20 @@ def xgboost_matrix(
     XGBoost places each feature's bins at its quantiles and reads the input
     in passes: it counts the values, sketches the quantiles over every row,
     indexes each value into its bin and builds the column matrix. The
-    returned matrix is XGBoost's own; ``xgb.train`` takes it as it is::
+    returned matrix is XGBoost's own, and ``xgb.train`` takes it as it is.
+    Here from Arrow IPC files, which the native engine reads itself:
 
-        train = po.gbdt.xgboost_matrix("train/*.arrow", label="y", weight="w")
-        valid = po.gbdt.xgboost_matrix("valid/*.arrow", label="y", weight="w", ref=train)
+    .. code-block:: python
+
+        import xgboost as xgb
+
+        df.head(300).write_ipc("train.arrow")              # the example data, as two Arrow files
+        df.tail(100).write_ipc("valid.arrow")
+        features = ["x0", "x1", "x2", "signal_a", "signal_b"]
+        train = po.gbdt.xgboost_matrix("train.arrow", label="y", features=features)
+        valid = po.gbdt.xgboost_matrix("valid.arrow", label="y", features=features, ref=train)
         booster = xgb.train({"tree_method": "hist", "max_bin": 256}, train, 500,
-                            evals=[(valid, "valid")], early_stopping_rounds=20)
+                            evals=[(valid, "valid")], early_stopping_rounds=20, verbose_eval=False)
 
     **The cuts.** With ``sample_rows``, one pass first draws a uniform sample
     of that many rows (row ``i`` is kept when its hash, SplitMix64 of ``i``
@@ -378,7 +389,8 @@ def xgboost_matrix(
         pass and so re-run each time, or a ``DataFrame``. The native engine
         reads Arrow IPC files itself, a record batch at a time.
     label, weight
-        The label and the row weights, numeric columns with no nulls.
+        The label and the row weights: numeric columns with no nulls and
+        finite values, a weight not negative.
     features
         The feature columns, in order; every other column by default.
     max_bin
@@ -402,12 +414,20 @@ def xgboost_matrix(
     Raises
     ------
     ValueError
-        A column missing or of a type the libraries do not read, a null or
-        non-finite label or weight, an empty source, a source whose passes
-        give different rows, or (``engine="native"``) an XGBoost the native
-        engine does not support, all named.
+        Each named: ``max_bin`` below 2, ``threads`` or ``sample_rows`` not
+        a positive integer, or an ``engine`` not one of the three; a source
+        that names no files, mixes Arrow IPC and Parquet, or names a file
+        whose extension says neither; a column missing, named twice, or of
+        a type the libraries do not read (a ``pl.Categorical`` among them);
+        a null or non-finite label or weight, or a negative weight; an empty
+        source, or one whose passes give different rows; a ``ref`` binned on
+        other features; or (``engine="native"``) an XGBoost the native
+        engine does not support.
     TypeError
-        ``ref`` not an ``xgboost.DMatrix``.
+        ``ref`` not an ``xgboost.DMatrix``, a source of another type, or
+        ``features`` given as one name.
+    FileNotFoundError
+        A glob of Arrow IPC files that matches nothing.
     """
     import xgboost as xgb
 
@@ -606,14 +626,21 @@ def lightgbm_dataset(
     LightGBM the whole stream, which it pushes column by column. Both routes
     hand LightGBM the same float32 values and grow the same trees, which are
     LightGBM's own from a float32 array of the data. The returned dataset is
-    LightGBM's own; ``lgb.train`` takes it as it is::
+    LightGBM's own, and ``lgb.train`` takes it as it is. Here the training
+    rows are the example data's two parquet files, read by a glob:
 
-        train = po.gbdt.lightgbm_dataset("train/*.parquet", label="y",
+    .. code-block:: python
+
+        import lightgbm as lgb
+
+        features = ["x0", "x1", "x2", "signal_a", "signal_b"]
+        train = po.gbdt.lightgbm_dataset("ticks/*.parquet", label="y", features=features,
                                          params={"verbose": -1})
-        valid = po.gbdt.lightgbm_dataset("valid.parquet", label="y", reference=train)
+        valid = po.gbdt.lightgbm_dataset("today.parquet", label="y", features=features,
+                                         reference=train)
         booster = lgb.train({"objective": "regression", "verbose": -1}, train, 500,
                             valid_sets=[valid],
-                            callbacks=[lgb.early_stopping(20)])
+                            callbacks=[lgb.early_stopping(20, verbose=False)])
 
     The dataset is constructed and its raw data never kept, so training may
     not change a dataset parameter (``max_bin``, ``min_data_in_bin``,
@@ -633,7 +660,8 @@ def lightgbm_dataset(
         ``LazyFrame`` (re-run for each pass), or a ``DataFrame``. The native
         engine reads Arrow IPC files itself, a record batch at a time.
     label, weight
-        The label and the row weights, numeric columns with no nulls.
+        The label and the row weights: numeric columns with no nulls and
+        finite values, a weight not negative.
     features
         The feature columns, in order; every other column by default.
     categorical
@@ -652,10 +680,11 @@ def lightgbm_dataset(
         The training dataset, for a validation dataset binned on its bins;
         one pass.
     in_memory
-        Hand LightGBM the whole stream as Arrow, held in memory; ``"auto"``
-        does when the features as float32 take at most a quarter of the
-        memory available, and the native engine runs a LightGBM that takes
-        an Arrow stream (4.7.0 on).
+        Hand LightGBM the whole stream at once, held in memory: as Arrow
+        under the native engine, as a float32 numpy array under the Python
+        one. ``"auto"`` does when the features as float32 take at most a
+        quarter of the memory available and, under the native engine, the
+        LightGBM loaded takes an Arrow stream (4.7.0 on).
     threads
         Threads for LightGBM's construction and the conversions; all by
         default.
@@ -666,13 +695,24 @@ def lightgbm_dataset(
     Raises
     ------
     ValueError
-        A column missing or of a type the libraries do not read, a parameter
-        given twice, a null or non-finite label or weight, an empty source,
-        more rows than LightGBM's 32-bit row count holds, a source whose
-        passes give different rows, or (``engine="native"``) a LightGBM the
-        native engine does not support, all named.
+        Each named: ``max_bin`` below 2, ``threads`` not a positive integer,
+        an ``engine`` not one of the three, or an ``in_memory`` that is not
+        ``True``, ``False`` or ``"auto"``; a parameter in ``params`` that is
+        this function's own argument; a source that names no files, mixes
+        Arrow IPC and Parquet, or names a file whose extension says neither;
+        a column missing, named twice, or of a type the libraries do not
+        read (a ``pl.Categorical`` among them); a ``categorical`` name that
+        is not a feature, or is a float column; a null or non-finite label
+        or weight, or a negative weight; an empty source, more rows than
+        LightGBM's 32-bit row count holds, or a source whose passes give
+        different rows; or (``engine="native"``) a LightGBM the native
+        engine does not support.
     TypeError
-        ``reference`` not a constructed ``lightgbm.Dataset``.
+        ``reference`` not a ``lightgbm.Dataset`` (one not yet constructed is
+        constructed here), a source of another type, or ``features`` or
+        ``categorical`` given as one name.
+    FileNotFoundError
+        A glob of Arrow IPC files that matches nothing.
     """
     import lightgbm as lgb
 
