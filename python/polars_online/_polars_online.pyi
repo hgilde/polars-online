@@ -3,6 +3,8 @@ this package are what users call; this is what lets a type checker follow them
 into the native calls. ``tests/test_kwargs_typing.py`` checks it names every
 attribute the built module has, so it cannot go stale silently."""
 
+from collections.abc import Callable, Iterator
+
 import polars as pl
 
 class RefreshTime:
@@ -232,3 +234,68 @@ def gram_path_subsets(
     within: bool,
     signs: list[list[float]],
 ) -> list[list[list[_PathOut]]]: ...
+
+# `po.gbdt`'s native engine (python/polars_online/gbdt.py, docs/PLAN.md task
+# 242). `batches` returns a fresh iterator of frames for each pass; each
+# build returns the library's handle, which the caller owns, and its counts
+# and timings.
+class GbdtXgboost:
+    def __init__(self, path: str) -> None: ...
+    @property
+    def version(self) -> tuple[int, int, int]: ...
+    def matrix(
+        self,
+        batches: Callable[[], Iterator[pl.DataFrame]],
+        names: list[str],
+        kinds: list[str],
+        levels: list[int],
+        label: str,
+        weight: str | None,
+        max_bin: int,
+        threads: int,
+        sample_rows: int | None,
+        seed: int,
+        ref_handle: int | None,
+        read_ahead: int,
+        ipc: tuple[list[str], list[list[str] | None]] | None = None,
+    ) -> tuple[int, dict[str, float]]: ...
+
+class GbdtLightgbm:
+    def __init__(self, path: str, version: str) -> None: ...
+    @property
+    def has_arrow(self) -> bool: ...
+    def dataset(
+        self,
+        batches: Callable[[], Iterator[pl.DataFrame]],
+        names: list[str],
+        kinds: list[str],
+        levels: list[int],
+        label: str,
+        weight: str | None,
+        params: str,
+        threads: int,
+        rows: int,
+        in_memory: bool,
+        reference: int | None,
+        read_ahead: int,
+        ipc: tuple[list[str], list[list[str] | None]] | None = None,
+    ) -> tuple[int, dict[str, float]]: ...
+
+class GbdtSampler:
+    def __init__(
+        self,
+        names: list[str],
+        kinds: list[str],
+        levels: list[int],
+        label: str,
+        weight: str | None,
+        sample_rows: int,
+        seed: int,
+        threads: int,
+    ) -> None: ...
+    def push(self, df: pl.DataFrame) -> None: ...
+    @property
+    def rows_seen(self) -> int: ...
+    def ref_matrix(self, max_bin: int) -> tuple[bytes, int, int]: ...
+
+def gbdt_available_memory() -> int: ...

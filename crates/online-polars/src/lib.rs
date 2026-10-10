@@ -45,6 +45,7 @@ mod checks;
 mod column;
 mod defaults;
 mod formula;
+pub mod gbdt;
 pub mod gramfit;
 mod pool;
 mod refresh;

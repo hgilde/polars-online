@@ -68,8 +68,8 @@ class UnstableWarning(UserWarning):
     :meth:`polars_online.ModelBank.fit_predict_arrow`,
     :meth:`polars_online.ModelBank.predict_arrow` and
     :class:`polars_online.ArrowStruct`, and the modules
-    :mod:`polars_online.sim` and :mod:`polars_online.corr`. Everything else in
-    ``__all__`` is promised.
+    :mod:`polars_online.sim`, :mod:`polars_online.corr` and
+    :mod:`polars_online.gbdt`. Everything else in ``__all__`` is promised.
     """
 
 

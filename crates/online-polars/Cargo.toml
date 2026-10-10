@@ -34,6 +34,12 @@ polars-arrow = { version = "=0.55.2", default-features = false, features = ["io_
 polars-core = { version = "=0.55.2", default-features = false }
 polars-parquet = { version = "=0.55.2", default-features = false }
 polars-utils = "=0.55.2"
+# `po.gbdt` (docs/PLAN.md task 242): XGBoost's and LightGBM's shared
+# libraries opened at run time from the user's installed Python packages,
+# by path. A pure-Rust wrapper over `dlopen` / `LoadLibraryW`; it links
+# neither library (CLAUDE.md rule 12), and the user named it when deciding
+# the task.
+libloading = "0.9"
 rayon.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true

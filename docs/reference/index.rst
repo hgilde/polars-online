@@ -25,3 +25,4 @@ workflow, and performance. Install with ``pip install polars-online``.
    stream
    ops
    sim
+   gbdt

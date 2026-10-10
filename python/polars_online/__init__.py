@@ -40,6 +40,7 @@ from polars_online import (
     _frame,  # noqa: F401  (registers the frame namespaces)
     corr,
     eval,
+    gbdt,
     gram,
     ops,
     sim,
@@ -99,6 +100,7 @@ __all__ = [
     "corr",
     "eval",
     "fit_predict",
+    "gbdt",
     "gram",
     "native_version",
     "predict",
