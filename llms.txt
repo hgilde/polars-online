@@ -136,6 +136,10 @@ Windows alike.
   resolved by the bank's own window core and learned once its window has closed
   and the `embargo` (at least its `window_size` for `fit_predict`) has passed
 - [Simulation](https://hgilde.github.io/polars-online/sim.html)
+- [Training inputs for XGBoost and LightGBM](https://hgilde.github.io/polars-online/gbdt.html):
+  `po.gbdt.xgboost_matrix`, `po.gbdt.lightgbm_dataset` -- each library's own
+  `QuantileDMatrix` or `Dataset`, binned from Arrow IPC files, Parquet files or a query
+  in batches, so `xgb.train` and `lgb.train` run on data larger than memory (unstable)
 
 ## Guides
 

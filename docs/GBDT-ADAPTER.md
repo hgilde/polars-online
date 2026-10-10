@@ -1,7 +1,7 @@
 # Training LightGBM and XGBoost from Arrow files, as fast as they go
 
-**Status as of 2026-10-10: research for PLAN task 235, measured, with
-nothing built in the package and the decision left to the user.** The user stated
+**Status as of 2026-10-10: research for PLAN task 235, measured, and
+built in task 242 as `po.gbdt` (§7).** The user stated
 the goal the same day: "read from the arrow files and maximize training
 speed by dynamically constructing inputs as needed". Five ways to do that,
 options A to E, were built as prototypes outside the package and timed
@@ -455,16 +455,191 @@ handing over cuts (§4.1). LightGBM's forced bins: slower than its own
 sample, and they keep only 252 bounds (§3.2). A spill of the batches:
 slower than re-running a parquet query (§5).
 
-## 7. Reproducing the measurements
+## 7. Built (task 242)
 
-Neither library is a dependency of the package or of its dev group, so a
-run names both, at the versions measured. The script writes the data where
+**The recommendation is built as `po.gbdt`: `xgboost_matrix` returns an
+`xgboost.QuantileDMatrix` and `lightgbm_dataset` a constructed
+`lightgbm.Dataset`, so `xgb.train` and `lgb.train` run unchanged.** The user
+decided the shape on 2026-10-10 ("Build it before the docs"): the binned
+object handed to the library's own Python class, shape (b) of §6, prototyped
+first. Rust builds the native handle in `crates/online-polars/src/gbdt/`,
+and `crates/online-py/src/gbdt.rs` and `python/polars_online/gbdt.py` put it
+in front of Python. Each library is loaded from the user's own installed
+package by the path that package loaded it from (`libloading`), so nothing
+is linked and the package still depends on Polars alone.
+
+### 7.1 The hand-off
+
+**Both classes take a handle made outside them, and free it once.** A
+prototype took each library's own handle away from the object that made it,
+the state a handle built in Rust arrives in, and wrapped it again. Through
+`xgb.train` and `lgb.train`, with an evaluation set, early stopping and a
+callback, the wrapped objects grew the same trees as the originals and
+logged the same evaluations, and a counting wrapper on each library's free
+function saw every handle freed exactly once.
+
+| library | how the class takes the handle | what rests on the library's internals |
+|---|---|---|
+| XGBoost 3.4.1 | `xgb.QuantileDMatrix(ctypes.c_void_p(handle), max_bin=...)`, the constructor's own branch for a handle (it builds slices that way, `core.py:1524`); a validation matrix gets `.ref = weakref.ref(train)`, the check `xgb.train` makes (`training.py:178`) | the branch is public code but not documented |
+| LightGBM 4.7.0 | `lgb.Dataset(None, params=...)`, then `._handle` set; `construct()` returns at once, `__del__` frees it (`basic.py:1828`, `:2028`) | `_handle` is a private attribute; the build refuses by name a `Dataset` without it |
+
+**A LightGBM dataset built here is constructed, as any whose raw data is
+freed: training may not change a dataset parameter.** `lgb.train` passes its
+parameters through `LGBM_DatasetUpdateParamChecking`, which refuses a
+changed `max_bin`, `data_random_seed`, `min_data_in_bin` and the rest
+(`c_api.cpp:248`), as it refuses for LightGBM's own constructed dataset. So
+those parameters go to `lightgbm_dataset(params=...)`. The dataset records
+its categorical features under `categorical_column`, the key LightGBM's own
+`Dataset` records them under, so a user's own validation set built with
+`reference=train` raises no warning.
+
+### 7.2 What the component does
+
+| step | XGBoost | LightGBM |
+|---|---|---|
+| read | Arrow IPC files in Rust, a record batch at a time (polars-arrow's reader); Parquet and a `LazyFrame` through Polars' `collect_batches`, each frame's chunks joined into one on the reader thread; two batches ready ahead | the same |
+| bins | a bottom-k sample: the 200,000 rows of smallest SplitMix64 hash of their index, the same rows however the source is batched; edges at the sample's quantiles, or a bin per value for a feature of at most `max_bin` values; built into a dense `ref` | LightGBM's own: `LGBM_SampleIndices`, those rows gathered in the first pass, `LGBM_DatasetCreateFromSampledColumn` |
+| hand-over | each batch's columns as array interfaces on their Arrow buffers, the validity bitmap as the mask, into `XGQuantileDMatrixCreateFromCallback` | float32 rows built in parallel, `LGBM_DatasetPushRows`; or in memory, every batch as float32 Arrow, `LGBM_DatasetCreateFromArrowStream` |
+| categoricals | a `pl.Enum`'s codes, feature type `c`, its levels planted in the `ref` | a `pl.Enum`'s codes in `categorical_feature`, and any integer column named |
+| refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a library version outside the C API's range (XGBoost 2.0 to 4.0, LightGBM 4.0 to 5.0) | the same, and more than 2³¹ − 1 rows |
+
+**XGBoost places its cuts exactly where they are planted.** A `ref` column
+of `d <= max_bin` distinct values `u_0 < .. < u_{d-1}` comes back as the
+cuts `[-inf, u_1, .., u_{d-1}, u_{d-1} + |u_{d-1}| + 1e-5]` on 3.4.1, so
+the planted values are the edges; `tests/test_gbdt.py` holds every feature's
+cuts to the sample's definition. A category code missing from the `ref` is binned without an error,
+which is why a categorical feature must be a `pl.Enum`, whose levels are
+known before the data.
+
+**The Python engine grows the native engine's trees.** `engine="python"`
+feeds numpy batches to an `xgboost.DataIter`, with the `ref` built from the
+same sample by the same Rust code, and a `lightgbm.Sequence` that answers
+LightGBM's sample rows from a first pass. `engine="auto"` falls back to it,
+with a warning, when the native engine cannot load a library.
+
+### 7.3 Polars' read-ahead
+
+**`collect_batches` reads far ahead of its consumer, and on a source of 1 GB
+it held the whole source before the first batch arrived.** Polars' streaming
+engine prefetches row groups and files sized from its thread count, so a
+consumer that is slower than the reader, as a library is, sees it hold
+them:
+
+| source | consumer | peak growth |
+|---|---|---:|
+| 1.0 GB of Parquet, 50,000-row groups | nothing, `collect_batches` alone | 1.0 GB |
+| the same | the same, `POLARS_ROW_GROUP_PREFETCH_SIZE=2` | 0.39 GB |
+| 4.1 GB raw (1e7 × 50) of Parquet | nothing, a 30 ms pause a batch | 2.1 GB |
+| 1.0 GB of Arrow IPC | `xgboost_matrix`, the native reader | 0.46 GB |
+| the same, as `pl.scan_ipc` | `xgboost_matrix`, `collect_batches` | 2.1 GB |
+| 1.0 GB of Parquet | `xgboost_matrix`, prefetch 1 and 4 Polars threads | 0.74 GB |
+
+So the native engine reads Arrow IPC files itself, and the docstrings point
+a Parquet or query source at the README's "Tuning memory with Polars' own
+settings". py-polars 1.44.2 held as much as 2.0.0.
+
+**A frame from `collect_batches` arrives in several chunks, and joining
+them before the library is faster than handing the chunks over one by
+one.** Each chunk was a batch of its own for XGBoost, 378 on 1e7 × 50 where
+the IPC files give 132, and XGBoost's construction took 4.4 seconds against
+3.9 with the chunks joined on the reader thread, the copy overlapping
+XGBoost's work.
+
+### 7.4 Measurements
+
+**On 1e7 × 50, `po.gbdt` reaches XGBoost's first round as soon as the
+research driver did, and LightGBM's sooner than any route of §4.** The time
+before the first round and the peak footprint, median of three interleaved
+runs at a load of 4.5 to 10, 8 threads, from the Arrow IPC files of §4 and
+the same rows as one `LazyFrame` over them:
+
+| library | route | time before the first round, s | peak memory, GB | trees |
+|---|---|---:|---:|---|
+| XGBoost | `po.gbdt`, IPC files, native | **4.04** | 3.6 | P |
+| XGBoost | `po.gbdt`, `LazyFrame`, native | 4.18 | 7.2 | P |
+| XGBoost | `po.gbdt`, IPC files, Python engine | 5.46 | 7.1 | P |
+| XGBoost | `po.gbdt`, `sample_rows=None` | 7.97 | 3.6 | X |
+| XGBoost | research driver, cuts from a sample (D + C) | 4.13 | 2.8 | sample |
+| XGBoost | `DataIter`, Polars batches, cuts from 40 slices (C) | 4.64 | 6.9 | sample |
+| XGBoost | `collect()`, numpy (baseline) | 7.04 | 8.7 | X |
+| XGBoost | `DataIter`, Polars batches (B) | 8.71 | 4.8 | X |
+| LightGBM | `po.gbdt`, in memory, native | **1.45** | 2.9 | L32 |
+| LightGBM | `po.gbdt`, IPC files, native | 1.68 | 1.7 | L32 |
+| LightGBM | `po.gbdt`, `LazyFrame`, native | 1.72 | 4.8 | L32 |
+| LightGBM | `po.gbdt`, IPC files, Python engine | 2.22 | 4.6 | L32 |
+| LightGBM | research driver, float32 rows (D) | 1.83 | 1.2 | moved |
+| LightGBM | `collect()`, the Polars frame (baseline) | 1.54 | 8.9 | L |
+| LightGBM | `Sequence`, float64 rows (A) | 2.17 | 2.7 | L |
+
+X is XGBoost's own sketch, one hash for every route that let it sketch,
+`po.gbdt`'s included. P is one hash for every `po.gbdt` route with cuts from
+its sample, whichever source and engine. L32 is one hash for every
+`po.gbdt` LightGBM route, which the tests hold to LightGBM's own trees from
+a float32 array; L is LightGBM's own from float64, and the validation RMSE
+of the two is the same to five places at 10 rounds (1.618177 and 1.618181).
+P scored 1.638671 at 10 rounds against X's 1.636459, inside the spread a
+sample's seed gives (§4.5).
+
+**Beyond memory, on 1e8 × 50, the native engine is the fastest route for
+both libraries.** Single runs at a load of 6 to 14, from the 41 GB of Arrow
+IPC files, which no longer fit in the page cache. The `LazyFrame` waited
+11.7 seconds for Polars' batches, against 4.9 for the native reader's, and
+held 7.5 GB more:
+
+| library | route | time before the first round, s | peak memory, GB |
+|---|---|---:|---:|
+| XGBoost | `po.gbdt`, IPC files, native | **48.6** | 27.8 |
+| XGBoost | `po.gbdt`, `LazyFrame`, native | 58.4 | 35.3 |
+| XGBoost | `po.gbdt`, IPC files, Python engine | 72.3 | 34.6 |
+| XGBoost | research driver (D + C) | 51.9 | 27.6 |
+| XGBoost | `DataIter`, cuts from 40 slices (C) | 53.6 | 31.6 |
+| LightGBM | `po.gbdt`, IPC files, native | **18.8** | 6.9 |
+| LightGBM | `po.gbdt`, `LazyFrame`, native | 21.4 | 14.1 |
+| LightGBM | `po.gbdt`, IPC files, Python engine | 24.9 | 14.9 |
+| LightGBM | research driver, float32 rows (D) | 20.6 | 6.2 |
+| LightGBM | `Sequence`, float64 rows (A) | 24.6 | 9.8 |
+
+**`in_memory="auto"` takes LightGBM's Arrow route when the features as
+float32 take at most a quarter of the memory available.** On 1e7 × 50 that
+route was 14% sooner than the two passes, at a peak 1.4 times the float32
+data (2.9 GB for 2.0 GB). Both routes hand LightGBM the same float32 values,
+so the choice, which depends on the machine, never changes the trees.
+
+### 7.5 Tests and CI
+
+`tests/test_gbdt.py` holds each library's trees, by hash, to its own numpy
+route on the same bins (XGBoost on the same `ref`, and with
+`sample_rows=None` on its own sketch; LightGBM from a float32 array), and the
+sample's cuts to their definition, written from the docstring. It runs
+evaluation sets, early stopping and callbacks through `xgb.train` and
+`lgb.train`, a validation set on the training bins, categoricals, nulls,
+IPC, Parquet, a `LazyFrame` and a frame in many chunks to one hash, both
+engines to one hash, the refusals, each handle freed once, sixty builds
+without growth, and a 1 GB source built in a fraction of it.
+
+**The dev group names `xgboost` on macOS and `xgboost-cpu` elsewhere.**
+XGBoost's Linux wheel is 57 MB and requires `nvidia-nccl-cu13`, 305 MB more;
+`xgboost-cpu` is the same project's CPU-only build of the same module, 5.8 MB
+on Linux and 2.2 MB on Windows, with no macOS wheel, where `xgboost` is
+CPU-only already (2.4 MB). LightGBM's wheels are 1.4 to 3.5 MB.
+
+**On macOS both libraries load `@rpath/libomp.dylib` from Homebrew's
+prefix.** CI's macOS legs install it (`brew install libomp`). A machine
+without it, as this one is, loads scikit-learn's bundled copy under that
+name (`tests/_site/libomp.py`): a copy whose install name is rewritten and
+which is signed again, loaded globally before the libraries.
+
+## 8. Reproducing the measurements
+
+Both libraries are in the dev group since task 242, at the versions
+measured, so `uv run` has them. The `po-*` routes need the extension built
+(`maturin develop --release`). The script writes the data where
 it is told, under the gitignored `.cache/` here, and prints one JSON line
 per route. The Rust driver builds on its own, and the script finds it
 through `GBDT_DRIVER`:
 
 ```bash
-W="uv run --with xgboost==3.4.1 --with lightgbm==4.7.0 python scripts/gbdt_adapter.py"
+W="uv run python scripts/gbdt_adapter.py"
 $W generate .cache/gbdt/r1e7_f50 --rows 1e7 --features 50
 # the same rows as uncompressed Arrow IPC files, which the Rust driver reads
 $W to-ipc .cache/gbdt/r1e7_f50 .cache/gbdt/r1e7_f50_ipc
@@ -475,6 +650,10 @@ $W sweep .cache/gbdt/r1e7_f50_ipc xgb-numpy xgb-iter xgb-iter-ref rust-xgb-dense
     lgb-polars lgb-stream rust-lgb-f32 --rounds 50 --threads 8 --spill .cache/gbdt/spill
 # the sample's seed, for the spread of a route that bins from a sample
 $W sweep .cache/gbdt/r1e7_f50 xgb-replay-ref lgb-numpy --sample-seed 1 --spill .cache/gbdt/spill
+# §7: po.gbdt beside the research routes, interleaved, 10 rounds
+$W sweep .cache/gbdt/r1e7_f50_ipc po-xgb-native po-xgb-native-lazy po-xgb-python po-xgb-native-sketch \
+    rust-xgb-columnar-sample xgb-iter-ref po-lgb-native po-lgb-native-lazy po-lgb-native-memory \
+    po-lgb-python rust-lgb-f32 lgb-stream --rounds 10 --threads 8
 ```
 
 On macOS, both libraries' wheels load `@rpath/libomp.dylib`. Homebrew's
@@ -503,5 +682,8 @@ which the Rust driver needs too.
 | `rust-xgb-codes` | the t-digest's cuts, and every batch quantized in Rust to one-byte codes, which XGBoost bins one to one |
 | `rust-lgb-f64`, `rust-lgb-f32` | the Rust driver: LightGBM's own sample gathered in one pass, then each batch transposed to rows in parallel and pushed |
 | `rust-lgb-forced`, `rust-lgb-codes` | the same with the t-digest's cuts as forced bins (252 of them), or with every batch quantized to codes |
+| `po-xgb-native`, `po-lgb-native` | `po.gbdt` (§7) on the part files: the native engine, which reads Arrow IPC files itself; `po-lgb-native-memory` with `in_memory=True` |
+| `po-xgb-native-lazy`, `po-lgb-native-lazy` | the same on the parts as one `LazyFrame`, read through `collect_batches` |
+| `po-xgb-python`, `po-lgb-python` | `po.gbdt` with `engine="python"`; `po-xgb-native-sketch` with `sample_rows=None` |
 
 `--f32` casts the features to Float32 as the replays read them.

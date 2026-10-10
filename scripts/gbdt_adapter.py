@@ -3,16 +3,15 @@ the libraries' usual paths from Polars, Python iterators over Arrow batches,
 cuts placed outside the libraries, and the Rust driver in
 `scripts/gbdt_driver`, which reads the files and drives their C APIs.
 
-docs/GBDT-ADAPTER.md (PLAN task 235) is this script's output, read. Neither
-library is a dependency of the package or of its dev group, so a run names
-them, with the versions the document measured:
+docs/GBDT-ADAPTER.md (PLAN task 235) is this script's output, read. Both
+libraries are in the dev group since task 242 (XGBoost 3.4.1 and LightGBM
+4.7.0, the versions the document measured), whose `po-*` routes measure
+`po.gbdt` with the extension built:
 
-    uv run --with xgboost==3.4.1 --with lightgbm==4.7.0 python scripts/gbdt_adapter.py \\
-        generate .cache/gbdt/r1e7_f50 --rows 10000000 --features 50
-    uv run --with xgboost==3.4.1 --with lightgbm==4.7.0 python scripts/gbdt_adapter.py \\
-        to-ipc .cache/gbdt/r1e7_f50 .cache/gbdt/r1e7_f50_ipc
-    uv run --with xgboost==3.4.1 --with lightgbm==4.7.0 python scripts/gbdt_adapter.py \\
-        sweep .cache/gbdt/r1e7_f50_ipc xgb-iter rust-xgb-columnar-sample --rounds 50
+    uv run python scripts/gbdt_adapter.py generate .cache/gbdt/r1e7_f50 --rows 1e7 --features 50
+    uv run python scripts/gbdt_adapter.py to-ipc .cache/gbdt/r1e7_f50 .cache/gbdt/r1e7_f50_ipc
+    uv run python scripts/gbdt_adapter.py sweep .cache/gbdt/r1e7_f50_ipc \\
+        xgb-iter rust-xgb-columnar-sample po-xgb-native --rounds 50
 
 `run` measures one route in this process and prints one JSON line; `sweep`
 runs each route it is given in a fresh interpreter, so that each peak is
@@ -990,6 +989,69 @@ def route_rust(
     return out
 
 
+# --------------------------------------------------------------------------
+# po.gbdt, the built component (PLAN task 242)
+# --------------------------------------------------------------------------
+
+#: The routes through `po.gbdt`: the library, the engine, and its options.
+#: A route is handed the part files (which the native engine reads itself
+#: when they are Arrow IPC), or with `-lazy` the parts as one `LazyFrame`,
+#: read through `collect_batches`.
+PO_ROUTES = {
+    "po-xgb-native": ("xgb", "native", {}),
+    "po-xgb-native-lazy": ("xgb", "native", {}),
+    "po-xgb-python": ("xgb", "python", {}),
+    "po-xgb-native-sketch": ("xgb", "native", {"sample_rows": None}),
+    "po-lgb-native": ("lgb", "native", {"in_memory": False}),
+    "po-lgb-native-lazy": ("lgb", "native", {"in_memory": False}),
+    "po-lgb-native-memory": ("lgb", "native", {"in_memory": True}),
+    "po-lgb-python": ("lgb", "python", {"in_memory": False}),
+}
+
+
+def route_po(
+    name: str, data: Path, m: Meter, rounds: int, threads: int, spill: Path | None, f32: bool
+) -> dict:
+    """The package's own builder over the parts as one query, with the
+    research's training parameters, so its trees compare by hash."""
+    import polars_online as po
+
+    lib, engine, opts = PO_ROUTES[name]
+    feats = features_of(data)
+    lf = source(data) if name.endswith("-lazy") else _parts(data)[0]
+    # The library imported before the clock starts, as the other routes do.
+    import lightgbm as lgb
+    import xgboost as xgb
+
+    m.phase("bin")
+    if lib == "xgb":
+        d = po.gbdt.xgboost_matrix(
+            lf, label="y", features=feats, threads=threads, engine=engine, **opts
+        )
+        out: dict = {"cuts": _xgb_cuts(d), "native": dict(po.gbdt._LAST_STATS)}
+        m.phase("boost")
+        bst = xgb.train(_xgb_params(threads), d, num_boost_round=rounds)
+        m.phase("score")
+        out["valid_rmse"] = round(
+            _xgb_score(bst, pl.read_parquet(data / "valid.parquet"), feats), 6
+        )
+        out["trees"] = _xgb_trees(bst)
+        return out
+    params = _lgb_params(threads)
+    dataset = {k: params[k] for k in ("data_random_seed", "verbose")}
+    d = po.gbdt.lightgbm_dataset(
+        lf, label="y", features=feats, params=dataset, threads=threads, engine=engine, **opts
+    )
+    native = dict(po.gbdt._LAST_STATS)
+    m.phase("boost")
+    bst = lgb.train(params, d, num_boost_round=rounds)
+    m.phase("score")
+    out = {"valid_rmse": round(_lgb_score(bst, pl.read_parquet(data / "valid.parquet"), feats), 6)}
+    out["trees"] = _lgb_trees(bst)
+    out["native"] = native
+    return out
+
+
 ROUTES = [
     "source-pass",
     "xgb-numpy",
@@ -1012,6 +1074,7 @@ ROUTES = [
     "lgb-replay",
     "lgb-replay-spill",
     *RUST_ROUTES,
+    *PO_ROUTES,
 ]
 
 
@@ -1052,7 +1115,13 @@ def run(data: Path, name: str, rounds: int, threads: int, spill: Path | None, f3
     load0 = _load()
     m = Meter()
     t = time.perf_counter()
-    kinds = {"xgb": route_xgb, "lgb": route_lgb, "source": route_source, "rust": route_rust}
+    kinds = {
+        "xgb": route_xgb,
+        "lgb": route_lgb,
+        "source": route_source,
+        "rust": route_rust,
+        "po": route_po,
+    }
     fn = kinds[name.split("-")[0]]
     out = fn(name, data, m, rounds, threads, spill, f32)
     total = time.perf_counter() - t

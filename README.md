@@ -5100,6 +5100,40 @@ this operator over plain batches, so it runs without Pathway, which is not
 a dependency. Its sketch of the pipeline around the operator needs
 Pathway, installed under its own licence, and an input connector.
 
+### Training XGBoost and LightGBM: `po.gbdt`
+
+**`po.gbdt` builds XGBoost's and LightGBM's own training objects from Arrow
+IPC files, Parquet files or a query, so that `xgb.train` and `lgb.train` run
+on data that does not fit in memory.** Both libraries bin each feature
+before they boost, and binning reads every row. `po.gbdt` reads the rows in
+batches, in Rust, and hands each library a batch's Arrow buffers with no
+copy, a null by its validity bit. Each library is loaded from the package
+you installed, so polars-online still depends on Polars alone.
+This code uses the files `ticks.parquet` and `today.parquet` from
+[Example data](#example-data):
+
+```python
+import xgboost as xgb
+
+features = ["x0", "x1", "x2"]
+# an xgb.QuantileDMatrix; a list of files or a glob such as "train/part-*.arrow" works too
+train = po.gbdt.xgboost_matrix("ticks.parquet", label="y", features=features)
+# the rows that follow, binned on the training cuts
+valid = po.gbdt.xgboost_matrix("today.parquet", label="y", features=features, ref=train)
+booster = xgb.train({"tree_method": "hist", "max_bin": 256}, train, 50,
+                    evals=[(valid, "valid")], early_stopping_rounds=5, verbose_eval=False)
+```
+
+**XGBoost's cuts come from a uniform sample of 200,000 rows, which removes
+XGBoost's pass that sketches every row.** `sample_rows=None` keeps that
+pass, and with it XGBoost's own trees. `po.gbdt.lightgbm_dataset` returns a
+constructed `lgb.Dataset`, binned on LightGBM's own sample, and holds the
+data in memory only when it fits. On 10 million rows of 50 features, the
+first round began after 4.0 seconds for XGBoost, against 8.7 for its own
+iterator over Polars batches, and after 1.5 seconds for LightGBM.
+[GBDT-ADAPTER §7](docs/GBDT-ADAPTER.md#7-built-task-242) has the
+measurements, and the docstrings have every parameter.
+
 ## Versions, testing and development
 
 Here is what to pin when you install, what the test suite holds each
@@ -5131,7 +5165,7 @@ minor. An unstable part can change its form in any minor release:
 | | what it covers |
 |---|---|
 | **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags and exit status; and the environment variables the package reads |
-| **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim` and `po.corr`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
+| **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
 | **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io ([R3](docs/RELEASE-READINESS.md#r3--rust-crates-not-published)); and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
 
 **From 1.0, a changed default or meaning is a major release, and a fix to
