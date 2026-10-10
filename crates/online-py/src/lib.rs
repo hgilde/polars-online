@@ -225,11 +225,11 @@ fn busy(what: &str) -> PyErr {
 }
 
 /// One spec's output struct, handed to Python over the Arrow PyCapsule
-/// interface instead of as a pyo3-polars `PySeries`.
+/// interface instead of as a pyo3-polars ``PySeries``.
 ///
-/// A consumer -- `pl.Series`, pyarrow's `pa.array` -- calls
-/// `__arrow_c_array__` and takes ownership of the two C structs it returns.
-/// duckdb reads only `__arrow_c_stream__`, so it goes through `pl.Series`.
+/// A consumer -- ``pl.Series``, pyarrow's ``pa.array`` -- calls
+/// ``__arrow_c_array__`` and takes ownership of the two C structs it returns.
+/// duckdb reads only ``__arrow_c_stream__``, so it goes through ``pl.Series``.
 /// Exporting consumes the array, so a second call raises rather than hand
 /// out buffers that have already been given away.
 ///
@@ -1047,7 +1047,8 @@ fn resolved_defaults(spec_json: &str) -> PyResult<String> {
     serde_json::to_string(&resolved).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Version of the compiled extension, checked against the Python package version.
+/// The compiled extension's version, which matches ``polars_online.__version__``
+/// in a consistent install.
 #[pyfunction]
 fn native_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1090,7 +1091,9 @@ fn spec_clock_fields() -> (
     )
 }
 
-/// State-file schema version (see `online_core::SCHEMA_VERSION`).
+/// The state-file schema version this build writes.
+/// :meth:`polars_online.ModelBank.load` refuses a file written under a higher
+/// one.
 #[pyfunction]
 fn schema_version() -> u32 {
     online_core::SCHEMA_VERSION
@@ -1099,8 +1102,8 @@ fn schema_version() -> u32 {
 /// Size of the bank's thread pool.
 ///
 /// The pool is built at the first bank call from ``POLARS_ONLINE_MAX_THREADS``
-/// (unset: one thread per core) and never resized; this builds it if nothing
-/// has yet. Polars' own pool, ``POLARS_MAX_THREADS``, is separate --
+/// (unset or ``0``: one thread per core) and never resized; this builds it if
+/// nothing has yet. Polars' own pool, ``POLARS_MAX_THREADS``, is separate --
 /// ``pl.thread_pool_size()`` reports that one.
 ///
 /// Raises ``ValueError`` when the variable is set to anything but a
