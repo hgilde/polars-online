@@ -39,6 +39,7 @@ it by that number. Most are dated, and each reads as of its date.
 | [24. A wide `marginal` through the bank](#24-a-wide-marginal-through-the-bank-the-cost-that-was-not-the-models-task-124-2026-09-25) | a wide spec's call costs far more than its model | |
 | [25. A wide `marginal` split across the pool](#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25) | a wide `marginal` spec, and whether `shards` splits its flush | |
 | [27. `marginal`'s shared feature moments](#27-marginals-shared-feature-moments-e72-task-125-2026-09-29) | you keep many targets' pairs in one `marginal`, and want what `feature_moments="shared"` saves | |
+| [39. The state's traffic behind `marginal`'s slope](#39-the-states-traffic-behind-marginals-slope-task-127-2026-10-10) | you want what a loop order that keeps a wide `marginal`'s state in cache wins, and why E74's pair-major run was not built | |
 | **[Releases compared, and slowdowns bisected](#releases-compared-and-slowdowns-bisected)** | | |
 | [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
 | [28. The README's numbers, re-measured](#28-the-readmes-numbers-re-measured-2026-09-29) | you want the numbers the README quotes, the run they came from, and how much a run moves | [the benchmark](#the-benchmark) · [the Parallelism workloads](#the-parallelism-workloads) · [the wheel's size](#the-wheels-size) |
@@ -3626,6 +3627,180 @@ runs one contiguous pass per target and one for the feature. The second
 kept the one-target pass inside that larger function, where it ran at 1.7
 times `pair_kernel`'s time on the same work. In a function of its own that
 takes the mixes by value, as `pair_kernel` does, it runs level with it.
+
+### 39. The state's traffic behind `marginal`'s slope (task 127, 2026-10-10)
+
+*An Apple M4 Pro: ten performance cores with a 128 KB L1 data cache each,
+in two clusters of five that each share 16 MB of L2, and four efficiency
+cores. One thread unless a table says otherwise. Other jobs held up to
+nine cores throughout, at load averages of 4.5 to 18. So every figure is
+the best of interleaved rounds, and the two sides of every comparison ran
+in one sitting.*
+
+E74 asked for a chunk run pair-major. Its reason was that each row moves
+every pair's state in and out of cache, `p·T` pairs of it, for a few flops
+each ([MARGINAL-AT-WIDTH.md](records/MARGINAL-AT-WIDTH.md)). Task 124
+found that the cost per feature that does not grow with `T` is the
+stream's, not the model's (§24). This section measures what is left: how
+much of the model's cost per target is the state's traffic. **A seventh
+of it for the moments and a fifth with lags, and a loop order that keeps
+the state in registers does not win it back.** A loop order that keeps one
+target's slice in the L1 cache wins most of it.
+
+#### The model's slope and the stream's intercept
+
+`marg_bench` steps the model alone. `ModelBank.fit_predict`, with
+`POLARS_ONLINE_MAX_THREADS=1` and `ONLINE_TIMING=1`, runs the whole call.
+Its `process` section is the transpose into rows, the data summary and the
+model. At `p = 10,000`, in nanoseconds per feature per row, fitted over
+`T` = 3, 10 and 30 at 1,000 rows a call:
+
+| layout and lags | the model alone | the bank's `process` | the whole call |
+|---|---|---|---|
+| `"per_target"` | 0.09 + 0.584·T | 1.40 + 0.529·T | 5.07 + 0.512·T |
+| `"shared"` | 0.81 + 0.171·T | 1.94 + 0.167·T | 5.46 + 0.155·T |
+| `"per_target"`, `lags=[1, 2, 5]` | 0.52 + 2.429·T | 1.38 + 2.367·T | 4.96 + 2.367·T |
+| `"shared"`, `lags=[1, 2, 5]` | 2.31 + 1.617·T | 3.78 + 1.554·T | 7.31 + 1.549·T |
+
+**The slope is the model's, and the intercept is the stream's.** Through
+the bank the slope matches the model alone within a tenth. The model's own
+intercept under `"shared"` is the feature's moments, stepped once a row.
+The stream adds 1.1–1.5 ns per feature per row in `process`, the transpose
+and the data summary of §24, and 1–2 ns in `extract`, the casts. Outside
+the bank's sections each call costs about 20 ms at this width, 2 µs a
+column, whatever its row count. That is 1.8 ns per feature per row at
+1,000 rows a call and 0.5 at 4,000. The bank ran at load averages of 12 to
+15, the model alone at 4.5 to 8.4.
+
+Per pair and row, the slope holds from 100 features to 30,000. The model
+alone, best of six rounds of five runs, in nanoseconds:
+
+| layout | `p` | T = 1 | T = 3 | T = 10 | T = 30 |
+|---|---:|---:|---:|---:|---:|
+| `"per_target"` | 100 | 0.76 | 0.58 | 0.53 | 0.51 |
+| | 1,000 | 0.59 | 0.51 | 0.57 | 0.58 |
+| | 10,000 | 0.72 | 0.61 | 0.60 | 0.59 |
+| | 30,000 | 0.70 | 0.63 | 0.60 | 0.60 |
+| `"per_target"`, `lags=[1, 2, 5]` | 100 | 2.44 | 2.08 | 1.97 | 2.37 |
+| | 1,000 | 2.49 | 2.48 | 2.53 | 2.58 |
+| | 10,000 | 2.99 | 2.64 | 2.48 | 2.45 |
+| | 30,000 | 3.11 | 2.65 | 2.51 | 2.48 |
+| `"shared"` | 100 | 1.08 | 0.54 | 0.29 | 0.22 |
+| | 1,000 | 0.65 | 0.32 | 0.20 | 0.18 |
+| | 10,000 | 0.74 | 0.44 | 0.25 | 0.20 |
+| | 30,000 | 0.69 | 0.45 | 0.26 | 0.20 |
+| `"shared"`, `lags=[1, 2, 5]` | 100 | 4.08 | 2.25 | 1.58 | 1.59 |
+| | 1,000 | 3.20 | 2.07 | 1.62 | 1.48 |
+| | 10,000 | 3.84 | 2.43 | 1.87 | 1.69 |
+| | 30,000 | 3.94 | 2.46 | 1.87 | 1.69 |
+
+Under `"shared"` a pair's figure carries its feature's moments divided by
+`T`, so it falls as `T` grows. At `p = 100` the targets' own work, spread
+over a hundred features, lifts the one-target figures.
+
+#### The pair's state against the caches
+
+| layout | bytes a pair | bytes a feature | state at `p = 10,000`, T = 1 | T = 10 | T = 30 |
+|---|---:|---:|---:|---:|---:|
+| `"per_target"` | 32 | — | 0.32 MB | 3.2 MB | 9.6 MB |
+| `"per_target"`, 3 lags | 104 | 40, the ring | 1.0 MB | 10 MB | 31 MB |
+| `"shared"` | 8 | 24 | 0.32 MB | 1.0 MB | 2.6 MB |
+| `"shared"`, 3 lags | 56 | 88 | 1.0 MB | 6.1 MB | 17 MB |
+
+Every learned row reads and writes all of it once, beside the row's `8p`
+bytes of features. L1 holds the 32 bytes of 4,096 pairs. The table above
+shows the step between 3,000 pairs, which run at 0.49–0.53 ns, and 9,000,
+which run at 0.58. So every wide shape streams its state from L2 or memory
+on every row. `sysctl` does not report the size of the system-level cache.
+
+#### How much of the slope is the traffic
+
+**Resident against streamed: one step, at L1.** The same code runs at
+0.49–0.53 ns a pair with its state in L1, up to 3,000 pairs, where three
+or more targets share each row's features. At one target it takes
+0.59–0.60 ns even then, since each pair also reads its feature from memory
+afresh. Past 9,000 pairs, with the state streamed, it takes 0.57–0.61 ns.
+9.6 MB of state, inside L2, and 29 MB, past it, cost the same.
+
+| layout | resident (at most 104 KB) | streamed | the traffic's share |
+|---|---:|---:|---:|
+| `"per_target"` | 0.49–0.53 | 0.57–0.61 | about 14% |
+| `"per_target"`, 3 lags | 1.97–2.08 | 2.45–2.62 | about 20% |
+| `"shared"`, T = 30 | 0.17 | 0.20 | about 13% |
+
+**The process's own counters agree.** No hardware-counter tool runs here
+without root. `perf` does not exist on macOS, `kperf` refuses to configure
+its counters, `powermetrics` needs `sudo`, and `xctrace`'s CPU Counters
+template exports no counter table from the command line. The process's own
+fixed counters do run: `/usr/bin/time -l` prints its instructions retired
+and its cycles elapsed. Each figure below is a run of eleven passes less a
+run of one, per pair and row:
+
+| shape | state | cycles | instructions | per cycle |
+|---|---:|---:|---:|---:|
+| `"per_target"`, `p = 100`, T = 30 | 96 KB | 2.06 | 16.3 | 7.9 |
+| `"per_target"`, `p = 10,000`, T = 30 | 9.6 MB | 2.37 | 14.6 | 6.2 |
+| `"per_target"`, `p = 30,000`, T = 30 | 29 MB | 2.36 | 14.6 | 6.2 |
+| 3 lags, `p = 100`, T = 10 | 104 KB | 8.0 | 62.5 | 7.8 |
+| 3 lags, `p = 10,000`, T = 30 | 31 MB | 10.0 | 55.4 | 5.6 |
+
+**The floor is the arithmetic.** A copy of the pair loop, `pair_kernel`'s
+expressions compiled alone, is 25 instructions per two pairs: five vector
+loads, four stores, fourteen floating-point operations and two to loop.
+The core's four floating-point pipes take the fourteen in 3.5 cycles. So no
+loop order can step a pair in fewer than 1.75 cycles, whatever it does
+with the state. With the state in L1 the model takes 2.06 cycles, and
+streamed 2.37. At width a pair takes 0.60 ns: an order that keeps the
+state in L1 can win back 0.08 ns of it, and one that also kept it in
+registers could win at most 0.16.
+
+**A bandwidth floor says the same.** A probe that reads and writes four
+arrays and reads a fifth, with almost no arithmetic, moves one element in
+0.31 ns in L1. From 128 KB to 512 MB it takes 0.51–0.60 ns, about 120 GB/s,
+with no step at L2. Sizes between 4 and 8 MB ran slower in some rounds,
+while other jobs shared the cluster's L2. The copy of the pair loop takes
+0.46 ns in L1 and 0.53–0.64 beyond. Past L1, then, a pair runs at the rate
+one core moves its 72 bytes, from L2 or from memory alike.
+
+#### Three loop orders on the same arithmetic
+
+A probe stepped the copy of the pair loop over `p = 10,000` features in
+three orders. Each pair takes the same operations in the same order in
+all three, and the state's hash is the same in every one. The batch is 104
+rows, which is what `step_sharded` holds at this width, and each row is
+copied in as a held row is. In nanoseconds per pair and row, best of three
+rounds:
+
+| loop order | T = 1 | T = 10 | T = 30 |
+|---|---:|---:|---:|
+| row by row, every target in each row (today's `step`) | 0.62 | 0.61 | 0.61 |
+| one target × 2,048 features, the batch's rows inside | 0.65 | 0.52 | 0.51 |
+| 64 features × every target, the batch's rows inside | 0.75 | 0.54 | 0.53 |
+| registers: 16 features through the batch's rows (E74) | 0.75 | 0.58 | 0.57 |
+| registers: 4, 8 and 32 features | 1.28, 0.84, 0.72 | 1.11, 0.67, 0.62 | 1.14, 0.67, 0.59 |
+
+**E74's order is about 5% faster at best, and half as fast at its
+narrowest.**
+With the state in registers and the rows innermost, each row's update
+waits on the one before. A pair's mean feeds its deviation, which feeds
+its mean again, seven dependent operations a row. Sixteen features keep
+enough of those chains in flight to cover the wait, but their state then
+fills the registers, and thirty-two spill. **A tile that keeps one
+target's slice in L1 wins 16% at ten targets and more.** It wins 10% at
+three, and loses 5% at one, where copying each held row costs more than
+the traffic saved. A tile's shape matters: 256 features × 30 targets ran
+1.3 to 1.6 times as slow as row by row.
+
+#### Not built: a pair-major run for the unsplit model
+
+**Recommended: do not build E74's run.** The slope is about 85%
+arithmetic. A run with the state in registers is at best 5% faster, and
+twice as slow where it is narrow. A tile in L1 would take about 16% off
+the model's slope at ten targets and more. That is 9% of a call at
+10,000 features and ten targets, 14% at thirty, and a 5% loss at one. To
+have it, the unsplit `step` would hold rows as `step_sharded` does, with up
+to 8 MB of features a model while the bank runs it. It would also size its
+tile to this machine's 128 KB L1, where many x86 cores have 32 or 48 KB.
 
 ## Releases compared, and slowdowns bisected
 

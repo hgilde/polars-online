@@ -13,11 +13,16 @@
 //! per feature (0, none), `features` (8), `absent`, the percentage of rows
 //! each target but the first is absent on (0), `lags` as a comma list (none),
 //! `cross`, the cross lags as a comma list or `none` (every lag), `rows`
-//! (1,000,000), `runs` (25) and `moments`, `per_target` or `shared` (the
-//! feature moments' layout, docs/PLAN.md task 125). `-- targets=9 bins=16` is E71's shape (docs/PLAN.md task 122), and
-//! `-- targets=9 lags=1,2,5,10,20,50 cross=1` E70's (task 123). The last
-//! line is a checksum of every pair's numbers, so two builds that should
-//! agree to the bit can be seen to.
+//! (1,000,000), `runs` (25), `moments`, `per_target` or `shared` (the
+//! feature moments' layout, docs/PLAN.md task 125), and `shards`, a count of
+//! feature ranges that [`Marginal::step_sharded`] steps through each batch of
+//! held rows in turn on this thread (0, unsplit): the same arithmetic with
+//! a range's pairs kept in cache across the batch, which is how task 127
+//! measured the state's traffic (docs/PERFORMANCE.md §39). `-- targets=9
+//! bins=16` is E71's shape (docs/PLAN.md task 122), and `-- targets=9
+//! lags=1,2,5,10,20,50 cross=1` E70's (task 123). The last line is a
+//! checksum of every pair's numbers, so two builds, or two loop orders, that
+//! should agree to the bit can be seen to.
 use online_core::*;
 use std::time::Instant;
 
@@ -38,6 +43,7 @@ fn main() {
         .collect();
     let known = [
         "targets", "bins", "features", "absent", "lags", "cross", "rows", "runs", "moments",
+        "shards",
     ];
     if let Some((k, _)) = args.iter().find(|(k, _)| !known.contains(&k.as_str())) {
         panic!("unknown argument {k:?}; expected one of {known:?}");
@@ -60,6 +66,11 @@ fn main() {
         num("rows", 1_000_000),
         num("runs", 25),
     );
+    let n_shards = num("shards", 0);
+    let shards = Shards {
+        count: n_shards,
+        run: &run_in_order,
+    };
     let lags = get("lags").map_or_else(Vec::new, list);
     let cross_lags = get("cross").map(list);
     let mut seed = 12345u64;
@@ -107,13 +118,23 @@ fn main() {
         })
         .unwrap();
         let t0 = Instant::now();
-        for (i, (x, y)) in rows.iter().enumerate() {
-            OnlineModel::step(&mut m, x, y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        if n_shards > 1 {
+            for (i, (x, y)) in rows.iter().enumerate() {
+                m.step_sharded(x, y, if i == 0 { 0.0 } else { 1.0 }, 1.0, &shards);
+            }
+            m.flush(&shards);
+        } else {
+            for (i, (x, y)) in rows.iter().enumerate() {
+                OnlineModel::step(&mut m, x, y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
         }
         let el = t0.elapsed().as_secs_f64();
         best = best.min(el);
         std::hint::black_box(m.pair(0, 0));
         last = Some(m);
+    }
+    if n_shards > 1 {
+        println!("{n_shards} feature ranges, stepped in turn on one thread");
     }
     println!("{:.1} rows/s ({:.1} ms)", n_rows as f64 / best, best * 1e3);
     // FNV-1a over the bits of every number every pair reports.
