@@ -19,6 +19,7 @@
   ewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   ewm_var(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
   fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+  gbdt  # unstable
   gram
   increment(input: 'str | pl.Expr') -> 'pl.Expr'
   native_version()
@@ -1248,6 +1249,9 @@
     sums(df: 'pl.DataFrame', spec_name: 'str', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, weight: 'str | None' = None, binary: 'bool' = False) -> 'pl.DataFrame'
     unpack(df: 'pl.DataFrame', spec_name: 'str', *, spec: 'dict | None' = None, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame'
     window_metrics(df: 'pl.DataFrame', spec_name: 'str', *, clock: 'str', every: 'float | Duration', group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+  gbdt:  # unstable
+    lightgbm_dataset(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, categorical: 'Sequence[str] | None' = None, max_bin: 'int' = 255, params: 'dict[str, Any] | None' = None, reference: 'lightgbm.Dataset | None' = None, in_memory: "bool | Literal['auto']" = 'auto', threads: 'int | None' = None, engine: 'Engine' = 'auto') -> 'lightgbm.Dataset'
+    xgboost_matrix(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, max_bin: 'int' = 256, sample_rows: 'int | None' = 200000, ref: 'xgboost.DMatrix | None' = None, threads: 'int | None' = None, seed: 'int' = 0, engine: 'Engine' = 'auto') -> 'xgboost.QuantileDMatrix'
   gram:
     INTERCEPT
     coef_stats(g: 'dict[str, Any]', coef: 'Sequence[float]', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
