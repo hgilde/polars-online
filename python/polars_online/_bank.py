@@ -1028,7 +1028,9 @@ class ModelBank:
             ``restart_after_step_back`` restarted the stream.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
-            last row (docs/WARMUP-AND-CONVERGENCE.md). ``settled_frac`` is
+            last row (`docs/WARMUP-AND-CONVERGENCE.md
+            <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`__).
+            ``settled_frac`` is
             how full the decay window is: the fraction the next row's
             ``settled_frac`` reads, which under ``embargo`` counts the clock
             the held rows have covered too. ``error_inflation`` is the
@@ -2043,7 +2045,9 @@ class ModelBank:
 
         ``spec`` and ``group`` narrow the frame as in :meth:`summary`
         (``KeyError`` / ``IndexError`` for a spec the bank has not got). A
-        bank that has seen no rows has nothing to say: the frame is empty.
+        bank that has seen no rows has nothing to say: the frame is empty,
+        apart from ``not_checked`` for a spec with a Gram when numpy is not
+        installed.
         """
         from polars_online._check import check
 

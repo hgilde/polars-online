@@ -548,3 +548,9 @@ def test_without_numpy_the_gram_checks_say_they_did_not_run(monkeypatch):
     row = f.filter(code="not_checked").row(0, named=True)
     assert row["severity"] == "info"
     assert "polars-online[numpy]" in row["message"]
+    # The docstring (task 239): a bank that has seen no rows says nothing,
+    # apart from this finding for a spec with a Gram.
+    unfed = po.ModelBank(specs[:1]).check()
+    assert unfed["code"].to_list() == ["not_checked"]
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    assert po.ModelBank(specs[:1]).check().is_empty()
