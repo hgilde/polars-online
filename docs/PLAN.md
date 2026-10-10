@@ -9456,6 +9456,56 @@ tick, and that the series holding it up has a count near 1.
       pass rules of task 149), the math stated for every model (CLAUDE.md),
       and the Sphinx reference (`-W`, every page rendering); findings fixed
       where they have one answer, raised where they have options.
+- [ ] 240. **Pooling Grams within parts: block fixed effects** --
+      requested 2026-10-10 (the user: "file into the plan"). An option on
+      `po.gram.merge`, and on everything that merges parts internally
+      (`po.gram.solve_subsets`, `po.gram.lars_paths`), that pools the parts'
+      moments **within** parts: each part's co-moments about its own means,
+      averaged by its weight, **without** the between-part term
+      `(W_a W_b / W²) Δ Δ'`, e.g. `po.gram.merge(blocks, within=True)` and
+      `po.gram.solve_subsets(blocks, halves, path=..., within=True)`. For parts
+      `i` with weights `W_i`, co-moments `C_i`, each target's
+      `target_weights` `T_i`, cross-moments `X_i` and variances `V_i`:
+      `W = Σ W_i`, `C = Σ W_i C_i / W`; `T = Σ T_i`, `X = Σ T_i X_i / T`,
+      `V = Σ T_i V_i / T`; `n_kish = W² / Σ (W_i² / n_kish_i)`,
+      `target_n_kish = T² / Σ (T_i² / target_n_kish_i)`. The means have no
+      single meaning there (each part keeps its own): the result is the Gram
+      of the rows demeaned part by part -- a regression with part fixed
+      effects -- so `solve` gives the slopes and no intercept (or the
+      weighted grand mean as one, documented as such), and `coef_stats`'
+      degrees of freedom lose one per part. **Why:** a selection over weekly
+      Grams pools them (in halves for stability selection, whole for the
+      joint fit), and the exact union adds the spread between the weeks'
+      means; for a slow factor (an EWMA at a long half-life) the weekly
+      means of `x` and of the target wander, and a chance correlation of
+      the block means -- about ±0.2 over 19 weeks -- moves the pooled
+      correlation by a few thousandths, the size of a real one-second effect
+      (0.005-0.03). Pooling within weeks asks only how `x` and `y` move
+      together inside each week, which the per-week statistics ask too; the
+      between-week co-movement of levels is a different, much less
+      replicated question. Without it, the native `solve_subsets` and
+      `lars_paths` cannot serve such a selection (a Python loop over 100
+      halves x 10 targets x 11 runs stands in today). **Checks:**
+      `merge(parts, within=True)` against the Gram of the rows demeaned per
+      part, read into memory (co-moments, cross-moments and solves within
+      1e-12); one part equals `merge([part])`; parts with equal means equal
+      the union merge; `solve_subsets(..., within=True)` against a loop of
+      `merge(within=True)` and `solve`, as the union form is tested; a part
+      whose target is absent (`T_i = 0`) contributes to `C` and not to `X`,
+      `V` or `T`. GRAM.md (task 237) gains the theory (fixed effects, the
+      within estimator) and a recipe.
+- [ ] 241. **A sign per part on the target, under within-pooling** --
+      requested 2026-10-10, with task 240. A selection's null calibration
+      negates each block's target at random and reruns the whole selection,
+      to measure what the procedure selects where no effect keeps its sign
+      across blocks. Under within-pooling that is exact and cheap: each
+      part's target cross-moments `X_i` times `s_i = ±1`, nothing else
+      changes. An argument such as `po.gram.solve_subsets(blocks, halves,
+      path=..., within=True, target_signs=signs)` (`signs`: parts x draws)
+      lets the null runs go through the same native path. Under the union
+      merge a negated part also moves the between-part term, so it is
+      refused there, by name. Checks: against negating each part's target
+      rows and refitting; one draw of all +1 equals no signs.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
