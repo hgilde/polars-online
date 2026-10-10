@@ -332,6 +332,28 @@ def test_the_rows_schema_does_not_depend_on_activity():
     assert pl.concat([plain, active]).height == 10
 
 
+def test_the_block_truth_is_before_the_cycle_profile():
+    """Task 239: ``truth_blocks``' ``corr`` is the states' matrix, before
+    ``cycle_profile`` mixes it toward the identity, as its docstring now
+    says: a profile that leaves the off-diagonal at 0.64 on average reads
+    0.8 in the truth."""
+    out = sim.regimes(
+        3,
+        states=[0.8],
+        transition=[[1.0]],
+        n_blocks=1,
+        rows_per_block=400,
+        cycle_rows=4,
+        cycle_profile=[0.2, 1.0, 1.0, 1.0],
+        seed=6,
+    )
+    want = np.full((3, 3), 0.8)
+    np.fill_diagonal(want, 1.0)
+    assert np.allclose(out["truth_blocks"]["corr"][0].to_numpy(), want[np.triu_indices(3)])
+    text = " ".join((sim.regimes.__doc__ or "").split())
+    assert "before ``cycle_profile`` mixes them toward the identity" in text
+
+
 def test_the_byte_identity_promise_names_its_numpy_version():
     """Review round 4 (YB17): numpy's ``Generator`` makes no promise across
     versions ("No Compatibility Guarantee", its docstring), so the same seed

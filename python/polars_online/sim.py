@@ -2,16 +2,35 @@
 
 The detectors in this library (``deco``, ``hmm``, ``corrchange``, ``bocpd``)
 are claims about streams whose correlation structure changes. A claim like
-that can only be measured against data whose truth is known, and the truth has
-to include the awkward parts: series that report at their own times, levels
-observed with additive noise, autocorrelated increments, a scale that moves
-with the regime, a periodic pattern, and an activity clock. :func:`regimes`
-produces all of it from one seed, and hands back the truth beside the data.
+that can only be measured against data whose truth is known. :func:`regimes`
+produces such data from one seed, and hands back the truth beside it. The
+truth has to include the awkward parts of real streams, and each is a
+parameter:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - the awkward part
+     - the parameter
+   * - series that report at their own times
+     - ``async_rates``
+   * - levels observed with additive noise
+     - ``noise``
+   * - autocorrelated increments
+     - ``phi``
+   * - a scale that moves with the regime
+     - ``scale_state``
+   * - a periodic pattern in the correlation
+     - ``cycle_profile``, ``cycle_rows``
+   * - an activity clock
+     - ``activity``
 
 Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
 two calls with the same seed give byte-identical frames under one numpy
-version: numpy's ``Generator`` makes no promise across versions. numpy only;
-no scipy.
+version: numpy's ``Generator`` makes no promise across versions. Requires
+numpy, an optional extra of this package (``pip install
+polars-online[numpy]``), and nothing else.
 
 .. warning::
     This module is considered **unstable**: its keywords, its frames and the
@@ -175,8 +194,9 @@ def regimes(
     ``phi``
         The AR(1) coefficient per series (a scalar for all), ``|phi| < 1``.
     ``scale_state``
-        A scalar makes the noise scale rise with the state index; a list gives one
-        multiplier exponent per state.
+        The returns' scale per state, as the exponent of its multiplier
+        ``exp(scale_state * s_t)``. A scalar makes the scale rise with the
+        state index; a list gives one exponent per state.
     ``async_rates``
         Expected observations per row, per series: a row where series ``i``
         reported nothing carries ``null`` for ``x_i``. Last-observation sampling
@@ -204,13 +224,17 @@ def regimes(
 
     ``rows``
         What a consumer sees: ``entity``, ``t``, ``clock``, ``session``, the
-        levels ``x_1 .. x_m``, and ``activity``.
+        levels ``x_1 .. x_m`` (null where a series did not report), and
+        ``activity`` (null without ``activity``).
     ``truth_rows``
         Per row: ``t``, ``block``, ``state``, ``scale_mult`` and ``mix``, the
         interpolation fraction.
     ``truth_blocks``
         Per block: ``block``, ``state``, ``n_rows``, and ``corr``, the block's
-        true correlation matrix as ``vech``.
+        true correlation matrix as ``vech``, its upper triangle with the
+        diagonal, row by row. That matrix is the mean over the block's rows of
+        the states' matrices, before ``cycle_profile`` mixes them toward the
+        identity.
 
     .. code-block:: python
 
@@ -220,12 +244,19 @@ def regimes(
         )
         rows, truth = sim["rows"], sim["truth_blocks"]
 
-    ``ValueError`` for fewer than two series, a state that is not a correlation
-    matrix, a ``transition`` that is not row-stochastic or not ``K x K``,
-    ``durations`` that do not give one positive count per state, a ``design`` that
-    is neither, a ``phi`` outside ``(-1, 1)``, a ``cycle_profile`` of the wrong
-    length or outside ``(0, 1]``, an ``activity`` that is not two positive
-    numbers, and ``async_rates`` that are not ``m`` positive rates.
+    Raises ``ValueError`` for:
+
+    - fewer than two series, or ``n_blocks`` or ``rows_per_block`` below 1;
+    - a state that is not a correlation matrix;
+    - a ``transition`` that is not row-stochastic or not ``K x K``, and
+      ``durations`` that do not give one positive count per state;
+    - a ``design`` that is neither;
+    - a ``phi`` outside ``(-1, 1)``, or a ``phi`` or ``scale_state`` list of
+      the wrong length;
+    - a ``cycle_rows`` below 1, and a ``cycle_profile`` of the wrong length
+      or outside ``(0, 1]``;
+    - an ``activity`` that is not two positive numbers, and ``async_rates``
+      that are not ``m`` positive rates.
     """
     np = _np()
     if m < 2:
