@@ -248,14 +248,17 @@ def test_every_linear_model_takes_it(switch, build, extra):
 
 @pytest.mark.parametrize("switch", SWITCHES)
 def test_holt_takes_it(switch):
-    """`holt` has no features: the twin fits compare its level alone."""
+    """`holt` has no features: the twin fits compare its level alone. Its
+    trend at the level's half-life keeps readiness where the level's is:
+    at the default, four times it, the 900 rows would end before it."""
     _, fields = SWITCHES[switch]
     df = _frame()
+    kw = dict(targets=["y"], half_life=60.0, trend_half_life=60.0, **{switch: True})
     if switch in LEVERAGE:
         with pytest.raises(ValueError, match="needs a model that reads one row"):
-            po.spec.holt("m", targets=["y"], half_life=60.0, **{switch: True})
+            po.spec.holt("m", **kw)
         return
-    out = _run(df, po.spec.holt("m", targets=["y"], half_life=60.0, **{switch: True}))
+    out = _run(df, po.spec.holt("m", **kw))
     for f in fields:
         if f == "breusch_pagan_y":
             # No feature for a spread to move with.
