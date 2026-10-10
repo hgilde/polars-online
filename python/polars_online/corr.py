@@ -2,13 +2,34 @@
 
 :mod:`polars_online.gram`'s complement. Where that module solves and diagnoses
 a design matrix, this one takes a correlation matrix and does the arithmetic
-that comes after a pass: repair it to the nearest one that is a correlation
-matrix (:func:`nearest`), shrink it towards a structured target
-(:func:`shrink`), summarise it as an equicorrelation (:func:`equicorr`) or a
-block matrix (:func:`block_means`), place its eigenvalues against the
-Marchenko-Pastur edges (:func:`mp_edge`), score a forecast of it
-(:func:`loss`), undo the Epps attenuation (:func:`epps_invert`), and put a
-standard error on a single correlation (:func:`fisher_se`).
+that comes after a pass:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - kind
+     - the calls
+   * - read one
+     - :func:`matrix`, from an array, a Gram or a closed row
+   * - repair it
+     - :func:`nearest`, the nearest correlation matrix; :func:`shrink`,
+       towards a structured target
+   * - summarise it
+     - :func:`equicorr`, :func:`equicorr_row` and :func:`equicorr_loglik`
+       for one common correlation; :func:`block_means` and
+       :func:`from_blocks` for blocks; :func:`spectral` and
+       :func:`from_spectral` for the top eigenpairs; :func:`absorption`
+       and :func:`absorption_shift` for the share the top eigenvectors take
+   * - tell it from noise
+     - :func:`mp_edge` and :func:`mp_density`, the Marchenko-Pastur
+       edges and curve; :func:`signal_share` across blocks;
+       :func:`fisher_se` for one correlation, with :func:`to_z` and
+       :func:`from_z`
+   * - score a forecast of it
+     - :func:`loss`
+   * - undo the Epps attenuation
+     - :func:`epps_invert`
 
 Every function is a pure function of arrays. Where the input is a matrix it
 may equally be a mapping from :meth:`~polars_online.ModelBank.gram` or a row
@@ -69,8 +90,9 @@ __all__ = [
 
 #: Fisher's transform is infinite at ±1, and a degenerate block gives
 #: exactly that. Inputs are clipped here, so ``to_z(1.0)`` is about 7.25
-#: rather than ``inf``; the round trip through :func:`from_z` is then not
-#: quite the identity at the ends, which is the price of a finite number.
+#: rather than ``inf``. The round trip through :func:`from_z` is then not
+#: quite the identity at the ends: it gives back ``±Z_CLIP``, to rounding,
+#: for ``±1``.
 Z_CLIP = 1.0 - 1e-6
 
 
@@ -153,13 +175,15 @@ def nearest(
     infinity norm, the largest absolute row sum.
 
     Returns ``(X, dist, iters)``: the matrix, the weighted Frobenius distance
-    ``||W^1/2 (A - X) W^1/2||_F``, and the iterations taken. Convergence is linear
-    (a factor of about 3 an iteration on his own examples), so ``max_iter`` is a
-    safety net rather than a knob; reaching it returns the last iterate. The
-    result has an exactly unit diagonal and is PSD to ``tol``: the iteration
-    converges to the boundary of the cone, so the smallest eigenvalue can be a
-    small negative number of that order. Tighten ``tol`` if that matters; clipping
-    it here would break the diagonal again.
+    ``||W^1/2 (A - X) W^1/2||_F``, and the iterations taken. Convergence is
+    linear: the change fell by a factor of 2.4 an iteration on his 3 x 3
+    example and 2.7 on his 4 x 4, from ``tol=1e-4`` to ``1e-10``. So
+    ``tol`` sets the work, and ``max_iter`` only stops a run that would not
+    converge; reaching it returns the last iterate. The result has an exactly
+    unit diagonal and is PSD to ``tol``: the iteration converges to the
+    boundary of the cone, so the smallest eigenvalue can be a small negative
+    number of that order. Tighten ``tol`` if that matters; clipping it here
+    would break the diagonal again.
 
     .. code-block:: python
 
@@ -287,21 +311,25 @@ def shrink(
     ``pi`` and ``theta`` are fourth-moment sums, so they cannot be recovered from
     ``R`` and ``T``: pass ``x`` as the ``T x k`` sample the matrix came from (the
     standardised rows), or pass ``alpha`` yourself. One of the two is required.
-    ``x`` has to be the sample ``r`` is of: ``s_ij`` above is the plain covariance
-    of ``x``, and ``gamma`` compares the target with it, so an ``r`` that is some
-    other estimate of the same pairs (a decayed one out of a bank, say) makes
-    ``kappa`` a comparison of two different matrices. The intensity is still in
-    ``[0, 1]`` and the result still a shrunk matrix, but it is not the optimal
-    intensity for the ``r`` handed in; pass ``alpha`` yourself when the two cannot
-    be the same sample. ``x`` needs at least two rows.
+
+    **``x`` has to be the sample ``r`` is of.** ``s_ij`` above is the plain
+    covariance of ``x``, and ``gamma`` compares the target with it. So an ``r``
+    that is some other estimate of the same pairs (a decayed one out of a bank,
+    say) makes ``kappa`` a comparison of two different matrices. The intensity
+    is still in ``[0, 1]`` and the result still a shrunk matrix, but it is not
+    the optimal intensity for the ``r`` handed in. Pass ``alpha`` yourself when
+    the two cannot be the same sample. ``x`` needs at least two rows.
 
     Returns ``(shrunk, alpha)``. The result is positive definite whenever the
-    target is and ``alpha > 0``, which is the point: a sample correlation matrix
-    from fewer rows than columns is singular, and this is the cheapest honest
-    repair. :func:`nearest` is the other one, and they answer different questions:
-    shrinkage trades bias for variance, Higham's projection changes the matrix as
-    little as possible. ``ValueError`` for a target that is neither, for ``alpha``
-    outside ``[0, 1]``, and for ``x`` of the wrong shape.
+    target is and ``alpha > 0``. So it repairs a sample correlation matrix from
+    fewer rows than columns, which is singular, in one step. :func:`nearest` is
+    the other repair, and they answer different questions: shrinkage trades
+    bias for variance, Higham's projection changes the matrix as little as
+    possible.
+
+    ``ValueError`` for a target that is neither, for ``alpha`` outside ``[0,
+    1]``, for neither ``x`` nor ``alpha``, and for an ``x`` of the wrong shape
+    or with fewer than two rows.
     """
     np = _np()
     s = matrix(r)
@@ -467,10 +495,11 @@ shift = renamed_function("po.corr.shift", "po.corr.absorption_shift")
 
 
 def spectral(r: Any, k: int) -> tuple[Any, Any]:
-    """The top ``k`` eigenpairs, descending: ``(values, vectors)`` with ``vectors``
-    row-major ``k x n``, each signed so its largest-magnitude entry is positive --
-    the rule ``ew_cov``'s ``pca`` uses on a first refresh, so the two agree up to
-    that convention.
+    """The top ``k`` eigenpairs of an ``n x n`` matrix, descending: ``(values,
+    vectors)`` with ``vectors`` row-major ``k x n``, each signed so its
+    largest-magnitude entry is positive. That is the rule ``ew_cov``'s ``pca``
+    uses on a first refresh, so the two agree up to that convention. A ``k``
+    above ``n`` gives all ``n``.
     """
     np = _np()
     m = matrix(r)
@@ -590,6 +619,9 @@ def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
 def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
     """The Marchenko-Pastur density ``(Q / 2 pi sigma2) sqrt((lam_+ - lam) (lam -
     lam_-)) / lam``, zero outside the edges: the curve to draw a spectrum against.
+
+    ``Q``, ``lam_+`` and ``lam_-`` are :func:`mp_edge`'s, and so is the
+    ``ValueError``.
     """
     np = _np()
     lo, hi = mp_edge(n, m, sigma2)

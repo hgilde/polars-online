@@ -85,6 +85,19 @@ def test_nearest_reproduces_highams_four_by_four_and_its_iteration_count():
     assert iters == 19
 
 
+def test_nearest_converges_as_its_docstring_measures():
+    """Task 239: the docstring said "a factor of about 3 an iteration on his
+    own examples", unmeasured. From the iterations ``tol=1e-4`` and
+    ``1e-10`` take, the change falls by 2.4 an iteration on the 3 x 3 and
+    2.7 on the 4 x 4."""
+    doc = " ".join((corr.nearest.__doc__ or "").split())
+    for a, figure in ((HIGHAM_3, "2.4"), (HIGHAM_4, "2.7")):
+        first = corr.nearest(a, tol=1e-4)[2]
+        last = corr.nearest(a, tol=1e-10)[2]
+        assert f"{10 ** (6 / (last - first)):.1f}" == figure, (first, last)
+        assert f"factor of {figure}" in doc or f"and {figure} on" in doc, figure
+
+
 def test_nearest_obeys_highams_bounds():
     """Three consequences of his theorems, each a test."""
     # A diagonal matrix has nothing to repair but its scale.
