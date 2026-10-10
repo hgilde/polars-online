@@ -9448,8 +9448,10 @@ tick, and that the series holding it up has a count near 1.
       better name"; chose "Data quality"): `docs/DATA-ISSUES.md` is
       `docs/DATA-QUALITY.md`, its title "Data quality", its README section
       "Checking your data's quality"; `check()` and `audit` keep their names.
-- [ ] 239. **A review of every API doc** -- the user, 2026-10-10, after
-      task 238: every public docstring (the Python package, the builders in
+- [ ] 239. **A review of every API doc** -- the user, 2026-10-10; run
+      **before** task 238's rewrite (the user: "You can flip the api and
+      [docs] rewrite if that would be better"), so the guides are rewritten
+      on docstrings already checked, with 238's map drawn in parallel: every public docstring (the Python package, the builders in
       `_spec*.py`, `ModelBank`, `po.gram`, `po.eval`, `po.stream`, `po.corr`,
       `po.sim`, `ops`) read against the code (each parameter, default, unit,
       refusal and field it names), `docs/WRITING.md`'s rules (the docstring
