@@ -2058,3 +2058,34 @@ function = "TwinFit::gram"
 mutation = "replace * with /"
 line_has = "g[a + 1] = w * dev[a];"
 why = "as `replace * with +` here: the upper triangle is never read"
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace > with >="
+line_has = "if den > 0.0 && !knot.contains(&(j, s)) {"
+why = """at `1 − s a_j = 0` the step is `+inf`, never the smallest, or `0/0` \
+where the column's correlation is `λ` already; then `s a_j = 1` exactly, \
+so its other sign's step is `(λ + λ)/(1 + 1) = λ` exactly, which ends the \
+path rather than make an event, and the column has no step to take either \
+way (task 236)"""
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace < with <="
+line_has = "if best.is_none_or(|(least, _)| g < least) {"
+why = """the two signs' steps are one double only near `λ`: both steps `g` \
+satisfy `g (1 − a_j) = λ − c_j` and `g (1 + a_j) = λ + c_j`, which add to \
+`2g = 2λ`, so with each rounded once `g` is within `3 ε λ` of `λ`, past \
+`λ − TIE λ_max`, where the path ends whichever sign is kept. Both clamped \
+to 0 would need `λ − c_j ≤ 0` and `λ + c_j ≤ 0`, so `λ ≤ 0`, which the \
+loop never holds (task 236)"""
+
+[[equivalent]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::anchor"
+mutation = "replace * with /"
+line_has = ".map(|p| d[self.cols[p]] - lambda * self.signs[p])"
+why = """a sign is 1.0 or -1.0, and `λ / ±1` is `λ · ±1` to the bit \
+(task 236)"""

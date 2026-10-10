@@ -358,3 +358,34 @@ where a product's pieces need not be the single call's \
 (`crate::pieces`), at most in the last bits: \
 `the_cut_factor_is_faers_own_on_every_architecture` holds the cut \
 within 1e-13 of faer's at 65 and 129"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::settle"
+mutation = "replace < with <="
+line_has = "Some(pos) => s * delta[pos] < -TIE * size,"
+kind = "tie"
+why = """the two part only where a tied column's velocity `s_j δ_j` is \
+exactly `−TIE` times the direction's largest, a computed value landing on \
+the tolerance to the bit; on 6,194 designs of task 236, 3,000 of them with \
+every column tied, no path differed"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::settle"
+mutation = "replace < with <="
+line_has = "None => usable[j] && s * a[j] < 1.0 - TIE,"
+kind = "tie"
+why = """the two part only where a column left out has `s_j a_j` exactly \
+`1 − TIE`, a computed speed landing on the tolerance to the bit; on the \
+same 6,194 designs no path differed"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Factor::push"
+mutation = "replace > with >="
+line_has = "if pivot > floor {"
+kind = "tie"
+why = """the two part only at a pivot exactly `1e-12` of its diagonal, \
+which no input built from data lands on to the bit; on the same 6,194 \
+designs, the wide ones setting columns aside, no path differed"""
