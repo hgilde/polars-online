@@ -999,26 +999,39 @@ def lars_path(
     stopped 0.48 from a knot in the intercept, at an objective above the
     knot's.
 
+    Columns that tie change at one knot. A knot is a penalty at which the
+    active set changes. Where several columns reach the active correlation
+    at once, as two with equal ``|d_j|`` do on an orthogonal design, they
+    are settled together at that one knot. A tie is read to within
+    rounding: steps within 64 ulps of ``l_max`` of the smallest are one
+    knot, since ``l`` is computed to about that. The lasso decides which
+    tied columns enter. One whose slope the direction with it would move
+    against its sign stays out, and can enter further down. scikit-learn
+    1.9.1's ``lars_path_gram`` takes tied columns one at a time and ends
+    off least squares: on an identity Gram with ``d = [1, 1]``, at
+    ``[2, 1]``, where least squares is ``[1, 1]``.
+
     A selection reads only the start of a path, and a step costs
     ``O(k |A|)``, so stop it early: after ``max_steps`` knots past the
-    first, or at the knot where ``max_active`` columns are active. A column
+    first, or at the first knot where ``max_active`` columns or more are
+    active, more than ``max_active`` where columns tie there. A column
     that is constant on the Gram's rows never enters. A column that would
     enter collinear with the active set is set aside, since it adds no
     direction: its pivot in the factor of ``R_AA`` is below ``1e-12`` of
     its variance. It takes no step and makes no knot, so each knot but the
-    last at ``l = 0`` is a column entering or leaving. Ties go to the
-    column first in ``features``, which is the Gram's ``columns`` order
-    when ``features`` is ``None``. Measured on
-    an M4 Pro, a path takes 9 microseconds whole at 15 columns, and 0.2 ms
-    for 40 knots at 200 columns or 3 ms at 2,000.
+    last at ``l = 0`` is one column or more entering or leaving. Measured
+    on an M4 Pro, a path takes 9 microseconds whole at 15 columns, and
+    0.2 ms for 40 knots at 200 columns or 3 ms at 2,000.
 
     .. rubric:: Parameters
 
     ``target``, ``features``
         As for :func:`solve`.
     ``max_steps``, ``max_active``
-        Where to stop: knots past the first, and columns active at once.
-        ``None`` is no limit, and the path runs to ``l = 0``.
+        Where to stop: after this many knots past the first, each its own
+        penalty however many columns change at it; and at the first knot
+        with this many columns active or more. ``None`` is no limit, and
+        the path runs to ``l = 0``.
     ``penalty_weights``
         A scale ``w_j`` on the penalty per feature, as for
         :func:`lasso_path`, but each finite and above 0. A weight of 0
@@ -1038,11 +1051,13 @@ def lars_path(
         recovered, as a row of :func:`lasso_path`.
     ``active``
         The active set below each knot, by name, in the order its columns
-        entered. A column entering at a knot is in that knot's set with its
-        coefficient still 0, growing from there; one leaving is out of it.
-        So the first knot's set holds the first column to enter, and a
-        knot's nonzero coefficients are the set before it, less any column
-        leaving at it.
+        entered, those entering at one knot in ``features`` order. A column
+        entering at a knot is in that knot's set with its coefficient still
+        0, growing from there; one leaving is out of it. So the first
+        knot's set holds the first columns to enter, one unless several
+        tie, and a knot's nonzero coefficients are the set before it, less
+        any column leaving at it. The one exception is a tie that turns a
+        slope back as it reaches 0, which stays in the set at 0.
     ``stop``
         ``"max_steps"``, ``"max_active"``, or ``"end"``: ``l`` reached 0,
         or no column can enter.
@@ -1054,7 +1069,7 @@ def lars_path(
         bank.fit_predict(df)
         g = bank.gram("ridge")[0]
         path = po.gram.lars_path(g, target="y", max_active=1)
-        first = path["active"][-1]              # [the column that enters first]
+        first = path["active"][-1]              # [the first column to enter, and any that tie it]
 
     ``ValueError`` for a limit that is not a whole number of at least 1, and
     for ``penalty_weights`` of the wrong length or not finite and above 0.

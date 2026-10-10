@@ -11,10 +11,10 @@
 //!
 //! and its solution is piecewise linear in `λ`. LARS walks the pieces from
 //! `λ_max = max_j |d_j|`, where every coefficient is 0, down: the knots are
-//! where a column enters the active set `A` or, under the lasso
-//! modification, leaves it. Between knots the correlations `c = d − Rb` of
-//! the active columns stay equal in size, `|c_j| = λ`, with the signs
-//! `s_j = sign(c_j)` they entered with, and
+//! the penalties where the active set `A` changes, as columns enter it or,
+//! under the lasso modification, leave it. Between knots the correlations
+//! `c = d − Rb` of the active columns stay equal in size, `|c_j| = λ`, with
+//! the signs `s_j = sign(c_j)` they entered with, and
 //!
 //! ```text
 //! δ_A = (R_AA)⁻¹ s_A                  the direction, in the active coefficients
@@ -22,13 +22,53 @@
 //! b_A ← b_A + γ δ_A,  λ ← λ − γ,  c ← c − γ a
 //! ```
 //!
-//! with `γ` the first of: a column `j` outside `A` reaching the active
-//! correlation, `γ⁺ = min⁺{(λ − c_j)/(1 − a_j), (λ + c_j)/(1 + a_j)}`; an
-//! active coefficient reaching 0, `γ⁻ = min⁺{−b_j/δ_j}`, where that column
-//! leaves (the lasso modification); or `λ` reaching 0, where the path ends
-//! at the least-squares fit on `A`. `min⁺` is the least strictly positive
-//! value. `c` is formed afresh from `b` at each knot rather than stepped by
-//! `γ a`, so rounding does not build up along the path.
+//! with `γ` the smallest of: a column `j` outside `A` reaching the active
+//! correlation with a sign `s`, `γ⁺ = (λ − s c_j)/(1 − s a_j)` where
+//! `1 − s a_j > 0`; an active coefficient reaching 0, `γ⁻ = −b_j/δ_j` where
+//! `s_j δ_j < 0`, at which that column leaves (the lasso modification); or
+//! `λ` reaching 0, where the path ends at the least-squares fit on `A`. `c`
+//! is formed afresh from `b` at each knot rather than stepped by `γ a`, so
+//! rounding does not build up along the path.
+//!
+//! **Ties are read to within rounding.** Every column whose step is within
+//! `TIE · λ_max` of the smallest, with [`TIE`] 64 ulps, changes at that one
+//! knot. `λ_max` bounds every penalty and correlation on the path, and `λ`
+//! is `λ_max` less the steps taken, so it carries an error of a few ulps of
+//! `λ_max`: two steps closer than that are one penalty. The first knot takes
+//! every column whose `|d_j|` is that close to `λ_max`. A step within the
+//! tolerance of 0 belongs to the knot just made, which its column joins.
+//! A step below 0 counts as 0: a symmetry that ties two columns exactly
+//! once left the second's step at `−2.8e-17`, since `λ` is carried by
+//! subtraction and `c` formed afresh, and a test for a positive step passed
+//! the column over for good. On designs without ties the closest two
+//! knots were 3.9e5 ulps apart, and the path is the one it was before
+//! ties were read, to the bit.
+//!
+//! **The lasso decides which tied columns are active below a knot.** A
+//! column whose coefficient is 0 at the knot is in if the direction moves
+//! it with its sign, `s_j δ_j > 0`, and out if its correlation then falls
+//! at least as fast as `λ`, `s_j a_j ≥ 1`. With one column changing, the
+//! block inverse gives `δ_j = (s_j − a_j)/p` for a pivot `p > 0`, where
+//! `a_j` is read without it: a column whose step was positive moves with
+//! its sign, and one whose coefficient crossed 0 stays out. So it enters,
+//! or leaves. With several the choice is a linear complementarity problem,
+//! solved by Murty's least-index principal pivoting (1974, "Note on a
+//! Bard-type scheme for solving the complementarity problem"), which is
+//! finite on a positive definite `R_AA`. All columns tied in correlation
+//! do not always enter: on `R = 0.6 I + (−0.4) 11ᵀ` and `d = [1, 1, −1]`
+//! all three tie at `λ = 1`, and the direction with all three moves column
+//! 2 against its sign. A tied column left out sits at the active
+//! correlation, so it may enter on the next step only with the other sign:
+//! its step with its own sign is 0, which rounding can make positive.
+//!
+//! **At a knot where several columns change, the columns that stay are
+//! solved afresh.** Steps up to `TIE · λ_max` apart are taken as one, so a
+//! column leaving there is set to 0 from up to `TIE · λ_max · |δ_j|` short
+//! of it, and `|δ_j|` is large where the active set is nearly collinear
+//! (1.6e7 in a test). Solving `b_S = (R_SS)⁻¹ (d_S − λ s_S)` for the columns
+//! `S` that stay leaves the conditions off by `TIE · λ_max · |1 − s_j a_j|`
+//! at most, since the pivot times `δ_j` is `1 − s_j a_j`. A column that
+//! enters a hair short of the active correlation stays that far off it.
 //!
 //! Only the active columns' rows of `R` are read -- `a` and `c` are sums
 //! over them -- so a row is formed when its column first enters
@@ -38,11 +78,19 @@
 //!
 //! A column that would enter collinear with the active set (its pivot in
 //! the factor below `1e-12` of its diagonal) is set aside instead: it adds
-//! no direction, and its correlation, equal to the active one, would make
-//! it the next to enter again at a step of 0. A column that has just left
-//! sits at the active correlation with the sign it had, so on the next step
-//! it may enter only with the other sign: the root with its own sign is a
-//! step of 0, which rounding can make `1e-17`.
+//! no direction, and its correlation, equal to the active one, would tie
+//! every knot after. A duplicate of an active column is one.
+
+/// Steps within `TIE · λ_max` of each other are one knot, and a step within
+/// it of 0 is the knot just made (the module doc). 64 ulps, measured in
+/// units of `ε λ_max` (docs/PLAN.md task 236): on Grams whose ties are
+/// exact as stored, the path's own arithmetic parted tied steps by 31 at
+/// most, and the closest two knots of designs without ties were 3.9e5
+/// apart. Ties exact only before a Gram's own rounding, as in columns
+/// standardized from rows in other orders, came out 1,925 apart at most,
+/// 95% within 64. A tie past the tolerance is two knots a hair apart, which
+/// is the path of the Gram as it is stored.
+pub(super) const TIE: f64 = 64.0 * f64::EPSILON;
 
 /// Rows of a `k × k` symmetric matrix `R`, formed on request: a path reads
 /// only its active columns' rows, so `R` need never be formed whole.
@@ -75,7 +123,7 @@ impl CorrRows for DenseRows<'_> {
 pub enum LarsStop {
     /// After `max_steps` knots past the first.
     MaxSteps,
-    /// At the knot where `max_active` columns were active.
+    /// At the first knot where `max_active` columns or more were active.
     MaxActive,
     /// At `λ = 0`, the least-squares fit on the active set, or with every
     /// column that can enter active.
@@ -85,9 +133,11 @@ pub enum LarsStop {
 /// When to stop a path early; `None` is no limit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LarsLimits {
-    /// Knots past the first, each one column entering or leaving.
+    /// Knots past the first, each a penalty of its own, at which one column
+    /// or several (at a tie) enter or leave.
     pub max_steps: Option<usize>,
-    /// Columns active at once.
+    /// Columns active at once: the path stops at the first knot with this
+    /// many or more, more where columns tie there.
     pub max_active: Option<usize>,
 }
 
@@ -100,17 +150,21 @@ pub struct LarsPath {
     /// of `R` and `d`.
     pub coefs: Vec<f64>,
     /// The active set on the stretch of the path below each knot, in the
-    /// order its columns entered. A column entering at a knot is in its set
-    /// with a coefficient still 0 there, which grows from it; one leaving is
-    /// out of it, at 0. So a knot's coefficients are nonzero on the set
-    /// before it, less the one leaving, and the last knot's on its own.
+    /// order its columns entered, those entering at one knot in column
+    /// order. A column entering at a knot is in its set with a coefficient
+    /// still 0 there, which grows from it; one leaving is out of it, at 0.
+    /// So a knot's coefficients are nonzero on the set before it, less the
+    /// columns leaving, and the last knot's on its own. The one exception
+    /// is a tie that turns a coefficient back as it reaches 0: it stays in
+    /// the set, at 0 at the knot.
     pub active: Vec<Vec<usize>>,
     pub stop: LarsStop,
 }
 
 /// The lasso path of `f(b)` above, for `R` row-major `k × k` (symmetric)
-/// and `d` of length `k`. A column with `live[j]` false never enters. Ties
-/// between columns go to the lower index.
+/// and `d` of length `k`. A column with `live[j]` false never enters, nor
+/// one whose `d_j` is not finite. Columns that tie enter or leave at one
+/// knot (the module doc).
 pub fn lars_lasso(r: &[f64], d: &[f64], live: &[bool], limits: LarsLimits) -> LarsPath {
     lars_lasso_rows(&DenseRows { r, k: d.len() }, d, live, limits)
 }
@@ -133,24 +187,33 @@ pub fn lars_lasso_rows(
     };
     let mut b = vec![0.0; k];
     let mut c = d.to_vec();
-    let mut usable: Vec<bool> = live.to_vec();
-    // The first knot: λ_max, every coefficient 0, and the column with the
-    // largest correlation about to enter.
-    let Some(first) = argmax_abs(&c, &usable) else {
-        path.record(0.0, &b, &[]);
-        return path;
-    };
-    let mut lambda = c[first].abs();
-    if lambda <= 0.0 {
+    // A correlation that is not finite has no step to compare: an infinite
+    // one would make λ_max infinite and every step's tolerance NaN.
+    let mut usable: Vec<bool> = (0..k).map(|j| live[j] && d[j].is_finite()).collect();
+    // The first knot: λ_max, every coefficient 0.
+    let lambda_max = (0..k)
+        .filter(|&j| usable[j])
+        .fold(0.0f64, |m, j| m.max(c[j].abs()));
+    if lambda_max <= 0.0 {
         path.record(0.0, &b, &[]);
         return path;
     }
+    let tie = TIE * lambda_max;
+    let mut lambda = lambda_max;
     let mut state = Active::new(k);
-    // A column alone is collinear with nothing: its pivot is its diagonal,
-    // and a live column's is above 0.
-    if !state.enter(rows, first, c[first].signum()) {
-        usable[first] = false;
-    }
+    let mut a = vec![0.0; k];
+    // Every column within `tie` of λ_max enters there. A column alone is
+    // collinear with nothing (its pivot is its diagonal, above 0 for a live
+    // column), so the first of them does.
+    let tied: Vec<(usize, f64)> = (0..k)
+        .filter(|&j| usable[j] && lambda - c[j].abs() <= tie)
+        .map(|j| (j, c[j].signum()))
+        .collect();
+    // The columns at 0 and at the active correlation at the current knot,
+    // each with its sign: those that entered or left there, and those the
+    // lasso left out.
+    let mut knot = state.admit(rows, &tied, &mut usable);
+    state.settle(rows, &knot, &mut usable, &mut a);
     path.record(lambda, &b, &state.cols);
     if limits.max_active.is_some_and(|m| state.cols.len() >= m) {
         path.stop = LarsStop::MaxActive;
@@ -158,8 +221,6 @@ pub fn lars_lasso_rows(
     }
 
     let mut steps = 0usize;
-    let mut a = vec![0.0; k];
-    let mut just_left: Option<(usize, f64)> = None;
     loop {
         if limits.max_steps.is_some_and(|m| steps >= m) {
             path.stop = LarsStop::MaxSteps;
@@ -173,62 +234,110 @@ pub fn lars_lasso_rows(
         let delta = state.factor.solve(&state.signs);
         // How fast each column's correlation falls along the direction.
         state.combine(&delta, &mut a);
-        // The first column outside A to reach the active correlation.
-        let mut gamma = lambda;
-        let mut enter: Option<(usize, f64)> = None;
-        for j in 0..k {
+        // A column outside A: its step to the active correlation, with the
+        // sign it would enter with. A step below 0 is a tie that rounding
+        // put past the knot, and counts as 0. One the knot left out sits at
+        // the active correlation with its sign, a step of 0 that rounding
+        // could make positive, so with that sign it is passed over.
+        let entry = |j: usize| -> Option<(f64, f64)> {
             if !usable[j] || state.is_in[j] {
-                continue;
+                return None;
             }
-            for (g, s) in [
-                ((lambda - c[j]) / (1.0 - a[j]), 1.0),
-                ((lambda + c[j]) / (1.0 + a[j]), -1.0),
-            ] {
-                if just_left == Some((j, s)) {
-                    continue;
-                }
-                if g > 0.0 && g < gamma {
-                    gamma = g;
-                    enter = Some((j, s));
+            let mut best: Option<(f64, f64)> = None;
+            for s in [1.0, -1.0] {
+                let den = 1.0 - s * a[j];
+                if den > 0.0 && !knot.contains(&(j, s)) {
+                    let g = (lambda - s * c[j]).max(0.0) / den;
+                    if best.is_none_or(|(least, _)| g < least) {
+                        best = Some((g, s));
+                    }
                 }
             }
-        }
-        // The first active coefficient to reach 0 (the lasso modification).
-        let mut leave: Option<usize> = None;
-        for (pos, (&i, &di)) in state.cols.iter().zip(&delta).enumerate() {
-            let g = -b[i] / di;
-            if g > 0.0 && g < gamma {
-                gamma = g;
-                leave = Some(pos);
-                enter = None;
+            best
+        };
+        // An active coefficient: its step to 0, if it moves toward 0. One at
+        // 0 was settled in at this knot; one past 0 by rounding is at 0
+        // already.
+        let leave = |pos: usize| -> Option<f64> {
+            let s = state.signs[pos];
+            let (size, toward) = (s * b[state.cols[pos]], s * delta[pos]);
+            (toward < 0.0 && size != 0.0).then(|| size.max(0.0) / -toward)
+        };
+        let mut gamma = f64::INFINITY;
+        for j in 0..k {
+            if let Some((g, _)) = entry(j) {
+                gamma = gamma.min(g);
             }
         }
-        // A column collinear with the active set adds no direction: it is
-        // set aside before the path moves, and the step is found again
-        // without it. Its pivot reads the active set alone, not `b`, so
-        // the test needs no step; taking the step first made a knot where
-        // nothing entered or left (review 6, E-5).
-        let moving = state.cols.len();
-        if let Some((j, s)) = enter
-            && !state.enter(rows, j, s)
-        {
-            usable[j] = false;
-            continue;
+        for pos in 0..state.cols.len() {
+            if let Some(g) = leave(pos) {
+                gamma = gamma.min(g);
+            }
         }
-        for (&i, &di) in state.cols[..moving].iter().zip(&delta) {
-            b[i] += gamma * di;
-        }
-        lambda -= gamma;
-        steps += 1;
-        just_left = None;
-        if let Some(pos) = leave {
-            let (i, s) = state.leave(pos);
-            b[i] = 0.0;
-            just_left = Some((i, s));
-        } else if enter.is_none() {
-            // λ reached 0: the least-squares fit on A, the path's end.
+        if gamma >= lambda - tie {
+            // λ reaches 0 first: the least-squares fit on A, the path's end.
+            for (&i, &di) in state.cols.iter().zip(&delta) {
+                b[i] += lambda * di;
+            }
             path.record(0.0, &b, &state.cols);
             return path;
+        }
+        // Every step within `tie` of the smallest is at one knot.
+        let mut entering = Vec::new();
+        for j in 0..k {
+            if let Some((g, s)) = entry(j)
+                && g <= gamma + tie
+            {
+                entering.push((j, s));
+            }
+        }
+        let leaving: Vec<usize> = (0..state.cols.len())
+            .filter(|&pos| leave(pos).is_some_and(|g| g <= gamma + tie))
+            .collect();
+        // A step within `tie` of 0 is at the knot just made: its columns
+        // join that knot, which is recorded again.
+        let same_knot = gamma <= tie;
+        let moving = state.cols.len();
+        let mut changed = Vec::new();
+        if leaving.is_empty() {
+            // A column collinear with the active set adds no direction: it
+            // is set aside before the path moves, and the step is found
+            // again without it. Its pivot reads the active set alone, not
+            // `b`, so the test needs no step; taking the step first made a
+            // knot where nothing entered or left (review 6, E-5).
+            changed = state.admit(rows, &entering, &mut usable);
+            if changed.is_empty() {
+                continue;
+            }
+        }
+        if same_knot {
+            path.unrecord(k);
+        } else {
+            for (&i, &di) in state.cols[..moving].iter().zip(&delta) {
+                b[i] += gamma * di;
+            }
+            lambda -= gamma;
+            steps += 1;
+            knot.clear();
+        }
+        if !leaving.is_empty() {
+            for (i, s) in state.leave_all(&leaving) {
+                b[i] = 0.0;
+                changed.push((i, s));
+            }
+            changed.extend(state.admit(rows, &entering, &mut usable));
+        }
+        knot.retain(|&(j, _)| changed.iter().all(|&(i, _)| i != j));
+        knot.extend(changed);
+        knot.sort_by_key(|&(j, _)| j);
+        state.settle(rows, &knot, &mut usable, &mut a);
+        if knot.len() > 1 {
+            // Steps up to `tie` apart were taken as one, so a column leaving
+            // here was set to 0 from up to `tie |δ_j|`, and `|δ_j|` is large
+            // where the active set is nearly collinear. The columns staying
+            // are solved afresh at this penalty, which leaves the conditions
+            // off by `tie |1 − s_j a_j|` at most (the module doc).
+            state.anchor(d, lambda, &knot, &mut b);
         }
         state.correlations(d, &b, &mut c);
         path.record(lambda, &b, &state.cols);
@@ -303,6 +412,13 @@ impl LarsPath {
         self.active.push(active.to_vec());
     }
 
+    /// The last knot, of `k` coefficients, taken back to be recorded again.
+    fn unrecord(&mut self, k: usize) {
+        self.penalties.pop();
+        self.coefs.truncate(self.coefs.len() - k);
+        self.active.pop();
+    }
+
     /// The number of knots.
     pub fn len(&self) -> usize {
         self.penalties.len()
@@ -312,17 +428,6 @@ impl LarsPath {
     pub fn is_empty(&self) -> bool {
         self.penalties.is_empty()
     }
-}
-
-/// The usable column with the largest `|c_j|`, the lowest index on a tie.
-fn argmax_abs(c: &[f64], usable: &[bool]) -> Option<usize> {
-    let mut best: Option<usize> = None;
-    for j in 0..c.len() {
-        if usable[j] && best.is_none_or(|i| c[j].abs() > c[i].abs()) {
-            best = Some(j);
-        }
-    }
-    best
 }
 
 /// The active set: its columns in the order they entered, their signs, the
@@ -362,13 +467,36 @@ impl Active {
         true
     }
 
-    /// The column at `pos` out, returning it and its sign; the factor is
-    /// formed afresh over the rest.
-    fn leave(&mut self, pos: usize) -> (usize, f64) {
-        let i = self.cols.remove(pos);
-        let s = self.signs.remove(pos);
-        self.rows.remove(pos);
-        self.is_in[i] = false;
+    /// Each of `cols` in, in turn, with its sign; one collinear with the
+    /// active set is set aside for good (`usable` false). The ones that
+    /// entered.
+    fn admit(
+        &mut self,
+        rows: &impl CorrRows,
+        cols: &[(usize, f64)],
+        usable: &mut [bool],
+    ) -> Vec<(usize, f64)> {
+        let mut entered = Vec::with_capacity(cols.len());
+        for &(j, s) in cols {
+            if self.enter(rows, j, s) {
+                entered.push((j, s));
+            } else {
+                usable[j] = false;
+            }
+        }
+        entered
+    }
+
+    /// The columns at `positions` (ascending) out, returning each with its
+    /// sign; the factor is formed afresh over the rest.
+    fn leave_all(&mut self, positions: &[usize]) -> Vec<(usize, f64)> {
+        let mut gone = Vec::with_capacity(positions.len());
+        for &pos in positions.iter().rev() {
+            let i = self.cols.remove(pos);
+            gone.push((i, self.signs.remove(pos)));
+            self.rows.remove(pos);
+            self.is_in[i] = false;
+        }
         self.factor = Factor::default();
         for p in 0..self.cols.len() {
             let cross: Vec<f64> = self.cols[..p].iter().map(|&q| self.rows[p][q]).collect();
@@ -377,7 +505,85 @@ impl Active {
             // so: the floor is for rounding, never reached in a test.
             self.factor.push(&cross, self.rows[p][self.cols[p]], true);
         }
-        (i, s)
+        gone
+    }
+
+    /// Where column `j` sits in the active set, if it is in it.
+    fn position(&self, j: usize) -> Option<usize> {
+        if !self.is_in[j] {
+            return None;
+        }
+        self.cols.iter().position(|&i| i == j)
+    }
+
+    /// Which columns of `knot` -- each at 0 at a knot and at the active
+    /// correlation, with its sign, in column order -- are active below it
+    /// (the module doc). In: the direction moves it with its sign,
+    /// `s_j δ_j ≥ 0`. Out: its correlation falls at least as fast as `λ`,
+    /// `s_j a_j ≥ 1`. Both within [`TIE`]. Murty's least-index rule flips
+    /// the first column that fails its test until none does, which Murty
+    /// proved finite on a positive definite `R_AA`. The loop stops at `2ⁿ`
+    /// flips for `n` columns, the number of sets to choose between, and at
+    /// 65,536 past 16 columns. The most measured was 10, among six columns
+    /// all tied at `λ_max` (docs/PLAN.md task 236). A single column needs no
+    /// flip: it enters if its step was positive, and leaves if its
+    /// coefficient crossed 0.
+    fn settle(
+        &mut self,
+        rows: &impl CorrRows,
+        knot: &[(usize, f64)],
+        usable: &mut [bool],
+        a: &mut [f64],
+    ) {
+        if knot.len() < 2 {
+            return;
+        }
+        for _ in 0..1usize << knot.len().min(16) {
+            let delta = self.factor.solve(&self.signs);
+            self.combine(&delta, a);
+            let size = delta.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let fails = knot.iter().copied().find(|&(j, s)| match self.position(j) {
+                Some(pos) => s * delta[pos] < -TIE * size,
+                None => usable[j] && s * a[j] < 1.0 - TIE,
+            });
+            let Some((j, s)) = fails else {
+                return;
+            };
+            match self.position(j) {
+                Some(pos) => {
+                    self.leave_all(&[pos]);
+                }
+                None => {
+                    if !self.enter(rows, j, s) {
+                        usable[j] = false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The coefficients of the active columns outside `knot` solved afresh
+    /// at `λ`, `b_S = (R_SS)⁻¹ (d_S − λ s_S)`, where their correlations are
+    /// `λ` in size. Those columns lead the active set, since the ones of a
+    /// knot entered there, so `R_SS`'s factor is the leading block of the
+    /// active set's.
+    fn anchor(&self, d: &[f64], lambda: f64, knot: &[(usize, f64)], b: &mut [f64]) {
+        let staying = self
+            .cols
+            .iter()
+            .take_while(|&&j| knot.iter().all(|&(i, _)| i != j))
+            .count();
+        debug_assert!(
+            self.cols[staying..]
+                .iter()
+                .all(|&j| knot.iter().any(|&(i, _)| i == j))
+        );
+        let rhs: Vec<f64> = (0..staying)
+            .map(|p| d[self.cols[p]] - lambda * self.signs[p])
+            .collect();
+        for (&j, v) in self.cols.iter().zip(self.factor.solve(&rhs)) {
+            b[j] = v;
+        }
     }
 
     /// `out = R_{·A} v`.
@@ -438,9 +644,11 @@ impl Factor {
         true
     }
 
-    /// `x` with `L Lᵀ x = s`.
+    /// `x` with `L Lᵀ x = s`, on the leading `s.len()` rows of `L`: the
+    /// factor of the matrix's leading block.
     fn solve(&self, s: &[f64]) -> Vec<f64> {
-        let n = self.rows.len();
+        let n = s.len();
+        debug_assert!(n <= self.rows.len());
         let mut y = vec![0.0; n];
         for i in 0..n {
             let t: f64 = (0..i).map(|m| self.rows[i][m] * y[m]).sum();

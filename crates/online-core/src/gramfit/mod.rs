@@ -13,6 +13,8 @@
 
 mod cd;
 mod lars;
+#[cfg(test)]
+mod lars_tie_tests;
 mod merge;
 #[cfg(test)]
 mod merge_tests;

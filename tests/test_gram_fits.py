@@ -209,6 +209,26 @@ class TestLarsPath:
         assert np.count_nonzero(active["coef"][-1][1:]) == 1, "the second enters at 0"
         assert np.array_equal(active["coef"], full["coef"][: len(active["coef"])])
 
+    def test_columns_that_tie_enter_at_one_knot(self):
+        """Two uncorrelated columns, equally correlated with the target, from
+        rows the bank accumulated (task 236): both enter at the first knot,
+        and the path ends at least squares. Taken one at a time, the second's
+        step was 0 and it never entered."""
+        n = 1000
+        a = np.tile([1.0, 1.0, -1.0, -1.0], n // 4)
+        b = np.tile([1.0, -1.0, 1.0, -1.0], n // 4)
+        e = np.tile([1.0, -1.0, -1.0, 1.0], n // 4)
+        df = pl.DataFrame({"x0": 0.1 * a, "x1": 0.1 * b, "y": 2.0 + 0.3 * (a + b) + 0.05 * e})
+        g = gram(df)
+        path = pg.lars_path(g)
+        assert path["active"] == [["x0", "x1"], ["x0", "x1"]]
+        assert path["penalties"][-1] == 0.0
+        assert path["coef"][-1] == pytest.approx(pg.solve(g), rel=1e-12)
+        assert path["coef"][-1][1:] == pytest.approx([3.0, 3.0], rel=1e-12)
+        one = pg.lars_path(g, max_active=1)
+        assert one["stop"] == "max_active"
+        assert one["active"] == [["x0", "x1"]], "a tie passes max_active"
+
     def test_a_constant_column_never_enters(self):
         g = gram(stream(seed=10, constant=True))
         path = pg.lars_path(g)

@@ -33,7 +33,8 @@ pub struct GramPath {
     /// features' original units with the intercept recovered, `n × k`.
     pub coefs: Vec<f64>,
     /// The active columns at each knot, by position in the Gram's
-    /// `columns`, in the order they entered.
+    /// `columns`, in the order they entered, those entering at one knot (a
+    /// tie) in `slots` order.
     pub active: Vec<Vec<usize>>,
     pub stop: LarsStop,
 }

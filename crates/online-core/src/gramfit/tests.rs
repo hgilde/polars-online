@@ -8,7 +8,13 @@ use crate::oracle;
 /// A Gram in correlation form from `n` rows of `k` columns: column `j` is
 /// `z_j + mix · z_0` for standard normal `z`, and `y = Σ_j beta_j x_j +
 /// noise`. Returns `(R, d)`, standardized so `R` has a unit diagonal.
-fn design(seed: u64, n: usize, k: usize, mix: f64, beta: &[f64]) -> (Vec<f64>, Vec<f64>) {
+pub(super) fn design(
+    seed: u64,
+    n: usize,
+    k: usize,
+    mix: f64,
+    beta: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
     let mut rng = SplitMix64::new(seed);
     let mut normal = || {
         // Box-Muller from two uniforms in (0, 1].
@@ -33,7 +39,7 @@ fn design(seed: u64, n: usize, k: usize, mix: f64, beta: &[f64]) -> (Vec<f64>, V
 
 /// `(R, d)` of rows `x` (`n × k`) and `y`: each column centred and scaled
 /// to unit population variance, `y` centred.
-fn standardized(x: &[f64], y: &[f64], n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
+pub(super) fn standardized(x: &[f64], y: &[f64], n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
     let mut x = x.to_vec();
     for j in 0..k {
         let m = (0..n).map(|i| x[i * k + j]).sum::<f64>() / n as f64;
@@ -57,7 +63,7 @@ fn standardized(x: &[f64], y: &[f64], n: usize, k: usize) -> (Vec<f64>, Vec<f64>
 /// The lasso's optimality conditions at `lambda`, by definition: with
 /// `c = d − R b`, `c_j = λ sign(b_j)` where `b_j ≠ 0` and `|c_j| ≤ λ`
 /// elsewhere.
-fn assert_kkt(r: &[f64], d: &[f64], b: &[f64], lambda: f64, tol: f64) {
+pub(super) fn assert_kkt(r: &[f64], d: &[f64], b: &[f64], lambda: f64, tol: f64) {
     let k = d.len();
     for j in 0..k {
         let c = d[j] - (0..k).map(|i| r[j * k + i] * b[i]).sum::<f64>();
@@ -146,7 +152,7 @@ fn every_knot_meets_the_lasso_conditions_and_the_active_set_solve() {
 
 /// A path with a column leaving: correlated columns with signs that
 /// disagree, the first of seeds 0..200 whose path has one.
-fn path_with_a_drop() -> (Vec<f64>, Vec<f64>, LarsPath) {
+pub(super) fn path_with_a_drop() -> (Vec<f64>, Vec<f64>, LarsPath) {
     let beta = [1.0, 1.0, -0.9, 0.0, 0.5, -0.4];
     for seed in 0..200 {
         let (r, d) = design(seed, 60, 6, 1.5, &beta);
@@ -202,7 +208,7 @@ fn a_column_leaves_where_its_coefficient_crosses_zero() {
 
 /// Each knot's support as the active sets say it: the set before the knot,
 /// less the column leaving at it, and the last knot's own set.
-fn supports(path: &LarsPath) -> Vec<Vec<usize>> {
+pub(super) fn supports(path: &LarsPath) -> Vec<Vec<usize>> {
     (0..path.len())
         .map(|n| {
             let mut s: Vec<usize> = if n == 0 {
@@ -223,14 +229,14 @@ fn supports(path: &LarsPath) -> Vec<Vec<usize>> {
 }
 
 /// Knot `n`'s coefficients' support.
-fn knot_support(path: &LarsPath, k: usize, n: usize) -> Vec<usize> {
+pub(super) fn knot_support(path: &LarsPath, k: usize, n: usize) -> Vec<usize> {
     (0..k).filter(|&j| path.coefs[n * k + j] != 0.0).collect()
 }
 
 /// [`design`] with every column a mix of all of them, `x = z (I + M)` for
 /// a standard normal `M`: correlations of both signs, which is what makes
 /// columns leave a lasso path and come back.
-fn mixed_design(seed: u64, n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
+pub(super) fn mixed_design(seed: u64, n: usize, k: usize) -> (Vec<f64>, Vec<f64>) {
     let mut rng = SplitMix64::new(seed ^ 0x9e37_79b9);
     let mut normal = || {
         let u = 1.0 - rng.uniform();
