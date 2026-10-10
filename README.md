@@ -2187,6 +2187,10 @@ r2 = 1 - resid_var / g["target_vars"][0]
 
 The [`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
 reference states every array and the identities that relate them.
+[Wide fits from Grams](docs/GRAM.md) is the guide to fitting from Grams,
+with the theory and a recipe that runs for each task: a Gram per week
+from one pass, pooling weeks, a ridge with its t, the lasso path,
+stability selection, compact exports and `gram_threads`.
 
 **`po.gram` does the same algebra in one call**, on any Gram, such as one
 read from a saved state. Two calls need care:

@@ -35,6 +35,9 @@ a relative tolerance, not to equality. :func:`lasso_path` and
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
 Nothing here needs scipy or scikit-learn.
+
+`docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__ is the guide:
+each function on weekly blocks from one pass, the theory behind it, and a recipe that runs.
 """
 
 from __future__ import annotations
@@ -283,6 +286,10 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
     Every part must have the same ``columns`` and ``targets`` (``ValueError``).
     Merging one Gram returns it unchanged; merging none is a ``ValueError``.
+
+    See *Pooling blocks* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     parts = list(grams)
@@ -482,6 +489,10 @@ def from_row(row: Any) -> dict[str, Any]:
     ``ValueError`` for a row of a kind that keeps no accumulators (its ``columns``
     is null): there is no Gram to make. ``TypeError`` for something that is none
     of the three forms.
+
+    See *Reading Grams from saved files* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     d = _row_mapping(row)
@@ -570,6 +581,10 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     mapping of the same shape, its ``comoments`` in float64 and packed if
     ``g``'s is. ``KeyError`` for a name the Gram has not got,
     ``IndexError`` for a position.
+
+    See *Every least-squares fit is a function of the Gram* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     idx = _col_index(g, cols)
@@ -606,6 +621,10 @@ def correlation(g: dict[str, Any]) -> Any:
     intercept included: a constant has no correlation with anything, and reporting
     0 there would read as "independent". The diagonal is 1 where the variance is
     positive.
+
+    See *Is the fit determined?* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     c = _comoments(np, g)
@@ -684,6 +703,10 @@ def solve(
     ``KeyError`` / ``IndexError`` for a target or column the Gram has not got;
     ``ValueError`` for the intercept among ``features``, and for a ``ridge``
     that is not finite and at least 0, as a spec's ``ridge`` must be.
+
+    See *A ridge and its t* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     ridges = np.atleast_1d(np.asarray(ridge, dtype=float))
@@ -804,6 +827,10 @@ def lasso_path(
     parameter: a penalty or a weight that is not finite and at least 0,
     ``l1_ratio`` outside ``[0, 1]``, ``max_iter`` below 1, ``tol`` not finite
     and above 0. ``KeyError`` / ``IndexError`` as for :func:`solve`.
+
+    See *Choosing columns on the lasso path* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     # Each was taken as given: `max_iter=0` returned the intercept with every
@@ -1212,6 +1239,10 @@ def solve_subsets(
     :func:`coef_stats`) or one without ``means_by_target`` and
     ``cross_centred``, which :func:`merge` forms after pooling and this
     does not. Otherwise as :func:`solve` and :func:`lars_path`.
+
+    See *Stability selection over halves of the weeks* and *Per-block coefficients* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe of each use.
     """
     np = _np()
     parts = list(grams)
@@ -1360,6 +1391,10 @@ def coef_stats(
     ``coef`` must have one entry per Gram column (``ValueError``); ``ValueError``
     if the Gram has no target moments, which a state saved by 0.2.0 or earlier
     cannot answer.
+
+    See *A ridge and its t* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     t = _target_index(g, target)
@@ -1444,6 +1479,10 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     far below ``sqrt(eps)``, and it read 1.0002 where ``a`` and ``c`` read
     ``inf``. A large VIF says a column is in a dependency; a VIF near 1 does
     not say it is in none.
+
+    See *Is the fit determined?* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     slots, _ = _feature_slots(g, features)
@@ -1490,6 +1529,10 @@ def condition(g: dict[str, Any], *, features: Sequence[str | int] | None = None)
     part of the collinearity when a column is nearly constant, and centring hides
     that. ``singular_values`` are of that scaled raw matrix, so they are the
     square roots of the eigenvalues of the scaled second-moment matrix.
+
+    See *Is the fit determined?* in
+    `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
+    for the theory and a recipe that runs.
     """
     np = _np()
     names = _columns(g)
