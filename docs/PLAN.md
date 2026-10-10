@@ -9432,6 +9432,18 @@ tick, and that the series holding it up has a count near 1.
       generating their data and reading it from parquet, their printed
       output shown and held by a test (`tests/doc_recipes.py`) -- and links
       and anchors kept working (`tests/test_doc_structure.py`).
+      **Every feature with a page of its own has a README section** (the
+      user, 2026-10-10: "We want to make sure that features with their own
+      doc pages have a section in the main readme so a casual user can
+      find"): a heading a casual reader scanning the README would look for
+      (named by what the reader wants to do, not by the page), a short
+      recipe that shows the capability, and the link to the page -- for
+      DIAGNOSTICS, DATA-ISSUES (`check()` and `audit`), GRAM, RUNNER,
+      STATE-WORKFLOW, REGIMES, PERFORMANCE and OUTPUTS, and any page that
+      lands later (task 235's GBDT-ADAPTER if built); a test holds it, each
+      guide in `docs/README.md`'s table linked from its own README section.
+      Measured 2026-10-10 before the pass: GRAM is linked from the README
+      once, DATA-ISSUES and STATE-WORKFLOW twice.
 - [ ] 239. **A review of every API doc** -- the user, 2026-10-10, after
       task 238: every public docstring (the Python package, the builders in
       `_spec*.py`, `ModelBank`, `po.gram`, `po.eval`, `po.stream`, `po.corr`,
