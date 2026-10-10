@@ -41,11 +41,12 @@ class PolarsOnlineDeprecationWarning(DeprecationWarning):
     The old name still works -- read as the new one -- until the next major
     version, which refuses it naming the new one; the message names both.
     A spec parameter goes through a forwarding table, at any depth of a
-    spec. Another function's keyword, a function, a word a parameter takes,
-    a flag, an environment variable, an output field or a frame column
-    renamed after 1.0 ships a forwarding of its own that raises this
-    warning: a check at the function's top, a stub, an alias or a second
-    column.
+    spec. Any other name renamed after 1.0 ships a forwarding of its own
+    that raises this warning: a check at the function's top, a stub, an
+    alias or a second column. That covers another function's keyword, a
+    function, a word a parameter takes, a flag, an environment variable, an
+    output field and a frame column.
+
     A rename made before 1.0 was never forwarded: the old name is refused
     outright (``TypeError`` from a builder, ``ValueError`` from a spec dict),
     so no name warns today. Python shows a ``DeprecationWarning`` raised from
@@ -61,15 +62,20 @@ class UnstableWarning(UserWarning):
 
     Raised only when the environment variable ``POLARS_ONLINE_WARN_UNSTABLE``
     is ``1``, as Polars raises its own ``UnstableWarning`` under
-    ``POLARS_WARN_UNSTABLE``. Each such surface says so in its docstring. It
-    may change in any release without that counting as a breaking change:
-    the state file of :func:`polars_online.stream.with_windows`, the formula
-    tree's written form (a formula target in a TOML file or a saved state),
-    :meth:`polars_online.ModelBank.fit_predict_arrow`,
-    :meth:`polars_online.ModelBank.predict_arrow` and
-    :class:`polars_online.ArrowStruct`, and the modules
-    :mod:`polars_online.sim`, :mod:`polars_online.corr` and
-    :mod:`polars_online.gbdt`. Everything else in ``__all__`` is promised.
+    ``POLARS_WARN_UNSTABLE``. Each such surface says so in its docstring,
+    and may change in any release without that counting as a breaking
+    change:
+
+    - the state file of :func:`polars_online.stream.with_windows`;
+    - the formula tree's written form (a formula target in a TOML file or a
+      saved state);
+    - :meth:`polars_online.ModelBank.fit_predict_arrow`,
+      :meth:`polars_online.ModelBank.predict_arrow` and
+      :class:`polars_online.ArrowStruct`;
+    - the modules :mod:`polars_online.sim`, :mod:`polars_online.corr` and
+      :mod:`polars_online.gbdt`.
+
+    Everything else in ``__all__`` is promised.
     """
 
 
