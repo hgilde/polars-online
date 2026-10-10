@@ -6,7 +6,7 @@ query with the bank in it is O(chunk) in memory however long the stream is.
 The bank is registered as a polars source, the kind of node the engine pulls
 batches from, and what comes after it -- filters, selects, joins, writing the
 result to a file -- is polars' own. A filter after the bank never changes what
-the bank learns from; one that should belongs before it.
+the bank learns from. To keep rows from the bank, filter before it.
 
 The plan is pure: every execution starts from the same state (the specs'
 initial state, or ``load_state``, read when the plan is built), so collecting
@@ -22,10 +22,10 @@ in the same state.
 takes a bank's output apart: each spec's struct column becomes its fields as
 columns, with the ``coef`` list as one named column per coefficient
 (:func:`polars_online.spec.coef_fields`). ``online.with_windows(*exprs, **named)``
-adds windowed means, looking back or ahead, as columns
+adds windowed means, sums and rates, looking back or ahead, as columns
 (:func:`polars_online.stream.with_windows`), so a query can add them and fit
 on them in one chain. Both namespaces are attached at import, which no type
-checker can see; :func:`fit_predict`, :func:`predict`, :func:`unnest` and
+checker can see. So :func:`fit_predict`, :func:`predict`, :func:`unnest` and
 :func:`polars_online.stream.with_windows` are the same calls with the frame
 as the first argument, visibly typed.
 """
@@ -207,46 +207,66 @@ def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
 class OrderNotGuaranteedWarning(UserWarning):
     """A plan handed to a bank has a row order polars does not guarantee.
 
-    An online model learns in row order, so the order a plan delivers is part of
-    the model. :meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict_batches` and
-    ``lf.online.fit_predict`` run a plan through polars' streaming engine, and a
-    ``join``, ``group_by``, ``unique`` or ``sort`` by several keys without an
-    order guarantee delivers a different stream there than ``lf.collect()``
-    gives. Measured on 200,000
-    rows: ``collect()`` kept the input order and ``collect_batches()`` did not,
-    so a plan checked by collecting it learns something else when it is fed.
-    The order may also differ between runs.
+    An online model learns in row order, so the order a plan delivers is part
+    of the model. :meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict_batches`
+    and ``lf.online.fit_predict`` run a plan through polars' streaming engine.
+    There a ``join``, ``group_by``, ``unique`` or ``sort`` by several keys
+    without an order guarantee delivers a different stream than
+    ``lf.collect()`` gives. Measured on 200,000 rows: ``collect()`` kept the
+    input order and ``collect_batches()`` did not, so a plan checked by
+    collecting it learns something else when it is fed. The order may also
+    differ between runs.
 
-    The warning names each such node and its fix: ``maintain_order="left"`` on
-    a join, ``maintain_order=True`` on a ``group_by`` and on a ``sort`` by
-    several keys (rows with equal keys come out in no particular order), a
-    ``sort`` after a ``unique`` (the streaming engine does not honour its
-    ``maintain_order``), or a sort before the bank.
+    The warning names each such node and its fix:
 
-    Best-effort by design. The plan's ``explain`` text is read first, and only
-    when it names a join, an aggregation or a ``unique`` is the plan read
-    through ``LazyFrame.serialize`` -- a format polars has deprecated -- and
+    .. list-table::
+       :header-rows: 1
+       :widths: 35 65
+
+       * - the node
+         - its fix
+       * - a ``join``
+         - ``maintain_order="left"``
+       * - a ``group_by``
+         - ``maintain_order=True``
+       * - a ``sort`` by several keys
+         - ``maintain_order=True``: without it, rows with equal keys come out
+           in no particular order
+       * - a ``unique``
+         - a ``sort`` after it: the streaming engine does not honour its
+           ``maintain_order``
+       * - any of them
+         - a sort before the bank
+
+    Best-effort by design. The plan's ``explain`` text is read first. Only
+    when it names a join, an aggregation, a ``unique`` or a sort is the plan
+    read through ``LazyFrame.serialize``, a format polars has deprecated, and
     walked. A plan polars cannot serialize is let through in silence. Polars
     1.44.2 serializes a plan that already holds a bank, its Python source
     included, so a join stacked *above* a bank is reported there; a polars
     that cannot serialize it says nothing about it. The inspection never
-    fails a run.
-    For a plan whose order is fixed by other means,
+    fails a run. For a plan whose order is fixed by other means,
     ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
 
-    **Not raised by** :meth:`ModelBank.fit` **when every spec is an accumulator
-    with no decay** -- ``ewridge`` or ``rls`` at ``lam=1.0``, no ``window_size``, no
-    session, no drift reset. Those sums commute,
-    so the state after that fit is the same whatever the order (to rounding:
-    3.3e-16 over 200 rows), and ``fit`` keeps only the state. The exception is
-    that narrow on purpose. It does not extend to ``fit_predict_batches`` or to
-    the plan form, whose predictions are out-of-sample and so move with the
-    order even where the coefficients do not (1.33 on the same rows); nor to a
-    model whose update does not commute, which is every other one -- ``sgd``,
-    ``pa``, ``ftrl``, ``quantile`` and a reweighting ``huber`` all differ
-    materially with no decay at all, and ``lasso`` selects its penalty by an
-    out-of-sample error, so "no half-life" is not by itself a reason to expect
-    order not to matter. A spec option the check does not recognise counts as unsafe, so a
+    **Not raised by** :meth:`ModelBank.fit` **when every spec is an
+    accumulator with no decay**: ``ewridge`` or ``rls`` at ``lam=1.0`` or
+    ``half_life=inf``, with no ``window_size``, no session and no drift
+    reset. Those sums commute, so the state after that fit is the same
+    whatever the order (to rounding: 6.7e-16 for ``ewridge`` and 1.4e-15 for
+    ``rls`` over 200 rows), and ``fit`` keeps only the state. Nothing else is
+    spared the warning, on purpose:
+
+    - ``fit_predict_batches`` and the plan form over the same specs, whose
+      predictions are out-of-sample and so move with the order even where
+      the coefficients do not (by up to 0.087 for ``ewridge`` and 0.65 for
+      ``rls`` on the same rows);
+    - every other model, whose update does not commute: ``sgd``, ``pa``,
+      ``ftrl``, ``quantile`` and a reweighting ``huber`` all differ
+      materially with no decay at all;
+    - ``lasso``, which selects its penalty by an out-of-sample error.
+
+    So "no half-life" is not by itself a reason to expect order not to
+    matter. A spec option the check does not recognise counts as unsafe, so a
     key added later cannot quietly become exempt.
     """
 
@@ -258,32 +278,34 @@ class ReadinessWarning(UserWarning):
     :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and the
     plan form -- never by ``predict``, for four findings
     (`docs/WARMUP-AND-CONVERGENCE.md
-    <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_):
+    <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_).
+    The first three judge a stream only once it is 95% settled
+    (``settled_frac`` 0.95): before that, its early rows still move what a
+    notice would say, and a notice cannot be taken back. A stream with no
+    decay never settles, so it is never judged, and its ``support_coef``,
+    ``withheld_reason`` and :meth:`ModelBank.summary` carry what it reads.
 
     - **A coefficient the ridge determined more than the data did**
-      (``support_coef < 0.5``), named, on a row the gates let through once
-      the stream is 95% settled -- before that, the first rows' noisy
-      feature variances can read a share below 0.5 that the settled fit does
-      not, and a stream with no decay never settles, so ``support_coef`` and
-      :meth:`ModelBank.summary`'s ``min_support_coef`` carry it there. The
-      design does not determine it: a duplicated or constant column, or a
-      ridge as large as the feature's variance. Predictions are unaffected in
-      sample; the split among such columns is arbitrary and moves the moment
-      the collinearity breaks.
-    - **The noise gate has not been met**: the stream has all but settled,
-      the gate has withheld every row for a further half-life, and at the
-      row rate so far ``error_inflation`` stays above
-      ``max_error_inflation``, so predictions stay withheld unless the rows
-      come faster. Not for ``kalman``, whose gate reads each row's own
-      value, which a row nearer the design's centre reads lower. The message
-      says how far, and the way out -- a half-life above the one it names,
-      or a looser ratio.
-    - **A** ``min_weight`` **has not been met**: the stream has all but
-      settled, the floor has withheld every row for a further half-life, and
-      at the rows' spacing ``d`` and weight so far the weight a target reads
-      tops out below its ``min_weight`` -- the ceiling
-      ``1 / (1 - 2 ** (-d / half_life))``, which a clock column keeps any
-      spec from knowing in advance. The message names the ceiling
+      (``support_coef < 0.5``), named, on a row the gates let through.
+      Before the stream is settled, the first rows' noisy feature variances
+      can read a share below 0.5 that the settled fit does not. The design
+      does not determine such a coefficient: a duplicated or constant
+      column, or a ridge as large as the feature's variance. Predictions are
+      unaffected in sample; the split among such columns is arbitrary and
+      moves the moment the collinearity breaks.
+    - **The noise gate has not been met**: the stream is settled, the gate
+      has withheld every row for a further half-life, and at the row rate so
+      far ``error_inflation`` stays above ``max_error_inflation``. So
+      predictions stay withheld unless the rows come faster. Not for
+      ``kalman``, whose gate reads each row's own value, which a row nearer
+      the design's centre reads lower. The message says how far, and the way
+      out: a half-life above the one it names, or a looser ratio.
+    - **A** ``min_weight`` **has not been met**: the stream is settled, the
+      floor has withheld every row for a further half-life, and the weight a
+      target reads tops out below its ``min_weight``. At the rows' spacing
+      ``d`` and weight so far, the ceiling is
+      ``1 / (1 - 2 ** (-d / half_life))`` times that weight, which a clock
+      column keeps any spec from knowing in advance. The message names the ceiling
       (``weight_sum_settled`` in :meth:`ModelBank.summary`), and the way out.
       A target no row has given a value with a positive weight has no rate
       to project from, so its message says that instead, with no ceiling.
@@ -295,15 +317,16 @@ class ReadinessWarning(UserWarning):
       the test on most rows. Said once per diagnostic when the bank is built,
       on its first learning call, naming ``horizon_rows``.
 
-    Both wait a half-life during which their gate withholds every row, on
-    the clock the learned rows have covered; a row the gate lets through
-    starts the wait again. Their ceiling is a projection from the rows so
-    far, which rows that come faster can beat, so neither says "for good".
-    The wait is in the state file: a bank saved and loaded inside it goes
-    on waiting, and says its notice on the row an unbroken stream would.
-    Under ``embargo`` both notices read how far the rows the model has
-    learned from have settled, the clock its weight has covered; the row's
-    ``settled_frac`` counts the held rows' clock too.
+    The noise-gate and ``min_weight`` notices wait a half-life during which
+    their gate withholds every row, on the clock the learned rows have
+    covered; a row the gate lets through starts the wait again. Their
+    ceiling is a projection from the rows so far, which rows that come
+    faster can beat, so neither says "for good". The wait is in the state
+    file: a bank saved and loaded inside it goes on waiting, and says its
+    notice on the row an unbroken stream would. Under ``embargo`` both
+    notices read how far the rows the model has learned from have settled,
+    the clock its weight has covered; the row's ``settled_frac`` counts the
+    held rows' clock too.
 
     Every row already carries the state (``withheld_reason``, ``settled_frac``,
     ``support_coef``); the warning is the once-only pointer to it. For a spec
@@ -327,11 +350,12 @@ class ConsumedSourceWarning(UserWarning):
     This warns rather than raises, because a source may legitimately have no
     rows -- an empty query is not a mistake. It is raised only for a plan
     whose source is a Python scan *and* which yielded nothing, which is the
-    shape a consumed stream has; an in-memory frame's ``.lazy()`` and a
-    ``scan_parquet`` cannot trip it, and both are safely reusable. The one
-    exception is :func:`polars_online.stream.embargo`, a plan of Polars' own
-    that reads its input twice and runs after it returns: it warns as it
-    builds the plan, whenever its input's source is a Python scan.
+    shape a consumed stream has. An in-memory frame's ``.lazy()`` and a
+    ``scan_parquet`` cannot trip it, and both are safely reusable.
+    :func:`polars_online.stream.embargo` warns earlier: its result is a plan
+    of Polars' own that reads its input twice and runs after the function
+    returns, so it warns as it builds the plan, whenever its input's source
+    is a Python scan.
 
     The fix is to rebuild the plan per run -- ``pl.scan_arrow_c_stream(con.sql(q))``
     inside the loop rather than outside it -- since the producer will make a
@@ -549,7 +573,8 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
 #: Models whose fit is an accumulation, so the state after a ``fit()`` is the
 #: same whatever order the rows arrived in -- **to rounding, never to the
 #: bit**: the Gram sums commute mathematically but not in floating point.
-#: Measured over 200 rows with no decay: ``ewridge`` 3.3e-16, ``rls`` 8.9e-16.
+#: Measured over 200 rows with no decay: ``ewridge`` 6.7e-16, ``rls`` 1.4e-15
+#: (re-measured 2026-10-10; 3.3e-16 and 8.9e-16 when first listed).
 #: Every other model moves materially even with no decay at all, because its
 #: update is not commutative -- ``sgd`` 5.9e-03, ``pa`` 5.1e-02, ``ftrl``
 #: 3.3e-02, ``quantile`` 2.8e-03 -- so "no half-life" is not on its own a
@@ -704,8 +729,9 @@ def _order_free(specs: Any) -> bool:
     This is about ``fit()`` alone, whose product is the state. It is never
     about a prediction: ``pred`` is out-of-sample by construction, so row *i*
     is predicted from the rows before it, and reordering moves every
-    prediction even where the coefficients commute (measured: 1.33 on a
-    no-decay ``ewridge`` whose coefficients agreed to 3.3e-16)."""
+    prediction even where the coefficients commute (measured 2026-10-10: by
+    up to 0.087 on a no-decay ``ewridge`` whose coefficients agreed to
+    6.7e-16)."""
     if not specs:
         return False
     for spec in specs:
@@ -1073,10 +1099,10 @@ class LazyFrameOnlineNamespace:
             flat = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
 
         Filters, selections and ``head`` applied after are pushed into the source. A
-        filter never changes what the bank learns from; filter before to do that. A
-        selection is read from the input, so a wide scan reads only the columns the
-        specs and the query need. ``head(n)`` feeds the bank the first ``n`` rows and
-        no more.
+        filter never changes what the bank learns from. To keep rows from the bank,
+        filter before it. A selection is read from the input, so a wide scan reads
+        only the columns the specs and the query need. ``head(n)`` feeds the bank the
+        first ``n`` rows and no more.
 
         ``specs`` are the bank's, or ``load_state`` names a saved bank to resume from
         (with ``specs``, they are checked against the file). The file is read when the
@@ -1091,15 +1117,15 @@ class LazyFrameOnlineNamespace:
         writes the same bytes twice. Nothing is written unless the source reaches the
         last row: a run abandoned before then, or one the bank ended with an error,
         leaves the file as it was. A node after the bank failing does not stop the
-        bank, so the state is written then. The ``online`` CLI saves only after
-        its output is committed, for the case where the two must be tied together, and
-        a dated ``save_state`` per batch of data keeps a rerun from learning it twice.
+        bank, so the state is written then. Where the output and the state must be
+        tied together, the ``online`` CLI saves only after its output is committed.
+        A dated ``save_state`` per batch of data keeps a rerun from learning it twice.
 
         The plan runs through polars' streaming engine, and an online model learns
         in row order, so the order the engine delivers is part of the result. A
         ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
         different stream there than ``lf.collect()`` gives, and may differ between
-        runs; give a join ``maintain_order="left"``, a ``group_by``
+        runs. Give a join ``maintain_order="left"``, a ``group_by``
         ``maintain_order=True``, and sort after a ``unique``, or sort before the
         bank. A plan with such a node raises :class:`OrderNotGuaranteedWarning`
         when it is built, naming the node.
@@ -1110,25 +1136,33 @@ class LazyFrameOnlineNamespace:
         written where ``save_state`` is written and under the same rules: only when
         the source reaches its last row, once per execution of the plan, and twice
         with the same bytes for a plan used twice in one query. It needs a spec with
-        ``group_close``; a run in which nothing closed writes an empty frame with the
+        ``group_close``. A run in which nothing closed writes an empty frame with the
         schema.
 
         What the schema decides is reported while the plan is built, as polars reports
-        its own schema errors. ``ValueError`` for neither ``specs`` nor
-        ``load_state``, for ``chunk_size`` below 1, for a spec the bank refuses, and
-        for a spec whose column the plan has not got, is not numeric, or shares the
-        spec's name (the checks of :class:`ModelBank` and
-        :meth:`ModelBank.fit_predict`, with the same messages), and for a
-        ``UInt128`` column, which no frame can carry into the bank. ``FileNotFoundError``
-        for a ``load_state`` that is not there or a ``save_state`` whose directory is
-        not. ``ValueError`` for a ``load_state`` that is not a bank this build loads
-        or whose specs are not ``specs`` (:meth:`ModelBank.load`). What only the
-        values decide (a null clock, a negative weight, a clock running backwards) is
-        reported when the plan runs: as polars' ``ComputeError`` carrying the bank's
-        message under py-polars 1.x, and as the bank's ``ValueError`` itself under
-        2.0, since how a plan wraps an error is Polars' to change. A ``save_state``
-        that cannot be written when the run ends is reported the same way, as the
-        ``OSError`` with the path, wrapped under 1.x.
+        its own schema errors:
+
+        - ``ValueError`` for neither ``specs`` nor ``load_state``, for
+          ``chunk_size`` below 1, and for a spec the bank refuses;
+        - ``ValueError`` for a spec whose column the plan has not got, is not
+          numeric, or shares the spec's name (the checks of :class:`ModelBank`
+          and :meth:`ModelBank.fit_predict`, with the same messages), and for a
+          ``UInt128`` column, which no frame can carry into the bank;
+        - ``ValueError`` for a ``closed_groups`` whose extension names no
+          format, or beside specs none of which has ``group_close``;
+        - ``FileNotFoundError`` for a ``load_state`` that is not there, or a
+          ``save_state`` or ``closed_groups`` whose directory is not, and
+          ``IsADirectoryError`` for a ``save_state`` that is a directory;
+        - ``ValueError`` for a ``load_state`` that is not a bank this build
+          loads or whose specs are not ``specs`` (:meth:`ModelBank.load`).
+
+        What only the values decide (a null clock, a negative weight, a clock
+        running backwards) is reported when the plan runs. It arrives as polars'
+        ``ComputeError`` carrying the bank's message under py-polars 1.x, and as
+        the bank's ``ValueError`` itself under 2.0, since how a plan wraps an
+        error is Polars' to change. A ``save_state`` that cannot be written when
+        the run ends is reported the same way, as the ``OSError`` with the path,
+        wrapped under 1.x.
         """
         return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_size, closed_groups)
 
@@ -1143,7 +1177,8 @@ class LazyFrameOnlineNamespace:
         untouched, so sharing it with a plan is safe. Or it is a path to a
         saved state, read when the plan is built. Build the plan again to
         pick up a newer file. Target columns are optional, as for
-        ``predict``; ``chunk_size`` is the read chunk.
+        :meth:`ModelBank.predict`. ``chunk_size`` is the read chunk, 100,000
+        rows by default.
 
         .. code-block:: python
 
@@ -1283,10 +1318,10 @@ class DataFrameOnlineNamespace:
         """``ModelBank(specs).fit_predict(df)`` in one call: the frame plus one struct
         column per spec, from a bank that is then dropped.
 
-        ``save_state`` saves the bank first (:meth:`ModelBank.save`), and
-        ``load_state`` starts it from a saved bank instead of the specs. Keep a bank
-        of your own to feed it more rows. ``closed_groups`` writes the groups that
-        finished to a sidecar file in the format its extension names, before
+        ``save_state`` saves the bank before it is dropped (:meth:`ModelBank.save`),
+        and ``load_state`` starts it from a saved bank instead of the specs. Keep a
+        bank of your own to feed it more rows. ``closed_groups`` writes the groups
+        that finished to a sidecar file in the format its extension names, before
         ``save_state`` (:meth:`ModelBank.closed_groups`).
 
         .. code-block:: python
@@ -1296,8 +1331,11 @@ class DataFrameOnlineNamespace:
 
         Raises what :class:`ModelBank`, :meth:`ModelBank.fit_predict`,
         :meth:`ModelBank.load` and :meth:`ModelBank.save` raise, and ``ValueError``
-        for neither ``specs`` nor ``load_state``. A ``save_state`` whose directory is
-        not there is ``FileNotFoundError`` before the fit, not after it.
+        for neither ``specs`` nor ``load_state``. A ``save_state`` or
+        ``closed_groups`` whose directory is not there is ``FileNotFoundError``
+        before the fit, not after it, and a ``closed_groups`` that
+        :meth:`LazyFrameOnlineNamespace.fit_predict` refuses is refused here, also
+        before the fit.
         """
         save_path = _save_path(save_state)
         bank = _bank(specs, load_state, "fit_predict")()
@@ -1412,7 +1450,7 @@ def fit_predict(
     (:meth:`LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame`` gives the
     frame with the bank's columns (:meth:`DataFrameOnlineNamespace.fit_predict`).
     ``load_state`` starts the bank from a saved one and ``save_state`` writes
-    where it ends up; ``chunk_size`` is the plan's read chunk, and a frame already
+    where it ends up. ``chunk_size`` is the plan's read chunk, and a frame already
     in memory is fitted in one call. ``TypeError`` for a ``frame`` that is
     neither; otherwise raises what the namespace method does.
     """
@@ -1445,8 +1483,10 @@ def predict(
 
     Scores the rows against ``bank`` as it stands and learns nothing: a plan from
     a ``LazyFrame`` (:meth:`LazyFrameOnlineNamespace.predict`), a frame from a
-    ``DataFrame`` (:meth:`DataFrameOnlineNamespace.predict`). ``TypeError`` for a
-    ``frame`` that is neither; otherwise raises what the namespace method does.
+    ``DataFrame`` (:meth:`DataFrameOnlineNamespace.predict`). ``chunk_size`` is
+    the plan's read chunk, and a frame already in memory is scored in one call.
+    ``TypeError`` for a ``frame`` that is neither; otherwise raises what the
+    namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
         return _predict_lazy(frame, bank, chunk_size)

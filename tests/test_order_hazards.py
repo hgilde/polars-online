@@ -547,7 +547,8 @@ def test_a_disqualified_fit_still_warns():
 def test_an_accumulators_coefficients_commute(free):
     """To rounding, never to the bit: the Gram sums commute mathematically but
     not in floating point. If this ever fails, the exception above is wrong.
-    `rls` measured 1.4e-15, `ewridge` 3.3e-16."""
+    `rls` measured 1.4e-15, `ewridge` 6.7e-16 (2026-10-10; 3.3e-16 when this
+    was written)."""
     assert _spread(free, _rows()) < 1e-12
 
 
