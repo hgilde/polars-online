@@ -19,6 +19,7 @@ once its label would really have been known. Two things have to be earned:
 """
 
 import subprocess
+from datetime import time
 
 import numpy as np
 import polars as pl
@@ -954,6 +955,14 @@ class TestEmbargoItself:
                 TypeError, match=f"^embargo: clock column '{clock}' must be numeric"
             ):
                 stream.embargo(df.lazy(), clock=clock, delay=delay)
+
+    def test_a_time_of_day_clock_is_refused_as_a_spec_refuses_it(self):
+        """The docstring's refusal (task 239): a ``Time`` column is temporal,
+        so it passes the numeric-or-temporal test, and is refused by name as
+        a clock that starts again at midnight, a ``ValueError``."""
+        df = pl.DataFrame({"t": [time(9), time(10)], "x": [1.0, 2.0]})
+        with pytest.raises(ValueError, match="is a time of day, which starts again at midnight"):
+            stream.embargo(df, clock="t", delay="1m")
 
     def test_a_single_use_source_is_warned_about(self):
         """Review round 4 (YB3): the predict and the learn copies are two

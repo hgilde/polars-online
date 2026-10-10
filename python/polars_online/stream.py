@@ -1,5 +1,5 @@
-"""Streaming transforms of a plan: streams whose labels arrive late, and series
-that tick at their own times.
+"""Streaming transforms of a plan: labels that arrive late, windows looking back
+or ahead, and series that tick at their own times.
 
 Everything here takes a ``LazyFrame`` or a ``DataFrame`` and gives back the same
 kind, in O(state) memory, before or beside a bank. Every function follows the
@@ -22,9 +22,10 @@ written out in polars. It is useful for seeing what the delay does, for a
 model that has no ``embargo``, and as the oracle the native path is tested
 against.
 
-:func:`with_windows` adds exponentially weighted means with a hard cutoff, looking
-back or ahead, described with :mod:`polars_online.ops`: any number of them
-in one pass, each row out once every window over it has closed.
+:func:`with_windows` adds exponentially weighted means, sums and rates looking
+back or ahead, and variances looking back, each with an optional hard cutoff,
+described with :mod:`polars_online.ops`: any number of them in one pass, each
+row out once every window over it has closed.
 
 :func:`refresh_time` puts asynchronous series on a common grid by
 Barndorff-Nielsen, Hansen, Lunde & Shephard's refresh-time rule: a grid point
@@ -149,17 +150,17 @@ def embargo(
     ``weight`` names an existing weight column, of any numeric dtype, which
     comes back as ``Float64``, the number the bank reads it as. Without it the
     function adds one, named ``role + "_weight"``, that is 1 on learn rows and
-    0 on predict rows; pass that name to the spec's ``weight=``.
+    0 on predict rows. Pass that name to the spec's ``weight=``.
 
     It reads its input twice, once for each copy, merging the two as they
     stream. A source that can be read once only -- what
     ``pl.scan_arrow_c_stream`` builds over a DuckDB relation or a pyarrow
     reader -- gives the second read nothing, and half the stream would go
     missing with no error. Whether a source is spent cannot be seen until
-    the plan runs, so an input whose source is a Python scan, which such a
+    the plan runs. So an input whose source is a Python scan, which such a
     stream is, is warned about with :class:`~polars_online.ConsumedSourceWarning`
-    as the plan is built: write it to a file and scan that, or collect it
-    first.
+    as the plan is built. Write such an input to a file and scan that, or
+    collect it first.
 
     .. code-block:: python
 
@@ -174,7 +175,7 @@ def embargo(
     by the clock alone, so a frame sorted within its groups but not across
     them comes back with a group's rows out of order. A bank then refuses it,
     as it refuses every step back unless ``restart_after_step_back`` says it
-    is a new start (task 120). Sort by the clock first (``lf.sort(clock,
+    is a new start. Sort by the clock before the embargo (``lf.sort(clock,
     maintain_order=True)``), or embargo each group and concatenate. The result
     is sorted by ``clock`` with learn rows before predict rows at the same
     clock value: a label whose ``delay`` has just run out is known at that
@@ -203,6 +204,7 @@ def embargo(
     - a ``delay`` of the wrong kind for the clock, or one that is not a whole
       number on an integer clock;
     - a ``clock`` or ``weight`` column the frame has not got;
+    - a ``Time`` clock, since a time of day starts again at midnight;
     - a frame that already has a column named ``role``, or, without
       ``weight``, one named ``role + "_weight"``.
 
@@ -398,9 +400,9 @@ def refresh_time(
     across an interval.
 
     The input is long: one row per tick, with a ``series`` column naming it,
-    a ``clock`` and a ``value``. A wide frame is already synchronised;
+    a ``clock`` and a ``value``. A wide frame is already synchronised.
     ``lf.unpivot(index=[clock], variable_name="series", value_name="value")``
-    is the line that makes one from the other. ``names`` is required and
+    is the line that makes the long form from the wide one. ``names`` is required and
     gives the series in output order. It is not discovered from the data,
     because a lazy plan has to declare its schema before a row is read, and
     the output columns are named after the series. A row whose ``series`` is
@@ -782,16 +784,17 @@ def with_windows(
     rule for the rows the spec learns from. A forward window over a row the
     spec would skip (a null feature or weight) is null, as the model never
     learns its target. These keywords are the call's, not output names: an
-    expression passed as ``session=...`` is refused; name it with
-    ``.alias()``.
+    expression passed as ``session=...`` is refused. Name it with
+    ``.alias()`` instead.
 
     **A formula is element-wise.** Columns, literals, arithmetic, negation,
-    comparisons, ``log``, ``exp``, ``abs``, ``sqrt``, ``pow``, ``clip``,
+    comparisons, ``&`` and ``|``, ``log``, ``exp``, ``abs``, ``sqrt``, ``pow``, ``clip``,
     ``fill_null``, ``is_null``, ``is_not_null``, ``when/then/otherwise``,
     ``cast`` and ``alias`` over the operators. A ``shift``, a cumulative or
     rolling function, ``over`` or an aggregation would depend on the
-    chunking, and is refused by name while the plan is built. An operator's input is the
-    same kind of formula, ``increment`` included, not another operator. The
+    chunking, and is refused by name while the plan is built. An operator's
+    input is the same kind of formula, ``increment`` included, not another
+    operator. The
     formula is kept as a compact tree of its own, in the plan and in a saved
     state (docs/PLAN.md task 143).
 
@@ -815,7 +818,7 @@ def with_windows(
     row whose window has not passed when the input ends is emitted
     unresolved, null. Any resumed run refuses by name an input whose first
     row is at the last stamp the state read, unless that row starts a new
-    session: a file boundary inside a tied stamp cannot be told from an
+    session. A file boundary inside a tied stamp cannot be told from an
     input that repeats rows the state read, which would come out twice. So
     cut a stream into files between stamps. Without a clock column there is
     no stamp to compare, and a repeated row is not caught.
@@ -852,28 +855,34 @@ def with_windows(
     A clock that starts over at the same stamp each day needs a session
     column for the next day's file to differ from the saved input at its
     first row. Without a clock column a row-count clock steps forward at
-    every row, so the next file is one that begins with a new session --
-    under ``group``, a new session of a group the state has read -- and
+    every row. So the next file is one that begins with a new session
+    (under ``group``, a new session of a group the state has read), and
     not with the saved input's first session, which marks the saved input
-    itself; without a session column either, there is no next file:
+    itself. Without a session column either, there is no next file:
     resume on the same input. An input whose rows match the state's where
     it was cut is taken as the same input, so resume a stream whose rows
     can repeat (a daily grid with the same values) on the same input only.
     A state resumes only the call that saved it, on the same kind of clock.
 
-    ``ValueError`` for a formula, a clock policy or a column that cannot
-    run (a look-ahead under ``group`` with no ``clock`` among them), an
-    output name that collides, a ``load_state`` another call saved, and a
-    ``UInt128`` column, read or not: the extension cannot take one in, so
-    the column is named with a cast to make.
-    What the run refuses once the plan is running -- a step back,
-    naming the row, or a state resumed on another input -- surfaces as
+    Refused while the plan is built:
+
+    - ``ValueError`` for a formula, a clock policy or a column that cannot
+      run (a look-ahead under ``group`` with no ``clock`` among them), an
+      output name that collides, ``chunk_size`` below 1, and a
+      ``load_state`` another call saved;
+    - ``ValueError`` for a ``UInt128`` column, read or not: the extension
+      cannot take one in, so the column is named with a cast to make;
+    - ``TypeError`` for something that is not an expression, an expression
+      given to a clock keyword, a ``like`` that is not a spec, and a clock
+      keyword beside ``like=``;
+    - ``FileNotFoundError`` for a ``load_state`` that is not there, or a
+      ``save_state`` whose directory is not.
+
+    What the run refuses once the plan is running -- a step back, naming
+    the row, or a state resumed on another input -- surfaces as
     ``polars.exceptions.ComputeError`` with the message inside under
-    py-polars 1.x, since the rows come from a Python source, and as the
-    ``ValueError`` itself under 2.0. ``TypeError`` for something that
-    is not an expression, or a clock keyword beside ``like=``.
-    ``FileNotFoundError`` for a ``load_state`` that is not there, or a
-    ``save_state`` whose directory is not.
+    py-polars 1.x, since the rows come from a Python source. Under 2.0 it
+    is the ``ValueError`` itself.
     """
     who = "with_windows"
     given = {
