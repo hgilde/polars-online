@@ -9534,7 +9534,7 @@ tick, and that the series holding it up has a count near 1.
       merge a negated part also moves the between-part term, so it is
       refused there, by name. Checks: against negating each part's target
       rows and refitting; one draw of all +1 equals no signs.
-- [ ] 242. **The GBDT input component -- the user's call**
+- [ ] 242. **The GBDT input component**
       (`docs/GBDT-ADAPTER.md` §6, task 235). Recommended: one Rust component,
       loading XGBoost's and LightGBM's shared libraries from the user's
       installed wheels at runtime (`libloading`; nothing linked, rule 12;
@@ -9547,6 +9547,15 @@ tick, and that the series holding it up has a count near 1.
       library's Python class (not prototyped; leans on private attributes).
       About 1,200 lines of Rust; both libraries in the dev group (XGBoost's
       Linux wheel pulls `nvidia-nccl-cu13`; macOS CI needs libomp).
+      **Decided 2026-10-10** (the user: "Build it before the docs", after
+      the benefits: setup 1.7-2.8x sooner for XGBoost, the raw matrix never
+      built, data past memory streamed; boosting itself unchanged): build
+      the component as recommended, shape (b) -- the built matrix or dataset
+      handed to the library's own Python class, so `xgb.train`/`lgb.train`
+      keep their callbacks, evaluation sets and early stopping -- with the
+      hand-off prototyped first on both libraries and shape (a) where (b)
+      cannot be done cleanly; the Python form of option C as the engine
+      when the native one cannot load. Before task 239 and task 238.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
