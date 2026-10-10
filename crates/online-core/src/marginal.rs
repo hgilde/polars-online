@@ -2057,18 +2057,23 @@ impl<'a> MarginalShard<'a> {
     /// Step this range's pairs through every held row, in order: per row,
     /// the lags against the means before it, then the bins, then the runs
     /// and the pair moments -- `step`'s order, so the same numbers.
+    /// `"per_target"` runs one target at a time ([`Self::run_by_target`]).
     pub fn run(&mut self) {
-        use crate::marglag::{Lagged, step_all, step_cross, step_xx, wait};
+        use crate::marglag::{Lagged, step_cross, step_xx, wait};
         let job = self.job;
+        if !job.shared {
+            self.run_by_target();
+            return;
+        }
         let d = job.d;
         let (p, n_targets, n_lags) = (job.p, job.n_targets, job.cross_of.len());
         let (j0, j1) = (self.j.start, self.j.end);
         let mut at = Vec::new();
-        let mut dx = Vec::with_capacity(if job.shared { j1 - j0 } else { 0 });
+        let mut dx = Vec::with_capacity(j1 - j0);
         for r in 0..d.n {
             let x = &d.xs[r * p + j0..r * p + j1];
             let mixes = &d.mixes[r * n_targets..(r + 1) * n_targets];
-            if n_lags > 0 && job.shared {
+            if n_lags > 0 {
                 // One block of feature moments: the feature's autocovariance
                 // at each lag once, with the row's mix, and each present
                 // target's cross terms with its own, as
@@ -2127,88 +2132,113 @@ impl<'a> MarginalShard<'a> {
                         );
                     }
                 }
-            } else if n_lags > 0 {
-                let backs = &d.backs[r * n_lags..(r + 1) * n_lags];
-                for (t, mix) in mixes.iter().enumerate() {
-                    let Some(m) = *mix else {
-                        continue;
-                    };
-                    for (li, (&back, &ci)) in backs.iter().zip(job.cross_of).enumerate() {
-                        let xx = li * n_targets + t;
-                        let Some(src) = back else {
-                            // Nothing that far back yet: the moments age
-                            // and wait.
-                            wait(m.a, self.cxx[xx]);
-                            if let Some(ci) = ci {
-                                wait(m.a, self.cxy[ci * n_targets + t]);
-                                wait(m.a, self.cyx[ci * n_targets + t]);
-                            }
-                            continue;
-                        };
-                        let lagged = Lagged {
-                            a: m.a,
-                            b: m.b,
-                            dy_now: m.dy,
-                            dy_lag: d.dy_lag[(r * n_targets + t) * n_lags + li],
-                            x,
-                            x_lag: &job.row_x(src)[j0..j1],
-                            mx: self.mx[t],
-                            mx_lo: self.mx_lo[t],
-                        };
-                        match ci {
-                            Some(ci) => step_all(
-                                lagged,
-                                self.cxx[xx],
-                                self.cxy[ci * n_targets + t],
-                                self.cyx[ci * n_targets + t],
-                            ),
-                            None => step_xx(lagged, self.cxx[xx]),
-                        }
-                    }
-                }
             }
-            if let (Some(u), Some((edges, off))) = (d.u[r], job.bins) {
-                // Each feature's bin once a row, then every target's cells.
-                crate::margbins::bin_offsets_in(edges, off, j0, x, &mut at);
-                for t in 0..n_targets {
-                    let Some(v) = d.ys[r * n_targets + t].filter(|v| v.is_finite()) else {
-                        continue;
-                    };
-                    self.wrote |= crate::margbins::update_cells(
-                        u,
-                        v,
-                        &at,
-                        self.w[t],
-                        self.mean[t],
-                        self.m2[t],
-                        self.mean_lo[t],
-                    );
-                }
-            }
-            if job.shared {
-                // One block of feature moments, and no runs: `"shared"`
-                // takes no window.
-                pair_kernel_shared(
-                    d.shared[r],
-                    mixes,
-                    x,
-                    self.mx[0],
-                    self.mx_lo[0],
-                    self.sxx[0],
-                    &mut self.sxy,
-                    &mut dx,
-                );
-                continue;
-            }
-            for (t, mix) in mixes.iter().enumerate() {
-                let Some(m) = *mix else {
+            self.cells(r, &mut at);
+            // One block of feature moments, and no runs: `"shared"` takes no
+            // window.
+            pair_kernel_shared(
+                d.shared[r],
+                mixes,
+                x,
+                self.mx[0],
+                self.mx_lo[0],
+                self.sxx[0],
+                &mut self.sxy,
+                &mut dx,
+            );
+        }
+    }
+
+    /// [`Self::run`] under `"per_target"`: the bins' cells row by row, then
+    /// one target at a time through every held row, its lags, runs and pair
+    /// moments in `step`'s order on each. A target's slice of the range then
+    /// stays in cache through the batch, where row by row every target's
+    /// slice passed through the cache once a row (docs/PERFORMANCE.md §39).
+    /// The numbers are the same: a target's pairs read nothing that another
+    /// target's pairs or the bins' cells write, so each pair still takes
+    /// every row in order, and its lags still read its means before the row.
+    fn run_by_target(&mut self) {
+        use crate::marglag::{Lagged, step_all, step_xx, wait};
+        let job = self.job;
+        let d = job.d;
+        let (p, n_targets, n_lags) = (job.p, job.n_targets, job.cross_of.len());
+        let (j0, j1) = (self.j.start, self.j.end);
+        let mut at = Vec::new();
+        for r in 0..d.n {
+            self.cells(r, &mut at);
+        }
+        for t in 0..n_targets {
+            for r in 0..d.n {
+                let Some(m) = d.mixes[r * n_targets + t] else {
                     continue;
                 };
+                let x = &d.xs[r * p + j0..r * p + j1];
+                let backs = &d.backs[r * n_lags..(r + 1) * n_lags];
+                for (li, (&back, &ci)) in backs.iter().zip(job.cross_of).enumerate() {
+                    let xx = li * n_targets + t;
+                    let Some(src) = back else {
+                        // Nothing that far back yet: the moments age and
+                        // wait.
+                        wait(m.a, self.cxx[xx]);
+                        if let Some(ci) = ci {
+                            wait(m.a, self.cxy[ci * n_targets + t]);
+                            wait(m.a, self.cyx[ci * n_targets + t]);
+                        }
+                        continue;
+                    };
+                    let lagged = Lagged {
+                        a: m.a,
+                        b: m.b,
+                        dy_now: m.dy,
+                        dy_lag: d.dy_lag[(r * n_targets + t) * n_lags + li],
+                        x,
+                        x_lag: &job.row_x(src)[j0..j1],
+                        mx: self.mx[t],
+                        mx_lo: self.mx_lo[t],
+                    };
+                    match ci {
+                        Some(ci) => step_all(
+                            lagged,
+                            self.cxx[xx],
+                            self.cxy[ci * n_targets + t],
+                            self.cyx[ci * n_targets + t],
+                        ),
+                        None => step_xx(lagged, self.cxx[xx]),
+                    }
+                }
                 if let (Some(row), Some(values)) = (m.runs_row, self.runs.get_mut(t)) {
                     crate::runs::track_slots(values, self.runs_start[t], x, row);
                 }
                 pair_kernel(m, x, self.mx[t], self.mx_lo[t], self.sxx[t], self.sxy[t]);
             }
+        }
+    }
+
+    /// Held row `r`'s cells in the bins, where it writes any: each feature's
+    /// bin once, then every present target's cell.
+    fn cells(&mut self, r: usize, at: &mut Vec<usize>) {
+        let job = self.job;
+        let d = job.d;
+        let (Some(u), Some((edges, off))) = (d.u[r], job.bins) else {
+            return;
+        };
+        let (p, n_targets) = (job.p, job.n_targets);
+        let (j0, j1) = (self.j.start, self.j.end);
+        let x = &d.xs[r * p + j0..r * p + j1];
+        crate::margbins::bin_offsets_in(edges, off, j0, x, at);
+        for t in 0..n_targets {
+            let Some(v) = d.ys[r * n_targets + t].filter(|v| v.is_finite()) else {
+                continue;
+            };
+            self.wrote |= crate::margbins::update_cells(
+                u,
+                v,
+                at,
+                self.w[t],
+                self.mean[t],
+                self.m2[t],
+                self.mean_lo[t],
+            );
         }
     }
 }

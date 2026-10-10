@@ -3645,7 +3645,8 @@ stream's, not the model's (§24). This section measures what is left: how
 much of the model's cost per target is the state's traffic. **A seventh
 of it for the moments and a fifth with lags, and a loop order that keeps
 the state in registers does not win it back.** A loop order that keeps one
-target's slice in the L1 cache wins most of it.
+target's slice in the L1 cache wins most of it, and a sharded `marginal`
+now steps that way.
 
 #### The model's slope and the stream's intercept
 
@@ -3791,6 +3792,67 @@ three, and loses 5% at one, where copying each held row costs more than
 the traffic saved. A tile's shape matters: 256 features × 30 targets ran
 1.3 to 1.6 times as slow as row by row.
 
+#### Built: a sharded `marginal` steps one target at a time
+
+A sharded flush (§25) gave each range of features to a `MarginalShard`,
+which stepped its pairs row by row, every target in each row. Under
+`"per_target"` it now steps one target through every held row, then the
+next (`MarginalShard::run_by_target`). The bins' cells take every held row
+first, since they read and write nothing a pair does. A target's pairs read
+nothing that another target's pairs write. So each pair still takes every
+row in order, its lags still read its means before the row, and every
+number is the same to the bit. `a_sharded_step_is_the_unsplit_step_to_the_bit`
+holds the state's bytes to the unsplit model's, and it fails with a pair's
+moments moved ahead of its lags. `"shared"` keeps its order, since its
+feature moments step once a row, after every target's covariance.
+
+`marg_bench shards=` on one thread, the build before and this one
+interleaved, three rounds, best of each, in milliseconds. The checksum was
+equal in every shape:
+
+| shape, one thread | ranges | before | after | ratio |
+|---|---:|---:|---:|---:|
+| 10,000 features, 30 targets | 40 | 63.1 | 48.2 | 0.76 |
+| 30,000 features, 30 targets | 118 | 148.0 | 113.9 | 0.77 |
+| 1,000 features, 30 targets | 4 | 56.6 | 46.0 | 0.81 |
+| 10,000 features, 30 targets | 10 | 54.9 | 49.2 | 0.90 |
+| 10,000 features, 10 targets | 40 | 33.6 | 33.9 | 1.01 |
+| 10,000 features, 3 targets | 40 | 18.8 | 18.9 | 1.01 |
+| 10,000 features, 1 target | 40 | 24.6 | 24.3 | 0.99 |
+| 10,000 features, 9 targets, 16 bins | 28 | 39.5 | 37.2 | 0.94 |
+| 10,000 features, 9 targets, 6 lags (1 cross) | 28 | 186.8 | 180.2 | 0.96 |
+| 10,000 features, 30 targets, 3 lags | 40 | 231.7 | 233.4 | 1.01 |
+| 2,000 features, 9 targets, 16 bins, 3 lags (1 cross) | 10 | 414.1 | 390.5 | 0.94 |
+| 10,000 features, 30 targets, unsplit | — | 54.7 | 55.0 | 1.01 |
+
+**It pays where a range's state for every target outgrows L1.** At 40
+ranges and thirty targets a range held 240 KB, and one target's slice of
+it 8 KB. At ten targets a range held 80 KB, inside L1 already, and nothing
+moved. The unsplit model runs none of this code, and its time did not move.
+
+Through the bank, `ModelBank.fit_predict` at 10,000 features with the two
+builds' extensions swapped in turn, three rounds of three calls, the best
+of each build, in milliseconds. The pairs' frame was equal to the byte in every
+shape:
+
+| shape | threads | `shards` | before | after | ratio |
+|---|---:|---|---:|---:|---:|
+| moments, 30 targets, 1,000 rows | 14 | `"auto"` | 69.4 | 59.4 | 0.86 |
+| 3 lags, 30 targets, 300 rows | 14 | `"auto"` | 61.3 | 49.9 | 0.81 |
+| moments, 9 targets, 1,000 rows | 14 | `"auto"` | 47.6 | 46.8 | 0.98 |
+| 6 lags (1 cross), 16 bins, 9 targets, 300 rows | 14 | `"auto"` | 84.1 | 82.3 | 0.98 |
+| moments, 30 targets, 1,000 rows | 4 | `"auto"` | 81.2 | 76.0 | 0.94 |
+| 3 lags, 30 targets, 300 rows | 4 | `"auto"` | 85.7 | 78.2 | 0.91 |
+| moments, 9 targets, 1,000 rows | 4 | `"auto"` | 51.0 | 48.7 | 0.96 |
+| 6 lags (1 cross), 16 bins, 9 targets, 300 rows | 4 | `"auto"` | 106.7 | 102.3 | 0.96 |
+| moments, 30 targets, 1,000 rows | 1 | 40 | 222.5 | 203.8 | 0.92 |
+| moments, 30 targets, 1,000 rows | 1 | none | 217.4 | 216.0 | 0.99 |
+
+The lags gain on the pool, where on one thread they did not. The threads
+of a cluster share its L2, and a slice kept in L1 leaves that bandwidth
+to the others. That is the likely reason, inferred and not measured here.
+The load averages were 9 to 15 through both tables.
+
 #### Not built: a pair-major run for the unsplit model
 
 **Recommended: do not build E74's run.** The slope is about 85%
@@ -3801,6 +3863,9 @@ the model's slope at ten targets and more. That is 9% of a call at
 have it, the unsplit `step` would hold rows as `step_sharded` does, with up
 to 8 MB of features a model while the bank runs it. It would also size its
 tile to this machine's 128 KB L1, where many x86 cores have 32 or 48 KB.
+A user who wants the tiled order on one thread has it already: `shards`
+set to a count runs it, at 0.94 of the unsplit call's time with thirty
+targets (above).
 
 ## Releases compared, and slowdowns bisected
 
