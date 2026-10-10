@@ -1605,8 +1605,8 @@ The output names task 144 renamed:
 ### Tests and documents
 
 - Every mutant that survived the push to `5cb8f7e` is caught by a test or
-  listed with its reason (task 234): 342 survivors, 316 caught by tests,
-  35 equivalent and 2 tolerated; the cut Cholesky factor and the threaded
+  listed with its reason (task 234): 342 survivors, 297 caught by tests,
+  39 equivalent and 2 tolerated, 4 in `lars.rs` left for a decision; the cut Cholesky factor and the threaded
   Gram merge are held to faer's on every architecture, not only aarch64.
   The diagnostics page gives each model's CUSUM spread and the share of
   breaks it finds.

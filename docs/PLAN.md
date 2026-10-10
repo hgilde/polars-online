@@ -9290,8 +9290,8 @@ tick, and that the series holding it up has a count near 1.
 - [x] 234. **The mutants that survived the push of `5cb8f7e`** -- its
       Mutants job ran complete (3,088 mutants on the changed lines, 111
       shards): 342 survived, 4 timed out. *Done 2026-10-10* (four workers):
-      tests for 316, 35 more listed equivalent and 2 tolerated (with
-      reasons), the 4 timeouts infinite loops the mutants make. Defects
+      tests for 297, 39 listed equivalent and 2 tolerated (with
+      reasons), 4 left for task 236, the 4 timeouts infinite loops the mutants make. Defects
       fixed: `audit`'s MAD past `distinct_cap` stopped bisecting after 200
       halvings (one value at 1e70 beside a spread of 1 read a MAD of 6.2e9,
       at 1e100 6.2e39; it now bisects to neighbouring doubles); `lasso_path`
