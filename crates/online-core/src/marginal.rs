@@ -1539,7 +1539,7 @@ impl Marginal {
         let d = std::mem::take(&mut self.defer);
         let (p, n_targets) = (self.cfg.n_features, self.cfg.n_targets);
         let count = shards.count.clamp(1, p.max(1));
-        let cuts: Vec<usize> = (0..=count).map(|k| k * p / count).collect();
+        let cuts = shard_cuts(p, count);
         let cross_of = self.lag.as_ref().map(|l| l.cross_of()).unwrap_or_default();
         let tracks_runs = d
             .mixes
@@ -1890,6 +1890,25 @@ const BATCH_BYTES: usize = 8 << 20;
 /// Rows a batch of `p` features holds before it is flushed.
 fn batch_rows(p: usize) -> usize {
     (BATCH_BYTES / (8 * p.max(1))).clamp(1, BATCH_ROWS)
+}
+
+/// Where a flush cuts `p` features into `count` ranges: evenly, with each
+/// cut between two ranges moved down to an even feature where every range
+/// would keep three or more, so it keeps two or more. A range that starts
+/// on an odd feature reads each of its slices a double off the 16-byte
+/// boundary a vector load of two doubles is aligned to. Even cuts took 9
+/// to 16% off a flush of 28 ranges of 10,000 features, each 357 or 358
+/// wide, whatever the targets, lags or bins (docs/PERFORMANCE.md §39).
+/// Where the cuts fall moves no number: each range steps its own pairs.
+fn shard_cuts(p: usize, count: usize) -> Vec<usize> {
+    let even = p >= 3 * count;
+    (0..=count)
+        .map(|k| match k * p / count {
+            _ if k == count => p,
+            cut if even => cut / 2 * 2,
+            cut => cut,
+        })
+        .collect()
 }
 
 /// A pair's moments on one row, in nanoseconds on one thread, and what

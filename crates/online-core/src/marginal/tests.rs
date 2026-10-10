@@ -2587,7 +2587,13 @@ fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
             with(&|c| {
                 c.bins = Some(Box::new(crate::BinCfg {
                     n_bins: 3,
-                    edges: Some((0..p).map(|j| vec![-0.5 + j as f64 * 0.1, 0.5]).collect()),
+                    // A tenth higher a feature, wrapping before the first
+                    // edge reaches the second at ten features.
+                    edges: Some(
+                        (0..p)
+                            .map(|j| vec![-0.5 + (j % 9) as f64 * 0.1, 0.5])
+                            .collect(),
+                    ),
                     rule: crate::BinRule::Quantile,
                     warm_rows: 2,
                     budget_mib: None,
@@ -2742,6 +2748,83 @@ fn a_sharded_step_is_the_unsplit_step_to_the_bit() {
                     "{name}, {count} shards {how}: the state differs"
                 );
             }
+        }
+    }
+}
+
+/// A flush cuts its features on even boundaries where every range would
+/// keep three or more, and evenly where one would not: 41 features in
+/// three ranges cut at 12 and 26, where an even share cuts at 13 and 27.
+#[test]
+fn a_flush_cuts_its_features_on_even_boundaries() {
+    assert_eq!(super::shard_cuts(41, 3), [0, 12, 26, 41]);
+    assert_eq!(super::shard_cuts(41, 6), [0, 6, 12, 20, 26, 34, 41]);
+    assert_eq!(super::shard_cuts(7, 2), [0, 2, 7]);
+    // Three features a range exactly: every odd cut moves.
+    assert_eq!(
+        super::shard_cuts(42, 14),
+        [0, 2, 6, 8, 12, 14, 18, 20, 24, 26, 30, 32, 36, 38, 42]
+    );
+    // Fewer than three a range: the even share, odd cuts and all.
+    assert_eq!(
+        super::shard_cuts(41, 14),
+        [0, 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41]
+    );
+    for p in 1..200 {
+        for count in 1..=p {
+            let cuts = super::shard_cuts(p, count);
+            assert_eq!((cuts[0], cuts[count]), (0, p), "{p} in {count}");
+            assert!(
+                cuts.windows(2).all(|w| w[0] < w[1]),
+                "{p} in {count}: an empty range in {cuts:?}"
+            );
+            if p >= 3 * count {
+                assert!(
+                    cuts[..count].iter().all(|c| c % 2 == 0),
+                    "{p} in {count}: an odd cut in {cuts:?}"
+                );
+                assert!(
+                    cuts.windows(2).all(|w| w[1] - w[0] >= 2),
+                    "{p} in {count}: a range of one feature in {cuts:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Cuts moved to even boundaries move no number: at 41 features, three
+/// and six ranges each cut where an even share would not, and the state
+/// is the unsplit model's to the byte in every configuration.
+#[test]
+fn a_flush_cut_on_even_boundaries_is_the_unsplit_step_to_the_bit() {
+    let p = 41;
+    let rows = shard_stream(400, p);
+    for (name, c) in shard_cfgs(p) {
+        let mut plain = Marginal::new(c.clone()).unwrap();
+        for r in &rows {
+            if r.clear {
+                OnlineModel::clear_lags(&mut plain);
+            }
+            OnlineModel::step(&mut plain, &r.x, &r.y, r.d, r.w);
+        }
+        let want = state_bytes(&plain);
+        for count in [3, 6] {
+            let shards = Shards {
+                count,
+                run: &run_in_order,
+            };
+            let mut m = Marginal::new(c.clone()).unwrap();
+            for r in &rows {
+                if r.clear {
+                    OnlineModel::clear_lags(&mut m);
+                }
+                m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+            }
+            m.flush(&shards);
+            assert!(
+                state_bytes(&m) == want,
+                "{name}, {count} shards: the state differs"
+            );
         }
     }
 }

@@ -3852,6 +3852,39 @@ of a cluster share its L2, and a slice kept in L1 leaves that bandwidth
 to the others. That is the likely reason, inferred and not measured here.
 The load averages were 9 to 15 through both tables.
 
+**A flush also cuts its features on even boundaries.** It cut `p`
+features into `count` equal shares. So 10,000 features in 28 ranges, the
+`"auto"` count on fourteen threads, made ranges of 357 or 358, and about
+half of them started on an odd feature. Such a range reads each of its
+slices a double off the 16-byte boundary that a vector load of two
+doubles is aligned to. Each cut between two ranges now moves down to an
+even feature where every range would keep three or more
+(`shard_cuts`). Where the cuts fall moves no number, which
+`a_flush_cut_on_even_boundaries_is_the_unsplit_step_to_the_bit` holds at
+41 features. On one thread at load averages of 16 to 18, against the
+build before, interleaved, four rounds, best of each, in milliseconds. The
+checksum was equal in every shape:
+
+| shape, one thread | ranges | equal shares | even cuts | ratio |
+|---|---:|---:|---:|---:|
+| 10,000 features, 30 targets | 28 | 57.5 | 48.7 | 0.85 |
+| 10,000 features, 30 targets | 39 | 57.1 | 50.7 | 0.89 |
+| 10,000 features, 30 targets, cuts even already | 40 | 52.2 | 50.4 | 0.97 |
+| 10,000 features, 9 targets | 28 | 36.5 | 31.5 | 0.86 |
+| 10,000 features, 1 target | 28 | 29.6 | 26.2 | 0.89 |
+| 10,000 features, 30 targets, 3 lags | 28 | 261.1 | 232.1 | 0.89 |
+| 10,000 features, 9 targets, 16 bins | 28 | 37.9 | 34.6 | 0.91 |
+| 4,000 features, 10 targets | 6 | 27.1 | 23.4 | 0.86 |
+| 1,000 features, 30 targets | 3 | 52.6 | 46.7 | 0.89 |
+
+Two earlier sittings ran the same shapes, the 40 ranges aside. Cuts on
+every second feature took 0.82 to 0.91 of the equal shares' time there,
+and cuts on every sixteenth 0.78 to 0.97. Through the bank on one thread
+with `shards=28` the call took 0.90 and 0.93 of the time in two sittings. On
+fourteen threads with `"auto"`, the four shapes of the bank table above
+measured 0.95 to 1.04 over six rounds. That is inside this sitting's
+noise, at load averages of 14 to 16, so no gain on the pool is shown.
+
 #### Not built: a pair-major run for the unsplit model
 
 **Recommended: do not build E74's run.** The slope is about 85%
