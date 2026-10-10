@@ -20,6 +20,12 @@ import without_pyarrow  # noqa: E402
 
 without_pyarrow.install()
 
+# On a Mac without Homebrew's libomp, the copy XGBoost and LightGBM can load
+# (tests/_site/libomp.py); nothing elsewhere.
+import libomp  # noqa: E402
+
+libomp.install()
+
 # The two tiers' Hypothesis profiles, `extended` unless HYPOTHESIS_PROFILE
 # says `essential` (tests/tiers.py, docs/TESTING.md "Two tiers").
 import tiers  # noqa: E402

@@ -80,11 +80,12 @@ def signature_of(obj: object) -> str:
 
 
 #: The names the policy calls unstable (docs/RELEASE-READINESS.md, "Keeping
-#: the API stable"): the Arrow export and the two helper modules beside the
-#: bank. Each is pinned with the label, so the snapshot says which of its
-#: lines carry no promise (review round 5, E7); `tests/test_unstable.py`
+#: the API stable"): the Arrow export, the two helper modules beside the
+#: bank, and the training inputs built on other libraries' C APIs (`gbdt`,
+#: task 242). Each is pinned with the label, so the snapshot says which of
+#: its lines carry no promise (review round 5, E7); `tests/test_unstable.py`
 #: holds each to its docstring label and to `UnstableWarning`.
-UNSTABLE = {"ArrowStruct", "corr", "sim", "fit_predict_arrow", "predict_arrow"}
+UNSTABLE = {"ArrowStruct", "corr", "gbdt", "sim", "fit_predict_arrow", "predict_arrow"}
 
 
 def unstable_label(name: str) -> str:

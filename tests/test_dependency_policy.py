@@ -250,8 +250,26 @@ def is_open(licence: str) -> bool:
     return bool(ids) and ids <= OPEN
 
 
+def _applies(requirement: str) -> bool:
+    """Whether a requirement's environment marker holds on this platform.
+    The groups' only markers name the platform: XGBoost is `xgboost` on
+    macOS and `xgboost-cpu` elsewhere (task 242), and only the one this
+    platform installs has metadata to read."""
+    if ";" not in requirement:
+        return True
+    marker = requirement.split(";", 1)[1].strip()
+    m = re.fullmatch(r"sys_platform\s*(==|!=)\s*['\"](\w+)['\"]", marker)
+    assert m, f"a marker this test does not read: {marker!r}"
+    return (sys.platform == m.group(2)) == (m.group(1) == "==")
+
+
 def _groups() -> list[str]:
-    return [_name(r) for group in ("dev", "docs") for r in META["dependency-groups"][group]]
+    return [
+        _name(r)
+        for group in ("dev", "docs")
+        for r in META["dependency-groups"][group]
+        if _applies(r)
+    ]
 
 
 def test_every_test_library_carries_an_open_licence() -> None:

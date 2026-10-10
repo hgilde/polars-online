@@ -165,6 +165,17 @@ dev = [
     # reader took eleven indented tables for tables that GitHub shows as
     # code. MIT. The floor is the version measured.
     "markdown-it-py>=4.2.0",
+    # tests/test_gbdt.py (docs/PLAN.md task 242): `po.gbdt` builds XGBoost's
+    # and LightGBM's own training objects, and is held to each library's own
+    # route by the hash of the trees. XGBoost's Linux wheel is 57 MB and
+    # requires `nvidia-nccl-cu13` (305 MB); `xgboost-cpu` is the same
+    # project's CPU-only build of the same module (5.8 MB, no NCCL), which
+    # has no macOS wheel, where `xgboost` is CPU-only already. Both
+    # Apache-2.0 (LightGBM MIT). On macOS both load `@rpath/libomp.dylib`
+    # (tests/conftest.py). The floors are the versions measured.
+    "xgboost>=3.4.1; sys_platform == 'darwin'",
+    "xgboost-cpu>=3.4.1; sys_platform != 'darwin'",
+    "lightgbm>=4.7.0",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a

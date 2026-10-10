@@ -7,8 +7,8 @@ The surfaces: the ``with_windows`` state file's format, the formula tree's
 written form (a formula target in a TOML file -- the command line's, in
 ``crates/online-cli/tests/run.rs`` -- and in a saved state),
 ``fit_predict_arrow``, ``predict_arrow`` and ``ArrowStruct``, and the modules
-``po.sim`` and ``po.corr``. Each emits under the variable and is silent
-without it.
+``po.sim``, ``po.corr`` and ``po.gbdt``. Each emits under the variable and is
+silent without it.
 """
 
 from __future__ import annotations
@@ -101,6 +101,10 @@ def unstable_calls(tmp_path) -> dict[str, Callable[[], object]]:
         ),
         "po.corr.nearest": lambda: po.corr.nearest(corr),
         "po.corr.shrink": lambda: po.corr.shrink(corr, alpha=0.3),
+        "po.gbdt.xgboost_matrix": lambda: po.gbdt.xgboost_matrix(df, label="y"),
+        "po.gbdt.lightgbm_dataset": lambda: po.gbdt.lightgbm_dataset(
+            df, label="y", params={"verbose": -1}
+        ),
     }
 
 
@@ -121,6 +125,8 @@ SURFACES = [
     "po.sim.regimes",
     "po.corr.nearest",
     "po.corr.shrink",
+    "po.gbdt.xgboost_matrix",
+    "po.gbdt.lightgbm_dataset",
 ]
 
 
@@ -189,6 +195,7 @@ def test_every_corr_function_is_labelled():
     [
         po.sim,
         po.corr,
+        po.gbdt,
         po.ArrowStruct,
         po.ModelBank.fit_predict_arrow,
         po.ModelBank.predict_arrow,

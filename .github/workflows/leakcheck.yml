@@ -71,6 +71,12 @@ jobs:
       - run: uv sync
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
 
+      # pytest collects tests/test_gbdt.py, which imports XGBoost and
+      # LightGBM, whose macOS wheels load Homebrew's libomp (ci.yml).
+      - name: OpenMP for XGBoost and LightGBM (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: leak check
         run: |
           set +e

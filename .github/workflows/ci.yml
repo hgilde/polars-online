@@ -221,6 +221,14 @@ jobs:
 
       - run: uv sync
 
+      # XGBoost's and LightGBM's macOS wheels load `@rpath/libomp.dylib` from
+      # Homebrew's prefix, and tests/test_gbdt.py imports both (task 242).
+      # Without it, tests/_site/libomp.py loads scikit-learn's bundled copy
+      # under that name; Homebrew's is the runtime a user installs.
+      - name: OpenMP for XGBoost and LightGBM (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       # Every package but online-py. With it in the build, pyo3-polars turns
       # on polars-error's `python` feature, so every test binary that links
       # polars links libpython as well. On Linux a system Python's libpython
