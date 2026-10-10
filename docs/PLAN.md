@@ -4713,7 +4713,23 @@ decision it needs, with a recommendation where there is one.
       were one bug of ours on every Python: `to_json` refused a bank with
       a column that never held a value; fixed. Re-run when polars and
       those four ship 3.15 support, then add the leg and the classifier
-      together.
+      together. **Re-measured 2026-10-10 on 3.15.0** (released 2026-10-09):
+      polars 2.0.0 carries the fixes (#29489, #29491) and every probe that
+      failed on 1.44.2 passes; every polars 1.x still fails on 3.15.0
+      (1.34.0 and 1.44.2 return the same `None`s), so the classifier will
+      need `polars>=2.0.0` on 3.15 under a `python_version` marker (the
+      user's call when it lands; recommended over raising the floor
+      everywhere). pyarrow 26.0.0 and pandas 3.0.6 ship cp315 wheels (the
+      lock's 25.0.1 cannot build without Arrow C++; a lock refresh fixes
+      it); duckdb (1.5.6, 2.0.0.dev), adbc-driver-manager 1.12.0 and
+      vowpalwabbit 9.11.9 still have none. Built from source on macOS they
+      install and work, and with them the whole suite passes on 3.15.0:
+      6,003 passed, 2 skipped (the Windows-spelling guard); without them 29
+      fail, each on the missing module. The leg waits on those three
+      wheels; then refresh the lock, add the marker, the leg and the
+      classifier together. Meanwhile CI's `lint` and `benchmark` name
+      `UV_PYTHON: "3.12"`: uv 0.13 downloads 3.15 where it finds no
+      interpreter, which the locked pyarrow cannot install on.
 
 - [ ] 118. **Ideas waiting on a need** — kept so they are not lost; none is
       to be built without one, *each the user's call*: `log_loss` in

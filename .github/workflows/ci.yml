@@ -83,6 +83,12 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # The floor, named: uv 0.13 (2026-10-09) downloads 3.15 where no
+      # interpreter is found, and the locked pyarrow 25.0.1 has no cp315
+      # wheel (PLAN task 117), so a runner image without a 3.12 would fail
+      # the sync rather than lint.
+      UV_PYTHON: "3.12"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
