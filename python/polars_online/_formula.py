@@ -6,11 +6,11 @@ An operator such as :func:`polars_online.ewm_mean` returns a genuine
 JSON after ``@po:``. So it composes with ``pl.col``, ``pl.lit``, numbers,
 ``when/then`` and the element-wise functions on either side of a Polars
 operator. At build time :func:`to_tree` reads the expression's own tree
-(``expr.meta.serialize(format="json")``, under the caller's Polars) and
-walks seven node kinds into nested lists -- ``Column``, ``Literal``,
-``BinaryExpr``, ``Function`` (log, exp, abs, sqrt, pow, clip, fill_null,
-is_null, is_not_null, negate), ``Ternary``, ``Cast`` and ``Alias`` -- with
-the operators inlined as nodes of their own:
+(``expr.meta.serialize(format="json")``, under the caller's Polars). It
+walks seven node kinds -- ``Column``, ``Literal``, ``BinaryExpr``,
+``Function`` (log, exp, abs, sqrt, pow, clip, fill_null, is_null,
+is_not_null, negate), ``Ternary``, ``Cast`` and ``Alias`` -- into nested
+lists, with the operators inlined as nodes of their own:
 
 .. code-block:: python
 

@@ -1,12 +1,13 @@
 """``ModelBank.check``: findings about the data a bank was fed, read from what
 every bank already keeps (docs/PLAN.md task 223 (a)).
 
-Nothing here runs during :meth:`~polars_online.ModelBank.fit_predict`: each
+Nothing here runs during :meth:`~polars_online.ModelBank.fit_predict`. Each
 check reads a table the bank keeps anyway (``summary``, ``describe``,
-``solve_failures``, ``last_row``, ``gram``, ``marginal``), so it costs the run
-nothing and a bank loaded from a file gives the same findings as the bank that
-saved it. Every threshold below was measured before it shipped; the docstring
-of :meth:`~polars_online.ModelBank.check` gives each one with its rates.
+``solve_failures``, ``last_row``, ``gram``, ``marginal``, ``audit``). So it
+adds no work to the run, and a bank loaded from a file gives the same findings
+as the bank that saved it. Every threshold in this module was measured before
+it shipped, and the docstring of :meth:`~polars_online.ModelBank.check` gives
+each one with its rates.
 """
 
 from __future__ import annotations
