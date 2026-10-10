@@ -9371,6 +9371,18 @@ tick, and that the series holding it up has a count near 1.
       tied column at one knot -- penalties fall strictly, a knot may add
       several; (c) a relative tie tolerance, as scikit-learn's -- moves
       paths at rounding on data with no tie.
+      **Decided 2026-10-10** (the user: "I am not worried about the amount
+      of work what is the best option", then "Yes"): (b) with ties read to
+      within rounding -- every column whose entry or exit step is within a
+      few ulps of the smallest, relative to the problem's scale, enters or
+      leaves at that one knot, as the lasso path's knots are defined (a λ
+      where the active set changes, several columns at once at a tie); a
+      strict root test also loses a tie that rounding computes at -1e-17.
+      `max_steps` counts knots, a knot may add or drop several columns, and
+      `max_active` stops at the first knot reaching q (more at a tie).
+      Checked against closed-form paths (an orthogonal design's
+      soft-thresholding, an equicorrelated design's, duplicate columns),
+      KKT at every knot, and random designs unchanged to rounding.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
