@@ -761,7 +761,7 @@ The diagnostics add, per slot:
        last value carried forward, shows as a ratio falling toward 0; a
        feature that moved, as a shift. Refused where its memory is ``inf``
        (run once, with no window), where both memories would be the whole
-       stream. On docs/DATA-ISSUES.md's frozen feed (a half-life of
+       stream. On docs/DATA-QUALITY.md's frozen feed (a half-life of
        20) the held feature's ratio fell below 0.5 2.9 half-lives in, and
        ``rls``'s slope passed 1, winding up, 52.6 half-lives in. At a
        half-life of 200, clean features read a ratio outside 0.5 to 2 on no

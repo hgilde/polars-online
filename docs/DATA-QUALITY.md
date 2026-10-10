@@ -1,4 +1,4 @@
-# Detecting data issues
+# Data quality
 
 A model fitted on a stream fits whatever it is given. It cannot tell you
 that a column is `-999` where it was not measured, or that a feed stopped
@@ -61,7 +61,7 @@ warning constant ridge x2 0.0
 warning missing ridge x3 0.3
 info heavy_tails audit x1 951.0
 info missing audit x3 0.3
-column 'x2' took one value (1) on every usable row of the stream: as a feature it is collinear with the intercept, and as a target there is nothing to learn. See https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md#constant
+column 'x2' took one value (1) on every usable row of the stream: as a feature it is collinear with the intercept, and as a target there is nothing to learn. See https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#constant
 ```
 
 Each finding names the spec that found it. The audit sees every fault:
@@ -125,7 +125,7 @@ its columns and counts nulls, NaNs and infinities apart. It also counts
 repeated values, runs of one value, persistence like a random walk's,
 heavy tails, duplicated columns and the clock's stamps. Its memory does not
 grow with the rows: about 10 KiB a column. Run it alone before choosing a
-model, or beside the models in the same pass, as the [three-fault example](#detecting-data-issues) does.
+model, or beside the models in the same pass, as the [three-fault example](#data-quality) does.
 Without one in the bank, `check()` says nothing about sentinels, frozen
 feeds, few values, random walks, tails, duplicates or the clock's spacing.
 
@@ -154,7 +154,7 @@ Install it with `pip install polars-online[numpy]`.
 **Every recipe on this page is a complete program.** It generates its data
 with the problem planted, saves it to parquet and reads it back with
 `pl.scan_parquet`, as a stream too large to hold would be read. Its output
-is shown below it. `tests/test_data_issues.py` runs each recipe and holds
+is shown below it. `tests/test_data_quality.py` runs each recipe and holds
 its output to what is shown, so none goes stale. A number past a million
 in an output is a model that has blown up, and its digits depend on the
 platform's rounding. So the test holds such a number only to being past a

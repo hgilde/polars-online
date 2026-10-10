@@ -9136,7 +9136,7 @@ tick, and that the series holding it up has a count near 1.
       Misra-Gries past `distinct_cap`; nine more codes. Review round 6 found
       `frozen` firing on clean persistent-discrete columns (§20).
 - [x] 224. **A section in the docs on detecting data issues** -- the user,
-      2026-10-08. After task 223. `docs/DATA-ISSUES.md`, linked from the
+      2026-10-08. After task 223. `docs/DATA-QUALITY.md`, linked from the
       README and from each finding's "what to do": per problem, how it
       shows (the finding, and what it does to each model if left alone,
       measured: a frozen feature's `rls` windup, a level's lost precision,
@@ -9167,9 +9167,9 @@ tick, and that the series holding it up has a count near 1.
       the fix in Polars, and the model after it, each with its output shown
       and read. Every recipe runs in a test, as for task 222, so none goes
       stale.
-      *Done 2026-10-09:* `docs/DATA-ISSUES.md`, one section per `check()`
+      *Done 2026-10-09:* `docs/DATA-QUALITY.md`, one section per `check()`
       code (each message links its section), 12 recipes held to their output
-      by `tests/test_data_issues.py`, 16 sources, task 228's result.
+      by `tests/test_data_quality.py`, 16 sources, task 228's result.
 - [x] 225. **A multithreaded product for one wide Gram** -- requested
       2026-10-08 (the user: "Fold those into the current plan additions"),
       for a workload of 10,000 features over 9.5 million rows, read as
@@ -9416,7 +9416,7 @@ tick, and that the series holding it up has a count near 1.
       the guidelines and ensuring that we prefer to have recipes as examples
       of capabilities." After tasks 127 and 235-237 merge to `main`.
       **Scope:** the README and every guide `docs/README.md` lists (RUNNER,
-      STATE-WORKFLOW, DIAGNOSTICS, DATA-ISSUES, GRAM, OUTPUTS through its
+      STATE-WORKFLOW, DIAGNOSTICS, DATA-QUALITY, GRAM, OUTPUTS through its
       generator, REGIMES, PERFORMANCE's guide part, EXTENDING, TESTING,
       RELEASE-READINESS, WRITING), `docs/README.md` itself, CONTRIBUTING and
       `llms.txt`; the records stay as written (`docs/README.md`: "A record
@@ -9438,12 +9438,16 @@ tick, and that the series holding it up has a count near 1.
       find"): a heading a casual reader scanning the README would look for
       (named by what the reader wants to do, not by the page), a short
       recipe that shows the capability, and the link to the page -- for
-      DIAGNOSTICS, DATA-ISSUES (`check()` and `audit`), GRAM, RUNNER,
+      DIAGNOSTICS, DATA-QUALITY (`check()` and `audit`), GRAM, RUNNER,
       STATE-WORKFLOW, REGIMES, PERFORMANCE and OUTPUTS, and any page that
       lands later (task 235's GBDT-ADAPTER if built); a test holds it, each
       guide in `docs/README.md`'s table linked from its own README section.
       Measured 2026-10-10 before the pass: GRAM is linked from the README
       once, DATA-ISSUES and STATE-WORKFLOW twice.
+      **Renamed 2026-10-10** (the user: "Instead of data issues we need a
+      better name"; chose "Data quality"): `docs/DATA-ISSUES.md` is
+      `docs/DATA-QUALITY.md`, its title "Data quality", its README section
+      "Checking your data's quality"; `check()` and `audit` keep their names.
 - [ ] 239. **A review of every API doc** -- the user, 2026-10-10, after
       task 238: every public docstring (the Python package, the builders in
       `_spec*.py`, `ModelBank`, `po.gram`, `po.eval`, `po.stream`, `po.corr`,

@@ -36,7 +36,7 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
   scipy.
 - **`ModelBank.check()`** (task 223): findings about what each stream was
   fed, with severity, value, threshold and a link to its section of
-  `docs/DATA-ISSUES.md`; free, the same from a state file and at any
+  `docs/DATA-QUALITY.md`; free, the same from a state file and at any
   chunking; no error or warning on 750 clean runs, every planted problem
   found.
 - **`po.spec.audit`** (task 223): what a stream's columns hold, in one pass
@@ -1628,7 +1628,7 @@ The output names task 144 renamed:
   not forty, and stops each at 160 minutes, not 100: the slowest shard of
   the last push took 83 of its 100, and the suite every mutant runs grew
   from 146 s to 209 s.
-- **`docs/DIAGNOSTICS.md` and `docs/DATA-ISSUES.md`** (tasks 222 and 224):
+- **`docs/DIAGNOSTICS.md` and `docs/DATA-QUALITY.md`** (tasks 222 and 224):
   is the model working, and can the data be learned from -- each ordered
   by question or by `check()` code, with the theory in prose and its
   sources, and runnable recipes (18 and 12) whose printed output a test

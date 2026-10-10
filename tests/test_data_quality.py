@@ -1,4 +1,4 @@
-"""``docs/DATA-ISSUES.md`` (docs/PLAN.md task 224): the page each finding of
+"""``docs/DATA-QUALITY.md`` (docs/PLAN.md task 224): the page each finding of
 ``ModelBank.check`` links to, held to the code.
 
 Every recipe on the page runs here, and prints what the page shows under it,
@@ -24,7 +24,7 @@ from polars_online import _check
 TIER = "essential"
 
 REPO = Path(__file__).resolve().parents[1]
-PAGE = REPO / "docs" / "DATA-ISSUES.md"
+PAGE = REPO / "docs" / "DATA-QUALITY.md"
 
 
 RECIPES = recipes(PAGE)
@@ -36,12 +36,12 @@ def test_the_page_has_its_recipes():
 
 
 @pytest.mark.parametrize(
-    ("line", "code", "shown"), RECIPES, ids=[f"DATA-ISSUES.md:L{line}" for line, _, _ in RECIPES]
+    ("line", "code", "shown"), RECIPES, ids=[f"DATA-QUALITY.md:L{line}" for line, _, _ in RECIPES]
 )
 def test_a_recipe_prints_what_the_page_shows(line, code, shown, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # a recipe writes its parquet file where it runs
     problems = differences(shown, run(code, PAGE))
-    assert not problems, f"DATA-ISSUES.md:{line}:\n" + "\n".join(problems)
+    assert not problems, f"DATA-QUALITY.md:{line}:\n" + "\n".join(problems)
 
 
 def test_the_comparison_holds_words_digits_and_blow_ups():
@@ -65,10 +65,10 @@ def _anchors() -> set[str]:
 
 
 def test_every_code_has_a_section_on_the_page():
-    """A finding's message links to ``DATA-ISSUES.md#<code>``, so each code
+    """A finding's message links to ``DATA-QUALITY.md#<code>``, so each code
     is an anchor there: an explicit one, or a heading whose text is the code."""
     missing = sorted(_check.CODES - _anchors())
-    assert not missing, f"codes with no anchor on docs/DATA-ISSUES.md: {missing}"
+    assert not missing, f"codes with no anchor on docs/DATA-QUALITY.md: {missing}"
 
 
 def test_the_docstring_lists_the_same_codes():
@@ -91,11 +91,11 @@ def test_every_message_ends_with_the_link_to_its_code():
     assert len(set(found["code"])) >= 20, set(found["code"])
     assert set(found["code"]) <= _check.CODES, set(found["code"]) - _check.CODES
     for code, message in found.select("code", "message").iter_rows():
-        assert message.endswith(f". See {_check.DATA_ISSUES}#{code}"), message
+        assert message.endswith(f". See {_check.DATA_QUALITY}#{code}"), message
 
 
 def test_the_link_is_the_page_on_main():
-    assert _check.DATA_ISSUES.endswith("/blob/main/docs/DATA-ISSUES.md")
+    assert _check.DATA_QUALITY.endswith("/blob/main/docs/DATA-QUALITY.md")
     assert PAGE.is_file()
 
 
@@ -104,4 +104,4 @@ def test_the_readme_links_the_page_beside_check_and_audit():
     for anchor in ("**`check()` reads these tables", "#### `audit` — what a stream's columns hold"):
         start = readme.index(anchor)
         section = readme[start : readme.index("\n#", start + len(anchor))]
-        assert "docs/DATA-ISSUES.md" in section, anchor
+        assert "docs/DATA-QUALITY.md" in section, anchor

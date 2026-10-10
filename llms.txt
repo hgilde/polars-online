@@ -145,7 +145,7 @@ Windows alike.
   is the model working, one question at a time -- calibration, breaks, robust standard
   errors, specification tests, tails, influence, feature health, model comparison,
   readiness, intervals -- each with its thresholds, cost, theory and a recipe that runs
-- [Data issues](https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md):
+- [Data quality](https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md):
   each `bank.check()` finding, what it does to a fit, and its fix in Polars
 - [Wide fits from Grams](https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md):
   one pass leaves a Gram per week; `po.gram` pools weeks, fits a ridge with its t, walks

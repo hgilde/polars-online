@@ -2007,7 +2007,7 @@ every seed. The docstring of `ModelBank.check` lists the checks with their
 thresholds. A bank keeps no count of sentinel values, frozen feeds,
 duplicated columns or the clock's gaps; an [`audit`](#audit--what-a-streams-columns-hold)
 spec does, and `check()` reads it. Each message ends with a link to the
-section of [docs/DATA-ISSUES.md](docs/DATA-ISSUES.md) on its `code`. That
+section of [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) on its `code`. That
 section shows what the problem does to each model and how to fix it with
 Polars before the bank, in a program that runs, with the theory behind it.
 
@@ -3834,7 +3834,7 @@ model])`) to check the data a fit was made from, at the cost of one more
 spec. `check()` lists an audit's findings with the models' own, and the
 docstring of `ModelBank.check` gives each threshold with the rate at which
 it found a planted problem and stayed silent on clean data.
-[docs/DATA-ISSUES.md](docs/DATA-ISSUES.md) has a recipe for each finding:
+[docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) has a recipe for each finding:
 the problem planted, the model left alone, the fix in Polars, and the model
 after it.
 

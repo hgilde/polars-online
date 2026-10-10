@@ -4,7 +4,7 @@ held to the code.
 Every recipe on the page runs here, and prints what the page shows under it,
 so a recipe and the prose that reads its output cannot drift from the library
 (docs/WRITING.md §3, "Every code block runs"). The comparison is
-``tests/doc_recipes.py``'s, which ``tests/test_data_issues.py`` uses too:
+``tests/doc_recipes.py``'s, which ``tests/test_data_quality.py`` uses too:
 the same lines and words, each number within two units of its last printed
 digit, and a number past a million held to its sign and size only. Every
 diagnostic switch a spec takes is on the page, and the README, the document
@@ -78,4 +78,4 @@ def test_the_readme_the_map_and_llms_txt_link_the_page():
     assert "docs/DIAGNOSTICS.md" in section
     assert "](DIAGNOSTICS.md)" in (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     assert "docs/DIAGNOSTICS.md" in (REPO / "llms.txt").read_text(encoding="utf-8")
-    assert "DIAGNOSTICS.md" in (REPO / "docs" / "DATA-ISSUES.md").read_text(encoding="utf-8")
+    assert "DIAGNOSTICS.md" in (REPO / "docs" / "DATA-QUALITY.md").read_text(encoding="utf-8")

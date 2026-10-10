@@ -1,5 +1,5 @@
 """The recipes of a docs page that shows each program's output under it:
-``docs/DATA-ISSUES.md`` (``tests/test_data_issues.py``) and
+``docs/DATA-QUALITY.md`` (``tests/test_data_quality.py``) and
 ``docs/DIAGNOSTICS.md`` (``tests/test_diagnostics_page.py``).
 
 Each python block of such a page is followed by a ```text block of what it

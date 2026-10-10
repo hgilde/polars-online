@@ -5,7 +5,7 @@ Every recipe on the page runs here and prints what the page shows under it,
 so a recipe and the prose that reads its output cannot drift from the library
 (docs/WRITING.md §3, "Every code block runs"). The comparison is
 ``tests/doc_recipes.py``'s, which ``tests/test_diagnostics_page.py`` and
-``tests/test_data_issues.py`` use too: the same lines and words, and each
+``tests/test_data_quality.py`` use too: the same lines and words, and each
 number within two units of its last printed digit. A line that reports a wall
 time is the machine's, so it is held to its words and its numbers are left
 free. Every function of ``po.gram`` is on the page, and the README, the

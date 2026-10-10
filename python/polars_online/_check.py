@@ -24,10 +24,10 @@ if TYPE_CHECKING:
 #: The page that explains each finding, with a recipe for it: a message ends
 #: with this address and ``#<code>``, the anchor of that code's section
 #: (docs/PLAN.md task 224).
-DATA_ISSUES = "https://github.com/hgilde/polars-online/blob/main/docs/DATA-ISSUES.md"
+DATA_QUALITY = "https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md"
 
-#: Every code a finding can carry. ``tests/test_data_issues.py`` holds it to
-#: the docstring's tables and to the anchors of ``docs/DATA-ISSUES.md``.
+#: Every code a finding can carry. ``tests/test_data_quality.py`` holds it to
+#: the docstring's tables and to the anchors of ``docs/DATA-QUALITY.md``.
 CODES = frozenset(
     [
         # read from what every bank keeps (task 223 (a))
@@ -302,7 +302,7 @@ def _spec_findings(
                 column,
                 value,
                 threshold,
-                f"{message}. See {DATA_ISSUES}#{code}",
+                f"{message}. See {DATA_QUALITY}#{code}",
                 place.get(group, -1),
             )
         )

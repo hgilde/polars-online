@@ -9,7 +9,7 @@ diagnostic. A diagnostic is a switch in the spec that adds fields to the
 model's output on every row, or a call in `po.eval` that scores an output
 after the run.
 
-[Detecting data issues](DATA-ISSUES.md) asks whether the data can be
+[Data quality](DATA-QUALITY.md) asks whether the data can be
 learned from at all. This page asks whether the model learned from it well.
 
 Here is a stream whose relationship changes halfway: the slope on `x1`
@@ -1310,7 +1310,7 @@ stops and is carried forward is still a number on every row.** A fit that
 keeps sums, such as `rls`, then sees a column that no longer varies. Under
 forgetting, the information about that coefficient decays and nothing
 replaces it, so the coefficient winds up (Åström and Wittenmark 1995).
-[Detecting data issues](DATA-ISSUES.md#constant-and-frozen-features)
+[Data quality](DATA-QUALITY.md#constant-and-frozen-features)
 measures the windup. `emit_feature_health` watches the features
 themselves, before any coefficient moves.
 
@@ -1381,7 +1381,7 @@ thousand rows before the fit showed anything.
 
 **What to do.** Fix a stale feed in the query before the bank: null each
 value older than its own sampling interval, so the model skips the rows it
-did not observe ([Detecting data issues](DATA-ISSUES.md#constant-and-frozen-features)
+did not observe ([Data quality](DATA-QUALITY.md#constant-and-frozen-features)
 has the recipe). Or use a model whose ridge does not fade, such as
 `ewridge`, which does not wind up. A `mean_shift` that stays large says the
 feature moved to a new level: a coefficient fitted at the old level may

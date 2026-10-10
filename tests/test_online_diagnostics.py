@@ -505,7 +505,7 @@ def test_feature_health_zero_weights_and_a_save():
 
 
 def test_a_held_feature_goes_quiet_long_before_rls_winds_up():
-    """docs/DATA-ISSUES.md's frozen feed: ``x1`` held from row 300 at a
+    """docs/DATA-QUALITY.md's frozen feed: ``x1`` held from row 300 at a
     half-life of 20. ``spread_ratio_x1`` falls below 0.5 within three
     half-lives; ``rls``'s slope passes 1 after about fifty."""
     rng = np.random.default_rng(3)

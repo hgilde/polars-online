@@ -735,7 +735,7 @@ three columns. Their VIFs are 399 to 816. With `x5` in the fit, the t of
 `x1` and `x2` falls from 29.1 and 22.2 to 0.3 and 0.0, while `x0`, `x3`
 and `x4` keep theirs. To read the coefficients, drop one of the three,
 combine them into one column in the query before the bank, or increase
-the ridge ([Detecting data issues](DATA-ISSUES.md#collinear)).
+the ridge ([Data quality](DATA-QUALITY.md#collinear)).
 
 ## Choosing columns on the lasso path
 
