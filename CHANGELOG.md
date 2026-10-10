@@ -18,6 +18,18 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **`po.gram.merge(..., within=True)` and `solve_subsets(..., within=True)`:
+  pooling within parts** (task 240). Each part's moments are pooled about
+  its own means, without the between-part term: the Gram of the rows
+  demeaned part by part, the within (fixed-effects) estimator. Fits give
+  their slopes and a `nan` intercept, and `coef_stats` takes one degree of
+  freedom per part. Held to the demeaned rows (1e-12) and to statsmodels
+  with a dummy per part.
+- **`solve_subsets(..., within=True, target_signs=signs)`** (task 241): a
+  sign per Gram on its targets, one column per draw, so a selection's null
+  runs by sign flips go through the native path; each draw gives the same
+  bits as negating each block's target rows. 100 null runs of 100 halves at
+  200 columns take 0.08 s.
 - **Online diagnostics: calibration, breaks, robust standard errors,
   specification, tails, influence and feature health** (task 221), each a
   spec switch with its own memory (`*_half_life`; `inf` is the run-once

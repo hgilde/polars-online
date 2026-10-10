@@ -9484,7 +9484,7 @@ tick, and that the series holding it up has a count near 1.
       pass rules of task 149), the math stated for every model (CLAUDE.md),
       and the Sphinx reference (`-W`, every page rendering); findings fixed
       where they have one answer, raised where they have options.
-- [ ] 240. **Pooling Grams within parts: block fixed effects** --
+- [x] 240. **Pooling Grams within parts: block fixed effects** --
       requested 2026-10-10 (the user: "file into the plan"). An option on
       `po.gram.merge`, and on everything that merges parts internally
       (`po.gram.solve_subsets`, `po.gram.lars_paths`), that pools the parts'
@@ -9522,7 +9522,20 @@ tick, and that the series holding it up has a count near 1.
       whose target is absent (`T_i = 0`) contributes to `C` and not to `X`,
       `V` or `T`. GRAM.md (task 237) gains the theory (fixed effects, the
       within estimator) and a recipe.
-- [ ] 241. **A sign per part on the target, under within-pooling** --
+      *Done 2026-10-10:* `merge(within=True)` and `solve_subsets(within=True)`
+      (ridge and path); the pooled Gram is the demeaned rows' (means 0,
+      `cross_moments` = `cross_centred`) and carries `within_parts` and
+      `target_within_parts`; every fit gives the slopes and a `nan` intercept
+      (the coordinator's call: a fixed-effects fit's intercepts are per
+      part), and `coef_stats` loses one degree of freedom per part; a union
+      of several parts refuses a within part. `lars_paths` merges nothing,
+      so it takes no option and reads a within Gram it is handed; the
+      merge-then-path case is `solve_subsets(..., path=..., within=True)`.
+      Held to the demeaned rows (1e-12) and statsmodels OLS with a dummy per
+      part. Measured: a slow factor whose weekly means correlate with the
+      target's at -0.10 by chance reads t = -3.4 pooled as a union, -0.3
+      within (Fama-MacBeth 0.2). GRAM.md *Pooling within blocks*.
+- [x] 241. **A sign per part on the target, under within-pooling** --
       requested 2026-10-10, with task 240. A selection's null calibration
       negates each block's target at random and reruns the whole selection,
       to measure what the procedure selects where no effect keeps its sign
@@ -9534,6 +9547,12 @@ tick, and that the series holding it up has a count near 1.
       merge a negated part also moves the between-part term, so it is
       refused there, by name. Checks: against negating each part's target
       rows and refitting; one draw of all +1 equals no signs.
+      *Done 2026-10-10:* `target_signs` (Grams x draws, ±1, within only;
+      refused otherwise), each draw pooling only the cross-moments again;
+      each draw the same bits as negated target rows. 100 null runs of 100
+      halves at 200 columns take 0.08 s with the real run (a Python loop
+      about 0.08 s a draw). GRAM.md *A null for the selection, by sign
+      flips*.
 - [ ] 242. **The GBDT input component**
       (`docs/GBDT-ADAPTER.md` §6, task 235). Recommended: one Rust component,
       loading XGBoost's and LightGBM's shared libraries from the user's
