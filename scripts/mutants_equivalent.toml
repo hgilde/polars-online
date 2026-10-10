@@ -367,22 +367,15 @@ more, so the branch is taken either way"""
 file = "crates/online-core/src/marginal.rs"
 function = "MarginalShard<'a>::run"
 mutation = "replace > with >="
-line_has = "if n_lags > 0 && job.shared {"
-why = """with no lags the block walks `d.backs[0..0]` and does nothing (the \
-`d.shared[r]` it reads first exists for every held row under shared \
-moments), and what follows the `if` runs either way"""
+line_has = "            if n_lags > 0 {"
+why = """the block runs under shared moments alone; with no lags it walks \
+`d.backs[0..0]` and does nothing (the `d.shared[r]` it reads first exists \
+for every held row under shared moments), and what follows the `if` runs \
+either way"""
 
 [[equivalent]]
 file = "crates/online-core/src/marginal.rs"
-function = "MarginalShard<'a>::run"
-mutation = "replace > with >="
-line_has = "} else if n_lags > 0 {"
-why = """with no lags each present target's loop walks the empty `backs` and \
-does nothing"""
-
-[[equivalent]]
-file = "crates/online-core/src/marginal.rs"
-function = "MarginalShard<'a>::run"
+function = "MarginalShard<'a>::cells"
 mutation = "replace |= with &="
 line_has = "self.wrote |= crate::margbins::update_cells("
 why = """`wrote` is read only by a `debug_assert!` in `flush_rows`, which holds \
