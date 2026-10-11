@@ -11,10 +11,10 @@ never the rows. It can pool any set of weeks, fit a ridge with its t, walk
 a lasso path, or count how often each column is chosen on halves of the
 weeks. The module `po.gram` does each of these.
 
-The README's [The running sums behind a fit](../README.md#the-running-sums-behind-a-fit)
-introduces a Gram's arrays, and the reference of
+`bank.gram()` and `po.gram` need numpy, an optional extra, which
+`pip install polars-online[numpy]` adds. The reference of
 [`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
-states each of them and the identities between them.
+states each array and the identities between them.
 
 Here is a stream of 40 weeks with 200 features, of which six matter. One
 pass leaves a Gram per week, and the fit pools all forty. The spec's
@@ -121,14 +121,11 @@ These are the words of the library that the page uses:
 | active set, knot | on a lasso path, the columns whose coefficient is not 0, and a penalty at which that set changes |
 | half | 20 of the 40 weeks, drawn at random, and their pooled Gram |
 
-The keys of a Gram that the recipes read, in the names the formulas on
-this page give them (the README's
-[The running sums behind a fit](../README.md#the-running-sums-behind-a-fit)
-lists every key):
+The keys of a Gram, in the names the formulas on this page give them:
 
 | key | what it holds |
 |---|---|
-| `group` | the block's key, as text: here the week's Monday |
+| `group`, `instance` | the block's key, as text: here the week's Monday. And the half-life's suffix of the output's field names, such as `"@h500"`, or `""` for a spec with one half-life |
 | `columns`, `targets` | the names along each axis |
 | `weight_sum`, `n_kish` | the weight behind the Gram, `W`, and its Kish size |
 | `means` | the columns' weighted means, `m` |
@@ -137,6 +134,7 @@ lists every key):
 | `cross_centred` | per target, the same moments centred at the columns' means and the target's own mean: `c`, the vector a fit is solved from |
 | `means_by_target` | per target, the columns' means over the rows the target was present on |
 | `target_weights`, `target_means`, `target_vars`, `target_n_kish` | per target, its weight, its mean, its variance `V` and its Kish size |
+| `lags`, `lag_comoments` | for an `ew_cov(lags=[...])`, the lags and the co-moments of each column with every column that many rows back. `None` for any other spec |
 
 What you can do with a set of Grams, and the calls that do it:
 
@@ -161,7 +159,8 @@ What you can do with a set of Grams, and the calls that do it:
 A fit can read a Gram in place of its rows for two reasons. Every
 least-squares fit on the Gram's columns is a function of the Gram, and
 the Gram's moments are centred, so they keep their digits however far a
-column sits from zero. Some questions need each row, and no Gram answers
+column sits from zero. A Gram holds the rows its spec weighs, as of the
+last row it learned. Some questions need each row, and no Gram answers
 them.
 
 ### Every least-squares fit is a function of the Gram
@@ -221,6 +220,22 @@ count. Under a decay, `n_kish = W² / Σ w²` is the number of equally
 weighted rows the moments are worth (Kish 1965), and a standard error
 divides by it.
 
+### Which rows a Gram holds, and as of when
+
+**A Gram holds the rows its model learned, at the weights its decay gave
+them.** Under `half_life=float("inf")` that is every row since the group
+began, each weighing the same. Under a finite half-life the older rows
+weigh less, and `weight_sum` falls as the stream goes quiet.
+
+**Under a `window_size`, a Gram holds only the window.** Every array is
+the window's, the target moments included, so `po.gram.solve` on it fits
+the window as it stood after the last row.
+
+**`bank.gram()` is as of the last row, and `bank.coef()` as of the last
+solve.** A model solves on the schedule its `solve_every` sets, so between
+two solves its coefficients lag the Gram. Solve the Gram with
+`po.gram.solve` for the fit as of the last row.
+
 ### What a Gram cannot answer
 
 A question that needs each row's residual, or a column the Gram does not
@@ -256,9 +271,8 @@ collected as fast as the bank can:
 **A block's Gram has `k²` entries, whatever its rows.** A week of 504
 rows at 201 columns has a co-moment matrix of 323,208 bytes, and so has a
 week of a million rows. At 10,000 columns a block is 800 MB in float64.
-The workload these tools were built for, 9.5 million rows read as 38
-weekly blocks of 10,000 columns, is 30 GB of Grams ([PLAN](PLAN.md)
-tasks 225 and 229). The bank holds the Gram of every group it has seen,
+These tools were built for 9.5 million rows read as 38 weekly blocks of
+10,000 columns, which is 30 GB of Grams. The bank holds the Gram of every group it has seen,
 so a pass needs about `8k²` bytes for each block it holds. With
 `group_close`, the bank writes each finished week out and holds one week
 at a time. [A compact Gram](#a-compact-gram) halves or quarters what
@@ -661,8 +675,8 @@ with `C = Q diag(e) Q'`, each penalty's slopes are
 `Q diag(1 / (e + λ)) Q' c`. To reproduce the coefficients a spec reports
 in `bank.coef()`, pass its `ridge` and `standardize`. `solve` does not
 reproduce a spec's `ridge_scale="sum"` or `coef_prior`, a ridge on a
-decaying scale and a prior other than zero, as the README's
-[`po.gram` table](../README.md#the-running-sums-behind-a-fit) says.
+decaying scale and a prior other than zero. Read those fits from
+`bank.coef()`.
 
 **`coef_stats` computes least squares' standard errors from the Gram:**
 
@@ -678,11 +692,12 @@ With `half_life=float("inf")` and every row's weight 1, `n` is the row
 count, and these are the classical standard errors: the recipe gets the
 ones numpy computes from the rows, to within 1e-9. The intercept's is
 least squares' too: `ȳ` and the slopes are uncorrelated, so the variance
-of `b_0 = ȳ − m'b` is `Var[ȳ] + m' Var[b] m`. **Without an intercept the
-statistics are a fit through the origin's**, read from the raw moments:
-`C` is `E[z z']`, `c` is `E[z y]` and `V` is `E[y²]`, so `resid_var` is
-the residuals' mean square and `r2` is uncentred, as statsmodels reports
-an OLS fit with no constant.
+of `b_0 = ȳ − m'b` is `Var[ȳ] + m' Var[b] m`.
+
+**Without an intercept the statistics are a fit through the origin's,
+read from the raw moments.** There `C` is `E[z z']`, `c` is `E[z y]` and
+`V` is `E[y²]`. So `resid_var` is the residuals' mean square, and `r2` is
+uncentred, as statsmodels reports an OLS fit with no constant.
 
 **The t carries least squares' assumptions, whatever fit it is given:**
 
@@ -1044,9 +1059,9 @@ reading for that.
 **`po.gram.solve_subsets(..., path=...)` gives the same paths in one
 call.** It reads the Grams once into memory the call holds, then merges
 each half and walks its path there, on the bank's thread pool, without a
-Python copy of a matrix per half. Its ridge form, on 38 Grams and 100 subsets at 2,000
-columns, took 3.0 s where a loop of `merge`, `solve` and `coef_stats`
-took 76 s ([PLAN](PLAN.md) task 227).
+Python copy of a matrix per half. Its ridge form, on 38 Grams and 100
+subsets at 2,000 columns, took 3.0 s where a loop of `merge`, `solve` and
+`coef_stats` took 76 s.
 
 ```python
 import time
@@ -1648,4 +1663,4 @@ Each claim above that is not measured here rests on one of these.
 | Wooldridge, J. M. (2010). *Econometric Analysis of Cross Section and Panel Data*, 2nd ed. MIT Press. | the within, or fixed-effects, estimator (chapter 10) |
 | Winkler, A. M., Ridgway, G. R., Webster, M. A., Smith, S. M. and Nichols, T. E. (2014). Permutation inference for the general linear model. *NeuroImage* 92, 381–397. | sign flipping as a permutation test, flipping whole blocks, and the maximum statistic over many tests |
 | Zou, H. and Hastie, T. (2005). Regularization and variable selection via the elastic net. *Journal of the Royal Statistical Society, Series B* 67(2), 301–320. | the elastic net |
-| [PERFORMANCE §37 and §38](PERFORMANCE.md#37-one-wide-gram-on-several-threads-task-225-2026-10-08), [PLAN](PLAN.md) tasks 225 to 229 and 231 | `gram_threads`, a solve's bits in any pool, `lars_path`, `solve_subsets` and the compact forms, as measured when they were built |
+| [PERFORMANCE §37 and §38](PERFORMANCE.md#37-one-wide-gram-on-several-threads-task-225-2026-10-08) | `gram_threads`, and a solve's bits in any pool, as measured |
