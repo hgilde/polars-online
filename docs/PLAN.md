@@ -9894,7 +9894,7 @@ tick, and that the series holding it up has a count near 1.
       to undo); (10) the approval of the PyPI upload is the user's click,
       not the coordinator's; (11) install from PyPI into a clean venv and
       check the three versions and a fit.
-- [ ] 249. **Step comments in the examples (before 1.0)** -- the user,
+- [x] 249. **Step comments in the examples (before 1.0)** -- the user,
       2026-10-11: "Some of the example code is missing the few one-line
       comments to explain large code blocks in sections." WRITING §3's rule
       ("a long example names its steps in brief comments") was lost in the
@@ -9905,6 +9905,16 @@ tick, and that the series holding it up has a count near 1.
       unchanged, printed output held by the recipe tests) and a test that
       holds the rule; merged before the 1.0 bump, since the README is
       PyPI's page.
+      *Done 2026-10-11* (`477a956`, merged): 326 one-line step comments in
+      128 blocks (README 100, MODELS 49, GRAM 47, DATA-QUALITY 42,
+      DIAGNOSTICS 38, WINDOWS 22, GBDT 11, STATE-WORKFLOW 11, PERFORMANCE 3,
+      two `po.gram` docstrings 3), code unchanged token for token, printed
+      output held by the recipe tests. `tests/test_example_steps.py`: a
+      python block of 10 statements or more has no run of more than 8
+      without a full-line comment (statements by `tokenize`'s logical
+      lines, so a multi-line call is one step); 99 of 107 such blocks broke
+      it before, none after; it fails on the old docs. WRITING §3 and §6
+      name it.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task

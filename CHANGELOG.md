@@ -1817,6 +1817,12 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **Every long example names its steps** (task 249): 326 one-line step
+  comments across the README and the guides, as WRITING's rule asks ("a
+  long example names its steps in brief comments"); the code and its
+  printed output are unchanged. `tests/test_example_steps.py` holds it: a
+  block of ten statements or more has no run of more than eight without a
+  comment.
 - **Faster dev iterations** (task 245). The gate runs tests in parallel:
   cargo-nextest where installed (with `cargo test --doc` beside it) and
   pytest-xdist, in as many processes as the machine has cores free (2 to
