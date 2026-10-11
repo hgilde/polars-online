@@ -324,6 +324,19 @@ impl AnyModel {
         }
     }
 
+    /// Whether the model is still holding its first rows to seed itself
+    /// from, its `warm_rows`, and so reports nothing: `kmeans`' centres,
+    /// `hmm`'s states, `bocpd`'s prior. Every other model has no such
+    /// buffer.
+    pub fn seeding(&self) -> bool {
+        match self {
+            AnyModel::KMeans(m) => !m.seeded(),
+            AnyModel::Hmm(m) => !m.seeded(),
+            AnyModel::Bocpd(m) => m.warming(),
+            _ => false,
+        }
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ewridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -864,11 +877,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_features: spec.k(),
                 decay,
                 stats,
-                // Floored at 2: a variance needs two rows, so a spec asking
-                // for fewer (including 0) is quietly raised rather than
-                // refused -- a covariance below two rows has nothing to
-                // report (review 2026-09-18, minor).
-                min_weight: spec.min_periods_per_target()[0].max(2.0),
+                // Floored at 2 (`gate_floors`): a covariance below two rows
+                // has nothing to report (review 2026-09-18, minor).
+                min_weight: gate_floors(spec)[0],
                 precision_prior: *precision_prior,
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
                 pca: pca.unwrap_or(0),
@@ -2085,15 +2096,20 @@ pub fn settled_weight(weight: f64, first: f64, settled: f64) -> f64 {
 
 /// The reasons a row's predictions are withheld, as `withheld_reason`
 /// spells them: the code the row buffer carries (0 for none) and the name
-/// the output shows. The order is the precedence when several apply.
-pub const WITHHELD_REASONS: [&str; 3] = [
+/// the output shows. The order is the precedence when several apply. A
+/// state's last row keeps the code, so a new reason takes the next one:
+/// the model's own warm-up (`warm_rows`) came last, and no model that has
+/// it has the noise gate before it.
+pub const WITHHELD_REASONS: [&str; 4] = [
     "below_min_settled_frac",
     "below_min_weight",
     "above_max_error_inflation",
+    "below_warm_rows",
 ];
 const REASON_SETTLED: u8 = 1;
 const REASON_MIN_PERIODS: u8 = 2;
 const REASON_INFLATION: u8 = 3;
+const REASON_WARM_ROWS: u8 = 4;
 
 /// The settled fraction at which a readiness notice judges a stream
 /// (docs/WARMUP-AND-CONVERGENCE.md §3): the one rule all three notices
@@ -2162,6 +2178,22 @@ impl Unmet {
             settled_weight(self.weight, self.row_weight, self.settled) < solve_floor(spec)
         }
     }
+}
+
+/// The floor each target's outputs are gated at: the spec's `min_weight`,
+/// or its kind's default, with `ew_cov`'s raised to 2. A variance needs two
+/// rows, so a lower one, 0 included, is raised rather than refused, and the
+/// model and the gate read the same floor: the rows it holds back say so,
+/// `below_min_weight`, where the model's floor alone left them with no
+/// reason.
+fn gate_floors(spec: &Spec) -> Vec<f64> {
+    let mut floors = spec.min_periods_per_target();
+    if matches!(spec.model, ModelKind::EwCov { .. }) {
+        for f in &mut floors {
+            *f = f.max(2.0);
+        }
+    }
+    floors
 }
 
 /// The weight a model with a noise gate needs before it solves at all: a
@@ -2976,7 +3008,7 @@ impl Stream {
                 last_session: None,
                 coef_cadence: CoefCadence::default(),
             },
-            min_weight: spec.min_periods_per_target(),
+            min_weight: gate_floors(spec),
             models,
             decays,
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
@@ -4823,6 +4855,10 @@ fn run_instance(
             let fit = settled_frac(inst.check_cfg.ready(), *inst.decay_time);
             !inst.model.get().scaler_warming() && (fit.is_nan() || settled_enough(fit))
         };
+        // Read before the step, which may seed the model on this row: the
+        // row itself was still read by the unseeded model, and reports
+        // nothing.
+        let seeding = inst.model.get().seeding();
 
         let mut step = if learn {
             // The row's stamp, for a window to key its snapshot by and
@@ -4977,6 +5013,14 @@ fn run_instance(
                     }
                 }
             }
+        }
+        // The model's own warm-up: the rows it holds to seed itself from
+        // report nothing, and say so, where no gate above has (no model
+        // with a noise gate seeds itself). It is a count of learned rows,
+        // not of weight, so it is not `min_weight`'s: a decayed weight can
+        // sit above the floor for every row of it.
+        if reason == 0 && seeding {
+            reason = REASON_WARM_ROWS;
         }
         // The noise gate has not been met: the stream has all but settled,
         // the gate has withheld every row for a further half-life, and the

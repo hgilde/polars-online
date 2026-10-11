@@ -38,7 +38,12 @@ from test_model_registry import MINIMAL
 
 TIER = "essential"
 
-REASONS = {"below_min_settled_frac", "above_max_error_inflation", "below_min_weight"}
+REASONS = {
+    "below_min_settled_frac",
+    "above_max_error_inflation",
+    "below_min_weight",
+    "below_warm_rows",
+}
 
 
 def frame(n: int = 300, k: int = 2, seed: int = 0, noise: float = 0.5) -> pl.DataFrame:
@@ -343,6 +348,45 @@ def test_every_kind_settles_by_the_formula_and_withholds_until_it(name):
     skip = ("weight_sum", "settled_frac", "withheld_reason", "coef", "support_coef")
     first = next(c for c in out.columns if c not in skip)
     assert out[first][:11].null_count() == 11, first
+
+
+@pytest.mark.parametrize(
+    ("name", "extra", "want"),
+    [
+        ("ew_cov", {"min_weight": 0.0}, [("below_min_weight", 3)]),
+        ("ew_cov", {"min_weight": 1.0}, [("below_min_weight", 3)]),
+        ("ew_cov", {"min_weight": 0.0, "window_size": 5.0}, [("below_min_weight", 3)]),
+        ("kmeans", {}, [("below_min_weight", 4), ("below_warm_rows", 236)]),
+        ("kmeans", {"warm_rows": 20}, [("below_min_weight", 4), ("below_warm_rows", 16)]),
+        ("hmm", {}, [("below_warm_rows", 50)]),
+        ("bocpd", {}, [("below_min_weight", 1), ("below_warm_rows", 3)]),
+    ],
+    ids=["ew_cov 0", "ew_cov 1", "ew_cov window", "kmeans", "kmeans 20", "hmm", "bocpd"],
+)
+def test_a_models_own_floor_and_warm_up_say_why(name, extra, want):
+    """Every row a model holds back names why. ``ew_cov``'s floor of 2 (a
+    variance needs two rows, so a lower ``min_weight`` is raised) held rows
+    back with no reason; it is the weight gate's floor, so they read
+    ``below_min_weight``. The rows ``kmeans``, ``hmm`` and ``bocpd`` hold to
+    seed their centres, states or prior from read ``below_warm_rows``: a
+    count of learned rows, which a decayed weight can sit above for every
+    row of it -- ``kmeans``' default buffer of 500 at a half-life of 10, whose
+    weight tops out near 15 against a ``min_weight`` of 3. Each null row says
+    why, and no other row does."""
+    kw: dict[str, object] = dict(targets=["y"], features=["x0", "x1"], half_life=10.0)
+    # `bocpd` takes no half-life: its registry entry drops it.
+    kw |= {k: v for k, v in MINIMAL[name].items() if k != "half_life" or v is None}
+    kw |= extra
+    spec = getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+    out = po.ModelBank([spec]).fit_predict(frame_for(name))["m"].struct.unnest()
+    skip = ("weight_sum", "settled_frac", "withheld_reason", "coef", "support_coef")
+    first = next(c for c in out.columns if c not in skip)
+    why = out["withheld_reason"].cast(pl.String).to_list()
+    assert (out[first].is_null() == out["withheld_reason"].is_not_null()).all(), first
+    expected = [r for r, rows in want for _ in range(rows)]
+    assert why == expected + [None] * (len(why) - len(expected))
+    if name == "kmeans" and not extra:
+        assert out["weight_sum"].max() < 15, "the weight never nears the buffer's rows"
 
 
 class TestErrorInflationField:

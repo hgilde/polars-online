@@ -2892,8 +2892,8 @@ def ew_cov(
     ``weight_sum``, and ``settled_frac`` and ``withheld_reason`` as everywhere.
     The statistics are null until ``min_weight``, which the bank floors at 2: a
     variance needs two rows, so a lower ``min_weight``, ``0`` included, is
-    raised to 2 rather than refused. The rows the floor holds back carry no
-    ``withheld_reason``. ``coef_every`` and ``max_rows_between_coefs`` are
+    raised to 2 rather than refused. The rows the floor holds back read
+    ``below_min_weight``, as the gate's do. ``coef_every`` and ``max_rows_between_coefs`` are
     refused, as there are no coefficients. The plain spec's fields are listed
     in `docs/OUTPUTS.md#ew_cov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_.
@@ -3868,7 +3868,7 @@ def kmeans(
     ``settled_frac``, ``withheld_reason``
         How far the decay window had filled before the row, null where nothing
         decays, and which gate withheld the row's fields, null where none did:
-        a warm-up of the model's own carries no reason.
+        ``below_warm_rows`` on the rows held to seed the centres from.
     ``coef``
         The centres: ``k`` rows of ``len(features)``, flattened
         cluster-major. :func:`coef_index` lays it out, with ``target``

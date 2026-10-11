@@ -307,7 +307,12 @@ class TestAccumulateOnly:
         assert po.spec.output_fields(bare) == ["weight_sum", "settled_frac", "withheld_reason"]
         bank = po.ModelBank([bare, full])
         out = bank.fit_predict(df)
-        reasons = ["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"]
+        reasons = [
+            "below_min_settled_frac",
+            "below_min_weight",
+            "above_max_error_inflation",
+            "below_warm_rows",
+        ]
         assert out.schema["c"] == pl.Struct(
             {
                 "weight_sum": pl.Float64,

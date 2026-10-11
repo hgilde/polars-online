@@ -1723,8 +1723,10 @@ time.
 ## Is it ready?
 
 **A model should not report a number before it has seen enough data to
-give one, and three gates say what "enough" means.** The gates hold back
-predictions only: the model learns from every row either way.
+give one, and three gates say what "enough" means,** with a fourth, the
+seeding warm-up, for the models that seed themselves from their first rows.
+The gates hold back predictions only: the model learns from every row
+either way.
 [Warm-up](../README.md#warm-up) in the README states each gate and its
 default, and [docs/WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md)
 the reasoning behind them.
@@ -1734,6 +1736,7 @@ the reasoning behind them.
 | `min_settled_frac` | the decay window is less full than this fraction of its steady state | `settled_frac = 1 − 2^(−T / half_life)`, with `T` the decay time seen | `below_min_settled_frac` |
 | `min_weight` | the weight behind the state is below it | `weight_sum` | `below_min_weight` |
 | `max_error_inflation` | estimation error would inflate the prediction's error over the noise floor by more than this factor | `error_inflation = sqrt(1 + edf / n_kish)` | `above_max_error_inflation` |
+| `warm_rows` (`kmeans`, `hmm`, `bocpd`) | the model has not yet seeded its centres, states or prior from its first learned rows | a count of learned rows, not a weight | `below_warm_rows` |
 
 The reasons are listed in their order of precedence, which is the order
 `withheld_reason` reports them in. `max_error_inflation` is on by default

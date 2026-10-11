@@ -171,7 +171,7 @@ impl FieldMeta {
             | Source::SeCoefHac(_) => DataType::List(Box::new(DataType::Float64)),
             Source::Reason(_) => DataType::from_frozen_categories(
                 polars::prelude::FrozenCategories::new(crate::stream::WITHHELD_REASONS)
-                    .expect("three distinct names"),
+                    .expect("distinct names"),
             ),
             Source::Cluster(_) => DataType::Int32,
             Source::Id(_) => DataType::Int64,

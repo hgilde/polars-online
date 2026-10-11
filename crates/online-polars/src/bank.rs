@@ -4995,7 +4995,7 @@ fn assemble(
         .zip(&arrays)
         .map(|(f, a)| {
             let field = ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true);
-            // The reason is an `Enum` over its three names: the metadata is
+            // The reason is an `Enum` over its names: the metadata is
             // what tells polars so (`column::enum_metadata`).
             if matches!(f.src, Source::Reason(_)) {
                 field.with_metadata(crate::column::enum_metadata(

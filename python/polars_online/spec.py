@@ -378,13 +378,16 @@ releases none. A regression writes, with ``<t>`` a target:
     seen, so ``0.5`` at one half-life, ``0.75`` at two, whatever the row rate.
     Null where nothing decays. What ``min_settled_frac`` gates on.
 ``withheld_reason``
-    Which gate withheld the row's predictions, as an ``Enum`` --
-    ``below_min_settled_frac``, ``below_min_weight`` or
-    ``above_max_error_inflation``, the first in that order that withheld
-    anything -- and null where no gate did. Fields null for another reason,
-    such as a skipped row, a warm-up of the model's own or a statistic not yet
-    due, leave it null. An ``Enum`` rather than a string, because a string
-    column costs sixteen bytes a row even when every value is null.
+    Which gate withheld the row's predictions, as an ``Enum``, and null where
+    no gate did. ``below_min_settled_frac``, ``below_min_weight``,
+    ``above_max_error_inflation`` and ``below_warm_rows`` are named in that
+    order, the first that withheld anything. ``below_warm_rows`` is the
+    model's own warm-up: the rows ``kmeans``, ``hmm`` and ``bocpd`` hold to
+    seed their centres, states or prior from (``warm_rows``), a count of
+    rows, where ``min_weight`` is a weight. Fields null for another reason,
+    such as a skipped row or a statistic not yet due, leave it null. An
+    ``Enum`` rather than a string, because a string column costs sixteen
+    bytes a row even when every value is null.
 ``support_coef``
     Each coefficient's data share, how much of it the data determined rather
     than the ridge: on ``coef``'s rows, of the same fit after the row, for

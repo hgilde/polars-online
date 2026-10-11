@@ -364,6 +364,12 @@ impl Hmm {
         self.n_eff
     }
 
+    /// True once the states exist: given, or seeded from the first
+    /// `warm_rows` learned rows. Until then every row reports nothing.
+    pub fn seeded(&self) -> bool {
+        self.seeded
+    }
+
     /// The filtered posterior over states, as the next row will read it.
     pub fn filtered(&self) -> &[f64] {
         &self.p

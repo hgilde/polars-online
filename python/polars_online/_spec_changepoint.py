@@ -305,7 +305,7 @@ def bocpd(
     ``settled_frac``, ``withheld_reason``
         How far the decay window had filled before the row, null where nothing
         decays, and which gate withheld the row's fields, null where none did:
-        a warm-up of the model's own carries no reason.
+        ``below_warm_rows`` on the rows held to seed the prior from.
 
     .. rubric:: Example
 

@@ -842,8 +842,9 @@ impl Bocpd {
         })
     }
 
-    /// Whether rows are still being held for the prior (the warm-up).
-    fn warming(&self) -> bool {
+    /// Whether rows are still being held for the prior (the warm-up), so
+    /// that a row reports nothing.
+    pub fn warming(&self) -> bool {
         self.cfg.warms_up() && self.data_prior.is_none()
     }
 

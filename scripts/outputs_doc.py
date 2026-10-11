@@ -245,9 +245,10 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
     ),
     (
         "withheld_reason",
-        "why the row's predictions are null: `below_min_settled_frac`, `below_min_weight` "
-        "or `above_max_error_inflation`. That order is their precedence, so the first that "
-        "applies is the one named",
+        "why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, "
+        "`above_max_error_inflation` or `below_warm_rows`. That order is their precedence, so "
+        "the first that applies is the one named. `below_warm_rows` is the model's own "
+        "warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from",
         "where nothing was withheld",
     ),
     (
@@ -351,7 +352,7 @@ DTYPES: list[tuple[str, str]] = [
     ("`bool`", "`Boolean`"),
     ("`str`", "`String`"),
     ("`list[f64]`", "`List(Float64)`"),
-    ("`enum`", "an `Enum` of `withheld_reason`'s three values"),
+    ("`enum`", "an `Enum` of `withheld_reason`'s four values"),
     ("`clock`", "the clock column's own type"),
 ]
 
