@@ -1,9 +1,23 @@
 # Models
 
-Each model's entry says when to reach for it, its update rule, its
-parameters and what it is checked against. The README's
+Each model's entry says when to reach for it, states its update rule,
+shows its parameters, and says what it is checked against. The README's
 [Models](../README.md#models) has the table of all twenty-two, how each
-learns from a row, and the notation the update rules use.
+learns from a row, and which to choose for which question.
+
+**The update rules share one notation.** `z` is `[1, x]` when there is an
+intercept, and `x` when there is not. `w` is the row's weight, and `W` the
+weight accumulated before the row. `λ` is the row's decay,
+`0.5 ** (Δclock / half_life)`, with `Δclock` the clock's step from the row
+before, capped at `gap_cap` ([Time and decay](../README.md#time-and-decay)).
+Without a clock column, each row is one unit of clock. A model keeps its
+running sums in *accumulators* of three kinds:
+
+| accumulator | where | why |
+|---|---|---|
+| an exponentially weighted **mean** | most models | it stays bounded over a stream of any length |
+| a decayed **sum** | `rls`'s matrix, and the gradient sums of `ftrl` and of `sgd`'s adagrad | |
+| a **centred** second moment, by a weighted Welford update | wherever a model keeps second moments as means | a variance is right even when a feature sits far from zero |
 
 ## Linear models
 

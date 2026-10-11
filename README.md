@@ -2051,9 +2051,10 @@ recipe that runs with its output shown:
 
 ## Models
 
-polars-online has twenty-two models in four families. A spec's clock,
-grouping and warm-up mean the same whichever model it names, and its
-half-life is always a half-life on the clock ([How a bank sees a
+polars-online has twenty-two models in four families, and each family
+answers one kind of question about a stream. A spec's clock, grouping and
+warm-up mean the same whichever model it names. Where a model takes a
+half-life, it is a half-life on the clock ([How a bank sees a
 stream](#how-a-bank-sees-a-stream)). To look up a model's keywords and
 their defaults, open its builder's reference page, such as the one for
 `po.spec.ewridge`. [docs/OUTPUTS.md](docs/OUTPUTS.md) lists every field a
@@ -2088,8 +2089,8 @@ against.
 | [`bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) · [math](docs/MODELS.md#bocpd--how-long-has-this-regime-lasted) | filter | how long this regime has lasted: Adams & MacKay's run-length posterior, so the answer is the regime's age and not a flag |
 | [`hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) · [math](docs/MODELS.md#hmm--which-regime-are-we-in) | filter | a Gaussian hidden Markov model, filtered as the stream runs: `ew_class` without the labels, with a transition matrix that can be learned |
 
-How a model learns from a row decides whether, with decay off, its answer
-depends on the row order:
+**How a model learns from a row decides whether, with decay off, its
+answer depends on the row order:**
 
 | learns by | what the model does with a row | with decay off | order-dependent even so |
 |---|---|---|---|
@@ -2100,22 +2101,109 @@ depends on the row order:
 | **filter** | carries a belief forward from row to row | depends on the row order | |
 | **test** | counts evidence as it goes | depends on the row order | |
 
-**In the update rules,** `z` is `[1, x]` when there is an intercept, `w` is
-the row's weight, and `W` the weight accumulated before the row. `λ` is the
-row's decay, `0.5 ** (Δclock / half_life)`. A model keeps its running sums
-in *accumulators* of three kinds:
-
-| accumulator | where | why |
-|---|---|---|
-| an exponentially weighted **mean** | most models | it stays bounded over a stream of any length |
-| a decayed **sum** | `rls`'s matrix, and the gradient sums of `ftrl` and of `sgd`'s adagrad | |
-| a **centred** second moment, by a weighted Welford update | wherever a model keeps second moments as means | a variance is right even when a feature sits far from zero |
-
 ### Choosing a model
 
-Each model's entry, with when to reach for it, its update rule, its
-parameters and its checks, is in [docs/MODELS.md](docs/MODELS.md), under
-the four families of the table above.
+**Choose the family by the question you are asking, then the model by what
+your data need.** Each model has an entry in
+[docs/MODELS.md](docs/MODELS.md): when to reach for it, its update rule,
+its parameters, a recipe on data whose answer is known, and what it is
+checked against. That page opens with the notation the update rules share.
+The regime models, `bocpd` and `hmm`, have a section of their own,
+[Detecting changes and regimes](#detecting-changes-and-regimes).
+
+| your question | the family | start with | change to another when |
+|---|---|---|---|
+| what will the target be? | Linear models | `ewridge` | the coefficients drift (`kalman`); some targets are wild (`huber`, `quantile`); few features matter (`lasso`, `ftrl`); each row must take O(k) time (`sgd`, `pa`); the target is a count (`sgd`) or 0/1 (`ftrl`); you want a baseline with no features (`holt`) |
+| how do these columns vary and move together? | Moments and correlation | `ew_cov` | there are thousands of columns (`marginal`); one correlation must stand for a whole matrix (`deco`); the prices are noisy ticks (`rcov`); you want to know what the columns hold (`audit`) |
+| which group does this row belong to? | Clustering and classification | `kmeans` | the clusters have any shape (`micro`); you have the labels to learn from (`ew_class`) |
+| has something held, or changed? | Sequential tests and regimes | `seqtest` | the correlations may have changed (`corrchange`); you want the regime's age (`bocpd`) or which regime it is (`hmm`) |
+
+**A linear model predicts a number, and a model whose coefficients drift
+follows a relationship that breaks.** In `df`, `ret`'s slope on
+`signal_a` is 0.8 on rows 0 to 199 and −0.8 from row 200. `ewridge`, with
+every row counted the same, averages the two slopes. `kalman` follows the
+new one, as far as the afternoon's noisier rows let it.
+This code uses `df` from [Example data](#example-data):
+
+```python
+common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=10.0)
+specs = [
+    po.spec.ewridge("ridge", half_life=float("inf"), **common),                # every row counts the same
+    po.spec.kalman("kalman", half_life=50.0, coef_half_life=20.0, **common),   # a coefficient that may drift
+]
+bank = po.ModelBank(specs)
+bank.fit(df)                                         # learn every row, keep no output
+for r in bank.coef().filter(pl.col("term") == "signal_a").iter_rows(named=True):
+    print(f"{r['spec']}: slope at the last row {r['coef']:.2f}")
+```
+
+```text
+ridge: slope at the last row 0.10
+kalman: slope at the last row -0.66
+```
+
+**A moments model tracks how columns vary and move together, and reads
+each row's value from the rows before it.** So the correlation of
+`signal_a` and `ret` changes sign after the break at row 200, and each
+row's value can serve as a feature for that row without leaking it.
+This code uses `df` from [Example data](#example-data):
+
+```python
+moves = po.spec.ew_cov("moves", features=["signal_a", "ret"], clock="t", gap_cap=10.0,
+                       half_life=50.0, stats=["corr"])
+corr = df.online.fit_predict([moves])["moves"].struct.field("corr_signal_a_ret")
+print(f"corr(signal_a, ret) at row 199: {corr[199]:.2f}, at row 399: {corr[399]:.2f}")
+```
+
+```text
+corr(signal_a, ret) at row 199: 0.41, at row 399: -0.33
+```
+
+**A clustering model labels each row with its nearest cluster before
+learning from the row, and moves the clusters as the stream runs.** Here
+`kmeans` finds three clusters planted at (0, 0), (6, 0) and (0, 6). The
+code makes its own points, since `df` has no clusters:
+
+```python
+rng = np.random.default_rng(3)
+centres = np.array([[0.0, 0.0], [6.0, 0.0], [0.0, 6.0]])             # three clusters, planted
+points = centres[rng.integers(0, 3, 3000)] + rng.standard_normal((3000, 2))
+pl.DataFrame(points, schema=["a", "b"]).write_parquet("points.parquet")
+
+clusters = po.spec.kmeans("clusters", features=["a", "b"], k=3, half_life=float("inf"))
+bank = po.ModelBank([clusters])
+bank.fit(pl.scan_parquet("points.parquet"))
+found = bank.coef()["coef"].to_numpy().reshape(3, 2).round(1)       # one row of (a, b) per centre
+print("centres found:", sorted(found.tolist()))
+```
+
+```text
+centres found: [[0.0, -0.1], [0.0, 6.0], [6.0, 0.0]]
+```
+
+**A sequential test says when the evidence is enough, and you may read it
+at any row.** Here `seqtest` asks whether a regression on `x0` and `x1`
+predicts `y` closer than `holt`, which reads only `y`'s own past. Its
+evidence passes the 5% level a few rows into `df`.
+This code uses `df` from [Example data](#example-data):
+
+```python
+import math
+
+common = dict(targets=["y"], clock="t", gap_cap=10.0, half_life=100.0)
+specs = [
+    po.spec.ewridge("ridge", features=["x0", "x1"], **common),
+    po.spec.holt("holt", **common),                                    # y's own level and trend, no feature
+    po.spec.seqtest("closer", targets=["y"], a="ridge", b="holt"),     # does ridge predict closer?
+]
+out = df.online.fit_predict(specs)
+passed = out["closer"].struct.field("log_e_a_y") >= math.log(20)    # the 5% level, however often you look
+print(f"ridge predicts closer than holt at the 5% level from row {passed.arg_true()[0]}")
+```
+
+```text
+ridge predicts closer than holt at the 5% level from row 18
+```
 
 ### Detecting changes and regimes
 
