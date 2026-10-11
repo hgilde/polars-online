@@ -23,19 +23,20 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-10-03 | 1,215 | 3,840 cases |
 
 The 2 opt-in soak tests are outside every count. They run with
-`pytest -m soak`, and the weekly leak-check workflow runs them. The earlier counts used `cargo test --workspace -- --list`,
-which also lists `online-py`, a crate with no tests.
+`pytest -m soak`, and the weekly leak-check workflow runs them. The counts
+before 2026-10-03 used `cargo test --workspace -- --list`, which also lists
+`online-py`, a crate with no tests.
 
 Each improvement is an entry with an ID, such as T-E9, and the code and the
-tests cite those IDs. They also cite the lettered sections that hold the
-entries, such as section C. Rows that say **blocked** or **never executed**
+tests cite those IDs. The code and the tests cite the lettered sections that
+hold the entries too, such as section C. Rows that say **blocked** or **never executed**
 were written before the repo had CI and are kept as the record.
 [What the first CI runs cleared](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06)
 says what cleared them.
 
 | section | what it holds |
 |---|---|
-| [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [the window operators and formula targets](#the-window-operators-and-formula-targets) · [resuming a run](#resuming-a-run) · [beyond the eight classes](#beyond-the-eight-classes) · [two tiers](#two-tiers) · [where the suite runs](#where-the-suite-runs) |
+| [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [the window operators and formula targets](#the-window-operators-and-formula-targets) · [resuming a run](#resuming-a-run) · [beyond the eight classes](#beyond-the-eight-classes) · [two tiers](#two-tiers) · [where the suite runs](#where-the-suite-runs) · [what the README's guarantees are held to](#what-the-readmes-guarantees-are-held-to) |
 | [What it has found](#what-it-has-found) | [defects, and where each is told](#defects-and-where-each-is-told) · [differences from river that are not bugs](#differences-from-river-that-are-not-bugs) |
 | [Where it is thin, and what is left](#where-it-is-thin-and-what-is-left) | [what is left](#what-is-left) · [measured coverage](#measured-coverage) · [mutation survivors](#mutation-survivors) |
 | [How the suite looks for defects](#how-the-suite-looks-for-defects) | [what the mutation run actually found](#what-the-mutation-run-actually-found) · [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31), the crash-safety audit |
@@ -51,16 +52,15 @@ The words this ledger uses:
 | mutant | one small change `cargo mutants` makes to the source, such as a flipped operator or a function body replaced with a constant, before it reruns the tests. A mutant is *caught* when some test fails, and *missed*, a survivor, when every test still passes (`scripts/mutants.sh`) |
 | equivalent mutant | a mutant that no test can kill: on every input the code can receive, the mutated line computes what the original does |
 | IC | the correlation of prediction with target, `po.eval`'s `ic` |
-| P1, P2, P3 | in an entry's P column, its priority: **P1** closes a PLAN promise or covers a found defect, **P2** is meaningful new assurance, **P3** is infrastructure |
+| P1, P2, P3 | in an entry's P column, its priority: **P1** makes good a promise the library states, such as a hard rule or one of the eight test classes, or covers a found defect; **P2** is meaningful new assurance; **P3** is infrastructure |
 | P1–P11 elsewhere | the performance items of `docs/PERFORMANCE.md` §3 |
-| E numbers; C, T, U and X numbers | entries in `docs/ENHANCEMENTS.md`; entries in `docs/IMPROVEMENTS.md` |
-| T-S numbers | the second opinions `docs/REVIEW-2026-09-12.md` proposes under "Second opinions", T-S1 to T-S17, and T-S18 from its pass 10; the tests in `tests/test_second_opinion.py` cite them |
-| R1 to R9 | the nine review rounds of the window operators and formula targets, all on 2026-10-03, recorded in `docs/PLAN.md` §14. A finding's ID, such as R5-C1, names its round |
+| T-S numbers | the second opinions proposed for the suite, T-S1 to T-S18, each a comparison with another library; `tests/test_second_opinion.py` holds those that were built, and cites them |
+| R1 to R9 | the nine rounds of checks over the window operators and formula targets, all on 2026-10-03. A finding's ID, such as R5-C1, names its round, and the docstring of the test that pins it says what was found |
 | hard rule N | the numbered hard rules in `CLAUDE.md` |
 | a kind | one of the 22 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
 | the ten regression models | the models the per-model sweeps run: `ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` and `holt`, which `REGRESSIONS` in `tests/test_model_registry.py` lists |
 | the window operators | exponentially weighted means, variances, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_var` and `po.ewm_std` look back, and `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate` look ahead |
-| a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.rewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed (`docs/PLAN.md` task 104) |
+| a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.rewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed |
 | the column form | the same window expression written as a column by `with_windows(like=spec)` and fed back as a plain target under the same `embargo`: what a formula target is held to |
 | the brute force | `brute()` in `crates/online-polars/src/windows.rs`, which computes each row's window from the definition by scanning every row of its stretch, with no running sums |
 | the time-reversal identity | a forward window over a stream is a backward one over the same stream reversed in time, with the row itself left out, so a forward `closed="right"` is a backward `"left"` |
@@ -70,14 +70,20 @@ The words this ledger uses:
 
 ## What the suite proves
 
-The scorecard is against the eight test classes of `docs/PLAN.md` §9. The
-references come next, with the rule that makes each one a reference and the
-libraries a test may take one from. Two surfaces newer than the classes
-follow: the window operators, and resuming a run. The last parts test what
-the classes do not name, say which tests gate a commit and which a push,
-and say where the suite runs.
+**The suite holds each model to a reference it cannot share a bug with, and
+the bank to the invariants it promises.** The design set out eight classes
+of test, from agreement with an oracle to a benchmark. The window operators
+and resumed runs came after the classes, and are held the same way. Other
+tests hold the library at its edges, and hold the files the repository
+promises, such as the API snapshot and the examples. The essentials gate
+each commit, and everything runs before a push and in CI on three operating
+systems.
 
 ### The eight test classes
+
+**Seven classes are done, and the sixth was retired when the form it
+compared was removed.** Each class is a property every model, or the bank,
+must have:
 
 | class | status | what holds it |
 |---|---|---|
@@ -87,30 +93,30 @@ and say where the suite runs.
 | 4. Clock semantics | Done | cap, a step back (refused, or a restart past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
 | 5. Null policy & warmup | Done | feature/target/weight nulls and `min_weight`, for all ten regression models (T-A5) |
 | 6. Arrow ≡ Polars output | **Retired, and replaced.** | the Arrow path, below |
-| 6b. `predict` ≡ `fit_predict` of the next row | Done (E31) | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
-| 6c. Runner ≡ bank, every source and format | Done (E32) | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
-| 7a. Frozen states | Done | one state of every `ModelState` variant mid-stream, with what it keeps (a window, lags, bins, a warm-up buffer, far rows, the clusterers' held start), and a bank file, a `with_windows` state and a `refresh_time` state, embedded as bytes with the rows that follow and what they reported; each loads, goes on to the bit on the platform that wrote it (to the golden tolerance elsewhere, libm's last bit) and saves its bytes again (`crates/online-core/tests/state_fixtures.rs`, `crates/online-polars/tests/state_fixtures.rs`; docs/PLAN.md task 198). Every schema from the minimum to `SCHEMA_VERSION` must have its set, so a layout change cannot land without one; `PRINT_STATE_FIXTURES=1` regenerates them |
-| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`; one `ewridge` spec until 2026-10-06, TA2). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own. It was defined but never executed before the repo had a remote |
+| 6b. `predict` ≡ `fit_predict` of the next row | Done | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
+| 6c. Runner ≡ bank, every source and format | Done | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
+| 7a. Frozen states | Done | one state of every `ModelState` variant mid-stream, with what it keeps (a window, lags, bins, a warm-up buffer, far rows, the clusterers' held start), and a bank file, a `with_windows` state and a `refresh_time` state, embedded as bytes with the rows that follow and what they reported; each loads, goes on to the bit on the platform that wrote it (to the golden tolerance elsewhere, libm's last bit) and saves its bytes again (`crates/online-core/tests/state_fixtures.rs`, `crates/online-polars/tests/state_fixtures.rs`). Every schema from the minimum to `SCHEMA_VERSION` must have its set, so a layout change cannot land without one; `PRINT_STATE_FIXTURES=1` regenerates them |
+| 7. Cross-platform state | Done | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`; one `ewridge` spec until 2026-10-06). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own. It was defined but never executed before the repo had a remote |
 | 8. Benchmark | Done | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
 
 **6. Arrow ≡ Polars output: retired, and replaced.** This row held the
-expression form to the bank. Task 85 removed that form (2026-09-17), and
-`tests/test_expr.py` with it, so the equivalence it named no longer has two
-sides. The Arrow path took its place. `tests/test_arrow_capsule.py` holds
+expression form to the bank. That form was removed on 2026-09-17, in 0.7.0,
+and `tests/test_expr.py` with it, so the equivalence it named no longer has
+two sides. The Arrow path took its place. `tests/test_arrow_capsule.py` holds
 `fit_predict_arrow`'s struct to `fit_predict`'s struct column, field for
 field and null for null. The nested `coef` list is included, and nulls are
 compared rather than skipped. `crates/online-polars/tests/arrow_chunk.rs`
 feeds a chunk built by hand from Arrow arrays, with no frame anywhere, and
 holds it to the same output.
 
-**6b. `predict` ≡ `fit_predict` of the next row (E31).**
+**6b. `predict` ≡ `fit_predict` of the next row.**
 `tests/test_predict.py` holds row `i` of `predict(df)` to row 0 of
 `fit_predict(df.slice(i, 1))` on a fresh clone, field for field. It does so
 for all ten regression models with every diagnostic on, and across every
 session and clock policy. `crates/online-core/tests/model_contract.rs` holds
 each model's `predict` to its `step`, row by row.
 
-**6c. Runner ≡ bank, every source and format (E32).**
+**6c. Runner ≡ bank, every source and format.**
 `crates/online-polars/tests/runner.rs` holds every input format (parquet,
 ipc, csv, ndjson), every output format, `Input::Batches` ≡ a plan, and the
 failure paths to the numbers `ModelBank` gives on the same rows. CSV's
@@ -119,7 +125,8 @@ line is held to the same numbers through `run_online` in `tests/conftest.py`
 (`test_closed_groups`, `test_hardening`, `test_predict`, `test_no_output`,
 `test_label_delay`), and every `sh` block of `docs/RUNNER.md` runs. The
 Python-side sources of the old runner, a path, a `LazyFrame`, a `DataFrame`
-and an iterator, went with it in task 83. What a `ModelBank` takes now is held
+and an iterator, went with it when the runner left Python, in 0.7.0. What a
+`ModelBank` takes now is held
 in `tests/test_bank_ergonomics.py`: `fit`, `fit_predict_batches`, over a
 plan, a frame or an iterator, and `chunk_size`. A format is bound in the
 tests, never in the API.
@@ -142,17 +149,17 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | `ewridge` | every solve against scikit-learn's `Ridge` (`TestEwRidgeIsSklearnsRidge`, 20 cases), and in Rust against its closed form solved by `faer` (`every_solve_is_its_closed_form_across_targets_and_ridges`) | 1e-8, relative; 1e-9 | |
 | `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref` (`tests/test_oracles_ewridge_paths.py`), recomputing every statistic from the raw rows at each solve, as the lasso's below does | pred 1.1e-14 | |
 | `rls` | `rls ≡ ewridge(ridge_scale="sum", solve_every=1)` | <1e-9 | |
-| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 6.1e-15 | |
+| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since 2026-09-24 | `rls_paths_ref`; `kalman_ref` (`tests/test_oracles_rls_kalman_paths.py`) | pred 5.8e-15; 6.1e-15 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
 | `kalman` | filterpy's `KalmanFilter`, across a zero-weight row (`TestKalmanZeroWeightRow`) and with a mean-reverting transition (`TestAMeanRevertingKalmanIsFilterpy`) | 1e-9 | T-S5 |
-| `kalman` standardized, the default | filterpy's `KalmanFilter` fed the rows standardized in numpy from the documented pre-row moments (`TestAStandardizedKalmanIsFilterpy`), and `coef[t]·x[t+1] = pred[t+1]` asserted directly (review 2026-10-05, TC1) | 1e-9; 1e-12 | |
+| `kalman` standardized, the default | filterpy's `KalmanFilter` fed the rows standardized in numpy from the documented pre-row moments (`TestAStandardizedKalmanIsFilterpy`), and `coef[t]·x[t+1] = pred[t+1]` asserted directly | 1e-9; 1e-12 | |
 | Kalman(q=0, fixed `obs_var`, `standardize=False`) | `river.linear_model.BayesianLinearRegression` | 3.6e-15 | T-R2 |
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
-| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref` (`tests/test_oracles_lasso_paths.py`): every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
+| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref` (`tests/test_oracles_lasso_paths.py`): every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since 2026-09-24 | pred 4.5e-14 | |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
-| `huber` | scikit-learn's `LinearRegression` at `huber_delta = 1e9`, where no row is down-weighted; `HuberRegressor` with one row in fifty a gross error | 1e-9; 0.1 (0.044 measured, at the default `huber_delta = 1.345` against scikit-learn's 1.35), where least squares is 0.38 to 0.47 off | T-S4 |
-| `quantile` | statsmodels' `QuantReg` after 20,000 rows (`TestQuantileIsQuantReg`) | 0.05 at the median and 0.08 at τ = 0.9 (0.005 and 0.006 measured) | T-S4 |
-| `quantile`'s every fit | the stationarity condition of the smoothed check loss it solves, rebuilt from the rows by the module doc's rules, band and nudge rows alike (`TestTheQuantileFitsDefinition`; TC1) | 1e-10 of the gradient's scale (1e-15 measured) | |
+| `huber` | scikit-learn's `LinearRegression` at `huber_delta = 1e9`, where no row is down-weighted; `HuberRegressor`, a batch fit of the same objective, with one row in fifty a gross error | 1e-9; 0.1 (0.044 measured, at the default `huber_delta = 1.345` against scikit-learn's 1.35), where least squares is 0.38 to 0.47 off | T-S4 |
+| `quantile` | statsmodels' `QuantReg`, a batch fit of the same objective, after 20,000 rows (`TestQuantileIsQuantReg`) | 0.05 at the median and 0.08 at τ = 0.9 (0.005 and 0.006 measured) | T-S4 |
+| `quantile`'s every fit | the stationarity condition of the smoothed check loss it solves, rebuilt from the rows by the module doc's rules, band and nudge rows alike (`TestTheQuantileFitsDefinition`) | 1e-10 of the gradient's scale (1e-15 measured) | |
 | Huber | `river.linear_model.LinearRegression(loss=optim.losses.Huber)` | statistical | T-R6 |
 | quantile | `river.stats.Quantile` | statistical | T-R5 |
 | FTRL | `ftrl_ref` | ~1e-16 | T-A4 |
@@ -161,35 +168,35 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | FTRL end to end: both losses, the intercept, row weights with zeros, null targets, two targets, `l1` with `l2` | Vowpal Wabbit's `--ftrl`, `pred` and `coef` on every row | 1e-5, its single precision (measured 2.6e-6) | |
 | `pa` | river's `PARegressor`, without an intercept, at unit weight and at `eps = 0`, river's tube being in the target's units and ours in the target's own EW std (`TestPassiveAggressiveIsRivers`) | 1e-12 | T-S18 |
 | `sgd` | scikit-learn's `SGDRegressor`, one per group (`tests/test_sgd.py`) | R² within 0.03 | |
-| `sgd`'s `l2` and `clip_gradient` | `sgd_ref` with the ridge on the slopes and the per-coordinate clip, on a case where the clip binds on more than 1,000 coordinates under every schedule (`test_the_clip_and_the_ridge_bind`; TC6) | 1e-12, relative | |
+| `sgd`'s `l2` and `clip_gradient` | `sgd_ref` with the ridge on the slopes and the per-coordinate clip, on a case where the clip binds on more than 1,000 coordinates under every schedule (`test_the_clip_and_the_ridge_bind`) | 1e-12, relative | |
 | `holt` | statsmodels' `Holt` once the weight saturates, and its state-space `ExponentialSmoothing` across a missing observation (`TestHoltAcrossAMissingObservation`); without a trend, statsmodels' `DescrStatsW` and pandas' `ewm(times=)` (`TestALevelOnlyHoltIsAnEwMean`) | 1e-12 and 1e-9; 1e-12 and 1e-8 | T-S14, T-S17 |
 | the plain `sigma` and `zscore` | the weighted EW root mean square of the residuals before the row (`tests/test_oracles_sigma.py`) | 8.1e-16 | |
 | `EwCov` | `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr` | 1e-9 | T-R3 |
 | `ew_cov`'s `mean`, `var`, `cov` and `corr` | pandas' `ewm` on a row-count clock, at offsets up to 1e8 (`TestTheEwMomentsArePandas`) | 1e-12 | T-S9 |
 | EW mean/var | `river.stats.EWMean` / `EWVar` | in the limit | T-R4 |
-| `ew_cov`'s lagged co-moments | the unrolled sum over the raw rows at the last row, AR(1) data with zero weights (`test_the_last_row_is_the_unrolled_sum_over_the_raw_rows`; TB7) | 1e-9 | |
+| `ew_cov`'s lagged co-moments | the unrolled sum over the raw rows at the last row, AR(1) data with zero weights (`test_the_last_row_is_the_unrolled_sum_over_the_raw_rows`) | 1e-9 | |
 | `ew_class`; `ew_cov`'s `mahal` and components, under a window | scipy's `multivariate_normal` and `mahalanobis`, and numpy's `eigh`, on the rows the window keeps (`TestWindowedGaussian`) | 1e-9 | T-S6, T-S8 |
 | `marginal`'s bins and best split | scipy's `binned_statistic`; a scikit-learn `DecisionTreeRegressor` stump, whose gain bounds the split's from above (`TestTheBinsAgainstScipyAndAStump`) | 1e-9 | T-S12 |
 | `marginal`'s serial count | statsmodels' `acf` and `weights_bartlett` (`TestTheBartlettSerialFactor`) | 0.02 | T-S11 |
 | `bocpd` | the `bayesian_changepoint_detection` package, at levels up to 1e8 (`TestBocpdAtALevel`) | 1e-9, and `run_mode` exactly | T-S15 |
 | `audit`'s column statistics | scipy's `skew` and `kurtosis`, statsmodels' `adfuller` with no lags and a constant, numpy's lag-1 `corrcoef`, `median` and median absolute deviation (`TestAuditIsScipyAndStatsmodels`) | 1e-8; the median and MAD exact from exact counts, and within ranks 49% to 51% (48% to 52% for the MAD) from the digest | |
 | `kmeans`, `micro` | `tests/reference_cluster.py`, a transcription of the Rust held bit for bit: a regression check, which can share a mistake with the code | bit for bit | |
-| `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: each checkpoint's centres, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay (review 2026-10-05, TB1) | 1e-9; the partition at ARI 0.99995 and the centres to 5.4e-4 | |
+| `kmeans`, `micro`, independently | `TestDefinitions` in `tests/test_kmeans.py` and `tests/test_micro.py`, from the module docs: each checkpoint's centres, weights and radii recomputed from the raw rows assigned to them at their decayed weights; `kmeans`' far, merge and dead decisions and `micro`'s admission, row by row against the exported state; scikit-learn's `KMeans` on 100,000 rows without decay | 1e-9; the partition at ARI 0.99995 and the centres to 5.4e-4 | |
 | `deco`, `hmm`, `corrchange`, `bocpd`, `rcov` | a longhand oracle written from each paper ([An oracle, not a golden number](#an-oracle-not-a-golden-number)) | 1e-12 to 1e-9: `deco`'s pair sum, `hmm`'s probabilities, `corrchange`'s statistic and `bocpd`'s posterior to 1e-12; `hmm`'s log-likelihood and `rcov`'s three estimators to 1e-9, relative | |
 | a target with gaps | numpy's `lstsq` on the target's own rows, pandas' pairwise `cov`, and statsmodels' `WLS`, ridge and elastic net (`TestATargetWithGaps`) | 1e-10 to 1e-8; the elastic net 1e-7 | |
-| `kalman`'s explicit `q`, `obs_var` with `p0`, a `coef_half_life` per coefficient with `inf` pinning, and no intercept under `standardize` | filterpy's `KalmanFilter`, the last on rows scaled by each feature's EW root mean square from numpy (`TestKalmanSettingsAreFilterpy`; review 2026-10-06, TA4) | 1e-11 (1.0e-14 measured) | |
-| `sgd`'s squared, epsilon-insensitive (at `eps = 0`, its tube being in the target's own EW std since task 202) and logistic losses under `"constant"`, weighted or not; `"inv_scaling"` at unit weights; the Huber cut is `sgd_ref`'s | scikit-learn's `SGDRegressor` and `SGDClassifier(loss="log_loss")`, `partial_fit` one row at a time (`TestSgdIsScikitLearnsSgd`; TA4) | 1e-12 (1.0e-15 measured) | |
-| `hmm` at fixed parameters | hmmlearn's `GaussianHMM`: the filtered and predicted probabilities, and each row's log-likelihood (`TestHmmIsHmmlearns`; TA4) | 1e-10 (1.4e-13 measured) | |
-| `rls` | padasip's `FilterRLS`, at unit weights on a row clock (`TestRlsIsPadasips`; TA4) | 1e-11 (1.6e-14 measured) | |
+| `kalman`'s explicit `q`, `obs_var` with `p0`, a `coef_half_life` per coefficient with `inf` pinning, and no intercept under `standardize` | filterpy's `KalmanFilter`, the last on rows scaled by each feature's EW root mean square from numpy (`TestKalmanSettingsAreFilterpy`) | 1e-11 (1.0e-14 measured) | |
+| `sgd`'s squared, epsilon-insensitive (at `eps = 0`, its tube being in the target's own EW std since 2026-10-07) and logistic losses under `"constant"`, weighted or not; `"inv_scaling"` at unit weights; the Huber cut is `sgd_ref`'s | scikit-learn's `SGDRegressor` and `SGDClassifier(loss="log_loss")`, `partial_fit` one row at a time (`TestSgdIsScikitLearnsSgd`) | 1e-12 (1.0e-15 measured) | |
+| `hmm` at fixed parameters | hmmlearn's `GaussianHMM`: the filtered and predicted probabilities, and each row's log-likelihood (`TestHmmIsHmmlearns`) | 1e-10 (1.4e-13 measured) | |
+| `rls` | padasip's `FilterRLS`, at unit weights on a row clock (`TestRlsIsPadasips`) | 1e-11 (1.6e-14 measured) | |
 | `seqtest` | `reference.seqtest_ref`, the paper's betting recursion in scalar code, and its closed form where the clip never binds (`tests/test_seqtest.py`) | 1e-12, relative | |
 | `emit_drift` | river's `PageHinkley` at `half_life = inf` (`TestAZeroWeightRowIsNotSeen`) | flag for flag | |
 | a prediction under `embargo` | river's progressive validation with `delay` (`TestLabelDelayFoldsWhatWasScored`) | 1e-12 | T-S16 |
 | `r2` and `coverage` under `embargo` | scikit-learn's `r2_score` over the matured rows; the share of matured rows inside their interval | 1e-9 | |
-| `emit_metrics` and `emit_autocorr` | a row's own outcome moved across zero, which moves none of the row's own fields, to the bit; on a logistic fit, scikit-learn's `accuracy_score` and `brier_score_loss` and scipy's `pointbiserialr` (`TestStreamingMetrics`; TB4) | to the bit; 1e-9 | |
+| `emit_metrics` and `emit_autocorr` | a row's own outcome moved across zero, which moves none of the row's own fields, to the bit; on a logistic fit, scikit-learn's `accuracy_score` and `brier_score_loss` and scipy's `pointbiserialr` (`TestStreamingMetrics`) | to the bit; 1e-9 | |
 | `resid_quantiles`, `mahal_quantiles` | the EW quantile by its definition, within the sketch's `tanh(1/128)` (`tests/test_diagnostics.py`); numpy's `quantile` of the past `mahal` scores (`TestMahalQuantiles`) | 3% (1.4e-3 measured); 10% | |
 | the `session_shrink` blend | numpy's `cov(aweights=)` of the rows at their blended weights (`TestSessionShrinkBlend`) | 1e-12 | |
 | `conformal` | **definition only**: a longhand replay of the recursion over the bank's own `pred`, `resid` and `sigma`, and the telescoped coverage bound (`tests/test_conformal.py`); no library computes an adaptive conformal radius | bit for bit | |
-| `huber` and `quantile` under a finite half-life, with nulls, several targets, `standardize` or zero weights; `ftrl` under a half-life; `sgd`'s Poisson loss and AdaGrad schedule; `ew_class` under decay; `EwQuantile` | **definition only**: `robust_ref`, `ftrl_ref`, `sgd_ref` and the definitions in `tests/test_diagnostics.py` and `tests/test_ew_class.py`. No library checked forgets as a half-life does, and scikit-learn's SGD has neither the Poisson loss nor AdaGrad (review 2026-10-06, TA4) | as each row above | |
+| `huber` and `quantile` under a finite half-life, with nulls, several targets, `standardize` or zero weights; `ftrl` under a half-life; `sgd`'s Poisson loss and AdaGrad schedule; `ew_class` under decay; `EwQuantile` | **definition only**: `robust_ref`, `ftrl_ref`, `sgd_ref` and the definitions in `tests/test_diagnostics.py` and `tests/test_ew_class.py`. No library checked forgets as a half-life does, and scikit-learn's SGD has neither the Poisson loss nor AdaGrad | as each row above | |
 | `micro`, `seqtest`, `deco`, `corrchange`, `rcov` | **definition only**: the oracles above, each written from its paper. river's `DenStream` takes another macro step, so it could agree only statistically, and no Python library computes the other four | as each row above | |
 | the window operators | the brute force; the time-reversal identity; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds ([below](#the-window-operators-and-formula-targets)) | 1e-9; 1e-9; 1e-9; exactly | |
 | a formula target | its column form | bit for bit, every prediction | |
@@ -201,8 +208,9 @@ code it checks.** An oracle written *from the implementation* agrees with it
 by construction. That is the one that is easy to get wrong, and it is how
 `bocpd`'s line 6 survived twelve unit tests.
 
-The 2026-09 batch (tasks 45–56) added five models and four helper modules,
-and its testing pattern is what found the defects. Every recursion got a
+The batch that added `deco`, `hmm`, `corrchange`, `bocpd` and `rcov`, with
+four helper modules, shipped in 0.2.0 on 2026-09-06. Its testing pattern is
+what found its defects. Every recursion got a
 longhand oracle written from the paper, and the oracle was allowed to
 disagree. It did, six times:
 
@@ -214,8 +222,6 @@ disagree. It did, six times:
 | `bocpd` | it implemented Algorithm 1's line 6 with the new run holding one row of the old regime |
 | `rcov` | its pre-averaging window was off by one |
 | `corrchange` | its size study was comparing Gaussian draws against a `t₅` table |
-
-Each is recorded in `docs/PLAN.md` §11a, with what it measured.
 
 **A test adds an oracle rather than a golden number.** The mutation work
 ([below](#what-the-mutation-run-actually-found)) followed the same rule, and
@@ -232,15 +238,15 @@ so do the window operators' tests. An oracle takes one of four forms:
 
 **A test may use any library the package does not depend on, when the test
 needs it.** The user settled this on 2026-09-24: "packages that we do not
-want to depend on are fine if needed to test with other libraries", and the
-test plan must allow it from here on. The package depends on polars alone,
+want to depend on are fine if needed to test with other libraries". The
+package depends on polars alone,
 with numpy as an extra, and that does not change. What a test needs is a
 separate question, and three kinds of need have come up:
 
 | need | libraries | example |
 |---|---|---|
 | an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
-| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit, hmmlearn, padasip | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4); `GaussianHMM` beside `hmm` (TA4) |
+| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn, Vowpal Wabbit, hmmlearn, padasip | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4); `GaussianHMM` beside `hmm` |
 | interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
 
 **An oracle comes from a third-party library wherever one computes the
@@ -281,21 +287,21 @@ contributor's environment, for its platforms, gets a group of its own and a
 CI job of its own. For rule 3, `tests/child.py` puts
 `tests/_site/sitecustomize.py`, which installs the same finder, on the path
 of every child interpreter a test spawns. Only
-`tests/test_pyarrow_interop.py`'s children see pyarrow. Review 2026-09-25
-found the examples' "nothing needs pyarrow" running with it importable, which
-is why the children are covered. The gate checks the lock with
+`tests/test_pyarrow_interop.py`'s children see pyarrow. The children are
+covered because on 2026-09-25 the examples' "nothing needs pyarrow" was
+found running with pyarrow importable. The gate checks the lock with
 `uv lock --check`.
 
-**scikit-learn is taken** (task 121, 2026-09-25). `tests/test_sgd.py`
+**scikit-learn is taken** (2026-09-25). `tests/test_sgd.py`
 compares `sgd` with `SGDRegressor` live, where it quoted sklearn's R² from
 `scripts/sklearn_comparison.py`. `tests/test_second_opinion.py` holds `huber`
 to `LinearRegression` at `huber_delta = 1e9`, the limit at which no row is
 down-weighted, and to `HuberRegressor` under outliers (T-S4). It holds
 `marginal`'s best split to a `DecisionTreeRegressor` stump (T-S12), and every
-`ewridge` solve to `Ridge` (task 113).
+`ewridge` solve to `Ridge`.
 
-**Vowpal Wabbit is taken** (task 115, 2026-09-29; the user: "find an
-alternative oracle for ftrl that supports more options"). Its `--ftrl`
+**Vowpal Wabbit is taken** (the user, 2026-09-29: "find an alternative
+oracle for ftrl that supports more options"). Its `--ftrl`
 runs the recursion `ftrl.rs` states, and it reaches options river's
 comparison does not: the squared loss, row weights, the intercept and the
 model's own predictions. `TestFtrlIsVowpalWabbits` holds `pred` and `coef`
@@ -305,8 +311,8 @@ operating systems, so it sits in the dev group like the rest. None of the
 libraries checked forgets as a half-life does (river, VW, and Keras's
 `Ftrl`), so a finite half-life stays with `ftrl_ref` (T-A4).
 
-**hmmlearn and padasip are taken** (review 2026-10-06, TA4). hmmlearn's
-`GaussianHMM` holds `hmm`'s filter at fixed parameters, row by row, and
+**hmmlearn and padasip are taken** (2026-10-06). hmmlearn's
+`GaussianHMM` holds `hmm`'s filter at fixed parameters, row by row.
 padasip's `FilterRLS` holds `rls`. hmmlearn ships wheels up to CPython 3.13,
 so the 3.14 legs build its sdist, a small C++ extension. padasip is pure
 Python. In the same round scikit-learn's `SGDRegressor` and `SGDClassifier`
@@ -316,15 +322,12 @@ took on `sgd`'s losses one row at a time, and filterpy the `kalman` settings
 **Pathway is parked.** It would run the Pathway half of
 `examples/pathway_integration.py`, but it is under the Business Source
 License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
-out of `pyproject.toml` until the user decides (`docs/ENHANCEMENTS.md`
-E26).
+out of `pyproject.toml` until the user decides.
 
 ### The window operators and formula targets
 
-The window operators are tasks 143 and 144 of `docs/PLAN.md`, and formula
-targets task 104. No library computes a windowed or forward form, so the
-oracles here are the definition and an identity, with Polars where it has
-the same operator.
+No library computes a windowed or forward form, so the oracles here are
+the definition and an identity, with Polars where it has the same operator.
 
 **Each window operator is held three ways: to the definition, to Polars'
 own functions where Polars has the operator, and to the time-reversal
@@ -341,7 +344,7 @@ identity.**
 
 The brute force and the identity both found a defect while the operators
 were built: a forward mean counted rows that held a value from outside its
-window ([Defects](#defects-and-where-each-is-told), task 143). The day of
+window ([Defects](#defects-and-where-each-is-told)). The day of
 data is ETCUSDT on 2024-01-02, from data.binance.vision.
 `tests/data.py::public_quotes_and_trades` downloads it once and caches it
 under `.cache/microstructure`, and offline that one test skips.
@@ -366,8 +369,8 @@ much of its input it consumed:
 
 | what is resumed | the claim | held by |
 |---|---|---|
-| a bank of any kind | saved mid-stream and loaded, it goes on exactly as the one that was not | `tests/test_every_kind.py` (task 111); `model_contract.rs`'s generated streams, at any row; a `quantile` fit holding a moved band factor, at 101 save points (`robust.rs`) and at every row from 990 to 1010 through the bank (`test_robust.py::TestTheBandFactorIsState`; task 170) |
-| a bank on input that overlaps its state | `ModelBank.skip_learned` keeps each row after its group's last clock, so the rerun learns each row once | `tests/test_skip_learned.py` (task 120) |
+| a bank of any kind | saved mid-stream and loaded, it goes on exactly as the one that was not | `tests/test_every_kind.py`; `model_contract.rs`'s generated streams, at any row; a `quantile` fit holding a moved band factor, at 101 save points (`robust.rs`) and at every row from 990 to 1010 through the bank (`test_robust.py::TestTheBandFactorIsState`) |
+| a bank on input that overlaps its state | `ModelBank.skip_learned` keeps each row after its group's last clock, so the rerun learns each row once | `tests/test_skip_learned.py` |
 | a formula target with a window open | a state saved mid-window resumes as one run | `a_state_saved_mid_window_resumes_as_one_run`, in `formula_targets.rs` and in `test_formula_targets.py` |
 | a window run, saved at a row | a save and load at row 1, 2, 17, 33 or 59 is one run | `test_a_save_and_load_at_every_row_is_one_run` |
 | a chain of window runs under a slice | six sliced runs, each resumed from the last state and saved again, then the rest, give one run's output, at `chunk_size` of 1, 7 and 100,000 | `test_a_state_saved_under_a_slice_resumes_on_the_same_input`, and its Rust twin in `windows_frame.rs` |
@@ -378,9 +381,9 @@ The first test of the last row is a tripwire. It asserts the windows state's
 version and the bank's schema version together, because a bank file embeds a
 window core for each formula target. So neither can move without the other.
 
-The window run's resume rules came out of nine review rounds on 2026-10-03,
-R1 to R9, which `docs/PLAN.md` §14 records. Each finding there names the test
-that pins it, and the tests' docstrings name the findings they pin.
+The window run's resume rules came out of nine rounds of checks on
+2026-10-03, R1 to R9. A test pins each finding, and its docstring names the
+finding by its round, such as R5-C1.
 
 ### Beyond the eight classes
 
@@ -398,23 +401,23 @@ behaves, then the files the repository promises.
 | [the examples](#examples-are-executed) | `tests/test_examples.py` | everything under `examples/` runs unmodified |
 | [memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) | `tests/test_ffi_memory.py`, `scripts/leakcheck.sh` | no leak and no crash across the FFI |
 | the shared contract | `crates/online-core/tests/model_contract.rs` | every model's shape accessors, its `n_eff` against one recursion (hard rule 8), its prediction slots and its state round trip |
-| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 half-lives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. It has 21 tests. Of the fourteen it had when written, twelve fail with the means plain (docs/PLAN.md task 101); the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
+| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 half-lives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. It has 21 tests. Of the fourteen it had when written, twelve fail with each running mean held as one plain double, where the models now carry it as a pair of doubles, to twice a double's precision; the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
 | Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers; the export validates in full, zero rows and an all-null field cross, two specs are two exports, and a requested schema other than the struct's own raises inside pyarrow 25.0.1's cast path (its bug, `array.pxi:321`) rather than coming back silently cast. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, and `tests/child.py` in the child interpreters the tests spawn, which so run as a user without it does |
-| a weight's scale (task 147) | `tests/test_weight_scale.py` | every spec of the release probe's workload, at its weights and at a hundred times them with `min_weight` scaled alike: only the specs whose docs say a weight counts on the sum scale move |
-| row order (2026-09-17; task 139) | `tests/test_order_hazards.py` | a query whose row order is unspecified is warned about before a bank reads it, with an `OrderNotGuaranteedWarning` naming the step and the fix; `test_what_is_not_order_free` holds the specs `ModelBank.fit` exempts from the warning to those whose state cannot depend on the order |
-| a delayed label at a break (task 153) | `TestBreaksCountElapsedTime` and `TestBreaksOnSkippedRows` in `tests/test_label_delay.py` | a row is learned once its delay has passed in elapsed time, counted from the frame, and a break releases nothing early |
-| an integer clock (task 200) | `tests/test_integer_clock.py`, `an_integer_*` in `crates/online-core/src/clock.rs`, `an_integer_clock_decides_its_edges_in_integers` in `crates/online-polars/src/windows.rs` | an `Int64` clock of epoch nanoseconds near 1.79e18, where a double resolves 256, against the raw integers: its steps, `settled_frac`, a `coef_every` cadence, a model window's edge, an embargo's release, a step back of 1 and one of exactly `restart_after_step_back`, a gap of exactly `gap_cap`, the window operators against Polars' `rolling_sum_by` and `po.increment` of an integer input; the same stream shifted to 0 as a float clock gives the same output to the bit; the frames give the clock in its own integer dtype |
-| the clocks a row reports (task 152) | `tests/test_clocks.py` | `emit_clocks`' `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the newest row learned by then: counted from the frame, and exact to the nanosecond on a `Datetime` clock |
-| `kalman` at any row spacing (task 150) | `crates/online-core/tests/kalman_clock.rs` | `coef_half_life` is a half-life on the clock: a slope step takes about the same clock time to learn at rows 1, 0.25 and 0.04 apart, where the old form parted by a factor of five, and a gap row adds exactly `q d²` to `P` |
-| the solve cadence (task 115 (b)) | `tests/test_solve_cadence.py` | by default, `ewridge`, `lasso`, `huber` and `quantile` solve again once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, so a long half-life still re-solves |
+| a weight's scale (2026-10-02) | `tests/test_weight_scale.py` | every spec of the release probe's workload, at its weights and at a hundred times them with `min_weight` scaled alike: only the specs whose docs say a weight counts on the sum scale move |
+| row order (2026-09-17; its exemptions narrowed 2026-09-29) | `tests/test_order_hazards.py` | a query whose row order is unspecified is warned about before a bank reads it, with an `OrderNotGuaranteedWarning` naming the step and the fix; `test_what_is_not_order_free` holds the specs `ModelBank.fit` exempts from the warning to those whose state cannot depend on the order |
+| a delayed label at a break (2026-10-02) | `TestBreaksCountElapsedTime` and `TestBreaksOnSkippedRows` in `tests/test_label_delay.py` | a row is learned once its delay has passed in elapsed time, counted from the frame, and a break releases nothing early |
+| an integer clock (2026-10-07) | `tests/test_integer_clock.py`, `an_integer_*` in `crates/online-core/src/clock.rs`, `an_integer_clock_decides_its_edges_in_integers` in `crates/online-polars/src/windows.rs` | an `Int64` clock of epoch nanoseconds near 1.79e18, where a double resolves 256, against the raw integers: its steps, `settled_frac`, a `coef_every` cadence, a model window's edge, an embargo's release, a step back of 1 and one of exactly `restart_after_step_back`, a gap of exactly `gap_cap`, the window operators against Polars' `rolling_sum_by` and `po.increment` of an integer input; the same stream shifted to 0 as a float clock gives the same output to the bit; the frames give the clock in its own integer dtype |
+| the clocks a row reports (2026-10-02) | `tests/test_clocks.py` | `emit_clocks`' `scored_clock`, the clock a row was scored at, and `learned_clock`, the clock of the newest row learned by then: counted from the frame, and exact to the nanosecond on a `Datetime` clock |
+| `kalman` at any row spacing (2026-10-03) | `crates/online-core/tests/kalman_clock.rs` | `coef_half_life` is a half-life on the clock: a slope step takes about the same clock time to learn at rows 1, 0.25 and 0.04 apart, where the old form parted by a factor of five, and a gap row adds exactly `q d²` to `P` |
+| the solve cadence | `tests/test_solve_cadence.py` | by default, `ewridge`, `lasso`, `huber` and `quantile` solve again once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, so a long half-life still re-solves |
 
 The files the repository promises are held the same way:
 
 | contract | held by | what it holds |
 |---|---|---|
-| the public API | `tests/test_api_surface.py` | every name, default, signature and output field name, against the snapshot `tests/api_surface.txt`, so a change is a reviewable diff; since task 190 also the defaults that resolve in Rust, the frames' columns and dtypes, the TOML keys, the CLI's flags, the environment variables, and the words each string-valued parameter takes |
+| the public API | `tests/test_api_surface.py` | every name, default, signature and output field name, against the snapshot `tests/api_surface.txt`, so a change is a reviewable diff; since 2026-10-07 also the defaults that resolve in Rust, the frames' columns and dtypes, the TOML keys, the CLI's flags, the environment variables, and the words each string-valued parameter takes |
 | the README's warm-up defaults | `tests/test_spec_defaults.py` | the `min_weight` table's rule for every model, at two feature counts and with and without an intercept, and the readiness gates' defaults, against what the bank resolves |
-| the names of task 144 | `tests/test_renames.py` | an old parameter is refused naming the new one, from a builder and from a spec dict; an old output name is gone |
+| the names that follow Polars (2026-10-02) | `tests/test_renames.py` | an old parameter is refused naming the new one, from a builder and from a spec dict; an old output name is gone |
 | a released state | `tests/test_released_state.py` | the files each release in its `RELEASES` list wrote, from 0.10.0 on, each from its wheel on PyPI, are refused by their schema version; offline, the test skips |
 | a released output | `scripts/compare_release.py` | every output against the newest release's, bit for bit: a report in CI, and a step of each release |
 | the documentation | `tests/test_production_hardening.py`, `tests/test_api_links.py`, `tests/test_doc_structure.py`, `tests/test_llms_txt.py`, and Sphinx with `-W` | every README python block and docstring example runs; every link into the API reference resolves; every Markdown file git tracks passes `docs/WRITING.md`'s structure checks; `llms.txt`'s model names and links are current; every docstring is valid reStructuredText |
@@ -449,7 +452,7 @@ lacked:
 | state-byte corruption | every magic-string byte must detect; any flip anywhere must fail cleanly, never panic |
 | concurrent `fit_predict` from two threads | a safe error, and the object usable after |
 | unicode/space column names | through save/load |
-| README python blocks | compiling. Since IMPROVEMENTS T5 they are *run*, each in its own copy of a namespace holding what the prose has introduced by that point. That found the README's `holt` example refused by the library's own validation |
+| README python blocks | compiling, when the round was written. They are now *run*, each in its own copy of a namespace holding what the prose has introduced by that point. That found the README's `holt` example refused by the library's own validation |
 
 River checks *not* adopted, with reasons:
 
@@ -472,9 +475,9 @@ bugs in the new flat slot-major buffers. It lives in `tests/test_hardening.py`:
 | a kitchen-sink stream at **30k rows with every output enabled at once**: 156+ fields from two instances × ridge grid × feature sets × two targets, sigma/z/drift/metrics/autocorr/quantiles/selected/averaged, groups, sessions, weights, nulls, clock gaps | the same digest across chunkings incl. row-at-a-time, across a mid-stream save/load, and across `POLARS_ONLINE_MAX_THREADS` 1 vs 8 |
 | the **coupled drift path** (grid + `drift_action="reset"`), which P2 added and nothing executed | a break in either instance resets both; the row-major path is chunk-invariant; it equals the parallel path when nothing fires |
 | parameter edges: half-life 1e-3 and inf, k=64, quantile levels 0.001/0.999 | half-life 1e-3 and inf give their exact limits |
-| **weight-scale invariance at 1e±6** | all weights ×c changes nothing but `weight_sum`: the test that the accumulators are in the mean form. Task 147's `tests/test_weight_scale.py` runs it over every kind, less the exceptions each model's docs name |
+| **weight-scale invariance at 1e±6** | all weights ×c changes nothing but `weight_sum`: the test that the accumulators are in the mean form. `tests/test_weight_scale.py` runs it over every kind, apart from the cases each model's docs name |
 | twelve targets with per-target warmup | each lands on the exact ceil(threshold) row |
-| the `coef` cadence: unset, `coef_every` 0 and 997 clock units, `max_rows_between_coefs` 997 | across chunk boundaries: each group's last accepted row in each chunk unset (review round 4, PB2), the same rows under a cadence (task 178) |
+| the `coef` cadence: unset, `coef_every` 0 and 997 clock units, `max_rows_between_coefs` 997 | across chunk boundaries: each group's last accepted row in each chunk unset, the same rows under a cadence |
 | P6's reader thread, on a corrupt file and on a mid-stream bank error | a clean exception, with no deadlock on either side of the channel |
 | the P5 spec cache | two specs on one thread stay distinct |
 
@@ -485,21 +488,23 @@ The soak (10M rows) was re-run after the refactor, and passes.
 **Done.** `tests/test_validation_doc.py` regenerates `docs/VALIDATION.md`
 and compares it to the committed copy, with timings normalized away. So the
 numbers the shipped defaults were chosen from cannot silently stop being
-true. It was re-run after the whole enhancement backlog, including E11b's
-centered moments, and **every number is unchanged**. That is itself the
+true. It was re-run after the whole enhancement backlog, including the switch
+to centred co-moments in `EwCov`, and **every number is unchanged**. That is itself the
 result: the numerics work did not move the measured optima. A second
 assertion checks the script still runs all five experiments, so the
 comparison cannot pass on a document that no longer justifies anything.
 
 #### The declared schema is checked for every model
 
-**Done.** `test_names_match_the_realized_struct_for_every_model` extends the
-E23 guard from `ewridge` alone to all ten regression models, times four output
-combinations (three when written), plus `ew_cov` separately. The optional
+**Done.** A guard written with the residual quantiles and autocorrelations
+held `ewridge`'s declared field names to the struct the bank produces.
+`test_names_match_the_realized_struct_for_every_model` extends it to all ten
+regression models, times four output combinations (three when written),
+plus `ew_cov` separately. The optional
 outputs are assembled in the stream layer and so generalize. But each model
 contributes its own prediction and coefficient slots, and `sgd`, `pa`, `holt`
-and `ew_cov` all postdate the original test. `tests/test_every_kind.py` (task
-111) holds every kind's output struct to `po.spec.output_fields`,
+and `ew_cov` all postdate the original test. `tests/test_every_kind.py`
+holds every kind's output struct to `po.spec.output_fields`,
 parametrised over the registry's `MINIMAL`, so a new kind is checked the day
 it is registered.
 
@@ -526,9 +531,9 @@ A documented example that no longer works is worse than none, and until this
 test nothing ran either file.
 
 **It found a documentation defect.** The README's chunk-invariance guarantee
-said "bit-identical output" with no exception. But `coef` is snapshotted on
-each chunk's last row as well as every `coef_every` rows, so smaller chunks
-report it more often. The guarantee now names that exception, and every
+said "bit-identical output" and set nothing apart. But `coef` is snapshotted
+on each chunk's last row as well as every `coef_every` rows, so smaller
+chunks report it more often. The guarantee now sets `coef` apart, and every
 computed field is still bit-identical.
 
 ### Two tiers
@@ -537,8 +542,7 @@ computed field is still bit-identical.
 suite runs before every push, always.** The user set the purpose on
 2026-10-08: "We will always run the full tests before a push, the idea of
 the essential tests is to improve the speed of iteration while developing
-many steps." A push never rides on the essentials, whatever they said
-(docs/PLAN.md task 210).
+many steps." A push never rides on the essentials, whatever they said.
 
 | when | what runs | tier |
 |---|---|---|
@@ -572,7 +576,7 @@ stay opt-in, as before.
 | a proptest property | a multiple of proptest's own 256: 128 to 2,048 | `PROPTEST_CASES=32`, an eighth: 16 to 256 |
 
 **A plain `pytest` runs both tiers; a plain `cargo test` runs the
-essentials.** `uv run pytest` is the full run: `addopts` leaves out the
+essentials.** `uv run pytest` is the full run. Its `addopts` leave out the
 soak alone, and the Hypothesis profile is `extended` unless
 `HYPOTHESIS_PROFILE=essential` is set (`tests/tiers.py`). cargo skips an
 ignored test, so `cargo test` alone runs the Rust essentials, and
@@ -607,76 +611,61 @@ cores, pytest's essentials took 72 s against the full suite's 196 s, and
 first and last lines and prints each step's time, so a slow test that
 creeps into the essentials shows where they run. CI runs only the full tier
 and spends no minutes timing the essentials. The user asked for that on
-2026-10-08: "Do the work before the push just to save ci time".
-docs/PLAN.md task 210 has the measurements and every test that moved.
+2026-10-08: "Do the work before the push just to save ci time". Each test
+that moved gives its reason in its mark.
 
 ### Where the suite runs
 
 **Every push to `main` and every pull request runs the suite on Linux,
 macOS and Windows.** The gate runs before every commit, the essentials
 while a task is in progress and everything before every push ([Two
-tiers](#two-tiers)), and each workflow under `.github/workflows/` on its
+tiers](#two-tiers)). Each workflow under `.github/workflows/` runs on its
 own schedule:
 
 | when | where | what runs |
 |---|---|---|
 | each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`'s essentials, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
-| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint and type checks, Sphinx, and every output against the newest release's, as a report; the Python coverage, as a report |
-| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report, which fails on a survivor `scripts/mutants_equivalent.toml` does not list |
+| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); every output compared with the newest release's, bit for bit, as a report; the Python coverage, as a report |
+| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
-| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check on Linux and macOS, its control included; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares |
+| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares |
 | monthly | `polars-canary.yml` | the suite on the floor of the Polars range, the version `pyproject.toml` declares |
 
 The canary and the release's Polars and NumPy legs leave out the tests
 marked `pins`. Those assert this repo's own Polars pins, so they cannot pass
 on another Polars. On the floor, a test that needs a newer Polars skips,
-naming the version it needs and why (`tests/polars_version.py`). Tests generate or download their own data (hard rule 1).
-Downloads are cached under `.cache/`, and a test that needs one skips
-offline: the public intraday data (`tests/data.py::public_intraday`), the
-released wheels, and the day of quotes and trades.
+naming the version it needs and why (`tests/polars_version.py`). Tests
+generate or download their own data (hard rule 1). Downloads are cached
+under `.cache/`, and a test that needs one skips offline: the public
+intraday data (`tests/data.py::public_intraday`), the released wheels, and
+the day of quotes and trades.
 
 ### What the README's guarantees are held to
 
-**Against references.** Each model is held to a reference written from its
-documented recursion, and to another library wherever one computes the
-same quantity:
-
-| model | held against | agreement |
-|---|---|---|
-| `ewridge`, `rls` | references written from the recursions | 1e-9 |
-| `ewridge` | scikit-learn's `Ridge` | 1e-8, relative |
-| `rls` | `ewridge(ridge_scale="sum")` solved on every row | below 1e-9 |
-| `kalman` | a reference; filterpy's Kalman filter; [river](https://riverml.xyz)'s `BayesianLinearRegression`, the case with no drift | about 1e-15; 1e-9; 3.6e-15 |
-| `lasso` | the KKT conditions of its objective; a reference descent, for every prediction | the conditions hold; about 1e-14 |
-| `huber`, `quantile` | references; scikit-learn's `HuberRegressor` and statsmodels' `QuantReg`, batch fits of the same objectives | about 1e-13; statistically |
-| `sgd` | scikit-learn's `SGDRegressor`, one per group | R² within 0.03 |
-| `ftrl` | a reference; river's FTRL, row for row; Vowpal Wabbit's `--ftrl`, on every row | about 1e-16; 1e-12; its single precision |
-| `pa` | river's `PARegressor` | 1e-12 |
-| `holt` | statsmodels' `Holt`, once the weight saturates; pandas' `ewm(times=)`, without a trend | 1e-12; 1e-8 |
-| `ew_cov` and the EW moments | pandas' `ewm`; river | 1e-12; 1e-9 |
-| `ew_class`, `mahal` | scipy's multivariate normal and Mahalanobis distance | 1e-9 |
-| `marginal` | scipy's `binned_statistic` and a scikit-learn decision stump, for the bins; statsmodels' autocorrelations, for the serial count | 1e-9; 0.02 |
-| `bocpd` | the `bayesian_changepoint_detection` package | 1e-9, and `run_mode` exactly |
-| targets with gaps | statsmodels' weighted least squares, ridge and elastic net | 1e-7 |
-| the window operators | a loop written from each definition, and the same window over the reversed stream; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds | to rounding; 1e-9; exactly |
-| a window target | the same window written as a column by `with_windows(like=spec)` and fed back as a plain target under the same embargo | prediction for prediction |
-| the core's hand-written solves, in the Rust tests | `faer`'s | |
+**Each guarantee in the README's [What you can rely
+on](../README.md#what-you-can-rely-on) is held by a reference, an
+invariant, generated streams, fixed numbers, a deliberate attack or a file
+the repository promises.** Each model's references, with the agreement each
+reaches, are in [Against reference
+implementations](#against-reference-implementations). In the Rust tests the
+core's hand-written solves are held to `faer`'s ([Libraries the package
+does not depend on](#libraries-the-package-does-not-depend-on)).
 
 **Invariants, for every model**, checked at the bank and, where they apply,
 at the command line:
 
 | invariant | checked as |
 |---|---|
-| chunk invariance | one chunk, seven, a hundred, one row at a time, and with a save and load in the middle |
-| thread invariance | 1 thread against 8 |
-| group independence | a group's numbers do not depend on what else is in the bank |
-| the paths agree | runner ≡ bank for every input source and format; the Arrow output ≡ the Polars one, field for field and null for null |
-| `predict` ≡ `fit_predict` | of the next row, field for field, with every diagnostic on |
-| stream semantics | the null policy, warm-up, and the clock |
+| chunk invariance | one chunk, seven, a hundred, one row at a time, and with a save and load in the middle ([class 2](#the-eight-test-classes)) |
+| thread invariance | 1 thread against 8 (T-D3, and [post-refactor hardening](#post-refactor-hardening-p1p8-review)) |
+| group independence | a group's numbers do not depend on what else is in the bank ([class 4](#the-eight-test-classes)) |
+| the paths agree | runner ≡ bank for every input source and format; the Arrow output ≡ the Polars one, field for field and null for null ([classes 6 and 6c](#the-eight-test-classes)) |
+| `predict` ≡ `fit_predict` | of the next row, field for field, with every diagnostic on ([class 6b](#the-eight-test-classes)) |
+| stream semantics | the null policy, warm-up, and the clock ([classes 4 and 5](#the-eight-test-classes)) |
 | `weight_sum` | the same recursion in every model (`crates/online-core/tests/model_contract.rs`) |
-| a window run resumed | a chain of runs saved under a slice and resumed gives one run's output, at chunks of 1, 7 and 100,000 rows, and another input is refused |
+| a window run resumed | a chain of runs saved under a slice and resumed gives one run's output, at chunks of 1, 7 and 100,000 rows, and another input is refused ([Resuming a run](#resuming-a-run)) |
 
 **Generated streams.** In the Rust tests, `proptest` drives generated
 streams through every model against the same contract. Hypothesis
@@ -684,15 +673,19 @@ generates adversarial streams, with mixed nulls, duplicate and long-gap
 clocks, values at ±1e8, zero weights and tiny groups. It asserts the
 strongest invariant: **changing a row's own target never changes that
 row's own prediction.** An information coefficient (IC) of about 0 on
-pure-noise targets checks the same thing from the other side.
+pure-noise targets checks the same thing from the other side (T-D2, and
+[class 3](#the-eight-test-classes)).
 
-**Fixed numbers.** Each model has one golden stream in the Rust core. The
-whole pipeline, from reading the columns through the models and the
-diagnostics to assembling each spec's output, is pinned to fixed output
-and compared on every operating system. So a divergence in Polars'
+**Fixed numbers.** Each model has one golden stream in the Rust core
+(T-D4). The whole pipeline, from reading the columns through the models and
+the diagnostics to assembling each spec's output, is pinned to fixed output
+and compared on every operating system (T-W7). So a divergence in Polars'
 vectorized paths on another CPU would show.
 
-**Hardening.** What the suite does to a bank on purpose:
+**Hardening.** What the suite does to a bank on purpose, held in full in
+[production hardening round 3](#production-hardening-round-3-vs-rivers-own-battery),
+[post-refactor hardening](#post-refactor-hardening-p1p8-review) and [FFI
+memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31):
 
 | attack | what must hold |
 |---|---|
@@ -705,35 +698,29 @@ vectorized paths on another CPU would show.
 | across the FFI | memory safety where two copies of Polars share one process |
 | sustained load | a 10M-row soak, opt-in with `pytest -m soak` |
 
-**Contracts that are files.** What is held to a file, and how:
+**Contracts that are files.** What is held to a file, and how, with each
+test named in [Beyond the eight classes](#beyond-the-eight-classes):
 
 | contract | how it is held |
 |---|---|
 | the public API: every name, default and signature, and every output field name | a checked-in snapshot (`tests/api_surface.txt`), so a change is a reviewable diff |
-| every python block in this README, and every example in the API reference | each one runs |
+| every python block in the README, and every example in the API reference | each one runs |
 | some docstring text | pinned where a test reads it |
-| everything under `examples/` | runs unmodified: the TOML through the real command line, the Pathway example's operator over plain batches, and the cursor examples against real DuckDB and SQLite databases |
+| everything under `examples/` | runs unmodified: the TOML through the real command line, the Pathway example's operator over plain batches, and the cursor examples against real DuckDB and SQLite databases ([Examples are executed](#examples-are-executed)) |
 | the state files every release from 0.10.0 on wrote | read and refused by their schema, as the CHANGELOG says they are |
 | `docs/VALIDATION.md`, where the defaults were chosen | regenerated and compared, so the numbers behind them cannot silently stop being true |
-| no data files in the repository | tests generate or download their own data, and a data file, a large file or generated output that gets tracked fails a test |
-
-**Where it runs:**
-
-| when | what runs |
-|---|---|
-| every commit | `./scripts/gate.sh`: `cargo fmt`, `clippy -D warnings`, `uv lock --check`, `ruff`, `mypy`, the build, `sphinx -W`, and the essentials of `cargo test` and `pytest` |
-| before every push | `./scripts/gate.sh --extended`: the same checks with every test |
-| every push and pull request | the tests on Ubuntu, Windows and macOS, on Python 3.12 and 3.14, and on 3.13 on Linux; the format, lint, type and documentation checks, on Linux; mutation testing of the lines the change touched, which fails on a mutant no test catches; and every output compared with the newest release's, bit for bit, as a report |
-| every release | a state file written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, and on the newest NumPy |
-| weekly | the suite on the newest py-polars, and on NumPy's next release candidate; a leak check across the boundary with Polars; mutation testing of all of `online-core`, as a report |
+| no data files in the repository | tests generate or download their own data, and a data file, a large file or generated output that gets tracked fails a test ([Hard rule 1](#hard-rule-1-is-enforced-not-remembered)) |
 
 ## What it has found
 
+**The suite has found defects in the library, in its documents and in its
+own tests, and two differences from river that are not bugs.**
+
 ### Defects, and where each is told
 
-Each row names what found the defect and where it is told in full.
+Each row names what found the defect, and where it is told in full or the test that now holds it.
 
-| finding | found by | told in |
+| finding | found by | told in, or held by |
 |---|---|---|
 | six errors in the 2026-09 batch: `deco`, `hmm`, `corrchange` twice, `bocpd` and `rcov` | oracles written from the paper | [An oracle, not a golden number](#an-oracle-not-a-golden-number) |
 | a zero-weight row at the head of a stream permanently disabled `ewridge` and `lasso` | the mutation run | [What the mutation run actually found](#what-the-mutation-run-actually-found) |
@@ -745,32 +732,32 @@ Each row names what found the defect and where it is told in full.
 | a unit-variance feature on a 1e6 offset was silently dropped | T-E9 | [C](#c-edge-case-matrix) |
 | `half_life=600` on a microsecond clock silently meant 600 µs | T-E10 | [C](#c-edge-case-matrix) |
 | a target listed as its own feature was accepted, and so were duplicate names; a ±inf prediction could pass; `clip_gradient=inf` was refused | production hardening round 3 | [Production hardening round 3](#production-hardening-round-3-vs-rivers-own-battery) |
-| the README's `holt` example was refused by the library's own validation | running the README's python blocks (IMPROVEMENTS T5) | the same |
-| the README's chunk-invariance guarantee named no exception for `coef` | running the examples | [Examples are executed](#examples-are-executed) |
+| the README's `holt` example was refused by the library's own validation | running the README's python blocks | the same |
+| the README's chunk-invariance guarantee did not set `coef` apart | running the examples | [Examples are executed](#examples-are-executed) |
 | three `online-cli` tests wrote Windows paths into a TOML basic string; the parse error said nothing about paths | the first Windows CI run | T-W3b in [D](#d-windows-and-cross-platform) |
 | nine pytest failures on Windows, all test bugs and no library bug | the first Windows CI runs | T-W1 in [D](#d-windows-and-cross-platform) |
 | a `UnicodeEncodeError` in `examples/pathway_integration.py` | CI on Windows | [What the first CI runs cleared](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06) |
 | two Windows gaps in `.vscode/settings.json` | writing `scripts/env.ps1` | T-W9 in [D](#d-windows-and-cross-platform) |
 | a String feature column was silently parsed back to f64 | the FFI audit | [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) |
-| a feature constant inside a `window_size` read as the subtraction's remainder, which a windowed lasso at a zero penalty divided by itself (predictions of 1e55) | the oracles of 2026-09-24 | docs/PLAN.md task 94 |
-| the lasso's `penalty_selected` under a `window_size` read errors outside it, four ways | the same oracles, then a Rust one | docs/PLAN.md task 95 |
-| `holt` reported `coef` as `[0, 0]` before a target's first observation | the same oracles | docs/PLAN.md task 97 |
-| a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | docs/PLAN.md task 100 |
-| a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring task 94's case outside a window | docs/PLAN.md task 101 |
-| a windowed `marginal` pair kept task 94's remainder for a slot held over the window, and `beta` divided it by itself | the sweep of every running mean for task 101 | docs/PLAN.md task 101 |
-| the clusters' metric weight `1 / var` grew without bound as a quiet feature's variance decayed, and a feature that stopped left a rounding artefact in it | the sweep for task 101, then the prototype's streams | docs/PLAN.md task 102 |
-| the window's held-feature rule compared the run's decayed weight with the window's to 1e-12, and the two drifted past it under a long window and a long half-life (1.6e-12 at a half-life of 1e6, fifty thousand rows of each) | review 2026-09-25 of tasks 94-97; a simulation, then `a_long_window_under_a_long_halflife_still_reads_a_held_feature` on the old rule | docs/PLAN.md task 94 |
-| the lasso's windowed selection fell back on whole-history errors through an empty window | the same review | docs/PLAN.md task 95 |
-| `corrchange`'s accurate `D̂` reached its true 0 on a collinear pair, and the numerator's rounding divided by it flagged every span of a derived column | review 2026-09-25 of task 103; `a_collinear_pair_has_no_verdict` | docs/PLAN.md task 103 |
-| `corrchange`'s long-run standard deviation took a span's variance as `E[x²] − E[x]²`: 1.2e-5 of itself off at a level of 1e5, NaN at 1e8, so the monitor flagged nothing there | the same sweep; a level-invariance test on deviations that are exact multiples of 2⁻²⁰ | docs/PLAN.md task 103 |
-| `ModelBank.fit` exempted `huber` and `lasso` from the row-order warning, though their state depends on the order: with one row in ten lifted by 5, a shuffle moves `huber`'s coefficients by 1.05e-02, and shuffles moved the penalty `lasso` selects from 0.01 to 0.1 and to 0.001 | task 138's analysis; `test_what_is_not_order_free`, which failed for both on the old list | docs/PLAN.md task 139 |
-| the bound that stands in for the noise gate's exact ratio, where a solve goes unread, would have passed a row whose share was NaN: an inverse that overflowed, with no ridge, at features near `1e-155` fitted through the origin | the test written for it, which failed before the guard | docs/PLAN.md task 140 |
-| a forward window's mean counted rows holding the row's own value or one its stamp excludes; it now starts at the first in-window row with a value of its own | the brute force and the time-reversal identity, both, while the operators were built | docs/PLAN.md task 143 |
-| a held value cut at a window's edge subtracted the boundary row's whole mass, which at a row exactly a window old cancelled to rounding dust: a `"left"` mean read 6.27 where the definition gave 6.34 | the definition, while the operators were built | docs/PLAN.md task 143 |
-| parameters in clock units acted per row: `emit_drift` flagged a 30-unit burst at four rows a unit and not at one, the residual quantiles never forgot (1.55 where the recent quantile was 0.166), and `resid_autocorr_lag` paired residuals across a break | measuring 0.13.0, and reading the code | docs/PLAN.md task 146 |
-| `kalman`'s `coef_half_life` acted as about `h · sqrt(d)` for rows `d` apart: a slope step took 74, 38 and 13 clock units to learn at rows 1, 0.25 and 0.04 apart | measuring 0.13.0 | docs/PLAN.md task 150 |
-| `label_delay`, now `embargo`, learned labels early at a break: with a 10-unit delay and a 5-unit cap, an 8-unit gap learned two labels early, and a session change with no gap learned nine | the design of task 104, which first capped the delay at the gap cap for it; four count tests that failed on the old build | docs/PLAN.md task 153 |
-| the findings of nine review rounds over the window operators and formula targets, each pinned by a test that failed before its fix | the review rounds R1 to R9, on 2026-10-03 | docs/PLAN.md §14 |
+| a feature constant inside a `window_size` read as the subtraction's remainder, which a windowed lasso at a zero penalty divided by itself (predictions of 1e55) | the oracles of 2026-09-24 | `tests/test_oracles_lasso_paths.py` |
+| the lasso's `penalty_selected` under a `window_size` read errors outside it, four ways | the same oracles, then a Rust one | `tests/test_oracles_lasso_paths.py` |
+| `holt` reported `coef` as `[0, 0]` before a target's first observation | the same oracles | `tests/test_oracles_gradient_paths.py` |
+| a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | `toml_config` in `tests/test_closed_groups.py`, which writes paths POSIX-style |
+| a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring the windowed lasso's case of 2026-09-24 outside a window | `crates/online-core/tests/held_values.rs` ([a stopped feature or target](#beyond-the-eight-classes)) |
+| a windowed `marginal` pair kept the remainder a constant feature leaves inside a window, for a slot held over the window, and `beta` divided it by itself | the sweep of every running mean that followed | `marginal_reports_a_stopped_feature_as_it_is` in `crates/online-core/tests/held_values.rs` |
+| the clusters' metric weight `1 / var` grew without bound as a quiet feature's variance decayed, and a feature that stopped left a rounding artefact in it | the same sweep, then the prototype's streams | `kmeans_assigns_the_same_at_every_level` and `micro_assigns_the_same_at_every_level` in `crates/online-core/tests/held_values.rs` |
+| the window's held-feature rule compared the run's decayed weight with the window's to 1e-12, and the two drifted past it under a long window and a long half-life (1.6e-12 at a half-life of 1e6, fifty thousand rows of each) | a second reading of the windowed fixes on 2026-09-25; a simulation, then `a_long_window_under_a_long_halflife_still_reads_a_held_feature` on the old rule | that test, in `crates/online-core/src/window.rs` |
+| the lasso's windowed selection fell back on whole-history errors through an empty window | the same reading | `tests/test_oracles_lasso_paths.py` |
+| `corrchange`'s accurate `D̂` reached its true 0 on a collinear pair, and the numerator's rounding divided by it flagged every span of a derived column | a second reading of `corrchange`'s fix on 2026-09-25; `a_collinear_pair_has_no_verdict` | that test, in `crates/online-core/src/corrchange.rs` |
+| `corrchange`'s long-run standard deviation took a span's variance as `E[x²] − E[x]²`: 1.2e-5 of itself off at a level of 1e5, NaN at 1e8, so the monitor flagged nothing there | the same sweep; a level-invariance test on deviations that are exact multiples of 2⁻²⁰ | `the_long_run_sd_is_free_of_the_columns_level`, in `crates/online-core/src/corrchange.rs` |
+| `ModelBank.fit` exempted `huber` and `lasso` from the row-order warning, though their state depends on the order: with one row in ten lifted by 5, a shuffle moves `huber`'s coefficients by 1.05e-02, and shuffles moved the penalty `lasso` selects from 0.01 to 0.1 and to 0.001 | the analysis behind the README rewrite of 2026-09-29; `test_what_is_not_order_free`, which failed for both on the old list | that test, in `tests/test_order_hazards.py` |
+| the bound that stands in for the noise gate's exact ratio, where a solve goes unread, would have passed a row whose share was NaN: an inverse that overflowed, with no ridge, at features near `1e-155` fitted through the origin | the test written for it, which failed before the guard | `a_share_that_is_not_a_number_withholds_whichever_way_the_gate_reads`, in `crates/online-core/src/ewridge/tests.rs` |
+| a forward window's mean counted rows holding the row's own value or one its stamp excludes; it now starts at the first in-window row with a value of its own | the brute force and the time-reversal identity, both, while the operators were built | [The window operators and formula targets](#the-window-operators-and-formula-targets) |
+| a held value cut at a window's edge subtracted the boundary row's whole mass, which at a row exactly a window old cancelled to rounding dust: a `"left"` mean read 6.27 where the definition gave 6.34 | the definition, while the operators were built | the brute force, `windows.rs::every_operator_matches_its_definition` |
+| parameters in clock units acted per row: `emit_drift` flagged a 30-unit burst at four rows a unit and not at one, the residual quantiles never forgot (1.55 where the recent quantile was 0.166), and `resid_autocorr_lag` paired residuals across a break | measuring 0.13.0, and reading the code | `tests/test_diagnostics.py` |
+| `kalman`'s `coef_half_life` acted as about `h · sqrt(d)` for rows `d` apart: a slope step took 74, 38 and 13 clock units to learn at rows 1, 0.25 and 0.04 apart | measuring 0.13.0 | `crates/online-core/tests/kalman_clock.rs` |
+| `label_delay`, now `embargo`, learned labels early at a break: with a 10-unit delay and a 5-unit cap, an 8-unit gap learned two labels early, and a session change with no gap learned nine | the design of formula targets, which first capped the delay at the gap cap for it; four count tests that failed on the old build | `TestBreaksCountElapsedTime` and `TestBreaksOnSkippedRows` in `tests/test_label_delay.py` |
+| the findings of nine rounds of checks over the window operators and formula targets, each pinned by a test that failed before its fix | the rounds R1 to R9, on 2026-10-03 | the docstring of each pinning test, which names its finding, such as R5-C1 |
 
 ### Differences from river that are not bugs
 
@@ -785,19 +772,21 @@ wrong.
 
 ## Where it is thin, and what is left
 
-What is left comes first. The two measures behind it follow: the code the
-Rust tests reach, and the mutants no test catches.
+**One entry is still open, and the newest code sits outside the mutation
+scope.** Two measures find where the tests are thin. Coverage counts the
+code the tests reach, and mutation testing finds code no test would notice
+breaking.
 
 ### What is left
 
-**One entry is open, and the newest code sits outside the mutation scope.**
+Each thin spot, why it is thin, and where it stands:
 
 | what | why it is thin | where it stands |
 |---|---|---|
 | T-W8's case-insensitivity | no test covers it; T-W8's file locking and long paths are tested | open since 2026-09-25 |
 | a network share path, `\\server\share\...` | out of a CI runner's reach | untested (T-W3) |
-| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests [above](#the-window-operators-and-formula-targets), and by review rounds R1 to R9 |
-| the weekly mutation pass over all of `online-core` | the first to finish, on 2026-10-04, ran at a time limit that counted most survivors as timeouts, so its 11 survivors are a floor | the limit corrected by task 155; a pass at the new limit is the next count; [Mutation survivors](#mutation-survivors) |
+| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), and by the nine rounds of checks, R1 to R9 |
+| the weekly mutation pass over all of `online-core` | the first to finish, on 2026-10-04, ran at a time limit that counted most survivors as timeouts, so its 11 survivors are a floor | the limit corrected on 2026-10-04, to ten times the baseline's test run; a pass at the new limit is the next count; [Mutation survivors](#mutation-survivors) |
 
 The last three entries closed on 2026-09-24: T-A2's numpy `lasso_ref` for the
 pred path, T-D4's mutation testing in CI, and T-W3's paths on a Windows
@@ -816,8 +805,10 @@ Two things are worth doing periodically rather than once:
 Measured with `./scripts/coverage.sh` on 2026-09-27: **96% of the Python
 package** (2,139 statements, 83 missed), and **93.9% region / 92.6% line**
 of the Rust workspace. The Rust figures were 75% and 73% on 2026-08-30. It
-is reported, never gating (T-D4), and Rust's figure is not in CI
-(docs/PLAN.md task 113 says why).
+is reported, never gating (T-D4), and Rust's figure is not in CI. It sees
+`cargo test` alone, so it would read `online-py` at 0%, and it would add an
+instrumented build to every run. The mutation jobs, on every push and
+weekly, are the sharper measure of the same thing.
 
 **The Rust figure understates reality.** `cargo llvm-cov` only sees what
 `cargo test` runs. `online-py` (0%) and much of `online-polars` are exercised
@@ -834,23 +825,29 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
 `scripts/mutants_equivalent.toml` does not list. That file holds 226
-entries (2026-10-10, after tasks 234, 127 and 236), each an equivalent mutant -- a few
+entries (2026-10-10), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
 **A survivor a test could tell apart only by a difference no caller can act
-on is tolerated, and listed apart** (task 158).
-`scripts/mutants_tolerated.toml` names 39, in 35 entries, each with its kind and the
-measured size of the difference: last-bit rounding, a difference below the
-computation's own error (most are `boundary`'s solver stopping a settled
-solve, under 1e-7 where its grid error is 3e-5), an exact tie no input can
-be built to reach, a guard only a release build reaches past a
-`debug_assert!`, a weight past the input bound, or a path one call of which
-costs 30 s in a debug build. The report shows them by kind and fails on none
-of them, in either job. An entry matches as an equivalent does, and may name
-the `columns` it covers or take in the line before, so it cannot cover a
-twin on the same line or in the same function that a test catches.
+on is tolerated, and listed apart** (2026-10-05).
+`scripts/mutants_tolerated.toml` names 39, in 35 entries, each with its kind
+and the measured size of the difference. The report shows them by kind and
+fails on none of them, in either job. The kinds:
+
+| kind | what it is |
+|---|---|
+| rounding | a difference in the last bit |
+| below the computation's own error | most are `boundary`'s solver stopping a settled solve, under 1e-7 where its grid error is 3e-5 |
+| an exact tie | one no input can be built to reach |
+| a release-only guard | a guard only a release build reaches, past a `debug_assert!` |
+| past the input bound | a weight past the bound on what an input may be |
+| too slow to test | a path one call of which costs 30 s in a debug build |
+
+An entry matches as an equivalent does. It may name the `columns` it covers
+or take in the line before, so it cannot cover a twin that a test catches,
+on the same line or in the same function.
 
 **Equivalent mutants are left alone deliberately: no test can kill them.**
 Two from the first passes show the kind. Flipping `Ftrl::weight`'s
@@ -858,7 +855,7 @@ Two from the first passes show the kind. Flipping `Ftrl::weight`'s
 `|zz| <= l1` guard above it has already returned on. In Holt's
 `beta > 0.0 && d_clock > 0.0`, the second test can never decide, because
 beta is `1 - 0.5^(d/half_life)`, zero exactly when d is. Holt's note in the
-source stood until its rewrite in task 80 (`ddc9d91`) removed `beta`, and the
+source stood until a rewrite of `holt` (`ddc9d91`) removed `beta`, and the
 branch with it. FTRL's branch, now in `Ftrl::weight_of` in
 `crates/online-core/src/ftrl.rs`, is recorded in
 `scripts/mutants_equivalent.toml` with that reason.
@@ -872,10 +869,10 @@ has the count by file. The triage, newest first:
 
 | scope | date | missed at the start | at the end |
 |---|---|---|---|
-| the 698 mutants the push to `103d721` left untested at the job's time limit, and the lines tasks 215 and 216 changed, in `kalman.rs`, `sgd.rs`, `pa.rs`, `rls.rs`, `robust.rs`, `stats.rs`, `lasso.rs` and the cluster summaries | 2026-10-08 (docs/PLAN.md task 220) | 71, run locally on the essentials tier | 55 caught by twenty-one new tests, 14 equivalent, 2 tolerated (rounding); and one of task 218's equivalents, `ewridge`'s `coef_variance` guard, was not: `Q ≤ W²` fails in doubles once `W²` underflows while `λ > 1/2` keeps `Q` at `2^-1074`, and a test now catches it |
-| the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 (docs/PLAN.md task 218) | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent; two of those went with the code that left a fit with no kept column NaN and `inf` live, where a resumed stream read its documented values |
-| `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 (docs/PLAN.md task 113) | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
-| the lines task 112 changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
+| the 698 mutants the push to `103d721` left untested at the job's time limit, and the lines two batches of fixes changed that day, in `kalman.rs`, `sgd.rs`, `pa.rs`, `rls.rs`, `robust.rs`, `stats.rs`, `lasso.rs` and the cluster summaries | 2026-10-08 | 71, run locally on the essentials tier | 55 caught by twenty-one new tests, 14 equivalent, 2 tolerated (rounding); and one of the equivalents the triage of `103d721`'s changed lines listed, `ewridge`'s `coef_variance` guard, was not: `Q ≤ W²` fails in doubles once `W²` underflows while `λ > 1/2` keeps `Q` at `2^-1074`, and a test now catches it |
+| the lines the push to `103d721` changed, in `kalman.rs`, `ewridge.rs`, `clock.rs` and `lasso.rs` | 2026-10-08 | 105, run 37834489097 | 86 caught by ten new tests, 19 equivalent; two of those went with the code that left a fit with no kept column NaN and `inf` live, where a resumed stream read its documented values |
+| `lasso.rs` and `ewridge.rs`, afresh | 2026-09-27 | 104 of 906, and 152 timed out | every mutant caught or recorded, after two `--iterate` rounds |
+| the lines a batch of performance fixes changed in `gaps.rs` and `ewlagcov.rs` | 2026-09-27 | 43 viable | 42 caught, the other equivalent |
 | `stats.rs`, on its own | 2026-09-24 | 48 of 285, no timeouts | 5: one caught since, and four equivalent |
 
 **`lasso.rs` and `ewridge.rs`.** The tests that closed them lean on
@@ -909,9 +906,9 @@ at the minimum, and the other four were equivalent mutants. Three were in
 `P2Quantile`. One was `d_sign > 0` against `>=`, where `d_sign` is only ever
 ±1. The other two were the two `<` of the parabolic order check against
 `<=`, which differ only when the prediction lands exactly on a neighbour.
-Task 146 replaced `P2Quantile`, which never forgot, with `EwQuantile`, held
-to the exponentially weighted quantile's definition row by row, and those
-three went with it. The fourth is still listed: `SlotMetrics::update`'s
+On 2026-10-02 `EwQuantile` replaced `P2Quantile`, which never forgot. It is held
+to the exponentially weighted quantile's definition row by row, and the three
+equivalents went with `P2Quantile`. The fourth is still listed: `SlotMetrics::update`'s
 `denom > 0` against `>=`, where a scored row's `w > 0` keeps `denom`
 positive.
 
@@ -927,8 +924,9 @@ assertion sees.
 `scripts/mutants.sh` runs `cargo mutants` over `online-core`. It makes one
 small change to the source, rebuilds, and reruns the tests. A missed mutant
 means every test still passed with the code deliberately broken: a gap in the
-tests rather than a bug in the code. [Mutation survivors](#mutation-survivors)
-says where they stand today. The passes so far:
+tests rather than a bug in the code. Six passes have run, the last two over
+one or two files, and the survivors left today are counted in [Mutation
+survivors](#mutation-survivors):
 
 | pass | date | mutants | missed | timeouts |
 |---|---|---|---|---|
@@ -953,7 +951,7 @@ its shape. Grouped by function, run 1's survivors were:
 | `EwCovModel::read` / `labels` / `n_outputs` | 26 | `ew_cov` is reachable only through the Polars layer |
 | `<Holt as OnlineModel>::step` | 19 | brand new, and its tests checked outcomes not arithmetic |
 | `Kalman::pred_var` + `<Kalman as OnlineModel>::step` | 17 | surfaced only as `emit_sigma` / spec options |
-| `EwCov::precision` / `with_precision_prior` / `partial_corr` | 15 | E2's precision matrix, solved on demand and exposed only as a statistic (C5) |
+| `EwCov::precision` / `with_precision_prior` / `partial_corr` | 15 | `ew_cov`'s precision matrix, solved on demand and exposed only as a statistic |
 
 #### The mutation blind spot
 
@@ -1010,11 +1008,13 @@ look like an error. It looked like good news.
 percent, the numbers underneath are not trustworthy.
 
 A shorter limit makes a pass faster, but *more* sensitive to this, and
-it hides survivors as timeouts. Since task 155 a mutant stops at ten times
+it hides survivors as timeouts. Since 2026-10-04 a mutant stops at ten times
 the baseline's test run, in CI and in `scripts/mutants.sh`, after three
 times hid most of a pass's survivors.
 
 #### Where the 217 stood after run 3
+
+Run 3's survivors by file, beside run 1's:
 
 | file | run 1 | run 3 |
 |---|---|---|
@@ -1041,13 +1041,14 @@ Data Interface. There a `SeriesExport` carries a `release` callback back into
 the binary that produced it. Nothing else in the suite would notice if that
 contract were broken: a leak is invisible, and a double-free is a crash that
 takes pytest with it. `tests/test_ffi_memory.py` covers it: 16 tests (~7 s)
-when written, and 13 since task 85 (`6d9b983`) removed the expression
-plugin's four and `test_many_tiny_groups` took the place of one (`b9e4977`).
+when written, and 13 since the expression plugin's removal (`6d9b983`, in
+0.7.0) took its four and `test_many_tiny_groups` took the place of one
+(`b9e4977`).
 
 **The assertion is that memory plateaus, rather than that it never grows.**
 Allocators do not return pages eagerly, rayon spawns workers lazily, and
 Polars cached the loaded plugin while there was one. This was measured on the
-plugin, before task 85 removed it. Our `.over()` took a one-time **+6 MB**
+plugin, before its removal. Our `.over()` took a one-time **+6 MB**
 and was then flat across 1,800 iterations (per-block deltas +0.7, −0.9, +1.1,
 −0.3, −0.3). Native Polars `.over()`, by contrast, slowly *returns* memory. A
 naive "RSS must not grow" test would have failed on that step forever. So
@@ -1076,7 +1077,7 @@ What the leak tests cover:
 | fifty groups of thirty rows, through the bank's own group column; when written, `.over()` across groups | `test_many_tiny_groups` |
 | multi-chunk inputs: a chunked Series exports one `ArrowArray` per chunk, each needing release | `test_multi_chunk_input` |
 | sliced frames that share their parent's buffers | `test_sliced_frame_sharing_buffers` |
-| the bank's error path; **both error paths** when written, before the plugin's went with task 85 | `test_the_bank_error_path_still_releases` |
+| the bank's error path; **both error paths** when written, before the plugin's was removed | `test_the_bank_error_path_still_releases` |
 | outputs outliving their inputs | `test_output_outliving_its_input` |
 | state round-trips | `test_state_round_trip` |
 
@@ -1092,7 +1093,7 @@ failed assertion with a native traceback instead of a dead test session:
 | pickle round-trips | `test_pickled_bank_survives_a_round_trip` |
 
 When written, the crash cases also held both FFI paths interleaved while each
-held the other's exports. That test went with the plugin in task 85.
+held the other's exports. That test went with the plugin.
 
 **`scripts/leakcheck.sh` goes further than RSS can.** It runs `leaks` on
 macOS, which walks the malloc zones for unreachable blocks, and valgrind on
@@ -1114,12 +1115,12 @@ Two findings worth recording, neither a leak:
 
 | finding (2026-08-31) | what became of it |
 |---|---|
-| The error paths are clean. The sharper one was the plugin's: the engine had already exported the inputs when our function returned an error, so releasing them happened on a path that only runs when something has gone wrong. | The plugin went with task 85; the bank's error path is still tested. |
-| A **String feature column was silently parsed back to f64**, and a non-numeric one became all-nulls rather than raising. That was consistent with the null policy and not a memory issue. But `pytest.raises` on a String column did not fire, and a Categorical was the dtype genuinely refused. | Since IMPROVEMENTS U2 (`667bac1`, 2026-09-01) a String column is refused by name ("has dtype str; it must be numeric"), pinned by `test_a_string_column_is_refused_not_cast_to_null` in `tests/test_error_messages.py`. |
+| The error paths are clean. The sharper one was the plugin's: the engine had already exported the inputs when our function returned an error, so releasing them happened on a path that only runs when something has gone wrong. | The plugin was removed in 0.7.0; the bank's error path is still tested. |
+| A **String feature column was silently parsed back to f64**, and a non-numeric one became all-nulls rather than raising. That was consistent with the null policy and not a memory issue. But `pytest.raises` on a String column did not fire, and a Categorical was the dtype genuinely refused. | Since `667bac1` (2026-09-01) a String column is refused by name ("has dtype str; it must be numeric"), pinned by `test_a_string_column_is_refused_not_cast_to_null` in `tests/test_error_messages.py`. |
 
 ## The entries, by ID
 
-Priorities: **P1** = closes a PLAN promise or covers a found defect; **P2** =
+Priorities: **P1** = makes good a promise the library states, or covers a found defect; **P2** =
 meaningful new assurance; **P3** = infrastructure. A struck-through
 priority, such as ~~P1~~ **done**, marks an entry that is finished. Each
 section has one table, with one row per ID, and a paragraph under it for an
@@ -1156,7 +1157,7 @@ intercept identity. It sees one snapshot, the last solve's. So since
 to `reference.lasso_ref`, a cyclic coordinate descent written from the
 objective (Friedman, Hastie & Tibshirani 2010). It runs from zero to 1e-14,
 so no warm start can change its answer. It follows the documented schedule:
-`solve_every` and its default by weight (task 115 (b)),
+`solve_every` and its default by weight,
 `max_rows_between_solves`, the forced first solve at `min_weight`, the decay,
 a capped gap, skipped and zero-weight rows. It compares every path point's
 `pred` and `resid`, `weight_sum`, every `coef` row, where `coef` is null, and
@@ -1229,17 +1230,17 @@ weights after each update, as Algorithm 1 does, so the end-to-end
 comparison is with it, in `tests/test_second_opinion.py`.
 
 **T-R2.** `TestKalmanIsBayesianLinearRegression` maps `obs_var = 1/beta`
-and `p0 = beta/alpha`, the prior `p0 * obs_var = 1/alpha` (task 172), and
+and `p0 = beta/alpha`, the prior `p0 * obs_var = 1/alpha` (since 2026-10-06), and
 matches exactly, to 3.6e-15, across three (alpha,
 beta) settings. It includes a guard that turning standardization on breaks
 the match, so the switch cannot silently become a no-op. The class was
-deleted in `509c6cf` and restored in task 90 (2026-09-23).
+deleted in `509c6cf` and restored on 2026-09-23.
 
 **T-R3.** The agreement is exact (1e-9) with no decay, reached via the new
-`ew_cov` surface (ENHANCEMENTS E1). The final test in that class quantified
+`ew_cov` surface. The final test in that class quantified
 where the two diverged: at a 1e9 offset, river's Welford form was still exact
 while our raw-moment form had lost the variance entirely. That was the gap
-E11b closed (`509c6cf`). `EwCov` keeps centered co-moments, and the final
+the switch to centred co-moments closed (`509c6cf`). `EwCov` keeps centered co-moments, and the final
 test is now `test_matches_river_even_on_a_large_offset`, which holds the two
 to agreement at such offsets.
 
@@ -1267,7 +1268,7 @@ build of the time when this document was written, and both are fixed.
 | T-E3 | ~~P1~~ **done** | ±inf in features / targets / weight / clock | pinned by `TestNonFinite`, plus outputs are never non-finite |
 | T-E4 | ~~P1~~ **done** | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | both halves covered: a restart at a step back, and the refusal with `restart_after_step_back` unset |
 | T-E5 | ~~P2~~ **done** | Degenerate solves in the **plain** path | finite outputs throughout, with `solve_failures` observable |
-| T-E6 | ~~P2~~ **done** | Duplicate clock values, `gap_cap = 0` (refused since task 120), `half_life` far below the typical Δ | pinned; no NaN leaks under extreme decay |
+| T-E6 | ~~P2~~ **done** | Duplicate clock values, `gap_cap = 0` (refused since 2026-09-28), `half_life` far below the typical Δ | pinned; no NaN leaks under extreme decay |
 | T-E7 | ~~P2~~ **done** | Minimal shapes | empty chunks, single-row groups and a one-feature/one-target spec all behave |
 | T-E8 | ~~P2~~ **done** | Non-string group and session columns, null session values | a null session value **is** its own session |
 | T-E9 | ~~P2~~ **done; found a defect, then removed the limit** | **Large-offset cancellation** | slope-recovery error at a 1e6 offset **2.0e-03 → 6.8e-10** |
@@ -1290,7 +1291,7 @@ models (all seven when written) and the `w = 0` pure-decay case.
 replaces the `"<null>"` string sentinel, so a null group is structurally
 distinct from a group named `"<null>"`. `TestGroupKeys` covers it, including
 save/load and integer group columns. Bank files gained a `format_version`, 2
-then. It is still 2 for most files, and since task 88 a bank whose specs
+then. It is still 2 for most files, and since 2026-09-23 a bank whose specs
 carry a duration writes 3. Version 1 files loaded then, because the key
 serializes transparently as its inner `Option`. Today a bank file below
 `MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) is refused by
@@ -1306,7 +1307,7 @@ across a chunk boundary goes through `restart_after_step_back`,
 indistinguishable from real data. The test sets `restart_after_step_back=0.0`
 for that, so every step back restarts. A step back no larger than
 `restart_after_step_back` is refused as a late row, and with it unset, the
-default, every step back is (ENHANCEMENTS E3, task 120), which catches a
+default, every step back is (since 2026-09-28), which catches a
 mis-sorted chunk boundary loudly. It also guards that correctly ordered
 chunking stays invariant.
 
@@ -1314,15 +1315,15 @@ chunking stays invariant.
 plain path. Exactly collinear features drive the jitter fallback (107
 jittered solves over 200 rows), with finite outputs throughout. A real ridge
 removes the need for jitter entirely, and non-solving models report 0. It
-required implementing ENHANCEMENTS E5 first: `Bank::solve_failures()` /
+required surfacing the solve failures first: `Bank::solve_failures()` /
 `ModelBank.solve_failures()` expose the count per spec and group.
 
 **T-E6.** Duplicate clock values are zero deltas, so no decay.
-`gap_cap = 0` disabled decay entirely until task 120 (2026-09-28), which
-refuses it: no decay is `half_life = "inf"`. A half-life far below the delta
+`gap_cap = 0` disabled decay entirely until 2026-09-28, when it was
+refused: no decay is `half_life = "inf"`. A half-life far below the delta
 makes every row effectively the first (`weight_sum → 1`), and no NaN leaks
 under extreme decay. A zero-weight row whose decay underflows forgets the
-history as the decay does (task 115 (c)), in every model
+history as the decay does, in every model
 (`crates/online-core/tests/model_contract.rs`).
 
 **T-E7.** An empty chunk is accepted, and returns an empty frame with the
@@ -1338,8 +1339,8 @@ previously undocumented; it is now pinned.
 **T-E9.** The first finding was a threshold. The zero-variance drop threshold
 was `1e-10 × raw second moment`, ~450,000× the real noise floor. So a
 unit-variance feature on a **1e6 offset was silently dropped with coefficient
-0**, at an ordinary financial scale. Then the underlying cause was removed
-(ENHANCEMENTS E11b): `EwCov` keeps centered co-moments, and the solves read
+0**, at an ordinary financial scale. Then the underlying cause was removed:
+`EwCov` keeps centered co-moments, and the solves read
 them directly. Slope-recovery error at a 1e6 offset went **2.0e-03 →
 6.8e-10**. Offsets of 1e8/1e10 went from dropped entirely to 2.5e-08 /
 4.8e-07. The tests pin the new range, and keep the old numbers in comments so
@@ -1351,7 +1352,7 @@ internal representation: the same 60 seconds is 60e3 / 60e6 / 60e9 units for
 microsecond column silently meant 600 µs, decaying every row to nothing and
 producing plausible-looking garbage with no error.
 
-**Decision: reject (2026-08-30), then durations (task 88, 2026-09-23).** A
+**Decision: reject (2026-08-30), then durations (2026-09-23).** A
 temporal clock is read in its own integer nanoseconds and takes its clock
 parameters as durations. The gap between two rows is taken in integers
 before it becomes seconds, so a nanosecond timestamp keeps its nanoseconds
@@ -1368,13 +1369,13 @@ column's step, a refusal by name. Numeric clocks (int and float) are
 unchanged, and are asserted to agree with each other.
 
 **T-E11.** 10M rows go through one state in ~6.5s (2.4s for both soak tests
-at task 160). `weight_sum` stays bounded and does not drift between the start
+on 2026-10-05). `weight_sum` stays bounded and does not drift between the start
 and end of the stream, the coefficients are still accurate, and resume is
 still exact. A 2M-row state serializes to under 4KB: memory is O(state)
 rather than O(data). It is opt-in, via `pytest -m soak`, and the weekly
-leak-check workflow runs it. Until task 160 (TC11) no workflow did, and the
-resume test had failed unseen since task 120 refused a step back: its tail
-restarted the clock at 0.
+leak-check workflow runs it. Until 2026-10-05 no workflow did, and the
+resume test had failed unseen since a step back was first refused, on
+2026-09-28: its tail restarted the clock at 0.
 
 **T-E12.** Splitting a stream exactly after a skipped row and resuming from
 state reproduces the unbroken run, so the pending delta survives the state
@@ -1424,7 +1425,7 @@ has it.
 | T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `online.exe` vs `online` | executed on Windows CI |
 | T-W6 | ~~P2~~ **pinned locally** | **Float formatting in output field names** | |
 | T-W7 | ~~P2~~ **done** | **Numeric reproducibility across OS/CPU** | compared at 1e-12 on Windows |
-| T-W8 | P3, **partly done**: file locking (C6's atomic rewrite) and long paths (`\\?\`) are tested; case-insensitivity is not | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | executed on Windows CI |
+| T-W8 | P3, **partly done**: file locking (the atomic rewrite in `atomic.rs`) and long paths (`\\?\`) are tested; case-insensitivity is not | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | executed on Windows CI |
 | T-W9 | ~~P3~~ **done** | **`scripts/env.sh` has no Windows equivalent** | |
 
 **T-W1.** Written when `cargo test --workspace`, `maturin develop` and the
@@ -1449,7 +1450,7 @@ is the result worth recording. A later run the same day, on `d6158aa`, passed
 712 and failed one
 ([the record](#what-the-first-ci-runs-cleared-2026-08-31-to-2026-09-06)).
 
-**T-W2.** PLAN §9 class 7 and hard rule 5. As first written: the msgpack
+**T-W2.** Class 7 of [the eight test classes](#the-eight-test-classes), and hard rule 5. As first written: the msgpack
 payload has no host-dependent parts *by construction*, and `save_bytes` is
 asserted deterministic locally, but that is an argument rather than a test.
 
@@ -1509,8 +1510,8 @@ runner, as first written, is whether the Windows job produces `online.exe`
 in the first place.
 
 **T-W6.** The exact field-name list for a grid spec is asserted, so a
-platform divergence fails loudly: 58 fields, and 52 when written. Task 87
-(`3e0b359`) added `settled_frac`, `withheld_reason` and `support_coef` at
+platform divergence fails loudly: 58 fields, and 52 when written. The
+readiness fields (`3e0b359`, 0.9.0) added `settled_frac`, `withheld_reason` and `support_coef` at
 each of the grid's two half-lives. The list embeds formatted floats. Combo
 labels are built with `format!("{r}")` on f64 (e.g. `pred_y__r0.000001`).
 Rust's float `Display` is locale-independent, so this *should* be identical
@@ -1523,8 +1524,8 @@ stream through a 25-spec bank. Of those, 157 are read at each of three rows:
 25, 60 and 119. The other 34 are not per row. They are `marginal`'s 20 pair
 statistics, read at the end, `corrchange`'s 4 statistics, and `rcov`'s 10
 closed-group values. When written it committed 135 outputs from an
-eleven-spec bank at three rows each. It held 126 until IMPROVEMENTS X2 added
-`ftrl`, the one model it had never pinned, and 502 on 2026-09-26. It compares
+eleven-spec bank at three rows each. It held 126 until it took in `ftrl`,
+the one model it had never pinned, and 502 on 2026-09-26. It compares
 with a 1e-12 relative tolerance. `golden.rs` already pinned the Rust core;
 this pins the *Polars* layer, which nothing did: extraction, per-group
 fan-out, diagnostics, struct assembly. Locally the agreement is exact. The
@@ -1538,7 +1539,7 @@ cross-platform one the first time CI ran, with no further work.
 the runner opens the output parquet with `File::create`. A still-open reader
 on Windows makes rewriting fail where POSIX allows it. That is relevant to
 `--load-state` loops. Both writes have since moved to a temporary file and a
-rename (IMPROVEMENTS C6, `crates/online-polars/src/atomic.rs`).
+rename (`crates/online-polars/src/atomic.rs`).
 
 **T-W9.** `scripts/env.ps1` was added, dot-sourced (`. .\scripts\env.ps1`).
 Writing it surfaced two real Windows gaps in `.vscode/settings.json` that the
@@ -1591,8 +1592,8 @@ space after the sign, a `pl.duration` past 292 years wrapped, and a
 `timedelta` that long was refused without a name. And `embargo` broke chunk
 invariance in `settled_frac`'s last bit.
 
-**T-D2 in Rust, 2026-09-25** (task 121). `model_contract.rs`'s module
-`generated` holds every kind (21 then, `audit` the 22nd since task 223 (b)) to three clauses of the contract, over streams
+**T-D2 in Rust, 2026-09-25.** `model_contract.rs`'s module
+`generated` holds every kind (21 then, `audit` the 22nd since 2026-10-08) to three clauses of the contract, over streams
 `proptest` generates and shrinks. First, `predict_with` is the step without the
 update. Second, a state saved and restored at any row continues exactly as
 the model that was not. Third, nothing is infinite, with values up to `1e50`,
@@ -1628,7 +1629,7 @@ fails on a survivor that `scripts/mutants_equivalent.toml` does not list:
 new code should come with a test that would notice it breaking.
 
 **The changed lines' pass tests every mutant it lists, however large the
-push** (task 219). The repository is public, so GitHub's runners cost it
+push.** The repository is public, so GitHub's runners cost it
 nothing (the user, 2026-10-08: "We don't pay for minutes being open
 source"). A first job lists the change's mutants, which builds nothing.
 `scripts/mutants_shards.py` then takes a shard for every thirty (forty
@@ -1653,7 +1654,7 @@ ninety-six shards, sixteen at a time. The weekly pass runs on its schedule only 
 the repository is public, and by hand. Its survivors are reported through
 `scripts/mutants_report.py` and never gate.
 
-**Every run is sized to finish, and says when it did not** (task 155). It
+**Every run is sized to finish, and says when it did not.** It
 skips the doctests, which took 39 of the 67 seconds a test run of
 `online-core` cost, and stops a mutant at ten times the baseline's test
 run. It stops itself inside its job's limit and lists the mutants it was

@@ -3201,19 +3201,56 @@ their true regime.
 
 ## Performance
 
-A bank spends most of its time on the models' own arithmetic. Its memory
-holds their state, a few chunks in flight, and what Polars has read ahead
-of the bank. The thread counts and `chunk_size` change only speed and
-memory, never the numbers a bank returns. Every figure here was measured on
-one Apple M4 Pro with 14 cores (10 performance, 4 efficiency). The runs
-behind them are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md), with a
-table of what to change when a number is not what you expected.
+**A bank spends its time on the models' own arithmetic, and its memory on
+their state, a few chunks in flight, and what Polars has read ahead of the
+bank.** The thread counts and `chunk_size` change only the speed and the
+memory, never the numbers a bank returns.
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) has the measurement behind
+every figure here, and a table of what to change when a number is not what
+you expected. Every figure was measured on one Apple M4 Pro with 14 cores
+(10 performance, 4 efficiency), so your own times will differ.
+
+**A model's speed is set by the work it does on each row.** `ewridge`
+solves a system of `k` features, so it does `O(k²)` work a row, and ten
+times the features take several times as long. This recipe writes 200,000
+rows of 50 features to a file, then times one `ewridge` over it at 5
+features and at 50, best of three runs. `ModelBank.fit` learns from every
+row and keeps no output, so the time is the reading and the model:
+
+```python
+import time
+
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(1)
+n = 200_000
+X = rng.standard_normal((n, 50))
+pl.DataFrame(
+    {"y": X[:, 0] + rng.standard_normal(n)} | {f"x{j}": X[:, j] for j in range(50)}
+).write_parquet("wide.parquet")
+
+for k in (5, 50):
+    spec = po.spec.ewridge("ridge", targets=["y"], features=[f"x{j}" for j in range(k)],
+                           half_life=1000.0)
+    seconds = []
+    for _ in range(3):
+        start = time.perf_counter()
+        po.ModelBank([spec]).fit(pl.scan_parquet("wide.parquet"))   # learn every row, keep no output
+        seconds.append(time.perf_counter() - start)
+    print(f"time at {k} features: {n / min(seconds) / 1e6:.1f} million rows a second")
+```
+
+```text
+time at 5 features: 2.2 million rows a second
+time at 50 features: 0.8 million rows a second
+```
 
 ### Throughput
 
-**A model's speed is set by the work it does on each row**, such as a
-solve, a matrix to factor or a distance to each centre. Here are rows a
-second for every model at its usual settings, all under these conditions:
+Here are rows a second for every model at its usual settings, all under
+these conditions:
 
 | | |
 |---|---|
@@ -3329,6 +3366,46 @@ process, by design ([What this is not](#what-this-is-not)).
 | `shards`, on a wide `marginal` | the one task that runs on several threads: `shards` splits its pairs across the pool within a group ([`marginal`](docs/MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
 | a Python thread that reads ahead | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` | |
 
+**Specs run side by side, and each gives the numbers it gives alone.**
+This recipe reproduces the table's second row on a generated file: eight
+`ewridge` specs of 20 features, one per half-life, in one bank and then one
+at a time. The times are your machine's, and the outputs are equal to the
+bit:
+
+```python
+import time
+
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(2)
+n = 300_000
+features = [f"x{j}" for j in range(20)]
+pl.DataFrame(
+    {"y": rng.standard_normal(n)} | {f: rng.standard_normal(n) for f in features}
+).write_parquet("specs.parquet")
+specs = [po.spec.ewridge(f"h{h}", targets=["y"], features=features, half_life=float(h))
+         for h in (100, 200, 400, 800, 1600, 3200, 6400, 12800)]   # eight specs, one task each
+
+start = time.perf_counter()
+together = pl.scan_parquet("specs.parquet").online.fit_predict(specs).collect()
+in_one_bank = time.perf_counter() - start
+
+start = time.perf_counter()
+alone = [pl.scan_parquet("specs.parquet").online.fit_predict([s]).collect() for s in specs]
+one_at_a_time = time.perf_counter() - start
+
+print(f"time: {in_one_bank:.2f} s in one bank, {one_at_a_time:.2f} s one at a time")
+same = all(together[s["name"]].equals(a[s["name"]]) for s, a in zip(specs, alone))
+print("the same output either way:", same)
+```
+
+```text
+time: 0.42 s in one bank, 1.56 s one at a time
+the same output either way: True
+```
+
 Rows a second for k=20 over 64 groups, at each thread count
 ([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)):
 
@@ -3344,19 +3421,24 @@ pool:**
 | `POLARS_ONLINE_MAX_THREADS` | the bank's pool | one thread per core | the first chunk any bank fits or scores, through any call, or the first `po.thread_pool_size()` | [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) |
 | `POLARS_MAX_THREADS` | Polars' readers and writers, and their read-ahead ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) | one thread per core | `import polars`, which `import polars_online` runs | `pl.thread_pool_size()` |
 
-Set both in the shell when you start Python, as
-`POLARS_ONLINE_MAX_THREADS=8 POLARS_MAX_THREADS=8 python fit.py`, which
-works whatever the script imports. Or set them in Python before the point
-the table names, as `os.environ["POLARS_ONLINE_MAX_THREADS"] = "8"`. A variable set after
-that point is ignored, so check the sizes in effect with
-`po.thread_pool_size()` and `pl.thread_pool_size()`. A
-`POLARS_ONLINE_MAX_THREADS` that is not a whole number makes that first
-call raise `ValueError`, naming the variable. Giving both pools every core
-slows neither, because a bank task never calls back into Polars' pool.
+**Set both before the point the table names, because a variable set after
+it is ignored.** In the shell, as
+`POLARS_ONLINE_MAX_THREADS=8 POLARS_MAX_THREADS=8 python fit.py`, the
+setting holds whatever the script imports. In Python, set
+`os.environ["POLARS_ONLINE_MAX_THREADS"] = "8"` before that point, and
+check the sizes in effect with `po.thread_pool_size()` and
+`pl.thread_pool_size()`. A `POLARS_ONLINE_MAX_THREADS` that is not a whole
+number makes that first call raise `ValueError`, naming the variable.
+Giving both pools every core slows neither, because a bank task never calls
+back into Polars' pool.
 
 **To search over factor sets, build one spec per set and pass the whole
 list to one `lf.online.fit_predict` call.** Each spec runs as its own task
-on each group, and the query reads the file once.
+on each group, and the query reads the file once. Its output has one
+column per spec, which is what `po.eval.compare_specs` reads, and one state
+file, `grid.state`, holds them all. `df`'s target is built from `x0` and
+`x1`, so the set of those two scores best, and adding `x2`, which plays no
+part, scores a little lower.
 This code uses the file `ticks.parquet` from [Example data](#example-data):
 
 ```python
@@ -3383,15 +3465,25 @@ specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, 
    .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state")
    .sink_parquet("grid.parquet"))
 
-scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
-                               [s["name"] for s in specs]).sort("r2", descending=True)
+# one row per spec and grid point; keep each spec's best
+scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"), [s["name"] for s in specs])
+best = scores.group_by("spec").agg(pl.col("r2").max()).sort("r2", descending=True)
+for spec_name, r2 in best.iter_rows():
+    print(f"{spec_name:<15} best R² {r2:.3f}")
 ```
 
-On 2.56M rows over 64 groups, the six specs make 6 × 64 tasks every chunk.
-The query takes 29.0 s at one thread and 4.3 s at fourteen
+```text
+mkt-sz-std0     best R² 0.938
+mkt-sz-std1     best R² 0.938
+mkt-sz-val-std0 best R² 0.927
+mkt-sz-val-std1 best R² 0.926
+mkt-std0        best R² 0.707
+mkt-std1        best R² 0.707
+```
+
+On 2.56M rows over 64 groups, the six specs make 6 × 64 tasks every chunk,
+and the same query takes 29.0 s at one thread and 4.3 s at fourteen
 ([PERFORMANCE §31](docs/PERFORMANCE.md#31-0130-against-0120-2026-09-29)).
-Its output has one column per spec, which is what `compare_specs` reads,
-and one state file, `grid.state`, holds them all.
 
 ### Chunk size
 
@@ -3400,22 +3492,42 @@ and one state file, `grid.state`, holds them all.
 `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and
 `refresh_time` take it. A frame passed to `ModelBank.fit_predict` is one
 chunk, whatever its size.
-This code uses `df` and `lf` from [Example data](#example-data):
+
+**The chunk size changes the speed and the memory, never a prediction.**
+It changes only which rows carry `coef` and `support_coef`: each group's
+last accepted row of every chunk. This recipe reads the same file 10 rows
+at a time and all at once, with four groups, so the small chunks write the
+coefficients on 4 rows of each of 40 chunks.
+This code uses the file `ticks.parquet` and `df` from [Example data](#example-data):
 
 ```python
-fitted = lf.online.fit_predict([spec], chunk_size=50_000).collect()               # a query, read 50,000 rows at a time
-whole = po.ModelBank([spec]).fit_predict(df)                                       # a frame: one chunk, whatever its size
-parts = pl.concat(po.ModelBank([spec]).fit_predict_batches(df, chunk_size=100))   # the same frame, 100 rows at a time
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
+                       half_life=50.0, group="stock_id")
+query = pl.scan_parquet("ticks.parquet")
+small = query.online.fit_predict([spec], chunk_size=10).collect()       # read 10 rows at a time
+large = query.online.fit_predict([spec], chunk_size=100_000).collect()  # the whole file at once
+whole = po.ModelBank([spec]).fit_predict(df)                            # a frame: one chunk, whatever its size
+
+def field(out, name):
+    return out["ridge"].struct.field(name)
+
+print("largest difference in pred_y:", (field(small, "pred_y") - field(large, "pred_y")).abs().max())
+print("the same as the frame's:", field(large, "pred_y").equals(field(whole, "pred_y")))
+print("rows carrying coef:", field(small, "coef").is_not_null().sum(), "at 10 rows a chunk,",
+      field(large, "coef").is_not_null().sum(), "at 100,000")
 ```
 
-The chunk size changes only which rows carry `coef` and `support_coef`:
-each group's last accepted row of every chunk.
+```text
+largest difference in pred_y: 0.0
+the same as the frame's: True
+rows carrying coef: 160 at 10 rows a chunk, 4 at 100,000
+```
 
 **For a wide frame, use larger chunks, because each chunk carries a fixed
 overhead.** At 10,000 columns, handing a chunk across from Polars alone
 takes about 8 ms a call: 4 µs of every row at 2,000 rows a call, and 0.4 µs
 at 20,000
-([PERFORMANCE §20](docs/PERFORMANCE.md#20-sgds-per-feature-cost-task-75-2026-09-08)).
+([PERFORMANCE §20](docs/PERFORMANCE.md#20-sgds-per-feature-cost-2026-09-08)).
 
 **For less memory, use smaller chunks**, because a few are in flight at
 once: three on the command line, and a few more in Python
@@ -3449,6 +3561,41 @@ returns freed pages at once, holds 0.75 GB at 12M rows against 0.73 GB at
 | the chunks in flight | `chunk_size` | a few chunks at once, three on the command line ([Chunk size](#chunk-size)) |
 | the rows a delay or a window holds | the delay or the window, times the rows' rate | never the stream's length |
 | whatever Polars' reader has read ahead | Polars' thread count | `POLARS_MAX_THREADS` shrinks it, and Polars' prefetch settings tune it directly ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) |
+
+**Measure the first part by saving the state, whose size is what the models
+keep.** This recipe fits one `ewridge` of 20 features on the first
+10,000 rows of a generated file and on all 1,000,000, once with no groups
+and once over 64. The state stays the same size as the rows grow, and it
+grows with the groups:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(3)
+n = 1_000_000
+features = [f"x{j}" for j in range(20)]
+pl.DataFrame(
+    {"g": rng.integers(0, 64, n), "y": rng.standard_normal(n)}
+    | {f: rng.standard_normal(n) for f in features}
+).write_parquet("long.parquet")
+
+for group in (None, "g"):
+    spec = po.spec.ewridge("ridge", targets=["y"], features=features, half_life=1000.0, group=group)
+    for rows in (10_000, 1_000_000):
+        bank = po.ModelBank([spec])
+        bank.fit(pl.scan_parquet("long.parquet").head(rows))     # learn, keep no output
+        kb = len(bank.save_bytes()) / 1024                        # the state, as saved
+        print(f"{'64 groups' if group else 'one group'}, after {rows:>9,} rows: state {kb:,.0f} KB")
+```
+
+```text
+one group, after    10,000 rows: state 10 KB
+one group, after 1,000,000 rows: state 10 KB
+64 groups, after    10,000 rows: state 581 KB
+64 groups, after 1,000,000 rows: state 583 KB
+```
 
 **For a statistic per group over a long stream, use a spec's `group=`,
 which keeps one set of running sums per group.** Polars' `rolling` over
@@ -3532,16 +3679,12 @@ Keeping Polars at four threads holds 33% less memory, for 15% more time.
 ### Window operators
 
 **A window operator, such as `po.ewm_mean`, does the same work on a row
-however long its window, and holds about one window of rows.** An operator
-whose input is null on most rows runs slower, because each read scans the
-rows between its values. On 300k rows, one value in 5,000 takes 0.24 s,
-against 0.04 s with a value on every row
-([PERFORMANCE §35](docs/PERFORMANCE.md#35-two-costs-the-review-of-2026-10-03-named-and-did-not-change)).
-
-Measured on 16M rows arriving about two a second on the clock, parquet in
-and parquet out, one group
-([PERFORMANCE §33](docs/PERFORMANCE.md#33-window-operators-task-143-2026-10-03),
-and [§34](docs/PERFORMANCE.md#34-a-window-expression-as-a-target-task-104-2026-10-03)
+however long its window, and holds about one window of rows.** So a window
+adds little memory: within 0.04 GB of reading and writing the file alone,
+and a 4-minute window takes what a 1-minute one does. Measured on 16M rows
+arriving about two a second on the clock, parquet in and parquet out, one
+group ([PERFORMANCE §33](docs/PERFORMANCE.md#33-window-operators-2026-10-03),
+and [§34](docs/PERFORMANCE.md#34-a-window-expression-as-a-target-2026-10-03)
 for the window targets):
 
 | what runs | time | peak memory |
@@ -3552,8 +3695,10 @@ for the window targets):
 | a model whose target is a window expression, which the bank resolves itself: the native form | 9.37 s | 1.09 GB |
 | the window written by `with_windows(..., like=spec)` and fed back as a plain target: the column form | 5.87 s | 1.23 GB |
 
-A window's memory stays within 0.04 GB of reading and writing the file
-alone, and a 4-minute window takes what a 1-minute one does.
+**An operator whose input is null on most rows runs slower, because each
+read scans the rows between its values.** On 300k rows, one value in 5,000
+takes 0.24 s, against 0.04 s with a value on every row
+([PERFORMANCE §35](docs/PERFORMANCE.md#35-two-costs-named-and-left-unchanged-2026-10-03)).
 
 **To have operators share one queue, give them the same direction, back or
 ahead, and the same `half_life`, `window_size` and `closed`.** Sixteen
@@ -3563,35 +3708,54 @@ their own.
 **Write a look-ahead target as a column for speed, or give its expression
 in `targets` for less memory.** For the column form, call
 `with_windows(..., like=spec)` in the query before the bank, and name the
-column it writes in the spec's `targets`, under the same `embargo`.
-[Windows as a model's inputs and
-target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) runs both forms. Polars
+column it writes in the spec's `targets`, under the same `embargo`. Polars
 then runs the window and the bank at once, as two stages of one query. In
-the native form the bank resolves the windows itself, in the same source as
-the model and one after the other. With many groups it adds a Polars query
-per group per chunk on the calling thread, before the groups' rows run on
-the pool (§35).
+the native form the bank resolves the windows itself, one after the other
+in the same source as the model. With many groups, that adds a Polars
+query per group per chunk on the calling thread.
+[Windows as a model's inputs and
+target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) runs both
+forms.
 
 ### Against scikit-learn
 
-Most people compare this library with scikit-learn's
+**This library's main regressions solve exactly, where scikit-learn's
+streaming regressor takes gradient steps.**
 [`SGDRegressor.partial_fit`](https://scikit-learn.org/stable/modules/generated/sklearn.linear_model.SGDRegressor.html),
-a first-order stochastic optimiser whose answer depends on the learning
-rate, the schedule, the feature scaling and the row order. The primary
-regressions here, `ewridge`, `rls`, `lasso`, `huber` and `quantile`,
-accumulate sufficient statistics and solve, so they have no learning rate.
-With decay off (`half_life=float("inf")`) and `ridge=0`, `ewridge` is
-ordinary least squares to 2e-13 of `numpy.linalg.lstsq`, in any row order.
-To compare like with like, run `SGDRegressor` against
-[`sgd`](docs/MODELS.md#sgd--stochastic-gradient-descent), the cheap `O(k)` baseline: at
-the same constant step the two give the same R² to four places, because
-they run the same recursion.
+the scikit-learn estimator most people compare with, is a first-order
+stochastic optimiser: its answer depends on the learning rate, the
+schedule, the feature scaling and the row order. `ewridge`, `rls`,
+`lasso`, `huber` and `quantile` accumulate sufficient statistics and
+solve, so they have no learning rate. With decay off
+(`half_life=float("inf")`) and `ridge=0`, `ewridge` is ordinary least
+squares to 2e-13 of `numpy.linalg.lstsq`, in any row order. The like for
+like is [`sgd`](docs/MODELS.md#sgd--stochastic-gradient-descent), the cheap
+`O(k)` baseline: at the same constant step it gives `SGDRegressor`'s R² to
+four places, because the two run the same recursion.
 
-Every contender reaches the noise ceiling on a stationary stream.
-Scoring each row before learning it, the bank is faster, while sklearn has
-the ecosystem: pipelines, `GridSearchCV`, calibration, and far more use.
+The comparison ran on one generated stream of 100,000 rows with `k = 20`,
+on 2026-09-08. Each contender ran at its best over a sweep of its own
+settings, by `scripts/sklearn_comparison.py` on scikit-learn 1.9.0.
+`ewridge` solves on every row here, and its rate was re-measured on
+2026-09-29. The noise ceiling is the R² of the generating signal itself:
 
-**Beyond speed and accuracy, the two differ in what one fit can hold:**
+| contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
+|---|---:|---:|---:|---|
+| noise ceiling | 0.9831 | 0.9923 | | |
+| `SGDRegressor`, row by row | 0.9829 | 0.9899 | 3,400 | every row before it |
+| `SGDRegressor`, batches of 1,000 | 0.9830 | 0.9820 | 2,200,000 | every row before its *batch* |
+| `po.spec.sgd` | 0.9826 | 0.9906 | 6,000,000 | every row before it |
+| `po.spec.ewridge` | **0.9831** | **0.9907** | 480,000 | every row before it |
+
+**Every contender reaches the noise ceiling on a stationary stream, and
+the gaps come from what a prediction saw.** sklearn's fast form updates
+once per 1,000-row batch, so a prediction can come up to 999 rows before
+its update, and on the drifting stream it scores 0.9820. Called on every
+row, `partial_fit` runs at 3,400 rows a second, which is Python's overhead
+on each row. sklearn has the ecosystem: pipelines, `GridSearchCV`,
+calibration, and far more use.
+
+**The two differ in what one fit can hold:**
 
 | | sklearn | here |
 |---|---|---|
@@ -3602,87 +3766,30 @@ the ecosystem: pipelines, `GridSearchCV`, calibration, and far more use.
 | chunking | | chunk invariance is a test |
 | saved model | a pickle | a versioned file that loads on every OS |
 
-The comparison ran under these conditions:
-
-| | |
-|---|---|
-| stream | one generated stream of 100,000 rows with `k = 20`, measured on 2026-09-08 |
-| contenders | each at its best over a sweep of its own settings, by `scripts/sklearn_comparison.py` on scikit-learn 1.9.0; [PERFORMANCE §19](docs/PERFORMANCE.md#19-against-sklearnlinear_modelsgdregressor-task-72-2026-09-08) has the full tables and the sweeps |
-| `po.spec.ewridge` | solves on every row here, unlike in [Throughput](#throughput); its rates were re-measured on 2026-09-29, once its solve had been made cheaper ([§30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)) |
-| noise ceiling | the R² of the generating signal itself |
-
-| contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
-|---|---:|---:|---:|---|
-| noise ceiling | 0.9831 | 0.9923 | | |
-| `SGDRegressor`, row by row | 0.9829 | 0.9899 | 3,400 | every row before it |
-| `SGDRegressor`, batches of 1,000 | 0.9830 | 0.9820 | 2,200,000 | every row before its *batch* |
-| `po.spec.sgd` | 0.9826 | 0.9906 | 6,000,000 | every row before it |
-| `po.spec.ewridge` | **0.9831** | **0.9907** | 480,000 | every row before it |
-
-**sklearn's fast form updates once per 1,000-row batch, so a prediction
-can come up to 999 rows before its update.** That staleness is the one gap
-in accuracy: on the drifting stream the row-by-row contenders are within
-0.001 of each other, and the batched `SGDRegressor` scores 0.9820. Called
-on every row, which gives each prediction the state as it stands,
-`partial_fit` runs at 3,400 rows a second: Python's overhead on each row.
-
-**A half-life gives no edge on this stream, because its rows are evenly
-spaced.** A constant learning rate `eta` remembers about `1/eta` rows,
-which on evenly spaced rows acts as a half-life. A half-life on a clock
-matters when the rows are unevenly spaced.
-
-**Where the exact solve wins: the first hundred rows of every group.** An
-exact solve is right as soon as its Gram, `X'X`
-([The running sums behind a fit](#the-running-sums-behind-a-fit)), is full
-rank, about `k` rows in, where a first-order method needs about `1/eta`
-rows per direction. The stream has 500 groups of 200 rows, each with its
-own coefficients and `k = 20`. Each sklearn group gets its own estimator
-and scaler, in a dict, row by row, and the bank runs `group="g"`. R² by
-position in the group:
-
-| contender | R², rows 25–50 | R², rows 50–100 | R², rows 100–200 | rows/sec |
-|---|---:|---:|---:|---:|
-| noise ceiling | 0.9896 | 0.9903 | 0.9900 | |
-| `SGDRegressor` per group, at its best | 0.7277 | 0.9242 | 0.9789 | 3,342 |
-| `po.spec.sgd`, `standardize=True`, the same step | 0.7182 | 0.9213 | 0.9788 | 18,519,660 |
-| `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 3,765,320 |
-
-The two `sgd` rows take sklearn's step, and differ by 0.01 of R² only in
-how the *prediction* is standardised. In sklearn's loop the row it predicts
-is scaled by the moments before it, and in `sgd` by the moments including
-it.
-
-**Where sklearn wins: a wide row against `ewridge`, by batching.**
-`ewridge` keeps a `(k+1)²` matrix. At `k = 10,000`:
-
-| contender | state | rows/sec | what a prediction saw |
-|---|---:|---:|---|
-| `ewridge` | 860 MB | 53 | |
-| `ewridge`, `gram_block_rows=1024` | no less | 379 | |
-| `SGDRegressor`, batches of 1,000 | 0.31 MB | 20,007 | every row before its *batch* |
-| `SGDRegressor`, row by row | | 2,206 | the state as it stands |
-| `sgd` | 0.89 MB | 33,271 | the state as it stands |
-
-The time goes to the matrix itself: a rank-1 update moves all 800 MB of it
-every row, at 85 GB/s, near this machine's memory bandwidth. With
-`gram_block_rows=1024`, `ewridge` touches the matrix once per 1,024 rows
-instead, for 7.2× the throughput and no less memory.
-
-**At this width, use `sgd`, at a learning rate that falls as `1/k`.** It is
-`O(k)`, faster than sklearn's batch, and makes every prediction from the
-state as it stands. A least-mean-squares step is stable only while
-`eta · |z|² < 2`, and a standardised row has `|z|² ≈ k`, so both libraries
-ran at `learning_rate = 0.2 / k`. There `sgd` and `SGDRegressor` row by row
-agree, with a correlation of 0.999997 under `standardize=True`, which is
-sklearn's own recipe of a scaler in front of the step.
+**The exact solve wins in the first hundred rows of every group, and
+sklearn wins on a very wide row by batching.** An exact solve is right as
+soon as its Gram, `X'X`, is full rank, about `k` rows in, where a
+first-order method needs about `1/eta` rows per direction. On 500 groups of
+200 rows, `ewridge` scores an R² of 0.9693 on rows 25 to 50 against
+`SGDRegressor`'s 0.7277. At `k = 10,000`, `ewridge`'s `(k+1)²` matrix
+holds 860 MB and moves all of it on every row, so it runs 53 rows a
+second, or 379 with `gram_block_rows=1024`. There, `sgd` at a learning
+rate of `0.2 / k` runs 33,271 rows a second from 0.89 MB, faster than
+`SGDRegressor`'s 20,007 in batches.
+[PERFORMANCE §19](docs/PERFORMANCE.md#19-against-sklearnlinear_modelsgdregressor-2026-09-08)
+has the full tables, the sweeps, and why a half-life gives no edge on
+evenly spaced rows.
 
 ## Scope and integrations
 
-polars-online fits models to rows that are already read and aligned, by
-Polars in the query before the bank or by another tool. A bank can still
-take its rows from a database through Polars, or run as an operator inside
-a stream processor, and [chunk invariance](#row-order-and-the-two-guarantees)
-means another engine's batching cannot change the numbers.
+**polars-online fits models to rows that are already read and in clock
+order, so reading, joining and ordering the rows is the job of Polars or of
+another tool before the bank.** A bank can take its rows from a database
+through Polars, or run as an operator inside a stream processor. [Chunk
+invariance](#row-order-and-the-two-guarantees) means another engine's
+batching cannot change the numbers. For a model this library does not fit,
+such as gradient-boosted trees, `po.gbdt` builds XGBoost's and LightGBM's
+training objects from files too large to hold.
 
 ### What this is not
 
@@ -3697,9 +3804,9 @@ arrives late can be held back with [`embargo`](#labels-that-arrive-late).
 polars-online does two things to a stream itself
 ([Preparing a stream](#preparing-a-stream)). `po.stream.refresh_time` puts
 series that tick at their own times on one grid, and
-`po.stream.with_windows` computes exponentially weighted means, sums and
-rates over a window of the clock. It deliberately does **not** provide the
-rest:
+`po.stream.with_windows` computes exponentially weighted means, variances,
+sums and rates over a window of the clock. It deliberately does **not**
+provide the rest:
 
 | not provided | use instead |
 |---|---|
@@ -3713,14 +3820,18 @@ rest:
 To feed a bank from a database, sort the query by the clock with
 `ORDER BY` in its SQL. Read its result with Polars'
 `pl.scan_arrow_c_stream` (py-polars 1.43.0 or later), and chain
-`.online.fit_predict(specs)` on that query.
+`.online.fit_predict(specs)` on that query. The rows cross through the
+Arrow PyCapsule interface, so no pyarrow is needed. Install DuckDB or an
+ADBC driver yourself: the package depends on neither.
 This code uses the file `ticks.parquet` from [Example data](#example-data):
 
 ```python
 import duckdb
 
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
+                       half_life=100.0)
 con = duckdb.connect()                                    # an in-memory database
-query = "SELECT * FROM 'ticks.parquet' ORDER BY t"        # clock order, sorted by the database; the file is Example data's
+query = "SELECT * FROM 'ticks.parquet' ORDER BY t"        # clock order, sorted by the database
 fitted = (
     pl.scan_arrow_c_stream(con.cursor().sql(query))       # a DuckDB relation, on a cursor of its own
     .online.fit_predict([spec])
@@ -3729,12 +3840,9 @@ fitted = (
 # With ADBC, on a cursor of its own: cur.execute(query), then pl.scan_arrow_c_stream(cur.fetch_arrow())
 ```
 
-The rows cross through the Arrow PyCapsule interface, so no pyarrow is
-needed.
 [examples/duckdb_cursors.py](examples/duckdb_cursors.py) and
 [examples/adbc_cursors.py](examples/adbc_cursors.py) run these steps
-against real databases. Install DuckDB or an ADBC driver yourself: the
-package depends on neither.
+against real databases.
 
 **Give every lazy query its own cursor, from `con.cursor()`, because a
 cursor holds one open result.** Both examples show the rule and the trap
@@ -3750,14 +3858,17 @@ early.** A read stops early on an error, such as a spec refusing a clock
 that steps back, or when the consumer stops. Closing the cursor at once
 then crashed the process with a segmentation fault, measured on SQLite,
 `adbc_driver_manager` 1.12.0 and polars 1.44.2 at 200,000 rows. A wait of
-3 s before the close, or no close before the process exits, avoided it
-([docs/ARROW-SOURCES.md](docs/ARROW-SOURCES.md#adbc-measured)).
+3 s before the close, or no close before the process exits, avoided it.
 
 ### Pathway
 
-To run a bank inside a Pathway pipeline, wrap a `ModelBank` in a stateful
-operator. The operator calls `fit_predict` on each batch Pathway hands it,
-and Pathway checkpoints it with `save_bytes` and `load_bytes`.
+To run a bank inside a [Pathway](https://pathway.com) pipeline, wrap a
+`ModelBank` in a stateful operator. The operator calls `fit_predict` on
+each batch Pathway hands it, and Pathway checkpoints it with `save_bytes`
+and `load_bytes`. Pathway does the ingestion, the event-time alignment and
+the windowing before the operator. This recipe feeds the operator two
+plain batches with a checkpoint and a restore between them, and its
+predictions equal one run's over the same rows.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -3775,14 +3886,25 @@ class BankOperator:                                  # the operator's state is t
         self.bank = po.ModelBank.load_bytes(blob, specs=self.specs)
 
 
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
+                       half_life=100.0)
 op = BankOperator([spec])
 first = op(df.head(200))                             # plain batches stand in for Pathway's
 op.restore(op.snapshot())                            # a checkpoint and a restart between two batches ...
 rest = op(df.tail(200))                              # ... and the bank goes on where it was
+
+one_run = po.ModelBank([spec]).fit_predict(df)       # the same rows, with no restart
+print("rows scored:", first.height + rest.height)
+restarted = pl.concat([first, rest])
+print("the same predictions as one run:",
+      restarted["ridge"].struct.field("pred_y").equals(one_run["ridge"].struct.field("pred_y")))
 ```
 
-Pathway does the ingestion, the event-time alignment and the windowing
-before the operator.
+```text
+rows scored: 400
+the same predictions as one run: True
+```
+
 [examples/pathway_integration.py](examples/pathway_integration.py) runs
 this operator over plain batches, so it runs without Pathway, which is not
 a dependency. Its sketch of the pipeline around the operator needs
@@ -3790,13 +3912,58 @@ Pathway, installed under its own licence, and an input connector.
 
 ### Training XGBoost and LightGBM on files larger than memory
 
-`po.gbdt` and how to use it are in [Training XGBoost and LightGBM:
-`po.gbdt`](docs/GBDT.md).
+**`po.gbdt` builds XGBoost's and LightGBM's own training objects from
+files too large to hold, so `xgb.train` and `lgb.train` run on them
+unchanged.** Both libraries bin each feature before they boost, and
+binning reads every row. `po.gbdt` reads the rows in batches, in Rust, and
+hands each library one batch at a time.
+[docs/GBDT.md](docs/GBDT.md) says how it bins, what each library is
+handed, and what Polars' read-ahead does to its memory. `po.gbdt` is
+unstable: its keywords may change in any release.
+
+This recipe writes a training file and a validation file whose target
+depends on `x0` and `x1` but not `x2`, with noise of spread 0.3. The
+validation rows are binned on the training rows' bins (`ref=train`), as
+XGBoost requires of a set it evaluates on:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+import xgboost as xgb
+
+rng = np.random.default_rng(4)
+for name, n in (("train", 20_000), ("valid", 5_000)):
+    x0, x1, x2 = rng.standard_normal((3, n))
+    pl.DataFrame({
+        "x0": x0, "x1": x1, "x2": x2,                                      # x2 plays no part
+        "y": np.sin(2 * x0) + (x1 > 0.5) + 0.3 * rng.standard_normal(n),   # noise of spread 0.3
+    }).write_parquet(f"{name}.parquet")
+
+features = ["x0", "x1", "x2"]
+train = po.gbdt.xgboost_matrix("train.parquet", label="y", features=features)             # an xgb.QuantileDMatrix
+valid = po.gbdt.xgboost_matrix("valid.parquet", label="y", features=features, ref=train)  # on train's bins
+history = {}
+booster = xgb.train({"tree_method": "hist", "max_depth": 4, "eta": 0.3}, train, 50,
+                    evals=[(valid, "valid")], evals_result=history, verbose_eval=False)
+rmse = history["valid"]["rmse"]
+print(f"validation RMSE: {rmse[0]:.2f} after 1 round, {rmse[-1]:.2f} after 50 (the noise is 0.30)")
+gain = booster.get_score(importance_type="total_gain")
+print("share of the gain:", ", ".join(f"{f} {g / sum(gain.values()):.2f}" for f, g in gain.items()))
+```
+
+```text
+validation RMSE: 0.68 after 1 round, 0.31 after 50 (the noise is 0.30)
+share of the gain: x0 0.70, x1 0.30, x2 0.00
+```
 
 ## Versions, testing and development
 
-Here is what to pin when you install, what the test suite holds each
-guarantee to, and how to build and test from a checkout.
+**Before 1.0, a minor release of this package can break your code or move
+the numbers a model returns, so pin the minor version.** Each guarantee in
+[What you can rely on](#what-you-can-rely-on) is held by tests that run on
+Linux, macOS and Windows at every push. A checkout builds with uv and a
+stable Rust toolchain.
 
 ### Versioning and the Polars pin
 
@@ -3825,7 +3992,7 @@ minor. An unstable part can change its form in any minor release:
 |---|---|
 | **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags and exit status; and the environment variables the package reads |
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
-| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io ([R3](docs/RELEASE-READINESS.md#r3--rust-crates-not-published)); and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
+| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
 
 **From 1.0, a changed default or meaning is a major release, and a fix to
 numbers that were wrong is a minor one.** A number is wrong when it
@@ -3855,23 +4022,23 @@ function's top, a stub, an alias or a second column. Both warn with
 Each change to a state's layout ships a loader for the layout before it.
 A saved state of each kind, frozen in the test suite, checks it three
 ways. The current layout's fixtures load, continue to the bit, and save
-back byte for byte. A previous layout's load through the loader, continue
-to the bit, and save back as the current layout's fixture bytes of the
-same case: the loader turns a state into exactly what this build writes
-from the same rows. The two unstable formats, a window run's state and a
+back byte for byte. A previous layout's fixtures load through its loader,
+continue to the bit, and save back as the current layout's fixture bytes
+of the same case. So the loader turns a state into exactly what this build
+writes from the same rows. The two unstable formats, a window run's state and a
 formula target inside a bank's, are outside that promise. Before 1.0 there
 is no such promise: after upgrading across a release, refit a saved state
 from its input ([Saving, loading and serving](#saving-loading-and-serving)).
 
-**From 1.0, raising the Polars floor is a minor release, and dropping a
+**From 1.0, moving the Polars floor up is a minor release, and dropping a
 Polars major version a major one.** A resolver that installs the new
 release upgrades Polars with it, inside the same Polars major, so no code
-has to change for a raised floor:
+has to change for a higher floor:
 
 | a change to the Polars range | before 1.0 | from 1.0 |
 |---|---|---|
 | widening it to admit a newer Polars | minor | minor |
-| raising the floor | minor | minor |
+| moving the floor up | minor | minor |
 | capping it below a Polars that broke this library, as [How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves) describes | patch | patch |
 | dropping a Polars major version | minor | major |
 
@@ -3894,61 +4061,78 @@ what you use:
 | `lf.online.fit_predict`, `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and `refresh_time` | 1.34.0 | they read with `LazyFrame.collect_batches`, which py-polars added in 1.34.0 |
 | the examples that stream a DuckDB, ADBC or pyarrow source into a bank | 1.43.0 | for `pl.scan_arrow_c_stream` |
 
-The suite passes on 2.0.0, the pin, at every change. It runs on the
-floor, 1.34.0, before every release and once a month
-([How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves)), and passed there on 2026-10-07.
-On the floor, 23 tests skip, each naming the newer Polars it needs: most
-check against a Polars function that has changed since, and the rest
-stream a database or a pyarrow reader through `pl.scan_arrow_c_stream`.
-The suite has also passed on 1.38.1, 1.44.1, 1.44.2 (the pin until
-2026-10-08) and 2.0.0-rc.1 with identical numbers.
+**The suite passes on 2.0.0, the pin, at every change, and on the floor,
+1.34.0, before every release and once a month**
+([How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves)). It
+passed on the floor on 2026-10-07. There, 23 tests skip, each naming the
+newer Polars it needs: most check against a Polars function that has
+changed since, and the rest stream a database or a pyarrow reader through
+`pl.scan_arrow_c_stream`. The suite has also passed on 1.38.1, 1.44.1,
+1.44.2 (the pin until 2026-10-08) and 2.0.0-rc.1 with identical numbers.
 `tests/test_scaffold.py` asserts the pin and the range, and
 [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) has each run with
 its date and what differed.
 
 #### Which interfaces carry a promise
 
-This library crosses into Polars four ways, and only the Arrow PyCapsule
-interface carries a promise. It narrows the exposure without removing it,
-because only the output side uses it, and the frame still goes in as a
-Polars frame. The three without a promise include the two that stream,
-`ModelBank` and the IO plugin. So treat a break on a new Polars as expected
-maintenance, and check those two paths before the others:
+**Treat a break on a new Polars as expected maintenance, because three of
+the four ways this library crosses into Polars carry no promise from
+Polars.** The two that stream data, `ModelBank` and the IO plugin behind
+`lf.online.fit_predict`, are among the three, so check those paths first:
 
 | interface | used by | its promise |
 |---|---|---|
 | pyo3-polars' extension types | `ModelBank` | none beyond the latest definitions working with the latest Polars: provided "for convenience" |
 | the IO plugin | `lf.online.fit_predict`, `lf.online.predict`, and `with_windows` and `refresh_time` on a query | none: documented, but `@unstable` in py-polars |
 | an expression's serialized form, `expr.meta.serialize(format="json")` | the window formulas, read into this library's own tree | none: Polars calls it unstable across versions; its shapes were measured the same on 1.34.0 and 1.44.2 |
-| the Arrow PyCapsule interface | [`fit_predict_arrow`](#output-as-arrow) | an Arrow specification, which py-polars and pyarrow consume, so a break there would be Arrow's rather than Polars' |
+| the Arrow PyCapsule interface | [`fit_predict_arrow`](#output-as-arrow) | an Arrow specification, which py-polars and pyarrow consume. Only the output side uses it, and the frame still goes in as a Polars frame |
 
 **A mismatch raises an `AttributeError` before any data moves, and does
 not crash the process.** `ModelBank` moves data across the boundary
 through the Arrow C Data Interface, with two private methods of py-polars,
 `_export` and `_import`, so a Polars without them fails at once.
+[Which interfaces carry a
+promise](docs/RELEASE-READINESS.md#which-interfaces-carry-a-promise) in
+the release guide says how a break shows on each interface, and which
+tests watch for it.
 
 ### Testing
 
-**Each guarantee in [What you can rely on](#what-you-can-rely-on) is held to
-an oracle or an invariant.** An oracle is a reference the model cannot
-share a bug with, and an invariant is a property every run must keep. The
-suite has 1,215 Rust tests and 3,840 pytest cases, counted on 2026-10-03,
-and [docs/TESTING.md](docs/TESTING.md) is the ledger of what each part
-proves.
+**Each guarantee in [What you can rely on](#what-you-can-rely-on) is held
+by a test, against an oracle or an invariant.** An oracle is a reference
+the model cannot share a bug with, such as scikit-learn's `Ridge` for
+`ewridge`. An invariant is a property every run must keep, checked over
+streams Hypothesis generates with mixed nulls, clocks that repeat or jump,
+values at ±1e8, zero weights and tiny groups:
 
-The tables of what each guarantee is held to are in
-[docs/TESTING.md](docs/TESTING.md#what-the-readmes-guarantees-are-held-to).
+| guarantee | held by |
+|---|---|
+| honest predictions | changing a row's own target never changes that row's prediction, for every model (`tests/test_properties.py`) |
+| bounded memory | a 10-million-row run whose memory and state stay bounded (`tests/test_soak.py`, opt-in with `pytest -m soak`, weekly) |
+| any chunking | a stream fed in chunks of 1 to 13 rows gives one chunk's output, on generated streams for every regression model (`tests/test_properties.py`) and on a fixed stream for every model, which is also saved and loaded halfway (`tests/test_semantics_all_models.py`) |
+| any thread count | a bank's pool at 1 thread against 8, its output compared bit for bit (`tests/test_portability.py`) |
+| zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/online-core/tests/model_contract.rs`) |
+| each model's numbers | a reference written from its update equations, and another library wherever one computes the same quantity, such as statsmodels, scipy and [river](https://riverml.xyz) |
+
+The suite has 1,215 Rust tests and 3,840 pytest cases, counted on
+2026-10-03. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
+and Windows at 3.12 and 3.14, at every push to `main` and every pull
+request. [docs/TESTING.md](docs/TESTING.md) is the ledger of what each part
+proves: every reference and its agreement, every invariant, and [where the
+suite runs](docs/TESTING.md#where-the-suite-runs).
 
 ### Development
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the commands to build and test from
-a checkout, and says how to make changes.
+a checkout, and how to make a change.
 
 | to find | read |
 |---|---|
 | every document, and which to read for what | [docs/README.md](docs/README.md) |
 | a map for coding agents, at the repo root and on the docs site | [llms.txt](llms.txt) ([llmstxt.org](https://llmstxt.org)) |
 | the API reference, built from the docstrings and published from every green push to `main` | <https://hgilde.github.io/polars-online/> |
+| what each release changed | [CHANGELOG.md](CHANGELOG.md) |
+| how to cut a release, and which Polars versions are promised | [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) |
 
 ### License
 

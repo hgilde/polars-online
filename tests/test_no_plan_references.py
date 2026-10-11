@@ -56,13 +56,15 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             r"|\brecords/"
         ),
     ),
-    ("an entry of ENHANCEMENTS by its number", re.compile(r"\bE\d{1,3}\b")),
+    # Not T-E9: TESTING.md's own entry IDs, which the code and tests cite.
+    ("an entry of ENHANCEMENTS by its number", re.compile(r"(?<!T-)\bE\d{1,3}\b")),
 ]
 
 #: The reader-facing files held to ``PATTERNS`` beside the docstrings: the
 #: reference's own pages, and the files already clean of citations.
 FILES: list[str] = [
     "llms.txt",
+    "CONTRIBUTING.md",
     "SECURITY.md",
     "CODE_OF_CONDUCT.md",
     "docs/OUTPUTS.md",
@@ -74,6 +76,9 @@ FILES: list[str] = [
     "docs/RUNNER.md",
     "docs/GBDT.md",
     "docs/REGIMES.md",
+    "docs/PERFORMANCE.md",
+    "docs/RELEASE-READINESS.md",
+    "docs/TESTING.md",
     *sorted(str(p.relative_to(REPO)) for p in REFERENCE.glob("*.rst")),
 ]
 
@@ -121,6 +126,7 @@ def test_each_kind_of_citation_is_caught(text):
         "1E5 rows, as 1e5",
         "docs/PERFORMANCE.md §37 and docs/DIAGNOSTICS.md#is-it-ready",
         "reviewed by statsmodels' OLS",
+        "the TESTING.md entry T-E9",
     ],
 )
 def test_what_is_not_a_citation_passes(text):

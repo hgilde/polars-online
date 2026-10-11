@@ -36,7 +36,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from doc_recipes import differences, shown_outputs
+from doc_recipes import TIMED, differences, shown_outputs, untimed
 from doc_recipes import run as run_recipe
 from polars_version import needs_polars
 from test_ffi_memory import run_isolated
@@ -656,8 +656,6 @@ def _names(code: str) -> tuple[set[str], list[str]]:
             stored.add(node.name)
         elif isinstance(node, ast.arg):
             stored.add(node.arg)
-        elif isinstance(node, ast.ExceptHandler) and node.name:  # `except ValueError as e`
-            stored.add(node.name)
     return stored, loaded
 
 
@@ -1009,8 +1007,23 @@ class TestReadmeExamples:
             finally:
                 os.environ.clear()
                 os.environ.update(env)
-            problems += [f"README.md:{line}:\n{p}" for p in differences(shown, printed)]
+            # A line that reports a time or a rate is the machine's: its words are held.
+            problems += [
+                f"README.md:{line}:\n{p}" for p in differences(untimed(shown), untimed(printed))
+            ]
         assert not problems, "\n\n".join(problems)
+
+    def test_a_readme_recipe_times_only_what_a_machine_decides(self):
+        """A recipe's timed line is held to its words alone (``untimed``), so a
+        recipe that printed a result on one would escape the comparison: each
+        timed line reports a time in seconds or a rate of rows a second."""
+        timed = [
+            text
+            for _, _, shown in README_RECIPES
+            for text in shown.splitlines()
+            if text.startswith(TIMED)
+        ]
+        assert all(" s" in text or "rows a second" in text for text in timed), timed
 
     def test_a_runner_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, online_cli):
         """The runner guide's shell blocks that show their output: each runs
