@@ -9955,6 +9955,11 @@ tick, and that the series holding it up has a count near 1.
       means -- rather than speed comes back to the user first. The final
       benchmark against 0.13.0's wheel runs once, alone, after the fixes
       merge.
+      Then (the user, 2026-10-11: "Once memory and performance are fixed if
+      there is nothing for me continue with the release"): with nothing
+      left for the user, task 247 resumes without asking -- the version
+      bump, the full gate, the push, CI, the dispatch -- up to the PyPI
+      approval, which stays the user's click.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
