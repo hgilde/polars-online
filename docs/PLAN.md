@@ -9782,7 +9782,9 @@ tick, and that the series holding it up has a count near 1.
       the current rounds clean up worktrees, cargo cache, branches then
       implement 245" -- every agent worktree and merged branch removed and
       `cargo clean` run first, so the "before" timings start from a cold
-      build and a clean machine. Measured 2026-10-11: 19 agent worktrees,
+      build and a clean machine. Then "After 245 push" (the user,
+      2026-10-11): `main` is pushed once 245 is merged, on a full gate of
+      the exact sha and with no bug open. Measured 2026-10-11: 19 agent worktrees,
       each with its own `target/` of 20-25 GB, each compiling Polars from
       scratch twice (debug for `cargo test`, `release` -- thin LTO,
       `codegen-units = 1` -- for the wheel); load average 31 on 14 cores
