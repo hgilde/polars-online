@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import uuid
 from pathlib import Path
 
 import pytest
@@ -244,3 +245,71 @@ def test_a_cached_download_is_written_whole_or_not_at_all(tmp_path):
     with pytest.raises(OSError, match="disk full"):
         data.write_atomically(other, fails)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["day.parquet"]
+
+
+# --- scripts/quick.sh ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "crates", "rebuild", "must_run"),
+    [
+        (
+            "crates/online-core/src/kalman.rs",
+            {"online-core"},
+            True,
+            {"tests/test_kalman.py", "tests/test_kalman_revert.py"},
+        ),
+        (
+            "crates/online-core/src/ewcov/par.rs",
+            {"online-core"},
+            True,
+            {"tests/test_ew_cov.py", "tests/test_ew_cov_bias.py"},
+        ),
+        (
+            "crates/online-core/src/margbins.rs",
+            {"online-core"},
+            True,
+            {"tests/test_marginal_bins.py"},
+        ),
+        ("crates/online-polars/src/bank.rs", {"online-polars"}, True, {"tests/test_bank.py"}),
+        ("crates/online-core/tests/golden.rs", {"online-core"}, False, set()),
+        ("crates/online-cli/src/main.rs", {"online-cli"}, False, {"tests/test_cli_terminal.py"}),
+        (
+            "python/polars_online/gram.py",
+            set(),
+            False,
+            {"tests/test_gram.py", "tests/test_gram_page.py"},
+        ),
+        ("tests/test_holt.py", set(), False, {"tests/test_holt.py"}),
+        ("tests/data.py", set(), False, {"tests/test_data_and_reference.py"}),
+        ("docs/TESTING.md", set(), False, {"tests/test_tiers.py"}),
+    ],
+)
+def test_quick_maps_a_changed_path_to_its_tests(path, crates, rebuild, must_run):
+    plan = _load("quick").plan([path])
+    assert plan.crates == crates
+    assert plan.rebuild == rebuild
+    assert must_run <= plan.tests, sorted(plan.tests)
+    assert not plan.unmapped
+
+
+def test_quick_runs_everything_for_a_helper_every_test_runs_under():
+    quick = _load("quick")
+    every = set(quick._test_files())
+    assert quick.plan(["tests/conftest.py"]).tests == every
+    assert len(every) > 100
+
+
+def test_quick_names_what_it_cannot_map():
+    # A name made here, so not even this file names it.
+    page = f"docs/{uuid.uuid4().hex}.md"
+    plan = _load("quick").plan([page])
+    assert plan.unmapped == [page] and not plan.tests
+
+
+def test_quick_is_not_the_gate():
+    """It says so when it passes, so a green loop is not read as a check."""
+    text = (REPO / "scripts" / "quick.py").read_text(encoding="utf-8")
+    assert re.search(
+        r"PASS \(the mapped tests only; the gate still runs before each commit\)", text
+    )
