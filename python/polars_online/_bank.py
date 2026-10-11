@@ -339,7 +339,9 @@ class ModelBank:
         ``ValueError``, naming the spec and the column, when:
 
         - a column a spec reads (target, feature, clock, session, weight,
-          group) is not in the frame;
+          group) is not in the frame, as
+          :class:`~polars_online.ColumnNotFoundError`, which is both a
+          ``ValueError`` and Polars' ``ColumnNotFoundError``;
         - a target, feature or weight column is not numeric;
         - a column is ``UInt128``, read or not: the extension cannot take one
           in, so the column is named with a cast to make, a clock in the

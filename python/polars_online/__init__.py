@@ -61,6 +61,10 @@ part of it applies:
    * - a value that is refused: a spec parameter, a config key, what a
        column holds
      - ``ValueError``, naming the spec and the parameter or column
+   * - a column a spec reads that the frame has not got
+     - :class:`ColumnNotFoundError`, naming the spec, the column's role and
+       the column: Polars' ``ColumnNotFoundError`` and a ``ValueError``
+       both, so either ``except`` catches it
    * - a wrong type
      - ``TypeError``
    * - a spec name or position a bank has not got
@@ -87,6 +91,7 @@ from polars_online import (
     stream,
 )
 from polars_online._bank import ModelBank
+from polars_online._errors import ColumnNotFoundError
 from polars_online._frame import (
     ConsumedSourceWarning,
     OrderNotGuaranteedWarning,
@@ -102,7 +107,11 @@ from polars_online._polars_online import (
     thread_pool_size,
 )
 from polars_online._spec import FormulaTarget, Target, target
-from polars_online._warnings import PolarsOnlineDeprecationWarning, UnstableWarning
+from polars_online._warnings import (
+    PolarsOnlineDeprecationWarning,
+    PolarsOnlineWarning,
+    UnstableWarning,
+)
 from polars_online.ops import (
     ewm_mean,
     ewm_rate,
@@ -128,10 +137,12 @@ __all__ = [
     "rewm_mean",
     "rewm_rate",
     "rewm_sum",
+    "ColumnNotFoundError",
     "ArrowStruct",
     "ConsumedSourceWarning",
     "ModelBank",
     "OrderNotGuaranteedWarning",
+    "PolarsOnlineWarning",
     "PolarsOnlineDeprecationWarning",
     "ReadinessWarning",
     "UnstableWarning",

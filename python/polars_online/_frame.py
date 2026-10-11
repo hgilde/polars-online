@@ -50,6 +50,7 @@ from polars.io.plugins import register_io_source
 from polars_online import _polars_online as _native
 from polars_online._bank import ModelBank, _refuse_uint128
 from polars_online._spec import _renamed_keywords, coef_fields, output_index, target_columns
+from polars_online._warnings import PolarsOnlineWarning
 
 if TYPE_CHECKING:
     from polars_online._duration import Duration
@@ -205,7 +206,7 @@ def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
     return cols
 
 
-class OrderNotGuaranteedWarning(UserWarning):
+class OrderNotGuaranteedWarning(PolarsOnlineWarning, UserWarning):
     """A plan handed to a bank has a row order polars does not guarantee.
 
     An online model learns in row order, so the order a plan delivers is part
@@ -272,7 +273,7 @@ class OrderNotGuaranteedWarning(UserWarning):
     """
 
 
-class ReadinessWarning(UserWarning):
+class ReadinessWarning(PolarsOnlineWarning, UserWarning):
     """A model is not, or cannot become, ready in a way worth a word.
 
     Raised once per (spec, group) by the learning calls --
@@ -338,7 +339,7 @@ class ReadinessWarning(UserWarning):
     """
 
 
-class ConsumedSourceWarning(UserWarning):
+class ConsumedSourceWarning(PolarsOnlineWarning, UserWarning):
     """A plan that reads a single-use source fed a bank no rows at all.
 
     An Arrow C stream is consumed once: the specification says a capsule "can

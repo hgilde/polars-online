@@ -1856,7 +1856,7 @@ except ValueError as e:
 ```
 
 ```text
-not found: spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
+spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
 ```
 
 **With a type checker, call `po.fit_predict`,

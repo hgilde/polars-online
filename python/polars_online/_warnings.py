@@ -18,6 +18,8 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 #: The parameters renamed after 1.0, old -> new: a builder's keyword or a
+from polars.exceptions import UnstableWarning as _PolarsUnstableWarning
+
 #: spec dict's key under the old name is read as the new one, with a
 #: :class:`PolarsOnlineDeprecationWarning`, until the next major version
 #: moves the entry to ``_spec._RENAMED``, which refuses it naming the new one
@@ -35,34 +37,60 @@ _DEPRECATED: dict[str, str] = {}
 UNSTABLE_VAR = "POLARS_ONLINE_WARN_UNSTABLE"
 
 
-class PolarsOnlineDeprecationWarning(DeprecationWarning):
-    """A name renamed after 1.0, used by its old spelling.
+class PolarsOnlineWarning(Warning):
+    """The base of every warning this library raises.
+
+    Each warning keeps the standard category it belongs to as well:
+    :class:`~polars_online.ReadinessWarning`,
+    :class:`~polars_online.OrderNotGuaranteedWarning`,
+    :class:`~polars_online.ConsumedSourceWarning` and
+    :class:`~polars_online.UnstableWarning` are each a ``UserWarning``, and
+    :class:`~polars_online.PolarsOnlineDeprecationWarning` is a
+    ``DeprecationWarning``. So one filter covers every warning of this
+    library, as Polars' ``PolarsWarning`` covers Polars' own, and a filter
+    on the standard category goes on working:
+
+    .. code-block:: python
+
+        import warnings
+
+        warnings.simplefilter("ignore", po.PolarsOnlineWarning)   # every one of them
+    """
+
+
+class PolarsOnlineDeprecationWarning(PolarsOnlineWarning, DeprecationWarning):
+    """A renamed name, used by its old spelling.
 
     The old name still works -- read as the new one -- until the next major
     version, which refuses it naming the new one; the message names both.
     A spec parameter goes through a forwarding table, at any depth of a
-    spec. Any other name renamed after 1.0 ships a forwarding of its own
-    that raises this warning: a check at the function's top, a stub, an
-    alias or a second column. That covers another function's keyword, a
-    function, a word a parameter takes, a flag, an environment variable, an
-    output field and a frame column.
+    spec. Any other renamed name ships a forwarding of its own that raises
+    this warning: a check at the function's top, a stub, an alias or a
+    second column. That covers another function's keyword, a function, a
+    word a parameter takes, a flag, an environment variable, an output field
+    and a frame column.
 
-    A rename made before 1.0 was never forwarded: the old name is refused
-    outright (``TypeError`` from a builder, ``ValueError`` from a spec dict),
-    so no name warns today. Python shows a ``DeprecationWarning`` raised from
-    a library only in ``__main__`` and under test runners; to see it
-    everywhere, ``warnings.simplefilter("default",
+    The names renamed as the API was settled for 1.0 are forwarded this way,
+    and the changelog lists them. The renames made earlier were never
+    forwarded: each old name is refused outright, naming the new one
+    (``TypeError`` from a builder, ``ValueError`` from a spec dict).
+
+    Python shows a ``DeprecationWarning`` raised from a library only in
+    ``__main__`` and under test runners; to see it everywhere,
+    ``warnings.simplefilter("default",
     polars_online.PolarsOnlineDeprecationWarning)``, and to make it an error,
     ``"error"``.
     """
 
 
-class UnstableWarning(UserWarning):
+class UnstableWarning(PolarsOnlineWarning, UserWarning, _PolarsUnstableWarning):
     """A surface that is not yet promised, used.
 
     Raised only when the environment variable ``POLARS_ONLINE_WARN_UNSTABLE``
     is ``1``, as Polars raises its own ``UnstableWarning`` under
-    ``POLARS_WARN_UNSTABLE``. Each such surface says so in its docstring,
+    ``POLARS_WARN_UNSTABLE``. It is a subclass of Polars' class too, so a
+    filter on ``polars.exceptions.UnstableWarning`` covers this library's
+    unstable surfaces as well. Each such surface says so in its docstring,
     and may change in any release without that counting as a breaking
     change:
 
