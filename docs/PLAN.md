@@ -9714,6 +9714,20 @@ tick, and that the series holding it up has a count near 1.
       3/20 and 9/20 streams (the old rule on none beyond chance). No layout
       change; GOLDEN's five bocpd values at row 119 re-pinned; scoped
       mutants 22/22 caught.
+      *243b, done 2026-10-11* (`92bae70`, `37855ca`, `78aa1e7`; the user:
+      "We will make this change"): the fold keeps the tail run with the
+      largest log-joint, the oldest among equals, scaled to the cap as
+      before. Task 243's rule kept the oldest, which without pruning is the
+      row-0 run: after a break the post-break run's mass went onto the old
+      regime's statistics and the reported start jumped again about
+      `max_run` rows later (`prune_below=0`: 4/20 streams at `max_run=50`,
+      17/20 at 200, measured at `e70dd1b`; 0/20 now, as the uncapped
+      posterior). Equal in every cell of task 243's grid, at
+      `prune_below=0` and in REGIMES §5 (0.53 / 121 / 351). The capped
+      run's memory stated everywhere the fold is: `lam = cap/(cap+1)`,
+      half-life `ln 2 / ln((cap+1)/cap)` ≈ `0.69 (max_run - 1)` rows,
+      pinned by a test. No layout change; GOLDEN unmoved; scoped mutants
+      6/6 after a tie test closed the one survivor.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

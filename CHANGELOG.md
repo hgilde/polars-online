@@ -708,7 +708,14 @@ reinterpreted parameter, an output's dtype or a file to refit.
   the dominant run keeps its memory: at `max_run=20`, `prune_below=1e-2`, a
   quiet stream's summed `p_change` falls from 34.8 to 7.1, and REGIMES §5's
   false alarms from 1.00 to 0.53 per 1,000 quiet rows. Nothing moves at the
-  defaults below 10,000 rows.
+  defaults below 10,000 rows. Among the runs at the cap, the one carrying
+  the most mass is kept (the oldest among equals): after a break the
+  post-break run keeps its statistics there, where folding into the oldest
+  put its mass on the row-0 run's and raised a second alarm about
+  `max_run` rows after the break when nothing was pruned (`prune_below=0`,
+  `max_run=200`: 17 of 20 streams, none now). The capped run is an
+  exponentially weighted run scaled by `(max_run - 1)/max_run` each row,
+  half-life about `0.69 (max_run - 1)` rows.
 - **Diagnostics wait for the longest finite memory a model keeps** (task
   234): `holt`'s trend, `kalman`'s longest, `ewridge`'s
   `long_half_life`, `lasso`'s `select_half_life`. Settled on its level
