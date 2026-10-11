@@ -161,8 +161,8 @@ def unpack(
     :func:`polars_online.spec.output_index` and the spec's ``targets``. A
     plain target is its column, and so is a column renamed with ``name=``. A
     formula target is read from a column of its own name, which
-    :func:`polars_online.stream.with_windows` makes; the bank resolves it
-    inside its stream and does not write it out.
+    :func:`polars_online.stream.with_windows` makes: the bank resolves the
+    formula inside its stream and does not write it out.
 
     Without ``spec`` a name-based rule is used: a slot is read against the
     column named after it. That can misattribute a target whose name embeds
@@ -660,8 +660,8 @@ def seqtest(
     learn from: null, NaN, infinite, or past its input bound of 1e100. What
     the bank adds is the clock (``session``, ``restart_after_step_back``),
     which a frame in memory has not got. The bank's struct is held to this
-    one to the last bit; the difference is that the bank is O(state) over a
-    stream and this is O(rows) over a frame.
+    one to the last bit. The bank keeps memory the size of its state over a
+    stream, where this holds the whole frame.
 
     .. code-block:: python
 
@@ -1170,10 +1170,11 @@ def diebold_mariano(
     """Diebold and Mariano's (1995) test of equal squared error between two
     specs' out-of-sample predictions, with Newey and West's variance.
 
-    Per target ``t``, the loss differential ``d = resid_b**2 - resid_a**2``,
-    positive when ``a`` was closer, over the rows where both have a
-    residual; its mean ``d̄`` over Newey and West's (1987) standard error,
-    Bartlett weights ``1 - l / (lags + 1)`` to ``lags``:
+    Per target ``t``, the loss differential is ``d = resid_b**2 -
+    resid_a**2``, positive when ``a`` was closer, over the rows where both
+    have a residual. The statistic is its mean ``d̄`` over Newey and West's
+    (1987) standard error, with Bartlett weights ``1 - l / (lags + 1)`` to
+    ``lags``:
 
     .. code-block:: text
 
