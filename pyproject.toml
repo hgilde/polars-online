@@ -91,6 +91,11 @@ dev = [
     "numpy>=2.5.2",
     "pytest>=8.3",
     "pytest-cov>=7.1.0",
+    # The suite in several processes at once (`pytest -n`): the gate runs it
+    # so, sized to the cores the machine has free, and the tests that read
+    # memory or wall time run in one process of their own (tests/conftest.py,
+    # docs/TESTING.md "Iterating"). MIT. The floor is the version measured.
+    "pytest-xdist>=3.8.0",
     # tests/test_ffi_memory.py reads RSS to detect FFI leaks. One dependency
     # beats three hand-rolled platform branches that could each be wrong.
     "psutil>=5.9",
@@ -218,6 +223,7 @@ filterwarnings = ["error::polars_online.PolarsOnlineDeprecationWarning"]
 markers = [
     "soak: long-running stability tests (millions of rows)",
     "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
+    "serial: tests that measure the process's memory, which other work on the machine moves; `scripts/gate.sh` runs the rest in several processes (pytest-xdist) and these afterwards in one, alone (docs/TESTING.md, \"Iterating\")",
     "pins: tests that can only pass on the versions this repo pins -- assertions about the pins themselves, docs that record the version they were generated with, and another library's current behaviour measured on its locked version (polars' multi-key sort, a pyarrow cast bug, duckdb's refusal); the canary unpins on purpose and runs `-m 'not soak and not pins'`",
 ]
 [tool.ruff]

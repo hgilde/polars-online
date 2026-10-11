@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.client
 import io
+import os
 import time
 import urllib.error
 import urllib.request
@@ -154,6 +155,22 @@ def _download(url: str, attempts: int = 3) -> bytes:
     raise AssertionError("unreachable")
 
 
+def write_atomically(path: Path, write) -> None:
+    """Write a cached file whole or not at all: ``write`` writes a temporary
+    file beside ``path``, named for this process, which then replaces
+    ``path`` in one step. The suite runs in several processes at once
+    (pytest-xdist), and a reader that saw a half-written file through
+    ``path.exists()`` would read a truncated parquet; with the replace, a
+    reader sees no file or the whole one, and two writers each write the
+    same bytes."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _one_day(date: str) -> pl.DataFrame:
     CACHE_DIR.mkdir(exist_ok=True)
     cached = CACHE_DIR / f"BTCUSDT-1m-{date}.parquet"
@@ -179,7 +196,7 @@ def _one_day(date: str) -> pl.DataFrame:
         .sort("t")
         .with_columns(group=pl.lit("BTCUSDT"))
     )
-    df.write_parquet(cached)
+    write_atomically(cached, df.write_parquet)
     return df
 
 
@@ -240,7 +257,8 @@ def public_quotes_and_trades(symbol: str = "ETCUSDT", date: str = "2024-01-02") 
         if not raw.exists():
             data = _download(f"{_BINANCE_UM}/{kind}/{symbol}/{name}.zip")
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                raw.write_bytes(z.read(f"{name}.csv"))
+                body = z.read(f"{name}.csv")
+            write_atomically(raw, lambda tmp: tmp.write_bytes(body))
         return pl.read_csv(raw)
 
     quotes = csv("bookTicker").select(
@@ -286,7 +304,7 @@ def public_quotes_and_trades(symbol: str = "ETCUSDT", date: str = "2024-01-02") 
             "ts", "kind", "bid", "ask", "bid_qty", "ask_qty", "price", "quantity", "side", "mid"
         )
     )
-    both.write_parquet(cached)
+    write_atomically(cached, both.write_parquet)
     return both
 
 

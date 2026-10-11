@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -42,20 +43,40 @@ def newest_release() -> str:
         return json.load(r)["info"]["version"]
 
 
+def _python_in(venv: Path) -> Path:
+    return venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+
+
 def released_python(version: str) -> Path:
-    """A venv holding `polars-online==version` and this environment's Polars."""
+    """A venv holding `polars-online==version` and this environment's Polars.
+
+    Built under a name of this process's own and renamed into place once
+    installed, so a venv at the cached path is always a whole one: the test
+    suite runs in several processes at once, and two of them may want the
+    same release's venv. The first rename wins, and a later builder's copy
+    is deleted. A venv's interpreter finds its packages from `pyvenv.cfg`
+    beside it, so the rename moves a working environment."""
     venv = CACHE / version
-    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python = _python_in(venv)
     if not python.exists():
+        CACHE.mkdir(parents=True, exist_ok=True)
+        building = CACHE / f"{version}.{os.getpid()}.building"
+        shutil.rmtree(building, ignore_errors=True)
         wanted = f"{sys.version_info.major}.{sys.version_info.minor}"
-        subprocess.run(["uv", "venv", "-q", "--python", wanted, str(venv)], check=True)
+        subprocess.run(["uv", "venv", "-q", "--python", wanted, str(building)], check=True)
         subprocess.run(
             [
-                "uv", "pip", "install", "-q", "--python", str(python),
+                "uv", "pip", "install", "-q", "--python", str(_python_in(building)),
                 f"polars-online=={version}", f"polars=={pl.__version__}", "numpy",
             ],
             check=True,
         )  # fmt: skip
+        try:
+            building.rename(venv)
+        except OSError:
+            if not python.exists():
+                raise
+        shutil.rmtree(building, ignore_errors=True)
     return python
 
 

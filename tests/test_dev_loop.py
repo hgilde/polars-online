@@ -176,3 +176,71 @@ def test_what_ships_and_what_gates_a_push_build_release():
         if p.is_file() and BUILDS_DEV.search(p.read_text(encoding="utf-8", errors="replace"))
     )
     assert set(named) <= {"scripts/quick.py"}, named
+
+
+# --- the parallel gate -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("cores", "load", "expected"),
+    [
+        (14, 0.3, 8),  # an idle machine: at most eight
+        (14, 11.4, 3),  # the other user's jobs on eleven cores
+        (14, 13.9, 2),  # a full machine: still two
+        (14, 30.0, 2),
+        (8, None, 4),  # no load average (Windows): half the cores
+        (2, None, 2),
+    ],
+)
+def test_the_worker_count_follows_the_free_cores(cores, load, expected):
+    assert _load("workers").workers(cores, load) == expected
+
+
+def test_the_gate_runs_in_parallel_and_keeps_a_serial_switch():
+    assert "--serial) serial=1" in GATE
+    assert "python3 scripts/workers.py" in GATE
+    # The Python tests: the parallel run leaves the `serial` ones out, and
+    # they run afterwards in one process, so between them every test runs.
+    assert '-n "$workers" --dist worksteal -m "$marks and not serial"' in GATE
+    assert 'pytest_or_none -q -m "$marks and serial"' in GATE
+    # nextest where installed, with cargo's doctests beside it, which
+    # nextest does not run; `cargo test` otherwise.
+    assert "cargo nextest run --workspace --exclude online-py" in GATE
+    assert "cargo test --workspace --exclude online-py --doc" in GATE
+
+
+def test_the_memory_tests_run_alone():
+    """The tests that read their process's memory carry `serial`, so the
+    gate runs them after the parallel run, in one process."""
+    for path, needle in [
+        ("tests/test_ffi_memory.py", "pytest.mark.serial,"),
+        ("tests/test_gbdt.py", "@pytest.mark.serial\ndef test_many_builds_do_not_leak"),
+    ]:
+        assert needle in (REPO / path).read_text(encoding="utf-8"), path
+
+
+def test_a_cached_download_is_written_whole_or_not_at_all(tmp_path):
+    """Several processes share `.cache/`: a reader must never see a file
+    another is still writing. The write goes to a file of the writer's own,
+    and a failure leaves neither that file nor the cached one behind."""
+    import data
+
+    target = tmp_path / "day.parquet"
+    seen = []
+
+    def write(tmp: Path) -> None:
+        tmp.write_bytes(b"half")
+        seen.append(target.exists())
+        tmp.write_bytes(b"whole")
+
+    data.write_atomically(target, write)
+    assert seen == [False] and target.read_bytes() == b"whole"
+
+    def fails(tmp: Path) -> None:
+        tmp.write_bytes(b"half")
+        raise OSError("disk full")
+
+    other = tmp_path / "other.parquet"
+    with pytest.raises(OSError, match="disk full"):
+        data.write_atomically(other, fails)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["day.parquet"]

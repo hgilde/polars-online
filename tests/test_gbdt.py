@@ -1061,24 +1061,26 @@ def test_each_handle_is_freed_once(data, valid, monkeypatch):
 
 
 @pytest.mark.extended(reason="memory: RSS over sixty builds of each library, several seconds")
+@pytest.mark.serial
 def test_many_builds_do_not_leak():
-    import os
-
-    import psutil
+    """A leak of either object grows by its size per build: 20,000 rows of
+    7 bins is 140 kB to 560 kB, 3.5 to 14 times the limit of 40 kB a build.
+    The check is `test_ffi_memory`'s, which measures only once the
+    allocator's ramp is over and finds where that is. In a process that
+    has run little before this test, as when the gate runs the `serial`
+    tests on their own, RSS rose for about 100 builds before it held
+    (2026-10-11), and the fixed window this used, builds 20 to 60, read
+    that ramp as a leak."""
+    from test_ffi_memory import assert_plateaus
 
     df = frame(20_000)
-    proc = psutil.Process(os.getpid())
-    rss = []
-    for i in range(60):
+
+    def build():
         m = gbdt.xgboost_matrix(df, label="y")
         d = gbdt.lightgbm_dataset(df, label="y", params=LGB_DATA)
         del m, d
-        gc.collect()
-        if i % 10 == 9:
-            rss.append(proc.memory_info().rss)
-    # A leak of either object grows by its size per build: 20,000 x 7 bins
-    # is 140 kB to 560 kB, so 50 builds would be 7 MB or more.
-    assert rss[-1] - rss[1] < 4e6, [r / 1e6 for r in rss]
+
+    assert_plateaus(build, per_block=10, kb_per_iter=40.0)
 
 
 #: A source larger than a build may hold: 6 million rows of 20 float64
@@ -1128,6 +1130,9 @@ def big(tmp_path_factory):
 @pytest.mark.extended(
     reason="memory: a child interpreter builds from a 1 GB source, seconds to write and read"
 )
+# One process, so the 2 GB the module's `big` fixture writes is written once,
+# and alone, since each case holds most of a gigabyte at its peak.
+@pytest.mark.serial
 @pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
 @pytest.mark.parametrize(("source", "limit"), [("ipc", 0.75e9), ("parquet", 1.0e9)])
 def test_a_source_larger_than_memory_streams(big, lib, source, limit):

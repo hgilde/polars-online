@@ -1,0 +1,17 @@
+# cargo-nextest, which scripts/gate.sh runs the Rust tests with where it is
+# installed (docs/TESTING.md, "Iterating"). Each test runs as a process of
+# its own, so the run takes as long as its slowest test at best: these
+# start first, so that they do not start last.
+#
+# Measured on 2026-10-11, the extended tier: the eigen-solve and solve pool
+# tests in online-core's unit tests took 75 s and 28 s, and online-polars'
+# chunk_plan, summary and cadence_exact tests 24 to 48 s each; every other
+# test, under 19 s.
+
+[[profile.default.overrides]]
+filter = "test(/pool_tests::/)"
+priority = 100
+
+[[profile.default.overrides]]
+filter = "binary(chunk_plan) | binary(summary) | binary(cadence_exact)"
+priority = 50
