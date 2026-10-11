@@ -9778,7 +9778,11 @@ tick, and that the series holding it up has a count near 1.
       are slow now due to large number of tests and other things, what
       should we do to speed up dev iterations", then "Put it on the list
       after the current work is done" (after task 244 and review 7's fix
-      batches merge and gate). Measured 2026-10-11: 19 agent worktrees,
+      batches merge and gate). Then (the user, 2026-10-11): "After
+      the current rounds clean up worktrees, cargo cache, branches then
+      implement 245" -- every agent worktree and merged branch removed and
+      `cargo clean` run first, so the "before" timings start from a cold
+      build and a clean machine. Measured 2026-10-11: 19 agent worktrees,
       each with its own `target/` of 20-25 GB, each compiling Polars from
       scratch twice (debug for `cargo test`, `release` -- thin LTO,
       `codegen-units = 1` -- for the wheel); load average 31 on 14 cores
