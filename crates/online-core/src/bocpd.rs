@@ -36,9 +36,14 @@
 //! The run vector would grow by one every row, so runs whose normalised
 //! mass falls below `prune_below` are dropped and the rest renormalised, and
 //! `max_run` caps a run's length. The runs that reach `max_run − 1` rows are
-//! folded into the oldest of them, which keeps its place and its statistics,
-//! scaled back to `max_run − 1` rows' weight as a decay would scale them.
-//! Both are approximations
+//! folded into the one of them carrying the most mass, the oldest among
+//! equals, which keeps its statistics, scaled back to `max_run − 1` rows'
+//! weight as a decay would scale them. The capped slot is then an
+//! exponentially weighted run: each row a Welford step and a scale by
+//! `cap / (cap + 1)`, `cap = max_run − 1`, so its mean steps by `1 / max_run`
+//! of the row's deviation and its half-life is `ln 2 / ln((cap + 1) / cap)`,
+//! about `0.69 (max_run − 1)` rows: 13.5 at `max_run = 20`, about 6,900 at
+//! the default 10,000. Both are approximations
 //! with a knob, and a test measures what the knob costs. In a stationary
 //! stream the pruning bounds little: one regime makes every "it began `j`
 //! rows ago" hypothesis about as likely as the next, and the posterior
@@ -291,14 +296,19 @@ pub struct BocpdCfg {
     /// Drop runs below this normalised mass.
     pub prune_below: f64,
     /// Cap a run's length here. The runs that reach `max_run − 1` rows are
-    /// folded into the oldest of them, which holds their summed mass and
-    /// keeps its own statistics, scaled back to `max_run − 1` rows: its
-    /// weight and scatter times `(max_run − 1) / len`, its mean unchanged.
-    /// So `max_run` bounds the memory of a run, and with it the vector, at
-    /// most `max_run` lengths (`0 ..= max_run − 1`), and `run_mode`
-    /// saturates one below it. The run that dominates a quiet stream keeps
-    /// its memory at the cap, however far pruning has thinned the runs
-    /// younger than it.
+    /// folded into the one of them carrying the most mass, the oldest among
+    /// equals: it holds their summed mass and keeps its own statistics,
+    /// scaled back to `max_run − 1` rows, its weight and scatter times
+    /// `(max_run − 1) / len`, its mean unchanged. So `max_run` bounds the
+    /// memory of a run, and with it the vector, at most `max_run` lengths
+    /// (`0 ..= max_run − 1`), and `run_mode` saturates one below it. The
+    /// capped run is an exponentially weighted run, scaled each row by
+    /// `(max_run − 1) / max_run`: its mean steps by `1 / max_run` of the
+    /// row's deviation, and its half-life is `ln 2 / ln(max_run / (max_run −
+    /// 1))`, about `0.69 (max_run − 1)` rows. The run that dominates a quiet
+    /// stream keeps its memory at the cap, however far pruning has thinned
+    /// the runs younger than it; after a break the post-break run takes the
+    /// slot once it reaches the cap.
     pub max_run: usize,
     pub min_weight: f64,
     /// Learned rows buffered to set the prior from, where `prior_mean` or
@@ -1269,27 +1279,48 @@ impl Bocpd {
                 });
             }
         }
-        // Fold every run that has reached `max_run - 1` rows into the oldest
-        // of them, scaled back to `max_run - 1` rows: it takes their summed
-        // mass, keeps its own statistics and keeps its place, so no run is
-        // ever longer than `max_run - 1` rows -- a bounded memory, and so a
-        // bounded vector, of at most `max_run` lengths. The vector runs
-        // newest-first, its lengths rising, so the runs at the cap are its
-        // tail, and the oldest is the last. Keeping the oldest's statistics
-        // is what keeps the dominant run's memory: once pruning has dropped
-        // runs from the middle, the youngest run at or past the cap can be
-        // far younger than the run carrying the mass, and folding into it
-        // reset that run's memory and moved `run_mode` down by up to
-        // `max_run - 1` on quiet data, each reset read as a change. The cap
-        // is on the length, not the position, since a slot's position stops
-        // being its length after a prune. `max_run_folds_the_tail` and
-        // `max_run_caps_the_length_after_a_prune` pin both halves.
+        // Fold every run that has reached `max_run - 1` rows into the one of
+        // them carrying the most mass, scaled back to `max_run - 1` rows: it
+        // takes their summed mass, keeps its own statistics and takes the
+        // tail's place, so no run is ever longer than `max_run - 1` rows --
+        // a bounded memory, and so a bounded vector, of at most `max_run`
+        // lengths. The vector runs newest-first, its lengths rising, so the
+        // runs at the cap are its tail, and the oldest is the last. Keeping
+        // the heaviest's statistics is what keeps the dominant run's memory
+        // whichever run that is. On quiet data it is the oldest: folding
+        // into the youngest run at the cap, which pruning can leave far
+        // younger than the run carrying the mass, reset that run's memory
+        // and moved `run_mode` down by up to `max_run - 1`, each reset read
+        // as a change (task 243). After a break it is the post-break run:
+        // folding into the oldest put that run's mass on the row-0 run's
+        // statistics, the old regime's mean, and the capped slot predicted
+        // badly until its memory adapted, so the mass went to the shorter
+        // runs and the reported start jumped again, a second alarm about
+        // `max_run` rows after the break (task 243b). Among equals the
+        // oldest, so a flat tail folds as it always did. The capped slot is
+        // then an exponentially weighted run: a Welford step and a scale by
+        // `cap / (cap + 1)` each row, a decay at that `lam`, whose mean
+        // steps by `1 / max_run` and whose half-life is `ln 2 / ln((cap +
+        // 1) / cap)`, about `0.69 (max_run - 1)` rows. The cap is on the
+        // length, not the position, since a slot's position stops being its
+        // length after a prune. `max_run_folds_the_tail`,
+        // `max_run_caps_the_length_after_a_prune`,
+        // `heavy_pruning_keeps_the_dominant_runs_memory_at_the_cap`,
+        // `after_a_break_the_fold_keeps_the_run_carrying_the_mass` and
+        // `the_capped_run_is_an_exponentially_weighted_run` pin each part.
         let cap = (self.cfg.max_run - 1) as f64;
         let kept = self.runs.iter().take_while(|r| r.len < cap).count();
         if kept < self.runs.len() {
             let tail = log_sum_exp(&self.logjoint[kept..]);
-            let oldest = self.runs.len() - 1;
-            self.runs.swap(kept, oldest);
+            // The heaviest, and the last of the tail among equals: scanned
+            // from the end, so only a strictly heavier run moves it.
+            let mut heaviest = self.runs.len() - 1;
+            for i in (kept..heaviest).rev() {
+                if self.logjoint[i] > self.logjoint[heaviest] {
+                    heaviest = i;
+                }
+            }
+            self.runs.swap(kept, heaviest);
             self.runs.truncate(kept + 1);
             self.runs[kept].shrink_to(cap);
             self.logjoint.truncate(kept + 1);
@@ -1868,7 +1899,21 @@ mod tests {
         let mut n = Normals::new(5);
         let (mut p_sum, mut prev, mut worst_drop, mut capped) = (0.0, 0.0, 0.0f64, 0);
         for i in 0..600 {
-            let out = m.step(&[n.normal()], &[], 1.0, 1.0);
+            let x = n.normal();
+            // On every row the capped slot is the oldest run of the tail,
+            // the dominant run itself, scaled to the cap. At this pruning no
+            // younger run survives to the cap on these rows, so the tail is
+            // that run alone; the leg below is where the choice arises.
+            let probe = before_fold(&m, &[x]);
+            let tail: Vec<usize> = (0..probe.runs.len())
+                .filter(|&j| probe.runs[j].len >= 19.0)
+                .collect();
+            let out = m.step(&[x], &[], 1.0, 1.0);
+            if let (Some(&first), Some(&oldest)) = (tail.first(), tail.last()) {
+                let mut want = probe.runs[oldest].clone();
+                want.shrink_to(19.0);
+                assert_eq!(m.runs[first], want, "row {i}");
+            }
             if i > 0 {
                 p_sum += out.pred[0];
                 worst_drop = worst_drop.max(prev - out.pred[1]);
@@ -1879,6 +1924,198 @@ mod tests {
         assert!(capped > 500, "the cap was the mode on {capped} rows");
         assert!(worst_drop <= 5.0, "run_mode fell by {worst_drop}");
         assert!(p_sum < 12.0, "p_change summed to {p_sum}");
+        // The fold keeps the tail run carrying the most mass. At
+        // `prune_below = 1e-3` a younger run reaches the cap beside the
+        // dominant one on 203 of these rows, and on every one the dominant
+        // run, the oldest, is the heaviest: what the fold keeps on quiet
+        // data is what it kept when it took the oldest by rule.
+        let mut m = Bocpd::new(BocpdCfg {
+            max_run: 20,
+            prune_below: 1e-3,
+            hazard: 200.0,
+            ..cfg(1)
+        })
+        .unwrap();
+        let mut n = Normals::new(5);
+        let mut folds = 0;
+        for i in 0..600 {
+            let x = n.normal();
+            let probe = before_fold(&m, &[x]);
+            let tail: Vec<usize> = (0..probe.runs.len())
+                .filter(|&j| probe.runs[j].len >= 19.0)
+                .collect();
+            m.step(&[x], &[], 1.0, 1.0);
+            if tail.len() > 1 {
+                folds += 1;
+                let oldest = *tail.last().unwrap();
+                let heaviest = tail.iter().copied().fold(tail[0], |a, j| {
+                    if probe.logjoint[j] >= probe.logjoint[a] {
+                        j
+                    } else {
+                        a
+                    }
+                });
+                assert_eq!(heaviest, oldest, "row {i}: the oldest run carries the mass");
+                let mut want = probe.runs[oldest].clone();
+                want.shrink_to(19.0);
+                assert_eq!(m.runs[tail[0]], want, "row {i}");
+            }
+        }
+        assert!(folds > 150, "a younger run reached the cap on {folds} rows");
+    }
+
+    /// The state the fold reads: a clone that folds nothing (`max_run` past
+    /// any length) stepped on the same row holds the grown and pruned vector
+    /// as `prune` sees it before the fold, since the fold is the last thing
+    /// a row does and the only reader of `max_run`.
+    fn before_fold(m: &Bocpd, x: &[f64]) -> Bocpd {
+        let mut probe = m.clone();
+        probe.cfg.max_run = usize::MAX;
+        probe.step(x, &[], 1.0, 1.0);
+        probe
+    }
+
+    /// The rows where the row the run began on, `t − run_mode`, jumps by more
+    /// than `jump`: the alarm REGIMES §5 reads `bocpd` by.
+    fn start_alarms(starts: &[f64], jump: f64) -> Vec<usize> {
+        (1..starts.len())
+            .filter(|&t| starts[t] - starts[t - 1] > jump)
+            .collect()
+    }
+
+    /// After a break the run carrying the mass is the post-break run, and the
+    /// fold keeps it: at the row it reaches the cap the capped slot is that
+    /// run to the bit (the uncapped model's run of the same length), under
+    /// the tail's summed mass. Folding into the oldest run at the cap kept
+    /// the row-0 run instead -- the old regime's mean at the cap's weight --
+    /// under the post-break mass, so the capped slot predicted badly until
+    /// its memory adapted, the mass went to the shorter runs, and the start
+    /// `t − run_mode` reports jumped again: a second alarm about `max_run`
+    /// rows after the break. On a 3-sigma mean shift at row 300 of 1,000 at
+    /// `max_run = 200`, 38 of the first 40 seeds raised 3 to 14 alarms after
+    /// row 310 where the uncapped posterior raised none or one; on these
+    /// four it raised none, and the capped model 3, 2, 3 and 7 (task 243b,
+    /// measured at `e70dd1b`).
+    #[test]
+    fn after_a_break_the_fold_keeps_the_run_carrying_the_mass() {
+        let (max_run, brk, rows) = (200usize, 300usize, 1000usize);
+        let cap = (max_run - 1) as f64;
+        // The post-break run holds rows `brk..=t`, so it reaches the cap on
+        // row `brk + cap - 1`.
+        let fold_row = brk + max_run - 2;
+        let base = BocpdCfg {
+            max_run,
+            hazard: 250.0,
+            ..cfg(1)
+        };
+        for seed in [0u64, 3, 5, 9] {
+            let mut capped = Bocpd::new(base.clone()).unwrap();
+            let mut whole = Bocpd::new(BocpdCfg {
+                max_run: 100_000,
+                ..base.clone()
+            })
+            .unwrap();
+            let mut n = Normals::new(seed);
+            let (mut starts_c, mut starts_w) = (vec![], vec![]);
+            for t in 0..rows {
+                let x = n.normal() + if t >= brk { 3.0 } else { 0.0 };
+                if t == fold_row {
+                    let probe = before_fold(&capped, &[x]);
+                    // With nothing pruned the tail is the run reaching the cap
+                    // and the capped slot, grown past it.
+                    let lens: Vec<f64> = probe.runs.iter().map(|r| r.len).collect();
+                    assert_eq!(&lens[max_run - 1..], &[cap, cap + 1.0], "{seed}");
+                    let (post, old) = (max_run - 1, max_run);
+                    assert!(
+                        probe.logjoint[post] > probe.logjoint[old],
+                        "{seed}: the post-break run carries the mass: {} vs {}",
+                        probe.logjoint[post],
+                        probe.logjoint[old]
+                    );
+                    // (By now the capped slot is itself a run born a few rows
+                    // before the break, each row's fold having kept the
+                    // heaviest; the post-break run is heavier still.)
+                    assert!(
+                        probe.runs[post].mean[0] > 2.5,
+                        "{seed}: the post-break regime's mean: {}",
+                        probe.runs[post].mean[0]
+                    );
+                    let a = capped.step(&[x], &[], 1.0, 1.0);
+                    let b = whole.step(&[x], &[], 1.0, 1.0);
+                    starts_c.push(t as f64 - a.pred[1]);
+                    starts_w.push(t as f64 - b.pred[1]);
+                    assert_eq!(capped.runs.len(), max_run, "{seed}");
+                    // The kept run is the post-break run to the bit: scaling
+                    // a run of `cap` rows to `cap` multiplies by 1.
+                    assert_eq!(capped.runs[post], probe.runs[post], "{seed}");
+                    assert_eq!(capped.runs[post], whole.runs[post], "{seed}");
+                    let tail = log_sum_exp(&probe.logjoint[post..]);
+                    assert_eq!(capped.logjoint[post], tail, "{seed}");
+                    assert_eq!(&capped.logjoint[..post], &probe.logjoint[..post], "{seed}");
+                } else {
+                    let a = capped.step(&[x], &[], 1.0, 1.0);
+                    let b = whole.step(&[x], &[], 1.0, 1.0);
+                    starts_c.push(t as f64 - a.pred[1]);
+                    starts_w.push(t as f64 - b.pred[1]);
+                }
+            }
+            let (ac, aw) = (start_alarms(&starts_c, 10.0), start_alarms(&starts_w, 10.0));
+            let late = |a: &[usize]| a.iter().filter(|&&t| t > brk + 10).count();
+            assert!(
+                ac.iter().any(|&t| (brk..=brk + 10).contains(&t)),
+                "{seed}: the break is found: {ac:?}"
+            );
+            assert_eq!(
+                late(&aw),
+                0,
+                "{seed}: the uncapped posterior is quiet after it: {aw:?}"
+            );
+            assert_eq!(late(&ac), 0, "{seed}: and so is the capped one: {ac:?}");
+        }
+    }
+
+    /// A run at the cap is an exponentially weighted run. Each row it takes
+    /// the row at a Welford step, `cap` rows' weight becoming `cap + 1`, and
+    /// is scaled back to `cap`: a decay at `lam = cap / (cap + 1)`, whose
+    /// weight stays at `cap`, whose mean steps by `1 / max_run` of the row's
+    /// deviation, and whose half-life is `ln 2 / ln((cap + 1) / cap)`, 13.5
+    /// rows at `max_run = 20` and about `0.69 (max_run − 1)` in general.
+    #[test]
+    fn the_capped_run_is_an_exponentially_weighted_run() {
+        let max_run = 20usize;
+        let cap = (max_run - 1) as f64;
+        let mut m = Bocpd::new(BocpdCfg { max_run, ..cfg(1) }).unwrap();
+        let mut n = Normals::new(3);
+        for _ in 0..40 {
+            m.step(&[n.normal()], &[], 1.0, 1.0);
+        }
+        for _ in 0..100 {
+            let before = m.runs.last().unwrap().clone();
+            assert_eq!(before.len, cap);
+            assert!(
+                (before.n - cap).abs() < 1e-12,
+                "the weight stays at the cap: {}",
+                before.n
+            );
+            let x = n.normal();
+            m.step(&[x], &[], 1.0, 1.0);
+            let after = m.runs.last().unwrap();
+            assert_eq!(after.len, cap);
+            let step = after.mean[0] - before.mean[0];
+            let want = (x - before.mean[0]) / max_run as f64;
+            assert!(
+                (step - want).abs() < 1e-14,
+                "the mean steps by 1/max_run: {step} vs {want}"
+            );
+            // The scatter takes the deviation at `cap / (cap + 1)` and is
+            // scaled by the same.
+            let lam = cap / (cap + 1.0);
+            let dev = x - before.mean[0];
+            let m2 = (before.m2[0] + lam * dev * dev) * lam;
+            assert!((after.m2[0] - m2).abs() < 1e-10, "{} vs {m2}", after.m2[0]);
+        }
+        let half_life = 2f64.ln() / ((cap + 1.0) / cap).ln();
+        assert!((half_life - 13.51).abs() < 0.01, "{half_life}");
     }
 
     /// `max_run` caps a run's length, not its position. Once pruning has
