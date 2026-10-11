@@ -534,7 +534,8 @@ def test_a_library_or_version_the_native_engine_does_not_call_is_refused_by_name
     # A library without the functions: LightGBM's file is no XGBoost.
     with pytest.raises(ValueError, match="has no `XGBoostVersion`"):
         native.GbdtXgboost(gbdt._library_path(lgb.basic._LIB))
-    assert native.GbdtXgboost(gbdt._library_path(xgb.core._LIB)).version >= (2, 0, 0)
+    # The floor is 2.1, the first XGBoost whose C API takes Arrow columns.
+    assert native.GbdtXgboost(gbdt._library_path(xgb.core._LIB)).version >= (2, 1, 0)
 
 
 def test_auto_falls_back_to_the_python_engine_with_a_warning(data, monkeypatch):
