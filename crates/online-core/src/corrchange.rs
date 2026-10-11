@@ -325,8 +325,8 @@ impl CorrChangeCfg {
                 }
                 if self.scalar {
                     return Err(
-                        "corrchange: scalar applies to kind = \"monitor\"; the window statistic \
-                         is already one number"
+                        "corrchange: scalar applies to kind = \"monitor\" or \"sequential\"; \
+                         the window statistic is already one number"
                             .into(),
                     );
                 }
@@ -2320,7 +2320,7 @@ mod tests {
                 scalar: true,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "scalar applies to",
+            "scalar applies to kind = \"monitor\" or \"sequential\"; the window statistic",
         );
         // docs/REVIEW-E54-E64.md CC1 and CC3: the cases `validate` refuses
         // and nothing exercised.

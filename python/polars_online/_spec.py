@@ -845,18 +845,24 @@ def _common(
 
 
 def _mirror_target(
-    name: str, kind: str, features: list[str], common: Any, statistic: str
+    name: str,
+    kind: str,
+    features: list[str],
+    common: Any,
+    statistic: str,
+    noun: str = "features",
 ) -> list[str]:
     """The ``targets`` a model with no target hands the plumbing: its first
     feature. ``targets=`` is refused by name, and so is an empty
     ``features``, which the Rust side names for every other model and these
     indexed before it could (review 2026-10-05, YA1 and YA5: an
-    ``IndexError``, and a ``TypeError`` naming ``_common()``)."""
+    ``IndexError``, and a ``TypeError`` naming ``_common()``). ``noun`` is
+    what the builder calls its features: ``audit``'s are ``columns``."""
     if "targets" in common:
-        msg = f"spec {json.dumps(name)}: {kind}() takes no targets; {statistic} the features"
+        msg = f"spec {json.dumps(name)}: {kind}() takes no targets; {statistic} the {noun}"
         raise TypeError(msg)
     if not features:
-        raise ValueError(f"spec {json.dumps(name)}: features must be non-empty")
+        raise ValueError(f"spec {json.dumps(name)}: {noun} must be non-empty")
     return [features[0]]
 
 

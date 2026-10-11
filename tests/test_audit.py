@@ -87,6 +87,17 @@ class TestTheBuilder:
         with pytest.raises(ValueError, match="columns must be non-empty"):
             po.spec.audit("a", columns=[])
 
+    def test_its_refusals_say_columns(self):
+        """An audit takes ``columns``, and its refusals name them so: a
+        column given twice, and ``targets``, read as ``features`` once."""
+        with pytest.raises(ValueError, match='spec "a": columns lists "x0" more than once'):
+            po.spec.audit("a", columns=["x0", "x1", "x0"])
+        with pytest.raises(
+            TypeError,
+            match='spec "a": audit\\(\\) takes no targets; it counts what is in the columns',
+        ):
+            po.spec.audit("a", columns=["x0"], targets=["y"])
+
     @pytest.mark.parametrize(
         ("kw", "says"),
         [

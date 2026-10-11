@@ -219,6 +219,15 @@ def audit(
         raise TypeError(msg)
     if not columns:
         raise ValueError(f"spec {json.dumps(name)}: columns must be non-empty")
+    # Named here, in the builder's word: the shared check below says
+    # `features`, which an audit does not take.
+    seen: set[str] = set()
+    for c in columns:
+        if c in seen:
+            raise ValueError(
+                f"spec {json.dumps(name)}: columns lists {json.dumps(c)} more than once"
+            )
+        seen.add(c)
     # Each key is written only when given, as the Rust spec skips it when
     # absent: a spec from a TOML file that leaves it out saves the same bytes,
     # and the bank reports back the dict made here (`_SKIPPED_WHEN_ABSENT`).
@@ -227,5 +236,5 @@ def audit(
         model["pairs"] = True
     if distinct_cap is not None:
         model["distinct_cap"] = distinct_cap
-    targets = _mirror_target(name, "audit", columns, common, "it counts what is in")
+    targets = _mirror_target(name, "audit", columns, common, "it counts what is in", "columns")
     return _common(name, model, targets=targets, features=columns, **common)

@@ -338,7 +338,10 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
         ({"kind": "window", "span_rows": None}, "needs `span_rows`"),
         ({"kind": "window", "span_rows": 2}, "span_rows of at least 3"),
         ({"kind": "window", "span_rows": 20, "n_perm": 2}, "n_perm >= 20"),
-        ({"kind": "window", "span_rows": 20, "scalar": True}, "scalar applies to"),
+        (
+            {"kind": "window", "span_rows": 20, "scalar": True},
+            'scalar applies to kind = "monitor" or "sequential"; the window',
+        ),
         ({"half_life": 100.0}, "apply to corrchange only with scalar"),
         ({"emit_sigma": True}, "does not apply to corrchange"),
         # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
