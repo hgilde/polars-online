@@ -69,17 +69,27 @@ r2_y at rows 2,999, 3,100, 3,300 and 5,999: 0.51, 0.43, 0.44, 0.55
 threshold on 77% of the rows after. It is the Wald distance between two
 fits of the same regression, one at the diagnostic's memory and one at four
 times it, and it grows when a coefficient moves. The two CUSUMs watch the
-residuals' mean and spread, and pass 3 on 1.8% and 2.8% of the rows after
-the flip, near the 0.3% to 0.8% they pass on a stream with no break. A
+residuals' mean and spread. After the flip they pass 3 on 1.8% and 2.8% of
+the rows, near the 0.3% to 0.8% they pass on a stream with no break. A
 slope that flips on a feature centred at zero leaves the residuals' mean at
 zero, so the CUSUM barely sees it, and the spread grows too little here for
 the CUSUM of squares. The calibration
 stays quiet because the fit forgets: within a few half-lives it has learned
 the new slope, and its predictions are scaled right again. The running R²
 falls from 0.51 before the flip to 0.43 a hundred rows after, and is back
-to 0.55 by the end. Each section of this page takes one question, says
-which diagnostic answers it and what that diagnostic cannot see, and gives
-a recipe that runs.
+to 0.55 by the end. Each question below has a section of its own: which
+diagnostic answers it, what that diagnostic cannot see, and a recipe that
+runs.
+
+**Every recipe on this page is a complete program.** It generates its data
+with the answer planted, saves it to parquet and reads it back with
+`pl.scan_parquet`, as a stream too large to hold would be read. Its output
+is shown below it. `tests/test_diagnostics_page.py` runs each recipe and
+holds its output to what is shown, so none goes stale. A number past a
+million in an output is a model that has blown up. Its digits depend on
+the platform's rounding, so the test holds such a number only to being past
+a million. Warnings that a recipe raises, such as a `ReadinessWarning`, go
+to the standard error stream and are not shown.
 
 These are the words of the library that the page uses:
 
@@ -121,7 +131,7 @@ cost a row and a set of models that take it.
 **Every residual a diagnostic reads was made before the model learned from
 its row.** A bank predicts a row, records the residual, and only then
 learns the row. So a diagnostic built from those residuals is a
-*prequential* one, in Dawid's (1984) term: it judges the forecasts the
+*prequential* one, in Dawid's (1984) term. It judges the forecasts the
 model actually made, in the order it made them, on outcomes it had not yet
 seen. Nothing has to be held out, and nothing is refitted.
 
@@ -155,8 +165,8 @@ once over the whole stream.
 **The fit's own memory is its half-life, but for two fits that forget on
 another clock.** Under `window_size`, it is the half-life whose
 exponential weights have the window's Kish size. A window of `W` rows is
-worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`, so `λ = (W −
-1)/(W + 1)` and the half-life is `ln 2 / ln((W + 1)/(W − 1))` rows, about
+worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`. So `λ = (W −
+1)/(W + 1)`, and the half-life is `ln 2 / ln((W + 1)/(W − 1))` rows, about
 `W / 2.885`. On a clock column the window is in clock units, and the
 half-life is `W ln 2 / 2` of them. A window beside a half-life takes the
 Kish size of the decayed weights cut at the window. `kalman` forgets its
@@ -190,9 +200,10 @@ diagnostic at the fit's own memory sees only part of it.** A calibration
 slope of 0.7 says the predictions are 43% too large (`1 / 0.7` is 1.43).
 The fit drifts toward the truth as it learns. Over one half-life it has
 moved halfway, so the residuals a diagnostic at the same memory reads have
-had half the error taken out of them. That diagnostic is conservative. Measured on a fit whose calibration
-slope was 0.7, the calibration test passed its 5% value on 5% of rows at
-the model's memory, on 42% at four times it, and on 89% run once. On
+had half the error taken out of them. That diagnostic is conservative.
+On a fit whose calibration slope was 0.7, the calibration test passed its
+5% value on 5% of rows at the model's memory. It passed on 42% at four
+times that memory, and on 89% run once. On
 calibrated fits it passed on 0.3% to 0.6% of rows at the model's memory
 and 0% to 0.3% at four times. That is why the calibration's memory
 defaults to four times the model's, and every other diagnostic's to the
@@ -212,32 +223,39 @@ break on the median.
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
 forgets, a diagnostic also waits until the stream is 95% settled on the
-longest finite memory the model keeps, 4.3 of its half-lives, the point
-from which the readiness notices judge a stream. That is the fit's memory,
-but `holt`'s trend (`trend_half_life`, four times its level's by default),
-the longest of `kalman`'s `coef_half_life` and `half_life`, `ewridge`'s
-`long_half_life` and `lasso`'s `select_half_life`: a fit with several
-memories has settled only once the longest has. Ready on its level alone,
-`holt`'s CUSUM spread 2.7 and passed 3 on 28% of the 2,000 rows after its
-diagnostics started, on 20 clean streams at a half-life of 200; ready on
-its trend, 0.74 and on none. And `sgd` and `pa` under `standardize` fold from
-the row their scaler switches the fit to the caller's units, 22 rows of
-Kish's size in. The fields of the twin fits and of feature health read the
-target and the features alone, and fold every row.
+longest finite memory the model keeps. That is 4.3 of its half-lives, the
+point from which the readiness notices judge a stream. A fit with several
+memories has settled only once the longest has, so four models count a
+memory beside their half-life:
+
+| model | the memory it counts beside `half_life` |
+|---|---|
+| `holt` | its trend's, `trend_half_life`, four times its level's by default |
+| `kalman` | `coef_half_life` |
+| `ewridge` | `long_half_life`, when given |
+| `lasso` | `select_half_life`, when given |
+
+On 20 clean streams at a half-life of 200, `holt`'s CUSUM read ready on
+its level alone spread 2.7, and passed 3 on 28% of the 2,000 rows after
+its diagnostics started. Ready on its trend, it spread 0.74 and passed on
+none. `sgd` and `pa` under `standardize` fold from the row their scaler
+switches the fit to the caller's units, 22 rows of Kish's size in. The
+fields of the twin fits and of feature health read the target and the
+features alone, and fold every row.
 
 **A fit far from its truth carries its warm-up error for many
 half-lives.** `rls` and `kalman` learn the intercept from a prior at 0, so
 on a target at 5,000 their first predictions are thousands of noise sds
-off. Folded from the first prediction, those residuals held Jarque and
-Bera's statistic past its 5% value on 81% of rows 1,000 to 2,000 beside
-`rls` at a half-life of 50, 20 to 40 half-lives in, and the calibration
-test on 100%. Folded from readiness they passed on 4.9% and 24%. What
-remains is the prior's bias itself, which fades only as the fit forgets
-it. At a half-life of 200, `rls`'s mean residual was still +2.1 noise sds
-over rows 400 to 1,000 and +0.16 over rows 1,000 to 2,000, and the
-calibration and the CUSUM flag it there, as they should. `kalman`, whose
-prior is sized from the first rows, read at a level from row 1,000 on as it
-reads on a target at 0, each test past its 5% value on 0.1% to 8.9% of
+off. Beside `rls` at a half-life of 50, residuals folded from the first
+prediction held Jarque and Bera's statistic past its 5% value on 81% of
+rows 1,000 to 2,000, 20 to 40 half-lives in. They held the calibration
+test past its own on 100%. Folded from readiness they passed on 4.9% and
+24%. What remains is the prior's bias itself, which fades only as the fit
+forgets it. At a half-life of 200, `rls`'s mean residual was still +2.1
+noise sds over rows 400 to 1,000, and +0.16 over rows 1,000 to 2,000. The
+calibration and the CUSUM flag it there, as they should. `kalman` sizes
+its prior from the first rows. From row 1,000 on it read the same at a
+level as on a target at 0, each test past its 5% value on 0.1% to 8.9% of
 rows.
 
 **A fit that forgets nothing never settles, so run once only the gates
@@ -261,16 +279,6 @@ before, so the flags come in long runs. Over 40 clean streams, Ljung-Box at
 a memory of 1,000 rows sat past its 5% value on 4.2% of rows. On single
 streams the share ran from 0% to 20%. Read a statistic's median over a
 stretch, or how long it stays past a threshold, before reading one row.
-
-**Every recipe on this page is a complete program.** It generates its data
-with the answer planted, saves it to parquet and reads it back with
-`pl.scan_parquet`, as a stream too large to hold would be read. Its output
-is shown below it. `tests/test_diagnostics_page.py` runs each recipe and
-holds its output to what is shown, so none goes stale. A number past a
-million in an output is a model that has blown up. Its digits depend on
-the platform's rounding, so the test holds such a number only to being past
-a million. Warnings that a recipe raises, such as a `ReadinessWarning`, go
-to the standard error stream and are not shown.
 
 ### Every switch at once
 
@@ -402,18 +410,22 @@ example](#a-worked-example-the-two-stage-reversion-beta)).
 
 **A quantile fit's calibration is its coverage.** A prediction of the
 `q`-th quantile is calibrated when the outcome falls below it on a share
-`q` of rows; Mincer and Zarnowitz's regression asks whether it is the mean,
-and on a stable fit at `q = 0.9` passed its 5% value on every row. On
-`quantile` and on `sgd` under `loss="quantile"`, `emit_calibration` writes
-`calibration_coverage_<t>`, the EW share of rows below the prediction, and
-`calibration_wald_<t>`, the binomial test of that share at Kish's size,
-`(Σω d)² / (q (1 − q) Σω²)` with `d = 1{y < pred} − q`, `chi2(1)` at a
-calibrated quantile, with Newey and West's lag products under a horizon.
-On 30 clean streams the coverage's median read 0.499-0.500 at `q = 0.5`
-and 0.895-0.900 at `q = 0.9`; at the default memory the test passed 3.84
-on 0% to 1.7% of rows, conservative as the slope's is beside a fit that
-absorbs what it reads. `cusum` sums `d / sqrt(q (1 − q))` there in place of
-the studentized residual, which flagged every row at `q = 0.9`: a quantile's
+`q` of rows. Mincer and Zarnowitz's regression asks whether it is the
+mean, and on a stable fit at `q = 0.9` it passed its 5% value on every
+row. So on `quantile`, and on `sgd` under `loss="quantile"`,
+`emit_calibration` writes two other fields:
+
+| field | what it is |
+|---|---|
+| `calibration_coverage_<t>` | the EW share of rows below the prediction |
+| `calibration_wald_<t>` | the binomial test of that share at Kish's size, `(Σω d)² / (q (1 − q) Σω²)` with `d = 1{y < pred} − q`: `chi2(1)` at a calibrated quantile, with Newey and West's lag products under a horizon |
+
+On 30 clean streams the coverage's median read 0.499 to 0.500 at
+`q = 0.5`, and 0.895 to 0.900 at `q = 0.9`. At the default memory the test
+passed 3.84 on 0% to 1.7% of rows. It is conservative, as the slope's test
+is beside a fit that absorbs what it reads. `cusum` sums
+`d / sqrt(q (1 − q))` there in place of the studentized residual. The
+studentized residual flagged every row at `q = 0.9`, because a quantile's
 residuals do not have a zero mean.
 
 **It cannot see a fit that is wrong but calibrated.** A model missing a
@@ -473,8 +485,8 @@ The shrunk fit's median slope is 2.00: its ridge halved every
 coefficient, so every prediction is half the size it should be. The Wald
 test flags every row, and rescaling by the slope takes its error from
 1.329 to 1.023, the steady fit's level. The overfit fit's slope is 0.82,
-flagged on 98% of rows: its predictions are about 22% too large, because
-twenty coefficients estimated on about 87 rows' worth of data add their
+flagged on 98% of rows: its predictions are about 22% too large. Twenty
+coefficients estimated on about 87 rows' worth of data add their
 estimation noise to every prediction. Rescaling recovers only a little,
 from 1.278 to 1.241, since most of that noise varies from row to row, and
 no single multiplier removes it. Its fix is a longer half-life or fewer
@@ -482,7 +494,7 @@ features. The steady fit's slope is 1.00, flagged on no row, and
 rescaling changes nothing.
 
 **What to do.** When the slope sits away from 1 for many half-lives,
-rescale the predictions by the calibration as the recipe does, or remove
+rescale the predictions by the calibration as the recipe does. Or remove
 the cause: a smaller ridge, a faster learning rate, or a longer half-life.
 When the slope is 1 and the error still high, the model is missing
 information, and [What is it missing?](#what-is-it-missing) is the next
@@ -523,11 +535,16 @@ Theirs, `s_r`, is the share of a whole run's squares that fell in its
 first `r` rows, read against a boundary. This one is the sum of `z² − 1`
 over its own standard deviation, which reads the spread the residuals have
 drifted to from the one their studentizing scale held. It divides by the
-measured `E[z⁴] − 1`, the variance of `z²`, where it divided by 2, a
-Gaussian's: on Student's t noise with 3 to 5 degrees of freedom it passed
-1.96 on 11% to 33% of rows windowed and on 28% to 53% of 40 streams' last
-rows run once, and now on 4.7% to 5.5% and 2.5% to 7.5% (Gaussian: 6.3%
-and 2.5%). Run once its mean sits a little above 0, +0.1 to +0.4 at the
+measured `E[z⁴] − 1`, the variance of `z²`, and not by a Gaussian's 2, so
+it holds its rate on heavy tails. Each cell below is the share past 1.96,
+of rows windowed, and of 40 streams' last rows run once:
+
+| noise | over 2, windowed | over `E[z⁴] − 1`, windowed | over 2, run once | over `E[z⁴] − 1`, run once |
+|---|---:|---:|---:|---:|
+| Student's t, 3 to 5 degrees of freedom | 11% to 33% | 4.7% to 5.5% | 28% to 53% | 2.5% to 7.5% |
+| Gaussian | | 6.3% | | 2.5% |
+
+Run once its mean sits a little above 0, +0.1 to +0.4 at the
 last of 6,000 rows, since the first rows' `z` are read against a young
 scale and spread wider than 1. The fourth moment is read at four times the
 memory, so that a change of spread does not hide itself in it at once.
@@ -537,27 +554,33 @@ memory, so that a change of spread does not hide itself in it at once.
 
 **A windowed CUSUM is over its own null, since the fit absorbs part of
 every level it sums.** A fit that forgets is an EW mean of the shocks
-before each row, so its residual is the shock less that mean, and a sum of
-those residuals at a memory `h` cancels much of itself. In continuous time
-the sum's variance is `r = h_fit / (h_fit + h)` of the plain sum's, whatever
-the rows' rate: one half at equal memories, a standard deviation of 0.71.
-The CUSUM of squares is studentized by a scale at its own memory, which
-absorbs the squares' level the same way, so its share is one half. Each
-is divided by its share. On 30 clean streams beside `ewridge` and `rls`,
-`lasso` and `kalman` at a half-life of 200, the CUSUM's spread was 0.48 to
-0.94 at memories of 800 to 50 and is now 1.04 to 1.08, and the CUSUM of
-squares' 0.72 to 0.79 and is now 1.01 to 1.10. `quantile` with an
-intercept absorbs its coverage the same way, and its indicators' CUSUM is
-divided by the same share: over it, the spread read 1.03 to 1.06 at
-memories of 50 and 200, and 1.10 to 1.25 at 800, on 30 clean streams at
-`q = 0.5` and `0.9`. `huber`, `holt` and the gradient fits absorb at a
-pace of their own, so they keep the plain sum.
+before each row, so its residual is the shock less that mean. A sum of
+those residuals at a memory `h` therefore cancels much of itself. In
+continuous time the sum's variance is `r = h_fit / (h_fit + h)` of the
+plain sum's, whatever the rows' rate: one half at equal memories, a
+standard deviation of 0.71. The CUSUM of squares is studentized by a scale
+at its own memory, which absorbs the squares' level the same way, so its
+share is one half. Each is divided by its share. On 30 clean streams
+beside `ewridge`, `rls`, `lasso` and `kalman` at a half-life of 200, at
+memories of 800 to 50, the spreads read:
+
+| | not divided | divided by its share |
+|---|---:|---:|
+| `cusum` | 0.48 to 0.94 | 1.04 to 1.08 |
+| `cusum_sq` | 0.72 to 0.79 | 1.01 to 1.10 |
+
+`quantile` with an intercept absorbs its coverage the same way, and its
+indicators' CUSUM is divided by the same share. On 30 clean streams at
+`q = 0.5` and `0.9`, that CUSUM's spread read 1.03 to 1.06 at memories of
+50 and 200, and 1.10 to 1.25 at 800. `huber`, `holt` and the gradient
+fits absorb at a pace of their own, so they keep the plain sum.
 
 **Beside a fit that keeps the plain sum, `|cusum| > 3` is conservative and
-finds less.** Its spread reads below 1 there. On 30 clean streams of 6,000
-rows and 60 streams of 3,000 rows whose intercept moved half a noise sd at
-row 1,500, at a half-life of 200 (`holt`: 12,000 and 9,000 rows, the break
-at 6,000, past its trend's readiness):
+finds less.** Its spread reads below 1 there. The table is measured at a
+half-life of 200 on 30 clean streams of 6,000 rows, and on 60 streams of
+3,000 rows whose intercept moved half a noise sd at row 1,500. For `holt`
+the streams are 12,000 and 9,000 rows, with the break at 6,000, past its
+trend's readiness:
 
 | model | spread of `cusum`, memory 50 / 200 / 800 | breaks `\|cusum\| > 3` found | `break_wald` found |
 |---|---|---|---|
@@ -570,37 +593,47 @@ at 6,000, past its trend's readiness):
 | `pa` | 0.51 / 0.48 / 0.51 | 0% / 0% / 0% | 98% / 100% / 100% |
 
 A gradient fit absorbs a level at its learning rate, so the residuals the
-CUSUM sums carry little of the move: `pa`'s found no break at any memory,
-and `sgd`'s found 2% to 82% of them by memory. `break_wald` reads the
+CUSUM sums carry little of the move. Beside `pa` it found no break at any
+memory, and beside `sgd` 2% to 82% of them by memory. `break_wald` reads the
 target and the features alone, so it finds a break beside every model
-alike; beside `holt` its pair has only the level to compare. On the clean
-streams `|cusum| > 3` held on at most 0.7% of rows beside any model, and
-`break_wald` on at most 0.22%. `calibration_wald` past `chi2(2)`'s 0.01%
-value found none of the breaks beside `sgd` and `ftrl`; beside `pa` it
-held on every clean row, whose predictions here were not calibrated.
+alike. Beside `holt` its pair of fits has only the level to compare. On
+the clean streams `|cusum| > 3` held on at most 0.7% of rows beside any
+model, and `break_wald` on at most 0.22%. `calibration_wald` past
+`chi2(2)`'s 0.01% value found none of the breaks beside `sgd` and `ftrl`.
+Beside `pa` it held on every clean row, whose predictions here were not
+calibrated.
 
-On 200 streams of 3,000 rows with a break at row 1,500, beside a fit at a
-half-life of 200, `|cusum| > 3` found every intercept break, 62 rows after
-it on the median, and `|cusum_sq| > 3` every variance break within 17 rows
-on the median. `break_wald > 21.1`, `chi2(3)`'s 0.01% value, found every
-slope break, 102 rows after it on the median. On 40 streams of 25,000 rows
-with no break, at the same half-life, `|cusum| > 3` held on 0.24% of rows
-and `|cusum_sq| > 3` on 0.22%, near a normal's 0.27%, and `break_wald >
-21.1` on 0.025%.
+Beside a fit at a half-life of 200, each flag found its break as below.
+The breaks are on 200 streams of 3,000 rows, at row 1,500, and the rows
+flagged with no break are on 40 streams of 25,000 rows:
+
+| flag | the breaks it found | median delay | rows flagged with no break |
+|---|---|---:|---:|
+| `\|cusum\| > 3` | every intercept break | 62 rows | 0.24% |
+| `\|cusum_sq\| > 3` | every variance break | 17 rows | 0.22% |
+| `break_wald > 21.1`, `chi2(3)`'s 0.01% value | every slope break | 102 rows | 0.025% |
+
+A normal variable passes 3 on 0.27% of draws. Not divided by their
+null's share, the two CUSUMs held on 0.002% and 0.011% of the rows with
+no break, and found the breaks 96 and 20 rows after them.
 
 **`break_wald` reads the exact variance of the two fits' difference.**
-Each fit is `β = G⁻¹ Σ ω z y` over `z = (1, x)`, so with noise of variance
-`σ²` the difference has the variance `σ² (A_f H_ff A_f + A_s H_ss A_s −
-A_f H_fs A_s − A_s H_fs A_f)`, `A = G⁻¹` and `H` the sums of `ω_f² z z'`,
-`ω_s² z z'` and `ω_f ω_s z z'`, which the diagnostic keeps. It once read
-the slow fit's Gram for both fits, which is right only while the design
-holds still: when a feature's spread fell tenfold with nothing broken, it
-passed 21.1 after the change on 85% of 100 streams, and now on none. On
-streams with no break it passed `chi2(3)`'s 5% value on 4.5% to 5.0% of
-rows, and beside AR(1) features at 0.99 and 0.999 on 3.4% and 3.1%, with
-means of 2.9 and 2.7 for `chi2(3)`'s 3; with 20 features at a half-life of
-20 its mean was 20.7 for `chi2(21)`'s 21. Before each was divided by its null, they held on 0.002%
-and 0.011%, and found the breaks 96 and 20 rows after them.
+Each fit is `β = G⁻¹ Σ ω z y` over `z = (1, x)`. With noise of variance
+`σ²`, the difference has the variance
+
+```text
+σ² (A_f H_ff A_f + A_s H_ss A_s − A_f H_fs A_s − A_s H_fs A_f)
+```
+
+where `A = G⁻¹`, and the `H` are the sums of `ω_f² z z'`, `ω_s² z z'`
+and `ω_f ω_s z z'`, which the diagnostic keeps. The slow fit's Gram alone
+would serve both fits only while the design holds still. When a feature's
+spread fell tenfold with nothing broken, that shortcut passed 21.1 after
+the change on 85% of 100 streams, and the exact variance on none. On
+streams with no break, `break_wald` passed `chi2(3)`'s 5% value on 4.5% to
+5.0% of rows. Beside AR(1) features at 0.99 and 0.999 it passed on 3.4%
+and 3.1%, with means of 2.9 and 2.7 for `chi2(3)`'s 3. With 20 features at
+a half-life of 20 its mean was 20.7, for `chi2(21)`'s 21.
 
 **The CUSUM cannot see a slope that moves on a feature centred at zero.**
 The residuals of the old fit on the new relationship are `(b_new − b_old)
@@ -758,12 +791,16 @@ breaks. Read together, the other three flags tell the breaks apart:
 | the noise grew | quiet, or late | fires first, within 25 rows | quiet, or late |
 | a slope moved | quiet, or late | fires, while the fit catches up | fires |
 
-Over 200 streams each of those breaks, "late" means this: after a doubling
-of the noise `|cusum| > 3` fired on half the streams, 120 rows in on the
-median, and `break_wald > 21.1` on 18%, 155 rows in, where `|cusum_sq| >
-3` fired on every one within 17; after a slope
-moved, the two CUSUMs fired on a third of the streams, 146 and 501 rows in,
-where `break_wald` fired on every one within 100.
+Over 200 streams of each break, "late" means this:
+
+| break | flag | streams it fired on | median delay |
+|---|---|---:|---:|
+| the noise doubled | `\|cusum_sq\| > 3` | every one | within 17 rows |
+| the noise doubled | `\|cusum\| > 3` | half | 120 rows |
+| the noise doubled | `break_wald > 21.1` | 18% | 155 rows |
+| a slope moved | `break_wald > 21.1` | every one | within 100 rows |
+| a slope moved | `\|cusum\| > 3` | a third | 146 rows |
+| a slope moved | `\|cusum_sq\| > 3` | a third | 501 rows |
 
 **What to do.** When `cusum` fires alone or with `break_wald`, the level
 moved: restart the fit from the crossing, or let a fit that forgets catch
@@ -781,7 +818,7 @@ assumption.** A target that sums the next `h` rows' changes shares `h − 1`
 of them with its neighbour. Its residuals are then correlated over `h − 1`
 rows by construction, a moving average of order `h − 1`. Against a feature
 that moves slowly, the coefficient's variance grows by about `1 + 2 Σ ρ_x(l)
-ρ_e(l)` over the lags, close to `h`, so a t that ignores the overlap is
+ρ_e(l)` over the lags, close to `h`. So a t that ignores the overlap is
 about `sqrt(h)` times too large. Newey and West (1987) estimate the
 coefficients' covariance with the lagged products of the scores added
 back, at Bartlett weights that keep the estimate positive.
@@ -820,18 +857,26 @@ so once, in a `ReadinessWarning`. Under a horizon of `h` rows:
 | `ljung_box` | tests lags `h` to `h + L − 1` against Bartlett's covariance past an `MA(h − 1)` |
 | `breusch_pagan`, `reset` | Wald's test of the same coefficients with Newey and West's variance at `2h` lags, from the residual under each null |
 
-**Lags read from `embargo` stop at 64.** Each lag costs a slot a sum of
-`(k + 1)²` numbers in `se_coef_hac`'s sandwich and in Breusch and Pagan's,
-16 in RESET's, 4 in the calibration's and 2 in each CUSUM's, so an embargo
-of 5,000 rows asked 40 MB a slot. 64 lags cover a horizon of 32 rows at
-twice it; past that a `ReadinessWarning` says so, and `horizon_rows`, given,
-takes twice its value in lags whatever they cost (`robust_se_lags` sets
-`se_coef_hac`'s alone).
+**Lags read from `embargo` stop at 64.** Each lag adds a sum to every slot
+of each diagnostic that reads the horizon:
 
-On a five-row look-ahead target against two AR(1) features at 0.5 to 0.95,
-with nothing missing, over 30 streams of 4,000 rows, the plain forms passed
-their 5% values on these shares of rows 1,500 to 3,999, and the horizon's
-forms on the shares after the arrows:
+| diagnostic | numbers a slot keeps per lag |
+|---|---:|
+| `se_coef_hac`'s sandwich | `(k + 1)²` |
+| `breusch_pagan` | `(k + 1)²` |
+| `reset` | 16 |
+| `calibration_wald` | 4 |
+| `cusum`, `cusum_sq` | 2 each |
+
+So an embargo of 5,000 rows would ask 40 MB a slot. 64 lags cover a
+horizon of 32 rows at twice it, and past that a `ReadinessWarning` says so.
+A `horizon_rows` given by the spec takes twice its value in lags, whatever
+they cost. `robust_se_lags` sets `se_coef_hac`'s lags alone.
+
+The table is measured on 30 streams of 4,000 rows, each a five-row
+look-ahead target against two AR(1) features at 0.5 to 0.95, with nothing
+missing. Each cell is the share of rows 1,500 to 3,999 on which the plain
+form passed its 5% value, and after the arrow the horizon's form:
 
 | at a half-life of 200 | `breusch_pagan` | `reset` | `calibration_wald` | `cusum` | `cusum_sq` | `break_wald` |
 |---|---:|---:|---:|---:|---:|---:|
@@ -840,7 +885,7 @@ forms on the shares after the arrows:
 | AR 0.95 | 37.9% → 4.7% | 39.2% → 5.2% | 18.6% → 0.0% | 24.9% → 8.1% | 14.7% → 7.1% | 62.5% → 4.7% |
 
 Run once, the plain forms passed on 5% to 68%, and the horizon's on 2.1%
-to 13.2%: Newey and West's estimate errs small on a few thousand rows of a
+to 13.2%. Newey and West's estimate errs small on a few thousand rows of a
 persistent feature, and a run-once statistic keeps every row of it. At a
 ten-row horizon the windowed forms passed on 0.0% to 8.4%. `break_wald`'s
 factor is exact for a persistent feature and generous for one that is not,
@@ -913,15 +958,15 @@ reads 0.0504, near the true spread, and rejects on 8%.
 
 Measured more widely, on a target summing the next `h` rows' shocks
 against a persistent feature, the coefficient's true spread was 2.1 to 2.3
-times `se_coef` at `h = 5`, and 3.1 to 4.2 times at `h = 20`. `se_coef_hac`
+times `se_coef` at `h = 5`. It was 3.1 to 4.2 times at `h = 20`. `se_coef_hac`
 read 83% to 97% of the true spread at `L = h`, and 90% to 104% at `L = 2h`,
 the default.
 
 **`po.gram.coef_stats` and `marginal`'s `t` read Kish's size too, and are
 silent about the overlap the same way.** `po.gram.coef_stats` computes each
 coefficient's standard error and t from a Gram, such as one loaded from a
-state, at `n = target_n_kish` ([The running sums behind a
-fit](../README.md#the-running-sums-behind-a-fit)). Read its t as a scale for
+state, at `n = target_n_kish` ([A ridge and its
+t](GRAM.md#a-ridge-and-its-t)). Read its t as a scale for
 comparing coefficients. `marginal`'s `t_serial` corrects each pair's count
 for rows that resemble their neighbours, after Bartlett (1935): over
 1,000 pairs of independent AR(1) series, `|t|` passed 1.96 on 45% of them
@@ -962,8 +1007,8 @@ factor.** Their `(n + 2)/(n − l)` corrects for the `l` rows of a sample
 that have no partner `l` rows back. Under exponential weights every row
 but the oldest has one, and the factor only inflates `Q` at Kish's `n`.
 On iid residuals with 10 lags, Ljung and Box's form passed its 5% value
-on 15.8% of streams at a half-life of 10 rows and 9.7% at 20, where Box
-and Pierce's passed on 4.8% and 5.7%. From a half-life of 50 to 200 the
+on 15.8% of streams at a half-life of 10 rows, and on 9.7% at 20. Box and
+Pierce's passed on 4.8% and 5.7%. From a half-life of 50 to 200 the
 two read 4.6% to 6.7%. Run once, Ljung and Box's held at 5.3% to 7.7%
 from 30 to 1,000 rows, where Box and Pierce's fell to 2.7% at 30, so the
 run-once form keeps it.
@@ -976,9 +1021,9 @@ streams with nothing missing, and the shifted one on 6.0% to 6.7%. The
 horizon is `embargo` on a spec with no clock column and `horizon_rows` on
 one with ([Can its t be trusted?](#can-its-t-be-trusted)). There
 `breusch_pagan` and `reset` become Wald's tests of the same coefficients
-with Newey and West's variance: beside an AR(1) feature at 0.95, their
-`n R²` forms passed their 5% values on 38% and 39% of the rows of streams
-missing nothing, and the Wald forms on 4.7% and 5.2%.
+with Newey and West's variance. Beside an AR(1) feature at 0.95, on
+streams missing nothing, their `n R²` forms passed their 5% values on 38%
+and 39% of the rows, and the Wald forms on 4.7% and 5.2%.
 
 **Each test sees only its own shape.** Breusch-Pagan regresses `resid²` on
 the features themselves, so a spread symmetric in a feature, as `|x0|`, is
@@ -1066,7 +1111,7 @@ curve_fixed         8.0            1.7    1.1
 
 The clean stream reads 8.0, 1.0 and 0.7, each below its 5% value (18.3,
 5.99 and 5.99). Each faulty stream lights one test, by a factor of 50 or
-more over the clean stream: `ljung_box` reads 447.7 for the missing lag,
+more over the clean stream. `ljung_box` reads 447.7 for the missing lag,
 `breusch_pagan` 337.6 for the spread, and `reset` 261.5 for the
 curvature.
 With last row's error as a feature, the lagged stream's `ljung_box` falls
@@ -1110,15 +1155,22 @@ streams of 25,000 rows at a half-life of 200, read as the mean of
 | Student's t, 3 degrees of freedom | 36 | 6.3 | 2.1 | 0.4 | 0 |
 
 **The CUSUM of squares reads the tails it is given.** It standardizes
-the sum of `z² − 1` by the measured variance of `z²`, `E[z⁴] − 1`, where
-it once took a Gaussian's 2: under an excess kurtosis `κ` that variance is
+the sum of `z² − 1` by the measured variance of `z²`, `E[z⁴] − 1`, and
+not by a Gaussian's 2. Under an excess kurtosis `κ` that variance is
 `2 + κ`. On 40 streams of 25,000 rows at a half-life of 200,
-`|cusum_sq| > 3` held on 0.31% of Gaussian rows, 0.49% of rows of t with 5
-degrees of freedom, 0.63% with 4 and 1.0% with 3, where over 2 it held on
-0.01%, 2.8%, 6.8% and 19%. `|cusum| > 3` held on 0.31% to 0.75%, and
-`break_wald > 21.1` on 0.11% or fewer, even with 3 degrees of freedom. The
-price is power: under heavy tails a squared residual varies so much that a
-change of spread takes longer to stand out from it.
+`|cusum_sq| > 3` held on these shares of rows:
+
+| noise | over `E[z⁴] − 1` | over 2 |
+|---|---:|---:|
+| Gaussian | 0.31% | 0.01% |
+| Student's t, 5 degrees of freedom | 0.49% | 2.8% |
+| Student's t, 4 degrees of freedom | 0.63% | 6.8% |
+| Student's t, 3 degrees of freedom | 1.0% | 19% |
+
+On the same streams `|cusum| > 3` held on 0.31% to 0.75% of rows, and
+`break_wald > 21.1` on 0.11% or fewer, even with 3 degrees of freedom.
+What it gives up is power: under heavy tails a squared residual varies so
+much that a change of spread takes longer to stand out from it.
 
 **A windowed kurtosis is itself noisy under heavy tails.** The kurtosis of
 Student's t with 3 degrees of freedom is infinite, so a windowed estimate
@@ -1127,8 +1179,9 @@ mean 32. Read the mean over a long stable stretch, as the measurements in
 the table did.
 
 The recipe measures the tails and `sigma` over a stretch known to be
-stable, sets `drift_threshold` from them, and counts each detector's flags
-over 200,000 stable rows and after a break that triples the noise:
+stable, and sets `drift_threshold` from them. Then it counts each
+detector's flags over 200,000 stable rows, and after a break that triples
+the noise:
 
 ```python
 import numpy as np
@@ -1192,7 +1245,7 @@ The stretch reads an excess kurtosis of 16.6, which calls for a
 the noise triples, `sigma` triples with it, and `drift` scores each
 residual against `sigma`. Its first flag after the break at 20 is a false alarm,
 15,011 rows in. The CUSUM of squares flagged 2,044 of the stable rows,
-1.0% of them, and found the break only 4,717 rows in: with an infinite
+1.0% of them, and found the break only 4,717 rows in. With an infinite
 fourth moment, the squares' own spread swamps a tripling for a long time.
 Over 2, a Gaussian's variance of `z²`, it had flagged 17% of the stable
 rows and found the break 18 rows in. `sigma` itself, past twice its level
@@ -1202,8 +1255,8 @@ rows in.
 **What to do.** Measure `kurtosis` over a stable stretch before trusting
 any threshold on the residuals. Set `drift_threshold` from it by the table.
 On residuals with an excess kurtosis past 4, read a change of spread from
-`sigma` against its level over a stable stretch as well as from
-`cusum_sq`, which holds its false-alarm rate there and is slow to fire. A robust model, `huber` or
+`sigma` against its level over a stable stretch. `cusum_sq` holds its
+false-alarm rate there, but is slow to fire. A robust model, `huber` or
 `quantile`, limits how far one large residual moves the fit.
 
 ## Which row moved it?
@@ -1288,7 +1341,7 @@ fit has settled.
 
 **A cutoff scales with the fit: `4 · sqrt((k + 1) / weight_sum)` for `k`
 features.** A clean row's influence is about its leverage's square root,
-and a leverage is about `(k + 1) / weight_sum`, so a fit with more
+and a leverage is about `(k + 1) / weight_sum`. So a fit with more
 features or a shorter memory reads larger on every row. On clean rows at
 half-lives of 20 to 1,000 rows and 2 to 10 features, the 99.9th
 percentile of `|influence|` read 2.5 to 3.2 times `sqrt((k + 1) /
@@ -1325,9 +1378,9 @@ themselves, before any coefficient moves.
 | cost, models | 36 ns a row at 5 features; the nine linear models with features |
 
 Under `embargo` the features fold when their row is released, with the
-row's target, so the fields lag the feed by the embargo: on a feed frozen
-at row 1,500 at a half-life of 20, the ratio fell below 0.5 at row 1,547,
-and at row 1,646 under an embargo of 100 rows.
+row's target, so the fields lag the feed by the embargo. On a feed frozen
+at row 1,500 at a half-life of 20, the ratio fell below 0.5 at row 1,547.
+Under an embargo of 100 rows it fell below at row 1,646.
 
 The recipe holds `x1` at its last value for 3,000 rows, as a feed that
 stopped would, and fits `rls`:
@@ -1581,7 +1634,7 @@ extra coefficient 0.00: big found better on 0% of streams by Diebold-Mariano, 2%
 ```
 
 Where the extra coefficient is 0.05, Diebold and Mariano's test finds the
-larger model better on 1% of the streams, below its own 5% size: the lean
+larger model better on 1% of the streams, below its own 5% size. The lean
 toward the smaller model swamps a small real gain. Clark and West's finds
 it on 44%. Where the extra coefficient is 0, Clark and West's rejects on
 2%, within its 5% size. On 200 streams in the measurements behind
@@ -1723,20 +1776,19 @@ time.
 ## Is it ready?
 
 **A model should not report a number before it has seen enough data to
-give one, and three gates say what "enough" means,** with a fourth, the
-seeding warm-up, for the models that seed themselves from their first rows.
-The gates hold back predictions only: the model learns from every row
-either way.
-[Warm-up](../README.md#warm-up) in the README states each gate and its
-default, and [docs/WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md)
-the reasoning behind them.
+give one, and three gates say what "enough" means.** A fourth, the
+seeding warm-up, holds back the models that seed themselves from their
+first rows. The gates hold back predictions only: the model learns from
+every row either way. [Warm-up](../README.md#warm-up) in the README
+states each gate, its default and the field it reads. A withheld
+prediction's `withheld_reason` names the gate that held it:
 
-| gate | withholds a prediction while | field it reads | `withheld_reason` |
-|---|---|---|---|
-| `min_settled_frac` | the decay window is less full than this fraction of its steady state | `settled_frac = 1 − 2^(−T / half_life)`, with `T` the decay time seen | `below_min_settled_frac` |
-| `min_weight` | the weight behind the state is below it | `weight_sum` | `below_min_weight` |
-| `max_error_inflation` | estimation error would inflate the prediction's error over the noise floor by more than this factor | `error_inflation = sqrt(1 + edf / n_kish)` | `above_max_error_inflation` |
-| `warm_rows` (`kmeans`, `hmm`, `bocpd`) | the model has not yet seeded its centres, states or prior from its first learned rows | a count of learned rows, not a weight | `below_warm_rows` |
+| gate | `withheld_reason` |
+|---|---|
+| `min_settled_frac` | `below_min_settled_frac` |
+| `min_weight` | `below_min_weight` |
+| `max_error_inflation` | `above_max_error_inflation` |
+| `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centres, states or prior | `below_warm_rows` |
 
 The reasons are listed in their order of precedence, which is the order
 `withheld_reason` reports them in. `max_error_inflation` is on by default
@@ -1793,8 +1845,9 @@ row 600 have an error of 1.12 against a noise floor of 1, because the
 earliest ones still carry much estimation error. The strict gate, at 5%
 over the floor, waits for 108 rows and its early error is 1.01. The other
 two gates wait for one half-life of history or for 100 of weight, and
-reach the same early error. Which gate to use depends on what a
-withheld prediction costs. The error inflation gate reads the fit's own
+reach the same early error. Choose a gate by what matters more: a
+prediction on every row, or an early prediction as good as a late one.
+The error inflation gate reads the fit's own
 size, so it moves with the number of features. `min_settled_frac` and
 `min_weight` ask for a fixed amount of history.
 
@@ -1831,8 +1884,8 @@ Shafer 2005) without a held-out set, because every residual is already out
 of sample.
 
 **Under a `weight` column, each step is scaled by the row's weight over
-the mean weight**, so a heavy row's miss counts for more, and the share of
-rows covered can sit on either side of the number asked for. The step is
+the mean weight**, so a heavy row's miss counts for more. The share of
+rows covered can then sit on either side of the number asked for. The step is
 taken once per scored row, so the radius moves faster in clock time where
 rows are denser. `conformal_rate` is 0.05 by default.
 
@@ -1895,10 +1948,10 @@ rows at the same width. On Student's t, the Gaussian interval covers 92.8%,
 more than asked, because `sigma` is inflated by the rare huge residuals,
 and it is wider than it needs to be for most rows. The quantile and the
 conformal interval cover 90.0% at a half-width of 1.36, against the
-Gaussian interval's 1.59. On three streams of 200,000 rows with Student's
-t at 2.5 degrees of freedom, a scale mixture and a regime shift, the
-Gaussian interval covered 94% to 95%, and `conformal` stayed within 1
-point of 90%.
+Gaussian interval's 1.59. Three more streams of 200,000 rows had
+Student's t noise at 2.5 degrees of freedom, a scale mixture and a regime
+shift. On them the Gaussian interval covered 94% to 95%, and `conformal`
+stayed within 1 point of 90%.
 
 **What to do.** Serve `lo` and `hi` from `conformal` when the coverage
 must hold, and `sigma` when a scale is enough. A `zscore` beyond 3 is a
