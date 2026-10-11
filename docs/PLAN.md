@@ -9894,6 +9894,17 @@ tick, and that the series holding it up has a count near 1.
       to undo); (10) the approval of the PyPI upload is the user's click,
       not the coordinator's; (11) install from PyPI into a clean venv and
       check the three versions and a fit.
+- [ ] 249. **Step comments in the examples (before 1.0)** -- the user,
+      2026-10-11: "Some of the example code is missing the few one-line
+      comments to explain large code blocks in sections." WRITING §3's rule
+      ("a long example names its steps in brief comments") was lost in the
+      rewrite: of 145 python blocks of 10+ code lines in the README,
+      CONTRIBUTING and the guides, 137 had a stretch of 10+ code lines with
+      no full-line comment (the README's first fit, which §3 cites as the
+      model, had none in 43 lines). A worker adds the step comments (code
+      unchanged, printed output held by the recipe tests) and a test that
+      holds the rule; merged before the 1.0 bump, since the README is
+      PyPI's page.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
