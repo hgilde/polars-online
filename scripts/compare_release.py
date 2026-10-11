@@ -122,10 +122,33 @@ def _explode(s: pl.Series) -> pl.Series:
         return s.explode()
 
 
+def _dtype_change(a: pl.Series, b: pl.Series) -> str | None:
+    """How the dtype moved, or None where `same` would compare the values
+    as they are (an `Array` against a `List` of the same numbers)."""
+    if {type(a.dtype), type(b.dtype)} == {pl.Array, pl.List}:
+        return None
+    if a.dtype == b.dtype:
+        return None
+    if isinstance(a.dtype, pl.Enum) and isinstance(b.dtype, pl.Enum):
+        old, new = list(a.dtype.categories), list(b.dtype.categories)
+        gone = [c for c in old if c not in new]
+        added = [c for c in new if c not in old]
+        if not gone and not added:
+            return "Enum categories reordered"
+        return f"Enum categories: gone {gone}, new {added}"
+    return f"dtype {a.dtype} -> {b.dtype}"
+
+
 def first_difference(a: pl.Series, b: pl.Series) -> str:
+    dtype = _dtype_change(a, b)
     for i, (x, y) in enumerate(zip(a.to_list(), b.to_list(), strict=True)):
         if x != y and not (x != x and y != y):  # NaN == NaN here
-            return f"row {i}: {x!r} -> {y!r}"
+            return f"row {i}: {x!r} -> {y!r}" + (f" ({dtype})" if dtype else "")
+    # Every value equal as Python reads it: either the dtype moved (an
+    # integer width, an Enum's categories), which the release compares too,
+    # or the bits differ where `==` does not look (-0.0 against 0.0).
+    if dtype:
+        return f"{dtype}, every value equal"
     return "bits differ (e.g. -0.0 against 0.0)"
 
 

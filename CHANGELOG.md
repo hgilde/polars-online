@@ -370,6 +370,9 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Changed (breaking)
 
+Code that ran on 0.13.0 must change for these: a name, a refusal, a
+reinterpreted parameter, an output's dtype or a file to refit.
+
 - **The API standardized before 1.0** (task 244). A renamed *parameter*
   is read under its old name with a `PolarsOnlineDeprecationWarning` until
   2.0; a renamed *output field or frame column* cannot be, so these are
@@ -454,8 +457,6 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 - **The window formula refusal lists everything a formula reads**, in
   Python and on the command line (negation, `&`/`|`, `pow`, `is_null` and
   `is_not_null` were missing), from one list both check.
-Code that ran on 0.13.0 must change for these: a name, a refusal, a
-reinterpreted parameter, an output's dtype or a file to refit.
 
 - **A Poisson `sgd` fit refuses a chunk with a negative target, naming the
   row** (task 209), as scikit-learn's `PoissonRegressor` does and as
@@ -670,6 +671,39 @@ reinterpreted parameter, an output's dtype or a file to refit.
   - The spec builders refuse two outputs that would render to one field
     name, naming the inputs that collided.
 
+The parameters task 144 renamed:
+
+| was | is |
+|---|---|
+| `halflife`, alone and in every name that spells it | `half_life`: `long_half_life`, `coef_half_life`, `revert_half_life`, `select_half_life`, `level_half_life`, `trend_half_life` |
+| `label_delay` | `embargo` |
+| `max_dclock` | `gap_cap` |
+| a model's `window`, and `po.eval.rolling_metrics`'s | `window_size` |
+| `min_periods` | `min_weight` |
+| `emit_resid_z` | `emit_zscore` |
+| `sgd`'s `scale_features` | `standardize` |
+| `add_intercept` | `fit_intercept` |
+| `lasso`'s `max_cd_iters` and `cd_tol` | `max_iter` and `tol` |
+| `corrchange`'s `reset` | `reset_on_flag` |
+| `ridge_decay`, a bool | `ridge_scale = "mean"`, the default, or `"sum"`, checked by value in the builder |
+| `on_clock_reset` and `min_backwards_jump` | `restart_after_step_back`, the one clock rule above |
+
+The output names task 144 renamed:
+
+| was | is |
+|---|---|
+| `n_eff`, in every field, in `closed_groups`, `coef()`, `last_row()`, `marginal()` and `gram()`, and in `po.eval`'s sums | `weight_sum`, as `summary()` already called it: `weight_sum@h10`, `pair_weight_sum` |
+| `withheld_reason`'s value for the weight gate | `below_min_weight` |
+| `coef()`'s `lambda` column | `penalty` |
+| `resid_z_<t>` | `zscore_<t>`: a target named `z_y` collided with `resid_z_y` |
+| `lam_selected_<t>` | `penalty_selected_<t>` |
+| `pcorr_<a>_<b>` | `partial_corr_<a>_<b>` |
+| `absresid_q<p>` | `abs_resid_q<p>` |
+| the PCA loadings, `pc<j>_<feature>` | `pc<j>_loading_<feature>`: a feature named `var`, `share` or `score` collided with the component's fields |
+| `bocpd`'s `logscore` | `loglik` |
+| `hmm`'s `p_<k>` and `p1_<k>` | `filtered_<k>` and `predicted_<k>` |
+| `micro`'s field `micro` | `micro_id` |
+
 - **`po.corr.signal_share` takes a Kish size** (task 148): its second
   argument is `n_kish_blocks`, was `n_eff_blocks`. The sampling variance of
   a correlation's Fisher-z is `1 / (n - 3)` at Kish's `n`; `weight_sum` is
@@ -813,6 +847,9 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+Numbers move in most of these, each saying by how much; under this
+project's versioning that is carried by the minor version before 1.0.
+
 - **The online diagnostics' nulls, after review round 7** (A-1, A-2, A-3,
   E-1). Beside a `kalman` with a `coef_half_life` list, the windowed
   `cusum`'s null share reads the intercept's memory, which is what absorbs
@@ -925,8 +962,6 @@ reinterpreted parameter, an output's dtype or a file to refit.
   at a limit of 1.06, below that average, 40% of rows still pass. One
   withheld row says nothing of the rows after it, and a notice cannot be
   retracted. The other models' notice is unchanged.
-Numbers move in most of these, each saying by how much; under this
-project's versioning that is carried by the minor version before 1.0.
 
 - **`kalman(share_p=True)` reads the shared noise once a row** (task 186;
   review round 4, CC3), so no target's noise holds another target's
@@ -1155,40 +1190,6 @@ project's versioning that is carried by the minor version before 1.0.
   share `s` of a stream of `v` rows per clock unit needs
   `beta_mu ≈ 1.44·s·v·h`. No numbers move.
 
-
-The parameters task 144 renamed:
-
-| was | is |
-|---|---|
-| `halflife`, alone and in every name that spells it | `half_life`: `long_half_life`, `coef_half_life`, `revert_half_life`, `select_half_life`, `level_half_life`, `trend_half_life` |
-| `label_delay` | `embargo` |
-| `max_dclock` | `gap_cap` |
-| a model's `window`, and `po.eval.rolling_metrics`'s | `window_size` |
-| `min_periods` | `min_weight` |
-| `emit_resid_z` | `emit_zscore` |
-| `sgd`'s `scale_features` | `standardize` |
-| `add_intercept` | `fit_intercept` |
-| `lasso`'s `max_cd_iters` and `cd_tol` | `max_iter` and `tol` |
-| `corrchange`'s `reset` | `reset_on_flag` |
-| `ridge_decay`, a bool | `ridge_scale = "mean"`, the default, or `"sum"`, checked by value in the builder |
-| `on_clock_reset` and `min_backwards_jump` | `restart_after_step_back`, the one clock rule above |
-
-The output names task 144 renamed:
-
-| was | is |
-|---|---|
-| `n_eff`, in every field, in `closed_groups`, `coef()`, `last_row()`, `marginal()` and `gram()`, and in `po.eval`'s sums | `weight_sum`, as `summary()` already called it: `weight_sum@h10`, `pair_weight_sum` |
-| `withheld_reason`'s value for the weight gate | `below_min_weight` |
-| `coef()`'s `lambda` column | `penalty` |
-| `resid_z_<t>` | `zscore_<t>`: a target named `z_y` collided with `resid_z_y` |
-| `lam_selected_<t>` | `penalty_selected_<t>` |
-| `pcorr_<a>_<b>` | `partial_corr_<a>_<b>` |
-| `absresid_q<p>` | `abs_resid_q<p>` |
-| the PCA loadings, `pc<j>_<feature>` | `pc<j>_loading_<feature>`: a feature named `var`, `share` or `score` collided with the component's fields |
-| `bocpd`'s `logscore` | `loglik` |
-| `hmm`'s `p_<k>` and `p1_<k>` | `filtered_<k>` and `predicted_<k>` |
-| `micro`'s field `micro` | `micro_id` |
-
 - **`po.stream.embargo` keeps an integer clock's dtype** (task 160). A whole
   delay, `5.0` as well as `5`, is added in the clock's dtype, where merging
   the two copies died in a `SchemaError`. A fractional delay on an integer
@@ -1261,6 +1262,46 @@ The output names task 144 renamed:
 
 ### Performance
 
+- **1.0 against 0.13.0, measured before the release**:
+  `scripts/benchmark.py` at 200,000 rows, seven rounds of each build in
+  turn, on an Apple M4 Pro at load 2.6 to 4.4, with 1-11% scatter within a
+  build. Most configurations run at 0.72 to 0.98 of 0.13.0's rows a second.
+  `sgd` and `pa` without standardizing run at 0.63 and 0.64, and `bocpd` at
+  0.25. `ew_cov` with `mahal` is 5% faster, and `hmm` at twenty features,
+  `corrchange`, `ew_class` with a tied covariance and `ew_cov` with lags
+  are within the scatter. Each step was bisected to the commit that made
+  it, and each is the cost of a correction listed in this release's
+  entries:
+  - Every row's place on the clock held exactly (task 175, beside tasks
+    153, 176 and 200): `seqtest` went from 0.97 to 0.84 of 0.13.0 at that
+    commit, `sgd` from 0.98 to 0.87, and `ewridge` at five features from
+    0.95 to 0.89. Every stream stamps every row, with a window or without
+    one, and the stamps are saved with its state, so skipping them where
+    nothing reads them would change the state file.
+  - `sgd` checks that every gradient of a row is finite before any
+    coefficient moves (task 186): `sgd` went from 0.83 to 0.76.
+  - `kmeans`' and `micro`'s centres are compensated pairs (task 215): 0.89
+    to 0.81 and 0.81 to 0.76.
+  - `coef` and the fields laid out like it are `Array(Float64, k)` (task
+    244), `k` doubles on every row, a null row too: `ewridge` at ten
+    targets went from 0.90 to 0.72, and `sgd` from 0.67 to 0.63. The memory
+    is the next entry.
+  - `bocpd` sets its prior from its first rows, with
+    `degrees_of_freedom_prior` 3 under `diag` (task 195): 921,000 rows a
+    second became 234,000 at four features, at `max_run` 20 or 200. Given
+    0.13.0's prior (`mean_prior` of zeros, `covariance_prior=[1.0]`,
+    `degrees_of_freedom_prior=6`), 1.0 runs at 879,000; with the prior
+    from the rows and `degrees_of_freedom_prior=6`, at 439,000. The cost
+    follows the prior, not the code.
+  - The rest comes a few percent at a time from the corrections between
+    0.13.0 and 1.0, the value checks of task 183 among them.
+- **A `coef` field holds its `k` doubles on every row** (task 244), since
+  an `Array` has no row without its slots, where a `List` stored nothing
+  for a null row. A ten-target `ewridge` at twenty features has 210
+  coefficients a row: over 1,000,000 rows its `coef` holds 1.6 GiB, where
+  0.13.0's held 7.8 MiB with one row carrying a value. The fit's peak
+  memory rose by 3.9 GiB, against 0.7 GiB. A stream read in chunks holds
+  one chunk's worth at a time.
 - **A sharded `marginal` (`shards=`) steps each target through a held
   batch in turn, and cuts its feature ranges on even features** (task
   127): on one thread up to 24% faster at thirty targets, and 9-16% where
@@ -1817,6 +1858,17 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **`scripts/compare_release.py` names a dtype change** where every
+  value is equal: an integer widened, or an Enum's categories renamed, as
+  `dtype Int32 -> Int64, every value equal` or `Enum categories: gone
+  [...], new [...]`. It said "bits differ (e.g. -0.0 against 0.0)" for
+  these, which sent a reader after a sign of zero that was not there. A
+  row that differs is reported with the dtype change beside it.
+  `scripts/release_probe.py`'s table of old names gains the ones
+  `scripts/benchmark.py` uses, so the benchmark runs under 0.13.0's wheel
+  too: `ew_class`'s `covariance_type` and its words, `bocpd`'s
+  `covariance_type` as the `emission` word, `rls`'s `delta`, the
+  row-count names of task 196, and `pa`'s `standardize=False`.
 - **Faster dev iterations** (task 245). The gate runs tests in parallel:
   cargo-nextest where installed (with `cargo test --doc` beside it) and
   pytest-xdist, in as many processes as the machine has cores free (2 to
