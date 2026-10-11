@@ -10,13 +10,13 @@
 //! polars-online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
 use clap::{CommandFactory, Parser};
-use online_polars::{Format, RunConfig, run_config_reported};
+use online_polars::{Format, RunConfig, RunStats, run_config_reported};
 
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
 fn parse_format(s: &str) -> Result<Format, String> {
@@ -48,6 +48,43 @@ fn counted(n: usize, noun: &str) -> String {
         format!("1 {noun}")
     } else {
         format!("{n} {noun}s")
+    }
+}
+
+/// The progress line, rewritten in place with a carriage return as each
+/// chunk is read. Only a terminal renders that as intended, so it is drawn
+/// only on a terminal standard error, and not under `--quiet`: a log or a
+/// pipe gets none of it (task 244, C-9).
+struct Progress {
+    draw: bool,
+}
+
+impl Progress {
+    fn new(quiet: bool, terminal: bool) -> Self {
+        Self {
+            draw: !quiet && terminal,
+        }
+    }
+
+    /// The line as it stands after `s`. A failed write to standard error
+    /// is not the run's failure, so it is dropped.
+    fn update(&self, s: RunStats, out: &mut impl Write) {
+        if self.draw {
+            let _ = write!(
+                out,
+                "\r{} in {}",
+                counted(s.rows, "row"),
+                counted(s.chunks, "chunk")
+            );
+        }
+    }
+
+    /// The line ended, once the run is over; a run that read no chunk drew
+    /// none, and ends none.
+    fn finish(&self, s: RunStats, out: &mut impl Write) {
+        if self.draw && s.chunks > 0 {
+            let _ = writeln!(out);
+        }
     }
 }
 
@@ -432,23 +469,13 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    // Rewritten in place with a carriage return, which only a terminal
-    // renders as intended: a log or a pipe gets none (task 244, C-9).
-    let progress = !cli.quiet && std::io::stderr().is_terminal();
+    let progress = Progress::new(cli.quiet, std::io::stderr().is_terminal());
     let (stats, readiness) = run_config_reported(&cfg, |s| {
-        if progress {
-            eprint!(
-                "\r{} in {}",
-                counted(s.rows, "row"),
-                counted(s.chunks, "chunk")
-            );
-        }
+        progress.update(s, &mut std::io::stderr());
         Ok(())
     })
     .map_err(|e| e.to_string())?;
-    if progress && stats.chunks > 0 {
-        eprintln!();
-    }
+    progress.finish(stats, &mut std::io::stderr());
     let (rows, chunks) = (counted(stats.rows, "row"), counted(stats.chunks, "chunk"));
     if cfg.no_output() {
         // Under `--no-output` the path is empty, so name the outcome rather
@@ -476,6 +503,60 @@ fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use online_polars::RunStats;
+
+    /// A relative path is read from the config's directory, an absolute one
+    /// stays as it is, and an empty one -- `output` left out, a run with no
+    /// output -- stays empty, rather than become the directory itself.
+    #[test]
+    fn a_relative_path_is_the_configs_and_an_empty_one_stays_empty() {
+        let abs = std::env::temp_dir().join("c.parquet");
+        let text = format!(
+            "input = 'in.parquet'\nsave_state = 's.state'\nclosed_groups = '{}'\n\
+             [[specs]]\nname = 'm'\ntargets = ['y']\nfeatures = ['x']\nhalf_life = 1.0\n\
+             [specs.model]\ntype = 'ewridge'\n",
+            abs.display()
+        );
+        let mut cfg: online_polars::RunConfig = toml::from_str(&text).unwrap();
+        let dir = std::path::Path::new("conf");
+        super::relative_to(&mut cfg, dir);
+        assert_eq!(cfg.input, dir.join("in.parquet"));
+        assert_eq!(cfg.save_state, Some(dir.join("s.state")));
+        assert_eq!(cfg.closed_groups, Some(abs));
+        assert!(cfg.output.as_os_str().is_empty() && cfg.load_state.is_none());
+    }
+
+    /// The progress line is drawn on a terminal without `--quiet`, and
+    /// nowhere else; it counts in the singular at one, and a run that read
+    /// no chunk ends no line.
+    #[test]
+    fn the_progress_line_is_drawn_on_a_terminal_without_quiet_alone() {
+        for (quiet, terminal, drawn) in [
+            (false, true, true),
+            (true, true, false),
+            (false, false, false),
+            (true, false, false),
+        ] {
+            let progress = super::Progress::new(quiet, terminal);
+            let mut out = Vec::new();
+            progress.update(RunStats { rows: 7, chunks: 1 }, &mut out);
+            let end = RunStats {
+                rows: 50,
+                chunks: 8,
+            };
+            progress.update(end, &mut out);
+            progress.finish(end, &mut out);
+            let want = if drawn {
+                "\r7 rows in 1 chunk\r50 rows in 8 chunks\n"
+            } else {
+                ""
+            };
+            assert_eq!(String::from_utf8(out).unwrap(), want, "{quiet} {terminal}");
+        }
+        let mut out = Vec::new();
+        super::Progress::new(false, true).finish(RunStats::default(), &mut out);
+        assert!(out.is_empty());
+    }
     /// A key the table deprecates is read as its new name at any depth, a
     /// spec's own and its model's, with a notice each; an old and a new name
     /// side by side are refused; the production table, empty before 1.0,
