@@ -17,7 +17,8 @@ that decided the design follows as a dated record.
 These subsections are the guide to using the state workflow. The numbered
 sections after them are the research that decided it.
 
-A state file is the same file, byte for byte, whichever wrote it (§5 C2).
+A state file is the same file, byte for byte, whichever wrote it: a query,
+`po.run` and a `ModelBank` fed the same chunks write identical bytes.
 A query and an eager frame take it as `load_state` and `save_state`, and
 the TOML under the same two keys. The command line spells them `--load-state`
 and `--save-state`, and a `ModelBank` has `load` and `save`.
@@ -31,15 +32,16 @@ to what is shown.
 
 ### Each step, and what it guarantees
 
-Each step has a call in Python and a flag or key on the command line, and
-each rests on rules the record states and checks:
+Each step has a call in Python and a flag or key on the command line.
+[The rules, and the evidence for each](#the-rules-and-the-evidence-for-each)
+gives what each guarantee rests on:
 
-| step | in Python | on the command line | what it guarantees | rules |
-|---|---|---|---|---|
-| **1. Fit, and keep the state** | `lf.online.fit_predict([spec], save_state="ridge.state")` | `save_state` in the TOML, or `--save-state` | the state is written whole, once the bank has been fed its last row | R1, R2, R4, R6, R7 |
-| **2. Inspect it** | Loading the file gives the `ModelBank` back: `po.ModelBank.load(path)`, with `coef()` (the betas), `last_row()`, `summary()` and `describe()` (what it was fed), `gram()` and the rest. `save_bytes()` / `load_bytes()` are the same state as bytes, for a store that is not a file | | none of them needs a row of data | |
-| **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --load-state p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count | R3, R5 |
-| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --load-state p --save-state p` | it resumes at the next row and replaces the file. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap | R2, R3 |
+| step | in Python | on the command line | what it guarantees |
+|---|---|---|---|
+| **1. Fit, and keep the state** | `lf.online.fit_predict([spec], save_state="ridge.state")` | `save_state` in the TOML, or `--save-state` | the state is written whole, once the bank has been fed its last row, and two runs of the query write the same bytes |
+| **2. Inspect it** | Loading the file gives the `ModelBank` back: `po.ModelBank.load(path)`, with `coef()` (the betas), `last_row()`, `summary()` and `describe()` (what it was fed), `gram()` and the rest. `save_bytes()` / `load_bytes()` are the same state as bytes, for a store that is not a file | | none of them needs a row of data |
+| **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --load-state p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count |
+| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --load-state p --save-state p` | it resumes at the next row and replaces the file. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap |
 
 ### Fit, and keep the state
 
@@ -156,7 +158,7 @@ under head(100), the state has been fed 100 rows
 
 **A query that fails after the bank can still write the state.** Polars
 1.x runs the bank to the end of its input before it reports an error from
-a step after it (F5), so the bank reaches its last row and writes. A full
+a step after it, so the bank reaches its last row and writes. A full
 disk under `sink_parquet`, or a bad cast, then leaves `save_state` written
 with the whole stream's state, while the query's own output is missing.
 With `load_state=p, save_state=p`, a rerun of the same input then steps
@@ -345,20 +347,25 @@ row before a group's saved clock is refused as any step back is.
 
 ### The rules, and the evidence for each
 
-Each guarantee above is one of seven rules, stated in full in §4. The facts
-about Polars they rest on were measured (§2, F1–F8), and the prototype's
-checks held them (§5, C1–C8b). Why the alternatives were rejected is §3 and
-§7.
+Each guarantee above rests on a fact about how Polars runs a Python
+source, which nothing in Polars' documentation states. `scripts/io_source_semantics.py`
+measures each one with a source that logs its own runs, on py-polars
+1.34.0, 1.38.1 and 1.44.1. Each guarantee was then checked on a bank of 3
+groups of 1,000 rows, read in chunks of 250, and `tests/test_frame.py`
+holds the checks:
 
-| rule | what it guarantees | measured | checked |
-|---|---|---|---|
-| R1 | `save_state` is written when the bank has been fed its last row: the input's end, or the rows a `head(n)` asked for. Never on a run the caller abandoned, or one the bank ended with an error. The write is atomic | F7 | C5, C6 |
-| R2 | every run of a query ends in the same state, so two runs write the same bytes. A run with nothing to write runs once where a query uses it twice | F1, F2 | C3 |
-| R3 | `load_state` and `predict(path)` are read when the query is built, so a query run twice gives the same result | F2 | C8b |
-| R4 | the bank is fed exactly the rows the query pulled | F4 | C1, C4, C4b |
-| R5 | `predict` refuses `save_state`, as `online --predict` does | | `predict(save_state=)` refused (§8) |
-| R6 | a failure after the bank still writes the state on py-polars 1.x, and on 2.0 only for a stream short enough to finish first: [the one gap](#the-one-gap-a-failure-after-the-bank) | F5 | C7 |
-| R7 | building a query writes nothing | F3 | |
+| what is guaranteed | the fact about Polars it rests on | how it was checked |
+|---|---|---|
+| `save_state` is written when the bank has been fed its last row: the input's end, or the rows a `head(n)` asked for. Never on a run the caller abandoned, or one the bank ended with an error. The write is atomic | a run the caller abandons, by a `break` out of `collect_batches`, is left suspended rather than ended, so only the source's own end can trigger the write | a `break` out of `collect_batches` wrote no file, nor did a bank error at row 700 |
+| every run of a query ends in the same state, so two runs write the same bytes. A query that uses the bank twice runs it twice when it writes a state, and with nothing to write Polars may run it once | a query that uses a plan twice, as `lf.join(lf)`, `pl.concat([lf, lf])` or `pl.collect_all` over two sinks do, runs its source twice, at the same time on two threads | each of those three wrote the file twice, on two threads, and the file was byte-identical to `po.run`'s |
+| `load_state` and `predict(path)` are read when the query is built, so a query run twice gives the same result | the two runs above overlap, so a state read at run time could be read while the other run writes it | a query built against a state file, run again after the file was overwritten, gave the same frame |
+| the bank is fed exactly the rows the query pulled | a `head(n)` reaches the source as a row count, and the source stops there; a `sort().head(n)` does not, so the bank reads every row | `head(613)` wrote the state of a bank fed the first 613 rows, byte for byte, and `sort().head(5)` the whole stream's |
+| `predict` refuses `save_state`, as `online --predict` does, since it learns nothing | | `predict(save_state=...)` is refused |
+| a failure after the bank still writes the state on py-polars 1.x, and on 2.0 only for a stream short enough to finish first: [the one gap](#the-one-gap-a-failure-after-the-bank) | Polars runs a source to the end of its input before it reports the error of a step after it | a cast that failed after the bank left the file, byte-identical to the whole stream's state |
+| building a query writes nothing | building or inspecting a query, by `collect_schema()` or `explain()`, runs no source | a source's run count stayed at 0 |
+
+[The research behind it](#the-research-behind-it-2026-09-03) has each
+measurement in full, and why the alternatives were rejected.
 
 ## The research behind it, 2026-09-03
 

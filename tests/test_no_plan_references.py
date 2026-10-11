@@ -370,6 +370,26 @@ def test_no_guide_part_cites_the_plan_a_task_a_review_or_a_record(path):
     assert not found, "\n".join(found)
 
 
+#: The labels a record gives its own points: rules `R1`, facts `F5`, checks
+#: `C8b`, and its numbered sections `§4`.
+RECORD_LABEL = re.compile(r"\b[RFC][0-9]+b?\b|§ ?[0-9]")
+
+
+@pytest.mark.parametrize("path", sorted(GUIDE_PARTS))
+def test_no_guide_part_cites_its_own_records_labels(path):
+    """Task 238 (follow-up 4): STATE-WORKFLOW's guide cited its record's
+    rules, facts and checks by label (`R1, R2, R4`, `F5`, `§5 C2`), which
+    sends a reader into the record for what the guide should state. Each
+    point is stated where it is made, and the record below keeps its labels."""
+    text = (REPO / path).read_text(encoding="utf-8")
+    guide = text[: text.index(GUIDE_PARTS[path])]
+    found = [
+        f"{path}:{guide.count(chr(10), 0, m.start()) + 1}: {m.group(0)}"
+        for m in RECORD_LABEL.finditer(guide)
+    ]
+    assert not found, "\n".join(found)
+
+
 def test_every_guide_is_held():
     """The rule covers the README, every guide in the *Guides* table of
     `docs/README.md`, `CONTRIBUTING.md` and `llms.txt` (CLAUDE.md, Style),
