@@ -976,7 +976,7 @@ pub enum ModelKind {
         #[serde(default)]
         mahal_quantiles: Option<Vec<f64>>,
         /// Principal components to track, each `pc<j>_var`, `pc<j>_share`,
-        /// `pc<j>_<feature>` per feature and `pc<j>_score` (E38).
+        /// `pc<j>_loading_<feature>` per feature and `pc<j>_score` (E38).
         #[serde(default)]
         pca: Option<usize>,
         /// Clock units between refreshes of the components, as `solve_every`
@@ -4767,8 +4767,10 @@ impl Spec {
                 ..
             } => {
                 // Where the feature moments are kept (docs/PLAN.md task 125).
-                // The core refuses `"shared"` with a window or lags too, and
-                // says why; here it is refused where the spec is made.
+                // The core refuses `"shared"` with a window too, and says
+                // why; here it is refused where the spec is made. With lags
+                // it is taken: each feature's autocovariance at each lag is
+                // then kept once, beside the shared moments.
                 match feature_moments.as_deref() {
                     None | Some("per_target") => {}
                     Some("shared") if window.is_some() => {

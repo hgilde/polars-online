@@ -179,7 +179,7 @@ def test_quantile_coverage_is_the_level_asked_for():
     settled = m & (np.arange(n) >= n // 2)
     after = (y[settled] < p[settled]).mean()
     # A tail quantile on 8 000 rows is still arriving -- at tau = 0.9 the band
-    # holds a fifteenth of them -- so the whole stream reads a little under the
+    # holds a ninth of them -- so the whole stream reads a little under the
     # level and its second half reads the level: 0.858 and 0.893 measured,
     # where the frozen IRLS weights this replaced read 0.777 and 0.855 (N9).
     assert 0.84 < below < 0.90, below
@@ -190,7 +190,7 @@ def test_quantile_predicts_every_row_under_a_finite_halflife():
     """The per-target ``min_weight`` gate reads the rows a target was present
     on (hard rule 8, S2). From N9 to the second review's F1 the quantile fit
     reported its band's weight instead, which a half-life caps at the band's
-    share of the effective sample -- a fifteenth of it at ``tau = 0.9`` -- so
+    share of the effective sample -- a ninth of it at ``tau = 0.9`` -- so
     a ``min_weight`` above that share closed the gate again after the first
     predictions: at ``half_life = 100`` and ``min_weight = 20`` the rows with
     a prediction ran 178, 233, 2, 88, 155 and 203 per thousand, where
