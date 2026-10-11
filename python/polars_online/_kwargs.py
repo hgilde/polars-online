@@ -1,4 +1,5 @@
-"""The shared keyword parameters of every spec, as ``TypedDict`` classes (PEP 692).
+"""The keyword parameters every spec builder shares, as one ``TypedDict``
+(PEP 692).
 
 The builders in :mod:`polars_online.spec` take the shared parameters as
 ``**common``, annotated as ``Unpack[CommonKwargs]``. So an editor completes
@@ -21,6 +22,9 @@ would show nothing and leave a typo to be found when the call runs. A
 # signatures with nothing holding them to the originals -- the drift the
 # test above exists to prevent. They were deleted on 2026-09-17; rebuild
 # them from the builders if a typed keyword surface is ever wanted again.
+# The namespace's own set, every shared parameter but `group` and
+# `group_close`, survived as a base class (`ExprKwargs`) until task 239
+# folded it into `CommonKwargs`: nothing but `CommonKwargs` read it.
 #
 # No `from __future__ import annotations` here: under it `Required[...]` is
 # a string the TypedDict machinery does not look inside, so every key would
@@ -32,18 +36,12 @@ from polars_online._duration import Duration
 
 __all__ = [
     "CommonKwargs",
-    "ExprKwargs",
 ]
 
 
-class ExprKwargs(TypedDict, total=False):
-    """The parameters every model shares, minus ``group`` and ``group_close``.
-
-    The base :class:`CommonKwargs` inherits from. The name is historical: it
-    was the set the expression namespace took, before that namespace was
-    removed. It survives as the shared base, and
-    ``tests/test_kwargs_typing.py`` holds it to the shared parameters.
-    """
+class CommonKwargs(TypedDict, total=False):
+    """What the builders take as ``**common``: every parameter the models
+    share, the group and its close policy among them."""
 
     fit_intercept: bool
     clock: str | None
@@ -95,11 +93,5 @@ class ExprKwargs(TypedDict, total=False):
     emit_feature_health: bool
     feature_health_half_life: float | Duration | None
     embargo: float | Duration | None
-
-
-class CommonKwargs(ExprKwargs, total=False):
-    """What the builders take as ``**common``: the above plus the group and
-    its close policy."""
-
     group: str | None
     group_close: str | None

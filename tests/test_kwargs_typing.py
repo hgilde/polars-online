@@ -1,9 +1,9 @@
 """The ``**common`` of the spec builders is typed with PEP 692
 ``Unpack[TypedDict]`` (docs/IMPROVEMENTS.md U4), so an editor completes it and
-a type checker catches a typo. Each TypedDict is a copy of a builder's
-signature, and a copy drifts, so every one is pinned here to the builder it
-mirrors: same keys, same annotations, same required set. Change a builder and
-this says which class to update.
+a type checker catches a typo. The one ``TypedDict``, ``CommonKwargs``, is a
+copy of the shared parameters in ``_common``'s signature, and a copy drifts,
+so it is pinned here to them: same keys, same annotations, same required set.
+Change a shared parameter and this says so.
 """
 
 from __future__ import annotations
@@ -60,12 +60,16 @@ def _common_hints() -> dict[str, object]:
 def test_common_kwargs_mirror_the_shared_parameters():
     shared = {k: v for k, v in _common_hints().items() if k not in ("targets", "features")}
     assert typing.get_type_hints(_kwargs.CommonKwargs) == shared
-    # `ExprKwargs` is the shared base: everything but the group and its
-    # close policy, which only the builders take.
-    assert typing.get_type_hints(_kwargs.ExprKwargs) == {
-        k: v for k, v in shared.items() if k not in ("group", "group_close")
-    }
     assert _kwargs.CommonKwargs.__required_keys__ == frozenset()
+    # One class with every shared parameter: the expression namespace's set,
+    # all but the group and its close policy, was a base class nothing else
+    # read, and is folded in.
+    assert {"group", "group_close"} <= set(shared)
+    assert _kwargs.__all__ == ["CommonKwargs"]
+    typed_dicts = [
+        n for n, v in vars(_kwargs).items() if isinstance(v, type) and typing.is_typeddict(v)
+    ]
+    assert typed_dicts == ["CommonKwargs"], typed_dicts
 
 
 @pytest.mark.parametrize("name", BUILDERS)
