@@ -243,7 +243,7 @@ def main() -> None:
         )
         for r in (1.0, 0.5, 0.1)
     ]
-    res = run(df, specs, [target]).filter(~pl.col("slot").str.ends_with("l0"))
+    res = run(df, specs, [target]).filter(~pl.col("slot").str.ends_with("__p0"))
     section(
         "3. Elastic net `l1_ratio` [validate]",
         "Lasso path "
