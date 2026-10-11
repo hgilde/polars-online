@@ -1982,7 +1982,10 @@ def kalman(
         scalar, or one value per slot with the intercept first; ``inf`` pins
         that coefficient; every value above 0. Required unless ``q`` is given,
         and refused beside it. Not the spec's ``half_life``, which drives the
-        standardization and the residual variance.
+        standardization and the residual variance. The diagnostics' default
+        memory is the shortest finite entry; the windowed CUSUM's null share
+        reads the intercept's entry, the memory at which a level in the
+        target is absorbed, and ``inf`` there leaves the plain sum.
 
         Under ``standardize`` the drift is per standard deviation of each
         feature as the moments stand. A slope's random walk in the caller's

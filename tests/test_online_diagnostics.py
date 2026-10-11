@@ -1055,6 +1055,44 @@ def test_a_windowed_cusum_reads_its_own_null():
             assert 0.9 < sd < 1.2, (memory, field, sd)
 
 
+@pytest.mark.parametrize(
+    ("coef_half_life", "before"),
+    [
+        ([30.0, 30.0, 30.0], 1.03),
+        ([float("inf"), 30.0, 30.0], 1.40),
+        ([30.0, 10.0, 10.0], 1.29),
+    ],
+)
+def test_kalmans_cusum_null_share_reads_the_intercepts_memory(coef_half_life, before):
+    """The windowed CUSUM's null share, `h_fit / (h_fit + h)`, read `h_fit`
+    as the diagnostics' memory beside `kalman`, the shortest finite
+    `coef_half_life`; a level is absorbed by the intercept's coefficient
+    at its own entry, and `inf` there pins it, absorbing nothing (review
+    round 7, A-1). On 20 clean streams, over rows 3,000+, the CUSUM beside
+    `[inf, 30, 30]` spread 1.40 and passed 3 on 3.3% of rows, and beside
+    `[30, 10, 10]` 1.29 and 1.8%, where `[30, 30, 30]` read 1.03 and 0.35%
+    (`before` is each spread); at the intercept's entry each reads about
+    1.03. The CUSUM of squares reads the scale's memory, and does not
+    move."""
+    df = _clean(20, 6_000, 7)
+    spec = po.spec.kalman(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=30.0,
+        coef_half_life=coef_half_life,
+        group="g",
+        emit_breaks=True,
+    )
+    out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 3_000)
+    late = out["cusum_y"].drop_nulls()
+    sd, past = late.std(), (late.abs() > 3).mean()
+    assert 0.95 < sd < 1.1, (sd, past, before)
+    assert past < 0.01, (sd, past, before)
+    sq = out["cusum_sq_y"].drop_nulls().std()
+    assert 0.95 < sq < 1.1, sq
+
+
 def test_the_cusum_of_squares_reads_the_measured_fourth_moment():
     """The CUSUM of squares divided by 2, a Gaussian's `E[z⁴] − 1`: on
     Student's t with 4 degrees of freedom it passed 1.96 on 18.5% of rows

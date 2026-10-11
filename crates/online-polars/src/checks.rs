@@ -63,9 +63,6 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
 /// breaks' twin fits, the features each slot's coefficients cover.
 #[derive(Debug, Clone)]
 pub struct CheckCfg {
-    /// The fit's own memory, which absorbs a level at its pace (the
-    /// CUSUM's windowed null, task 232 (4)).
-    fit: Decay,
     /// The longest finite memory the model keeps, which a diagnostic's
     /// readiness reads (task 232 (1), task 234; [`Spec::ready_memory`]).
     ready: Decay,
@@ -123,7 +120,6 @@ impl CheckCfg {
             _ => vec![all; crate::stream::combos(spec).len()],
         };
         let mut cfg = Self {
-            fit: spec.fit_memory(model),
             ready: spec.ready_memory(model),
             calibration: spec.diagnostic_decay_of(
                 spec.calibration_half_life.as_ref(),
@@ -181,8 +177,14 @@ impl CheckCfg {
         // (`huber`, `quantile`) and 0.57-1.13 (`sgd`, `pa`, `ftrl`); without
         // it `huber` reads 0.57-0.95 and the gradient fits 0.30-0.79,
         // conservative, so they keep the plain sum. So does `holt`, which
-        // reads 0.51-0.94 from its readiness on its trend (task 234).
-        let (h_fit, h_breaks) = (half_life_of(cfg.fit), half_life_of(cfg.breaks));
+        // reads 0.51-0.94 from its readiness on its trend (task 234). The
+        // level is absorbed at the intercept's memory, which for a `kalman`
+        // with a `coef_half_life` per coefficient is the intercept's entry,
+        // not the shortest (review round 7, A-1).
+        let (h_fit, h_breaks) = (
+            half_life_of(spec.level_memory(model)),
+            half_life_of(cfg.breaks),
+        );
         let least_squares = matches!(
             spec.model,
             ModelKind::EwRidge { .. }

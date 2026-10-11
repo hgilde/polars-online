@@ -235,7 +235,10 @@ the diagnostics
     a clock column. Beside a decay ``n`` is the Kish size of the decayed
     weights inside the window, taken in its continuous form on a clock column.
     For ``kalman`` the fit's memory is its ``coef_half_life``, the shortest
-    finite one where a list gives one per coefficient. A diagnostic folds a row
+    finite one where a list gives one per coefficient; the windowed CUSUM's
+    null share reads the list's intercept entry instead, the memory at which
+    a level is absorbed, and a pinned intercept leaves the plain sum. A
+    diagnostic folds a row
     only once the instance is ready: the row's prediction past every gate, the
     stream 95% settled on the longest finite memory the model keeps where it
     forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.

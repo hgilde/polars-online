@@ -171,7 +171,9 @@ worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`. So `λ = (W 
 half-life is `W ln 2 / 2` of them. A window beside a half-life takes the
 Kish size of the decayed weights cut at the window. `kalman` forgets its
 coefficients at `coef_half_life`, so its diagnostics read at that, the
-shortest finite one where it gives one per coefficient. Beside
+shortest finite one where it gives one per coefficient; the CUSUM's null
+share alone reads the intercept's entry, since the intercept is what
+absorbs a level ([Has it broken?](#has-it-broken)). Beside
 `window_size=400` with no decay, `se_coef_hc0` read the window slope's
 spread over 200 streams, 0.0495 against 0.0498, where at the run-once
 memory it read a third of it. On 30 clean streams beside `window_size=100`,
@@ -560,7 +562,14 @@ before each row, so its residual is the shock less that mean. A sum of
 those residuals at a memory `h` therefore cancels much of itself. In
 continuous time the sum's variance is `r = h_fit / (h_fit + h)` of the
 plain sum's, whatever the rows' rate: one half at equal memories, a
-standard deviation of 0.71. The CUSUM of squares is studentized by a scale
+standard deviation of 0.71. `h_fit` is the memory at which the fit absorbs
+a level, the fit's own, but for a `kalman` whose `coef_half_life` gives
+each coefficient its own: a level is absorbed by the intercept's
+coefficient alone, so `h_fit` is the intercept's entry, and `inf` there
+pins it, absorbs nothing, and leaves the plain sum. Read at the shortest
+entry instead, `[inf, 30, 30]` spread 1.40 on clean streams and `[30, 10,
+10]` 1.29, where `[30, 30, 30]` read 1.03; at the intercept's each reads
+about 1.03. The CUSUM of squares is studentized by a scale
 at its own memory, which absorbs the squares' level the same way, so its
 share is one half. Each is divided by its share. On 30 clean streams
 beside `ewridge`, `rls`, `lasso` and `kalman` at a half-life of 200, at
