@@ -1027,7 +1027,7 @@ def lasso_path(
     ``penalties``
         The penalties ``l``, from large to small, as a path is meant to be
         walked: the warm start makes that both faster and better conditioned.
-        They are a spec's ``lasso_path``, and ``bank.coef()`` reports each as
+        They are a ``lasso`` spec's ``penalties``, and ``bank.coef()`` reports each as
         ``penalty``. The keyword was ``lambdas`` before 1.0; that name is
         refused, and the error names this one.
     ``l1_ratio``
