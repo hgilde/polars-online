@@ -252,10 +252,10 @@ the diagnostics
     calibration's, Breusch and Pagan's and RESET's tests take Newey and West's
     variance at twice it in lags, the CUSUMs and ``break_wald`` the long-run
     variance, and Ljung and Box skip the lags inside it. ``se_coef_hac``'s lags
-    default to twice ``horizon_rows``, or to twice ``embargo``, rounded up,
-    where the horizon is read from ``embargo``. A horizon read from ``embargo``
-    gives at most 64 lags, and a :class:`polars_online.ReadinessWarning` says
-    so past it. `docs/DIAGNOSTICS.md
+    default to twice the horizon too: an ``embargo`` of 2.5 is a horizon of 3
+    rows, and 6 lags. A horizon read from ``embargo`` gives at most 64 lags,
+    and a :class:`polars_online.ReadinessWarning` says so past it.
+    `docs/DIAGNOSTICS.md
     <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
     orders them by the question each answers, with their thresholds,
     false-alarm rates, costs and the theory behind them, and a recipe for each.
@@ -492,8 +492,9 @@ The diagnostics add, per slot:
        does not: run once on 1,500 rows it read 0.9-1.3% above
        statsmodels' ``cov_type="HC0"`` and ``"HAC"``, and on 3,000 rows
        under a 5- to 20-row embargo 2-9% above. The lags default to twice
-       ``horizon_rows``, or to twice ``embargo``, rounded up, on a spec with
-       no clock column, and to ``0`` otherwise. Read from ``embargo`` they
+       ``horizon_rows``, or on a spec with no clock column to twice
+       ``embargo`` once rounded up to whole rows (6 at 2.5), and to ``0``
+       otherwise. Read from ``embargo`` they
        are at most 64, with a notice past it: each lag costs a slot
        ``(k + 1)**2`` numbers. On a target summing the next ``h`` rows'
        shocks against a persistent feature, the coefficient's true spread

@@ -219,7 +219,10 @@ impl Spec {
     /// target's horizon in rows ([`Self::horizon`]: `horizon_rows`, or
     /// `embargo` rounded up on a spec with no clock column, where a row is a
     /// unit -- a look-ahead target in a fit needs an embargo as long as its
-    /// window); else `0`, HC0 alone.
+    /// window); else `0`, HC0 alone. That is [`Self::nw_lags`], the rule
+    /// every diagnostic under a horizon reads, capped alike: `2 ·
+    /// ceil(embargo)`, not `ceil(2 · embargo)`, which read one lag fewer at
+    /// an embargo of 2.5.
     ///
     /// Twice, not once: a horizon of `h` rows correlates the residuals up
     /// to `h − 1` rows apart, and Bartlett's weights `1 − l/(L+1)` count a
@@ -227,18 +230,7 @@ impl Spec {
     /// persistent feature (task 221 (c)), the standard error read 83-97%
     /// of the coefficients' true spread at `L = h` and 90-104% at `2h`.
     pub fn robust_se_lags_or_default(&self) -> usize {
-        if let Some(l) = self.robust_se_lags {
-            return l;
-        }
-        if self.horizon_rows.is_some() {
-            return self.nw_lags();
-        }
-        match (&self.clock, &self.embargo) {
-            (None, Some(Span::Units(h))) if h.is_finite() && *h > 0.0 => {
-                ((2.0 * h).ceil() as usize).min(NW_LAG_CAP)
-            }
-            _ => 0,
-        }
+        self.robust_se_lags.unwrap_or_else(|| self.nw_lags())
     }
 
     /// How many of the fit's memories ([`Self::fit_memory`]: the instance's
@@ -545,5 +537,39 @@ mod tests {
         assert_eq!(ready(plain, Decay::Lam(0.9)), Decay::Lam(0.9));
         assert_eq!(half_life_of(Decay::Lam(0.5)), 1.0);
         assert_eq!(half_life_of(Decay::Lam(1.0)), f64::INFINITY);
+    }
+
+    /// `se_coef_hac`'s lags default to the rule every diagnostic under a
+    /// horizon shares, twice the horizon in rows, `2 · ceil(embargo)` on a
+    /// spec with no clock column: an embargo of 2.5 is a horizon of 3 rows
+    /// and 6 lags, where `ceil(2 · 2.5)` read 5, one fewer than the
+    /// calibration, Breusch and Pagan and RESET take beside it. Given
+    /// lags stay as given, and a horizon past the cap is capped alike.
+    #[test]
+    fn the_hac_lags_default_to_the_shared_rule() {
+        let robust = |extra: &str| {
+            let json = format!(
+                r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"],
+                    "features": ["a"], "half_life": 10, "emit_robust_se": true{extra}}}"#
+            );
+            serde_json::from_str::<Spec>(&json).unwrap()
+        };
+        for (embargo, horizon) in [(2.5, 3), (0.3, 1), (4.0, 4), (31.5, 32), (40.2, 41)] {
+            let s = robust(&format!(r#", "embargo": {embargo}"#));
+            assert_eq!(s.horizon(), horizon, "embargo {embargo}");
+            assert_eq!(s.robust_se_lags_or_default(), s.nw_lags(), "embargo {embargo}");
+            assert_eq!(
+                s.robust_se_lags_or_default(),
+                (2 * horizon).min(NW_LAG_CAP),
+                "embargo {embargo}"
+            );
+        }
+        let s = robust(r#", "embargo": 2.5, "robust_se_lags": 5"#);
+        assert_eq!(s.robust_se_lags_or_default(), 5);
+        let s = robust(r#", "embargo": 2.5, "horizon_rows": 40"#);
+        assert_eq!(s.robust_se_lags_or_default(), 80);
+        assert_eq!(robust("").robust_se_lags_or_default(), 0);
+        let s = robust(r#", "embargo": 2.5, "clock": "t", "gap_cap": 10"#);
+        assert_eq!(s.robust_se_lags_or_default(), 0);
     }
 }

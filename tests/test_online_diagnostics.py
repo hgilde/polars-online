@@ -383,6 +383,19 @@ def test_robust_se_lags_default_to_twice_the_embargo_without_a_clock():
     assert '"robust_se_half_life":60.0' in resolved.replace(" ", "")
 
 
+def test_robust_se_lags_default_to_the_horizons_twice_its_rows():
+    """The default lags are twice the horizon, the rule the calibration,
+    Breusch and Pagan and RESET read beside them: an embargo of 2.5 rows is
+    a horizon of 3, and 6 lags, where ``ceil(2 * 2.5)`` read 5."""
+    df = _frame()
+    default = _run(df, _robust_spec(robust_se_lags=None, embargo=2.5))["se_coef_hac"]
+    assert default.drop_nulls().len() > 600, "the test reads values"
+    six = _run(df, _robust_spec(robust_se_lags=6, embargo=2.5))["se_coef_hac"]
+    five = _run(df, _robust_spec(robust_se_lags=5, embargo=2.5))["se_coef_hac"]
+    assert default.equals(six, null_equal=True)
+    assert not default.equals(five, null_equal=True)
+
+
 @pytest.mark.parametrize(
     ("build", "extra", "why"),
     [
