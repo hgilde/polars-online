@@ -1039,8 +1039,8 @@ floor ([The floor and the ceiling](#the-floor-and-the-ceiling)):
 | capping it below a Polars that broke this library | patch | patch |
 | dropping a Polars major version | minor | major |
 
-**A user who wants stability pins the current minor, before 1.0 and
-after.** Before 1.0 the minor carries breaking changes. From 1.0 it carries
+**From 1.0, a user who wants stability pins the major, as `~=1.0` or
+`>=1,<2`, and the current minor as well to hold the numbers.** Before 1.0 the minor carries breaking changes. From 1.0 it carries
 none, but it can carry a declared fix to numbers that were wrong, so
 `~=1.0` keeps code working and `~=1.4.0` holds the numbers as well. The
 README's example pin names the current minor, as `~=0.13.0` names the
