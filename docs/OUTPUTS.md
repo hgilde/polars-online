@@ -285,8 +285,8 @@ The fields of `po.spec.ew_cov("m", features=["x0", "x1"], half_life=50.0)`:
 |---|---|---|---|
 | `mean_x0` | `f64` | EW mean of `<f>` | while withheld |
 | `mean_x1` | `f64` | EW mean of `<f>` | while withheld |
-| `std_x0` | `f64` | EW standard deviation of `<f>`, the square root of the population variance | while withheld |
-| `std_x1` | `f64` | EW standard deviation of `<f>`, the square root of the population variance | while withheld |
+| `std_x0` | `f64` | EW standard deviation of `<f>`, the square root of `var_<f>` | while withheld |
+| `std_x1` | `f64` | EW standard deviation of `<f>`, the square root of `var_<f>` | while withheld |
 | `corr_x0_x1` | `f64` | EW correlation of the pair | while withheld |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |

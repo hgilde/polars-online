@@ -480,6 +480,7 @@ fn sgd_predicts_the_same_at_every_level() {
 fn ew_cov_reports_a_stopped_feature_as_it_is() {
     for level in LEVELS {
         let mut m = EwCovModel::new(EwCovCfg {
+            bias: true,
             n_features: 3,
             decay: decay(),
             stats: vec![EwCovStat::Var, EwCovStat::Corr],
@@ -1154,6 +1155,7 @@ fn a_row_of_no_weight_moves_no_mean() {
     });
     no_weight_moves_nothing("ew_cov", || {
         EwCovModel::new(EwCovCfg {
+            bias: false,
             n_features: 3,
             decay: decay(),
             stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],

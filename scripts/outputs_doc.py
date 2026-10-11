@@ -70,9 +70,10 @@ MEANING: dict[str, str] = {
     ),
     "penalty_selected_<t>": "the path point in force for `<t>`, by lowest EW out-of-sample error",
     "mean_<f>": "EW mean of `<f>`",
-    "var_<f>": "EW variance of `<f>`, in the population form: no `ddof` correction",
-    "std_<f>": "EW standard deviation of `<f>`, the square root of the population variance",
-    "cov_<a>_<b>": "EW covariance of the pair, in the population form: no `ddof` correction",
+    "var_<f>": "EW variance of `<f>`, corrected for the unequal weights as Polars' `ewm_var` "
+    "is, unless `bias`",
+    "std_<f>": "EW standard deviation of `<f>`, the square root of `var_<f>`",
+    "cov_<a>_<b>": "EW covariance of the pair, corrected as `var_<f>` is",
     "corr_<a>_<b>": "EW correlation of the pair",
     "partial_corr_<a>_<b>": "the pair's correlation controlling for every other column",
     "mahal": "Mahalanobis distance of the row from the running mean, in standard deviations",

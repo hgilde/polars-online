@@ -177,6 +177,7 @@ mod tests {
         use crate::{Decay, EwCovCfg, EwCovModel, OnlineModel};
         for (stamped, want) in [(true, [1, 2001, 4001]), (false, [1, 2002, 4003])] {
             let mut m = EwCovModel::new(EwCovCfg {
+                bias: false,
                 n_features: 2,
                 decay: Decay::Halflife(f64::INFINITY),
                 stats: Vec::new(),

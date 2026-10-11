@@ -680,6 +680,26 @@ fn an_audits_counters_are_written_in_both_forms() {
     }
 }
 
+/// `ew_cov`'s `bias` in both of its values (schema 61, docs/PLAN.md task
+/// 244): `false`, the default, in `ew_cov`, whose statistics and components
+/// the factor scales, and `true` in `ew_cov_window`. A bool, which [`held`]
+/// does not count, so read here.
+#[test]
+fn ew_covs_bias_is_written_in_both_values() {
+    if regenerating() {
+        return;
+    }
+    for (name, bias) in [("ew_cov", false), ("ew_cov_window", true)] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let got = at(&v, &["model", "EwCovModel", "cfg", "bias"]).and_then(rmpv::Value::as_bool);
+        assert_eq!(got, Some(bias), "{name}");
+    }
+}
+
 // --- regeneration -----------------------------------------------------------
 
 fn dir() -> PathBuf {

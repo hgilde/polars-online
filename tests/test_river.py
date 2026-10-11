@@ -282,12 +282,15 @@ class TestEwStatistics:
     def test_ew_variance_tracks_river(self):
         """``ew_cov``'s ``var`` against river's ``EWVar`` at the same fading
         factor, both read before the row: apart while river's seed weighs,
-        and the same number once it is forgotten (1.5e-14 measured). The
-        test never called this library, and held river alone to the truth
-        (review 2026-10-05, TC2)."""
+        and the same number once it is forgotten (1.5e-14 measured). River's
+        is the weighted mean, uncorrected, which is ``bias=True``. The test
+        never called this library, and held river alone to the truth (review
+        2026-10-05, TC2)."""
         rng = np.random.default_rng(8)
         y = rng.standard_normal(5000) * 2.0
-        spec = po.spec.ew_cov("c", features=["x0"], stats=["var"], half_life=self.HALFLIFE)
+        spec = po.spec.ew_cov(
+            "c", features=["x0"], stats=["var"], half_life=self.HALFLIFE, bias=True
+        )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": y}))
         ours = out["c"].struct.field("var_x0").to_numpy().astype(float)
         v = stats.EWVar(fading_factor=self.fading)
@@ -384,7 +387,8 @@ class TestHuber:
 class TestEwCovAgainstRiver:
     """T-R3: with no decay, our mean-form accumulators are exact running
     moments, and river computes the same quantities by a different route
-    (Welford updates). Any disagreement is a bug in one of us.
+    (Welford updates). Any disagreement is a bug in one of us. ``ew_cov``'s
+    default ``bias=False`` is, with no decay, river's default ``ddof=1``.
 
     Unblocked by ENHANCEMENTS E1 (`ew_cov`), which made these statistics
     reachable without fitting a regression.
@@ -410,7 +414,7 @@ class TestEwCovAgainstRiver:
         a, b = self._data()
         ours = self._ours(a, b, ["mean", "var"])
 
-        m, v = stats.Mean(), stats.Var(ddof=0)
+        m, v = stats.Mean(), stats.Var(ddof=1)
         for x in a[:-1]:  # ours reports the state before the final row
             m.update(float(x))
             v.update(float(x))
@@ -420,7 +424,7 @@ class TestEwCovAgainstRiver:
     def test_covariance_matches_river(self):
         a, b = self._data()
         ours = self._ours(a, b, ["cov"])
-        c = stats.Cov(ddof=0)
+        c = stats.Cov(ddof=1)
         for x, y in zip(a[:-1], b[:-1], strict=True):
             c.update(float(x), float(y))
         assert ours["cov_x0_x1"] == pytest.approx(c.get(), abs=1e-9)
@@ -442,10 +446,10 @@ class TestEwCovAgainstRiver:
         for offset in (0.0, 1e6, 1e9):
             a = base + offset
             ours = self._ours(a, base, ["var"])["var_x0"]
-            v = stats.Var(ddof=0)
+            v = stats.Var(ddof=1)
             for x in a[:-1]:
                 v.update(float(x))
-            truth = base[:-1].var()
+            truth = base[:-1].var(ddof=1)
             # both implementations stay close to the truth; ours used to be off
             # by more than 0.5 at 1e9
             assert abs(v.get() - truth) < 1e-3, f"river drifted at offset {offset}"

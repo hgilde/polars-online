@@ -2477,7 +2477,8 @@ mod tests {
         // review round 6's tails and scored inflation, 59 for task 233's
         // smallest change in an audit, 60 for task 232's Newey-West sums
         // and 61 for review round 7's residual lag products on a quantile
-        // fit (A-2), the windows state unchanged.
+        // fit (A-2) and task 244's `bias` in an `ew_cov`, the windows state
+        // unchanged.
         assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 61));
     }
 

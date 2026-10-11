@@ -313,6 +313,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
 
 fn ew_cov_cfg() -> EwCovCfg {
     EwCovCfg {
+        bias: false,
         n_features: 3,
         decay: decay(),
         stats: vec![
@@ -645,6 +646,7 @@ pub fn all() -> Vec<Case> {
             "EwCovModel",
             EwCovModel,
             EwCovModel::new(EwCovCfg {
+                bias: true,
                 stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
                 mahal_quantiles: Vec::new(),
                 pca: 0,

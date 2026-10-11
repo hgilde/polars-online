@@ -524,6 +524,7 @@ fn the_windowed_kish_size_is_ew_covs() {
     c.window = Some(window);
     let mut m = Marginal::new(c).unwrap();
     let mut ec = EwCovModel::new(EwCovCfg {
+        bias: true,
         n_features: 2,
         decay: Decay::Halflife(h),
         stats: vec![EwCovStat::Mean],
@@ -846,6 +847,7 @@ fn lagged_pair_moments_are_ew_covs_to_the_bit() {
     // `ew_cov` over the same two columns, in the order [x, y]: its lagged
     // co-moment for (0, 1) is `E[dx_t·dy_{t-l}]`, which is `cxy`.
     let mut ec = EwCovModel::new(EwCovCfg {
+        bias: true,
         n_features: 2,
         decay: Decay::Halflife(30.0),
         stats: vec![EwCovStat::Mean],
@@ -913,6 +915,7 @@ fn lagged_pair_moments_are_ew_covs_for_every_feature_and_target() {
     c.lags = lags.clone();
     let mut m = Marginal::new(c).unwrap();
     let mut ec = EwCovModel::new(EwCovCfg {
+        bias: true,
         n_features: p + nt,
         decay: Decay::Halflife(30.0),
         stats: vec![EwCovStat::Mean],
@@ -1679,6 +1682,7 @@ fn a_pair_is_the_ew_cov_of_the_two_columns_to_the_bit() {
     let mut m = Marginal::new(cfg(2, 1)).unwrap();
     let mut covs = [EwCov::new(2), EwCov::new(2)];
     let mut full = EwCovModel::new(EwCovCfg {
+        bias: true,
         n_features: 2,
         decay: Decay::Halflife(20.0),
         stats: vec![EwCovStat::Corr],
@@ -1856,6 +1860,7 @@ fn state_round_trips_and_continues_identically() {
     assert_eq!(r, m);
     let wrong = Marginal::restore(
         &EwCovModel::new(EwCovCfg {
+            bias: true,
             n_features: 1,
             decay: Decay::Halflife(1.0),
             stats: vec![],

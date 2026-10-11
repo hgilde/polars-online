@@ -43,19 +43,23 @@ class TestStatistics:
         out = po.ModelBank([_spec()]).fit_predict(df)
         a, b = df["x0"].to_numpy(), df["x1"].to_numpy()
         # no decay => these are the ordinary sample statistics of all but the
-        # final row (values are read before each row is folded in)
+        # final row (values are read before each row is folded in), the
+        # standard deviation with `ddof=1` under the default `bias=False`
         assert _last(out, "mean_x0") == pytest.approx(a[:-1].mean(), abs=1e-9)
-        assert _last(out, "std_x1") == pytest.approx(b[:-1].std(), abs=1e-9)
+        assert _last(out, "std_x1") == pytest.approx(b[:-1].std(ddof=1), abs=1e-9)
         assert _last(out, "corr_x0_x1") == pytest.approx(
             np.corrcoef(a[:-1], b[:-1])[0, 1], abs=1e-9
         )
 
-    def test_cov_and_var_variants(self):
+    @pytest.mark.parametrize("bias", [False, True])
+    def test_cov_and_var_variants(self, bias):
+        # Under no decay `bias` is numpy's `ddof`: 1 by default, 0 under it.
         df = _df()
-        out = po.ModelBank([_spec(stats=["var", "cov"])]).fit_predict(df)
+        out = po.ModelBank([_spec(stats=["var", "cov"], bias=bias)]).fit_predict(df)
         a, b = df["x0"].to_numpy()[:-1], df["x1"].to_numpy()[:-1]
-        assert _last(out, "var_x0") == pytest.approx(a.var(), abs=1e-9)
-        assert _last(out, "cov_x0_x1") == pytest.approx(np.cov(a, b, bias=True)[0, 1], abs=1e-9)
+        ddof = 0 if bias else 1
+        assert _last(out, "var_x0") == pytest.approx(a.var(ddof=ddof), abs=1e-9)
+        assert _last(out, "cov_x0_x1") == pytest.approx(np.cov(a, b, ddof=ddof)[0, 1], abs=1e-9)
 
     def test_all_pairs_are_emitted(self):
         spec = _spec(features=("x0", "x1", "x2"), stats=["corr"])
@@ -673,14 +677,17 @@ def test_a_large_offset_and_a_tiny_scale_leave_the_centred_moments():
     assert np.isfinite([vt, rt]).all()
 
 
-def test_a_window_is_polars_rolling_with_an_exponential_weight():
+@pytest.mark.parametrize("bias", [False, True])
+def test_a_window_is_polars_rolling_with_an_exponential_weight(bias):
     """The docstring's agreement with Polars: under a ``window_size``, each
     field is ``df.rolling(clock, period=window_size)`` over the rows each row
-    weighted ``2 ** (-age / half_life)`` from the window's last row, shifted
-    one row, since a row's moments are read before the row. 20,000 rows
-    about a minute apart, a three-hour window and a half-life of 30 minutes,
-    a column near 100 that wanders: measured 8.5e-14 for its mean, 6.3e-14
-    for its variance and 4.3e-14 for the correlation; held to 1e-12."""
+    weighted ``2 ** (-age / half_life)`` from the window's last row, the
+    second moments times ``W**2 / (W**2 - sum(w**2))`` unless ``bias``,
+    shifted one row, since a row's moments are read before the row. 20,000
+    rows about a minute apart, a three-hour window and a half-life of 30
+    minutes, a column near 100 that wanders: measured 8.5e-14 for its mean,
+    6.3e-14 for its variance (6.4e-14 corrected) and 4.3e-14 for the
+    correlation; held to 1e-12."""
     from datetime import datetime, timedelta
 
     n = 20_000
@@ -704,6 +711,7 @@ def test_a_window_is_polars_rolling_with_an_exponential_weight():
         window_size="3h",
         gap_cap="1d",  # past every gap here, so no gap is capped
         min_weight=0.0,
+        bias=bias,
     )
     got = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
 
@@ -711,9 +719,10 @@ def test_a_window_is_polars_rolling_with_an_exponential_weight():
     w = 2.0 ** (-age / 1800.0)
     m0 = (w * pl.col("x0")).sum() / w.sum()
     m1 = (w * pl.col("x1")).sum() / w.sum()
-    v0 = (w * (pl.col("x0") - m0) ** 2).sum() / w.sum()
-    v1 = (w * (pl.col("x1") - m1) ** 2).sum() / w.sum()
-    c01 = (w * (pl.col("x0") - m0) * (pl.col("x1") - m1)).sum() / w.sum()
+    c = 1.0 if bias else w.sum() ** 2 / (w.sum() ** 2 - (w**2).sum())
+    v0 = c * (w * (pl.col("x0") - m0) ** 2).sum() / w.sum()
+    v1 = c * (w * (pl.col("x1") - m1) ** 2).sum() / w.sum()
+    c01 = c * (w * (pl.col("x0") - m0) * (pl.col("x1") - m1)).sum() / w.sum()
     want = (
         df.rolling("t", period="3h", closed="right")
         .agg(

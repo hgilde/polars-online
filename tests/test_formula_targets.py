@@ -985,7 +985,7 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     an audit's smallest change (58 refused); 60 since task 232, for the
     diagnostics' Newey-West sums under a horizon (59 refused); and 61 since
     review round 7 (A-2), for a quantile fit's residuals' lag products under
-    a horizon (60 refused)."""
+    a horizon, and task 244, for ``ew_cov``'s ``bias`` (60 refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
