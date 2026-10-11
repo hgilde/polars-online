@@ -264,7 +264,7 @@ fn read_all(py: Python<'_>, grams: &[GramIn<'_>]) -> PyResult<Vec<InGram>> {
 
 fn stop_name(stop: LarsStop) -> &'static str {
     match stop {
-        LarsStop::MaxSteps => "max_steps",
+        LarsStop::MaxSteps => "max_iter",
         LarsStop::MaxActive => "max_active",
         LarsStop::End => "end",
     }

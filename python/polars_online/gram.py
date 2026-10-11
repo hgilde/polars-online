@@ -61,12 +61,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, NotRequired, TypedDict
 
 from polars_online import _polars_online as _native
 from polars_online._renamed import renamed_keywords
+from polars_online._warnings import deprecated_keywords, forward_deprecated
 
 __all__ = [
+    "Gram",
     "INTERCEPT",
     "coef_stats",
     "condition",
@@ -88,6 +90,39 @@ __all__ = [
 INTERCEPT = "intercept"
 
 
+class Gram(TypedDict):
+    """The mapping :meth:`~polars_online.ModelBank.gram` returns, and every
+    function here takes: the running sums behind one fit, as numpy arrays.
+
+    :meth:`~polars_online.ModelBank.gram` says what each key holds and its
+    shape. :func:`merge`, :func:`subset` and :func:`from_row` return the same
+    keys, so a Gram from any of them goes on to any other function here. The
+    arrays are typed ``Any`` because numpy is an optional extra of this
+    package. ``within_parts`` and ``target_within_parts`` are present only on
+    a Gram pooled within parts (``merge(within=True)``).
+    """
+
+    group: str | None
+    instance: str | None
+    columns: list[str]
+    targets: list[str]
+    weight_sum: float
+    n_kish: float | None
+    means: Any
+    comoments: Any
+    cross_moments: Any
+    means_by_target: Any
+    cross_centred: Any
+    target_weights: Any
+    target_means: Any
+    target_vars: Any
+    target_n_kish: Any
+    lags: list[int] | None
+    lag_comoments: Any
+    within_parts: NotRequired[Any]
+    target_within_parts: NotRequired[Any]
+
+
 def _np() -> Any:
     try:
         import numpy as np
@@ -100,7 +135,7 @@ def _np() -> Any:
     return np
 
 
-def _columns(g: dict[str, Any]) -> list[str]:
+def _columns(g: Gram) -> list[str]:
     cols = g.get("columns")
     if cols is None:
         msg = (
@@ -111,7 +146,7 @@ def _columns(g: dict[str, Any]) -> list[str]:
     return list(cols)
 
 
-def _col_index(g: dict[str, Any], cols: Sequence[str | int]) -> list[int]:
+def _col_index(g: Gram, cols: Sequence[str | int]) -> list[int]:
     names = _columns(g)
     out = []
     for c in cols:
@@ -128,7 +163,7 @@ def _col_index(g: dict[str, Any], cols: Sequence[str | int]) -> list[int]:
     return out
 
 
-def _target_index(g: dict[str, Any], target: str | int) -> int:
+def _target_index(g: Gram, target: str | int) -> int:
     names = list(g.get("targets") or [])
     if isinstance(target, int):
         n = len(g["cross_moments"])
@@ -142,7 +177,7 @@ def _target_index(g: dict[str, Any], target: str | int) -> int:
     return names.index(target)
 
 
-def _means_of(np: Any, g: dict[str, Any], t: int) -> Any:
+def _means_of(np: Any, g: Gram, t: int) -> Any:
     """The column means target ``t``'s cross-moments are centred at and its
     intercept is recovered from: its own, over the rows it was present on
     (``means_by_target``), or the Gram's ``means`` in a mapping without
@@ -153,7 +188,7 @@ def _means_of(np: Any, g: dict[str, Any], t: int) -> Any:
     return np.asarray(by_target, dtype=float)[t]
 
 
-def _cross_centred(np: Any, g: dict[str, Any], t: int, m: Any, ybar: float) -> Any:
+def _cross_centred(np: Any, g: Gram, t: int, m: Any, ybar: float) -> Any:
     """Target ``t``'s cross-moments centred at its column means ``m`` and its
     mean ``ybar``, as the model holds them: ``cross_centred``, or -- in a
     mapping without it -- ``cross_moments[t] - m * ybar``, a difference of
@@ -165,7 +200,7 @@ def _cross_centred(np: Any, g: dict[str, Any], t: int, m: Any, ybar: float) -> A
     return np.asarray(g["cross_moments"], dtype=float)[t] - m * ybar
 
 
-def _ybar_of(np: Any, g: dict[str, Any], icept: int) -> Any:
+def _ybar_of(np: Any, g: Gram, icept: int) -> Any:
     """Each target's mean, which its centred cross-moments are centred at:
     the raw cross-moment at the intercept, exactly (``0 + 1 * ybar``), or
     ``target_means``; ``None`` when the mapping has neither."""
@@ -176,9 +211,7 @@ def _ybar_of(np: Any, g: dict[str, Any], icept: int) -> Any:
     return None if tm is None else np.asarray(tm, dtype=float).copy()
 
 
-def _feature_slots(
-    g: dict[str, Any], features: Sequence[str | int] | None
-) -> tuple[list[int], int]:
+def _feature_slots(g: Gram, features: Sequence[str | int] | None) -> tuple[list[int], int]:
     """The column positions to regress on, and the intercept's position or -1.
 
     The intercept is never one of the features: it is a constant column with
@@ -200,7 +233,7 @@ def _feature_slots(
     return slots, icept
 
 
-def _is_packed(np: Any, g: dict[str, Any]) -> bool:
+def _is_packed(np: Any, g: Gram) -> bool:
     """Whether a Gram's ``comoments`` is the packed upper triangle
     (``ModelBank.gram(layout="packed")``), one axis, rather than the whole
     matrix."""
@@ -215,7 +248,7 @@ def _unpack(np: Any, v: Any, k: int) -> Any:
     return m + np.triu(m, 1).T
 
 
-def _comoments(np: Any, g: dict[str, Any]) -> Any:
+def _comoments(np: Any, g: Gram) -> Any:
     """``g``'s co-moments as the whole ``k x k`` matrix in float64, whatever
     form ``ModelBank.gram()`` handed them over in (``dtype``, ``layout``)."""
     if _is_packed(np, g):
@@ -223,7 +256,7 @@ def _comoments(np: Any, g: dict[str, Any]) -> Any:
     return np.asarray(g["comoments"], dtype=float)
 
 
-def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str, Any]:
+def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     """Pool the Grams of disjoint row sets into the Gram of their union, or,
     with ``within=True``, within each part.
 
@@ -379,7 +412,7 @@ def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str,
     if len(parts) == 1 and not within:
         # Nothing to pool: the part is its own union, its group, instance and
         # lags included, which the pooled form drops (review 2026-10-05, YB8).
-        return dict(parts[0])
+        return parts[0].copy()
     cols = _columns(parts[0])
     targets = list(parts[0].get("targets") or [])
     for p in parts[1:]:
@@ -398,7 +431,7 @@ def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str,
     packed = all(_is_packed(np, p) for p in parts)
     iu = np.triu_indices(len(cols))
 
-    def matrix(p: dict[str, Any]) -> Any:
+    def matrix(p: Gram) -> Any:
         if packed:
             return np.asarray(p["comoments"], dtype=float)
         return _comoments(np, p)
@@ -497,12 +530,12 @@ def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str,
     }
 
 
-def _is_within(g: dict[str, Any]) -> bool:
+def _is_within(g: Gram) -> bool:
     """Whether ``g`` was pooled within parts (``merge(within=True)``)."""
     return g.get("within_parts") is not None
 
 
-def _refuse_within_union(what: str, parts: Sequence[dict[str, Any]]) -> None:
+def _refuse_within_union(what: str, parts: Sequence[Gram]) -> None:
     """Refuse to pool a Gram pooled within parts as a union beside others:
     its means are 0, the demeaned rows', so the union would add the gap
     from 0 to the other parts' means as if their rows had not been
@@ -518,7 +551,7 @@ def _refuse_within_union(what: str, parts: Sequence[dict[str, Any]]) -> None:
             raise ValueError(msg)
 
 
-def _target_parts(np: Any, g: dict[str, Any]) -> Any:
+def _target_parts(np: Any, g: Gram) -> Any:
     """Per target, the parts ``g`` holds: its ``target_within_parts`` if it
     was pooled within, else 1 for each target with weight and 0 for one
     without."""
@@ -527,7 +560,7 @@ def _target_parts(np: Any, g: dict[str, Any]) -> Any:
     return (np.asarray(g["target_weights"], dtype=float) > 0.0).astype(np.int64)
 
 
-def _centred_rows(np: Any, g: dict[str, Any], icept: int, m: int, k: int) -> Any:
+def _centred_rows(np: Any, g: Gram, icept: int, m: int, k: int) -> Any:
     """Every target's centred cross-moments, ``m x k``: ``cross_centred``,
     or in a mapping without it, as :func:`solve` forms them."""
     cc = g.get("cross_centred")
@@ -545,9 +578,7 @@ def _centred_rows(np: Any, g: dict[str, Any], icept: int, m: int, k: int) -> Any
     return np.stack([_cross_centred(np, g, t, _means_of(np, g, t), ybar[t]) for t in range(m)])
 
 
-def _merge_within(
-    np: Any, parts: list[dict[str, Any]], cols: list[str], targets: list[str]
-) -> dict[str, Any]:
+def _merge_within(np: Any, parts: list[Gram], cols: list[str], targets: list[str]) -> Gram:
     """:func:`merge` with ``within=True``: the parts' moments about their
     own means, folded in order, and the Gram of the rows demeaned part by
     part around them. The fold is
@@ -557,7 +588,7 @@ def _merge_within(
     k = len(cols)
     _, icept = _feature_slots(parts[0], None)
 
-    def matrix(p: dict[str, Any]) -> Any:
+    def matrix(p: Gram) -> Any:
         if packed:
             return np.asarray(p["comoments"], dtype=float)
         return _comoments(np, p)
@@ -666,7 +697,7 @@ def _floats(np: Any, v: Any) -> Any:
     return np.asarray([np.nan if x is None else x for x in v], dtype=float)
 
 
-def from_row(row: Any) -> dict[str, Any]:
+def from_row(row: Any) -> Gram:
     """A closed group's row as the mapping :meth:`~polars_online.ModelBank.gram`
     returns, so everything in this module works on it.
 
@@ -756,7 +787,7 @@ def _add_opt(a: Any, b: Any) -> Any:
     return None if b is None else a + b
 
 
-def _q_of(g: dict[str, Any]) -> float | None:
+def _q_of(g: Gram) -> float | None:
     """`sum(w**2)` behind the feature moments, back out of `n_kish`: 0 for a
     part that learned nothing, whose `n_kish` is None for want of a weight
     to divide by, not for want of the sums."""
@@ -769,7 +800,7 @@ def _q_of(g: dict[str, Any]) -> float | None:
     return w * w / float(nk)
 
 
-def _target_q(np: Any, g: dict[str, Any]) -> Any:
+def _target_q(np: Any, g: Gram) -> Any:
     nk = g.get("target_n_kish")
     if nk is None:
         return None
@@ -778,7 +809,8 @@ def _target_q(np: Any, g: dict[str, Any]) -> Any:
     return np.divide(tw * tw, nk, out=np.zeros_like(tw), where=np.isfinite(nk) & (nk > 0.0))
 
 
-def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
+@deprecated_keywords("po.gram.subset", {"cols": "columns"})
+def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     """The Gram of a subset of the columns, in the order given.
 
     Exact, not approximate: a marginal set of moments is a sub-block of the joint
@@ -787,9 +819,10 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     stepwise, an information criterion over feature sets, or an ``r``-column fit
     read off a ``k``-column stream all come from one pass.
 
-    ``cols`` are names or positions, and the intercept may be selected like any
-    other column. **Leave the intercept out, and every fit on the subset goes
-    through the origin**, as a spec with ``fit_intercept=False`` does:
+    ``columns`` are names or positions, as the Gram's own ``columns`` key
+    names them, and the intercept may be selected like any other column.
+    **Leave the intercept out, and every fit on the subset goes through the
+    origin**, as a spec with ``fit_intercept=False`` does:
     :func:`solve` and the paths read the raw moments, ``E[z z']`` and
     ``E[z y]``, and centre nothing. Keep it for a fit with an intercept.
     Targets are untouched: they index a different axis. Returns a mapping of
@@ -802,7 +835,7 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     for the theory and a recipe that runs.
     """
     np = _np()
-    idx = _col_index(g, cols)
+    idx = _col_index(g, columns)
     names = _columns(g)
     como = _comoments(np, g)
     cross = np.asarray(g["cross_moments"], dtype=float)
@@ -829,7 +862,7 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     }
 
 
-def correlation(g: dict[str, Any]) -> Any:
+def correlation(g: Gram) -> Any:
     """The correlation matrix of the columns, from the centred co-moments.
 
     A ``k x k`` array, ``C_ij / sqrt(C_ii C_jj)`` from the co-moments ``C``.
@@ -856,7 +889,7 @@ def correlation(g: dict[str, Any]) -> Any:
 
 
 def solve(
-    g: dict[str, Any],
+    g: Gram,
     *,
     ridge: float | Sequence[float] = 0.0,
     target: str | int = 0,
@@ -987,7 +1020,7 @@ def solve(
 
 @renamed_keywords("po.gram.lasso_path", {"lambdas": "penalties"})
 def lasso_path(
-    g: dict[str, Any],
+    g: Gram,
     penalties: Sequence[float],
     *,
     l1_ratio: float = 1.0,
@@ -1118,7 +1151,7 @@ def lasso_path(
     return np.asarray(flat, dtype=float).reshape(len(lams), k)
 
 
-def _native_gram(np: Any, g: dict[str, Any], icept: int) -> tuple[Any, ...]:
+def _native_gram(np: Any, g: Gram, icept: int) -> tuple[Any, ...]:
     """A Gram's arrays as the Rust fits read them: ``k`` and
     ``weight_sum``, then ``means``, ``comoments``, ``cross_moments``,
     ``means_by_target``, ``cross_centred``, ``target_weights``,
@@ -1198,12 +1231,13 @@ def _lars_weights(np: Any, n: int, penalty_weights: Sequence[float] | None) -> l
     return [float(v) for v in pw]
 
 
+@deprecated_keywords("po.gram.lars_path", {"max_steps": "max_iter"})
 def lars_path(
-    g: dict[str, Any],
+    g: Gram,
     *,
     target: str | int = 0,
     features: Sequence[str | int] | None = None,
-    max_steps: int | None = None,
+    max_iter: int | None = None,
     max_active: int | None = None,
     penalty_weights: Sequence[float] | None = None,
 ) -> dict[str, Any]:
@@ -1254,7 +1288,7 @@ def lars_path(
     with ``d = [1, 1]``, at ``[2, 1]``, where least squares is ``[1, 1]``.
 
     A selection reads only the start of a path, and a step takes
-    ``O(k |A|)`` operations, so stop it early. ``max_steps`` stops it after
+    ``O(k |A|)`` operations, so stop it early. ``max_iter`` stops it after
     that many knots past the path's first. ``max_active`` stops it at the
     first knot with that many columns active or more, more than
     ``max_active`` where columns tie there. A column
@@ -1271,7 +1305,7 @@ def lars_path(
 
     ``target``, ``features``
         As for :func:`solve`.
-    ``max_steps``, ``max_active``
+    ``max_iter``, ``max_active``
         Where to stop: after this many knots past the first, each its own
         penalty however many columns change at it; and at the first knot
         with this many columns active or more. ``None`` is no limit, and
@@ -1305,7 +1339,7 @@ def lars_path(
         it reaches 0 is the one case apart: that column stays in the set at
         0.
     ``stop``
-        ``"max_steps"``, ``"max_active"``, or ``"end"``: ``l`` reached 0,
+        ``"max_iter"``, ``"max_active"``, or ``"end"``: ``l`` reached 0,
         or no column can enter.
 
     .. code-block:: python
@@ -1326,18 +1360,19 @@ def lars_path(
         [g],
         targets=[target],
         features=features,
-        max_steps=max_steps,
+        max_iter=max_iter,
         max_active=max_active,
         penalty_weights=penalty_weights,
     )[0][0]
 
 
+@deprecated_keywords("po.gram.lars_paths", {"max_steps": "max_iter"})
 def lars_paths(
-    grams: Sequence[dict[str, Any]],
+    grams: Sequence[Gram],
     *,
     targets: Sequence[str | int] | None = None,
     features: Sequence[str | int] | None = None,
-    max_steps: int | None = None,
+    max_iter: int | None = None,
     max_active: int | None = None,
     penalty_weights: Sequence[float] | None = None,
 ) -> list[list[dict[str, Any]]]:
@@ -1379,7 +1414,7 @@ def lars_paths(
             msg = f"lars_paths() needs the same columns in every Gram: {cols} vs {_columns(p)}"
             raise ValueError(msg)
     slots, icept = _feature_slots(parts[0], features)
-    steps, active = _limit("max_steps", max_steps), _limit("max_active", max_active)
+    steps, active = _limit("max_iter", max_iter), _limit("max_active", max_active)
     weights = _lars_weights(np, len(slots), penalty_weights)
     tidx = [
         list(range(len(p["cross_moments"])))
@@ -1406,16 +1441,16 @@ def lars_paths(
     ]
 
 
-_PATH_KEYS = ("max_steps", "max_active", "penalty_weights")
+_PATH_KEYS = ("max_iter", "max_active", "penalty_weights")
 
 
 def solve_subsets(
-    grams: Sequence[dict[str, Any]],
+    grams: Sequence[Gram],
     subsets: Sequence[Sequence[int]],
     *,
     targets: Sequence[str | int] | None = None,
     features: Sequence[str | int] | None = None,
-    ridge: float = 0.0,
+    ridge: float | Sequence[float] = 0.0,
     standardize: bool = False,
     path: dict[str, Any] | None = None,
     within: bool = False,
@@ -1486,7 +1521,7 @@ def solve_subsets(
         As for :func:`solve`, one ridge.
     ``path``
         ``None`` for the ridge fit, or a dict of :func:`lars_path`'s
-        ``max_steps``, ``max_active`` and ``penalty_weights`` (``{}`` for
+        ``max_iter``, ``max_active`` and ``penalty_weights`` (``{}`` for
         none of them) for each target's lasso path instead. ``ridge`` and
         ``standardize`` are then not read: a path is in correlation form.
     ``within``
@@ -1584,7 +1619,7 @@ def solve_subsets(
     tidx = list(range(m)) if targets is None else [_target_index(parts[0], t) for t in targets]
     for p in parts:
         for key in ("means_by_target", "cross_centred"):
-            v = p.get(key)
+            v: Any = p.get(key)
             if m and (v is None or len(v) == 0):
                 msg = (
                     f"solve_subsets() needs {key!r} in every Gram, which ModelBank.gram() "
@@ -1601,11 +1636,14 @@ def solve_subsets(
         return out if target_signs is not None else out[0]
 
     if path is not None:
+        # `lars_path`'s keyword renamed after 0.13, read under its old name
+        # here too (task 244, M-24).
+        path = forward_deprecated("po.gram.solve_subsets: path", path, {"max_steps": "max_iter"})
         unknown = sorted(set(path) - set(_PATH_KEYS))
         if unknown:
             msg = f"solve_subsets(): path takes {list(_PATH_KEYS)}, not {unknown}"
             raise ValueError(msg)
-        steps = _limit("max_steps", path.get("max_steps"))
+        steps = _limit("max_iter", path.get("max_iter"))
         active = _limit("max_active", path.get("max_active"))
         weights = _lars_weights(np, len(slots), path.get("penalty_weights"))
         out = _native.gram_path_subsets(
@@ -1628,7 +1666,9 @@ def solve_subsets(
                 for draw in out
             ]
         )
-    if not (math.isfinite(ridge) and ridge >= 0.0):
+    scalar = np.ndim(ridge) == 0
+    ridges = [float(r) for r in np.atleast_1d(np.asarray(ridge, dtype=float))]
+    if not ridges or not all(math.isfinite(r) and r >= 0.0 for r in ridges):
         msg = f"solve_subsets: ridge must be finite and >= 0, got {ridge!r}"
         raise ValueError(msg)
     for p in parts:
@@ -1639,11 +1679,12 @@ def solve_subsets(
                 "ModelBank.gram() reports both"
             )
             raise ValueError(msg)
-    fits = _native.gram_ridge_subsets(
-        native, picked, tidx, slots, ic, float(ridge), bool(standardize), bool(within), signs
-    )
-    return per_draw(
-        [
+
+    def fit(r: float) -> list[Any]:
+        fits = _native.gram_ridge_subsets(
+            native, picked, tidx, slots, ic, r, bool(standardize), bool(within), signs
+        )
+        return [
             [
                 [
                     {
@@ -1660,6 +1701,32 @@ def solve_subsets(
                 for per in draw
             ]
             for draw in fits
+        ]
+
+    if scalar:
+        return per_draw(fit(ridges[0]))
+    # A grid, as :func:`solve` takes one: each value fitted in turn, and each
+    # number stacked with one row per value; `n` does not depend on the ridge.
+    grids = [fit(r) for r in ridges]
+    return per_draw(
+        [
+            [
+                [
+                    {
+                        key: (
+                            first[key]
+                            if key == "n"
+                            else np.stack([g[d][s][t][key] for g in grids])
+                            if key in ("coef", "se", "t")
+                            else np.asarray([g[d][s][t][key] for g in grids], dtype=float)
+                        )
+                        for key in first
+                    }
+                    for t, first in enumerate(per)
+                ]
+                for s, per in enumerate(draw)
+            ]
+            for d, draw in enumerate(grids[0])
         ]
     )
 
@@ -1697,7 +1764,7 @@ def _target_signs(np: Any, target_signs: Any, n_grams: int, within: bool) -> lis
 
 
 def coef_stats(
-    g: dict[str, Any],
+    g: Gram,
     coef: Sequence[float],
     *,
     target: str | int = 0,
@@ -1876,7 +1943,7 @@ def coef_stats(
     }
 
 
-def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> Any:
+def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
     """Variance inflation factors: ``1 / (1 - R2_j)`` for each column on the rest,
     straight off the diagonal of the inverse correlation matrix.
 
@@ -1936,7 +2003,7 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     return out
 
 
-def condition(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> dict[str, Any]:
+def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[str, Any]:
     """Belsley's collinearity diagnostics for the accumulated design.
 
     ``features`` names the columns to diagnose, by name or position: every

@@ -2759,8 +2759,8 @@ print(pl.read_parquet("blocks.parquet").select("group", "rows_fed").rows())
 ### Reading a correlation matrix
 
 `po.corr` repairs, shrinks, summarizes and scores a correlation matrix,
-given as an array, a `gram()` dict or a closed row (`po.corr.matrix`
-turns any of them into an array). Each function needs only numpy, and
+given as an array, a `gram()` dict or a closed row (`po.gram.correlation`
+turns a Gram into one). Each function needs only numpy, and
 follows the paper it names. A matrix pieced together pair by pair, each
 pair on its own rows, need not be a correlation matrix at all, as here:
 its smallest eigenvalue is negative. `po.corr.nearest` repairs it.
