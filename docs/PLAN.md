@@ -9811,6 +9811,26 @@ tick, and that the series holding it up has a count near 1.
       memory and timing tests (`test_ffi_memory`, the timed recipes) in a
       serial group; (6) `scripts/quick.sh` mapping changed paths to their
       test files for the loop inside a task.
+- [x] 246. **The mutants run's headroom** -- the user, 2026-10-11: "Ensure
+      that the GitHub mutants run has plenty of headroom not to fail its
+      next run", then "Can we just run future mutants with a memory limit
+      rather than having to watch and run on our machine?" The push of
+      `5cb8f7e` (run 37945116563) lost 8 of 111 shards to "The runner has
+      received a shutdown signal", 12 to 81 minutes in, well inside their
+      limits; reproducing the deal showed every one was dealt `audit.rs`'s
+      `Moments::rescale`/`add`/`merge` mutants first or early, so a mutant
+      ran the runner out of memory, and those shards' outcomes never
+      uploaded (task 234's "ran complete" was wrong on that count). *Done*:
+      every mutant's test processes run under `prlimit --data` as cargo's
+      test runner, 6 GiB at `-j 2` (changed lines) and 3 GiB at `-j 4`
+      (weekly), 12 GiB of the runner's 16 either way, against a measured
+      peak of 497 MiB (online-core's largest test binary, extended tier,
+      four test threads); the changed lines' stop 300 minutes inside 330
+      (the slowest shard of that push took 98), the weekly's 325 inside 350.
+      Held by `TestMutationTesting::test_every_mutants_test_process_is_capped_in_memory`
+      and `..._stops_with_room_before_its_job_is_killed` (both fail on the
+      old workflow). The next push lists 418 mutants at `6f87839` (about 14
+      shards), before task 244 and review 7's fixes add theirs.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

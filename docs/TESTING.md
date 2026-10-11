@@ -1646,7 +1646,23 @@ pass or replaces it while it waits: the next pass lists only its own diff. On
 2026-10-09 the share became thirty and each shard's stop 160 minutes (the
 job's limit 180): the push of `f54d1e5`'s slowest shard of forty took 83 of
 its 100 minutes, and the Rust suite every mutant runs had grown from 146 s
-to 209 s (the user: "Yes mutants sharding").
+to 209 s (the user: "Yes mutants sharding"). On 2026-10-11 each shard's stop
+became 300 minutes inside a limit of 330, three times the push of
+`5cb8f7e`'s slowest shard (98 minutes), and the weekly shard's 325 inside
+350.
+
+**A mutant cannot take its runner down.** Every test process a mutant runs
+is capped in memory: cargo runs each test binary through `prlimit --data`
+(the job's `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER`), at 6 GiB for the
+changed lines' two mutants at a time and 3 GiB for the weekly pass's four,
+12 GiB of a runner's 16 either way. A mutant whose loop keeps allocating
+then fails its own allocation, and is counted caught. Before the cap, the
+push of `5cb8f7e` lost 8 of its 111 shards to "The runner has received a
+shutdown signal", every one of them dealt `audit.rs`'s `Moments` mutants,
+and their outcomes never reached the report. online-core's largest test
+binary peaks at 497 MiB with the extended tier at four test threads, the
+others under 82 MiB, and the baseline runs under the same cap, so a cap too
+small fails the shard loudly.
 A pull request's runs share one group, and a newer commit cancels the
 older, since it lists the whole pull request's diff again.
 
