@@ -156,6 +156,33 @@ class TestMergeWithin:
         union = pg.solve(pg.merge(blocks(df)))
         assert abs(union[1] - 0.5) > 1.0 > 10 * abs(b[1] - 0.5)
 
+    def test_a_target_with_gaps_is_fitted_pairwise_and_not_on_its_own_rows(self):
+        """GRAM.md, *Pooling within blocks*: under ``target_gaps="pairwise"``
+        the co-moments pool over every row of a part and a target's
+        cross-moments over the rows it is present on, so ``y2``'s within fit
+        is that pairwise one, and not statsmodels' fixed-effects regression
+        on ``y2``'s rows alone (review 7, B-D1: up to 0.02 on slopes of 0.2
+        to 0.5). ``y``, present on every row, is that regression."""
+        import statsmodels.api as sm
+
+        df = frame(seed=21)
+        g = pg.merge(blocks(df), within=True)
+        want = demeaned(df)
+        x = df.select(FEATURES).to_numpy()
+        blk = df["block"].to_numpy()
+        gaps = {}
+        for t, name in enumerate(["y", "y2"]):
+            b = pg.solve(g, target=t)
+            pairwise = np.linalg.solve(want["comoments"], want[name]["cross_centred"])
+            close(b[1:], pairwise, tol=1e-10)
+            y = df[name].to_numpy().astype(float)
+            own = ~np.isnan(y)
+            dummies = (blk[own][:, None] == np.unique(blk[own])).astype(float)
+            fe = sm.OLS(y[own], np.hstack([x[own], dummies])).fit().params[:4]
+            gaps[name] = float(np.abs(b[1:] - fe).max())
+        assert gaps["y"] < 1e-12, gaps
+        assert 5e-3 < gaps["y2"] < 0.05, gaps
+
     @pytest.mark.parametrize(
         "form",
         [dict(layout="packed"), dict(dtype="float32"), dict(dtype="float32", layout="packed")],

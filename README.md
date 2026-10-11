@@ -3971,11 +3971,11 @@ share of the gain: x0 0.70, x1 0.30, x2 0.00
 
 ## Versions, testing and development
 
-**Before 1.0, a minor release of this package can break your code or move
-the numbers a model returns, so pin the minor version.** Each guarantee in
-[What you can rely on](#what-you-can-rely-on) is held by tests that run on
-Linux, macOS and Windows at every push. A checkout builds with uv and a
-stable Rust toolchain.
+**Version 1.0 starts this package's promise of a stable API: a minor
+release adds to it, and only a major release removes or renames a stable
+part.** Each guarantee in [What you can rely on](#what-you-can-rely-on) is
+held by tests that run on Linux, macOS and Windows at every push. A
+checkout builds with uv and a stable Rust toolchain.
 
 ### Versioning and the Polars pin
 
@@ -3986,19 +3986,27 @@ promise it.
 
 #### This package's own versioning
 
-**For stability, pin the minor version in your requirements, as
-`polars-online~=0.13.0`, which takes the 0.13 series' patch releases and
-no 0.14.** Without that pin, an upgrade can bring a new minor version.
-While this package is pre-1.0, the **minor** version carries breaking
-changes and any change to the numbers a model returns. From 1.0, a minor
-version breaks nothing stable, so `polars-online~=1.0` keeps your code
-working across the 1.x series. Pin the minor as well if your numbers must
-not move, because a minor release can correct numbers that were wrong. The
-package follows semantic versioning ([CHANGELOG.md](CHANGELOG.md)).
+**To keep your code working across the 1.x series, pin the major version
+in your requirements, as `polars-online~=1.0` or `polars-online>=1,<2`.**
+A minor release adds models, parameters, outputs and functions, and breaks
+nothing stable. It can also correct numbers that were wrong, so pin the
+minor as well if your numbers must not move. `polars-online~=0.13.0` pins
+the current minor: it takes that minor's patch releases and stops before
+the next minor. The package follows semantic versioning
+([CHANGELOG.md](CHANGELOG.md)).
 
-**Stable means part of this package's API, and from 1.0 a breaking change
-to a stable part needs a new major version.** Before 1.0 it needs a new
-minor. An unstable part can change its form in any minor release:
+**Code written for 0.x needs the changes the CHANGELOG lists under
+*Changed (breaking)* before it runs on 1.0.** Version 1.0 renamed and
+removed parts of the 0.x API, to make it more standard and consistent. A
+spec keyword that 1.0 renamed is refused with an error that names the new
+one.
+
+**Stable means part of this package's API, and a breaking change to a
+stable part needs a new major version.** `tests/test_api_surface.py`
+compares the stable parts with a snapshot of them, `tests/api_surface.txt`,
+so a change to one shows as a diff in review. The command line's exit
+status is held by a test of its own. An unstable part can change its form
+in any minor release:
 
 | | what it covers |
 |---|---|
@@ -4006,21 +4014,20 @@ minor. An unstable part can change its form in any minor release:
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
 | **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
 
-**From 1.0, a changed default or meaning is a major release, and a fix to
-numbers that were wrong is a minor one.** A number is wrong when it
-disagrees with the model's stated definition, the update equations its
-docstring gives:
+**A changed default or meaning needs a major release, and a fix to numbers
+that were wrong a minor one.** A number is wrong when it disagrees with
+the model's stated definition, the update equations its docstring gives:
 
-| a change | before 1.0 | from 1.0 |
-|---|---|---|
-| a fix that moves no number | patch | patch |
-| a fix to numbers that were wrong | minor | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures from the last release |
-| a new model, parameter, output or function | minor | minor |
-| a stable name renamed | minor, and the old name is refused, naming the new one | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one, as the next paragraph says |
-| a default or a meaning changed, or a stable name removed | minor | major |
-| a change to an unstable part | minor | minor, declared in the CHANGELOG |
+| a change | the release it needs |
+|---|---|
+| a fix that moves no number | patch |
+| a fix to numbers that were wrong | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures from the last release |
+| a new model, parameter, output or function | minor |
+| a stable name renamed | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one, as the next paragraph says |
+| a default or a meaning changed, or a stable name removed | major |
+| a change to an unstable part | minor, declared in the CHANGELOG |
 
-**From 1.0, a renamed spec parameter is forwarded by a table, and any
+**A spec parameter renamed after 1.0 is forwarded by a table, and any
 other renamed name by a forwarding of its own.** The table reads a spec
 builder's old keyword, a spec dict's old key and a TOML file's old key as
 the new one, at any depth of a spec. It does not reach another function's
@@ -4030,29 +4037,31 @@ ships its own forwarding in the release that renames it: a check at the
 function's top, a stub, an alias or a second column. Both warn with
 `PolarsOnlineDeprecationWarning`, and both last until the next major.
 
-**From 1.0, a state file a 1.x build wrote loads in every later 1.x.**
-Each change to a state's layout ships a loader for the layout before it.
-A saved state of each kind, frozen in the test suite, checks it three
-ways. The current layout's fixtures load, continue to the bit, and save
-back byte for byte. A previous layout's fixtures load through its loader,
-continue to the bit, and save back as the current layout's fixture bytes
-of the same case. So the loader turns a state into exactly what this build
-writes from the same rows. The two unstable formats, a window run's state and a
-formula target inside a bank's, are outside that promise. Before 1.0 there
-is no such promise: after upgrading across a release, refit a saved state
-from its input ([Saving, loading and serving](#saving-loading-and-serving)).
+**A state file a 1.x build saved loads in every 1.x build after it, and a
+state file a 0.x release saved does not load in 1.0.** The oldest layout a
+build loads stays at 1.0's for the whole 1.x series, and each change to a
+state's layout ships a loader for the layout before it. A saved state of
+each kind, frozen in the test suite, checks it three ways. The current
+layout's fixtures load, continue to the bit, and save back byte for byte.
+A previous layout's fixtures load through its loader, continue to the bit,
+and save back as the current layout's fixture bytes of the same case. So
+the loader turns a state into exactly what this build writes from the same
+rows. The two unstable formats, a window run's state and a formula target
+inside a bank's, are outside that promise. A 0.x state is refused by its
+schema version, with an error that says to refit it from its input
+([Saving, loading and serving](#saving-loading-and-serving)).
 
-**From 1.0, moving the Polars floor up is a minor release, and dropping a
-Polars major version a major one.** A resolver that installs the new
-release upgrades Polars with it, inside the same Polars major, so no code
-has to change for a higher floor:
+**Moving the Polars floor up needs a minor release, and dropping a Polars
+major version a major one.** A resolver that installs the new release
+upgrades Polars with it, inside the same Polars major, so no code has to
+change for a higher floor:
 
-| a change to the Polars range | before 1.0 | from 1.0 |
-|---|---|---|
-| widening it to admit a newer Polars | minor | minor |
-| moving the floor up | minor | minor |
-| capping it below a Polars that broke this library, as [How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves) describes | patch | patch |
-| dropping a Polars major version | minor | major |
+| a change to the Polars range | the release it needs |
+|---|---|
+| widening it to admit a newer Polars | minor |
+| moving the floor up | minor |
+| capping it below a Polars that broke this library, as [How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves) describes | patch |
+| dropping a Polars major version | major |
 
 #### What is pinned
 
