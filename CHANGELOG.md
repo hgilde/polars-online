@@ -334,6 +334,14 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Changed (breaking)
 
+- **Every integer output is `Int64`** (task 238): `kmeans`' `cluster`,
+  `micro`'s `n_clusters` and `n_micro`, and `hmm`'s `state` were `Int32`,
+  while `micro`'s `cluster` and every id, count and run length was `Int64`,
+  so code reading `cluster` from one model broke on the other's.
+  `output_index` no longer names an `i32`.
+- **The window formula refusal lists everything a formula reads**, in
+  Python and on the command line (negation, `&`/`|`, `pow`, `is_null` and
+  `is_not_null` were missing), from one list both check.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 

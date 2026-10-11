@@ -9510,6 +9510,17 @@ tick, and that the series holding it up has a count near 1.
       between pages, STATE-WORKFLOW's record IDs, RUNNER's `bank.toml`,
       MODELS' notation. The user's verdict on I8 is pending; the README's
       *Versions* still teaches 0.x pinning beside the 1.0 note (the user's).
+      *Follow-ups done 2026-10-11* (`task238-fu`, `be41a02`..`50691e7`,
+      merged `9d36e94`): `cluster` one dtype, then every integer output
+      `Int64` (the worker's raise, option (a), taken by the coordinator as
+      the user's "more standard and consistent" API before 1.0); the formula
+      refusal from one `ACCEPTED` list in Python and Rust; the disagreeing
+      figures re-measured (`scripts/diagnostics_rates.py`,
+      `scripts/memory_bench.py`: run-once CUSUM no-break 6.0% as statsmodels,
+      README memory on Polars 2.0 at 12M rows 1.8 GB query / 0.77 GB CLI);
+      STATE-WORKFLOW's guide states its rules (44 record labels gone);
+      RUNNER runs `job.toml` with a clock and `--skip-learned`; MODELS gives
+      each quantity its own symbol. Full tier 6266 passed.
 - [x] 239. **A review of every API doc** -- the user, 2026-10-10; run
       **before** task 238's rewrite (the user: "You can flip the api and
       [docs] rewrite if that would be better"), so the guides are rewritten
