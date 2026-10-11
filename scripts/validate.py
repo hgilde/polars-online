@@ -333,7 +333,7 @@ def main() -> None:
     print("---")
     print()
     print(
-        "Predictions are out-of-sample by construction (docs/PLAN.md hard rule 2): "
+        "Predictions are out-of-sample by construction: "
         "each row is predicted before the model sees its target. Negative R^2 on "
         "financial data is normal and expected - it means the model does worse than "
         "the realized in-window mean, not that anything is broken."

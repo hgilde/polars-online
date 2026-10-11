@@ -1,11 +1,11 @@
 # How the documentation is written
 
 The rules the reader-facing docs are held to: the README first, then the
-docstrings and the guides under `docs/`. Each rule is drawn from a report
-in [PHRASING.md](records/PHRASING.md). Most reports name a problem, and one
-confirms an approach that worked. Each rule names the entry it came from,
-so it can be checked against the case. Where two rules pull against each
-other, the lower-numbered one wins.
+docstrings and the guides under `docs/`. Each rule was drawn from a
+reader's report on a draft. Most reports named a problem, and one confirmed
+an approach that worked, so each rule gives the case it came from, and can
+be checked against it. Where two rules pull against each other, the
+lower-numbered one wins.
 
 Every rule serves one test: **can this sentence be understood by a reader
 who has not yet been told what it is about?** The writer already has the
@@ -15,7 +15,7 @@ spent, a mechanism alluded to rather than stated, and a document that
 assumes the reader has the author's map of it.
 
 Nine principles sit above the numbered rules. They generalize the user's
-verdicts on the README's rewrites (README-ITERATIONS.md, I3 and I4), and
+verdicts on the README's rewrites, and
 were written down at the user's word on 2026-10-04: "Write all the rules".
 Each numbered rule is one way to keep one of them.
 
@@ -48,7 +48,7 @@ Each numbered rule is one way to keep one of them.
 
 The reader of the README **knows statistics, a little Polars, and what it
 means for rows to be in time order, and nothing about the internals of
-Polars or of this project** (PHRASING: "README draft, round 1"). Every
+Polars or of this project**. Every
 sentence is written to that reader, and checked by reading it as them.
 
 What that reader does not have must be defined before it is used, or
@@ -84,8 +84,8 @@ time* asks nothing. The replacements so far:
 **Audit the draft as the reader, not as the author.** Read each section
 cold and list every word the reader above would stop at. Each one is
 defined where it stands, defined earlier and linked, or replaced. The list
-for the round-1 draft is in PHRASING.md: nineteen words, most of them the
-library's own.
+for the first draft the reader audited held nineteen words, most of them
+the library's own.
 
 ## 1. Every document has an altitude, and stays at it
 
@@ -100,7 +100,7 @@ Three altitudes, each with its own job:
 **Depth has an address.** Detail removed from a higher altitude is moved,
 never deleted. It goes to the document that owns it, and a one-line
 cross-reference stays behind. *Any content we remove from here should have
-a place somewhere else* (PHRASING: "What you get"). Before cutting, name
+a place somewhere else*. Before cutting, name
 where the detail lands. If it lands nowhere yet, that is a document to
 write, not a sentence to drop.
 
@@ -109,20 +109,20 @@ mechanism at the altitude that owns the mechanism.** In the introduction,
 *this syntax reads all the data into memory up front* is the whole story.
 *Polars hands a stateful expression its whole column at once, in either
 engine* is the deep-doc sentence behind it. It does not belong up top,
-even though it is true and interesting (PHRASING: "The expression form").
+even though it is true and interesting.
 Neither altitude may *allude*: a cost is named by what is spent, and an
 effect by what causes it, at whichever level that belongs.
 
 ## 2. Plan the map, then give each section one job
 
 A reader meets a document's structure before its sentences, so the
-structure is designed first, as a map, and only then written (PHRASING:
-"the task 89 rewrite").
+structure is designed first, as a map, and only then written.
 
 **Plan the whole map before rewriting a sentence.** List every section and
 subsection, and say where each piece of the current text lands, before
-touching the prose. Record the map in `docs/PLAN.md`, where decisions
-live, with `←` marking what moved; task 89 is the model. A map catches
+touching the prose. Record the map beside the pass's prompt in the log of
+README passes, which [docs/README.md](README.md#records) lists under *Logs
+of the documentation*, with `←` marking what moved. A map catches
 what a sentence-by-sentence pass cannot. The README's map caught these:
 
 | what the map showed | where it went |
@@ -144,41 +144,37 @@ linked beside it, shows the hierarchy at a glance. The README's old
 contents was one paragraph of sixteen links, all at the same level.
 
 **The introduction leads with its example.** A reader who has watched a
-bank run reads the idea and the terms as explanations of something seen.
-So the README's *Introduction* opens with a first fit, its inputs and
-outputs shown (§3). The idea, the terms and the guarantees follow it
-(PHRASING: "the opener of Introduction"). §1 gives the introduction that
-example as its job.
+bank run reads the idea and the terms as explanations of something seen. So
+the README's *Introduction* opens with a first fit, its inputs and outputs
+shown (§3). The idea, the terms and the guarantees follow it. §1 gives the
+introduction that example as its job.
 
 **Every section opens with a short introduction, or with a table of its
 contents that explains the subsections.** A reader decides from the opener
 whether the section answers their question. A table of the subsections
-opens the section when it explains a lot about them or adds information
-(PHRASING: "the opener of Introduction"). *How a bank sees a stream* opens
-with the question each subsection answers and the parameters that answer
-it. Otherwise the opener is one to three sentences that say what the
-section offers: *here is a first model fit, and an introduction to the
-library*. What every subsection
-obeys is stated here too, before the first subsection rather than inside
-one: the rules both of *Windowed means*' subsections follow sat inside the
-first of them. A heading followed directly by a subheading, a table, a
-list or a code block is a section with no opener. On 2026-10-04 sixteen of
-the README's headings were. Four were top-level sections that went straight
-to a subheading: *Introduction*, *Performance*, *Scope and integrations*,
-and *Versions, testing and development* (PHRASING: "Openers, kinds and
-tacked-on details").
+opens the section when it explains a lot about them or adds information.
+*How a bank sees a stream* opens with the question each subsection answers
+and the parameters that answer it. Otherwise the opener is one to three
+sentences that say what the section offers: *here is a first model fit, and
+an introduction to the library*. What every subsection obeys is stated here
+too, before the first subsection rather than inside one: the rules both of
+*Windowed means*' subsections follow sat inside the first of them. A
+heading followed directly by a subheading, a table, a list or a code block
+is a section with no opener. On 2026-10-04 sixteen of the README's headings
+were. Four were top-level sections that went straight to a subheading:
+*Introduction*, *Performance*, *Scope and integrations*, and *Versions,
+testing and development*.
 
-**An opener never lists what follows in a sentence.** The subsections
-are already listed at the top, in the contents table, and the bold leads
-name the paragraphs. So a sentence that walks through them tells the reader
+**An opener never lists what follows in a sentence.** The subsections are
+already listed at the top, in the contents table, and the bold leads name
+the paragraphs. So a sentence that walks through them tells the reader
 nothing new. One was *The idea says how, Terminology defines the words this
 README uses, and What you can rely on lists what holds in every run*. The
-user found it "like a small table of contents for the section" (PHRASING:
-"the opener of Introduction"). Another was *The paragraphs below say what
-that pass guarantees, when row order matters, and how a bank is run, saved
-and checked*. For that one the user's wording was *here are a few points to
-remember about fitting models with polars-online* (PHRASING: "The
-paragraphs below"). Its signs are a subsection's title, in italics or as a
+user found it "like a small table of contents for the section". Another was
+*The paragraphs below say what that pass guarantees, when row order
+matters, and how a bank is run, saved and checked*. For that one the user's
+wording was *here are a few points to remember about fitting models with
+polars-online*. Its signs are a subsection's title, in italics or as a
 link, followed by *says*, *shows* or *lists*; *Below come*, *Below are* or
 *The paragraphs below say*; and *follow the example*. The test is to strip
 the names and topics of what follows from the opener: what remains must
@@ -215,44 +211,39 @@ model sections are the exception to moving freely.
 their level, as `docs/EXTENDING.md` step 15 says.
 
 **Every paragraph serves the heading.** A section about the clock does not
-explain grouping, cite a test, or survey which models the clock applies to
-(PHRASING: "A clock that is not time"). A section titled *Groups, weights
-and warm-up* whose prose is entirely about warm-up is two sections that
-have not been separated yet (PHRASING: "Groups, weights and warm-up").
-When a paragraph does not serve its heading, the section that owns it
-usually exists already. Move the paragraph there rather than widening the
-heading.
+explain grouping, cite a test, or survey which models the clock applies to.
+A section titled *Groups, weights and warm-up* whose prose is entirely
+about warm-up is two sections that have not been separated yet. When a
+paragraph does not serve its heading, the section that owns it usually
+exists already. Move the paragraph there rather than widening the heading.
 
 **Siblings sit together.** Things a reader will compare are adjacent, in
 the order the reader meets them. *With a decay* and *without a decay* are
-one such pair, and the three ways to run a bank are another (PHRASING:
-"Any row order").
+one such pair, and the three ways to run a bank are another.
 
 **Lead with the library's own idiom.** This is a Polars library, so the
 Polars form of anything comes first, the Python-loop form second, and the
-exceptional form last (PHRASING: "A Python loop over chunks").
+exceptional form last.
 
 **The short version goes up front, the long version where it lives.** The
 introduction carries one table row on testing, one sentence on saving
 state and one number on parallelism. The sections that own those topics
-carry the rest (PHRASING: "What you get", "Mistakes are named").
+carry the rest.
 
 ## 3. Code with comments, not prose that narrates code
 
 **When the content is *describing*, show it as code.** If a passage says
 what a parameter does, what comes out of a structure, or how to call
-something, it becomes a code example with comments (PHRASING: "Whole
-document — prose that should be code with comments"). One paragraph once
+something, it becomes a code example with comments. One paragraph once
 explained that `repr(bank)` shows its specs and groups, that
 `bank.groups()` lists every group with its row count, and that
 `bank.drop_groups(...)` forgets the quiet ones. It is now a code block
-with comments (PHRASING: "A bank says what it holds", "As a query").
+with comments.
 So is a paragraph that walks through a call's forms: *`po.target("price_5m",
 relative_to="mid")` is the target `price_5m − mid` … In the CLI's TOML it
-is a table* became three targets in one spec, a comment on each scale
-(PHRASING: "`po.target`, in Relative and look-ahead targets"). Task 201
-later removed `relative_to`, and the example became the same targets made
-with `with_columns`.
+is a table* became three targets in one spec, a comment on each scale.
+`relative_to` was later removed, and the example became the same targets
+made with `with_columns`.
 
 | the prose was | it becomes |
 |---|---|
@@ -263,33 +254,31 @@ with `with_columns`.
 **An example shows what goes in and what comes out.** A reader cannot
 follow a call on a frame they have never seen. So an example shows its
 input, built in code the reader has seen, with a few of its rows printed in
-a table where their shape matters, and the table each step returns. Its comments say what each line takes and what it
-gives. The `refresh_time` example became readable once it built its eight
-ticks in the open and printed the grid they make (PHRASING: "the
-`refresh_time` example"). The first fit is held to the same rule (PHRASING:
-"the opener of Introduction"). A printed table is a claim like any other,
-so a test holds it to what the code returns, as
-`tests/test_refresh_time.py` holds that grid.
+a table where their shape matters, and the table each step returns. Its
+comments say what each line takes and what it gives. The `refresh_time`
+example became readable once it built its eight ticks in the open and
+printed the grid they make. The first fit is held to the same rule. A
+printed table is a claim like any other, so a test holds it to what the
+code returns, as `tests/test_refresh_time.py` holds that grid.
 
-**Every name an example reads was built by an example before it.** A
-reader starts with nothing and runs the examples in order, so a frame
-described in prose is a frame they cannot make. A frame that several
-sections read is built once, in *Example data* after *Install*, and a
-section that runs on it links there. I4 answered R1's *introduce every
-frame an example reads* with a paragraph that listed `df`'s columns. It
-sat at the end of a section about parameters for four rewrites, until the
-user found it "out of context" and "very hard to understand" (PHRASING:
-"The examples from here on read two frames"). No test could see it,
-because the README test's namespace hands every block `df` ready-made. So
+**Every name an example reads was built by an example before it.** A reader
+starts with nothing and runs the examples in order, so a frame described in
+prose is a frame they cannot make. A frame that several sections read is
+built once, in *Example data* after *Install*, and a section that runs on
+it links there. I4 answered R1's *introduce every frame an example reads*
+with a paragraph that listed `df`'s columns. It sat at the end of a section
+about parameters for four rewrites, until the user found it "out of
+context" and "very hard to understand". No test could see it, because the
+README test's namespace hands every block `df` ready-made. So
 `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one` parses
 the README's blocks in order, and fails on a name that no block before it
 builds.
 
-**An example that reads the example data says so in the line just above
-it, with a link.** The last sentence above such a block names what it
-reads, as *This code uses `df` from [Example data](../README.md#example-data):*,
-so a reader who opens the README at any section can tell where `df` comes
-from, and build it (the user, 2026-10-05).
+**An example that reads the example data says so in the line just above it,
+with a link.** The last sentence above such a block names what it reads, as
+*This code uses `df` from [Example data](../README.md#example-data):*, so a
+reader who opens the README at any section can tell where `df` comes from,
+and build it (the user, 2026-10-05).
 `test_an_example_on_the_example_data_says_so_just_above_it` holds every
 block to it.
 
@@ -305,71 +294,67 @@ saving tables to disk and then reading them from a lazy frame".
 and the docstrings to it.
 
 **An example matches each part of its claim, and says which part it
-shows.** *Features and targets can be windows over the stream* promised
-two things. Its examples, *the last minute's time-weighted mean or the next
+shows.** *Features and targets can be windows over the stream* promised two
+things. Its examples, *the last minute's time-weighted mean or the next
 minute's VWAP*, never said which was a feature and which a target. So the
-user read it as a backward window with no forward target (PHRASING:
-"Features and targets can be windows"). A claim about features and targets
-names a feature that looks back and a target that looks ahead, each as
-what it is.
+user read it as a backward window with no forward target. A claim about
+features and targets names a feature that looks back and a target that
+looks ahead, each as what it is.
 
 **A long example names its steps in brief comments, and leaves the detail
 to the prose.** The first fit runs four steps in one block: make up the
 input, fit every row and serve, fit locally, and forecast a target that
 looks ahead. The user found the section "much better" with its tables and
 prose, and asked for comments "briefly describing what is happening but not
-high detail since the section has good detail" (PHRASING: "the first fit's
-code comments"). So each step opens with a one-line comment that says what
-it does, and a line's own comment says what it gives.
+high detail since the section has good detail". So each step opens with a
+one-line comment that says what it does, and a line's own comment says what
+it gives.
 
 **An example builds a thing in Polars' own terms when the library takes
 them.** Where a spec takes a Polars expression, the example writes one, and
-a helper that does the same job comes second, if at all. The user found
-the expressions clearer than `po.target("price_5m", relative_to="mid")`
-(PHRASING: "relative targets as expressions"), and task 201 removed that
-helper for the `with_columns` expression that does its job. An expression
-such as `(po.rewm_mean("price", ...) - pl.col("mid")).alias("fwd_move")`
-shows what is computed and over which rows, in a language the reader
-already knows.
+a helper that does the same job comes second, if at all. The user found the
+expressions clearer than `po.target("price_5m", relative_to="mid")`, and
+that helper was removed for the `with_columns` expression that does its
+job. An expression such as `(po.rewm_mean("price", ...) -
+pl.col("mid")).alias("fwd_move")` shows what is computed and over which
+rows, in a language the reader already knows.
 
 **Prose that stays must carry what a comment cannot hold at comment
 length.** A reason earns its sentence: *filter after the bank, because a
 filter before it makes Polars hold several blocks of each parquet file per
 thread*. So does a warning, such as *a huge finite half-life is not `inf`*,
 and so does a trade-off. A restatement of what the code already shows does
-not (PHRASING: "As a query", clarification). The test for what remains:
+not. The test for what remains:
 would its comment be longer than the code it sits beside? Then it is a
 concept, and it stays as text, above the code and not repeated inside it.
 
-**Every code block runs.** A code example is a claim the reader trusts.
-The test suite runs the README's python blocks and the docstrings'
-examples, so a converted passage is also a test of what it describes. Run
-a section's blocks while drafting it, not only at the end.
-`_readme_namespace` in `tests/test_production_hardening.py` builds the
-namespace each README block runs in, so a draft's blocks can run there
-before they reach the README: `uv run python scripts/doc_review.py run
-DRAFT.md` runs each the way the README test does. It holds what the README's examples have
-built, so a block that runs there has not shown that a reader could run
-it: the rule above checks that.
+**Every code block runs.** A code example is a claim the reader trusts. The
+test suite runs the README's python blocks and the docstrings' examples, so
+a converted passage is also a test of what it describes. Run a section's
+blocks while drafting it, not only at the end. `_readme_namespace` in
+`tests/test_production_hardening.py` builds the namespace each README block
+runs in, so a draft's blocks can run there before they reach the README:
+`uv run python scripts/doc_review.py run DRAFT.md` runs each the way the
+README test does. It holds what the README's examples have built, so a
+block that runs there has not shown that a reader could run it: the rule
+above checks that.
 
 **An example may name a model. A survey may not.** A runnable example
 needs a real spec, so it names one; that is what the library does. A
 sentence that lists three models to make one general point is compressed
 to the point itself, or cut. *Clocked on a feature, `ew_cov` reports
-moments local in it, and `marginal` does the same pair by pair* was one
-(PHRASING: "A clock that is not time", clarification).
+moments local in it, and `marginal` does the same pair by pair* was one.
 
 ## 4. Facts: whose, how measured, and where they live
 
-**A fact about some models is not a fact about the bank.** *With decay
-off, the bank is plain least squares* is true of the five models that
-solve a normal equation, and false of the sixteen that do not (PHRASING:
-"Or no clock at all"). *The order of the rows matters only when a model
-forgets* was false of the models that step, filter or test, which depend
-on the order either way (PHRASING: "the task 89 rewrite"). Shared sections
-state what is shared: the concept and the API. Each model's own section
-states what is that model's. When a claim is tempting to make about "the
-bank", check it against the model table first.
+**A fact about some models is not a fact about the bank.** *With decay off,
+the bank is plain least squares* is true of the five models that solve a
+normal equation, and false of the sixteen that do not. *The order of the
+rows matters only when a model forgets* was false of the models that step,
+filter or test, which depend on the order either way. Shared sections state
+what is shared: the concept and the API. Each model's own section states
+what is that model's. When a claim is tempting to make about "the bank",
+check it against the model table first.
 
 **Check a fact against the code, not against the old prose.** A rewrite is
 where stale facts get copied forward. The README listed the reasons a
@@ -378,7 +363,8 @@ declares, and that order is their precedence. Reading the constant, not
 the README, is what caught it.
 
 **A rewrite may drop words, never add facts.** A new form can ask for a
-fact the old text never gave. In task 89 that form was the table: turning
+fact the old text never gave. In the README's rewrite of 2026-09-23 that
+form was the table: turning
 prose into tables created cells, and two were filled without evidence
 before both were caught. A column for scikit-learn said its chunking was
 "not tested", a claim about another project that nobody had checked. A
@@ -391,40 +377,41 @@ conditions hold".
 states the guarantee, such as *memory is proportional to the model's
 state, not to the data that has passed through it*. The numbers behind it
 (1.4 GB against 3.97 GB, 2e-13 against `lstsq`) go to the model's section,
-a table, or `docs/PERFORMANCE.md` (PHRASING: "Any row order"). The
+a table, or `docs/PERFORMANCE.md`. The
 exception is a number that makes a point prose cannot. The lag a one-sided
 kernel implies is easier to believe as *0.08 against 0.39* than as an
 adjective.
 
 **Numbers come from measurements, not from round figures.** A throughput
 teaser is picked from a measured thread count, not interpolated to a tidy
-one (PHRASING: "What you get", note on "5 threads").
+one.
 
 **Do not claim documentation that does not exist.** *With documented
 complexity in time* is a claim the reader will follow. If no document
 states each diagnostic's cost, either write it or say what is actually
-documented (PHRASING: "What you get", note on the diagnostics paragraph).
+documented.
 
 **State the rule and its reason, not the story of the bug.** *`bank.specs`
 is a copy, and read-only … and used to: editing it in place left `coef()`
 labelling coefficients from a spec the bank was not running* tells a
 development memory. The reader needs the rule, a copy and read-only, and
 the reason, that a stale copy would mislabel coefficients, in the present
-tense (PHRASING: "`bank.specs` is a copy"). The history belongs in
-`CHANGELOG.md` or `docs/PLAN.md`. Outside those two files, grep for
+tense. The history belongs in
+`CHANGELOG.md` or in the records `docs/README.md` lists. Outside those,
+grep for
 `used to`, `once did`, `the first version` and `before this was fixed`.
 
 **An effect is attributed to its own cause.** *That order is what makes
 every prediction honest … and it is what lets the whole thing run on far
 more rows than fit in memory* fused two claims with one "and". The
 predict-then-learn order does make a prediction honest. Bounded memory
-comes from the models keeping only their state, in any order (PHRASING:
-"The idea"). When a sentence carries two effects, check that each is
-credited to the mechanism that actually produces it.
+comes from the models keeping only their state, in any order. When a
+sentence carries two effects, check that each is credited to the mechanism
+that actually produces it.
 
 **A thing is not its file.** *State is a file* names a serialization as if
 it were the concept. It sat two lines below a glossary that defines state
-as what the bank has learned (PHRASING: "State is a file"). Say what the
+as what the bank has learned. Say what the
 thing is, then what can be done with it: *state can be saved to a file and
 loaded back*. A heading never contradicts a definition the reader was just
 given.
@@ -438,13 +425,13 @@ exception makes the reader hold all three to get any one.
 names its model, the columns it reads and how it treats time; its first
 argument is the spec's own name, which its output column takes* joined what
 a spec describes to what its name is for. The user found that the second
-half "does not belong so closely joined to the first part" (PHRASING: "the
-opener of What a spec names"). Two ideas take two sentences, and an idea on
-another topic goes to the paragraph that topic owns. The README of
-2026-10-04 had 29 prose sentences with a semicolon, most of them two ideas.
+half "does not belong so closely joined to the first part". Two ideas take
+two sentences, and an idea on another topic goes to the paragraph that
+topic owns. The README of 2026-10-04 had 29 prose sentences with a
+semicolon, most of them two ideas.
 
 **Aim near 20 words a sentence, and never 45.** Two claims joined by
-*and* are usually two sentences. Task 89 took the
+*and* are usually two sentences. The rewrite of 2026-09-23 took the
 README's mean sentence from 23.4 words to 19.9. Its sentences of 45 words
 or more went from 44 to 2, and both of those are two sentences the count
 merges (§6).
@@ -459,24 +446,22 @@ that has not been drawn yet. §7 has the shapes.
 
 **Name a thing in full on first use, and link it.** *A bank*, to a reader
 who has not met `ModelBank`, is an English word with several meanings.
-*A \[model bank\](...)* is the class (PHRASING: "Three ways to run a bank").
+*A \[model bank\](...)* is the class.
 A term from a domain the reader may not share is glossed where it first
 appears, or replaced by what it handles. *Session* is a capital-markets
 word, so it became *market-data-like sessions, with their boundaries,
-clock gaps and clock resets* (PHRASING: "a ceiling on gaps").
+clock gaps and clock resets*.
 
 **Why, then what, then units.** The sentence on `min_weight` gives the
 reason first: a model reports only once it has seen enough data to have
 converged, so it never reports an uninformed number. Its units, `weight_sum`,
-come last. The draft put the units first and the reason never (PHRASING:
-"Groups, weights and warm-up").
+come last. The draft put the units first and the reason never.
 
 **Plain English.** A compressed possessive (*the numbers are the bank's*)
 reads as a puzzle before it reads as a sentence. So do a stacked pair of
-em-dash clauses and an italicised copula doing a verb's work (PHRASING:
-"The numbers are the bank's"). A pronoun or a back-reference, such as *the
-loop above*, must point at something the reader has just seen, in the
-document's current order (PHRASING: "As a query").
+em-dash clauses and an italicised copula doing a verb's work. A pronoun or
+a back-reference, such as *the loop above*, must point at something the
+reader has just seen, in the document's current order.
 
 **Explain how something is done in procedural sentences, naming the tool,
 the method and the point in the pipeline.** A compressed definition leaves
@@ -484,7 +469,7 @@ the reader to infer the step. *Or the target can be a column you make
 first* names no tool and no point; *make the column with Polars'
 `with_columns`, chained in the query before the bank* names both. The
 user's model wording is *made with Polars expressions and chained before
-the model* (PHRASING: "procedural sentences"). The test, for every how-to
+the model*. The test, for every how-to
 sentence: could a reader act on it without inferring a missing step or
 tool?
 
@@ -514,16 +499,16 @@ link to it.
 **A word with a Python meaning keeps it.** In a Python library's docs,
 *exception* and *raise* mean an error raised. *Most models take all of
 them, and each exception is named where its parameter is introduced* left
-the user asking whether a model raised something (PHRASING: "each exception
-is named"). For the everyday sense, say *except*, *apart from*, *a model
-that does not take it*, *increase* or *a larger*. On 2026-10-04 the README
-used *exception* in that sense seven times and *raise* for *increase* five.
+the user asking whether a model raised something. For the everyday sense,
+say *except*, *apart from*, *a model that does not take it*, *increase* or
+*a larger*. On 2026-10-04 the README used *exception* in that sense seven
+times and *raise* for *increase* five.
 
 **A *too* far from what it points at marks one topic split in two.**
 *The diagnostics are out-of-sample too* sat four paragraphs below *Every
 prediction is out-of-sample*, the claim its *too* leans on. The user read
 that distance as a sign that the two paragraphs are one, to be combined and
-simplified (PHRASING: "The diagnostics are out-of-sample too"). So a *too*,
+simplified. So a *too*,
 an *also* or a *the same way* points at the sentence before it, or at most
 the paragraph before. Farther than that, the two passages merge, under a
 lead that states what both share. The user's lead for this one was
@@ -536,12 +521,10 @@ parameter) is used to name the output column, for example*
 `po.spec.ewridge("ridge", ...)` *adds a column named* `ridge`. The draft
 said *its first argument is the spec's own name, which its output column
 takes*. Its inverted clause, *which its output column takes*, makes the
-reader rebuild the sentence before reading it (PHRASING: "the opener of
-What a spec names").
+reader rebuild the sentence before reading it.
 
-The user rewrote one paragraph of *A first fit* to show the voice wanted
-(PHRASING: "the local fit in A first fit"), and §8 sets the two versions
-side by side. Four rules come from it.
+The user rewrote one paragraph of *A first fit* to show the voice wanted,
+and §8 sets the two versions side by side. Four rules come from it.
 
 **An aside inside a list goes in parentheses.** *Give the same spec a
 clock, the timestamp column ts, and a finite half_life* reads as three
@@ -568,21 +551,23 @@ the setting in a relative clause, and a contrast last.
 ## 6. The pass itself
 
 A rewrite is a sequence of steps, and each has a check that does not rely
-on rereading (PHRASING: "the task 89 rewrite"):
+on rereading:
 
 | step | what to do | how it is checked |
 |---|---|---|
 | 1. measure | count the prose before touching it | the counts below, with `scripts/doc_review.py measure` and `counts` |
-| 2. map | plan every section, and where each piece of the current text lands (§2) | the map is in `docs/PLAN.md` before any prose changes, and gives each section's opener and the subsections its kinds become |
+| 2. map | plan every section, and where each piece of the current text lands (§2) | the map is in the log of README passes before any prose changes, and gives each section's opener and the subsections its kinds become |
 | 3. draft | rewrite one section at a time | each section's code blocks run as it is finished |
 | 4. account | lose nothing | every number, backticked name and link target in the old text is in the new, or in the document it moved to: a diff, not a reading. `uv run python scripts/doc_review.py account OLD.md NEW.md [--also DOC.md ...]` lists what was lost |
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
 | 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks |
-| 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for (README-ITERATIONS, I7's verdict) |
+| 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
 
-The counts, taken outside code blocks, tables and headings. `uv run python scripts/doc_review.py measure FILE.md` takes the first seven, and `counts FILE.md` lists every hit of the eleven numbered ones, in this order:
+The counts, taken outside code blocks, tables and headings. `uv run python
+scripts/doc_review.py measure FILE.md` takes the first seven, and `counts
+FILE.md` lists every hit of the eleven numbered ones, in this order:
 
 | count | what it finds |
 |---|---|
@@ -620,8 +605,8 @@ A flattering count is easy to produce, so measure honestly:
 | counting a pattern's hits unread | `the point` matched "the point-biserial correlation" | read each hit before counting it |
 | rendering with `mode=gfm` | used GitHub's comment rendering, which turns every line break into `<br>` | `mode=markdown`, which is how GitHub renders a README file |
 
-**A docstring pass runs the same steps, with four differences** (task 149,
-2026-10-03). A docstring is a deep doc, reached from the API reference or
+**A docstring pass runs the same steps, with four differences**
+(2026-10-03). A docstring is a deep doc, reached from the API reference or
 `help()` by a reader who already has the README's words, so it carries the
 mechanism, the equations, the units, the defaults and the refusals:
 
@@ -632,23 +617,23 @@ mechanism, the equations, the units, the defaults and the refusals:
 | 7, render | Sphinx with `-W`, which the gate runs: a docstring that is not valid reStructuredText fails there |
 | 8, gate | the doc tests, and the tests that pin a docstring's text. `tests/test_temporal_clock.py` wants each clock parameter's entry to say "clock units" on one line, and `tests/test_weight_scale.py` pins whole phrases, line wraps included. Grep the tests for `__doc__` before a batch, and run them |
 
-**Record every pass over the README in
-[README-ITERATIONS.md](README-ITERATIONS.md).** Its prompt goes in
-verbatim before the pass starts, with the ideas it takes on and the counts
-of step 1. The counts of step 6 and the user's verdict follow, so the
-record shows which prompts produced a better document.
+**Record every pass over the README in the log of README passes**, which
+[docs/README.md](README.md#records) lists under *Logs of the
+documentation*. Its prompt goes in verbatim before the pass starts, with
+the ideas it takes on and the counts of step 1. The counts of step 6 and
+the user's verdict follow, so the record shows which prompts produced a
+better document.
 
 **Keep the report verbatim.** When a reader names a problem, or confirms
-an approach, PHRASING.md keeps their words unedited and the
-interpretation separate. The rule drawn from it can then be checked
-against what was actually said (PHRASING, "Format").
+an approach, the log of phrasing reports beside the log of README passes
+keeps their words unedited and the interpretation separate. The rule drawn
+from it can then be checked against what was actually said.
 
 ## 7. Tables, not bullet lists
 
 A bullet list of things that differ along the same dimensions makes the
 reader build the comparison in their head. A table builds it for them, so
-use one whenever the items share dimensions (PHRASING: "the task 89
-rewrite"):
+use one whenever the items share dimensions:
 
 | the content | the table | where the README does it |
 |---|---|---|
@@ -674,8 +659,8 @@ argument into fragments.
 ## 8. Rewrites, as examples
 
 Two rewrites show what the rules produce, as something concrete for a
-future draft to be measured against: the task 89 rewrite of the whole
-README, and one paragraph the user rewrote by hand.
+future draft to be measured against: the rewrite of the whole README on
+2026-09-23, and one paragraph the user rewrote by hand.
 
 ### The rewrite of 2026-09-23
 
@@ -707,10 +692,9 @@ Measured the same way before and after, on paragraph boundaries (§6):
 
 ### A paragraph the user rewrote, 2026-10-04
 
-The user rewrote *A first fit*'s paragraph on the local fit (PHRASING:
-"the local fit in A first fit"). It went from six sentences and 124 words
-to five and 93, at about the same length a sentence, so the gain is in how
-each sentence is built.
+The user rewrote *A first fit*'s paragraph on the local fit. It went from
+six sentences and 124 words to five and 93, at about the same length a
+sentence, so the gain is in how each sentence is built.
 
 Before:
 

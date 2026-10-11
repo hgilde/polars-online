@@ -22,7 +22,7 @@ either:
 
 ```sh
 git show --stat aa96ad3   # holt: the smallest possible model, 17 files
-git show --stat 47d3b35   # bocpd, task 55, the most recent model: 23 files
+git show --stat 47d3b35   # bocpd: 23 files
 ```
 
 Both predate several checks in the table below, among them the held-value
@@ -63,13 +63,14 @@ The new module holds three things:
 | `<Model>::new(cfg) -> Result<Self, String>` | the constructor, which validates the cfg |
 | `impl OnlineModel` | `step` *and* `predict`. `predict` is the step without the step: what `step` would report for the row, state untouched |
 
-**Every parameter check belongs in `new`, not in the spec layer**: the CLI and
-the bank both construct through `new`. **Derive `step`'s prediction from
-`predict`**, so the two cannot drift (ENHANCEMENTS E31). The docstring states
-the update equations. The module's unit tests need an **oracle**, not a golden
-number alone. Where another library computes the quantity, the oracle is
-that library: `faer` in Rust tests, and scikit-learn, scipy or statsmodels
-in `tests/test_second_opinion.py` ([docs/TESTING.md](TESTING.md#libraries-the-package-does-not-depend-on)).
+**Every parameter check belongs in `new`, not in the spec layer**: the CLI
+and the bank both construct through `new`. **Derive `step`'s prediction
+from `predict`**, so the two cannot drift. The docstring states the update
+equations. The module's unit tests need an **oracle**, not a golden number
+alone. Where another library computes the quantity, the oracle is that
+library: `faer` in Rust tests, and scikit-learn, scipy or statsmodels in
+`tests/test_second_opinion.py`
+([docs/TESTING.md](TESTING.md#libraries-the-package-does-not-depend-on)).
 Otherwise it is the recursion written out longhand, an equivalent model
 configured differently, or the optimality conditions.
 
@@ -80,10 +81,10 @@ These rules hold for every model:
 | `n_eff`, emitted as `weight_sum`, is the weight before this row's update and before its own decay | one `min_weight` must mean the same thing across a bank (CLAUDE.md rule 8) | `model_contract.rs`, every model against one recursion |
 | a zero-weight first row divides no 0/0 | a NaN in the state never washes out (rule 9) | the contract's zero-weight probes |
 | a zero-weight row still decays `n_eff`, advancing the clock and nothing else | the stream with the row and the stream without it, its clock step carried into the next row, report the same `n_eff` | `zero_weight_rows_only_advance_the_clock`, which names no decay |
-| a parameter measured in clock units acts on the clock, so the numbers do not change with how densely rows arrive; anything that still counts rows says so in the docstring | a half-life or a window means the same at any row rate (docs/PLAN.md task 146) | the model's own tests; the docstring check of step 9 |
-| a row weight scales evidence: in a model that keeps means, scaling every weight changes nothing but `weight_sum` | a weight is relative (task 147) | `tests/test_weight_scale.py`, over `scripts/release_probe.py`'s `WORKLOAD`; a model whose outputs move with the scale goes into its `EXCEPTIONS`, with the reason |
+| a parameter measured in clock units acts on the clock, so the numbers do not change with how densely rows arrive; anything that still counts rows says so in the docstring | a half-life or a window means the same at any row rate | the model's own tests; the docstring check of step 9 |
+| a row weight scales evidence: in a model that keeps means, scaling every weight changes nothing but `weight_sum` | a weight is relative | `tests/test_weight_scale.py`, over `scripts/release_probe.py`'s `WORKLOAD`; a model whose outputs move with the scale goes into its `EXCEPTIONS`, with the reason |
 | a row of weight 0 past the underflow forgets as a row of weight 0 does | a tiny weight must not freeze the state | `a_zero_weight_row_past_the_underflow_forgets` |
-| a value that is not `usable` -- not a number, infinite, or past `INPUT_BOUND` -- is refused by the trait's one rule: a target is absent; a row with a feature or a weight that is not usable is learned at weight 0 and keeps nothing of its own; it reports nothing for a feature, `predict`'s answer for a weight. `step` begins with `crate::model::refused_step`, and a `predict` that reads its features with `refused_predict` (`refused_predict_with` where `y` is read) | the contract is the core's own, not the bank's alone: a direct Rust caller gets the bank's reading, and a zero-weight update never forms `0 · NaN` (docs/PLAN.md task 183) | `refuses_unusable_values` in `tests/model_contract.rs`, from `predict_is_the_step_without_the_step` for every model, against the same row at weight 0 byte for byte, and from `probe_with` against the accessor |
+| a value that is not `usable` -- not a number, infinite, or past `INPUT_BOUND` -- is refused by the trait's one rule: a target is absent; a row with a feature or a weight that is not usable is learned at weight 0 and keeps nothing of its own; it reports nothing for a feature, `predict`'s answer for a weight. `step` begins with `crate::model::refused_step`, and a `predict` that reads its features with `refused_predict` (`refused_predict_with` where `y` is read) | the contract is the core's own, not the bank's alone: a direct Rust caller gets the bank's reading, and a zero-weight update never forms `0 · NaN` | `refuses_unusable_values` in `tests/model_contract.rs`, from `predict_is_the_step_without_the_step` for every model, against the same row at weight 0 byte for byte, and from `probe_with` against the accessor |
 | no `unsafe`, and `f64` everywhere | hard rule 6 | `unsafe_code = "forbid"`, and review |
 
 **Check:** the trait. A missing method is a compile error; the shared contract
@@ -96,14 +97,14 @@ Each such case overrides a method, and each has its check:
 
 | if the model … | it implements | the check |
 |---|---|---|
-| keeps a ring of past rows: a lag ring, a window | **`clear_lags`**, dropping that ring and nothing else (docs/PLAN.md task 47) | `probe_with` in `tests/model_contract.rs`, against `KEEPS_LAGS` |
-| has a `window_size` | its snapshots in `online_core::Snapshots`, a **`Footprint`** for the snapshot type (the heap it holds, in bytes), and **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it (review 2026-09-12, P4); **`set_window_closed`** reaching the ring too, so that the spec's `closed` decides its edge, and a `closed` field in its `ModelKind` variant (docs/PLAN.md task 196) | `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder`; `crates/online-polars/tests/window_edge.rs`, every test of which runs each windowed model under both edges |
-| is windowed and predicts a target | an entry in `ModelKind::window_and_every`, so the stream cuts its `sigma` and `zscore` at the fit's window (review 2026-09-12, S1) | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
-| keeps a weight per target: the rows each target was present on | **`target_n_eff_into`** (review 2026-09-12, S2) | `test_a_sparse_target_warms_up_on_its_own_weight` in `tests/test_bank.py`, to which it is added |
-| reads a number out of `y` rather than regressing it | **`predict_with(x, y, d_clock)`** (docs/REVIEW-E54-E64.md C1) | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
-| counts a value that is not usable rather than refusing it, as `audit` does (docs/PLAN.md task 223 (b)) | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a restart must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
-| solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share` (docs/PLAN.md task 115 (b)). The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
-| reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (docs/WARMUP-AND-CONVERGENCE.md §2). Only `ewridge` does today: `Spec::has_error_inflation` in `crates/online-polars/src/spec.rs` refuses `max_error_inflation` and `emit_error_inflation` for every other model, and names a new one that reports them | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
+| keeps a ring of past rows: a lag ring, a window | **`clear_lags`**, dropping that ring and nothing else | `probe_with` in `tests/model_contract.rs`, against `KEEPS_LAGS` |
+| has a `window_size` | its snapshots in `online_core::Snapshots`, a **`Footprint`** for the snapshot type (the heap it holds, in bytes), and **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it; **`set_window_closed`** reaching the ring too, so that the spec's `closed` decides its edge, and a `closed` field in its `ModelKind` variant | `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder`; `crates/online-polars/tests/window_edge.rs`, every test of which runs each windowed model under both edges |
+| is windowed and predicts a target | an entry in `ModelKind::window_and_every`, so the stream cuts its `sigma` and `zscore` at the fit's window | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
+| keeps a weight per target: the rows each target was present on | **`target_n_eff_into`** | `test_a_sparse_target_warms_up_on_its_own_weight` in `tests/test_bank.py`, to which it is added |
+| reads a number out of `y` rather than regressing it | **`predict_with(x, y, d_clock)`** | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
+| counts a value that is not usable rather than refusing it, as `audit` does | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a restart must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
+| solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share`. The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
+| reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (the README's [*Warm-up*](../README.md#warm-up) says what each gates). Only `ewridge` does today: `Spec::has_error_inflation` in `crates/online-polars/src/spec.rs` refuses `max_error_inflation` and `emit_error_inflation` for every other model, and names a new one that reports them | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
 
 **Row-lagged state.** The stream calls `clear_lags` on a session change and on
 a capped clock gap (`ClockAdvance::capped`). Those are the two events after
@@ -119,7 +120,7 @@ from there.
 **Read a ring's depth from the configuration, never from a container's
 `capacity()`.** A clone and a msgpack round-trip both shrink the capacity to
 the length it holds. So a ring copied while short would keep that depth for
-ever (docs/REVIEW-E54-E64.md L1). The contract's copy is taken with an *empty*
+ever. The contract's copy is taken with an *empty*
 ring, which grows back. The case that bites is a partly filled one, so the
 model's own unit tests need a save/restore at every depth from empty to full.
 
@@ -138,10 +139,10 @@ parametrization.
 each target's `min_weight` is checked against its own weight rather than the
 shared `n_eff`. The default leaves every target on the shared one, and
 `test_a_sparse_target_warms_up_on_its_own_weight` fails for a model that keeps
-the default. Its unequal thresholds are the case that tells: `sgd`, `pa`,
-`ftrl` and `rls` gated each target on its own weight inside the model, but
-against the smallest threshold, and kept the default, so a list was checked
-against the shared weight until task 158.
+the default. The case that tells is a list of unequal thresholds: a model that
+gates each target on its own weight inside the model, but against the
+smallest threshold, and keeps the default checks that list against the
+shared weight.
 
 **A parameter in the targets slot.** `bocpd`'s hazard column and `hmm`'s
 exogenous column are read out of `y`. Without `predict_with`, `predict`
@@ -160,9 +161,10 @@ out (`crate::comp`). Take each deviation as `comp::dev(x, hi, lo)` and each
 step as `comp::add(hi, lo, b·d)`. Take no step on a row of weight 0, where
 adding zero could round the pair afresh. A plain `m += b·(x − m)` stops a
 few rounding steps short of a value the stream holds, and whatever is
-centred on it then settles on that gap (docs/PLAN.md task 101). A window
-read by subtraction also keeps a `Runs` beside its moments, and zeroes a
-slot held over the window (task 94).
+centred on it then settles on that gap. A window read by subtraction also
+keeps a `Runs` beside its moments, and zeroes the spread of a value held
+over the whole window, which subtracting the rows that leave would give as
+rounding noise rather than zero.
 
 | if the model … | the check |
 |---|---|
@@ -171,17 +173,18 @@ slot held over the window (task 94).
 
 #### Restoring
 
-`restore` checks the state's shape against its cfg before returning it. Every
-vector must be at the width `new` gives it, with one accumulator per target or
-class, and a window or a lag ring exactly when the cfg asks for one. A
-mismatch is refused as `StateError::Invalid(".. wrong shape")` (review
-2026-09-18, B3). **A state's vectors are whatever a hand-edited JSON file or a
-flipped length header makes them**, and an unchecked one loaded and panicked
-on the first `step`'s indexing. The nested accumulators (`EwCov`, `EwLagCov`,
-`MarginalLags`, `MarginalBins`, `FeatureMoments`) carry a `has_shape` for it.
+`restore` checks the state's shape against its cfg before returning it.
+Every vector must be at the width `new` gives it, with one accumulator per
+target or class, and a window or a lag ring exactly when the cfg asks for
+one. A mismatch is refused as `StateError::Invalid(".. wrong shape")`. **A
+state's vectors are whatever a hand-edited JSON file or a flipped length
+header makes them**, and an unchecked one loaded and panicked on the first
+`step`'s indexing. The nested accumulators (`EwCov`, `EwLagCov`,
+`MarginalLags`, `MarginalBins`, `FeatureMoments`) carry a `has_shape` for
+it.
 
 **Check:** the model's own `a_state_of_the_wrong_shape_is_refused` unit test,
-which every model module carries since task 111. `sgd` and `kalman` check the
+which every model module carries. `sgd` and `kalman` check the
 shape in their `TryFrom`, as a saved state is read, so their tests go through
 the encoding. `crates/online-polars/tests/summary.rs`'s corruption sweeps cut
 and bit-flip a saved state of every model kind and run `fit_predict` on every
@@ -213,11 +216,12 @@ until the variant is listed in `PROBED`, which is the reminder for step 4.
 ### Step 4 — `tests/model_contract.rs`
 
 A `<model>_cfg()`, a `#[test] fn <model>()` that runs `probe_with` and
-`check`, and the variant name in `PROBED`. This is the one place every model
-is held to the same `n_eff` recursion, slot counts, state round-trip and
-bounded-input contract at once. Add a `#[test] fn <model>_predict_is_the_step()`
-too, through `predict_is_the_step_without_the_step`, which holds `predict` to
-`step`'s `pred`, `n_eff` and `extra`, row by row.
+`check`, and the variant name in `PROBED`. This is the one place every
+model is held to the same `n_eff` recursion, slot counts, state round-trip
+and bounded-input contract at once. Add a `#[test] fn
+<model>_predict_is_the_step()` too, through
+`predict_is_the_step_without_the_step`, which holds `predict` to `step`'s
+`pred`, `n_eff` and `extra`, row by row.
 
 **Check:** the test in step 3, and
 `every_model_with_a_recovery_test_has_a_predict_parity_test`, which reads this
@@ -291,14 +295,15 @@ added to the lists it belongs in:
 | `has_error_inflation` | `ewridge`, `rls`, `kalman`, `lasso` | the noise gate, `max_error_inflation` |
 | `has_row_error_inflation` | `ewridge`, `rls`, `kalman` | `emit_error_inflation` and `emit_influence`; the recursive residual of `emit_breaks` and `emit_tails` stands 1 in for the inflation without it |
 | `has_se_coef` | `ewridge`, `rls`, `kalman` | `emit_se_coef` |
-| `has_robust_se` | `ewridge`, `rls` | `emit_robust_se`, the least-squares sandwich (task 221 (c)) |
+| `has_robust_se` | `ewridge`, `rls` | `emit_robust_se`, the least-squares sandwich |
 | `has_support_coef` | `ewridge`, `huber`, `quantile` | the `support_coef` field beside `coef` |
 
 A model refused one of these says why in the refusal: `no_noise_statistic`
 and the `match` arms beside each refusal in `Spec::validate` name a reason
 per family, and a new family needs its own arm.
 
-**Check:** `test_model_registry::test_each_kind_takes_the_per_model_readings_its_predicates_say`
+**Check:**
+`test_model_registry::test_each_kind_takes_the_per_model_readings_its_predicates_say`
 fails on a builder missing from its `DIAGNOSTIC_READS` table, and on a
 model that takes a reading the table does not give it, or is refused one
 the table does.
@@ -320,25 +325,25 @@ and the gate get pinned.
 #### A block rather than a row
 
 A model whose value is a **block** rather than a row, such as `rcov`, is a
-third shape again. It needs `group` and `group_close`, emits `weight_sum` alone per
-row, and its output leaves the bank through `Bank::closed_groups` when the
-group closes. `Spec::validate` refuses it without the two columns, and
-`tests/test_closed_groups.py` is the file that covers the queue.
+third shape again. It needs `group` and `group_close`, emits `weight_sum`
+alone per row, and its output leaves the bank through `Bank::closed_groups`
+when the group closes. `Spec::validate` refuses it without the two columns,
+and `tests/test_closed_groups.py` is the file that covers the queue.
 
 #### A parameter measured in clock units
 
 **A parameter measured in clock units is a `Span`, not an `f64`**, so a
-temporal clock can give it as a duration (docs/PLAN.md task 88). A window, a
-solve cadence and a half-life of the model's own are such parameters, and
-one value per slot is a `SpanList`. It goes into **`CLOCK_FIELDS`** under the model's
-`type`, and into the match in **`Spec::clock_spans`**, which the bank uses to
-refuse a number on a temporal clock and a duration on a numeric one. A rate
-*per* clock unit, such as `kalman`'s `q`, has no duration form: it goes into
-`CLOCK_RATES` and `Spec::clock_rate` instead. A parameter whose number means
-something other than clock units, and whose duration is a clock parameter --
-`bocpd`'s `hazard`, rows or a duration (task 179) -- goes into
-`DURATION_OR_UNIT_FREE_FIELDS`, and `clock_spans` reads it only when it is a
-duration.
+temporal clock can give it as a duration. A window, a solve cadence and a
+half-life of the model's own are such parameters, and one value per slot is
+a `SpanList`. It goes into **`CLOCK_FIELDS`** under the model's `type`, and
+into the match in **`Spec::clock_spans`**, which the bank uses to refuse a
+number on a temporal clock and a duration on a numeric one. A rate *per*
+clock unit, such as `kalman`'s `q`, has no duration form: it goes into
+`CLOCK_RATES` and `Spec::clock_rate` instead. A parameter whose number
+means something other than clock units, and whose duration is a clock
+parameter -- `bocpd`'s `hazard`, rows or a duration -- goes into
+`DURATION_OR_UNIT_FREE_FIELDS`, and `clock_spans` reads it only when it is
+a duration.
 
 **Check:** `clock_fields_are_exactly_the_fields_that_take_a_duration` walks
 every field serde knows and fails on a `Span` missing from the table, or a
@@ -368,7 +373,7 @@ model left out of it restores as `WrongModel`. The save/load sweeps
 model is in their lists, which step 12 enforces. `Stream::restore` then
 compares each restored model's `n_features`, `n_targets` and `n_outputs` with
 the fresh model's. So a state of another width is refused before the first
-row, rather than indexing past the spec's columns (review 2026-09-18, B3). A
+row, rather than indexing past the spec's columns. A
 model whose widths are not the cfg's own, such as a grid or a per-target
 layout, must answer those three from the same cfg both times.
 
@@ -432,12 +437,13 @@ reads another's output goes through the same two switches, not a third phase.
 
 **Check:**
 `test_portability.TestOutputSchemaStability.test_names_match_the_realized_struct_for_every_model`
-compares the declared field names with the struct the bank actually produces,
-for every model in its list, times four output combinations (three when
-written). `test_coef.test_every_model_lays_out_as_coef_index` checks each
-model's `coef` list is as long as its named slots: add a spec to
-`COEF_SPECS` there, which `test_the_layout_test_covers_every_kind_with_a_coef`
-holds to every builder `coef_index` lays out.
+compares the declared field names with the struct the bank actually
+produces, for every model in its list, times four output combinations
+(three when written). `test_coef.test_every_model_lays_out_as_coef_index`
+checks each model's `coef` list is as long as its named slots: add a spec
+to `COEF_SPECS` there, which
+`test_the_layout_test_covers_every_kind_with_a_coef` holds to every builder
+`coef_index` lays out.
 
 **`crates/online-cli` needs nothing, and `crates/online-py` nothing for a
 model whose product is its output**: both build from the spec. A model
@@ -509,9 +515,9 @@ A keyword that names a column of the caller's goes in `FREE_TEXT` instead.
 The Python-side oracle, through `ModelBank`: a library that computes the
 same quantity where one exists, in `tests/test_second_opinion.py`; a numpy
 reference in `tests/reference.py` where the model has a closed form; and a
-longhand recursion otherwise. `huber` and `quantile` share `test_robust.py`. The
-per-model sweeps below cover the surfaces and the schema, so this file is for
-the arithmetic, which they cannot see.
+longhand recursion otherwise. `huber` and `quantile` share
+`test_robust.py`. The per-model sweeps below cover the surfaces and the
+schema, so this file is for the arithmetic, which they cannot see.
 
 **Check:**
 `test_model_registry::test_every_builder_has_a_per_model_test_file` fails for
@@ -525,11 +531,11 @@ One entry each in `test_semantics_all_models.MODELS`,
 `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
 `(builder name, the least it needs to be constructible)`.
 
-**The sweeps assert on `pred` and `resid`, so a model with no prediction sits
-them out**, through `test_model_registry.REGRESSIONS`. Those models are
-`ew_cov`, `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`, `deco`,
-`rcov`, `hmm`, `corrchange`, `bocpd` and `audit`. Each gets its own schema test
-instead, such as
+**The sweeps assert on `pred` and `resid`, so a model with no prediction
+sits them out**, through `test_model_registry.REGRESSIONS`. Those models
+are `ew_cov`, `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`, `deco`,
+`rcov`, `hmm`, `corrchange`, `bocpd` and `audit`. Each gets its own schema
+test instead, such as
 `test_portability.TestOutputSchemaStability.test_kmeans_names_match_the_realized_struct`,
 `test_micro_names_match_the_realized_struct`,
 `test_ew_class_names_match_the_realized_struct` and
@@ -592,13 +598,15 @@ it. The families are linear models; moments and correlation; clustering and
 classification; and sequential tests and regimes. Add a row under the same
 family in the README's model table, its `math` link to the new heading.
 
-**Check:** `test_model_registry::test_the_models_page_documents_every_model`.
-`huber` and `quantile` share a heading; the regex knows. And
-`test_api_links`: `test_the_model_table_links_every_builder_to_its_page` wants
-the table row to link `` [`<name>`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.<name>) ``,
-and `test_every_model_section_links_its_builder_and_its_source` wants the
-heading's section to carry an `*API:*` link to the builder and a `*Rust:*`
-link to `crates/online-core/src/<file>.rs`, which must exist.
+**Check:**
+`test_model_registry::test_the_models_page_documents_every_model`. `huber`
+and `quantile` share a heading; the regex knows. And `test_api_links`:
+`test_the_model_table_links_every_builder_to_its_page` wants the table row
+to link ``
+[`<name>`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.<name>)
+``, and `test_every_model_section_links_its_builder_and_its_source` wants
+the heading's section to carry an `*API:*` link to the builder and a
+`*Rust:*` link to `crates/online-core/src/<file>.rs`, which must exist.
 
 **`docs/OUTPUTS.md`** is generated. In `scripts/outputs_doc.py`, place the
 model in its family in `FAMILIES`, give each new field stem a `MEANING` line,
@@ -614,8 +622,9 @@ builder's name differs from its kind.
 
 ### Step 16 — `CHANGELOG.md` and the design note
 
-**`CHANGELOG.md`**, and the design note wherever the model was proposed:
-`docs/PLAN.md` §4 for the original six, `docs/ENHANCEMENTS.md` for the rest.
+**`CHANGELOG.md`**, and the design note in the record where the model was
+proposed, which [docs/README.md](README.md#records) lists under *The
+plan*.
 
 **No check.**
 
@@ -636,31 +645,32 @@ tiers"](TESTING.md#two-tiers)).
 | what you add | where it goes | what pins it |
 |---|---|---|
 | **a new *common* parameter**, one every model takes, like `embargo` | the field on `Spec` in `crates/online-polars/src/spec.rs` with `#[serde(default)]`, and its validation in `Spec::validate`; `CommonKwargs` in `python/polars_online/_kwargs.py`; `_common`'s signature *and* the dict it builds, in `python/polars_online/_spec.py` | the API snapshot (`tests/api_surface.txt`) records the new keyword and its default, and regenerating it is the diff to read |
-| **a new output field** on every model | `FieldMeta` in `crates/online-polars/src/bank.rs` carries the name and dtype (IMPROVEMENTS X1); the emit flag goes on `Spec`, in `CommonKwargs` in `python/polars_online/_kwargs.py`, and in `_common`'s signature and the dict it builds | `test_portability::test_exact_field_names_for_a_grid_spec`, plus the API snapshot |
+| **a new output field** on every model | `FieldMeta` in `crates/online-polars/src/bank.rs` carries the name and dtype; the emit flag goes on `Spec`, in `CommonKwargs` in `python/polars_online/_kwargs.py`, and in `_common`'s signature and the dict it builds | `test_portability::test_exact_field_names_for_a_grid_spec`, plus the API snapshot |
 | **a new clock-policy parameter** | the `ClockPolicy` in `crates/online-polars/src/spec.rs`, and `with_windows`' signatures beside the spec's; a renamed one goes into `_RENAMED` in `_spec.py`, which `name_renamed` reports | the rename tests (`tests/test_renames.py`), and the API snapshot |
 | **a new kind of input column**, beyond features, targets and the weight | `DataSummary::layout` and `feed_row` in `crates/online-polars/src/summary.rs` decide which columns `describe()` lists, and in what order; `Bank::describe`'s `keep` decides which get moments | `tests/summary.rs` pins the frame's column names, and compares every statistic to an oracle computed over the frame, so a column the summary does not know is a failing count there |
 | **a new parameter** on one model | the `Cfg` field and its validation in `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the `build_one` default (step 7), the builder keyword (step 9), the snapshot (step 10); if `inf` means something for it, `_INF_OK` (step 9) | the inf-table test catches the Python half; the compiler catches the Rust half |
 
-**A spec field changes the bytes of every bank file**, since each carries its
-specs. A field with `#[serde(default)]` added inside a schema no release has
-shipped needs no bump. Otherwise it is a layout change under hard rule 5:
-bump `SCHEMA_VERSION`, and regenerate the frozen state fixtures --
-`PRINT_STATE_FIXTURES=1 cargo test -p online-core --test state_fixtures`,
-then the same for `-p online-polars` -- which refuse a schema they were not
-written at. Before 1.0 raise `MIN_SCHEMA_VERSION` and the bank's
-`MIN_BANK_SCHEMA_VERSION` to the new schema with it, rather than write a
-loader for the old layout; from 1.0 keep the old fixtures and write the
-loader they hold you to (docs/PLAN.md task 198). A change to the windows
-state's version moves the bank's schema with it, and a Rust test pairs the
-two. **A new model adds a case** to `crates/online-core/tests/cases/mod.rs`,
-keeping what its state can keep, and its variant name to the frozen list in
-`tests/state_fixtures.rs`: the name is the tag in every state file. **If the Python builders write a default the field
-would not otherwise have, add it to `Spec::fill_defaults` too.** Otherwise a
-TOML spec and the same spec in Python will save different bytes
-(`tests/test_no_output.py` compares the two state files).
+**A spec field changes the bytes of every bank file**, since each carries
+its specs. A field with `#[serde(default)]` added inside a schema no
+release has shipped needs no bump. Otherwise it is a layout change under
+hard rule 5: bump `SCHEMA_VERSION`, and regenerate the frozen state
+fixtures -- `PRINT_STATE_FIXTURES=1 cargo test -p online-core --test
+state_fixtures`, then the same for `-p online-polars` -- which refuse a
+schema they were not written at. Before 1.0 raise `MIN_SCHEMA_VERSION` and
+the bank's `MIN_BANK_SCHEMA_VERSION` to the new schema with it, rather than
+write a loader for the old layout; from 1.0 keep the old fixtures and write
+the loader they hold you to. A change to the windows state's version moves
+the bank's schema with it, and a Rust test pairs the two. **A new model
+adds a case** to `crates/online-core/tests/cases/mod.rs`, keeping what its
+state can keep, and its variant name to the frozen list in
+`tests/state_fixtures.rs`: the name is the tag in every state file. **If
+the Python builders write a default the field would not otherwise have, add
+it to `Spec::fill_defaults` too.** Otherwise a TOML spec and the same spec
+in Python will save different bytes (`tests/test_no_output.py` compares the
+two state files).
 
 **If a new output field gets its own `ChunkOut` buffer**, add it to
-`LastRow::take` and `LastRow::to_chunk` in `crates/online-polars/src/stream.rs`.
-Switch it on in the rich spec of `crates/online-polars/tests/last_row.rs`,
-whose field-for-field comparison of the saved last row against the frame is
-what catches the omission.
+`LastRow::take` and `LastRow::to_chunk` in
+`crates/online-polars/src/stream.rs`. Switch it on in the rich spec of
+`crates/online-polars/tests/last_row.rs`, whose field-for-field comparison
+of the saved last row against the frame is what catches the omission.

@@ -10,10 +10,11 @@ made, the trade-off. A link to a guide (the *Guides* table of
 ``docs/README.md``) is fine, since a guide is written to be read.
 
 Two lists hold it. ``PATTERNS`` is what may not be cited. ``FILES`` is the
-reader-facing files held to it beside every public docstring; the README,
-the guides, ``CONTRIBUTING.md`` and ``llms.txt`` join it as each is
-rewritten to the rule. Source comments may keep their citations: they are
-read by whoever changes the code, beside the plan.
+reader-facing files held to it beside every public docstring: the README,
+every guide, ``CONTRIBUTING.md`` and ``llms.txt``, which
+``test_every_guide_is_held`` keeps complete (``GUIDE_PARTS`` holds a guide
+that a record follows in its file). Source comments may keep their
+citations: they are read by whoever changes the code, beside the plan.
 """
 
 from __future__ import annotations
@@ -61,8 +62,10 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 #: The reader-facing files held to ``PATTERNS`` beside the docstrings: the
-#: reference's own pages, and the files already clean of citations.
+#: README, every guide, the files at the top of the repository a reader
+#: opens, and the reference's own pages.
 FILES: list[str] = [
+    "README.md",
     "llms.txt",
     "CONTRIBUTING.md",
     "SECURITY.md",
@@ -79,6 +82,9 @@ FILES: list[str] = [
     "docs/PERFORMANCE.md",
     "docs/RELEASE-READINESS.md",
     "docs/TESTING.md",
+    "docs/EXTENDING.md",
+    "docs/WRITING.md",
+    "docs/VALIDATION.md",
     *sorted(str(p.relative_to(REPO)) for p in REFERENCE.glob("*.rst")),
 ]
 
@@ -362,3 +368,18 @@ def test_no_guide_part_cites_the_plan_a_task_a_review_or_a_record(path):
     assert GUIDE_PARTS[path] in text, f"{path}: the record's heading moved"
     found = citations(text[: text.index(GUIDE_PARTS[path])])
     assert not found, "\n".join(found)
+
+
+def test_every_guide_is_held():
+    """The rule covers the README, every guide in the *Guides* table of
+    `docs/README.md`, `CONTRIBUTING.md` and `llms.txt` (CLAUDE.md, Style),
+    so each is in ``FILES``, or in ``GUIDE_PARTS`` when a record follows
+    its guide in the same file. A guide added to the table is held from the
+    day it is listed, not when someone remembers to add it here."""
+    index = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
+    table = index.split("\n## Guides\n", 1)[1].split("\n## ", 1)[0]
+    guides = [f"docs/{name}" for name in re.findall(r"^\| \[[^\]]+\]\(([^)#]+)\)", table, re.M)]
+    assert len(guides) >= 15, guides
+    held = set(FILES) | set(GUIDE_PARTS)
+    missing = [p for p in ["README.md", "CONTRIBUTING.md", "llms.txt", *guides] if p not in held]
+    assert not missing, missing

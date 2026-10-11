@@ -115,4 +115,4 @@ The models of section 5 on the raw features and on each feature in units of its 
 
 ---
 
-Predictions are out-of-sample by construction (docs/PLAN.md hard rule 2): each row is predicted before the model sees its target. Negative R^2 on financial data is normal and expected - it means the model does worse than the realized in-window mean, not that anything is broken.
+Predictions are out-of-sample by construction: each row is predicted before the model sees its target. Negative R^2 on financial data is normal and expected - it means the model does worse than the realized in-window mean, not that anything is broken.

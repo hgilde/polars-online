@@ -30,7 +30,7 @@ kept in [`records/`](records/), and its row links it there.
 | [TESTING.md](TESTING.md) | you want to know what the suite proves, what it has found, and where it is thin |
 | [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
 | **Writing the documentation** | |
-| [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's task 89 rewrite as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
+| [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a report in [PHRASING.md](records/PHRASING.md), with the README's rewrite of 2026-09-23 as the worked example. A pass over the README starts from [README-ITERATIONS.md](README-ITERATIONS.md), and a new report goes into PHRASING.md |
 
 ## Records
 
