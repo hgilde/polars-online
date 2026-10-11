@@ -583,7 +583,7 @@ class Target(TypedDict):
 
 
 class FormulaTarget(TypedDict):
-    """A target that is a formula of the row's future (docs/PLAN.md task 104):
+    """A target that is a formula of the row's future:
     what a window expression in ``targets`` becomes, and a ``[[specs]]`` target
     table with ``name`` and ``formula`` in the CLI's TOML. ``formula`` is the
     expression's compact tree (:mod:`polars_online.ops`), holding at least one
@@ -1595,18 +1595,18 @@ def rls(
 
     **A feature that holds one value for long winds the fit up: use**
     :func:`ewridge` **for a long-running stream whose features can go quiet.**
-    The prior fades with the sums, so nothing holds a coefficient in a direction
-    the data stop exciting. A feature held at a value ``c`` other than 0 shows
-    the fit only ``intercept + c * slope``. The information that tells the slope
-    from the intercept then decays by ``lam`` a row, with nothing to renew it.
-    Once it is under a rounding step, rounding sets the slope, and the slope
-    wanders. A feature constant from its first row winds up the same way. Held
-    at exactly 0, it excites nothing in that direction, and the slope stays
-    where it was. :func:`ewridge`'s default ``ridge`` is a penalty on the means
-    that never fades, and it centres each feature, so it does not wind up.
-    Measured with ``half_life=20`` (a row a clock unit), ``delta=1`` and noise
-    0.17, on a feature held for 150 half-lives after 300 rows of moving, then
-    moving again for 10 (docs/PLAN.md task 217):
+    The prior fades with the sums, so nothing holds a coefficient in a
+    direction the data stop exciting. A feature held at a value ``c`` other
+    than 0 shows the fit only ``intercept + c * slope``. The information that
+    tells the slope from the intercept then decays by ``lam`` a row, with
+    nothing to renew it. Once it is under a rounding step, rounding sets the
+    slope, and the slope wanders. A feature constant from its first row winds
+    up the same way. Held at exactly 0, it excites nothing in that direction,
+    and the slope stays where it was. :func:`ewridge`'s default ``ridge`` is a
+    penalty on the means that never fades, and it centres each feature, so it
+    does not wind up. Measured with ``half_life=20`` (a row a clock unit),
+    ``delta=1`` and noise 0.17, on a feature held for 150 half-lives after 300
+    rows of moving, then moving again for 10:
 
     .. list-table::
        :header-rows: 1
@@ -1665,9 +1665,9 @@ def rls(
     diagnostics and the rest, with the fields each diagnostic adds.
 
     ``min_weight`` counts the rows the model learned from, those with every
-    target present, at their raw weights, decayed, where ``weight_sum`` counts every
-    row, so rows with a null target do not warm up a fit they never reached
-    (docs/PLAN.md task 115 (d)).
+    target present, at their raw weights, decayed, where ``weight_sum`` counts
+    every row, so rows with a null target do not warm up a fit they never
+    reached.
 
     .. rubric:: Output
 
@@ -1929,9 +1929,10 @@ def kalman(
     the whole clock since the last one (``D_j``; under ``share_p`` any target's
     row), because ``Q * D ** 2`` is not additive over a split gap. Charged per
     row, a row of weight 0 inside a gap would shrink the gap's noise and move
-    every later prediction (0.197 at ``coef_half_life = 20``). And a target
+    every later prediction (by 0.197 at ``coef_half_life = 20``). And a target
     seen on one row in 10 would forget 3.6 times slower on the clock than one
-    seen on every row (docs/PLAN.md task 211).
+    seen on every row: 270 clock units against 75, measured at the same
+    ``coef_half_life``.
 
     Until a target has a residual variance, each row takes its noise from its own
     innovation, ``R_j = (y_j - z' b_j) ** 2``, computed before the update, so the
@@ -1952,20 +1953,21 @@ def kalman(
         target's last adds the process noise
         ``sigma^2 * (ln 2 * D / h_i) ** 2``, which matches EW-RLS's
         steady-state gain at that spacing. So the half-life is the same whether
-        rows come every unit or every hundredth (docs/PLAN.md task 150), and
-        whether the target is seen on every row or one in ten (task 211). That
-        is each standardized direction's memory with the others held still.
-        Under correlated features, a direction of the design's correlation with
-        eigenvalue ``lambda`` is learned with a memory of about
-        ``h / sqrt(lambda)`` (Ljung and Gunnarsson 1990), where EW-RLS forgets
-        every direction at ``h``. At a correlation of 0.9 and ``h = 50`` the
-        memories measured 37.5 and 160.5 clock units, against 36.3 and 158.1
-        predicted. With the EW residual variance as ``R``, which a step in the
-        truth inflates, a step is learned about 1.45 times slower than with the
-        true noise. A scalar, or one value per slot with the intercept first;
-        ``inf`` pins that coefficient; every value above 0. Required unless
-        ``q`` is given, and refused beside it. Not the spec's ``half_life``,
-        which drives the standardization and the residual variance.
+        rows come every unit or every hundredth, and whether the target is seen
+        on every row or one in ten, since the noise is charged for the whole
+        clock since the target's last observation. That is each standardized
+        direction's memory with the others held still. Under correlated
+        features, a direction of the design's correlation with eigenvalue
+        ``lambda`` is learned with a memory of about ``h / sqrt(lambda)``
+        (Ljung and Gunnarsson 1990), where EW-RLS forgets every direction at
+        ``h``. At a correlation of 0.9 and ``h = 50`` the memories measured
+        37.5 and 160.5 clock units, against 36.3 and 158.1 predicted. With the
+        EW residual variance as ``R``, which a step in the truth inflates, a
+        step is learned about 1.45 times slower than with the true noise. A
+        scalar, or one value per slot with the intercept first; ``inf`` pins
+        that coefficient; every value above 0. Required unless ``q`` is given,
+        and refused beside it. Not the spec's ``half_life``, which drives the
+        standardization and the residual variance.
 
         Under ``standardize`` the drift is per standard deviation of each
         feature as the moments stand. A slope's random walk in the caller's
@@ -2030,11 +2032,11 @@ def kalman(
         power of two predict the same to the bit. A filter read through the
         moments as they stand instead has a finite half-life's own wander move
         every prediction: at a half-life of 50 and R² 0.99998 its out-of-sample
-        error was 223 noise variances above the noise (review round 5, G1). The
-        anchor gives the same filter, to rounding, as a re-map on every row,
-        and is a fifth cheaper a row at ten features (task 211). A re-map past
-        what a stretch of data makes -- a scale by more than 1024 times either
-        way, or a mean by more than 1024 of the anchor's scale -- is not
+        error was 223 noise variances above the noise. The anchor gives the
+        same filter, to rounding, as a re-map on every row, and is a fifth
+        cheaper a row at ten features (221 against 277 nanoseconds). A re-map
+        past what a stretch of data makes -- a scale by more than 1024 times
+        either way, or a mean by more than 1024 of the anchor's scale -- is not
         followed, and the state is read in the new coordinates.
 
         For a coefficient per current standard deviation, which moves with the
@@ -2042,7 +2044,7 @@ def kalman(
         ``standardize = False``: the README's *Features in units of their
         spread* builds the column with :func:`polars_online.ewm_mean
         <polars_online.ops.ewm_mean>` and :func:`polars_online.ewm_std
-        <polars_online.ops.ewm_std>` (docs/PLAN.md task 212).
+        <polars_online.ops.ewm_std>`.
     ``revert_half_life``
         A reversion half-life ``r_i`` per slot, above 0: between observations
         the coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a
@@ -2079,10 +2081,10 @@ def kalman(
         variance; from then its variance, learned from fewer rows, enters the
         mean. With a noise ``sigma^2_j`` of its own, a target's own filter
         would keep ``P`` times ``sigma^2_j`` over the mean, and that is the
-        covariance its ``se_coef`` reads (docs/PLAN.md task 211). Read off
-        ``P`` as it stands, two targets of noise 0.01 and 1 had standard errors
-        7.3 times too large and 1.39 times too small. Default ``False``: one
-        ``P`` per target, the exact filter for each target under its own noise.
+        covariance its ``se_coef`` reads. Read off ``P`` as it stands, two
+        targets of noise 0.01 and 1 had standard errors 7.3 times too large and
+        1.39 times too small. Default ``False``: one ``P`` per target, the
+        exact filter for each target under its own noise.
 
         When sharing helps. With a constant noise, ``P / sigma^2`` and the gain
         never read ``sigma^2``, since the process noise is ``sigma^2`` times
@@ -2340,25 +2342,25 @@ def quantile(
 
     The smoothed loss has the same curvature on either side of the fit, so the
     rows' own history cancels and the fit converges to the quantile regression.
-    Reweighting the rows by the check loss's IRLS weight, ``psi(r) / r``, does not
-    converge to it. That weight is the secant of this step where the step is its
-    tangent, and it is unbounded as ``r`` goes to zero; a row whose prior residual
-    happened to be near zero then holds the fit near the fit it was scored by.
-    Measured at the median of a skewed noise after 20 000 rows against
-    ``statsmodels``' ``QuantReg``, the step is 0.005 away, inside ``QuantReg``'s
-    own standard error of 0.007, where the weights settled 0.164 short (review
-    2026-09-12, N9).
+    Reweighting the rows by the check loss's IRLS weight, ``psi(r) / r``, does
+    not converge to it. That weight is the secant of this step where the step
+    is its tangent, and it is unbounded as ``r`` goes to zero; a row whose
+    prior residual happened to be near zero then holds the fit near the fit it
+    was scored by. Measured at the median of a skewed noise after 20 000 rows
+    against ``statsmodels``' ``QuantReg``, the step is 0.005 away, inside
+    ``QuantReg``'s own standard error of 0.007, where the weights settled 0.164
+    short.
 
     The band. ``h`` is ``quantile_eps * s``. The rows inside the band are the
-    curvature the step leans on, so a much narrower band converges more slowly and
-    a much wider one smooths the quantile toward the mean. The band is never
-    narrower than ``(k / n) ** 0.4`` of ``s``, for ``k`` coefficients and the
-    target's effective sample ``n`` -- its present rows counted one each,
+    curvature the step leans on, so a much narrower band converges more slowly
+    and a much wider one smooths the quantile toward the mean. The band is
+    never narrower than ``(k / n) ** 0.4`` of ``s``, for ``k`` coefficients and
+    the target's effective sample ``n`` -- its present rows counted one each,
     decayed, whatever their weights -- which is the smoothed-quantile bandwidth
-    rate. Under a half-life the band's share of the sample is a few rows, and the
-    floor is what keeps the step fed there; a long stream leaves the floor behind.
-    Coverage at ``quantile = 0.9`` on normal noise reads 0.895 at ``half_life =
-    30`` and 0.900 from 200 up (the second review of 2026-09-15, F3).
+    rate. Under a half-life the band's share of the sample is a few rows, and
+    the floor is what keeps the step fed there; a long stream leaves the floor
+    behind. Coverage at ``quantile = 0.9`` on normal noise reads 0.895 at
+    ``half_life = 30`` and 0.900 from 200 up.
 
     Warm-up and rebuilding. Under three rows per coefficient of the rows the
     target was present on, the fit is ordinary least squares: a Newton step
@@ -2375,8 +2377,7 @@ def quantile(
     clear of one row, so the rule does not fire in steady state. Both rules
     count rows, so a weight's scale reaches neither. Rules that compared the
     rows' weight with a row count would let rows at weight 100 leave the
-    warm-up on their first row, where the fit reached 1e51 (docs/PLAN.md task
-    147).
+    warm-up on their first row, where the fit reached 1e51.
 
     Until a target has an ``s`` above 0, its rows are least squares too. That
     is before its first residual, or while every residual so far is exactly
@@ -2580,9 +2581,9 @@ def ftrl(
 
     ``min_weight`` counts the rows the target was present on, at their raw
     weights, decayed, where ``weight_sum`` counts every row. So rows with a
-    null target do not warm up coefficients they never moved (docs/PLAN.md
-    task 115 (d)). A label ``strict_binary`` refuses is not one of them, nor
-    a row skipped because its squared gradient would overflow.
+    null target do not warm up coefficients they never moved. A label
+    ``strict_binary`` refuses is not one of them, nor a row skipped because its
+    squared gradient would overflow.
 
     .. rubric:: Output
 
@@ -3060,7 +3061,7 @@ def sgd(
         0.99998. Inside it the gradient is zero, so a tube many noise standard
         deviations wide holds the fit wherever it first lands inside it.
         Measured (one feature, no decay; the out-of-sample error above the
-        noise, in noise variances, median over seeds; docs/PLAN.md task 207):
+        noise, in noise variances, median over seeds):
 
         .. list-table::
            :header-rows: 1
@@ -3159,10 +3160,10 @@ def sgd(
         prediction. At a half-life of 10 and R² 0.978 its slope came out 3.03
         for a truth of 2. At a half-life of 50 and R² 0.99998 its out-of-sample
         error was 248 noise variances above the noise, where the raw fit's was
-        0.010 (docs/PLAN.md task 206). The warm-up is there because a step
-        taken in the caller's units against a scale a few rows old is kept for
-        good: held in the caller's units from the first row, short groups lost
-        everything (R² -207 at rows 25-50 of 200-row groups).
+        0.010. The warm-up is there because a step taken in the caller's units
+        against a scale a few rows old is kept for good: held in the caller's
+        units from the first row, short groups lost everything (R² -207 at rows
+        25-50 of 200-row groups).
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes; the intercept is always free. ``coef_min``
         and ``coef_max`` bound each slope (one number for every feature, or a
@@ -3198,9 +3199,9 @@ def sgd(
     diagnostics and the rest, with the fields each diagnostic adds.
 
     ``min_weight`` counts the rows the target was present on, at their raw
-    weights, decayed, where ``weight_sum`` counts every row, so rows with a null
-    target do not warm up coefficients they never moved (docs/PLAN.md task
-    115 (d)). A label ``strict_binary`` refuses is not one of them.
+    weights, decayed, where ``weight_sum`` counts every row, so rows with a
+    null target do not warm up coefficients they never moved. A label
+    ``strict_binary`` refuses is not one of them.
 
     .. rubric:: Output
 
@@ -3348,19 +3349,18 @@ def pa(
 
     **On a level that moves, raise ``c`` or difference the target.** The fit
     starts from zero coefficients, and a ``pa1`` cap of 1 moves the intercept
-    about one unit a row. On a target falling from 1,000 to -1,000 at 0.5 a
-    row (half-life 200, noise 0.3), the intercept stood at 51.5 at row 50 and
-    401 at row 400, and met the level near row 670. With the level as a
-    feature too, the capped steps, mapped into the caller's units through the
-    scaler, swung the fit far past the level instead. A drift that the
-    intercept carries alone keeps a lag at any ``c``: 2.2 on average over
-    rows 800 to 1,600 at ``c = 1000``. About half of it is the tube,
-    ``eps * sigma``, whose ``sigma`` holds the drift (97 to 143 here); with
-    ``eps = 0`` the lag was 1.1. Differencing the target and the moving
-    features, ``y - y.shift(1)``, takes the level out of the fit: the level
-    is then the last row's ``y`` plus the predicted change, and the change
-    carries noise of 0.42 here. Measured as ``pred - y`` (docs/PLAN.md task
-    216):
+    about one unit a row. On a target falling from 1,000 to -1,000 at 0.5 a row
+    (half-life 200, noise 0.3), the intercept stood at 51.5 at row 50 and 401
+    at row 400, and met the level near row 670. With the level as a feature
+    too, the capped steps, mapped into the caller's units through the scaler,
+    swung the fit far past the level instead. A drift that the intercept
+    carries alone keeps a lag at any ``c``: 2.2 on average over rows 800 to
+    1,600 at ``c = 1000``. About half of it is the tube, ``eps * sigma``, whose
+    ``sigma`` holds the drift (97 to 143 here); with ``eps = 0`` the lag was
+    1.1. Differencing the target and the moving features, ``y - y.shift(1)``,
+    takes the level out of the fit: the level is then the last row's ``y`` plus
+    the predicted change, and the change carries noise of 0.42 here. Measured
+    as ``pred - y``:
 
     .. list-table::
        :header-rows: 1
@@ -3447,8 +3447,7 @@ def pa(
         inside it and nothing moves. Default 0.01: errors under 1% of the
         target's own spread do not move the fit. Measured (``pa1``, one
         feature, a target of spread about 2, no decay; the out-of-sample error
-        above the noise, in noise variances, median over seeds; docs/PLAN.md
-        task 207):
+        above the noise, in noise variances, median over seeds):
 
         .. list-table::
            :header-rows: 1
@@ -3517,18 +3516,17 @@ def pa(
         moving moves none of it. A fit read through the moments as they stand
         instead has a finite half-life's own wander move every prediction. At a
         half-life of 50 and R² 0.99998 that cost 31.8 noise variances of
-        out-of-sample error above the noise, where the raw fit's was 0.18
-        (docs/PLAN.md task 206). Past the warm-up a box or a sum bounds the
-        coefficients in the caller's units and is projected as for :func:`sgd`.
+        out-of-sample error above the noise, where the raw fit's was 0.18. Past
+        the warm-up a box or a sum bounds the coefficients in the caller's
+        units and is projected as for :func:`sgd`.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
     diagnostics and the rest, with the fields each diagnostic adds.
 
     ``min_weight`` counts the rows the target was present on, at their raw
-    weights, decayed, where ``weight_sum`` counts every row, so rows with a null
-    target do not warm up coefficients they never moved (docs/PLAN.md task
-    115 (d)).
+    weights, decayed, where ``weight_sum`` counts every row, so rows with a
+    null target do not warm up coefficients they never moved.
 
     A row weight below 1 scales ``tau``, so a half-weight row moves the fit half
     as far; a weight above 1 counts as 1. The update is a projection onto the
