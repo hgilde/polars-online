@@ -693,4 +693,8 @@ fn a_constant_target_has_no_r2() {
     let fit = ridge_fits(&g.arrays(), &[0], &[1], Some(0), 0.0, false).remove(0);
     assert_eq!((fit.coef[0], fit.coef[1], fit.resid_var), (5.0, 0.0, 0.0));
     assert!(fit.r2.is_nan(), "{}", fit.r2);
+    // An exact fit's errors are 0, and a t over an error of 0 is NaN, the
+    // intercept's as the slope's, never an infinite t.
+    assert_eq!((fit.se[0], fit.se[1]), (0.0, 0.0));
+    assert!(fit.t[0].is_nan() && fit.t[1].is_nan(), "{:?}", fit.t);
 }
