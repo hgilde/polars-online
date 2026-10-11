@@ -973,7 +973,7 @@ of its lines carry no promise:
 | the TOML config keys: the run config's, a spec's, and each model type's | `[toml keys]`, read from serde's refusal of a key a table has not got |
 | the CLI's flags, and whether each takes a value | `[cli flags]`, from `online --help` |
 | the CLI's exit status: 0, 1 for a refusal or a run error, 2 for a usage error | `docs/RUNNER.md`'s *Exit status* and a CLI test, not the snapshot |
-| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
+| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `POLARS_ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
 
 **From 1.0, a changed default or meaning needs a major release, and a fix
 to numbers that were wrong a minor one**, as decided on 2026-10-06. A number is wrong when it disagrees with the model's stated

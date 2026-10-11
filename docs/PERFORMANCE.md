@@ -143,7 +143,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 | stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); the README's *Parallelism* calls it a task. A single stream is one spec over one group, or with no `group` at all |
 | instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
 | slot | one value an instance writes for every row: a target's prediction, or one of `ew_cov`'s 230 statistics (§13) |
-| section | one part of a chunk's work, as `ONLINE_TIMING=1` times it: `extract` (the columns), `group` (row indices per key), `process` (the models) and `assemble` (the output columns), in the order it prints them (§12) |
+| section | one part of a chunk's work, as `POLARS_ONLINE_TIMING=1` times it: `extract` (the columns), `group` (row indices per key), `process` (the models) and `assemble` (the output columns), in the order it prints them (§12) |
 | run | the rows a stream feeds through one set of output buffers, `ChunkOut::run_rows` of them (§13) |
 | stride, gather | a stride reads one group's values from every n-th row of an interleaved column. A gather copies them into one contiguous run first (§12, P9) |
 | the Gram | the `k × k` co-moment matrix a regression keeps (§14, §18) |
@@ -222,20 +222,24 @@ cargo run --release -p online-core --example rls_bench
 cargo run --release -p online-core --example gram_block_bench
 
 # The bank through Python, with the per-chunk section timings on stderr
-ONLINE_TIMING=1 uv run python scripts/benchmark.py
+POLARS_ONLINE_TIMING=1 uv run python scripts/benchmark.py
 ```
 
 The sections name the rest where they use them: `scripts/scaling_bench.py`
 (§8), `marg_bench` (§17, §22–§24), `scripts/sklearn_comparison.py` (§19), and
 `sgd_bench` and `sgd_signature` (§20).
 
-**For the time inside a run, set `ONLINE_TIMING=1`, which prints two kinds
+**For the time inside a run, set `POLARS_ONLINE_TIMING=1`, which prints two kinds
 of line to stderr:**
 
 | printed by | once per | fields |
 |---|---|---|
 | the bank | chunk | `extract`, `group`, `process` and `assemble`, the sections, in wall milliseconds; and `total`, the whole call, of which the four sections are consecutive parts (`crates/online-polars/src/bank.rs`) |
 | the command line's runner | run | `read_wait` and `write_wait`, the bank thread's waits on the reader and the writer; `bank`, its time in the bank; `writer_busy`, the writer's own time; and `total`, the whole run (`crates/online-polars/src/runner.rs`) |
+
+**The lines are written for a person, so their words and fields are not
+promised: a minor release may change them.** The variable turns them on at
+`1` and at no other value, as `POLARS_ONLINE_WARN_UNSTABLE` does.
 
 A profile says where inside `process` the time goes, and the wall clock
 says how much: §13 has the recipe. [CONTRIBUTING.md](../CONTRIBUTING.md)
@@ -297,7 +301,7 @@ The numbers before any of §3's changes, measured on 2026-08-30.
 | k=20, solve every 25 rows | 3,941,742 |
 
 **The bank on the same arithmetic:** 200k rows, ewridge, a clock column,
-and the `ONLINE_TIMING` sections in ms.
+and the `POLARS_ONLINE_TIMING` sections in ms.
 
 | case | extract | group | process | assemble | total | rows/s |
 |---|---|---|---|---|---|---|
@@ -1214,7 +1218,7 @@ through `po.run`:
 | csv | 0.90 s | 2.15 s |
 | ndjson | 1.14 s | 2.33 s |
 
-`ONLINE_TIMING=1` prints one line per run beside the per-chunk ones. In
+`POLARS_ONLINE_TIMING=1` prints one line per run beside the per-chunk ones. In
 it, `read_wait` and `write_wait` are the bank thread's slack, and
 `writer_busy` is the writer's own time; *How the numbers are made* lists
 every field. The line says where each case sits.
@@ -2000,7 +2004,7 @@ in the order they were found.
 in `assemble`, and the list above nearly started at the wrong end. `sample`
 counts threads: `assemble` runs on all fourteen, and `process` on one for a
 single group, so a 14× weighting made a 20 ms phase look like 280.
-`ONLINE_TIMING=1` prints `extract / group / process / assemble / total` per
+`POLARS_ONLINE_TIMING=1` prints `extract / group / process / assemble / total` per
 chunk in wall milliseconds, and is the number to trust. The profile is for
 *where in `process`*, at function granularity. Per-line attribution inside
 an inlined recursion is not reliable: the `sqrt` above showed up on the
@@ -2460,7 +2464,7 @@ workload's settings (`half_life=inf`, `solve_every` past the end,
 
 The single thread's 28.9 ps is within the 28 to 38 ps that one
 accumulator measured on 0.13.0, at a load of 8 to 25, when the option was
-asked for. `ONLINE_TIMING=1`
+asked for. `POLARS_ONLINE_TIMING=1`
 puts most of the difference in the models' section: about 5 to 8 µs a row
 beyond the product, the model's own `O(k)` work on each row, which no
 thread count shortens. Reading the columns is another 1.7 µs a row.
@@ -2951,7 +2955,7 @@ row was summed.
 
 #### Where the 14 ns went
 
-Four places, measured one at a time on an M4 Pro, with `ONLINE_TIMING=1`
+Four places, measured one at a time on an M4 Pro, with `POLARS_ONLINE_TIMING=1`
 (per-phase milliseconds on stderr) and
 `crates/online-core/examples/sgd_bench.rs` (the core step alone):
 
@@ -3433,7 +3437,7 @@ A caller running `marginal` at width measured a cost of 14–17 ns per feature p
 did not grow with the number of targets. The model alone has almost none
 of it (§23's intercept), so it had to be in the bank's path. One thread,
 10,000 features, 5,000 rows, `lam = 1` and a unit weight, best of three
-through `ModelBank.fit_predict`, with `ONLINE_TIMING=1` for the sections:
+through `ModelBank.fit_predict`, with `POLARS_ONLINE_TIMING=1` for the sections:
 
 | stage, 1 target, moments only | before |
 |---|---:|
@@ -3703,7 +3707,7 @@ now steps that way.
 #### The model's slope and the stream's intercept
 
 `marg_bench` steps the model alone. `ModelBank.fit_predict`, with
-`POLARS_ONLINE_MAX_THREADS=1` and `ONLINE_TIMING=1`, runs the whole call.
+`POLARS_ONLINE_MAX_THREADS=1` and `POLARS_ONLINE_TIMING=1`, runs the whole call.
 Its `process` section is the transpose into rows, the data summary and the
 model. At `p = 10,000`, in nanoseconds per feature per row, fitted over
 `T` = 3, 10 and 30 at 1,000 rows a call:

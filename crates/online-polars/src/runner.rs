@@ -741,12 +741,12 @@ fn run_with(
         Input::Lazy(lf) => Empty::Plan(Box::new(lf.clone().limit(0))),
         Input::Batches { schema, .. } => Empty::Frame(DataFrame::empty_with_schema(schema)),
     };
-    // Where the run's time goes, to stderr when ONLINE_TIMING is set: how
+    // Where the run's time goes, to stderr under POLARS_ONLINE_TIMING=1: how
     // long this thread waited for the reader, spent in the bank, and waited
     // for the writer, and how long the writer was busy. The waits are the
     // pipeline's slack -- a run that waits on the reader is read-bound, one
     // that waits on the writer is write-bound (docs/PERFORMANCE.md).
-    let timing = std::env::var_os("ONLINE_TIMING").is_some();
+    let timing = crate::timing::timing_on();
     let t_start = Instant::now();
     let mut t_read_wait = Duration::ZERO;
     let mut t_bank = Duration::ZERO;
@@ -911,7 +911,7 @@ fn run_with(
         };
         if timing {
             eprintln!(
-                "ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}s \
+                "POLARS_ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}s \
                  write_wait={:.2}s writer_busy={:.2}s total={:.2}s",
                 stats.rows,
                 stats.chunks,

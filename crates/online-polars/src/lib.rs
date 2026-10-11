@@ -59,6 +59,7 @@ mod spec_diff;
 mod stream;
 mod summary;
 mod targets;
+mod timing;
 mod windows;
 mod windows_frame;
 
@@ -103,6 +104,7 @@ pub use stream::{
 };
 pub use summary::{ColumnStats, DataSummary, Role};
 pub use targets::{TargetDef, Targets};
+pub use timing::{TIMING_VAR, renamed_timing_notice};
 pub use windows::{
     Closed, Direction, Emitted, KernelDef, OpDef, OpKind, Partial, Refusal, RowIn, Stat, Windows,
 };

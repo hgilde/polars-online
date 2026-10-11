@@ -904,11 +904,21 @@ def env_vars() -> list[str]:
     return sorted(names)
 
 
+#: Variables the shipped code reads only to say they were renamed, each
+#: with its new name: they turn nothing on.
+RENAMED_ENV_VARS = {"ONLINE_TIMING": "POLARS_ONLINE_TIMING"}
+
+
 def env_vars_section() -> list[str]:
     return [
         "[env vars]  # read at run time by the shipped code (crates/*/src, the package):"
         " a variable added or renamed is a diff here",
-        *(f"  {name}" for name in env_vars()),
+        *(
+            f"  {name}  (renamed {RENAMED_ENV_VARS[name]}; read only to say so)"
+            if name in RENAMED_ENV_VARS
+            else f"  {name}"
+            for name in env_vars()
+        ),
     ]
 
 

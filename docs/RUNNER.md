@@ -251,7 +251,7 @@ its own. It counts the groups whose last row was withheld, by
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2); 1 group with min_support_coef < 0.5`.
 A spec with neither has no line, as in every run on this page.
 Standard error carries the progress, which `--quiet` turns off, the timings
-`ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
+`POLARS_ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
 carries the notices about a model's warm-up, led by `online:` as an error
 is. So read a failure from the exit status: a line on standard error does
 not mean the run failed.
@@ -415,7 +415,7 @@ line, CSV and NDJSON included.
 The command line is a three-stage pipeline: a reader thread, the bank on
 the calling thread, and a writer thread, with one chunk in flight per
 stage. A `closed_groups` sidecar has a writer thread of its own.
-`ONLINE_TIMING=1` prints how long the bank waited on each side. Parquet
+`POLARS_ONLINE_TIMING=1` prints how long the bank waited on each side. Parquet
 pages are encoded on Polars' pool, a column per task, in parallel, and
 NDJSON on the writer's own thread.
 
