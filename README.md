@@ -2143,9 +2143,9 @@ kalman: slope at the last row -0.66
 ```
 
 **A moments model tracks how columns vary and move together, and reads
-each row's value from the rows before it.** So the correlation of
-`signal_a` and `ret` changes sign after the break at row 200, and each
-row's value can serve as a feature for that row without leaking it.
+each row's value from the rows before it.** So a row's value can serve as
+a feature for that row without leaking it. Here the correlation of
+`signal_a` and `ret` changes sign after the break at row 200.
 This code uses `df` from [Example data](#example-data):
 
 ```python

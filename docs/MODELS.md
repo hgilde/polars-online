@@ -22,14 +22,17 @@ running sums in *accumulators* of three kinds:
 ## Linear models
 
 Ten models predict a numeric target. Nine regress it on features, and
-`holt`, a baseline, uses none. Several of them take the same parameters:
+`holt`, a baseline, uses none. Start with `ewridge`, and change to another
+when your data need what it adds. Several of them take the same
+parameters:
 
 | parameters | taken by | explained under |
 |---|---|---|
+| `ridge` | `ewridge`, where a list fits a grid; `huber` and `quantile`, as one number. `rls` refuses it and takes `delta` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) and [`rls`](#rls--recursive-least-squares) |
 | `solve_every`, `max_rows_between_solves` | `ewridge`, `lasso`, `huber`, `quantile` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) |
 | `target_gaps` | `ewridge`, `lasso` | [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) |
 | `window_size` | `ewridge`, `lasso` | [A hard window](../README.md#a-hard-window) |
-| `standardize` | `ewridge`, `huber` and `quantile`; and `kalman`, `sgd` and `pa`, where it is the default | `ewridge` and `kalman` |
+| `standardize` | `ewridge`, `huber` and `quantile`, off by default; `kalman`, `sgd` and `pa`, on by default. `lasso` always standardizes, and `ftrl` never does | `ewridge`, `kalman` and `ftrl` |
 | `coef_min`, `coef_max`, `coef_sum` | `sgd`, `pa` | [`sgd`](#sgd--stochastic-gradient-descent) |
 | `weight` | every model, though `rls`, `kalman`, `sgd`, `pa` and `ftrl` read it differently from a weighted mean | [Weights](../README.md#weights) |
 
@@ -41,10 +44,10 @@ What `half_life` decays differs by model:
 | `lasso` | the same sums, and the error that picks the penalty unless `select_half_life` is given |
 | `rls` | `A` and `b`, as decayed sums rather than means |
 | `kalman` | the observation-noise estimate and the features' standardization; `coef_half_life` sets how fast a coefficient may drift |
-| `huber`, `quantile` | their running sums, kept per target |
-| `sgd` | `weight_sum`, the running moments `standardize` scales by, and adagrad's sums, but not the coefficients |
-| `pa` | `weight_sum`, each target's own weight and the running moments `standardize` scales by, but not the coefficients |
-| `ftrl` | its per-coordinate sums, and its penalties with them |
+| `huber`, `quantile` | their running sums, kept per target, and the residuals' spread `σ` |
+| `sgd` | `weight_sum`, the running moments `standardize` scales by, the spreads its cut and tube are drawn in, and adagrad's sums, but not the coefficients |
+| `pa` | `weight_sum`, each target's own weight, the running moments `standardize` scales by and the spread its tube is drawn in, but not the coefficients |
+| `ftrl` | its per-coordinate sums, but not its penalties, so a shorter half-life shrinks the fit more |
 | `holt` | the level; the trend has `trend_half_life` |
 
 ### `ewridge` — EW ridge on sufficient statistics
@@ -52,8 +55,51 @@ What `half_life` decays differs by model:
 *API:* [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) — *Rust:* [`ewridge.rs`](../crates/online-core/src/ewridge.rs) — *Outputs:* [fields](OUTPUTS.md#ewridge)
 
 Start with `ewridge`, ridge regression solved from running sums, and change
-to another linear model when your data needs what it adds, such as
+to another linear model when your data need what it adds, such as
 coefficients that drift (`kalman`).
+
+**A grid of half-lives and ridge values is fitted in one pass.** Each
+half-life keeps a set of running sums, and each ridge value is one more
+solve from that set. Here a slope drifts from 1 to 3 over 20,000 rows, and
+four fits read it at the last row:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# A slope on x that drifts from 1 to 3 over 20,000 rows, one row a clock unit.
+rng = np.random.default_rng(1)
+n = 20_000
+x = rng.standard_normal(n)
+slope = 1.0 + 2.0 * np.arange(n) / n
+y = slope * x + 0.5 * rng.standard_normal(n)
+pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y}).write_parquet("drift.parquet")
+
+drift = po.spec.ewridge(
+    "drift", targets=["y"], features=["x"], clock="t", gap_cap=10.0,
+    half_life=[200.0, 20_000.0],   # a grid of two half-lives, one set of running sums each ...
+    ridge=[1e-6, 0.1],             # ... by two ridges, solved from each set: four fits
+)
+bank = po.ModelBank([drift])
+bank.fit(pl.scan_parquet("drift.parquet"))   # learn every row, keep no output
+print(f"the true slope at the last row: {slope[-1]:.2f}")
+for r in bank.coef().filter(pl.col("term") == "x").iter_rows(named=True):
+    print(f"half-life {r['instance']}, ridge {r['ridge']:g}: slope {r['coef']:.2f}")
+```
+
+```text
+the true slope at the last row: 3.00
+half-life @h200, ridge 1e-06: slope 2.98
+half-life @h200, ridge 0.1: slope 2.71
+half-life @h20000, ridge 1e-06: slope 2.11
+half-life @h20000, ridge 0.1: slope 1.92
+```
+
+The half-life of 200 rows follows the drift. The half-life of 20,000 still
+weighs the rows from the middle of the stream, where the slope was near 2.
+A ridge of 0.1 divides a slope by about `1 + 0.1/var(x)`, here 1.1, because
+the ridge is added to the feature's variance in the solve.
 
 `S_j` and `r_j` are target `j`'s running means of `z zᵀ` and `z·y_j`, kept
 over the rows where `y_j` is present, and `W_j` is the weight behind them.
@@ -63,7 +109,9 @@ The coefficients are solved from them on a schedule:
 W'   = λW + w                       weight_sum, over every row
 W_j' = λW_j + w                     on the rows where y_j is present, λW_j on the others
 S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   r_j' = (λW_j·r_j + w·z·y_j) / W_j'
-solve:  (S_j + ridge·D) β_j = r_j + ridge·D·β₀     D = I with a 0 at the intercept, β₀ = coef_prior (0 by default)
+solve, ridge_scale="mean":  (S_j + ridge·D) β_j = r_j + ridge·D·β₀      D = I with a 0 at the intercept
+solve, ridge_scale="sum":   (W_j·S_j + p·ridge·I) β_j = W_j·r_j + p·ridge·β₀
+                            p the product of every decay so far, β₀ = coef_prior (0 by default)
 ```
 
 ```python
@@ -88,8 +136,8 @@ rr = po.spec.ewridge(
 | when it solves | `solve_every`, `max_rows_between_solves` | |
 | how the ridge applies | `standardize`, `ridge_scale`, `coef_prior` | `ridge_scale="sum"` is refused beside `standardize`, a ridge or feature-set grid, and a window |
 | a target null on some rows | `target_gaps` | |
-| what the sums remember | `window_size` ([A hard window](../README.md#a-hard-window)), `session_shrink` | `session_shrink` needs `session` and `long_half_life`, and is refused beside `session_gap="reset"` and `window_size` |
-| a wide fit | `gram_block_rows`, `gram_threads` | `gram_block_rows` is refused with `window_size=`, and where a solve happens every row |
+| what the sums remember | `window_size` ([A hard window](../README.md#a-hard-window)), `session_shrink` | `session_shrink` needs `session` and `long_half_life`, and is refused beside `session_gap="reset"`, `group_close="session"` and `window_size` |
+| a wide fit | `gram_block_rows`, `gram_threads` | `gram_block_rows` is refused beside `window_size`, and wherever no schedule spaces the solves: `solve_every=0`, `max_rows_between_solves=1`, or `half_life=inf` and `lam=` without a `solve_every` |
 
 **A grid of `ridge` values or of `feature_sets`, as in `rr`, adds a solve
 per value and no update of the sums.** Only the named sets are fitted, so
@@ -103,9 +151,9 @@ weight learned since then reaches `ln 2 / 50` of the weight the fit holds:
 about 1.4 %, or every `half_life/50` of clock in steady state. To solve on
 the clock instead, give `solve_every` in clock units. `half_life=inf` and
 `lam=` solve on every row, so when the fit need not be current at every
-row, give them a `solve_every`. On 6M rows × 20 features from a parquet stream,
-`solve_every=1000` takes 1.4 s instead of 10.7 s, with the coefficients at
-most 1000 rows out of date.
+row, give them a `solve_every`. On 6M rows × 20 features from a parquet
+stream, `solve_every=1000` took 1.4 s instead of 10.7 s, with the
+coefficients at most 1000 rows out of date.
 
 **`ewridge` solves by Cholesky factorization, and retries a near-singular
 system with a small jitter on the diagonal.** `bank.solve_failures()`
@@ -174,7 +222,7 @@ wide = po.spec.ewridge(
 )
 ```
 
-| features | rows per second, against one row at a time, on one thread |
+| features | rows per second with no solve, against one row at a time, on one thread |
 |---:|---:|
 | 256 | 5.1× |
 | 1,000 | 6.6× |
@@ -195,7 +243,7 @@ already keep every core busy gains nothing from it.
 **With decay off and `ridge=0`, `ewridge` fits ordinary least squares over
 every row seen, in any row order.** Its coefficients match
 `numpy.linalg.lstsq` to 2e-13, fed forwards or backwards. On 6M rows × 20
-features from a parquet stream, memory peaks at 1.4 GB, against 3.97 GB
+features from a parquet stream, memory peaked at 1.4 GB, against 3.97 GB
 for `lstsq` on the same rows.
 
 ### `rls` — recursive least squares
@@ -203,8 +251,40 @@ for `lstsq` on the same rows.
 *API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](../crates/online-core/src/rls.rs) — *Outputs:* [fields](OUTPUTS.md#rls)
 
 Use `rls` when the coefficients must be current at every row: it updates
-them on every row in O(k²) time, without a solve. Its fit equals
-`ewridge(ridge_scale="sum")` solved on every row, to better than 1e-9.
+them on every row in O(k²) time, without a solve.
+
+**`rls` is `ewridge(ridge_scale="sum")` solved on every row, to better
+than 1e-9.** Its `delta` is that `ridge`. Here the two run side by side on
+a stream whose slope drifts:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# y = 0.5 + slope·x0 − x1 plus noise, with x0's slope drifting from 1 to 2.
+rng = np.random.default_rng(2)
+n = 5_000
+x0, x1 = rng.standard_normal((2, n))
+y = 0.5 + (1.0 + np.arange(n) / n) * x0 - x1 + 0.3 * rng.standard_normal(n)
+pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1, "y": y}).write_parquet("rls.parquet")
+
+common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=10.0, half_life=300.0)
+specs = [
+    po.spec.rls("rls", delta=2.0, **common),                      # A starts at 2·I, a prior that fades
+    po.spec.ewridge("sum", ridge=2.0, ridge_scale="sum",          # the same prior on ewridge's sum scale ...
+                    max_rows_between_solves=1, **common),         # ... solved on every row
+]
+out = pl.scan_parquet("rls.parquet").online.fit_predict(specs).collect()
+gap = (out["rls"].struct.field("pred_y") - out["sum"].struct.field("pred_y")).abs().max()
+print(f"the two predictions differ by less than 1e-9 on every row: {gap < 1e-9}")
+print("rls's coefficients at the last row:", [round(c, 2) for c in out["rls"].struct.field("coef").drop_nulls()[-1]])
+```
+
+```text
+the two predictions differ by less than 1e-9 on every row: True
+rls's coefficients at the last row: [0.52, 1.92, -0.99]
+```
 
 `A` and `b_j` are the decayed sums of `zzᵀ` and `y_j z`, started from the
 prior strength `delta`, the classic RLS name for `P₀ = I/δ`:
@@ -216,12 +296,16 @@ A₀ = delta·I         b₀ = delta·coef_prior
 
 Because `A` is a sum, `delta` is in the features' squared units summed over
 rows, a row's weight is on the sum scale, and a heavier stream outweighs
-the starting prior sooner ([Weights](../README.md#weights)). It is `ewridge`'s `ridge`
-under `ridge_scale="sum"`, not its default `ridge`, which never fades, and
-it penalizes every coefficient, the intercept included. The targets share one Cholesky factor of `A`, so a row
-with any target null is scored but teaches none of them. So when the
-targets go missing on different rows, give each its own `rls` spec.
-Otherwise one spec holds them all.
+the starting prior sooner ([Weights](../README.md#weights)). It is
+`ewridge`'s `ridge` under `ridge_scale="sum"`, not its default `ridge`,
+which never fades, and it penalizes every coefficient, the intercept
+included. `ridge` is refused here, with a message naming `delta`.
+
+**The targets share one Cholesky factor of `A`, so a row with any target
+null is scored but teaches none of them.** When the targets go missing on
+different rows, give each its own `rls` spec. Otherwise one spec holds them
+all. For the same reason, `min_weight` counts only the rows with every
+target present, where `weight_sum` counts every row.
 
 ```python
 rls = po.spec.rls(
@@ -268,7 +352,45 @@ half-lives.
 
 Use `lasso` when only some features should carry weight: its L1 penalty
 sets the others to exactly zero. It fits a path of penalties from
-`ewridge`'s centred running sums.
+`ewridge`'s centred running sums, and chooses among them as the stream
+runs.
+
+**The penalty that has predicted best so far is reported on every row.**
+Here 3 of 20 features carry the target, and the penalty in force at the
+last row keeps exactly those three:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# 20 features, of which only x0, x1 and x2 carry weight in the target.
+rng = np.random.default_rng(3)
+n, k = 5_000, 20
+x = rng.standard_normal((n, k))
+y = 2.0 * x[:, 0] - 1.5 * x[:, 1] + 1.0 * x[:, 2] + rng.standard_normal(n)
+names = [f"x{i}" for i in range(k)]
+pl.DataFrame(x, schema=names).with_columns(y=y).write_parquet("wide.parquet")
+
+las = po.spec.lasso(
+    "las", targets=["y"], features=names,
+    half_life=float("inf"),                  # every row counts the same
+    lasso_path=[0.3, 0.1, 0.03, 0.01],       # the penalties, decreasing
+)
+bank = po.ModelBank([las])
+out = pl.concat(bank.fit_predict_batches(pl.scan_parquet("wide.parquet")))   # the output, chunk by chunk
+chosen = out["las"].struct.field("penalty_selected_y")[-1]
+betas = bank.coef().filter(pl.col("penalty") == chosen, pl.col("term") != "intercept")
+kept = betas.filter(pl.col("coef") != 0.0)
+print(f"penalty in force at the last row: {chosen}")
+print(f"coefficients left nonzero: {kept.height} of {betas.height}:",
+      {r["term"]: round(r["coef"], 2) for r in kept.iter_rows(named=True)})
+```
+
+```text
+penalty in force at the last row: 0.03
+coefficients left nonzero: 3 of 20: {'x0': 1.97, 'x1': -1.44, 'x2': 0.99}
+```
 
 It runs coordinate descent on the standardized sums, warm-started along the
 path and from one solve to the next. `C` is the features' correlation
@@ -317,6 +439,43 @@ covers only the window ([A hard window](../README.md#a-hard-window)).
 Use `kalman` when a relationship moves faster than a half-life can follow,
 or when a coefficient should be forgotten once the rows stop supporting it.
 
+**A coefficient that may drift follows a jump that running sums only
+average in.** Here a slope jumps from 1 to 3 at row 2,000. `kalman` lets
+half a coefficient's memory go in 20 clock units, and `ewridge`'s sums
+forget at the spec's half-life of 200:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# A slope on x that jumps from 1 to 3 at row 2,000, one row a clock unit.
+rng = np.random.default_rng(4)
+n = 3_000
+x = rng.standard_normal(n)
+slope = np.where(np.arange(n) < 2_000, 1.0, 3.0)
+y = slope * x + 0.5 * rng.standard_normal(n)
+pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y}).write_parquet("jump.parquet")
+
+common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=200.0, coef_every=0)
+specs = [
+    po.spec.kalman("kalman", coef_half_life=20.0, **common),            # a coefficient may drift
+    po.spec.ewridge("ewridge", max_rows_between_solves=1, **common),    # solved on every row
+]
+out = pl.scan_parquet("jump.parquet").online.fit_predict(specs).collect()
+for row in (1_999, 2_010, 2_050, 2_200):
+    k = out["kalman"].struct.field("coef")[row][1]     # [intercept, slope] after the row
+    e = out["ewridge"].struct.field("coef")[row][1]
+    print(f"row {row}: truth {slope[row]:.0f}, kalman {k:.2f}, ewridge {e:.2f}")
+```
+
+```text
+row 1999: truth 1, kalman 1.00, ewridge 1.01
+row 2010: truth 3, kalman 1.50, ewridge 1.09
+row 2050: truth 3, kalman 2.68, ewridge 1.45
+row 2200: truth 3, kalman 3.04, ewridge 2.05
+```
+
 Per target `j`, `β_j` are the coefficients and `P_j` their covariance.
 `r_i` is coefficient `i`'s `revert_half_life`, and `φ_i = 2^(−Δclock/r_i)`
 its entry of `Φ`. `Q` is the process noise, which `coef_half_life` sets, and
@@ -347,15 +506,17 @@ noise estimate, so the default `p0=1` gives a prior as uncertain as one
 observation. Unstandardized, the first row with a noise sets `P_j =
 p0·R_j·I` before its correction. Standardized, each coefficient waits for
 its feature's scale: its prior is set on the first row that observes the
-target once the feature's variance is above 0. The estimate there is the
-mean squared innovation over the target's rows so far, once three rows give
-it. One squared innovation falls below 1% of its mean one time in twelve,
-and with no process noise a prior that small pins the fit for good. Since
-the noise and the prior both come from the data, the warm-up does not
-depend on the target's units. With a fixed `obs_var=`, the noise is known
-from the start.
-
-This code uses `df` from [Example data](../README.md#example-data):
+target once the feature's variance is above 0. The noise estimate there is
+the weighted median of the first three rows' squared innovations, divided
+by 0.4549. That number is the median of a chi-squared of one degree, so the
+estimate reads the noise variance as a mean would. One squared innovation
+falls below 1% of the noise one time in twelve, and the median of three
+about one time in 120. With no process noise, a prior that small pins the
+fit for good. The median also keeps one wild row among the three from
+sizing the prior.
+Since the noise and the prior both come from the data, the warm-up does
+not depend on the target's units. With a fixed `obs_var=`, the noise is
+known from the start.
 
 ```python
 revert = po.spec.kalman(
@@ -367,7 +528,6 @@ revert = po.spec.kalman(
     p0=1.0,                            # the default: the prior variance is p0 times the first noise estimate
     share_p=False,                     # the default: one P per target; True keeps one for all, driven by their mean σ²
 )
-fit = po.ModelBank([revert]).fit_predict(df)
 ```
 
 **By default each coefficient drifts as a random walk: between observations
@@ -416,17 +576,17 @@ the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
 coefficients and their covariance are held in the coordinates of an anchor:
 the means and scales at the last re-map. The process noise and the priors,
 defined in the means and scales as they stand, are carried into the
-anchor's coordinates exactly. When a scale moves past twice or half the
-anchor's, or a mean by more than the anchor's scale, the state is mapped to
-the new coordinates, `b ← A b` and `P ← A P Aᵀ`. So no prediction moves
-because the scaler did. Read through the scaler as it stood, as release
-0.13.0 read it, its own wander under a half-life of 50 cost 223 noise
-variances of out-of-sample error at R² 0.99998: one feature, 30,000 rows,
-the median of five seeds. This filter's error stands 0.014 above the noise
-there, as an unstandardized one's does. A map of more than 1024 times a
-scale is not followed. The old reading, a coefficient per current standard
-deviation, is this filter on a column z-scored in the stream with
-`standardize=False`, as in
+anchor's coordinates exactly. The state is mapped to new coordinates,
+`b ← A b` and `P ← A P Aᵀ`, when a scale moves past twice or half the
+anchor's, or a mean by more than the anchor's scale. So no prediction moves
+because the scaler did. A filter read through the scaler as it stands would
+move every prediction with the scaler's own wander under a half-life. At a
+half-life of 50 that wander added 223 noise variances to the out-of-sample
+error at R² 0.99998 (one feature, 30,000 rows, the median of five seeds). This
+filter's error stands 0.014 above the noise there, as an unstandardized
+one's does. A map of more than 1024 times a scale is not
+followed. For a coefficient per current standard deviation, z-score the
+column in the stream and give it with `standardize=False`, as in
 [Features in units of their spread](WINDOWS.md#features-in-units-of-their-spread).
 
 **`predict` applies the reversion,** by the same `Φ` over the distance
@@ -435,10 +595,10 @@ least `2^(−gap_cap/r_i)` of its value. To let a far prediction approach the
 intercept, give a `gap_cap` that spans several reversion half-lives. Under
 `standardize` the intercept is the target's level at the features' means.
 
-With `standardize=False`, `q=0` and a fixed `obs_var=`, the filter is
-exactly Bayesian linear regression, the ridge with penalty `1/p0`: river's
-`BayesianLinearRegression` agrees to 1e-13. Standardized, each prior waits
-for its feature's scale, so it is not that ridge.
+**With `standardize=False`, `q=0` and a fixed `obs_var=`, the filter is
+exactly Bayesian linear regression,** the ridge with penalty `1/p0`:
+river's `BayesianLinearRegression` agrees to 1e-13. Standardized, each
+prior waits for its feature's scale, so it is not that ridge.
 
 **`se_coef` and `error_inflation` are exact under the model,** which says
 the coefficients walk at the noise `coef_half_life` implies. On a truth that
@@ -453,7 +613,7 @@ noise.** With a constant noise, `P/σ²` and the gain never read `σ²`, so a
 shared `P` and one per target part only where the targets' noises move
 apart. Give `share_p=True` for related targets, whose noises move together,
 or where each target's own noise estimate is noisy, from a short or sparse
-history, which the mean over the targets smooths. It also costs one `k×k`
+history, which the mean over the targets smooths. It also takes one `k×k`
 update a row instead of one per target. On section 4 of
 [docs/VALIDATION.md](VALIDATION.md), the next minute's return scored
 R² -0.0110 shared against -0.0168 per target, and the next five minutes'
@@ -469,9 +629,53 @@ as the median, which outliers cannot pull. Both read each row's residual
 against the fit *before* the row is learned, so both stay out-of-sample.
 Both take `ewridge`'s `ridge=` as a single number, and refuse a list.
 
-`r` is the row's residual, `σ` the plain exponentially weighted standard
-deviation of the residuals, `δ` is `huber_delta` and `τ` the `quantile`
-level. The *Gram* is `ewridge`'s `S`, and the cross-moment its `r_j`:
+**A few wild targets pull a least-squares slope, and neither robust model
+lets them.** Here about 2% of the rows are 50 too high, all where `x` is
+above 0, so they tilt the line:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# y = 1 + 2x plus noise, and about 2% of the rows wild: 50 too high, on rows where x is above 0.
+rng = np.random.default_rng(5)
+n = 10_000
+x = rng.standard_normal(n)
+y = 1.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
+wild = (rng.random(n) < 0.04) & (x > 0)
+y[wild] += 50.0
+pl.DataFrame({"x": x, "y": y}).write_parquet("wild.parquet")
+
+common = dict(targets=["y"], features=["x"], half_life=float("inf"))
+specs = [
+    po.spec.ewridge("ewridge", **common),
+    po.spec.huber("huber", **common),                     # huber_delta=1.345, the default
+    po.spec.quantile("median", quantile=0.5, **common),
+]
+bank = po.ModelBank(specs)
+bank.fit(pl.scan_parquet("wild.parquet"))
+print(f"wild rows: {wild.sum()} of {n}; the true slope: 2")
+for r in bank.coef().filter(pl.col("term") == "x").iter_rows(named=True):
+    print(f"{r['spec']}: slope {r['coef']:.2f}")
+```
+
+```text
+wild rows: 218 of 10000; the true slope: 2
+ewridge: slope 2.89
+huber: slope 2.18
+median: slope 2.03
+```
+
+`huber` still learns from a wild row, at a weight that shrinks with its
+miss, so it lands nearer the truth than least squares and not on it. The
+median takes only the sign of a row's miss beyond the band, so a wild row
+counts no more than an ordinary one.
+
+`r` is the row's residual, and `σ` the exponentially weighted root mean
+square of the target's residuals, about 0. `δ` is `huber_delta` and `τ`
+the `quantile` level. The *Gram* is `ewridge`'s `S`, and the cross-moment
+its `r_j`:
 
 ```
 huber:     the ridge update at weight  w · min(1, δσ / |r|)
@@ -482,6 +686,11 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
            h is never narrower than (k/n)^{2/5} · σ, for the target's effective sample n
 ```
 
+The weights are per target, so `huber` and `quantile` keep one set of
+sums per target, where `ewridge` shares one set across targets. `σ` is not
+itself robust: a burst of outliers widens the cut for the rows after it,
+until the exponentially weighted mean forgets them.
+
 **Until a target has a `σ` above 0, `huber` down-weights no row.** That is
 before its first residual, or while every residual so far is exactly zero:
 there is nothing to judge an outlier against. `quantile` has no band to draw
@@ -489,11 +698,16 @@ there, and takes least-squares rows.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
-                    huber_delta=1.5)      # a residual beyond huber_delta * sigma is down-weighted
+                    huber_delta=1.5)      # a residual beyond huber_delta * sigma is down-weighted (default 1.345)
 med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
                        quantile=0.5,      # the level, strictly between 0 and 1: 0.5 is a median regression
                        quantile_eps=0.2)  # the band's half-width, in units of sigma (default 0.2)
 ```
+
+**`huber_delta`'s default, 1.345, is the cut at which Huber's estimator is
+95% as efficient as least squares when the errors are normal.**
+statsmodels' `HuberT` takes 1.345 and scikit-learn's `HuberRegressor`
+1.35. `huber_delta=inf` cuts nothing, which is least squares.
 
 **The band's rows, those with `|r| < h`, give the Newton step its
 curvature.** So a much smaller `quantile_eps` narrows the band and slows
@@ -527,8 +741,44 @@ equal, for three reasons:
 
 Use `sgd` when each row must take only O(k) time: it takes one gradient
 step per row and never solves. It is the only model here that takes count
-targets (`loss="poisson"`). With `Gᵢ` adagrad's running sum of squared
-gradients, a row takes this step:
+targets (`loss="poisson"`), and its coefficients can be bounded or summed
+to a constant, as portfolio weights are.
+
+**A count target takes the Poisson loss, whose log link makes `pred` a
+rate.** Here the counts' log-rate is `0.5 + 0.3·x0 − 0.2·x1`, and adagrad
+adapts each coefficient's rate to its own gradients:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# A count target: y is Poisson with log-rate 0.5 + 0.3·x0 − 0.2·x1.
+rng = np.random.default_rng(6)
+n = 50_000
+x0, x1 = rng.standard_normal((2, n))
+y = rng.poisson(np.exp(0.5 + 0.3 * x0 - 0.2 * x1)).astype(float)
+pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("counts.parquet")
+
+counts = po.spec.sgd(
+    "counts", targets=["y"], features=["x0", "x1"], half_life=float("inf"),
+    loss="poisson",                          # a negative target refuses the chunk, naming the row
+    schedule="adagrad", learning_rate=0.05,  # a rate per coefficient, adapted to its gradients
+)
+bank = po.ModelBank([counts])
+bank.fit(pl.scan_parquet("counts.parquet"))
+print("truth:  {'intercept': 0.5, 'x0': 0.3, 'x1': -0.2}")
+print("fitted:", {r["term"]: round(r["coef"], 2) for r in bank.coef().iter_rows(named=True)})
+```
+
+```text
+truth:  {'intercept': 0.5, 'x0': 0.3, 'x1': -0.2}
+fitted: {'intercept': 0.51, 'x0': 0.31, 'x1': -0.21}
+```
+
+With `Gᵢ` adagrad's running sum of squared gradients, a row takes this
+step, with `z = [1, x]` and `β` in the caller's units under
+`standardize=False`:
 
 ```
 eta = zᵀβ        p = link(eta)        d = dL/d eta
@@ -536,6 +786,14 @@ g₀ = d·w         gᵢ = d·zᵢ·w + l2·βᵢ     each clipped to ±clip_gra
 βᵢ -= lrᵢ·gᵢ     lrᵢ = learning_rate                           schedule="constant"
                      = learning_rate/(1 + weight_sum)^power    schedule="inv_scaling"
                      = learning_rate/(√Gᵢ + 1e-8)              schedule="adagrad"
+```
+
+Under `standardize`, the default, `z` is the row standardized,
+`zᵢ = (xᵢ − mᵢ)/sᵢ`, and the ridge reads `l2·sᵢ·βᵢ`. Once the scaler has
+warmed up, the step taken in `z` is mapped into the caller's units:
+
+```
+βᵢ -= lrᵢ·gᵢ / sᵢ        β₀ -= lr₀·g₀ − Σᵢ mᵢ·lrᵢ·gᵢ / sᵢ
 ```
 
 **To set how many rows the coefficients remember, choose `learning_rate`.**
@@ -556,13 +814,13 @@ The loss sets the link and the gradient:
 | `poisson` | log, for count targets | `p − y` | a negative target refuses the chunk, naming the row |
 | `logistic` | sigmoid, for 0/1 targets | `p − clamp(y, 0, 1)` | `strict_binary=True` refuses a chunk with a label not 0 or 1 |
 
-**`s` is the exponentially weighted standard deviation of the target's
+**`s` is the exponentially weighted root mean square of the target's
 out-of-sample residuals**, as `huber`'s `σ` is, and **`s_y` is the
-target's own**, the spread of `y` around its exponentially weighted mean.
-So a cut and a tube mean the same thing at any scale of the target. Until
-the target has an `s`, the Huber row is a squared-loss row; until it has
-an `s_y`, two weighted rows of different values, the tube has no width. In
-the target's own units a tube of 0.1 never let a target in thousandths be
+target's own spread**, around its exponentially weighted mean. So a cut and
+a tube mean the same thing at any scale of the target. Until the target has
+an `s`, the Huber row is a squared-loss row. Until it has an `s_y`, which
+takes two weighted rows of different values, the tube has no width. In the
+target's own units a tube of 0.1 never let a target in thousandths be
 learned. `sgd` standardizes its features by default, as `kalman` does: one
 learning rate has to suit every feature, and raw, features in hundreds took
 the default fit's R² from 0.96 to below −70,000.
@@ -571,9 +829,9 @@ the default fit's R² from 0.96 to below −70,000.
 units.** Until it has learned 22 rows by Kish's count, the fit runs in its
 standardized coordinates and is read out through its moments. From then on
 each step is taken on the standardized row and mapped back by that row's
-means and scales. So the scaler's moving moves no prediction. Read through
+means and scales, so the scaler's moving moves no prediction. Read through
 the moments instead, a half-life of 10 put the slope at 3.03 for a truth of
-2 at R² 0.978; held, it is 2.02.
+2 at R² 0.978. Held in the caller's units, it is 2.02.
 
 **The cut reads the residuals and the tube does not, because the fit starts
 from zero.** Its first residuals are the target's whole level. Beyond the
@@ -606,6 +864,17 @@ losses. A Poisson fit takes counts, so a negative target refuses the chunk
 and names the row, as scikit-learn's `PoissonRegressor` refuses one. Taken
 as it stood, `p − y` drove the prediction down to the link's floor,
 `e^−30`, and held it there.
+
+**To bound the slopes, give `coef_min` and `coef_max` (one number, or one
+per feature, with `-inf` or `inf` for an open side) and `coef_sum` for
+their total:**
+
+| setting | what it expresses |
+|---|---|
+| `coef_min=0, coef_sum=1` | a long-only, fully invested portfolio |
+| `coef_min=0` alone | a sign the model must respect |
+| `coef_min` equal to `coef_max` | a slope pinned at a known value |
+
 This code uses `df` from [Example data](../README.md#example-data):
 
 ```python
@@ -624,16 +893,6 @@ last = fit["portfolio"].struct.field("coef").drop_nulls()[-1]
 assert min(last[1:]) >= 0.0 and abs(sum(last[1:]) - 1.0) < 1e-12   # the last row's slopes: at least 0, summing to 1
 ```
 
-**To bound the slopes, give `coef_min` and `coef_max` (one number, or one
-per feature, with `-inf` or `inf` for an open side) and `coef_sum` for
-their total:**
-
-| setting | what it expresses |
-|---|---|
-| `coef_min=0, coef_sum=1` | a long-only, fully invested portfolio |
-| `coef_min=0` alone | a sign the model must respect |
-| `coef_min` equal to `coef_max` | a slope pinned at a known value |
-
 After every step the slopes move to the nearest point that satisfies every
 bound (the Euclidean projection). The fit starts from zero, projected, so a
 fit on the simplex starts at uniform weights. The intercept is never
@@ -647,13 +906,54 @@ caller's units even under `standardize=True`.
 Use `pa` to step on every row without tuning a learning rate. Each row asks
 the fit to come within `eps·σ` of its target, `σ` the target's own
 exponentially weighted standard deviation, as `sgd`'s tube is drawn in. The
-update is the smallest change that does so:
+update is the smallest change that does so.
+
+**`pa` takes `sgd`'s bounds on the slopes.** Here the truth is
+`1 + 2·x0 − x1`, and `coef_max=1.5` holds `x0`'s slope below its true
+value, so the fit settles on the nearest line the bound allows:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# y = 1 + 2·x0 − x1 plus noise.
+rng = np.random.default_rng(7)
+n = 20_000
+x0, x1 = rng.standard_normal((2, n))
+y = 1.0 + 2.0 * x0 - 1.0 * x1 + 0.3 * rng.standard_normal(n)
+pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("pa.parquet")
+
+common = dict(targets=["y"], features=["x0", "x1"], half_life=float("inf"), c=0.1)
+specs = [
+    po.spec.pa("free", **common),
+    po.spec.pa("capped", coef_max=1.5, **common),   # no slope above 1.5, so x0's cannot reach 2
+]
+bank = po.ModelBank(specs)
+bank.fit(pl.scan_parquet("pa.parquet"))
+for name in ("free", "capped"):
+    fitted = {r["term"]: round(r["coef"], 2) for r in bank.coef().filter(pl.col("spec") == name).iter_rows(named=True)}
+    print(f"{name}: {fitted}")
+```
+
+```text
+free: {'intercept': 0.99, 'x0': 2.02, 'x1': -0.98}
+capped: {'intercept': 0.89, 'x0': 1.48, 'x1': -1.09}
+```
+
+With `p` the prediction, and the intercept's 1 inside `z`, a row takes the
+step its `mode` sets:
 
 ```
 loss = max(0, |y − p| − eps·σ)      s = ‖z‖²
 pa    τ = loss / s          pa1  τ = min(c, loss/s)      pa2  τ = loss / (s + 1/(2c))
 β    += min(w, 1) · τ · sign(y − p) · z
 ```
+
+That is the step under `standardize=False`, with `z = [1, x]`. Under
+`standardize`, the default, `z` is the row standardized with `sgd`'s scaler,
+and past the scaler's warm-up the step is mapped into the caller's units as
+`sgd`'s is.
 
 In the target's units, a tube of 0.1 held a target in hundredths on every
 row, and the model never learned it. In the residuals' spread, a fit from
@@ -668,7 +968,7 @@ below are for a target of spread about 2. `pa2`'s `c` sits beside `s` and
 is free of the target's units: under `"pa"` and `"pa2"` a target scaled by
 `k` fits as the unscaled one, scaled by `k`.
 
-**On a level that moves, raise `c` or difference the target.** The fit
+**On a level that moves, give a larger `c` or difference the target.** The fit
 starts from zero coefficients, and a `pa1` cap of 1 moves the intercept
 about one unit a row. On a target falling from 1,000 to −1,000 at 0.5 a
 row, at a half-life of 200 and noise 0.3, the intercept met the level near
@@ -704,10 +1004,12 @@ error above the noise in noise variances:
 The default tube had the smallest worst regret over 108 streams and all
 three modes. `pa` standardizes its features by default, with `sgd`'s
 scaler, so `s` and `c` are not in the features' units either. Past the
-scaler's warm-up its coefficients are held in the
-caller's units, as `sgd`'s are, and an uncapped step still puts the row on
-its tube's edge. A row weight below 1 scales the step, and a weight above 1 counts as 1.
-Where outliers are possible, keep a `mode` that caps or damps the step:
+scaler's warm-up its coefficients are held in the caller's units, as
+`sgd`'s are, and an uncapped step still puts the row on its tube's edge. A
+row weight below 1 scales the step, and a weight above 1 counts as 1.
+
+**Where outliers are possible, keep a `mode` that caps or damps the
+step:**
 
 | `mode` | the step |
 |---|---|
@@ -718,7 +1020,7 @@ Where outliers are possible, keep a `mode` that caps or damps the step:
 ```python
 pa = po.spec.pa(
     "pa", targets=["y"], features=["x0", "x1"], half_life=200.0,
-    mode="pa1",                  # the default
+    mode="pa1",                  # the default; "pa" takes no c and refuses one
     c=0.1,
     eps=0.05,                    # within 0.05 of the target's std a row is "close enough", and nothing moves
 )
@@ -750,6 +1052,44 @@ with `loss`:
 | `"logistic"`, the default | a probability, with `resid = y - p` | logistic regression |
 | `"squared"` | the linear prediction | a sparse linear regression with no solves and an L1 penalty |
 
+**`l1` keeps the features with evidence and zeroes the rest.** Here a 0/1
+target depends on 5 of 50 features. The fit keeps those five, and its
+probabilities class the rows of the second half, each before it is learned:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# A 0/1 target from 50 features, of which only x0 to x4 move its probability.
+rng = np.random.default_rng(8)
+n, k = 20_000, 50
+x = rng.standard_normal((n, k))
+logit = x[:, :5] @ np.array([1.5, -1.0, 1.0, 0.8, -0.8])
+up = (rng.random(n) < 1.0 / (1.0 + np.exp(-logit))).astype(float)
+names = [f"x{i}" for i in range(k)]
+pl.DataFrame(x, schema=names).with_columns(up=up).write_parquet("clicks.parquet")
+
+sparse = po.spec.ftrl(
+    "sparse", targets=["up"], features=names, half_life=float("inf"),
+    l1=300.0,                      # zero a coefficient whose summed evidence stays under 300
+    strict_binary=True,            # refuse a target that is not 0 or 1
+)
+bank = po.ModelBank([sparse])
+out = pl.concat(bank.fit_predict_batches(pl.scan_parquet("clicks.parquet")))
+betas = bank.coef().filter(pl.col("term") != "intercept")
+kept = betas.filter(pl.col("coef") != 0.0)["term"].to_list()
+p_up = out["sparse"].struct.field("pred_up")      # each row's probability, from the fit before the row
+hits = ((p_up > 0.5).cast(pl.Float64) == out["up"])[n // 2:].mean()
+print(f"coefficients left nonzero: {len(kept)} of {betas.height}: {kept}")
+print(f"rows of the second half classed right, out of sample: {hits:.2f}")
+```
+
+```text
+coefficients left nonzero: 5 of 50: ['x0', 'x1', 'x2', 'x3', 'x4']
+rows of the second half classed right, out of sample: 0.81
+```
+
 Under the logistic loss a target outside `[0, 1]` is clamped into it. To
 refuse such a target instead, give `strict_binary=True`, which refuses a
 chunk with any target but 0 or 1 and names the row.
@@ -759,7 +1099,7 @@ chunk with any target but 0 or 1 and names the row.
 
 ```
 b_i  = 0 if |zz_i| ≤ l1 else −(zz_i − sign(zz_i)·l1) / (β/α + d_i + l2)
-p    = sigmoid(zᵀb)
+p    = sigmoid(zᵀb)                  zᵀb itself under loss="squared"
 zz_i ← λzz_i      n_i ← λn_i      d_i ← λd_i      λ over the clock since the row that last taught the target
 g_i  = (p − y)·z_i·w      s_i = (√(n_i + g_i²) − √n_i)/α
 zz_i += g_i − s_i·b_i      n_i += g_i²      d_i += s_i
@@ -794,9 +1134,9 @@ is on the mean scale.
 coefficient's error reaches the prediction multiplied by the feature's
 value, so a feature at a level `L` carries it at `L` times its size. On the
 stream of `crates/online-core/tests/held_values.rs`, with one of three
-features at `L`, the squared loss's error is about `0.018·L`: 18.3 at 1,000
-and at -1,000, and 1.8e6 at 1e8, where it is 0.75 at 0.5. Standardize or
-z-score such a feature first, as
+features at `L`, the squared loss's error is about `0.018·L`. That is 18.3
+at 1,000 and at -1,000, and 1.8e6 at 1e8, where it is 0.75 at 0.5. Standardize or
+z-score such a feature in the query before the bank, as
 [Features in units of their spread](WINDOWS.md#features-in-units-of-their-spread)
 shows. `ftrl` has no `standardize` because `l1` zeroes a coefficient in the
 feature's own units: a scale inside the model would move which coefficients
@@ -806,11 +1146,12 @@ feature's own units: a scale inside the model would move which coefficients
 where it was,** because the sums wait for the next row that teaches it.
 That row is scored with the fit as it stood, then ages the sums by the
 whole clock since. The gap ages the evidence and not the penalties, so the
-fit gives way to them: a constant 5 settled at `half_life=100` stands at
-0.75 of itself after the row that ends a gap of one half-life.
+fit gives way to them. A constant 5 settled at `half_life=100` stands at
+0.75 of itself after the row that ends a gap of one half-life, and at 0.15
+after a gap of five.
 
-With decay off, `d_i` is `√n_i/α`, which is river's FTRL: the
-two agree to 1e-12, row for row, and Vowpal Wabbit's `--ftrl` agrees to its
+**With decay off, `d_i` is `√n_i/α`, which is river's FTRL:** the two
+agree to 1e-12, row for row, and Vowpal Wabbit's `--ftrl` agrees to its
 single precision.
 
 ### `holt` — Holt's linear trend
@@ -819,19 +1160,50 @@ single precision.
 
 `holt` is the only linear model that takes no features: it extrapolates the
 target's own level and trend. To measure what a model's features add, run
-`holt` in the same bank, then compare the two models' `sigma` ([How wide
+`holt` in the same bank. Then compare the two models' `sigma` ([How wide
 is its error?](DIAGNOSTICS.md#how-wide-is-its-error)), or let a
 [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting) with `a` and
 `b` say which predicts closer.
-This code uses `df` from [Example data](../README.md#example-data):
+
+**A feature earns its place when the model that reads it beats `holt`.**
+Here the target's level wanders and trends, and `2·x` rides on it. A
+regression on `x`, whose intercept follows the level, beats `holt` on the
+spread of its error, and `seqtest` says when the evidence for that is
+enough:
 
 ```python
-with_x = po.spec.ewridge("with_x", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=600.0,
-                         half_life=200.0, emit_sigma=True)     # sigma_y is written only when switched on
-naive = po.spec.holt("naive", targets=["y"], clock="t", gap_cap=600.0,
-                     half_life=200.0, emit_sigma=True)         # the same target, from its own past alone
-gain = po.spec.seqtest("gain", targets=["y"], a="with_x", b="naive")   # evidence that the features predict closer
-compared = po.ModelBank([with_x, naive, gain]).fit_predict(df)
+import math
+
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# A level that wanders and trends, plus 2·x and noise, one row a clock unit.
+rng = np.random.default_rng(9)
+n = 2_000
+t = np.arange(n, dtype=float)
+x = rng.standard_normal(n)
+level = 0.02 * t + np.cumsum(0.1 * rng.standard_normal(n))
+y = level + 2.0 * x + 0.5 * rng.standard_normal(n)
+pl.DataFrame({"t": t, "x": x, "y": y}).write_parquet("trend.parquet")
+
+common = dict(targets=["y"], clock="t", gap_cap=10.0, half_life=20.0, emit_sigma=True)   # sigma_y: the error's spread
+specs = [
+    po.spec.ewridge("with_x", features=["x"], **common),    # the feature, and an intercept that follows the level
+    po.spec.holt("naive", **common),                         # the target's own level and trend alone
+    po.spec.seqtest("gain", targets=["y"], a="with_x", b="naive"),   # evidence that with_x predicts closer
+]
+out = pl.scan_parquet("trend.parquet").online.fit_predict(specs).collect()
+for name in ("with_x", "naive"):
+    print(f"{name}: sigma_y at the last row {out[name].struct.field('sigma_y')[-1]:.2f}")
+passed = out["gain"].struct.field("log_e_a_y") >= math.log(20)   # the 5% level, read at any row
+print(f"with_x predicts closer at the 5% level from row {passed.arg_true()[0]}")
+```
+
+```text
+with_x: sigma_y at the last row 1.14
+naive: sigma_y at the last row 2.21
+with_x predicts closer at the 5% level from row 10
 ```
 
 Level and trend, `l` and `b`, are weighted means of what each row observes
@@ -847,6 +1219,11 @@ l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)          W' = λ_l·W + w
 b'   = (λ_b·V·b + w·(l' − l)/s)/(λ_b·V + w)    V' = λ_b·V + w
 ```
 
+A target's first observation sets `l = y` and `W = w`, predicts nothing,
+and starts the trend at 0. The gains `w/(λW + w)` start at 1 and fall to
+the textbook's fixed `1 − λ` as the weight saturates. So a new series is
+followed sooner, and from there the fit is statsmodels' `Holt`.
+
 ```python
 baseline = po.spec.holt(
     "baseline", targets=["y"], clock="t", gap_cap=600.0,
@@ -859,10 +1236,9 @@ baseline = po.spec.holt(
 **`holt` measures the trend per clock unit, and per second on a temporal
 clock,** so on an irregular clock it extrapolates the right distance.
 
-**The level's half-life is the spec's `half_life`, as every model's
-decay is.** `level_half_life`, a second name it once had, is refused and
-the message names `half_life`. To make the trend the whole history's
-drift, give `trend_half_life=inf`.
+**The level forgets at the spec's `half_life`, as every model's decay
+does.** `level_half_life` is refused, with a message naming `half_life`. To
+make the trend the whole history's drift, give `trend_half_life=inf`.
 
 **For a flat forecast, give `trend=False`:** simple exponential smoothing,
 whose level is the target's exponentially weighted mean. It holds the
