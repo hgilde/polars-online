@@ -226,8 +226,9 @@ break on the median.
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
 forgets, a diagnostic also waits until the stream is 95% settled on the
-longest finite memory the model keeps. That is 4.3 of its half-lives, the
-point from which the readiness notices judge a stream. A fit with several
+longest finite memory the model keeps, 4.3 of that memory's half-lives.
+Under `window_size` with no decay that memory is the window's Kish
+half-life, so a diagnostic starts about `1.5 W` rows in. A fit with several
 memories has settled only once the longest has, so four models count a
 memory beside their half-life:
 
@@ -245,6 +246,21 @@ none. `sgd` and `pa` under `standardize` fold from the row their scaler
 switches the fit to the caller's units, 22 rows of Kish's size in. The
 fields of the twin fits and of feature health read the target and the
 features alone, and fold every row.
+
+**The readiness notices read the model's own half-life, so they can judge
+a stream long before its diagnostics start.** `settled_frac`,
+`min_settled_frac`, `summary()` and the notices that a gate is not met read
+the decay `half_life` sets. A notice projects the weight a stream tops out
+at, `1 / (1 − λ^d)`, or the noise gate's ratio, and both settle on that
+clock. A diagnostic waits for the longest memory, because a residual from
+before that memory has settled carries its warm-up bias, which reads as a
+break. On `holt` at a half-life of 50, with its trend at the default 200,
+the stream is 95% settled on the level at row 218. A `min_weight` above
+the weight's ceiling of 72.6 is named at row 268, a half-life later. The
+first `cusum` comes at row 878, past the trend's 95% at row 866. Under
+`window_size` with no decay nothing settles, so `settled_frac` is null and
+no notice judges the stream. Its diagnostics still start 4.3 of the
+window's Kish half-lives in.
 
 **A fit far from its truth carries its warm-up error for many
 half-lives.** `rls` and `kalman` learn the intercept from a prior at 0, so
