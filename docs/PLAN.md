@@ -9505,6 +9505,19 @@ tick, and that the series holding it up has a count near 1.
       of the removed expression namespace in the private `_kwargs` module and
       in no API snapshot, folds into `CommonKwargs`. These land as one
       follow-up after parts a and c.
+      **No doc references the plan** (the user, 2026-10-10: "No doc should
+      reference the plan, everything should be explained from first
+      principals"): the README, every guide, CONTRIBUTING, `llms.txt` and
+      every public docstring cite no PLAN section, task number or record,
+      and state the reason itself -- the mechanism, the measurement and how
+      it was made, the trade-off -- a link to another guide being fine.
+      Before: 166 references in PERFORMANCE.md, 84 in TESTING.md, 37 in
+      RELEASE-READINESS.md, 17 in EXTENDING.md, 14 each in WRITING.md and
+      STATE-WORKFLOW.md, a handful elsewhere, and about a hundred in the
+      package's sources (docstrings and comments; comments may keep them).
+      Docstrings in task 239 and its follow-up, the rest in task 238; a rule
+      in WRITING.md and a test that scans the README, the guides and the
+      rendered docstrings hold it.
 - [x] 240. **Pooling Grams within parts: block fixed effects** --
       requested 2026-10-10 (the user: "file into the plan"). An option on
       `po.gram.merge`, and on everything that merges parts internally
