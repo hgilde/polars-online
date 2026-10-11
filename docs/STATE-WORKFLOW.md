@@ -14,57 +14,153 @@ that decided the design follows as a dated record.
 
 ## The workflow in four steps
 
-This section is the one to read to *use* the state workflow. The numbered
-sections after it are the research that decided it.
+These subsections are the guide to using the state workflow. The numbered
+sections after them are the research that decided it.
 
 A state file is the same file, byte for byte, whichever wrote it (§5 C2).
 A query and an eager frame take it as `load_state` and `save_state`, and
 the TOML under the same two keys. The command line spells them `--load-state`
 and `--save-state`, and a `ModelBank` has `load` and `save`.
 
+**Every example in this guide is a recipe: a complete program, with
+what it prints.** Each generates its data with the answer planted, saves
+it to parquet and reads it back with `pl.scan_parquet`, as a stream too
+large to hold would be read. What each prints is shown under it, and
+`tests/test_state_workflow_page.py` runs each recipe and holds its output
+to what is shown.
+
 ### Each step, and what it guarantees
+
+Each step has a call in Python and a flag or key on the command line, and
+each rests on rules the record states and checks:
 
 | step | in Python | on the command line | what it guarantees | rules |
 |---|---|---|---|---|
 | **1. Fit, and keep the state** | `lf.online.fit_predict([spec], save_state="ridge.state")` | `save_state` in the TOML, or `--save-state` | the state is written whole, once the bank has been fed its last row | R1, R2, R4, R6, R7 |
 | **2. Inspect it** | Loading the file gives the `ModelBank` back: `po.ModelBank.load(path)`, with `coef()` (the betas), `last_row()`, `summary()` and `describe()` (what it was fed), `gram()` and the rest. `save_bytes()` / `load_bytes()` are the same state as bytes, for a store that is not a file | | none of them needs a row of data | |
 | **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --load-state p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count | R3, R5 |
-| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --load-state p --save-state p` | it resumes at the next row and replaces. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap | R2, R3 |
+| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --load-state p --save-state p` | it resumes at the next row and replaces the file. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap | R2, R3 |
 
 ### Fit, and keep the state
 
 The bank in a query learns as the rows stream through it, and the state
-is written once the bank has been fed its last row:
+is written once the bank has been fed its last row. The recipe runs the
+four steps over a stream of 2,000 rows cut into two files, `2025.parquet`
+and `2026.parquet`, whose target is `0.5 + 1.5·x0 − 2·x1` plus noise. It
+then compares what the steps gave with one run over the whole stream:
 
 ```python
+import numpy as np
 import polars as pl
+
 import polars_online as po
 
+# A stream of 2,000 rows, a row each clock unit: y = 0.5 + 1.5 x0 - 2 x1, plus noise of spread 0.1.
+rng = np.random.default_rng(3)
+n = 2_000
+x0, x1, noise = rng.standard_normal((3, n))
+stream = pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1,
+                       "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise})
+stream.head(1_500).write_parquet("2025.parquet")    # the stream so far
+stream.tail(500).write_parquet("2026.parquet")      # the rows that follow it
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                        clock="t", half_life=600.0, gap_cap=300.0)
 
+# 1. Fit, and keep the state: written once the bank has been fed the file's last row.
 (pl.scan_parquet("2025.parquet")                           # a query over the file; nothing is read yet
    .online.fit_predict([spec], save_state="ridge.state")   # the bank learns a chunk at a time, and saves at the last row
    .sink_parquet("2025_scored.parquet"))                   # runs the query, writing the scored rows without holding them all
+
+# 2. Inspect it: the betas the state holds, with no row of data.
+bank = po.ModelBank.load("ridge.state", specs=[spec])
+for term, coef in bank.coef().select("term", "coef").iter_rows():
+    print(f"{term:>9} {coef:7.3f}")
+
+# 3. Serve from it: every row scored against the state as it stands, which never moves.
+served = pl.scan_parquet("2026.parquet").online.predict("ridge.state").collect()
+
+# 4. Learn on from it, and save over it.
+(pl.scan_parquet("2026.parquet")
+   .online.fit_predict(load_state="ridge.state", save_state="ridge.state")
+   .sink_parquet("2026_scored.parquet"))
+
+# Against one run over the whole stream:
+one_run = po.ModelBank([spec])
+one_run_out = one_run.fit_predict(stream).tail(500)
+pred = lambda out: out["ridge"].struct.field("pred_y")
+resumed = pl.read_parquet("2026_scored.parquet")
+print(f"learned on: largest difference from one run {(pred(resumed) - pred(one_run_out)).abs().max()}")
+print(f"served: the first row as one run scores it {pred(served)[0] == pred(one_run_out)[0]}")
+print(f"the state on disk is one run's, byte for byte: {po.ModelBank.load('ridge.state').save_bytes() == one_run.save_bytes()}")
 ```
+
+```text
+intercept   0.500
+       x0   1.500
+       x1  -1.996
+learned on: largest difference from one run 0.0
+served: the first row as one run scores it True
+the state on disk is one run's, byte for byte: True
+```
+
+The state learned from `2025.parquet` holds the planted coefficients. The
+run that learned on from it gives one run's predictions on every row of
+`2026.parquet`, and leaves one run's state on disk, to the byte. Serving
+scores the first row of `2026.parquet` as one run does. It scores the
+later rows from the same state, since it learns nothing.
 
 **`save_state` is written whole, and only once the bank has been fed its
 last row.** The write is atomic: a reader sees the old file or the new
 one. A run the caller abandons, or one ended by an error inside the bank,
-leaves the file as it was. An error in a later step of the query still
-writes it, which is [the one gap](#the-one-gap-a-failure-after-the-bank).
+leaves the file as it was. An error in a step of the query after the bank
+still writes it, which is [the one gap](#the-one-gap-a-failure-after-the-bank).
 The command line does the same from a `save_state` in the TOML, and saves
 only after its output is committed.
+
+**Building a query writes nothing, and every run of it ends in the same
+state.** The file is written when the query runs, and `load_state` is read
+when the query is built. So a query run twice writes the same bytes twice,
+and a run under `head(n)` writes the state after the first `n` rows:
+
+```python
+from pathlib import Path
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+rng = np.random.default_rng(3)
+x0, x1, noise = rng.standard_normal((3, 2_000))
+pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
+              "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise}).write_parquet("stream.parquet")
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+
+query = pl.scan_parquet("stream.parquet").online.fit_predict([spec], save_state="run.state")
+print(f"after building the query, the file exists: {Path('run.state').exists()}")
+query.collect()
+first = Path("run.state").read_bytes()
+query.collect()
+print(f"two runs, the same bytes: {Path('run.state').read_bytes() == first}")
+query.head(100).collect()
+print(f"under head(100), the state has been fed {po.ModelBank.load('run.state').rows_fed()} rows")
+```
+
+```text
+after building the query, the file exists: False
+two runs, the same bytes: True
+under head(100), the state has been fed 100 rows
+```
 
 ### The one gap: a failure after the bank
 
 **A query that fails after the bank can still write the state.** Polars
-runs the bank to the end of its input before it reports an error from a
-later step (F5), so the bank reaches its last row and writes. A full disk
-under `sink_parquet`, or a bad cast, then leaves `save_state` written with
-the whole stream's state, while the query's own output is missing. With
-`load_state=p, save_state=p`, a rerun of the same input then steps every
-group's clock back, which a spec with a clock column refuses
+1.x runs the bank to the end of its input before it reports an error from
+a step after it (F5), so the bank reaches its last row and writes. A full
+disk under `sink_parquet`, or a bad cast, then leaves `save_state` written
+with the whole stream's state, while the query's own output is missing.
+With `load_state=p, save_state=p`, a rerun of the same input then steps
+every group's clock back, which a spec with a clock column refuses
 (`restart_after_step_back` unset). Feeding it through
 [`skip_learned`](#resuming-on-input-that-overlaps-the-state) learns nothing
 twice, and so writes no output for those rows either.
@@ -76,10 +172,13 @@ It saves the state only after its writer has committed the output.
 `ridge-2026-01.state`. That keeps a rerun from consuming the state it
 needs, and the files keep an audit trail.
 
-On py-polars 2.0.0rc1 the gap narrows: a long enough stream is stopped
-rather than run to its end, and the state is not written (the record's
-opening, under [The research behind it](#the-research-behind-it-2026-09-03),
-has the measurement).
+On py-polars 2.0 the gap narrows: a long enough stream is stopped rather
+than run to its end, and the state is not written. It was measured with chunks
+of 500 rows and a cast that fails after the bank. Polars 1.44.1 wrote the
+state at 4,000 rows and at 40,000, and 2.0.0rc1 at 4,000 only (the
+record's opening, under [The research behind
+it](#the-research-behind-it-2026-09-03), has the measurement). How Polars stops a failing query is Polars' to change, so
+neither outcome is promised.
 
 ### Resuming on input that overlaps the state
 
@@ -87,24 +186,53 @@ has the measurement).
 such as a rerun of the day or a file that overlaps the last one, steps
 every group's clock back to rows the state has learned. With
 `restart_after_step_back` unset, the default, that chunk is refused, naming
-the row, and the bank is untouched. Given, a step back larger than it starts
-the group over, so the overlap is learned again from nothing (docs/PLAN.md
-task 120). A spec with no clock column has nothing to compare, and learns
-an overlap twice.
+the row, and the bank is untouched. Given, a step back larger than it
+starts the group over, so the overlap is learned again from nothing. A
+spec with no clock column has nothing to compare, and learns an overlap
+twice.
 
 **`ModelBank.skip_learned(frame)` drops what the state has learned.** It
 keeps each row whose clock is after its group's last clock, in every spec
 with a clock, and every row of a group the bank has not seen. It takes a
 `DataFrame` or a `LazyFrame` and keeps the row order, so a query stays a
-query:
+query. The recipe saves a bank after 1,500 rows, then resumes it on a file
+that starts 100 rows before the save:
 
 ```python
-bank = po.ModelBank.load("ridge.state")
-out = bank.fit_predict(bank.skip_learned(rerun))              # eager
+import numpy as np
+import polars as pl
 
-(bank.skip_learned(pl.scan_parquet("2025-06.parquet"))       # a query
-   .online.fit_predict(load_state="ridge.state", save_state="ridge.state")
-   .sink_parquet("2025-06_scored.parquet"))
+import polars_online as po
+
+rng = np.random.default_rng(3)
+x0, x1, noise = rng.standard_normal((3, 2_000))
+stream = pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
+                       "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise})
+stream.slice(1_400).write_parquet("rerun.parquet")        # starts 100 rows before the save
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+saved = po.ModelBank([spec])
+saved.fit_predict(stream.head(1_500))
+saved.save("ridge.state")
+
+bank = po.ModelBank.load("ridge.state")
+try:
+    bank.fit_predict(pl.read_parquet("rerun.parquet"))    # refused: the bank is untouched
+except ValueError as e:
+    print(str(e).split(";")[0])
+kept = bank.skip_learned(pl.scan_parquet("rerun.parquet"))   # a query
+print(f"skip_learned keeps {kept.collect().height} of {pl.scan_parquet('rerun.parquet').collect().height} rows")
+
+(kept.online.fit_predict(load_state="ridge.state", save_state="ridge.state")
+     .sink_parquet("rerun_scored.parquet"))
+one_run = po.ModelBank([spec])
+one_run.fit_predict(stream)
+print(f"the state is one run's, byte for byte: {po.ModelBank.load('ridge.state').save_bytes() == one_run.save_bytes()}")
+```
+
+```text
+spec "ridge": clock column "t" goes backwards by 99 at row 0 (restart_after_step_back is unset, so every step back is refused)
+skip_learned keeps 500 of 600 rows
+the state is one run's, byte for byte: True
 ```
 
 | a row of the input | is |
@@ -135,6 +263,43 @@ file holds every spec, and for every spec and group:
 | a window target's open windows, and the rows they hold | resumes with the windows open, and learns each row once its window closes and its embargo has passed |
 | the rows of closed groups not yet read | still returns them from `closed_groups()` |
 
+The recipe saves two specs part-way through a stream. One learns each row
+50 clock units late, under an `embargo`, so its state holds the last 50
+rows unlearned. The other learns a target that looks 20 units ahead, so
+its state holds open windows. Each resumed run gives one run's
+predictions:
+
+```python
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+rng = np.random.default_rng(3)
+x0, x1, noise = rng.standard_normal((3, 2_000))
+stream = pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
+                       "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise})
+stream.head(1_500).write_parquet("2025.parquet")
+stream.tail(500).write_parquet("2026.parquet")
+clock = dict(clock="t", gap_cap=300.0, half_life=600.0)
+late = po.spec.ewridge("late", targets=["y"], features=["x0", "x1"], embargo=50.0, **clock)     # each row learned 50 units later
+y_ahead = po.rewm_mean("y", half_life=10.0, window_size=20.0).alias("y_ahead")                   # the next 20 units' mean of y
+window = po.spec.ewridge("window", targets=[y_ahead], features=["x0", "x1"], embargo=20.0, **clock)
+specs = [late, window]
+
+pl.scan_parquet("2025.parquet").online.fit_predict(specs, save_state="carry.state").sink_parquet("2025_scored.parquet")
+resumed = pl.scan_parquet("2026.parquet").online.fit_predict(load_state="carry.state").collect()
+one_run = po.ModelBank(specs).fit_predict(stream).tail(500)
+for name, target in [("late", "y"), ("window", "y_ahead")]:
+    difference = (resumed[name].struct.field(f"pred_{target}") - one_run[name].struct.field(f"pred_{target}")).abs().max()
+    print(f"{name}: largest difference from one run {difference}")
+```
+
+```text
+late: largest difference from one run 0.0
+window: largest difference from one run 0.0
+```
+
 A state-only fit under a window target is the one place the surfaces part.
 `lf.online.fit_predict(save_state=...)` keeps predictions, so it refuses an
 embargo shorter than the target's window. `ModelBank.fit` and `online
@@ -152,13 +317,13 @@ and the rows still waiting for their windows to close, and a run given
 reads past the last row it returns, so the state also records how many rows
 of the input it consumed, and the input's first row and last rows read.
 WINDOWS.md's [Saving and resuming a window
-run](WINDOWS.md#saving-and-resuming-a-window-run) shows the use; here is
-what each rule guarantees, and the test that holds it:
+run](WINDOWS.md#saving-and-resuming-a-window-run) shows each case with a
+recipe. Here is what each rule guarantees, and the test that holds it:
 
 | the input a resumed run is given | the run | held by |
 |---|---|---|
 | the next file, after an unsliced run | goes on, and first returns the rows the state held | `test_a_save_and_load_at_every_row_is_one_run`, `test_a_state_saved_under_a_slice_skips_nothing_of_another_input` |
-| an input whose first row is at the last stamp read, after an unsliced run, and starts no new session | refused by name, as after a sliced run: it may repeat rows the state read, which came out twice before task 158 (E13) | `test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row`, `an_unsliced_state_refuses_an_input_at_the_last_stamp_it_read` |
+| an input whose first row is at the last stamp read, after an unsliced run, and starts no new session | refused by name, as after a sliced run: it may repeat rows the state read, which would come out twice | `test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row`, `an_unsliced_state_refuses_an_input_at_the_last_stamp_it_read` |
 | the same input, after a sliced run | skips the rows consumed, so any chain of sliced runs gives one run's output, at chunks of 1, 7 and 100,000 rows | `test_a_state_saved_under_a_slice_resumes_on_the_same_input`, `test_a_state_saved_under_a_slice_resumes_alike_at_any_chunk_size` |
 | the next file, after a sliced run, its first row a step forward or a new start by the clock policy | skips nothing, the rows a previous file left held included | `test_a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held`, `test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file` |
 | an input whose first row is at the last stamp read, or steps back where the policy refuses it | refused by name: `another input` | `test_a_next_file_starts_after_the_last_stamp_the_state_read`, `test_a_state_saved_under_a_slice_refuses_another_input` |
@@ -169,11 +334,9 @@ what each rule guarantees, and the test that holds it:
 The windows state is version 7, and a bank file that carries one per window
 target moves its own schema with it, which a Rust test pairs. A state
 resumes only the call that saved it (`test_a_state_resumes_only_its_own_call`).
-Two limits remain, both stated in `with_windows`' docstring. A clock that
-starts over at the same stamp each day needs a session column, and an input
-whose rows match the state's where it was cut is taken as the same input.
-The nine review rounds that built these rules are in docs/PLAN.md §14, each
-finding with its test.
+`with_windows`' docstring states two limits. A clock that starts over at
+the same stamp each day needs a session column. And an input whose rows
+match the state's where it was cut is taken as the same input.
 
 `po.stream.refresh_time` resumes as a bank does: on the input after the
 last tick it read. Under a slice it reads up to the tick that completed the
