@@ -154,9 +154,8 @@ fn from_ipc(hex_text: &str) -> DataFrame {
 /// settled, a half-life not yet past, so the notice comes in the
 /// continuation. And a windowed `ewridge` with its residual spread (task
 /// 217, schema 52): the row counts its cross-moments keep, live and in its
-/// window's snapshots, and the spread ring's own, per slot. And an `audit`
-/// with its pairs (task 223 (b), schema 54): a spec the bank's file names,
-/// which reads every row.
+/// window's snapshots, and the spread ring's own, per slot. The `audit`
+/// is in the second file's specs ([`diagnosed_specs`]).
 fn specs() -> Vec<Spec> {
     [
         r#"{"name": "dated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "ts", "half_life": "10m", "gap_cap": "1h", "weight": "w"}"#,
@@ -168,7 +167,6 @@ fn specs() -> Vec<Spec> {
         r#"{"name": "sessioned", "model": {"type": "ew_cov", "pca": 1}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "group": "g", "session": "s", "group_close": "session"}"#,
         r#"{"name": "waiting", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "half_life": 16.0, "min_weight": 30.0}"#,
         r#"{"name": "spread_window", "model": {"type": "ewridge", "window_size": 12.0}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0, "emit_sigma": true}"#,
-        r#"{"name": "audited", "model": {"type": "audit", "pairs": true}, "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t", "gap_cap": 50.0}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -179,11 +177,15 @@ fn specs() -> Vec<Spec> {
 /// with a memory of their own (docs/PLAN.md task 221, schema 55), in a file
 /// of their own so that neither file passes the 250 KB a source file is
 /// held to. A half-life of 10 clock units settles the stream 95% well
-/// before the save, from which the diagnostics fold (task 232 (1)).
+/// before the save, from which the diagnostics fold (task 232 (1)). And an
+/// `audit` with its pairs (task 223 (b), schema 54): a spec the bank's file
+/// names, which reads every row. It moved here from the first file when the
+/// fourth `withheld_reason` (task 239) took that file past the cap.
 fn diagnosed_specs() -> Vec<Spec> {
     [
         r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "horizon_rows": 2, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
         r#"{"name": "quantiled", "model": {"type": "quantile", "quantile": 0.8}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "horizon_rows": 2, "emit_calibration": true, "emit_breaks": true}"#,
+        r#"{"name": "audited", "model": {"type": "audit", "pairs": true}, "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t", "gap_cap": 50.0}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))

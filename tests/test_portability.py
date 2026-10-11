@@ -25,7 +25,9 @@ TIER = "mixed"
 
 #: `withheld_reason`, an enum over the three gates, on every model that
 #: writes a row (docs/WARMUP-AND-CONVERGENCE.md §3).
-REASON_DTYPE = pl.Enum(["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"])
+REASON_DTYPE = pl.Enum(
+    ["below_min_settled_frac", "below_min_weight", "above_max_error_inflation", "below_warm_rows"]
+)
 
 REPO = Path(__file__).resolve().parent.parent
 

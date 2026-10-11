@@ -795,7 +795,12 @@ class TestEdgeCases:
                 "weight_sum": pl.Float64,
                 "settled_frac": pl.Float64,
                 "withheld_reason": pl.Enum(
-                    ["below_min_settled_frac", "below_min_weight", "above_max_error_inflation"]
+                    [
+                        "below_min_settled_frac",
+                        "below_min_weight",
+                        "above_max_error_inflation",
+                        "below_warm_rows",
+                    ]
                 ),
             }
         )
