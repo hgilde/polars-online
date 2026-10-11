@@ -9645,7 +9645,7 @@ tick, and that the series holding it up has a count near 1.
       first batch), which is why IPC is read natively. Dev group:
       `xgboost` (macOS) or `xgboost-cpu`, and `lightgbm`; macOS CI installs
       libomp. Windows and Linux are first exercised by CI.
-- [ ] 243. **`bocpd`'s fold under heavy pruning** (task
+- [x] 243. **`bocpd`'s fold under heavy pruning** (task
       239). With `max_run` capping the run length, a run that reaches it
       folds into the oldest run shorter than the cap; when pruning has left
       a gap below the cap, that run can be much younger, the dominant run's
@@ -9659,6 +9659,22 @@ tick, and that the series holding it up has a count near 1.
       **Decided 2026-10-10** (the user: "Your reco"): build the scaling,
       and keep it only if it gives fewer false alarms without slower
       detection; otherwise keep the rule.
+      *Done 2026-10-11* (`99d2862`): built and kept. Fewer false alarms in
+      all nine cells of `max_run` {20, 50, 1000} x `prune_below` {1e-6,
+      1e-4, 1e-2} on three kinds of break (correlation, 3-sigma mean, x9
+      variance; 20 seeds of a quiet stream and its broken twin), and on §5
+      (0.53 vs 1.00 per 1,000 quiet rows). §5's worst delay of 207 was the
+      cap's own alarm at rows 1203-1207, which all 20 quiet twins raised
+      too; under the scaled fold it reads 351, as before task 239. Scored
+      as broken streams alarmed minus quiet twins alarmed in the same
+      window, detection is equal or better in every cell but the x9
+      variance step at (20, 1e-4): +8 against +14, at 0.12 against 10.82
+      false alarms per 1,000; the coordinator kept it on that trade (the
+      rule's letter would drop it: reported to the user). At `max_run` 20
+      or 50 with `prune_below=1e-2` the scaled fold finds a mean shift on
+      3/20 and 9/20 streams (the old rule on none beyond chance). No layout
+      change; GOLDEN's five bocpd values at row 119 re-pinned; scoped
+      mutants 22/22 caught.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

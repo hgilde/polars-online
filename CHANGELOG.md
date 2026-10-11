@@ -685,6 +685,14 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **`bocpd`'s capped runs fold into the oldest, scaled back to the cap**
+  (task 243): the runs that reach `max_run - 1` rows fold into the oldest
+  of them, whose weight and scatter shrink to `max_run - 1` rows' worth
+  while its mean stays, instead of into the youngest. Under heavy pruning
+  the dominant run keeps its memory: at `max_run=20`, `prune_below=1e-2`, a
+  quiet stream's summed `p_change` falls from 34.8 to 7.1, and REGIMES §5's
+  false alarms from 1.00 to 0.53 per 1,000 quiet rows. Nothing moves at the
+  defaults below 10,000 rows.
 - **Diagnostics wait for the longest finite memory a model keeps** (task
   234): `holt`'s trend, `kalman`'s longest, `ewridge`'s
   `long_half_life`, `lasso`'s `select_half_life`. Settled on its level
