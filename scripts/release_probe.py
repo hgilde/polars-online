@@ -220,6 +220,10 @@ _OLD_NAMES = {
     "max_iter": "max_cd_iters",
     "tol": "cd_tol",
     "reset_on_flag": "reset",
+    # Task 196's row counts, which say so in their names.
+    "update_every_rows": "update_every",
+    "split_merge_every_rows": "split_merge_every",
+    "permute_every_rows": "permute_every",
 }
 
 
@@ -240,6 +244,9 @@ def _current_names() -> bool:
 _OLD_NAMES_IN = {
     "kmeans": {"n_clusters": "k", "init": "seed_rule"},
     "hmm": {"n_components": "k", "init": "seed_rule", "covariance_type": "covariance"},
+    "ew_class": {"covariance_type": "covariance"},
+    # Task 195's `delta`: `ridge` is still `ewridge`'s, so only `rls` moves.
+    "rls": {"delta": "ridge"},
     "lasso": {"penalties": "lasso_path", "snapshot_every": "window_every"},
     "corrchange": {"window_rows": "span_rows"},
     "bocpd": {
@@ -251,6 +258,19 @@ _OLD_NAMES_IN = {
 }
 
 
+#: The words renamed in one builder's parameter, under its 1.0 name, new
+#: word -> the 0.13 word (task 244). `bocpd`'s `covariance_type` was its
+#: `emission` word, which `_speak` translates on its own.
+_OLD_WORDS_IN = {
+    "kmeans": {"init": {"k-means++": "kmeanspp"}},
+    "hmm": {
+        "init": {"k-means++": "kmeanspp"},
+        "covariance_type": {"tied": "shared", "diag": "diagonal"},
+    },
+    "ew_class": {"covariance_type": {"tied": "shared", "diag": "diagonal"}},
+}
+
+
 def _names_of_1_0() -> bool:
     """Whether the installed package takes the names of 2026-10-11."""
     return "n_clusters" in inspect.signature(po.spec.kmeans).parameters
@@ -259,6 +279,11 @@ def _names_of_1_0() -> bool:
 def _speak(builder: str, kw: dict) -> dict:
     """``kw`` in the installed package's own names."""
     if not _names_of_1_0():
+        words = _OLD_WORDS_IN.get(builder, {})
+        kw = {k: words[k].get(v, v) if k in words else v for k, v in kw.items()}
+        if builder == "bocpd" and "covariance_type" in kw:
+            shape = kw.pop("covariance_type")
+            kw["emission"] = "gaussian" if shape == "full" else shape
         kw = {_OLD_NAMES_IN.get(builder, {}).get(k, k): v for k, v in kw.items()}
     if _current_names():
         return kw
@@ -271,6 +296,8 @@ def _speak(builder: str, kw: dict) -> dict:
             out["ridge_decay"] = value == "sum"
         elif key == "standardize" and builder == "sgd":
             out["scale_features"] = value
+        elif key == "standardize" and builder == "pa" and value is False:
+            pass  # task 195's default; before it, `pa` read its features raw
         elif key == "stats":
             # Task 196's `lag_corr`, `lagcorr` before it.
             out["stats"] = ["lagcorr" if s == "lag_corr" else s for s in value]

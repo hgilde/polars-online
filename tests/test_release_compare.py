@@ -39,6 +39,30 @@ def test_bits_are_compared_not_values():
     assert not same(pl.Series([1.0]), pl.Series([1], dtype=pl.Int64)), "the dtype is compared"
 
 
+def test_a_dtype_change_is_named_not_called_bits():
+    """A field whose values are all equal but whose dtype moved -- an
+    integer widened, an Enum's categories renamed -- was reported as "bits
+    differ (e.g. -0.0 against 0.0)", which sent the reader after a sign of
+    zero that was not there (release 1.0's comparison: `kmeans.cluster`,
+    every `withheld_reason`)."""
+    old = pl.Series([1, 0, None], dtype=pl.Int32)
+    new = pl.Series([1, 0, None], dtype=pl.Int64)
+    assert not compare.same(old, new)
+    assert compare.first_difference(old, new) == "dtype Int32 -> Int64, every value equal"
+    old_e = pl.Series(["a", None], dtype=pl.Enum(["a", "below_min_periods"]))
+    new_e = pl.Series(["a", None], dtype=pl.Enum(["a", "below_min_weight"]))
+    text = compare.first_difference(old_e, new_e)
+    assert "bits differ" not in text, text
+    assert "gone ['below_min_periods']" in text and "new ['below_min_weight']" in text, text
+    # A row that differs is still named first, with the dtype beside it.
+    assert compare.first_difference(old, pl.Series([1, 2, None])).startswith("row 1: 0 -> 2")
+    # And a sign of zero, whose dtype is the same, keeps its own message.
+    assert compare.first_difference(pl.Series([0.0]), pl.Series([-0.0])).startswith("bits differ")
+    # An Array against a List of the same numbers is not a dtype change.
+    arr = pl.Series([[1.0, 2.0]], dtype=pl.Array(pl.Float64, 2))
+    assert compare.same(arr, pl.Series([[1.0, 2.0]]))
+
+
 def test_this_build_runs_the_whole_workload(tmp_path):
     """A spec this build refuses would drop out of every comparison unseen:
     the workload must keep up with the API."""
