@@ -1630,7 +1630,7 @@ for speed.** Each feature then keeps one mean and variance, over every
 learned row, in place of one per pair over its target's rows. At 20,000
 pairs that runs 2.7 times as fast at ten targets, with a state under half
 the size and the same table to the bit ([PERFORMANCE
-§27](PERFORMANCE.md#27-marginals-shared-feature-moments-e72-task-125-2026-09-29)).
+§27](PERFORMANCE.md#27-marginals-shared-feature-moments-2026-09-29)).
 Where a target is absent on some rows, `var_x` and the centre of `cov` then
 come from every row. That is a different estimator, sound only where the
 absence says nothing about the feature, so otherwise keep the default. It
@@ -1645,7 +1645,7 @@ the width and the pool, and leaves whole a narrow spec, or a windowed one
 that snapshots every row, the default, whose batch is a single row. The
 numbers are the same to the bit at any count, so a saved bank resumes under
 any count. On 14 threads ([PERFORMANCE
-§25](PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25)):
+§25](PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-2026-09-25)):
 
 | the spec | `"auto"` ran the bank |
 |---|---|

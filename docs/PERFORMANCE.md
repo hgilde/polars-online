@@ -2340,8 +2340,6 @@ bit. And the product's kernel follows the CPU's vector width, so a blocked
 Gram's last bits can differ between machines, where the rank-1 path's do
 not. Frozen fixtures stay unblocked.
 
-<a id="37-one-wide-gram-on-several-threads-task-225-2026-10-08"></a>
-
 ### 37. One wide Gram on several threads (2026-10-08)
 
 `ewridge` and `ew_cov` take a `gram_threads`, which runs the
@@ -2499,8 +2497,6 @@ cargo run --release -p online-core --example gram_threads_bench -- 1000 2000 400
 MANY_GROUPS=1 cargo run --release -p online-core --example gram_threads_bench -- 256 512 724
 ```
 
-<a id="38-a-solves-bits-whatever-the-pool-task-231-2026-10-09"></a>
-
 ### 38. A solve's bits, whatever the pool (2026-10-09)
 
 **A wide fit now gives the same bits in a pool of any size, at the pool's
@@ -2595,8 +2591,6 @@ default pool moved once to it, at the widths where the pool mattered.
 ```sh
 cargo run --release -p online-core --example solve_threads_bench -- 512 1000 2000 4000
 ```
-
-<a id="19-against-sklearnlinear_modelsgdregressor-task-72-2026-09-08"></a>
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)
 
@@ -2945,8 +2939,6 @@ was done the same day, with the row admitted at unit weight, so
 Polyak average could be added as an option, if the stationary gap of 0.0005
 ever matters to anyone. For the measurement, two lessons: print the ceiling, and never report a
 sweep whose best point is at its edge.
-
-<a id="20-sgds-per-feature-cost-task-75-2026-09-08"></a>
 
 ### 20. `sgd`'s per-feature cost (2026-09-08)
 
@@ -3509,8 +3501,6 @@ three interleaved rounds:
 | 20 features, 10 targets | 2.85M rows/s | 3.05M rows/s |
 | 20 features, a solve every 25 rows | 3.21M rows/s | 3.53M rows/s |
 
-<a id="25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25"></a>
-
 ### 25. A wide `marginal` split across the pool (2026-09-25)
 
 The pool's unit of work is a stream, one spec on one group. A
@@ -3650,8 +3640,6 @@ Nested that way, the models holding a batch at once are bounded by the
 sharded groups in the chunk, not by the threads.
 Nothing runs on rayon's global pool, and the nesting cannot deadlock,
 since every job is finite work over its own slices.
-
-<a id="27-marginals-shared-feature-moments-e72-task-125-2026-09-29"></a>
 
 ### 27. `marginal`'s shared feature moments (2026-09-29)
 
@@ -4626,8 +4614,6 @@ figure less than 7%, and every time of the window and the model less than
 6% but one: 0.17 s for the first 1M-row window, the run's first process. The recipe's
 times moved up to 13%, and the sub-second scan-and-sink's up to a third.
 
-<a id="33-window-operators-task-143-2026-10-03"></a>
-
 ### 33. Window operators (2026-10-03)
 
 *Provenance: added in `3af3e48`, and timed beside §32's core rebuilt at
@@ -4700,8 +4686,6 @@ Operators sharing one kernel against as many kernels, 16M rows, `H` 1m:
   on this case and stays as the simpler path. Chunk size moves nothing
   from 50k to 500k rows: the cost is per row.
 
-<a id="34-a-window-expression-as-a-target-task-104-2026-10-03"></a>
-
 ### 34. A window expression as a target (2026-10-03)
 
 *Provenance: added in `67535e2`. An Apple M4 Pro. Load: 6.0
@@ -4756,8 +4740,6 @@ memory.
 - **Memory is below the column form's**: the native path never
   materialises the target column, and holds a row's formula columns only
   until its window closes (1.09 against 1.23 GB at 16M rows).
-
-<a id="35-two-costs-the-review-of-2026-10-03-named-and-did-not-change"></a>
 
 ### 35. Two costs named and left unchanged (2026-10-03)
 
