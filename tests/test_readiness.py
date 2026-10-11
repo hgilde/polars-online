@@ -835,8 +835,8 @@ class TestSettledWeight:
         assert notice_rows(set(range(1, df.height))) == [notice_at]
 
     def test_the_readmes_kernel_example_does_not_warn(self, tmp_path, monkeypatch):
-        """README, *A local fit along any feature*, verbatim, on the README's
-        own ``df``: a sorted feature as the clock is sparse in its tails and
+        """README, *A local fit along any feature*, as it stood, on the README's
+        own ``df``, and the section's block as it stands: a sorted feature as the clock is sparse in its tails and
         dense at its mode, so the rows come faster after the stream settles
         and the weight climbs from about 7.7 to 103. The notice read the
         regular-stream projection at the first withheld row past 95% settled
@@ -856,11 +856,22 @@ class TestSettledWeight:
         monkeypatch.chdir(tmp_path)  # Example data writes its parquet files here
         ns: dict = {}
         exec(compile(block("Example data"), "README.md: Example data", "exec"), ns)
-        kernel = block("A local fit along any feature")
-        assert 'clock="x0"' in kernel and "min_weight=10.0" in kernel, kernel
+        # The README's section now fits a curve of its own (task 238), and
+        # its block is held by the README's recipe test; the kernel on
+        # `df`'s sorted `x0` that this regression was found on is kept here.
+        kernel = (
+            'curve = df.sort("x0")\n'
+            'kernel = po.spec.ewridge("kernel", targets=["y"], features=["x0"], clock="x0",\n'
+            "    half_life=0.5, gap_cap=1.0, max_rows_between_solves=1, coef_every=0,\n"
+            "    min_weight=10.0)\n"
+            'fitted = po.ModelBank([kernel]).fit_predict(curve).unnest("kernel")\n'
+        )
+        local = block("A local fit along any feature")
+        assert 'clock="x"' in local and "min_weight=20.0" in local, local
         with warnings.catch_warnings():
             warnings.simplefilter("error", po.ReadinessWarning)
             exec(compile(kernel, "README.md: A local fit along any feature", "exec"), ns)
+            exec(compile(local, "README.md: A local fit along any feature", "exec"), {})
         fitted = ns["fitted"]
         assert fitted["pred_y"].drop_nulls().len() == 381
         assert fitted["weight_sum"].max() > 100.0
