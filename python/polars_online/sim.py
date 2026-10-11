@@ -188,7 +188,9 @@ def regimes(
         says.
     ``design``, ``smooth_rows``
         ``"step"`` switches at the block boundary; ``"smooth"`` interpolates the
-        correlation matrix linearly over ``smooth_rows`` rows around it. A convex
+        correlation matrix linearly over ``smooth_rows`` rows centred on it:
+        row ``t`` follows ``(1 - mix) R_before + mix R_after``, the states of
+        the blocks before and after the boundary, on both sides of it. A convex
         combination of two correlation matrices is one, so every matrix along the
         way is valid.
     ``phi``
@@ -228,7 +230,8 @@ def regimes(
         ``activity`` (null without ``activity``).
     ``truth_rows``
         Per row: ``t``, ``block``, ``state``, ``scale_mult`` and ``mix``, the
-        interpolation fraction.
+        weight of the later block's state in the row's blend: 0 away from a
+        boundary, rising to 1 across it.
     ``truth_blocks``
         Per block: ``block``, ``state``, ``n_rows``, and ``corr``, the block's
         true correlation matrix as ``vech``, its upper triangle with the
@@ -303,31 +306,42 @@ def regimes(
     block_of = np.arange(n) // rows_per_block
     state_of = np.array([chain[b] for b in block_of])
     # The interpolation fraction: 0 away from a boundary, ramping to 1
-    # across `smooth_rows` centred on it.
+    # across `smooth_rows` centred on it, and the two states it blends: the
+    # block before the boundary's (`before`) and the block after it
+    # (`after`). Row `t` follows `(1 - mix) R_before + mix R_after`, on
+    # either side of the boundary, so `truth_rows`' `mix` is what the data
+    # follow. A row away from every boundary follows its own block's state.
     mix = np.zeros(n)
+    before = state_of.copy()
+    after = state_of.copy()
     if design == "smooth" and smooth_rows > 0:
         half = smooth_rows / 2.0
         for b in range(1, n_blocks):
             edge = b * rows_per_block
             for t in range(max(0, int(edge - half)), min(n, int(edge + half) + 1)):
                 mix[t] = np.clip(0.5 + (t - edge) / smooth_rows, 0.0, 1.0)
+                before[t], after[t] = chain[b - 1], chain[b]
 
-    chol: dict[tuple[int, int, int], Any] = {}
+    def corr_at(t: int) -> Any:
+        """`R_t` before `cycle_profile`: its block's state, or the blend of
+        the two blocks' across a boundary."""
+        if mix[t] > 0.0:
+            return (1.0 - mix[t]) * mats[int(before[t])] + mix[t] * mats[int(after[t])]
+        return mats[int(before[t])]
+
+    chol: dict[tuple[Any, ...], Any] = {}
 
     def factor(t: int) -> Any:
-        """The Cholesky factor of `R_t`, cached per (state, previous state,
-        cycle_profile row) — one factorisation per state under `"step"`."""
-        s = int(state_of[t])
-        prev = int(state_of[max(0, t - 1)]) if mix[t] > 0.0 else s
+        """The Cholesky factor of `R_t`, cached per (state, cycle_profile
+        row), and per blend across a boundary -- one factorisation per state
+        under `"step"`."""
         d = t % cycle_len if cycle_profile is not None else 0
-        key = (s, prev, d if cycle_profile is not None else 0)
+        key: tuple[Any, ...] = (int(before[t]), int(after[t]), d)
         if mix[t] > 0.0:
-            key = (s, prev, d, round(mix[t], 12))  # type: ignore[assignment]
+            key = (*key, round(float(mix[t]), 12))
         if key in chol:
             return chol[key]
-        r = mats[s]
-        if mix[t] > 0.0:
-            r = (1.0 - mix[t]) * mats[prev] + mix[t] * mats[s]
+        r = corr_at(t)
         if cycle_profile is not None:
             scale = float(cycle_profile[d])
             r = scale * r + (1.0 - scale) * np.eye(m)
@@ -403,18 +417,7 @@ def regimes(
     blocks = []
     for b in range(n_blocks):
         idx = np.flatnonzero(block_of == b)
-        r = np.mean(
-            [
-                (
-                    (1.0 - mix[t]) * mats[int(state_of[max(0, t - 1)])]
-                    + mix[t] * mats[int(state_of[t])]
-                    if mix[t] > 0.0
-                    else mats[int(state_of[t])]
-                )
-                for t in idx
-            ],
-            axis=0,
-        )
+        r = np.mean([corr_at(t) for t in idx], axis=0)
         blocks.append(
             {
                 "block": b,

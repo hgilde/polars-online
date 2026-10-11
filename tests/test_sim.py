@@ -141,6 +141,51 @@ def test_smooth_interpolates_and_every_matrix_on_the_way_is_valid():
     assert len(ends) > 1
 
 
+def test_smooth_blends_the_two_blocks_states_on_both_sides_of_a_boundary():
+    """Row ``t`` across a boundary follows ``(1 - mix) R_before + mix
+    R_after``, the two blocks' states, as ``truth_rows``' ``mix`` says.
+    The draws blended a row with the row before it, which on every row but
+    the boundary's own is the same block, so only that row was blended, and
+    ``mix`` described a ramp the data did not follow. Each block's truth is
+    the mean of that blend over its rows, and the returns' correlation on
+    the rows a boundary blends is the blend's: on the last rows of a block
+    of correlation 0 before one of 0.9, about 0.2."""
+    rows_per_block, n_blocks = 40, 300
+    out = sim.regimes(
+        2,
+        states=[0.0, 0.9],
+        transition=[[0.0, 1.0], [1.0, 0.0]],
+        n_blocks=n_blocks,
+        rows_per_block=rows_per_block,
+        design="smooth",
+        smooth_rows=40,
+        seed=4,
+    )
+    truth, blocks = out["truth_rows"], out["truth_blocks"]
+    state = blocks["state"].to_numpy()
+    rho = np.array([0.0, 0.9])
+    mix = truth["mix"].to_numpy()
+    t = truth["t"].to_numpy()
+    edge = np.rint(t / rows_per_block).astype(int)
+    edge = np.clip(edge, 1, n_blocks - 1)
+    blended = np.where(mix > 0.0, (1.0 - mix) * rho[state[edge - 1]] + mix * rho[state[edge]], 0.0)
+    own = rho[truth["state"].to_numpy()]
+    want = np.where(mix > 0.0, blended, own)
+    # Each block's truth is the mean of its rows' blend.
+    block = truth["block"].to_numpy()
+    for b, corr in enumerate(blocks["corr"].to_list()):
+        assert corr[1] == pytest.approx(want[block == b].mean(), abs=1e-12), b
+    # The data follow it: the rows before a boundary, still in the old
+    # block, read the blend, not their block's state.
+    x = out["rows"].select("x_1", "x_2").to_numpy()
+    ret = np.diff(x, axis=0, prepend=np.zeros((1, 2)))
+    late = (mix > 0.0) & (mix < 0.5) & (own == 0.0)
+    assert late.sum() > 2000, late.sum()
+    got = np.corrcoef(ret[late].T)[0, 1]
+    assert got == pytest.approx(want[late].mean(), abs=0.05), (got, want[late].mean())
+    assert got > 0.1, "the old block's own state reads 0"
+
+
 def test_phi_is_recovered_from_the_lag_one_autocorrelation():
     out = sim.regimes(
         2,
