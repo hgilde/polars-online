@@ -413,12 +413,11 @@ combo, and are the cases in `output_index`:
 | `micro` | none: its `coef` is one row per *live* summary, so the length is not a property of the spec, and `coef_index` refuses it by name |
 
 An output that is not an `f64` needs its own `Source` variant and dtype. NaN
-is null for all four:
+is null for all three:
 
 | variant | materialized as | what it carries |
 |---|---|---|
-| `Source::Cluster` | `i32` | a small count, read out of the `pred` buffer: `micro`'s live counts, `hmm`'s state |
-| `Source::Id` | an `i64` | a cluster label (`kmeans`' and `micro`'s), `micro`'s id, `seqtest`'s counts |
+| `Source::Id` | an `i64` | every integer, read out of the `pred` buffer: a cluster label (`kmeans`' and `micro`'s), `micro`'s id and live counts, `hmm`'s state, `seqtest`'s counts. One integer dtype for every output, so a test holds a new model to it |
 | `Source::Flag` | a `Boolean` | |
 | `Source::Label` | its name (`F64Column::finish_label_array`) | a class index |
 

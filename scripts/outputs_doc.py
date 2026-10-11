@@ -355,7 +355,6 @@ CLOCK_SPEC = {**SHARED_SPEC, "emit_clocks": True}
 #: Each dtype `output_index` names, and the polars type a field of it has.
 DTYPES: list[tuple[str, str]] = [
     ("`f64`", "`Float64`"),
-    ("`i32`", "`Int32`"),
     ("`i64`", "`Int64`"),
     ("`bool`", "`Boolean`"),
     ("`str`", "`String`"),

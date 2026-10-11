@@ -1376,9 +1376,8 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``dtype``
         The type the bank declares to polars before the first row is read:
         ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum``
-        (``withheld_reason``), ``i32`` (``hmm``'s state, ``micro``'s live
-        counts), ``i64`` (a count, a row index or an id, and the cluster
-        label of ``kmeans`` and ``micro`` alike), or ``clock``
+        (``withheld_reason``), ``i64`` (every integer: a count, a state, a
+        row index, an id or a cluster label), or ``clock``
         (``scored_clock`` and ``learned_clock``, in the clock column's own
         type).
 
@@ -4087,7 +4086,7 @@ def micro(
     ``outlier``
         Whether no established summary takes it (``bool``).
     ``n_clusters``, ``n_micro``
-        Live clusters and live summaries (``i32``), so churn is visible
+        Live clusters and live summaries (``i64``), so churn is visible
         without diffing labels.
     ``weight_sum``
         As everywhere.

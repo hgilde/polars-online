@@ -810,7 +810,7 @@ class TestEdgeCases:
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
         assert out["cluster@h50"].dtype == pl.Int64
         assert out["outlier@h50"].dtype == pl.Boolean
-        assert out["n_micro@h50"].dtype == pl.Int32
+        assert out["n_micro@h50"].dtype == pl.Int64
         assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
 
     def test_coef_is_the_potential_summaries_ragged(self):
@@ -857,8 +857,8 @@ class TestEdgeCases:
             "f64",
             "i64",
             "bool",
-            "i32",
-            "i32",
+            "i64",
+            "i64",
             "f64",
             "f64",
             "enum",

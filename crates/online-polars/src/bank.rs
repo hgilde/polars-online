@@ -2540,11 +2540,7 @@ impl SpecDerived {
                 .filter(|f| {
                     matches!(
                         f.src,
-                        Source::Stat(_)
-                            | Source::Cluster(_)
-                            | Source::Id(_)
-                            | Source::Flag(_)
-                            | Source::Label(_)
+                        Source::Stat(_) | Source::Id(_) | Source::Flag(_) | Source::Label(_)
                     )
                 })
                 .count()
@@ -4821,10 +4817,6 @@ fn assemble(
                 Source::Pred(i) | Source::Stat(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
                         .finish_array_boxed()
-                }
-                Source::Cluster(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_i32_array_boxed()
                 }
                 Source::Id(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])

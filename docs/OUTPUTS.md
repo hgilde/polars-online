@@ -80,7 +80,6 @@ row, as `po.spec.output_index(spec)` lists it:
 | dtype | the Polars type |
 |---|---|
 | `f64` | `Float64` |
-| `i32` | `Int32` |
 | `i64` | `Int64` |
 | `bool` | `Boolean` |
 | `str` | `String` |
@@ -361,8 +360,8 @@ The fields of `po.spec.micro("m", features=["x0", "x1"], half_life=50.0, eps=0.3
 | `dist` | `f64` | distance from the row to the centre `cluster` was read from | where `cluster` is |
 | `micro_id` | `i64` | id of the micro-cluster the row joins, or opens when none can take it | while withheld |
 | `outlier` | `bool` | true when no established micro-cluster takes the row | while withheld |
-| `n_clusters` | `i32` | macro-clusters currently linked | while withheld |
-| `n_micro` | `i32` | live micro-clusters | while withheld |
+| `n_clusters` | `i64` | macro-clusters currently linked | while withheld |
+| `n_micro` | `i64` | live micro-clusters | while withheld |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
@@ -437,7 +436,7 @@ The fields of `po.spec.hmm("m", features=["x0", "x1"], half_life=50.0, k=2, prec
 | `filtered_1` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `predicted_0` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `predicted_1` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `state` | `i32` | the most likely state for this row: the one with the largest `predicted_<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `state` | `i64` | the most likely state for this row: the one with the largest `predicted_<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `loglik` | `f64` | log predictive density of the row, under the model as it stood before the row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |

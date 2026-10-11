@@ -111,12 +111,10 @@ pub(super) enum Source {
     /// An `ew_cov` statistic, or a `kmeans` / `micro` distance, which rides
     /// in the `pred` buffer.
     Stat(usize),
-    /// A `micro` count or an `hmm` state: the `pred` buffer holds a small
-    /// non-negative integer as an f64 (NaN = null), materialized as `i32`.
-    Cluster(usize),
-    /// A cluster label (`kmeans`' and `micro`'s alike: a field two models
-    /// write has one dtype, task 238), a `micro` id, or a count: `i64`, the
-    /// same way.
+    /// Every integer a model emits -- a cluster label, a `micro` id or
+    /// count, an `hmm` state, a run length: the `pred` buffer holds it as an
+    /// f64 (NaN = null), materialized as `i64`, Polars' default integer, so
+    /// every integer output has one dtype (task 238).
     Id(usize),
     /// A `micro` flag: `1.0` / `0.0` in the `pred` buffer (NaN = null),
     /// materialized as `Boolean`.
@@ -173,7 +171,6 @@ impl FieldMeta {
                 polars::prelude::FrozenCategories::new(crate::stream::WITHHELD_REASONS)
                     .expect("distinct names"),
             ),
-            Source::Cluster(_) => DataType::Int32,
             Source::Id(_) => DataType::Int64,
             Source::Flag(_) => DataType::Boolean,
             Source::Label(_) => DataType::String,
@@ -722,12 +719,12 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             fields.push(over(
                 FieldMeta::new(format!("n_clusters{suffix}"), "n_clusters")
                     .decay(d)
-                    .src(Source::Cluster(at(4))),
+                    .src(Source::Id(at(4))),
             ));
             fields.push(over(
                 FieldMeta::new(format!("n_micro{suffix}"), "n_micro")
                     .decay(d)
-                    .src(Source::Cluster(at(5))),
+                    .src(Source::Id(at(5))),
             ));
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
@@ -818,9 +815,9 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             for (slot, l) in labels.iter().enumerate() {
                 let at = mi * n_slots + slot;
                 // `state` is a small count, so it rides in `pred` and comes
-                // out as an `i32`.
+                // out as an `i64`, as every integer output does.
                 let src = if l == "state" {
-                    Source::Cluster(at)
+                    Source::Id(at)
                 } else {
                     Source::Stat(at)
                 };

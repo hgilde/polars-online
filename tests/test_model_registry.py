@@ -470,7 +470,7 @@ def test_output_index_names_every_dtype_it_declares():
         emit_clocks=True,
     )
     seen |= set(po.spec.output_index(clocks)["dtype"].to_list())
-    documented = {"f64", "bool", "str", "list[f64]", "enum", "i32", "i64", "clock"}
+    documented = {"f64", "bool", "str", "list[f64]", "enum", "i64", "clock"}
     assert seen == documented, seen ^ documented
     doc = po.spec.output_index.__doc__ or ""
     assert all(f"``{d}``" in doc for d in documented)
@@ -568,7 +568,9 @@ def test_a_field_name_has_one_dtype_across_the_registry():
     way from either. ``kmeans`` wrote ``cluster`` as ``i32`` and ``micro`` as
     ``i64``, so code reading the column from one model broke on the other's.
     Each field of every model's plainest spec, its instance suffix
-    (``@h50``) dropped, has one dtype over the whole registry."""
+    (``@h50``) dropped, has one dtype over the whole registry. Every integer
+    output is ``i64`` since: ``test_output_index_names_every_dtype_it_declares``
+    refuses an ``i32``."""
     dtypes: dict[str, dict[str, set[str]]] = {}
     for name in MINIMAL:
         index = po.spec.output_index(_build(name))

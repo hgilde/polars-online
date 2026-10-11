@@ -9,7 +9,7 @@
 
 use polars::prelude::PlSmallStr;
 use polars_arrow::array::{
-    BooleanArray, DictionaryArray, Float64Array, Int32Array, Int64Array, MutableBinaryViewArray,
+    BooleanArray, DictionaryArray, Float64Array, Int64Array, MutableBinaryViewArray,
     PrimitiveArray, Utf8ViewArray,
 };
 use polars_arrow::bitmap::{Bitmap, MutableBitmap};
@@ -141,22 +141,9 @@ impl F64Column {
         PrimitiveArray::new(ArrowDataType::Float64, self.values.into(), validity)
     }
 
-    /// The same column as `i32`, for a value that is an index or a count (a
-    /// `kmeans` assignment, a `micro` count). Every set value is a small
-    /// non-negative integer by construction; the null rows carry NaN and are
-    /// masked, not cast.
-    pub(crate) fn finish_i32_array(self) -> Int32Array {
-        let validity = self.validity();
-        let values: Vec<i32> = self
-            .values
-            .iter()
-            .map(|&v| if v.is_finite() { v as i32 } else { 0 })
-            .collect();
-        PrimitiveArray::new(ArrowDataType::Int32, values.into(), validity)
-    }
-
-    /// The same column as `i64`, for an id that only ever grows (a `micro`
-    /// id or label).
+    /// The same column as `i64`, for every integer a model emits (a cluster
+    /// label, an id, a count, a state). Every set value is an integer by
+    /// construction; the null rows carry NaN and are masked, not cast.
     pub(crate) fn finish_i64_array(self) -> Int64Array {
         let validity = self.validity();
         let values: Vec<i64> = self
@@ -255,10 +242,6 @@ impl F64Column {
     /// here rather than at fourteen call sites.
     pub(crate) fn finish_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
         Box::new(self.finish_array())
-    }
-
-    pub(crate) fn finish_i32_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
-        Box::new(self.finish_i32_array())
     }
 
     pub(crate) fn finish_i64_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
