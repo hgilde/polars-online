@@ -407,3 +407,16 @@ def test_the_full_covariance_filter_recovers_states_at_four_features():
     p = live.select("filtered_0", "filtered_1").to_numpy()
     assert np.allclose(p.sum(axis=1), 1.0)
     assert ((p >= 0) & (p <= 1)).all()
+
+
+def test_state_is_the_most_likely_under_the_predicted_probabilities():
+    """Task 239: ``state`` is the argmax of ``predicted_<j>``, the row's
+    prediction from the rows before it, not of ``filtered_<j>``, which the
+    rows before left; on a stream that switches the two differ."""
+    out = run(blobs(n=3000, run=50), warm_rows=200, transition_prior=0.1)
+    live = out.drop("coef", "withheld_reason").drop_nulls()
+    assert live.height > 2500
+    pred = live.select("predicted_0", "predicted_1").to_numpy()
+    assert (live["state"].to_numpy() == pred.argmax(axis=1)).all()
+    filt = live.select("filtered_0", "filtered_1").to_numpy()
+    assert (pred.argmax(axis=1) != filt.argmax(axis=1)).sum() > 0
