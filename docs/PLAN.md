@@ -9492,6 +9492,19 @@ tick, and that the series holding it up has a count near 1.
       pass rules of task 149), the math stated for every model (CLAUDE.md),
       and the Sphinx reference (`-W`, every page rendering); findings fixed
       where they have one answer, raised where they have options.
+      *Part b done 2026-10-10* (`ModelBank`, the namespaces, `po.stream`,
+      the operators, the package docstrings; 10 commits, 5 tests; 45+-word
+      sentences 33 -> 3; the order-free figures re-measured: coefficients
+      6.7e-16 / 1.4e-15, predictions 0.087 / 0.65). Its raised points,
+      decided: docstrings drop bare `docs/PLAN.md task N` citations and link
+      a guide where one explains the point (one pass over all three parts);
+      `test_order_hazards` pins its figures to a range so a stale one fails;
+      `check()`'s measurement narrative moves to DATA-QUALITY.md in task 238,
+      its code and threshold tables staying; `not_checked` only where there
+      is something to check; and (the user: "Yes") `ExprKwargs`, a leftover
+      of the removed expression namespace in the private `_kwargs` module and
+      in no API snapshot, folds into `CommonKwargs`. These land as one
+      follow-up after parts a and c.
 - [x] 240. **Pooling Grams within parts: block fixed effects** --
       requested 2026-10-10 (the user: "file into the plan"). An option on
       `po.gram.merge`, and on everything that merges parts internally
