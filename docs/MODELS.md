@@ -1270,6 +1270,39 @@ columns you name. It takes one O(k²) step per row, where Polars expressions
 alone take O(k²) *passes over the data* for every pairwise exponentially
 weighted correlation.
 
+**It follows a correlation that moves, at the pace its half-life sets.**
+This code makes two columns whose correlation jumps from 0.2 to 0.8 at row
+2,000, and reads `corr_a_b` before the jump and after it:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(1)
+n = 4000
+rho = np.where(np.arange(n) < 2000, 0.2, 0.8)                 # the truth: 0.2, then 0.8 from row 2000
+a, e = rng.standard_normal((2, n))
+pl.DataFrame({"a": a, "b": rho * a + np.sqrt(1 - rho**2) * e}).write_parquet("pair.parquet")
+
+mv = po.spec.ew_cov("mv", features=["a", "b"], half_life=200.0, stats=["corr"])   # no clock: a half-life of 200 rows
+out = pl.scan_parquet("pair.parquet").online.fit_predict([mv]).collect()
+corr = out["mv"].struct.field("corr_a_b")
+for row in (1999, 2200, 2400, 3999):                         # before the jump, one and two half-lives after, the end
+    print(f"row {row}: corr {corr[row]:.2f}")
+```
+
+```text
+row 1999: corr 0.20
+row 2200: corr 0.49
+row 2400: corr 0.68
+row 3999: corr 0.80
+```
+
+One half-life after the jump, `corr` has gone half of the way to the new
+level, and after two it has gone about three quarters. A shorter half-life
+follows faster, and gives a noisier estimate.
+
 The model keeps `m` and `C`, the weighted means of `x` and of
 `(x − m)(x − m)ᵀ`. It updates them in Welford's centred form, because the raw
 form, `E[x xᵀ] − m mᵀ`, loses a variance when the columns sit far from zero:
@@ -1297,8 +1330,8 @@ left out:
 
 For a wide set of columns, give `stats=[]`, so that each row writes no
 statistics, and read the moments from the state after the run with
-`bank.gram("mv")`.
-This code uses `df` from [Example data](../README.md#example-data):
+`bank.gram("mv")`. This code uses `df` from [Example
+data](../README.md#example-data):
 
 ```python
 mv = po.spec.ew_cov(
@@ -1328,19 +1361,19 @@ at the `half_life` and within 0.78%.
 
 **Each eigendecomposition takes O(k³) time, so give `pca_every` to refresh
 the principal components on a schedule.** It counts the clock's units, as a
-regression's `solve_every` does: `pca_every=20` refreshes them every 20 units
-of `t`, a row each here, and a temporal clock takes a duration such as
+regression's `solve_every` does: `pca_every=20` refreshes them every 20
+units of `t`, a row each here, and a temporal clock takes a duration such as
 `"5m"`. `max_rows_between_pca` caps the rows between refreshes, and
 whichever comes first refreshes. The default is every row, and the rows
-between refreshes are scored on the last loadings. With `pca=1`, each row writes `pc0_var`,
-`pc0_share` (of the trace), `pc0_loading_<feature>` and `pc0_score`. Each
-refresh keeps the previous sign, so a loading never flips.
+between refreshes are scored on the last loadings. With `pca=1`, each row
+writes `pc0_var`, `pc0_share` (of the trace), `pc0_loading_<feature>` and
+`pc0_score`. Each refresh keeps the previous sign, so a loading never flips.
 
 **`window_size` cuts the history off at a fixed age** ([A hard
 window](../README.md#a-hard-window)). For a frame that fits in memory, Polars'
 `df.rolling("t", period="3h").agg(...)` with an exponential weight gives the
-same numbers to 1e-14, but recomputes every window, in `O(n·W)` time, where
-the spec takes `O(n)`. So use the spec for a stream, a state to save, or
+same numbers to about 1e-13, but recomputes every window, in `O(n·W)` time,
+where the spec takes `O(n)`. So use the spec for a stream, a state to save, or
 speed: measured, it ran 24 times as fast at a 74-row window and 1,100 times
 at a 4,680-row one.
 
@@ -1385,6 +1418,44 @@ time per row, where one `ew_cov` over all the columns would take
 O((p + T)²). Each row writes only `weight_sum`, and `bank.marginal()` reads
 the pairs from the state as a table after the run.
 
+**A screen finds the few features that matter among many.** This code makes
+500 features, of which five move the target, screens every pair in one pass,
+and prints the six with the largest `|t_stat|`:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(2)
+n, p = 2000, 500
+x = rng.standard_normal((n, p))
+y = x[:, [7, 42, 99, 250, 401]] @ np.array([0.5, -0.4, 0.3, 0.3, -0.2]) + rng.standard_normal(n)   # five matter
+features = [f"f{j}" for j in range(p)]
+pl.DataFrame(x, schema=features).with_columns(y=y).write_parquet("wide.parquet")
+
+screen = po.spec.marginal("screen", targets=["y"], features=features, half_life=float("inf"))   # every row weighs the same
+bank = po.ModelBank([screen])
+bank.fit(pl.scan_parquet("wide.parquet"))                    # learn, and keep only the state
+table = bank.marginal("screen").sort(pl.col("t_stat").abs(), descending=True)
+for r in table.head(6).iter_rows(named=True):
+    print(f"{r['feature']}: corr {r['corr']:+.2f}, t_stat {r['t_stat']:+.1f}")
+```
+
+```text
+f7: corr +0.40, t_stat +19.2
+f42: corr -0.34, t_stat -16.0
+f250: corr +0.23, t_stat +10.7
+f99: corr +0.23, t_stat +10.6
+f401: corr -0.19, t_stat -8.5
+f275: corr -0.07, t_stat -3.1
+```
+
+The five planted features lead, in the order of their coefficients, and the
+best of the 495 others trails at a `t_stat` of −3.1. With 495 chances, a
+value that size is what noise alone gives, which is why `t_stat` ranks pairs
+and is no p-value (below).
+
 Each pair (feature `j`, target `t`) keeps its own `m_x`, `S_xx` and `S_xy`,
 over its target's rows. Per target `t`, on a row where `y_t` is present, with
 `W_t` the weight behind that target before the row:
@@ -1411,7 +1482,7 @@ one_stock = bank.marginal("pairs", group="b0")   # 10 rows here: five features b
 # mean_x, var_x, mean_y, var_y, cov    the pair's moments, population form
 # corr                         cov / sqrt(var_x * var_y)
 # beta                         cov / var_x: the slope of the target on that feature alone
-# t                            corr * sqrt((n_kish - 2) / (1 - corr²)): the t-statistic at the Kish sample size
+# t_stat                       corr * sqrt((n_kish - 2) / (1 - corr²)): the t-statistic at the Kish sample size
 ```
 
 For unit weights a step `Δclock` apart, `n_kish` tends to
@@ -1420,17 +1491,17 @@ For unit weights a step `Δclock` apart, `n_kish` tends to
 **A null target ages its own pairs (`W_t ← λW_t`, `Q_t ← λ²Q_t`) and teaches
 them nothing.** A null feature skips the row, as in every model.
 
-**`corr`, `beta` and `t` are null until the target's `W_t` reaches
+**`corr`, `beta` and `t_stat` are null until the target's `W_t` reaches
 `min_weight`**, 3 by default here, because two rows give a correlation of ±1
 whatever the data. A statistic is null wherever it is undefined: all three
-for a constant feature, and `t` at `n_kish ≤ 2`.
+for a constant feature, and `t_stat` at `n_kish ≤ 2`.
 
-**Use `t` to rank pairs, and never as a p-value**, because the rows are
-neither independent nor Gaussian. `t` is built on `n_kish`, the right count
+**Use `t_stat` to rank pairs, and never as a p-value**, because the rows are
+neither independent nor Gaussian. `t_stat` is built on `n_kish`, the right count
 for unequal weights, which says nothing about rows that resemble their
-neighbours. So on a smooth stream it claims evidence that is not there:
-over 1,000 pairs of *independent* AR(1) series with `φ = 0.9` and `0.8`,
-3,000 rows each, `|t|` passed 1.96 on 45% of them.
+neighbours. So on a smooth stream it claims evidence that is not there.
+Over 1,000 pairs of *independent* AR(1) series with `φ = 0.9` and `0.8`,
+3,000 rows each, `|t_stat|` passed 1.96 on 45% of them.
 
 Five settings extend the pairs, the first two with views that are off by
 default:
@@ -1479,7 +1550,7 @@ table = bank.marginal("serial")
 # lag_corr_xx, lag_corr_yy      each series' own autocorrelation, one entry per lag
 # lag_corr_xy, lag_corr_yx      the feature now against the target l rows back, and the reverse, one entry per cross lag
 # n_serial                    n_kish over the serial_rule's bracket
-# t_serial                    the same statistic as t, against that count
+# t_serial                    the same statistic as t_stat, against that count
 # phi_x, phi_y                the fitted per-row decays, under serial_rule="geometric"
 ```
 
@@ -1543,10 +1614,10 @@ give a larger `bin_budget`, or `float("inf")` for no limit.
 
 **Give a screen a `window_size` when a relation may flip sign**, because two
 regimes of opposite sign average to nothing over a long history. The window
-truncates every pair moment, so `corr`, `beta` and `t` describe the rows
-inside it ([A hard window](../README.md#a-hard-window)). `weight_sum`, in the record and
-in the table, is the weight inside the window. A window refuses `bins`, so
-bin the features in a second spec without one.
+truncates every pair moment, so `corr`, `beta` and `t_stat` describe the
+rows inside it ([A hard window](../README.md#a-hard-window)). `weight_sum`,
+in the record and in the table, is the weight inside the window. A window
+refuses `bins`, so bin the features in a second spec without one.
 
 **To use `lags` under a window, give `window_lags=True`; otherwise the spec is
 refused.** Each snapshot then holds the lag moments beside the pair moments:
@@ -1554,11 +1625,11 @@ twice its size at one lag, and six times at five with the default cross lags.
 A windowed lag moment is an estimate, while the windowed pair moments are
 exact.
 
-**With several targets present on every row, give
-`feature_moments="shared"` for speed.** Each feature then keeps one mean and
-variance, over every learned row, in place of one per pair over its target's
-rows. At 20,000 pairs that runs 2.7 times as fast at ten targets, with a
-state under half the size and the same table to the bit ([PERFORMANCE
+**With several targets present on every row, give `feature_moments="shared"`
+for speed.** Each feature then keeps one mean and variance, over every
+learned row, in place of one per pair over its target's rows. At 20,000
+pairs that runs 2.7 times as fast at ten targets, with a state under half
+the size and the same table to the bit ([PERFORMANCE
 §27](PERFORMANCE.md#27-marginals-shared-feature-moments-e72-task-125-2026-09-29)).
 Where a target is absent on some rows, `var_x` and the centre of `cov` then
 come from every row. That is a different estimator, sound only where the
@@ -1566,15 +1637,15 @@ absence says nothing about the feature, so otherwise keep the default. It
 takes `lags`, and refuses a `window_size`.
 
 **Give `shards="auto"` to spread one wide spec over the threads.** The bank
-runs groups and specs in parallel ([Parallelism](../README.md#parallelism)), so a wide
-`marginal` on one group is otherwise one thread's work. `shards=10` splits
-its pairs into ten ranges of features, each run on a thread of its own, a
-batch of rows at a time. `"auto"` sizes the split to the width and the pool,
-and leaves whole a narrow spec, or a windowed one that snapshots every
-row, the default, whose batch is a single row. The numbers are the same
-to the bit at any count, so a saved bank resumes under any count. On 14
-threads
-([PERFORMANCE §25](PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25)):
+runs groups and specs in parallel ([Parallelism](../README.md#parallelism)),
+so a wide `marginal` on one group is otherwise one thread's work.
+`shards=10` splits its pairs into ten ranges of features, each run on a
+thread of its own, a batch of rows at a time. `"auto"` sizes the split to
+the width and the pool, and leaves whole a narrow spec, or a windowed one
+that snapshots every row, the default, whose batch is a single row. The
+numbers are the same to the bit at any count, so a saved bank resumes under
+any count. On 14 threads ([PERFORMANCE
+§25](PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25)):
 
 | the spec | `"auto"` ran the bank |
 |---|---|
@@ -1591,6 +1662,41 @@ correlation matrix moving without O(m²) work a row. So `deco` replaces the
 `m(m−1)/2` free entries of the matrix of `m` series with their average, the
 *equicorrelation*, and estimates that in O(m) a row, for the whole matrix or
 per block.
+
+**`rho` moves with the average correlation, and reads below it.** This code
+makes ten series whose every pair correlates at 0.2 and then, from row
+2,000, at 0.6. It runs `deco` beside an `ew_cov` over the same columns, and
+prints `rho` beside the mean of the 45 pairwise correlations:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(3)
+n, m = 4000, 10
+rho = np.where(np.arange(n) < 2000, 0.2, 0.6)                 # the truth: every pair at 0.2, then 0.6 from row 2000
+common, own = rng.standard_normal(n), rng.standard_normal((m, n))
+names = [f"s{i}" for i in range(m)]
+pl.DataFrame(dict(zip(names, np.sqrt(rho) * common + np.sqrt(1 - rho) * own))).write_parquet("ten.parquet")
+
+eq = po.spec.deco("eq", features=names, half_life=100.0)
+pairs = po.spec.ew_cov("pairs", features=names, half_life=100.0, stats=["corr"])
+out = pl.scan_parquet("ten.parquet").online.fit_predict([eq, pairs]).collect()
+level = out["eq"].struct.field("rho")
+mean_corr = out["pairs"].struct.unnest().select(pl.mean_horizontal(pl.selectors.starts_with("corr_"))).to_series()
+for row in (1999, 3999):
+    print(f"row {row}: truth {rho[row]:.1f}, deco's rho {level[row]:.2f}, the mean of ew_cov's corr {mean_corr[row]:.2f}")
+```
+
+```text
+row 1999: truth 0.2, deco's rho 0.14, the mean of ew_cov's corr 0.19
+row 3999: truth 0.6, deco's rho 0.40, the mean of ew_cov's corr 0.60
+```
+
+`deco` takes O(m) a row where the `ew_cov` takes O(m²), and its `rho`
+settles near two-thirds of the truth: each row's estimate is a ratio of
+two averages, which reads low.
 
 The row is standardised against the means and variances as they stood before
 it, `r_i = (x_i − m_i)/√v_i`. With `S₁ = Σ r_i` and `S₂ = Σ r_i²` over the
@@ -1658,6 +1764,47 @@ ends its memory, so `rcov` refuses a `half_life` or `lam`. A `weight` must be
 0 or 1, since a sum over returns has no fractional row, and any other value
 is an error naming the row.
 
+**The kernel recovers a correlation that noise hides from the plain sum.**
+This code makes 20 blocks of two prices whose returns correlate at 0.6, each
+tick measured with noise, and prints each estimator's mean correlation over
+the blocks:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(4)
+blocks, rows = 20, 1000
+z = rng.standard_normal((2, blocks * rows))
+latent = np.cumsum([z[0], 0.6 * z[0] + 0.8 * z[1]], axis=1)  # two efficient prices whose returns correlate at 0.6
+observed = latent + rng.normal(0.0, 0.7, latent.shape)        # each tick measured with noise
+pl.DataFrame({
+    "block": np.repeat(np.arange(blocks), rows),              # a block id: a trading day, say
+    "p1": observed[0], "p2": observed[1],
+}).write_parquet("blocks.parquet")
+
+returns = pl.scan_parquet("blocks.parquet").with_columns(pl.col("p1", "p2").diff().over("block"))   # within each block
+specs = [
+    po.spec.rcov(kind, features=["p1", "p2"], group="block", group_close="monotone", kind=kind, block_rows=rows)
+    for kind in ("plain", "kernel")
+]
+bank = po.ModelBank(specs)
+bank.fit(returns)
+for kind in ("plain", "kernel"):
+    closed = bank.closed_groups(kind)                        # one row per block that closed
+    corr = closed["rcorr"].list.get(1)                         # vech of [[1, r], [r, 1]] is [1, r, 1]
+    print(f"{kind}: mean correlation {corr.mean():.2f} over {closed.height} blocks (truth 0.60)")
+```
+
+```text
+plain: mean correlation 0.29 over 19 blocks (truth 0.60)
+kernel: mean correlation 0.59 over 19 blocks (truth 0.60)
+```
+
+The last block never closes, because no later block arrives to close it
+under `group_close="monotone"`, so 19 of the 20 report.
+
 The plain realised covariance, the sum of the returns' outer products, goes
 wrong over real ticks in two ways. Each price is the efficient price plus a
 measurement error, whose variance accumulates with every tick, and series not
@@ -1675,15 +1822,18 @@ block's truth:
 | `"preavg"` | the modulated realised covariance (Christensen, Kinnebrock & Podolskij 2010): returns pre-averaged over `k_n = ceil(theta * block_rows^0.6)` rows | series not observed on every row, where it is the least biased |
 
 **Compute the returns from prices with Polars' `diff()` in the query before
-the bank, over each block with `.over("block")`,** so that no return spans two
-blocks. The bank skips each block's first row, whose return is null. For a
-series not observed on every row, carry its last price forward with
+the bank, over each block with `.over("block")`,** so that no return spans
+two blocks. The bank skips each block's first row, whose return is null. For
+a series not observed on every row, carry its last price forward with
 `forward_fill().over("block")` before the diff, and use `kind="preavg"`. Or
 build a common grid with `po.stream.refresh_time` before the diff ([Series
-that tick at their own times](../README.md#series-that-tick-at-their-own-times)), and
-keep the kernel.
+that tick at their own
+times](../README.md#series-that-tick-at-their-own-times)), and keep the
+kernel. Each parameter is shown in this code, which uses `df` from [Example
+data](../README.md#example-data), cut into blocks of 100 rows:
 
 ```python
+by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # a block id that rises every 100 rows
 rk = po.spec.rcov(
     "rk", features=["x0", "x1"],       # x0 and x1 stand in for two prices, differenced in `returns`
     group="block", group_close="monotone",
@@ -1692,7 +1842,7 @@ rk = po.spec.rcov(
     block_rows=2000,             # a sizing hint for the ring
     bandwidth=None,              # a fixed H; left out, set from the data
 )
-returns = by_block.with_columns(              # by_block: df with a block id rising every 100 rows
+returns = by_block.with_columns(
     pl.col("x0", "x1").diff().over("block")   # each row's change since the row before it, within its block
 )
 bank = po.ModelBank([rk])
@@ -1719,18 +1869,17 @@ average observations already in the state at close, and a product enters
 `Γ̂_h` only once both its legs are final.
 
 **`psd=True`, the default, clips any negative eigenvalue and reports
-`rcov_psd_repaired`.** For a correlation read on its own under `"preavg"`, give
-`psd=False`. It selects the balanced form, a shorter window of
+`rcov_psd_repaired`.** For a correlation read on its own under `"preavg"`,
+give `psd=False`. It selects the balanced form, a shorter window of
 `k_n = floor(theta * sqrt(block_rows))` rows with the bias term subtracted,
-which was the more accurate on
-[docs/REGIMES.md §8](REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth)'s
-streams. The bias term is `b` times `sum(x x')`, where
-`b = psi1 / (2 psi2 k_n^2)` tends to `6 / k_n^2` as the window grows.
-That sum holds the block's covariance as well as the noise, so the term
-removes `b` of the covariance too. The balanced form divides its estimate by
-`1 - b` to restore it, as Christensen, Kinnebrock and Podolskij's footnote 1
-does. It is not always positive semi-definite, so keep the default where
-the matrix must be.
+which was the more accurate on [docs/REGIMES.md
+§8](REGIMES.md#8-rcov-three-estimators-against-each-blocks-truth)'s streams.
+The bias term is `b` times `sum(x x')`, where `b = psi1 / (2 psi2 k_n^2)`
+tends to `6 / k_n^2` as the window grows. That sum holds the block's
+covariance as well as the noise, so the term removes `b` of the covariance
+too. The balanced form divides its estimate by `1 - b` to restore it, as
+Christensen, Kinnebrock and Podolskij's footnote 1 does. It is not always
+positive semi-definite, so keep the default where the matrix must be.
 
 **Fix the bandwidth `H` with `bandwidth=`; otherwise give `block_rows`, the
 block's expected length in rows, and `H` is set from the data** as
@@ -1746,15 +1895,55 @@ stretches**, and no product pairs two returns across the break.
 
 *API:* [`po.spec.audit`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.audit) — *Rust:* [`audit.rs`](../crates/online-core/src/audit.rs) — *Outputs:* [fields](OUTPUTS.md#audit)
 
-Reach for `audit` before choosing a model, to find out what is wrong with the
-data. It learns nothing. Per column it counts the nulls, the NaNs, the
-infinities and the values past `1e100` apart, and measures what makes a
-column hard to learn from: a value repeated far more often than any other,
-a run of one value, persistence like a random walk's, and heavy tails. Per
-stream it measures the clock's duplicate stamps, gaps and spread of steps.
-Each row writes only `weight_sum`, and `bank.audit()` reads the counts from
-the state as a table after the run. `bank.check()` reads them too, and says
-what they mean.
+Reach for `audit` before choosing a model, to find out what is wrong with
+the data. It learns nothing. Per column it counts the nulls, the NaNs, the
+infinities and the values past `1e100`, each kind apart. It also measures
+what makes a column hard to learn from: a value repeated far more often than
+any other, a run of one value, persistence like a random walk's, and heavy
+tails. Per stream it measures the clock's duplicate stamps, gaps and spread
+of steps. Each row writes only `weight_sum`, and `bank.audit()` reads the
+counts from the state as a table after the run. `bank.check()` reads them
+too, and says what they mean.
+
+**An audit finds a frozen feed and a sentinel value.** This code makes a
+price that stops moving at row 1,200 and a size column that holds `-999` on
+one row in 40. It prints what `bank.audit()` measured, and what
+`bank.check()` reads from it:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(5)
+n = 2000
+price = 100 + np.cumsum(rng.normal(0.0, 0.1, n))
+price[1200:] = price[1199]                                    # the feed froze at row 1200
+size = rng.exponential(1.0, n)
+size[::40] = -999.0                                           # a sentinel standing for "missing", on one row in 40
+pl.DataFrame({"price": price, "size": size, "flow": rng.standard_normal(n)}).write_parquet("feed.parquet")
+
+bank = po.ModelBank([po.spec.audit("audit", columns=["price", "size", "flow"])])
+bank.fit(pl.scan_parquet("feed.parquet"))
+for r in bank.audit().iter_rows(named=True):                  # what each column holds
+    print(f"{r['column']:>5}: longest run of one value {r['longest_run']}, smallest value {r['min']:g}")
+for r in bank.check().iter_rows(named=True):                  # what that means, the worst first
+    print(f"{r['severity']}: {r['code']} on {r['column']}")
+```
+
+```text
+price: longest run of one value 801, smallest value 97.3958
+ size: longest run of one value 1, smallest value -999
+ flow: longest run of one value 1, smallest value -3.22357
+warning: frozen on price
+warning: random_walk on price
+warning: sentinel on size
+info: heavy_tails on size
+```
+
+Each finding's `message` says what to do, and links its section of
+[DATA-QUALITY.md](DATA-QUALITY.md), which shows what the problem does to
+each model and how to fix it with Polars.
 
 An audit reads every row, where a model skips a row with a feature that is
 not a usable number. Its memory does not grow with the rows: about 10 KiB a
@@ -1809,6 +1998,42 @@ rows assigned to it (`ew_cov`'s mean recursion, per cluster). Three rules
 keep the centres on the data: seeding, a split–merge move that finds a
 cluster born after seeding, and a dead rule that re-places a centre whose
 blob vanished.
+
+**The split–merge move gives a cluster born after seeding a centre of its
+own.** This code makes three round clusters, and a fourth that appears at
+row 4,000. It fits `k=4` and counts each label's rows before the fourth
+appears and at the end:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(6)
+n = 8000
+centres = np.array([[0.0, 0.0], [6.0, 0.0], [0.0, 6.0], [6.0, 6.0]])
+blob = rng.integers(0, 3, n)                                  # three clusters ...
+late = np.arange(n) >= 4000
+blob[late] = rng.integers(0, 4, late.sum())                   # ... and a fourth born at row 4000
+xy = centres[blob] + rng.standard_normal((n, 2))
+pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1]}).write_parquet("blobs.parquet")
+
+km = po.spec.kmeans("km", features=["x", "y"], half_life=1000.0, k=4, warm_rows=500)
+label = pl.scan_parquet("blobs.parquet").online.fit_predict([km]).collect()["km"].struct.field("cluster")
+for lo, hi in ((3000, 4000), (7000, 8000)):
+    counts = label[lo:hi].value_counts().sort("cluster")
+    print(f"rows {lo}-{hi - 1}: " + ", ".join(f"cluster {c}: {k}" for c, k in counts.iter_rows()))
+```
+
+```text
+rows 3000-3999: cluster 0: 338, cluster 1: 175, cluster 2: 322, cluster 3: 165
+rows 7000-7999: cluster 0: 255, cluster 1: 266, cluster 2: 237, cluster 3: 242
+```
+
+Before the fourth cluster appears, clusters 1 and 3 share one of the three,
+about 170 rows each. Once it appears, the split–merge move frees cluster 3
+and places it on the new cluster, and each of the four holds about a quarter
+of the rows.
 
 With `c_j` centre `j` and `n_j` its decayed weight:
 
@@ -1881,6 +2106,47 @@ being told how many there are, flags the rows that belong to none, and follows
 clusters that appear and vanish. It builds on DenStream's micro-clusters,
 with a linking step over them.
 
+**It finds two rings that no centre-based rule can split, and flags
+scattered rows as noise.** This code makes an inner and an outer ring, with
+one row in twenty scattered over the square around them, and reads the last
+4,000 rows:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(7)
+n = 10000
+ring = rng.integers(0, 2, n)                                  # 0: the inner ring, radius 1; 1: the outer, radius 3
+angle = rng.uniform(0.0, 2 * np.pi, n)
+radius = np.where(ring == 0, 1.0, 3.0) + rng.normal(0.0, 0.1, n)
+xy = np.column_stack([radius * np.cos(angle), radius * np.sin(angle)])
+noise = rng.random(n) < 0.05                                  # one row in twenty is scattered at random
+xy[noise] = rng.uniform(-4.0, 4.0, (noise.sum(), 2))
+pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "ring": ring, "noise": noise}).write_parquet("rings.parquet")
+
+mc = po.spec.micro("mc", features=["x", "y"], half_life=3000.0, eps=0.07)
+out = pl.scan_parquet("rings.parquet").online.fit_predict([mc]).collect().unnest("mc")
+late = out.tail(4000)                                         # once the summaries have formed
+print(f"clusters: {late['n_clusters'][-1]}")
+for name, ring_id in (("inner ring", 0), ("outer ring", 1)):
+    rows = late.filter(~pl.col("noise") & (pl.col("ring") == ring_id))
+    labels = rows.filter(~pl.col("outlier"))["cluster"].n_unique()
+    print(f"{name}: {labels} label, {rows['outlier'].mean():.1%} flagged as noise")
+print(f"scattered rows: {late.filter(pl.col('noise'))['outlier'].mean():.1%} flagged as noise")
+```
+
+```text
+clusters: 2
+inner ring: 1 label, 0.4% flagged as noise
+outer ring: 1 label, 1.5% flagged as noise
+scattered rows: 61.1% flagged as noise
+```
+
+A scattered row that lands on a ring, or close enough to join one of its
+summaries, takes the ring's label, so not every scattered row is flagged.
+
 Each micro-cluster is a *summary*: a decayed weight `n`, a centre `c`, and a
 radius `r`, the exponentially weighted root-mean-square distance of its rows
 from the centre. A summary is *established* once its weight reaches `beta_mu`
@@ -1905,8 +2171,9 @@ the row on which a quiet feature moves again is not an outlier by that alone.
 **Every `prune_every` units of the clock, the light summaries are dropped
 and the established ones linked.** A temporal clock takes a duration, and
 `max_rows_between_prunes` caps the learned rows between checkpoints, as a
-regression's `solve_every` and `max_rows_between_solves` schedule a solve;
-with neither, every 100 learned rows. Centres within `L` of each other share a label.
+regression's `solve_every` and `max_rows_between_solves` schedule a solve.
+With neither, the checkpoint comes every 100 learned rows. Centres within
+`L` of each other share a label.
 Give `macro_link=2` to link only summaries that touch. Left out, `L` is read
 from the spacing the summaries show. A cluster's label is the smallest id
 among its linked summaries, so it lasts as long as that summary does. A
@@ -1962,9 +2229,44 @@ Reach for `ew_class` to classify rows by a label column: name the column in
 `label` and list its values in `classes`. It keeps one `ew_cov` state per
 class, a weight `n_c`, a mean `μ_c` and a centred covariance `C_c`, and
 scores a row by Bayes' rule over Gaussian classes. `C_c` is in the
-population form, with no `ddof` correction, as `ew_cov`'s is. On three
-Gaussian classes with their own covariances, its accuracy is within 0.001
-of the Bayes rate, and its probabilities are calibrated to about 0.01.
+population form, with no `ddof` correction, as `ew_cov`'s is.
+
+**Out of sample, it classes about as well as the Bayes rule that knows the
+true distributions.** This code makes three Gaussian classes with their own
+spreads, and scores the last 5,000 rows, each classed before its own label
+is learned:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(8)
+n = 6000
+means = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 2.0]])
+spread = np.array([[1.0, 0.6], [0.6, 1.0], [0.8, 0.8]])        # each class's own standard deviations
+label = rng.integers(0, 3, n)                                 # three classes, equally likely
+xy = means[label] + rng.standard_normal((n, 2)) * spread[label]
+pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "kind": np.array(["a", "b", "c"])[label]}).write_parquet("classes.parquet")
+
+cl = po.spec.ew_class("cl", features=["x", "y"], label="kind", classes=["a", "b", "c"],
+                      precision_prior=0.1, half_life=float("inf"))
+scored = pl.scan_parquet("classes.parquet").online.fit_predict([cl]).collect().unnest("cl").tail(5000)
+print(f"classed right, out of sample: {(scored['class'] == scored['kind']).mean():.3f}")
+z = (xy[:, None, :] - means[None]) / spread[None]             # the Bayes rule, from the true means and spreads
+best = np.argmax(-0.5 * (z**2).sum(axis=2) - np.log(spread).sum(axis=1), axis=1)
+print(f"the Bayes rule, on the same rows: {(best == label)[-5000:].mean():.3f}")
+```
+
+```text
+classed right, out of sample: 0.857
+the Bayes rule, on the same rows: 0.860
+```
+
+The test suite holds it to the same on 200,000 rows of three Gaussian
+classes in six dimensions, each with its own covariance. There its accuracy
+is within 0.01 of the Bayes rate, and each band of its probabilities is
+within 0.03 of the share of rows it classes right.
 
 `π_c` is a class's share of the weight, and `r_c` the ridge `precision_prior`,
 which makes a class scoreable from its first row and fades as `ew_cov`'s does:
@@ -2033,6 +2335,38 @@ spec predicts closer than another. A p-value cannot be read that way,
 because checking it repeatedly inflates its error rate. An *e-process*,
 which this model keeps, can be read at any row, as often as you like.
 
+**Its evidence passes the 5% level once a sign holds, and stays below it
+when none does.** This code makes a column positive 54% of the time and one
+positive half the time, and prints the first row at which each test's
+evidence reaches `ln 20`:
+
+```python
+import math
+
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(9)
+n = 3000
+pl.DataFrame({
+    "edge": rng.normal(0.1, 1.0, n),                           # positive 54% of the time
+    "none": rng.normal(0.0, 1.0, n),                           # positive half the time
+}).write_parquet("signs.parquet")
+
+sign = po.spec.seqtest("sign", targets=["edge", "none"])
+out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect().unnest("sign")
+for col in ("edge", "none"):
+    passed = out.with_row_index("row").filter(pl.col(f"log_e_pos_{col}") >= math.log(20))
+    when = f"at row {passed['row'][0]}" if passed.height else "never"
+    print(f"{col}: the evidence first passes the 5% level {when}")
+```
+
+```text
+edge: the evidence first passes the 5% level at row 324
+none: the evidence first passes the 5% level never
+```
+
 Each row counts as one trial, so `seqtest` refuses a `weight` or a
 `half_life`. To skip a row, null its target. For a frame already in memory,
 [`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#polars_online.eval.seqtest)
@@ -2065,10 +2399,10 @@ them in `a` and `b`.** The sign tested is then `|resid_b| - |resid_a|`,
 positive when `a` came closer, on the out-of-sample residuals the two specs'
 output records report. A row where either side is null (warm-up, a skipped
 row) sits out the test. When a side is a grid, pick its instance with
-`a_suffix` or `b_suffix`, such as `"@h500"` or `"__r0.5@h500"` ([Output field
-names](../README.md#output-field-names)). Without the suffix, the bank refuses the spec
-and lists the grid's residual fields.
-This code uses `df` from [Example data](../README.md#example-data):
+`a_suffix` or `b_suffix`, such as `"@h500"` or `"__r0.5@h500"` ([Output
+field names](../README.md#output-field-names)). Without the suffix, the bank
+refuses the spec and lists the grid's residual fields. This code uses `df`
+from [Example data](../README.md#example-data):
 
 ```python
 common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, group="stock_id")
@@ -2126,6 +2460,40 @@ name have changed. Give `kind` to pick one of its three tests:
 Every kind writes the same five fields, `stat`, `crit`, `flag`,
 `since_flag` and `since_change`. A parameter that belongs to another kind
 is refused, naming the kinds it applies to.
+
+**The sequential kind flags a correlation break soon after it happens.**
+This code makes two columns that are uncorrelated until row 2,200 and
+correlate at 0.7 after it, and prints each flag:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(10)
+n = 4000
+rho = np.where(np.arange(n) < 2200, 0.0, 0.7)                 # the truth: uncorrelated, then 0.7 from row 2200
+a, e = rng.standard_normal((2, n))
+pl.DataFrame({"a": a, "b": rho * a + np.sqrt(1 - rho**2) * e}).write_parquet("break.parquet")
+
+watch = po.spec.corrchange(
+    "watch", features=["a", "b"],
+    kind="sequential",           # each row tested against a stable history as it arrives
+    span_rows=500,               # 500 rows of history ...
+    monitor_rows=1000,           # ... then up to 1000 rows monitored: a cycle of 1500 rows, the second from row 1500
+)
+out = pl.scan_parquet("break.parquet").online.fit_predict([watch]).collect().unnest("watch")
+for r in out.with_row_index("row").filter(pl.col("flag")).iter_rows(named=True):
+    print(f"flag at row {r['row']}: stat {r['stat']:.2f} past crit {r['crit']:.2f}")
+```
+
+```text
+flag at row 2285: stat 1.84 past crit 1.83
+```
+
+The break falls in the second cycle's monitored rows, which start at row
+2,000, and the flag comes 85 rows after it. No row of the first cycle, or of
+the second cycle before the break, is flagged.
 
 Under `"monitor"` and `"sequential"`, the statistic is the largest over the
 pairs, and the level `alpha` (0.05 by default) is spread over the pairs as
@@ -2253,6 +2621,41 @@ has lasted. It keeps a probability distribution over the **run length**, the
 rows since the last break, so it can say "we are forty rows into a regime",
 not only "something broke".
 
+**`run_mode` dates a break, while `p_change` may hardly move.** This code
+makes a column whose spread quadruples at row 1,000, and reads the row each
+row's current run began on, `row - run_mode`:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(11)
+n = 2000
+scale = np.where(np.arange(n) < 1000, 1.0, 4.0)               # the truth: the spread quadruples at row 1000
+pl.DataFrame({"x": rng.standard_normal(n) * scale}).write_parquet("spread.parquet")
+
+runs = po.spec.bocpd("runs", features=["x"], hazard=500.0)    # a break expected every 500 rows
+out = pl.scan_parquet("spread.parquet").online.fit_predict([runs]).collect().unnest("runs")
+out = out.with_row_index("row").with_columns(began=pl.col("row") - pl.col("run_mode"))   # the row the current run began on
+found = out.filter((pl.col("row") >= 1000) & (pl.col("began") >= 1000)).row(0, named=True)
+print(f"first row whose run began after the break: {found['row']}, dated to row {found['began']}")
+for row in (1050, 1999):
+    print(f"row {row}: the regime began at row {out['began'][row]}")
+print(f"largest p_change on rows 1000 to 1049: {out['p_change'][1000:1050].max():.2f}")
+```
+
+```text
+first row whose run began after the break: 1009, dated to row 1001
+row 1050: the regime began at row 1001
+row 1999: the regime began at row 1001
+largest p_change on rows 1000 to 1049: 0.02
+```
+
+Nine rows after the break the posterior has accepted it, and dates it within
+a row of the truth. No single row of the wider regime is surprising enough
+to lift `p_change`, which is why the answer is read from `run_mode` (below).
+
 `bocpd` refuses a `half_life` or `lam`, because the run-length posterior does
 the forgetting. Set how fast with `hazard`, the expected run length. With
 `H = 1/hazard` the chance of a break after each row, and `π_r` the posterior
@@ -2312,17 +2715,23 @@ started = out.with_columns(      # the row each group's current run began on, co
 ```
 
 **Leave `prior_mean` and `prior_scale` out, and the first rows set them.**
-The first `warm_rows` learned rows, `d + 2` by default, report null; their
+The first `warm_rows` learned rows, `d + 2` by default, report null. Their
 mean and covariance (the diagonal under `"diag"` and `"robust"`) become the
-prior, and they are then read as rows of a model that had it from the start.
-A prior in the data's units decides what counts as surprising: the identity
-it once defaulted to made every row of data in 1e-4 a break, and no row of
-data at 1e4 able to begin a run. `prior_nu` defaults to the smallest value
-that gives the prior's variance a mean, `d + 2` under `"gaussian"` and 3
-otherwise, and at it the prior's mean variance is that covariance.
-`prior_nu` and `prior_scale` are 2a and 2b in the gamma parametrisation. So
-the example's values are Adams and MacKay's own finance example (a = 1, b =
-1e-4, hazard = 250): a precision of 1e4 on average.
+prior, and the rows are then read as rows of a model that had it from the
+start. `prior_nu` defaults to the smallest value that gives the prior's
+variance a mean, `d + 2` under `"gaussian"` and 3 otherwise, and at it the
+prior's mean variance is that covariance.
+
+**A prior you give must be in the data's units, because it decides what
+counts as surprising.** Too wide, and no row is surprising. A column of
+spread 1e-4 whose spread grew tenfold at row 500 was never found to break
+under a prior of unit precision (`prior_mean=[0.0]`, `prior_scale=[2.0]`,
+`prior_nu=2.0`). The prior set from its first rows dated the break to row
+500. Too narrow or off-centre, and a run that begins on a row has no density
+for it. `prior_nu` and `prior_scale` are 2a and 2b in the gamma
+parametrisation. So the parameter tour's values are Adams and MacKay's own
+finance example (a = 1, b = 1e-4, hazard = 250), a precision of 1e4 on
+average.
 
 **Read the regime's age from `run_mode`, and use `p_change` only as an
 alarm.** `p_change` is a per-row likelihood ratio, so it is spiky, and its
@@ -2338,8 +2747,8 @@ kinds of break:
 **`p_change` reports `P(r ≤ 1)`, because `P(r = 0)` equals `H` on every
 row:** the two branches share one predictive, so the normalised mass at
 `r = 0` is *exactly* `H`, whatever the data. Under a duration `hazard` that
-does not hold: the chance of a break comes before the row, nothing sits at
-`r = 0` after it, and `p_change` is the chance that the row began a run. Row
+does not hold. The chance of a break comes before the row and nothing sits
+at `r = 0` after it, so `p_change` is the chance that the row began a run. Row
 one of a group reports nothing under the default `min_weight` of 1, since
 `P(r ≤ 1)` is 1 there however the row looks.
 
@@ -2378,10 +2787,46 @@ Two settings bound the runs kept, and a third sets the hazard row by row:
 
 Reach for `hmm` to ask "which regime are we in", not only "which regime does
 this row look like".
-[`ew_class`](#ew_class--gaussian-classification-on-ew_cov-moments) classifies
-a row against *labelled* Gaussians. An `hmm` does the same arithmetic without
-labels: the regime is a *hidden state*, and a transition matrix carries
-information from one row to the next.
+[`ew_class`](#ew_class--gaussian-classification-on-ew_cov-moments)
+classifies a row against *labelled* Gaussians. An `hmm` does the same
+arithmetic without labels: the regime is a *hidden state*, and a transition
+matrix carries information from one row to the next.
+
+**Because regimes last, the filter beats a rule that knows the true
+centres.** This code makes two overlapping blobs, 1.5 apart in each
+coordinate, and a sticky chain that switches between them about once in 200
+rows. It compares the filter's state with the nearest true centre, row by
+row:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(12)
+n = 6000
+state = np.zeros(n, dtype=int)
+for i in range(1, n):                                         # a sticky chain: each row has a 0.5% chance of a switch
+    state[i] = 1 - state[i - 1] if rng.random() < 0.005 else state[i - 1]
+centres = np.array([[-0.75, -0.75], [0.75, 0.75]])            # two blobs of unit spread
+xy = centres[state] + rng.standard_normal((n, 2))
+pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "truth": state}).write_parquet("blobs.parquet")
+
+hidden = po.spec.hmm("hidden", features=["x", "y"], k=2, precision_prior=1e-2, warm_rows=500,
+                     half_life=float("inf"))
+rows = pl.scan_parquet("blobs.parquet").online.fit_predict([hidden]).collect().unnest("hidden").tail(5000)
+right = (rows["state"] == rows["truth"]).mean()               # the states are numbered as seeded, so read either way
+nearest = ((rows["x"] + rows["y"] > 0).cast(pl.Int64) == rows["truth"]).mean()   # the nearest true centre
+print(f"rows in their true state: the filter {max(right, 1 - right):.2f}, the nearest true centre {nearest:.2f}")
+```
+
+```text
+rows in their true state: the filter 0.92, the nearest true centre 0.85
+```
+
+The nearest centre reads each row alone. The filter carries what the rows
+before told it through the transition matrix it learns, so a row that lands
+nearer the other blob does not flip its state.
 
 Here a hidden state means one of the `k` regimes, not the bank's saved state.
 The model runs Hamilton's filter one row at a time, from the filtered `p` the
@@ -2439,12 +2884,18 @@ query before the bank, give the states with `means` and `covs` and freeze
 them with `learn=False`, or give a larger `precision_prior`. Keep that ridge
 well below the data's variance: a ridge near it halves every correlation.
 
-**With a sticky transition matrix, the filter beats a nearest-centre rule
-that knows the true centres.** On two-dimensional blobs 1.5 apart, that rule
-is 85% right, and the filter 99%. The matrix is learned from the **filtered
-joint of consecutive states**, `ξ_kl = p_k(t−1)·Π_kl·f_l / Σ`, and a
-Dirichlet pseudo-count keeps the matrix row of a state never visited a
-distribution.
+**The transition matrix is learned from the filtered joint of consecutive
+states,** `ξ_kl = p_k(t−1)·Π_kl·f_l / Σ`, and a Dirichlet pseudo-count keeps
+the matrix row of a state never visited a distribution.
+
+**When one row says little about its regime, give the matrix a sticky
+prior:** `transition=` a matrix whose diagonal is near 1, and
+`transition_prior=` the number of rows that prior counts as. The README's
+[Detecting changes and regimes](../README.md#detecting-changes-and-regimes)
+runs two series whose returns widen 2.7 times in every other block of 500
+rows. Under the default prior the filter put 59% of the rows after seeding
+in their true regime. Under `transition=[0.998, 0.002, 0.002, 0.998]` and
+`transition_prior=500.0` it put 94% there.
 
 **The transition matrix moves one step per row, whatever the clock between
 rows, so the gap over a weekend counts as a single step.** The transition
