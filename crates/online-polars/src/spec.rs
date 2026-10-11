@@ -1111,8 +1111,9 @@ pub enum ModelKind {
         /// Aggressiveness: under "pa1" a cap on the step, in the target's
         /// units over `‖z‖²`'s, so the same `c` binds by the target's scale
         /// (review round 5, G5); under "pa2" the damping `1/(2c)` beside
-        /// `‖z‖²`, free of the target's units. Default 1. Ignored by "pa";
-        /// `"inf"` caps nothing, so either bounded mode is "pa".
+        /// `‖z‖²`, free of the target's units. Default 1. Refused under
+        /// "pa", which reads none; `"inf"` caps nothing, so either bounded
+        /// mode is "pa".
         #[serde(default)]
         c: Option<Num>,
         /// Insensitive tube, in units of the target's own EW std, the
@@ -4315,6 +4316,14 @@ impl Spec {
                         self.name, v.0
                     ));
                 }
+                // Refused where nothing reads it, as `sgd`'s `power` is.
+                if c.is_some() && mode.as_deref() == Some("pa") {
+                    return Err(format!(
+                        "spec {:?}: pa c is for mode \"pa1\" or \"pa2\"; mode \"pa\" does not \
+                         use it",
+                        self.name
+                    ));
+                }
                 // A tube of `inf` holds every row: a model that never learns
                 // (review 2026-09-12, S27).
                 if let Some(v) = eps.filter(|v| *v < 0.0 || !v.is_finite()) {
@@ -5369,3 +5378,6 @@ mod clock_tests;
 
 #[cfg(test)]
 mod sgd_tests;
+
+#[cfg(test)]
+mod pa_tests;

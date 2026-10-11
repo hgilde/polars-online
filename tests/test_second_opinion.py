@@ -2599,7 +2599,8 @@ class TestPassiveAggressiveIsRivers:
             targets=["y"],
             features=["x0", "x1"],
             mode=mode,
-            c=c,
+            # `"pa"` reads no `c`, and refuses one; river's ignores its `C`.
+            **({} if mode == "pa" else {"c": c}),
             eps=eps,
             fit_intercept=False,
             half_life=float("inf"),

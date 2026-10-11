@@ -3449,8 +3449,8 @@ def pa(
         ``c`` is in the target's units alone there, and what it does depends on
         the target's scale. Under ``pa2``, the damping ``1 / (2c)`` beside
         ``s``, in ``s``'s units and free of the target's. ``"pa"`` reads no
-        ``c``, and takes one without a word. Default 1.0, above 0; ``inf`` caps
-        nothing, so either bounded mode is then ``"pa"``.
+        ``c`` and refuses one. Default 1.0, above 0; ``inf`` caps nothing, so
+        either bounded mode is then ``"pa"``.
     ``eps``
         The margin, in units of ``sigma``, at least 0: the row is close enough
         inside it and nothing moves. Default 0.01: errors under 1% of the
@@ -3575,7 +3575,9 @@ def pa(
 
     As every builder does (:mod:`polars_online.spec`); ``eps`` refuses ``inf``
     and a value below 0, ``c`` a value not above 0, and the constraints are
-    checked as for :func:`sgd`.
+    checked as for :func:`sgd`. ``c`` belongs to the modes ``"pa1"`` and
+    ``"pa2"``, and is refused beside ``mode="pa"`` (``ValueError``), rather
+    than ignored.
     """
     model: dict[str, Any] = {
         "type": "pa",

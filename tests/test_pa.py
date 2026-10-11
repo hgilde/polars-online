@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 
 TIER = "essential"
 
@@ -35,7 +36,9 @@ def _linear(n=5000, seed=0, noise=0.0):
 
 @pytest.mark.parametrize("mode", ["pa", "pa1", "pa2"])
 def test_recovers_a_noiseless_relationship(mode):
-    c, _ = _fit(_linear(), mode=mode, eps=0.01, c=1.0)
+    # `"pa"` reads no `c`, and refuses one.
+    cap = {} if mode == "pa" else {"c": 1.0}
+    c, _ = _fit(_linear(), mode=mode, eps=0.01, **cap)
     assert c[0] == pytest.approx(0.25, abs=0.05), f"{mode}: {c}"
     assert c[1] == pytest.approx(1.5, abs=0.05), f"{mode}: {c}"
     assert c[2] == pytest.approx(-0.5, abs=0.05), f"{mode}: {c}"
@@ -171,6 +174,38 @@ def test_bad_config_rejected():
         _spec(c=0.0)
     with pytest.raises(ValueError, match="pa eps must be finite and >= 0"):
         _spec(eps=-1.0)
+
+
+@pytest.mark.parametrize("c", [0.5, float("inf")])
+def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, online_cli):
+    """``c`` is ``"pa1"``'s cap and ``"pa2"``'s damping, and ``"pa"`` reads
+    neither: it took a ``c`` without a word. A parameter whose switch is off
+    is refused, as ``sgd`` refuses ``power`` beside a schedule that does not
+    read it, by the builder, by a raw dict and by the CLI's dry run."""
+    msg = 'spec "m": pa c is for mode "pa1" or "pa2"; mode "pa" does not use it'
+    with pytest.raises(ValueError, match=msg):
+        _spec(mode="pa", c=c)
+    spec = _spec(mode="pa")
+    assert spec["model"]["c"] is None, spec["model"]
+    po.ModelBank([spec])
+    raw = dict(spec, model={**spec["model"], "c": c})
+    with pytest.raises(ValueError, match=msg):
+        po.ModelBank([raw])
+    _linear(n=50).write_parquet(tmp_path / "in.parquet")
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [raw],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        args=["--dry-run"],
+        check=False,
+    )
+    assert res.returncode != 0, res.stdout
+    assert msg in res.stderr, res.stderr
+    # Either bounded mode takes it.
+    for mode in ("pa1", "pa2"):
+        po.ModelBank([_spec(mode=mode, c=c)])
 
 
 def _cc4(scale_y=1.0, scale_x=1.0, n=3000):
