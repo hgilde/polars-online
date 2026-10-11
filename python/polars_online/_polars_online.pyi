@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator
 import polars as pl
 
 class RefreshTime:
-    """Refresh-time sampling (E58), fed frames of the long input in order."""
+    """Refresh-time sampling, fed frames of the long input in order."""
 
     def __init__(
         self,
@@ -35,7 +35,7 @@ class RefreshTime:
     def feed(self, df: pl.DataFrame, limit: int | None = None) -> pl.DataFrame: ...
 
 class Windows:
-    """``po.stream.with_windows`` (task 78), fed a stream's chunks in order."""
+    """``po.stream.with_windows``, fed a stream's chunks in order."""
 
     def __init__(self, config: str, input: pl.DataFrame) -> None: ...
     @staticmethod
