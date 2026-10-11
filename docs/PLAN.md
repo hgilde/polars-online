@@ -9734,6 +9734,46 @@ tick, and that the series holding it up has a count near 1.
       half-life `ln 2 / ln((cap+1)/cap)` ≈ `0.69 (max_run - 1)` rows,
       pinned by a test. No layout change; GOLDEN unmoved; scoped mutants
       6/6 after a tie test closed the one survivor.
+- [ ] 244. **The API standardized before 1.0** -- the user, 2026-10-11:
+      "What else should we do before 1.0? Examine the api for improvements
+      and standardization that is better done now", then "Your reco for
+      all" (to the consolidated list and to the model split: Opus, xhigh
+      for the output grammar, `ew_cov`'s `bias=` and `coef` as an Array,
+      high for the rest). Four read-only reviewers over
+      `tests/api_surface.txt` at `93d0ef4` (P spec keywords, O outputs, M
+      `ModelBank`/helpers, C CLI/TOML/env); their proposals, IDs and probes:
+      the session scratchpad, `api1/API-{P,O,M,C}.md`. The framing fact: a
+      renamed parameter forwards after 1.0 (`RENAMED`, §18 D2), a renamed
+      output field or frame column cannot (a struct field has no alias), so
+      the output surface is now or a major.
+      *Decided:* every "do" item (P-1..P-9, O-1..O-10, M-1..M-13, C-1..C-5)
+      and, of the decisions: (1) one integer dtype, Int64, for every count
+      in every frame and field (§18 N19's UInt64 frame counts dropped); (2)
+      `coef`, `support_coef`, `se_coef*` as `Array(Float64, k)` (micro's
+      ragged `coef` stays a List); (3) `ew_cov(bias=)`, Polars' default
+      `False` (numbers move, the state gains the weight-squared sum); (4)
+      `save`/`load` take file objects, `to_json` + `save_json` fold into
+      `write_json(file=None)`; (5) the binary is `polars-online`; (6)
+      `rewm_*` fold into `ewm_*(reverse=True)`; (7) `po.eval` infers
+      `binary` from the spec, columns `accuracy`, `brier_skill`; (8)
+      `audit(columns=)`/`ew_class(label=)` keep their keywords, the
+      refusal names the mapping, RUNNER's sentence is corrected; (9) one
+      qualifier rule in field names, glued to the kind before the columns,
+      `__p<penalty>` for a lasso; (10) exit status and files are the CLI's
+      contract, its text is not; `unnest(separator=)` as Polars 2.0's. And
+      the folded "consider" items: a leading `spec` column on `marginal()`
+      and `audit()`; `seed_rule` -> `init` (`'k-means++'`); `span_rows` ->
+      `window_rows`; `reset_<t>` -> `ramsey_reset_<t>`; `rows_fed` and
+      `output_fields` as properties; a `Gram` TypedDict; `--version` with the
+      schema and the Rust Polars; units for `obs_var`, `precision_prior`,
+      `robust_beta`; `<quantity>_<stat>` column order (`clock_last`,
+      `step_max`, `support_coef_min`); `pca` cadence pair named as the
+      others. *Left:* the `loss` words, `po.sim`/`po.gbdt` placement,
+      `fit` continuing (documented "as sklearn's `partial_fit`"),
+      `to_toml`, gbdt's `engine`.
+      *Built as five workers* (`task244-{out,spec,bank,cli,bias}`), each a
+      disjoint part; schema numbers and regenerated fixtures reconciled at
+      the merge.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
