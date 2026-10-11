@@ -423,15 +423,26 @@ regime, saying which row the current one began on. And it almost never
 says so when nothing has happened: 0.53 alarms per 1000 quiet rows.
 
 **None of those alarms comes from the cap on a run's length.** The runs
-that reach `max_run - 1 = 1199` rows fold into the oldest of them, scaled
-back to 1199 rows' weight. So the run in progress keeps its place, and the
-start it reports moves a row at a time. When they folded into the youngest
-run at the cap instead, every quiet stream raised an alarm a few rows past
-row 1200, where the run's reported start jumped to that younger run's. That
-took the rate to 1.00 per 1000. The same alarm, at rows 1203 to 1207, was
-the first one after the break on three broken streams, and made the worst
-delay read 207. It was the cap firing on schedule, not the break being
-found: within 200 rows of the break both rules find it on 17 of 20 streams.
+that reach `max_run - 1 = 1199` rows fold into the one of them carrying the
+most mass, scaled back to 1199 rows' weight: on a quiet stream the oldest,
+and after a break the post-break run, once it reaches the cap. So the run
+in progress keeps its place, and the start it reports moves a row at a
+time. The capped run is then an exponentially weighted run, scaled by
+`1199 / 1200` each row, with a half-life of `ln 2 / ln(1200 / 1199)`, about
+830 rows. When they folded into the youngest run at the cap instead, every
+quiet stream raised an alarm a few rows past row 1200, where the run's
+reported start jumped to that younger run's. That took the rate to 1.00 per
+1000. The same alarm, at rows 1203 to 1207, was the first one after the
+break on three broken streams, and made the worst delay read 207. It was
+the cap firing on schedule, not the break being found: within 200 rows of
+the break both rules find it on 17 of 20 streams. Folding into the oldest
+run by rule gives every figure in this table too, since on these streams
+the oldest run is the one carrying the mass. Where nothing is pruned it is
+not: after a 3-sigma mean shift the post-break run reached the cap and its
+mass went onto the row-0 run's statistics, the old regime's mean at the
+cap's weight, and the reported start jumped a second time about `max_run`
+rows after the break (17 of 20 streams at `max_run=200`, none with the
+uncapped posterior on the same rows, and none now).
 
 ## 6. The Epps effect, and the two ways out
 

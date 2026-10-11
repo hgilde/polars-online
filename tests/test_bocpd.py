@@ -350,6 +350,41 @@ def test_the_cap_keeps_the_dominant_runs_memory_under_heavy_pruning():
     assert np.diff(mode).min() >= -5, np.diff(mode).min()
 
 
+def test_the_fold_after_a_break_keeps_the_run_carrying_the_mass():
+    """The runs that reach ``max_run - 1`` rows fold into the one of them
+    carrying the most mass. After a break that is the post-break run, so the
+    capped slot keeps the new regime's statistics and the start that
+    ``t - run_mode`` reports moves a row at a time. Folding into the oldest
+    run at the cap put the post-break run's mass on the row-0 run's
+    statistics, the old regime's mean at the cap's weight: the capped slot
+    then predicted badly until its memory adapted, the mass went to the
+    shorter runs, and the reported start jumped again about ``max_run`` rows
+    after the break. On a 3-sigma mean shift at row 300 of 1,000 rows,
+    ``max_run = 200`` and nothing pruned, 17 of these 20 streams raised more
+    such alarms after row 310 than the uncapped posterior on the same rows
+    (seed 1: rows 541, 556 and 583 among them); now none does."""
+
+    def alarms(out):
+        mode = out["run_mode"].fill_null(0).to_numpy()
+        start = np.arange(len(mode)) - mode
+        return [int(i) for i in np.where(np.diff(start) > 10)[0] + 1]
+
+    kw = dict(hazard=250.0, prior_mean=[0.0], prior_scale=[1.0], min_weight=0.0, prune_below=0.0)
+    found, worse = 0, []
+    for seed in range(20):
+        x = normals(1000, seed)
+        x[300:] += 3.0
+        cap = alarms(run(x, max_run=200, **kw))
+        ref = alarms(run(x, max_run=10_000, **kw))
+        found += any(295 <= a <= 310 for a in cap)
+        late_cap = [a for a in cap if a > 310]
+        late_ref = [a for a in ref if a > 310]
+        if len(late_cap) > len(late_ref):
+            worse.append((seed, late_cap, late_ref))
+    assert found == 20, found
+    assert worse == [], (len(worse), worse)
+
+
 def test_the_prior_scale_sets_what_counts_as_surprising():
     """The one parameter a caller must set from their data. `prior_scale` is
     the prior guess at the variance, and the failure when it is too large is

@@ -71,14 +71,20 @@ def bocpd(
     ``"diag"`` and ``"robust"``, and ``O(runs * d³)`` under ``"gaussian"``,
     which factors each run's scale. The run vector would grow by one every row.
     So runs below ``prune_below`` of the mass are dropped. The runs that reach
-    ``max_run - 1`` rows are folded into the oldest of them, which takes their
-    mass and keeps its place. Its statistics are scaled back to
-    ``max_run - 1`` rows' weight, as a decay would scale them: the weight and
-    scatter shrink, the mean stays. ``max_run`` caps a run's length: no run
-    kept is longer than ``max_run - 1`` rows, so ``run_mode`` saturates one
-    below it, and the runs kept, at most ``max_run`` lengths, bound the work a
-    row takes. The run that dominates a quiet stream keeps its memory at the
-    cap however many younger runs ``prune_below`` drops.
+    ``max_run - 1`` rows are folded into the one of them carrying the most
+    mass, the oldest among equals, which takes their mass and the tail's
+    place. Its statistics are scaled back to ``max_run - 1`` rows' weight, as
+    a decay would scale them: the weight and scatter shrink, the mean stays.
+    ``max_run`` caps a run's length: no run kept is longer than
+    ``max_run - 1`` rows, so ``run_mode`` saturates one below it, and the runs
+    kept, at most ``max_run`` lengths, bound the work a row takes. The capped
+    run is an exponentially weighted run, scaled by ``(max_run - 1) / max_run``
+    each row: its mean steps by ``1 / max_run`` of the row's deviation, and
+    its half-life is ``ln 2 / ln(max_run / (max_run - 1))``, about
+    ``0.69 * (max_run - 1)`` rows, 6,900 at the default. The run that
+    dominates a quiet stream keeps its memory at the cap however many younger
+    runs ``prune_below`` drops, and after a break the post-break run takes the
+    slot once it reaches the cap.
 
     A row of weight ``w`` teaches at ``w / w_bar``, ``w_bar`` the mean weight
     of the rows learned from, this one included. That is in its run's
@@ -233,8 +239,9 @@ def bocpd(
         least 2, and refused beside both priors, which leave nothing to set.
     ``prune_below``, ``max_run``
         The share of the mass below which a run is dropped (default
-        ``1e-6``), and the run length at which runs are folded into the
-        oldest, scaled back to ``max_run - 1`` rows (default 10,000). A
+        ``1e-6``), and the run length at which runs are folded into the one
+        carrying the most mass, scaled back to ``max_run - 1`` rows (default
+        10,000). A
         changepoint collapses the runs to a few dozen, but a stream that does
         not break spreads them over thousands of run lengths. There
         ``max_run`` is the bound on the runs kept and on a row's work.
