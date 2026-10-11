@@ -230,6 +230,19 @@ introduction carries one table row on testing, one sentence on saving
 state and one number on parallelism. The sections that own those topics
 carry the rest.
 
+**Every feature with a page of its own has a README section that leads to
+it.** A casual reader finds a feature by scanning the README, not the list
+of guides (the user, 2026-10-10: "We want to make sure that features with
+their own doc pages have a section in the main readme so a casual user can
+find"). So the section's heading names what the reader wants to do, as
+*Fitting many features from one pass* does for GRAM, rather than the page.
+It sits in the contents table, its own text links the page before any
+other link, and its recipe shows the capability working. The four guides
+for changing the library and writing its docs need only a link.
+`test_every_guide_has_a_readme_section` in `tests/test_doc_structure.py`
+holds every guide in `docs/README.md`'s *Guides* table to it, so a page
+listed there fails the test until its section exists.
+
 ## 3. Code with comments, not prose that narrates code
 
 **When the content is *describing*, show it as code.** If a passage says
@@ -328,6 +341,22 @@ not. The test for what remains:
 would its comment be longer than the code it sits beside? Then it is a
 concept, and it stays as text, above the code and not repeated inside it.
 
+**A capability is shown by a recipe.** A recipe is an example a reader can
+run as it stands and check: it generates its data, or reads the files
+*Example data* writes, saves what it reads to parquet and scans it back,
+and prints its result. A ```` ```text ```` block right under it shows what
+it prints, and a test holds the two together with `tests/doc_recipes.py`'s
+`differences`: the same lines, the same words, and each number within two
+units of its last printed digit. A line that
+starts with `time` reports what the machine decides, so it is held to its
+words alone. The result printed shows the capability working, so a recipe
+plants an answer and prints it beside what the library found: a planted
+coefficient beside its estimate, a break's row beside the row it was
+flagged. A block whose output is not shown only runs, so a section that
+claims a capability shows it with a recipe instead. Each page with recipes
+has a test that runs them, as `tests/test_gram_page.py` runs GRAM's, and
+the README's run in what its *Example data* block builds.
+
 **Every code block runs.** A code example is a claim the reader trusts. The
 test suite runs the README's python blocks and the docstrings' examples, so
 a converted passage is also a test of what it describes. Run a section's
@@ -400,6 +429,24 @@ tense. The history belongs in
 `CHANGELOG.md` or in the records `docs/README.md` lists. Outside those,
 grep for
 `used to`, `once did`, `the first version` and `before this was fixed`.
+
+**Cite no plan, no task, no review and no record: state the reason
+itself.** A reader has none of the project's plan, a task's number, a
+review's finding or a record, so a citation of one tells them only that a
+reason exists somewhere else (the user, 2026-10-10: "No doc should
+reference the plan, everything should be explained from first
+principals"). The README, every guide in `docs/README.md`'s *Guides*
+table, `CONTRIBUTING.md`, `llms.txt`, every public docstring and every
+error or warning message cite no section of the plan, no task by its
+number, no review and none of the documents `docs/README.md` lists under
+*Records*. State the mechanism, the measurement and how it was made, or
+the trade-off. A link to another guide that explains the point is fine,
+and a link to a record is not. Code comments, tests, the CHANGELOG and the
+records themselves may keep task numbers.
+`tests/test_no_plan_references.py` holds the files, the docstrings and
+every string literal the package ships, and `test_every_guide_is_held`
+fails when a guide listed in `docs/README.md` is not among the files it
+reads.
 
 **An effect is attributed to its own cause.** *That order is what makes
 every prediction honest … and it is what lets the whole thing run on far
@@ -562,7 +609,7 @@ on rereading:
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
-| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks |
+| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
 | 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
 
 The counts, taken outside code blocks, tables and headings. `uv run python
