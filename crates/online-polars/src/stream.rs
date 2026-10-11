@@ -3185,7 +3185,13 @@ impl Stream {
             .zip(&fresh.checks)
             .all(|(s, l)| s.fits(l, spec))
         {
-            return Err("saved state's diagnostics (task 221) do not fit this spec".into());
+            return Err(
+                "saved state's residual diagnostics (the calibration, breaks, robust standard \
+                 errors, specification tests, tails, influence and feature health this spec \
+                 switches on) do not fit this spec: the same switches, but shaped for other \
+                 features, lags or levels, which is a damaged state"
+                    .into(),
+            );
         }
         // A file written by a spec with a `embargo` carries the rows it
         // had not learned from yet; one written without a delay has none, and

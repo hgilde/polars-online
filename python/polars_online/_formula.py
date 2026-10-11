@@ -108,8 +108,9 @@ def _refuse(kind: str, detail: str = "") -> FormulaError:
         f"a window formula is element-wise: columns, literals, arithmetic, comparisons, "
         f"log/exp/abs/sqrt/pow/clip/fill_null/is_null, when/then/otherwise, cast and alias "
         f"over the operators; {kind} is not read{detail}. A shift, a cumulative or rolling "
-        f"function, an aggregation or a window would depend on the chunking "
-        f"(docs/PLAN.md task 143)."
+        f"function, an aggregation or a window would depend on the chunking: the formula "
+        f"is evaluated a chunk at a time, row by row, so a node that reads other rows would "
+        f"read only the chunk's, and one stream fed in two chunkings would give two answers."
     )
 
 
