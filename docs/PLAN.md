@@ -9861,6 +9861,20 @@ tick, and that the series holding it up has a count near 1.
       and `..._stops_with_room_before_its_job_is_killed` (both fail on the
       old workflow). The next push lists 418 mutants at `6f87839` (about 14
       shards), before task 244 and review 7's fixes add theirs.
+- [ ] 247. **A rehearsal for 1.0** -- the user, 2026-10-11: "After the
+      push run a rehearsal for 1.0". `release.yml` builds the version the
+      commit says and checks it agrees in six places, has a CHANGELOG
+      section and a README pin on its minor, so the rehearsal runs on a
+      branch `rehearse-1.0` off the pushed commit with one bump commit to
+      1.0.0 (the six places, VALIDATION.md and both locks regenerated, the
+      bank fixture regenerated for its package version, a `## [1.0.0]`
+      section, the pin `~=1.0.0`), dispatched with `publish` off (publishing
+      is refused off `main`), so `main` does not claim 1.0.0 before 1.0 is
+      released. It is the first build of the renamed `polars-online` binary
+      in `release.yml`. Beside it, RELEASE-READINESS steps 1-3 run locally
+      (the bit-for-bit comparison with 0.13.0, the benchmark against
+      0.13.0's wheel, the released states), since the workflow does not run
+      them. Findings fixed on `main`; the branch deleted after.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
