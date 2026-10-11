@@ -55,13 +55,13 @@ median of 12 rows, where seeded from the rows it follows no switch at all
 ([§1](#1-does-hmm-recover-the-stream-that-made-it)).
 
 **Set each prior from the data's scale, because one set too wide fails the
-same way in `hmm` and in `bocpd`.** At 1.0, on returns whose variance is about 1.0,
-`hmm`'s `precision_prior` halves every correlation. The share of rows in
-the true state then falls from 98 % to 58 %. Set too large, `bocpd`'s
-`prior_scale` makes every row unsurprising, so a real break is never found
-([its entry in MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)),
-and §1 measures `hmm`'s
-([§1](#1-does-hmm-recover-the-stream-that-made-it)).
+same way in `hmm` and in `bocpd`.** At 1.0, on returns whose variance is
+about 1.0, `hmm`'s `precision_prior` halves every correlation. The share of
+rows in the true state then falls from 98 % to 58 %. Set too large,
+`bocpd`'s `prior_scale` makes every row unsurprising, so a real break is
+never found ([its entry in
+MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)), and §1
+measures `hmm`'s ([§1](#1-does-hmm-recover-the-stream-that-made-it)).
 
 **`corrchange`'s monitor is close to its paper's tables.** Wied, Krämer and
 Dehling (WKD) tabulate its size and power for "i.i.d. bivariate `t_5`
@@ -250,7 +250,8 @@ Gaussian pairs at `T = 500`, for `rho` of 0 and 0.5, and again at 0.5 with
 one column multiplied by 100. No test holds the size to WKD's own figure.
 
 > **Measured 2026-09-27, before the kernel moved to WKD's `1 − l/γ` (it
-> was Newey–West's `1 − l/(γ+1)`), at 20,000 replications a cell.** In the table's row order, the shared-scale `t_5` read 0.040,
+> was Newey–West's `1 − l/(γ+1)`), at 20,000 replications a cell.** In
+> the table's row order, the shared-scale `t_5` read 0.040,
 > 0.031, 0.040, 0.035, 0.033 and 0.038; the independent `t_5` 0.042, 0.042,
 > 0.040, 0.041, 0.042 and 0.039; Gaussian pairs 0.045, 0.041, 0.046, 0.046,
 > 0.042 and 0.046. No cell moved by more than 0.001.
@@ -560,10 +561,10 @@ to the third decimal.
 **Asynchrony is the harder case.** Carried forward, a series that was not
 observed returns zero, and `plain` loses 0.420. The kernel, which sums its
 lags, keeps most of it, at a bias of −0.094. Pre-averaging is the least
-biased, at −0.017 and −0.021, because its window, tens of rows long,
-spans the rows a series missed. Refresh time takes the kernel's bias to −0.017, on
-602 rows a block, and pre-averaging's error rises there, to 0.150 and
-0.106, with fewer rows to average over.
+biased, at −0.017 and −0.021, because its window, tens of rows long, spans
+the rows a series missed. Refresh time takes the kernel's bias to −0.017, on
+602 rows a block, and pre-averaging's error rises there, to 0.150 and 0.106,
+with fewer rows to average over.
 
 **`psd=False` is the better pre-averaging form here.** It has the lower
 error in every condition, 0.074 against 0.113 on clean data. `psd=True` is
