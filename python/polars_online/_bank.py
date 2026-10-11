@@ -1086,9 +1086,15 @@ class ModelBank:
             <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__).
             ``settled_frac`` is how full the decay window is: the fraction
             the next row's ``settled_frac`` reads, which under ``embargo``
-            counts the clock the held rows have covered too. ``error_inflation`` is the
-            largest noise-gate ratio over its slots: ``ewridge``'s
-            ``sqrt(1 + edf / n_kish)``, ``rls``'s
+            counts the clock the held rows have covered too. It reads the
+            model's own decay, ``half_life``, as ``min_settled_frac`` and the
+            readiness notices do, not a second memory the model keeps beside
+            it, such as ``holt``'s trend: the diagnostics wait for the
+            longest of those instead (`docs/DIAGNOSTICS.md, One memory per
+            diagnostic
+            <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
+            ``error_inflation`` is the largest noise-gate ratio over its
+            slots: ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
             ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
             ``sqrt(1 + df / n_kish)``. ``kalman``'s gate reads each row's own
             value, so its reading is the gate's mean field over the design,

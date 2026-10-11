@@ -73,7 +73,10 @@
 //!
 //! and the same long-run factor `1 + 2 Σ_l (1 − l/(L+1)) P1_l / S2` scales
 //! `break_wald`'s noise variance ([`TwinFit::wald`]). With no horizon `L` is
-//! 0 and they are the forms above.
+//! 0 and they are the forms above. On a quantile fit the CUSUM's terms are
+//! the indicators (task 232 (6)), so `P1_l` is theirs; the residuals'
+//! `P1_l` are kept beside them for `break_wald`, whose twin fits' noise is
+//! the residuals' ([`Breaks::long_run_residuals`]; review round 7, A-2).
 
 use std::collections::VecDeque;
 
@@ -126,6 +129,15 @@ pub struct Breaks {
     indicator: bool,
     #[serde(default)]
     c2: f64,
+    /// On a quantile fit under a horizon, the lag products `P1_l` of the
+    /// studentized residuals' `ω z` and their ring, which `P1` and `ring1`
+    /// then hold of the indicators: `break_wald`'s noise is the residuals'
+    /// (review round 7, A-2; [`Self::long_run_residuals`]). Empty
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pz: Vec<f64>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    ringz: VecDeque<f64>,
 }
 
 fn is_zero(v: &usize) -> bool {
@@ -149,10 +161,20 @@ impl Breaks {
     }
 
     /// The same, whose CUSUM sums a quantile fit's indicators where `on`
-    /// (task 232 (6)).
+    /// (task 232 (6)); under lags it then keeps the residuals' lag products
+    /// beside the indicators' (review round 7, A-2).
     pub fn with_indicator(mut self, on: bool) -> Self {
         self.indicator = on;
+        let kept = if on { self.lags } else { 0 };
+        self.pz = vec![0.0; kept];
+        self.ringz.clear();
         self
+    }
+
+    /// The lags the residuals' own products are kept over: `lags` on a
+    /// quantile fit, 0 elsewhere, where `P1` is already the residuals'.
+    fn residual_lags(&self) -> usize {
+        if self.indicator { self.lags } else { 0 }
     }
 
     /// Whether a restored accumulator can be read and folded at `lags`:
@@ -164,6 +186,8 @@ impl Breaks {
             && self.p2.len() == lags
             && self.ring1.len() <= lags
             && self.ring2.len() <= lags
+            && self.pz.len() == self.residual_lags()
+            && self.ringz.len() <= self.residual_lags()
             && self.c2.is_finite()
             && self.c2 >= 0.0
             && self
@@ -172,6 +196,8 @@ impl Breaks {
                 .chain(&self.p2)
                 .chain(&self.ring1)
                 .chain(&self.ring2)
+                .chain(&self.pz)
+                .chain(&self.ringz)
                 .all(|v| v.is_finite())
             && [
                 self.s1, self.s2, self.z1, self.z2, self.z4, self.w4, self.v1, self.v2, self.vq,
@@ -203,10 +229,12 @@ impl Breaks {
         self.p1
             .iter_mut()
             .chain(&mut self.p2)
+            .chain(&mut self.pz)
             .for_each(|v| *v *= lam2);
         self.ring1
             .iter_mut()
             .chain(&mut self.ring2)
+            .chain(&mut self.ringz)
             .for_each(|v| *v *= lam);
     }
 
@@ -215,6 +243,7 @@ impl Breaks {
     pub fn clear_lags(&mut self) {
         self.ring1.clear();
         self.ring2.clear();
+        self.ringz.clear();
     }
 
     /// The studentized residual of a recursive residual `v` against the
@@ -270,6 +299,16 @@ impl Breaks {
                 self.ring2.push_front(u2);
                 self.ring2.truncate(self.lags);
             }
+            // On a quantile fit `P1` holds the indicators' products: the
+            // residuals' own, for `break_wald`, are kept beside them.
+            if self.residual_lags() > 0 {
+                let uz = w * z;
+                for (l, bz) in self.ringz.iter().enumerate() {
+                    self.pz[l] += uz * bz;
+                }
+                self.ringz.push_front(uz);
+                self.ringz.truncate(self.lags);
+            }
         }
         self.v1 += w;
         self.v2 += w * w;
@@ -291,16 +330,37 @@ impl Breaks {
             .sum()
     }
 
-    /// The long-run variance of the studentized residuals over their
-    /// short-run one, `1 + 2 Σ_l (1 − l/(L+1)) P1_l / S2` (module docs): 1
-    /// with no horizon, `None` before the first studentized residual and
-    /// where the lag products leave it at or below 0.
+    /// The long-run variance of the CUSUM's terms over their short-run one,
+    /// `1 + 2 Σ_l (1 − l/(L+1)) P1_l / S2` (module docs) -- the studentized
+    /// residuals', or on a quantile fit the indicators': 1 with no horizon,
+    /// `None` before the first term and where the lag products leave it at
+    /// or below 0.
     pub fn long_run(&self) -> Option<f64> {
-        let s2 = self.cusum_s2();
+        Self::long_run_of(self.cusum_s2(), self.bartlett(&self.p1))
+    }
+
+    /// The studentized residuals' long-run variance over their short-run
+    /// one, which scales `break_wald`'s noise ([`TwinFit::wald`]): the
+    /// CUSUM's own ([`Self::long_run`]) but on a quantile fit, whose CUSUM
+    /// sums indicators. The twin least-squares fits' noise is the
+    /// residuals', whose autocorrelation under an overlap is larger than
+    /// the indicators' (the arcsine law, `(2/π) asin ρ` at the median), so
+    /// the indicators' factor left the Wald distance too large: on quiet
+    /// five-row look-ahead streams it passed `chi2(3)`'s 5% value on 10.8%
+    /// of rows beside `quantile` against 5.9% beside `ewridge` (review
+    /// round 7, A-2).
+    pub fn long_run_residuals(&self) -> Option<f64> {
+        if !self.indicator {
+            return self.long_run();
+        }
+        Self::long_run_of(self.s2, self.bartlett(&self.pz))
+    }
+
+    fn long_run_of(s2: f64, bartlett: f64) -> Option<f64> {
         if s2 <= 0.0 {
             return None;
         }
-        let f = 1.0 + 2.0 * self.bartlett(&self.p1) / s2;
+        let f = 1.0 + 2.0 * bartlett / s2;
         (f > 0.0).then_some(f)
     }
 
@@ -360,6 +420,96 @@ pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
     fit_half_life / (fit_half_life + own_half_life)
 }
 
+/// The share of a windowed CUSUM's plain variance its null has beside a
+/// fit that absorbs a level over a window of `window` clock units cut from
+/// a decay at `fit_half_life` (`inf` for none), its own sums at
+/// `own_half_life` (review round 7, A-3). [`cusum_null`] is the window's
+/// limit as it grows; read as an exponential of the window's Kish size, a
+/// window of 100 rows with no decay read 1/2 where this reads 0.703, and
+/// the CUSUM spread 1.19 on clean streams.
+///
+/// The fit's prediction is a weighted mean of the shocks before the row,
+/// `g(y)` the weight on the one `y` ago, so the residual is `e_t = ε_t −
+/// ∫ g(y) ε_{t−y} dy`. Summed at the rate `κ_c` (`ln 2` over the half-life,
+/// weights `w(x) = e^{−κ_c x}`), shock `ε_{t−x}` enters with `c = w − w ∗ g`,
+/// and since `∫ w(x) w(x − y) dx = e^{−κ_c |y|} / (2 κ_c)`, its square
+/// over the plain sum's `∫ w² = 1 / (2 κ_c)` is
+///
+/// ```text
+/// r = 1 − 2 ∫ g(y) e^{−κ_c y} dy + ∫∫ g(y) g(y') e^{−κ_c |y − y'|} dy dy'
+/// ```
+///
+/// With `u = κ_c W`, `v = κ_m W` (`κ_m` the decay's rate) and `F(a) = (1 −
+/// e^{−a}) / a`, `F(0) = 1`, the window's weights `g(y) = κ_m e^{−κ_m y} /
+/// (1 − e^{−v})` on `[0, W]` give, with `C = v / (1 − e^{−v})`,
+///
+/// ```text
+/// r = 1 − 2 C F(u + v) + (C² / v) (F(u + v) − e^{−2v} F(u − v))
+/// ```
+///
+/// and, with no decay (`v → 0`, `g = 1 / W`),
+///
+/// ```text
+/// r = 1 + 2 F'(u) = 1 + 2 e^{−u} / u − 2 (1 − e^{−u}) / u²
+/// ```
+///
+/// which is 0.703 at the window's Kish half-life (`u = 2`). The double
+/// integral is `2 C² / W²` times `∫_0^W e^{(κ_m − κ_c) p} ∫_p^W e^{−2 κ_m
+/// s} ds dp` over the lag `p = y − y'`. As the window grows past the decay
+/// (`u, v → ∞`), `r → u / (u + v)`, [`cusum_null`]'s `κ_c / (κ_m + κ_c)`.
+/// Near `v = 0` the decayed form cancels, so a `v` below `1e-8` reads the
+/// undecayed one (they part by about `v`); near `u = 0` so does `F'`, which
+/// a series reads below 0.1. `inf` for `own_half_life` reads 1, as
+/// [`cusum_null`] does for the run-once sums; an infinite or non-positive
+/// `window` is no window, and reads [`cusum_null`].
+pub fn cusum_null_window(window: f64, fit_half_life: f64, own_half_life: f64) -> f64 {
+    if !(window.is_finite() && window > 0.0) {
+        return cusum_null(fit_half_life, own_half_life);
+    }
+    if !own_half_life.is_finite() {
+        return 1.0;
+    }
+    let ln2 = std::f64::consts::LN_2;
+    let u = ln2 / own_half_life * window;
+    // 0 where nothing decays (`ln 2 / inf`).
+    let v = ln2 / fit_half_life * window;
+    if v < 1e-8 {
+        return 1.0 + 2.0 * d_absorbed(u);
+    }
+    let c = v / -(-v).exp_m1();
+    // `e^{−2v} F(u − v)`, kept from overflowing where `v > u`.
+    let tail = if u >= v {
+        (-2.0 * v).exp() * absorbed(u - v)
+    } else {
+        (-(u + v)).exp() * absorbed(v - u)
+    };
+    1.0 - 2.0 * c * absorbed(u + v) + c * c / v * (absorbed(u + v) - tail)
+}
+
+/// `F(a) = (1 − e^{−a}) / a`, 1 at 0: [`cusum_null_window`]'s weight on a
+/// rate `a` over a unit window.
+fn absorbed(a: f64) -> f64 {
+    if a == 0.0 { 1.0 } else { -(-a).exp_m1() / a }
+}
+
+/// `F'(u) = e^{−u} / u − (1 − e^{−u}) / u²`, by its series
+/// `Σ_{n≥1} (−1)^n n u^{n−1} / (n + 1)!` below 0.1, where the closed form
+/// cancels.
+fn d_absorbed(u: f64) -> f64 {
+    if u < 0.1 {
+        let (mut sum, mut pow, mut fact) = (0.0, 1.0, 1.0);
+        for n in 1..14 {
+            fact *= f64::from(n + 1);
+            let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
+            sum += sign * f64::from(n) * pow / fact;
+            pow *= u;
+        }
+        return sum;
+    }
+    let q = (-u).exp();
+    q / u - (1.0 - q) / (u * u)
+}
+
 /// The fast and slow fits of one target, and the sums their difference's
 /// variance reads: two exponentially weighted least-squares fits of the
 /// target on the features, one at the diagnostic's memory (fast) and one at
@@ -381,7 +531,7 @@ pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
 ///
 /// `σ²` is the slow fit's residual mean square at Kish's degrees of
 /// freedom, times the residuals' long-run over short-run variance under a
-/// horizon ([`Breaks::long_run`]). Through the origin the same sums are
+/// horizon ([`Breaks::long_run_residuals`]). Through the origin the same sums are
 /// read in `x = c + (x − c)`'s coordinates. The slow factor is the fast
 /// one's fourth root, two square roots, which are exact in every libm: no
 /// platform's last bit enters the state.
@@ -532,8 +682,8 @@ impl TwinFit {
     /// memories coincide (no decay: the run-once form has no slow fit, and
     /// the difference no variance) or the slow fit leaves no residual.
     /// `long_run` scales the noise's variance by the residuals' long-run
-    /// over short-run variance under a horizon ([`Breaks::long_run`]), 1
-    /// without one.
+    /// over short-run variance under a horizon
+    /// ([`Breaks::long_run_residuals`]), 1 without one.
     pub fn wald(&self, idx: &[usize], intercept: bool, long_run: f64) -> Option<f64> {
         let kx = self.fast.k() - 1;
         let k = idx.len() + usize::from(intercept);
@@ -870,6 +1020,124 @@ mod tests {
         assert_eq!(cusum_null(50.0, f64::INFINITY), 1.0);
     }
 
+    /// The share beside a window by its definition (review round 7, A-3):
+    /// shock `x` ago enters the CUSUM with weight `c(x) = e^(−κ_c x) −
+    /// ∫_0^min(x,W) g(y) e^(−κ_c (x − y)) dy`, `g` the window's weights on
+    /// the shocks before a row -- uniform with no decay, `e^(−κ_m y)`
+    /// normalized beside one -- summed on a fine grid against the plain
+    /// sum's weights. The closed form agrees to the grid's error at short,
+    /// equal and long CUSUM memories (within 1e-4 here), with no decay, a decay much longer
+    /// than the window, one beside it and one much shorter; with no decay
+    /// it reads 0.703 at the window's Kish half-life whatever the window,
+    /// and it runs into [`cusum_null`] as the window grows past the decay.
+    #[test]
+    fn a_windows_cusum_null_share_is_its_absorption() {
+        let ln2 = std::f64::consts::LN_2;
+        let by_grid = |w: f64, hm: f64, hc: f64| {
+            let dt = 0.002 * w.min(hc);
+            let (km, kc) = (ln2 / hm, ln2 / hc);
+            let cells = (w / dt).round() as usize;
+            let total: f64 = (0..cells)
+                .map(|j| (-km * (j as f64 + 0.5) * dt).exp() * dt)
+                .sum();
+            // `acc` is `∫_0^min(x,W) g(y) e^(−κ_c (x − y)) dy` at the cell
+            // edge `x`, each cell's weight taken at its middle; `c²` and the
+            // plain sum's weights are integrated by the trapezoid rule.
+            let n = cells + (60.0 * hc / dt) as usize;
+            let (mut acc, mut c_lo, mut num, mut den) = (0.0, 1.0, 0.0, 0.0);
+            for i in 0..n {
+                let x = (i + 1) as f64 * dt;
+                acc *= (-kc * dt).exp();
+                if i < cells {
+                    let mid = (i as f64 + 0.5) * dt;
+                    acc += (-km * mid).exp() / total * dt * (-kc * dt / 2.0).exp();
+                }
+                let c_hi = (-kc * x).exp() - acc;
+                num += (c_lo * c_lo + c_hi * c_hi) / 2.0 * dt;
+                den += ((-2.0 * kc * (x - dt)).exp() + (-2.0 * kc * x).exp()) / 2.0 * dt;
+                c_lo = c_hi;
+            }
+            num / den
+        };
+        let inf = f64::INFINITY;
+        for w in [12.0f64, 100.0, 400.0] {
+            let kish = ln2 / ((w + 1.0) / (w - 1.0)).ln();
+            for hm in [inf, 1e7, 5.0 * w, w, 0.1 * w] {
+                for hc in [kish / 20.0, kish / 3.0, kish, 4.0 * kish, 50.0 * kish] {
+                    let got = cusum_null_window(w, hm, hc);
+                    let want = by_grid(w, hm, hc);
+                    assert!(
+                        (got - want).abs() < 5e-4 * want.max(0.05),
+                        "{w} {hm} {hc}: {got} vs {want}"
+                    );
+                }
+            }
+            // At the window's continuous Kish half-life, `W ln 2 / 2`.
+            let r = cusum_null_window(w, inf, w * ln2 / 2.0);
+            assert!((r - 0.70300).abs() < 1e-5, "{w}: {r}");
+        }
+        // The series and the closed form of `F'` meet at 0.1, and the
+        // decayed form meets the undecayed one at `v = 1e-8`.
+        let (lo, hi) = (d_absorbed(0.1 - 1e-12), d_absorbed(0.1));
+        assert!((lo - hi).abs() < 1e-12, "{lo} vs {hi}");
+        // A CUSUM far longer than the window, where `F'`'s closed form
+        // would lose every digit: `r = 2u/3 − u²/4 + u³/15 − …`.
+        for u in [1e-6, 1e-3] {
+            let r = cusum_null_window(1.0, inf, ln2 / u);
+            let want = 2.0 * u / 3.0 - u * u / 4.0 + u * u * u / 15.0;
+            assert!((r - want).abs() < 1e-9 * want, "{u}: {r} vs {want}");
+        }
+        // Each switch's edge reads the closed form, which parts from the
+        // other form in its last bits: `u = 0.1` reads `F'` in closed form,
+        // and `v = 1e-8` the decayed share.
+        let q = (-0.1f64).exp();
+        assert_eq!(hi, q / 0.1 - (1.0 - q) / (0.1 * 0.1));
+        let mut h = ln2 / 1e-8;
+        for _ in 0..64 {
+            if ln2 / h == 1e-8 {
+                break;
+            }
+            h = if ln2 / h > 1e-8 {
+                h.next_up()
+            } else {
+                h.next_down()
+            };
+        }
+        assert_eq!(ln2 / h, 1e-8);
+        let edge = cusum_null_window(1.0, h, 0.35);
+        let undecayed = 1.0 + 2.0 * d_absorbed(ln2 / 0.35);
+        assert!(
+            edge != undecayed && (edge - undecayed).abs() < 1e-6,
+            "{edge}"
+        );
+        let w = 100.0;
+        let at = |v: f64| cusum_null_window(w, ln2 * w / v, 30.0);
+        assert!((at(0.99e-8) - at(1.01e-8)).abs() < 1e-7);
+        assert!((at(1e-5) - at(1e-9)).abs() < 1e-4);
+        // Equal rates, where `F(u − v)` is `F(0) = 1`, lie on the same
+        // curve as their neighbours.
+        let (w, h) = (100.0, 30.0);
+        let equal = cusum_null_window(w, h, h);
+        let near = cusum_null_window(w, h, h * (1.0 + 1e-9));
+        assert!((equal - near).abs() < 1e-8, "{equal} vs {near}");
+        assert!((equal - by_grid(w, h, h)).abs() < 5e-4 * equal);
+        // Rates far apart either way, where `e^(|u − v|)` alone would
+        // overflow: a CUSUM far shorter than the window takes almost the
+        // whole of a sum, and a window far past a short decay is the
+        // exponential's share.
+        let short = cusum_null_window(1_000.0, 1_000.0, 0.5);
+        assert!(short > 0.999 && short <= 1.0, "{short}");
+        let past = cusum_null_window(1e5, 1.0, 50.0);
+        assert!((past - cusum_null(1.0, 50.0)).abs() < 1e-9, "{past}");
+        // A window far past the decay is the exponential's share.
+        let long = cusum_null_window(1e6, 50.0, 80.0);
+        assert!((long - cusum_null(50.0, 80.0)).abs() < 1e-9, "{long}");
+        assert_eq!(cusum_null_window(inf, 50.0, 80.0), cusum_null(50.0, 80.0));
+        assert_eq!(cusum_null_window(0.0, 50.0, 80.0), cusum_null(50.0, 80.0));
+        assert_eq!(cusum_null_window(100.0, 50.0, inf), 1.0);
+        assert_eq!(cusum_null_window(100.0, inf, inf), 1.0);
+    }
+
     /// A zero weight, the first included, and a `v` that is not a number
     /// only age the sums.
     #[test]
@@ -1087,6 +1355,137 @@ mod tests {
         }
         // The indicators' long-run variance reads their own weights.
         assert_eq!(b.long_run(), Some(1.0));
+        assert_eq!(b.long_run_residuals(), Some(1.0));
+        assert!(b.has_shape(0));
+    }
+
+    /// On a quantile fit under a horizon, two long-run factors by their
+    /// definition (review round 7, A-2): the CUSUM's over the indicators'
+    /// lag products, and `break_wald`'s over the studentized residuals'
+    /// -- Bartlett's weights on the products of the scored rows' `ω z`, a
+    /// pair `l` scored rows apart, at their present weights, under a
+    /// decay, zeros, rows with no indicator and a cleared run. Residuals
+    /// that carry a lag and indicators that carry less of it read two
+    /// factors that differ; without an indicator the two are one.
+    #[test]
+    fn a_quantile_fits_break_wald_reads_the_residuals_long_run_variance() {
+        let lags = 3usize;
+        let mut b = Breaks::with_lags(lags).with_indicator(true);
+        let mut plain = Breaks::with_lags(lags);
+        let mut s = 44u64;
+        let lam = 0.98;
+        let q = 0.5f64;
+        // Per run: (z, weight now) of the scored rows, and (c, weight
+        // now) of the rows with an indicator.
+        let mut zs: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
+        let mut cs: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
+        let mut prev = 0.0;
+        let mut differed = 0;
+        for i in 0..500 {
+            let v = 0.8 * prev + lcg(&mut s);
+            prev = v;
+            let c =
+                (i % 11 != 5).then(|| (f64::from(u8::from(v < 0.0)) - q) / (q * (1.0 - q)).sqrt());
+            let w = if i % 9 == 4 { 0.0 } else { 1.0 + lcg(&mut s) };
+            if i == 300 {
+                b.clear_lags();
+                plain.clear_lags();
+                zs.push(Vec::new());
+                cs.push(Vec::new());
+            }
+            let z = b.studentized(v);
+            b.update(v, lam, w, c);
+            plain.update(v, lam, w, None);
+            zs.iter_mut().flatten().for_each(|r| r.1 *= lam);
+            cs.iter_mut().flatten().for_each(|r| r.1 *= lam);
+            if w > 0.0 {
+                if let Some(z) = z {
+                    zs.last_mut().unwrap().push((z, w));
+                }
+                if let Some(c) = c {
+                    cs.last_mut().unwrap().push((c, w));
+                }
+            }
+            if i < 40 || i % 23 != 0 {
+                continue;
+            }
+            let factor = |runs: &Vec<Vec<(f64, f64)>>| {
+                let s2: f64 = runs.iter().flatten().map(|r| r.1 * r.1).sum();
+                let mut p = 0.0;
+                for run in runs {
+                    for l in 1..=lags {
+                        let bw = 1.0 - l as f64 / (lags as f64 + 1.0);
+                        for t in l..run.len() {
+                            p += bw * run[t].1 * run[t - l].1 * run[t].0 * run[t - l].0;
+                        }
+                    }
+                }
+                1.0 + 2.0 * p / s2
+            };
+            let (want_z, want_c) = (factor(&zs), factor(&cs));
+            let tol = 1e-9;
+            assert!(
+                (b.long_run_residuals().unwrap() - want_z).abs() < tol,
+                "row {i}"
+            );
+            assert!((b.long_run().unwrap() - want_c).abs() < tol, "row {i}");
+            // The plain accumulator over the same residuals reads the same
+            // factor, from one set of products.
+            assert!((plain.long_run().unwrap() - want_z).abs() < tol, "row {i}");
+            assert_eq!(plain.long_run(), plain.long_run_residuals());
+            if (want_z - want_c).abs() > 0.1 {
+                differed += 1;
+            }
+        }
+        assert!(
+            differed >= 10,
+            "the residuals' factor is not the indicators'"
+        );
+        assert!(b.has_shape(lags) && !b.has_shape(0));
+        assert!(plain.has_shape(lags));
+    }
+
+    /// The residuals' products are written on a quantile fit under lags
+    /// alone, and read back; a restored one with a product too few, or
+    /// more rows in its ring than lags, is refused.
+    #[test]
+    fn the_residuals_products_are_written_on_a_quantile_fit_under_lags() {
+        let named = |b: &Breaks| rmp_serde::to_vec_named(b).unwrap();
+        let has = |bytes: &[u8], key: &[u8]| bytes.windows(key.len()).any(|w| w == key);
+        // Twice over: the scale studentizes from its tenth Kish row on.
+        let rows = [
+            1.0, -0.5, 0.7, -1.2, 0.3, 0.9, -0.1, 0.4, -0.8, 1.1, 0.2, -0.6, 0.5, -0.3,
+        ];
+        let mut fed: Vec<Breaks> = Vec::new();
+        for (lags, on) in [(0, false), (3, false), (0, true), (3, true)] {
+            let mut b = Breaks::with_lags(lags).with_indicator(on);
+            for v in rows.iter().chain(&rows).copied() {
+                b.update(v, 0.9, 1.0, Some(if v < 0.0 { 1.0 } else { -1.0 }));
+            }
+            let bytes = named(&b);
+            assert_eq!(
+                has(&bytes, b"pz"),
+                lags > 0 && on,
+                "lags {lags}, indicator {on}"
+            );
+            assert_eq!(has(&bytes, b"ringz"), lags > 0 && on);
+            let back: Breaks = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(back, b);
+            assert!(back.has_shape(lags));
+            fed.push(b);
+        }
+        let quantile = fed.pop().unwrap();
+        assert_eq!(quantile.pz.len(), 3);
+        assert_eq!(quantile.ringz.len(), 3);
+        let bad = |edit: fn(&mut Breaks)| {
+            let mut c = quantile.clone();
+            edit(&mut c);
+            !c.has_shape(3)
+        };
+        assert!(bad(|c| c.pz.pop().map(drop).unwrap()));
+        assert!(bad(|c| c.pz[0] = f64::NAN));
+        assert!(bad(|c| c.ringz.push_back(0.0)));
+        assert!(bad(|c| c.ringz[1] = f64::INFINITY));
     }
 
     /// The lag products of the indicators can cancel the variance outright

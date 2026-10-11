@@ -2475,9 +2475,10 @@ mod tests {
         // 54 for task 223 (b)'s `audit`, 55 for task 221's diagnostics
         // with a memory of their own, 56 for its parts (d)-(h), 57 for
         // review round 6's tails and scored inflation, 59 for task 233's
-        // smallest change in an audit and 60 for task 232's Newey-West
-        // sums, the windows state unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 60));
+        // smallest change in an audit, 60 for task 232's Newey-West sums
+        // and 61 for review round 7's residual lag products on a quantile
+        // fit (A-2), the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 61));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

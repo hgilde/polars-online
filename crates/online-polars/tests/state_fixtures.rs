@@ -976,6 +976,24 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
                 p.contains(".breaks.") && p.ends_with(".c2") && v.as_f64().is_some_and(|f| f != 0.0)
             },
         ),
+        // Schema 61 (review round 7, A-2): a quantile fit's residuals' lag
+        // products and ring under a horizon, beside its indicators'.
+        (
+            "bank_diagnosed",
+            "a quantile fit's residual lag products",
+            |p, v| {
+                p.contains(".breaks.") && p.contains(".pz.") && v.as_f64().is_some_and(|f| f != 0.0)
+            },
+        ),
+        (
+            "bank_diagnosed",
+            "a quantile fit's residual ring",
+            |p, v| {
+                p.contains(".breaks.")
+                    && p.contains(".ringz.")
+                    && v.as_f64().is_some_and(|f| f != 0.0)
+            },
+        ),
         ("bank_diagnosed", "a slot's fourth moment", |p, v| {
             p.contains(".breaks.") && p.ends_with(".z4") && v.as_f64().is_some_and(|f| f != 0.0)
         }),

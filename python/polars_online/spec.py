@@ -234,8 +234,13 @@ the diagnostics
     ``window_size / 2.885`` rows, or ``window_size * ln 2 / 2`` clock units on
     a clock column. Beside a decay ``n`` is the Kish size of the decayed
     weights inside the window, taken in its continuous form on a clock column.
+    The windowed CUSUM's null share reads the window itself instead, since a
+    window absorbs a level as a mean over its rows (``emit_breaks`` below).
     For ``kalman`` the fit's memory is its ``coef_half_life``, the shortest
-    finite one where a list gives one per coefficient. A diagnostic folds a row
+    finite one where a list gives one per coefficient; the windowed CUSUM's
+    null share reads the list's intercept entry instead, the memory at which
+    a level is absorbed, and a pinned intercept leaves the plain sum. A
+    diagnostic folds a row
     only once the instance is ready: the row's prediction past every gate, the
     stream 95% settled on the longest finite memory the model keeps where it
     forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.
@@ -658,7 +663,16 @@ The diagnostics add, per slot:
        is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
        ``cusum_sq``'s scale shares its memory, a half. Each is divided by
        that share, and their spreads read 1.01-1.10 on clean streams, where
-       undivided they read 0.48-0.94. ``quantile`` with an intercept absorbs its coverage the
+       undivided they read 0.48-0.94. Under ``window_size`` the fit absorbs a
+       level as a mean over the window, weighted by the decay inside it, and
+       a sum of its residuals cancels less. With no decay, and ``u =
+       window_size * ln 2 / h``, ``cusum``'s share is ``1 + 2 exp(-u) / u -
+       2 (1 - exp(-u)) / u**2``, 0.703 at the default memory. Beside a decay
+       it runs from that form to ``h_fit / (h_fit + h)`` as the window grows
+       past the half-life. Over it, beside windows of 100 and 400 rows with
+       no decay and at half-lives of 50 and 200, the spread read 1.00-1.02;
+       read as an exponential of the window's Kish size, 1.08-1.20.
+       ``quantile`` with an intercept absorbs its coverage the
        same way, and its indicators' ``cusum`` is divided by the same share:
        over it, 1.03-1.06 at memories of 50 and 200 and 1.10-1.25 at 800.
        The other fits keep the plain sum, whose spread reads below 1 beside
