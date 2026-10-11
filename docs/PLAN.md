@@ -9774,6 +9774,34 @@ tick, and that the series holding it up has a count near 1.
       *Built as five workers* (`task244-{out,spec,bank,cli,bias}`), each a
       disjoint part; schema numbers and regenerated fixtures reconciled at
       the merge.
+- [ ] 245. **Faster dev iterations** -- the user, 2026-10-11: "Iterations
+      are slow now due to large number of tests and other things, what
+      should we do to speed up dev iterations", then "Put it on the list
+      after the current work is done" (after task 244 and review 7's fix
+      batches merge and gate). Measured 2026-10-11: 19 agent worktrees,
+      each with its own `target/` of 20-25 GB, each compiling Polars from
+      scratch twice (debug for `cargo test`, `release` -- thin LTO,
+      `codegen-units = 1` -- for the wheel); load average 31 on 14 cores
+      with eight agents and the other project's jobs; the full gate 469 s
+      (cargo test 185 s, mostly compiling the test binaries; pytest 273 s
+      on one process), the essentials 114 s on one process. The plan, each
+      measured before and after on one commit, the full gate run both ways
+      to show nothing moved:
+      (1) workers run the tests for what they touched plus the essentials,
+      the full tier once per merge wave on `main`, the full gate before
+      every push as now; (2) at most about four concurrent agents;
+      (3) `sccache` as `RUSTC_WRAPPER`, so a worktree reuses compiled
+      crates by content hash (a shared `target/` clobbers the main build,
+      so it is not the answer) -- a dev tool on the user's machine, not
+      linked into the wheel or CLI: **confirm the install with the user
+      when the task starts**; (4) a `dev-wheel` profile (release without
+      LTO, many codegen units, incremental) for `maturin develop` in
+      worktrees and the inner loop, the shipped wheel, CI and the pre-push
+      gate keeping `release`, kept only if the golden tests show the bits
+      unchanged; (5) `pytest-xdist` and `cargo-nextest` (test-only), the
+      memory and timing tests (`test_ffi_memory`, the timed recipes) in a
+      serial group; (6) `scripts/quick.sh` mapping changed paths to their
+      test files for the loop inside a task.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
