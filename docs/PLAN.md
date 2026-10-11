@@ -9510,6 +9510,12 @@ tick, and that the series holding it up has a count near 1.
       between pages, STATE-WORKFLOW's record IDs, RUNNER's `bank.toml`,
       MODELS' notation. The user's verdict on I8 is pending; the README's
       *Versions* still teaches 0.x pinning beside the 1.0 note (the user's).
+      *Done 2026-10-11* (review 7 fix 4, `fbef263` + `176f491`): *Versions*
+      rewritten for 1.x (pin `~=1.0`/`>=1,<2`, the minor for numbers; the
+      example pin stays on pyproject's minor for `release_version.py`; 0.x
+      code -> *Changed (breaking)*; 0.x states refused; the before-1.0
+      columns kept only in RELEASE-READINESS); B-D1's sentence in GRAM
+      *Pooling within blocks* with its test; STATE-WORKFLOW:309 aligned.
       *Follow-ups done 2026-10-11* (`task238-fu`, `be41a02`..`50691e7`,
       merged `9d36e94`): `cluster` one dtype, then every integer output
       `Int64` (the worker's raise, option (a), taken by the coordinator as

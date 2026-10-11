@@ -306,8 +306,8 @@ A state-only fit under a window target is the one place the surfaces part.
 `lf.online.fit_predict(save_state=...)` keeps predictions, so it refuses an
 embargo shorter than the target's window. `ModelBank.fit` and `online
 --no-output` keep none, so they take any embargo. A bank file is refused by
-any build whose schema it does not meet, and before 1.0 a schema change is
-refit rather than loaded ([Saving, loading and
+any build whose schema it does not meet; from 1.0 every later 1.x build
+loads it, and a 0.x file is refit rather than loaded ([Saving, loading and
 serving](../README.md#saving-loading-and-serving)).
 
 ### A window run's state

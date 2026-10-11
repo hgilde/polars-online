@@ -18,6 +18,15 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **The README's versioning is written for 1.x** (task 238 follow-up,
+  review 7). 1.0 starts the API promise: pin `~=1.0` or `>=1,<2`, and the
+  minor too to hold the numbers; 0.x code needs the *Changed (breaking)*
+  entries, and a 0.x state is refused by its schema. GRAM says a target
+  with gaps is fitted pairwise within parts (the co-moments over every
+  row of a part, the target's cross-moments over its own rows), so it is
+  not the fixed-effects regression on that target's rows alone (2.2e-02
+  on slopes of 0.2-0.5; a target on every row is that regression to
+  1.7e-14), held by a test.
 - **Every capability in the docs is shown by a recipe whose printed output
   a test holds** (task 238): the README (57 recipes), a recipe per model in
   `docs/MODELS.md`, and the WINDOWS, RUNNER, STATE-WORKFLOW, GBDT and
