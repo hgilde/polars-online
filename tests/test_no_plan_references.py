@@ -63,6 +63,7 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 #: reference's own pages, and the files already clean of citations.
 FILES: list[str] = [
     "llms.txt",
+    "CONTRIBUTING.md",
     "SECURITY.md",
     "CODE_OF_CONDUCT.md",
     "docs/OUTPUTS.md",

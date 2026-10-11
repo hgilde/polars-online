@@ -1,38 +1,29 @@
 # Contributing
 
-Thanks for looking. This is a small, opinionated library; the fastest way to
-get a change merged is to match the conventions it already has.
+Thanks for looking. This is a small, opinionated library, and the fastest
+way to get a change merged is to match the conventions it already has.
 
 ## Getting set up
 
-```sh
-uv sync                                    # Python env (CPython 3.12+)
-source scripts/env.sh                      # PATH for cargo/uv; `. .\scripts\env.ps1` on Windows
-./scripts/gate.sh                          # every check, with the tests' essentials
-./scripts/gate.sh --extended               # every check and every test: before every push
-```
-
-Prerequisites are [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
-([rustup](https://rustup.rs)). Nothing else.
-
-To build and test from a checkout, install [uv](https://docs.astral.sh/uv/)
-and a stable Rust toolchain with [rustup](https://rustup.rs). In each new
-shell, run `source scripts/env.sh`, or `. .\scripts\env.ps1` in PowerShell,
-to put both on the `PATH`. VS Code's terminal gets them from
+**Install [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
+([rustup](https://rustup.rs)); nothing else is needed.** In each new shell,
+run `source scripts/env.sh`, or `. .\scripts\env.ps1` in PowerShell, to
+put both on the `PATH`. VS Code's terminal gets them from
 `.vscode/settings.json`.
 
-Run `cargo` through `uv run`, as the commands below do, because
-`online-py` builds against pyo3's `abi3-py312` and needs a 3.12+
-interpreter at build time. The tests download or generate their own data
-and cache downloads under `.cache/`. Offline, the tests that need a
-download are skipped.
+**Run `cargo` through `uv run`, as the commands below do, because
+`online-py` builds against pyo3's `abi3-py312`.** That build needs a Python
+3.12 or newer interpreter, and `uv run` hands it the project's. The tests
+download or generate their own data and cache downloads under `.cache/`.
+Offline, the tests that need a download are skipped.
 
 ```sh
 uv sync                                                # Python env (CPython 3.12 or newer)
-./scripts/gate.sh                                      # every check, the tests' essentials
-./scripts/gate.sh --extended                           # every check and every test, before a push
+source scripts/env.sh                                  # PATH for cargo and uv; `. .\scripts\env.ps1` on Windows
+./scripts/gate.sh                                      # every check, the tests' essentials: each commit
+./scripts/gate.sh --extended                           # every check and every test: before every push
 uv run cargo test --workspace --exclude online-py      # Rust tests; `-- --include-ignored` for all
-uv run maturin develop --release -m crates/online-py/Cargo.toml
+uv run maturin develop --release -m crates/online-py/Cargo.toml   # the extension, into the env
 uv run pytest                                          # Python tests
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference
 uv run python scripts/validate.py > docs/VALIDATION.md # re-run the experiments that chose the defaults
@@ -84,22 +75,20 @@ the pre-push check. The gate exists because grepping test output for
 commits even on failure, because a pipeline returns the exit status of
 `tail`.
 
-## What the tests guarantee
+## What a change must not break
 
-Two properties are load-bearing, and a change that breaks either is wrong by
-definition rather than by preference:
+**A change that breaks either of the library's two guarantees is wrong by
+definition.** Every row is predicted before its own target is learned, and
+a stream gives the same numbers in one chunk or a thousand, with or
+without a save and resume in the middle. The README's [Row order and the
+two guarantees](README.md#row-order-and-the-two-guarantees) states both,
+and says which rows carry `coef` and `support_coef`, the one output that
+moves with the chunking.
 
-1. **Predictions are out-of-sample by construction.** Every row is predicted
-   from the state *before* that row's target is folded in.
-2. **Chunk invariance.** Feeding a stream as 1 chunk or 1000 chunks produces
-   identical output, and so does saving state mid-stream and resuming. The one
-   exception is which rows carry `coef`, and `support_coef` beside it: a
-   reporting cadence rather than a value.
-
-`crates/online-core/tests/golden.rs` and `tests/test_golden_pipeline.py` pin
-the numbers both layers produce, to within 1e-12 on every platform. **If a
-change moves a golden number, that is the finding.** Understand why before
-regenerating it.
+**If a change moves a golden number, that is the finding, so understand
+why before regenerating it.** `crates/online-core/tests/golden.rs` and
+`tests/test_golden_pipeline.py` pin the numbers both layers produce, to
+within 1e-12 on every platform.
 
 ## Conventions
 
@@ -116,8 +105,8 @@ regenerating it.
 - **No data files in the repo, ever.** Tests generate or download what they
   need, cached under the gitignored `.cache/`. `tests/test_repo_hygiene.py`
   enforces this.
-- **Comments explain why, not what.** The codebase is full of comments naming
-  the bug a guard prevents; that is the house style.
+- **Comments explain why a line is there.** The house style is a comment
+  that names the bug a guard prevents.
 
 ## Adding a model
 
@@ -158,16 +147,15 @@ its §5 collects them.
 
 - One logical change per commit, with a message that says what was measured or
   what defect it prevents.
-- Name the task or the review a commit belongs to: `Task 154: ...`, or
-  `Review R5: ...; C1-C8` with the finding IDs, or `Plan: ...` for a change to
-  `docs/PLAN.md` alone.
-- Update the relevant doc in the same commit: `docs/PLAN.md`,
-  `docs/ENHANCEMENTS.md` for a new feature's design, the README,
+- Open the message with the piece of work the commit belongs to, as the
+  history does: its number, or the review and the finding IDs it answers.
+- Update the relevant doc in the same commit: the README,
   `CHANGELOG.md`'s unreleased entry, `docs/TESTING.md`,
-  `docs/PERFORMANCE.md`, and `docs/OUTPUTS.md` regenerated where an output
-  changed. A change to the public API shows as a diff of
-  `tests/api_surface.txt`, which the pull request includes.
-  [`docs/README.md`](docs/README.md) says which document holds what.
+  `docs/PERFORMANCE.md`, `docs/OUTPUTS.md` regenerated where an output
+  changed, and the design record a new feature's design belongs in. A
+  change to the public API shows as a diff of `tests/api_surface.txt`,
+  which the pull request includes. [`docs/README.md`](docs/README.md) says
+  which document holds what, the records included.
 - Keep section numbers where they are — the code and the README cite them.
 
 ## Licensing of contributions
