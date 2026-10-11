@@ -2119,9 +2119,77 @@ the four families of the table above.
 
 ### Detecting changes and regimes
 
-The sequential tests and the regime models are under [Sequential tests and
-regimes](docs/MODELS.md#sequential-tests-and-regimes), and what each finds
-on data whose truth is known is in [docs/REGIMES.md](docs/REGIMES.md).
+**Four models watch a stream for change, and each answers its own
+question.** What each finds on streams whose answer is known, and what it
+misses, is measured in [docs/REGIMES.md](docs/REGIMES.md). Their update
+rules and parameters are under [Sequential tests and
+regimes](docs/MODELS.md#sequential-tests-and-regimes). Each answer is read
+before its row is learned from, as every prediction is, so it can drive a
+decision on that row:
+
+| the question | the model | what it writes on each row |
+|---|---|---|
+| does a column tend to be positive, or does one spec predict closer than another? | [`seqtest`](docs/MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting) | the log wealth of a bet on each side; past `ln 20` is the 5% level, however often you look |
+| have the correlations among these columns changed? | [`corrchange`](docs/MODELS.md#corrchange--has-the-correlation-structure-changed) | a test statistic, its critical value, and a flag where one passes the other |
+| how long has the current regime lasted? | [`bocpd`](docs/MODELS.md#bocpd--how-long-has-this-regime-lasted) | `run_mode`, the most likely number of rows since the regime began |
+| which regime is the stream in? | [`hmm`](docs/MODELS.md#hmm--which-regime-are-we-in) | the probability of each hidden state, and the most probable one |
+
+This code makes two series whose returns take turns, 500 rows at a time,
+between a calm regime and one 2.7 times as wide. It uses `po.sim.regimes`,
+which returns the regime each row was drawn in beside the rows. `bocpd`
+dates each switch, and `hmm` says which regime each row is in:
+
+```python
+import polars as pl
+import polars_online as po
+
+sim = po.sim.regimes(                                         # two series, and the regime each row was drawn in
+    2, states=[0.3, 0.3], transition=[[0.0, 1.0], [1.0, 0.0]],   # the two regimes take turns, a block each
+    n_blocks=6, rows_per_block=500,
+    scale_state=[0.0, 1.0],                                   # regime 1's returns are e = 2.7 times as wide
+    seed=3,
+)
+truth = sim["truth_rows"].select("t", regime="state")
+sim["rows"].join(truth, on="t").write_parquet("regimes.parquet")
+returns = pl.scan_parquet("regimes.parquet").with_columns(pl.col("x_1", "x_2").diff())   # from the levels
+
+age = po.spec.bocpd("age", features=["x_1", "x_2"], hazard=500.0)   # how long has this regime lasted?
+which = po.spec.hmm(                                          # which regime is this row in?
+    "which", features=["x_1", "x_2"], k=2, half_life=float("inf"),
+    precision_prior=1e-2, warm_rows=500,
+    transition=[0.998, 0.002, 0.002, 0.998], transition_prior=500.0,   # a regime lasts about 500 rows
+)
+out = returns.online.fit_predict([age, which]).collect().with_columns(
+    began=pl.col("t") - pl.col("age").struct.field("run_mode"),   # the row the current regime began on
+    guess=pl.col("which").struct.field("state"),
+)
+for switch in (500, 1000, 1500, 2000, 2500):
+    began = out.filter(pl.col("t") == switch + 50)["began"][0]
+    print(f"a switch at row {switch}: 50 rows later, bocpd dates the regime to row {began}")
+scored = out.filter(pl.col("t") >= 500)                       # hmm seeds its states from the first 500 rows
+agree = (scored["guess"] == scored["regime"]).mean()          # its states are numbered as seeded, so read either way
+print(f"hmm puts {max(agree, 1 - agree):.0%} of the rows after seeding in their true regime")
+```
+
+```text
+a switch at row 500: 50 rows later, bocpd dates the regime to row 497
+a switch at row 1000: 50 rows later, bocpd dates the regime to row 1000
+a switch at row 1500: 50 rows later, bocpd dates the regime to row 1501
+a switch at row 2000: 50 rows later, bocpd dates the regime to row 1998
+a switch at row 2500: 50 rows later, bocpd dates the regime to row 2501
+hmm puts 94% of the rows after seeding in their true regime
+```
+
+**Read a regime's age from `bocpd`'s `run_mode`.** Fifty rows after each
+switch, `bocpd` dates the new regime to within three rows of the truth. Its
+alarm, `p_change`, scores each row on its own, so it barely moves when only
+the spread changes: no single row of the wider regime is surprising.
+
+**Tell `hmm` that regimes last.** One return says little about which regime
+it came from. A sticky `transition` matrix, counted by `transition_prior`
+as 500 rows, lets the filter weigh each row against what the rows before
+it said. Without those two arguments, the filter puts 59% of the rows in
+their true regime.
 
 ## Performance
 
