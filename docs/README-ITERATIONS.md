@@ -47,7 +47,7 @@ with its map, oldest first:
 | I5, rewrite | 2026-10-04 | write all the rules, then rewrite the README by them as a test | `21b84a4` (task 157, 2026-10-05), inside I7, which built on it | *each exception is named* reads as a Python exception; the first fit is "much better", and wants brief comments in its code; relative targets should be Polars expressions, built with `with_columns` and with forward windows |
 | I6, rewrite | 2026-10-04 | rewrite the README with the latest updates | `21b84a4` (task 157, 2026-10-05), inside I7, which built on it; rendered at claude.ai/artifact/QkEc6s4eAiY171WtgVzkqY | write procedures as procedures: name the tool, the method and the step; both branches of a condition; no definition by negation or aphorism; anchor every relative word |
 | I7, rewrite | 2026-10-04 | start the next README, rewriting phrasing completely under the procedural rules | `21b84a4` (task 157, 2026-10-05), then the fixes of task 158 in `20c5e5f` and `a7a8f3c`; rendered at claude.ai/artifact/P6o4QeGH2bBpVnwVT6yQRT | in progress: *The examples from here on read two frames* is out of context and very hard to understand; why did the reviewers miss it, and how will they catch it in future; the `po.target` paragraph should be a code example with comments; every example on the example data says so just above it, with a link |
-| I8, task 238 | 2026-10-10 | rewrite every reader-facing document, with recipes as the examples of capabilities and a README section for every feature page: first the map | the map merged to `main` (`3176294`), C1-C5 decided by the coordinator (the user: "Your call"); the rewrite after task 239 | pending |
+| I8, task 238 | 2026-10-10 | rewrite every reader-facing document, with recipes as the examples of capabilities and a README section for every feature page: first the map | the map merged to `main` (`3176294`), C1-C5 decided by the coordinator (the user: "Your call"); six writers merged at `9cce8f7`, then the assembler on `task238-asm` (`ccd4a3d` to `c88f55f`) | pending |
 
 ### I1, task 89 (2026-09-23)
 
@@ -838,6 +838,99 @@ assumes the recommended option of each, and its step 0 waits on them.
 
 Left open from I7: A1 cut *The idea*'s point on saving, as a restatement
 of the first fit's step 2. Whether to restore it is still the user's call.
+
+#### 7. After the pass
+
+**The rewrite:** six writers on `9cce8f7` (A to E, with D split in two),
+each in its own README range and files, then one assembler on
+`task238-asm` (`ccd4a3d` to `c88f55f`): the contents table and anchors; V4
+(`test_every_guide_has_a_readme_section`); every guide held to the no-plan
+rule (`test_every_guide_is_held`); WRITING's rules for a recipe, a README
+section per feature page and citations; V5's integers held exactly; the
+writers' pages made consistent; and a cold read by five readers with none
+of the pass's context, then a render of the README and 18 guides through
+GitHub's markdown API (`mode=markdown`): every table rendered, every
+in-page link on an id GitHub wrote.
+
+`scripts/doc_review.py measure`, on `c88f55f`, beside the counts before
+(section 6) where the document existed:
+
+| document | prose words | sentences | mean | 35+ | 45+ | cost words | *X, not Y* | tables | python blocks |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| README | 15,614 (25,802) | 877 (1,443) | 17.8 (17.9) | 4 (19) | 2 (3) | 3 (10) | 1 (4) | 76 (121) | 67 (84) |
+| MODELS, new | 13,268 | 736 | 18.0 | 3 | 0 | 1 | 3 | 34 | 52 |
+| WINDOWS, new | 2,415 | 134 | 18.0 | 1 | 0 | 0 | 0 | 7 | 11 |
+| GBDT, new | 1,090 | 55 | 19.8 | 0 | 0 | 0 | 0 | 2 | 5 |
+| RUNNER | 2,248 (2,031) | 122 (108) | 18.4 (18.8) | 3 (5) | 0 (2) | 0 (0) | 0 (0) | 4 (4) | 0 (0) |
+| STATE-WORKFLOW | 4,010 (3,663) | 238 (216) | 16.8 (17.0) | 3 (4) | 1 (1) | 0 (0) | 0 (0) | 14 (14) | 5 (3) |
+| DIAGNOSTICS | 9,306 (9,482) | 504 (455) | 18.5 (20.8) | 1 (45) | 0 (15) | 6 (9) | 0 (0) | 31 (23) | 18 (18) |
+| DATA-QUALITY | 7,246 (7,250) | 404 (395) | 17.9 (18.4) | 0 (8) | 0 (4) | 6 (7) | 2 (2) | 18 (15) | 12 (12) |
+| GRAM | 6,177 (5,967) | 350 (335) | 17.6 (17.8) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 9 (9) | 14 (14) |
+| OUTPUTS | 693 (458) | 53 (28) | 13.1 (16.4) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 28 (28) | 1 (0) |
+| REGIMES | 4,566 (4,339) | 261 (238) | 17.5 (18.2) | 2 (6) | 0 (1) | 0 (2) | 2 (1) | 22 (21) | 0 (0) |
+| PERFORMANCE, whole | 28,161 (27,924) | 1,585 (1,574) | 17.8 (17.7) | 39 (39) | 5 (5) | 110 (105) | 45 (45) | 150 (150) | 3 (2) |
+| EXTENDING | 3,400 (3,391) | 205 (205) | 16.6 (16.5) | 9 (8) | 1 (0) | 0 (0) | 6 (6) | 15 (15) | 0 (0) |
+| TESTING | 10,215 (9,934) | 677 (649) | 15.1 (15.3) | 6 (8) | 1 (5) | 4 (5) | 0 (0) | 51 (47) | 0 (0) |
+| RELEASE-READINESS | 10,904 (10,442) | 685 (651) | 15.9 (16.0) | 3 (9) | 0 (3) | 7 (7) | 16 (17) | 42 (43) | 0 (0) |
+| WRITING | 6,008 (5,724) | 346 (324) | 17.4 (17.7) | 13 (13) | 0 (1) | 13 (12) | 12 (11) | 15 (15) | 0 (0) |
+| docs/README.md | 157 (151) | 11 (11) | 14.3 (13.7) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 3 (3) | 0 (0) |
+| CONTRIBUTING | 1,096 (977) | 81 (76) | 13.5 (12.9) | 0 (0) | 0 (0) | 0 (0) | 2 (3) | 0 (0) | 0 (0) |
+| llms.txt | 1,222 (1,160) | 74 (71) | 16.5 (16.3) | 7 (7) | 2 (2) | 1 (1) | 3 (3) | 1 (1) | 1 (1) |
+
+The README lost 10,188 prose words: the model entries, the windows and
+`po.gbdt`'s section went to MODELS, WINDOWS and GBDT (16,773 words there),
+and the detail of the running sums, *Against scikit-learn*, the pin's
+procedure and *Testing*'s tables went to the guides that held them. Its
+python blocks fell from 84 to 67, and the recipes among them, a block
+followed by what it prints, rose from 2 to 57. PERFORMANCE's whole-file
+counts barely move: only its guide part was rewritten, and its records
+stay as written.
+
+`scripts/doc_review.py counts`, the hits of each numbered count after the
+pass (before, section 6, in brackets), each still to be read:
+
+| document | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| README | 0 (0) | 0 (0) | 3 (14) | 9 (17) | 0 (0) | 1 (0) | 0 (2) | 0 (0) | 11 (15) | 11 (26) | 1 (5) |
+| MODELS, new | 0 | 0 | 3 | 11 | 0 | 0 | 0 | 0 | 3 | 3 | 0 |
+| WINDOWS, new | 0 | 0 | 2 | 3 | 0 | 0 | 1 | 0 | 0 | 2 | 0 |
+| GBDT, new | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 2 |
+| RUNNER | 0 (2) | 0 (0) | 1 (1) | 2 (1) | 0 (0) | 0 (1) | 0 (1) | 0 (0) | 0 (1) | 4 (4) | 0 (0) |
+| STATE-WORKFLOW | 5 (6) | 0 (0) | 5 (6) | 11 (11) | 0 (0) | 0 (1) | 0 (0) | 0 (0) | 4 (6) | 5 (5) | 3 (3) |
+| DIAGNOSTICS | 0 (0) | 0 (0) | 0 (8) | 6 (7) | 0 (0) | 0 (0) | 3 (3) | 0 (0) | 3 (3) | 2 (3) | 0 (0) |
+| DATA-QUALITY | 0 (0) | 0 (0) | 1 (1) | 6 (6) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 1 (1) | 2 (2) | 0 (0) |
+| GRAM | 0 (0) | 0 (0) | 0 (0) | 9 (8) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 3 (2) | 0 (0) |
+| OUTPUTS | 0 (20) | 0 (0) | 0 (0) | 2 (2) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) |
+| REGIMES | 0 (1) | 0 (0) | 4 (9) | 5 (2) | 0 (0) | 0 (2) | 0 (1) | 0 (0) | 0 (1) | 1 (1) | 2 (1) |
+| PERFORMANCE, whole | 10 (10) | 0 (0) | 67 (66) | 25 (25) | 0 (0) | 17 (14) | 9 (9) | 0 (0) | 25 (21) | 10 (10) | 6 (6) |
+| EXTENDING | 6 (6) | 0 (0) | 10 (10) | 7 (7) | 0 (0) | 2 (2) | 1 (1) | 0 (0) | 1 (1) | 2 (2) | 1 (1) |
+| TESTING | 2 (5) | 0 (1) | 15 (16) | 23 (22) | 0 (0) | 1 (2) | 1 (1) | 0 (0) | 5 (8) | 5 (5) | 3 (7) |
+| RELEASE-READINESS | 0 (1) | 1 (2) | 9 (18) | 20 (17) | 0 (0) | 3 (6) | 4 (5) | 0 (0) | 15 (17) | 1 (1) | 20 (21) |
+| WRITING | 0 (0) | 0 (0) | 8 (9) | 6 (7) | 3 (3) | 5 (7) | 2 (2) | 1 (1) | 19 (19) | 1 (1) | 9 (8) |
+| docs/README.md | 2 (2) | 0 (0) | 0 (0) | 1 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 0 (0) | 1 (1) |
+| CONTRIBUTING | 0 (3) | 0 (0) | 4 (7) | 2 (2) | 0 (0) | 0 (0) | 1 (1) | 0 (0) | 0 (0) | 0 (0) | 0 (1) |
+| llms.txt | 4 (4) | 0 (0) | 5 (5) | 3 (3) | 0 (0) | 0 (0) | 1 (1) | 0 (0) | 0 (0) | 2 (2) | 0 (1) |
+
+The links from the README to each guide, by `grep` after the pass (before
+in brackets): MODELS 45, DIAGNOSTICS 19 (17), PERFORMANCE 16 (22), GRAM 11
+(1), WINDOWS 10, RELEASE-READINESS 5 (3), DATA-QUALITY 3 (2), RUNNER 3
+(4), TESTING 3 (2), OUTPUTS 2 (24), STATE-WORKFLOW 2 (2), GBDT, REGIMES,
+EXTENDING and WRITING 1 each (REGIMES 11), VALIDATION 0 (5). OUTPUTS and
+REGIMES fell because the model entries that linked them moved to MODELS.
+Every guide to using the library now has a README section that links it
+first, sits in the contents table and shows the capability with a recipe,
+which V4 holds.
+
+**The assembler's verdict:** the README is half its length in prose and a
+casual reader reaches every feature page from a section named for the
+task. Its recipes, 57 where there were 2, print what each capability does
+on data with a planted answer, and V5 holds every printed line, integers
+exactly. The cold read found what the writers' own passes could not: a
+fact stated in two writers' words with two numbers (bocpd's `p_change`,
+the test counts, the `--predict` flags), terms used before the section
+that introduces them, and counts that had drifted in the maintainers'
+guides. Those with one answer are fixed; the ones that need a measurement
+or a decision are left for the coordinator. The user's verdict is pending.
 
 **Verdict:** pending.
 
