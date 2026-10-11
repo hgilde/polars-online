@@ -92,7 +92,7 @@ def test_every_model_exports_without_losing_a_value(name):
     inf-capable config float fails here until its field is annotated."""
     bank = po.ModelBank([EVERY_MODEL[name]])
     bank.fit_predict(_df())
-    text = bank.to_json()
+    text = bank.write_json()
     json.loads(text)  # and it is strict JSON, not a relaxed dialect
 
 
@@ -101,7 +101,7 @@ def test_a_non_finite_is_tagged_rather_than_nulled():
     documented setting, and it lands in the state's own ``decay``."""
     bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
-    doc = json.loads(bank.to_json())
+    doc = json.loads(bank.write_json())
 
     assert doc["specs"][0]["half_life"] == "inf", "the spec's own field"
 
@@ -150,7 +150,7 @@ def test_a_column_that_never_held_a_value_exports(how):
         df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("w"))
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
-    doc = json.loads(bank.to_json())
+    doc = json.loads(bank.write_json())
     empty = [c for c in _column_stats(doc) if c["count"] == 0]
     assert empty, "a column with no value is in the summary"
     assert all(c["min"] == "inf" and c["max"] == "-inf" for c in empty), empty
@@ -174,7 +174,7 @@ def test_a_coefficient_no_solve_gave_exports_tagged():
     )
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
-    doc = json.loads(bank.to_json())
+    doc = json.loads(bank.write_json())
     # Group a closed, undrained: one row per Gram, `z`'s on its own.
     coefs = [row["coef"] for row in doc["closed"]]
     assert ["nan"] * 3 in coefs, coefs
@@ -190,11 +190,11 @@ def test_the_export_is_the_state_and_not_a_summary():
     ]
     bank = po.ModelBank(specs)
     bank.fit_predict(_df())
-    doc = json.loads(bank.to_json())
+    doc = json.loads(bank.write_json())
 
     assert doc["schema_version"] == po.schema_version()
     assert doc["specs"] == json.loads(json.dumps(bank.specs))
-    assert doc["rows_fed"] == bank.rows_fed()
+    assert doc["rows_fed"] == bank.rows_fed
     assert len(doc["states"]) == len(specs), "one block per spec"
     for block, spec in zip(doc["states"], specs, strict=True):
         held = bank.groups(spec["name"]).height
@@ -204,7 +204,7 @@ def test_the_export_is_the_state_and_not_a_summary():
 def test_pretty_and_compact_carry_the_same_thing():
     bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
-    pretty, compact = bank.to_json(), bank.to_json(pretty=False)
+    pretty, compact = bank.write_json(), bank.write_json(pretty=False)
     assert len(compact) < len(pretty)
     assert json.loads(pretty) == json.loads(compact)
 
@@ -213,8 +213,8 @@ def test_save_json_writes_what_to_json_returns(tmp_path):
     bank = po.ModelBank([po.spec.ewridge("s", half_life=INF, **B)])
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
-    bank.save_json(p)
-    assert json.loads(p.read_text(encoding="utf-8")) == json.loads(bank.to_json())
+    bank.write_json(p)
+    assert json.loads(p.read_text(encoding="utf-8")) == json.loads(bank.write_json())
 
 
 def test_the_export_does_not_disturb_the_state(tmp_path):
@@ -224,7 +224,7 @@ def test_the_export_does_not_disturb_the_state(tmp_path):
     df = _df()
     bank.fit_predict(df)
     before = bank.save_bytes()
-    bank.to_json()
+    bank.write_json()
     assert bank.save_bytes() == before
 
 
@@ -234,6 +234,6 @@ def test_json_is_an_export_and_not_a_load_format(tmp_path):
     bank = po.ModelBank([po.spec.ewridge("s", half_life=20.0, **B)])
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
-    bank.save_json(p)
+    bank.write_json(p)
     with pytest.raises(ValueError, match="not a polars-online bank state file"):
         po.ModelBank.load(p)

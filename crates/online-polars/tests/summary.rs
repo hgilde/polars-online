@@ -165,12 +165,23 @@ fn f64s(df: &DataFrame, name: &str) -> Vec<Option<f64>> {
     df.column(name).unwrap().f64().unwrap().iter().collect()
 }
 
+/// A count column, an `Int64` as every count of every frame, read back as
+/// the `u64` the bank keeps it in.
 fn u64s(df: &DataFrame, name: &str) -> Vec<Option<u64>> {
-    df.column(name).unwrap().u64().unwrap().iter().collect()
+    df.column(name)
+        .unwrap()
+        .i64()
+        .unwrap()
+        .iter()
+        .map(|v| v.map(|v| u64::try_from(v).expect("a count is never negative")))
+        .collect()
 }
 
+/// A text column -- or an `Enum`, as `describe`'s `role` is -- as strings.
 fn strs(df: &DataFrame, name: &str) -> Vec<Option<String>> {
     df.column(name)
+        .unwrap()
+        .cast(&DataType::String)
         .unwrap()
         .str()
         .unwrap()
@@ -368,16 +379,17 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 "weight_sum",
                 "clock_min",
                 "clock_max",
-                "last_clock",
+                "clock_last",
                 "session_changes",
                 "clock_backwards",
                 "resets",
+                "solve_failures",
                 // The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
                 "settled_frac",
                 "weight_sum_settled",
                 "error_inflation",
-                "min_support_coef",
-                "min_support_coef_feature",
+                "support_coef_min",
+                "support_coef_min_feature",
                 "n_coef"
             ]
         );
@@ -390,7 +402,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 "column",
                 "role",
                 "count",
-                "null_count",
+                "unusable_count",
                 "mean",
                 "std",
                 "min",
@@ -473,7 +485,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 .find(|(k, _, _)| k.as_str() == Some(g))
                 .unwrap();
             assert_eq!(
-                f("last_clock"),
+                f("clock_last"),
                 last_clock.map(ClockValue::seconds),
                 "{what}: last_clock"
             );
@@ -500,7 +512,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
             }
             assert_eq!(d.height(), expect.len(), "{what}: describe rows\n{d}");
             let (cols, roles) = (strs(&d, "column"), strs(&d, "role"));
-            let (count, nulls) = (u64s(&d, "count"), u64s(&d, "null_count"));
+            let (count, nulls) = (u64s(&d, "count"), u64s(&d, "unusable_count"));
             let (mean, std, min, max) = (
                 f64s(&d, "mean"),
                 f64s(&d, "std"),
@@ -540,7 +552,7 @@ fn summary_and_describe_are_the_frame_s_numbers() {
     let x0 = d
         .filter(&d.column("column").unwrap().str().unwrap().equal("x0"))
         .unwrap();
-    assert!(u64s(&x0, "null_count")[0].unwrap() >= 4 * 3);
+    assert!(u64s(&x0, "unusable_count")[0].unwrap() >= 4 * 3);
     assert!(
         f64s(&x0, "max")[0].unwrap() <= 1.0,
         "1e300 and inf were not counted"
@@ -694,7 +706,7 @@ fn predict_moves_nothing_and_an_unseen_group_or_empty_bank_is_empty() {
     let empty = Bank::new(specs).unwrap();
     let s = empty.summary(0, None).unwrap();
     assert_eq!(s.height(), 0);
-    assert_eq!(s.width(), 19);
+    assert_eq!(s.width(), 20);
     let d = empty.describe(0, None).unwrap();
     assert_eq!(d.height(), 0);
     assert_eq!(d.width(), 9);
@@ -727,7 +739,7 @@ fn a_group_of_skipped_rows_is_fed_and_not_processed() {
             .filter(&d.column("column").unwrap().str().unwrap().equal("x0"))
             .unwrap();
         assert_eq!(u64s(&x0, "count")[0], Some(0));
-        assert_eq!(u64s(&x0, "null_count")[0], Some(5));
+        assert_eq!(u64s(&x0, "unusable_count")[0], Some(5));
         assert_eq!(f64s(&x0, "mean")[0], None);
         assert_eq!(f64s(&x0, "min")[0], None);
     }
@@ -1291,7 +1303,7 @@ fn the_support_notice_waits_for_a_settled_stream() {
     let min = flat
         .summary(0, None)
         .unwrap()
-        .column("min_support_coef")
+        .column("support_coef_min")
         .unwrap()
         .f64()
         .unwrap()

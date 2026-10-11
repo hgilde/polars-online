@@ -85,7 +85,7 @@ def demeaned(df: pl.DataFrame) -> dict[str, Any]:
             dxt = np.vstack([dxt, x[rows] - x[rows].mean(axis=0)])
             dy = np.concatenate([dy, y[rows] - y[rows].mean()])
         out[name] = {
-            "cross_centred": dxt.T @ dy / len(dy),
+            "cross_centered": dxt.T @ dy / len(dy),
             "var": dy @ dy / len(dy),
             "weight": float(len(dy)),
             "parts": len(np.unique(b[own])),
@@ -111,9 +111,9 @@ class TestMergeWithin:
         assert np.array_equal(g["means_by_target"], np.tile(g["means"], (2, 1)))
         assert np.array_equal(g["target_means"], [0.0, 0.0])
         for t, name in enumerate(["y", "y2"]):
-            close(g["cross_centred"][t][1:], want[name]["cross_centred"])
-            assert np.array_equal(g["cross_moments"][t], g["cross_centred"][t])
-            assert g["cross_centred"][t][0] == 0.0
+            close(g["cross_centered"][t][1:], want[name]["cross_centered"])
+            assert np.array_equal(g["cross_moments"][t], g["cross_centered"][t])
+            assert g["cross_centered"][t][0] == 0.0
             close(g["target_vars"][t], want[name]["var"])
             assert g["target_weights"][t] == want[name]["weight"]
             assert g["target_n_kish"][t] == pytest.approx(want[name]["weight"], rel=1e-12)
@@ -173,7 +173,7 @@ class TestMergeWithin:
         gaps = {}
         for t, name in enumerate(["y", "y2"]):
             b = pg.solve(g, target=t)
-            pairwise = np.linalg.solve(want["comoments"], want[name]["cross_centred"])
+            pairwise = np.linalg.solve(want["comoments"], want[name]["cross_centered"])
             close(b[1:], pairwise, tol=1e-10)
             y = df[name].to_numpy().astype(float)
             own = ~np.isnan(y)
@@ -202,16 +202,22 @@ class TestMergeWithin:
             np.testing.assert_allclose(
                 pg._comoments(np, got), whole["comoments"], rtol=2e-7, atol=1e-6
             )
-        for key in ("cross_centred", "target_vars", "target_weights", "target_within_parts"):
+        for key in ("cross_centered", "target_vars", "target_weights", "target_within_parts"):
             assert np.array_equal(got[key], whole[key]), key
 
     def test_one_part_is_its_own_moments_about_its_means(self):
         part = blocks(frame(seed=3))[0]
         got = pg.merge([part], within=True)
-        for key in ("comoments", "cross_centred", "target_vars", "target_weights", "target_n_kish"):
+        for key in (
+            "comoments",
+            "cross_centered",
+            "target_vars",
+            "target_weights",
+            "target_n_kish",
+        ):
             assert np.array_equal(got[key], part[key]), key
         assert got["weight_sum"] == part["weight_sum"] and got["n_kish"] == part["n_kish"]
-        assert np.array_equal(got["cross_moments"], part["cross_centred"])
+        assert np.array_equal(got["cross_moments"], part["cross_centered"])
         assert got["within_parts"] == 1 and got["target_within_parts"].tolist() == [1, 1]
         # The same slopes as the part's own fit, and no intercept.
         mine, its = pg.solve(got), pg.solve(part)
@@ -243,7 +249,7 @@ class TestMergeWithin:
             "weight_sum",
             "n_kish",
             "comoments",
-            "cross_centred",
+            "cross_centered",
             "target_weights",
             "target_vars",
             "target_n_kish",
@@ -259,7 +265,7 @@ class TestMergeWithin:
         without = pg.merge(grams[:3] + grams[4:], within=True)
         assert every["weight_sum"] == without["weight_sum"] + grams[3]["weight_sum"]
         assert not np.allclose(every["comoments"], without["comoments"])
-        for key in ("cross_centred", "target_vars", "target_weights", "target_n_kish"):
+        for key in ("cross_centered", "target_vars", "target_weights", "target_n_kish"):
             assert np.array_equal(every[key][1], without[key][1]), key
         assert every["target_within_parts"].tolist() == [6, 5]
         assert without["target_within_parts"].tolist() == [5, 5]
@@ -445,7 +451,7 @@ class TestTargetSigns:
 
     def test_every_sign_plus_one_is_no_signs(self):
         grams = blocks(frame(seed=16))
-        for case in (dict(ridge=0.1), dict(path={"max_steps": 4})):
+        for case in (dict(ridge=0.1), dict(path={"max_iter": 4})):
             plain = pg.solve_subsets(grams, SUBSETS, within=True, **case)
             (signed,) = pg.solve_subsets(
                 grams, SUBSETS, within=True, target_signs=np.ones((6, 1)), **case

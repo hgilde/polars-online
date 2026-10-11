@@ -291,7 +291,7 @@ class TestDefinitions:
 
     @staticmethod
     def state(bank: po.ModelBank) -> dict:
-        model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]
+        model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]
         return model["Micro"]
 
     @staticmethod
@@ -832,8 +832,9 @@ class TestEdgeCases:
         assert (last[:, 3] <= 0.1 * math.sqrt(2) * (1 + 1e-12)).all()
         # The layout has no fixed positions: nothing to name, nothing to index.
         assert po.spec.coef_fields(s).height == 0
+        assert po.spec.coef_index(s).height == 0
         with pytest.raises(ValueError, match="micro's coef is one .* row per established summary"):
-            po.spec.coef_index(s)
+            po.ModelBank([s]).coef("m")
         flat = po.ModelBank([s]).fit_predict(frame(X)).online.unnest([s])
         assert "coef" in flat.columns and flat["coef"].dtype == pl.List(pl.Float64)
         assert flat["coef"].to_list() == coef.to_list()
@@ -1074,7 +1075,7 @@ class TestTheCheckpointClock:
         for kw in ({}, {"prune_every": "5m"}, {"max_rows_between_prunes": 20}):
             bank = po.ModelBank([self.clocked(**kw)])
             bank.fit_predict(df.head(50))
-            assert '"prune_every"' in bank.to_json(), kw
+            assert '"prune_every"' in bank.write_json(), kw
 
     def test_a_cadence_in_the_wrong_kind_or_below_zero_is_refused(self):
         with pytest.raises(ValueError, match="prune_every is a plain number"):

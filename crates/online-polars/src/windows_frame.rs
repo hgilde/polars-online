@@ -2476,7 +2476,9 @@ mod tests {
         // with a memory of their own, 56 for its parts (d)-(h), 57 for
         // review round 6's tails and scored inflation, 59 for task 233's
         // smallest change in an audit, 60 for task 232's Newey-West sums
-        // and 61 for task 244's names, the windows state unchanged.
+        // and 61 for review round 7's residual lag products on a quantile
+        // fit (A-2), task 244's `bias` in an `ew_cov` and its 1.0 names, the
+        // windows state unchanged.
         assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 61));
     }
 

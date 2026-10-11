@@ -558,6 +558,14 @@ fn coef_is_the_output_s_last_coef_per_group() {
     let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
     let out = bank.fit_predict(&df).unwrap().remove(0);
     let coef = out.struct_().unwrap().field_by_name("coef").unwrap();
+    // An `Array` of the layout's width, read through its list form.
+    assert_eq!(
+        coef.dtype(),
+        &DataType::Array(Box::new(DataType::Float64), 3)
+    );
+    let coef = coef
+        .cast(&DataType::List(Box::new(DataType::Float64)))
+        .unwrap();
     let coef = coef.list().unwrap();
     let gs = df.column("g").unwrap().str().unwrap();
 
@@ -651,20 +659,23 @@ fn coef_fields_name_every_slot_of_every_list() {
     for (i, f) in fields.iter().enumerate() {
         assert_eq!(f.position, i % per_instance);
         assert_eq!(f.field, format!("coef@h{}", f.half_life.unwrap() as i64));
+        assert_eq!(f.field, format!("coef{}", f.instance));
+        let target = f
+            .target
+            .as_deref()
+            .expect("a regression's slot is a target");
         let pred = preds
             .iter()
             .find(|m| {
-                m.target.as_deref() == Some(f.target.as_str())
+                m.target.as_deref() == Some(target)
                     && m.ridge == f.ridge
                     && m.feature_set == f.feature_set
                     && m.half_life == f.half_life
+                    && m.instance.as_deref() == Some(f.instance.as_str())
             })
             .unwrap_or_else(|| panic!("no pred field for {f:?}"));
-        let suffix = pred
-            .field
-            .strip_prefix(&format!("pred_{}", f.target))
-            .unwrap();
-        assert_eq!(f.name, format!("coef_{}_{}{suffix}", f.target, f.term));
+        let suffix = pred.field.strip_prefix(&format!("pred_{target}")).unwrap();
+        assert_eq!(f.name, format!("coef_{target}_{}{suffix}", f.term));
     }
     let terms: Vec<_> = fields[..3].iter().map(|f| f.term.as_str()).collect();
     assert_eq!(terms, ["intercept", "x0", "x1"]);

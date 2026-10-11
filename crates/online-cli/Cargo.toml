@@ -17,7 +17,7 @@ description = "Streaming runner for online-polars model banks: parquet, ipc, csv
 publish = false
 
 [[bin]]
-name = "online"
+name = "polars-online"
 path = "src/main.rs"
 
 

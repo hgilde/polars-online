@@ -52,16 +52,17 @@ class TestEveryJobIsBounded:
 
     #: Jobs allowed past two hours, with their cap. The weekly mutation
     #: shards run on Linux, only while the repository is public or by hand,
-    #: and stop cargo-mutants well inside the limit; four hours is the
-    #: backstop for a slow week (task 155).
-    LONGER = {("mutants.yml", "weekly"): 240}
+    #: and stop cargo-mutants well inside the limit (task 155); 350 minutes
+    #: since 2026-10-11, inside GitHub's 360, as room for a slow week.
+    LONGER = {("mutants.yml", "weekly"): 350}
 
     #: Jobs allowed past two hours on every push, on Linux: the changed
-    #: lines' mutation shards, whose stop is 160 minutes since 2026-10-09
-    #: (the user: "Yes mutants sharding"). The repository is public, so a
-    #: longer job costs nothing; a shard stopped short leaves mutants
-    #: untested and fails its report.
-    LONGER_ON_PUSH = {("mutants.yml", "changed"): 180}
+    #: lines' mutation shards, whose stop is 300 minutes since 2026-10-11
+    #: (the user: "Ensure that the GitHub mutants run has plenty of headroom
+    #: not to fail its next run"; the slowest shard of the push of 5cb8f7e
+    #: took 98). The repository is public, so a longer job costs nothing; a
+    #: shard stopped short leaves mutants untested and fails its report.
+    LONGER_ON_PUSH = {("mutants.yml", "changed"): 330}
 
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_job_has_a_timeout(self, name):
@@ -329,6 +330,53 @@ class TestMutationTesting:
         "changed": ("changed-report", "mutants-changed-"),
         "weekly": ("weekly-report", "mutants-shard-"),
     }
+
+    #: The memory every mutant's test processes may use together on a
+    #: GitHub runner (16 GiB): the rest is the runner's, so a mutant that
+    #: allocates without end fails alone instead of shutting the runner
+    #: down. The push of 5cb8f7e lost 8 of 111 shards that way.
+    MUTANTS_MEMORY = 12 * 2**30
+    #: online-core's largest test binary peaked at 497 MiB (2026-10-11, the
+    #: extended tier, four test threads); a cap under twice that would fail
+    #: the baseline.
+    TEST_PEAK = 497 * 2**20
+
+    @pytest.mark.parametrize("job", ["changed", "weekly"])
+    def test_every_mutants_test_process_is_capped_in_memory(self, job):
+        """Each shard runs its test binaries under ``prlimit --data`` through
+        cargo's test runner, and its cap times the mutants it runs at once
+        (``-j``) stays inside the runner, with room above the measured peak."""
+        spec = self.MUT["jobs"][job]
+        runner = spec.get("env", {}).get("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", "")
+        m = re.fullmatch(r"prlimit --data=(\d+) --", runner)
+        assert m, f"{job}: the test runner is {runner!r}, not a prlimit --data cap"
+        cap = int(m.group(1))
+        script = next(
+            s["run"]
+            for s in spec["steps"]
+            if "cargo mutants" in s.get("run", "") and "timeout" in s["run"]
+        )
+        jobs = int(re.search(r"-j (\d+)", script).group(1))
+        assert cap * jobs <= self.MUTANTS_MEMORY, (job, cap, jobs)
+        assert cap >= 4 * self.TEST_PEAK, (job, cap)
+
+    @pytest.mark.parametrize("job", ["changed", "weekly"])
+    def test_every_shard_stops_with_room_before_its_job_is_killed(self, job):
+        """cargo-mutants is stopped (SIGINT, then the kill two minutes on)
+        at least 25 minutes before the job's own limit, which leaves the
+        setup (about 3 minutes and a 3-minute baseline) and the upload the
+        room they need; and the job's limit stays inside GitHub's six hours."""
+        spec = self.MUT["jobs"][job]
+        script = next(
+            s["run"]
+            for s in spec["steps"]
+            if "cargo mutants" in s.get("run", "") and "timeout" in s["run"]
+        )
+        stop = int(re.search(r"--kill-after=2m (\d+)m cargo mutants", script).group(1))
+        assert stop + 2 + 23 <= spec["timeout-minutes"] <= 360, (job, stop, spec["timeout-minutes"])
+        # The push of 5cb8f7e's slowest changed-lines shard took 98 minutes.
+        if job == "changed":
+            assert stop >= 3 * 98, stop
 
     #: The job that lists the changed lines' mutants and sizes their pass
     #: (task 219), and the shard count and indices it hands the shards.

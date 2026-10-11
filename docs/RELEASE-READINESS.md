@@ -329,7 +329,7 @@ measurement:
 | the ceiling, `<3` | the Python suite on `2.0.0rc1`, and the blocking leg of `release.yml` on the newest version in range, run in every dispatched release before any tag exists | [Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) |
 | what Polars itself promises | nothing for `ModelBank`, the IO plugin or the serialized form of an expression; the Arrow PyCapsule output is Arrow's contract | [Which interfaces carry a promise](#which-interfaces-carry-a-promise) |
 | the Rust `polars` | 0.55.2, pinned by `Cargo.toml` and linked into the wheel, so it never meets the user's | [the matrix](#statically-linking-polars-will-break-users-on-other-versions) |
-| the `online` CLI | the Rust `polars` 0.55.2 alone: it never touches py-polars | [The other failure](#the-other-failure-is-the-canarys-own-hygiene) |
+| the `polars-online` CLI | the Rust `polars` 0.55.2 alone: it never touches py-polars | [The other failure](#the-other-failure-is-the-canarys-own-hygiene) |
 | NumPy, the optional extra | `numpy>=1.26`: the newest NumPy blocks a release | [NumPy, the one optional dependency](#numpy-the-one-optional-dependency) |
 
 ### The floor and the ceiling
@@ -786,7 +786,7 @@ assertion to hold on both.
 
 **That is a narrowing of a documented hazard, not a regression.** The
 dangerous case is the state being written when the output was not, and 2.0
-does that less often. The `online` CLI remains the transactional call
+does that less often. The `polars-online` CLI remains the transactional call
 either way.
 
 #### The other failure is the canary's own hygiene
@@ -821,7 +821,7 @@ The 5 deselected are the 3 `pins` and 2 `soak`. `pins` asserts properties
 recorded in a generated document. So it cannot pass on an unpinned run, by
 construction, and that is the canary's design rather than a gap.
 
-The `online` CLI is unaffected either way: it links the Rust `polars`
+The `polars-online` CLI is unaffected either way: it links the Rust `polars`
 0.55.2 and never touches py-polars, so a py-polars major cannot reach it.
 
 #### What 2.0 adds that this library could use
@@ -964,16 +964,16 @@ of its lines carry no promise:
 | the defaults that resolve in Rust, `min_weight`'s per-kind rule included | `[resolved defaults]`, read off the bank's own build of each kind (`_polars_online.resolved_defaults`); `tests/test_spec_defaults.py` holds the README's warm-up tables to it |
 | `ModelBank`'s methods, `__init__` included | `[ModelBank]` |
 | the `.online` namespace | `[frame namespaces]` |
-| the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
+| the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `audit()`, `check()`, `solve_failures()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
 | the closed-groups frame's columns | `[closed_groups columns]`, each column with its dtype, in order |
 | the helper modules' functions, each with its signature | `[helper modules]` |
 | `po.stream.embargo`'s two columns, `_online_role` and `_online_role_weight` | `[helper modules]`, as the default of `embargo`'s `role`, the first column's name, which the second's extends; `tests/test_label_delay.py` reads both |
-| output field names | `[output field grammar]` |
+| output field names and their dtypes | `[output field grammar]`, every `emit_*` turned on in one spec |
 | the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |
 | the TOML config keys: the run config's, a spec's, and each model type's | `[toml keys]`, read from serde's refusal of a key a table has not got |
-| the CLI's flags, and whether each takes a value | `[cli flags]`, from `online --help` |
+| the CLI's flags, and whether each takes a value | `[cli flags]`, from `polars-online --help` |
 | the CLI's exit status: 0, 1 for a refusal or a run error, 2 for a usage error | `docs/RUNNER.md`'s *Exit status* and a CLI test, not the snapshot |
-| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
+| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `POLARS_ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
 
 **From 1.0, a changed default or meaning needs a major release, and a fix
 to numbers that were wrong a minor one**, as decided on 2026-10-06. A number is wrong when it disagrees with the model's stated
@@ -1281,12 +1281,12 @@ twelve classes, counted on 2026-10-08:
 
 | class | what it asserts |
 |---|---|
-| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are cancelled, and releases queue instead. The one longer job is the weekly mutation shard, at four hours, on Linux and only while public or by hand |
+| `TestEveryJobIsBounded` | every job in every workflow has a timeout of at most two hours, and every workflow a concurrency group; superseded runs are cancelled, and releases queue instead. The longer jobs are the mutation shards, on Linux: the changed lines' at 330 minutes on every push, the weekly pass's at 350 and only while public or by hand |
 | `TestTheMatrixDefaultsToCheap` | lint stays on Linux and never builds the extension; the expensive runners are opt-in; the visibility test fails safe on a missing field; macOS is reachable only by a manual dispatch or the repository being public |
 | `TestStepOrderingThatHasAlreadyBrokenCI` | disk is freed before the cache is restored, rustflags are set before anything compiles, and the cache survives a failing job |
 | `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
 | `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
-| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need: a first job lists them, with the scope, the diff and the pinned cargo-mutants the shards use, and takes a shard for every thirty (forty until 2026-10-09), at most four-fifths of the slowest shard measured, each stopped at 160 minutes, and the report expects that many; each push's pass has a concurrency group of its own, so no later push cancels or replaces it, while a pull request's newer commit cancels its older; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer or a shard that sent nothing |
+| `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need: a first job lists them, with the scope, the diff and the pinned cargo-mutants the shards use, and takes a shard for every thirty (forty until 2026-10-09), at most four-fifths of the slowest shard measured, each stopped at 300 minutes (three times the slowest shard measured, 98) with every test process capped in memory so a runaway mutant cannot shut the runner down, and the report expects that many; each push's pass has a concurrency group of its own, so no later push cancels or replaces it, while a pull request's newer commit cancels its older; the weekly pass runs only while public or by hand, and reports its survivors; every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given, and its report fails on a run that tested fewer or a shard that sent nothing |
 | `TestTheRustTestsLinkNoPython` | every workflow and the local gate leave `online-py` out of `cargo test`, so no test binary links libpython |
 | `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
 | `TestActionsArePinnedToCommits` | every external action is pinned to a commit, with the version it names in a comment |

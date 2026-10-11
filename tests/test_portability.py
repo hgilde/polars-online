@@ -301,12 +301,12 @@ class TestOutputSchemaStability:
             half_life=100.0,
         )
         assert po.spec.output_fields(spec) == [
-            "pred_y0__l1",
-            "resid_y0__l1",
-            "pred_y0__l0.01",
-            "resid_y0__l0.01",
-            "pred_y0__l0",
-            "resid_y0__l0",
+            "pred_y0__p1",
+            "resid_y0__p1",
+            "pred_y0__p0.01",
+            "resid_y0__p0.01",
+            "pred_y0__p0",
+            "resid_y0__p0",
             "weight_sum",
             "settled_frac",
             "withheld_reason",
@@ -442,6 +442,7 @@ class TestOutputSchemaStability:
             pl.Float64: "f64",
             pl.Int64: "i64",
             pl.List(pl.Float64): "list[f64]",
+            pl.Array(pl.Float64, 4): "array[f64, 4]",
         }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
@@ -536,17 +537,19 @@ class TestOutputSchemaStability:
         out = po.ModelBank([spec]).fit_predict(df)
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
+        classes = pl.Enum(["neg", "pos"])
+        means = pl.Array(pl.Float64, 4)  # two classes' means of two features
         names = {
             REASON_DTYPE: "enum",
+            classes: "enum",
             pl.Float64: "f64",
-            pl.String: "str",
-            pl.List(pl.Float64): "list[f64]",
+            means: "array[f64, 4]",
         }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
-        per_instance = [pl.String, pl.Float64, pl.Float64, pl.Float64]
-        per_instance += [pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
+        per_instance = [classes, pl.Float64, pl.Float64, pl.Float64]
+        per_instance += [pl.Float64, REASON_DTYPE, means]
         n_instances = len(half_life) if isinstance(half_life, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
@@ -761,7 +764,9 @@ class TestConfigParsing:
         # literal string); this pins that the parser keeps it intact, which is
         # what T-W3 will exercise for real on Windows. The dry run opens the
         # input as the run would (task 160, YB12), and no host has this one,
-        # so it names the path in its refusal, as it read it.
+        # so it names the path in its refusal, as it read it. Off Windows the
+        # path is relative, so it is read from the config's directory (task
+        # 244, C-2), and the refusal names it with that directory in front.
         cfg = tmp_path / "win.toml"
         cfg.write_text(
             'input = "C:\\\\data\\\\in.parquet"\n'
@@ -776,7 +781,10 @@ class TestConfigParsing:
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode != 0, res.stdout
-        assert "input C:\\data\\in.parquet:" in res.stderr, res.stderr[-1500:]
+        want = "input C:\\data\\in.parquet:"
+        if sys.platform != "win32":
+            want = "input " + str(cfg.parent / "C:\\data\\in.parquet") + ":"
+        assert want in res.stderr, res.stderr[-1500:]
 
     def test_paths_with_spaces(self, tmp_path):
         d = tmp_path / "a directory with spaces"

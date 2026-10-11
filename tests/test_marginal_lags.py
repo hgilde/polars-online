@@ -4,7 +4,7 @@
 and says nothing about serial dependence. On a smooth stream consecutive rows
 are nearly the same observation, so `t` is over-dispersed and reports
 significance that is not there. `n_serial` divides by Bartlett's factor
-`1 + 2·Σ ρ_x(ℓ)·ρ_y(ℓ)` and `t_serial` is the statistic against it
+`1 + 2·Σ ρ_x(ℓ)·ρ_y(ℓ)` and `t_stat_serial` is the statistic against it
 (`docs/MARGINAL-LAGS-AND-BINS.md`, E66).
 """
 
@@ -96,7 +96,7 @@ def test_t_claims_significance_that_t_serial_does_not():
     statistic that respects serial dependence should not be large."""
     row = pairs(stream(seed=3), serial_rule="geometric")
     assert abs(row["t_stat"]) > 2.0, "the uncorrected statistic should look significant"
-    assert abs(row["t_serial"]) < 2.0
+    assert abs(row["t_stat_serial"]) < 2.0
     assert row["n_serial"] < row["n_kish"] / 3, "the correction should bite hard at phi=0.9/0.8"
 
 
@@ -105,8 +105,8 @@ def test_over_many_null_streams_t_serial_rejects_at_its_level():
     (``phi_x = 0.9``, ``phi_y = 0.8``, 3,000 rows each, one group each, no
     decay, ``LAGS``, ``"geometric"``). Bartlett's factor is ``1 + 2 * 0.72 /
     (1 - 0.72) = 6.14``, so ``t`` spreads ``sqrt(6.14) = 2.48`` and passes
-    1.96 on far more than 5% of the streams, where ``t_serial`` spreads about
-    1. Measured: ``sd(t)`` 2.52 and 45.5% past 1.96, ``sd(t_serial)`` 1.04 and
+    1.96 on far more than 5% of the streams, where ``t_stat_serial`` spreads about
+    1. Measured: ``sd(t)`` 2.52 and 45.5% past 1.96, ``sd(t_stat_serial)`` 1.04 and
     5.4%, median ``n_serial`` 511 (``3000 / 6.14 = 488``). The bounds are
     about three standard errors of 1,000 draws either side."""
     reps, n = 1000, 3000
@@ -135,7 +135,7 @@ def test_over_many_null_streams_t_serial_rejects_at_its_level():
     table = bank.marginal("m")
     assert table.height == reps
     t = table["t_stat"].to_numpy()
-    ts = table["t_serial"].to_numpy()
+    ts = table["t_stat_serial"].to_numpy()
     assert 2.25 < t.std(ddof=1) < 2.75, t.std(ddof=1)
     assert 0.40 < np.mean(np.abs(t) > 1.96) < 0.51, np.mean(np.abs(t) > 1.96)
     assert 0.95 < ts.std(ddof=1) < 1.13, ts.std(ddof=1)
@@ -172,7 +172,7 @@ def test_one_chunk_and_many_agree():
         pairs(df, chunks=1, serial_rule="geometric"),
         pairs(df, chunks=40, serial_rule="geometric"),
     )
-    for key in ("corr", "n_serial", "t_serial", "phi_x", "phi_y"):
+    for key in ("corr", "n_serial", "t_stat_serial", "phi_x", "phi_y"):
         assert one[key] == many[key], key
     for key in ("lag_corr_xx", "lag_corr_yy", "lag_corr_xy", "lag_corr_yx"):
         assert one[key] == many[key], key
@@ -217,10 +217,10 @@ def test_the_lagged_pair_is_ew_cov_lags_to_the_bit():
     cov = po.spec.ew_cov("c", features=["x", "y"], lags=LAGS, stats=["lag_corr"], **EVENTS)
     last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
     for i, lag in enumerate(LAGS):
-        assert pair["lag_corr_xx"][i] == last[f"lag_corr_x_x_l{lag}"], lag
-        assert pair["lag_corr_yy"][i] == last[f"lag_corr_y_y_l{lag}"], lag
-        assert pair["lag_corr_xy"][i] == last[f"lag_corr_x_y_l{lag}"], lag
-        assert pair["lag_corr_yx"][i] == last[f"lag_corr_y_x_l{lag}"], lag
+        assert pair["lag_corr_xx"][i] == last[f"lag_corr_l{lag}_x_x"], lag
+        assert pair["lag_corr_yy"][i] == last[f"lag_corr_l{lag}_y_y"], lag
+        assert pair["lag_corr_xy"][i] == last[f"lag_corr_l{lag}_x_y"], lag
+        assert pair["lag_corr_yx"][i] == last[f"lag_corr_l{lag}_y_x"], lag
     assert 0.5 < pair["lag_corr_xx"][0] < 1.0, "and the numbers are the process's"
 
 
@@ -318,7 +318,7 @@ def test_without_lags_the_frame_is_what_it_was():
     )
     bank.fit_predict(df)
     cols = bank.marginal("m").columns
-    assert not any(c.startswith(("lag_corr", "n_serial", "t_serial", "phi_")) for c in cols)
+    assert not any(c.startswith(("lag_corr", "n_serial", "t_stat_serial", "phi_")) for c in cols)
 
 
 # --- cross_lags (E70, docs/PLAN.md task 123) ---------------------------------
@@ -356,7 +356,7 @@ def test_cross_lags_keep_the_default_cross_terms_and_change_nothing_else():
         "lag_corr_xx",
         "lag_corr_yy",
         "n_serial",
-        "t_serial",
+        "t_stat_serial",
         "phi_x",
         "phi_y",
         "corr",

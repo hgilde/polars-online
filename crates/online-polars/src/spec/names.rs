@@ -423,10 +423,24 @@ mod tests {
                 crate::spec::word_deprecation_notice("init", "kmeanspp", "k-means++"),
             ]
         );
+        assert_eq!(
+            notices[2],
+            "init = \"kmeanspp\" is deprecated: it was renamed \"k-means++\". It is read as \
+             \"k-means++\" until the next major version, which refuses it"
+        );
         assert_eq!(old[0]["model"]["n_clusters"], 2);
         assert_eq!(old[0]["model"]["init"], "k-means++");
-        // Another model's `k`, and a feature called `k`, are left alone.
+        // Another model's `k`, and a feature called `k`, are left alone, and
+        // so is a word another model's table holds under a renamed word's key.
         assert_eq!(old[1]["model"]["k"], 2);
+        let mut other: serde_json::Value =
+            serde_json::from_str(r#"{"type": "ew_cov", "init": "kmeanspp"}"#).unwrap();
+        assert!(
+            crate::spec::forward_deprecated_in_models(&mut other)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(other["init"], "kmeanspp");
         assert_eq!(old[1]["features"][0], "k");
         let mut bocpd: serde_json::Value =
             serde_json::from_str(r#"{"type": "bocpd", "emission": "robust"}"#).unwrap();
@@ -443,6 +457,111 @@ mod tests {
         assert!(
             err.contains("k was renamed n_components, and both"),
             "{err}"
+        );
+    }
+
+    /// `init`'s words reach the core's seeding rules one for one, and a
+    /// windowed `closed` of Polars' two the model cannot honour is refused
+    /// with its reason.
+    #[test]
+    fn init_words_reach_the_seeding_rules_and_closed_left_says_why() {
+        use online_core::SeedRule;
+        for (word, rule) in [
+            (None, SeedRule::Lloyd),
+            (Some("lloyd"), SeedRule::Lloyd),
+            (Some("k-means++"), SeedRule::Kmeanspp),
+            (Some("farthest"), SeedRule::Farthest),
+            (Some("first"), SeedRule::First),
+        ] {
+            assert_eq!(crate::stream::init_rule(word).unwrap(), rule, "{word:?}");
+        }
+        let e = crate::stream::init_rule(Some("kmeanspp")).unwrap_err();
+        assert!(e.starts_with("init must be one of"), "{e}");
+        let e = serde_json::from_str::<crate::spec::ModelClosed>(r#""left""#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("closed = \"left\" leaves out the current row"),
+            "{e}"
+        );
+    }
+
+    /// `kmeans`' and `micro`'s `scale_floor` floors the variance `standardize`
+    /// measures in, and is refused beside `standardize = false` (task 244,
+    /// P-5); each alone is taken. And `ew_cov`'s row cap is listed under its
+    /// name with the clock cadence it pairs with.
+    #[test]
+    fn scale_floor_needs_standardize_and_the_pca_cap_is_listed() {
+        for model in [
+            r#"{"type": "kmeans", "n_clusters": 2"#,
+            r#"{"type": "micro", "eps": 0.3"#,
+        ] {
+            let spec = |extra: &str| -> crate::spec::Spec {
+                serde_json::from_str(&format!(
+                    r#"{{"name": "m", "model": {model}{extra}}}, "features": ["x0", "x1"],
+                        "half_life": 10.0}}"#
+                ))
+                .unwrap()
+            };
+            let mut s = spec(r#", "standardize": false, "scale_floor": 0.1"#);
+            s.fill_defaults();
+            let e = s.validate().unwrap_err();
+            assert!(
+                e.contains("scale_floor floors the variance"),
+                "{model}: {e}"
+            );
+            for ok in [r#", "standardize": false"#, r#", "scale_floor": 0.1"#] {
+                let mut s = spec(ok);
+                s.fill_defaults();
+                s.validate().unwrap_or_else(|e| panic!("{model}{ok}: {e}"));
+            }
+        }
+        let cov: crate::spec::ModelKind =
+            serde_json::from_str(r#"{"type": "ew_cov", "pca": 1, "max_rows_between_pcas": 5}"#)
+                .unwrap();
+        assert!(
+            cov.row_caps()
+                .contains(&("max_rows_between_pcas", Some(5), "pca_every")),
+            "{:?}",
+            cov.row_caps()
+        );
+    }
+
+    /// `bocpd`'s tempered predictive is `robust_beta` given, above 0 and
+    /// finite, under `covariance_type = "diag"` alone (task 244, P-2).
+    #[test]
+    fn robust_beta_turns_on_the_tempered_predictive_under_diag_alone() {
+        let spec = |extra: &str| -> crate::spec::Spec {
+            let mut s: crate::spec::Spec = serde_json::from_str(&format!(
+                r#"{{"name": "m", "model": {{"type": "bocpd"{extra}}}, "features": ["x0", "x1"]}}"#
+            ))
+            .unwrap();
+            s.fill_defaults();
+            s
+        };
+        let cfg = crate::stream::bocpd_cfg(&spec(r#", "robust_beta": 0.1"#)).unwrap();
+        assert_eq!(cfg.emission, online_core::BocpdEmission::Robust);
+        assert_eq!(cfg.robust_beta, 0.1);
+        let full = crate::stream::bocpd_cfg(&spec(r#", "covariance_type": "full""#)).unwrap();
+        assert_eq!(full.emission, online_core::BocpdEmission::Gaussian);
+        let plain = crate::stream::bocpd_cfg(&spec("")).unwrap();
+        assert_eq!(plain.emission, online_core::BocpdEmission::Diag);
+        for bad in ["0.0", "-0.1"] {
+            let e = crate::stream::bocpd_cfg(&spec(&format!(r#", "robust_beta": {bad}"#)))
+                .map(|_| ())
+                .unwrap_err();
+            assert!(
+                e.contains("robust_beta must be finite and > 0"),
+                "{bad}: {e}"
+            );
+        }
+        let e =
+            crate::stream::bocpd_cfg(&spec(r#", "covariance_type": "full", "robust_beta": 0.1"#))
+                .map(|_| ())
+                .unwrap_err();
+        assert!(
+            e.contains("robust_beta tempers the per-feature predictive"),
+            "{e}"
         );
     }
 

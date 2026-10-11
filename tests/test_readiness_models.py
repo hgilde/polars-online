@@ -67,7 +67,7 @@ def reasons(out: pl.DataFrame) -> list[str | None]:
 
 
 def pred_field(kind: str) -> str:
-    return "pred_y__l0.05" if kind == "lasso" else "pred_y"
+    return "pred_y"
 
 
 # ---------------------------------------------------------------------------
@@ -408,8 +408,8 @@ class TestRobustSupport:
         got = [str(w.message) for w in caught if issubclass(w.category, po.ReadinessWarning)]
         assert len(got) == 1 and "support_coef" in got[0], got
         summary = bank.summary("m")
-        assert summary["min_support_coef"][0] < 0.5
-        assert summary["min_support_coef_feature"][0] in ("x0", "x2")
+        assert summary["support_coef_min"][0] < 0.5
+        assert summary["support_coef_min_feature"][0] in ("x0", "x2")
 
 
 # ---------------------------------------------------------------------------
@@ -555,4 +555,4 @@ class TestTheSupportWarningWaitsForASettledStream:
             warnings.simplefilter("error", po.ReadinessWarning)
             out = unnest(bank.fit_predict(df))
         assert min(out["support_coef"][-1].to_list()[1:]) < 0.5
-        assert bank.summary("m")["min_support_coef"][0] < 0.5
+        assert bank.summary("m")["support_coef_min"][0] < 0.5

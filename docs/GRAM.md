@@ -4,7 +4,8 @@ A least-squares fit reads its rows only through a few running sums: the
 weight of the rows, the columns' means and co-moments, and each target's
 mean, variance and cross-moments with the columns. Together they are the
 fit's *Gram*. `ewridge`, `lasso` and `ew_cov` keep one in their state, and
-`bank.gram()` returns it as numpy arrays. A Gram's size depends on its
+`bank.gram()` returns it as numpy arrays, in a dict typed
+`po.gram.Gram` for a type checker. A Gram's size depends on its
 number of columns alone, so one pass over a stream too large to hold can
 leave a Gram for each week. Every fit after the pass reads those Grams and
 never the rows. It can pool any set of weeks, fit a ridge with its t, walk
@@ -132,7 +133,7 @@ The keys of a Gram, in the names the formulas on this page give them:
 | `means` | the columns' weighted means, `m` |
 | `comoments` | the columns' centred co-moments, `C`, a `k × k` matrix |
 | `cross_moments` | per target, the uncentred moments `E[z y]`, with `z` the columns of a row of data: one row of the array per target. At the intercept, a constant 1, the moment is the target's mean `ȳ` |
-| `cross_centred` | per target, the same moments centred at the columns' means and the target's own mean: `c`, the vector a fit is solved from |
+| `cross_centered` | per target, the same moments centred at the columns' means and the target's own mean: `c`, the vector a fit is solved from |
 | `means_by_target` | per target, the columns' means over the rows the target was present on |
 | `target_weights`, `target_means`, `target_vars`, `target_n_kish` | per target, its weight, its mean, its variance `V` and its Kish size |
 | `lags`, `lag_comoments` | for an `ew_cov(lags=[...])`, the lags and the co-moments of each column with every column that many rows back. `None` for any other spec |
@@ -212,7 +213,7 @@ carries about sixteen, and for a unit-variance column at 1e8 the
 difference keeps none of them. Each row's update adds the row's deviation from the running
 means to the co-moments, as Welford's (1962) recursion does, with weights
 as West (1979) gives them. Each target's cross-moments are kept
-centred at its own means, as `cross_centred`, for the same reason (Chan,
+centred at its own means, as `cross_centered`, for the same reason (Chan,
 Golub and LeVeque 1983).
 
 **`weight_sum` counts weight, and `n_kish` counts rows.** With
@@ -434,7 +435,7 @@ def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]
     gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b  # the target's mean less the fit's
-    spread = g["target_vars"][0] - 2 * b @ g["cross_centred"][0][1:] + b @ g["comoments"][1:, 1:] @ b
+    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
     return spread + gap**2
 
 
@@ -460,7 +461,7 @@ The held-out Gram gives the error the held-out rows give, 1.1337, to
 every digit printed. It is above the in-sample error, 1.0912, as a fit's
 error on rows it never saw is. In `mean_squared_error`, `gap` is the
 target's mean less the fit's, and `spread` the error about it. The spread
-reads `cross_centred`, the form the fit itself is solved from, so the
+reads `cross_centered`, the form the fit itself is solved from, so the
 score keeps its digits at any level.
 
 ### Aging a block before it is pooled
@@ -475,7 +476,7 @@ from its last row to the stream's last row, each step capped at `gap_cap`
 as the bank caps it. Leave the means and co-moments as they are, since
 they are weighted means. Leave `n_kish` too, since it does not change
 when every weight is scaled by one factor. `bank.groups()` gives each
-group's `last_clock`, in the order `gram()` gives the groups. Blocks run
+group's `clock_last`, in the order `gram()` gives the groups. Blocks run
 under `half_life=float("inf")` pool as they are.
 
 The recipe runs two specs over the same stream in one pass: a Gram per
@@ -520,7 +521,7 @@ bank.fit(lf)
 blocks, whole = bank.gram("by_week"), bank.gram("whole")[0]
 
 # Age each week to the stream's last row: its weights are relative to its own last row.
-last = bank.groups("by_week")["last_clock"]  # each week's last row, in the order gram() gives them
+last = bank.groups("by_week")["clock_last"]  # each week's last row, in the order gram() gives them
 aged = []
 for block, end in zip(blocks, last):
     decay = 0.5 ** ((last.max() - end) / timedelta(weeks=4))  # 0.5 ** (dt / half_life)
@@ -760,7 +761,7 @@ def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]
     gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b
-    spread = g["target_vars"][0] - 2 * b @ g["cross_centred"][0][1:] + b @ g["comoments"][1:, 1:] @ b
+    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
     return spread + gap**2
 
 
@@ -916,7 +917,7 @@ descent for a grid of penalties:**
 | | `lars_path`, and `lars_paths` for many Grams | `lasso_path` |
 |---|---|---|
 | computes | each knot exactly, from the largest penalty down | the solution at each penalty given, each started from the one before |
-| stops | after `max_steps` knots, or at the first knot with at least `max_active` columns active | at the last penalty |
+| stops | after `max_iter` knots, or at the first knot with at least `max_active` columns active | at the last penalty |
 | time, measured at a load average near 12 | 4 ms for the whole path, 201 knots, at 200 columns. Its reference gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
 | takes | a weight `w_j` above 0 for each column | a weight of 0, which keeps a column in the fit at every penalty, and an elastic net (`l1_ratio` below 1), whose path is not piecewise linear (Zou and Hastie 2005) |
 | use it for | the first columns to enter: a selection, and [stability selection](#stability-selection-over-halves-of-the-weeks) | a penalty chosen by held-out error, an elastic net, a column that must stay in |
@@ -971,7 +972,7 @@ def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]
     gap = g["cross_moments"][0][0] - b0 - g["means"][1:] @ b
-    spread = g["target_vars"][0] - 2 * b @ g["cross_centred"][0][1:] + b @ g["comoments"][1:, 1:] @ b
+    spread = g["target_vars"][0] - 2 * b @ g["cross_centered"][0][1:] + b @ g["comoments"][1:, 1:] @ b
     return spread + gap**2
 
 
@@ -1384,7 +1385,7 @@ into the dict `gram()` returns. numpy reads it as it stands: lay
 and solve.
 
 **A state can be exported as JSON for a program in another language,**
-with `bank.save_json(path)` ([Reading a state without this library](../README.md#reading-a-state-without-this-library)).
+with `bank.write_json(path)` ([Reading a state without this library](../README.md#reading-a-state-without-this-library)).
 The forty open weeks' state was 19 MB as `bank.save` wrote it, and 106 MB
 as JSON.
 
@@ -1437,7 +1438,7 @@ m = len(row["columns"])  # the intercept and the 200 features
 cov = np.zeros((m, m))
 cov[np.triu_indices(m)] = row["comoments"]  # the upper triangle, row by row
 cov += np.triu(cov, 1).T
-slopes = np.linalg.solve(cov[1:, 1:], np.asarray(row["cross_centred"])[1:])
+slopes = np.linalg.solve(cov[1:, 1:], np.asarray(row["cross_centered"])[1:])
 intercept = row["cross_moments"][0] - np.asarray(row["means_by_target"])[1:] @ slopes
 same = np.allclose(np.r_[intercept, slopes], po.gram.solve(blocks[0]), rtol=0, atol=1e-10)
 print(f"numpy alone and po.gram agree on the first week within 1e-10: {same}")

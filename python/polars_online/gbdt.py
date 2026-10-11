@@ -21,14 +21,18 @@ two parquet files, read by a glob:
 
 - :func:`xgboost_matrix` returns an ``xgboost.QuantileDMatrix``. XGBoost reads
   its input four times, and the second pass sketches every feature's
-  quantiles over every row. This places the cuts from a uniform sample of
+  quantiles over every row. This places the cuts from a sample of
   ``sample_rows`` rows instead, which removes that pass, about half the time
-  before the first round. The trees then differ from XGBoost's own sketch
-  by no more than a sample's seed moves them. On 10 million rows of 50
-  features, at 50 rounds, XGBoost's sketch scored a validation RMSE of
-  1.2379, and cuts from five seeds of a uniform sample 1.2347 to 1.2411.
-  LightGBM's own sampling spans 1.2298 to 1.2443 over five seeds.
-  ``sample_rows=None`` keeps XGBoost's sketch and its own trees.
+  before the first round. Without weights the sample is uniform. On 10
+  million unweighted rows of 50 features, at 50 rounds, XGBoost's sketch
+  scored a validation RMSE of 1.2379, and cuts from five seeds of the sample
+  1.2347 to 1.2411. LightGBM's own sampling spans 1.2298 to 1.2443 over five
+  seeds. With ``weight=``, the sample is drawn in proportion to the weights
+  and its quantiles are weighted, as XGBoost's sketch is. On 50,000 normal
+  values with weight 50 above 1.0 and ``max_bin=16``, 14 of the 15 cuts fall
+  above 1.0, as 14 of XGBoost's own do, and the heaviest bin holds 6.26% of
+  the weight, against 6.47% for XGBoost's. ``sample_rows=None`` keeps
+  XGBoost's sketch and its own trees.
 - :func:`lightgbm_dataset` returns a constructed ``lightgbm.Dataset``, binned
   on LightGBM's own sample: a first pass gathers the rows LightGBM samples, a
   second pushes every row as float32; or, when the data fits, the whole
@@ -406,13 +410,33 @@ def xgboost_matrix(
         booster = xgb.train({"tree_method": "hist", "max_bin": 256}, train, 500,
                             evals=[(valid, "valid")], early_stopping_rounds=20, verbose_eval=False)
 
-    **The cuts.** With ``sample_rows``, one pass first draws a uniform sample
-    of that many rows: row ``i`` is kept when its hash, SplitMix64 of ``i``
-    and ``seed``, is among the ``sample_rows`` smallest. Each feature's bin
-    edges sit at the sample's quantiles. A feature with at most ``max_bin``
-    distinct sample values gets a bin per value. Any other gets ``max_bin``
-    bins of equal sample frequency, edge ``j`` at the sorted sample's value
-    of rank ``floor(j m / max_bin)`` for ``m`` values. The cuts reach XGBoost
+    **The cuts.** With ``sample_rows``, one pass first draws a sample of
+    that many rows. Row ``i`` has a hash ``h``, SplitMix64 of ``i`` and
+    ``seed``, and the priority ``w / u``, where ``w`` is its weight (1
+    without ``weight``) and ``u = (2h + 1) / 2**65``. The ``sample_rows``
+    rows of largest priority are kept. Without weights these are the rows
+    of smallest hash, a uniform sample. With weights it is priority
+    sampling: a row heavier than ``tau``, the largest priority not kept, is
+    always kept and counts its own weight, and any other kept row counts
+    ``tau``. Summed over any set of rows, these counts estimate the set's
+    weight without bias, so the sample's weighted quantiles estimate the
+    source's. A row of weight 0 counts for nothing and places no cut. The
+    sample is drawn in proportion to the weights rather than uniformly
+    because a uniform one loses heavy rows: under a weight of 1e9 on one row
+    in a million, a uniform sample of 200,000 rows misses that row four
+    times in five, and its cuts ignore it.
+
+    Each feature's bin edges sit at the sample's weighted quantiles. A
+    feature with at most ``max_bin`` distinct sample values gets a bin per
+    value. Any other gets ``max_bin`` bins of equal weight. Edge ``j`` is
+    the first sorted sample value whose running weight exceeds
+    ``j / max_bin`` of the total. Without weights that is the value of rank
+    ``floor(j m / max_bin)`` for ``m`` values. At the quantile ``q``, a
+    cut's share of the weight then errs by about
+    ``sqrt(q (1 - q) / sample_rows)``, 0.11% at the median for 200,000 rows.
+    Over ten seeds on a million rows, its standard deviation measured 0.29%
+    to 0.46% with 20,000 rows, where the formula gives 0.35%, and 0.04% with
+    200,000 rows under weight 50 on a sixth of them. The cuts reach XGBoost
     as a ``ref``, which removes its sketch pass. The sample is the same rows
     however the source is batched and whichever engine reads it.
     ``sample_rows=None`` lets XGBoost sketch every row, and grows XGBoost's
@@ -713,6 +737,16 @@ def lightgbm_dataset(
         booster = lgb.train({"objective": "regression", "verbose": -1}, train, 500,
                             valid_sets=[valid],
                             callbacks=[lgb.early_stopping(20, verbose=False)])
+
+    **Weights do not move the bins**, in LightGBM or here. LightGBM's
+    sample is uniform, and neither ``LGBM_DatasetCreateFromSampledColumn``
+    nor the ``BinMapper::FindBin`` it calls takes a weight, so its bins are
+    those of the unweighted rows. :func:`xgboost_matrix` weights its cuts,
+    because XGBoost's own sketch does: each builds what its library builds.
+    With weight 50 on the values above 1.0 of 50,000 normal ones and
+    ``max_bin=16``, LightGBM's trees split at the same 14 bounds with the
+    weights as without, 2 of them above 1.0, where 14 of XGBoost's 15 cuts
+    are.
 
     The dataset is constructed and its raw data never kept, so training may
     not change a dataset parameter (``max_bin``, ``min_data_in_bin``,

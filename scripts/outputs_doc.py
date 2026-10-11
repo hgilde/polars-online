@@ -61,7 +61,7 @@ MEANING: dict[str, str] = {
     "pred_<f>": "the predictive mean for feature `<f>` under the fitted model",
     "resid_<t>": "`y - pred` for `<t>`",
     "weight_sum": f"accumulated weight before this row's update and before its own decay {SHARED}",
-    "coef": f"the numbers behind the fit as one list {SHARED}",
+    "coef": f"the numbers behind the fit as one array {SHARED}",
     "settled_frac": f"how far the decay window had filled before this row {SHARED}",
     "withheld_reason": f"why the row's predictions are null {SHARED}",
     "support_coef": (
@@ -70,9 +70,10 @@ MEANING: dict[str, str] = {
     ),
     "penalty_selected_<t>": "the path point in force for `<t>`, by lowest EW out-of-sample error",
     "mean_<f>": "EW mean of `<f>`",
-    "var_<f>": "EW variance of `<f>`, in the population form: no `ddof` correction",
-    "std_<f>": "EW standard deviation of `<f>`, the square root of the population variance",
-    "cov_<a>_<b>": "EW covariance of the pair, in the population form: no `ddof` correction",
+    "var_<f>": "EW variance of `<f>`, corrected for the unequal weights as Polars' `ewm_var` "
+    "is, unless `bias`",
+    "std_<f>": "EW standard deviation of `<f>`, the square root of `var_<f>`",
+    "cov_<a>_<b>": "EW covariance of the pair, corrected as `var_<f>` is",
     "corr_<a>_<b>": "EW correlation of the pair",
     "partial_corr_<a>_<b>": "the pair's correlation controlling for every other column",
     "mahal": "Mahalanobis distance of the row from the running mean, in standard deviations",
@@ -109,9 +110,9 @@ MEANING: dict[str, str] = {
     "run_mode": "most likely run length *before* this row, so `t - run_mode` dates the regime",
     "run_mean": "posterior mean run length",
     "loglik": "log predictive density of the row, under the model as it stood before the row",
-    "filtered_<j>": "posterior probability of state `<j>` before this row",
-    "predicted_<j>": "one-step-ahead probability of state `<j>`",
-    "state": "the most likely state for this row: the one with the largest `predicted_<j>`",
+    "filtered_state<j>": "posterior probability of state `<j>` before this row",
+    "predicted_state<j>": "one-step-ahead probability of state `<j>`",
+    "state": "the most likely state for this row: the one with the largest `predicted_state<j>`",
 }
 
 #: Where a field is null besides a skipped row, which nulls every field (see
@@ -168,8 +169,8 @@ ALSO_NULL: dict[str, str] = {
     "run_mode": WITHHELD,
     "run_mean": WITHHELD,
     "loglik": WITHHELD,
-    "filtered_<j>": UNTIL_SEEDED,
-    "predicted_<j>": UNTIL_SEEDED,
+    "filtered_state<j>": UNTIL_SEEDED,
+    "predicted_state<j>": UNTIL_SEEDED,
     "state": UNTIL_SEEDED,
 }
 
@@ -227,7 +228,7 @@ NAME_PARTS: list[tuple[str, str, str]] = [
     ("`__r<ridge>`", "one value of a `ridge` grid", ""),
     ("`__<set>`", "one of the `feature_sets`, with one ridge value", ""),
     ("`__<set>_r<ridge>`", "one of the `feature_sets`, with one value of a `ridge` grid", ""),
-    ("`__l<lambda>`", "one value of `penalties`", "`__l0.1`, `__l0`"),
+    ("`__p<penalty>`", "one value of `penalties`", "`__p0.1`, `__p0`"),
     (
         "`@h<half_life>`",
         "one half-life of a grid, at the end of every field's name: `weight_sum@h500`, or "
@@ -261,9 +262,10 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
     ),
     (
         "coef",
-        "the numbers behind the fit, as one flat list written after the row's update: a "
+        "the numbers behind the fit, as one array written after the row's update, as wide as "
+        "`po.spec.coef_index(spec)` is long: a "
         "regression's coefficients, or what a model that is not a regression keeps in their "
-        "place, such as its centres or state means. Its builder's docstring lays the list "
+        "place, such as its centres or state means. Its builder's docstring lays the array "
         "out. A model that solves on a schedule (`solve_every`) shows its latest solve, and "
         "the entries of a target no solve has fit yet are null. "
         "Under an `embargo` the row's own update waits for the delay, so `coef` is written "
@@ -357,9 +359,17 @@ DTYPES: list[tuple[str, str]] = [
     ("`f64`", "`Float64`"),
     ("`i64`", "`Int64`"),
     ("`bool`", "`Boolean`"),
-    ("`str`", "`String`"),
-    ("`list[f64]`", "`List(Float64)`"),
-    ("`enum`", "an `Enum` of `withheld_reason`'s four values"),
+    (
+        "`array[f64, k]`",
+        "`Array(Float64, k)`: `coef` and the fields laid out like it, `k` the height of "
+        "`po.spec.coef_index(spec)`, which `to_numpy()` reads as an `(n, k)` matrix",
+    ),
+    ("`list[f64]`", "`List(Float64)`: `micro`'s `coef`, one row per summary, as many as there are"),
+    (
+        "`enum`",
+        "an `Enum` of its values, in their order: `withheld_reason`'s four, an `ew_class` "
+        "spec's `classes` for `class`, a grid's slots for `selected_<t>`",
+    ),
     ("`clock`", "the clock column's own type"),
 ]
 
@@ -420,11 +430,20 @@ and two ridge values has four predictions of `y`, one per pair:
 
 Each table lists the fields of the model's plainest spec, whose target is
 `y` and whose features are `x0`, and `x1` where the model needs two. Your
-own spec's fields carry your column names in their place. The names follow
-the grammar in the README's [Output field
-names](../README.md#output-field-names): `<stat>_<column>` for a per-column
-value, `_<a>_<b>` for a pair, and a suffix where a grid makes several of the
-same field.
+own spec's fields carry your column names in their place.
+
+**Every name follows one grammar, which is stable.** Read left to right, a
+name is the kind (`pred`, `abs_resid`, `lag_corr`), then its qualifier, then
+the target or the columns it is about (`_<t>`, `_<f>`, `_<a>_<b>`), then the
+grid point after `__` and the instance after `@`. A qualifier is a number
+glued to the letter that says what it is: `q` a quantile level, `l` a lag
+(`abs_resid_q0.05_y`, `mahal_q0.99`, `lag_corr_l1_x0_x1`). The grid point
+uses letters too, `r` a ridge and `p` a lasso penalty, and the instance `h`,
+a half-life. A thing the spec has several of is numbered where it is named,
+glued to its word: a principal component `pc0` (`pc0_var`), an `hmm` state
+`state0` (`filtered_state0`), a `kmeans` centre `cluster0`
+(`coef_cluster0_x1`). The README's [Output field
+names](../README.md#output-field-names) builds a grid and reads its fields.
 
 {table(("in a name", "stands for", "in this page's tables"), NAME_PARTS)}
 
@@ -436,6 +455,11 @@ A field's dtype is the type the bank declares to Polars before it reads a
 row, as `po.spec.output_index(spec)` lists it:
 
 {table(("dtype", "the Polars type"), DTYPES)}
+
+**Every integer is an `Int64`**, in a field and in every frame the bank and
+`po.spec` return: a count, a state, a cluster label, a position, a row's
+index. It is Polars' own default integer, so a join, a concatenation or a
+comparison between two frames never meets two widths.
 
 ### When a field is null
 
@@ -505,7 +529,7 @@ def stem(field: str, targets: tuple[str, ...], features: tuple[str, ...]) -> str
     for pre in ("corr", "cov", "partial_corr"):
         if base.startswith(pre + "_"):
             return f"{pre}_<a>_<b>"
-    for pre in ("filtered_", "predicted_"):
+    for pre in ("filtered_state", "predicted_state"):
         if base.startswith(pre) and base[len(pre) :].isdigit():
             return f"{pre}<j>"
     if base.startswith("p_") and base != "p_change":

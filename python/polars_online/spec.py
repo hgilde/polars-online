@@ -5,7 +5,7 @@ parameters every model shares -- the clock, the decay, the groups, the weights
 and the warm-up. It is a plain dict, JSON-able, and the same thing as a
 ``[[specs]]`` entry in the CLI's TOML. A builder assembles one, checks it and
 returns it. :class:`polars_online.ModelBank`, the ``online`` namespaces and
-the ``online`` command line take lists of them.
+the ``polars-online`` command line take lists of them.
 
 The builders are the documented way to write a spec. A dict written by hand is
 checked the same way when it is used. Only a builder can tell a misspelt
@@ -28,8 +28,8 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     pl.col("mid")).log()`` or a difference sits about zero, where ``hit_rate``
     takes its sign. A :func:`polars_online.target` is a column under a name of
     its own. A target may also be a window expression looking ahead
-    (:mod:`polars_online.ops`), named by its alias: ``(po.rewm_mean("mid",
-    half_life="10s", window_size="1m") - pl.col("mid")).alias("fwd")``. The
+    (:mod:`polars_online.ops`), named by its alias: ``(po.ewm_mean("mid",
+    half_life="10s", window_size="1m", reverse=True) - pl.col("mid")).alias("fwd")``. The
     bank resolves it when the row's window closes, and learns the row then,
     under the ``embargo``. ``fit_predict`` asks the embargo to cover the
     longest forward ``window_size``. Under ``group`` it needs a ``clock``.
@@ -234,8 +234,13 @@ the diagnostics
     ``window_size / 2.885`` rows, or ``window_size * ln 2 / 2`` clock units on
     a clock column. Beside a decay ``n`` is the Kish size of the decayed
     weights inside the window, taken in its continuous form on a clock column.
+    The windowed CUSUM's null share reads the window itself instead, since a
+    window absorbs a level as a mean over its rows (``emit_breaks`` below).
     For ``kalman`` the fit's memory is its ``coef_half_life``, the shortest
-    finite one where a list gives one per coefficient. A diagnostic folds a row
+    finite one where a list gives one per coefficient; the windowed CUSUM's
+    null share reads the list's intercept entry instead, the memory at which
+    a level is absorbed, and a pinned intercept leaves the plain sum. A
+    diagnostic folds a row
     only once the instance is ready: the row's prediction past every gate, the
     stream 95% settled on the longest finite memory the model keeps where it
     forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.
@@ -335,10 +340,9 @@ change of clocks for summer time neither stretches nor folds the clock. Where a
 clock quantity reaches an output, it is in seconds: ``holt``'s trend is per
 second. :meth:`polars_online.ModelBank.summary`,
 :meth:`polars_online.ModelBank.groups` and
-:meth:`polars_online.ModelBank.closed_groups` give clock values as seconds
-since 1970. ``emit_clocks``' two fields are the exception: they are clock
-values in the clock column's own type. A ``Time`` column is refused, because a
-time of day starts again at midnight.
+:meth:`polars_online.ModelBank.closed_groups` give clock values in the clock
+column's own type, as ``emit_clocks``' two fields do. A ``Time`` column is
+refused, because a time of day starts again at midnight.
 
 .. rubric:: What a spec writes
 
@@ -366,12 +370,14 @@ releases none. A regression writes, with ``<t>`` a target:
     settles near 8,657, and Kish's ``n_kish`` is the sample size.
 ``coef``
     The coefficients of the fit after the row's update, the ones the next row
-    is predicted with (under an ``embargo``, as above). They are one flat list:
-    per (target, grid combination) slot in the order the ``pred`` fields
-    declare them, the intercept and then one entry per feature. Null on rows
-    where it is not filled (``coef_every``). :func:`coef_index` maps each
-    position to its term. :func:`coef_fields` names the column each becomes
-    when the struct is unnested.
+    is predicted with (under an ``embargo``, as above). They are one flat
+    ``Array``, as wide as :func:`coef_index` is long, so ``to_numpy()`` reads
+    the field as a matrix: per (target, grid combination) slot in the order the
+    ``pred`` fields declare them, the intercept and then one entry per feature.
+    Null on rows where it is not filled (``coef_every``). :func:`coef_index`
+    maps each position to its term, and ``.arr.get(position)`` reads it.
+    :func:`coef_fields` names the column each becomes when the struct is
+    unnested.
 ``settled_frac``
     How far the decay window had filled toward steady state before this row:
     ``1 - 2 ** (-T / half_life)`` with ``T`` the decay time the models have
@@ -419,7 +425,7 @@ target, so their fields take no suffix:
     resid_{target}{combo}{instance}             | __r{ridge}      ridge grid
     sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
     weight_sum{instance}                        | __{set}_r{ridge}
-    settled_frac{instance}                      | __l{lambda}     penalties point
+    settled_frac{instance}                      | __p{penalty}    penalties point
     withheld_reason{instance}
     coef{instance}                     instance = ""             single half-life
     support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
@@ -429,6 +435,18 @@ target, so their fields take no suffix:
     selected_{target}                           emit_selected: the chosen slot
     pred_{target}__selected                     emit_selected: its prediction
     pred_{target}__averaged                     emit_averaged
+
+**Every name follows one grammar, which is stable.** Read left to right, a
+name is the kind (``pred``, ``abs_resid``, ``lag_corr``), then its qualifier,
+then the target or the columns it is about, then the grid point after ``__``
+and the instance after ``@``. A qualifier is a number glued to the letter that
+says what it is: ``q`` a quantile level, ``l`` a lag (``abs_resid_q0.05_y``,
+``mahal_q0.99``, ``lag_corr_l1_x0_x1``). The grid point uses letters too:
+``r`` a ridge and ``p`` a lasso penalty, and the instance ``h``, a half-life.
+A thing the spec has several of is numbered where it is named, glued to its
+word: a principal component ``pc0`` (``pc0_var``, ``pc0_loading_x0``), an
+``hmm`` state ``state0`` (``filtered_state0``), a ``kmeans`` centre
+``cluster0`` (``coef_cluster0_x1``).
 
 ``<slot>`` below is a target with its suffix. :func:`output_index` gives every
 field with the values its name encodes, so a field is reached without building
@@ -520,7 +538,9 @@ The diagnostics add, per slot:
    * - ``emit_selected``
      - ``selected_<t>``, ``pred_<t>__selected``
      - The grid slot with the lowest EW out-of-sample squared error so
-       far, and its prediction. Needs more than one slot per target. Each
+       far, an ``Enum`` of the slots' labels in grid order (``@h50``,
+       ``r0.5``, ``a_r0.5``), and its prediction. Needs more than one slot
+       per target. Each
        slot's error decays at its own instance's half-life: like for like
        within a ridge or feature-set grid. Across a half-life grid a short
        half-life is ranked on fewer, more recent rows than a long one.
@@ -658,7 +678,16 @@ The diagnostics add, per slot:
        is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
        ``cusum_sq``'s scale shares its memory, a half. Each is divided by
        that share, and their spreads read 1.01-1.10 on clean streams, where
-       undivided they read 0.48-0.94. ``quantile`` with an intercept absorbs its coverage the
+       undivided they read 0.48-0.94. Under ``window_size`` the fit absorbs a
+       level as a mean over the window, weighted by the decay inside it, and
+       a sum of its residuals cancels less. With no decay, and ``u =
+       window_size * ln 2 / h``, ``cusum``'s share is ``1 + 2 exp(-u) / u -
+       2 (1 - exp(-u)) / u**2``, 0.703 at the default memory. Beside a decay
+       it runs from that form to ``h_fit / (h_fit + h)`` as the window grows
+       past the half-life. Over it, beside windows of 100 and 400 rows with
+       no decay and at half-lives of 50 and 200, the spread read 1.00-1.02;
+       read as an exponential of the window's Kish size, 1.08-1.20.
+       ``quantile`` with an intercept absorbs its coverage the
        same way, and its indicators' ``cusum`` is divided by the same share:
        over it, 1.03-1.06 at memories of 50 and 200 and 1.10-1.25 at 800.
        The other fits keep the plain sum, whose spread reads below 1 beside
@@ -699,7 +728,7 @@ The diagnostics add, per slot:
        values on 6-9% of rows and ``break_wald`` on 2.5-4.7%, where the
        plain forms passed on 13-63%.
    * - ``emit_specification``
-     - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``reset_<slot>``
+     - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``ramsey_reset_<slot>``
      - What the fit is missing, each at ``specification_half_life`` and
        Kish's size ``n``. ``ljung_box``: Box and Pierce's ``Q = n *
        sum(rho_l**2)`` over ``ljung_box_lags`` lags of the residuals
@@ -715,7 +744,7 @@ The diagnostics add, per slot:
        the rows of five-row look-ahead streams with nothing missing, this one
        on 6.0-6.7%. ``breusch_pagan``: ``n R2`` of ``resid**2`` on the
        slot's features (Koenker's form), ``chi2(k)``: a spread that moves
-       with them. ``reset``: Ramsey's test, the Lagrange multiplier for
+       with them. ``ramsey_reset``: Ramsey's test, the Lagrange multiplier for
        ``pred**2`` and ``pred**3`` beside ``pred`` in a regression of the
        residual, ``chi2(2)``: a curvature the fit is missing. Run once they
        are statsmodels' ``acorr_ljungbox``, ``het_breuschpagan`` and
@@ -724,7 +753,7 @@ The diagnostics add, per slot:
        streams missing nothing, run once or windowed, and on 98-100% of
        those missing what it looks for: an AR(1) at 0.3, a spread linear in
        a feature, a square of one. Under a horizon ``breusch_pagan`` and
-       ``reset`` are Wald's tests of the same coefficients with Newey and
+       ``ramsey_reset`` are Wald's tests of the same coefficients with Newey and
        West's variance at twice it in lags: beside a five-row look-ahead
        target and AR(1) features at 0.5-0.95 their ``n R2`` forms passed
        their 5% values on 10-39% of rows, the Wald forms on 3.1-5.2%.

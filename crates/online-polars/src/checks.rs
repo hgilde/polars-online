@@ -47,7 +47,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
         out.extend(["studentized", "cusum", "cusum_sq", "break_wald"]);
     }
     if spec.emit_specification {
-        out.extend(["ljung_box", "breusch_pagan", "reset"]);
+        // Ramsey's RESET by its author's name: `reset` alone read as the
+        // clock rules' `resets` and `drift_action = "reset"` (task 244).
+        out.extend(["ljung_box", "breusch_pagan", "ramsey_reset"]);
     }
     if spec.emit_tails {
         out.extend(["skew", "kurtosis", "jarque_bera"]);
@@ -63,9 +65,6 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
 /// breaks' twin fits, the features each slot's coefficients cover.
 #[derive(Debug, Clone)]
 pub struct CheckCfg {
-    /// The fit's own memory, which absorbs a level at its pace (the
-    /// CUSUM's windowed null, task 232 (4)).
-    fit: Decay,
     /// The longest finite memory the model keeps, which a diagnostic's
     /// readiness reads (task 232 (1), task 234; [`Spec::ready_memory`]).
     ready: Decay,
@@ -82,7 +81,8 @@ pub struct CheckCfg {
     /// one ([`Spec::nw_lags`]; task 232 (3)).
     nw: usize,
     /// The windowed CUSUM's and CUSUM of squares' null shares of their
-    /// plain variances ([`online_core::cusum_null`]; task 232 (4)).
+    /// plain variances ([`online_core::cusum_null_window`], [`online_core::cusum_null`]; task
+    /// 232 (4)).
     cusum_null: f64,
     cusum_sq_null: f64,
     /// A quantile fit's level: its calibration is a coverage and its CUSUM
@@ -123,7 +123,6 @@ impl CheckCfg {
             _ => vec![all; crate::stream::combos(spec).len()],
         };
         let mut cfg = Self {
-            fit: spec.fit_memory(model),
             ready: spec.ready_memory(model),
             calibration: spec.diagnostic_decay_of(
                 spec.calibration_half_life.as_ref(),
@@ -181,8 +180,13 @@ impl CheckCfg {
         // (`huber`, `quantile`) and 0.57-1.13 (`sgd`, `pa`, `ftrl`); without
         // it `huber` reads 0.57-0.95 and the gradient fits 0.30-0.79,
         // conservative, so they keep the plain sum. So does `holt`, which
-        // reads 0.51-0.94 from its readiness on its trend (task 234).
-        let (h_fit, h_breaks) = (half_life_of(cfg.fit), half_life_of(cfg.breaks));
+        // reads 0.51-0.94 from its readiness on its trend (task 234). The
+        // level is absorbed at the intercept's memory, which for a `kalman`
+        // with a `coef_half_life` per coefficient is the intercept's entry,
+        // not the shortest (review round 7, A-1), and under `window_size`
+        // over the window, as a rolling mean weighted by the decay inside
+        // it, not as an exponential of the window's Kish size (A-3).
+        let ((h_fit, window), h_breaks) = (spec.level_absorber(model), half_life_of(cfg.breaks));
         let least_squares = matches!(
             spec.model,
             ModelKind::EwRidge { .. }
@@ -197,7 +201,7 @@ impl CheckCfg {
         // plain sum: over the share it read 0.98-1.51.
         let quantile_fit = matches!(spec.model, ModelKind::Quantile { .. });
         if (least_squares || quantile_fit) && spec.fit_intercept {
-            cfg.cusum_null = online_core::cusum_null(h_fit, h_breaks);
+            cfg.cusum_null = online_core::cusum_null_window(window, h_fit, h_breaks);
         }
         cfg.cusum_sq_null = online_core::cusum_null(h_breaks, h_breaks);
         cfg
@@ -476,8 +480,14 @@ impl Checks {
                 put(v + 1, slot, b.cusum(cfg.cusum_null));
                 put(v + 2, slot, b.cusum_sq(cfg.cusum_sq_null));
                 // Under a horizon the noise's variance is the long-run one,
-                // read from the slot's own studentized residuals.
-                let long_run = if cfg.nw > 0 { b.long_run() } else { Some(1.0) };
+                // read from the slot's own studentized residuals -- on a
+                // quantile fit too, whose CUSUM sums indicators (review
+                // round 7, A-2).
+                let long_run = if cfg.nw > 0 {
+                    b.long_run_residuals()
+                } else {
+                    Some(1.0)
+                };
                 let wald = self.twin.get(slot / nc).and_then(|t| {
                     t.wald(cfg.combo_features.get(slot % nc)?, cfg.intercept, long_run?)
                 });

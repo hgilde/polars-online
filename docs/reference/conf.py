@@ -43,3 +43,16 @@ html_extra_path = ["../../llms.txt"]
 # The design notes live beside this directory as Markdown; Sphinx must not
 # try to read them.
 exclude_patterns = ["_build"]
+
+
+def _skip_renamed(app, what, name, obj, skip, options):
+    """Leave out a name kept only under its old spelling -- a refusal stub
+    or a forwarding with a deprecation warning -- so the reference shows the
+    new name alone, as the API snapshot does (``_renamed.is_renamed``)."""
+    from polars_online._renamed import is_renamed
+
+    return True if is_renamed(obj) else None
+
+
+def setup(app):
+    app.connect("autodoc-skip-member", _skip_renamed)

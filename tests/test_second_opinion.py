@@ -61,9 +61,11 @@ def _window(
 
 class TestWindowAtALargeOffset:
     """C17, the review's T-S10 (i). A window's moments are a weighted mean and
-    a population covariance of the rows inside it, which ``numpy.average`` and
-    ``numpy.cov(aweights=..., ddof=0)`` compute two-pass -- centre, then square
-    -- and so correctly at any offset. The truncation used to go back through
+    a weighted covariance of the rows inside it, which ``numpy.average`` and
+    ``numpy.cov(aweights=...)`` compute two-pass -- centre, then square -- and
+    so correctly at any offset: ``ddof=1`` is ``ew_cov``'s default correction
+    for unequal weights, ``ddof=0`` its ``bias=True`` and ``marginal``'s
+    population form. The truncation used to go back through
     ``E[x x'] = C + m m'``, subtract and re-centre, which at a level of ``1e8``
     left the variance with a resolution of about 2. The unwindowed
     accumulator (Welford) never had the defect, which makes ``window_size=None``
@@ -75,9 +77,10 @@ class TestWindowAtALargeOffset:
 
     HALFLIFE = 40.0
 
+    @pytest.mark.parametrize("bias", [False, True])
     @pytest.mark.parametrize("window", [None, 25.0, 60.0])
     @pytest.mark.parametrize("offset", [0.0, 1e8, -1e8])
-    def test_ew_cov_is_numpy_cov_of_the_rows_inside_the_window(self, offset, window):
+    def test_ew_cov_is_numpy_cov_of_the_rows_inside_the_window(self, offset, window, bias):
         rng = np.random.default_rng(7)
         n = 300
         x = rng.normal(0.0, 1.0, (n, 2))
@@ -91,6 +94,7 @@ class TestWindowAtALargeOffset:
             half_life=self.HALFLIFE,
             min_weight=0,
             window_size=window,
+            bias=bias,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         tol = 1e-12 if offset == 0.0 else 1e-6
@@ -101,7 +105,7 @@ class TestWindowAtALargeOffset:
             keep, w = _window((i - 1) - np.arange(i), self.HALFLIFE, window)
             rows = x[:i][keep]
             mean = np.average(rows, axis=0, weights=w)
-            cov = np.cov(rows.T, aweights=w, ddof=0)
+            cov = np.cov(rows.T, aweights=w, ddof=0 if bias else 1)
             got_cov = np.array(
                 [
                     [out["var_x0"][i], out["cov_x0_x1"][i]],
@@ -273,7 +277,7 @@ class TestTheWindowIsAllTheModelSees:
                 solve_every=1e-9,
                 **common,
             )
-            f0, f1, tol = "pred_y0__l0", "pred_y1__l0", 1e-6
+            f0, f1, tol = "pred_y0", "pred_y1", 1e-6
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         for i in range(170, n, 7):
             keep, w = _window((i - 1) - np.arange(i), self.HALFLIFE, self.WINDOW)
@@ -509,7 +513,10 @@ class TestWindowedGaussian:
         for i in range(250, n, 17):
             keep, _ = _window((i - 1) - np.arange(i), float("inf"), window)
             rows = x[:i][keep]
-            mean, cov = rows.mean(axis=0), np.cov(rows.T, ddof=0)
+            # `bias=False`, the default: on unit rows with no decay the
+            # correction is `ddof=1`, and it scales the ridge with the
+            # co-moments, a change below the tolerance at this prior.
+            mean, cov = rows.mean(axis=0), np.cov(rows.T, ddof=1)
             want = mahalanobis(x[i], mean, np.linalg.inv(cov + self.PRIOR * np.eye(2)))
             assert out["mahal"][i] == pytest.approx(want, rel=1e-9), i
             # The components a row is read with were refreshed after the row
@@ -686,7 +693,7 @@ class TestNoInterceptIsNotCentred:
                 fit_intercept=intercept,
             )
             df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-            pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y__l0")
+            pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
             for i in range(100, 400, 23):
                 b = _wls(x[:i], y[:i], np.ones(i), intercept=intercept)
                 want = b[0] + x[i] @ b[1:] if intercept else x[i] @ b
@@ -2047,7 +2054,7 @@ class TestAHopelessSerialFactorSaysSo:
     behind ``t`` by ``1 + 2·Σ ρ_x(l)·ρ_y(l)``, and two series whose
     autocorrelations have opposite signs take that below zero: an estimate
     outside the parameter space. The rule floored it at ``f64::MIN_POSITIVE``,
-    so ``n_serial`` came out ``+inf`` and ``t_serial`` ``±inf`` -- infinite
+    so ``n_serial`` came out ``+inf`` and ``t_stat_serial`` ``±inf`` -- infinite
     evidence from a correction that had failed. It is NaN now, the answer
     ``"geometric"`` already gives a factor it cannot form.
 
@@ -2093,11 +2100,11 @@ class TestAHopelessSerialFactorSaysSo:
         if 1.0 + 2.0 * rho_x * rho_y > 0.0:
             factor = 1.0 + 2.0 * row["lag_corr_xx"][0] * row["lag_corr_yy"][0]
             assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
-            assert np.isfinite(row["t_serial"])
+            assert np.isfinite(row["t_stat_serial"])
         else:
             # NaN in the model, null in the frame, as `phi_x` is.
             assert row["n_serial"] is None, row["n_serial"]
-            assert row["t_serial"] is None, row["t_serial"]
+            assert row["t_stat_serial"] is None, row["t_stat_serial"]
 
 
 class TestAWindowedLagIsTheWindows:
@@ -2195,7 +2202,7 @@ class TestTheBartlettSerialFactor:
         )
         assert factor > 0.0, factor
         assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
-        assert np.isfinite(row["t_serial"])
+        assert np.isfinite(row["t_stat_serial"])
 
 
 def _gappy(n: int, seed: int, level: float) -> tuple[np.ndarray, np.ndarray]:
@@ -2385,7 +2392,7 @@ class TestATargetWithGaps:
             max_iter=10_000,
             tol=1e-15,
         )
-        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y__l0")
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y__p0")
         ref = _own_rows_pred if target_gaps == "own_rows" else _pairwise_pred
         worst = max(abs(pred[t] - ref(x, y, t, h)) for t in range(100, n, 31))
         assert worst <= 1e-8, f"worst |pred - numpy| = {worst:.3e}"
@@ -2651,20 +2658,22 @@ class TestPassiveAggressiveIsRivers:
 class TestTheEwMomentsArePandas:
     """T-S9: pandas' ``ewm`` keeps the same adjusted, centred, mean-form EW
     recursion, so ``ew_cov``'s ``mean``, ``var``, ``cov`` and ``corr`` on a
-    row clock are its ``mean()``, ``var(bias=True)``, ``cov(bias=True)``
+    row clock are its ``mean()``, ``var(bias=bias)``, ``cov(bias=bias)``
     and ``corr()`` -- one row behind, since a row's statistics are read
-    before it is folded in -- at any offset. The tolerance is absolute: at
+    before it is folded in -- at any offset. pandas' ``bias=False`` is the
+    same correction as Polars' and ``ew_cov``'s default, ``W**2 / (W**2 -
+    sum(w**2))``, Kish's ``n / (n - 1)``. The tolerance is absolute: at
     ``1e8`` the data are resolved to ``L·ε``, and both sides are within a
     few units in the last place of an exact reference built from the
     deviations (measured: ``6e-8`` on the mean, ``2e-8`` on the rest), where
     a relative one means nothing for a covariance of two independent
-    columns, which crosses 0. ``bias=False`` would be Kish's correction,
-    ``n_kish``, not ``weight_sum``."""
+    columns, which crosses 0."""
 
     H = 25.0
 
+    @pytest.mark.parametrize("bias", [False, True])
     @pytest.mark.parametrize("offset", [0.0, 1e8])
-    def test_ew_cov_is_pandas_ewm(self, offset):
+    def test_ew_cov_is_pandas_ewm(self, offset, bias):
         import pandas as pd
 
         rng = np.random.default_rng(7)
@@ -2676,6 +2685,7 @@ class TestTheEwMomentsArePandas:
             half_life=self.H,
             stats=["mean", "var", "cov", "corr"],
             min_weight=0.0,
+            bias=bias,
         )
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
         out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
@@ -2683,8 +2693,8 @@ class TestTheEwMomentsArePandas:
         ew, pair = pdf.ewm(halflife=self.H), pdf["x0"].ewm(halflife=self.H)
         want = {
             "mean_x0": ew.mean()["x0"].to_numpy(),
-            "var_x0": ew.var(bias=True)["x0"].to_numpy(),
-            "cov_x0_x1": pair.cov(pdf["x1"], bias=True).to_numpy(),
+            "var_x0": ew.var(bias=bias)["x0"].to_numpy(),
+            "cov_x0_x1": pair.cov(pdf["x1"], bias=bias).to_numpy(),
             "corr_x0_x1": pair.corr(pdf["x1"]).to_numpy(),
         }
         for name, ref in want.items():
@@ -3363,7 +3373,12 @@ class TestPoEvalIsSklearnsMetrics:
 
     def test_the_regression_metrics(self):
         from scipy.stats import pearsonr
-        from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
+        from sklearn.metrics import (
+            accuracy_score,
+            mean_squared_error,
+            r2_score,
+            root_mean_squared_error,
+        )
 
         out, scored = self.regression()
         got = po.eval.metrics(out, "m", group=["g"], min_samples=1)
@@ -3375,6 +3390,7 @@ class TestPoEvalIsSklearnsMetrics:
             assert row["n"] == len(y) and (~signed).sum() > 5
             assert row["r2"] == pytest.approx(r2_score(y, pred), rel=1e-12)
             assert row["mse"] == pytest.approx(mean_squared_error(y, pred), rel=1e-12)
+            assert row["rmse"] == pytest.approx(root_mean_squared_error(y, pred), rel=1e-12)
             assert row["ic"] == pytest.approx(pearsonr(pred, y).statistic, rel=1e-12)
             want = accuracy_score(np.sign(y[signed]), np.sign(pred[signed]))
             assert row["hit_rate"] == pytest.approx(want, rel=1e-12)
@@ -3414,15 +3430,15 @@ class TestPoEvalIsSklearnsMetrics:
             min_weight=50.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
-        got = po.eval.metrics(out, "m", binary=True, min_samples=1).row(0, named=True)
+        got = po.eval.metrics(out, spec, min_samples=1).row(0, named=True)  # binary, by its loss
         scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
         y, p = scored["y"].to_numpy(), scored["pred"].to_numpy()
         assert p.min() > 1e-15 and p.max() < 1.0 - 1e-15, "the clip is not in play"
-        assert got["hit_rate"] == pytest.approx(accuracy_score(y, p > 0.5), rel=1e-12)
+        assert got["accuracy"] == pytest.approx(accuracy_score(y, p > 0.5), rel=1e-12)
         assert got["log_loss"] == pytest.approx(log_loss(y, p), rel=1e-12)
-        assert got["r2"] == pytest.approx(r2_score(y, p), rel=1e-12), "the Brier skill score"
+        assert got["brier_skill"] == pytest.approx(r2_score(y, p), rel=1e-12), "the Brier skill"
         assert got["ic"] == pytest.approx(pearsonr(p, y).statistic, rel=1e-12)
-        assert 0.6 < got["hit_rate"] < 0.95
+        assert 0.6 < got["accuracy"] < 0.95
 
 
 class TestShrinkToTheIdentityIsSklearnsLedoitWolf:
@@ -4010,10 +4026,10 @@ class TestHmmIsHmmlearns:
     recursion. ``learn = False`` with given means, covariances and
     transition: each state's emission is the Gaussian of its covariance plus
     ``precision_prior`` on the diagonal, and the filter starts uniform, so
-    hmmlearn's start is ``[1/2, 1/2] @ Pi``. ``filtered_<k>`` on a row is
+    hmmlearn's start is ``[1/2, 1/2] @ Pi``. ``filtered_state<k>`` on a row is
     read before the row, so it is hmmlearn's filtered probability at the row
     before, the last of ``predict_proba`` over the rows up to it;
-    ``predicted_<k>`` is that times ``Pi``; and ``loglik`` is ``log p(x_t |
+    ``predicted_state<k>`` is that times ``Pi``; and ``loglik`` is ``log p(x_t |
     x_<t)``, the difference of ``score`` over the rows up to it and up to the
     row before. Measured: 1.4e-13, the probabilities absolute and the
     log-likelihoods relative."""
@@ -4056,10 +4072,10 @@ class TestHmmIsHmmlearns:
         scores = np.array([model.score(x[: t + 1]) for t in range(n)])
         loglik = np.diff(scores, prepend=0.0)
 
-        got = out.select("filtered_0", "filtered_1").to_numpy()
+        got = out.select("filtered_state0", "filtered_state1").to_numpy()
         np.testing.assert_allclose(got[0], [0.5, 0.5], rtol=0, atol=0)
         np.testing.assert_allclose(got[1:], filtered[:-1], rtol=0, atol=self.TOL)
-        predicted = out.select("predicted_0", "predicted_1").to_numpy()
+        predicted = out.select("predicted_state0", "predicted_state1").to_numpy()
         np.testing.assert_allclose(predicted[1:], filtered[:-1] @ pi, rtol=0, atol=self.TOL)
         np.testing.assert_allclose(out["loglik"].to_numpy(), loglik, rtol=self.TOL, atol=self.TOL)
         # And the states are told apart: the filter is no flat 1/2.
@@ -4695,14 +4711,14 @@ class TestAuditIsScipyAndStatsmodels:
         med = np.median(x)
         assert got["median"] == med
         assert got["mad"] == np.median(np.abs(x - med))
-        assert got["distinct"] == len(np.unique(x))
+        assert got["n_unique"] == len(np.unique(x))
 
     @pytest.mark.parametrize("level", [0.0, 1e6])
     def test_the_digest_reads_the_median_and_mad_to_a_rank(self, level):
         rng = np.random.default_rng(74)
         x = level + rng.lognormal(size=20_000)
         got = self._audit(x)
-        assert got["distinct"] is None, "past the cap: the digest answers"
+        assert got["n_unique"] is None, "past the cap: the digest answers"
         lo, hi = np.quantile(x, [0.49, 0.51])
         assert lo <= got["median"] <= hi
         dev = np.abs(x - np.median(x))

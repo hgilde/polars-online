@@ -40,8 +40,8 @@ gives what each guarantee rests on:
 |---|---|---|---|
 | **1. Fit, and keep the state** | `lf.online.fit_predict([spec], save_state="ridge.state")` | `save_state` in the TOML, or `--save-state` | the state is written whole, once the bank has been fed its last row, and two runs of the query write the same bytes |
 | **2. Inspect it** | Loading the file gives the `ModelBank` back: `po.ModelBank.load(path)`, with `coef()` (the betas), `last_row()`, `summary()` and `describe()` (what it was fed), `gram()` and the rest. `save_bytes()` / `load_bytes()` are the same state as bytes, for a store that is not a file | | none of them needs a row of data |
-| **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `online --load-state p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count |
-| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `online --load-state p --save-state p` | it resumes at the next row and replaces the file. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap |
+| **3. Serve from it, learning nothing** | `lf.online.predict("ridge.state")` | `polars-online --load-state p --predict`, which refuses `--save-state` | every row is scored against the state as it stands, and the state never moves, so the same rows score the same way twice, on any thread count |
+| **4. Learn on from it** | `lf.online.fit_predict(load_state="ridge.state", save_state="ridge.state")` | `polars-online --load-state p --save-state p` | it resumes at the next row and replaces the file. The specs come from the file, and a `load_state` that is not a bank this build can read, or whose specs disagree with the ones passed, is a `ValueError` before any row is read. Input that overlaps the state is refused by default; [`skip_learned`](#resuming-on-input-that-overlaps-the-state) drops the overlap |
 
 ### Fit, and keep the state
 
@@ -145,7 +145,7 @@ first = Path("run.state").read_bytes()
 query.collect()
 print(f"two runs, the same bytes: {Path('run.state').read_bytes() == first}")
 query.head(100).collect()
-print(f"under head(100), the state has been fed {po.ModelBank.load('run.state').rows_fed()} rows")
+print(f"under head(100), the state has been fed {po.ModelBank.load('run.state').rows_fed} rows")
 ```
 
 ```text
@@ -285,7 +285,7 @@ stream.head(1_500).write_parquet("2025.parquet")
 stream.tail(500).write_parquet("2026.parquet")
 clock = dict(clock="t", gap_cap=300.0, half_life=600.0)
 late = po.spec.ewridge("late", targets=["y"], features=["x0", "x1"], embargo=50.0, **clock)     # each row learned 50 units later
-y_ahead = po.rewm_mean("y", half_life=10.0, window_size=20.0).alias("y_ahead")                   # the next 20 units' mean of y
+y_ahead = po.ewm_mean("y", half_life=10.0, window_size=20.0, reverse=True).alias("y_ahead")                   # the next 20 units' mean of y
 window = po.spec.ewridge("window", targets=[y_ahead], features=["x0", "x1"], embargo=20.0, **clock)
 specs = [late, window]
 
@@ -360,7 +360,7 @@ holds the checks:
 | every run of a query ends in the same state, so two runs write the same bytes. A query that uses the bank twice runs it twice when it writes a state, and with nothing to write Polars may run it once | a query that uses a plan twice, as `lf.join(lf)`, `pl.concat([lf, lf])` or `pl.collect_all` over two sinks do, runs its source twice, at the same time on two threads | each of those three wrote the file twice, on two threads, and the file was byte-identical to `po.run`'s |
 | `load_state` and `predict(path)` are read when the query is built, so a query run twice gives the same result | the two runs above overlap, so a state read at run time could be read while the other run writes it | a query built against a state file, run again after the file was overwritten, gave the same frame |
 | the bank is fed exactly the rows the query pulled | a `head(n)` reaches the source as a row count, and the source stops there; a `sort().head(n)` does not, so the bank reads every row | `head(613)` wrote the state of a bank fed the first 613 rows, byte for byte, and `sort().head(5)` the whole stream's |
-| `predict` refuses `save_state`, as `online --predict` does, since it learns nothing | | `predict(save_state=...)` is refused |
+| `predict` refuses `save_state`, as `polars-online --predict` does, since it learns nothing | | `predict(save_state=...)` is refused |
 | a failure after the bank still writes the state on py-polars 1.x, and on 2.0 only for a stream short enough to finish first: [the one gap](#the-one-gap-a-failure-after-the-bank) | Polars runs a source to the end of its input before it reports the error of a step after it | a cast that failed after the bank left the file, byte-identical to the whole stream's state |
 | building a query writes nothing | building or inspecting a query, by `collect_schema()` or `explain()`, runs no source | a source's run count stayed at 0 |
 
@@ -384,7 +384,7 @@ came after it:
 
 **Read with two changes since.** Task 83 (2026-09-17) removed `po.run`,
 the Python runner this document names as a third surface. The command line
-`online` keeps the file-to-file runner, and in Python a query goes to
+`polars-online` keeps the file-to-file runner, and in Python a query goes to
 `ModelBank.fit(lf)` or `fit_predict_batches(lf)`, which chunk it
 themselves. Every measurement and decision below stands. Where the text
 says `po.run` as a surface that exists, read the CLI for the file-to-file
@@ -456,7 +456,7 @@ stays so, as `po.run` was until task 83 removed it.
 
 | step | `ModelBank` | TOML / CLI (and `po.run`, until task 83) | plan `lf.online.*` (and `df.online.*`, `po.fit_predict`) |
 |---|---|---|---|
-| (1) fit online, bounded | `bank.fit(lf)` / `fit_predict_batches(lf)`, which chunk the plan; or `fit_predict(chunk)` in a loop of your own | `online --config bank.toml` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
+| (1) fit online, bounded | `bank.fit(lf)` / `fit_predict_batches(lf)`, which chunk the plan; or `fit_predict(chunk)` in a loop of your own | `polars-online --config bank.toml` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
 | (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `coef()`, `last_row()`, `summary()`, `describe()`, `gram()` | `save_state=` / `save_state = "…"` / `--save-state`, written after the output is committed | **none** — the bank was dropped when the source ended (E33: "no `save_state`"); now `save_state=` (§4) |
 | (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `--load-state p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
 | (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `--load-state p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |

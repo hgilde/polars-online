@@ -111,7 +111,7 @@ Each question, the diagnostic that answers it, and its fields:
 | is it scaled right? | `emit_calibration` | `calibration_slope_<t>`, `calibration_intercept_<t>`, `calibration_wald_<t>` | [Is it scaled right?](#is-it-scaled-right) |
 | has it broken? | `emit_breaks`, `emit_drift` | `studentized_<t>`, `cusum_<t>`, `cusum_sq_<t>`, `break_wald_<t>`, `drift_<t>` | [Has it broken?](#has-it-broken) |
 | can its t be trusted? | `emit_se_coef`, `emit_robust_se` | `se_coef`, `se_coef_hc0`, `se_coef_hac`, beside `coef` | [Can its t be trusted?](#can-its-t-be-trusted) |
-| what is it missing? | `emit_specification`, `emit_autocorr` | `ljung_box_<t>`, `breusch_pagan_<t>`, `reset_<t>`, `autocorr_<t>` | [What is it missing?](#what-is-it-missing) |
+| what is it missing? | `emit_specification`, `emit_autocorr` | `ljung_box_<t>`, `breusch_pagan_<t>`, `ramsey_reset_<t>`, `autocorr_<t>` | [What is it missing?](#what-is-it-missing) |
 | are its tails heavy? | `emit_tails` | `skew_<t>`, `kurtosis_<t>`, `jarque_bera_<t>` | [Are its tails heavy?](#are-its-tails-heavy) |
 | which row moved it? | `emit_influence` | `influence_<t>` | [Which row moved it?](#which-row-moved-it) |
 | are its features healthy? | `emit_feature_health` | `spread_ratio_<feature>`, `mean_shift_<feature>` | [Are its features healthy?](#are-its-features-healthy) |
@@ -171,11 +171,14 @@ worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`. So `λ = (W 
 half-life is `W ln 2 / 2` of them. A window beside a half-life takes the
 Kish size of the decayed weights cut at the window. `kalman` forgets its
 coefficients at `coef_half_life`, so its diagnostics read at that, the
-shortest finite one where it gives one per coefficient. Beside
+shortest finite one where it gives one per coefficient; the CUSUM's null
+share alone reads the intercept's entry, since the intercept is what
+absorbs a level. Under `window_size` that share reads the window itself
+([Has it broken?](#has-it-broken)). Beside
 `window_size=400` with no decay, `se_coef_hc0` read the window slope's
 spread over 200 streams, 0.0495 against 0.0498, where at the run-once
 memory it read a third of it. On 30 clean streams beside `window_size=100`,
-`reset` passed its 5% value on 4.8% of rows, where run once it passed on
+`ramsey_reset` passed its 5% value on 4.8% of rows, where run once it passed on
 51%.
 
 | form | memory | what it is | use it beside |
@@ -223,8 +226,9 @@ break on the median.
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
 forgets, a diagnostic also waits until the stream is 95% settled on the
-longest finite memory the model keeps. That is 4.3 of its half-lives, the
-point from which the readiness notices judge a stream. A fit with several
+longest finite memory the model keeps, 4.3 of that memory's half-lives.
+Under `window_size` with no decay that memory is the window's Kish
+half-life, so a diagnostic starts about `1.5 W` rows in. A fit with several
 memories has settled only once the longest has, so four models count a
 memory beside their half-life:
 
@@ -242,6 +246,21 @@ none. `sgd` and `pa` under `standardize` fold from the row their scaler
 switches the fit to the caller's units, 22 rows of Kish's size in. The
 fields of the twin fits and of feature health read the target and the
 features alone, and fold every row.
+
+**The readiness notices read the model's own half-life, so they can judge
+a stream long before its diagnostics start.** `settled_frac`,
+`min_settled_frac`, `summary()` and the notices that a gate is not met read
+the decay `half_life` sets. A notice projects the weight a stream tops out
+at, `1 / (1 − λ^d)`, or the noise gate's ratio, and both settle on that
+clock. A diagnostic waits for the longest memory, because a residual from
+before that memory has settled carries its warm-up bias, which reads as a
+break. On `holt` at a half-life of 50, with its trend at the default 200,
+the stream is 95% settled on the level at row 218. A `min_weight` above
+the weight's ceiling of 72.6 is named at row 268, a half-life later. The
+first `cusum` comes at row 878, past the trend's 95% at row 866. Under
+`window_size` with no decay nothing settles, so `settled_frac` is null and
+no notice judges the stream. Its diagnostics still start 4.3 of the
+window's Kish half-lives in.
 
 **A fit far from its truth carries its warm-up error for many
 half-lives.** `rls` and `kalman` learn the intercept from a prior at 0, so
@@ -262,11 +281,11 @@ rows.
 hold back the warm-up: give the model a `min_weight` of a few rows per
 coefficient.** A fit with three rows for three coefficients predicts
 wildly, and run once those first residuals weigh in the statistic forever.
-On 40 clean streams of 6,000 rows, a run-once `reset` beside a run-once
+On 40 clean streams of 6,000 rows, a run-once `ramsey_reset` beside a run-once
 `ewridge` at its default `min_weight` of 0 passed its 5% value on 26% of
 rows past row 2,000. At `min_weight=10` it passed on 2.6%. The calibration
 test passed on 19% of rows at 0 and 9.4% at 10. Beside a fit at a
-half-life of 200, a run-once `reset` passed on 25.8% of rows 1,000 to
+half-life of 200, a run-once `ramsey_reset` passed on 25.8% of rows 1,000 to
 3,000 when it folded from the first prediction, and on 4.8% from
 readiness.
 
@@ -317,7 +336,7 @@ every = po.spec.ewridge(
     calibration_half_life=800.0,  #   the default: four times the fit's memory, here its half-life
     emit_breaks=True,             # studentized_y, cusum_y, cusum_sq_y, break_wald_y
     breaks_half_life=200.0,       #   the default: the fit's memory, as for each below
-    emit_specification=True,      # ljung_box_y, breusch_pagan_y, reset_y
+    emit_specification=True,      # ljung_box_y, breusch_pagan_y, ramsey_reset_y
     ljung_box_lags=10,            #   the default
     emit_tails=True,              # skew_y, kurtosis_y, jarque_bera_y
     emit_influence=True,          # influence_y: ewridge, rls and kalman
@@ -339,7 +358,7 @@ pred_y resid_y error_inflation_y sigma_y zscore_y lo_y
 hi_y coverage_y ic_y r2_y hit_rate_y abs_resid_q0.5_y
 abs_resid_q0.9_y autocorr_y drift_y calibration_slope_y calibration_intercept_y calibration_wald_y
 studentized_y cusum_y cusum_sq_y break_wald_y ljung_box_y breusch_pagan_y
-reset_y skew_y kurtosis_y jarque_bera_y influence_y spread_ratio_x0
+ramsey_reset_y skew_y kurtosis_y jarque_bera_y influence_y spread_ratio_x0
 spread_ratio_x1 mean_shift_x0 mean_shift_x1 weight_sum settled_frac withheld_reason
 coef_y_intercept coef_y_x0 coef_y_x1 support_coef_y_intercept support_coef_y_x0 support_coef_y_x1
 se_coef_y_intercept se_coef_y_x0 se_coef_y_x1 se_coef_hc0_y_intercept se_coef_hc0_y_x0 se_coef_hc0_y_x1
@@ -560,7 +579,14 @@ before each row, so its residual is the shock less that mean. A sum of
 those residuals at a memory `h` therefore cancels much of itself. In
 continuous time the sum's variance is `r = h_fit / (h_fit + h)` of the
 plain sum's, whatever the rows' rate: one half at equal memories, a
-standard deviation of 0.71. The CUSUM of squares is studentized by a scale
+standard deviation of 0.71. `h_fit` is the memory at which the fit absorbs
+a level, the fit's own, but for a `kalman` whose `coef_half_life` gives
+each coefficient its own: a level is absorbed by the intercept's
+coefficient alone, so `h_fit` is the intercept's entry, and `inf` there
+pins it, absorbs nothing, and leaves the plain sum. Read at the shortest
+entry instead, `[inf, 30, 30]` spread 1.40 on clean streams and `[30, 10,
+10]` 1.29, where `[30, 30, 30]` read 1.03; at the intercept's each reads
+about 1.03. The CUSUM of squares is studentized by a scale
 at its own memory, which absorbs the squares' level the same way, so its
 share is one half. Each is divided by its share. On 30 clean streams
 beside `ewridge`, `rls`, `lasso` and `kalman` at a half-life of 200, at
@@ -576,6 +602,33 @@ indicators' CUSUM is divided by the same share. On 30 clean streams at
 `q = 0.5` and `0.9`, that CUSUM's spread read 1.03 to 1.06 at memories of
 50 and 200, and 1.10 to 1.25 at 800. `huber`, `holt` and the gradient
 fits absorb at a pace of their own, so they keep the plain sum.
+
+**A window absorbs a level as a mean over its rows, so its share is the
+window's own.** Under `window_size` the fit's prediction is a mean of the
+rows in the window, weighted by the decay inside it. A sum of its residuals
+cancels less than one beside an exponential of the same Kish size. With the
+fit's weights `g(y)` on the rows before it, the share is
+
+```text
+r = 1 − 2 ∫ g(y) e^(−κ y) dy + ∫∫ g(y) g(y') e^(−κ |y − y'|) dy dy'
+```
+
+with `κ = ln 2 / h`, `h` the CUSUM's memory. A window of `W` with no decay
+weighs its rows alike. With `u = W ln 2 / h` that gives `r = 1 + 2 e^(−u) / u
+− 2 (1 − e^(−u)) / u²`, 0.703 at the default memory, where read as an
+exponential it is one half. Beside a decay the weights are the decay's, cut
+at `W`. The share then runs from the window's form, for a window much
+shorter than the half-life, to `h_fit / (h_fit + h)`, for one much longer.
+The table is 20 sets of 20 clean streams of 6,000 rows beside `ewridge`,
+over rows 3,000 on:
+
+| window, half-life | spread of `cusum`, over the window's share | read as an exponential of its Kish size |
+|---|---:|---:|
+| 100 rows, none | 1.01 | 1.20 |
+| 400 rows, none | 1.00 | 1.19 |
+| 100 rows, 200 | 1.02 | 1.17 |
+| 400 rows, 200 | 1.01 | 1.08 |
+| 100 rows, 50 | 1.02 | 1.10 |
 
 **Beside a fit that keeps the plain sum, `|cusum| > 3` is conservative and
 finds less.** Its spread reads below 1 there. The table is measured at a
@@ -861,7 +914,7 @@ so once, in a `ReadinessWarning`. Under a horizon of `h` rows:
 | `cusum`, `cusum_sq` | each sum over its long-run variance: Bartlett's weights on its terms' products over `2h` lags |
 | `break_wald` | the noise variance times the studentized residuals' long-run over short-run variance |
 | `ljung_box` | tests lags `h` to `h + L − 1` against Bartlett's covariance past an `MA(h − 1)` |
-| `breusch_pagan`, `reset` | Wald's test of the same coefficients with Newey and West's variance at `2h` lags, from the residual under each null |
+| `breusch_pagan`, `ramsey_reset` | Wald's test of the same coefficients with Newey and West's variance at `2h` lags, from the residual under each null |
 
 **Lags read from `embargo` stop at 64.** Each lag adds a sum to every slot
 of each diagnostic that reads the horizon:
@@ -870,7 +923,7 @@ of each diagnostic that reads the horizon:
 |---|---:|
 | `se_coef_hac`'s sandwich | `(k + 1)²` |
 | `breusch_pagan` | `(k + 1)²` |
-| `reset` | 16 |
+| `ramsey_reset` | 16 |
 | `calibration_wald` | 4 |
 | `cusum`, `cusum_sq` | 2 each |
 
@@ -884,7 +937,7 @@ look-ahead target against two AR(1) features at 0.5 to 0.95, with nothing
 missing. Each cell is the share of rows 1,500 to 3,999 on which the plain
 form passed its 5% value, and after the arrow the horizon's form:
 
-| at a half-life of 200 | `breusch_pagan` | `reset` | `calibration_wald` | `cusum` | `cusum_sq` | `break_wald` |
+| at a half-life of 200 | `breusch_pagan` | `ramsey_reset` | `calibration_wald` | `cusum` | `cusum_sq` | `break_wald` |
 |---|---:|---:|---:|---:|---:|---:|
 | AR 0.5 | 20.6% → 4.0% | 10.1% → 3.1% | 7.9% → 0.0% | 23.6% → 7.6% | 12.7% → 6.2% | 47.6% → 2.5% |
 | AR 0.8 | 28.0% → 4.3% | 22.4% → 3.9% | 11.7% → 0.1% | 23.1% → 7.4% | 14.0% → 8.2% | 56.4% → 4.4% |
@@ -937,10 +990,10 @@ model = po.spec.ewridge(
 out = lf.online.fit_predict([model]).collect()
 last = out.group_by("stream", maintain_order=True).last().select(pl.col("m").struct.unnest())
 slope = last.select(
-    coef=pl.col("coef").list.get(1),  # [intercept, x]
-    se=pl.col("se_coef").list.get(1),
-    hc0=pl.col("se_coef_hc0").list.get(1),
-    hac=pl.col("se_coef_hac").list.get(1),
+    coef=pl.col("coef").arr.get(1),  # [intercept, x]
+    se=pl.col("se_coef").arr.get(1),
+    hc0=pl.col("se_coef_hc0").arr.get(1),
+    hac=pl.col("se_coef_hac").arr.get(1),
 )
 print(f"the slope's spread over the {streams} streams: {slope['coef'].std():.4f}")
 for se in ["se", "hc0", "hac"]:
@@ -973,10 +1026,10 @@ silent about the overlap the same way.** `po.gram.coef_stats` computes each
 coefficient's standard error and t from a Gram, such as one loaded from a
 state, at `n = target_n_kish` ([A ridge and its
 t](GRAM.md#a-ridge-and-its-t)). Read its t as a scale for
-comparing coefficients. `marginal`'s `t_serial` corrects each pair's count
+comparing coefficients. `marginal`'s `t_stat_serial` corrects each pair's count
 for rows that resemble their neighbours, after Bartlett (1935): over
 1,000 pairs of independent AR(1) series, `|t|` passed 1.96 on 45% of them
-and `|t_serial|` on 5.4%
+and `|t_stat_serial|` on 5.4%
 ([`marginal`](MODELS.md#marginal--every-pairs-moments-kept-in-the-state)).
 
 **What to do.** For a target that looks ahead, read `se_coef_hac`, with
@@ -995,7 +1048,7 @@ correlation look for what is left.
 |---|---|---|---|
 | `ljung_box_<t>` | Box and Pierce's (1970) `Q = n Σ_{l=1..L} ρ̂_l²` over `ljung_box_lags` lags (default 10), at Kish's `n`; run once, Ljung and Box's (1978) `n(n + 2) Σ ρ̂_l² / (n − l)` | `chi2(L)`: 18.3 at 5% for 10 lags | a lag the fit is missing, or a half-life too long |
 | `breusch_pagan_<t>` | Koenker's (1981) form of Breusch and Pagan's (1979) test: `n R²` of `resid²` regressed on the slot's features | `chi2(k)` for `k` features | a spread that moves with a feature, linearly |
-| `reset_<t>` | Ramsey's (1969) RESET as a Lagrange multiplier: `n R²` of `resid` on `pred²` and `pred³` beside `pred` | `chi2(2)`: 5.99 at 5% | a curvature the fit is missing |
+| `ramsey_reset_<t>` | Ramsey's (1969) RESET as a Lagrange multiplier: `n R²` of `resid` on `pred²` and `pred³` beside `pred` | `chi2(2)`: 5.99 at 5% | a curvature the fit is missing |
 | `autocorr_<t>` (`emit_autocorr`) | the EW correlation of each residual with the one `resid_autocorr_lag` scored rows back (default 1) | near 0 | one lag, read as a correlation |
 
 `emit_specification` writes the first three at `specification_half_life`,
@@ -1026,7 +1079,7 @@ The plain `Q` passed its 5% value on 61% of the rows of five-row look-ahead
 streams with nothing missing, and the shifted one on 6.0% to 6.7%. The
 horizon is `embargo` on a spec with no clock column and `horizon_rows` on
 one with ([Can its t be trusted?](#can-its-t-be-trusted)). There
-`breusch_pagan` and `reset` become Wald's tests of the same coefficients
+`breusch_pagan` and `ramsey_reset` become Wald's tests of the same coefficients
 with Newey and West's variance. Beside an AR(1) feature at 0.95, on
 streams missing nothing, their `n R²` forms passed their 5% values on 38%
 and 39% of the rows, and the Wald forms on 4.7% and 5.2%.
@@ -1035,7 +1088,7 @@ and 39% of the rows, and the Wald forms on 4.7% and 5.2%.
 the features themselves, so a spread symmetric in a feature, as `|x0|`, is
 invisible to it. On the recipe's stream with its noise times `0.5 +
 |x0|` in place of `exp(0.5 x0)`, it read a median of 3.0, under `chi2(2)`'s
-5% value of 5.99. `reset`, whose `pred²` carries `x0²`, read 7.7, and
+5% value of 5.99. `ramsey_reset`, whose `pred²` carries `x0²`, read 7.7, and
 caught the spread in its place. Ljung-Box sees correlation at the lags it
 tests and no further. RESET sees curvature along the prediction, so a
 curvature in a feature the prediction barely uses can hide from it.
@@ -1079,7 +1132,7 @@ lf = pl.scan_parquet("missing.parquet").with_columns(
 def spec(name, target, features):
     return po.spec.ewridge(
         name, targets=[target], features=features, half_life=1_000.0,
-        emit_specification=True,  # ljung_box (10 lags), breusch_pagan, reset, at a memory of 1,000 rows
+        emit_specification=True,  # ljung_box (10 lags), breusch_pagan, ramsey_reset, at a memory of 1,000 rows
     )
 
 
@@ -1094,34 +1147,34 @@ specs = [
 out = lf.online.fit_predict(specs).slice(6_000).collect()
 
 # Each statistic's median. With nothing missing: chi2(10) has a median of 9.3, chi2(2) or chi2(3) of 1.4 or 2.4.
-print(f"{'spec':12} {'ljung_box':>10} {'breusch_pagan':>14} {'reset':>6}")
+print(f"{'spec':12} {'ljung_box':>10} {'breusch_pagan':>14} {'ramsey_reset':>12}")
 for s in specs:
     name, y = s["name"], s["targets"][0]
     medians = out.select(pl.col(name).struct.unnest()).select(
         pl.col(f"ljung_box_{y}").median(),
         pl.col(f"breusch_pagan_{y}").median(),
-        pl.col(f"reset_{y}").median(),
+        pl.col(f"ramsey_reset_{y}").median(),
     )
-    print(f"{name:12} " + " ".join(f"{v:>{w}.1f}" for v, w in zip(medians.row(0), (10, 14, 6))))
+    print(f"{name:12} " + " ".join(f"{v:>{w}.1f}" for v, w in zip(medians.row(0), (10, 14, 12))))
 ```
 
 ```text
-spec          ljung_box  breusch_pagan  reset
-clean               8.0            1.0    0.7
-lag               447.7            2.5    0.5
-spread              4.9          337.6    1.8
-curve               8.5            0.8  261.5
-lag_fixed           7.8            1.4    1.0
-curve_fixed         8.0            1.7    1.1
+spec          ljung_box  breusch_pagan ramsey_reset
+clean               8.0            1.0          0.7
+lag               447.7            2.5          0.5
+spread              4.9          337.6          1.8
+curve               8.5            0.8        261.5
+lag_fixed           7.8            1.4          1.0
+curve_fixed         8.0            1.7          1.1
 ```
 
 The clean stream reads 8.0, 1.0 and 0.7, each below its 5% value (18.3,
 5.99 and 5.99). Each faulty stream lights one test, by a factor of 50 or
 more over the clean stream. `ljung_box` reads 447.7 for the missing lag,
-`breusch_pagan` 337.6 for the spread, and `reset` 261.5 for the
+`breusch_pagan` 337.6 for the spread, and `ramsey_reset` 261.5 for the
 curvature.
 With last row's error as a feature, the lagged stream's `ljung_box` falls
-back to 7.8, and with `x0²` as a feature the curved stream's `reset`
+back to 7.8, and with `x0²` as a feature the curved stream's `ramsey_reset`
 falls to 1.1. The spread has no fix in the features.
 Its coefficients are still right, but their `se_coef` is not, so read
 `se_coef_hc0` ([Can its t be trusted?](#can-its-t-be-trusted)), or weight
@@ -1130,7 +1183,7 @@ each row by the inverse of its expected variance.
 **What to do.** For `ljung_box`, add the lag the residuals carry, as a
 feature made with Polars' `shift` in the query before the bank, or
 shorten the half-life if the fit is lagging a moving relationship. For
-`reset`, add the curvature: a square, a product, or a transform of the
+`ramsey_reset`, add the curvature: a square, a product, or a transform of the
 feature that carries it. For `breusch_pagan`, read the robust standard
 errors.
 
@@ -2026,7 +2079,7 @@ fair = po.spec.ewridge("fair", targets=["A"], features=["x1", "x2", "x3"], half_
 
 # Stage 2, reversion: the next 150 s's 30-second EWMA of the mid, less the mid, regressed on
 # resid_A. Each row is learned once its window has closed (embargo), and its residuals overlap.
-fwd = (po.rewm_mean("mid", half_life="30s", window_size="150s") - pl.col("mid")).alias("B")
+fwd = (po.ewm_mean("mid", half_life="30s", window_size="150s", reverse=True) - pl.col("mid")).alias("B")
 stage2 = dict(
     targets=[fwd], half_life=float("inf"), embargo="150s", min_weight=1_000.0,
     emit_se_coef=True, emit_robust_se=True,
@@ -2139,7 +2192,7 @@ Each claim above that is not measured here rests on one of these.
 |---|---|
 | Angelopoulos, A. N., Candès, E. J. and Tibshirani, R. J. (2023). Conformal PID control for time series prediction. *Advances in Neural Information Processing Systems* 36. | the quantile-tracking step of `conformal` |
 | Åström, K. J. and Wittenmark, B. (1995). *Adaptive Control*, 2nd ed. Addison-Wesley. | estimator windup under exponential forgetting |
-| Bartlett, M. S. (1935). Some aspects of the time-correlation problem in regard to tests of significance. *Journal of the Royal Statistical Society* 98(3), 536–543. | the count correction behind `marginal`'s `t_serial` |
+| Bartlett, M. S. (1935). Some aspects of the time-correlation problem in regard to tests of significance. *Journal of the Royal Statistical Society* 98(3), 536–543. | the count correction behind `marginal`'s `t_stat_serial` |
 | Belsley, D. A., Kuh, E. and Welsch, R. E. (1980). *Regression Diagnostics*. Wiley. | DFFITS, the basis of `influence` |
 | Breusch, T. S. and Pagan, A. R. (1979). A simple test for heteroscedasticity and random coefficient variation. *Econometrica* 47(5), 1287–1294. | `breusch_pagan` |
 | Brown, R. L., Durbin, J. and Evans, J. M. (1975). Techniques for testing the constancy of regression relationships over time. *Journal of the Royal Statistical Society, Series B* 37(2), 149–192. | recursive residuals, the CUSUM and the CUSUM of squares, and their boundaries |
@@ -2156,6 +2209,6 @@ Each claim above that is not measured here rests on one of these.
 | Mincer, J. A. and Zarnowitz, V. (1969). The evaluation of economic forecasts. In *Economic Forecasts and Expectations*, ed. J. A. Mincer, 3–46. NBER. | the calibration regression |
 | Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. *Econometrica* 55(3), 703–708. | `se_coef_hac`, and the variance in `diebold_mariano` and `clark_west` |
 | Page, E. S. (1954). Continuous inspection schemes. *Biometrika* 41(1/2), 100–115. | the CUSUM detector behind `drift` |
-| Ramsey, J. B. (1969). Tests for specification errors in classical linear least-squares regression analysis. *Journal of the Royal Statistical Society, Series B* 31(2), 350–371. | `reset` |
+| Ramsey, J. B. (1969). Tests for specification errors in classical linear least-squares regression analysis. *Journal of the Royal Statistical Society, Series B* 31(2), 350–371. | `ramsey_reset` |
 | Vovk, V., Gammerman, A. and Shafer, G. (2005). *Algorithmic Learning in a Random World*. Springer. | conformal prediction |
 | White, H. (1980). A heteroskedasticity-consistent covariance matrix estimator and a direct test for heteroskedasticity. *Econometrica* 48(4), 817–838. | `se_coef_hc0` |

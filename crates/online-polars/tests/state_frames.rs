@@ -187,8 +187,10 @@ fn coef_rides_on_the_last_accepted_row_across_runs() {
     assert_eq!(coef_rows(&out), vec![skip_from - 1]);
     // The chunk's coefficients are the fit after that row, as `coef()` has it.
     let field = out[0].struct_().unwrap().field_by_name("coef").unwrap();
-    let AnyValue::List(row) = field.get(skip_from - 1).unwrap() else {
-        panic!("a list");
+    // An Array since `coef` is one (task 244); a List before.
+    let row = match field.get(skip_from - 1).unwrap() {
+        AnyValue::Array(row, _) | AnyValue::List(row) => row,
+        other => panic!("an array, got {other:?}"),
     };
     let read: Vec<f64> = bank.coef(0, None).unwrap()[0].coef.clone().expect("solved");
     assert_eq!(row.f64().unwrap().to_vec_null_aware().left().unwrap(), read);
@@ -238,16 +240,13 @@ fn the_clock_range_is_the_clock_columns_own_to_the_nanosecond() {
     let summary = bank.summary(0, None).unwrap();
     assert_eq!(ns(summary.column("clock_min").unwrap()), vec![Some(t[3])]);
     assert_eq!(ns(summary.column("clock_max").unwrap()), vec![Some(t[5])]);
-    assert_eq!(ns(summary.column("last_clock").unwrap()), vec![Some(t[5])]);
+    assert_eq!(ns(summary.column("clock_last").unwrap()), vec![Some(t[5])]);
     let groups = bank.groups_table(&[0]).unwrap();
-    assert_eq!(ns(groups.column("last_clock").unwrap()), vec![Some(t[5])]);
+    assert_eq!(ns(groups.column("clock_last").unwrap()), vec![Some(t[5])]);
     let closed = bank.closed_groups(None, true).unwrap();
     assert_eq!(ns(closed.column("clock_min").unwrap()), vec![Some(t[0])]);
     assert_eq!(ns(closed.column("clock_max").unwrap()), vec![Some(t[2])]);
-    assert_eq!(
-        closed.column("rows_fed").unwrap().dtype(),
-        &DataType::UInt64
-    );
+    assert_eq!(closed.column("rows_fed").unwrap().dtype(), &DataType::Int64);
 }
 
 /// Task 200: an integer clock's range comes out in its own integer dtype,
@@ -293,11 +292,11 @@ fn an_integer_clock_is_held_and_shown_in_its_own_dtype() {
         let summary = bank.summary(0, None).unwrap();
         assert_eq!(ints(summary.column("clock_min").unwrap()), vec![Some(t[3])]);
         assert_eq!(
-            ints(summary.column("last_clock").unwrap()),
+            ints(summary.column("clock_last").unwrap()),
             vec![Some(t[5])]
         );
         let groups = bank.groups_table(&[0]).unwrap();
-        assert_eq!(ints(groups.column("last_clock").unwrap()), vec![Some(t[5])]);
+        assert_eq!(ints(groups.column("clock_last").unwrap()), vec![Some(t[5])]);
         let closed = bank.closed_groups(None, true).unwrap();
         assert_eq!(ints(closed.column("clock_min").unwrap()), vec![Some(t[0])]);
         assert_eq!(ints(closed.column("clock_max").unwrap()), vec![Some(t[2])]);

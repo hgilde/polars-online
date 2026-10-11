@@ -10,8 +10,8 @@ use online_core::{ClockCfg, Disorder};
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 use polars_arrow::array::{
-    Array as ArrowArray, BooleanArray, Float64Array, ListArray, MutableBinaryViewArray,
-    PrimitiveArray, StructArray, Utf8ViewArray,
+    Array as ArrowArray, BooleanArray, FixedSizeListArray, Float64Array, ListArray, PrimitiveArray,
+    StructArray, Utf8ViewArray,
 };
 use polars_arrow::bitmap::MutableBitmap;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
@@ -33,7 +33,7 @@ use crate::stream::{
     AnyModel, ChunkOut, ClockDtype, ClockRefusal, StepRefusal, Stream, StreamState, combo_labels,
     last_accepted,
 };
-use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
+use crate::summary::{DataSummary, Role, SummaryRow, counts, describe_frame, summary_frame};
 use online_core::ClockValue;
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -195,8 +195,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// audit keeps each column's smallest change and the changes at it; a file
 /// from before it is refit. **60 since task 232** (the same day): under a
 /// horizon the diagnostics keep Newey and West's sums; a file from before
-/// it is refit. **61 since task 244** (2026-10-11): a spec's keys and words
-/// take the names they keep at 1.0; a file from before it is refit.
+/// it is refit. **61 since review round 7 and task 244** (2026-10-11): a
+/// quantile fit's breaks keep its residuals' lag products under a horizon
+/// beside its indicators' (A-2), an `ew_cov` keeps `bias`, its spec
+/// writes it, and its components' variances follow it, and a spec's keys
+/// and words take the names they keep at 1.0; a file from before it is
+/// refit.
 pub const MIN_BANK_SCHEMA_VERSION: u32 = 61;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
@@ -1957,6 +1961,22 @@ fn check_closed_row(specs: &[Spec], r: &ClosedRow) -> Result<(), String> {
     }
 }
 
+/// The decay of `spec`'s instance named by its field suffix (`"@h500"`, or
+/// `""` for one instance) as `output_index` gives it: `(half_life, lam)`,
+/// both `None` for a model that takes no decay (`seqtest`, `rcov`,
+/// `corrchange`, `bocpd`, `audit`), and an infinite half-life as `inf`.
+pub(crate) fn instance_decay(spec: &Spec, instance: &str) -> (Option<f64>, Option<f64>) {
+    if spec.half_life.is_none() && spec.lam.is_none() {
+        return (None, None);
+    }
+    let decays = spec.decays().unwrap_or_default();
+    match decays.iter().find(|(s, _)| s == instance).map(|(_, d)| d) {
+        Some(online_core::Decay::Halflife(h)) => (Some(*h), None),
+        Some(online_core::Decay::Lam(l)) => (None, Some(*l)),
+        None => (None, None),
+    }
+}
+
 /// The frame [`Bank::closed_groups`] returns: the common columns always,
 /// and a kind's block when **any** spec of the bank closes groups and is of
 /// that kind, null on the rows of other kinds (docs/ENHANCEMENTS.md E54).
@@ -2001,6 +2021,20 @@ fn closed_frame(
             "instance".into(),
             rows.iter().map(|r| r.instance.as_str()).collect::<Vec<_>>(),
         ),
+        // The instance's decay beside its suffix, as `output_index` and
+        // `coef()` give it (task 244).
+        Column::new(
+            "half_life".into(),
+            rows.iter()
+                .map(|r| instance_decay(&specs[r.spec], &r.instance).0)
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "lam".into(),
+            rows.iter()
+                .map(|r| instance_decay(&specs[r.spec], &r.instance).1)
+                .collect::<Vec<_>>(),
+        ),
         Column::new(
             "session".into(),
             rows.iter()
@@ -2017,21 +2051,11 @@ fn closed_frame(
                 .map(|r| r.n_kish.and_then(opt))
                 .collect::<Vec<_>>(),
         ),
-        // `UInt64`, as `summary()` and `groups()` count: a count saturated
-        // at the top of its range read -1 as an `Int64` (review round 4,
-        // PA3).
-        Column::new(
-            "rows_fed".into(),
-            rows.iter()
-                .map(|r| r.rows_fed)
-                .collect::<Vec<Option<u64>>>(),
-        ),
-        Column::new(
-            "rows_learned".into(),
-            rows.iter()
-                .map(|r| r.rows_learned)
-                .collect::<Vec<Option<u64>>>(),
-        ),
+        // An `Int64`, as every count of every frame (task 244): a count
+        // saturated at the top of a `u64` reads `i64::MAX`, never -1
+        // (`summary::count`; review round 4, PA3).
+        counts("rows_fed", rows.iter().map(|r| r.rows_fed)),
+        counts("rows_learned", rows.iter().map(|r| r.rows_learned)),
         ClockDtype::column(
             clock,
             "clock_min",
@@ -2086,7 +2110,7 @@ fn closed_frame(
                 .as_ref()
                 .map(|g| g.means_by_target.iter().flatten().copied().collect())
         }));
-        cols.push(list_f64("cross_centred", rows, |r| {
+        cols.push(list_f64("cross_centered", rows, |r| {
             r.gram
                 .as_ref()
                 .map(|g| g.cross_centred.iter().flatten().copied().collect())
@@ -2180,7 +2204,7 @@ fn closed_frame(
                     "pair_n_serial",
                     (|p: &PairRow| p.n_serial) as fn(&PairRow) -> f64,
                 ),
-                ("pair_t_serial", |p| p.t_serial),
+                ("pair_t_stat_serial", |p| p.t_serial),
                 ("pair_phi_x", |p| p.phi_x),
                 ("pair_phi_y", |p| p.phi_y),
             ] {
@@ -2228,12 +2252,24 @@ fn closed_frame(
                 .map(|r| r.rcov.as_ref().map(|b| b.n))
                 .collect::<Vec<_>>(),
         ));
-        cols.push(Column::new(
-            "rcov_kind".into(),
-            rows.iter()
-                .map(|r| r.rcov.as_ref().map(|b| b.kind.as_str()))
-                .collect::<Vec<_>>(),
-        ));
+        // An `Enum` over the estimators, in `RcovKind`'s order (task 244).
+        let kinds = [
+            online_core::RcovKind::Plain,
+            online_core::RcovKind::Kernel,
+            online_core::RcovKind::Preavg,
+        ]
+        .map(online_core::RcovKind::as_str);
+        cols.push(
+            Column::new(
+                "rcov_kind".into(),
+                rows.iter()
+                    .map(|r| r.rcov.as_ref().map(|b| b.kind.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .cast(&DataType::from_frozen_categories(
+                FrozenCategories::new(kinds).expect("distinct names"),
+            ))?,
+        );
         // Every column of the block carries the kind's prefix, as
         // `marginal`'s block carries `pair_` (review round 4, PA13).
         cols.push(Column::new(
@@ -2308,13 +2344,24 @@ pub struct CoefField {
     /// `pred_y__r0.5@h500`. Prefixed, because a bare `x1` would collide with
     /// the feature column of that name in the same frame.
     pub name: String,
-    pub target: String,
+    /// The target the slot fits, or `ew_class`'s label column, or a `deco`
+    /// slot (`rho`, a block, a pair of blocks); `None` for a `kmeans`
+    /// centre and an `hmm` state, which belong to no target.
+    pub target: Option<String>,
+    /// The instance's field suffix (`"@h500"`, or `""` for one instance).
+    pub instance: String,
     pub half_life: Option<f64>,
     pub lam: Option<f64>,
     pub ridge: Option<f64>,
     pub feature_set: Option<String>,
     /// Lasso path point.
     pub penalty: Option<f64>,
+    /// The `kmeans` centre the slot holds.
+    pub cluster: Option<usize>,
+    /// The `hmm` state whose means the slot holds.
+    pub state: Option<usize>,
+    /// The `ew_class` class whose means the slot holds.
+    pub class: Option<String>,
     /// `intercept`, a feature name, or `level` / `trend` for `holt`.
     pub term: String,
 }
@@ -2742,8 +2789,11 @@ impl Bank {
     }
 
     /// [`Self::groups`] for `specs` as one frame -- `spec`, `group`,
-    /// `rows_processed`, `last_clock` -- the clock in the clock column's own
+    /// `rows_fed`, `clock_last` -- the clock in the clock column's own
     /// dtype, exactly ([`ClockDtype::column`], review round 4, N18).
+    /// `rows_fed` is `summary()`'s, the rows routed to the group, skipped
+    /// ones included (task 244: it was the processed rows, under another
+    /// name).
     ///
     /// # Errors
     ///
@@ -2751,11 +2801,16 @@ impl Bank {
     /// dtypes, which one column cannot hold.
     pub fn groups_table(&self, specs: &[usize]) -> Result<DataFrame, String> {
         let clock = self.frame_clock(specs)?;
-        let all = self.groups();
+        let all = self.per_group(|s| {
+            (
+                s.summary().map(|d| d.rows_fed),
+                s.persisted.clock.last_clock(),
+            )
+        });
         let (mut spec, mut group, mut rows, mut last) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for &si in specs {
-            for (k, n, c) in &all[si] {
+            for (k, (n, c)) in &all[si] {
                 spec.push(self.specs[si].name.as_str());
                 group.push(k.as_str());
                 rows.push(*n);
@@ -2765,8 +2820,8 @@ impl Bank {
         let cols = vec![
             Column::new("spec".into(), spec),
             Column::new("group".into(), group),
-            Column::new("rows_processed".into(), rows),
-            ClockDtype::column(clock, "last_clock", &last).map_err(|e| e.to_string())?,
+            counts("rows_fed", rows),
+            ClockDtype::column(clock, "clock_last", &last).map_err(|e| e.to_string())?,
         ];
         DataFrame::new(last.len(), cols).map_err(|e| e.to_string())
     }
@@ -2980,9 +3035,19 @@ impl Bank {
                 .map(|v| (!v.is_nan()).then_some(v))
                 .collect()
         };
+        // The instance's decay beside its suffix, as `output_index` and
+        // `coef()` give it (task 244).
+        let decay: Vec<(Option<f64>, Option<f64>)> =
+            instance.iter().map(|i| instance_decay(s, i)).collect();
         let mut cols = vec![
+            Column::new("spec".into(), vec![s.name.as_str(); pairs.len()]),
             Column::new("group".into(), group_col),
             Column::new("instance".into(), instance),
+            Column::new(
+                "half_life".into(),
+                decay.iter().map(|d| d.0).collect::<Vec<_>>(),
+            ),
+            Column::new("lam".into(), decay.iter().map(|d| d.1).collect::<Vec<_>>()),
             Column::new("feature".into(), feature),
             Column::new("target".into(), target),
             Column::new("weight_sum".into(), num(|p| p.n_eff)),
@@ -3032,7 +3097,9 @@ impl Bank {
                 cols.push(lists(|p| &p.lag_corr_yx).with_name("lag_corr_yx".into()));
             }
             cols.push(Column::new("n_serial".into(), num(|p| p.n_serial)));
-            cols.push(Column::new("t_serial".into(), num(|p| p.t_serial)));
+            // `t_stat` again, at `n_serial`: the correlation's t keeps its
+            // conventional name, and this twin extends it (task 244).
+            cols.push(Column::new("t_stat_serial".into(), num(|p| p.t_serial)));
             cols.push(Column::new("phi_x".into(), num(|p| p.phi_x)));
             cols.push(Column::new("phi_y".into(), num(|p| p.phi_y)));
         }
@@ -3141,8 +3208,8 @@ impl Bank {
     /// `clock_min`, `clock_max`, `last_clock`, `session_changes`,
     /// `clock_backwards`, `resets`, and where each group stands on the
     /// readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3):
-    /// `settled_frac`, `error_inflation`, `min_support_coef`,
-    /// `min_support_coef_feature` and `n_coef`. The counts are over every row routed to
+    /// `settled_frac`, `error_inflation`, `support_coef_min`,
+    /// `support_coef_min_feature` and `n_coef`. The counts are over every row routed to
     /// the group since its state began, undecayed, and survive
     /// [`Bank::save_bytes`] / [`Bank::load_bytes`]; a group restored from a
     /// file written before the summary existed has `group`, `rows_processed`
@@ -3212,6 +3279,7 @@ impl Bank {
                     rows_processed: stream.persisted.rows_seen,
                     last_clock: stream.persisted.clock.last_clock(),
                     summary: stream.summary(),
+                    solve_failures: stream.solve_failures(),
                     readiness: Some(stream.readiness(&self.specs[spec])),
                     fits: !self.specs[spec].model.reads_every_row(),
                 }
@@ -3225,9 +3293,9 @@ impl Bank {
     /// order -- features, then targets (a table target under its name),
     /// then the weight column -- with
     /// `group`, `column`, `role` (`"feature"`, `"target"`, `"weight"`),
-    /// `count`, `null_count`, `mean`, `std` (sample, `ddof = 1`; null below
-    /// two values), `min`, `max`. A value counts when finite and within the
-    /// input bound, as the models take it, and is a null otherwise. A
+    /// `count`, `unusable_count`, `mean`, `std` (sample, `ddof = 1`; null
+    /// below two values), `min`, `max`. A value counts when finite and within
+    /// the input bound, as the models take it, and is unusable otherwise. A
     /// formula target's value is the one its row is released to the models
     /// with, counted at the release; the row is a null until then, and
     /// stays one when the input ends first or the window is cut (review
@@ -3546,9 +3614,9 @@ impl Bank {
         clock_dtypes: &[Option<crate::stream::ClockDtype>],
         key_dtypes: &[[Option<KeyDtype>; 2]],
     ) -> PolarsResult<Vec<StructArray>> {
-        // Section timings to stderr when ONLINE_TIMING is set; costs one env
-        // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
-        let timing = std::env::var_os("ONLINE_TIMING").is_some();
+        // Section timings to stderr under POLARS_ONLINE_TIMING=1; costs two
+        // env reads per chunk. This is how docs/PERFORMANCE.md's numbers are made.
+        let timing = crate::timing::timing_on();
         let t0 = std::time::Instant::now();
         let n = chunk.height();
         self.refuse_if_broken()?;
@@ -3929,7 +3997,7 @@ impl Bank {
         if timing {
             let total = t0.elapsed();
             eprintln!(
-                "ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
+                "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
                  assemble={:.1}ms total={:.1}ms ({:.0} rows/s)",
                 t_extract.as_secs_f64() * 1e3,
                 t_group.as_secs_f64() * 1e3,
@@ -4507,7 +4575,10 @@ impl Bank {
 }
 
 mod fields;
-pub use fields::{FieldMeta, coef_fields, duplicate_field, output_fields, output_index};
+pub use fields::{
+    FieldMeta, coef_fields, coef_fields_frame, duplicate_field, output_fields, output_index,
+    output_index_frame,
+};
 use fields::{Source, slot_labels};
 
 mod learned;
@@ -4583,18 +4654,63 @@ fn opt_bool_array(vals: &[Option<bool>]) -> Box<dyn ArrowArray> {
     ))
 }
 
-fn opt_str_array(vals: &[Option<&str>]) -> Box<dyn ArrowArray> {
-    let mut b = MutableBinaryViewArray::<str>::with_capacity(vals.len());
-    for v in vals {
-        b.push(*v);
+/// The `coef` field and the fields laid out like it, null where a row carried
+/// none: with a `width`, a `FixedSizeList` of it -- polars' `Array(Float64,
+/// width)`, every row `coef_index`'s height -- and without one (`micro`), a
+/// list ([`coef_list_array`]). Finite-or-null inside, as the list is.
+///
+/// # Errors
+///
+/// A row of another length than `width`, which no model writes: the layout
+/// `coef_index` reads is the models' own.
+fn coef_array(
+    coef: &[Option<&Vec<f64>>],
+    width: Option<usize>,
+) -> PolarsResult<Box<dyn ArrowArray>> {
+    let Some(k) = width else {
+        return Ok(coef_list_array(coef));
+    };
+    let mut values: Vec<f64> = Vec::with_capacity(coef.len() * k);
+    let mut inner = MutableBitmap::with_capacity(coef.len() * k);
+    let mut outer = MutableBitmap::with_capacity(coef.len());
+    for v in coef {
+        match v {
+            Some(flat) => {
+                polars_ensure!(
+                    flat.len() == k,
+                    ComputeError: "a coef row of {} entries where the spec lays out {k}",
+                    flat.len()
+                );
+                for &c in flat.iter() {
+                    let ok = c.is_finite();
+                    values.push(if ok { c } else { f64::NAN });
+                    inner.push(ok);
+                }
+                outer.push(true);
+            }
+            // A null row still holds `k` slots, masked by the row's bit.
+            None => {
+                values.extend(std::iter::repeat_n(f64::NAN, k));
+                inner.extend_constant(k, false);
+                outer.push(false);
+            }
+        }
     }
-    Box::new(Utf8ViewArray::from(b))
+    let inner_validity = (inner.unset_bits() > 0).then(|| inner.into());
+    let child = PrimitiveArray::new(ArrowDataType::Float64, values.into(), inner_validity);
+    let outer_validity = (outer.unset_bits() > 0).then(|| outer.into());
+    Ok(Box::new(FixedSizeListArray::try_new(
+        FixedSizeListArray::default_datatype(ArrowDataType::Float64, k),
+        coef.len(),
+        Box::new(child),
+        outer_validity,
+    )?))
 }
 
-/// The `coef` field: a list per row, null where the row carried none. Built by
-/// hand rather than through a builder because the nulls are nested -- a null
-/// list and a null *inside* a list are different things, and the finite-or-null
-/// contract applies to both.
+/// The `coef` field as a list per row, null where the row carried none: a
+/// `micro`'s, with no fixed width. Built by hand rather than through a builder
+/// because the nulls are nested -- a null list and a null *inside* a list are
+/// different things, and the finite-or-null contract applies to both.
 fn coef_list_array(coef: &[Option<&Vec<f64>>]) -> Box<dyn ArrowArray> {
     let mut offsets: Vec<i64> = Vec::with_capacity(coef.len() + 1);
     offsets.push(0);
@@ -4921,7 +5037,7 @@ fn assemble(
                             }
                         }
                     }
-                    coef_list_array(&support)
+                    coef_array(&support, f.width)?
                 }
                 Source::SeCoef(mi) | Source::SeCoefHc0(mi) | Source::SeCoefHac(mi) => {
                     fn pick<'a>(src: &Source, ch: &'a ChunkOut) -> &'a [Vec<Option<Vec<f64>>>] {
@@ -4942,7 +5058,7 @@ fn assemble(
                             }
                         }
                     }
-                    coef_list_array(&se)
+                    coef_array(&se, f.width)?
                 }
                 Source::LamSelected(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
@@ -4961,7 +5077,13 @@ fn assemble(
                     opt_bool_array(&drift)
                 }
                 Source::SelPred(i) => opt_f64_array(&sel_pred[i]),
-                Source::SelName(i) => opt_str_array(&sel_name[i]),
+                Source::SelName(i) => Box::new(crate::column::dict_array(
+                    sel_name[i]
+                        .iter()
+                        .map(|v| v.and_then(|l| labels.iter().position(|x| x == l)))
+                        .map(|k| k.map(|k| k as u32)),
+                    &labels.iter().map(String::as_str).collect::<Vec<_>>(),
+                )),
                 Source::AvgPred(i) => opt_f64_array(&avg_pred[i]),
                 Source::Coef(mi) => {
                     let mut coef: Vec<Option<&Vec<f64>>> = vec![None; n];
@@ -4976,7 +5098,7 @@ fn assemble(
                     }
                     // Finite-or-null inside the list too: an `ew_class` class
                     // no row has carried yet has NaN means, and a null says so.
-                    coef_list_array(&coef)
+                    coef_array(&coef, f.width)?
                 }
                 Source::ScoredClock => clock_array(n, chunks, clock_dtype, |ch| &ch.scored_clock),
                 Source::LearnedClock => clock_array(n, chunks, clock_dtype, |ch| &ch.learned_clock),
@@ -4991,12 +5113,16 @@ fn assemble(
         .zip(&arrays)
         .map(|(f, a)| {
             let field = ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true);
-            // The reason is an `Enum` over its names: the metadata is
-            // what tells polars so (`column::enum_metadata`).
+            // The reason, a class and a selected slot are each an `Enum`
+            // over their names: the metadata is what tells polars so
+            // (`column::enum_metadata`).
             if matches!(f.src, Source::Reason(_)) {
                 field.with_metadata(crate::column::enum_metadata(
                     &crate::stream::WITHHELD_REASONS,
                 ))
+            } else if let Some(names) = &f.categories {
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                field.with_metadata(crate::column::enum_metadata(&names))
             } else {
                 field
             }

@@ -109,7 +109,7 @@ def test_a_spec_dict_refuses_a_relative_table_by_name(table):
         po.ModelBank([spec])
     out = po.ModelBank([base]).fit_predict(frame())
     with pytest.raises(ValueError, match=REMOVED):
-        po.eval.metrics(out, "m", spec=spec)
+        po.eval.metrics(out, spec)
 
 
 def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
@@ -254,7 +254,7 @@ def test_a_renamed_column_is_the_name_everywhere():
     assert bank.gram("m")[0]["targets"] == ["ret"]
     desc = bank.describe("m").filter(pl.col("role") == "target")
     assert desc["column"].to_list() == ["ret"]
-    assert desc["null_count"].to_list() == [5]
+    assert desc["unusable_count"].to_list() == [5]
     assert bank.summary("m")["rows_learned"].item() == len(df) - 5
     assert bank.specs[0]["targets"] == [{"column": "p", "name": "ret"}]
     plain = po.ModelBank([po.spec.ewridge("m", targets=[po.target("p", name="p")], **common())])

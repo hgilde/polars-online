@@ -315,7 +315,7 @@ class TestDegenerateSolves:
         spec = _spec(**kw)
         bank = po.ModelBank([spec])
         out = bank.fit_predict(df)
-        return out, bank.solve_failures()["m"][""]
+        return out, bank.solve_failures("m", group="")["solve_failures"].item()
 
     def test_exactly_collinear_features_jitter_but_stay_finite(self):
         n = 200
@@ -350,7 +350,7 @@ class TestDegenerateSolves:
         for model, extra in [("rls", {}), ("kalman", {"coef_half_life": 10.0}), ("ftrl", {})]:
             bank = po.ModelBank([_spec(model, **extra)])
             bank.fit_predict(df)
-            assert bank.solve_failures()["m"][""] == 0
+            assert bank.solve_failures("m", group="")["solve_failures"].item() == 0
 
     @pytest.mark.parametrize(
         ("model", "extra"),

@@ -139,7 +139,7 @@ def test_a_broken_bank_names_itself_before_a_bad_column(tmp_path):
         bank.save(state)
     assert not isinstance(exc.value, OSError)
     assert state.read_bytes() == b"the last good state"
-    for export in (bank.to_json, lambda: bank.save_json(tmp_path / "b.json")):
+    for export in (bank.write_json, lambda: bank.write_json(tmp_path / "b.json")):
         with pytest.raises(ValueError, match="cannot go on.*window_budget"):
             export()
     assert not (tmp_path / "b.json").exists()

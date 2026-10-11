@@ -395,6 +395,9 @@ pub struct SummaryRow<'a> {
     pub rows_processed: u64,
     pub last_clock: Option<ClockValue>,
     pub summary: Option<&'a DataSummary>,
+    /// The solves that needed jitter or kept the previous fit, over the
+    /// stream's models (`Stream::solve_failures`).
+    pub solve_failures: u64,
     /// Where the stream stands on the readiness statistics
     /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
     /// stream to read them from.
@@ -406,13 +409,33 @@ pub struct SummaryRow<'a> {
     pub fits: bool,
 }
 
-/// The `summary` frame for these rows, 19 columns: `group`, `rows_fed`,
+/// A count as the frames give every count: an `Int64`, polars' default
+/// integer, one dtype in every frame and field of the library (task 244).
+/// A count at the top of a `u64` -- a state file can carry one, since every
+/// count saturates -- reads `i64::MAX`, never a negative number.
+pub fn count(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
+
+/// A column of counts, [`count`] each, null where a row has none.
+pub fn counts(name: &str, values: impl IntoIterator<Item = Option<u64>>) -> Column {
+    Column::new(
+        name.into(),
+        values
+            .into_iter()
+            .map(|v| v.map(count))
+            .collect::<Vec<Option<i64>>>(),
+    )
+}
+
+/// The `summary` frame for these rows, 20 columns: `group`, `rows_fed`,
 /// `rows_processed`, `rows_skipped`, `rows_learned`, `rows_zero_weight`,
-/// `weight_sum`, `clock_min`, `clock_max`, `last_clock`, `session_changes`,
-/// `clock_backwards`, `resets`, and the readiness statistics
-/// (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`, `weight_sum_settled`,
-/// `error_inflation`, `min_support_coef`, `min_support_coef_feature` and
-/// `n_coef`. The three clock columns are in `clock`'s dtype
+/// `weight_sum`, `clock_min`, `clock_max`, `clock_last`, `session_changes`,
+/// `clock_backwards`, `resets`, `solve_failures`, and the readiness
+/// statistics (docs/WARMUP-AND-CONVERGENCE.md §3): `settled_frac`,
+/// `weight_sum_settled`, `error_inflation`, `support_coef_min`,
+/// `support_coef_min_feature` and `n_coef`. Every count is an `Int64`
+/// ([`count`]); the three clock columns are in `clock`'s dtype
 /// ([`ClockDtype::column`]).
 pub fn summary_frame(
     rows: &[SummaryRow<'_>],
@@ -421,32 +444,30 @@ pub fn summary_frame(
     let clocks = |name: &str, f: &dyn Fn(&SummaryRow<'_>) -> Option<ClockValue>| {
         ClockDtype::column(clock, name, &rows.iter().map(f).collect::<Vec<_>>())
     };
-    let s = |f: fn(&DataSummary) -> u64| -> Vec<Option<u64>> {
-        rows.iter().map(|r| r.summary.map(f)).collect()
+    let s = |name: &str, f: fn(&DataSummary) -> u64| -> Column {
+        counts(name, rows.iter().map(|r| r.summary.map(f)))
     };
     let cols = vec![
         Column::new(
             "group".into(),
             rows.iter().map(|r| r.group).collect::<Vec<_>>(),
         ),
-        Column::new("rows_fed".into(), s(|d| d.rows_fed)),
-        Column::new(
-            "rows_processed".into(),
-            rows.iter().map(|r| r.rows_processed).collect::<Vec<u64>>(),
+        s("rows_fed", |d| d.rows_fed),
+        counts(
+            "rows_processed",
+            rows.iter().map(|r| Some(r.rows_processed)),
         ),
-        Column::new(
-            "rows_skipped".into(),
+        counts(
+            "rows_skipped",
             rows.iter()
-                .map(|r| r.summary.map(|d| d.rows_fed - r.rows_processed))
-                .collect::<Vec<Option<u64>>>(),
+                .map(|r| r.summary.map(|d| d.rows_fed - r.rows_processed)),
         ),
-        Column::new(
-            "rows_learned".into(),
+        counts(
+            "rows_learned",
             rows.iter()
-                .map(|r| r.summary.filter(|_| r.fits).map(|d| d.rows_learned))
-                .collect::<Vec<Option<u64>>>(),
+                .map(|r| r.summary.filter(|_| r.fits).map(|d| d.rows_learned)),
         ),
-        Column::new("rows_zero_weight".into(), s(|d| d.rows_zero_weight)),
+        s("rows_zero_weight", |d| d.rows_zero_weight),
         Column::new(
             "weight_sum".into(),
             rows.iter()
@@ -455,10 +476,14 @@ pub fn summary_frame(
         ),
         clocks("clock_min", &|r| r.summary.and_then(|d| d.clock_min))?,
         clocks("clock_max", &|r| r.summary.and_then(|d| d.clock_max))?,
-        clocks("last_clock", &|r| r.last_clock)?,
-        Column::new("session_changes".into(), s(|d| d.session_changes)),
-        Column::new("clock_backwards".into(), s(|d| d.clock_backwards)),
-        Column::new("resets".into(), s(|d| d.resets)),
+        clocks("clock_last", &|r| r.last_clock)?,
+        s("session_changes", |d| d.session_changes),
+        s("clock_backwards", |d| d.clock_backwards),
+        s("resets", |d| d.resets),
+        counts(
+            "solve_failures",
+            rows.iter().map(|r| Some(r.solve_failures)),
+        ),
         // The readiness statistics, NaN as null: a fraction that does not
         // exist (no decay), a ratio the model has not got, a share before
         // the first solve.
@@ -498,7 +523,7 @@ pub fn summary_frame(
                 .collect::<Vec<Option<f64>>>(),
         ),
         Column::new(
-            "min_support_coef".into(),
+            "support_coef_min".into(),
             rows.iter()
                 .map(|r| {
                     r.readiness
@@ -509,7 +534,7 @@ pub fn summary_frame(
                 .collect::<Vec<Option<f64>>>(),
         ),
         Column::new(
-            "min_support_coef_feature".into(),
+            "support_coef_min_feature".into(),
             rows.iter()
                 .map(|r| {
                     r.readiness
@@ -518,19 +543,21 @@ pub fn summary_frame(
                 })
                 .collect::<Vec<Option<&str>>>(),
         ),
-        Column::new(
-            "n_coef".into(),
+        counts(
+            "n_coef",
             rows.iter()
-                .map(|r| r.readiness.as_ref().filter(|_| r.fits).map(|x| x.n_coef))
-                .collect::<Vec<Option<u64>>>(),
+                .map(|r| r.readiness.as_ref().filter(|_| r.fits).map(|x| x.n_coef)),
         ),
     ];
     DataFrame::new(rows.len(), cols)
 }
 
 /// The `describe` frame for these streams: one row per (group, column) in
-/// `layout` order -- `group`, `column`, `role`, `count`, `null_count`,
-/// `mean`, `std`, `min`, `max`. `keep` says which layout entries to report
+/// `layout` order -- `group`, `column`, `role`, `count`, `unusable_count`,
+/// `mean`, `std`, `min`, `max`. `unusable_count` is not polars'
+/// `null_count`: it counts every value a model cannot learn from, a NaN, an
+/// infinity and a magnitude past the bound with the nulls, so `count` and
+/// it partition the rows. `keep` says which layout entries to report
 /// (a label target has counts only, an unsupervised model's mirrored
 /// target none): `Some(true)` reports the column, `Some(false)` its counts
 /// alone, `None` leaves it out. A stream without a summary reports its
@@ -543,7 +570,7 @@ pub fn describe_frame(
     let mut group: Vec<Option<&str>> = Vec::new();
     let mut column: Vec<&str> = Vec::new();
     let mut role: Vec<&str> = Vec::new();
-    let mut count: Vec<Option<u64>> = Vec::new();
+    let mut usable: Vec<Option<u64>> = Vec::new();
     let mut nulls: Vec<Option<u64>> = Vec::new();
     let (mut mean, mut std, mut min, mut max): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
         Default::default();
@@ -556,7 +583,7 @@ pub fn describe_frame(
             group.push(*g);
             column.push(name);
             role.push(r.as_str());
-            count.push(c.map(|c| c.count));
+            usable.push(c.map(|c| c.count));
             nulls.push(c.map(|c| c.nulls));
             let c = c.filter(|_| numbers);
             mean.push(c.and_then(ColumnStats::mean));
@@ -566,14 +593,19 @@ pub fn describe_frame(
         }
     }
     let height = group.len();
+    // An `Enum` over the three roles, in their order (task 244).
+    let roles = [Role::Feature, Role::Target, Role::Weight].map(Role::as_str);
+    let role = Column::new("role".into(), role).cast(&DataType::from_frozen_categories(
+        FrozenCategories::new(roles).expect("distinct names"),
+    ))?;
     DataFrame::new(
         height,
         vec![
             Column::new("group".into(), group),
             Column::new("column".into(), column),
-            Column::new("role".into(), role),
-            Column::new("count".into(), count),
-            Column::new("null_count".into(), nulls),
+            role,
+            counts("count", usable),
+            counts("unusable_count", nulls),
             Column::new("mean".into(), mean),
             Column::new("std".into(), std),
             Column::new("min".into(), min),

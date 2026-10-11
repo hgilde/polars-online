@@ -843,7 +843,7 @@ class TestNanosecondsAreKept:
         assert bank.summary()["clock_min"].dtype == df["t"].dtype
         assert bank.summary()["clock_min"][0] == df["t"][0]
         assert bank.summary()["clock_max"][0] == df["t"][49]
-        assert bank.groups()["last_clock"][0] == df["t"][49]
+        assert bank.groups()["clock_last"][0] == df["t"][49]
 
     def test_scoring_first_then_learning_changes_nothing(self):
         df = _temporal(_frame())

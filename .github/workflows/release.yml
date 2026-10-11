@@ -158,22 +158,22 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            bin: online
+            bin: polars-online
             cli: true
           # Intel: `macos-13` was retired from the hosted pool; `macos-15-intel`
           # is the label GitHub lists for x64 macOS now (actions/runner-images).
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            bin: online
+            bin: polars-online
             cli: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: online.exe
+            bin: polars-online.exe
             cli: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: auto
-            bin: online
+            bin: polars-online
             cli: true
           # Built natively on GitHub's arm64 runner, as polars builds its own.
           # Cross-compiling from x64 uses `manylinux2014-cross:aarch64`, whose
@@ -185,12 +185,12 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             manylinux: auto
-            bin: online
+            bin: polars-online
             cli: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             manylinux: musllinux_1_2
-            bin: online
+            bin: polars-online
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable

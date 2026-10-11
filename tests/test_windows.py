@@ -283,10 +283,11 @@ OPS = ("ewm_mean", "rewm_mean", "ewm_sum", "rewm_sum", "ewm_rate", "rewm_rate")
 @pytest.mark.parametrize("closed", ["right", "left", "both", "none"])
 def test_each_operator_matches_the_definition(op: str, closed: str) -> None:
     df = ticks(700, 3)
-    fn = getattr(po, op)
-    out = po.stream.with_windows(
-        df, y=fn("x", half_life=4.0, window_size=7.0, closed=closed, min_samples=2), **CLOCK
-    )
+    # A backward operator is `ewm_*(reverse=True)`; `rewm_*` names it in `loop`.
+    fn = getattr(po, op.removeprefix("r"))
+    back = {"reverse": True} if op.startswith("rewm") else {}
+    y = fn("x", half_life=4.0, window_size=7.0, closed=closed, min_samples=2, **back)
+    out = po.stream.with_windows(df, y=y, **CLOCK)
     want = loop(df, op, "x", half_life=4.0, window_size=7.0, closed=closed, min_samples=2)
     assert_close(out["y"].to_list(), want, f"{op} {closed}")
     assert sum(v is not None for v in want) > 500
@@ -394,8 +395,8 @@ def test_a_forward_window_is_a_backward_one_over_the_reversed_stream() -> None:
     df = ticks(500, 13, repeats=False)
     fwd = po.stream.with_windows(
         df,
-        m=po.rewm_mean("x", half_life=3.0, window_size=5.0),
-        s=po.rewm_sum("x", half_life=3.0, window_size=5.0),
+        m=po.ewm_mean("x", half_life=3.0, window_size=5.0, reverse=True),
+        s=po.ewm_sum("x", half_life=3.0, window_size=5.0, reverse=True),
         **CLOCK,
     )
     last = df["t"][-1]
@@ -456,9 +457,11 @@ def test_a_vwap_is_a_ratio_of_two_sums_and_a_side_is_a_when_inside_both() -> Non
     buys, sells = pl.when(pl.col("side") == "buy"), pl.when(pl.col("side") == "sell")
     out = po.stream.with_windows(
         df,
-        vwap=po.rewm_sum(notional, **h) / po.rewm_sum("quantity", **h),
-        buy_vwap=po.rewm_sum(buys.then(notional), **h) / po.rewm_sum(buys.then("quantity"), **h),
-        sell_vwap=po.rewm_sum(sells.then(notional), **h) / po.rewm_sum(sells.then("quantity"), **h),
+        vwap=po.ewm_sum(notional, **h, reverse=True) / po.ewm_sum("quantity", **h, reverse=True),
+        buy_vwap=po.ewm_sum(buys.then(notional), **h, reverse=True)
+        / po.ewm_sum(buys.then("quantity"), **h, reverse=True),
+        sell_vwap=po.ewm_sum(sells.then(notional), **h, reverse=True)
+        / po.ewm_sum(sells.then("quantity"), **h, reverse=True),
         **CLOCK,
     )
     pq = df.with_columns(pq=notional, bq=buys.then("quantity"), bpq=buys.then(notional))
@@ -489,7 +492,10 @@ def test_a_vwap_is_a_ratio_of_two_sums_and_a_side_is_a_when_inside_both() -> Non
     zero = pl.concat([df[:i], row.with_columns(quantity=pl.lit(0.0)), df[i:]])
     for other, label in ((split, "split"), (zero, "zero")):
         got = po.stream.with_windows(
-            other, vwap=po.rewm_sum(notional, **h) / po.rewm_sum("quantity", **h), **CLOCK
+            other,
+            vwap=po.ewm_sum(notional, **h, reverse=True)
+            / po.ewm_sum("quantity", **h, reverse=True),
+            **CLOCK,
         )
         assert_close(got["vwap"][:i].to_list(), out["vwap"][:i].to_list(), label)
 
@@ -599,8 +605,14 @@ def test_the_tree_round_trips_every_node_kind() -> None:
         c.fill_null(0.0),
         c.alias("z"),
         po.ewm_mean("a", half_life="10s", window_size="1m") - c,
-        po.rewm_sum(
-            c * d, half_life=5.0, window_size=60.0, closed="both", min_samples=3, partial="keep"
+        po.ewm_sum(
+            c * d,
+            half_life=5.0,
+            window_size=60.0,
+            closed="both",
+            min_samples=3,
+            partial="keep",
+            reverse=True,
         ),
         po.ewm_rate(po.increment("a"), half_life=30.0),
         po.increment(c + d),
@@ -727,7 +739,7 @@ def test_an_operators_parameters_are_checked_by_name() -> None:
         with pytest.raises((ValueError, TypeError), match=says):
             po.ewm_mean("x", **kw)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="window_size"):
-        po.rewm_mean("x", half_life=2.0)  # type: ignore[call-arg]
+        po.ewm_mean("x", half_life=2.0, reverse=True)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="half_life"):
         po.ewm_mean("x")  # type: ignore[call-arg]
     df = ticks(50, 1)
@@ -766,8 +778,8 @@ def test_a_gap_past_the_cap_and_a_session_change_cut_the_windows() -> None:
     df = event_stream()
     out = po.stream.with_windows(
         df,
-        keep=po.rewm_mean("x", half_life=1.0, window_size=5.0, partial="keep"),
-        null=po.rewm_mean("x", half_life=1.0, window_size=5.0, partial="null"),
+        keep=po.ewm_mean("x", half_life=1.0, window_size=5.0, partial="keep", reverse=True),
+        null=po.ewm_mean("x", half_life=1.0, window_size=5.0, partial="null", reverse=True),
         back=po.ewm_sum("x", half_life=math.inf, window_size=100.0),
         **events(),
     )
@@ -775,7 +787,9 @@ def test_a_gap_past_the_cap_and_a_session_change_cut_the_windows() -> None:
     assert out["keep"][3] is None, "a window with no row after it is null even when kept"
     assert out["back"].to_list() == [1, 3, 6, 10, 5, 11, 18, 8, 17, 27, 38]
     dropped = po.stream.with_windows(
-        df, d=po.rewm_mean("x", half_life=1.0, window_size=5.0, partial="drop"), **events()
+        df,
+        d=po.ewm_mean("x", half_life=1.0, window_size=5.0, partial="drop", reverse=True),
+        **events(),
     )
     # The four rows the gap cut and the three the session change cut leave;
     # the rows whose windows the input's end holds stay. Once `or height <
@@ -793,7 +807,7 @@ def test_a_reset_discards_and_a_late_row_is_refused() -> None:
         )
     out = po.stream.with_windows(
         df,
-        f=po.rewm_sum("x", half_life=math.inf, window_size=10.0, partial="keep"),
+        f=po.ewm_sum("x", half_life=math.inf, window_size=10.0, partial="keep", reverse=True),
         b=po.ewm_sum("x", half_life=math.inf),
         restart_after_step_back=0.0,
         **CLOCK,
@@ -812,7 +826,7 @@ def test_a_silent_group_holds_the_output_for_at_most_the_cap() -> None:
     )
     out = po.stream.with_windows(
         df,
-        f=po.rewm_sum("x", half_life=math.inf, window_size=100.0, partial="keep"),
+        f=po.ewm_sum("x", half_life=math.inf, window_size=100.0, partial="keep", reverse=True),
         clock="t",
         gap_cap=10.0,
         group="g",
@@ -828,10 +842,13 @@ def test_like_takes_the_specs_clock_and_its_rule() -> None:
         "m", targets=["mid"], features=["price"], half_life=10.0, clock="t", gap_cap=50.0
     )
     out = po.stream.with_windows(
-        df, f=po.rewm_mean("mid", half_life=5.0, window_size=10.0), like=spec
+        df, f=po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True), like=spec
     )
     plain = po.stream.with_windows(
-        df, f=po.rewm_mean("mid", half_life=5.0, window_size=10.0), clock="t", gap_cap=50.0
+        df,
+        f=po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True),
+        clock="t",
+        gap_cap=50.0,
     )
     # A row the spec would skip (a null feature: the quotes) gets a null window.
     quotes = (df["price"].is_null()).to_list()
@@ -839,7 +856,10 @@ def test_like_takes_the_specs_clock_and_its_rule() -> None:
         assert (a is None) if q else (a == b)
     with pytest.raises(TypeError, match="leave out clock"):
         po.stream.with_windows(
-            df, f=po.rewm_mean("mid", half_life=5.0, window_size=10.0), like=spec, clock="t"
+            df,
+            f=po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True),
+            like=spec,
+            clock="t",
         )
 
 
@@ -851,9 +871,11 @@ def mixed() -> dict[str, pl.Expr]:
     h = {"half_life": 2.0}
     return {
         "a": po.ewm_mean("x", **h, window_size=5.0),
-        "b": po.rewm_mean("x", **h, window_size=4.0) - pl.col("x"),
+        "b": po.ewm_mean("x", **h, window_size=4.0, reverse=True) - pl.col("x"),
         "c": po.ewm_rate(po.increment("x"), **h, window_size=6.0),
-        "d": po.rewm_sum(pl.when(pl.col("x") > 0).then("x"), **h, window_size=3.0, closed="left"),
+        "d": po.ewm_sum(
+            pl.when(pl.col("x") > 0).then("x"), **h, window_size=3.0, closed="left", reverse=True
+        ),
     }
 
 
@@ -963,7 +985,8 @@ def test_the_real_day_runs_and_the_recipes_agree_where_they_should() -> None:
     out = po.stream.with_windows(
         df,
         mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
-        fwd_vwap=po.rewm_sum(notional, **h) / po.rewm_sum("quantity", **h) - pl.col("mid"),
+        fwd_vwap=po.ewm_sum(notional, **h, reverse=True) / po.ewm_sum("quantity", **h, reverse=True)
+        - pl.col("mid"),
         vwap_pq=po.ewm_sum(notional, half_life="10s") / po.ewm_sum("quantity", half_life="10s"),
         vwap_sums=po.ewm_sum(po.increment("cum_pq"), half_life="10s")
         / po.ewm_sum(po.increment("cum_q"), half_life="10s"),
@@ -1113,7 +1136,7 @@ def test_a_row_exactly_one_window_later_lands_on_the_edge_at_any_age() -> None:
     out = po.stream.with_windows(
         df,
         left=po.ewm_sum("x", half_life=math.inf, window_size="1s", closed="left"),
-        fwd=po.rewm_sum("x", half_life=math.inf, window_size="1s"),
+        fwd=po.ewm_sum("x", half_life=math.inf, window_size="1s", reverse=True),
         clock="t",
         gap_cap="1h",
     )
@@ -1144,8 +1167,8 @@ def test_forward_left_and_both_hold_every_row_at_the_stamp() -> None:
     df = pl.DataFrame({"t": [0.0, 0.0, 1.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
     out = po.stream.with_windows(
         df,
-        left=po.rewm_sum("x", half_life=math.inf, window_size=2.0, closed="left"),
-        right=po.rewm_sum("x", half_life=math.inf, window_size=2.0),
+        left=po.ewm_sum("x", half_life=math.inf, window_size=2.0, closed="left", reverse=True),
+        right=po.ewm_sum("x", half_life=math.inf, window_size=2.0, reverse=True),
         **CLOCK,
     )
     # [0, 2): rows at 0 (both) and 1, for both rows at the stamp.
@@ -1157,8 +1180,8 @@ def test_forward_left_and_both_hold_every_row_at_the_stamp() -> None:
     df = ticks(400, 21, repeats=True)
     fwd = po.stream.with_windows(
         df,
-        m=po.rewm_mean("x", half_life=3.0, window_size=5.0, closed="left"),
-        s=po.rewm_sum("x", half_life=3.0, window_size=5.0, closed="left"),
+        m=po.ewm_mean("x", half_life=3.0, window_size=5.0, closed="left", reverse=True),
+        s=po.ewm_sum("x", half_life=3.0, window_size=5.0, closed="left", reverse=True),
         **CLOCK,
     )
     last = df["t"][-1]
@@ -1189,8 +1212,8 @@ def test_a_cut_window_ends_at_the_last_row_it_saw() -> None:
     for cap in (5.0, 300.0):
         out = po.stream.with_windows(
             df,
-            r=po.rewm_rate("x", half_life=math.inf, window_size=60.0, partial="keep"),
-            m=po.rewm_mean("x", half_life=math.inf, window_size=60.0, partial="keep"),
+            r=po.ewm_rate("x", half_life=math.inf, window_size=60.0, partial="keep", reverse=True),
+            m=po.ewm_mean("x", half_life=math.inf, window_size=60.0, partial="keep", reverse=True),
             clock="t",
             gap_cap=cap,
         )
@@ -1317,7 +1340,7 @@ def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> 
     # empty, one unresolved at the end. Polars has no look-ahead; the
     # mirror is a backward "left" window on the negated clock.
     df = _ms([base, base + 100, base + 400, base + 800])
-    fwd = po.rewm_sum("x", half_life=math.inf, window_size="300ms", closed="right")
+    fwd = po.ewm_sum("x", half_life=math.inf, window_size="300ms", closed="right", reverse=True)
     got = po.stream.with_windows(df, y=fwd, **clock)["y"].to_list()
     mirror = (
         df.with_columns(u=-pl.col("t").dt.epoch("ms"))
@@ -1366,7 +1389,7 @@ def test_a_state_saved_under_a_slice_resumes_on_the_same_input(tmp_path: Any, ro
     skip not yet applied when a resumed run satisfied its slice from held
     rows was left out of the count, so the chain broke at ``chunk_size=1``)."""
     df = ticks(60, 19, groups=2)
-    dropping = {"e": po.rewm_mean("x", half_life=2.0, window_size=4.0, partial="drop")}
+    dropping = {"e": po.ewm_mean("x", half_life=2.0, window_size=4.0, partial="drop", reverse=True)}
     for exprs, cap in [(mixed(), 20.0), (mixed() | dropping, 4.0)]:
         kw: dict[str, Any] = {"clock": "t", "gap_cap": cap, "group": "g", "chunk_size": rows}
         one = po.stream.with_windows(df, **exprs, **kw)
@@ -1471,7 +1494,7 @@ def test_a_silent_groups_session_reset_after_a_capped_gap_is_a_cut() -> None:
             "x": [1.0, 10.0, 20.0, 1.0, 1.0, 30.0],
         }
     )
-    fwd = po.rewm_sum("x", half_life=math.inf, window_size=10.0, partial="keep")
+    fwd = po.ewm_sum("x", half_life=math.inf, window_size=10.0, partial="keep", reverse=True)
     kw: dict[str, Any] = {"clock": "t", "gap_cap": 5.0, "session": "s", "session_gap": "reset"}
     grouped = po.stream.with_windows(df, y=fwd, group="g", **kw)
     assert grouped["y"][1] == 20.0, grouped["y"].to_list()
@@ -1513,22 +1536,28 @@ def test_a_state_saved_under_a_slice_refuses_another_input(tmp_path: Any) -> Non
     bare = df.drop("t")
     state = tmp_path / "bare.state"
     bare.lazy().online.with_windows(
-        f=po.rewm_sum("x", half_life=2.0, window_size=3.0), save_state=state
+        f=po.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True), save_state=state
     ).head(5).collect()
-    one = po.stream.with_windows(bare, f=po.rewm_sum("x", half_life=2.0, window_size=3.0))
+    one = po.stream.with_windows(
+        bare, f=po.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True)
+    )
     head = (
         bare.lazy()
-        .online.with_windows(f=po.rewm_sum("x", half_life=2.0, window_size=3.0), save_state=state)
+        .online.with_windows(
+            f=po.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True), save_state=state
+        )
         .head(5)
         .collect()
     )
     rest = po.stream.with_windows(
-        bare, f=po.rewm_sum("x", half_life=2.0, window_size=3.0), load_state=state
+        bare, f=po.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True), load_state=state
     )
     assert pl.concat([head, rest]).equals(one)
     with pytest.raises(_REFUSAL, match="another input"):
         po.stream.with_windows(
-            bare.slice(5), f=po.rewm_sum("x", half_life=2.0, window_size=3.0), load_state=state
+            bare.slice(5),
+            f=po.ewm_sum("x", half_life=2.0, window_size=3.0, reverse=True),
+            load_state=state,
         )
 
 
@@ -1615,7 +1644,7 @@ def test_a_next_file_starts_after_the_last_stamp_the_state_read(tmp_path: Any) -
     last row it read for the same input sliced inside a tied stamp, since a
     file boundary inside one cannot be told from it, and refuses it by name;
     one that starts after that stamp is the next file."""
-    y = {"y": po.rewm_mean("x", half_life=1.0, window_size=2.0)}
+    y = {"y": po.ewm_mean("x", half_life=1.0, window_size=2.0, reverse=True)}
     first = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
     state = tmp_path / "tie.state"
     a = first.lazy().online.with_windows(**y, save_state=state, **CLOCK).head(100).collect()
@@ -1636,7 +1665,7 @@ def test_an_unsliced_state_refuses_an_input_that_repeats_its_last_row(tmp_path: 
     gave 3,001 rows against one run's 3,000. It now refuses an input that
     starts at the last stamp it read, as a sliced state does, unless that row
     starts a new session; one that starts after it is the next file."""
-    y = {"y": po.rewm_mean("x", half_life=1.0, window_size=2.0)}
+    y = {"y": po.ewm_mean("x", half_life=1.0, window_size=2.0, reverse=True)}
     first = pl.DataFrame({"t": [0.0, 1.0, 2.0, 3.0], "x": [1.0, 2.0, 3.0, 4.0]})
     state = tmp_path / "unsliced.state"
     a = po.stream.with_windows(first, **y, save_state=state, **CLOCK)
@@ -1677,7 +1706,7 @@ def test_a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file(
             "d": ["a"] * 7,
         }
     )
-    y = {"y": po.rewm_mean("x", half_life=1.0, window_size=2.0)}
+    y = {"y": po.ewm_mean("x", half_life=1.0, window_size=2.0, reverse=True)}
     for start in (0.5, 0.0):
         day2 = pl.DataFrame(
             {"t": [start + i for i in range(8)], "x": [8.0 + i for i in range(8)], "d": ["b"] * 8}
@@ -1927,7 +1956,9 @@ def test_a_forward_window_whose_far_edge_is_the_last_row_before_a_break_is_whole
         call = {"clock": "t", "gap_cap": 1.5} | kw
         closed = call.pop("closed", "right")
         partial = call.pop("partial", "null")
-        f = po.rewm_sum("x", half_life=math.inf, window_size=2.0, closed=closed, partial=partial)
+        f = po.ewm_sum(
+            "x", half_life=math.inf, window_size=2.0, closed=closed, partial=partial, reverse=True
+        )
         return po.stream.with_windows(frame, f=f, **call)
 
     # t = 1: (1, 3] holds 4 + 8; t = 2 and t = 3 reach past the stretch; the
@@ -1976,7 +2007,9 @@ def test_a_reset_keeps_a_forward_window_whose_far_edge_is_the_last_row_before_it
     def run(
         frame: pl.DataFrame, closed: str = "right", partial: str = "null", **kw: Any
     ) -> pl.DataFrame:
-        f = po.rewm_sum("x", half_life=math.inf, window_size=2.0, closed=closed, partial=partial)
+        f = po.ewm_sum(
+            "x", half_life=math.inf, window_size=2.0, closed=closed, partial=partial, reverse=True
+        )
         return po.stream.with_windows(frame, f=f, clock="t", gap_cap=100.0, **kw)
 
     step_back: dict[str, Any] = {"restart_after_step_back": 1.0}
@@ -2013,7 +2046,7 @@ def test_a_window_looking_ahead_with_group_needs_a_clock_column() -> None:
             "x": [1.0, 2.0, 4.0, 8.0, 16.0],
         }
     )
-    fwd = po.rewm_sum("x", half_life=math.inf, window_size=2.0)
+    fwd = po.ewm_sum("x", half_life=math.inf, window_size=2.0, reverse=True)
     msg = (
         "with_windows: a window looking ahead with group needs a clock column.*"
         "Name a clock column, with gap_cap, or leave out group"
@@ -2067,7 +2100,7 @@ def test_a_state_resumes_under_another_spelling_of_the_same_length(tmp_path: Any
         return po.stream.with_windows(
             frame,
             b=po.ewm_sum("x", half_life="1h", window_size=window),
-            f=po.rewm_sum("x", half_life="1h", window_size=window),
+            f=po.ewm_sum("x", half_life="1h", window_size=window, reverse=True),
             clock="t",
             gap_cap=gap_cap,
             **kw,
@@ -2097,7 +2130,7 @@ def test_a_zoned_datetime_group_is_keyed_by_its_instant() -> None:
         return po.stream.with_windows(
             frame,
             b=po.ewm_sum("x0", half_life=3.0),
-            f=po.rewm_sum("x0", half_life=3.0, window_size=4.0),
+            f=po.ewm_sum("x0", half_life=3.0, window_size=4.0, reverse=True),
             clock="t",
             gap_cap=100.0,
             group="g",

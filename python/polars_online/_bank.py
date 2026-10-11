@@ -3,24 +3,37 @@
 from __future__ import annotations
 
 import copy
+import io
+import os
 import warnings
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Iterator
 from pathlib import Path
-from typing import Any, NoReturn, overload
+from typing import IO, TYPE_CHECKING, Any, Literal, overload
 
 import polars as pl
 
 from polars_online import _polars_online as _native
 from polars_online._polars_online import ArrowStruct
+from polars_online._renamed import renamed_method
 from polars_online._spec import (
     _coef_index_schema,
     _from_json,
     _json,
     _renamed_keywords,
     coef_index,
+    output_index,
     target_name,
 )
-from polars_online._warnings import warn_unstable
+from polars_online._warnings import (
+    PolarsOnlineDeprecationWarning,
+    deprecated_alias,
+    deprecated_keywords,
+    keyword_only_forwarded,
+    warn_unstable,
+)
+
+if TYPE_CHECKING:
+    from polars_online.gram import Gram
 
 #: What `gram()` calls the constant column a spec's `fit_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
@@ -30,7 +43,62 @@ _INTERCEPT = "intercept"
 #: so there is no cross-moment and no intercept column in the accumulator.
 _NO_TARGET_GRAM = ("ew_cov",)
 
+#: The columns of :meth:`ModelBank.coef` before :func:`coef_index`'s: what
+#: every reader leads with -- the spec, the group, the instance with its
+#: decay -- and the weight behind the fit.
+_COEF_SCHEMA_HEAD: dict[str, Any] = {
+    "spec": pl.String,
+    "group": pl.String,
+    "instance": pl.String,
+    "half_life": pl.Float64,
+    "lam": pl.Float64,
+    "weight_sum": pl.Float64,
+}
+
+#: The last column of :meth:`ModelBank.coef`: the value.
+_COEF_VALUE: dict[str, Any] = {"coef": pl.Float64}
+
+#: Why :meth:`ModelBank.coef` refuses a named spec of a kind with no named
+#: coefficient, where saying so helps; every other kind "emits no
+#: coefficients".
+_NO_COEF = {
+    "ew_cov": "ew_cov emits statistics, not coefficients",
+    "seqtest": "seqtest emits evidence (log e-values and counts), not coefficients",
+    "micro": (
+        "micro's coef is one [id, label, n, radius, c_1, ..., c_p] row per established "
+        "summary, as many as there are; it has no fixed layout to index, and is read from "
+        "the output's coef field"
+    ),
+}
+
 __all__ = ["ModelBank"]
+
+
+class _CalledInt(int):
+    """:attr:`ModelBank.rows_fed`'s value, which still answers the call it
+    was before it became a property, with the deprecation warning."""
+
+    def __call__(self) -> int:
+        _warn_called("rows_fed")
+        return int(self)
+
+
+class _CalledDict(dict[str, list[str]]):
+    """:attr:`ModelBank.output_fields`'s value, which still answers the call
+    it was before it became a property, with the deprecation warning."""
+
+    def __call__(self) -> dict[str, list[str]]:
+        _warn_called("output_fields")
+        return dict(self)
+
+
+def _warn_called(name: str) -> None:
+    warnings.warn(
+        f"ModelBank.{name} is a property: read bank.{name}, without the call. The call "
+        "works until the next major version, which refuses it",
+        PolarsOnlineDeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def _group_keys(group: str | Iterable[str | None] | None) -> list[str | None] | None:
@@ -98,7 +166,7 @@ class ModelBank:
     on any OS (:meth:`load`), and scored against without moving (:meth:`predict`).
 
     The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
-    (:mod:`polars_online._frame`), and as a file-to-file job, the ``online``
+    (:mod:`polars_online._frame`), and as a file-to-file job, the ``polars-online``
     command line. This class is the in-process form, for a plan you hand it to
     chunk (:meth:`fit_predict_batches`, :meth:`fit`) or frames you already have.
 
@@ -155,8 +223,9 @@ class ModelBank:
     def __repr__(self) -> str:
         names = ", ".join(repr(s["name"]) for s in self._specs)
         n_groups = max(self._native.group_counts(), default=0)
-        return f"ModelBank([{names}], groups={n_groups}, rows_fed={self.rows_fed()})"
+        return f"ModelBank([{names}], groups={n_groups}, rows_fed={self.rows_fed})"
 
+    @property
     def rows_fed(self) -> int:
         """Rows fed so far, over every chunk and group, each counted once however
         many specs the bank holds.
@@ -165,13 +234,15 @@ class ModelBank:
         count per (spec, group). So do the rows of groups since dropped
         (:meth:`drop_groups`) or closed (``group_close``), which :meth:`summary`
         no longer lists.
-        """
-        return self._native.rows_fed()
 
-    def rows_seen(self) -> NoReturn:
-        """Renamed :meth:`rows_fed`, the frames' word for the same count."""
-        msg = "ModelBank.rows_seen was renamed rows_fed"
-        raise AttributeError(msg)
+        A property, as :attr:`specs` is, and as Polars' ``height`` is: a count
+        the bank keeps, read without work. Before 1.0 it was a method, and
+        ``bank.rows_fed()`` still answers, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        """
+        return _CalledInt(self._native.rows_fed())
+
+    rows_seen = renamed_method("ModelBank", "rows_seen", "rows_fed")
 
     def groups(self, spec: str | int | None = None) -> pl.DataFrame:
         """The groups the bank holds state for: one row per (spec, group).
@@ -180,9 +251,10 @@ class ModelBank:
             The spec's name, and the group key as a string: ``""`` for a spec without
             a ``group`` column, null for rows whose key was null. A zoned ``Datetime``
             key is its instant, written as the UTC wall time.
-        ``rows_processed``
-            The group's rows that the null policy did not skip.
-        ``last_clock``
+        ``rows_fed``
+            The rows routed to the group, skipped ones included, as :meth:`summary`
+            counts them.
+        ``clock_last``
             Its last clock value, in the clock column's own dtype, exactly: a
             ``Datetime`` in its unit and zone, a ``Date``, a ``Duration``, an
             integer clock in its own width, and a ``Float64`` for a float clock (the
@@ -203,9 +275,9 @@ class ModelBank:
             )
             bank = po.ModelBank([spec])
             bank.fit_predict(df)
-            now = df["ts"].max()                   # last_clock is a Datetime, as ts is
+            now = df["ts"].max()                   # clock_last is a Datetime, as ts is
             month = pl.lit(now) - pl.duration(days=30)
-            stale = bank.groups().filter(pl.col("last_clock") < month)
+            stale = bank.groups().filter(pl.col("clock_last") < month)
             bank.drop_groups(stale["group"])     # the groups quiet for 30 days
 
         ``spec``, a name or a position, narrows the table to one spec: ``KeyError``
@@ -339,7 +411,9 @@ class ModelBank:
         ``ValueError``, naming the spec and the column, when:
 
         - a column a spec reads (target, feature, clock, session, weight,
-          group) is not in the frame;
+          group) is not in the frame, as
+          :class:`~polars_online.ColumnNotFoundError`, which is both a
+          ``ValueError`` and Polars' ``ColumnNotFoundError``;
         - a target, feature or weight column is not numeric;
         - a column is ``UInt128``, read or not: the extension cannot take one
           in, so the column is named with a cast to make, a clock in the
@@ -569,13 +643,15 @@ class ModelBank:
             msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
         raise TypeError(msg)
 
+    @keyword_only_forwarded("ModelBank.fit_predict_batches", ("closed_groups", "chunk_size"))
     @_renamed_keywords
     def fit_predict_batches(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        closed_groups: str | Path | None = None,
+        *,
+        closed_groups: str | os.PathLike[str] | None = None,
         chunk_size: int | None = None,
-    ) -> Iterable[pl.DataFrame]:
+    ) -> Iterator[pl.DataFrame]:
         """:meth:`fit_predict` over a plan or an iterator of chunks, lazily.
 
         Give it a ``LazyFrame`` and it does the chunking: the plan is read
@@ -622,10 +698,10 @@ class ModelBank:
     def _batches(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        closed_groups: str | Path | None,
+        closed_groups: str | os.PathLike[str] | None,
         chunk_size: int | None,
         what: str,
-    ) -> Iterable[pl.DataFrame]:
+    ) -> Iterator[pl.DataFrame]:
         """The run behind :meth:`fit_predict_batches` and :meth:`fit`: the
         arguments checked eagerly, then a generator. ``what`` is the public
         method the caller used, for the messages that name it."""
@@ -685,7 +761,7 @@ class ModelBank:
         learn_only: bool = False,
         started: int | None = None,
         what: str = "fit_predict_batches",
-    ) -> Iterable[pl.DataFrame]:
+    ) -> Iterator[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
         checked: a generator, so nothing here runs until a caller asks.
 
@@ -753,14 +829,22 @@ class ModelBank:
             return batches.iter_slices(n_rows=chunk_size)
         return batches
 
+    @keyword_only_forwarded("ModelBank.fit", ("closed_groups", "chunk_size"))
     @_renamed_keywords
     def fit(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        closed_groups: str | Path | None = None,
+        *,
+        closed_groups: str | os.PathLike[str] | None = None,
         chunk_size: int | None = None,
     ) -> None:
         """Learn from every row and keep nothing: the run whose product is the state.
+
+        **It goes on from the state the bank holds**, as scikit-learn's
+        ``partial_fit`` does, not as its ``fit``, which starts over. Two calls
+        over two days of rows leave the state one call over both would have,
+        and :meth:`fit_predict` after it goes on from there too. A bank that
+        starts with nothing learned is a new :class:`ModelBank`.
 
         :meth:`fit_predict_batches` with the output dropped as it comes, so no
         chunk's result is ever held and no frame is assembled from them. An
@@ -837,6 +921,10 @@ class ModelBank:
         ``spec``, ``group``, ``instance``
             The spec's name; the group key as :meth:`groups` reports it; the decay
             instance's field suffix (``"@h500"``, or ``""`` for a single one).
+        ``half_life``, ``lam``
+            The instance's decay, as :func:`polars_online.spec.output_index` gives it:
+            the half-life in clock units (``inf`` for no decay) or the ``lam``, the
+            other null.
         ``weight_sum``
             The accumulated weight behind the fit, what the next row's ``weight_sum`` field
             reports. The solve schedule decides when a stream first solves, not
@@ -848,6 +936,10 @@ class ModelBank:
             :func:`polars_online.spec.coef_index`'s columns: ``position`` indexes the
             flat ``coef`` list, ``term`` is ``"intercept"``, a feature name, or
             ``"level"`` / ``"trend"`` for ``holt``.
+        ``cluster``, ``state``, ``class``
+            ``coef_index``'s too, before ``term``: the ``kmeans`` centre, the
+            ``hmm`` state or the ``ew_class`` class a position belongs to, and
+            null for every other kind.
         ``coef``
             The value, in the features' original units; null until the stream's first
             solve, as ``coef`` is on those rows.
@@ -884,16 +976,7 @@ class ModelBank:
             # Every `coef()` frame's columns, `coef_index`'s among them, so
             # this one stacks with the others: it had seven columns of the
             # eleven, and a plain concat raised (review round 4, SF3).
-            return pl.DataFrame(
-                schema={
-                    "spec": pl.String,
-                    "group": pl.String,
-                    "instance": pl.String,
-                    "weight_sum": pl.Float64,
-                    **_coef_index_schema(),
-                    "coef": pl.Float64,
-                }
-            )
+            return pl.DataFrame(schema=_COEF_SCHEMA_HEAD | _coef_index_schema() | _COEF_VALUE)
         return pl.concat(frames, how="diagonal_relaxed")
 
     def _coef_try(self, idx: int, group: list[str | None] | None, name: str) -> pl.DataFrame | None:
@@ -904,8 +987,22 @@ class ModelBank:
             return None
 
     def _coef_one(self, idx: int, group: list[str | None] | None, name: str) -> pl.DataFrame:
-        layout = coef_index(self._specs[idx])
+        spec = self._specs[idx]
+        layout = coef_index(spec)
+        if layout.is_empty():
+            kind = spec["model"]["type"]
+            why = _NO_COEF.get(kind, f"{kind} emits no coefficients")
+            msg = f"spec {name!r}: {why}"
+            raise ValueError(msg)
         n = layout.height
+        # Each instance's decay, by its suffix, as `output_index` gives it.
+        decay = {
+            i: (h, lam)
+            for i, h, lam in output_index(spec)
+            .filter(pl.col("kind") == "weight_sum")
+            .select("instance", "half_life", "lam")
+            .iter_rows()
+        }
         groups: list[str | None] = []
         instances: list[str] = []
         n_effs: list[float] = []
@@ -925,12 +1022,14 @@ class ModelBank:
         return body.with_columns(
             pl.Series("group", groups, pl.String),
             pl.Series("instance", instances, pl.String),
+            pl.Series("half_life", [decay[i][0] for i in instances], pl.Float64),
+            pl.Series("lam", [decay[i][1] for i in instances], pl.Float64),
             pl.Series("weight_sum", n_effs, pl.Float64),
             # Finite-or-null, as the output's `coef` field is: an `ew_class`
             # class no row has carried yet has NaN means.
             pl.Series("coef", values, pl.Float64).fill_nan(None),
             pl.Series("spec", [name] * len(instances), pl.String),
-        ).select("spec", "group", "instance", "weight_sum", *layout.columns, "coef")
+        ).select(*_COEF_SCHEMA_HEAD, *layout.columns, *_COEF_VALUE)
 
     def last_row(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
@@ -998,7 +1097,7 @@ class ModelBank:
         ``spec``, ``group``
             As :meth:`groups` reports them.
         ``rows_fed``
-            Rows routed to the group, skipped or not.
+            Rows routed to the group, skipped or not, as :meth:`groups` counts them.
         ``rows_processed``
             Rows the models saw: every feature and the weight usable.
         ``rows_skipped``
@@ -1014,9 +1113,9 @@ class ModelBank:
         ``weight_sum``
             The sum of the processed rows' weights (1 per row without a
             weight column).
-        ``clock_min``, ``clock_max``, ``last_clock``
+        ``clock_min``, ``clock_max``, ``clock_last``
             The clock range fed and the last value, in the clock column's
-            own dtype, exactly, as :meth:`groups` gives ``last_clock``; null
+            own dtype, exactly, as :meth:`groups` gives ``clock_last``; null
             on a row-count clock.
         ``session_changes``
             Rows whose session differed from the previous row's.
@@ -1026,15 +1125,24 @@ class ModelBank:
         ``resets``
             Rows at which ``session_gap = "reset"`` or
             ``restart_after_step_back`` restarted the stream.
+        ``solve_failures``
+            The solves that needed jitter or kept the previous fit, what
+            :meth:`solve_failures` reports.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
             last row (`docs/DIAGNOSTICS.md, Is it ready?
             <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__).
             ``settled_frac`` is how full the decay window is: the fraction
             the next row's ``settled_frac`` reads, which under ``embargo``
-            counts the clock the held rows have covered too. ``error_inflation`` is the
-            largest noise-gate ratio over its slots: ``ewridge``'s
-            ``sqrt(1 + edf / n_kish)``, ``rls``'s
+            counts the clock the held rows have covered too. It reads the
+            model's own decay, ``half_life``, as ``min_settled_frac`` and the
+            readiness notices do, not a second memory the model keeps beside
+            it, such as ``holt``'s trend: the diagnostics wait for the
+            longest of those instead (`docs/DIAGNOSTICS.md, One memory per
+            diagnostic
+            <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
+            ``error_inflation`` is the largest noise-gate ratio over its
+            slots: ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
             ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
             ``sqrt(1 + df / n_kish)``. ``kalman``'s gate reads each row's own
             value, so its reading is the gate's mean field over the design,
@@ -1054,9 +1162,11 @@ class ModelBank:
             weight exactly, from the second row on. It says, before the stream
             gets there, whether a ``min_weight`` can be met. Null after a
             single row, with no decay, and under ``window_size``.
-        ``min_support_coef``, ``min_support_coef_feature``, ``n_coef``
+        ``support_coef_min``, ``support_coef_min_feature``, ``n_coef``
             The smallest coefficient's data share, the feature it belongs to,
             and the coefficients per target, likewise.
+
+        Every count is an ``Int64``, as in every frame and field of the library.
 
         An ``audit`` (:func:`polars_online.spec.audit`) reads every row and
         learns from none: its ``rows_processed`` is ``rows_fed`` and its
@@ -1085,10 +1195,11 @@ class ModelBank:
 
         ``column``, ``role``
             The column's name, and ``"feature"``, ``"target"`` or ``"weight"``.
-        ``count``, ``null_count``
+        ``count``, ``unusable_count``
             A partition of the rows fed: a value counts when finite and within the
-            input bound, as the models take it, and is a null otherwise -- polars
-            nulls, NaN, infinities and magnitudes beyond the bound alike.
+            input bound, as the models take it, and is unusable otherwise -- polars
+            nulls, NaN, infinities and magnitudes beyond the bound alike. Not
+            Polars' ``null_count``, which counts the nulls alone.
         ``mean``, ``std``, ``min``, ``max``
             Over the counted values, undecayed and in row order, so chunking cannot
             move them; ``std`` is the sample one (``ddof=1``), null below two values.
@@ -1116,8 +1227,8 @@ class ModelBank:
         group: str | Iterable[str | None] | None = None,
         *,
         dtype: Any = "float64",
-        layout: str = "full",
-    ) -> list[dict[str, Any]]:
+        layout: Literal["full", "packed"] = "full",
+    ) -> list[Gram]:
         """The running sums behind a spec's fit, per group and instance, as numpy arrays.
 
         One dict per (group, decay instance), and per Gram where a spec reads more
@@ -1173,7 +1284,7 @@ class ModelBank:
             present on every row the Gram learned (every target under ``target_gaps =
             "own_rows"``), and under ``"pairwise"`` a target's own means where it has
             gaps. :func:`polars_online.gram.solve` reads them. Empty for ``ew_cov``.
-        ``cross_centred``
+        ``cross_centered``
             Per target, the cross-moments centred at its column means and its own
             mean, ``E[(z - m_t) * (y - ybar_t)]``, shape ``(n_targets, k)``: what the
             model solves from, and what :func:`polars_online.gram.solve` reads. It
@@ -1273,7 +1384,7 @@ class ModelBank:
 
         .. code-block:: text
 
-            comoments[1:, 1:] @ beta[t][1:] == cross_centred[t][1:]
+            comoments[1:, 1:] @ beta[t][1:] == cross_centered[t][1:]
             beta[t][0] == ybar - m[1:] @ beta[t][1:]
 
         Values are in the features' original units. The intercept, when the spec has
@@ -1336,7 +1447,7 @@ class ModelBank:
         if spec_dict.get("fit_intercept", True) and not unsupervised:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
-        out = []
+        out: list[Gram] = []
         native = self._native.gram(idx, _group_keys(group), float32, packed, columns)
         for row, lag, (tidx, by_target, centred) in native:
             g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
@@ -1360,7 +1471,7 @@ class ModelBank:
                     "means_by_target": np.asarray(by_target, dtype=float).reshape(len(tidx), k)
                     if tidx
                     else np.zeros((0, k)),
-                    "cross_centred": np.asarray(centred, dtype=float).reshape(len(tidx), k)
+                    "cross_centered": np.asarray(centred, dtype=float).reshape(len(tidx), k)
                     if tidx
                     else np.zeros((0, k)),
                     "target_weights": np.asarray(tw),
@@ -1391,10 +1502,12 @@ class ModelBank:
         the bank that saved it would, and feeding the rows in one chunk or a thousand
         gives the same numbers to the bit. The columns:
 
-        ``group``, ``instance``
-            As :meth:`gram` reports them (``""`` for a spec without a ``group``
-            column; ``""`` for a single decay instance, else the field suffix such as
-            ``"@h500"``).
+        ``spec``, ``group``, ``instance``
+            The spec's name, and the group and instance as :meth:`gram` reports
+            them (``""`` for a spec without a ``group`` column; ``""`` for a single
+            decay instance, else the field suffix such as ``"@h500"``).
+        ``half_life``, ``lam``
+            The instance's decay, as :meth:`coef` gives it.
         ``feature``, ``target``
             The pair's feature column and the target's name (its column, unless
             a ``po.target`` table gave one).
@@ -1434,7 +1547,7 @@ class ModelBank:
             newest ``l`` rows, so a feature built from the same news shows
             ``lag_corr_xy`` above ``corr`` however it is sampled. Absent under
             ``cross_lags=[]``.
-        ``n_serial``, ``t_serial``
+        ``n_serial``, ``t_stat_serial``
             ``n_kish`` divided by Bartlett's serial-dependence factor, and the
             statistic against it. Null without ``serial_rule``.
         ``phi_x``, ``phi_y``
@@ -1486,7 +1599,7 @@ class ModelBank:
         spec: str | int | None = None,
         group: str | Iterable[str | None] | None = None,
         *,
-        table: str = "columns",
+        table: Literal["columns", "pairs", "clock"] = "columns",
         pooled: bool = False,
     ) -> pl.DataFrame:
         """What an ``audit`` spec counted (:func:`polars_online.spec.audit`): one row
@@ -1508,28 +1621,32 @@ class ModelBank:
             clock = bank.audit(table="clock")         # one row per group
             everything = bank.audit(pooled=True)      # every group as one stream, no group column
 
-        ``table="columns"`` (the default) has ``group`` and ``column``, then:
+        Every table leads with ``spec``, as every reader of the bank does, and
+        counts in ``Int64``. ``table="columns"`` (the default) has ``spec``,
+        ``group`` and ``column``, then:
 
-        ``rows``, ``null``, ``nan``, ``pos_inf``, ``neg_inf``, ``beyond_bound``, ``count``
-            The rows read, then each kind of value a model cannot learn from,
-            counted apart (``beyond_bound`` is finite but past ``1e100`` in
-            magnitude), and ``count``, the usable values. The six add up to
-            ``rows``.
+        ``rows_fed``, ``null_count``, ``nan_count``
+            The rows read, then two kinds of value a model cannot learn from:
+            the nulls, as Polars' ``null_count`` counts them, and the NaNs.
+        ``pos_inf_count``, ``neg_inf_count``, ``beyond_bound_count``, ``count``
+            The other kinds, each counted apart (``beyond_bound_count`` is finite but
+            past ``1e100`` in magnitude), and ``count``, the usable values. The
+            six counts add up to ``rows_fed``.
         ``mean``, ``std``, ``skew``, ``kurtosis``, ``min``, ``max``
             Over the usable values: ``std`` with ``ddof = 1``; ``skew`` and
             the excess ``kurtosis`` scipy's biased estimators. Null where
             undefined (no usable value, one, or no spread).
         ``median``, ``mad``, ``robust_z``
             The median and the median absolute deviation, exact while
-            ``distinct`` is not null and from a t-digest past the cap
+            ``n_unique`` is not null and from a t-digest past the cap
             (about 1% of the rows in rank), and the largest robust z,
             ``max(max - median, median - min) / (1.4826 mad)``.
-        ``distinct``
-            The distinct usable values, ``-0`` read as ``0``; null past the
-            spec's ``distinct_cap``.
+        ``n_unique``
+            The distinct usable values, as Polars' ``n_unique`` counts them,
+            ``-0`` read as ``0``; null past the spec's ``distinct_cap``.
         ``top_value``, ``top_count``, ``second_count``, ``count_error``
             The most repeated value, its count and the next value's: exact
-            while ``distinct`` is, and each at most ``count_error`` short of
+            while ``n_unique`` is, and each at most ``count_error`` short of
             the truth past the cap, where a value not held has a count of at
             most ``count_error``.
         ``longest_run``, ``equal_prev``, ``adjacent``, ``equal_by_chance``
@@ -1554,21 +1671,21 @@ class ModelBank:
             ``+inf`` for a fit with no residual and a slope of 1, such as a
             row counter (``-inf`` below 1).
 
-        ``table="pairs"``, for a spec built with ``pairs=True``: ``group``,
-        ``column_a``, ``column_b``, and over the rows where both are usable,
+        ``table="pairs"``, for a spec built with ``pairs=True``: ``spec``,
+        ``group``, ``column_a``, ``column_b``, and over the rows where both are usable,
         ``count``, ``corr`` and ``equal``, the rows on which the two are
         equal.
 
-        ``table="clock"``: ``group``, ``steps`` (between consecutive rows),
+        ``table="clock"``: ``spec``, ``group``, ``steps`` (between consecutive rows),
         ``duplicates`` (steps of 0), ``gaps`` (steps at or past
         ``gap_cap``, which a clock requires), ``regular`` (the rest), and
         the regular steps' ``step_mean``, ``step_std`` (population) and
-        ``step_cv``, and ``max_step`` over every step. No rows for a spec
+        ``step_cv``, and ``step_max`` over every step. No rows for a spec
         without a ``clock``. A step is the time that passed between the two
         rows, uncapped: a model ages by at most ``gap_cap`` of it, and the
         audit counts all of it (across a session change under a numeric
         ``session_gap``, that gap). On a temporal clock ``step_mean``,
-        ``step_std`` and ``max_step`` are ``Duration`` in the clock column's
+        ``step_std`` and ``step_max`` are ``Duration`` in the clock column's
         unit (milliseconds for a ``Date``), on a number clock numbers in its
         units, and ``Float64`` before a chunk has said which. A step back is
         refused, as for every spec; with ``restart_after_step_back`` each one
@@ -1577,7 +1694,7 @@ class ModelBank:
         count them.
 
         ``pooled=True`` merges the groups the frame covers into one audit,
-        as if they were one stream, and drops ``group``: the counts and
+        as if they were one stream, and drops ``group`` (``spec`` stays): the counts and
         moments merge exactly, up to rounding, and the counters past the cap
         and the digests approximately, as the spec's docstring says.
 
@@ -1621,14 +1738,14 @@ class ModelBank:
         missing on different rows are fitted from Grams of their own). The
         common columns:
 
-        ``spec``, ``group``, ``instance``, ``session``
-            Which stream closed. ``session`` is the value of the span that
-            ended under ``group_close = "session"``, and null under
-            ``"monotone"``.
+        ``spec``, ``group``, ``instance``, ``half_life``, ``lam``, ``session``
+            Which stream closed, the instance with its decay as :meth:`coef`
+            gives it. ``session`` is the value of the span that ended under
+            ``group_close = "session"``, and null under ``"monotone"``.
         ``weight_sum``, ``n_kish``
             As :meth:`gram` reports them, at the moment of the close.
         ``rows_fed``, ``rows_learned``, ``clock_min``, ``clock_max``
-            The span's own :meth:`summary` counts, ``UInt64`` as there, and clock
+            The span's own :meth:`summary` counts, ``Int64`` as there, and clock
             range, in the clock column's own dtype as there.
 
         Then a block per kind, present when any spec of the bank closes
@@ -1645,7 +1762,7 @@ class ModelBank:
              - ``columns``, ``means``, ``comoments``, ``targets``,
                ``target_means``, ``target_vars``, ``target_weights``,
                ``target_n_kish``, ``cross_moments``, ``means_by_target`` and
-               ``cross_centred``
+               ``cross_centered``
              - packed: ``comoments`` is the upper triangle with the diagonal,
                row by row (``k(k+1)/2`` numbers), and the per-target arrays
                are row-major ``(n_targets, k)``.
@@ -1655,7 +1772,10 @@ class ModelBank:
                ``po.gram.solve(po.gram.from_row(row))``
            * - every kind that reports coefficients
              - ``coef``
-             - on a Gram's row, the coefficients of that Gram's ``targets``
+             - on a Gram's row, the coefficients of that Gram's ``targets``.
+               A ``List``, where the output's ``coef`` is an ``Array``: one
+               column holds the rows of every closing spec and every Gram,
+               whose lengths differ
            * - an ``ew_cov`` with ``pca``
              - ``eig_vals`` and ``eig_vecs``
              - the vectors signed for continuity with the previous closed
@@ -1733,7 +1853,10 @@ class ModelBank:
             unreliable) or ``info``; an ``Enum`` in that order, worst first.
         ``code``
             Which check found it, a short name that stays the same across
-            releases. The table below lists them.
+            releases. The table below lists them. A ``String``, not an ``Enum``
+            as ``severity`` is: a minor release may add a check, and an
+            ``Enum``'s categories are part of its dtype, so a new code would
+            change the column's type under code that pins it.
         ``spec``, ``group``
             The stream, as :meth:`summary` names it. ``group`` is null for
             ``not_checked``, which is about the spec as a whole.
@@ -1979,8 +2102,10 @@ class ModelBank:
 
         return check(self, spec, group)
 
-    def solve_failures(self) -> dict[str, dict[str | None, int]]:
-        """Jittered or failed matrix factorizations so far, per spec and group.
+    def solve_failures(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
+        """Jittered or failed matrix factorizations so far: one row per (spec, group).
 
         A solve never returns NaN silently: a near-singular system is retried with
         escalating diagonal jitter, and total failure keeps the previous coefficients.
@@ -2006,38 +2131,72 @@ class ModelBank:
 
         Every other model reports 0 because it counts nothing, not because nothing can
         fail: ``rls`` and ``kalman`` track an inverse, and the gradient models keep no
-        second moment to factorize. Returns ``{spec name: {group key: count}}``.
+        second moment to factorize.
+
+        The columns are ``spec``, ``group`` (as :meth:`groups` reports it) and
+        ``solve_failures``, an ``Int64``: the same count :meth:`summary` carries in
+        its column of that name, without the rest of the summary. ``spec`` and
+        ``group`` narrow the frame as in :meth:`summary`.
+
+        .. code-block:: python
+
+            bank = po.ModelBank.load("bank.state")
+            failing = bank.solve_failures().filter(pl.col("solve_failures") > 0)
         """
         names = self._native.spec_names()
-        return {
-            name: dict(pairs)
-            for name, pairs in zip(names, self._native.solve_failures(), strict=True)
-        }
+        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        wanted = _group_keys(group)
+        native = self._native.solve_failures()
+        rows = [
+            (names[i], key, count)
+            for i in picked
+            for key, count in native[i]
+            if wanted is None or key in wanted
+        ]
+        return pl.DataFrame(
+            rows,
+            schema={"spec": pl.String, "group": pl.String, "solve_failures": pl.Int64},
+            orient="row",
+        )
 
+    @property
     def output_fields(self) -> dict[str, list[str]]:
         """Spec name to the field names of its output struct, in order:
         :func:`polars_online.spec.output_fields` for every spec in the bank.
 
         The fields are fixed by the spec, so this is the output schema before any row
-        is fed.
+        is fed. A property, as :attr:`specs` is. Before 1.0 it was a method, and
+        ``bank.output_fields()`` still answers, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
         """
-        return dict(zip(self._native.spec_names(), self._native.output_fields(), strict=True))
+        return _CalledDict(
+            zip(self._native.spec_names(), self._native.output_fields(), strict=True)
+        )
 
-    def save(self, path: str | Path) -> None:
+    @deprecated_keywords("ModelBank.save", {"path": "file"})
+    def save(self, file: str | os.PathLike[str] | IO[bytes]) -> None:
         """Write the state to a file: versioned msgpack, loadable on any supported OS.
 
-        Written to a temporary sibling and renamed into place, so an interrupted save
-        leaves the previous state where it was rather than truncating it. The rename
-        is preceded by a filesystem sync, so a power loss cannot replace a good state
-        file with an empty one. The sync takes about 4 ms on macOS, against about 0.5 ms for
-        serializing 500 groups. Save every chunk and the sync dominates; save every
-        hundredth and it disappears.
+        ``file`` is a path, or a file object opened for binary writing (an
+        ``open(..., "wb")`` or an ``io.BytesIO``), as Polars' ``write_*``
+        methods take either. :meth:`save_bytes` gives the same bytes.
+
+        A path is written to a temporary sibling and renamed into place, so an
+        interrupted save leaves the previous state where it was rather than truncating
+        it. The rename is preceded by a filesystem sync, so a power loss cannot replace
+        a good state file with an empty one. The sync takes about 4 ms on macOS, against
+        about 0.5 ms for serializing 500 groups. Save every chunk and the sync
+        dominates; save every hundredth and it disappears. A file object is handed
+        the bytes in one ``write``, after the state is serialized: whether the write
+        is atomic is up to whoever opened it.
 
         Raises the ``OSError`` for what went wrong, with the path in the message:
         ``FileNotFoundError`` for a directory that is not there, ``PermissionError``
         for one that cannot be written. The file, if it existed, is untouched.
         ``RuntimeError`` while a ``fit_predict`` is in flight on another thread, and
         ``ValueError`` for a bank a refused chunk left broken (:meth:`fit_predict`).
+        ``TypeError`` for a ``file`` that is neither a path nor a binary file
+        object.
 
         .. warning::
             A spec's formula target (:func:`polars_online.target` over a window
@@ -2048,19 +2207,31 @@ class ModelBank:
             holds one raises :class:`~polars_online.UnstableWarning`. The rest of
             the file is promised.
         """
-        self._warn_formula_form()
-        self._native.save(str(path))
+        if isinstance(file, (str, os.PathLike)):
+            # One frame more than `save_bytes`: the keyword forwarding's.
+            self._warn_formula_form(stacklevel=5)
+            self._native.save(os.fspath(file))
+            return
+        if not callable(getattr(file, "write", None)):
+            msg = (
+                "ModelBank.save takes a path or a file object opened for binary writing, "
+                f"got {type(file).__name__}"
+            )
+            raise TypeError(msg)
+        self._warn_formula_form(stacklevel=5)
+        file.write(bytes(self._native.save_bytes()))
 
-    def _warn_formula_form(self) -> None:
+    def _warn_formula_form(self, stacklevel: int = 4) -> None:
         """:class:`~polars_online.UnstableWarning` for a bank whose specs hold a
         formula target, whose written form is not promised (docs/PLAN.md task
-        198, D5); a caller's caller is the user's line."""
+        198, D5). ``stacklevel`` 4 is the caller's caller, the user's line under
+        a method that calls this; a method under a decorator passes 5."""
         if any(
             isinstance(t, dict) and "formula" in t
             for spec in self._specs
             for t in spec.get("targets") or ()
         ):
-            warn_unstable("a formula target's written form in a state file", stacklevel=4)
+            warn_unstable("a formula target's written form in a state file", stacklevel=stacklevel)
 
     def save_bytes(self) -> bytes:
         """What :meth:`save` writes, as bytes, for a store that is not a file
@@ -2073,9 +2244,30 @@ class ModelBank:
         self._warn_formula_form()
         return bytes(self._native.save_bytes())
 
-    def to_json(self, *, pretty: bool = True) -> str:
+    @overload
+    def write_json(self, file: None = None, *, pretty: bool = True) -> str: ...
+
+    @overload
+    def write_json(
+        self, file: str | os.PathLike[str] | IO[str] | IO[bytes], *, pretty: bool = True
+    ) -> None: ...
+
+    def write_json(
+        self,
+        file: str | os.PathLike[str] | IO[str] | IO[bytes] | None = None,
+        *,
+        pretty: bool = True,
+    ) -> str | None:
         """The state as JSON: everything :meth:`save` writes, in a form that can be read
         without this library.
+
+        Returned as a string when ``file`` is ``None``, as Polars'
+        ``DataFrame.write_json()`` returns its JSON. Otherwise written to
+        ``file``, a path or a file object, text or binary (UTF-8), and ``None``
+        is returned. A path is written plainly, not with :meth:`save`'s atomic
+        rename: this is an export of a state that lives elsewhere, so a
+        half-written one is mended by writing it again. ``pretty=False`` writes
+        it on one line.
 
         An export, not a second state format: :meth:`load` reads msgpack and only
         msgpack. Use it to look at a state, diff two of them, or hand one to something
@@ -2089,22 +2281,66 @@ class ModelBank:
         wrong. ``RuntimeError`` while a ``fit_predict`` is in flight on another
         thread, as :meth:`save` does. A formula target's written form is
         unstable, as :meth:`save` says, and the export carries the same tree.
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            import json
+
+            state = json.loads(bank.write_json())     # the state, as Python objects
+            bank.write_json("bank.json")               # the same text, in a file
         """
         self._warn_formula_form()
-        return str(self._native.save_json_string(pretty))
+        text = str(self._native.save_json_string(pretty))
+        if file is None:
+            return text
+        if isinstance(file, (str, os.PathLike)):
+            Path(file).write_text(text, encoding="utf-8")
+        elif isinstance(file, io.TextIOBase):
+            file.write(text)
+        elif callable(getattr(file, "write", None)):
+            # A binary file object, or one that does not say which: bytes, as
+            # UTF-8, and the text where it takes no bytes.
+            writer: Any = file
+            try:
+                writer.write(text.encode("utf-8"))
+            except TypeError:
+                writer.write(text)
+        else:
+            msg = (
+                "ModelBank.write_json takes a path, a file object or None, "
+                f"got {type(file).__name__}"
+            )
+            raise TypeError(msg)
+        return None
 
-    def save_json(self, path: str | Path, *, pretty: bool = True) -> None:
-        """Write :meth:`to_json` to ``path``.
+    @deprecated_alias("ModelBank.to_json", "ModelBank.write_json", ", which returns the same text")
+    def to_json(self, *, pretty: bool = True) -> str:
+        """Renamed :meth:`write_json`: called without a file it returns the same
+        string. Each call raises a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`."""
+        return self.write_json(pretty=pretty)
 
-        A plain ``write_text``, not :meth:`save`'s atomic rename: this is an export of
-        a state that lives elsewhere, so a half-written one is mended by writing it
-        again.
-        """
-        Path(path).write_text(self.to_json(pretty=pretty), encoding="utf-8")
+    @deprecated_alias("ModelBank.save_json", "ModelBank.write_json", ", which takes the same path")
+    def save_json(self, path: str | os.PathLike[str], *, pretty: bool = True) -> None:
+        """Renamed :meth:`write_json`, which takes the same path. Each call
+        raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`."""
+        self.write_json(path, pretty=pretty)
 
     @classmethod
-    def load(cls, path: str | Path, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
-        """A bank from a file :meth:`save` wrote, on this or any other OS.
+    @deprecated_keywords("ModelBank.load", {"path": "source"})
+    def load(
+        cls,
+        source: str | os.PathLike[str] | bytes | IO[bytes],
+        specs: Iterable[dict[str, Any]] | None = None,
+    ) -> ModelBank:
+        """A bank from a state :meth:`save` wrote, on this or any other OS.
+
+        ``source`` is a path, the bytes (:meth:`save_bytes`), or a file object
+        opened for binary reading (an ``open(..., "rb")`` or an ``io.BytesIO``),
+        as Polars' ``read_*`` functions take any of the three.
 
         The file carries the specs, so none need be given. Passing ``specs`` asserts
         they are the file's, which is how a resuming job checks that the state it
@@ -2117,7 +2353,8 @@ class ModelBank:
             bank.fit_predict(today)                    # and the stream goes on
 
         Raises ``FileNotFoundError`` (or the ``OSError`` for what went wrong) when the
-        file cannot be read, and ``ValueError`` when it can but is not a bank this
+        file cannot be read, ``TypeError`` for a ``source`` that is none of the
+        three, and ``ValueError`` when it can be read but is not a bank this
         build loads:
 
         - not a bank state file at all;
@@ -2143,18 +2380,47 @@ class ModelBank:
         :class:`~polars_online.UnstableWarning` under
         ``POLARS_ONLINE_WARN_UNSTABLE=1``.
         """
-        return cls.load_bytes(Path(path).read_bytes(), specs)
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            data = bytes(source)
+        elif isinstance(source, (str, os.PathLike)):
+            data = Path(source).read_bytes()
+        elif callable(getattr(source, "read", None)):
+            data = source.read()
+            if not isinstance(data, (bytes, bytearray)):
+                msg = (
+                    "ModelBank.load: the file object gave "
+                    f"{type(data).__name__}; open the file in binary mode ('rb')"
+                )
+                raise TypeError(msg)
+            data = bytes(data)
+        else:
+            msg = (
+                "ModelBank.load takes a path, bytes or a file object opened for binary "
+                f"reading, got {type(source).__name__}"
+            )
+            raise TypeError(msg)
+        # One frame more than `load_bytes`: the keyword forwarding's.
+        return cls._load_bytes(data, specs, stacklevel=5)
 
     @classmethod
     def load_bytes(cls, data: bytes, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
         """:meth:`load` from the bytes :meth:`save_bytes` gave, with the same ``specs``
         check and the same ``ValueError`` for bytes that are not a bank this build
-        loads.
+        loads. :meth:`load` takes the bytes too.
         """
+        return cls._load_bytes(data, specs, stacklevel=4)
+
+    @classmethod
+    def _load_bytes(
+        cls, data: bytes, specs: Iterable[dict[str, Any]] | None, stacklevel: int
+    ) -> ModelBank:
+        """:meth:`load_bytes`, with the formula form's warning pointed
+        ``stacklevel`` frames up from :meth:`_warn_formula_form`, so a public
+        method's caller is named however many frames it adds."""
         specs_json = _json(list(specs)) if specs is not None else None
         native = _native.ModelBank.load_bytes(data, specs_json)
         bank = cls._wrap(native)
-        bank._warn_formula_form()
+        bank._warn_formula_form(stacklevel=stacklevel + 1)
         return bank
 
     @classmethod

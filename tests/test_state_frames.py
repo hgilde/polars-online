@@ -8,8 +8,9 @@ Review round 4 (docs/PLAN.md §18), the user's decisions of 2026-10-06:
   start every group over, or cut every session, in silence.
 - N18: the clock range in ``summary()``, ``groups()`` and ``closed_groups()``
   is in the clock column's own dtype, exactly, as ``emit_clocks`` is.
-- N19, N20: ``closed_groups()`` counts as ``UInt64``, and prefixes every
-  column of its ``rcov`` block.
+- N19, N20: ``closed_groups()`` counts as one dtype with every other frame
+  (``Int64`` since task 244's decision 1), and prefixes every column of its
+  ``rcov`` block.
 - N21: ``group=`` takes one key or a list of them, ``None`` among them for
   the null group, and integer keys list in numeric order.
 - S2: without a cadence, ``coef`` is written on each group's last accepted
@@ -192,13 +193,13 @@ def test_summary_and_groups_give_the_clock_in_its_own_dtype_exactly(dtype):
     )
     summary = bank.summary()
     groups = bank.groups()
-    for col in ("clock_min", "clock_max", "last_clock"):
+    for col in ("clock_min", "clock_max", "clock_last"):
         assert summary[col].dtype == want, col
-    assert groups["last_clock"].dtype == want
+    assert groups["clock_last"].dtype == want
     assert summary["clock_min"].to_list() == by["lo"].to_list()
     assert summary["clock_max"].to_list() == by["hi"].to_list()
-    assert summary["last_clock"].to_list() == by["last"].to_list()
-    assert groups["last_clock"].to_list() == by["last"].to_list()
+    assert summary["clock_last"].to_list() == by["last"].to_list()
+    assert groups["clock_last"].to_list() == by["last"].to_list()
 
 
 @pytest.mark.parametrize("dtype", DTYPES, ids=str)
@@ -228,7 +229,7 @@ def test_a_row_count_clock_reads_null_in_float64():
     bank.fit_predict(df)
     s = bank.summary()
     assert s["clock_min"].dtype == pl.Float64 and s["clock_min"].null_count() == s.height
-    assert bank.groups()["last_clock"].dtype == pl.Float64
+    assert bank.groups()["clock_last"].dtype == pl.Float64
 
 
 def test_specs_whose_clocks_differ_are_read_one_at_a_time():
@@ -243,8 +244,8 @@ def test_specs_whose_clocks_differ_are_read_one_at_a_time():
     for read in (bank.summary, bank.groups):
         with pytest.raises(ValueError, match=r'spec "m".*datetime.*spec "b".*f64.*spec='):
             read()
-        assert read("m")["last_clock"].dtype == pl.Datetime("us")
-        assert read("b")["last_clock"].dtype == pl.Float64
+        assert read("m")["clock_last"].dtype == pl.Datetime("us")
+        assert read("b")["clock_last"].dtype == pl.Float64
     together = po.ModelBank([a, c])
     together.fit_predict(df)
     assert together.summary()["clock_min"].dtype == pl.Datetime("us")
@@ -254,16 +255,104 @@ def test_specs_whose_clocks_differ_are_read_one_at_a_time():
 # --- N19, N20: the closed frame's counts and its rcov block ---------------------
 
 
-def test_closed_counts_are_uint64_as_in_the_other_frames():
-    df = keyed()
-    bank = po.ModelBank([ridge(group="g", group_close="monotone")])
-    bank.fit_predict(df.sort("g"))
-    closed = bank.closed_groups()
-    assert closed.height > 0
-    assert closed.schema["rows_fed"] == pl.UInt64
-    assert closed.schema["rows_learned"] == pl.UInt64
-    summary = bank.summary()
-    assert pl.concat([closed.select("rows_fed"), summary.select("rows_fed")]).height > 0
+def _integers(dtype: pl.DataType, path: str) -> list[tuple[str, pl.DataType]]:
+    """Every integer dtype inside ``dtype``, a list's, an array's and a
+    struct's included, with where it sits."""
+    if isinstance(dtype, (pl.List, pl.Array)):
+        return _integers(dtype.inner, f"{path}[]")
+    if isinstance(dtype, pl.Struct):
+        return [i for f in dtype.fields for i in _integers(f.dtype, f"{path}.{f.name}")]
+    return [(path, dtype)] if dtype.is_integer() else []
+
+
+def _each_kind_fitted():
+    """Every kind at its fullest (``test_model_registry.fullest``), closing
+    its groups where it may, fitted on rows every kind can read: a 0/1
+    ``ftrl`` target, a text ``ew_class`` label, a key that only grows."""
+    from test_model_registry import MINIMAL, fullest
+
+    rng = np.random.default_rng(244)
+    n = 240
+    x0, x1 = rng.normal(size=n), rng.normal(size=n)
+    base = pl.DataFrame(
+        {
+            "x0": x0,
+            "x1": x1,
+            "y": 2.0 * x0 - x1 + 0.1 * rng.normal(size=n),
+            "z": x0 + 0.1 * rng.normal(size=n),
+            "g": np.arange(n) // 60,
+            "t": np.arange(n, dtype=float),
+        }
+    )
+    for name in sorted(MINIMAL):
+        if name != "audit":
+            spec = {**fullest(name), "group": "g", "group_close": "monotone"}
+        else:
+            # An audit closes no group, and its pairs and clock are tables
+            # of their own.
+            spec = po.spec.audit(
+                "m",
+                columns=["x0", "x1"],
+                group="g",
+                clock="t",
+                gap_cap=5.0,
+                pairs=True,
+                emit_clocks=True,
+            )
+        df = base
+        if name == "ftrl":
+            df = df.with_columns((pl.col(c) > 0).cast(pl.Float64) for c in ("y", "z"))
+        if name == "ew_class":
+            df = df.with_columns(
+                y=pl.when(pl.col("y") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
+            )
+        bank = po.ModelBank([spec])
+        out = bank.fit_predict(df)
+        yield name, spec, bank, out
+
+
+def test_every_count_in_every_frame_is_int64():
+    """One integer dtype, ``Int64``, for every count in every frame and
+    field the bank returns (task 244, decision 1): ``summary()``,
+    ``groups()``, ``describe()`` and ``closed_groups()`` counted in
+    ``UInt64``, ``coef_fields``' positions in ``UInt32`` and ``po.eval``'s
+    ``n`` in ``UInt32``, beside the struct's ``Int64``. Walked over every
+    kind at its fullest, so a frame or a field added later is held too."""
+    found: list[str] = []
+    for name, spec, bank, out in _each_kind_fitted():
+        frames = {
+            "output": out,
+            "groups()": bank.groups(),
+            "summary()": bank.summary(),
+            "describe()": bank.describe(),
+            "coef()": bank.coef(),
+            "last_row()": bank.last_row(),
+            "closed_groups()": bank.closed_groups(drop=False),
+            "check()": bank.check(),
+            "solve_failures()": bank.solve_failures(),
+            "output_index": po.spec.output_index(spec),
+            "coef_fields": po.spec.coef_fields(spec),
+            "coef_index": po.spec.coef_index(spec),
+        }
+        if name == "marginal":
+            frames["marginal()"] = bank.marginal("m")
+        if name == "audit":
+            for table in ("columns", "pairs", "clock"):
+                frames[f"audit({table!r})"] = bank.audit(table=table)
+            frames["audit(pooled=True)"] = bank.audit(pooled=True)
+        if name == "ewridge":
+            from polars_online import eval as ev
+
+            frames["eval.metrics"] = ev.metrics(out, spec, min_samples=1)
+            frames["eval.sums"] = ev.sums(out, spec)
+            frames["eval.from_sums"] = ev.from_sums(frames["eval.sums"], min_samples=1)
+        for label, frame in frames.items():
+            assert isinstance(frame, pl.DataFrame), (name, label)
+            for column, dtype in frame.schema.items():
+                for where, inner in _integers(dtype, column):
+                    if inner != pl.Int64:
+                        found.append(f"{name} {label} {where}: {inner}")
+    assert not found, "\n".join(found)
 
 
 def test_every_rcov_column_carries_the_prefix():
@@ -315,7 +404,7 @@ def test_integer_keys_list_in_numeric_order_the_null_group_first():
     assert bank.coef("m")["group"].unique(maintain_order=True).to_list() == NUMERIC
     assert [g["group"] for g in bank.gram("m")] == NUMERIC
     assert bank.marginal("p")["group"].to_list() == NUMERIC
-    assert list(bank.solve_failures()["m"]) == NUMERIC
+    assert bank.solve_failures("m")["group"].to_list() == NUMERIC
 
 
 def test_text_keys_list_in_text_order():
@@ -449,7 +538,7 @@ def test_rows_fed_is_the_frames_count_and_rows_seen_names_it():
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(30))
     bank.drop_groups(["0"])
-    assert bank.rows_fed() == 30
+    assert bank.rows_fed == 30
     assert bank.summary()["rows_fed"].sum() < 30
     assert "rows_fed=30" in repr(bank)
     with pytest.raises(AttributeError, match=r"rows_seen was renamed rows_fed"):

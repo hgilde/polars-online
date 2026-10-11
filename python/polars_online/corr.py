@@ -11,7 +11,8 @@ that comes after a pass:
    * - kind
      - the calls
    * - read one
-     - :func:`matrix`, from an array, a Gram or a closed row
+     - :func:`polars_online.gram.correlation`, from a Gram, and
+       :func:`polars_online.gram.from_row` for a closed row
    * - repair it
      - :func:`nearest`, the nearest correlation matrix; :func:`shrink`,
        towards a structured target
@@ -33,8 +34,8 @@ that comes after a pass:
 
 Every function is a pure function of arrays. Where the input is a matrix it
 may equally be a mapping from :meth:`~polars_online.ModelBank.gram` or a row
-from :meth:`~polars_online.ModelBank.closed_groups`: :func:`matrix` reads all
-three.
+from :meth:`~polars_online.ModelBank.closed_groups`, whose correlation matrix
+it reads as :func:`polars_online.gram.correlation` does.
 
 The arithmetic is the papers', named in each docstring, and every function is
 held against a longhand check in ``tests/test_corr.py``: Higham's own
@@ -62,7 +63,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from polars_online._renamed import renamed_function
-from polars_online._warnings import unstable
+from polars_online._warnings import deprecated_alias, unstable
 
 __all__ = [
     "Z_CLIP",
@@ -78,7 +79,6 @@ __all__ = [
     "from_spectral",
     "from_z",
     "loss",
-    "matrix",
     "mp_density",
     "mp_edge",
     "nearest",
@@ -108,8 +108,9 @@ def _np() -> Any:
     return np
 
 
-def matrix(obj: Any) -> Any:
-    """The ``k x k`` correlation matrix of whatever this is, as a float array.
+def _matrix(obj: Any) -> Any:
+    """The ``k x k`` correlation matrix of whatever this is, as a float array:
+    what every function here reads its matrix argument through.
 
     An array is returned as a float array; a mapping from
     :meth:`~polars_online.ModelBank.gram` or :func:`polars_online.gram.from_row`
@@ -124,13 +125,26 @@ def matrix(obj: Any) -> Any:
     ):
         from polars_online import gram as _gram
 
-        g = obj if isinstance(obj, dict) and "means" in obj else _gram.from_row(obj)
+        g: Any = obj if isinstance(obj, dict) and "means" in obj else _gram.from_row(obj)
         return _gram.correlation(g)
     m = np.asarray(obj, dtype=float)
     if m.ndim != 2 or m.shape[0] != m.shape[1]:
         msg = f"corr: expected a square matrix, a Gram mapping or a closed row; got {m.shape}"
         raise ValueError(msg)
     return m
+
+
+@deprecated_alias(
+    "po.corr.matrix",
+    "po.gram.correlation",
+    " for a Gram or a closed row's from_row, and every po.corr function takes the array, the "
+    "Gram or the closed row itself",
+)
+def matrix(obj: Any) -> Any:
+    """Renamed :func:`polars_online.gram.correlation` for a Gram: each call
+    raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`, then
+    reads ``obj`` as every function here reads its matrix argument."""
+    return _matrix(obj)
 
 
 # --- Fisher's transform ------------------------------------------------------
@@ -198,7 +212,7 @@ def nearest(
     ``ValueError``.
     """
     np = _np()
-    x = matrix(a)
+    x = _matrix(a)
     k = x.shape[0]
     # A NaN propagates through the eigendecomposition and comes back as a
     # matrix of NaNs with a NaN distance -- an answer, and a wrong one
@@ -332,7 +346,7 @@ def shrink(
     or with fewer than two rows.
     """
     np = _np()
-    s = matrix(r)
+    s = _matrix(r)
     k = s.shape[0]
     off = ~np.eye(k, dtype=bool)
     sd = np.sqrt(np.clip(np.diag(s), 0.0, None))
@@ -404,7 +418,7 @@ def equicorr(r: Any) -> float:
     below two columns.
     """
     np = _np()
-    m = matrix(r)
+    m = _matrix(r)
     k = m.shape[0]
     if k < 2:
         return float("nan")
@@ -461,7 +475,7 @@ def absorption(r: Any, k: int) -> float:
     ``1..n``.
     """
     np = _np()
-    vals = np.linalg.eigvalsh(matrix(r))[::-1]
+    vals = np.linalg.eigvalsh(_matrix(r))[::-1]
     total = float(vals.sum())
     if not 1 <= k <= vals.size:
         msg = f"corr.absorption: k must be 1..{vals.size}, got {k}"
@@ -502,7 +516,7 @@ def spectral(r: Any, k: int) -> tuple[Any, Any]:
     above ``n`` gives all ``n``.
     """
     np = _np()
-    m = matrix(r)
+    m = _matrix(r)
     vals, vecs = np.linalg.eigh(m)
     order = np.argsort(vals)[::-1][:k]
     out_vals = vals[order]
@@ -544,7 +558,7 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
     for a label count that is not the column count.
     """
     np = _np()
-    m = matrix(r)
+    m = _matrix(r)
     lab = list(labels)
     if len(lab) != m.shape[0]:
         msg = f"corr.block_means: {len(lab)} labels for a {m.shape[0]}-column matrix"
@@ -699,8 +713,8 @@ def loss(
     ``"z_mse"`` without ``n``.
     """
     np = _np()
-    f = matrix(fcst)
-    r = matrix(real)
+    f = _matrix(fcst)
+    r = _matrix(real)
     if f.shape != r.shape:
         msg = f"corr.loss: the two matrices must match, got {f.shape} and {r.shape}"
         raise ValueError(msg)

@@ -271,6 +271,83 @@ class TestBreaksAreBrownDurbinAndEvans:
         assert checked == 3
         assert out["break_wald_y"][650] > 21.1, "the break passes chi2(3)'s 0.01% value"
 
+    def test_a_quantile_fits_wald_under_a_horizon_takes_the_residuals_long_run_variance(self):
+        """Under a horizon ``break_wald``'s noise variance is scaled by the
+        studentized residuals' long-run over short-run variance; on a
+        quantile fit it took the indicators' (the CUSUM's terms there),
+        which is smaller under an overlap, and the statistic passed
+        ``chi2(3)``'s 5% value on 10.8% of quiet rows against ``ewridge``'s
+        5.9% (review round 7, A-2). The factor's lag terms are
+        ``statsmodels``' Bartlett kernel, ``S_hac_simple`` at ``2h`` lags
+        over the folded residuals ``ω z`` at their decayed weights, less
+        the kernel's own lag-zero term; over them stands ``Σ ω²``, the
+        short-run variance of a sum of unit-variance terms, which the
+        studentized residuals are by construction. The distance it scales
+        is the two ``WLS`` fits' with the exact variance, as above. The
+        horizon is ``horizon_rows``, with no embargo, so each row folds at
+        its arrival after its read, as the fits above do. The indicators'
+        factor, the same kernel over ``ω c``, is not the residuals' here,
+        so the old form fails."""
+        from statsmodels.stats.sandwich_covariance import S_hac_simple
+
+        # The diagnostics fold from 95% settled, 4.3 half-lives in: at 1,000
+        # rows and a half-life of 100 the sums hold 550 rows by the last
+        # read, enough for the two factors to stand apart.
+        h, horizon, n = 100.0, 5, 1_000
+        rng = np.random.default_rng(73)
+        x = rng.normal(size=(n, 2))
+        u = rng.normal(size=n + horizon)
+        fwd = np.convolve(u, np.ones(horizon), "valid")[1 : n + 1] / np.sqrt(horizon)
+        y = 0.5 + x @ np.array([1.0, -1.0]) + fwd
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        spec = po.spec.quantile(
+            "m",
+            quantile=0.5,
+            targets=["y"],
+            features=["x0", "x1"],
+            half_life=h,
+            horizon_rows=horizon,
+            min_weight=10.0,
+            emit_breaks=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        z = out["studentized_y"].to_numpy().astype(float)
+        pred = out["pred_y"].to_numpy().astype(float)
+        c = (np.where(y < pred, 1.0, 0.0) - 0.5) / 0.5
+        X = np.column_stack([np.ones(n), x])
+        L = 2 * horizon
+
+        def factor(term: np.ndarray, rows: np.ndarray, t: int) -> float:
+            # Row r folded at weight 1, aged by every row after it up to t - 1.
+            om = 0.5 ** ((t - 1 - rows) / h)
+            v = om * term[rows]
+            lagged = S_hac_simple(v[:, None], nlags=L)[0, 0] - v @ v
+            return float(1.0 + lagged / (om @ om))
+
+        checked = 0
+        for t in (500, 750, 999):
+            age = (t - 1) - np.arange(t)
+            wf, ws = 0.5 ** (age / h), 0.5 ** (age / (4 * h))
+            Xt, yt = X[:t], y[:t]
+            bf = np.linalg.solve((Xt * wf[:, None]).T @ Xt, (Xt * wf[:, None]).T @ yt)
+            bs = np.linalg.solve((Xt * ws[:, None]).T @ Xt, (Xt * ws[:, None]).T @ yt)
+            ns = ws.sum() ** 2 / (ws**2).sum()
+            s2 = (ws * (yt - Xt @ bs) ** 2).sum() / ws.sum() * ns / (ns - 3)
+            D = np.linalg.solve((Xt * wf[:, None]).T @ Xt, (Xt * wf[:, None]).T) - np.linalg.solve(
+                (Xt * ws[:, None]).T @ Xt, (Xt * ws[:, None]).T
+            )
+            d = bf - bs
+            plain = d @ np.linalg.solve(D @ D.T, d) / s2
+            # The residuals folded before row t: each row's studentized
+            # residual, written on its own row and folded there.
+            rows = np.flatnonzero(np.isfinite(z[:t]))
+            residuals = factor(z, rows, t)
+            indicators = factor(c, rows, t)
+            assert residuals > 3.0 and residuals - indicators > 0.3, (residuals, indicators)
+            np.testing.assert_allclose(out["break_wald_y"][t], plain / residuals, rtol=1e-6)
+            checked += 1
+        assert checked == 3
+
 
 def _sandwich_rows(n: int, seed: int) -> pl.DataFrame:
     """Two features far from zero and a residual whose spread grows with the
@@ -424,7 +501,7 @@ def _spec_rows(
 class TestSpecificationTestsAreStatsmodels:
     """Task 221 (d). Run once, on the bank's out-of-sample residuals of the
     rows before each row: ``ljung_box`` is ``acorr_ljungbox``,
-    ``breusch_pagan`` is ``het_breuschpagan``'s ``n R2``, and ``reset`` is
+    ``breusch_pagan`` is ``het_breuschpagan``'s ``n R2``, and ``ramsey_reset`` is
     ``compare_lm_test`` of the residual on ``p, p2, p3`` against ``p``.
     Past a horizon ``ljung_box`` is the definition with Bartlett's
     covariance, from ``statsmodels``' ``acf``; on planted curvature it
@@ -462,7 +539,9 @@ class TestSpecificationTestsAreStatsmodels:
             q = pt - pt[0]
             full = sm.OLS(rt, sm.add_constant(np.column_stack([q, q**2, q**3]))).fit()
             base = sm.OLS(rt, sm.add_constant(q)).fit()
-            np.testing.assert_allclose(out["reset_y"][t], full.compare_lm_test(base)[0], rtol=1e-7)
+            np.testing.assert_allclose(
+                out["ramsey_reset_y"][t], full.compare_lm_test(base)[0], rtol=1e-7
+            )
 
     def test_past_a_horizon_it_reads_bartletts_covariance(self):
         from statsmodels.tsa.stattools import acf
@@ -497,7 +576,7 @@ class TestSpecificationTestsAreStatsmodels:
 
         for seed, curve in ((63, 0.4), (64, 0.0), (65, 0.4), (66, 0.0)):
             df = _spec_rows(1500, seed, curve=curve, hetero=False)
-            ours = self._run(df)["reset_y"][-1] > 5.991
+            ours = self._run(df)["ramsey_reset_y"][-1] > 5.991
             X = sm.add_constant(df.select("x0", "x1").to_numpy())
             fit = sm.OLS(df["y"].to_numpy(), X).fit()
             theirs = linear_reset(fit, power=3, test_type="fitted", use_f=False).statistic > 5.991
@@ -579,7 +658,7 @@ class TestUnderAHorizonTheTestsAreNeweyWest:
             Zq = np.column_stack([np.ones_like(q), q, q**2, q**3])
             beta = sm.OLS(es, Zq).fit().params
             want = wald(Zq, r, beta[2:], [2, 3])
-            np.testing.assert_allclose(out["reset_y"][t], want, rtol=1e-6)
+            np.testing.assert_allclose(out["ramsey_reset_y"][t], want, rtol=1e-6)
             checked += 1
         assert checked == 3
 

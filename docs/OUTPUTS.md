@@ -51,11 +51,20 @@ pred_y__r0.5@h500 y 0.5 500.0
 
 Each table lists the fields of the model's plainest spec, whose target is
 `y` and whose features are `x0`, and `x1` where the model needs two. Your
-own spec's fields carry your column names in their place. The names follow
-the grammar in the README's [Output field
-names](../README.md#output-field-names): `<stat>_<column>` for a per-column
-value, `_<a>_<b>` for a pair, and a suffix where a grid makes several of the
-same field.
+own spec's fields carry your column names in their place.
+
+**Every name follows one grammar, which is stable.** Read left to right, a
+name is the kind (`pred`, `abs_resid`, `lag_corr`), then its qualifier, then
+the target or the columns it is about (`_<t>`, `_<f>`, `_<a>_<b>`), then the
+grid point after `__` and the instance after `@`. A qualifier is a number
+glued to the letter that says what it is: `q` a quantile level, `l` a lag
+(`abs_resid_q0.05_y`, `mahal_q0.99`, `lag_corr_l1_x0_x1`). The grid point
+uses letters too, `r` a ridge and `p` a lasso penalty, and the instance `h`,
+a half-life. A thing the spec has several of is numbered where it is named,
+glued to its word: a principal component `pc0` (`pc0_var`), an `hmm` state
+`state0` (`filtered_state0`), a `kmeans` centre `cluster0`
+(`coef_cluster0_x1`). The README's [Output field
+names](../README.md#output-field-names) builds a grid and reads its fields.
 
 | in a name | stands for | in this page's tables |
 |---|---|---|
@@ -67,7 +76,7 @@ same field.
 | `__r<ridge>` | one value of a `ridge` grid | |
 | `__<set>` | one of the `feature_sets`, with one ridge value | |
 | `__<set>_r<ridge>` | one of the `feature_sets`, with one value of a `ridge` grid | |
-| `__l<lambda>` | one value of `penalties` | `__l0.1`, `__l0` |
+| `__p<penalty>` | one value of `penalties` | `__p0.1`, `__p0` |
 | `@h<half_life>` | one half-life of a grid, at the end of every field's name: `weight_sum@h500`, or `weight_sum@h10m` for a duration | |
 
 EW, in a meaning below, is short for exponentially weighted.
@@ -82,10 +91,15 @@ row, as `po.spec.output_index(spec)` lists it:
 | `f64` | `Float64` |
 | `i64` | `Int64` |
 | `bool` | `Boolean` |
-| `str` | `String` |
-| `list[f64]` | `List(Float64)` |
-| `enum` | an `Enum` of `withheld_reason`'s four values |
+| `array[f64, k]` | `Array(Float64, k)`: `coef` and the fields laid out like it, `k` the height of `po.spec.coef_index(spec)`, which `to_numpy()` reads as an `(n, k)` matrix |
+| `list[f64]` | `List(Float64)`: `micro`'s `coef`, one row per summary, as many as there are |
+| `enum` | an `Enum` of its values, in their order: `withheld_reason`'s four, an `ew_class` spec's `classes` for `class`, a grid's slots for `selected_<t>` |
 | `clock` | the clock column's own type |
+
+**Every integer is an `Int64`**, in a field and in every frame the bank and
+`po.spec` return: a count, a state, a cluster label, a position, a row's
+index. It is Polars' own default integer, so a join, a concatenation or a
+comparison between two frames never meets two widths.
 
 ### When a field is null
 
@@ -109,7 +123,7 @@ Four fields appear in nearly every table below, and are defined here once:
 | `weight_sum` | `f64` | the accumulated weight before this row's update and before its own decay | never |
 | `settled_frac` | `f64` | how far the decay window had filled toward steady state before this row: `1 - 2^(-T/half_life)`, with `T` the decay time seen so far, so 0.5 at one half-life and 0.75 at two. `min_settled_frac` gates on it | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation` or `below_warm_rows`. That order is their precedence, so the first that applies is the one named. `below_warm_rows` is the model's own warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit, as one flat list written after the row's update: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the list out. A model that solves on a schedule (`solve_every`) shows its latest solve, and the entries of a target no solve has fit yet are null. Under an `embargo` the row's own update waits for the delay, so `coef` is written after the rows this row releases, and is the fit the next row is predicted with only when the next row releases none | on every row but those `coef_every` or `max_rows_between_coefs` fills, which with neither are each group's last accepted row in each chunk; and before the model has anything to report, such as a first solve |
+| `coef` | `array[f64, 2]` | the numbers behind the fit, as one array written after the row's update, as wide as `po.spec.coef_index(spec)` is long: a regression's coefficients, or what a model that is not a regression keeps in their place, such as its centres or state means. Its builder's docstring lays the array out. A model that solves on a schedule (`solve_every`) shows its latest solve, and the entries of a target no solve has fit yet are null. Under an `embargo` the row's own update waits for the delay, so `coef` is written after the rows this row releases, and is the fit the next row is predicted with only when the next row releases none | on every row but those `coef_every` or `max_rows_between_coefs` fills, which with neither are each group's last accepted row in each chunk; and before the model has anything to report, such as a first solve |
 
 ### What is not listed
 
@@ -152,8 +166,8 @@ The fields of `po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
-| `support_coef` | `list[f64]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `support_coef` | `array[f64, 2]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
 
 ## `rls`
 
@@ -166,7 +180,7 @@ The fields of `po.spec.rls("m", targets=["y"], features=["x0"], half_life=50.0)`
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `lasso`
 
@@ -174,14 +188,14 @@ The fields of `po.spec.lasso("m", targets=["y"], features=["x0"], half_life=50.0
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `pred_y__l0.1` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
-| `resid_y__l0.1` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
-| `pred_y__l0` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
-| `resid_y__l0` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
+| `pred_y__p0.1` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
+| `resid_y__p0.1` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
+| `pred_y__p0` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
+| `resid_y__p0` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 4]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 | `penalty_selected_y` | `f64` | the path point in force for `<t>`, by lowest EW out-of-sample error | never: it is written while the predictions are withheld too |
 
 ## `kalman`
@@ -195,7 +209,7 @@ The fields of `po.spec.kalman("m", targets=["y"], features=["x0"], half_life=50.
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `huber`
 
@@ -208,8 +222,8 @@ The fields of `po.spec.huber("m", targets=["y"], features=["x0"], half_life=50.0
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
-| `support_coef` | `list[f64]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `support_coef` | `array[f64, 2]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
 
 ## `quantile`
 
@@ -222,8 +236,8 @@ The fields of `po.spec.quantile("m", targets=["y"], features=["x0"], half_life=5
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
-| `support_coef` | `list[f64]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `support_coef` | `array[f64, 2]` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef` | where `coef` is, and in the intercept's place, which is not a share |
 
 ## `sgd`
 
@@ -236,7 +250,7 @@ The fields of `po.spec.sgd("m", targets=["y"], features=["x0"], half_life=50.0, 
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `pa`
 
@@ -249,7 +263,7 @@ The fields of `po.spec.pa("m", targets=["y"], features=["x0"], half_life=50.0)`:
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `ftrl`
 
@@ -262,7 +276,7 @@ The fields of `po.spec.ftrl("m", targets=["y"], features=["x0"], half_life=50.0)
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `holt`
 
@@ -275,7 +289,7 @@ The fields of `po.spec.holt("m", targets=["y"], half_life=50.0)`:
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `ew_cov`
 
@@ -285,8 +299,8 @@ The fields of `po.spec.ew_cov("m", features=["x0", "x1"], half_life=50.0)`:
 |---|---|---|---|
 | `mean_x0` | `f64` | EW mean of `<f>` | while withheld |
 | `mean_x1` | `f64` | EW mean of `<f>` | while withheld |
-| `std_x0` | `f64` | EW standard deviation of `<f>`, the square root of the population variance | while withheld |
-| `std_x1` | `f64` | EW standard deviation of `<f>`, the square root of the population variance | while withheld |
+| `std_x0` | `f64` | EW standard deviation of `<f>`, the square root of `var_<f>` | while withheld |
+| `std_x1` | `f64` | EW standard deviation of `<f>`, the square root of `var_<f>` | while withheld |
 | `corr_x0_x1` | `f64` | EW correlation of the pair | while withheld |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
@@ -314,7 +328,7 @@ The fields of `po.spec.deco("m", features=["x0", "x1"], half_life=50.0)`:
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 1]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `rcov`
 
@@ -348,7 +362,7 @@ The fields of `po.spec.kmeans("m", features=["x0", "x1"], half_life=50.0, n_clus
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 4]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `micro`
 
@@ -365,7 +379,7 @@ The fields of `po.spec.micro("m", features=["x0", "x1"], half_life=50.0, eps=0.3
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `list[f64]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `ew_class`
 
@@ -373,13 +387,13 @@ The fields of `po.spec.ew_class("m", features=["x0"], half_life=50.0, label="y",
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `class` | `str` | the most likely class label | while withheld |
+| `class` | `enum` | the most likely class label | while withheld |
 | `p_a` | `f64` | posterior probability of class `<label>` | while withheld |
 | `p_b` | `f64` | posterior probability of class `<label>` | while withheld |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 2]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `seqtest`
 
@@ -432,13 +446,13 @@ The fields of `po.spec.hmm("m", features=["x0", "x1"], half_life=50.0, n_compone
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `filtered_0` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `filtered_1` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `predicted_0` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `predicted_1` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `state` | `i64` | the most likely state for this row: the one with the largest `predicted_<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `filtered_state0` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `filtered_state1` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `predicted_state0` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `predicted_state1` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `state` | `i64` | the most likely state for this row: the one with the largest `predicted_state<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `loglik` | `f64` | log predictive density of the row, under the model as it stood before the row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
-| `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
+| `coef` | `array[f64, 4]` | the numbers behind the fit as one array ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |

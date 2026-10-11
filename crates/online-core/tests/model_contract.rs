@@ -500,6 +500,7 @@ fn holt() {
 
 fn ew_cov_model_cfg() -> EwCovCfg {
     EwCovCfg {
+        bias: false,
         n_features: K,
         decay: decay(),
         stats: vec![
@@ -1091,6 +1092,7 @@ fn every_model_refuses_a_decay_it_cannot_run_on() {
         }),
         ("ew_cov", &|decay| {
             EwCovModel::new(EwCovCfg {
+                bias: false,
                 decay,
                 ..ew_cov_model_cfg()
             })
@@ -1456,6 +1458,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
         ),
         (
             EwCovModel::new(EwCovCfg {
+                bias: false,
                 min_weight: nan,
                 ..ew_cov_model_cfg()
             })
@@ -1633,6 +1636,7 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
         })
         .map(drop),
         EwCovModel::new(EwCovCfg {
+            bias: false,
             min_weight: inf,
             ..ew_cov_model_cfg()
         })

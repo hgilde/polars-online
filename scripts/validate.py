@@ -233,7 +233,7 @@ def main() -> None:
     specs = [
         po.spec.lasso(
             f"l1_{int(r * 100)}",
-            lasso_path=path,
+            penalties=path,
             l1_ratio=r,
             targets=[target],
             features=feats,
@@ -243,7 +243,7 @@ def main() -> None:
         )
         for r in (1.0, 0.5, 0.1)
     ]
-    res = run(df, specs, [target]).filter(~pl.col("slot").str.ends_with("l0"))
+    res = run(df, specs, [target]).filter(~pl.col("slot").str.ends_with("__p0"))
     section(
         "3. Elastic net `l1_ratio` [validate]",
         "Lasso path "
@@ -286,7 +286,7 @@ def main() -> None:
         specs.append(
             po.spec.lasso(
                 "lasso",
-                lasso_path=[1e-3, 1e-4, 0.0],
+                penalties=[1e-3, 1e-4, 0.0],
                 targets=[t],
                 features=feats,
                 half_life=HL,

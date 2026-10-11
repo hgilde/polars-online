@@ -7,6 +7,7 @@ use polars::prelude::*;
 use super::{Bank, GroupKey};
 use crate::spec::ModelKind;
 use crate::stream::{AnyModel, ClockDtype, ClockUnit};
+use crate::summary::counts;
 
 /// Which of an audit's frames to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,25 +39,28 @@ fn opt(v: f64) -> Option<f64> {
 }
 
 impl Bank {
-    /// An `audit` spec's counts as a frame ([`AuditTable`]): per group in
-    /// key order ([`Self::sorted_keys`]), or, `pooled`, one audit of every
-    /// group the frame covers ([`Audit::merge`]), with no `group` column.
+    /// An `audit` spec's counts as a frame ([`AuditTable`]), led by `spec`,
+    /// as every reader of the bank is: per group in key order
+    /// ([`Self::sorted_keys`]), or, `pooled`, one audit of every group the
+    /// frame covers ([`Audit::merge`]), with no `group` column. Every count
+    /// is an `Int64`, as in every frame (task 244).
     ///
-    /// `Columns`: `group`, `column`, `rows`, `null`, `nan`, `pos_inf`,
-    /// `neg_inf`, `beyond_bound`, `count` (usable values), `mean`, `std`,
-    /// `skew`, `kurtosis`, `min`, `max`, `median`, `mad`, `robust_z`,
-    /// `distinct` (null past the cap), `top_value`, `top_count`,
-    /// `second_count`, `count_error`, `longest_run`, `equal_prev`,
-    /// `adjacent`, `equal_by_chance`, `min_change`, `min_change_count`,
-    /// `autocorr`, `unit_root_t`. `Pairs`: `group`, `column_a`,
-    /// `column_b`, `count`, `corr`, `equal`. `Clock`: `group`, `steps`,
-    /// `duplicates`, `gaps` (null without `gap_cap`), `regular`,
-    /// `step_mean`, `step_std`, `step_cv`, `max_step`; no rows for a stream
-    /// without a clock column. Each step is the time that passed, uncapped
-    /// (review 6, C-5); on a temporal clock `step_mean`, `step_std` and
-    /// `max_step` are `Duration`s in the column's unit (milliseconds for a
-    /// `Date`), and plain numbers on a number clock or before a chunk has
-    /// said which.
+    /// `Columns`: `spec`, `group`, `column`, `rows_fed`, `null_count`,
+    /// `nan_count`, `pos_inf_count`, `neg_inf_count`, `beyond_bound_count`,
+    /// `count` (usable
+    /// values), `mean`, `std`, `skew`, `kurtosis`, `min`, `max`, `median`,
+    /// `mad`, `robust_z`, `n_unique` (null past the cap), `top_value`,
+    /// `top_count`, `second_count`, `count_error`, `longest_run`,
+    /// `equal_prev`, `adjacent`, `equal_by_chance`, `min_change`,
+    /// `min_change_count`, `autocorr`, `unit_root_t`. `Pairs`: `spec`,
+    /// `group`, `column_a`, `column_b`, `count`, `corr`, `equal`. `Clock`:
+    /// `spec`, `group`, `steps`, `duplicates`, `gaps` (null without
+    /// `gap_cap`), `regular`, `step_mean`, `step_std`, `step_cv`,
+    /// `step_max`; no rows for a stream without a clock column. Each step
+    /// is the time that passed, uncapped (review 6, C-5); on a temporal
+    /// clock `step_mean`, `step_std` and `step_max` are `Duration`s in the
+    /// column's unit (milliseconds for a `Date`), and plain numbers on a
+    /// number clock or before a chunk has said which.
     ///
     /// # Errors
     ///
@@ -114,6 +118,7 @@ impl Bank {
             cols.remove(0);
         }
         let height = cols.first().map_or(0, Column::len);
+        cols.insert(0, Column::new("spec".into(), vec![s.name.as_str(); height]));
         DataFrame::new(height, cols).map_err(|e| e.to_string())
     }
 }
@@ -129,20 +134,24 @@ fn columns_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Colu
             reps.push(a.column(j));
         }
     }
-    let int = |f: fn(&AuditColumn) -> u64| -> Vec<u64> { reps.iter().map(f).collect() };
+    let int = |name: &str, f: fn(&AuditColumn) -> u64| -> Column {
+        counts(name, reps.iter().map(|r| Some(f(r))))
+    };
     let num = |f: fn(&AuditColumn) -> f64| -> Vec<Option<f64>> {
         reps.iter().map(|r| opt(f(r))).collect()
     };
     vec![
         Column::new("group".into(), group),
         Column::new("column".into(), column),
-        Column::new("rows".into(), int(|r| r.rows)),
-        Column::new("null".into(), int(|r| r.null)),
-        Column::new("nan".into(), int(|r| r.nan)),
-        Column::new("pos_inf".into(), int(|r| r.pos_inf)),
-        Column::new("neg_inf".into(), int(|r| r.neg_inf)),
-        Column::new("beyond_bound".into(), int(|r| r.beyond)),
-        Column::new("count".into(), int(|r| r.count)),
+        // Polars' names for the same counts (`null_count`, `n_unique`), and
+        // the rows fed as every frame says it (task 244).
+        int("rows_fed", |r| r.rows),
+        int("null_count", |r| r.null),
+        int("nan_count", |r| r.nan),
+        int("pos_inf_count", |r| r.pos_inf),
+        int("neg_inf_count", |r| r.neg_inf),
+        int("beyond_bound_count", |r| r.beyond),
+        int("count", |r| r.count),
         Column::new("mean".into(), num(|r| r.mean)),
         Column::new("std".into(), num(|r| r.std)),
         Column::new("skew".into(), num(|r| r.skew)),
@@ -152,22 +161,17 @@ fn columns_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Colu
         Column::new("median".into(), num(|r| r.median)),
         Column::new("mad".into(), num(|r| r.mad)),
         Column::new("robust_z".into(), num(|r| r.robust_z)),
-        Column::new(
-            "distinct".into(),
-            reps.iter()
-                .map(|r| r.distinct)
-                .collect::<Vec<Option<u64>>>(),
-        ),
+        counts("n_unique", reps.iter().map(|r| r.distinct)),
         Column::new("top_value".into(), num(|r| r.top_value)),
-        Column::new("top_count".into(), int(|r| r.top_count)),
-        Column::new("second_count".into(), int(|r| r.second_count)),
-        Column::new("count_error".into(), int(|r| r.count_error)),
-        Column::new("longest_run".into(), int(|r| r.longest_run)),
-        Column::new("equal_prev".into(), int(|r| r.equal_prev)),
-        Column::new("adjacent".into(), int(|r| r.adjacent)),
+        int("top_count", |r| r.top_count),
+        int("second_count", |r| r.second_count),
+        int("count_error", |r| r.count_error),
+        int("longest_run", |r| r.longest_run),
+        int("equal_prev", |r| r.equal_prev),
+        int("adjacent", |r| r.adjacent),
         Column::new("equal_by_chance".into(), num(|r| r.equal_by_chance)),
         Column::new("min_change".into(), num(|r| r.min_change)),
-        Column::new("min_change_count".into(), int(|r| r.min_change_count)),
+        int("min_change_count", |r| r.min_change_count),
         Column::new("autocorr".into(), num(|r| r.autocorr)),
         Column::new("unit_root_t".into(), num(|r| r.unit_root_t)),
     ]
@@ -184,9 +188,9 @@ fn pairs_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Column
                 group.push(*g);
                 a_col.push(&names[i]);
                 b_col.push(&names[j]);
-                count.push(p.count);
+                count.push(Some(p.count));
                 corr.push(opt(p.corr));
-                equal.push(p.equal);
+                equal.push(Some(p.equal));
             }
         }
     }
@@ -194,9 +198,9 @@ fn pairs_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Column
         Column::new("group".into(), group),
         Column::new("column_a".into(), a_col),
         Column::new("column_b".into(), b_col),
-        Column::new("count".into(), count),
+        counts("count", count),
         Column::new("corr".into(), corr),
-        Column::new("equal".into(), equal),
+        counts("equal", equal),
     ]
 }
 
@@ -225,7 +229,9 @@ fn clock_frame(audits: &[(Option<&str>, Audit)], dtype: Option<&ClockDtype>) -> 
             reps.push(c);
         }
     }
-    let int = |f: fn(&online_core::AuditClock) -> u64| -> Vec<u64> { reps.iter().map(f).collect() };
+    let int = |name: &str, f: fn(&online_core::AuditClock) -> u64| -> Column {
+        counts(name, reps.iter().map(|r| Some(f(r))))
+    };
     let num = |f: fn(&online_core::AuditClock) -> f64| -> Vec<Option<f64>> {
         reps.iter().map(|r| opt(f(r))).collect()
     };
@@ -248,16 +254,14 @@ fn clock_frame(audits: &[(Option<&str>, Audit)], dtype: Option<&ClockDtype>) -> 
     };
     vec![
         Column::new("group".into(), group),
-        Column::new("steps".into(), int(|r| r.steps)),
-        Column::new("duplicates".into(), int(|r| r.duplicates)),
-        Column::new(
-            "gaps".into(),
-            reps.iter().map(|r| r.gaps).collect::<Vec<Option<u64>>>(),
-        ),
-        Column::new("regular".into(), int(|r| r.regular)),
+        int("steps", |r| r.steps),
+        int("duplicates", |r| r.duplicates),
+        counts("gaps", reps.iter().map(|r| r.gaps)),
+        int("regular", |r| r.regular),
         span("step_mean", |r| r.step_mean),
         span("step_std", |r| r.step_std),
         Column::new("step_cv".into(), num(|r| r.step_cv)),
-        span("max_step", |r| r.max_step),
+        // `<quantity>_<stat>`, as `step_mean` (task 244).
+        span("step_max", |r| r.max_step),
     ]
 }

@@ -171,7 +171,7 @@ def test_a_save_carries_the_setting_and_resumes_to_the_bit(tmp_path):
     a.fit_predict(df.slice(0, 301))
     a.save(tmp_path / "threads.state")
     b = po.ModelBank.load(tmp_path / "threads.state")
-    assert '"gram_threads":8' in b.to_json().replace(" ", "")
+    assert '"gram_threads":8' in b.write_json().replace(" ", "")
     rest = b.fit_predict(df.slice(301)).select("m").unnest("m")
     assert rest.equals(whole.slice(301), null_equal=True)
 
@@ -221,9 +221,9 @@ def test_a_spec_without_it_writes_nothing_new():
     """Left out, the key is not written: a state that does not use it has
     the bytes it had before the option existed (no schema change)."""
     for spec in (ridge(None, 64), cov(None)):
-        assert "gram_threads" not in po.ModelBank([spec]).to_json()
+        assert "gram_threads" not in po.ModelBank([spec]).write_json()
     for spec in (ridge(2, 64), cov(2)):
-        doc = json.loads(po.ModelBank([spec]).to_json())
+        doc = json.loads(po.ModelBank([spec]).write_json())
         assert '"gram_threads": 2' in json.dumps(doc)
 
 

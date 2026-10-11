@@ -69,7 +69,7 @@ def python_lasso_path(
         m = pg._means_of(np, g, t)
         ybar = cross[icept]
         c = como[np.ix_(slots, slots)]
-        rhs = pg._cross_centred(np, g, t, m, ybar)[slots]
+        rhs = pg._cross_centered(np, g, t, m, ybar)[slots]
     else:
         c = como[np.ix_(slots, slots)] + np.outer(means[slots], means[slots])
         rhs = cross[slots]
@@ -149,7 +149,7 @@ class TestLassoPathIsTheLoopItReplaced:
 
     def test_a_mapping_without_the_centred_forms_forms_them(self):
         g = gram(stream(seed=5))
-        bare = dict(g, means_by_target=None, cross_centred=None)
+        bare = dict(g, means_by_target=None, cross_centered=None)
         got = pg.lasso_path(bare, PENALTIES)
         assert np.abs(got - python_lasso_path(bare, PENALTIES)).max() < 1e-12
         assert got == pytest.approx(pg.lasso_path(g, PENALTIES), abs=1e-9)
@@ -195,11 +195,11 @@ class TestLarsPath:
                 want = sets[n - 1] & sets[n]
             assert nonzero == want, n
 
-    def test_it_stops_after_max_steps_or_at_max_active(self):
+    def test_it_stops_after_max_iter_or_at_max_active(self):
         g = gram(stream(seed=9, k=8))
         full = pg.lars_path(g)
-        steps = pg.lars_path(g, max_steps=3)
-        assert steps["stop"] == "max_steps"
+        steps = pg.lars_path(g, max_iter=3)
+        assert steps["stop"] == "max_iter"
         assert len(steps["penalties"]) == 4
         assert np.array_equal(steps["coef"], full["coef"][:4])
         active = pg.lars_path(g, max_active=2)
@@ -261,7 +261,7 @@ class TestLarsPath:
     @pytest.mark.parametrize(
         ("kw", "match"),
         [
-            (dict(max_steps=0), "max_steps must be a whole number >= 1"),
+            (dict(max_iter=0), "max_iter must be a whole number >= 1"),
             (dict(max_active=True), "max_active must be a whole number >= 1"),
             (dict(max_active=2.0), "max_active must be a whole number >= 1"),
             (dict(penalty_weights=[1.0, 0.0, 1.0, 1.0, 1.0]), "use lasso_path for it"),
@@ -290,15 +290,15 @@ class TestLarsPaths:
         bank.fit_predict(df)
         grams = bank.gram("m")
         assert len(grams) == 4
-        many = pg.lars_paths(grams, max_steps=4)
+        many = pg.lars_paths(grams, max_iter=4)
         assert [len(per) for per in many] == [2, 2, 2, 2]
         for g, per in zip(grams, many, strict=True):
             for t, path in zip(["y", "y2"], per, strict=True):
-                one = pg.lars_path(g, target=t, max_steps=4)
+                one = pg.lars_path(g, target=t, max_iter=4)
                 assert np.array_equal(path["coef"], one["coef"])
                 assert np.array_equal(path["penalties"], one["penalties"])
                 assert path["active"] == one["active"]
-        named = pg.lars_paths(grams, targets=["y2"], max_steps=4)
+        named = pg.lars_paths(grams, targets=["y2"], max_iter=4)
         assert [len(per) for per in named] == [1, 1, 1, 1]
         assert np.array_equal(named[2][0]["coef"], many[2][1]["coef"])
 
@@ -436,8 +436,8 @@ class TestSolveSubsets:
 
     def test_a_subset_of_one_is_that_gram(self):
         grams = blocks(n_blocks=3)
-        alone = pg.solve_subsets(grams, [[0], [1], [2]], path={"max_steps": 4})
-        paths = pg.lars_paths(grams, max_steps=4)
+        alone = pg.solve_subsets(grams, [[0], [1], [2]], path={"max_iter": 4})
+        paths = pg.lars_paths(grams, max_iter=4)
         for a, p in zip(alone, paths, strict=True):
             for x, y in zip(a, p, strict=True):
                 assert np.array_equal(x["coef"], y["coef"])
@@ -487,8 +487,8 @@ class TestSolveSubsets:
             ([[0, 9]], {}, "out of range"),
             ([[1, 1]], {}, "names a Gram twice"),
             ([[0]], dict(ridge=-1.0), "ridge must be finite"),
-            ([[0]], dict(path={"max_iter": 3}), "path takes"),
-            ([[0]], dict(path={"max_steps": 0}), "max_steps must be"),
+            ([[0]], dict(path={"max_knots": 3}), "path takes"),
+            ([[0]], dict(path={"max_iter": 0}), "max_iter must be"),
             ([[0]], dict(features=["intercept"]), "constant column"),
         ],
     )
@@ -503,8 +503,8 @@ class TestSolveSubsets:
             pg.solve_subsets([], [[0]])
         with pytest.raises(ValueError, match="same columns and targets"):
             pg.solve_subsets([grams[0], pg.subset(grams[1], ["intercept", "x0"])], [[0, 1]])
-        bare = dict(grams[1], cross_centred=None)
-        with pytest.raises(ValueError, match="cross_centred"):
+        bare = dict(grams[1], cross_centered=None)
+        with pytest.raises(ValueError, match="cross_centered"):
             pg.solve_subsets([grams[0], bare], [[0, 1]])
         old = dict(grams[1], target_vars=None)
         with pytest.raises(ValueError, match="no target moments"):
@@ -613,8 +613,8 @@ class TestCompactGram:
             pg.lasso_path(h, PENALTIES), pg.lasso_path(g, PENALTIES), rtol=tol, atol=tol
         )
         np.testing.assert_allclose(
-            pg.lars_path(h, max_steps=4)["coef"],
-            pg.lars_path(g, max_steps=4)["coef"],
+            pg.lars_path(h, max_iter=4)["coef"],
+            pg.lars_path(g, max_iter=4)["coef"],
             rtol=tol,
             atol=tol,
         )
@@ -675,7 +675,7 @@ class TestCompactGram:
                 for a, b in zip(g_per, w_per, strict=True):
                     np.testing.assert_allclose(a["coef"], b["coef"], rtol=tol, atol=tol)
                     np.testing.assert_allclose(a["t"][1:], b["t"][1:], rtol=tol)
-            path = pg.solve_subsets(bank_forms[name], subsets, path={"max_steps": 3})
+            path = pg.solve_subsets(bank_forms[name], subsets, path={"max_iter": 3})
             assert len(path) == 3
 
     @pytest.mark.parametrize(

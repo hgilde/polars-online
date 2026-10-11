@@ -41,12 +41,17 @@ def test_coef_is_the_output_s_last_coef_per_group_and_instance():
         "spec",
         "group",
         "instance",
+        "half_life",
+        "lam",
         "weight_sum",
         "position",
         "target",
         "ridge",
         "feature_set",
         "penalty",
+        "cluster",
+        "state",
+        "class",
         "term",
         "coef",
     ]
@@ -107,7 +112,7 @@ def test_mistakes_and_edges_are_named():
     bank = po.ModelBank([GRID])
     bank.fit_predict(_grouped())
     empty = bank.coef("ols", group="never")
-    assert empty.shape == (0, 11) and empty.schema == bank.coef("ols").schema
+    assert empty.shape == (0, 16) and empty.schema == bank.coef("ols").schema
     with pytest.raises(KeyError, match="no spec named 'nope'"):
         bank.coef("nope")
     with pytest.raises(IndexError, match="spec index 3 out of range"):
@@ -179,7 +184,9 @@ def test_every_model_lays_out_as_coef_index(spec):
     out = bank.fit_predict(df)["m"].struct.unnest()
     c = bank.coef("m")
     layout = po.spec.coef_index(spec)
-    assert c.drop("spec", "group", "instance", "weight_sum", "coef").equals(layout)
+    assert c.drop("spec", "group", "instance", "half_life", "lam", "weight_sum", "coef").equals(
+        layout
+    )
     assert c["coef"].to_list() == out["coef"][-1].to_list()
 
 
@@ -275,9 +282,6 @@ def test_the_layout_test_covers_every_kind_with_a_coef():
     with_coef = set()
     for name in MINIMAL:
         spec = _build(name)
-        try:
-            po.spec.coef_index(spec)
-        except ValueError:
-            continue
-        with_coef.add(spec["model"]["type"])
+        if po.spec.coef_index(spec).height:
+            with_coef.add(spec["model"]["type"])
     assert {s["model"]["type"] for s in COEF_SPECS} == with_coef

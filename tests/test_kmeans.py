@@ -430,7 +430,7 @@ class TestScaleFloor:
 
 def _state(bank: po.ModelBank) -> dict:
     """The model's exported state: one group, one instance."""
-    model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]
+    model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]
     return model["KMeans"]
 
 
@@ -978,7 +978,7 @@ class TestEdgeCases:
             "coef_cluster1_c@h10",
         ]
         ci = po.spec.coef_index(s)
-        assert ci["target"].to_list() == ["cluster0"] * 3 + ["cluster1"] * 3
+        assert ci["cluster"].to_list() == [0] * 3 + [1] * 3
         assert ci["term"].to_list() == ["a", "b", "c"] * 2
         X, _ = blobs(n=200, seed=31, p=3)
         df = pl.DataFrame({"a": X[:, 0], "b": X[:, 1], "c": X[:, 2]})
@@ -997,14 +997,23 @@ class TestEdgeCases:
         assert set(names) <= set(flat.columns) and "coef" not in flat.columns
         # The bank's own `coef` reads the same centres, one row per position.
         c = bank.coef("m")
-        assert c["target"].to_list() == ["cluster0"] * 3 + ["cluster1"] * 3
+        assert c["cluster"].to_list() == [0] * 3 + [1] * 3
         assert c["coef"].to_list() == [flat[n][-1] for n in names]
 
     def test_output_index_declares_the_dtypes(self):
         idx = po.spec.output_index(spec())
         tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
         assert idx["kind"].to_list() == ["cluster", "dist", "dist_second", *tail]
-        assert idx["dtype"].to_list() == ["i64", "f64", "f64", "f64", "f64", "enum", "list[f64]"]
+        width = po.spec.coef_index(spec()).height
+        assert idx["dtype"].to_list() == [
+            "i64",
+            "f64",
+            "f64",
+            "f64",
+            "f64",
+            "enum",
+            f"array[f64, {width}]",
+        ]
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 
     def test_lazy_path_equals_bank(self):

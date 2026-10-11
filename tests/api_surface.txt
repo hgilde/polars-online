@@ -2,39 +2,38 @@
 
 [package]  # a function with its signature, keyword names and defaults included
   ArrowStruct  # unstable
+  ColumnNotFoundError
   ConsumedSourceWarning
   FormulaTarget
   ModelBank
   OrderNotGuaranteedWarning
   PolarsOnlineDeprecationWarning
+  PolarsOnlineWarning
   ReadinessWarning
   Target
   UnstableWarning
   __version__
   corr  # unstable
   eval
-  ewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  ewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  ewm_std(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
-  ewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  ewm_var(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
-  fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+  ewm_mean(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+  ewm_rate(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+  ewm_std(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
+  ewm_sum(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+  ewm_var(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
+  fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   gbdt  # unstable
   gram
   increment(input: 'str | pl.Expr') -> 'pl.Expr'
   native_version()
   ops
   predict(frame: 'pl.LazyFrame | pl.DataFrame', bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-  rewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  rewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-  rewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   schema_version()
   sim  # unstable
   spec
   stream
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
-  unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
+  unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   schema_version = 61
 
 [common parameters]  # every constructor accepts these via **common
@@ -163,6 +162,7 @@
     name
     features
     stats = None
+    bias = False
     precision_prior = None
     mahal_quantiles = None
     pca = None
@@ -518,6 +518,7 @@
     stream.specification_half_life = 50.0
     stream.tails_half_life = 50.0
   ew_cov(features=['x0', 'x1'], half_life=50.0):
+    model.bias = false
     model.decay.Halflife = 50.0
     model.lags = []
     model.mahal_quantiles = []
@@ -937,80 +938,79 @@
 [ModelBank]  # name and signature: a parameter added or a default moved is a diff here
   __init__(self, specs: 'Iterable[dict[str, Any]]') -> 'None'
   __reduce__(self, /)
-  audit(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None, *, table: 'str' = 'columns', pooled: 'bool' = False) -> 'pl.DataFrame'
+  audit(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None, *, table: "Literal['columns', 'pairs', 'clock']" = 'columns', pooled: 'bool' = False) -> 'pl.DataFrame'
   check(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   closed_groups(self, spec: 'str | int | None' = None, *, drop: 'bool' = True) -> 'pl.DataFrame'
   coef(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   describe(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   drop_groups(self, keys: 'Iterable[str | None]', spec: 'str | int | None' = None) -> 'int'
-  fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'None'
+  fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', *, closed_groups: 'str | os.PathLike[str] | None' = None, chunk_size: 'int | None' = None) -> 'None'
   fit_predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
   fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'  # unstable
-  fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_size: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
-  gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None, *, dtype: 'Any' = 'float64', layout: 'str' = 'full') -> 'list[dict[str, Any]]'
+  fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', *, closed_groups: 'str | os.PathLike[str] | None' = None, chunk_size: 'int | None' = None) -> 'Iterator[pl.DataFrame]'
+  gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None, *, dtype: 'Any' = 'float64', layout: "Literal['full', 'packed']" = 'full') -> 'list[Gram]'
   groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
   last_row(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
-  load(path: 'str | Path', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
+  load(source: 'str | os.PathLike[str] | bytes | IO[bytes]', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
   load_bytes(data: 'bytes', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
   marginal(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
-  output_fields(self) -> 'dict[str, list[str]]'
+  output_fields
   predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
   predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'  # unstable
-  rows_fed(self) -> 'int'
-  rows_seen(self) -> 'NoReturn'
-  save(self, path: 'str | Path') -> 'None'
+  rows_fed
+  save(self, file: 'str | os.PathLike[str] | IO[bytes]') -> 'None'
   save_bytes(self) -> 'bytes'
-  save_json(self, path: 'str | Path', *, pretty: 'bool' = True) -> 'None'
   skip_learned(self, frame: 'pl.DataFrame | pl.LazyFrame') -> 'pl.DataFrame | pl.LazyFrame'
-  solve_failures(self) -> 'dict[str, dict[str | None, int]]'
+  solve_failures(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   specs
   summary(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
-  to_json(self, *, pretty: 'bool' = True) -> 'str'
+  write_json(self, file: 'str | os.PathLike[str] | IO[str] | IO[bytes] | None' = None, *, pretty: 'bool' = True) -> 'str | None'
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
-  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
-  LazyFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame'
+  LazyFrame.online.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
-  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None) -> 'pl.DataFrame'
-  DataFrame.online.predict(bank: 'ModelBank | State') -> 'pl.DataFrame'
-  DataFrame.online.unnest(specs: 'Specs | ModelBank | State') -> 'pl.DataFrame'
+  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.DataFrame'
   DataFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
 
 [frame columns]  # column: dtype, in order: a column renamed, retyped, moved or added is a diff here
   ModelBank.groups():
     spec: String
     group: String
-    rows_processed: UInt64
-    last_clock: Float64
+    rows_fed: Int64
+    clock_last: Float64
   ModelBank.summary():
     spec: String
     group: String
-    rows_fed: UInt64
-    rows_processed: UInt64
-    rows_skipped: UInt64
-    rows_learned: UInt64
-    rows_zero_weight: UInt64
+    rows_fed: Int64
+    rows_processed: Int64
+    rows_skipped: Int64
+    rows_learned: Int64
+    rows_zero_weight: Int64
     weight_sum: Float64
     clock_min: Float64
     clock_max: Float64
-    last_clock: Float64
-    session_changes: UInt64
-    clock_backwards: UInt64
-    resets: UInt64
+    clock_last: Float64
+    session_changes: Int64
+    clock_backwards: Int64
+    resets: Int64
+    solve_failures: Int64
     settled_frac: Float64
     weight_sum_settled: Float64
     error_inflation: Float64
-    min_support_coef: Float64
-    min_support_coef_feature: String
-    n_coef: UInt64
+    support_coef_min: Float64
+    support_coef_min_feature: String
+    n_coef: Int64
   ModelBank.describe():
     spec: String
     group: String
     column: String
-    role: String
-    count: UInt64
-    null_count: UInt64
+    role: Enum[feature, target, weight]
+    count: Int64
+    unusable_count: Int64
     mean: Float64
     std: Float64
     min: Float64
@@ -1019,12 +1019,17 @@
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     weight_sum: Float64
     position: Int64
     target: String
     ridge: Float64
     feature_set: String
     penalty: Float64
+    cluster: Int64
+    state: Int64
+    class: String
     term: String
     coef: Float64
   ModelBank.last_row() of an ewridge spec:
@@ -1035,11 +1040,14 @@
     weight_sum: Float64
     settled_frac: Float64
     withheld_reason: Enum[below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows]
-    coef: List[Float64]
-    support_coef: List[Float64]
+    coef: Array[Float64, 3]
+    support_coef: Array[Float64, 3]
   ModelBank.marginal():
+    spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     feature: String
     target: String
     weight_sum: Float64
@@ -1053,8 +1061,11 @@
     beta: Float64
     t_stat: Float64
   ModelBank.marginal() with lags, serial_rule and bins:
+    spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     feature: String
     target: String
     weight_sum: Float64
@@ -1072,7 +1083,7 @@
     lag_corr_xy: List[Float64]
     lag_corr_yx: List[Float64]
     n_serial: Float64
-    t_serial: Float64
+    t_stat_serial: Float64
     phi_x: Float64
     phi_y: Float64
     bin_edges: List[Float64]
@@ -1083,15 +1094,16 @@
     split_at: Float64
     split_gain_t: Float64
   ModelBank.audit():
+    spec: String
     group: String
     column: String
-    rows: UInt64
-    null: UInt64
-    nan: UInt64
-    pos_inf: UInt64
-    neg_inf: UInt64
-    beyond_bound: UInt64
-    count: UInt64
+    rows_fed: Int64
+    null_count: Int64
+    nan_count: Int64
+    pos_inf_count: Int64
+    neg_inf_count: Int64
+    beyond_bound_count: Int64
+    count: Int64
     mean: Float64
     std: Float64
     skew: Float64
@@ -1101,45 +1113,48 @@
     median: Float64
     mad: Float64
     robust_z: Float64
-    distinct: UInt64
+    n_unique: Int64
     top_value: Float64
-    top_count: UInt64
-    second_count: UInt64
-    count_error: UInt64
-    longest_run: UInt64
-    equal_prev: UInt64
-    adjacent: UInt64
+    top_count: Int64
+    second_count: Int64
+    count_error: Int64
+    longest_run: Int64
+    equal_prev: Int64
+    adjacent: Int64
     equal_by_chance: Float64
     min_change: Float64
-    min_change_count: UInt64
+    min_change_count: Int64
     autocorr: Float64
     unit_root_t: Float64
   ModelBank.audit(table='pairs'):
+    spec: String
     group: String
     column_a: String
     column_b: String
-    count: UInt64
+    count: Int64
     corr: Float64
-    equal: UInt64
+    equal: Int64
   ModelBank.audit(table='clock'):
+    spec: String
     group: String
-    steps: UInt64
-    duplicates: UInt64
-    gaps: UInt64
-    regular: UInt64
+    steps: Int64
+    duplicates: Int64
+    gaps: Int64
+    regular: Int64
     step_mean: Float64
     step_std: Float64
     step_cv: Float64
-    max_step: Float64
+    step_max: Float64
   ModelBank.audit(pooled=True):
+    spec: String
     column: String
-    rows: UInt64
-    null: UInt64
-    nan: UInt64
-    pos_inf: UInt64
-    neg_inf: UInt64
-    beyond_bound: UInt64
-    count: UInt64
+    rows_fed: Int64
+    null_count: Int64
+    nan_count: Int64
+    pos_inf_count: Int64
+    neg_inf_count: Int64
+    beyond_bound_count: Int64
+    count: Int64
     mean: Float64
     std: Float64
     skew: Float64
@@ -1149,23 +1164,37 @@
     median: Float64
     mad: Float64
     robust_z: Float64
-    distinct: UInt64
+    n_unique: Int64
     top_value: Float64
-    top_count: UInt64
-    second_count: UInt64
-    count_error: UInt64
-    longest_run: UInt64
-    equal_prev: UInt64
-    adjacent: UInt64
+    top_count: Int64
+    second_count: Int64
+    count_error: Int64
+    longest_run: Int64
+    equal_prev: Int64
+    adjacent: Int64
     equal_by_chance: Float64
     min_change: Float64
-    min_change_count: UInt64
+    min_change_count: Int64
     autocorr: Float64
     unit_root_t: Float64
+  ModelBank.check():
+    severity: Enum[error, warning, info]
+    code: String
+    spec: String
+    group: String
+    column: String
+    value: Float64
+    threshold: Float64
+    message: String
+  ModelBank.solve_failures():
+    spec: String
+    group: String
+    solve_failures: Int64
   po.spec.output_index():
     field: String
     kind: String
     target: String
+    instance: String
     half_life: Float64
     lam: Float64
     ridge: Float64
@@ -1173,6 +1202,7 @@
     penalty: Float64
     quantile: Float64
     lag: Int64
+    component: Int64
     state: Int64
     class: String
     columns: List[String]
@@ -1183,17 +1213,24 @@
     ridge: Float64
     feature_set: String
     penalty: Float64
+    cluster: Int64
+    state: Int64
+    class: String
     term: String
   po.spec.coef_fields():
     field: String
-    position: UInt32
+    position: Int64
     name: String
     target: String
+    instance: String
     half_life: Float64
     lam: Float64
     ridge: Float64
     feature_set: String
     penalty: Float64
+    cluster: Int64
+    state: Int64
+    class: String
     term: String
   ModelBank.gram(), each entry's keys:
     group
@@ -1206,7 +1243,7 @@
     comoments
     cross_moments
     means_by_target
-    cross_centred
+    cross_centered
     target_weights
     target_means
     target_vars
@@ -1229,7 +1266,6 @@
     from_spectral(vals: 'Any', vecs: 'Any', *, unit_diag: 'bool' = True) -> 'Any'
     from_z(z: 'Any') -> 'Any'
     loss(fcst: 'Any', real: 'Any', kind: 'str' = 'qlike', *, mu: 'Any' = None, n: 'int | None' = None) -> 'float'
-    matrix(obj: 'Any') -> 'Any'
     mp_density(lam: 'Any', n: 'int', m: 'int', sigma2: 'float' = 1.0) -> 'Any'
     mp_edge(n: 'int', m: 'int', sigma2: 'float' = 1.0) -> 'tuple[float, float]'
     nearest(a: 'Any', w: 'Any' = None, *, tol: 'float' = 1e-08, max_iter: 'int' = 100) -> 'tuple[Any, float, int]'
@@ -1240,43 +1276,41 @@
   eval:
     RESERVED
     SUM_FIELDS
-    clark_west(df: 'pl.DataFrame', *, big: 'str', small: 'str', targets: 'Sequence[str] | None' = None, big_suffix: 'str' = '', small_suffix: 'str' = '', lags: 'int' = 0, group: 'str | Iterable[str]' = (), half_life: 'float | None' = None, min_samples: 'int' = 30, name: 'str' = 'clark_west') -> 'pl.DataFrame'
-    compare_specs(df: 'pl.DataFrame', spec_names: 'Iterable[str]', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, specs: 'Sequence[dict] | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
-    diebold_mariano(df: 'pl.DataFrame', *, a: 'str', b: 'str', targets: 'Sequence[str] | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', lags: 'int' = 0, group: 'str | Iterable[str]' = (), half_life: 'float | None' = None, min_samples: 'int' = 30, name: 'str' = 'diebold_mariano') -> 'pl.DataFrame'
-    from_sums(s: 'pl.DataFrame', *, min_samples: 'int' = 30) -> 'pl.DataFrame'
+    clark_west(df: 'pl.DataFrame', *, big: 'str', small: 'str', targets: 'Sequence[str] | None' = None, big_suffix: 'str' = '', small_suffix: 'str' = '', lags: 'int' = 0, group: 'str | Iterable[str] | None' = None, half_life: 'float | None' = None, min_samples: 'int' = 30, name: 'str' = 'clark_west') -> 'pl.DataFrame'
+    compare_specs(df: 'pl.DataFrame', specs: 'Iterable[str | dict]', *, group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, min_samples: 'int' = 30, binary: 'bool | None' = None) -> 'pl.DataFrame'
+    diebold_mariano(df: 'pl.DataFrame', *, a: 'str', b: 'str', targets: 'Sequence[str] | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', lags: 'int' = 0, group: 'str | Iterable[str] | None' = None, half_life: 'float | None' = None, min_samples: 'int' = 30, name: 'str' = 'diebold_mariano') -> 'pl.DataFrame'
+    from_sums(s: 'pl.DataFrame', *, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
     merge_sums(first: 'pl.DataFrame', *rest: 'pl.DataFrame') -> 'pl.DataFrame'
-    metrics(df: 'pl.DataFrame', spec_name: 'str', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
-    seqtest(df: 'pl.DataFrame', *, targets: 'Sequence[str] | None' = None, a: 'str | None' = None, b: 'str | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', group: 'str | Iterable[str]' = (), min_weight: 'float' = 0.0, name: 'str' = 'seqtest') -> 'pl.DataFrame'
-    sums(df: 'pl.DataFrame', spec_name: 'str', *, group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, weight: 'str | None' = None, binary: 'bool' = False) -> 'pl.DataFrame'
-    unpack(df: 'pl.DataFrame', spec_name: 'str', *, spec: 'dict | None' = None, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame'
-    window_metrics(df: 'pl.DataFrame', spec_name: 'str', *, clock: 'str', every: 'float | Duration', group: 'str | Iterable[str]' = (), targets: 'Sequence[str] | None' = None, spec: 'dict | None' = None, min_samples: 'int' = 30, binary: 'bool' = False) -> 'pl.DataFrame'
+    metrics(df: 'pl.DataFrame', spec: 'str | dict', *, group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, min_samples: 'int' = 30, binary: 'bool | None' = None) -> 'pl.DataFrame'
+    seqtest(df: 'pl.DataFrame', *, targets: 'Sequence[str] | None' = None, a: 'str | None' = None, b: 'str | None' = None, a_suffix: 'str' = '', b_suffix: 'str' = '', group: 'str | Iterable[str] | None' = None, min_weight: 'float' = 0.0, name: 'str' = 'seqtest') -> 'pl.DataFrame'
+    sums(df: 'pl.DataFrame', spec: 'str | dict', *, group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, weight: 'str | None' = None, binary: 'bool | None' = None) -> 'pl.DataFrame'
+    unpack(df: 'pl.DataFrame', spec: 'str | dict', *, targets: 'Sequence[str] | None' = None) -> 'pl.DataFrame'
+    window_metrics(df: 'pl.DataFrame', spec: 'str | dict', *, clock: 'str', every: 'float | Duration', group: 'str | Iterable[str] | None' = None, targets: 'Sequence[str] | None' = None, min_samples: 'int' = 30, binary: 'bool | None' = None) -> 'pl.DataFrame'
   gbdt:  # unstable
     lightgbm_dataset(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, categorical: 'Sequence[str] | None' = None, max_bin: 'int' = 255, params: 'dict[str, Any] | None' = None, reference: 'lightgbm.Dataset | None' = None, in_memory: "bool | Literal['auto']" = 'auto', threads: 'int | None' = None, engine: 'Engine' = 'auto') -> 'lightgbm.Dataset'
     xgboost_matrix(source: 'Source', *, label: 'str', weight: 'str | None' = None, features: 'Sequence[str] | None' = None, max_bin: 'int' = 256, sample_rows: 'int | None' = 200000, ref: 'xgboost.DMatrix | None' = None, threads: 'int | None' = None, seed: 'int' = 0, engine: 'Engine' = 'auto') -> 'xgboost.QuantileDMatrix'
   gram:
+    Gram
     INTERCEPT
-    coef_stats(g: 'dict[str, Any]', coef: 'Sequence[float]', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
-    condition(g: 'dict[str, Any]', *, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
-    correlation(g: 'dict[str, Any]') -> 'Any'
-    from_row(row: 'Any') -> 'dict[str, Any]'
-    lars_path(g: 'dict[str, Any]', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_steps: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'dict[str, Any]'
-    lars_paths(grams: 'Sequence[dict[str, Any]]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, max_steps: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'list[list[dict[str, Any]]]'
-    lasso_path(g: 'dict[str, Any]', penalties: 'Sequence[float]', *, l1_ratio: 'float' = 1.0, penalty_weights: 'Sequence[float] | None' = None, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int' = 1000, tol: 'float' = 1e-07) -> 'Any'
-    merge(grams: 'Sequence[dict[str, Any]]', *, within: 'bool' = False) -> 'dict[str, Any]'
-    solve(g: 'dict[str, Any]', *, ridge: 'float | Sequence[float]' = 0.0, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, standardize: 'bool' = False) -> 'Any'
-    solve_subsets(grams: 'Sequence[dict[str, Any]]', subsets: 'Sequence[Sequence[int]]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, ridge: 'float' = 0.0, standardize: 'bool' = False, path: 'dict[str, Any] | None' = None, within: 'bool' = False, target_signs: 'Any' = None) -> 'list[Any]'
-    subset(g: 'dict[str, Any]', cols: 'Sequence[str | int]') -> 'dict[str, Any]'
-    vif(g: 'dict[str, Any]', *, features: 'Sequence[str | int] | None' = None) -> 'Any'
+    coef_stats(g: 'Gram', coef: 'Sequence[float]', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
+    condition(g: 'Gram', *, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
+    correlation(g: 'Gram') -> 'Any'
+    from_row(row: 'Any') -> 'Gram'
+    lars_path(g: 'Gram', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'dict[str, Any]'
+    lars_paths(grams: 'Sequence[Gram]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, max_iter: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'list[list[dict[str, Any]]]'
+    lasso_path(g: 'Gram', penalties: 'Sequence[float]', *, l1_ratio: 'float' = 1.0, penalty_weights: 'Sequence[float] | None' = None, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int' = 1000, tol: 'float' = 1e-07) -> 'Any'
+    merge(grams: 'Sequence[Gram]', *, within: 'bool' = False) -> 'Gram'
+    solve(g: 'Gram', *, ridge: 'float | Sequence[float]' = 0.0, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, standardize: 'bool' = False) -> 'Any'
+    solve_subsets(grams: 'Sequence[Gram]', subsets: 'Sequence[Sequence[int]]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, ridge: 'float | Sequence[float]' = 0.0, standardize: 'bool' = False, path: 'dict[str, Any] | None' = None, within: 'bool' = False, target_signs: 'Any' = None) -> 'list[Any]'
+    subset(g: 'Gram', columns: 'Sequence[str | int]') -> 'Gram'
+    vif(g: 'Gram', *, features: 'Sequence[str | int] | None' = None) -> 'Any'
   ops:
-    ewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-    ewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-    ewm_std(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
-    ewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-    ewm_var(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any' = None, closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None, bias: 'bool' = False) -> 'pl.Expr'
+    ewm_mean(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+    ewm_rate(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+    ewm_std(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
+    ewm_sum(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+    ewm_var(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
     increment(input: 'str | pl.Expr') -> 'pl.Expr'
-    rewm_mean(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-    rewm_rate(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
-    rewm_sum(input: 'str | pl.Expr', *, half_life: 'Any', window_size: 'Any', closed: 'str' = 'right', min_samples: 'int' = 1, partial: 'str | None' = None) -> 'pl.Expr'
   sim:  # unstable
     regimes(m: 'int', *, states: 'Sequence[Any]', transition: 'Any', n_blocks: 'int', rows_per_block: 'int', durations: 'Sequence[int] | None' = None, design: 'str' = 'step', smooth_rows: 'int' = 0, phi: 'float | Sequence[float]' = 0.0, scale_state: 'float | Sequence[float]' = 0.0, async_rates: 'Sequence[float] | None' = None, noise: 'float' = 0.0, cycle_profile: 'Sequence[float] | None' = None, cycle_rows: 'int | None' = None, activity: 'tuple[float, float] | None' = None, seed: 'int' = 0) -> 'dict[str, pl.DataFrame]'
   stream:
@@ -1285,512 +1319,770 @@
     refresh_time(lf: 'pl.LazyFrame | pl.DataFrame', *, series: 'str', names: 'Sequence[str]', clock: 'str', value: 'str', group: 'str | None' = None, pairs: 'bool' = False, keep: 'Sequence[str]' = (), chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
     with_windows(lf: 'pl.LazyFrame | pl.DataFrame', *exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame | pl.DataFrame'
 
-[output field grammar]  # the strings users index the output struct by
+[output field grammar]  # name: dtype, the strings users index the output struct by, each with the dtype output_index declares
   ewridge minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
-    support_coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
+    support_coef: array[f64, 2]
   ewridge full grid, every output:
-    pred_y__a_r0.000001@h100
-    resid_y__a_r0.000001@h100
-    pred_y__a_r0.5@h100
-    resid_y__a_r0.5@h100
-    pred_y__b_r0.000001@h100
-    resid_y__b_r0.000001@h100
-    pred_y__b_r0.5@h100
-    resid_y__b_r0.5@h100
-    pred_z__a_r0.000001@h100
-    resid_z__a_r0.000001@h100
-    pred_z__a_r0.5@h100
-    resid_z__a_r0.5@h100
-    pred_z__b_r0.000001@h100
-    resid_z__b_r0.000001@h100
-    pred_z__b_r0.5@h100
-    resid_z__b_r0.5@h100
-    sigma_y__a_r0.000001@h100
-    sigma_y__a_r0.5@h100
-    sigma_y__b_r0.000001@h100
-    sigma_y__b_r0.5@h100
-    sigma_z__a_r0.000001@h100
-    sigma_z__a_r0.5@h100
-    sigma_z__b_r0.000001@h100
-    sigma_z__b_r0.5@h100
-    zscore_y__a_r0.000001@h100
-    zscore_y__a_r0.5@h100
-    zscore_y__b_r0.000001@h100
-    zscore_y__b_r0.5@h100
-    zscore_z__a_r0.000001@h100
-    zscore_z__a_r0.5@h100
-    zscore_z__b_r0.000001@h100
-    zscore_z__b_r0.5@h100
-    lo_y__a_r0.000001@h100
-    lo_y__a_r0.5@h100
-    lo_y__b_r0.000001@h100
-    lo_y__b_r0.5@h100
-    lo_z__a_r0.000001@h100
-    lo_z__a_r0.5@h100
-    lo_z__b_r0.000001@h100
-    lo_z__b_r0.5@h100
-    hi_y__a_r0.000001@h100
-    hi_y__a_r0.5@h100
-    hi_y__b_r0.000001@h100
-    hi_y__b_r0.5@h100
-    hi_z__a_r0.000001@h100
-    hi_z__a_r0.5@h100
-    hi_z__b_r0.000001@h100
-    hi_z__b_r0.5@h100
-    coverage_y__a_r0.000001@h100
-    coverage_y__a_r0.5@h100
-    coverage_y__b_r0.000001@h100
-    coverage_y__b_r0.5@h100
-    coverage_z__a_r0.000001@h100
-    coverage_z__a_r0.5@h100
-    coverage_z__b_r0.000001@h100
-    coverage_z__b_r0.5@h100
-    ic_y__a_r0.000001@h100
-    ic_y__a_r0.5@h100
-    ic_y__b_r0.000001@h100
-    ic_y__b_r0.5@h100
-    ic_z__a_r0.000001@h100
-    ic_z__a_r0.5@h100
-    ic_z__b_r0.000001@h100
-    ic_z__b_r0.5@h100
-    r2_y__a_r0.000001@h100
-    r2_y__a_r0.5@h100
-    r2_y__b_r0.000001@h100
-    r2_y__b_r0.5@h100
-    r2_z__a_r0.000001@h100
-    r2_z__a_r0.5@h100
-    r2_z__b_r0.000001@h100
-    r2_z__b_r0.5@h100
-    hit_rate_y__a_r0.000001@h100
-    hit_rate_y__a_r0.5@h100
-    hit_rate_y__b_r0.000001@h100
-    hit_rate_y__b_r0.5@h100
-    hit_rate_z__a_r0.000001@h100
-    hit_rate_z__a_r0.5@h100
-    hit_rate_z__b_r0.000001@h100
-    hit_rate_z__b_r0.5@h100
-    abs_resid_q0.05_y__a_r0.000001@h100
-    abs_resid_q0.05_y__a_r0.5@h100
-    abs_resid_q0.05_y__b_r0.000001@h100
-    abs_resid_q0.05_y__b_r0.5@h100
-    abs_resid_q0.05_z__a_r0.000001@h100
-    abs_resid_q0.05_z__a_r0.5@h100
-    abs_resid_q0.05_z__b_r0.000001@h100
-    abs_resid_q0.05_z__b_r0.5@h100
-    abs_resid_q0.95_y__a_r0.000001@h100
-    abs_resid_q0.95_y__a_r0.5@h100
-    abs_resid_q0.95_y__b_r0.000001@h100
-    abs_resid_q0.95_y__b_r0.5@h100
-    abs_resid_q0.95_z__a_r0.000001@h100
-    abs_resid_q0.95_z__a_r0.5@h100
-    abs_resid_q0.95_z__b_r0.000001@h100
-    abs_resid_q0.95_z__b_r0.5@h100
-    autocorr_y__a_r0.000001@h100
-    autocorr_y__a_r0.5@h100
-    autocorr_y__b_r0.000001@h100
-    autocorr_y__b_r0.5@h100
-    autocorr_z__a_r0.000001@h100
-    autocorr_z__a_r0.5@h100
-    autocorr_z__b_r0.000001@h100
-    autocorr_z__b_r0.5@h100
-    drift_y__a_r0.000001@h100
-    drift_y__a_r0.5@h100
-    drift_y__b_r0.000001@h100
-    drift_y__b_r0.5@h100
-    drift_z__a_r0.000001@h100
-    drift_z__a_r0.5@h100
-    drift_z__b_r0.000001@h100
-    drift_z__b_r0.5@h100
-    weight_sum@h100
-    settled_frac@h100
-    withheld_reason@h100
-    coef@h100
-    support_coef@h100
-    pred_y__a_r0.000001@h500
-    resid_y__a_r0.000001@h500
-    pred_y__a_r0.5@h500
-    resid_y__a_r0.5@h500
-    pred_y__b_r0.000001@h500
-    resid_y__b_r0.000001@h500
-    pred_y__b_r0.5@h500
-    resid_y__b_r0.5@h500
-    pred_z__a_r0.000001@h500
-    resid_z__a_r0.000001@h500
-    pred_z__a_r0.5@h500
-    resid_z__a_r0.5@h500
-    pred_z__b_r0.000001@h500
-    resid_z__b_r0.000001@h500
-    pred_z__b_r0.5@h500
-    resid_z__b_r0.5@h500
-    sigma_y__a_r0.000001@h500
-    sigma_y__a_r0.5@h500
-    sigma_y__b_r0.000001@h500
-    sigma_y__b_r0.5@h500
-    sigma_z__a_r0.000001@h500
-    sigma_z__a_r0.5@h500
-    sigma_z__b_r0.000001@h500
-    sigma_z__b_r0.5@h500
-    zscore_y__a_r0.000001@h500
-    zscore_y__a_r0.5@h500
-    zscore_y__b_r0.000001@h500
-    zscore_y__b_r0.5@h500
-    zscore_z__a_r0.000001@h500
-    zscore_z__a_r0.5@h500
-    zscore_z__b_r0.000001@h500
-    zscore_z__b_r0.5@h500
-    lo_y__a_r0.000001@h500
-    lo_y__a_r0.5@h500
-    lo_y__b_r0.000001@h500
-    lo_y__b_r0.5@h500
-    lo_z__a_r0.000001@h500
-    lo_z__a_r0.5@h500
-    lo_z__b_r0.000001@h500
-    lo_z__b_r0.5@h500
-    hi_y__a_r0.000001@h500
-    hi_y__a_r0.5@h500
-    hi_y__b_r0.000001@h500
-    hi_y__b_r0.5@h500
-    hi_z__a_r0.000001@h500
-    hi_z__a_r0.5@h500
-    hi_z__b_r0.000001@h500
-    hi_z__b_r0.5@h500
-    coverage_y__a_r0.000001@h500
-    coverage_y__a_r0.5@h500
-    coverage_y__b_r0.000001@h500
-    coverage_y__b_r0.5@h500
-    coverage_z__a_r0.000001@h500
-    coverage_z__a_r0.5@h500
-    coverage_z__b_r0.000001@h500
-    coverage_z__b_r0.5@h500
-    ic_y__a_r0.000001@h500
-    ic_y__a_r0.5@h500
-    ic_y__b_r0.000001@h500
-    ic_y__b_r0.5@h500
-    ic_z__a_r0.000001@h500
-    ic_z__a_r0.5@h500
-    ic_z__b_r0.000001@h500
-    ic_z__b_r0.5@h500
-    r2_y__a_r0.000001@h500
-    r2_y__a_r0.5@h500
-    r2_y__b_r0.000001@h500
-    r2_y__b_r0.5@h500
-    r2_z__a_r0.000001@h500
-    r2_z__a_r0.5@h500
-    r2_z__b_r0.000001@h500
-    r2_z__b_r0.5@h500
-    hit_rate_y__a_r0.000001@h500
-    hit_rate_y__a_r0.5@h500
-    hit_rate_y__b_r0.000001@h500
-    hit_rate_y__b_r0.5@h500
-    hit_rate_z__a_r0.000001@h500
-    hit_rate_z__a_r0.5@h500
-    hit_rate_z__b_r0.000001@h500
-    hit_rate_z__b_r0.5@h500
-    abs_resid_q0.05_y__a_r0.000001@h500
-    abs_resid_q0.05_y__a_r0.5@h500
-    abs_resid_q0.05_y__b_r0.000001@h500
-    abs_resid_q0.05_y__b_r0.5@h500
-    abs_resid_q0.05_z__a_r0.000001@h500
-    abs_resid_q0.05_z__a_r0.5@h500
-    abs_resid_q0.05_z__b_r0.000001@h500
-    abs_resid_q0.05_z__b_r0.5@h500
-    abs_resid_q0.95_y__a_r0.000001@h500
-    abs_resid_q0.95_y__a_r0.5@h500
-    abs_resid_q0.95_y__b_r0.000001@h500
-    abs_resid_q0.95_y__b_r0.5@h500
-    abs_resid_q0.95_z__a_r0.000001@h500
-    abs_resid_q0.95_z__a_r0.5@h500
-    abs_resid_q0.95_z__b_r0.000001@h500
-    abs_resid_q0.95_z__b_r0.5@h500
-    autocorr_y__a_r0.000001@h500
-    autocorr_y__a_r0.5@h500
-    autocorr_y__b_r0.000001@h500
-    autocorr_y__b_r0.5@h500
-    autocorr_z__a_r0.000001@h500
-    autocorr_z__a_r0.5@h500
-    autocorr_z__b_r0.000001@h500
-    autocorr_z__b_r0.5@h500
-    drift_y__a_r0.000001@h500
-    drift_y__a_r0.5@h500
-    drift_y__b_r0.000001@h500
-    drift_y__b_r0.5@h500
-    drift_z__a_r0.000001@h500
-    drift_z__a_r0.5@h500
-    drift_z__b_r0.000001@h500
-    drift_z__b_r0.5@h500
-    weight_sum@h500
-    settled_frac@h500
-    withheld_reason@h500
-    coef@h500
-    support_coef@h500
-    pred_y__selected
-    selected_y
-    pred_z__selected
-    selected_z
-    pred_y__averaged
-    pred_z__averaged
+    pred_y__a_r0.000001@h100: f64
+    resid_y__a_r0.000001@h100: f64
+    pred_y__a_r0.5@h100: f64
+    resid_y__a_r0.5@h100: f64
+    pred_y__b_r0.000001@h100: f64
+    resid_y__b_r0.000001@h100: f64
+    pred_y__b_r0.5@h100: f64
+    resid_y__b_r0.5@h100: f64
+    pred_z__a_r0.000001@h100: f64
+    resid_z__a_r0.000001@h100: f64
+    pred_z__a_r0.5@h100: f64
+    resid_z__a_r0.5@h100: f64
+    pred_z__b_r0.000001@h100: f64
+    resid_z__b_r0.000001@h100: f64
+    pred_z__b_r0.5@h100: f64
+    resid_z__b_r0.5@h100: f64
+    error_inflation_y__a_r0.000001@h100: f64
+    error_inflation_y__a_r0.5@h100: f64
+    error_inflation_y__b_r0.000001@h100: f64
+    error_inflation_y__b_r0.5@h100: f64
+    error_inflation_z__a_r0.000001@h100: f64
+    error_inflation_z__a_r0.5@h100: f64
+    error_inflation_z__b_r0.000001@h100: f64
+    error_inflation_z__b_r0.5@h100: f64
+    sigma_y__a_r0.000001@h100: f64
+    sigma_y__a_r0.5@h100: f64
+    sigma_y__b_r0.000001@h100: f64
+    sigma_y__b_r0.5@h100: f64
+    sigma_z__a_r0.000001@h100: f64
+    sigma_z__a_r0.5@h100: f64
+    sigma_z__b_r0.000001@h100: f64
+    sigma_z__b_r0.5@h100: f64
+    zscore_y__a_r0.000001@h100: f64
+    zscore_y__a_r0.5@h100: f64
+    zscore_y__b_r0.000001@h100: f64
+    zscore_y__b_r0.5@h100: f64
+    zscore_z__a_r0.000001@h100: f64
+    zscore_z__a_r0.5@h100: f64
+    zscore_z__b_r0.000001@h100: f64
+    zscore_z__b_r0.5@h100: f64
+    lo_y__a_r0.000001@h100: f64
+    lo_y__a_r0.5@h100: f64
+    lo_y__b_r0.000001@h100: f64
+    lo_y__b_r0.5@h100: f64
+    lo_z__a_r0.000001@h100: f64
+    lo_z__a_r0.5@h100: f64
+    lo_z__b_r0.000001@h100: f64
+    lo_z__b_r0.5@h100: f64
+    hi_y__a_r0.000001@h100: f64
+    hi_y__a_r0.5@h100: f64
+    hi_y__b_r0.000001@h100: f64
+    hi_y__b_r0.5@h100: f64
+    hi_z__a_r0.000001@h100: f64
+    hi_z__a_r0.5@h100: f64
+    hi_z__b_r0.000001@h100: f64
+    hi_z__b_r0.5@h100: f64
+    coverage_y__a_r0.000001@h100: f64
+    coverage_y__a_r0.5@h100: f64
+    coverage_y__b_r0.000001@h100: f64
+    coverage_y__b_r0.5@h100: f64
+    coverage_z__a_r0.000001@h100: f64
+    coverage_z__a_r0.5@h100: f64
+    coverage_z__b_r0.000001@h100: f64
+    coverage_z__b_r0.5@h100: f64
+    ic_y__a_r0.000001@h100: f64
+    ic_y__a_r0.5@h100: f64
+    ic_y__b_r0.000001@h100: f64
+    ic_y__b_r0.5@h100: f64
+    ic_z__a_r0.000001@h100: f64
+    ic_z__a_r0.5@h100: f64
+    ic_z__b_r0.000001@h100: f64
+    ic_z__b_r0.5@h100: f64
+    r2_y__a_r0.000001@h100: f64
+    r2_y__a_r0.5@h100: f64
+    r2_y__b_r0.000001@h100: f64
+    r2_y__b_r0.5@h100: f64
+    r2_z__a_r0.000001@h100: f64
+    r2_z__a_r0.5@h100: f64
+    r2_z__b_r0.000001@h100: f64
+    r2_z__b_r0.5@h100: f64
+    hit_rate_y__a_r0.000001@h100: f64
+    hit_rate_y__a_r0.5@h100: f64
+    hit_rate_y__b_r0.000001@h100: f64
+    hit_rate_y__b_r0.5@h100: f64
+    hit_rate_z__a_r0.000001@h100: f64
+    hit_rate_z__a_r0.5@h100: f64
+    hit_rate_z__b_r0.000001@h100: f64
+    hit_rate_z__b_r0.5@h100: f64
+    abs_resid_q0.05_y__a_r0.000001@h100: f64
+    abs_resid_q0.05_y__a_r0.5@h100: f64
+    abs_resid_q0.05_y__b_r0.000001@h100: f64
+    abs_resid_q0.05_y__b_r0.5@h100: f64
+    abs_resid_q0.05_z__a_r0.000001@h100: f64
+    abs_resid_q0.05_z__a_r0.5@h100: f64
+    abs_resid_q0.05_z__b_r0.000001@h100: f64
+    abs_resid_q0.05_z__b_r0.5@h100: f64
+    abs_resid_q0.95_y__a_r0.000001@h100: f64
+    abs_resid_q0.95_y__a_r0.5@h100: f64
+    abs_resid_q0.95_y__b_r0.000001@h100: f64
+    abs_resid_q0.95_y__b_r0.5@h100: f64
+    abs_resid_q0.95_z__a_r0.000001@h100: f64
+    abs_resid_q0.95_z__a_r0.5@h100: f64
+    abs_resid_q0.95_z__b_r0.000001@h100: f64
+    abs_resid_q0.95_z__b_r0.5@h100: f64
+    autocorr_y__a_r0.000001@h100: f64
+    autocorr_y__a_r0.5@h100: f64
+    autocorr_y__b_r0.000001@h100: f64
+    autocorr_y__b_r0.5@h100: f64
+    autocorr_z__a_r0.000001@h100: f64
+    autocorr_z__a_r0.5@h100: f64
+    autocorr_z__b_r0.000001@h100: f64
+    autocorr_z__b_r0.5@h100: f64
+    drift_y__a_r0.000001@h100: bool
+    drift_y__a_r0.5@h100: bool
+    drift_y__b_r0.000001@h100: bool
+    drift_y__b_r0.5@h100: bool
+    drift_z__a_r0.000001@h100: bool
+    drift_z__a_r0.5@h100: bool
+    drift_z__b_r0.000001@h100: bool
+    drift_z__b_r0.5@h100: bool
+    calibration_slope_y__a_r0.000001@h100: f64
+    calibration_slope_y__a_r0.5@h100: f64
+    calibration_slope_y__b_r0.000001@h100: f64
+    calibration_slope_y__b_r0.5@h100: f64
+    calibration_slope_z__a_r0.000001@h100: f64
+    calibration_slope_z__a_r0.5@h100: f64
+    calibration_slope_z__b_r0.000001@h100: f64
+    calibration_slope_z__b_r0.5@h100: f64
+    calibration_intercept_y__a_r0.000001@h100: f64
+    calibration_intercept_y__a_r0.5@h100: f64
+    calibration_intercept_y__b_r0.000001@h100: f64
+    calibration_intercept_y__b_r0.5@h100: f64
+    calibration_intercept_z__a_r0.000001@h100: f64
+    calibration_intercept_z__a_r0.5@h100: f64
+    calibration_intercept_z__b_r0.000001@h100: f64
+    calibration_intercept_z__b_r0.5@h100: f64
+    calibration_wald_y__a_r0.000001@h100: f64
+    calibration_wald_y__a_r0.5@h100: f64
+    calibration_wald_y__b_r0.000001@h100: f64
+    calibration_wald_y__b_r0.5@h100: f64
+    calibration_wald_z__a_r0.000001@h100: f64
+    calibration_wald_z__a_r0.5@h100: f64
+    calibration_wald_z__b_r0.000001@h100: f64
+    calibration_wald_z__b_r0.5@h100: f64
+    studentized_y__a_r0.000001@h100: f64
+    studentized_y__a_r0.5@h100: f64
+    studentized_y__b_r0.000001@h100: f64
+    studentized_y__b_r0.5@h100: f64
+    studentized_z__a_r0.000001@h100: f64
+    studentized_z__a_r0.5@h100: f64
+    studentized_z__b_r0.000001@h100: f64
+    studentized_z__b_r0.5@h100: f64
+    cusum_y__a_r0.000001@h100: f64
+    cusum_y__a_r0.5@h100: f64
+    cusum_y__b_r0.000001@h100: f64
+    cusum_y__b_r0.5@h100: f64
+    cusum_z__a_r0.000001@h100: f64
+    cusum_z__a_r0.5@h100: f64
+    cusum_z__b_r0.000001@h100: f64
+    cusum_z__b_r0.5@h100: f64
+    cusum_sq_y__a_r0.000001@h100: f64
+    cusum_sq_y__a_r0.5@h100: f64
+    cusum_sq_y__b_r0.000001@h100: f64
+    cusum_sq_y__b_r0.5@h100: f64
+    cusum_sq_z__a_r0.000001@h100: f64
+    cusum_sq_z__a_r0.5@h100: f64
+    cusum_sq_z__b_r0.000001@h100: f64
+    cusum_sq_z__b_r0.5@h100: f64
+    break_wald_y__a_r0.000001@h100: f64
+    break_wald_y__a_r0.5@h100: f64
+    break_wald_y__b_r0.000001@h100: f64
+    break_wald_y__b_r0.5@h100: f64
+    break_wald_z__a_r0.000001@h100: f64
+    break_wald_z__a_r0.5@h100: f64
+    break_wald_z__b_r0.000001@h100: f64
+    break_wald_z__b_r0.5@h100: f64
+    ljung_box_y__a_r0.000001@h100: f64
+    ljung_box_y__a_r0.5@h100: f64
+    ljung_box_y__b_r0.000001@h100: f64
+    ljung_box_y__b_r0.5@h100: f64
+    ljung_box_z__a_r0.000001@h100: f64
+    ljung_box_z__a_r0.5@h100: f64
+    ljung_box_z__b_r0.000001@h100: f64
+    ljung_box_z__b_r0.5@h100: f64
+    breusch_pagan_y__a_r0.000001@h100: f64
+    breusch_pagan_y__a_r0.5@h100: f64
+    breusch_pagan_y__b_r0.000001@h100: f64
+    breusch_pagan_y__b_r0.5@h100: f64
+    breusch_pagan_z__a_r0.000001@h100: f64
+    breusch_pagan_z__a_r0.5@h100: f64
+    breusch_pagan_z__b_r0.000001@h100: f64
+    breusch_pagan_z__b_r0.5@h100: f64
+    ramsey_reset_y__a_r0.000001@h100: f64
+    ramsey_reset_y__a_r0.5@h100: f64
+    ramsey_reset_y__b_r0.000001@h100: f64
+    ramsey_reset_y__b_r0.5@h100: f64
+    ramsey_reset_z__a_r0.000001@h100: f64
+    ramsey_reset_z__a_r0.5@h100: f64
+    ramsey_reset_z__b_r0.000001@h100: f64
+    ramsey_reset_z__b_r0.5@h100: f64
+    skew_y__a_r0.000001@h100: f64
+    skew_y__a_r0.5@h100: f64
+    skew_y__b_r0.000001@h100: f64
+    skew_y__b_r0.5@h100: f64
+    skew_z__a_r0.000001@h100: f64
+    skew_z__a_r0.5@h100: f64
+    skew_z__b_r0.000001@h100: f64
+    skew_z__b_r0.5@h100: f64
+    kurtosis_y__a_r0.000001@h100: f64
+    kurtosis_y__a_r0.5@h100: f64
+    kurtosis_y__b_r0.000001@h100: f64
+    kurtosis_y__b_r0.5@h100: f64
+    kurtosis_z__a_r0.000001@h100: f64
+    kurtosis_z__a_r0.5@h100: f64
+    kurtosis_z__b_r0.000001@h100: f64
+    kurtosis_z__b_r0.5@h100: f64
+    jarque_bera_y__a_r0.000001@h100: f64
+    jarque_bera_y__a_r0.5@h100: f64
+    jarque_bera_y__b_r0.000001@h100: f64
+    jarque_bera_y__b_r0.5@h100: f64
+    jarque_bera_z__a_r0.000001@h100: f64
+    jarque_bera_z__a_r0.5@h100: f64
+    jarque_bera_z__b_r0.000001@h100: f64
+    jarque_bera_z__b_r0.5@h100: f64
+    influence_y__a_r0.000001@h100: f64
+    influence_y__a_r0.5@h100: f64
+    influence_y__b_r0.000001@h100: f64
+    influence_y__b_r0.5@h100: f64
+    influence_z__a_r0.000001@h100: f64
+    influence_z__a_r0.5@h100: f64
+    influence_z__b_r0.000001@h100: f64
+    influence_z__b_r0.5@h100: f64
+    spread_ratio_x0@h100: f64
+    spread_ratio_x1@h100: f64
+    mean_shift_x0@h100: f64
+    mean_shift_x1@h100: f64
+    weight_sum@h100: f64
+    settled_frac@h100: f64
+    withheld_reason@h100: enum
+    coef@h100: array[f64, 24]
+    support_coef@h100: array[f64, 24]
+    se_coef@h100: array[f64, 24]
+    se_coef_hc0@h100: array[f64, 24]
+    se_coef_hac@h100: array[f64, 24]
+    pred_y__a_r0.000001@h500: f64
+    resid_y__a_r0.000001@h500: f64
+    pred_y__a_r0.5@h500: f64
+    resid_y__a_r0.5@h500: f64
+    pred_y__b_r0.000001@h500: f64
+    resid_y__b_r0.000001@h500: f64
+    pred_y__b_r0.5@h500: f64
+    resid_y__b_r0.5@h500: f64
+    pred_z__a_r0.000001@h500: f64
+    resid_z__a_r0.000001@h500: f64
+    pred_z__a_r0.5@h500: f64
+    resid_z__a_r0.5@h500: f64
+    pred_z__b_r0.000001@h500: f64
+    resid_z__b_r0.000001@h500: f64
+    pred_z__b_r0.5@h500: f64
+    resid_z__b_r0.5@h500: f64
+    error_inflation_y__a_r0.000001@h500: f64
+    error_inflation_y__a_r0.5@h500: f64
+    error_inflation_y__b_r0.000001@h500: f64
+    error_inflation_y__b_r0.5@h500: f64
+    error_inflation_z__a_r0.000001@h500: f64
+    error_inflation_z__a_r0.5@h500: f64
+    error_inflation_z__b_r0.000001@h500: f64
+    error_inflation_z__b_r0.5@h500: f64
+    sigma_y__a_r0.000001@h500: f64
+    sigma_y__a_r0.5@h500: f64
+    sigma_y__b_r0.000001@h500: f64
+    sigma_y__b_r0.5@h500: f64
+    sigma_z__a_r0.000001@h500: f64
+    sigma_z__a_r0.5@h500: f64
+    sigma_z__b_r0.000001@h500: f64
+    sigma_z__b_r0.5@h500: f64
+    zscore_y__a_r0.000001@h500: f64
+    zscore_y__a_r0.5@h500: f64
+    zscore_y__b_r0.000001@h500: f64
+    zscore_y__b_r0.5@h500: f64
+    zscore_z__a_r0.000001@h500: f64
+    zscore_z__a_r0.5@h500: f64
+    zscore_z__b_r0.000001@h500: f64
+    zscore_z__b_r0.5@h500: f64
+    lo_y__a_r0.000001@h500: f64
+    lo_y__a_r0.5@h500: f64
+    lo_y__b_r0.000001@h500: f64
+    lo_y__b_r0.5@h500: f64
+    lo_z__a_r0.000001@h500: f64
+    lo_z__a_r0.5@h500: f64
+    lo_z__b_r0.000001@h500: f64
+    lo_z__b_r0.5@h500: f64
+    hi_y__a_r0.000001@h500: f64
+    hi_y__a_r0.5@h500: f64
+    hi_y__b_r0.000001@h500: f64
+    hi_y__b_r0.5@h500: f64
+    hi_z__a_r0.000001@h500: f64
+    hi_z__a_r0.5@h500: f64
+    hi_z__b_r0.000001@h500: f64
+    hi_z__b_r0.5@h500: f64
+    coverage_y__a_r0.000001@h500: f64
+    coverage_y__a_r0.5@h500: f64
+    coverage_y__b_r0.000001@h500: f64
+    coverage_y__b_r0.5@h500: f64
+    coverage_z__a_r0.000001@h500: f64
+    coverage_z__a_r0.5@h500: f64
+    coverage_z__b_r0.000001@h500: f64
+    coverage_z__b_r0.5@h500: f64
+    ic_y__a_r0.000001@h500: f64
+    ic_y__a_r0.5@h500: f64
+    ic_y__b_r0.000001@h500: f64
+    ic_y__b_r0.5@h500: f64
+    ic_z__a_r0.000001@h500: f64
+    ic_z__a_r0.5@h500: f64
+    ic_z__b_r0.000001@h500: f64
+    ic_z__b_r0.5@h500: f64
+    r2_y__a_r0.000001@h500: f64
+    r2_y__a_r0.5@h500: f64
+    r2_y__b_r0.000001@h500: f64
+    r2_y__b_r0.5@h500: f64
+    r2_z__a_r0.000001@h500: f64
+    r2_z__a_r0.5@h500: f64
+    r2_z__b_r0.000001@h500: f64
+    r2_z__b_r0.5@h500: f64
+    hit_rate_y__a_r0.000001@h500: f64
+    hit_rate_y__a_r0.5@h500: f64
+    hit_rate_y__b_r0.000001@h500: f64
+    hit_rate_y__b_r0.5@h500: f64
+    hit_rate_z__a_r0.000001@h500: f64
+    hit_rate_z__a_r0.5@h500: f64
+    hit_rate_z__b_r0.000001@h500: f64
+    hit_rate_z__b_r0.5@h500: f64
+    abs_resid_q0.05_y__a_r0.000001@h500: f64
+    abs_resid_q0.05_y__a_r0.5@h500: f64
+    abs_resid_q0.05_y__b_r0.000001@h500: f64
+    abs_resid_q0.05_y__b_r0.5@h500: f64
+    abs_resid_q0.05_z__a_r0.000001@h500: f64
+    abs_resid_q0.05_z__a_r0.5@h500: f64
+    abs_resid_q0.05_z__b_r0.000001@h500: f64
+    abs_resid_q0.05_z__b_r0.5@h500: f64
+    abs_resid_q0.95_y__a_r0.000001@h500: f64
+    abs_resid_q0.95_y__a_r0.5@h500: f64
+    abs_resid_q0.95_y__b_r0.000001@h500: f64
+    abs_resid_q0.95_y__b_r0.5@h500: f64
+    abs_resid_q0.95_z__a_r0.000001@h500: f64
+    abs_resid_q0.95_z__a_r0.5@h500: f64
+    abs_resid_q0.95_z__b_r0.000001@h500: f64
+    abs_resid_q0.95_z__b_r0.5@h500: f64
+    autocorr_y__a_r0.000001@h500: f64
+    autocorr_y__a_r0.5@h500: f64
+    autocorr_y__b_r0.000001@h500: f64
+    autocorr_y__b_r0.5@h500: f64
+    autocorr_z__a_r0.000001@h500: f64
+    autocorr_z__a_r0.5@h500: f64
+    autocorr_z__b_r0.000001@h500: f64
+    autocorr_z__b_r0.5@h500: f64
+    drift_y__a_r0.000001@h500: bool
+    drift_y__a_r0.5@h500: bool
+    drift_y__b_r0.000001@h500: bool
+    drift_y__b_r0.5@h500: bool
+    drift_z__a_r0.000001@h500: bool
+    drift_z__a_r0.5@h500: bool
+    drift_z__b_r0.000001@h500: bool
+    drift_z__b_r0.5@h500: bool
+    calibration_slope_y__a_r0.000001@h500: f64
+    calibration_slope_y__a_r0.5@h500: f64
+    calibration_slope_y__b_r0.000001@h500: f64
+    calibration_slope_y__b_r0.5@h500: f64
+    calibration_slope_z__a_r0.000001@h500: f64
+    calibration_slope_z__a_r0.5@h500: f64
+    calibration_slope_z__b_r0.000001@h500: f64
+    calibration_slope_z__b_r0.5@h500: f64
+    calibration_intercept_y__a_r0.000001@h500: f64
+    calibration_intercept_y__a_r0.5@h500: f64
+    calibration_intercept_y__b_r0.000001@h500: f64
+    calibration_intercept_y__b_r0.5@h500: f64
+    calibration_intercept_z__a_r0.000001@h500: f64
+    calibration_intercept_z__a_r0.5@h500: f64
+    calibration_intercept_z__b_r0.000001@h500: f64
+    calibration_intercept_z__b_r0.5@h500: f64
+    calibration_wald_y__a_r0.000001@h500: f64
+    calibration_wald_y__a_r0.5@h500: f64
+    calibration_wald_y__b_r0.000001@h500: f64
+    calibration_wald_y__b_r0.5@h500: f64
+    calibration_wald_z__a_r0.000001@h500: f64
+    calibration_wald_z__a_r0.5@h500: f64
+    calibration_wald_z__b_r0.000001@h500: f64
+    calibration_wald_z__b_r0.5@h500: f64
+    studentized_y__a_r0.000001@h500: f64
+    studentized_y__a_r0.5@h500: f64
+    studentized_y__b_r0.000001@h500: f64
+    studentized_y__b_r0.5@h500: f64
+    studentized_z__a_r0.000001@h500: f64
+    studentized_z__a_r0.5@h500: f64
+    studentized_z__b_r0.000001@h500: f64
+    studentized_z__b_r0.5@h500: f64
+    cusum_y__a_r0.000001@h500: f64
+    cusum_y__a_r0.5@h500: f64
+    cusum_y__b_r0.000001@h500: f64
+    cusum_y__b_r0.5@h500: f64
+    cusum_z__a_r0.000001@h500: f64
+    cusum_z__a_r0.5@h500: f64
+    cusum_z__b_r0.000001@h500: f64
+    cusum_z__b_r0.5@h500: f64
+    cusum_sq_y__a_r0.000001@h500: f64
+    cusum_sq_y__a_r0.5@h500: f64
+    cusum_sq_y__b_r0.000001@h500: f64
+    cusum_sq_y__b_r0.5@h500: f64
+    cusum_sq_z__a_r0.000001@h500: f64
+    cusum_sq_z__a_r0.5@h500: f64
+    cusum_sq_z__b_r0.000001@h500: f64
+    cusum_sq_z__b_r0.5@h500: f64
+    break_wald_y__a_r0.000001@h500: f64
+    break_wald_y__a_r0.5@h500: f64
+    break_wald_y__b_r0.000001@h500: f64
+    break_wald_y__b_r0.5@h500: f64
+    break_wald_z__a_r0.000001@h500: f64
+    break_wald_z__a_r0.5@h500: f64
+    break_wald_z__b_r0.000001@h500: f64
+    break_wald_z__b_r0.5@h500: f64
+    ljung_box_y__a_r0.000001@h500: f64
+    ljung_box_y__a_r0.5@h500: f64
+    ljung_box_y__b_r0.000001@h500: f64
+    ljung_box_y__b_r0.5@h500: f64
+    ljung_box_z__a_r0.000001@h500: f64
+    ljung_box_z__a_r0.5@h500: f64
+    ljung_box_z__b_r0.000001@h500: f64
+    ljung_box_z__b_r0.5@h500: f64
+    breusch_pagan_y__a_r0.000001@h500: f64
+    breusch_pagan_y__a_r0.5@h500: f64
+    breusch_pagan_y__b_r0.000001@h500: f64
+    breusch_pagan_y__b_r0.5@h500: f64
+    breusch_pagan_z__a_r0.000001@h500: f64
+    breusch_pagan_z__a_r0.5@h500: f64
+    breusch_pagan_z__b_r0.000001@h500: f64
+    breusch_pagan_z__b_r0.5@h500: f64
+    ramsey_reset_y__a_r0.000001@h500: f64
+    ramsey_reset_y__a_r0.5@h500: f64
+    ramsey_reset_y__b_r0.000001@h500: f64
+    ramsey_reset_y__b_r0.5@h500: f64
+    ramsey_reset_z__a_r0.000001@h500: f64
+    ramsey_reset_z__a_r0.5@h500: f64
+    ramsey_reset_z__b_r0.000001@h500: f64
+    ramsey_reset_z__b_r0.5@h500: f64
+    skew_y__a_r0.000001@h500: f64
+    skew_y__a_r0.5@h500: f64
+    skew_y__b_r0.000001@h500: f64
+    skew_y__b_r0.5@h500: f64
+    skew_z__a_r0.000001@h500: f64
+    skew_z__a_r0.5@h500: f64
+    skew_z__b_r0.000001@h500: f64
+    skew_z__b_r0.5@h500: f64
+    kurtosis_y__a_r0.000001@h500: f64
+    kurtosis_y__a_r0.5@h500: f64
+    kurtosis_y__b_r0.000001@h500: f64
+    kurtosis_y__b_r0.5@h500: f64
+    kurtosis_z__a_r0.000001@h500: f64
+    kurtosis_z__a_r0.5@h500: f64
+    kurtosis_z__b_r0.000001@h500: f64
+    kurtosis_z__b_r0.5@h500: f64
+    jarque_bera_y__a_r0.000001@h500: f64
+    jarque_bera_y__a_r0.5@h500: f64
+    jarque_bera_y__b_r0.000001@h500: f64
+    jarque_bera_y__b_r0.5@h500: f64
+    jarque_bera_z__a_r0.000001@h500: f64
+    jarque_bera_z__a_r0.5@h500: f64
+    jarque_bera_z__b_r0.000001@h500: f64
+    jarque_bera_z__b_r0.5@h500: f64
+    influence_y__a_r0.000001@h500: f64
+    influence_y__a_r0.5@h500: f64
+    influence_y__b_r0.000001@h500: f64
+    influence_y__b_r0.5@h500: f64
+    influence_z__a_r0.000001@h500: f64
+    influence_z__a_r0.5@h500: f64
+    influence_z__b_r0.000001@h500: f64
+    influence_z__b_r0.5@h500: f64
+    spread_ratio_x0@h500: f64
+    spread_ratio_x1@h500: f64
+    mean_shift_x0@h500: f64
+    mean_shift_x1@h500: f64
+    weight_sum@h500: f64
+    settled_frac@h500: f64
+    withheld_reason@h500: enum
+    coef@h500: array[f64, 24]
+    support_coef@h500: array[f64, 24]
+    se_coef@h500: array[f64, 24]
+    se_coef_hc0@h500: array[f64, 24]
+    se_coef_hac@h500: array[f64, 24]
+    pred_y__selected: f64
+    selected_y: enum
+    pred_z__selected: f64
+    selected_z: enum
+    pred_y__averaged: f64
+    pred_z__averaged: f64
+    scored_clock: clock
+    learned_clock: clock
   float rendering at the extremes:
-    pred_y__r1e-300@h100
-    resid_y__r1e-300@h100
-    pred_y__r0.5@h100
-    resid_y__r0.5@h100
-    weight_sum@h100
-    settled_frac@h100
-    withheld_reason@h100
-    coef@h100
-    support_coef@h100
-    pred_y__r1e-300@h1e9
-    resid_y__r1e-300@h1e9
-    pred_y__r0.5@h1e9
-    resid_y__r0.5@h1e9
-    weight_sum@h1e9
-    settled_frac@h1e9
-    withheld_reason@h1e9
-    coef@h1e9
-    support_coef@h1e9
+    pred_y__r1e-300@h100: f64
+    resid_y__r1e-300@h100: f64
+    pred_y__r0.5@h100: f64
+    resid_y__r0.5@h100: f64
+    weight_sum@h100: f64
+    settled_frac@h100: f64
+    withheld_reason@h100: enum
+    coef@h100: array[f64, 4]
+    support_coef@h100: array[f64, 4]
+    pred_y__r1e-300@h1e9: f64
+    resid_y__r1e-300@h1e9: f64
+    pred_y__r0.5@h1e9: f64
+    resid_y__r0.5@h1e9: f64
+    weight_sum@h1e9: f64
+    settled_frac@h1e9: f64
+    withheld_reason@h1e9: enum
+    coef@h1e9: array[f64, 4]
+    support_coef@h1e9: array[f64, 4]
   lasso path:
-    pred_y__l0.1
-    resid_y__l0.1
-    pred_y__l0
-    resid_y__l0
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
-    penalty_selected_y
+    pred_y__p0.1: f64
+    resid_y__p0.1: f64
+    pred_y__p0: f64
+    resid_y__p0: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 4]
+    penalty_selected_y: f64
   rls minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
   lasso minimal:
-    pred_y__l0.1
-    resid_y__l0.1
-    pred_y__l0
-    resid_y__l0
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
-    penalty_selected_y
+    pred_y__p0.1: f64
+    resid_y__p0.1: f64
+    pred_y__p0: f64
+    resid_y__p0: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 4]
+    penalty_selected_y: f64
   kalman minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
   huber minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
-    support_coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
+    support_coef: array[f64, 2]
   quantile minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
-    support_coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
+    support_coef: array[f64, 2]
   sgd minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
   pa minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
   ftrl minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
   holt minimal:
-    pred_y
-    resid_y
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    pred_y: f64
+    resid_y: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 2]
   ew_cov minimal:
-    mean_x0
-    mean_x1
-    var_x0
-    var_x1
-    std_x0
-    std_x1
-    cov_x0_x1
-    corr_x0_x1
-    weight_sum
-    settled_frac
-    withheld_reason
+    mean_x0: f64
+    mean_x1: f64
+    var_x0: f64
+    var_x1: f64
+    std_x0: f64
+    std_x1: f64
+    cov_x0_x1: f64
+    corr_x0_x1: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   ew_cov every score:
-    partial_corr_x0_x1
-    mahal
-    mahal_q0.5
-    mahal_q0.99
-    pc0_var
-    pc0_share
-    pc0_loading_x0
-    pc0_loading_x1
-    pc0_score
-    pc1_var
-    pc1_share
-    pc1_loading_x0
-    pc1_loading_x1
-    pc1_score
-    weight_sum
-    settled_frac
-    withheld_reason
+    partial_corr_x0_x1: f64
+    mahal: f64
+    mahal_q0.5: f64
+    mahal_q0.99: f64
+    pc0_var: f64
+    pc0_share: f64
+    pc0_loading_x0: f64
+    pc0_loading_x1: f64
+    pc0_score: f64
+    pc1_var: f64
+    pc1_share: f64
+    pc1_loading_x0: f64
+    pc1_loading_x1: f64
+    pc1_score: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   kmeans minimal:
-    cluster
-    dist
-    dist_second
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    cluster: i64
+    dist: f64
+    dist_second: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 4]
   micro minimal:
-    cluster
-    dist
-    micro_id
-    outlier
-    n_clusters
-    n_micro
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    cluster: i64
+    dist: f64
+    micro_id: i64
+    outlier: bool
+    n_clusters: i64
+    n_micro: i64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: list[f64]
   ew_class minimal:
-    class
-    p_a
-    p_b
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    class: enum
+    p_a: f64
+    p_b: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 4]
   seqtest minimal:
-    log_e_pos_y
-    log_e_neg_y
-    n_pos_y
-    n_neg_y
-    log_e_pos_z
-    log_e_neg_z
-    n_pos_z
-    n_neg_z
-    weight_sum
-    settled_frac
-    withheld_reason
+    log_e_pos_y: f64
+    log_e_neg_y: f64
+    n_pos_y: i64
+    n_neg_y: i64
+    log_e_pos_z: f64
+    log_e_neg_z: f64
+    n_pos_z: i64
+    n_neg_z: i64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   seqtest comparing two specs:
-    log_e_a_y
-    log_e_b_y
-    wins_a_y
-    wins_b_y
-    weight_sum
-    settled_frac
-    withheld_reason
+    log_e_a_y: f64
+    log_e_b_y: f64
+    wins_a_y: i64
+    wins_b_y: i64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   marginal minimal:
-    weight_sum
+    weight_sum: f64
   ew_cov with lags:
-    corr_x0_x1
-    lag_corr_x0_x0_l1
-    lag_corr_x0_x1_l1
-    lag_corr_x1_x0_l1
-    lag_corr_x1_x1_l1
-    lag_corr_x0_x0_l5
-    lag_corr_x0_x1_l5
-    lag_corr_x1_x0_l5
-    lag_corr_x1_x1_l5
-    weight_sum
-    settled_frac
-    withheld_reason
+    corr_x0_x1: f64
+    lag_corr_l1_x0_x0: f64
+    lag_corr_l1_x0_x1: f64
+    lag_corr_l1_x1_x0: f64
+    lag_corr_l1_x1_x1: f64
+    lag_corr_l5_x0_x0: f64
+    lag_corr_l5_x0_x1: f64
+    lag_corr_l5_x1_x0: f64
+    lag_corr_l5_x1_x1: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   bocpd minimal:
-    p_change
-    run_mode
-    run_mean
-    pred_x0
-    pred_x1
-    loglik
-    weight_sum
-    settled_frac
-    withheld_reason
+    p_change: f64
+    run_mode: i64
+    run_mean: f64
+    pred_x0: f64
+    pred_x1: f64
+    loglik: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   corrchange minimal:
-    stat
-    crit
-    flag
-    since_flag
-    since_change
-    weight_sum
-    settled_frac
-    withheld_reason
+    stat: f64
+    crit: f64
+    flag: bool
+    since_flag: i64
+    since_change: i64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
   hmm minimal:
-    filtered_0
-    filtered_1
-    filtered_2
-    predicted_0
-    predicted_1
-    predicted_2
-    state
-    loglik
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    filtered_state0: f64
+    filtered_state1: f64
+    filtered_state2: f64
+    predicted_state0: f64
+    predicted_state1: f64
+    predicted_state2: f64
+    state: i64
+    loglik: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 6]
   rcov minimal:
-    weight_sum
+    weight_sum: f64
   deco minimal:
-    u
-    rho
-    loglik
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    u: f64
+    rho: f64
+    loglik: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 1]
   audit minimal:
-    weight_sum
+    weight_sum: f64
   deco blocked:
-    u_a
-    u_b
-    u_a_b
-    rho_a
-    rho_b
-    rho_a_b
-    loglik
-    weight_sum
-    settled_frac
-    withheld_reason
-    coef
+    u_a: f64
+    u_b: f64
+    u_a_b: f64
+    rho_a: f64
+    rho_b: f64
+    rho_a_b: f64
+    loglik: f64
+    weight_sum: f64
+    settled_frac: f64
+    withheld_reason: enum
+    coef: array[f64, 3]
 
 [closed_groups columns]  # column: dtype, in order: a column renamed, retyped, moved or added is a diff here
   shared:
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     coef: List[Float64]
@@ -1802,11 +2094,13 @@
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     columns: List[String]
@@ -1819,17 +2113,19 @@
     target_n_kish: List[Float64]
     cross_moments: List[Float64]
     means_by_target: List[Float64]
-    cross_centred: List[Float64]
+    cross_centered: List[Float64]
     coef: List[Float64]
   ewridge:
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     columns: List[String]
@@ -1842,7 +2138,7 @@
     target_n_kish: List[Float64]
     cross_moments: List[Float64]
     means_by_target: List[Float64]
-    cross_centred: List[Float64]
+    cross_centered: List[Float64]
     coef: List[Float64]
   ftrl: the shared columns only
   hmm: the shared columns only
@@ -1854,11 +2150,13 @@
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     columns: List[String]
@@ -1871,17 +2169,19 @@
     target_n_kish: List[Float64]
     cross_moments: List[Float64]
     means_by_target: List[Float64]
-    cross_centred: List[Float64]
+    cross_centered: List[Float64]
     coef: List[Float64]
   marginal:
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     coef: List[Float64]
@@ -1904,18 +2204,20 @@
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     coef: List[Float64]
     rcov: List[Float64]
     rcorr: List[Float64]
     rcov_n: Int64
-    rcov_kind: String
+    rcov_kind: Enum[plain, kernel, preavg]
     rcov_bandwidth_used: Int64
     rcov_omega2: List[Float64]
     rcov_iv_sparse: List[Float64]
@@ -1928,11 +2230,13 @@
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     columns: List[String]
@@ -1945,19 +2249,48 @@
     target_n_kish: List[Float64]
     cross_moments: List[Float64]
     means_by_target: List[Float64]
-    cross_centred: List[Float64]
+    cross_centered: List[Float64]
     coef: List[Float64]
     eig_vals: List[Float64]
     eig_vecs: List[Float64]
+  ew_cov with lags:
+    spec: String
+    group: String
+    instance: String
+    half_life: Float64
+    lam: Float64
+    session: String
+    weight_sum: Float64
+    n_kish: Float64
+    rows_fed: Int64
+    rows_learned: Int64
+    clock_min: Float64
+    clock_max: Float64
+    columns: List[String]
+    means: List[Float64]
+    comoments: List[Float64]
+    targets: List[String]
+    target_means: List[Float64]
+    target_vars: List[Float64]
+    target_weights: List[Float64]
+    target_n_kish: List[Float64]
+    cross_moments: List[Float64]
+    means_by_target: List[Float64]
+    cross_centered: List[Float64]
+    lags: List[Int64]
+    lag_comoments: List[Float64]
+    coef: List[Float64]
   marginal with lags and bins:
     spec: String
     group: String
     instance: String
+    half_life: Float64
+    lam: Float64
     session: String
     weight_sum: Float64
     n_kish: Float64
-    rows_fed: UInt64
-    rows_learned: UInt64
+    rows_fed: Int64
+    rows_learned: Int64
     clock_min: Float64
     clock_max: Float64
     coef: List[Float64]
@@ -1978,7 +2311,7 @@
     pair_lag_corr_xy: List[List[Float64]]
     pair_lag_corr_yx: List[List[Float64]]
     pair_n_serial: List[Float64]
-    pair_t_serial: List[Float64]
+    pair_t_stat_serial: List[Float64]
     pair_phi_x: List[Float64]
     pair_phi_y: List[Float64]
     pair_bin_edges: List[List[Float64]]
@@ -2037,12 +2370,12 @@
   po.ewm_sum.partial: drop, keep, null
   po.ewm_var.closed: both, left, none, right
   po.ewm_var.partial: drop, keep, null
-  po.rewm_mean.closed: both, left, none, right
-  po.rewm_mean.partial: drop, keep, null
-  po.rewm_rate.closed: both, left, none, right
-  po.rewm_rate.partial: drop, keep, null
-  po.rewm_sum.closed: both, left, none, right
-  po.rewm_sum.partial: drop, keep, null
+  po.ewm_mean(reverse=True).closed: both, left, none, right
+  po.ewm_mean(reverse=True).partial: drop, keep, null
+  po.ewm_rate(reverse=True).closed: both, left, none, right
+  po.ewm_rate(reverse=True).partial: drop, keep, null
+  po.ewm_sum(reverse=True).closed: both, left, none, right
+  po.ewm_sum(reverse=True).partial: drop, keep, null
   withheld_reason, in precedence order: below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows
   toml.input_format: csv, ipc, ndjson, parquet
   toml.output_format: csv, ipc, ndjson, parquet
@@ -2126,7 +2459,7 @@
     corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, change_action, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every_rows, scalar, seed, window_rows
     deco: alpha, beta, blocks, dynamics
     ew_class: classes, closed, covariance_type, max_rows_between_snapshots, precision_prior, snapshot_every, window_budget, window_size
-    ew_cov: closed, gram_threads, lags, mahal_quantiles, max_rows_between_pcas, max_rows_between_snapshots, pca, pca_every, precision_prior, snapshot_every, stats, window_budget, window_size
+    ew_cov: bias, closed, gram_threads, lags, mahal_quantiles, max_rows_between_pcas, max_rows_between_snapshots, pca, pca_every, precision_prior, snapshot_every, stats, window_budget, window_size
     ewridge: closed, coef_prior, feature_sets, gram_block_rows, gram_threads, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, snapshot_every, solve_every, standardize, target_gaps, window_budget, window_size
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance_type, covs, exog_tvtp, init, learn, means, n_components, precision_prior, seed, transition, transition_prior, tvtp_coef, warm_rows
@@ -2144,8 +2477,8 @@
     seqtest: a, a_suffix, b, b_suffix
     sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, l2, learning_rate, loss, power, quantile, schedule, standardize, strict_binary
 
-[cli flags]  # `online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
-  Usage: online [OPTIONS] --config <CONFIG>
+[cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
+  Usage: polars-online [OPTIONS] --config <CONFIG>
   --config <CONFIG>
   --input <INPUT>
   --output <OUTPUT>
@@ -2164,6 +2497,7 @@
   -V, --version
 
 [env vars]  # read at run time by the shipped code (crates/*/src, the package): a variable added or renamed is a diff here
-  ONLINE_TIMING
+  ONLINE_TIMING  (renamed POLARS_ONLINE_TIMING; read only to say so)
   POLARS_ONLINE_MAX_THREADS
+  POLARS_ONLINE_TIMING
   POLARS_ONLINE_WARN_UNSTABLE

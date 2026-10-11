@@ -93,7 +93,7 @@ def unstable_label(name: str) -> str:
 
 
 def describe_api(cli: Path | None = None) -> str:
-    """The snapshot's text. `cli` is the `online` executable (the
+    """The snapshot's text. `cli` is the `polars-online` executable (the
     `online_cli` fixture): its configuration's own keys, its flags and the
     words its format options take are read from it, and left out without it
     (`test_model_registry` reads the field grammar alone)."""
@@ -137,7 +137,14 @@ def describe_api(cli: Path | None = None) -> str:
     w("")
 
     w("[ModelBank]  # name and signature: a parameter added or a default moved is a diff here")
+    from polars_online._renamed import is_renamed
+
     for name in sorted(dir(po.ModelBank)):
+        # A name kept only under its old spelling (a refusal stub, or a
+        # forwarding with a deprecation warning) is left out, as the module
+        # stubs are by `__all__`: the snapshot shows the new name alone.
+        if is_renamed(inspect.getattr_static(po.ModelBank, name)):
+            continue
         if not name.startswith("_") or name in ("__init__", "__reduce__"):
             obj = getattr(po.ModelBank, name)
             try:
@@ -167,7 +174,10 @@ def describe_api(cli: Path | None = None) -> str:
             w(f"    {name}{signature_of(getattr(module, name))}")
     w("")
 
-    w("[output field grammar]  # the strings users index the output struct by")
+    w(
+        "[output field grammar]  # name: dtype, the strings users index the output struct by,"
+        " each with the dtype output_index declares"
+    )
     cases: list[tuple[str, dict]] = [
         ("ewridge minimal", dict(targets=["y"], features=["x0"], half_life=100.0)),
         (
@@ -187,6 +197,19 @@ def describe_api(cli: Path | None = None) -> str:
                 conformal=0.9,
                 emit_selected=True,
                 emit_averaged=True,
+                # Every other `emit_*` too, so each field a switch adds is
+                # held here with its dtype.
+                emit_error_inflation=True,
+                emit_se_coef=True,
+                emit_clocks=True,
+                emit_calibration=True,
+                emit_breaks=True,
+                emit_robust_se=True,
+                robust_se_lags=2,
+                emit_specification=True,
+                emit_tails=True,
+                emit_influence=True,
+                emit_feature_health=True,
             ),
         ),
         (
@@ -206,8 +229,8 @@ def describe_api(cli: Path | None = None) -> str:
         )
         s = getattr(po.spec, model)("m", min_weight=2.0, **kw)
         w(f"  {label}:")
-        for f in po.spec.output_fields(s):
-            w(f"    {f}")
+        for f, dtype in po.spec.output_index(s).select("field", "dtype").iter_rows():
+            w(f"    {f}: {dtype}")
     for model, kw in [
         ("rls", dict(targets=["y"], features=["x0"], half_life=100.0)),
         ("lasso", dict(targets=["y"], features=["x0"], half_life=100.0, penalties=[0.1, 0.0])),
@@ -289,8 +312,8 @@ def describe_api(cli: Path | None = None) -> str:
         gate = {} if model == "audit" else {"min_weight": 2.0}
         s = getattr(po.spec, model.split(" ")[0])("m", **gate, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")
-        for f in po.spec.output_fields(s):
-            w(f"    {f}")
+        for f, dtype in po.spec.output_index(s).select("field", "dtype").iter_rows():
+            w(f"    {f}: {dtype}")
     w("")
 
     # The frame `closed_groups` drains is as much API as an output field
@@ -312,6 +335,7 @@ def describe_api(cli: Path | None = None) -> str:
     # the bank unread (review 6, C-3).
     variants = [(name, dict(MINIMAL[name])) for name in sorted(MINIMAL) if name != "audit"] + [
         ("ew_cov with pca", {**MINIMAL["ew_cov"], "pca": 2}),
+        ("ew_cov with lags", {**MINIMAL["ew_cov"], "lags": [1]}),
         ("marginal with lags and bins", {**MINIMAL["marginal"], "lags": [1], "bins": 4}),
     ]
     frames: list[tuple[str, list[str]]] = []
@@ -471,6 +495,8 @@ def dtype_text(dtype: pl.DataType) -> str:
     Polars)."""
     if isinstance(dtype, pl.List):
         return f"List[{dtype_text(dtype.inner)}]"
+    if isinstance(dtype, pl.Array):
+        return f"Array[{dtype_text(dtype.inner)}, {dtype.size}]"
     if isinstance(dtype, pl.Enum):
         return f"Enum[{', '.join(dtype.categories.to_list())}]"
     if isinstance(dtype, pl.Struct):
@@ -518,6 +544,8 @@ def frame_columns_section() -> list[str]:
         ("ModelBank.audit(table='pairs')", bank.audit("audit", table="pairs")),
         ("ModelBank.audit(table='clock')", timed.audit(table="clock")),
         ("ModelBank.audit(pooled=True)", bank.audit("audit", pooled=True)),
+        ("ModelBank.check()", bank.check()),
+        ("ModelBank.solve_failures()", bank.solve_failures()),
         ("po.spec.output_index()", po.spec.output_index(ridge)),
         ("po.spec.coef_index()", po.spec.coef_index(ridge)),
         ("po.spec.coef_fields()", po.spec.coef_fields(ridge)),
@@ -711,21 +739,22 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
         return refuse
 
-    for op in (
-        "ewm_mean",
-        "ewm_rate",
-        "ewm_std",
-        "ewm_sum",
-        "ewm_var",
-        "rewm_mean",
-        "rewm_rate",
-        "rewm_sum",
-    ):
+    # Each operator, and the three that look ahead under `reverse=True` (the
+    # form that replaced `rewm_*`, task 244), which check their words apart.
+    ops: list[tuple[str, str, dict[str, object]]] = [
+        (op, op, {}) for op in ("ewm_mean", "ewm_rate", "ewm_std", "ewm_sum", "ewm_var")
+    ]
+    ops += [
+        (f"{op}(reverse=True)", op, {"reverse": True}) for op in ("ewm_mean", "ewm_rate", "ewm_sum")
+    ]
+    for label, op, extra in ops:
         for key in ("closed", "partial"):
             refuse = python_refusal(
-                getattr(po, op), {"input": "X", "half_life": 10.0, "window_size": 5.0}, key
+                getattr(po, op),
+                {"input": "X", "half_life": 10.0, "window_size": 5.0, **extra},
+                key,
             )
-            out.append(f"  po.{op}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
+            out.append(f"  po.{label}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
     reasons = (
         po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
         .fit_predict(pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]}))["m"]
@@ -755,7 +784,7 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
 
 def _cli_refusal(cli: Path, config: str, args: list[str] | None = None) -> str:
-    """What `online` says, on stderr, to `config` and `args`; empty when it
+    """What `polars-online` says, on stderr, to `config` and `args`; empty when it
     exits 0 (it never does here: no config below has specs)."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "bank.toml"
@@ -781,7 +810,7 @@ _WRITERS: dict[str, Callable[[pl.DataFrame, Path], None]] = {
 
 
 def _format_refusal(cli: Path, where: str, word: str) -> str:
-    """What `online --dry-run` says to a complete config whose format, under
+    """What `polars-online --dry-run` says to a complete config whose format, under
     the TOML key or the flag `where`, is `word`; empty when it takes it. A
     word is taken when the dry run exits 0, as `taken_words` requires
     (review round 5, E2): a config with no specs was refused for every word
@@ -855,16 +884,16 @@ def toml_keys_section(cli: Path | None) -> list[str]:
 
 
 def cli_flags_section(cli: Path) -> list[str]:
-    """`online --help`'s usage line and options, each with the value it
+    """`polars-online --help`'s usage line and options, each with the value it
     takes, if any; the help text beside them is not pinned."""
     text = subprocess.run(
         [str(cli), "--help"], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout
     out = [
-        "[cli flags]  # `online --help`: a flag added, renamed or removed, or one that starts or"
-        " stops taking a value, is a diff here"
+        "[cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that"
+        " starts or stops taking a value, is a diff here"
     ]
-    # clap names the program by the file it was run from: `online.exe` on
+    # clap names the program by the file it was run from: `polars-online.exe` on
     # Windows.
     out.extend(
         f"  {line.strip().replace(cli.name, cli.stem)}"
@@ -913,11 +942,21 @@ def env_vars() -> list[str]:
     return sorted(names)
 
 
+#: Variables the shipped code reads only to say they were renamed, each
+#: with its new name: they turn nothing on.
+RENAMED_ENV_VARS = {"ONLINE_TIMING": "POLARS_ONLINE_TIMING"}
+
+
 def env_vars_section() -> list[str]:
     return [
         "[env vars]  # read at run time by the shipped code (crates/*/src, the package):"
         " a variable added or renamed is a diff here",
-        *(f"  {name}" for name in env_vars()),
+        *(
+            f"  {name}  (renamed {RENAMED_ENV_VARS[name]}; read only to say so)"
+            if name in RENAMED_ENV_VARS
+            else f"  {name}"
+            for name in env_vars()
+        ),
     ]
 
 

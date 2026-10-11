@@ -45,8 +45,8 @@ fn ew_cov_lag_corr_carries_its_lag() {
     );
     assert_unique(&s);
     let idx = output_index(&s);
-    assert_eq!(by_name(&idx, "lag_corr_a_b_l3").lag, Some(3));
-    assert_eq!(by_name(&idx, "lag_corr_b_a_l1").lag, Some(1));
+    assert_eq!(by_name(&idx, "lag_corr_l3_a_b").lag, Some(3));
+    assert_eq!(by_name(&idx, "lag_corr_l1_b_a").lag, Some(1));
     assert_eq!(by_name(&idx, "corr_a_b").lag, None);
     // Serialized whatever its value, so the Python table has the column.
     assert!(rest(by_name(&idx, "corr_a_b")).get("lag").is_some());
@@ -61,8 +61,14 @@ fn hmm_posteriors_carry_their_state() {
     assert_unique(&s);
     let idx = output_index(&s);
     for st in 0..3 {
-        assert_eq!(by_name(&idx, &format!("filtered_{st}")).state, Some(st));
-        assert_eq!(by_name(&idx, &format!("predicted_{st}")).state, Some(st));
+        assert_eq!(
+            by_name(&idx, &format!("filtered_state{st}")).state,
+            Some(st)
+        );
+        assert_eq!(
+            by_name(&idx, &format!("predicted_state{st}")).state,
+            Some(st)
+        );
     }
     assert_eq!(by_name(&idx, "state").state, None);
     assert_eq!(by_name(&idx, "loglik").state, None);

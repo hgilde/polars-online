@@ -312,6 +312,46 @@ impl Spec {
         }
     }
 
+    /// How the fit absorbs a level in the target, which the windowed
+    /// CUSUM's null share reads (task 232 (4); review round 7, A-1, A-3):
+    /// the half-life of the decay it absorbs at and the window that decay
+    /// is cut at, in clock units, `inf` for none
+    /// ([`online_core::cusum_null_window`] takes the two).
+    ///
+    /// - **Under `window_size`**, the instance's decay and the window: the
+    ///   fit's prediction is a mean over the window, weighted by the decay
+    ///   inside it. Read as an exponential at the window's Kish half-life
+    ///   ([`Self::fit_memory`]), the share of a window of 100 rows with no
+    ///   decay read 1/2 where a rolling mean's is 0.703, and the CUSUM
+    ///   spread 1.20 on 20 sets of 20 clean streams (1.19 at 400 rows);
+    ///   beside a half-life of 200 the window of 100 spread 1.17 and the
+    ///   one of 400 1.08. Over the window's share each reads 1.00-1.02.
+    /// - **A `kalman` whose `coef_half_life` list gives each coefficient
+    ///   its own**, the intercept's entry (the first): a level is absorbed
+    ///   by the intercept's coefficient alone, and `inf` there pins it, so
+    ///   it absorbs nothing and the share is 1. Read as the shortest entry,
+    ///   `[inf, 30, 30]` divided a plain sum by 1/2 and the CUSUM spread
+    ///   1.40 on clean streams, and `[30, 10, 10]` 1.29, where `[30, 30,
+    ///   30]` read 1.03.
+    /// - Otherwise the fit's own memory ([`Self::fit_memory`]) and no
+    ///   window: a scalar `coef_half_life`, or `q` given, is the fit's.
+    pub fn level_absorber(&self, model: Decay) -> (f64, f64) {
+        if let super::ModelKind::Kalman {
+            coef_half_life: Some(list),
+            ..
+        } = &self.model
+        {
+            let hs = list.to_vec();
+            if hs.len() > 1 {
+                return (hs[0], f64::INFINITY);
+            }
+        }
+        match self.model.window_parts() {
+            Some((Some(w), _)) if w.is_finite() && w > 0.0 => (half_life_of(model), w),
+            _ => (half_life_of(self.fit_memory(model)), f64::INFINITY),
+        }
+    }
+
     /// The memory a diagnostic's readiness reads (task 232 (1), task 234):
     /// the longest finite one the model keeps, since a fit with several is
     /// settled only once the longest has. That is the fit's own
@@ -493,6 +533,39 @@ mod tests {
             r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["a", "b"]}}"#
         );
         serde_json::from_str(&json).unwrap()
+    }
+
+    /// The CUSUM's null share reads how the fit absorbs a level (review
+    /// round 7, A-1, A-3): a `kalman` list's intercept entry -- `inf`
+    /// where the intercept is pinned, whatever the slopes forget at --
+    /// the instance's decay and the window under `window_size`, not the
+    /// window's Kish half-life, and the fit's own memory beside a scalar,
+    /// a `q` or any other model.
+    #[test]
+    fn the_level_absorber_is_the_intercepts() {
+        let (inf, h) = (f64::INFINITY, Decay::Halflife(20.0));
+        let level = |model: &str, decay: Decay| spec(model).level_absorber(decay);
+        let list = r#"{"type": "kalman", "coef_half_life": [30.0, 10.0, 10.0]}"#;
+        assert_eq!(level(list, h), (30.0, inf));
+        assert_eq!(spec(list).fit_memory(h), Decay::Halflife(10.0));
+        let pinned = r#"{"type": "kalman", "coef_half_life": ["inf", 30.0, 30.0]}"#;
+        assert_eq!(level(pinned, h), (inf, inf));
+        assert_eq!(spec(pinned).fit_memory(h), Decay::Halflife(30.0));
+        let scalar = r#"{"type": "kalman", "coef_half_life": 50.0}"#;
+        assert_eq!(level(scalar, h), (50.0, inf));
+        let one = r#"{"type": "kalman", "coef_half_life": [50.0]}"#;
+        assert_eq!(level(one, h), (50.0, inf));
+        let q = r#"{"type": "kalman", "q": [0.01, 0.01, 0.01]}"#;
+        assert_eq!(level(q, h), (20.0, inf));
+        let plain = r#"{"type": "ewridge"}"#;
+        assert_eq!(level(plain, h), (20.0, inf));
+        assert_eq!(level(plain, Decay::Lam(0.5)), (1.0, inf));
+        let windowed = r#"{"type": "ewridge", "window_size": 100.0}"#;
+        assert_eq!(level(windowed, h), (20.0, 100.0));
+        assert_eq!(level(windowed, Decay::Halflife(inf)), (inf, 100.0));
+        assert_ne!(spec(windowed).fit_memory(h), h);
+        let lasso = r#"{"type": "lasso", "penalties": [0.1], "window_size": 40.0}"#;
+        assert_eq!(level(lasso, h), (20.0, 40.0));
     }
 
     /// Readiness reads the longest finite memory the model keeps (task

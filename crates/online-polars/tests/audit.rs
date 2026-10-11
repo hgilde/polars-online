@@ -69,8 +69,10 @@ fn read(bank: &Bank, table: AuditTable) -> DataFrame {
     bank.audit(0, None, table, false).unwrap()
 }
 
+/// A count, an `Int64` as every count of every frame, as a `u64`.
 fn count(f: &DataFrame, col: &str, row: usize) -> u64 {
-    f.column(col).unwrap().u64().unwrap().get(row).unwrap()
+    u64::try_from(f.column(col).unwrap().i64().unwrap().get(row).unwrap())
+        .expect("a count is never negative")
 }
 
 #[test]
@@ -85,15 +87,18 @@ fn a_null_and_a_nan_are_counted_apart_and_every_row_is_read() {
     let infs = (0..n).filter(|i| i % 40 == 9).count() as u64;
     assert_eq!(
         (
-            count(&cols, "rows", 0),
-            count(&cols, "null", 0),
-            count(&cols, "nan", 0)
+            count(&cols, "rows_fed", 0),
+            count(&cols, "null_count", 0),
+            count(&cols, "nan_count", 0)
         ),
         (n, nulls, nans)
     );
     assert_eq!(count(&cols, "count", 0), n - nulls - nans);
     assert_eq!(
-        (count(&cols, "pos_inf", 1), count(&cols, "null", 1)),
+        (
+            count(&cols, "pos_inf_count", 1),
+            count(&cols, "null_count", 1)
+        ),
         (infs, 0)
     );
     // Every row was read: the summary processed rows a feature's null
@@ -115,7 +120,7 @@ fn a_null_and_a_nan_are_counted_apart_and_every_row_is_read() {
     );
     // The largest step is the gap as it elapsed, 20, not the 5 `gap_cap`
     // ages a model by (review 6, C-5).
-    let max_step = clock.column("max_step").unwrap().f64().unwrap().get(0);
+    let max_step = clock.column("step_max").unwrap().f64().unwrap().get(0);
     assert_eq!(max_step, Some(20.0));
 }
 
@@ -160,7 +165,7 @@ fn a_temporal_clocks_steps_are_durations_as_they_elapsed() {
             TimeUnit::Microseconds => 1_000,
             TimeUnit::Nanoseconds => 1,
         };
-        for (col, want) in [("max_step", 125 * minute), ("step_mean", 5 * minute)] {
+        for (col, want) in [("step_max", 125 * minute), ("step_mean", 5 * minute)] {
             let c = clock.column(col).unwrap();
             assert_eq!(c.dtype(), &DataType::Duration(unit), "{col}");
             let got = c.cast(&DataType::Int64).unwrap().i64().unwrap().get(0);
@@ -195,7 +200,7 @@ fn a_restart_keeps_the_counts() {
     let mut bank = Bank::new(vec![spec(r#", "session": "s", "session_gap": "reset""#)]).unwrap();
     feed(&mut bank, &df, 3);
     let cols = read(&bank, AuditTable::Columns);
-    assert_eq!(count(&cols, "rows", 0), df.height() as u64);
+    assert_eq!(count(&cols, "rows_fed", 0), df.height() as u64);
     let summary = bank.summary(0, None).unwrap();
     assert_eq!(count(&summary, "resets", 0), 2);
     // Two restarts: two steps fewer than rows less one.

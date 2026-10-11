@@ -3,7 +3,8 @@ kept in the state and read back as a frame.
 
 Not a regression: nothing is emitted per row but `weight_sum`. The pairs are the
 product, so this file holds `ModelBank.marginal()` to a from-scratch numpy
-oracle, to `ew_cov` (a pair is the two-column `ew_cov`, to the bit) and to the
+oracle, to `ew_cov` (a pair is the two-column `ew_cov` under `bias=True`, the
+population form a pair keeps, to the bit) and to the
 shared contract -- chunk invariance, save/load, groups, the half-life grid,
 null and zero-weight rows -- on every surface that runs a spec.
 """
@@ -30,7 +31,7 @@ PAIR_FIELDS = [
     "beta",
     "t_stat",
 ]
-COLUMNS = ["group", "instance", "feature", "target", *PAIR_FIELDS]
+COLUMNS = ["spec", "group", "instance", "half_life", "lam", "feature", "target", *PAIR_FIELDS]
 
 
 def frame(
@@ -195,7 +196,7 @@ class TestArithmetic:
         for f in ("x0", "x1", "x2"):
             for t in ("y0", "y1"):
                 cov = po.spec.ew_cov(
-                    "c", features=[f, t], stats=["mean", "var", "cov", "corr"], **common
+                    "c", features=[f, t], stats=["mean", "var", "cov", "corr"], bias=True, **common
                 )
                 last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
                 pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(
@@ -401,7 +402,7 @@ class TestPlumbing:
         desc = bank.describe("m")
         assert desc["column"].to_list() == ["x0", "x1", "x2", "y0", "y1"]
         assert desc["role"].to_list() == ["feature"] * 3 + ["target"] * 2
-        assert desc.filter(pl.col("column") == "y1")["null_count"].item() > 0
+        assert desc.filter(pl.col("column") == "y1")["unusable_count"].item() > 0
         assert bank.summary("m")["rows_learned"].item() == 100
 
     def test_refusals(self):
@@ -455,7 +456,9 @@ def test_a_wide_pair_set_matches_ew_cov_to_the_bit():
     bank.fit_predict(df.head(-1))
     got = bank.marginal("m")
     for f, t in (("x0", "y0"), ("x7", "y2"), ("x11", "y1")):
-        cov = po.spec.ew_cov("c", features=[f, t], stats=["mean", "var", "cov", "corr"], **common)
+        cov = po.spec.ew_cov(
+            "c", features=[f, t], stats=["mean", "var", "cov", "corr"], bias=True, **common
+        )
         last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
         pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(0, named=True)
         assert pair["corr"] == last[f"corr_{f}_{t}"], (f, t)
@@ -494,7 +497,7 @@ class TestSharedFeatureMoments:
         for f in ("x0", "x1", "x2"):
             # `ew_cov` reports before each row; the pairs are read after the
             # last row, so it runs one row further (as the test above does).
-            cov = po.spec.ew_cov("c", features=[f], stats=["mean", "var"], **self.COMMON)
+            cov = po.spec.ew_cov("c", features=[f], stats=["mean", "var"], bias=True, **self.COMMON)
             last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
             for t in ("y0", "y1"):
                 pick = (pl.col("feature") == f) & (pl.col("target") == t)

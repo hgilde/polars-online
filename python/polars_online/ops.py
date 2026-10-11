@@ -110,8 +110,9 @@ inside both sums. There is no ``weight=``:
     out = po.stream.with_windows(
         trades,
         mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
-        fwd_vwap=po.rewm_sum(notional, half_life="10s", window_size="1m")
-                 / po.rewm_sum("quantity", half_life="10s", window_size="1m") - pl.col("mid"),
+        fwd_vwap=po.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
+                 / po.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True)
+                 - pl.col("mid"),
         buy_vwap=po.ewm_sum(buys.then(notional), half_life="10s")
                  / po.ewm_sum(buys.then("quantity"), half_life="10s"),
         clock="ts", gap_cap="5m", group="symbol",
@@ -200,11 +201,16 @@ variance or a standard deviation, and a window looking ahead under
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
 from polars_online._formula import operator
+from polars_online._warnings import deprecated_alias
+
+if TYPE_CHECKING:
+    from polars_online._duration import Duration
 
 __all__ = [
     "ewm_mean",
@@ -213,20 +219,51 @@ __all__ = [
     "ewm_sum",
     "ewm_var",
     "increment",
-    "rewm_mean",
-    "rewm_rate",
-    "rewm_sum",
 ]
+
+
+def _window(
+    name: str,
+    input: str | pl.Expr,
+    *,
+    half_life: float | Duration,
+    window_size: float | Duration | None,
+    closed: Literal["right", "left", "both", "none"],
+    min_samples: int,
+    partial: Literal["keep", "null", "drop"] | None,
+    reverse: bool,
+) -> pl.Expr:
+    """The mean, sum or rate ``name`` names, looking back, or ahead under
+    ``reverse``: the operator over the rows after each row, which the tree
+    keeps as ``r<name>``."""
+    if not isinstance(reverse, bool):
+        raise TypeError(f"po.{name}: reverse must be a bool, got {type(reverse).__name__}")
+    if reverse and window_size is None:
+        raise TypeError(
+            f"po.{name}(reverse=True): window_size is required; the rows ahead of a row have "
+            "no end without one"
+        )
+    return operator(
+        f"r{name}" if reverse else name,
+        input,
+        half_life=half_life,
+        window_size=window_size,
+        closed=closed,
+        min_samples=min_samples,
+        partial=partial,
+        who=f"po.{name}(reverse=True)" if reverse else None,
+    )
 
 
 def ewm_mean(
     input: str | pl.Expr,
     *,
-    half_life: Any,
-    window_size: Any = None,
-    closed: str = "right",
+    half_life: float | Duration,
+    window_size: float | Duration | None = None,
+    closed: Literal["right", "left", "both", "none"] = "right",
     min_samples: int = 1,
-    partial: str | None = None,
+    partial: Literal["keep", "null", "drop"] | None = None,
+    reverse: bool = False,
 ) -> pl.Expr:
     """The time-weighted mean of ``input`` over the rows at or before each
     row, less than ``window_size`` older (none: the running mean).
@@ -235,8 +272,15 @@ def ewm_mean(
     with ``a_i = 1 - lam ** (t_i - t_{i-1})`` and ``y_1 = x_1``: each value
     weighed by the decayed time of the interval ending at its row. Under a
     ``window_size`` only the part of each interval inside the window counts.
+
+    ``reverse=True`` looks ahead instead, as Polars' ``cum_sum(reverse=True)``
+    runs from the end: the mean over the rows after each row, at most
+    ``window_size`` later, which it then requires. It is the mirror, each
+    value held until the next row and weighed by the decayed time from the
+    row. As a spec's target it is known only once the window has closed, so
+    the bank learns it under an ``embargo`` of at least ``window_size``.
     """
-    return operator(
+    return _window(
         "ewm_mean",
         input,
         half_life=half_life,
@@ -244,49 +288,30 @@ def ewm_mean(
         closed=closed,
         min_samples=min_samples,
         partial=partial,
-    )
-
-
-def rewm_mean(
-    input: str | pl.Expr,
-    *,
-    half_life: Any,
-    window_size: Any,
-    closed: str = "right",
-    min_samples: int = 1,
-    partial: str | None = None,
-) -> pl.Expr:
-    """The time-weighted mean of ``input`` over the rows after each row, at
-    most ``window_size`` later: the mirror of :func:`ewm_mean`, each value
-    held until the next row and weighed by the decayed time from the row.
-    As a spec's target it is known only once the window has closed, so the
-    bank learns it under an ``embargo`` of at least ``window_size``."""
-    return operator(
-        "rewm_mean",
-        input,
-        half_life=half_life,
-        window_size=window_size,
-        closed=closed,
-        min_samples=min_samples,
-        partial=partial,
+        reverse=reverse,
     )
 
 
 def ewm_sum(
     input: str | pl.Expr,
     *,
-    half_life: Any,
-    window_size: Any = None,
-    closed: str = "right",
+    half_life: float | Duration,
+    window_size: float | Duration | None = None,
+    closed: Literal["right", "left", "both", "none"] = "right",
     min_samples: int = 1,
-    partial: str | None = None,
+    partial: Literal["keep", "null", "drop"] | None = None,
+    reverse: bool = False,
 ) -> pl.Expr:
     """``sum lam ** (tau_t - t_j) * x_j`` over the rows at or before each row,
     less than ``window_size`` older. On distinct stamps it is Polars'
     ``ewm_sum_by``, each value counted once at its own time. At a repeated
     stamp every row carries the stamp's total, where ``ewm_sum_by``'s is a
-    running sum. Two sums make a weighted mean."""
-    return operator(
+    running sum. Two sums make a weighted mean.
+
+    ``reverse=True`` looks ahead instead: ``sum lam ** (t_j - tau_t) * x_j``
+    over the rows after each row, at most ``window_size`` later, which it then
+    requires."""
+    return _window(
         "ewm_sum",
         input,
         half_life=half_life,
@@ -294,45 +319,28 @@ def ewm_sum(
         closed=closed,
         min_samples=min_samples,
         partial=partial,
-    )
-
-
-def rewm_sum(
-    input: str | pl.Expr,
-    *,
-    half_life: Any,
-    window_size: Any,
-    closed: str = "right",
-    min_samples: int = 1,
-    partial: str | None = None,
-) -> pl.Expr:
-    """``sum lam ** (t_j - tau_t) * x_j`` over the rows after each row, at
-    most ``window_size`` later: the mirror of :func:`ewm_sum`."""
-    return operator(
-        "rewm_sum",
-        input,
-        half_life=half_life,
-        window_size=window_size,
-        closed=closed,
-        min_samples=min_samples,
-        partial=partial,
+        reverse=reverse,
     )
 
 
 def ewm_rate(
     input: str | pl.Expr,
     *,
-    half_life: Any,
-    window_size: Any = None,
-    closed: str = "right",
+    half_life: float | Duration,
+    window_size: float | Duration | None = None,
+    closed: Literal["right", "left", "both", "none"] = "right",
     min_samples: int = 1,
-    partial: str | None = None,
+    partial: Literal["keep", "null", "drop"] | None = None,
+    reverse: bool = False,
 ) -> pl.Expr:
     """:func:`ewm_sum` over the decayed time the window covers, ``half_life /
     ln 2 * (1 - 2 ** (-T / half_life))``, with ``T`` the window's span inside
     the stretch. It is a quantity per unit of clock, such as a volume rate
-    from :func:`increment` of a running volume."""
-    return operator(
+    from :func:`increment` of a running volume.
+
+    ``reverse=True`` looks ahead instead: the sum ahead over the decayed time
+    the window ahead covers, ``window_size`` then required."""
+    return _window(
         "ewm_rate",
         input,
         half_life=half_life,
@@ -340,39 +348,56 @@ def ewm_rate(
         closed=closed,
         min_samples=min_samples,
         partial=partial,
+        reverse=reverse,
     )
 
 
-def rewm_rate(
-    input: str | pl.Expr,
-    *,
-    half_life: Any,
-    window_size: Any,
-    closed: str = "right",
-    min_samples: int = 1,
-    partial: str | None = None,
-) -> pl.Expr:
-    """:func:`rewm_sum` over the decayed time the window ahead covers: the
-    mirror of :func:`ewm_rate`."""
-    return operator(
-        "rewm_rate",
-        input,
-        half_life=half_life,
-        window_size=window_size,
-        closed=closed,
-        min_samples=min_samples,
-        partial=partial,
+def _forward(kind: str) -> Callable[..., pl.Expr]:
+    """The old name of ``ewm_<kind>(reverse=True)``, forwarded with a
+    deprecation warning."""
+    new = {"mean": ewm_mean, "sum": ewm_sum, "rate": ewm_rate}[kind]
+
+    @deprecated_alias(f"po.rewm_{kind}", f"po.ewm_{kind}(..., reverse=True)")
+    def old(
+        input: str | pl.Expr,
+        *,
+        half_life: float | Duration,
+        window_size: float | Duration,
+        closed: Literal["right", "left", "both", "none"] = "right",
+        min_samples: int = 1,
+        partial: Literal["keep", "null", "drop"] | None = None,
+    ) -> pl.Expr:
+        return new(
+            input,
+            half_life=half_life,
+            window_size=window_size,
+            closed=closed,
+            min_samples=min_samples,
+            partial=partial,
+            reverse=True,
+        )
+
+    old.__name__ = old.__qualname__ = f"rewm_{kind}"
+    old.__doc__ = (
+        f"Renamed :func:`ewm_{kind}` with ``reverse=True``: each call raises a "
+        ":class:`~polars_online.PolarsOnlineDeprecationWarning`, then gives that."
     )
+    return old
+
+
+rewm_mean = _forward("mean")
+rewm_sum = _forward("sum")
+rewm_rate = _forward("rate")
 
 
 def ewm_var(
     input: str | pl.Expr,
     *,
-    half_life: Any,
-    window_size: Any = None,
-    closed: str = "right",
+    half_life: float | Duration,
+    window_size: float | Duration | None = None,
+    closed: Literal["right", "left", "both", "none"] = "right",
     min_samples: int = 1,
-    partial: str | None = None,
+    partial: Literal["keep", "null", "drop"] | None = None,
     bias: bool = False,
 ) -> pl.Expr:
     """The variance of ``input`` about :func:`ewm_mean`, under the mean's own
@@ -410,11 +435,11 @@ def ewm_var(
 def ewm_std(
     input: str | pl.Expr,
     *,
-    half_life: Any,
-    window_size: Any = None,
-    closed: str = "right",
+    half_life: float | Duration,
+    window_size: float | Duration | None = None,
+    closed: Literal["right", "left", "both", "none"] = "right",
     min_samples: int = 1,
-    partial: str | None = None,
+    partial: Literal["keep", "null", "drop"] | None = None,
     bias: bool = False,
 ) -> pl.Expr:
     """The square root of :func:`ewm_var`, as Polars' ``ewm_std`` is the root

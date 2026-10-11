@@ -202,7 +202,11 @@ fn field(out: &DataFrame, name: &str) -> Series {
 fn events(out: &DataFrame, event: Event) -> Vec<usize> {
     match event {
         Event::Coef => {
-            let coef: Vec<Option<Vec<u64>>> = field(out, "coef")
+            // An `Array` as the bank writes it, read through its list form.
+            let coef = field(out, "coef")
+                .cast(&DataType::List(Box::new(DataType::Float64)))
+                .unwrap();
+            let coef: Vec<Option<Vec<u64>>> = coef
                 .list()
                 .unwrap()
                 .amortized_iter()

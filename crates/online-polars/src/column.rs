@@ -171,17 +171,48 @@ impl F64Column {
     /// The same column as the class names, for an `ew_class` prediction:
     /// every set value is a position in `classes` by construction (the model
     /// emits the argmax over its own classes), and the null rows stay null.
-    pub(crate) fn finish_label_array(self, classes: &[String]) -> Utf8ViewArray {
-        let mut b = MutableBinaryViewArray::<str>::with_capacity(self.values.len());
-        for (i, &v) in self.values.iter().enumerate() {
-            b.push(
-                self.is_valid(i)
-                    .then(|| classes.get(v as usize).map(String::as_str))
-                    .flatten(),
-            );
-        }
-        b.into()
+    /// A dictionary over the classes in their order, which [`enum_metadata`]
+    /// on its field makes polars read as an `Enum` of them (task 244).
+    pub(crate) fn finish_label_array(self, classes: &[String]) -> DictionaryArray<u32> {
+        let keys = self.values.iter().enumerate().map(|(i, &v)| {
+            (self.is_valid(i) && v >= 0.0 && (v as usize) < classes.len()).then_some(v as u32)
+        });
+        let names: Vec<&str> = classes.iter().map(String::as_str).collect();
+        dict_array(keys, &names)
     }
+}
+
+/// A dictionary-encoded string array over `names`, one key a row, null
+/// where a row has none: what an `Enum` field is made of, with
+/// [`enum_metadata`] on its field. A key past `names` is null.
+pub(crate) fn dict_array(
+    keys: impl Iterator<Item = Option<u32>>,
+    names: &[&str],
+) -> DictionaryArray<u32> {
+    let keys: Vec<Option<u32>> = keys
+        .map(|k| k.filter(|&k| (k as usize) < names.len()))
+        .collect();
+    let validity: Bitmap =
+        MutableBitmap::from_trusted_len_iter(keys.iter().map(Option::is_some)).into();
+    let keys = PrimitiveArray::new(
+        ArrowDataType::UInt32,
+        keys.iter()
+            .map(|k| k.unwrap_or(0))
+            .collect::<Vec<u32>>()
+            .into(),
+        (validity.unset_bits() > 0).then_some(validity),
+    );
+    let mut values = MutableBinaryViewArray::<str>::with_capacity(names.len());
+    for n in names {
+        values.push(Some(*n));
+    }
+    let values: Utf8ViewArray = values.into();
+    let dtype = ArrowDataType::Dictionary(
+        IntegerType::UInt32,
+        Box::new(ArrowDataType::Utf8View),
+        false,
+    );
+    DictionaryArray::try_new(dtype, keys, Box::new(values)).expect("every key is a name")
 }
 
 /// A column of small codes as a dictionary-encoded string array, `0` null:

@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from polars_version import needs_polars
 
 TIER = "essential"
 
@@ -60,11 +61,15 @@ class TestCoefFields:
             "position",
             "name",
             "target",
+            "instance",
             "half_life",
             "lam",
             "ridge",
             "feature_set",
             "penalty",
+            "cluster",
+            "state",
+            "class",
             "term",
         ]
         # Per instance: targets x combos slots, each the full term vector.
@@ -118,10 +123,10 @@ class TestCoefFields:
             min_weight=2.0,
         )
         assert po.spec.coef_fields(lasso)["name"].to_list() == [
-            "coef_y_intercept__l1",
-            "coef_y_x0__l1",
-            "coef_y_intercept__l0.1",
-            "coef_y_x0__l0.1",
+            "coef_y_intercept__p1",
+            "coef_y_x0__p1",
+            "coef_y_intercept__p0.1",
+            "coef_y_x0__p0.1",
         ]
         bare = po.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=50.0, min_weight=2.0, fit_intercept=False
@@ -135,7 +140,15 @@ class TestCoefFields:
         cf = po.spec.coef_fields(GRID)
         ci = po.spec.coef_index(GRID)
         want = cf.filter(pl.col("field") == "coef@h50").select(
-            pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "penalty", "term"
+            "position",
+            "target",
+            "ridge",
+            "feature_set",
+            "penalty",
+            "cluster",
+            "state",
+            "class",
+            "term",
         )
         assert ci.equals(want)
 
@@ -171,7 +184,7 @@ class TestUnnest:
             assert flat[field].equals(nested["ols"].struct.field(field))
         coef = nested["ols"].struct.field("coef")
         for pos, term in enumerate(["intercept", "x0", "x1"]):
-            assert flat[f"coef_y_{term}"].equals(coef.list.get(pos).alias(f"coef_y_{term}"))
+            assert flat[f"coef_y_{term}"].equals(coef.arr.get(pos).alias(f"coef_y_{term}"))
 
     def test_eager_and_function_forms_agree(self):
         nested = _frame().online.fit_predict([OLS, GRID])
@@ -295,3 +308,48 @@ def test_named_coefficients_predict_the_next_row():
         np.testing.assert_allclose(got[ok], want[ok], rtol=1e-9, atol=1e-9, err_msg=pred["field"])
         checked += 1
     assert checked == 2 * 4 * 2
+
+
+class TestSeparator:
+    """``separator=``, as Polars 2.0's ``DataFrame.unnest(separator=)``: each
+    column is named ``{spec}{separator}{name}``, so two specs that write a
+    field of one name unnest side by side (task 244, M-18 / C-10 / O-13)."""
+
+    A = po.spec.ewridge("a", targets=["y"], features=["x0"], half_life=50.0)
+    B = po.spec.ewridge("b", targets=["y"], features=["x1"], half_life=50.0)
+
+    def _out(self) -> pl.DataFrame:
+        return po.ModelBank([self.A, self.B]).fit_predict(_frame())
+
+    def test_two_specs_of_one_target_unnest_side_by_side(self):
+        out = self._out()
+        with pytest.raises(pl.exceptions.DuplicateError):
+            out.online.unnest([self.A, self.B])
+        flat = out.online.unnest([self.A, self.B], separator=".")
+        assert flat.columns[:7] == list(_frame().columns)
+        for name in ("a.pred_y", "a.coef_y_x0", "b.pred_y", "b.coef_y_x1", "b.support_coef_y_x1"):
+            assert name in flat.columns, name
+        lazy = out.lazy().online.unnest([self.A, self.B], separator=".").collect()
+        assert lazy.equals(flat)
+        assert po.unnest(out, [self.A, self.B], separator=".").equals(flat)
+        assert po.unnest(out.lazy(), [self.A, self.B], separator=".").collect().equals(flat)
+        # The values are the fields' own.
+        assert flat["a.pred_y"].equals(out["a"].struct.field("pred_y").alias("a.pred_y"))
+        with pytest.raises(TypeError, match="separator"):
+            out.online.unnest([self.A], separator=1)
+
+    @needs_polars("2.0.0", "DataFrame.unnest(separator=) is Polars 2.0's")
+    def test_the_names_are_polars_own(self):
+        """Every scalar field under the name Polars gives it; a ``coef``
+        list, which Polars keeps whole, as one column per coefficient under
+        the same prefix."""
+        out = self._out()
+        ours = out.online.unnest([self.A], separator="::")
+        theirs = out.unnest("a", separator="::")
+        scalar = [c for c in theirs.columns if c not in ("a::coef", "a::support_coef")]
+        assert ours.select(scalar).equals(theirs.select(scalar))
+        cov = po.spec.ew_cov("c", features=["x0", "x1"], half_life=50.0)
+        moments = po.ModelBank([cov]).fit_predict(_frame())
+        assert moments.online.unnest([cov], separator="_").equals(
+            moments.unnest("c", separator="_")
+        )

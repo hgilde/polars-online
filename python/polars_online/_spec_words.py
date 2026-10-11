@@ -1,5 +1,6 @@
 """The words a builder's parameter takes, read off its ``Literal``
-annotation, and the one refusal of a word outside them: a part of
+annotation, and the one refusal of a word outside them; and the parameters
+where infinity means something: a part of
 :mod:`polars_online._spec` moved to a file of its own, keeping that one
 under ``tests/test_repo_hygiene.py``'s 250 KB cap for a source file.
 """
@@ -96,3 +97,53 @@ def words_refusal(who: str, key: str, got: str, words: Sequence[str], hint: Any 
     # (`online_polars::RENAMED_VALUES`).
     renamed = f"; {got} was renamed {_RENAMED_WORDS[got]}" if got in _RENAMED_WORDS else ""
     return f"{who}: {key} must be {taken}; got {json.dumps(got)}{renamed}"
+
+
+# The parameters where ``inf`` means something: no decay, no ceiling, a
+# pinned coefficient, no clip, least squares (``huber_delta``), a step nothing
+# caps (``pa``'s ``c``), the argmin (``average_eta``). Rust parses these as
+# ``Num`` and ``validate`` takes them at ``inf``; everywhere else ``validate``
+# says ``finite``, and an infinity is refused here by name first, because
+# once it is inside the model's tagged union serde can only say `expected
+# f64`. The table was the fields whose Rust *type* admits ``inf``, which named
+# ``ridge`` and ``q``, both refused by ``validate``, and missed six that mean
+# something (review 2026-09-12, S27). Keyed by builder, since one name can be
+# a limit for one builder and no setting for another; ``"*"`` is the shared
+# parameters. tests/test_error_messages.py checks this table against the
+# Rust side.
+#: Where ``inf`` meant something until task 120 (2026-09-28), and the Rust
+#: side now refuses it with a message that names what to write instead:
+#: ``half_life = "inf"`` or a finite cap, and ``"reset"``. The builder passes
+#: these to it rather than say only "must be finite".
+_INF_REFUSED_BY_RUST = frozenset({"gap_cap", "session_gap"})
+
+_INF_OK: dict[str, frozenset[str]] = {
+    "*": frozenset(
+        {
+            "half_life",
+            "min_weight",
+            "average_eta",
+            # The noise gate at `inf` is off: no ratio is above it.
+            "max_error_inflation",
+            # A window budget at `inf` is no bound (`{"thin": inf}`).
+            "window_budget",
+            # A diagnostic's memory at `inf` is the run-once form (task 221).
+            "calibration_half_life",
+            "breaks_half_life",
+            "robust_se_half_life",
+            "specification_half_life",
+            "tails_half_life",
+            "influence_half_life",
+            "feature_health_half_life",
+        }
+    ),
+    "ewridge": frozenset({"long_half_life"}),
+    "lasso": frozenset({"select_half_life"}),
+    "kalman": frozenset({"coef_half_life", "revert_half_life"}),
+    "huber": frozenset({"huber_delta"}),
+    "sgd": frozenset({"clip_gradient", "coef_min", "coef_max", "huber_delta"}),
+    "pa": frozenset({"c", "coef_min", "coef_max"}),
+    "holt": frozenset({"trend_half_life"}),
+    # No bound on the bins' memory (docs/PLAN.md task 131).
+    "marginal": frozenset({"bin_budget"}),
+}

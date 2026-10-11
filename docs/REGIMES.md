@@ -136,7 +136,7 @@ the streams switch.
 | the filter | `k = 2`, `half_life = 4000`, and `precision_prior = 0.01` except in the last row |
 | seeded from the rows | `warm_rows = 500` and `transition_prior = 200` |
 | started from the truth | the true transition matrix, zero means, and covariances built from the true correlations and each seed's sample variances |
-| the score | the share of rows in state 0, read as `filtered_1` at most 0.5, with a row that has no `filtered_1` counted there. The script takes the better of the two ways to match states to the truth, which here is this share |
+| the score | the share of rows in state 0, read as `filtered_state1` at most 0.5, with a row that has no `filtered_state1` counted there. The script takes the better of the two ways to match states to the truth, which here is this share |
 
 | how it was started | mean share in the true state | worst seed |
 |---|---|---|
@@ -167,7 +167,7 @@ entry](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 The learned transition matrix is not read back through the public API, so
 what is scored is the state path, which is what a caller reads. The
-matrix's decayed counts are in the state that `ModelBank.to_json()`
+matrix's decayed counts are in the state that `ModelBank.write_json()`
 exports, but no method returns the matrix.
 
 > **Measured 2026-09-06:** the seeded row read 0.559, or 56 % (worst seed
@@ -187,7 +187,7 @@ which agrees with either state within a row or two.
 |---|---|
 | streams | 8 seeds of `po.sim.regimes` with `durations=[3, 3]`: two series, 12 blocks of 400 rows, 4799 returns each, switching at rows 1200, 2400 and 3600, 24 switches in all |
 | the filter | as above, but the true start's transition is the per-row hazard `1/1200` |
-| the score | the share of rows in the true state, a row with no `filtered_1` counted as a miss; and the rows after each switch until the filter holds the new state for 20 rows |
+| the score | the share of rows in the true state, a row with no `filtered_state1` counted as a miss; and the rows after each switch until the filter holds the new state for 20 rows |
 
 | how it was started | mean share in the true state | worst seed | median rows to hold the new state | longest | switches never held |
 |---|---|---|---|---|---|

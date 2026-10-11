@@ -134,9 +134,18 @@ class TestEveryRowIsRead:
         idx = np.arange(N)
         nulls = int((idx % 10 == 3).sum())
         nans = int(((idx % 10 != 3) & (idx % 25 == 7)).sum())
-        assert (a["rows"], a["null"], a["nan"], a["count"]) == (N, nulls, nans, N - nulls - nans)
+        assert (a["rows_fed"], a["null_count"], a["nan_count"], a["count"]) == (
+            N,
+            nulls,
+            nans,
+            N - nulls - nans,
+        )
         assert frame["a"].null_count() == nulls, "Polars counts the nulls alone"
-        assert (c["pos_inf"], c["null"], c["nan"]) == (int((idx % 100 == 50).sum()), 0, 0)
+        assert (c["pos_inf_count"], c["null_count"], c["nan_count"]) == (
+            int((idx % 100 == 50).sum()),
+            0,
+            0,
+        )
         # Every row reached the audit, where a model with `a` as a feature
         # skips each null and NaN.
         model = po.spec.ewridge("m", targets=["b"], features=["a"], half_life=50.0)
@@ -212,8 +221,8 @@ class TestTheChunkingAndTheState:
         reset = _fed(_spec(session="s", session_gap="reset"), frame)
         assert reset.summary()["resets"][0] == 2
         p, r = plain.audit(), reset.audit()
-        assert p.select("rows", "null", "nan", "count", "mean").equals(
-            r.select("rows", "null", "nan", "count", "mean")
+        assert p.select("rows_fed", "null_count", "nan_count", "count", "mean").equals(
+            r.select("rows_fed", "null_count", "nan_count", "count", "mean")
         )
         steps = plain.audit(table="clock")["steps"][0], reset.audit(table="clock")["steps"][0]
         assert steps == (N - 1, N - 3)
@@ -230,9 +239,9 @@ class TestTheClock:
         bank = _fed(po.spec.audit("a", columns=["x"], clock="t", gap_cap=30.0), df)
         row = bank.audit(table="clock").row(0, named=True)
         assert (row["steps"], row["gaps"], row["regular"]) == (5, 1, 4)
-        assert (row["max_step"], row["step_mean"], row["step_std"]) == (998.0, 1.0, 0.0)
+        assert (row["step_max"], row["step_mean"], row["step_std"]) == (998.0, 1.0, 0.0)
         schema = bank.audit(table="clock").schema
-        assert all(schema[c] == pl.Float64 for c in ("step_mean", "step_std", "max_step"))
+        assert all(schema[c] == pl.Float64 for c in ("step_mean", "step_std", "step_max"))
 
     @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
     def test_a_temporal_clock_reads_its_steps_as_durations(self, unit):
@@ -246,10 +255,10 @@ class TestTheClock:
         )
         spec = po.spec.audit("a", columns=["x"], clock="t", gap_cap="1h")
         clock = _fed(spec, df).audit(table="clock")
-        for c in ("step_mean", "step_std", "max_step"):
+        for c in ("step_mean", "step_std", "step_max"):
             assert clock.schema[c] == pl.Duration(unit), (c, clock.schema)
         row = clock.row(0, named=True)
-        assert row["max_step"] == timedelta(hours=2, minutes=5)
+        assert row["step_max"] == timedelta(hours=2, minutes=5)
         assert row["step_mean"] == timedelta(minutes=5)
         assert row["step_std"] == timedelta(0)
         assert (row["gaps"], row["regular"]) == (1, 8)
@@ -270,7 +279,7 @@ class TestTheClock:
         assert (row["clock_backwards"], row["resets"]) == (1, 1)
         assert set(bank.check()["code"]) >= {"step_back", "resets"}
         clock = bank.audit(table="clock").row(0, named=True)
-        assert (clock["steps"], clock["max_step"]) == (5, 1.5)
+        assert (clock["steps"], clock["step_max"]) == (5, 1.5)
 
 
 class TestGroupsMerge:
@@ -281,7 +290,17 @@ class TestGroupsMerge:
         frame = _frame()
         pooled = _fed(_spec(group="g"), frame).audit(pooled=True)
         whole = _fed(_spec(), frame).audit()
-        exact = ["column", "rows", "null", "nan", "pos_inf", "count", "min", "max", "distinct"]
+        exact = [
+            "column",
+            "rows_fed",
+            "null_count",
+            "nan_count",
+            "pos_inf_count",
+            "count",
+            "min",
+            "max",
+            "n_unique",
+        ]
         assert pooled.select(exact).equals(whole.select(exact))
         for col in ("mean", "std", "skew", "kurtosis"):
             np.testing.assert_allclose(pooled[col], whole[col], rtol=1e-10)

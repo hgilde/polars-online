@@ -8,6 +8,7 @@ use crate::{OnlineModel, State, StateError};
 
 fn cfg(k: usize, stats: Vec<EwCovStat>) -> EwCovCfg {
     EwCovCfg {
+        bias: false,
         n_features: k,
         decay: crate::Decay::Halflife(10.0),
         stats,

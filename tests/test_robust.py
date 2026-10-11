@@ -606,7 +606,7 @@ class TestTheBandFactorIsState:
                 for v in node:
                     walk(v)
 
-        walk(json.loads(bank.to_json()))
+        walk(json.loads(bank.write_json()))
         assert len(found) == 1, found
         factor = found[0]["factor"]
         assert factor["order"] == 2 and len(factor["lower"]) == 3, factor

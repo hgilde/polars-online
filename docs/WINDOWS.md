@@ -32,9 +32,9 @@ the clock's units: numbers on a numeric clock, and durations (`"10s"`, a
 | operator | the window of row *t* | what it computes |
 |---|---|---|
 | `po.ewm_mean(x, half_life=, window_size=)` | the rows at or before *t*, less than `window_size` older; with no `window_size`, every row since the last break | the time-weighted mean, as Polars' `ewm_mean_by` computes it: each value is held over the interval ending at its row and weighed by that interval's decayed time, so a burst of rows does not outweigh a quiet period. A row whose `x` is null is skipped, as `ewm_mean_by` skips a null; so is one whose `x` is NaN, infinite or beyond 1e100. Such a row gets the window's value as it stands, where `ewm_mean_by` gives it null |
-| `po.rewm_mean(x, half_life=, window_size=)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
-| `po.ewm_sum(x, ...)`, `po.rewm_sum(x, ...)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing, and gets the window's sum as it stands, where `ewm_sum_by` gives it null |
-| `po.ewm_rate(x, ...)`, `po.rewm_rate(x, ...)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing, and gets the window's rate as it stands |
+| `po.ewm_mean(x, half_life=, window_size=, reverse=True)` | the rows after *t*, at most `window_size` after it; `window_size` is required | the mirror of `ewm_mean`: each value is held until the next row |
+| `po.ewm_sum(x, ...)`, `po.ewm_sum(x, ..., reverse=True)` | as for the mean in the same direction | `Σ 0.5 ** (age / half_life) · x`, each row counted once at its own time, as Polars' `ewm_sum_by` computes it on distinct stamps; at a repeated stamp every row carries the stamp's total, where `ewm_sum_by`'s is a running sum. A row whose `x` is null, NaN, infinite or beyond 1e100 adds nothing, and gets the window's sum as it stands, where `ewm_sum_by` gives it null |
+| `po.ewm_rate(x, ...)`, `po.ewm_rate(x, ..., reverse=True)` | as for the mean in the same direction | the sum divided by the decayed time the window covers: a quantity per unit of clock. A row whose `x` is null adds nothing, and gets the window's rate as it stands |
 | `po.ewm_var(x, ...)`, `po.ewm_std(x, ...)` | as for `po.ewm_mean`; they look back only | the variance about `po.ewm_mean`, each value weighed as the mean weighs it, and its square root. With `bias=False`, the default, the variance is corrected for the weights' number and inequality as Polars' `ewm_var` corrects it, so a window that one row's weight fills is null. On a clock that steps by 1 a row, with `half_life` in rows, they are Polars' `ewm_var` and `ewm_std` with `adjust=False` (Polars before 1.44 gave the first row 0.0 under `bias=False` where it now gives null, as these do). A window that holds one value gives 0 exactly |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
@@ -112,7 +112,7 @@ stamps = pl.DataFrame({"t": [0.0, 1.0, 1.0, 2.0, 3.5], "one": 1.0})
 counts = po.stream.with_windows(
     stamps,
     **{f"back_{c}": po.ewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c) for c in ["right", "left"]},
-    **{f"ahead_{c}": po.rewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c) for c in ["right", "left"]},
+    **{f"ahead_{c}": po.ewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c, reverse=True) for c in ["right", "left"]},
     clock="t", gap_cap=10.0,
 )
 show = lambda v: "null" if v is None else f"{v:.0f}"
@@ -267,12 +267,12 @@ from datetime import timedelta
 
 notional = pl.col("price") * pl.col("quantity")
 buys = pl.when(pl.col("side") == "buy")
-next_minute = dict(half_life="10s", window_size="1m")
+next_minute = dict(half_life="10s", window_size="1m", reverse=True)
 windowed = po.stream.with_windows(
     trades,
     mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),  # the last minute's time-weighted mid, less the mid now
-    fwd_vwap=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute),      # the next minute's trades, weighted most on the next one
-    fwd_buy_vwap=po.rewm_sum(buys.then(notional), **next_minute) / po.rewm_sum(buys.then("quantity"), **next_minute),   # the same, buys only
+    fwd_vwap=po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute),      # the next minute's trades, weighted most on the next one
+    fwd_buy_vwap=po.ewm_sum(buys.then(notional), **next_minute) / po.ewm_sum(buys.then("quantity"), **next_minute),   # the same, buys only
     clock="ts", gap_cap="5m", group="symbol",
 )
 print(windowed.columns)
@@ -287,7 +287,7 @@ by_hand = (weight * ahead["price"] * ahead["quantity"]).sum() / (weight * ahead[
 print(f"row 1000: {ahead.height} trades in the next minute; fwd_vwap {row['fwd_vwap']:.6f}, by hand {by_hand:.6f}")
 
 (pl.scan_parquet("trades.parquet")
-    .online.with_windows(fwd_vwap=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute),
+    .online.with_windows(fwd_vwap=po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute),
                          clock="ts", gap_cap="5m", group="symbol")
     .sink_parquet("with_windows.parquet"))     # streams, holding about one window of rows
 ```
@@ -350,8 +350,8 @@ target, put its expression in the spec's `targets`. The bank then computes
 the window itself, one set per group on the spec's clock, so the groups may
 interleave in time.
 
-**Give a target expression an operator that looks ahead (`po.rewm_mean`,
-`po.rewm_sum` or `po.rewm_rate`) and a name, with `.alias()`.** The alias
+**Give a target expression an operator that looks ahead (`po.ewm_mean`,
+`po.ewm_sum` or `po.ewm_rate` with `reverse=True`) and a name, with `.alias()`.** The alias
 is used to name the output fields: `.alias("fwd_edge")` gives
 `pred_fwd_edge`. Without an operator that looks ahead, the target is known
 at its own row, and the spec builder raises `ValueError`. Make such a
@@ -398,8 +398,8 @@ trends = pl.scan_parquet("trades.parquet").online.with_windows(    # the feature
     **clock,
 )
 notional = pl.col("price") * pl.col("quantity")
-next_minute = dict(half_life="10s", window_size="1m")
-fwd_edge = (po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute) - pl.col("mid")).alias("fwd_edge")   # the target: the next minute's VWAP, less the mid
+next_minute = dict(half_life="10s", window_size="1m", reverse=True)
+fwd_edge = (po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute) - pl.col("mid")).alias("fwd_edge")   # the target: the next minute's VWAP, less the mid
 edge = po.spec.ewridge("edge", targets=[fwd_edge], features=["trend_5s", "trend_30s"],
                        half_life="30m", embargo="2m", **clock)   # each row learned two minutes later, once its minute is known
 fitted = trends.online.fit_predict([edge]).collect()      # trades, the two trends, and the column edge
@@ -521,8 +521,8 @@ as a step back.
 This code uses `trades` and `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
-next_minute = dict(half_life="10s", window_size="1m")
-vwap = dict(fwd_vwap=po.rewm_sum(pl.col("price") * pl.col("quantity"), **next_minute) / po.rewm_sum("quantity", **next_minute))
+next_minute = dict(half_life="10s", window_size="1m", reverse=True)
+vwap = dict(fwd_vwap=po.ewm_sum(pl.col("price") * pl.col("quantity"), **next_minute) / po.ewm_sum("quantity", **next_minute))
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
 one_run = po.stream.with_windows(trades, **vwap, **clock)            # one run
 

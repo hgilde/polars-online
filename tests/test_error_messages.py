@@ -1171,7 +1171,7 @@ def test_gap_cap_without_a_clock_is_refused_by_name():
         po.spec.ew_cov("c", features=["x0", "y"], half_life=10.0, lags=[1], gap_cap=0.5)
     with pytest.raises(ValueError, match="with_windows: gap_cap needs clock"):
         po.stream.with_windows(
-            _df(), f=po.rewm_sum("x0", half_life=10.0, window_size=3.0), gap_cap=0.5
+            _df(), f=po.ewm_sum("x0", half_life=10.0, window_size=3.0, reverse=True), gap_cap=0.5
         )
     # With the clock, the same cap is a cap.
     po.spec.ewridge("m", **BASE, clock="t", gap_cap=0.5)
@@ -1463,7 +1463,7 @@ def test_a_clock_step_past_the_largest_double_is_refused_by_row():
     with pytest.raises(ValueError) as exc:
         bank.fit_predict(frame)
     assert 'clock column "t" steps from -1e308 to 1e308 at row 1' in str(exc.value)
-    assert bank.rows_fed() == 0
+    assert bank.rows_fed == 0
 
 
 def test_a_mismatched_spec_on_load_is_named():

@@ -238,8 +238,37 @@ fn save_err(path: &str, e: std::io::Error) -> PyErr {
 fn run_err(e: &PolarsError) -> PyErr {
     match e {
         PolarsError::IO { error, .. } => os_err(error.kind(), e.to_string()),
+        _ => bank_err(e),
+    }
+}
+
+/// A bank's error as Python sees it: a column a spec reads that the frame
+/// has not got is `polars_online.ColumnNotFoundError`, which is both
+/// Polars' `ColumnNotFoundError` and a `ValueError`, with the message alone
+/// (a `PolarsError`'s display puts `not found: ` in front of it); every
+/// other refusal is the `ValueError` with the message (task 244, M-1).
+fn bank_err(e: &PolarsError) -> PyErr {
+    match e {
+        PolarsError::ColumnNotFound(msg) => column_not_found(msg.to_string()),
         _ => PyValueError::new_err(e.to_string()),
     }
+}
+
+/// `polars_online.ColumnNotFoundError(msg)`. The class is defined in Python
+/// (`_errors.py`), since it derives from Polars' Python class; should the
+/// module not import, the `ValueError` the class derives from is raised
+/// instead, with the same message.
+fn column_not_found(msg: String) -> PyErr {
+    Python::attach(|py| {
+        match py
+            .import("polars_online._errors")
+            .and_then(|m| m.getattr("ColumnNotFoundError"))
+            .and_then(|c| Ok(c.cast_into::<pyo3::types::PyType>()?))
+        {
+            Ok(cls) => PyErr::from_type(cls, msg),
+            Err(_) => PyValueError::new_err(msg),
+        }
+    })
 }
 
 /// The error for a bank reached from a second thread while `fit_predict` is
@@ -371,7 +400,7 @@ impl PyModelBank {
         let cols = slf
             .py()
             .detach(|| bank.fit_predict_from_with(&df, row_base, learn_only))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(cols
             .into_iter()
             .map(|c| PySeries(c.take_materialized_series()))
@@ -390,7 +419,7 @@ impl PyModelBank {
         let cols = slf
             .py()
             .detach(|| bank.predict_from(&df, row_base))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(cols
             .into_iter()
             .map(|c| PySeries(c.take_materialized_series()))
@@ -420,7 +449,7 @@ impl PyModelBank {
                 let chunk = chunk_from_frame(&df, bank.specs())?;
                 bank.fit_predict_arrow(&chunk)
             })
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(wrap_arrow(bank.specs(), arrays))
     }
 
@@ -436,7 +465,7 @@ impl PyModelBank {
                 let chunk = chunk_from_frame(&df, bank.specs())?;
                 bank.predict_arrow(&chunk)
             })
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(wrap_arrow(bank.specs(), arrays))
     }
 
@@ -1039,26 +1068,27 @@ fn validate_spec(spec_json: &str) -> PyResult<()> {
     spec.check().map_err(PyValueError::new_err)
 }
 
-/// The output index as JSON: one object per field with the machine values its
-/// name encodes (kind, target, half-life/lam, ridge, feature_set, penalty,
-/// quantile, columns). JSON keeps the FFI trivial; the Python side turns it
-/// into a DataFrame.
+/// The output index as a frame: one row per field with the machine values
+/// its name encodes (`online_polars::output_index_frame`). A frame rather
+/// than JSON, which has no infinity: an infinite half-life read null.
 #[pyfunction]
-fn spec_output_index(spec_json: &str) -> PyResult<String> {
+fn spec_output_index(spec_json: &str) -> PyResult<PyDataFrame> {
     let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.check().map_err(PyValueError::new_err)?;
-    serde_json::to_string(&online_polars::output_index(&spec))
+    online_polars::output_index_frame(&spec)
+        .map(PyDataFrame)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Every coefficient of a spec's output as JSON: the `coef` field and
+/// Every coefficient of a spec's output as a frame: the `coef` field and
 /// position it sits at, the column name `unnest` gives it, and the machine
-/// values (target, half-life/lam, ridge, feature_set, penalty, term).
+/// values (`online_polars::coef_fields_frame`).
 #[pyfunction]
-fn spec_coef_fields(spec_json: &str) -> PyResult<String> {
+fn spec_coef_fields(spec_json: &str) -> PyResult<PyDataFrame> {
     let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.check().map_err(PyValueError::new_err)?;
-    serde_json::to_string(&online_polars::coef_fields(&spec))
+    online_polars::coef_fields_frame(&spec)
+        .map(PyDataFrame)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 

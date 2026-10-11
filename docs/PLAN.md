@@ -9774,6 +9774,63 @@ tick, and that the series holding it up has a count near 1.
       *Built as five workers* (`task244-{out,spec,bank,cli,bias}`), each a
       disjoint part; schema numbers and regenerated fixtures reconciled at
       the merge.
+- [ ] 245. **Faster dev iterations** -- the user, 2026-10-11: "Iterations
+      are slow now due to large number of tests and other things, what
+      should we do to speed up dev iterations", then "Put it on the list
+      after the current work is done" (after task 244 and review 7's fix
+      batches merge and gate). Then (the user, 2026-10-11): "After
+      the current rounds clean up worktrees, cargo cache, branches then
+      implement 245" -- every agent worktree and merged branch removed and
+      `cargo clean` run first, so the "before" timings start from a cold
+      build and a clean machine. Then "After 245 push" (the user,
+      2026-10-11): `main` is pushed once 245 is merged, on a full gate of
+      the exact sha and with no bug open. Measured 2026-10-11: 19 agent worktrees,
+      each with its own `target/` of 20-25 GB, each compiling Polars from
+      scratch twice (debug for `cargo test`, `release` -- thin LTO,
+      `codegen-units = 1` -- for the wheel); load average 31 on 14 cores
+      with eight agents and the other project's jobs; the full gate 469 s
+      (cargo test 185 s, mostly compiling the test binaries; pytest 273 s
+      on one process), the essentials 114 s on one process. The plan, each
+      measured before and after on one commit, the full gate run both ways
+      to show nothing moved:
+      (1) workers run the tests for what they touched plus the essentials,
+      the full tier once per merge wave on `main`, the full gate before
+      every push as now; (2) at most about four concurrent agents;
+      (3) `sccache` as `RUSTC_WRAPPER`, so a worktree reuses compiled
+      crates by content hash (a shared `target/` clobbers the main build,
+      so it is not the answer) -- a dev tool on the user's machine, not
+      linked into the wheel or CLI: **install approved by the user,
+      2026-10-11** (installed then with `cargo install sccache --version
+      0.18.0 --locked --no-default-features`, a native arm64 build: the
+      machine's Homebrew is the Intel prefix with a core tap 4.5 years old,
+      which offers 0.3.0; it is not turned on until this task); (4) a `dev-wheel` profile (release without
+      LTO, many codegen units, incremental) for `maturin develop` in
+      worktrees and the inner loop, the shipped wheel, CI and the pre-push
+      gate keeping `release`, kept only if the golden tests show the bits
+      unchanged; (5) `pytest-xdist` and `cargo-nextest` (test-only), the
+      memory and timing tests (`test_ffi_memory`, the timed recipes) in a
+      serial group; (6) `scripts/quick.sh` mapping changed paths to their
+      test files for the loop inside a task.
+- [x] 246. **The mutants run's headroom** -- the user, 2026-10-11: "Ensure
+      that the GitHub mutants run has plenty of headroom not to fail its
+      next run", then "Can we just run future mutants with a memory limit
+      rather than having to watch and run on our machine?" The push of
+      `5cb8f7e` (run 37945116563) lost 8 of 111 shards to "The runner has
+      received a shutdown signal", 12 to 81 minutes in, well inside their
+      limits; reproducing the deal showed every one was dealt `audit.rs`'s
+      `Moments::rescale`/`add`/`merge` mutants first or early, so a mutant
+      ran the runner out of memory, and those shards' outcomes never
+      uploaded (task 234's "ran complete" was wrong on that count). *Done*:
+      every mutant's test processes run under `prlimit --data` as cargo's
+      test runner, 6 GiB at `-j 2` (changed lines) and 3 GiB at `-j 4`
+      (weekly), 12 GiB of the runner's 16 either way, against a measured
+      peak of 497 MiB (online-core's largest test binary, extended tier,
+      four test threads); the changed lines' stop 300 minutes inside 330
+      (the slowest shard of that push took 98), the weekly's 325 inside 350.
+      Held by `TestMutationTesting::test_every_mutants_test_process_is_capped_in_memory`
+      and `..._stops_with_room_before_its_job_is_killed` (both fail on the
+      old workflow). The next push lists 418 mutants at `6f87839` (about 14
+      shards), before task 244 and review 7's fixes add theirs.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
@@ -14146,7 +14203,7 @@ DIAGNOSTICS.md:226 and a `stream.rs` comment), E-2 (two guides list three
 `withheld_reason` values), E-3 (fourteen `po.gbdt` refusals untested).
 
 **Fixed, one right answer:** D-1..D-3 (`9b20cc5`); A-1, A-2, E-2
-(`review7-fix1`); C-1 (a `ref` built here records each feature's Enum
+(`review7-fix1`, schema 61; merged with fix3 2026-10-11); C-1 (a `ref` built here records each feature's Enum
 categories and refuses a mismatch by name), C-2, C-3, E-3 and `in_memory=1`
 (`review7-fix2`; stopped once by a permission prompt, resumed on the user's
 "Resume"); merged 2026-10-11, full tier 6302 passed).
@@ -14156,10 +14213,10 @@ worried about doing more work now and want the best outcomes"; the fixes
 delegated at the user's word to Opus at high effort): A-3 (a) the window's
 own form of the null, derived in closed form and held to spread 1.0 (what a
 window beside a decay reads is measured and stated); E-1 (a) keep both
-clocks, state them, test holt's two rows (`review7-fix3`); C-4 (b) weights
+clocks, state them, test holt's two rows (`review7-fix3`); done and merged 2026-10-11: `cusum_null_window`, a closed form held to quadrature at 9.7e-5, the window form beside a decay too, spread 1.00-1.02; holt's notice at row 268 and first diagnostic at 866); C-4 (b) weights
 carried into the sample and weighted quantiles, so the cuts are XGBoost's,
 plus the docstring sentence for LightGBM's unweighted binning
-(`review7-fix5`, after fix2); B-D1 the behaviour stays (the pairwise
+(`review7-fix5`, after fix2); done and merged 2026-10-11: probe (a) 2 -> 14 of 15 cuts above 1.0 (XGBoost 14), heaviest bin 35.5% -> 6.26% (XGBoost 6.47%), unweighted cuts bit-identical, scoped mutants 122 caught and the last survivor closed by hand); B-D1 the behaviour stays (the pairwise
 convention), one sentence in GRAM.md; the README's *Versions* rewritten for
 1.x beside the user's 1.0 note (`review7-fix4`). Not changed: the Int64
 choice (Polars' data integer; its index type UInt32 is for positions), the

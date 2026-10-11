@@ -7,7 +7,7 @@ rather than skipped silently:
 
 - `rls` is predict-only for **all** targets when **any** target is null,
   because `P` is shared across targets (documented deviation, PLAN section 4.2).
-- `lasso` names its output slots by path point (`pred_y0__l0.1`), because the
+- `lasso` names its output slots by path point (`pred_y0__p0.1`), because the
   selected penalty is part of the output semantics.
 - `ftrl` predicts a probability, so it is fed a 0/1 target.
 """
@@ -224,6 +224,8 @@ class TestWarmup:
         assert fields, f"{model}: no coef field"
         for name in fields:
             c = out["m"].struct.field(name)
+            # An `Array` as wide as the layout; read as the list it holds.
+            c = c.cast(pl.List(pl.Float64))
             lengths = c.list.len().drop_nulls().to_list()
             assert lengths, f"{model}.{name}: every row is null"
             assert all(n > 0 for n in lengths), f"{model}.{name}: an empty coef list"

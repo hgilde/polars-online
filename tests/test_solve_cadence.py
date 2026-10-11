@@ -102,7 +102,7 @@ def test_in_steady_state_the_rule_is_the_clocks_cadence():
     solved = []
     for i in range(3000, 3200):
         bank.fit_predict(df.slice(i, 1))
-        model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]["EwRidge"]
+        model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]["EwRidge"]
         if model["rows_since_solve"] == 0:
             solved.append(i)
     assert model["cfg"]["solve_share"] == pytest.approx(math.log(2) / 50, rel=1e-12)

@@ -35,6 +35,8 @@ from polars_online._polars_online import (
 )
 from polars_online._renamed import removed_keywords, renamed_keywords
 from polars_online._spec_words import (
+    _INF_OK,
+    _INF_REFUSED_BY_RUST,
     _WORD_REASONS,
     _bad_word,
     _one_of,
@@ -231,56 +233,6 @@ def _describe(hint: Any, plural: bool = False) -> str:
 def _got(v: Any) -> str:
     r = repr(v)
     return f"{type(v).__name__} {r if len(r) <= 60 else r[:57] + '...'}"
-
-
-# The parameters where ``inf`` means something: no decay, no ceiling, a
-# pinned coefficient, no clip, least squares (``huber_delta``), a step nothing
-# caps (``pa``'s ``c``), the argmin (``average_eta``). Rust parses these as
-# ``Num`` and ``validate`` takes them at ``inf``; everywhere else ``validate``
-# says ``finite``, and an infinity is refused here by name first, because
-# once it is inside the model's tagged union serde can only say `expected
-# f64`. The table was the fields whose Rust *type* admits ``inf``, which named
-# ``ridge`` and ``q``, both refused by ``validate``, and missed six that mean
-# something (review 2026-09-12, S27). Keyed by builder, since one name can be
-# a limit for one builder and no setting for another; ``"*"`` is the shared
-# parameters. tests/test_error_messages.py checks this table against the
-# Rust side.
-#: Where ``inf`` meant something until task 120 (2026-09-28), and the Rust
-#: side now refuses it with a message that names what to write instead:
-#: ``half_life = "inf"`` or a finite cap, and ``"reset"``. The builder passes
-#: these to it rather than say only "must be finite".
-_INF_REFUSED_BY_RUST = frozenset({"gap_cap", "session_gap"})
-
-_INF_OK: dict[str, frozenset[str]] = {
-    "*": frozenset(
-        {
-            "half_life",
-            "min_weight",
-            "average_eta",
-            # The noise gate at `inf` is off: no ratio is above it.
-            "max_error_inflation",
-            # A window budget at `inf` is no bound (`{"thin": inf}`).
-            "window_budget",
-            # A diagnostic's memory at `inf` is the run-once form (task 221).
-            "calibration_half_life",
-            "breaks_half_life",
-            "robust_se_half_life",
-            "specification_half_life",
-            "tails_half_life",
-            "influence_half_life",
-            "feature_health_half_life",
-        }
-    ),
-    "ewridge": frozenset({"long_half_life"}),
-    "lasso": frozenset({"select_half_life"}),
-    "kalman": frozenset({"coef_half_life", "revert_half_life"}),
-    "huber": frozenset({"huber_delta"}),
-    "sgd": frozenset({"clip_gradient", "coef_min", "coef_max", "huber_delta"}),
-    "pa": frozenset({"c", "coef_min", "coef_max"}),
-    "holt": frozenset({"trend_half_life"}),
-    # No bound on the bins' memory (docs/PLAN.md task 131).
-    "marginal": frozenset({"bin_budget"}),
-}
 
 
 #: The model keys the Rust spec skips when they are absent
@@ -679,9 +631,11 @@ def target_columns(t: str | Target | FormulaTarget) -> list[str]:
     return [t["column"]]
 
 
-def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
+def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
     """A window expression as a target table (docs/PLAN.md task 104): named by
-    its alias, holding at least one operator looking ahead."""
+    its alias, holding at least one operator looking ahead. A bare column
+    under an alias, ``pl.col("p").alias("price")``, is Polars' spelling of
+    ``po.target("p", name="price")``, and is read as it (task 244, M-11)."""
     from polars_online import _formula
 
     tree = _formula.to_tree(expr)
@@ -690,6 +644,15 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
     if isinstance(tree, list) and tree and tree[0] == "alias":
         name = tree[2]
         tree = tree[1]
+    if isinstance(tree, list) and len(tree) == 2 and tree[0] == "col":
+        column = tree[1]
+        if name == column:
+            raise ValueError(
+                f"{who}: target pl.col({column!r}) is the column itself: write the string "
+                f"{column!r} in targets, or name it with .alias(...), which "
+                f'po.target({column!r}, name="...") also does'
+            )
+        return target(column, name=name)
     if name.startswith(_formula.PREFIX):
         raise ValueError(
             f"{who}: a target expression whose name would be an operator's needs a name: "
@@ -712,9 +675,9 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
         else:
             make = "it holds no operator at all, so add it as a column with Polars' with_columns"
         raise ValueError(
-            f"{who}: target {name!r} holds no operator looking ahead (rewm_mean, rewm_sum or "
-            f"rewm_rate), so it is known at its own row: {make}, and name the column as the "
-            f"target"
+            f"{who}: target {name!r} holds no operator looking ahead (ewm_mean, ewm_sum or "
+            f"ewm_rate with reverse=True), so it is known at its own row: {make}, and name the "
+            "column as the target"
         )
     return {"name": name, "formula": tree}
 
@@ -725,7 +688,9 @@ def target(column: str, *, name: str | None = None) -> Target:
 
     ``po.target("p", name="price")`` in a spec's ``targets`` has the model
     learn the column ``p`` as it is, and name its output fields after
-    ``price``: ``pred_price`` and the rest. A string target is the same as
+    ``price``: ``pred_price`` and the rest. Polars' own spelling of a column
+    under another name, ``pl.col("p").alias("price")``, is read in
+    ``targets`` as this same target. A string target is the same as
     ``po.target`` with no ``name``, and so is a ``name`` equal to the column.
     A target's column used as a feature is refused, whatever its name.
 
@@ -1381,13 +1346,19 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         ``penalty_selected``, ``selected``, a statistic's stem, and so on.
     ``target``
         The target the field is about, or null.
+    ``instance``
+        The instance the field belongs to, by its suffix, as
+        :meth:`~polars_online.ModelBank.coef`, :meth:`~polars_online.ModelBank.gram`
+        and :meth:`~polars_online.ModelBank.closed_groups` name it: ``"@h500"``,
+        or ``""`` for a single instance. Null on a field that chooses across
+        the instances (``emit_selected``, ``emit_averaged``) and on the clocks,
+        which are the spec's own.
     ``half_life``, ``lam``
         The decay of the instance the field belongs to, filled for a single
         instance as for a grid. ``half_life`` is the instance's half-life in
         clock units, in seconds under a duration (``300.0`` for ``"5m"``),
-        and null under ``lam`` or for an infinite half-life, since the table
-        travels as JSON, which has no infinity. ``lam`` is the spec's
-        ``lam``, and null under a half-life.
+        ``inf`` for an infinite one, and null under ``lam``. ``lam`` is the
+        spec's ``lam``, and null under a half-life.
     ``ridge``, ``feature_set``, ``penalty``
         The grid combination: the ridge value, the feature set's name, the lasso
         path point; null where the spec has no such grid.
@@ -1395,9 +1366,11 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         The level of a ``resid_quantiles`` or ``mahal_quantiles`` field.
     ``lag``
         The lag, in learned rows, of an ``ew_cov`` ``lag_corr`` field.
+    ``component``
+        The principal component of an ``ew_cov`` ``pc<j>_*`` field.
     ``state``
-        The hidden state an ``hmm`` posterior is about (``filtered_<s>``,
-        ``predicted_<s>``).
+        The hidden state an ``hmm`` posterior is about (``filtered_state<s>``,
+        ``predicted_state<s>``).
     ``class``
         The class an ``ew_class`` posterior is about (``p_<class>``).
     ``columns``
@@ -1415,16 +1388,29 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         Null where no column set describes the field, as for a prediction.
     ``dtype``
         The type the bank declares to polars before the first row is read:
-        ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum``
-        (``withheld_reason``), ``i64`` (every integer: a count, a state, a
-        row index, an id or a cluster label), or ``clock``
-        (``scored_clock`` and ``learned_clock``, in the clock column's own
-        type).
+        ``f64``, ``bool``, ``array[f64, <k>]`` (``coef`` and the fields laid
+        out like it, ``k`` wide, ``k`` being :func:`coef_index`'s height),
+        ``list[f64]`` (``micro``'s ``coef``, as long as its summaries), ``enum`` (an ``Enum`` of
+        its values in their order: ``withheld_reason``'s, an ``ew_class``
+        spec's ``classes`` for ``class``, a grid's slots for
+        ``selected_<t>``), ``i64`` (every integer: a count, a state, a row
+        index, an id or a cluster label), or ``clock`` (``scored_clock`` and
+        ``learned_clock``, in the clock column's own type).
 
-    This is how to reach a field without constructing its name; the string
-    grammar (:mod:`polars_online.spec`, "What a spec writes") stays an
-    implementation detail. No two rows hold the same values apart from
-    ``field``, so a filter on the other columns reaches each field alone:
+    **Every name follows one grammar, which is stable.** Read left to right, a
+    name is the kind (``pred``, ``abs_resid``, ``lag_corr``), then its
+    qualifier, then the target or the columns it is about, then the grid point
+    after ``__`` and the instance after ``@``. A qualifier is a number glued to
+    the letter that says what it is: ``q`` a quantile level, ``l`` a lag
+    (``abs_resid_q0.05_y``, ``mahal_q0.99``, ``lag_corr_l1_x0_x1``). The grid
+    point uses letters too, ``r`` a ridge and ``p`` a lasso penalty, and the
+    instance ``h``, a half-life. A thing the spec has several of is numbered
+    where it is named, glued to its word: ``pc0_var``, ``filtered_state0``,
+    ``coef_cluster0_x1``.
+
+    This table is how to reach a field without constructing its name. No two
+    rows hold the same values apart from ``field``, so a filter on the other
+    columns reaches each field alone:
 
     .. code-block:: python
 
@@ -1445,26 +1431,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     from the strings. ``ValueError`` for a spec that is not valid, as for
     :func:`output_fields`.
     """
-    rows = json.loads(spec_output_index(_json(spec)))
-    return pl.DataFrame(
-        rows,
-        schema={
-            "field": pl.String,
-            "kind": pl.String,
-            "target": pl.String,
-            "half_life": pl.Float64,
-            "lam": pl.Float64,
-            "ridge": pl.Float64,
-            "feature_set": pl.String,
-            "penalty": pl.Float64,
-            "quantile": pl.Float64,
-            "lag": pl.Int64,
-            "state": pl.Int64,
-            "class": pl.String,
-            "columns": pl.List(pl.String),
-            "dtype": pl.String,
-        },
-    )
+    return spec_output_index(_json(spec))
 
 
 def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
@@ -1487,8 +1454,14 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
         of that name in the same frame. :func:`deco`'s are
         ``coef_{slot}{instance}``, its slot ``rho`` or a block or pair of
         blocks (``coef_tech``, ``coef_tech_banks``).
-    ``target``, ``half_life``, ``lam``, ``ridge``, ``feature_set``, ``penalty``
-        As :func:`output_index` reports them.
+    ``target``, ``instance``, ``half_life``, ``lam``, ``ridge``, ``feature_set``, ``penalty``
+        As :func:`output_index` reports them. ``target`` is :func:`ew_class`'s
+        label column, a :func:`deco` slot, and null for a :func:`kmeans`
+        centre and an :func:`hmm` state, which belong to no target.
+    ``cluster``, ``state``, ``class``
+        The :func:`kmeans` centre, the :func:`hmm` state or the
+        :func:`ew_class` class whose coordinates the slot holds; null for
+        every other kind.
     ``term``
         ``"intercept"``, a feature name, ``"level"`` / ``"trend"`` for
         :func:`holt`, or ``"rho"`` for :func:`deco`.
@@ -1511,7 +1484,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
             & (pl.col("ridge") == 0.5)
             & (pl.col("half_life") == 500.0)
         ).row(0, named=True)
-        slope = out["m"].struct.field(row["field"]).list.get(row["position"])
+        slope = out["m"].struct.field(row["field"]).arr.get(row["position"])
 
     Rendered by the Rust code that names the fields, from the slot order the
     models lay the list out in. That order is the intercept first when the spec
@@ -1520,37 +1493,36 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     declare them.
     ``ValueError`` for a spec that is not valid, as for :func:`output_fields`.
     """
-    rows = json.loads(spec_coef_fields(_json(spec)))
-    return pl.DataFrame(rows, schema=_COEF_FIELDS_SCHEMA)
+    return spec_coef_fields(_json(spec))
 
 
-#: The columns of :func:`coef_fields`, in order.
-_COEF_FIELDS_SCHEMA: dict[str, Any] = {
-    "field": pl.String,
-    "position": pl.UInt32,
-    "name": pl.String,
-    "target": pl.String,
-    "half_life": pl.Float64,
-    "lam": pl.Float64,
-    "ridge": pl.Float64,
-    "feature_set": pl.String,
-    "penalty": pl.Float64,
-    "term": pl.String,
-}
+#: :func:`coef_index`'s columns, of a :func:`coef_fields` frame.
+_INDEX_COLUMNS = (
+    "position",
+    "target",
+    "ridge",
+    "feature_set",
+    "penalty",
+    "cluster",
+    "state",
+    "class",
+    "term",
+)
 
 
 def _index_columns(fields: pl.DataFrame) -> pl.DataFrame:
     """:func:`coef_index`'s columns of a :func:`coef_fields` frame: the one
     place they are chosen, so a bank with no coefficients lays out the empty
     frame :meth:`ModelBank.coef` gives with them too (review round 4, SF3)."""
-    return fields.select(
-        pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "penalty", "term"
-    )
+    return fields.select(_INDEX_COLUMNS)
 
 
 def _coef_index_schema() -> pl.Schema:
-    """The schema of every :func:`coef_index` frame, whatever the spec."""
-    return _index_columns(pl.DataFrame(schema=_COEF_FIELDS_SCHEMA)).schema
+    """The schema of every :func:`coef_index` frame, whatever the spec: the
+    empty layout of a spec with no coefficients."""
+    return _index_columns(
+        coef_fields(ew_cov("_", features=["_"], stats=["mean"], half_life=1.0))
+    ).schema
 
 
 def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
@@ -1560,11 +1532,12 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     terms in order. This maps ``position`` to ``target``, the combination's
     ``ridge``, ``feature_set`` and ``penalty``, and ``term`` --
     ``"intercept"``, a feature name, or ``"level"`` / ``"trend"`` for
-    :func:`holt`. For :func:`kmeans` the slots are the centres, so ``target``
-    reads ``"cluster0"``, ``"cluster1"``, ... and ``term`` is the feature whose
-    coordinate the position holds; for :func:`ew_class` and :func:`hmm` a class
-    or state likewise. For :func:`deco` a slot is ``rho``, or a block or a pair
-    of blocks, and ``term`` reads ``"rho"``.
+    :func:`holt`. For :func:`kmeans` the slots are the centres, so ``cluster``
+    reads ``0``, ``1``, ... and ``term`` is the feature whose coordinate the
+    position holds; for :func:`hmm` a state likewise, in ``state``, and for
+    :func:`ew_class` a class, in ``class``. For :func:`deco` a slot is
+    ``rho``, or a block or a pair of blocks, in ``target``, and ``term``
+    reads ``"rho"``.
 
     .. code-block:: python
 
@@ -1576,13 +1549,13 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         pos = ci.filter(
             (pl.col("target") == "y") & (pl.col("ridge") == 0.5) & (pl.col("term") == "x1")
         )["position"].item()
-        slope = out["m"].struct.field("coef@h100").list.get(pos)
+        slope = out["m"].struct.field("coef@h100").arr.get(pos)
 
     Every instance's list has this layout; :func:`coef_fields` is the same
     table per instance, with the field each list sits in and the column name
     each entry unnests to. ``ValueError`` for a spec that is not valid, as for
-    :func:`output_fields`. ``ValueError`` naming the kind, too, for a spec with
-    no fixed layout to index:
+    :func:`output_fields`. Empty, with the same columns, for a spec with no
+    fixed layout to index, as :func:`coef_fields` is:
 
     - ``ew_cov``, which has no coefficients;
     - ``seqtest``, which reports evidence;
@@ -1591,29 +1564,10 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     - ``marginal``, ``rcov``, ``corrchange``, ``bocpd`` and ``audit``, which
       report none.
     """
-    kind = spec.get("model", {}).get("type")
-    if kind == "ew_cov":
-        msg = "ew_cov emits statistics, not coefficients"
-        raise ValueError(msg)
-    if kind == "seqtest":
-        msg = "seqtest emits evidence (log e-values and counts), not coefficients"
-        raise ValueError(msg)
-    if kind == "micro":
-        msg = (
-            "micro's coef is one [id, label, n, radius, c_1, ..., c_p] row per established "
-            "summary, as many as there are; it has no fixed layout to index"
-        )
-        raise ValueError(msg)
     cf = coef_fields(spec)
     if cf.is_empty():
-        # Every kind with no ``coef``, not only the three named above:
-        # ``marginal``, ``rcov``, ``corrchange`` and ``bocpd`` reached the line
-        # below on an empty frame and raised whatever polars raises there
-        # (review 2026-09-12, S26).
-        msg = f"{kind} emits no coefficients"
-        raise ValueError(msg)
-    first = cf["field"][0]
-    return _index_columns(cf.filter(pl.col("field") == first))
+        return _index_columns(cf)
+    return _index_columns(cf.filter(pl.col("field") == cf["field"][0]))
 
 
 @_checked
@@ -2029,7 +1983,10 @@ def kalman(
         scalar, or one value per slot with the intercept first; ``inf`` pins
         that coefficient; every value above 0. Required unless ``q`` is given,
         and refused beside it. Not the spec's ``half_life``, which drives the
-        standardization and the residual variance.
+        standardization and the residual variance. The diagnostics' default
+        memory is the shortest finite entry; the windowed CUSUM's null share
+        reads the intercept's entry, the memory at which a level in the
+        target is absorbed, and ``inf`` there leaves the plain sum.
 
         Under ``standardize`` the drift is per standard deviation of each
         feature as the moments stand. A slope's random walk in the caller's
@@ -2724,6 +2681,7 @@ def ew_cov(
     features: list[str],
     stats: list[Literal["mean", "var", "std", "cov", "corr", "partial_corr", "mahal", "lag_corr"]]
     | None = None,
+    bias: bool = False,
     precision_prior: float | None = None,
     mahal_quantiles: list[float] | None = None,
     pca: int | None = None,
@@ -2749,22 +2707,29 @@ def ew_cov(
     .. rubric:: The recursion
 
     The means and the centred co-moments ``C`` are kept as weighted means, in
-    Welford's form:
+    Welford's form, beside the sum of the squared weights ``Q``:
 
     .. code-block:: text
 
         W'     = lam * W + w
+        Q'     = lam**2 * Q + w**2
         a      = lam * W / W'        b = w / W'        (a + b = 1)
         delta  = x - m
         m'     = m + b * delta
         C'_ij  = a * C_ij + a * b * delta_i * delta_j
 
-    so ``var_i = C_ii``, ``cov_ij = C_ij`` and
-    ``corr_ij = C_ij / sqrt(C_ii C_jj)`` are read off directly. A variance
-    stays accurate when the columns sit on a large offset, where the raw
-    ``E[x^2] - m^2`` form loses it. With ``P = (C + s * precision_prior *
-    I)^-1``, read before the row, ``s`` the prior's scale (1 on the first row,
-    times ``a`` on each row after):
+    The second moments are read off ``C`` times a factor ``c``, and
+    ``corr_ij = C_ij / sqrt(C_ii C_jj)``, from which ``c`` cancels:
+
+    .. code-block:: text
+
+        c       = W**2 / (W**2 - Q)       (1 under bias=True)
+        var_i   = c * C_ii        std_i = sqrt(var_i)        cov_ij = c * C_ij
+
+    A variance stays accurate when the columns sit on a large offset, where
+    the raw ``E[x^2] - m^2`` form loses it. With ``P = (c * (C + s *
+    precision_prior * I))^-1``, read before the row, ``s`` the prior's scale
+    (1 on the first row, times ``a`` on each row after):
 
     .. code-block:: text
 
@@ -2775,13 +2740,14 @@ def ew_cov(
     pairwise EW correlation needs. For moments on data that fits in memory,
     polars already does this under a ``window_size``:
     ``df.rolling(clock, period=window_size).agg(...)``, each row weighted
-    ``2 ** (-age / half_life)`` from the window's last row, and shifted one
-    row, since a row's moments are read before the row. On 20,000 rows about a
-    minute apart, a three-hour window (about 180 rows) and a half-life of 30
-    minutes, the mean of a column near 100 agreed to 8.5e-14, its variance to
-    6.3e-14 and its correlation with a second column to 4.3e-14. The reason to
-    reach for the spec is a stream, a saved state, or the work: polars
-    recomputes each window, ``O(n * W)``, where this is ``O(n)``.
+    ``2 ** (-age / half_life)`` from the window's last row, ``c`` from those
+    weights, and shifted one row, since a row's moments are read before the
+    row. On 20,000 rows about a minute apart, a three-hour window (about 180
+    rows) and a half-life of 30 minutes, the mean of a column near 100 agreed
+    to 8.5e-14, its variance to 6.4e-14 and its correlation with a second
+    column to 4.3e-14. The reason to reach for the spec is a stream, a saved
+    state, or the work: polars recomputes each window, ``O(n * W)``, where
+    this is ``O(n)``.
 
     .. rubric:: Parameters
 
@@ -2796,6 +2762,21 @@ def ew_cov(
         then its state, read back with :meth:`polars_online.ModelBank.gram` and
         :meth:`polars_online.ModelBank.describe`. That is the form for a wide
         set of columns, where even the means are k values per row nobody reads.
+    ``bias``
+        Polars' ``bias``, with its default ``False``: ``var``, ``std`` and
+        ``cov`` are then Polars' ``ewm_var`` and ``ewm_std`` and the
+        covariance they imply, on a clock of one row a step and with Polars'
+        default ``adjust=True``. The factor ``c`` above is ``n / (n - 1)`` at
+        Kish's effective size ``n = W**2 / Q``, the number of equally weighted
+        rows the moments are worth: Bessel's correction, ``ddof=1`` for ``n``
+        unit rows with no decay. At a half-life of 20 rows it is 1.018 in
+        steady state, at 2 rows 1.207. A second moment is null while the
+        moments hold one row of weight, which has no spread to correct, as
+        Polars' is. ``True`` reports the weighted means as kept, which is what
+        :meth:`polars_online.ModelBank.gram` returns under either. ``c``
+        multiplies the ridge on the co-moments with them, so it divides
+        ``mahal`` by ``sqrt(c)``, multiplies ``pc<j>_var`` by its value at the
+        refresh, and moves no correlation, share, loading or score.
     ``precision_prior``
         A ridge on the co-moments, in the features' squared units, above 0:
         the precision matrix ``P`` above, solved on each row it is read
@@ -2870,7 +2851,7 @@ def ew_cov(
         or a run of skipped rows' whose total the ceiling cut. Those are the
         events after which "the row ``l`` back" is not a row ``l`` ago. A
         zero-weight row ages the matrices and does not enter the ring. Add
-        ``"lag_corr"`` to ``stats`` to write ``lag_corr_<a>_<b>_l<l>`` =
+        ``"lag_corr"`` to ``stats`` to write ``lag_corr_l<l>_<a>_<b>`` =
         ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per lag and ordered pair, the
         auto terms included. That is ``k²`` slots a lag, since a lagged
         matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
@@ -2941,8 +2922,9 @@ def ew_cov(
         since a row's fields are read before its own decay, as ``weight_sum``
         is. The rows after it report nulls rather than stale numbers, until the
         window holds ``min_weight`` again. ``mahal``, ``partial_corr`` and the
-        PCA read the window's moments too, and the PCA refresh is gated on the
-        window's weight. ``window_size`` does not combine with ``lags`` or
+        PCA read the window's moments too, ``bias``'s factor is the window's
+        ``W`` and ``Q``, and the PCA refresh is gated on the window's weight.
+        ``window_size`` does not combine with ``lags`` or
         ``mahal_quantiles``, which accumulate over a history it does not
         truncate; both are refused by name.
 
@@ -2957,7 +2939,7 @@ def ew_cov(
     asks for: ``mean_<column>``, ``var_<column>`` and ``std_<column>`` per
     column; ``cov_<column>_<column>``, ``corr_<column>_<column>`` and
     ``partial_corr_<column>_<column>`` per pair, unordered, ``i < j``
-    (``mean_x0``, ``corr_x0_x1``); ``lag_corr_<a>_<b>_l<l>`` per lag and
+    (``mean_x0``, ``corr_x0_x1``); ``lag_corr_l<l>_<a>_<b>`` per lag and
     ordered pair; ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields,
     ``weight_sum``, and ``settled_frac`` and ``withheld_reason`` as everywhere.
     The statistics are null until ``min_weight``, which the bank floors at 2: a
@@ -2968,9 +2950,11 @@ def ew_cov(
     in `docs/OUTPUTS.md#ew_cov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_.
     The moments themselves are :meth:`polars_online.ModelBank.gram`'s
-    ``means``, ``comoments``, ``lags`` and ``lag_comoments``. A group that
-    closes writes them to :meth:`polars_online.ModelBank.closed_groups` with
-    ``eig_vals`` and ``eig_vecs`` under ``pca``.
+    ``means``, ``comoments``, ``lags`` and ``lag_comoments``, the weighted
+    means as kept whatever ``bias`` is, with ``n_kish`` to correct them by. A
+    group that closes writes them to
+    :meth:`polars_online.ModelBank.closed_groups` with ``eig_vals`` and
+    ``eig_vecs`` of those ``comoments`` under ``pca``.
 
     .. rubric:: Example
 
@@ -3005,6 +2989,7 @@ def ew_cov(
     model: dict[str, Any] = {
         "type": "ew_cov",
         "stats": stats,
+        "bias": bias,
         "precision_prior": precision_prior,
         "mahal_quantiles": mahal_quantiles,
         "pca": pca,
@@ -3946,9 +3931,9 @@ def kmeans(
         ``below_warm_rows`` on the rows held to seed the centres from.
     ``coef``
         The centres: ``n_clusters`` rows of ``len(features)``, flattened
-        cluster-major. :func:`coef_index` lays it out, with ``target``
-        reading ``"cluster0"``, ``"cluster1"``, ... and ``term`` the feature
-        whose coordinate the position holds.
+        cluster-major. :func:`coef_index` lays it out, with ``cluster``
+        reading ``0``, ``1``, ... and ``term`` the feature whose coordinate
+        the position holds.
 
     .. rubric:: Example
 
@@ -3963,7 +3948,7 @@ def kmeans(
             dead_frac=0.05,         # a centre whose blob vanished is re-placed 4.3 half-lives later
         )
         out = po.ModelBank([km]).fit_predict(df).unnest("km")
-        layout = po.spec.coef_index(km)    # target = "cluster0".., term = the feature
+        layout = po.spec.coef_index(km)    # cluster = 0, 1, 2; term = the feature
 
     .. rubric:: Raises
 
@@ -4166,7 +4151,9 @@ def micro(
     ``coef``
         The established summaries, one ``[id, label, n, radius, c_1, ...,
         c_p]`` row each, flattened -- as many rows as there are, so
-        :func:`coef_index` does not apply.
+        :func:`coef_index` is empty and the field is a ``List``, where every
+        other model's ``coef`` is an ``Array`` of fixed width. One row's list
+        reshaped to ``(-1, 4 + p)`` is its summaries, one per row.
 
     .. rubric:: Example
 
@@ -4332,8 +4319,9 @@ def ew_class(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_class>`_):
 
     ``class``
-        The class with the largest posterior (``str``; the first, on a tie),
-        null before ``min_weight`` and while no class has been seen.
+        The class with the largest posterior (the first, on a tie), an
+        ``Enum`` of ``classes`` in their order; null before ``min_weight`` and
+        while no class has been seen.
     ``p_<class>``
         One per class in ``classes`` order: its posterior probability, so the
         ``p_`` fields sum to 1 -- exactly 0 for a class no row has carried
@@ -4619,7 +4607,7 @@ def marginal(
         dependence. On a smooth stream consecutive rows are nearly the same
         observation, and the variance of a sample correlation is not ``1/n``
         but ``[1 + 2 * sum_l rho_x(l) * rho_y(l)] / n`` (Bartlett 1935).
-        ``n_serial`` is ``n_kish`` divided by that bracket, and ``t_serial``
+        ``n_serial`` is ``n_kish`` divided by that bracket, and ``t_stat_serial``
         the statistic against it. The rule says how the bracket sums the kept
         lags:
 
@@ -4629,7 +4617,7 @@ def marginal(
 
            * - rule
              - the bracket
-             - ``n_serial`` and ``t_serial`` null when
+             - ``n_serial`` and ``t_stat_serial`` null when
            * - ``"truncated"``
              - the kept lags as they are
              - the bracket is zero or below (two series whose
@@ -4655,7 +4643,7 @@ def marginal(
         ``lags = [1, 2, 3, 5, 8, 13]`` and ``"geometric"``: ``t_stat`` spread
         with a standard deviation of 2.52, near Bartlett's
         ``sqrt(1 + 2 * 0.72 / (1 - 0.72)) = 2.48``, and passed 1.96 on 45% of
-        them: significance that is not there. ``t_serial`` spread 1.04 and
+        them: significance that is not there. ``t_stat_serial`` spread 1.04 and
         passed on 5.4%, its ``n_serial`` a median 511 of ``n_kish = 3000``. The
         lags add ``(L + 2C) * p * T + L * T`` doubles beside the pair moments,
         for ``L`` lags of which ``C`` keep the cross terms. They also hold a

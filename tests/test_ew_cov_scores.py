@@ -51,7 +51,9 @@ CHI2_99 = {
 
 def replay(X, lam, w, *, prior, accepted=None):
     """Replay `EwCov::update` row by row and return, per row, the state
-    *before* the row: (means, centred co-moments, precision_scale, w_sum).
+    *before* the row: (means, centred co-moments, precision_scale, w_sum,
+    factor), the last what the default ``bias=False`` multiplies the second
+    moments by.
 
     The Welford form, in the crate's operation order, with each mean the
     pair `m + lo` whose steps no rounding drops (docs/PLAN.md task 101):
@@ -60,24 +62,32 @@ def replay(X, lam, w, *, prior, accepted=None):
         c_ij  = a*c_ij + a*b*d_i*d_j
         y = b*d + lo;  t = m + y;  lo = y - (t - m);  m = t
         precision_scale = 1 if a <= 0 else precision_scale*a
-    A skipped row (`accepted` false) leaves the state alone. The means
-    returned are the pairs' doubles, `m`, as the crate reports them.
+        q = lam**2 * q + w**2;  factor = w_sum**2 / (w_sum**2 - q)
+    the factor undefined (NaN) with fewer than two rows of weight. A skipped
+    row (`accepted` false) leaves the state alone. The means returned are the
+    pairs' doubles, `m`, as the crate reports them.
     """
     n, k = X.shape
     m = np.zeros(k)
     lo = np.zeros(k)
     c = np.zeros((k, k))
     w_sum = 0.0
+    q = 0.0
+    rows = 0
     scale = 1.0
     states = []
     for i in range(n):
-        states.append((m.copy(), c.copy(), scale, w_sum))
+        w2 = w_sum * w_sum
+        factor = w2 / (w2 - q) if rows >= 2 and q > 0.0 and w2 - q > 0.0 else math.nan
+        states.append((m.copy(), c.copy(), scale, w_sum, factor))
         if accepted is not None and not accepted[i]:
             continue
+        rows += int(w[i] > 0.0)
         w_new = lam[i] * w_sum + w[i]
         if w_new <= 0.0:
             w_sum = w_new
             continue
+        q = lam[i] * lam[i] * q + w[i] * w[i]
         a = lam[i] * w_sum / w_new
         b = w[i] / w_new
         d = (X[i] - m) - lo
@@ -93,9 +103,12 @@ def replay(X, lam, w, *, prior, accepted=None):
     return states
 
 
-def mahal_oracle(x, m, c, scale, prior):
+def mahal_oracle(x, m, c, scale, prior, factor=1.0):
+    """The distance in the metric ``factor * (c + prior * scale * I)``: the
+    co-moments and their ridge scaled together, as ``bias=False`` scales
+    them."""
     k = len(x)
-    M = c + prior * scale * np.eye(k)
+    M = factor * (c + prior * scale * np.eye(k))
     d = x - m
     sol = np.linalg.solve(M, d)
     return math.sqrt(max(0.0, float(d @ sol)))
@@ -164,11 +177,11 @@ class TestMahalOracle:
         lam[0] = 1.0
         states = replay(X, lam, np.ones(n), prior=prior)
         for i in range(n):
-            m, c, scale, w_sum = states[i]
+            m, c, scale, w_sum, factor = states[i]
             if w_sum < 5.0:
                 assert np.isnan(got[i]), i
                 continue
-            want = mahal_oracle(X[i], m, c, scale, prior)
+            want = mahal_oracle(X[i], m, c, scale, prior, factor)
             assert got[i] == pytest.approx(want, rel=1e-9, abs=1e-12), i
         # The means the crate reports are the replayed ones, bit for bit.
         for j in range(k):
@@ -221,14 +234,14 @@ class TestMahalOracle:
         states = replay(X, lam, ww, prior=prior, accepted=accepted)
         checked = 0
         for i in range(n):
-            m, c, scale, w_sum = states[i]
+            m, c, scale, w_sum, factor = states[i]
             if not accepted[i]:
                 assert np.isnan(got[i]), "a skipped row has no output"
                 continue
             if w_sum < 3.0:
                 assert np.isnan(got[i]), i
                 continue
-            want = mahal_oracle(X[i], m, c, scale, prior)
+            want = mahal_oracle(X[i], m, c, scale, prior, factor)
             assert got[i] == pytest.approx(want, rel=1e-9, abs=1e-12), i
             checked += 1
         assert checked > 500
@@ -286,7 +299,7 @@ class TestPcaOracle:
         since = 0
         checked = 0
         for i in range(n):
-            m, c, scale, w_sum = states[i]
+            m = states[i][0]
             if frozen is None:
                 for j in range(r):
                     assert np.isnan(field(out, f"pc{j}_var")[i]), i
@@ -303,12 +316,14 @@ class TestPcaOracle:
                     assert field(out, f"pc{j}_score")[i] == pytest.approx(score, abs=1e-9)
                 checked += 1
             # Row i is learned; maybe refresh.
-            m2, c2, _, w2 = states[i + 1] if i + 1 < n else (None, None, None, None)
-            if m2 is None:
+            if i + 1 >= n:
                 break
+            _, c2, _, w2, f2 = states[i + 1]
             since += 1
             if w2 >= 5.0 and (frozen is None or since >= every):
-                frozen = pca_oracle(c2, r, frozen)
+                # The components of the matrix the default reports, the
+                # co-moments times the factor of the refresh.
+                frozen = pca_oracle(f2 * c2, r, frozen)
                 since = 0
         assert checked > 280
 
@@ -824,11 +839,13 @@ class TestEdgeCases:
         ok = np.isfinite(small)
         assert (big[ok] < small[ok]).all()
         lam = np.ones(n)
-        m, c, scale, w_sum = replay(X, lam, np.ones(n), prior=1e3)[-1]
+        m, c, scale, w_sum, factor = replay(X, lam, np.ones(n), prior=1e3)[-1]
         assert scale == pytest.approx(1.0 / (n - 1), rel=1e-12)
-        assert big[-1] == pytest.approx(mahal_oracle(X[-1], m, c, scale, 1e3), rel=1e-9)
+        # Unit rows with no decay: the default's factor is n / (n - 1).
+        assert factor == pytest.approx((n - 1) / (n - 2), rel=1e-12)
+        assert big[-1] == pytest.approx(mahal_oracle(X[-1], m, c, scale, 1e3, factor), rel=1e-9)
         # With the ridge nearly gone the two agree.
-        assert small[-1] == pytest.approx(mahal_oracle(X[-1], m, c, scale, 1e-9), rel=1e-9)
+        assert small[-1] == pytest.approx(mahal_oracle(X[-1], m, c, scale, 1e-9, factor), rel=1e-9)
 
 
 def test_pca_variance_scales_and_the_shares_are_invariant_at_a_tiny_scale():

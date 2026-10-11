@@ -502,5 +502,5 @@ class TestTheJsonExport:
                 for x in v:
                     walk(x)
 
-        walk(json.loads(bank.to_json()))
+        walk(json.loads(bank.write_json()))
         assert found and all(s == spacing for s in found), found

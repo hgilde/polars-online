@@ -232,7 +232,7 @@ class TestBankToml:
             "--output", str(data / "out2.parquet"),
             "--load-state", str(state),
             # The config's own `save_state` is relative, so without this the
-            # run would drop a `bank.state` in the repo root.
+            # run would drop a `bank.state` in examples/, beside the config.
             "--save-state", str(data / "bank2.state"),
         )  # fmt: skip
         assert res.returncode == 0, res.stderr
