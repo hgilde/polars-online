@@ -9482,7 +9482,7 @@ tick, and that the series holding it up has a count near 1.
       better name"; chose "Data quality"): `docs/DATA-ISSUES.md` is
       `docs/DATA-QUALITY.md`, its title "Data quality", its README section
       "Checking your data's quality"; `check()` and `audit` keep their names.
-- [ ] 239. **A review of every API doc** -- the user, 2026-10-10; run
+- [x] 239. **A review of every API doc** -- the user, 2026-10-10; run
       **before** task 238's rewrite (the user: "You can flip the api and
       [docs] rewrite if that would be better"), so the guides are rewritten
       on docstrings already checked, with 238's map drawn in parallel: every public docstring (the Python package, the builders in
@@ -9505,6 +9505,23 @@ tick, and that the series holding it up has a count near 1.
       of the removed expression namespace in the private `_kwargs` module and
       in no API snapshot, folds into `CommonKwargs`. These land as one
       follow-up after parts a and c.
+      *Done 2026-10-10.* Part a (the builders): about 90 facts, about 150
+      refusals, 23 plan references removed, six tests. Part c (`po.gram`,
+      `po.eval`, `po.corr`, `po.sim`, `po.gbdt`, the reference pages): about
+      30 facts; `merge`'s precision measured (2.4e-15 at 2 parts, 3.8e-14
+      at 1,000); `po.gbdt`'s examples run. Follow-up, docs: every rendered
+      page cites no plan, task or record (`tests/test_no_plan_references.py`,
+      157 docstrings), 42 unresolved links fixed, four unbacked figures
+      re-measured, the order-free figures held to ranges. Follow-up, code:
+      `pa` refuses `c` under `mode="pa"`; one Newey-West lag rule;
+      `output_index` gains `lag`, `state`, `class`; `withheld_reason` gains
+      `below_warm_rows` (`kmeans`, `hmm`, `bocpd` before seeding) and
+      `ew_cov`'s floor reads `below_min_weight`; `bocpd`'s `max_run` caps
+      the run length; `coef_stats`/`solve_subsets` through the origin read
+      raw moments (statsmodels without a constant) and give the intercept
+      its se; `po.sim`'s smooth design blends the ramp; `marginal` refuses
+      empty lags; `not_checked` only where there is something to check;
+      `ExprKwargs` folded into `CommonKwargs`. Open: task 243.
       **No doc references the plan** (the user, 2026-10-10: "No doc should
       reference the plan, everything should be explained from first
       principals"): the README, every guide, CONTRIBUTING, `llms.txt` and
@@ -9628,6 +9645,17 @@ tick, and that the series holding it up has a count near 1.
       first batch), which is why IPC is read natively. Dev group:
       `xgboost` (macOS) or `xgboost-cpu`, and `lightgbm`; macOS CI installs
       libomp. Windows and Linux are first exercised by CI.
+- [ ] 243. **`bocpd`'s fold under heavy pruning -- the user's call** (task
+      239). With `max_run` capping the run length, a run that reaches it
+      folds into the oldest run shorter than the cap; when pruning has left
+      a gap below the cap, that run can be much younger, the dominant run's
+      memory resets and `run_mode` jumps: at `max_run=20`,
+      `prune_below=1e-2` on stationary data `p_change` summed over the
+      stream rose from about 7 to about 35, and REGIMES §5's false alarms
+      from 0.53 to 1.00 per 1,000 quiet rows (worst delay 351 -> 207). At
+      the defaults nothing moved. Options: keep the rule; or scale the
+      over-long run's statistics down to `max_run - 1` rows' weight instead
+      of taking a younger run's.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

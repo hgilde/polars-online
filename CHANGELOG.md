@@ -1168,6 +1168,17 @@ The output names task 144 renamed:
 
 ### Fixed
 
+- **The API review's fixes** (task 239): `coef_stats` and `solve_subsets`
+  read least squares through the origin when a fit has no intercept (the
+  old centred reading put a standard error at 3.7 times statsmodels') and
+  give an intercept its standard error; `bocpd`'s `max_run` caps a run's
+  length (with pruning the oldest run grew past it); `withheld_reason`
+  gains `below_warm_rows` for the rows `kmeans`, `hmm` and `bocpd` hold to
+  seed themselves, and `ew_cov`'s floor reads `below_min_weight`;
+  `se_coef_hac`'s default lags follow the shared rule, `2·ceil(embargo)`;
+  `po.sim`'s smooth design blends the ramp its `mix` reports;
+  `output_index` gains `lag`, `state` and `class`; `pa` refuses `c` under
+  `mode="pa"` and `marginal` empty `lags`, by name.
 - **`po.gram.lars_path`: columns that tie are settled at one knot** (task
   236). A column whose correlation tied the active set's never entered, so
   an identity Gram with `d = [1, 1]` ended at `[1, 0]` rather than least
@@ -1640,6 +1651,11 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- Every public docstring was read against the code (task 239): about 120
+  wrong facts corrected, about 150 refusals the code made now stated, no
+  docstring cites the plan, a task or a record
+  (`tests/test_no_plan_references.py`), and figures no source backed are
+  re-measured with how they were made.
 - `docs/GBDT-ADAPTER.md`: how to train LightGBM and XGBoost from Arrow
   files as fast as they go, five options measured (task 235);
   `scripts/gbdt_adapter.py` and `scripts/gbdt_driver` are the measurement
