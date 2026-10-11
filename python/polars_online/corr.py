@@ -489,8 +489,8 @@ def absorption_shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) 
     return (fast - slow) / s if s > 0.0 else np.full_like(fast, np.nan)
 
 
-#: Renamed :func:`absorption_shift` before 1.0 (docs/PLAN.md task 197;
-#: review round 4, YB10).
+#: Renamed :func:`absorption_shift` before 1.0, since Polars' ``shift`` is a
+#: lag: the old name is refused, and the error names the new one.
 shift = renamed_function("po.corr.shift", "po.corr.absorption_shift")
 
 
@@ -838,7 +838,7 @@ def fisher_se(
 
 
 def _label_unstable() -> None:
-    """Every public function, labelled unstable (docs/PLAN.md task 198, D5):
+    """Every public function, labelled unstable:
     each call raises :class:`polars_online.UnstableWarning` under
     ``POLARS_ONLINE_WARN_UNSTABLE=1``, once however many of the others it
     runs. By name from ``__all__``, so a function added or renamed is
