@@ -322,7 +322,13 @@ looks ahead. The user found the section "much better" with its tables and
 prose, and asked for comments "briefly describing what is happening but not
 high detail since the section has good detail". So each step opens with a
 one-line comment that says what it does, and a line's own comment says what
-it gives.
+it gives. The rewrites that followed lost them, and the user found that
+"some of the example code is missing the few one-line comments to explain
+large code blocks in sections" (2026-10-11). So
+`tests/test_example_steps.py` holds the README, CONTRIBUTING and every
+guide to it: a python block of ten statements or more has no run of more
+than eight without a comment on a line of its own. It counts statements,
+not lines, so a spec written one parameter to a line is one step.
 
 **An example builds a thing in Polars' own terms when the library takes
 them.** Where a spec takes a Polars expression, the example writes one, and
@@ -610,7 +616,7 @@ on rereading:
 | 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown`. `uv run python scripts/doc_review.py render FILE.md OUT.html` does it through `gh`, as a standalone page |
-| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
+| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block and checks that each name a block reads was built by a block before it, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks. `tests/test_example_steps.py` checks that each long example names its steps (§3). A README recipe is held to the output it shows by `test_a_readme_recipe_prints_what_it_shows`, a guide's by its page's own test, and `test_every_guide_has_a_readme_section` holds each guide to a README section (§2). `tests/test_no_plan_references.py` holds every reader-facing file to §4's rule on citations |
 | 9. cold read | read it in order as a newcomer | a reader with none of the pass's context (no brief, no earlier version, no code) reads the rendered page from the top. They mark each paragraph whose purpose they cannot tell from what comes before it, and each example they could not run from what the page has shown. A writer who checks one part against the rules misses both: the rules are about sentences, and a writer knows what each paragraph is for |
 
 The counts, taken outside code blocks, tables and headings. `uv run python

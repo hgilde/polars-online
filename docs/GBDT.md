@@ -27,6 +27,7 @@ import polars as pl
 import polars_online as po
 import xgboost as xgb
 
+# The training and validation files, with the target planted in x0 and x1.
 rng = np.random.default_rng(5)
 for name, n in (("train", 20_000), ("valid", 5_000)):
     x0, x1, x2 = rng.standard_normal((3, n))
@@ -124,6 +125,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A rating of four values beside a continuous feature.
 rng = np.random.default_rng(6)
 n = 10_000
 pl.DataFrame({
@@ -132,6 +134,7 @@ pl.DataFrame({
     "y": rng.standard_normal(n),
 }).write_parquet("ratings.parquet")
 
+# Build the matrix, and read each feature's cuts back from it.
 train = po.gbdt.xgboost_matrix("ratings.parquet", label="y", features=["rating", "size"])
 indptr, cuts = train.get_quantile_cut()                # every feature's cuts, end to end
 print("rating's cuts:", [round(float(c), 5) for c in cuts[indptr[0]:indptr[1]]])
@@ -159,11 +162,13 @@ import polars as pl
 import polars_online as po
 import xgboost as xgb
 
+# One file, whose target is x0 times x1 plus noise.
 rng = np.random.default_rng(6)
 n = 10_000
 x0, x1 = rng.standard_normal((2, n))
 pl.DataFrame({"x0": x0, "x1": x1, "y": x0 * x1 + rng.standard_normal(n)}).write_parquet("pairs.parquet")
 
+# The file built by each engine, and the same trees trained on each.
 native = po.gbdt.xgboost_matrix("pairs.parquet", label="y", features=["x0", "x1"], engine="native")
 python = po.gbdt.xgboost_matrix("pairs.parquet", label="y", features=["x0", "x1"], engine="python")
 params = {"tree_method": "hist", "max_depth": 3}
@@ -198,6 +203,7 @@ import polars as pl
 import polars_online as po
 import xgboost as xgb
 
+# Four venues, each shifting the target by its own amount.
 rng = np.random.default_rng(7)
 n = 20_000
 venues = ["NYSE", "ARCA", "BATS", "IEX"]
@@ -209,6 +215,7 @@ frame = pl.DataFrame({
 }).with_columns(y=pl.col("x0") + pl.Series([effect[v] for v in venue]) + 0.1 * rng.standard_normal(n))
 frame.write_parquet("venues.parquet")
 
+# Train on the venue as a category, then predict each venue at x0 = 0.
 train = po.gbdt.xgboost_matrix("venues.parquet", label="y", features=["venue", "x0"])
 print("feature types:", train.feature_types)                          # "c": a categorical feature
 booster = xgb.train({"tree_method": "hist", "max_depth": 4}, train, 50)
@@ -216,6 +223,7 @@ test = pl.DataFrame({"venue": pl.Series(venues, dtype=pl.Enum(venues)), "x0": 0.
 pred = booster.predict(po.gbdt.xgboost_matrix(test, label="y", features=["venue", "x0"], ref=train))
 print("prediction at x0 = 0:", ", ".join(f"{v} {p:.1f}" for v, p in zip(venues, pred)))
 
+# The same column as a pl.Categorical is refused.
 frame.with_columns(pl.col("venue").cast(pl.String).cast(pl.Categorical)).write_parquet("cat.parquet")
 try:
     po.gbdt.xgboost_matrix("cat.parquet", label="y", features=["venue", "x0"])
@@ -252,15 +260,18 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# One feature and its target, written to a file.
 rng = np.random.default_rng(8)
 n = 10_000
 x0 = rng.standard_normal(n)
 pl.DataFrame({"x0": x0, "y": x0 + rng.standard_normal(n)}).write_parquet("rows.parquet")
 
+# Built with 63 bins, the dataset trains.
 train = po.gbdt.lightgbm_dataset("rows.parquet", label="y", features=["x0"], max_bin=63)
 booster = lgb.train({"verbose": -1}, train, 10)               # binned with 63 bins, as built
 print("trees:", booster.num_trees())
 
+# Built with the default, it refuses 63 bins at training.
 again = po.gbdt.lightgbm_dataset("rows.parquet", label="y", features=["x0"])
 try:
     lgb.train({"max_bin": 63, "verbose": -1}, again, 10)       # a binning parameter, too late

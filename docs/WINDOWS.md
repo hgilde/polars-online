@@ -48,11 +48,13 @@ This code uses `trades.parquet` from [Example data](../README.md#example-data):
 ```python
 aaa = pl.read_parquet("trades.parquet").filter(pl.col("symbol") == "AAA")   # one symbol's quotes and trades
 aaa.write_parquet("aaa.parquet")
+# The running mean and the last minute's volume, by the library.
 ours = pl.scan_parquet("aaa.parquet").online.with_windows(
     mean=po.ewm_mean("mid", half_life="5s"),                                 # every row since the stream began
     volume=po.ewm_sum("quantity", half_life=float("inf"), window_size="1m"), # evenly weighted: the last minute's volume
     clock="ts", gap_cap="5m",
 ).collect()
+# The same two by Polars' own functions.
 polars = aaa.with_columns(
     mean=pl.col("mid").ewm_mean_by("ts", half_life="5s"),
     volume=pl.col("quantity").fill_null(0.0).rolling_sum_by("ts", "1m"),    # a quote adds no volume
@@ -80,6 +82,7 @@ mid_mean = po.ewm_mean(
     min_samples=3,      # the fewest rows with a value the window must hold; fewer give null
     partial="keep",     # what a window gives when a gap or a session change cuts it short
 )
+# The window over the file, each symbol on its own.
 windowed_mid = pl.scan_parquet("trades.parquet").online.with_windows(
     mid_mean=mid_mean, clock="ts", gap_cap="5m", group="symbol",
 ).collect()
@@ -109,12 +112,14 @@ numeric clock, two of them at the stamp 1.0, with a window of 2:
 
 ```python
 stamps = pl.DataFrame({"t": [0.0, 1.0, 1.0, 2.0, 3.5], "one": 1.0})
+# Count the rows in each window, back and ahead, under both closed rules.
 counts = po.stream.with_windows(
     stamps,
     **{f"back_{c}": po.ewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c) for c in ["right", "left"]},
     **{f"ahead_{c}": po.ewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c, reverse=True) for c in ["right", "left"]},
     clock="t", gap_cap=10.0,
 )
+# The counts as a table, a line per row.
 show = lambda v: "null" if v is None else f"{v:.0f}"
 print("   t  back_right  back_left  ahead_right  ahead_left")
 for r in counts.iter_rows(named=True):
@@ -188,6 +193,7 @@ volume = (
     )
     .collect()
 )
+# The stream's own rate, beside each symbol's median rate and trend.
 seconds = (trades["ts"].max() - trades["ts"].min()).total_seconds()
 print(f"units traded a second by each symbol, over the stream: {trades['quantity'].sum() / seconds / 2:.2f}")
 for symbol, rate, trend in volume.group_by("symbol").agg(pl.col("volume_rate", "rate_trend").median()).sort("symbol").iter_rows():
@@ -265,6 +271,7 @@ This code uses `trades` and `trades.parquet` from [Example data](../README.md#ex
 ```python
 from datetime import timedelta
 
+# A trend that looks back, and two VWAPs that look ahead.
 notional = pl.col("price") * pl.col("quantity")
 buys = pl.when(pl.col("side") == "buy")
 next_minute = dict(half_life="10s", window_size="1m", reverse=True)
@@ -277,6 +284,7 @@ windowed = po.stream.with_windows(
 )
 print(windowed.columns)
 
+# One row's fwd_vwap again by hand, from the trades in its next minute.
 row = windowed.row(1000, named=True)
 ahead = trades.filter(                                         # the trades in (ts, ts + 1m] of the row's symbol
     pl.col("symbol") == row["symbol"], pl.col("price").is_not_null(),
@@ -286,6 +294,7 @@ weight = 0.5 ** ((ahead["ts"] - row["ts"]).dt.total_microseconds() / 1e6 / 10)
 by_hand = (weight * ahead["price"] * ahead["quantity"]).sum() / (weight * ahead["quantity"]).sum()
 print(f"row 1000: {ahead.height} trades in the next minute; fwd_vwap {row['fwd_vwap']:.6f}, by hand {by_hand:.6f}")
 
+# The same column over the file, streamed to parquet.
 (pl.scan_parquet("trades.parquet")
     .online.with_windows(fwd_vwap=po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute),
                          clock="ts", gap_cap="5m", group="symbol")
@@ -311,12 +320,14 @@ This code uses `trades` from [Example data](../README.md#example-data):
 ```python
 import re
 
+# Sorted by symbol, the clock across symbols steps back, and is refused.
 by_symbol = trades.sort("symbol")                          # every AAA row, then every BBB row
 try:
     po.stream.with_windows(by_symbol, mid_mean=po.ewm_mean("mid", half_life="5s"),
                            clock="ts", gap_cap="5m", group="symbol")
 except (ValueError, pl.exceptions.ComputeError) as e:
     print(re.search(r'clock column .* at row \d+', str(e)).group())
+# Back in clock order, the same call runs.
 in_order = by_symbol.sort("ts", maintain_order=True)       # back in clock order across the symbols
 print(po.stream.with_windows(in_order, mid_mean=po.ewm_mean("mid", half_life="5s"),
                              clock="ts", gap_cap="5m", group="symbol").height)
@@ -391,12 +402,14 @@ window's one, and the two forms agree on every row.
 This code uses `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
+# Features that look back, on one clock shared with the model.
 clock = dict(clock="ts", gap_cap="5m", group="symbol")             # one clock for the windows and the model
 trends = pl.scan_parquet("trades.parquet").online.with_windows(    # the features: windows that look back
     trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),
     trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
     **clock,
 )
+# A target that looks ahead, learned two minutes late.
 notional = pl.col("price") * pl.col("quantity")
 next_minute = dict(half_life="10s", window_size="1m", reverse=True)
 fwd_edge = (po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute) - pl.col("mid")).alias("fwd_edge")   # the target: the next minute's VWAP, less the mid
@@ -404,16 +417,19 @@ edge = po.spec.ewridge("edge", targets=[fwd_edge], features=["trend_5s", "trend_
                        half_life="30m", embargo="2m", **clock)   # each row learned two minutes later, once its minute is known
 fitted = trends.online.fit_predict([edge]).collect()      # trades, the two trends, and the column edge
 
+# The same target as a column, and the same model on it.
 as_column = trends.online.with_windows(fwd_edge, like=edge).collect()   # the target the model learned, as a column
 by_column = po.spec.ewridge("by_column", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
                             half_life="30m", embargo="2m", **clock)     # the same model, its target named as that column
 column_form = as_column.online.fit_predict([by_column])
 
+# The two forms compared row for row.
 expression, column = fitted["edge"].struct, column_form["by_column"].struct
 print(f"rows {fitted.height}, of which predicted {fitted.height - expression.field('pred_fwd_edge').null_count()}")
 print(f"largest difference between the two forms: {(expression.field('pred_fwd_edge') - column.field('pred_fwd_edge')).abs().max()}")
 print(f"resid_fwd_edge null on {expression.field('resid_fwd_edge').null_count()} rows")
 
+# An embargo shorter than the target's window is refused.
 short = po.spec.ewridge("short", targets=[fwd_edge], features=["trend_5s"], half_life="30m", embargo="30s", **clock)
 try:
     trends.online.fit_predict([short])                    # refused when the query is built
@@ -446,6 +462,7 @@ coefficients against the truth.
 This code uses `ticks.parquet` from [Example data](../README.md#example-data):
 
 ```python
+# Each feature in units of its current spread, and a fit on those.
 row_clock = dict(clock="t", gap_cap=10.0)                # one clock for the z-scores and the model; t steps by 1 a row
 spread = dict(half_life=100.0)                           # how fast the mean and the spread forget, in the clock's units
 zscored = pl.scan_parquet("ticks.parquet").online.with_windows(
@@ -457,6 +474,7 @@ zscored = pl.scan_parquet("ticks.parquet").online.with_windows(
 per_sd = po.spec.ewridge("per_sd", targets=["y"], features=["z_x0", "z_x1"], half_life=100.0, **row_clock)
 fitted = zscored.online.fit_predict([per_sd]).collect()   # the rows, the z-scores, the spreads and the column per_sd
 
+# The spread against Polars', and the fit against the truth.
 polars_sd = pl.read_parquet("ticks.parquet")["x0"].ewm_std(half_life=100.0, adjust=False)
 print(f"po.ewm_std against Polars' ewm_std: largest difference {(fitted['sd_x0'] - polars_sd).abs().max():.12f}")
 last = fitted.row(-1, named=True)
@@ -521,21 +539,25 @@ as a step back.
 This code uses `trades` and `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
+# The forward VWAP in one run over the whole stream.
 next_minute = dict(half_life="10s", window_size="1m", reverse=True)
 vwap = dict(fwd_vwap=po.ewm_sum(pl.col("price") * pl.col("quantity"), **next_minute) / po.ewm_sum("quantity", **next_minute))
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
 one_run = po.stream.with_windows(trades, **vwap, **clock)            # one run
 
+# Two files, the second run resumed from the state the first saved.
 trades.head(2000).write_parquet("day1.parquet")                       # the same stream as two files
 trades.slice(2000).write_parquet("day2.parquet")
 first = pl.scan_parquet("day1.parquet").online.with_windows(**vwap, **clock, save_state="w.state").collect()   # its last rows wait
 second = pl.scan_parquet("day2.parquet").online.with_windows(**vwap, **clock, load_state="w.state").collect()  # they come out first
 print(f"two files: {first.height} rows, then {second.height}; one run's output: {pl.concat([first, second]).equals(one_run)}")
 
+# A run stopped at head(500), then resumed on the same file.
 head = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, save_state="h.state").head(500).collect()
 rest = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()  # the same file: it skips the rows read
 print(f"head(500), then the rest: {head.height} rows, then {rest.height}; one run's output: {pl.concat([head, rest]).equals(one_run)}")
 
+# An input that starts before the state's last row is refused.
 trades.slice(300).write_parquet("overlap.parquet")                   # starts before the last row the state read
 try:
     pl.scan_parquet("overlap.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()

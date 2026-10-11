@@ -298,6 +298,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# df: 400 rows of numbers and labels, a minute apart.
 rng = np.random.default_rng(0)
 x0, x1, x2, signal_a, signal_b, noise_y, noise_ret = rng.standard_normal((7, 400))
 row = np.arange(400)
@@ -313,6 +314,7 @@ df = pl.DataFrame({
     "session": ["m"] * 200 + ["a"] * 200,                        # a morning session, then an afternoon one
     "venue": ["X", "Y"] * 200,
 })
+# Save df, and the rows that follow it, as the files the examples scan.
 df.write_parquet("ticks.parquet")                                # df on disk, as one file
 lf = pl.scan_parquet("ticks.parquet")                            # the same rows, read back from the file as a query
 today = df.with_columns(pl.col("t") + 400.0)                     # the 400 rows that follow df's, on the clock t
@@ -322,6 +324,7 @@ Path("ticks").mkdir(exist_ok=True)                               # and df as two
 df.head(200).write_parquet("ticks/part-0.parquet")
 df.tail(200).write_parquet("ticks/part-1.parquet")
 
+# trades: quotes, with trades between them, about two rows a second.
 rng = np.random.default_rng(7)
 is_trade = rng.random(3000) < 0.3                                # three rows in ten are trades, the rest quotes
 micros = np.cumsum(rng.exponential(5e5, 3000)).astype(int)       # about two rows a second
@@ -407,6 +410,7 @@ comparison. Its last line finds the truth planted in `y`: an intercept of
 It reads `df` and `lf` from [Example data](#example-data):
 
 ```python
+# Two specs the bank refuses, each refusal printed.
 for refused in [
     po.spec.ewridge("x0", targets=["y"], features=["x1"], half_life=600.0),          # named like a column
     po.spec.ewridge("by_venue", targets=["y"], features=["venue"], half_life=600.0),  # a text feature
@@ -416,6 +420,7 @@ for refused in [
     except ValueError as err:
         print(err)
 
+# The venue fitted as a comparison.
 by_venue = po.spec.ewridge("by_venue", targets=["y"], features=["x0", "x1", "is_x"], half_life=float("inf"))
 coded = lf.with_columns(is_x=pl.col("venue") == "X").online.fit_predict([by_venue]).collect()
 print("intercept, x0, x1, venue X:", [round(c, 2) for c in coded["by_venue"].struct.field("coef")[-1]])
@@ -454,6 +459,7 @@ its window closes. This code runs on `trades.parquet`, the quotes and
 trades saved in [Example data](#example-data):
 
 ```python
+# A feature, a target that looks ahead, and a fit on the trades.
 flows = pl.scan_parquet("trades.parquet").with_columns(                   # a query, and a feature in it: a trade's signed size
     flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
 )
@@ -470,6 +476,7 @@ as_column = {**ahead_5m, "targets": ["fwd_move"]}                      # a spec 
 made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])   # like= takes the spec's clock, gap_cap and group
 column = made.online.unnest([as_column]).collect()
 
+# The two forms side by side.
 same = (moves["pred_fwd_move"] == column["pred_fwd_move"]).sum()
 print(f"rows predicted: {moves['pred_fwd_move'].count()} by the expression, {column['pred_fwd_move'].count()} by the column, {same} equal")
 # The rows of the last five minutes have no outcome yet in either form.
@@ -497,6 +504,7 @@ It reads `trades.parquet` from [Example data](#example-data):
 flows = pl.scan_parquet("trades.parquet").with_columns(
     flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
 )
+# Four forms of a trade's price against the mid.
 returns = flows.with_columns(
     ratio=pl.col("price") / pl.col("mid"),                              # price / mid, about 1
     fwd_return=pl.col("price") / pl.col("mid") - 1,                     # the quotient less 1, about zero
@@ -506,6 +514,7 @@ returns = flows.with_columns(
 vs_mid = po.spec.ewridge("vs_mid", targets=["ratio", "fwd_return", "log_ret", "diff"], features=["flow"],
                          clock="ts", gap_cap="5m", half_life="30m", group="symbol", emit_metrics=True)
 against_mid = returns.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()
+# How often each form's prediction had the sign right.
 for target in ["ratio", "fwd_return", "log_ret", "diff"]:
     print(f"hit_rate of {target}: {against_mid[f'hit_rate_{target}'].drop_nulls()[-1]:.2f}")
 ```
@@ -600,6 +609,7 @@ It reads `df` from [Example data](#example-data):
 ```python
 import textwrap
 
+# The same model on each clock, read on the last row.
 on_t = po.spec.holt("on_t", targets=["t"], clock="t", half_life=100.0, gap_cap=300.0)       # numbers: t counts minutes
 on_ts = po.spec.holt("on_ts", targets=["t"], clock="ts", half_life="100m", gap_cap="300m")  # durations: ts is a Datetime
 last = po.ModelBank([on_t, on_ts]).fit_predict(df).tail(1)
@@ -607,6 +617,7 @@ for name, unit in [("on_t", "per unit of t, a minute"), ("on_ts", "per second")]
     fields = last[name].struct
     print(f"{name}: weight_sum {fields.field('weight_sum')[0]:.2f}, trend {fields.field('coef')[0][1]:.6f} {unit}")
 
+# The same spec on ts with plain numbers: refused.
 try:
     po.ModelBank([po.spec.holt("wrong", targets=["t"], clock="ts", half_life=100.0, gap_cap=300.0)]).fit_predict(df)
 except ValueError as err:   # a plain number on a Datetime clock
@@ -698,10 +709,12 @@ for `half_life`.
 This code uses `df` from [Example data](#example-data):
 
 ```python
+# df with a weekend between its two sessions, saved.
 afternoon = pl.col("session") == "a"
 df.with_columns(ts=pl.when(afternoon).then(pl.col("ts") + pl.duration(days=2)).otherwise(pl.col("ts"))) \
   .write_parquet("weekend.parquet")
 
+# Four ways to treat the weekend.
 common = dict(targets=["y"], features=["x0", "x1"], clock="ts", half_life="30m")   # ts is a Datetime: durations
 policies = [
     po.spec.ewridge("capped", gap_cap="5m", **common),                             # the weekend counts as five minutes
@@ -709,6 +722,7 @@ policies = [
     po.spec.ewridge("one_minute", gap_cap="5m", session="session", session_gap="1m", **common),   # one minute at the boundary
     po.spec.ewridge("reset", gap_cap="5m", session="session", session_gap="reset", **common),  # a fresh start there
 ]
+# Each policy's weight_sum around the boundary at row 200.
 fitted = pl.scan_parquet("weekend.parquet").online.fit_predict(policies).collect()
 print("row" + "".join(f"{p['name']:>12}" for p in policies))
 for row in [199, 200, 201, 202]:
@@ -750,6 +764,7 @@ last line reads `settled_frac` on the last row under `half_life=1e12`.
 It reads `df` from [Example data](#example-data):
 
 ```python
+# Plain least squares in three orders, then numpy's.
 batch = po.spec.ewridge("batch", targets=["y"], features=["x0", "x1", "x2"],
                         half_life=float("inf"),   # no clock, no decay
                         ridge=0.0)                 # plain least squares, in place of the default ridge of 1e-6
@@ -759,6 +774,7 @@ for order, rows in [("in order", df), ("reversed", df.reverse()), ("shuffled", d
 design = np.column_stack([np.ones(df.height), df["x0"], df["x1"], df["x2"]])
 print(f"{'numpy':<9}", " ".join(f"{c:9.6f}" for c in np.linalg.lstsq(design, df["y"], rcond=None)[0]))
 
+# A huge finite half-life, which is not inf.
 huge = po.spec.ewridge("huge", targets=["y"], features=["x0"], clock="t", half_life=1e12, gap_cap=300.0)
 print(f"settled_frac after 399 units of t under half_life=1e12: {po.ModelBank([huge]).fit_predict(df)['huge'].struct.field('settled_frac')[-1]:.1e}")
 ```
@@ -847,6 +863,7 @@ with the edge between 140 and 150 units back.
 It reads `df` from [Example data](#example-data):
 
 ```python
+# The same model with a window and without.
 cut = po.spec.ew_cov(
     "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0,
     window_size=150.0,             # a row this many clock units old or older contributes exactly nothing
@@ -854,6 +871,7 @@ cut = po.spec.ew_cov(
     window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring
 )
 whole = po.spec.ew_cov("whole", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0)
+# Each weight_sum on the last row, against the ceiling and the window's share of it.
 last = po.ModelBank([cut, whole]).fit_predict(df).tail(1)
 ceiling = 1 / (1 - 0.5 ** (1 / 50))
 print(f"without a window: weight_sum {last['whole'].struct.field('weight_sum')[0]:.2f}, the ceiling {ceiling:.2f}")
@@ -928,10 +946,12 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# 1,200 noisy points on sin(x), saved.
 rng = np.random.default_rng(1)
 x = rng.uniform(-3.0, 3.0, 1200)
 pl.DataFrame({"x": x, "y": np.sin(x) + 0.1 * rng.standard_normal(1200)}).write_parquet("curve.parquet")
 
+# A straight line fitted locally at a given bandwidth, over the points sorted by x.
 def local(bandwidth):
     kernel = po.spec.ewridge(
         "kernel", targets=["y"], features=["x"],
@@ -945,12 +965,14 @@ def local(bandwidth):
     query = pl.scan_parquet("curve.parquet").sort("x")   # sorted by the feature, in the query before the bank
     return query.online.fit_predict([kernel]).online.unnest([kernel]).collect()   # pred_y: the curve at each row's x
 
+# Two bandwidths, and the best straight line through every point.
 narrow, wide = local(0.25), local(1.0)
 fit = narrow["pred_y"].is_not_null()                    # the rows past the warm-up
 curve = narrow.filter(fit)
 truth = np.sin(curve["x"].to_numpy())
 line = np.polyval(np.polyfit(narrow["x"], narrow["y"], 1), curve["x"].to_numpy())
 
+# Each fit's distance from the true curve.
 def rms(pred):
     return float(np.sqrt(np.mean((np.asarray(pred) - truth) ** 2)))
 
@@ -996,14 +1018,17 @@ through `fit_predict_batches` ([In a loop](#in-a-loop-modelbank)).
 It reads `df` from [Example data](#example-data):
 
 ```python
+# One run over every row.
 honest = po.spec.ewridge("honest", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0)
 one_run = po.ModelBank([honest]).fit_predict(df)["honest"].struct.field("pred_y")
 
+# Row 300 from a bank that learned only the rows before it.
 first_300 = po.ModelBank([honest])
 first_300.fit_predict(df.head(300))                           # learns rows 0 to 299
 alone = first_300.predict(df.slice(300, 1))["honest"].struct.field("pred_y")[0]
 print(f"row 300: {one_run[300]:.6f} in one run, {alone:.6f} from rows 0 to 299 alone")
 
+# The same stream, one row per chunk.
 by_row = pl.concat(po.ModelBank([honest]).fit_predict_batches(df, chunk_size=1))   # 400 chunks of one row
 print(f"one chunk against 400: {(one_run - by_row['honest'].struct.field('pred_y')).abs().max()} largest difference")
 ```
@@ -1047,8 +1072,10 @@ It reads `lf` from [Example data](#example-data):
 import textwrap
 import warnings
 
+# A fee per venue, and a spec that reads it.
 pl.DataFrame({"venue": ["X", "Y"], "fee": [0.1, 0.2]}).write_parquet("fees.parquet")
 priced = po.spec.ewridge("priced", targets=["y"], features=["x0", "fee"], half_life=100.0)
+# Join both ways, and print the bank's warning, if any.
 for order in [None, "left"]:
     joined = lf.join(pl.scan_parquet("fees.parquet"), on="venue", **({"maintain_order": order} if order else {}))
     with warnings.catch_warnings(record=True) as caught:
@@ -1127,12 +1154,14 @@ It reads `df` from [Example data](#example-data):
 import textwrap
 
 late = df.head(10)[[0, 1, 2, 3, 4, 5, 7, 8, 6, 9]]           # t runs 0 ... 5, 7, 8, 6, 9
+# Left unset, any step back is refused.
 strict = po.spec.ewridge("strict", targets=["y"], features=["x0"], clock="t", half_life=100.0, gap_cap=300.0)
 try:
     po.ModelBank([strict]).fit_predict(late)
 except ValueError as err:
     print(textwrap.fill(str(err), 100))
 
+# Set below the step: the model starts over, and summary() counts it.
 lenient = po.spec.ewridge("lenient", targets=["y"], features=["x0"], clock="t", half_life=100.0, gap_cap=300.0,
                           restart_after_step_back=1.0)       # a step back larger than 1 starts the model over
 bank = po.ModelBank([lenient])
@@ -1160,6 +1189,7 @@ numbers are those of the same spec fitted to that group's rows alone.
 This code uses `df` from [Example data](#example-data):
 
 ```python
+# One model per stock, in one pass.
 per_stock = po.spec.ewridge(
     "per_stock", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0,
     group="stock_id",           # one model per distinct value of this column
@@ -1169,6 +1199,7 @@ together = bank.fit_predict(df)
 for row in bank.groups().iter_rows(named=True):
     print(f"group {row['group']}: {row['rows_fed']} rows, the last at t = {row['clock_last']}")
 
+# Stock b0's rows alone give the same predictions.
 alone = {**per_stock, "group": None}           # the same spec without a group, fed stock b0's rows alone
 b0 = po.ModelBank([alone]).fit_predict(df.filter(pl.col("stock_id") == "b0"))
 in_bank = together.filter(pl.col("stock_id") == "b0")["per_stock"].struct.field("pred_y")
@@ -1225,9 +1256,11 @@ weighted = po.spec.ewridge(
     "weighted", targets=["y"], features=["x0", "x1"], half_life=float("inf"),
     weight="w",                # a column of row weights
 )
+# Row 100 weighs nothing; then every weight times 10.
 ones = df.with_columns(w=pl.when(pl.int_range(pl.len()) == 100).then(0.0).otherwise(1.0))
 tens = ones.with_columns(pl.col("w") * 10)
 fields = [po.ModelBank([weighted]).fit_predict(frame)["weighted"].struct for frame in (ones, tens)]
+# The rows around row 100, and what the scaling moved.
 for row in [99, 100, 101, 102]:
     print(f"row {row}: pred_y {fields[0].field('pred_y')[row]:.4f}, weight_sum {fields[0].field('weight_sum')[row]:g}")
 print(f"weights times 10: pred_y moves by at most {(fields[0].field('pred_y') - fields[1].field('pred_y')).abs().max():g}, "
@@ -1328,6 +1361,7 @@ warm = po.spec.ewridge(
     min_weight=8.0,             # and until the weight behind the fit reaches 8
     max_error_inflation=1.05,   # and while estimation error would add more than 5% over the noise floor
 )
+# How many rows each gate withheld, and the first row predicted.
 rows = po.ModelBank([warm]).fit_predict(df).unnest("warm")
 counts = rows.group_by("withheld_reason").len().sort("withheld_reason", nulls_last=True)
 for reason, n in counts.iter_rows():
@@ -1493,6 +1527,7 @@ scored, the clock the model stands at after it, whether the fit moved, and
 `weight_sum` on the row after it, on `df` from [Example data](#example-data):
 
 ```python
+# One spec, and four copies of the stream that differ only at row 100.
 held = po.spec.ewridge("held", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0,
                        weight="w", max_rows_between_solves=1)   # a solve on every row, so each fit read is current
 rows = df.with_columns(w=pl.lit(1.0))
@@ -1503,9 +1538,11 @@ ways = {
     "weight 0": rows.with_columns(w=pl.when(row_100).then(0.0).otherwise(pl.col("w"))),
     "predict": rows,
 }
+# A bank that has seen rows 0 to 99, to tell whether the fit moved.
 before = po.ModelBank([held])
 before.fit_predict(rows.head(100))                            # rows 0 to 99
 print(f"{'':<14} {'scored':>6} {'clock':>6} {'fit moved':>9} {'weight_sum':>10}")
+# Each way: rows 0 to 99, then row 100, then row 101.
 for way, frame in ways.items():
     bank = po.ModelBank([held])
     bank.fit_predict(frame.head(100))
@@ -1513,6 +1550,7 @@ for way, frame in ways.items():
         scored = bank.predict(frame.slice(100, 1))            # scores row 100 and learns nothing
     else:
         scored = bank.fit_predict(frame.slice(100, 1))
+    # What row 100 did: the clock, the fit, and the next row's weight_sum.
     clock = bank.groups()["clock_last"][0]
     moved = bank.coef()["coef"].to_list() != before.coef()["coef"].to_list()
     after = bank.fit_predict(frame.slice(101, 1))["held"].struct.field("weight_sum")[0]
@@ -1579,6 +1617,7 @@ VWAP of the trades, less the mid now.
 This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
+# The next minute's VWAP, from two sums over the same window.
 notional = pl.col("price") * pl.col("quantity")
 next_minute = dict(half_life="10s", window_size="1m", reverse=True)   # weights halve every 10 s from the row; the window ends a minute on
 windowed = pl.scan_parquet("trades.parquet").online.with_windows(
@@ -1586,6 +1625,7 @@ windowed = pl.scan_parquet("trades.parquet").online.with_windows(
     fwd_edge=po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute) - pl.col("mid"),   # a target: looks ahead
     clock="ts", gap_cap="5m", group="symbol",              # the clock, the longest step it ages by, and one set of windows per symbol
 ).collect()
+# Five rows, with both windows beside the mid.
 print("time      symbol  mid      mid_trend  fwd_edge")
 for r in windowed.slice(200, 5).iter_rows(named=True):
     print(f"{r['ts']:%H:%M:%S}  {r['symbol']}     {r['mid']:.3f}  {r['mid_trend']:+.4f}    {r['fwd_edge']:+.4f}")
@@ -1688,9 +1728,11 @@ true coefficients are 1/3 each. It then reads the same ticks on a
 grid every 0.1 clock units, each series' last price carried forward:
 
 ```python
+# Three prices that share one move, each observed at times of its own.
 rng = np.random.default_rng(1)
 steps = 200_000                                          # a hidden price path, 0.01 clock units a step
 shared = np.cumsum(rng.normal(0.0, 0.1, steps))          # the move the three series share
+# One frame per series, then one stream in clock order.
 names = ["AAA", "BBB", "CCC"]
 frames = []
 for s in names:
@@ -1700,6 +1742,7 @@ for s in names:
     frames.append(pl.DataFrame({"symbol": s, "t": t, "px": price[(t * 100).astype(int)]}))
 pl.concat(frames).sort("t").write_parquet("own_times.parquet")   # one stream, in clock order
 
+# The refresh grid and the models on it, in one query.
 grid = po.stream.refresh_time(pl.scan_parquet("own_times.parquet"), series="symbol", names=names,
                               clock="t", value="px")    # a query, since it was given one
 returns = grid.select("time_refresh", *(pl.col(f"{s}_value").diff().alias(s) for s in names))  # each series' change since the last point
@@ -1710,11 +1753,13 @@ specs = [
                     clock="time_refresh", gap_cap=10.0, half_life=float("inf")),
 ]
 out = returns.online.fit_predict(specs).collect()         # the first point has no change, so both models skip it
+# The correlations and the betas on the last point.
 last = out.row(-1, named=True)
 print(f"{out.height} refresh times from {pl.read_parquet('own_times.parquet').height} ticks")
 print("on the refresh grid: corr " + ", ".join(f"{last['comove'][f'corr_{a}_{b}']:.2f}" for a, b in [("AAA", "BBB"), ("AAA", "CCC"), ("BBB", "CCC")])
       + f"; AAA on BBB {last['beta']['coef'][1]:.2f}, on CCC {last['beta']['coef'][2]:.2f}")
 
+# The same ticks on a grid every 0.1 clock units, for comparison.
 ticks_by_series = pl.read_parquet("own_times.parquet").partition_by("symbol", as_dict=True)
 fine = pl.DataFrame({"t": np.arange(0.0, 2_000.0, 0.1)})
 for s in names:                                          # each series' last price at each point of the fine grid
@@ -1776,6 +1821,7 @@ spec = po.spec.ewridge(                                   # a ridge regression o
     clock="t", half_life=600.0, gap_cap=300.0,
     group="stock_id", ridge=[1e-6, 0.1], standardize=True,
 )
+# Run the query to a file, then read what it wrote.
 (
     pl.scan_parquet("ticks/*.parquet")                    # a query over the files; nothing is read yet
     .online.fit_predict([spec], chunk_size=100_000)       # a bank with nothing learned yet; every run starts from the same place
@@ -1786,10 +1832,12 @@ spec = po.spec.ewridge(                                   # a ridge regression o
 fitted = pl.read_parquet("fitted.parquet")
 print(f"{fitted.height} rows past the filter; the record's fields: {fitted['ridge'].struct.fields}")
 
+# The same spec, one row per chunk.
 one_row_chunks = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], chunk_size=1).collect()
 same = one_row_chunks.filter(pl.col("ridge").struct.field("weight_sum") > 50)["ridge"].struct.field("pred_y__r0.1")
 print(f"largest difference, chunks of 100,000 against chunks of 1: {(fitted['ridge'].struct.field('pred_y__r0.1') - same).abs().max()}")
 
+# One stock's fit on its last row.
 last = fitted.filter(pl.col("stock_id") == "b3").row(-1, named=True)
 intercept, b0, b1, b2 = last["ridge"]["coef"][:4]        # the fit at the first ridge value; the second's follow
 print(f"b3's coefficients on its last row: intercept {intercept:.2f}, x0 {b0:.2f}, x1 {b1:.2f}, x2 {b2:.2f}")
@@ -1830,6 +1878,7 @@ fitted = (
     .online.fit_predict([learn_from_x])
     .collect()
 )
+# How many rows were scored, and how much weight was learned.
 scored = fitted["ridge"].struct.field("pred_y").is_not_null().sum()
 print(f"rows scored: {scored} of {fitted.height}; weight_sum on the last row: {fitted['ridge'].struct.field('weight_sum')[-1]:.0f}")
 ```
@@ -2018,12 +2067,14 @@ a second read raises `ValueError`.
 This code uses `df` and `today` from [Example data](#example-data):
 
 ```python
+# One spec's output as Arrow, read once as a Series.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 bank = po.ModelBank([spec])
 structs = bank.fit_predict_arrow(df)                    # one per spec, as Arrow
 ridge = pl.Series(structs[0])                           # Polars as the reader here: any reader of __arrow_c_array__ takes it
 print(f"{len(structs)} {type(structs[0]).__name__}; read as a Series: {ridge.name}, {ridge.len()} rows")
 print(f"the same as fit_predict's column: {ridge.equals(po.ModelBank([spec]).fit_predict(df)['ridge'])}")
+# A second read of the same struct is refused.
 try:
     pl.Series(structs[0])                               # the second read
 except ValueError as e:
@@ -2069,15 +2120,18 @@ This code uses `df` and `today` from [Example data](#example-data):
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 one_run = po.ModelBank([spec]).fit_predict(pl.concat([df, today]))   # df and today as one stream, for comparison
 
+# Fit df, save the bank, and load it back.
 bank = po.ModelBank([spec])
 bank.fit_predict(df)                                     # the stream so far
 bank.save("bank.state")
 loaded = po.ModelBank.load("bank.state", specs=[spec])   # specs= checks the file holds this model, not another
 
+# Serve today from the loaded bank.
 served = loaded.predict(today)                           # score today's rows, learning nothing
 pred = lambda out: out["ridge"].struct.field("pred_y")
 print(f"served, today's first row: {pred(served)[0]:.6f}; one run: {pred(one_run)[400]:.6f}")
 
+# Resume on input that overlaps what the state has learned.
 rerun = pl.concat([df.tail(50), today])                  # input that overlaps the state by 50 rows
 kept = loaded.skip_learned(rerun)                        # the rows the state has not learned
 resumed = loaded.fit_predict(kept)
@@ -2113,6 +2167,7 @@ This code uses `df` and `ticks.parquet` from [Example data](#example-data):
 ```python
 from pathlib import Path
 
+# The same state, saved from a bank and from a query.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 bank = po.ModelBank([spec])
 bank.fit_predict(df)
@@ -2185,11 +2240,13 @@ file:**
 This code uses `df` and `ticks.parquet` from [Example data](#example-data):
 
 ```python
+# A saved bank, and a spec that does not match it.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 bank = po.ModelBank([spec])
 bank.fit_predict(df)
 bank.save("bank.state")
 other = po.spec.ewridge("ridge", targets=["y"], features=["x0"], clock="t", half_life=600.0, gap_cap=300.0)
+# Three loads that fail: no file, the wrong spec, not a state file.
 for path, specs in [("nowhere.state", [spec]), ("bank.state", [other]), ("ticks.parquet", None)]:
     try:
         po.ModelBank.load(path, specs=specs)
@@ -2219,9 +2276,11 @@ spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
 bank = po.ModelBank([spec])
 bank.fit_predict(df)
 bank.save("bank.state")
+# Three ways to score the rows after df's.
 scored = bank.predict(today)                             # every row scored from the same state: nothing moves
 served = later.online.predict(bank).collect()            # a bank, as it stands when the query runs
 from_file = later.online.predict("bank.state").collect() # a path, read when the query is built
+# Every row saw the same state, and the three agree.
 weights = scored["ridge"].struct.field("weight_sum")
 print(f"weight_sum on every row: {weights.min():.4f} to {weights.max():.4f}; the three agree: "
       f"{scored['ridge'].equals(served['ridge']) and served['ridge'].equals(from_file['ridge'])}")
@@ -2302,12 +2361,14 @@ is loaded back with nothing but the file.
 This code uses `lf` from [Example data](#example-data):
 
 ```python
+# A bank fitted per stock, and saved.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t", gap_cap=300.0,
                        half_life=600.0, group="stock_id")
 fitted = po.ModelBank([spec])
 fitted.fit(lf)                           # learn from every row of the file, keep only the state
 fitted.save("bank.state")
 
+# Loaded back from the file alone, it describes itself.
 bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
 print(repr(bank))                        # its specs, its groups, the rows it was fed
 print(bank.rows_fed, bank.solve_failures()["solve_failures"].to_list())   # rows fed; solves that needed help, per group
@@ -2342,16 +2403,19 @@ and `x2` 0.
 This code uses `lf` from [Example data](#example-data):
 
 ```python
+# A ridge per stock, learned from every row of lf.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t", gap_cap=300.0,
                        half_life=600.0, group="stock_id")
 bank = po.ModelBank([spec])
 bank.fit(lf)
 
+# The four tables, each a frame.
 betas = bank.coef()                    # one row per coefficient: spec, group, instance, ..., term, coef
 fed = bank.summary("ridge")            # one row per group: what it was fed, and its warm-up readings
 cols = bank.describe("ridge")          # one row per input column per group: role, count, nulls, moments
 last = bank.last_row("ridge")          # one row per group: the record fit_predict wrote on its last row
 
+# Read three of them: the coefficients, what was fed, and b0's columns.
 wide = betas.pivot("term", index="group", values="coef")   # a row per group, a column per term
 for row in wide.iter_rows(named=True):
     print(row["group"], " ".join(f"{t} {row[t]:.2f}" for t in ["intercept", "x0", "x1", "x2"]))
@@ -2421,6 +2485,7 @@ for name, half_life in [("fast", 50.0), ("slow", 1000.0)]:    # two half-lives, 
     one.fit(lf)
     one.save(f"fits/{name}.state")
 
+# Load the files back, and stack their tables in one.
 banks = [po.ModelBank.load(f) for f in sorted(Path("fits").glob("*.state"))]
 betas = pl.concat([b.coef() for b in banks])                          # the same columns for every spec
 last = pl.concat([b.last_row() for b in banks], how="diagonal_relaxed")   # fields that differ by spec
@@ -2458,11 +2523,13 @@ grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
                        gap_cap=300.0, half_life=[100.0, 500.0], ridge=[1e-6, 0.5])
 out = df.online.fit_predict([grid])  # df's columns, plus the spec's column "m"
 
+# A field's name, found from the values it holds.
 idx = po.spec.output_index(grid)     # every field, with the values its name encodes, and its dtype
 name = idx.filter((pl.col("kind") == "pred") & (pl.col("target") == "y")
                   & (pl.col("ridge") == 1e-6) & (pl.col("half_life") == 500.0))["field"].item()
 print(name, out["m"].struct.field(name).dtype)
 
+# A coefficient's place in its list, found the same way.
 row = po.spec.coef_fields(grid).filter(                        # one row per coefficient: its list, position, and unnest column
     (pl.col("term") == "x1") & (pl.col("ridge") == 1e-6) & (pl.col("half_life") == 500.0)
 ).row(0, named=True)
@@ -2589,12 +2656,15 @@ slope by more than a third.
 This code uses `df` from [Example data](#example-data):
 
 ```python
+# A grid of two half-lives by two ridge values, fitted on df.
 grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
                        gap_cap=300.0, half_life=[100.0, 500.0], ridge=[1e-6, 0.5])
 grid_bank = po.ModelBank([grid])
 out = grid_bank.fit_predict(df)                             # df's columns, plus "m"
+# The blocks spread into columns.
 cols = out.online.unnest([grid])                            # coef@h100 and coef@h500, spread into columns
 print(cols.select("pred_y__r0.5@h500", "coef_y_x0__r0.5@h500").columns)   # each block's columns named the way its pred field is
+# The same blocks from the bank, a row each.
 betas = grid_bank.coef()                                    # target, ridge, feature_set and penalty tell the blocks apart
 blocks_wide = betas.pivot("term", index=["instance", "ridge"], values="coef")   # a row per block
 for instance, ridge, b0, b1, b2 in blocks_wide.sort("instance", "ridge").iter_rows():
@@ -2631,6 +2701,7 @@ call.
 This code uses `lf` from [Example data](#example-data):
 
 ```python
+# One Gram per hour, from one pass.
 features = ["x0", "x1", "x2", "signal_a", "signal_b"]
 hours = po.spec.ewridge(
     "hours", targets=["y"], features=features, group="hour",   # a Gram per hour
@@ -2640,6 +2711,7 @@ bank = po.ModelBank([hours])
 bank.fit(lf.with_columns(hour=pl.col("ts").dt.truncate("1h")))   # the hour, made in the query
 hourly = bank.gram("hours")                 # one dict of numpy arrays per hour, oldest first
 
+# Pool every hour into one fit.
 pooled = po.gram.merge(hourly)              # the Gram of all the hours' rows
 coef = po.gram.solve(pooled)                # least squares: the intercept, then the features
 t = po.gram.coef_stats(pooled, coef)["t"]   # and each coefficient's t
@@ -2780,9 +2852,11 @@ r = np.array([[1.0, 0.9, 0.7],          # three correlations estimated pair by p
               [0.9, 1.0, 0.1],          # x0 follows both x1 and x2 closely, yet x1 and x2 barely move together,
               [0.7, 0.1, 1.0]])         # which no single set of rows can give
 print(f"smallest eigenvalue {np.linalg.eigvalsh(r).min():+.3f}")
+# The repair, and how far it moved the matrix.
 fixed, dist, iters = po.corr.nearest(r)    # Higham (2002): the nearest correlation matrix, by alternating projections
 print(f"repaired: smallest eigenvalue within 1e-8 of 0: {abs(np.linalg.eigvalsh(fixed).min()) < 1e-8}, moved by {dist:.3f}")
 print(np.round(fixed, 3).tolist())
+# Shrinkage, the noise edges, and a correlation's standard error.
 shrunk, alpha = po.corr.shrink(fixed, alpha=0.2)   # Ledoit-Wolf shrinkage toward a constant-correlation target
 lo, hi = po.corr.mp_edge(n=2000, m=50)     # the Marchenko-Pastur edges: eigenvalues inside them are what pure noise gives
 print(f"noise edges for 50 series over 2,000 rows: {lo:.3f} to {hi:.3f}")
@@ -2849,6 +2923,7 @@ from the faulty file, and `check()` names each fault.
 This code uses `df` from [Example data](#example-data):
 
 ```python
+# df with three faults planted, saved.
 faulty = df.with_columns(
     x1=pl.when(pl.col("t") % 20 == 0).then(-999.0).otherwise(pl.col("x1")),  # -999 where x1 was not measured: 5% of rows
     x2=pl.when(pl.col("t") % 3 == 0).then(None).otherwise(pl.col("x2")),     # x2 missing on a third of the rows
@@ -2856,12 +2931,14 @@ faulty = df.with_columns(
 )
 faulty.write_parquet("faulty.parquet")
 
+# An audit beside a ridge, learned from the faulty file.
 features = ["x0", "x1", "x2", "x3"]
 audit = po.spec.audit("audit", columns=[*features, "y"], clock="t", gap_cap=300.0)   # counts what no model keeps
 model = po.spec.ewridge("ridge", targets=["y"], features=features, clock="t", gap_cap=300.0, half_life=100.0)
 bank = po.ModelBank([audit, model])
 bank.fit(pl.scan_parquet("faulty.parquet"))
 
+# Each finding, and the advice on the worst.
 findings = bank.check()                     # one row per problem, the worst first
 for row in findings.select("severity", "code", "spec", "column", pl.col("value").round_sig_figs(3)).iter_rows():
     print(*row)
@@ -3124,6 +3201,7 @@ This code uses `df` from [Example data](#example-data):
 ```python
 import math
 
+# Two forecasts of y, and a test between them.
 common = dict(targets=["y"], clock="t", gap_cap=10.0, half_life=100.0)
 specs = [
     po.spec.ewridge("ridge", features=["x0", "x1"], **common),
@@ -3165,6 +3243,7 @@ dates each switch, and `hmm` says which regime each row is in:
 import polars as pl
 import polars_online as po
 
+# Make the data, and save it with its truth.
 sim = po.sim.regimes(                                         # two series, and the regime each row was drawn in
     2, states=[0.3, 0.3], transition=[[0.0, 1.0], [1.0, 0.0]],   # the two regimes take turns, a block each
     n_blocks=6, rows_per_block=500,
@@ -3175,6 +3254,7 @@ truth = sim["truth_rows"].select("t", regime="state")
 sim["rows"].join(truth, on="t").write_parquet("regimes.parquet")
 returns = pl.scan_parquet("regimes.parquet").with_columns(pl.col("x_1", "x_2").diff())   # from the levels
 
+# One model dates each switch, the other names the regime.
 age = po.spec.bocpd("age", features=["x_1", "x_2"], hazard=500.0)   # how long has this regime lasted?
 which = po.spec.hmm(                                          # which regime is this row in?
     "which", features=["x_1", "x_2"], n_components=2, half_life=float("inf"),
@@ -3185,6 +3265,7 @@ out = returns.online.fit_predict([age, which]).collect().with_columns(
     began=pl.col("t") - pl.col("age").struct.field("run_mode"),   # the row the current regime began on
     guess=pl.col("which").struct.field("state"),
 )
+# Score both against the planted switches and regimes.
 for switch in (500, 1000, 1500, 2000, 2500):
     began = out.filter(pl.col("t") == switch + 50)["began"][0]
     print(f"a switch at row {switch}: 50 rows later, bocpd dates the regime to row {began}")
@@ -3239,6 +3320,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# 200,000 rows of 50 features, on disk.
 rng = np.random.default_rng(1)
 n = 200_000
 X = rng.standard_normal((n, 50))
@@ -3246,6 +3328,7 @@ pl.DataFrame(
     {"y": X[:, 0] + rng.standard_normal(n)} | {f"x{j}": X[:, j] for j in range(50)}
 ).write_parquet("wide.parquet")
 
+# Time one fit at 5 features and at 50, best of three.
 for k in (5, 50):
     spec = po.spec.ewridge("ridge", targets=["y"], features=[f"x{j}" for j in range(k)],
                            half_life=1000.0)
@@ -3398,6 +3481,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A file of 20 features, and eight specs that differ only in half-life.
 rng = np.random.default_rng(2)
 n = 300_000
 features = [f"x{j}" for j in range(20)]
@@ -3407,6 +3491,7 @@ pl.DataFrame(
 specs = [po.spec.ewridge(f"h{h}", targets=["y"], features=features, half_life=float(h))
          for h in (100, 200, 400, 800, 1600, 3200, 6400, 12800)]   # eight specs, one task each
 
+# The eight in one bank, then one at a time.
 start = time.perf_counter()
 together = pl.scan_parquet("specs.parquet").online.fit_predict(specs).collect()
 in_one_bank = time.perf_counter() - start
@@ -3415,6 +3500,7 @@ start = time.perf_counter()
 alone = [pl.scan_parquet("specs.parquet").online.fit_predict([s]).collect() for s in specs]
 one_at_a_time = time.perf_counter() - start
 
+# The times, and whether the outputs agree.
 print(f"time: {in_one_bank:.2f} s in one bank, {one_at_a_time:.2f} s one at a time")
 same = all(together[s["name"]].equals(a[s["name"]]) for s, a in zip(specs, alone))
 print("the same output either way:", same)
@@ -3469,6 +3555,7 @@ import polars as pl
 import polars_online as po
 from itertools import product
 
+# Three factor sets, each with and without standardizing: six specs.
 factors = {"mkt": ["x0"], "mkt-sz": ["x0", "x1"], "mkt-sz-val": ["x0", "x1", "x2"]}
 
 def factor_spec(name, features, standardize):
@@ -3480,6 +3567,7 @@ def factor_spec(name, features, standardize):
 
 specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, True])]
 
+# One pass over the file fits all six.
 (pl.scan_parquet("ticks.parquet")
    .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state")
    .sink_parquet("grid.parquet"))
@@ -3520,6 +3608,7 @@ coefficients on 4 rows of each of 40 chunks.
 This code uses the file `ticks.parquet` and `df` from [Example data](#example-data):
 
 ```python
+# The same spec over chunks of 10 rows, the whole file, and a frame.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
                        half_life=50.0, group="stock_id")
 query = pl.scan_parquet("ticks.parquet")
@@ -3527,6 +3616,7 @@ small = query.online.fit_predict([spec], chunk_size=10).collect()       # read 1
 large = query.online.fit_predict([spec], chunk_size=100_000).collect()  # the whole file at once
 whole = po.ModelBank([spec]).fit_predict(df)                            # a frame: one chunk, whatever its size
 
+# Compare the predictions, and count the rows that carry coef.
 def field(out, name):
     return out["ridge"].struct.field(name)
 
@@ -3596,6 +3686,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A million rows of 20 features and 64 groups, on disk.
 rng = np.random.default_rng(3)
 n = 1_000_000
 features = [f"x{j}" for j in range(20)]
@@ -3604,6 +3695,7 @@ pl.DataFrame(
     | {f: rng.standard_normal(n) for f in features}
 ).write_parquet("long.parquet")
 
+# The state's size after 10,000 rows and after all of them, with and without groups.
 for group in (None, "g"):
     spec = po.spec.ewridge("ridge", targets=["y"], features=features, half_life=1000.0, group=group)
     for rows in (10_000, 1_000_000):
@@ -3681,6 +3773,7 @@ os.environ["POLARS_ONLINE_MAX_THREADS"] = "14"   # before the first fit_predict:
 import polars as pl
 import polars_online as po
 
+# The run itself does not change.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")
 (pl.scan_parquet("ticks.parquet")                     # written in Example data
@@ -3895,6 +3988,7 @@ predictions equal one run's over the same rows.
 This code uses `df` from [Example data](#example-data):
 
 ```python
+# The operator: a bank that Pathway feeds and checkpoints.
 class BankOperator:                                  # the operator's state is the bank
     def __init__(self, specs):
         self.specs, self.bank = specs, po.ModelBank(specs)
@@ -3902,6 +3996,7 @@ class BankOperator:                                  # the operator's state is t
     def __call__(self, batch: pl.DataFrame) -> pl.DataFrame:
         return self.bank.fit_predict(batch)          # each ordered batch Pathway hands it
 
+    # Pathway's checkpoint, and its restore.
     def snapshot(self) -> bytes:
         return self.bank.save_bytes()                # what Pathway's persistence stores
 
@@ -3909,6 +4004,7 @@ class BankOperator:                                  # the operator's state is t
         self.bank = po.ModelBank.load_bytes(blob, specs=self.specs)
 
 
+# Feed it two batches, restarting between them.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
                        half_life=100.0)
 op = BankOperator([spec])
@@ -3916,6 +4012,7 @@ first = op(df.head(200))                             # plain batches stand in fo
 op.restore(op.snapshot())                            # a checkpoint and a restart between two batches ...
 rest = op(df.tail(200))                              # ... and the bank goes on where it was
 
+# Compare with one run over the same rows.
 one_run = po.ModelBank([spec]).fit_predict(df)       # the same rows, with no restart
 print("rows scored:", first.height + rest.height)
 restarted = pl.concat([first, rest])
@@ -3955,6 +4052,7 @@ import polars as pl
 import polars_online as po
 import xgboost as xgb
 
+# A training file and a validation file, where y ignores x2.
 rng = np.random.default_rng(4)
 for name, n in (("train", 20_000), ("valid", 5_000)):
     x0, x1, x2 = rng.standard_normal((3, n))
@@ -3963,12 +4061,14 @@ for name, n in (("train", 20_000), ("valid", 5_000)):
         "y": np.sin(2 * x0) + (x1 > 0.5) + 0.3 * rng.standard_normal(n),   # noise of spread 0.3
     }).write_parquet(f"{name}.parquet")
 
+# Bin both files, and train for 50 rounds.
 features = ["x0", "x1", "x2"]
 train = po.gbdt.xgboost_matrix("train.parquet", label="y", features=features)             # an xgb.QuantileDMatrix
 valid = po.gbdt.xgboost_matrix("valid.parquet", label="y", features=features, ref=train)  # on train's bins
 history = {}
 booster = xgb.train({"tree_method": "hist", "max_depth": 4, "eta": 0.3}, train, 50,
                     evals=[(valid, "valid")], evals_result=history, verbose_eval=False)
+# The validation error, and each feature's share of the gain.
 rmse = history["valid"]["rmse"]
 print(f"validation RMSE: {rmse[0]:.2f} after 1 round, {rmse[-1]:.2f} after 50 (the noise is 0.30)")
 gain = booster.get_score(importance_type="total_gain")

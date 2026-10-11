@@ -39,6 +39,7 @@ pl.DataFrame(
 ).fill_nan(None).write_parquet("quotes.parquet")
 lf = pl.scan_parquet("quotes.parquet")
 
+# An audit beside a ridge regression, both fitted over the stream.
 features = ["x0", "x1", "x2", "x3"]
 audit = po.spec.audit("audit", columns=[*features, "y"], clock="t", gap_cap=5.0)
 model = po.spec.ewridge(
@@ -47,6 +48,7 @@ model = po.spec.ewridge(
 bank = po.ModelBank([audit, model])
 bank.fit(lf)  # learn from every row; keep only the state
 
+# The findings, and the advice the worst one gives.
 findings = bank.check()  # one row per problem, the worst first
 shown = findings.select("severity", "code", "spec", "column", pl.col("value").round_sig_figs(3))
 for row in shown.iter_rows():
@@ -273,6 +275,7 @@ n = 20_000
 x0 = rng.standard_normal(n)
 x1 = 0.6 * x0 + 0.8 * rng.standard_normal(n)
 y = 1.0 * x0 + 0.5 * x1 + rng.standard_normal(n)
+# Where each copy's gaps fall.
 gap_at_random = rng.random(n) < 0.6
 gap_when_y_high = rng.random(n) < 1 / (1 + np.exp(-2 * y))
 pl.DataFrame(
@@ -286,6 +289,7 @@ pl.DataFrame(
 lf = pl.scan_parquet("gaps.parquet")
 
 
+# One least-squares fit over a query, reused for each way below.
 def slopes(query, features):
     """Fit plain least squares (no decay) over the query; return the bank and the coefficients."""
     spec = po.spec.ewridge("ols", targets=["y"], features=features, half_life=float("inf"))
@@ -309,6 +313,7 @@ for x1 in ["x1_random", "x1_by_y"]:
         lf.with_columns(pl.col(x1).fill_null(running_mean)),  # the mean of the values so far
         lf.with_columns(pl.col(x1).fill_null(strategy="forward")),  # the last value seen
     ]
+    # Each way's slopes of x0 and x1, then x0's alone with x1 dropped.
     cells = []
     for query in ways:
         b = slopes(query, ["x0", x1])[1]
@@ -390,6 +395,7 @@ pl.DataFrame({"x0": x0, "x1": x1_fed, "y": y}).write_parquet("sentinel.parquet")
 lf = pl.scan_parquet("sentinel.parquet")
 
 
+# The same fit for the feed as it comes and for the fix.
 def run(query):
     """Fit an audit and a ridge regression; return the bank, the final coefficients and R²."""
     audit = po.spec.audit("audit", columns=["x0", "x1", "y"])
@@ -400,6 +406,7 @@ def run(query):
     return bank, dict(bank.coef().select("term", "coef").iter_rows()), r2
 
 
+# Left alone: the findings, then the slopes and the R².
 bank, coef, r2 = run(lf)
 shown = bank.check().select("severity", "code", "spec", "column", pl.col("value").round_sig_figs(3))
 for row in shown.iter_rows():
@@ -535,6 +542,7 @@ t = np.arange(n, dtype=float)
 x0 = rng.standard_normal(n)
 x1 = rng.standard_normal(n)
 y = 1.0 * x0 + 0.5 * x1 + 0.2 * rng.standard_normal(n)
+# The span the feed is stopped, and the table as the join built it.
 stopped = (t >= 300) & (t < 3_300)
 pl.DataFrame(
     {
@@ -548,6 +556,7 @@ pl.DataFrame(
 lf = pl.scan_parquet("frozen.parquet")
 
 
+# One fit per way below, scored while x1 is held and after it moves.
 def run(query, model):
     """Fit an audit and the model; print the findings once. Return x1's largest |slope| while it
     was held, and the rms error of the predictions after it moves again."""
@@ -555,6 +564,7 @@ def run(query, model):
         [po.spec.audit("audit", columns=["x0", "x1"], clock="t", gap_cap=5.0), model]
     )
     out = pl.concat(bank.fit_predict_batches(query, chunk_size=1_000)).unnest(model["name"])
+    # x1's largest slope while it is held, and the error once it moves.
     held = out.filter((pl.col("t") >= 300) & (pl.col("t") < 3_300))
     slope = held.select(pl.col("coef").arr.get(2).abs().max()).item()  # coef: [intercept, x0, x1]
     moved = out.filter(pl.col("t") >= 3_300)
@@ -562,6 +572,7 @@ def run(query, model):
     return bank, slope, rmse
 
 
+# Left alone: rls on the held value, and what check() says.
 common = dict(
     targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=20.0, coef_every=1
 )
@@ -733,6 +744,7 @@ y = 0.5 * (price - 5_000) + 300 * ret + 0.5 * rng.standard_normal(n)
 pl.DataFrame({"price": price, "ret": ret, "y": y}).write_parquet("level.parquet")
 lf = pl.scan_parquet("level.parquet")
 
+# The three models the recipe compares, on the columns as they come.
 specs = [
     po.spec.rls("rls", targets=["y"], features=["price", "ret"], half_life=float("inf")),
     po.spec.sgd(
@@ -742,6 +754,7 @@ specs = [
 ]
 
 
+# One pass over a query, for the raw columns and for the rescaled ones.
 def run(query):
     """Fit every spec; print check()'s findings and each spec's R² over the last 10,000 rows."""
     bank = po.ModelBank(specs)
@@ -751,12 +764,14 @@ def run(query):
     )
     for row in shown.iter_rows():
         print(*row)
+    # Each model's out-of-sample R².
     for s in specs:
         pred = pl.col(s["name"]).struct.field("pred_y")
         r2 = out.select(1 - (pl.col("y") - pred).pow(2).mean() / pl.col("y").var()).item()
         print(f"{s['name']:8} R² {r2:.3g}")
 
 
+# The columns as they come, then rescaled.
 run(lf)
 print("-- the price less its first value, the return in thousandths --")
 run(lf.with_columns(pl.col("price") - pl.col("price").first(), pl.col("ret") * 1_000))
@@ -866,6 +881,7 @@ pl.DataFrame({"x0": x0, "x1": x1, "x2": x2, "y": y}).write_parquet("collinear.pa
 lf = pl.scan_parquet("collinear.parquet")
 
 
+# One pass over the stream with the given features.
 def run(features):
     """Fit an audit with pairs and a ridge regression; print the findings, R², and x0's
     coefficient over the last 10,000 rows, alone and with x2's share of the same effect."""
@@ -875,11 +891,13 @@ def run(features):
     )
     bank = po.ModelBank([audit, model])
     out = pl.concat(bank.fit_predict_batches(lf, chunk_size=5_000)).unnest("ridge").tail(10_000)
+    # What the audit and the model each found.
     shown = bank.check().select(
         "severity", "code", "spec", "column", pl.col("value").round_sig_figs(3)
     )
     for row in shown.iter_rows():
         print(*row)
+    # How well it predicts, and how far x0's coefficient wanders.
     r2 = out.select(1 - (pl.col("y") - pl.col("pred_y")).pow(2).mean() / pl.col("y").var()).item()
     slope = out.select(pl.col("coef").arr.get(1)).to_series()  # coef: [intercept, x0, x1, (x2)]
     whole = slope + 100 * out["coef"].arr.get(3) if "x2" in features else slope
@@ -889,6 +907,7 @@ def run(features):
     )
 
 
+# Both copies in the model, then only the dollars.
 run(["x0", "x1", "x2"])
 print("-- x2 dropped --")
 run(["x0", "x1"])
@@ -949,12 +968,14 @@ pl.DataFrame({"venue": venue.astype(float), "x": x, "y": y}).write_parquet("venu
 lf = pl.scan_parquet("venues.parquet")
 
 
+# One pass with the given features, scored on the last 10,000 rows.
 def run(query, features):
     """Fit an audit of the columns as they arrive, and a ridge regression on the features."""
     audit = po.spec.audit("audit", columns=["x", "venue"])
     model = po.spec.ewridge("ridge", targets=["y"], features=features, half_life=2_000.0)
     bank = po.ModelBank([audit, model])
     out = pl.concat(bank.fit_predict_batches(query, chunk_size=5_000)).unnest("ridge").tail(10_000)
+    # What the audit found, then how well the model predicts.
     shown = bank.check().select(
         "severity", "code", "spec", "column", pl.col("value").round_sig_figs(3)
     )
@@ -964,6 +985,7 @@ def run(query, features):
     print(f"R² {r2:.3f}")
 
 
+# The venue code fed as a number, then one-hot.
 run(lf, ["x", "venue"])
 print("-- one indicator per venue but the first --")
 indicators = [(pl.col("venue") == v).cast(pl.Float64).alias(f"venue_{v}") for v in range(1, 5)]
@@ -1043,23 +1065,27 @@ pl.DataFrame(
 lf = pl.scan_parquet("walks.parquet")
 
 
+# One least-squares fit over a query, read back with its t.
 def run(query):
     """Fit an audit and plain least squares; print the findings, the slope and its t."""
     audit = po.spec.audit("audit", columns=["x", "y"])
     ols = po.spec.ewridge("ols", targets=["y"], features=["x"], half_life=float("inf"), ridge=1e-9)
     bank = po.ModelBank([audit, ols])
     bank.fit(query)
+    # What the audit and the model each found.
     shown = bank.check().select(
         "severity", "code", "spec", "column", pl.col("value").round_sig_figs(3)
     )
     for row in shown.iter_rows():
         print(*row)
+    # Re-solve the fit from its running sums, to read the slope's t.
     g = bank.gram("ols")[0]  # the model's running sums
     coef = po.gram.solve(g, ridge=1e-9)  # [intercept, slope]
     stats = po.gram.coef_stats(g, coef)  # the slope's t, and the R², from the same sums
     print(f"slope {coef[1]:.3f}, t {stats['t'][1]:.1f}, R² {stats['r2']:.3f}")
 
 
+# The walks as they are, then their changes.
 run(lf)
 print("-- both differenced --")
 run(lf.select(pl.col("x").diff(), pl.col("y").diff()))
@@ -1139,6 +1165,7 @@ y = 0.5 * x + 0.3 * rng.standard_t(2, n)
 pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y}).write_parquet("tails.parquet")
 lf = pl.scan_parquet("tails.parquet")
 
+# An audit, ewridge with its sigma, drift and conformal interval, and huber beside it.
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=5.0, half_life=200.0, coef_every=1)
 specs = [
     po.spec.audit("audit", columns=["x", "y"]),
@@ -1147,12 +1174,14 @@ specs = [
     ),
     po.spec.huber("huber", **common),
 ]
+# Fit over the stream, and print what check() found.
 bank = po.ModelBank(specs)
 out = pl.concat(bank.fit_predict_batches(lf, chunk_size=10_000)).tail(40_000)
 shown = bank.check().select("severity", "code", "spec", "column", pl.col("value").round_sig_figs(3))
 for row in shown.iter_rows():
     print(*row)
 
+# How often each interval covers y, and how often drift fired.
 ew = out.unnest("ewridge")
 gaussian = ew.select(
     ((pl.col("y") - pl.col("pred_y")).abs() <= 1.645 * pl.col("sigma_y")).mean()
@@ -1161,6 +1190,7 @@ conformal = ew.select(pl.col("y").is_between(pl.col("lo_y"), pl.col("hi_y")).mea
 flagged = ew.select(pl.col("drift_y").sum()).item()
 print(f"90% interval from sigma covers {gaussian:.3f}; conformal covers {conformal:.3f}")
 print(f"sigma from {ew['sigma_y'].min():.3g} to {ew['sigma_y'].max():.3g}; drift flagged {flagged}")
+# How far each model's slope strays from 0.5.
 for name in ["ewridge", "huber"]:
     slope = out.select(pl.col(name).struct.field("coef").arr.get(1))  # coef: [intercept, x]
     within = slope.select((pl.all() - 0.5).abs().quantile(0.99)).item()
@@ -1240,6 +1270,7 @@ n = 20_000
 pl.DataFrame({"t": np.arange(n, dtype=float), "r": rng.standard_normal(n)}).write_parquet(
     "returns.parquet"
 )
+# The target, and two features meant to read only the past.
 lf = pl.scan_parquet("returns.parquet").with_columns(
     fwd=pl.col("r").rolling_mean(10).shift(-10),  # the target: the mean return of the next ten rows
     past_bad=pl.col("r")
@@ -1249,6 +1280,7 @@ lf = pl.scan_parquet("returns.parquet").with_columns(
 )
 
 
+# One model of fwd on one feature, with or without an embargo.
 def run(feature, **embargo):
     """Fit a ridge regression of fwd on one feature; print the findings and the R²."""
     spec = po.spec.ewridge(
@@ -1256,6 +1288,7 @@ def run(feature, **embargo):
     )
     bank = po.ModelBank([spec])
     out = pl.concat(bank.fit_predict_batches(lf, chunk_size=5_000)).unnest("m")
+    # The out-of-sample R² over the rows whose target is known.
     out = out.drop_nulls(["fwd", "pred_fwd"])
     r2 = out.select(
         1 - (pl.col("fwd") - pl.col("pred_fwd")).pow(2).mean() / pl.col("fwd").var()
@@ -1268,6 +1301,7 @@ def run(feature, **embargo):
     print(f"{feature}, {'embargo 10' if embargo else 'no embargo'}: R² {r2:.3f}")
 
 
+# The leaking feature, the honest one, and the honest one under an embargo.
 run("past_bad")
 run("past")
 run("past", embargo=10.0)  # learn each row ten rows later, when its target is known
@@ -1361,6 +1395,7 @@ n = 10_000
 t = np.cumsum(rng.exponential(20.0, n)).round()
 x = rng.standard_normal(n)
 trades = pl.DataFrame({"t": t, "x": x, "y": 0.5 * x + rng.standard_normal(n)})
+# Move some rows a few places late, and send a copy of others.
 place = np.arange(n, dtype=float)
 late = rng.random(n) < 0.005
 place[late] += rng.integers(2, 6, late.sum())
@@ -1370,6 +1405,7 @@ pl.concat([trades.with_columns(place=place), resent]).sort("place").drop("place"
 )
 lf = pl.scan_parquet("trades.parquet")
 
+# An audit and a ridge regression on the trades' clock.
 audit = po.spec.audit("audit", columns=["x", "y"], clock="t", gap_cap=200.0)
 model = po.spec.ewridge(
     "ridge", targets=["y"], features=["x"], clock="t", gap_cap=200.0, half_life=5_000.0
@@ -1481,6 +1517,7 @@ stock = np.repeat([f"S{i:02d}" for i in range(40)], rows)
 n = len(stock)
 x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
 y = 0.5 * x0 + 0.3 * x1 + rng.standard_normal(n)
+# Shuffle the stocks' rows into one stream on one clock.
 order = rng.permutation(n)
 pl.DataFrame(
     {
@@ -1495,6 +1532,7 @@ lf = pl.scan_parquet("stocks.parquet")
 small = [f"S{i:02d}" for i in range(4, 40)]
 
 
+# One regression per group, with a minimum weight before it predicts.
 def run(query, group):
     """Fit a regression per group; count the findings by code, and the small stocks' predictions."""
     spec = po.spec.ewridge(
@@ -1507,12 +1545,14 @@ def run(query, group):
     )
     bank = po.ModelBank([spec])
     out = pl.concat(bank.fit_predict_batches(query, chunk_size=5_000)).unnest("ridge")
+    # The findings by code, and the share of the small stocks' rows predicted.
     for row in bank.check().group_by("severity", "code", maintain_order=True).len().iter_rows():
         print(*row)
     predicted = out.filter(pl.col("stock").is_in(small))["pred_y"].is_not_null().mean()
     print(f"the small stocks' rows predicted: {predicted:.0%}")
 
 
+# Each stock its own group, then the small ones pooled into one.
 run(lf, "stock")
 print("-- the small stocks pooled into one group --")
 pooled = lf.with_columns(
@@ -1521,6 +1561,7 @@ pooled = lf.with_columns(
 run(pooled, "pool")
 
 print("-- half-lives that do not suit the stream --")
+# One half-life too short for the row rate, one far longer than the stream.
 specs = [
     po.spec.ewridge(
         "short",
@@ -1535,6 +1576,7 @@ specs = [
         "long", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=100_000.0
     ),
 ]
+# Fit both, and what check() says of each.
 bank = po.ModelBank(specs)
 bank.fit(lf)
 shown = bank.check().select(

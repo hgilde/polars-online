@@ -307,6 +307,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
             fitted.fit_predict(rows)
             return fitted.gram("h")[0]
 
+        # Each half's Gram, the early one aged to the late one's last row.
         early, late = gram_of(df.head(200)), gram_of(df.tail(200))
         dt = df["t"][399] - df["t"][199]                 # early half's last row to late half's
         decay = 0.5 ** (dt / 100.0)
@@ -1566,8 +1567,10 @@ def solve_subsets(
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
         blocks = bank.gram("ridge")                     # one Gram per group
+        # A ridge fit in each block alone.
         each = po.gram.solve_subsets(blocks, [[i] for i in range(len(blocks))], ridge=1e-6)
         t_x0 = [fits[0]["t"][1] for fits in each]       # x0's t in every block
+        # A path over each pair of blocks, and its null runs under random signs.
         halves = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1})
         signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(len(blocks), 20))
         null = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
