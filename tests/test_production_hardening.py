@@ -28,7 +28,6 @@ import pickle
 import re
 import subprocess
 import threading
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -744,69 +743,33 @@ def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
     return bank.closed_groups()
 
 
-def _trades(n: int = 3000) -> pl.DataFrame:
-    """Quotes, each with a `mid`, and trades between them -- three rows in ten
-    -- with a `side`, a `quantity` and a `price`, null on the quotes; two
-    symbols, about two rows a second on the clock `ts`."""
-    rng = np.random.default_rng(7)
-    trade = rng.random(n) < 0.3
-    start = datetime(2024, 1, 2, 9, 30)
-    ts = [start + timedelta(microseconds=int(u)) for u in np.cumsum(rng.exponential(5e5, n))]
-    mid = 100 + np.cumsum(rng.normal(0.0, 0.01, n))
-    return pl.DataFrame(
-        {
-            "ts": ts,
-            "symbol": rng.choice(["AAA", "BBB"], n),
-            "mid": mid,
-            "side": [
-                s if k else None for s, k in zip(rng.choice(["buy", "sell"], n), trade, strict=True)
-            ],
-            "quantity": [
-                float(q) if k else None for q, k in zip(rng.integers(1, 10, n), trade, strict=True)
-            ],
-            "price": [
-                float(m + e) if k else None
-                for m, e, k in zip(mid, rng.normal(0.0, 0.02, n), trade, strict=True)
-            ],
-        }
-    )
+def _example_data(tmp_path: Path) -> dict[str, object]:
+    """What the README's *Example data* block builds, run as written in
+    ``tmp_path``, which is where it writes its parquet files: the frames
+    (``df``, ``lf``, ``today``, ``later``, ``trades``), the modules it
+    imports, and whatever else it names. A recipe runs in this namespace
+    and nothing more, so what it prints comes from the README's own data."""
+    ns: dict[str, object] = {"__name__": "__readme__"}
+    with contextlib.chdir(tmp_path):
+        exec(compile(_example_data_block(), "README.md: Example data", "exec"), ns)
+    return ns
 
 
 def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     """What the README's examples have built by the time a block runs: the
-    frames *Example data* builds, a spec with the grid its field-name
-    examples assume, a fed bank, an output frame, and the files the doc
-    examples read. A block that needs something not here fails with a
-    `NameError`. That finds a name missing from this namespace, not one the
-    README never built: every block here gets `df` ready-made, so a README
-    that only described `df` passed for four rewrites (README-ITERATIONS,
-    C11). `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one`
+    frames *Example data* builds, by running that block as written (so
+    there is no copy of the README's data here to drift from it), a spec
+    with the grid its field-name examples assume, a fed bank, an output
+    frame, and the files the doc examples read. A block that needs
+    something not here fails with a `NameError`. That finds a name missing
+    from this namespace, not one the README never built: every block here
+    gets `df` ready-made, so a README that only described `df` passed for
+    four rewrites (README-ITERATIONS, C11).
+    `test_every_name_a_readme_example_reads_was_built_by_an_earlier_one`
     checks the README itself."""
-    n = 400
-    rng = np.random.default_rng(0)
-    df = pl.DataFrame(
-        {
-            "t": np.arange(float(n)),
-            # A timestamp, a minute apart: the README's clock="ts" specs give durations.
-            "ts": pl.datetime_range(
-                datetime(2024, 1, 2, 9, 30),
-                datetime(2024, 1, 2, 9, 30) + timedelta(minutes=n - 1),
-                "1m",
-                eager=True,
-            ),
-            "x0": rng.standard_normal(n),
-            "x1": rng.standard_normal(n),
-            "x2": rng.standard_normal(n),
-            "signal_a": rng.standard_normal(n),
-            "signal_b": rng.standard_normal(n),
-            "y": rng.standard_normal(n),
-            "ret": rng.standard_normal(n),
-            "stock_id": [f"b{i % 4}" for i in range(n)],
-            "group": [f"g{i % 3}" for i in range(n)],
-            "session": ["m"] * (n // 2) + ["a"] * (n - n // 2),
-            "venue": ["X", "Y"] * (n // 2),
-        }
-    )
+    data = _example_data(tmp_path)
+    df = data["df"]
+    assert isinstance(df, pl.DataFrame)
     common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0)
     # `spec` as section 2 shows it, and `grid` as the "output field names"
     # section introduces it (ridge 0.5, half-life 500 are what its blocks filter on).
@@ -832,16 +795,10 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     ).fit_predict(df)
     graded = po.ModelBank([grid]).fit_predict(df)
     out = df.hstack(scored.select("ridge", "kalman")).hstack(graded.select("m"))
-    # The rows after `df`'s, as "today" is after the stream a bank has
-    # learned: the same rows again would step every group's clock back,
-    # which the default refuses (task 120).
-    today = df.with_columns(pl.col("t") - df["t"].min() + df["t"].max() + 1.0)
-    df.write_parquet(tmp_path / "ticks.parquet")
-    today.write_parquet(tmp_path / "today.parquet")
-    _trades().write_parquet(tmp_path / "trades.parquet")
-    (tmp_path / "ticks").mkdir()  # the `ticks/*.parquet` glob: a stream in two files
-    df[:200].write_parquet(tmp_path / "ticks" / "part-0.parquet")
-    df[200:].write_parquet(tmp_path / "ticks" / "part-1.parquet")
+    # *Example data* wrote ticks.parquet, today.parquet, trades.parquet and
+    # the `ticks/*.parquet` glob; the runner guide's examples read these too.
+    today = data["today"]
+    assert isinstance(today, pl.DataFrame)
     today.write_csv(tmp_path / "today.csv")
     # `--input-format ipc` names a file whose extension does not say so.
     df.write_ipc(tmp_path / "feed.dat")
@@ -902,7 +859,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         ),
         # The "windowed means" section's stream: quotes with a mid, and
         # trades between them, for two symbols on the clock `ts`.
-        "trades": _trades(),
+        "trades": data["trades"],
         # The "relative and look-ahead targets" section builds it in its first
         # block, and its `with_columns` return block reuses it.
         "flows": pl.scan_parquet(tmp_path / "trades.parquet").with_columns(
@@ -956,12 +913,13 @@ class TestReadmeExamples:
     def test_the_readme_builds_the_frames_its_examples_read(self, tmp_path, monkeypatch):
         """*Example data* shows the code that builds `df`, `trades` and
         `today`, and writes the files some examples scan, so a reader can run
-        any example. It must build exactly the frames the namespace above
-        gives every block, or the README would show one stream and test its
-        examples on another."""
+        any example. The namespace above runs that block as written, so it
+        gives every block the README's own frames; here the block runs again
+        where nothing else wrote, and each file it writes holds the frame it
+        names, `lf` and `later` read back `df` and `today`, and `today`
+        follows `df` on the clock `t` (the same rows again would step every
+        group's clock back, which the default refuses)."""
         ns = _readme_namespace(tmp_path)
-        # The block runs where the fixture wrote nothing, so the files read
-        # back below are the ones it writes.
         readme = tmp_path / "readme"
         readme.mkdir()
         monkeypatch.chdir(readme)
@@ -973,6 +931,31 @@ class TestReadmeExamples:
         assert shown["later"].collect().equals(ns["today"])
         for file, name in [("ticks", "df"), ("today", "today"), ("trades", "trades")]:
             assert pl.read_parquet(readme / f"{file}.parquet").equals(ns[name]), file
+        parts = pl.read_parquet(readme / "ticks" / "*.parquet")
+        assert parts.equals(ns["df"])
+        df, today = ns["df"], ns["today"]
+        assert today["t"].min() > df["t"].max()
+
+    def test_the_example_data_plants_what_it_says(self, tmp_path):
+        """*Example data* says `df` holds a known answer: `y` is
+        ``1 + 2 x0 - x1`` plus noise of spread 0.5, `ret`'s beta on
+        `signal_a` flips from 0.8 to -0.8 at row 200, and its noise is calm
+        (0.5) and volatile (2) in alternate hundreds. Least squares on the
+        README's own frame finds each, so a recipe that prints a fit can be
+        read against it."""
+        df = _example_data(tmp_path)["df"]
+        assert isinstance(df, pl.DataFrame)
+        x = np.column_stack([np.ones(df.height), df["x0"], df["x1"], df["x2"]])
+        coef, *_ = np.linalg.lstsq(x, df["y"].to_numpy(), rcond=None)
+        assert np.allclose(coef, [1.0, 2.0, -1.0, 0.0], atol=0.1), coef
+        ret, a = df["ret"].to_numpy(), df["signal_a"].to_numpy()
+        for rows, beta in [(slice(0, 200), 0.8), (slice(200, 400), -0.8)]:
+            fit = np.polyfit(a[rows], ret[rows], 1)[0]
+            assert abs(fit - beta) < 0.3, (rows, fit)
+        beta = np.where(np.arange(400) < 200, 0.8, -0.8)
+        resid = ret - beta * a
+        spreads = [resid[i : i + 100].std() for i in range(0, 400, 100)]
+        assert np.allclose(spreads, [0.5, 2.0, 0.5, 2.0], rtol=0.2), spreads
 
     #: The names the namespace hands out that the README also builds, and
     #: which of the README blocks that assign one it copies.

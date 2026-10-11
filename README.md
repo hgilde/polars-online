@@ -297,10 +297,15 @@ import polars as pl
 import polars_online as po
 
 rng = np.random.default_rng(0)
+x0, x1, x2, signal_a, signal_b, noise_y, noise_ret = rng.standard_normal((7, 400))
+row = np.arange(400)
 df = pl.DataFrame({
     "t": np.arange(400.0),                                       # a numeric clock: the row's number
     "ts": pl.datetime_range(datetime(2024, 1, 2, 9, 30), datetime(2024, 1, 2, 16, 9), "1m", eager=True),   # a minute apart
-    **{name: rng.standard_normal(400) for name in ["x0", "x1", "x2", "signal_a", "signal_b", "y", "ret"]},
+    "x0": x0, "x1": x1, "x2": x2, "signal_a": signal_a, "signal_b": signal_b,
+    "y": 1.0 + 2.0 * x0 - 1.0 * x1 + 0.5 * noise_y,              # the truth: intercept 1, x0 2, x1 -1; x2 plays no part
+    "ret": np.where(row < 200, 0.8, -0.8) * signal_a             # a break: the beta on signal_a flips at row 200
+    + np.where(row // 100 % 2 == 1, 2.0, 0.5) * noise_ret,       # two regimes: calm (0.5), volatile (2.0) on rows 100-199 and 300-399
     "stock_id": [f"b{i % 4}" for i in range(400)],               # four stocks, taking turns row by row
     "group": [f"g{i % 3}" for i in range(400)],
     "session": ["m"] * 200 + ["a"] * 200,                        # a morning session, then an afternoon one
@@ -332,9 +337,13 @@ trades = pl.DataFrame({
 trades.write_parquet("trades.parquet")                           # on disk, for the examples that scan it
 ```
 
-The numbers in `df` are independent random draws, so a model fitted on
-them finds no relation. Run the examples for the calls and the shape of
-what they return.
+`df` holds a known answer, so an example's output can be read against it.
+`y` is `1 + 2·x0 − x1` plus noise of spread 0.5, and `x2`, `signal_a` and
+`signal_b` play no part in it. `ret`'s beta on `signal_a` is 0.8 for the
+morning session's 200 rows and −0.8 for the afternoon's: a break. Its noise
+is calm, of spread 0.5, on rows 0 to 99 and 200 to 299, and volatile, of
+spread 2, on the other two hundred: two regimes. `trades` holds no planted
+relation: its mid is a random walk.
 
 ## How a bank sees a stream
 
