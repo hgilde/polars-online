@@ -32,22 +32,29 @@ numbers beside the model, in memory the size of its state. Or reduce each
 chunk with :func:`sums`, add the chunks with :func:`merge_sums` and read the
 scores with :func:`from_sums`.
 
-A target that is not a column under its own name -- a column renamed with
+**``spec`` is the spec's name or the spec dict itself.** The name is the
+struct column's. The dict names the column too, and says more: a target
+that is not a column under its own name -- a column renamed with
 :func:`polars_online.target`, or a window expression looking ahead -- is
-read through the spec that wrote the output: pass it as ``spec`` (see
-:func:`unpack`).
+read through it (see :func:`unpack`), and so is whether a fit is a
+classifier, whose scores take other names (:func:`metrics`'s ``binary``).
 
-The scores start from :func:`unpack` and raise what it raises: ``KeyError``
-for a ``spec_name`` the frame has not got, ``TypeError`` for a column that is
-not a model's prediction struct, ``ValueError`` for a slot whose target column
-cannot be found. A ``group`` or ``clock`` column the frame has not got is
-polars' ``ColumnNotFoundError``.
+Every call here reads a whole ``DataFrame``: a ``LazyFrame`` is refused with
+a ``TypeError`` that says to collect it. The scores start from
+:func:`unpack` and raise what it raises: ``KeyError`` for a spec the frame
+has no column of, ``TypeError`` for a column that is not a model's
+prediction struct, ``ValueError`` for a slot whose target column cannot be
+found. A ``group`` or ``clock`` column the frame has not got is polars'
+``ColumnNotFoundError``.
 
 ``group`` names one key column, as a spec's ``group`` does, or a list of
-them. ``min_samples`` is the fewest rows a key is reported on, Polars' name
-for that count. Before 1.0 they were ``by`` and ``min_obs``, and
-:func:`window_metrics` was ``rolling_metrics``. An old name is refused, and
-the error names the new one.
+them, and ``None``, the default, is no key. ``min_samples`` is the fewest
+rows a key is scored on, as Polars' ``min_samples`` is: a key with fewer
+keeps its row, its count ``n`` read and its scores null. Before 1.0 they
+were ``by`` and ``min_obs``, and :func:`window_metrics` was
+``rolling_metrics``. An old name is refused, and the error names the new
+one. ``spec_name``, which ``spec`` replaced, is read as ``spec`` with a
+:class:`~polars_online.PolarsOnlineDeprecationWarning`.
 
 `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
 says which question each call and each diagnostic switch answers, with its
@@ -56,8 +63,10 @@ threshold, its false-alarm rate as measured, and a recipe that runs.
 
 from __future__ import annotations
 
+import functools
 import math
-from collections.abc import Iterable, Sequence
+import warnings
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 import polars as pl
@@ -65,6 +74,7 @@ import polars as pl
 from polars_online._duration import Duration, clock_nanoseconds
 from polars_online._polars_online import format_duration
 from polars_online._renamed import renamed_function, renamed_keywords
+from polars_online._warnings import PolarsOnlineDeprecationWarning
 
 __all__ = [
     "metrics",
@@ -108,6 +118,88 @@ SUM_FIELDS = (
 )
 
 
+def _frame(who: str, df: object) -> None:
+    """Refuse anything but a ``DataFrame`` here, where every call reads the
+    whole frame: a ``LazyFrame`` once reached Polars' own calls, which warned
+    three times and then failed on ``LazyFrame is not subscriptable``."""
+    if isinstance(df, pl.DataFrame):
+        return
+    if isinstance(df, pl.LazyFrame):
+        msg = f"{who} takes a DataFrame, not a LazyFrame: collect it first (lf.collect())"
+    else:
+        msg = f"{who} takes a polars DataFrame, got {type(df).__name__}"
+    raise TypeError(msg)
+
+
+def _spec_of(who: str, spec: str | dict) -> tuple[str, dict | None]:
+    """``spec`` as the struct column's name and, when it is the spec dict,
+    the dict too."""
+    if isinstance(spec, str):
+        return spec, None
+    if isinstance(spec, dict) and isinstance(spec.get("name"), str):
+        return spec["name"], spec
+    msg = f"{who}: spec is a spec's name or its dict, got {type(spec).__name__}"
+    raise TypeError(msg)
+
+
+def _warn_merged(who: str, what: str) -> None:
+    warnings.warn(
+        f"{who}: {what} is deprecated: spec takes the spec's name or its dict, which carries "
+        "the name. It is read as before until the next major version, which refuses it",
+        PolarsOnlineDeprecationWarning,
+        stacklevel=3,
+    )
+
+
+def _takes_spec[R](who: str) -> Callable[[Callable[..., R]], Callable[..., R]]:
+    """A decorator for a call whose ``spec_name`` and ``spec=`` became one
+    ``spec``, the name or the dict: the old forms, ``spec_name=`` and a name
+    beside ``spec=``, are read as the new one, with a
+    :class:`~polars_online.PolarsOnlineDeprecationWarning`, and a frame
+    that is not a ``DataFrame`` is refused by name."""
+
+    def decorate(fn: Callable[..., R]) -> Callable[..., R]:
+        @functools.wraps(fn)
+        def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
+            _frame(who, df)
+            if "spec_name" in kwargs:
+                if args:
+                    msg = f"{who}: spec_name was merged into spec, and both are given"
+                    raise TypeError(msg)
+                _warn_merged(who, "spec_name")
+                args = (kwargs.pop("spec_name"),)
+            if args and isinstance(args[0], str) and isinstance(kwargs.get("spec"), dict):
+                written = kwargs.pop("spec")
+                if written.get("name") != args[0]:
+                    msg = (
+                        f"{who}: spec {args[0]!r} and the spec dict named "
+                        f"{written.get('name')!r} disagree; give the dict alone as spec"
+                    )
+                    raise ValueError(msg)
+                _warn_merged(who, "a spec's name beside the spec dict")
+                args = (written, *args[1:])
+            return fn(df, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def _logistic(spec: dict | None) -> bool:
+    """Whether ``spec`` names a fit with ``loss = "logistic"``, whose
+    ``pred`` is a probability and its target a 0/1 label: ``ftrl``'s default
+    and one of ``sgd``'s losses."""
+    model = (spec or {}).get("model") or {}
+    loss = model.get("loss", "logistic" if model.get("type") == "ftrl" else None)
+    return loss == "logistic"
+
+
+def _binary(binary: bool | None, spec: dict | None) -> bool:
+    """``binary`` as given, or read from the spec when ``None``: on for a
+    logistic fit, off without a spec, where the loss cannot be known."""
+    return _logistic(spec) if binary is None else binary
+
+
 def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
     dtype = df.schema[spec_name]
     if not isinstance(dtype, pl.Struct):
@@ -134,14 +226,17 @@ _INPUT_BOUND = 1e100
 RESERVED = ("slot", "target", "pred", "y")
 
 
+@_takes_spec("po.eval.unpack")
 def unpack(
     df: pl.DataFrame,
-    spec_name: str,
+    spec: str | dict,
     *,
-    spec: dict | None = None,
     targets: Sequence[str] | None = None,
 ) -> pl.DataFrame:
     """A spec's output in long form: one row per (row, prediction slot).
+
+    ``spec`` is the spec's name, which is its struct column's, or the spec
+    dict itself, which names the column too.
 
     Returns the non-struct columns of ``df`` plus:
 
@@ -157,35 +252,39 @@ def unpack(
     duplicated: a target column called ``y`` would otherwise collide with the
     ``y`` output.
 
-    Pass ``spec`` to read each slot's target as the spec writes it, through
-    :func:`polars_online.spec.output_index` and the spec's ``targets``. A
-    plain target is its column, and so is a column renamed with ``name=``. A
-    formula target is read from a column of its own name, which
+    Pass the spec dict to read each slot's target as the spec writes it,
+    through :func:`polars_online.spec.output_index` and the spec's
+    ``targets``. A plain target is its column, and so is a column renamed with
+    ``name=``. A formula target is read from a column of its own name, which
     :func:`polars_online.stream.with_windows` makes: the bank resolves the
     formula inside its stream and does not write it out.
 
-    Without ``spec`` a name-based rule is used: a slot is read against the
-    column named after it. That can misattribute a target whose name embeds
-    another's, and a renamed target (``po.target("p", name="price")`` writes
-    ``pred_price``) names no column, so only ``spec`` can say what it read.
+    Given the name alone, a name-based rule is used: a slot is read against
+    the column named after it. That can misattribute a target whose name
+    embeds another's, and a renamed target (``po.target("p", name="price")``
+    writes ``pred_price``) names no column, so only the dict can say what it
+    read. ``targets`` narrows the columns that rule reads.
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        long = po.eval.unpack(out, "ridge")       # slot, target, pred, y, and the input columns
+        long = po.eval.unpack(out, spec)          # slot, target, pred, y, and the input columns
 
     Raises:
 
-    - ``KeyError`` for a ``spec_name`` the frame has not got;
+    - ``TypeError`` for a ``LazyFrame``, which is told to collect: every call
+      here reads the whole frame;
+    - ``KeyError`` for a spec the frame has no column of;
     - ``TypeError`` for a column that is not a struct, or a struct with no
       ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro``, ``ew_class``
       or ``seqtest`` output);
     - ``ValueError`` when a slot's target column cannot be found (the frame
-      has not got it, or ``targets`` does not name it, or without ``spec`` no
-      column is named after the slot) and, with ``spec``, whatever
+      has not got it, or ``targets`` does not name it, or by the name-based
+      rule no column is named after the slot) and, given the dict, whatever
       :func:`polars_online.spec.output_index` raises for it.
     """
+    spec_name, written = _spec_of("po.eval.unpack", spec)
     fields = _pred_fields(df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
     # With the spec in hand, the slot -> target mapping comes from
@@ -193,7 +292,7 @@ def unpack(
     # target's value from the spec's own table of it, instead of the
     # heuristic name-parsing below, which exists only for callers who have a
     # frame but no spec.
-    exact = {} if spec is None else _spec_targets(spec, df)
+    exact = {} if written is None else _spec_targets(written, df)
     frames = []
     for slot in fields:
         if slot in exact:
@@ -278,11 +377,13 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
     return max(matches, key=len)
 
 
-def _group_keys(group: str | Iterable[str]) -> list[str]:
+def _group_keys(group: str | Iterable[str] | None) -> list[str]:
     """``group`` as the list of its key columns: a bare string is one key,
     as in Polars' ``group_by`` and ``over`` and a spec's ``group``. Iterated
     as a sequence, ``group="group"`` would be the keys ``g``, ``r``, ``o``,
-    ``u``, ``p``."""
+    ``u``, ``p``. ``None`` is no key, as a spec's ``group=None`` is."""
+    if group is None:
+        return []
     return [group] if isinstance(group, str) else list(group)
 
 
@@ -315,7 +416,7 @@ def _no_hit(spec: dict | None) -> bool:
     return model.get("type") == "sgd" and model.get("loss") == "poisson"
 
 
-def _metric_exprs(min_samples: int, *, binary: bool = False, hit: bool = True) -> list[pl.Expr]:
+def _metric_exprs(*, binary: bool = False, hit: bool = True) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
     # The centred sums, as :func:`sums` keeps them: a metric is null where
     # one it divides by is 0, as :func:`from_sums` gives it, where this gave
@@ -324,10 +425,12 @@ def _metric_exprs(min_samples: int, *, binary: bool = False, hit: bool = True) -
     m2_pred = (pl.col("pred") - pl.col("pred").mean()).pow(2).sum()
     exprs = [
         pl.len().alias("n"),
-        # Out-of-sample R^2 against the realized mean of y in the window --
-        # the Brier skill score when `binary` (`pred` a probability, `y` a
-        # 0/1 label): same formula, different name (docs/PLAN.md task 76).
-        pl.when(m2_y > 0).then(1.0 - resid.pow(2).sum() / m2_y).alias("r2"),
+        # Out-of-sample R^2 against the realized mean of y in the window. When
+        # `binary` (`pred` a probability, `y` a 0/1 label) the same formula
+        # is the Brier skill score, and is named so (task 244, M-19).
+        pl.when(m2_y > 0)
+        .then(1.0 - resid.pow(2).sum() / m2_y)
+        .alias("brier_skill" if binary else "r2"),
         # Correlation of prediction with target -- the point-biserial
         # correlation when `binary`, again the same formula.
         pl.when(m2_y * m2_pred > 0).then(pl.corr("pred", "y")).alias("ic"),
@@ -339,7 +442,7 @@ def _metric_exprs(min_samples: int, *, binary: bool = False, hit: bool = True) -
         # agrees and is not a hit rate at all on this kind of fit (task 76
         # found it reading exactly 1.0 on a fit that had learned nothing).
         exprs.append(
-            (((pl.col("pred") > 0.5) == (pl.col("y") > 0.5)).sum() / pl.len()).alias("hit_rate")
+            (((pl.col("pred") > 0.5) == (pl.col("y") > 0.5)).sum() / pl.len()).alias("accuracy")
         )
         # Log loss: -(y*ln(p) + (1-y)*ln(1-p)), mean over the window. Lives
         # here, over a collected frame, rather than in the streaming
@@ -370,31 +473,45 @@ def _metric_exprs(min_samples: int, *, binary: bool = False, hit: bool = True) -
         hits = ((pred.sign() == y.sign()) & scored).sum()
         exprs.append(pl.when(signed > 0).then(hits.truediv(signed)).alias("hit_rate"))
     exprs.append(resid.pow(2).mean().alias("mse"))
-    exprs.append(pl.when(pl.len() >= min_samples).then(True).otherwise(False).alias("enough"))
+    exprs.append(resid.pow(2).mean().sqrt().alias("rmse"))
     return exprs
 
 
+def _thin(out: pl.DataFrame, min_samples: int, keep: Iterable[str]) -> pl.DataFrame:
+    """``out`` with every column but the keys, ``n`` and ``keep`` null where
+    ``n`` is below ``min_samples``: Polars' meaning of ``min_samples`` in
+    ``rolling_*`` and ``ewm_*``, where a window too thin gives null and never
+    leaves the result. The row stays, its count read (task 244, M-6)."""
+    held = {"n", *keep}
+    thin = pl.col("n") < min_samples
+    return out.with_columns(
+        pl.when(thin).then(None).otherwise(pl.col(c)).alias(c) for c in out.columns if c not in held
+    )
+
+
 @renamed_keywords("po.eval.metrics", _BOTH)
+@_takes_spec("po.eval.metrics")
 def metrics(
     df: pl.DataFrame,
-    spec_name: str,
+    spec: str | dict,
     *,
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     targets: Sequence[str] | None = None,
-    spec: dict | None = None,
     min_samples: int = 30,
-    binary: bool = False,
+    binary: bool | None = None,
 ) -> pl.DataFrame:
     """Out-of-sample metrics per ``(slot, target, *group)``, over the whole frame.
 
-    Rows where the prediction or the target is missing are dropped, so warm-up
-    and skipped rows never enter the numbers. Missing is what the bank reads as
-    missing: null, NaN, infinite, or past its input bound of 1e100 in
-    magnitude, a target the bank still predicts the row of. ``group`` is one
-    key column, or a list of them. A key with fewer than ``min_samples`` rows
-    left is dropped from the result rather than reported on too little.
-    ``spec`` and ``targets`` are :func:`unpack`'s: pass the spec for a target
-    that is not a plain column. The columns:
+    ``spec`` is the spec's name or its dict, as :func:`unpack` takes it: give
+    the dict for a target that is not a plain column, and to have ``binary``
+    read from its loss. Rows where the prediction or the target is missing are
+    dropped, so warm-up and skipped rows never enter the numbers. Missing is
+    what the bank reads as missing: null, NaN, infinite, or past its input
+    bound of 1e100 in magnitude, a target the bank still predicts the row of.
+    ``group`` is one key column, or a list of them, and ``None`` for no key.
+    A key with fewer than ``min_samples`` rows left keeps its row, with ``n``
+    read and every metric null, as Polars' ``rolling_*`` and ``ewm_*`` give null
+    below their ``min_samples``. ``targets`` is :func:`unpack`'s. The columns:
 
     ``slot``, ``target``, and the ``group`` columns
         The key.
@@ -414,54 +531,67 @@ def metrics(
         prices, reads 1.0 whatever the fit, so a return is better a
         difference or a log ratio. A Poisson ``sgd`` fit (``loss =
         "poisson"``) has no sign to hit -- a rate is positive and a count
-        never negative -- and the bank nulls its ``hit_rate``: with ``spec``
-        naming one, null here too. Without ``spec`` the loss cannot be
-        known, and the sign test reads its 1.0.
-    ``mse``
-        The mean squared residual.
+        never negative -- and the bank nulls its ``hit_rate``: with the spec
+        dict naming one, null here too. Given the name alone, the loss cannot
+        be known, and the sign test reads its 1.0.
+    ``mse``, ``rmse``
+        The mean squared residual, and its square root, in the target's units.
 
     A metric that is undefined is null, as :func:`from_sums` gives it, rather
     than an infinity or a NaN that reads as a number.
 
-    ``binary=True`` reads ``pred`` as a probability and ``y`` as a 0/1 label, the
-    output of a ``sgd`` or ``ftrl`` fit with ``loss = "logistic"``. ``hit_rate``
-    becomes accuracy at a 0.5 threshold and every row scores. A ``log_loss``
-    column is added, ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged, with ``p``
-    clipped to ``[1e-15, 1 - 1e-15]`` so a confident miss is a large number
-    and not an infinity. ``r2`` and ``ic`` keep their formulas under names
-    that mean something different on a 0/1 target, the Brier skill score and
-    the point-biserial correlation. Nothing here reads the target's values to
-    decide which reading applies: name it explicitly, the way you chose the
-    loss.
+    **A logistic fit is scored as a classifier.** ``binary`` reads ``pred`` as a
+    probability and ``y`` as a 0/1 label, the output of a ``sgd`` or ``ftrl``
+    fit with ``loss = "logistic"``. By default it is read from the spec dict's
+    loss, and is off given the name alone, since nothing here reads the
+    target's values to decide. Under ``binary`` two columns change name with
+    their meaning, and one is added:
+
+    ``brier_skill`` (for ``r2``)
+        The same formula, which on a 0/1 target is the Brier skill score: the
+        share of the Brier score of always predicting the base rate that the
+        fit removes.
+    ``accuracy`` (for ``hit_rate``)
+        The share of rows on the right side of 0.5. Every row scores.
+    ``log_loss``
+        ``-(y*ln(p) + (1-y)*ln(1-p))`` averaged, with ``p`` clipped to
+        ``[1e-15, 1 - 1e-15]`` so a confident miss is a large number and not
+        an infinity.
+
+    ``ic`` keeps its name: on a 0/1 target it is the point-biserial
+    correlation, the same formula. ``rmse`` is then the root of the Brier
+    score.
 
     .. code-block:: python
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        scores = po.eval.metrics(out, "ridge", group="stock_id")   # n, r2, ic, hit_rate, mse
+        scores = po.eval.metrics(out, spec, group="stock_id")   # n, r2, ic, hit_rate, mse, rmse
 
     Raises as :func:`unpack` does; a ``group`` column the frame has not got is
     polars' ``ColumnNotFoundError``.
     """
-    long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
+    spec_name, written = _spec_of("po.eval.metrics", spec)
+    binary = _binary(binary, written)
+    long = _scored(unpack(df, written or spec_name, targets=targets))
     keys = ["slot", "target", *_group_keys(group)]
-    exprs = _metric_exprs(min_samples, binary=binary, hit=not _no_hit(spec))
+    exprs = _metric_exprs(binary=binary, hit=not _no_hit(written))
     out = long.group_by(keys).agg(exprs).sort(keys)
-    return out.filter(pl.col("enough")).drop("enough")
+    return _thin(out, min_samples, keys)
 
 
 @renamed_keywords("po.eval.window_metrics", _WINDOW)
+@_takes_spec("po.eval.window_metrics")
 def window_metrics(
     df: pl.DataFrame,
-    spec_name: str,
+    spec: str | dict,
     *,
     clock: str,
     every: float | Duration,
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     targets: Sequence[str] | None = None,
-    spec: dict | None = None,
     min_samples: int = 30,
-    binary: bool = False,
+    binary: bool | None = None,
 ) -> pl.DataFrame:
     """:func:`metrics` in tumbling windows of ``every`` clock units.
 
@@ -470,8 +600,10 @@ def window_metrics(
     is why this is not ``rolling_metrics``, its name before 1.0.
 
     The columns are :func:`metrics`'s, per window, plus ``window_start``, the
-    left edge of each bucket (``floor(clock / every) * every``). ``binary``,
-    ``group``, ``min_samples``, ``spec`` and ``targets`` are :func:`metrics`'s.
+    left edge of each bucket (``floor(clock / every) * every``). ``spec``,
+    ``binary``, ``group``, ``min_samples`` and ``targets`` are
+    :func:`metrics`'s: a window with fewer than ``min_samples`` rows keeps its
+    row, with ``n`` read and the metrics null.
     ``every`` is measured the way a spec's clock parameters are: a number for
     a numeric clock, and a duration for a ``Datetime``, ``Date`` or
     ``Duration`` one. ``window_start`` is of the clock's own dtype, an
@@ -495,6 +627,7 @@ def window_metrics(
     - polars' ``ColumnNotFoundError`` for a ``clock`` or ``group`` column the
       frame has not got.
     """
+    spec_name, written = _spec_of("po.eval.window_metrics", spec)
     dtype = df.schema.get(clock)
     if dtype is None:
         # Named before the window is checked against it (review R2, P9).
@@ -535,13 +668,13 @@ def window_metrics(
         )
     else:
         start = pl.col(clock).dt.truncate(format_duration(ns))
-    long = _scored(unpack(df, spec_name, spec=spec, targets=targets)).with_columns(
+    long = _scored(unpack(df, written or spec_name, targets=targets)).with_columns(
         start.alias("window_start")
     )
     keys = ["slot", "target", *_group_keys(group), "window_start"]
-    exprs = _metric_exprs(min_samples, binary=binary, hit=not _no_hit(spec))
+    exprs = _metric_exprs(binary=_binary(binary, written), hit=not _no_hit(written))
     out = long.group_by(keys).agg(exprs).sort(keys)
-    return out.filter(pl.col("enough")).drop("enough")
+    return _thin(out, min_samples, keys)
 
 
 #: Renamed :func:`window_metrics`, and its ``window_size`` ``every``, before
@@ -551,24 +684,51 @@ rolling_metrics = renamed_function(
 )
 
 
+def _takes_specs[R](fn: Callable[..., R]) -> Callable[..., R]:
+    """:func:`compare_specs`' ``spec_names`` and ``specs=`` merged into one
+    ``specs``, names or dicts: the old forms read as the new one, with a
+    :class:`~polars_online.PolarsOnlineDeprecationWarning`, as
+    :func:`_takes_spec` does for one spec."""
+    who = "po.eval.compare_specs"
+
+    @functools.wraps(fn)
+    def wrapper(df: Any, *args: Any, **kwargs: Any) -> R:
+        _frame(who, df)
+        if "spec_names" in kwargs:
+            if args:
+                msg = f"{who}: spec_names was merged into specs, and both are given"
+                raise TypeError(msg)
+            _warn_merged(who, "spec_names")
+            args = (kwargs.pop("spec_names"),)
+        if args and "specs" in kwargs:
+            written = {s.get("name"): s for s in kwargs.pop("specs") or ()}
+            _warn_merged(who, "a list of names beside specs=")
+            args = ([written.get(s, s) if isinstance(s, str) else s for s in args[0]],)
+        return fn(df, *args, **kwargs)
+
+    return wrapper
+
+
 @renamed_keywords("po.eval.compare_specs", _BOTH)
+@_takes_specs
 def compare_specs(
     df: pl.DataFrame,
-    spec_names: Iterable[str],
+    specs: Iterable[str | dict],
     *,
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     targets: Sequence[str] | None = None,
-    specs: Sequence[dict] | None = None,
     min_samples: int = 30,
-    binary: bool = False,
+    binary: bool | None = None,
 ) -> pl.DataFrame:
     """:func:`metrics` for several specs in one table, with a ``spec`` column first.
 
-    ``binary``, ``group`` and ``min_samples`` are :func:`metrics`'s, applied to
-    every spec alike: compare specs that share a loss, not a logistic fit
-    against a regression one. ``specs`` are the specs that wrote the columns,
-    each read as :func:`metrics` reads its ``spec`` for the column of its
-    name; a name without one is read by the name-based rule.
+    ``specs`` are the specs that wrote the columns, each its name or its
+    dict, read as :func:`metrics` reads its ``spec``. ``group`` and
+    ``min_samples`` are :func:`metrics`'s, applied to every spec alike.
+    ``binary`` is too, and by default is read from the dicts' losses: specs
+    that share a loss share a table, so a logistic fit and a regression one
+    are refused together, since their columns differ. Compare specs that
+    share a loss.
 
     .. code-block:: python
 
@@ -577,22 +737,32 @@ def compare_specs(
             "kalman", targets=["y"], features=["x0", "x1"], half_life=100.0, coef_half_life=50.0
         )
         out = po.ModelBank([ridge, kalman]).fit_predict(df)
-        table = po.eval.compare_specs(out, ["ridge", "kalman"])   # which had the lower error
+        table = po.eval.compare_specs(out, [ridge, kalman])   # which had the lower error
 
-    Raises as :func:`metrics` does for each; no specs give an empty frame.
+    Raises as :func:`metrics` does for each, and ``ValueError`` for specs whose
+    losses read ``binary`` both ways; no specs give an empty frame.
     """
-    written = {s.get("name"): s for s in specs or ()}
+    given = [_spec_of("po.eval.compare_specs", s) for s in specs]
+    if binary is None:
+        reads = {_logistic(written) for _, written in given}
+        if len(reads) > 1:
+            names = [name for name, _ in given]
+            msg = (
+                f"po.eval.compare_specs: specs {names} mix a logistic fit with others, whose "
+                "metrics differ in kind; compare them in two calls, or set binary"
+            )
+            raise ValueError(msg)
+        binary = reads.pop() if reads else False
     frames = [
         metrics(
             df,
-            name,
+            written or name,
             group=group,
             targets=targets,
-            spec=written.get(name),
             min_samples=min_samples,
             binary=binary,
         ).with_columns(pl.lit(name).alias("spec"))
-        for name in spec_names
+        for name, written in given
     ]
     cols = ["spec", *frames[0].columns[:-1]] if frames else []
     return pl.concat(frames).select(cols) if frames else pl.DataFrame()
@@ -617,7 +787,7 @@ def seqtest(
     b: str | None = None,
     a_suffix: str = "",
     b_suffix: str = "",
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     min_weight: float = 0.0,
     name: str = "seqtest",
 ) -> pl.DataFrame:
@@ -683,6 +853,7 @@ def seqtest(
     - polars' ``ColumnNotFoundError`` for a column-mode target or a
       ``group`` column the frame has not got.
     """
+    _frame("po.eval.seqtest", df)
     keys = _group_keys(group)
     if (a is None) != (b is None):
         msg = "seqtest: a and b go together; name both specs to compare them, or neither"
@@ -780,15 +951,15 @@ def seqtest(
 
 
 @renamed_keywords("po.eval.sums", _GROUP)
+@_takes_spec("po.eval.sums")
 def sums(
     df: pl.DataFrame,
-    spec_name: str,
+    spec: str | dict,
     *,
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     targets: Sequence[str] | None = None,
-    spec: dict | None = None,
     weight: str | None = None,
-    binary: bool = False,
+    binary: bool | None = None,
 ) -> pl.DataFrame:
     """Reduce a chunk of output to the sufficient statistics of its metrics.
 
@@ -810,13 +981,14 @@ def sums(
     ``hits``, ``signed``
         For the hit rate: ``hits`` counts sign agreements and ``signed`` the rows
         with ``y != 0`` and ``pred != 0``, as :func:`metrics` takes them. Under
-        ``binary=True`` (:func:`metrics`'s reading), ``hits`` counts agreement
-        at a 0.5 threshold and ``signed`` every row, since every row scores.
-        With ``spec`` naming a Poisson ``sgd`` fit, which has no sign to hit,
-        both are 0, and :func:`from_sums` gives the null the bank gives.
-        **Keep chunks of the two readings apart**: :func:`merge_sums` sums
-        whatever is in ``hits`` and ``signed`` without knowing which
-        ``binary`` produced it.
+        ``binary`` (:func:`metrics`'s reading, by default read from the spec
+        dict's loss), ``hits`` counts agreement at a 0.5 threshold and
+        ``signed`` every row, since every row scores. With the spec dict
+        naming a Poisson ``sgd`` fit, which has no sign to hit, both are 0,
+        and :func:`from_sums` gives the null the bank gives. **Keep chunks of
+        the two readings apart**: :func:`merge_sums` sums whatever is in
+        ``hits`` and ``signed`` without knowing which ``binary`` produced it,
+        and :func:`from_sums` is told by its own ``binary``.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
@@ -840,13 +1012,15 @@ def sums(
 
         spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        part = po.eval.sums(out.head(200), "ridge", group="stock_id")   # ten numbers per key
-        rest = po.eval.sums(out.tail(200), "ridge", group="stock_id")
+        part = po.eval.sums(out.head(200), spec, group="stock_id")   # ten numbers per key
+        rest = po.eval.sums(out.tail(200), spec, group="stock_id")
         running = po.eval.merge_sums(part, rest)                     # any split, to rounding
         scores = po.eval.from_sums(running, min_samples=10)          # r2, ic, hit_rate, mse, rmse
 
     """
-    long = _scored(unpack(df, spec_name, spec=spec, targets=targets))
+    spec_name, written = _spec_of("po.eval.sums", spec)
+    binary = _binary(binary, written)
+    long = _scored(unpack(df, written or spec_name, targets=targets))
     if weight is not None:
         # What the bank does with the same weight: it skips a row whose
         # weight it cannot use and refuses a negative one (review round 4,
@@ -865,7 +1039,7 @@ def sums(
         # A target or a prediction of zero has no sign, as in :func:`metrics`
         # and the bank (docs/PLAN.md task 195, S6); a fit with no sign to
         # hit signs no row at all, so :func:`from_sums` gives null (E1).
-        scored = pl.lit(False) if _no_hit(spec) else (y != 0) & (p != 0)
+        scored = pl.lit(False) if _no_hit(written) else (y != 0) & (p != 0)
         hits, signed = w * ((y.sign() == p.sign()) & scored), w * scored
     keys = ["slot", "target", *_group_keys(group)]
     return (
@@ -912,6 +1086,8 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     unchanged. ``ValueError`` for parts whose key columns differ.
     """
     frames = [first, *rest]
+    for f in frames:
+        _frame("po.eval.merge_sums", f)
     keys = [c for c in frames[0].columns if c not in SUM_FIELDS]
     for f in frames[1:]:
         other = [c for c in f.columns if c not in SUM_FIELDS]
@@ -949,46 +1125,48 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
 
 
 @renamed_keywords("po.eval.from_sums", _MIN_SAMPLES)
-def from_sums(s: pl.DataFrame, *, min_samples: int = 30) -> pl.DataFrame:
+def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -> pl.DataFrame:
     """The metrics :func:`metrics` reports, from :func:`sums` instead of rows.
 
     Same columns and same numbers: ``n``, ``r2`` (out-of-sample against the
     realized mean), ``ic`` (correlation of prediction with target), ``hit_rate``,
-    ``mse``, and ``rmse`` beside it. Sums built with :func:`sums`' ``weight``
-    give each one weighted, ``mse`` as ``sse / w``. Which reading ``hit_rate``
-    is (sign agreement, or accuracy at 0.5) was fixed when the sums were built
-    (:func:`sums`'s ``binary``). This divides ``hits`` by ``signed``, so there
-    is nothing to choose here. There is no ``log_loss`` column, which
-    :func:`metrics`' ``binary=True`` computes over a frame in memory:
+    ``mse`` and ``rmse``. Sums built with :func:`sums`' ``weight`` give each
+    one weighted, ``mse`` as ``sse / w``. Which reading ``hit_rate`` is (sign
+    agreement, or accuracy at 0.5) was fixed when the sums were built
+    (:func:`sums`'s ``binary``), since this divides ``hits`` by ``signed``.
+    ``binary=True`` says the sums were built that way, and names the columns
+    as :func:`metrics` does under it: ``brier_skill`` for ``r2`` and
+    ``accuracy`` for ``hit_rate``. The sums do not record their reading, so
+    this cannot read it from them. There is no ``log_loss`` column, which
+    :func:`metrics` computes under ``binary`` over a frame in memory:
     :data:`SUM_FIELDS` carries no sum for it. A key with fewer than
-    ``min_samples`` rows is dropped, as :func:`metrics` drops it.
+    ``min_samples`` rows keeps its row, with ``n`` read and the metrics null,
+    as :func:`metrics` keeps it.
 
     ``r2`` and ``ic`` are null where they are undefined: a key whose target or
     prediction never varied has no correlation to report, and dividing by its zero
     variance would give an infinity that reads as a number.
     """
+    _frame("po.eval.from_sums", s)
     keys = [c for c in s.columns if c not in SUM_FIELDS]
     mse = pl.col("sse") / pl.col("w")
     denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
-    return (
-        s.filter(pl.col("n") >= min_samples)
-        .select(
-            *keys,
-            pl.col("n"),
-            pl.when(pl.col("m2_y") > 0)
-            .then(1.0 - pl.col("sse") / pl.col("m2_y"))
-            .otherwise(None)
-            .alias("r2"),
-            pl.when(denom > 0).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
-            pl.when(pl.col("signed") > 0)
-            .then(pl.col("hits") / pl.col("signed"))
-            .otherwise(None)
-            .alias("hit_rate"),
-            mse.alias("mse"),
-            mse.sqrt().alias("rmse"),
-        )
-        .sort(keys)
-    )
+    out = s.select(
+        *keys,
+        pl.col("n"),
+        pl.when(pl.col("m2_y") > 0)
+        .then(1.0 - pl.col("sse") / pl.col("m2_y"))
+        .otherwise(None)
+        .alias("brier_skill" if binary else "r2"),
+        pl.when(denom > 0).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
+        pl.when(pl.col("signed") > 0)
+        .then(pl.col("hits") / pl.col("signed"))
+        .otherwise(None)
+        .alias("accuracy" if binary else "hit_rate"),
+        mse.alias("mse"),
+        mse.sqrt().alias("rmse"),
+    ).sort(keys)
+    return _thin(out, min_samples, keys)
 
 
 def _paired_residuals(
@@ -1070,8 +1248,8 @@ def _hac_test(
         ]
         g = rows.group_by(keys, maintain_order=True).agg(exprs) if keys else rows.select(exprs)
         frames.append(g.with_columns(pl.lit(t).alias("target")))
-    out = pl.concat(frames).filter(pl.col("n") >= min_samples)
-    return out.select(*keys, "target", pl.col("n").cast(pl.Int64), "mean", stat)
+    out = pl.concat(frames).select(*keys, "target", pl.col("n").cast(pl.Int64), "mean", stat)
+    return _thin(out, min_samples, [*keys, "target"])
 
 
 def _ew_test(
@@ -1162,7 +1340,7 @@ def diebold_mariano(
     a_suffix: str = "",
     b_suffix: str = "",
     lags: int = 0,
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     half_life: float | None = None,
     min_samples: int = 30,
     name: str = "diebold_mariano",
@@ -1188,9 +1366,11 @@ def diebold_mariano(
     one: the larger one's squared error carries the noise of estimating a
     coefficient that is zero.
 
-    Without ``half_life``, it returns one row per (``group``, target) with
-    ``n`` rows and at least ``min_samples``: the ``mean`` differential,
-    ``dm`` and its two-sided ``p_value``.
+    Without ``half_life``, it returns one row per (``group``, target): the
+    ``n`` rows read, the ``mean`` differential, ``dm`` and its two-sided
+    ``p_value``. A key with fewer than ``min_samples`` rows keeps its row,
+    with ``n`` read and the other three null, as Polars gives null below its
+    ``min_samples``.
 
     With ``half_life`` (in rows), it returns the statistic on every row
     instead, each row before it at ``0.5 ** (age / half_life)``, one step per
@@ -1211,6 +1391,7 @@ def diebold_mariano(
         test = po.eval.diebold_mariano(out, a="x0_only", b="x1_only")
         # dm above 1.96: x0_only predicted y better, at 5%; below -1.96, x1_only did
     """
+    _frame("po.eval.diebold_mariano", df)
     keys = _group_keys(group)
     pairs = _paired_residuals(df, a, b, targets, a_suffix, b_suffix, "diebold_mariano")
     values = {t: rb * rb - ra * ra for t, (ra, rb) in pairs.items()}
@@ -1238,7 +1419,7 @@ def clark_west(
     big_suffix: str = "",
     small_suffix: str = "",
     lags: int = 0,
-    group: str | Iterable[str] = (),
+    group: str | Iterable[str] | None = None,
     half_life: float | None = None,
     min_samples: int = 30,
     name: str = "clark_west",
@@ -1281,6 +1462,7 @@ def clark_west(
         test = po.eval.clark_west(out, big="big", small="small")
         # cw above 1.645: x1 improves the forecast, at 5%
     """
+    _frame("po.eval.clark_west", df)
     keys = _group_keys(group)
     pairs = _paired_residuals(df, big, small, targets, big_suffix, small_suffix, "clark_west")
     values = {t: rs * rs - rb * rb + (rb - rs) * (rb - rs) for t, (rb, rs) in pairs.items()}

@@ -182,7 +182,7 @@ class TestBinary:
     def test_binary_hit_rate_is_not_a_constant_one(self):
         out, _ = _logistic_fit(informative=False)
         m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
-        assert m["hit_rate"][0] < 0.6, f"a fit that knows nothing scored {m['hit_rate'][0]}"
+        assert m["accuracy"][0] < 0.6, f"a fit that knows nothing scored {m['accuracy'][0]}"
 
     def test_binary_hit_rate_matches_a_numpy_replica(self):
         out, y = _logistic_fit()
@@ -190,13 +190,14 @@ class TestBinary:
         ok = np.isfinite(pred)
         want = float(((pred[ok] > 0.5) == (y[ok] > 0.5)).mean())
         m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
-        assert abs(m["hit_rate"][0] - want) < 1e-12
+        assert abs(m["accuracy"][0] - want) < 1e-12
         assert want > 0.6, f"the fit should have learned something: {want}"
 
     def test_sign_reading_still_reads_one_on_the_same_fit(self):
-        # binary=False (the default) is unchanged: two positive numbers
-        # always agree in sign, which is exactly the defect -- reading it
-        # without `binary=True` still shows the old number, undisturbed.
+        # Given the spec's name alone, `binary` is off (the loss cannot be
+        # read), and unchanged: two positive numbers always agree in sign,
+        # which is exactly the defect -- reading it without `binary` still
+        # shows the old number, undisturbed. The spec dict turns it on.
         out, _ = _logistic_fit()
         m = po.eval.metrics(out, "m", targets=["y0"])
         assert m["hit_rate"][0] == 1.0
@@ -222,9 +223,9 @@ class TestBinary:
         # a plain running mean) and read before the last row; po.eval scores
         # every row including the last, so compare to that same window.
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
-        assert abs(last - m["hit_rate"][0]) < 0.01, (
+        assert abs(last - m["accuracy"][0]) < 0.01, (
             last,
-            m["hit_rate"][0],
+            m["accuracy"][0],
             (~np.isnan(pred)).sum(),
         )
 
@@ -232,9 +233,9 @@ class TestBinary:
         out, _ = _logistic_fit()
         want = po.eval.metrics(out, "m", targets=["y0"], binary=True)
         s = po.eval.sums(out, "m", targets=["y0"], binary=True)
-        got = po.eval.from_sums(s)
-        assert abs(got["hit_rate"][0] - want["hit_rate"][0]) < 1e-12
-        assert abs(got["r2"][0] - want["r2"][0]) < 1e-9
+        got = po.eval.from_sums(s, binary=True)
+        assert abs(got["accuracy"][0] - want["accuracy"][0]) < 1e-12
+        assert abs(got["brier_skill"][0] - want["brier_skill"][0]) < 1e-9
         assert abs(got["ic"][0] - want["ic"][0]) < 1e-9
 
 
