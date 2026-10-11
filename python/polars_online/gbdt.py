@@ -21,11 +21,11 @@ two parquet files, read by a glob:
 
 - :func:`xgboost_matrix` returns an ``xgboost.QuantileDMatrix``. XGBoost reads
   its input four times, and the second pass sketches every feature's
-  quantiles over every row; this places the cuts from a uniform sample of
+  quantiles over every row. This places the cuts from a uniform sample of
   ``sample_rows`` rows instead, which removes that pass, about half the time
   before the first round. The trees then differ from XGBoost's own sketch
   within the spread a sample's seed already gives (``docs/GBDT-ADAPTER.md``
-  §4.5); ``sample_rows=None`` keeps XGBoost's sketch and its own trees.
+  §4.5). ``sample_rows=None`` keeps XGBoost's sketch and its own trees.
 - :func:`lightgbm_dataset` returns a constructed ``lightgbm.Dataset``, binned
   on LightGBM's own sample: a first pass gathers the rows LightGBM samples, a
   second pushes every row as float32; or, when the data fits, the whole
@@ -34,18 +34,18 @@ two parquet files, read by a glob:
 **The native engine** reads Arrow IPC files itself, a record batch at a
 time, and any other source through Polars' streaming engine
 (``collect_batches``). It hands each batch's Arrow buffers to the library's C
-API with no copy: nulls go by Arrow validity, not as a NaN copy. The library is loaded
-from the user's own installed package, by the path that package loaded it
-from: nothing is linked into this package, whose only dependency stays
-``polars``. ``engine="python"`` builds through the libraries' Python APIs
-instead, numpy batches into an ``xgboost.DataIter`` with the same sample's
-cuts, and a ``lightgbm.Sequence``; ``engine="auto"`` falls back to it, with a
-warning, when the native engine cannot load the library. Both engines grow
-the same trees.
+API with no copy: nulls go by Arrow validity, not as a NaN copy. The library
+is loaded from the user's own installed package, by the path that package
+loaded it from. Nothing is linked into this package, whose only dependency
+stays ``polars``. ``engine="python"`` builds through the libraries' Python
+APIs instead: numpy batches into an ``xgboost.DataIter`` with the same
+sample's cuts, and a ``lightgbm.Sequence``. ``engine="auto"`` falls back to
+it, with a warning, when the native engine cannot load the library. Both
+engines grow the same trees.
 
 **What the columns may hold.** Every feature is numeric (any integer or float
 dtype), Boolean, or a ``pl.Enum``, whose codes go in as a categorical
-feature: their meaning is fixed by the Enum's categories, so a model is read
+feature. The Enum's categories fix what each code means, so a model is read
 the same way at prediction (pass the codes, ``pl.col(c).to_physical()``). A
 ``pl.Categorical`` is refused, since its codes depend on the process that
 made them; cast it to a ``pl.Enum``. The label and the weight are numeric,
@@ -361,73 +361,96 @@ def xgboost_matrix(
                             evals=[(valid, "valid")], early_stopping_rounds=20, verbose_eval=False)
 
     **The cuts.** With ``sample_rows``, one pass first draws a uniform sample
-    of that many rows (row ``i`` is kept when its hash, SplitMix64 of ``i``
-    and ``seed``, is among the ``sample_rows`` smallest) and places each
-    feature's bin edges at the sample's quantiles: a feature with at most
-    ``max_bin`` distinct sample values gets a bin per value, and any other
-    gets ``max_bin`` bins of equal sample frequency, edge ``j`` at the sorted
-    sample's value of rank ``floor(j m / max_bin)`` for ``m`` values. They
-    reach XGBoost as a ``ref``, which removes its sketch pass. The sample is
-    the same rows however the source is batched and whichever engine reads
-    it. ``sample_rows=None`` lets XGBoost sketch every row, and grows
-    XGBoost's own trees.
+    of that many rows: row ``i`` is kept when its hash, SplitMix64 of ``i``
+    and ``seed``, is among the ``sample_rows`` smallest. Each feature's bin
+    edges sit at the sample's quantiles. A feature with at most ``max_bin``
+    distinct sample values gets a bin per value. Any other gets ``max_bin``
+    bins of equal sample frequency, edge ``j`` at the sorted sample's value
+    of rank ``floor(j m / max_bin)`` for ``m`` values. The cuts reach XGBoost
+    as a ``ref``, which removes its sketch pass. The sample is the same rows
+    however the source is batched and whichever engine reads it.
+    ``sample_rows=None`` lets XGBoost sketch every row, and grows XGBoost's
+    own trees.
 
-    **Measured** on 10 million rows of 50 features with nulls, from Arrow
-    IPC files, at 8 threads (``docs/GBDT-ADAPTER.md`` §7): the first round
-    began after 4.0 seconds at a peak of 3.6 GB, against 8.7 s and 4.8 GB for
-    XGBoost's own ``DataIter`` over Polars batches, and 7.0 s and 8.7 GB for
-    ``collect()`` and numpy. ``sample_rows=None`` took 8.0 s. A
-    ``LazyFrame`` took 4.2 s, at the 7.2 GB that Polars' read-ahead holds
-    (the README's "Tuning memory with Polars' own settings" cuts it), and
-    ``engine="python"`` 5.5 s.
+    **Measured** on 10 million rows of 50 features with nulls, at 8 threads
+    (``docs/GBDT-ADAPTER.md`` §7.4): the time before the first round, and the
+    peak memory. Polars' read-ahead holds the ``LazyFrame``'s 7.2 GB, and
+    the README's "Tuning memory with Polars' own settings" cuts it.
 
-    Parameters
-    ----------
-    source
+    .. list-table::
+       :header-rows: 1
+       :widths: 60 20 20
+
+       * - route
+         - seconds
+         - peak, GB
+       * - this, from Arrow IPC files
+         - 4.0
+         - 3.6
+       * - this, from a ``LazyFrame`` over them
+         - 4.2
+         - 7.2
+       * - this, ``engine="python"``
+         - 5.5
+         - 7.1
+       * - this, ``sample_rows=None``
+         - 8.0
+         - 3.6
+       * - XGBoost's own ``DataIter`` over Polars batches
+         - 8.7
+         - 4.8
+       * - ``collect()`` and numpy
+         - 7.0
+         - 8.7
+
+    .. rubric:: Parameters
+
+    ``source``
         Arrow IPC or Parquet paths (globs taken, one kind of file), a
         ``LazyFrame``, read in batches through ``collect_batches`` once per
         pass and so re-run each time, or a ``DataFrame``. The native engine
         reads Arrow IPC files itself, a record batch at a time.
-    label, weight
+    ``label``, ``weight``
         The label and the row weights: numeric columns with no nulls and
         finite values, a weight not negative.
-    features
+    ``features``
         The feature columns, in order; every other column by default.
-    max_bin
+    ``max_bin``
         Bins per feature, XGBoost's ``max_bin``: training must pass the same.
-    sample_rows
+    ``sample_rows``
         Rows of the sample the cuts come from; ``None`` for XGBoost's own
         sketch. Ignored with ``ref``.
-    ref
+    ``ref``
         The training matrix, for a validation or test matrix binned on its
         cuts (``xgb.train`` refuses a ``QuantileDMatrix`` evaluation set
         without it). The returned matrix keeps a weak reference to it.
-    threads
+    ``threads``
         Threads for XGBoost's construction and the conversions; all by
         default.
-    seed
+    ``seed``
         The sample's seed.
-    engine
+    ``engine``
         ``"native"``, ``"python"``, or ``"auto"``: native, falling back to
         Python with a warning when the native engine cannot load XGBoost.
 
-    Raises
-    ------
-    ValueError
-        Each named: ``max_bin`` below 2, ``threads`` or ``sample_rows`` not
-        a positive integer, or an ``engine`` not one of the three; a source
-        that names no files, mixes Arrow IPC and Parquet, or names a file
-        whose extension says neither; a column missing, named twice, or of
-        a type the libraries do not read (a ``pl.Categorical`` among them);
-        a null or non-finite label or weight, or a negative weight; an empty
-        source, or one whose passes give different rows; a ``ref`` binned on
-        other features; or (``engine="native"``) an XGBoost the native
-        engine does not support.
-    TypeError
-        ``ref`` not an ``xgboost.DMatrix``, a source of another type, or
-        ``features`` given as one name.
-    FileNotFoundError
-        A glob of Arrow IPC files that matches nothing.
+    .. rubric:: Raises
+
+    ``ValueError``, each named, for:
+
+    - ``max_bin`` below 2, ``threads`` or ``sample_rows`` not a positive
+      integer, or an ``engine`` not one of the three;
+    - a source that names no files, mixes Arrow IPC and Parquet, or names a
+      file whose extension says neither;
+    - a column missing, named twice, or of a type the libraries do not read
+      (a ``pl.Categorical`` among them);
+    - a null or non-finite label or weight, or a negative weight;
+    - an empty source, or one whose passes give different rows;
+    - a ``ref`` binned on other features;
+    - (``engine="native"``) an XGBoost the native engine does not support.
+
+    ``TypeError`` for a ``ref`` that is not an ``xgboost.DMatrix``, a source
+    of another type, or ``features`` given as one name. ``FileNotFoundError``
+    for a glob of Arrow IPC files that matches nothing.
     """
     import xgboost as xgb
 
@@ -648,71 +671,90 @@ def lightgbm_dataset(
     constructed dataset. Pass them here, in ``params``.
 
     **Measured** on 10 million rows of 50 features with nulls, from Arrow
-    IPC files, at 8 threads (``docs/GBDT-ADAPTER.md`` §7): the first round
-    began after 1.7 seconds at a peak of 1.7 GB streamed, and after 1.45 s at
-    2.9 GB in memory, against 1.5 s and 8.9 GB for LightGBM's own route from
-    a collected Polars frame, and 2.2 s for its ``Sequence``.
+    IPC files, at 8 threads (``docs/GBDT-ADAPTER.md`` §7.4): the time before
+    the first round, and the peak memory.
 
-    Parameters
-    ----------
-    source
+    .. list-table::
+       :header-rows: 1
+       :widths: 60 20 20
+
+       * - route
+         - seconds
+         - peak, GB
+       * - this, streamed in two passes
+         - 1.7
+         - 1.7
+       * - this, ``in_memory``
+         - 1.45
+         - 2.9
+       * - LightGBM's own route from a collected Polars frame
+         - 1.5
+         - 8.9
+       * - LightGBM's ``Sequence``
+         - 2.2
+         - 2.7
+
+    .. rubric:: Parameters
+
+    ``source``
         Arrow IPC or Parquet paths (globs taken, one kind of file), a
         ``LazyFrame`` (re-run for each pass), or a ``DataFrame``. The native
         engine reads Arrow IPC files itself, a record batch at a time.
-    label, weight
+    ``label``, ``weight``
         The label and the row weights: numeric columns with no nulls and
         finite values, a weight not negative.
-    features
+    ``features``
         The feature columns, in order; every other column by default.
-    categorical
+    ``categorical``
         The categorical features, ``pl.Enum`` or integer columns (a code
         below 0 is missing, as LightGBM reads it); every ``pl.Enum`` feature
         by default. A ``pl.Enum`` left out goes in as its codes, a number.
-    max_bin
+    ``max_bin``
         Bins per feature, LightGBM's ``max_bin``.
-    params
+    ``params``
         Other dataset parameters, as ``lightgbm.Dataset(params=)`` takes
         them: ``verbose``, ``min_data_in_bin``, ``bin_construct_sample_cnt``,
         ``data_random_seed``, ``use_missing``, ``zero_as_missing``, ... Not
         ``max_bin``, ``categorical_feature`` or ``num_threads``, which are
         this function's own arguments.
-    reference
+    ``reference``
         The training dataset, for a validation dataset binned on its bins;
         one pass.
-    in_memory
+    ``in_memory``
         Hand LightGBM the whole stream at once, held in memory: as Arrow
         under the native engine, as a float32 numpy array under the Python
         one. ``"auto"`` does when the features as float32 take at most a
         quarter of the memory available and, under the native engine, the
         LightGBM loaded takes an Arrow stream (4.7.0 on).
-    threads
+    ``threads``
         Threads for LightGBM's construction and the conversions; all by
         default.
-    engine
+    ``engine``
         ``"native"``, ``"python"``, or ``"auto"``: native, falling back to
         Python with a warning when the native engine cannot load LightGBM.
 
-    Raises
-    ------
-    ValueError
-        Each named: ``max_bin`` below 2, ``threads`` not a positive integer,
-        an ``engine`` not one of the three, or an ``in_memory`` that is not
-        ``True``, ``False`` or ``"auto"``; a parameter in ``params`` that is
-        this function's own argument; a source that names no files, mixes
-        Arrow IPC and Parquet, or names a file whose extension says neither;
-        a column missing, named twice, or of a type the libraries do not
-        read (a ``pl.Categorical`` among them); a ``categorical`` name that
-        is not a feature, or is a float column; a null or non-finite label
-        or weight, or a negative weight; an empty source, more rows than
-        LightGBM's 32-bit row count holds, or a source whose passes give
-        different rows; or (``engine="native"``) a LightGBM the native
-        engine does not support.
-    TypeError
-        ``reference`` not a ``lightgbm.Dataset`` (one not yet constructed is
-        constructed here), a source of another type, or ``features`` or
-        ``categorical`` given as one name.
-    FileNotFoundError
-        A glob of Arrow IPC files that matches nothing.
+    .. rubric:: Raises
+
+    ``ValueError``, each named, for:
+
+    - ``max_bin`` below 2, ``threads`` not a positive integer, an ``engine``
+      not one of the three, or an ``in_memory`` that is not ``True``,
+      ``False`` or ``"auto"``;
+    - a parameter in ``params`` that is this function's own argument;
+    - a source that names no files, mixes Arrow IPC and Parquet, or names a
+      file whose extension says neither;
+    - a column missing, named twice, or of a type the libraries do not read
+      (a ``pl.Categorical`` among them);
+    - a ``categorical`` name that is not a feature, or is a float column;
+    - a null or non-finite label or weight, or a negative weight;
+    - an empty source, more rows than LightGBM's 32-bit row count holds, or
+      a source whose passes give different rows;
+    - (``engine="native"``) a LightGBM the native engine does not support.
+
+    ``TypeError`` for a ``reference`` that is not a ``lightgbm.Dataset`` (one
+    not yet constructed is constructed here), a source of another type, or
+    ``features`` or ``categorical`` given as one name. ``FileNotFoundError``
+    for a glob of Arrow IPC files that matches nothing.
     """
     import lightgbm as lgb
 
