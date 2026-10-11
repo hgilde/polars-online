@@ -224,8 +224,6 @@ class TestWarmup:
         assert fields, f"{model}: no coef field"
         for name in fields:
             c = out["m"].struct.field(name)
-            # An `Array` as wide as the layout; read as the list it holds.
-            c = c.cast(pl.List(pl.Float64))
             lengths = c.list.len().drop_nulls().to_list()
             assert lengths, f"{model}.{name}: every row is null"
             assert all(n > 0 for n in lengths), f"{model}.{name}: an empty coef list"

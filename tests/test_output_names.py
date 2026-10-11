@@ -229,13 +229,17 @@ def test_a_word_from_a_fixed_set_is_an_enum():
 #: The fields laid out like ``coef``, one value per coefficient.
 _COEF_LIKE = ("coef", "support_coef", "se_coef", "se_coef_hc0", "se_coef_hac")
 
+_LIST = pl.List(pl.Float64)
 
-def test_coef_is_an_array_as_wide_as_its_layout():
-    """``coef`` and the fields laid out like it were a ``List`` of any length
-    on every row; each row is ``coef_index``'s height long, so they are an
-    ``Array(Float64, k)``, which ``to_numpy`` reads as an ``(n, k)`` matrix
-    and ``.arr`` indexes. ``micro``'s, one row per summary and as many as
-    there are, stays a ``List``."""
+
+def test_coef_is_a_list_wherever_the_bank_writes_it():
+    """Task 250 (the user, reversing task 244's decision (2)): ``coef`` and
+    the fields laid out like it are a ``List(Float64)`` -- in the output, in
+    ``output_index``, in the query's declared schema, in ``last_row()``, in
+    the Arrow capsule -- because a list stores nothing for a null row and the
+    field is null on most rows. An ``(n, k)`` matrix is a recipe on the rows
+    that carry it: ``.list.to_array(k)``, then ``to_numpy()``. ``unnest``
+    reads the list, and an ``Array`` of a file a build that wrote one left."""
     spec = po.spec.ewridge(
         "r",
         targets=["y"],
@@ -251,31 +255,65 @@ def test_coef_is_an_array_as_wide_as_its_layout():
     df = _rows()
     out = po.ModelBank([spec]).fit_predict(df)
     idx = po.spec.output_index(spec)
+    capsule = pl.Series(po.ModelBank([spec]).fit_predict_arrow(df)[0]).struct
     for field in _COEF_LIKE:
-        assert out["r"].struct.field(field).dtype == pl.Array(pl.Float64, k), field
-        assert idx.filter(field=field)["dtype"].item() == f"array[f64, {k}]", field
-    matrix = out["r"].struct.field("coef").drop_nulls().to_numpy()
+        assert out["r"].struct.field(field).dtype == _LIST, field
+        assert idx.filter(field=field)["dtype"].item() == "list[f64]", field
+        assert capsule.field(field).dtype == _LIST, field
+        assert capsule.field(field).equals(out["r"].struct.field(field), null_equal=True), field
+    # The recipe the docs show for a matrix.
+    matrix = (
+        out.select(pl.col("r").struct.field("coef"))
+        .filter(pl.col("coef").is_not_null())
+        .select(pl.col("coef").list.to_array(k))
+        .to_series()
+        .to_numpy()
+    )
     assert matrix.dtype == np.float64 and matrix.shape[1] == k and matrix.shape[0] > 100
-    # One chunk or seven: the same arrays, to the bit.
+    # One chunk or seven: the same lists, to the bit.
     seven = po.ModelBank([spec])
     chunked = pl.concat(seven.fit_predict(c) for c in df.iter_slices(-(-df.height // 7)))
     for field in _COEF_LIKE:
         assert chunked["r"].struct.field(field).equals(out["r"].struct.field(field)), field
     # The query's declared schema is the realized one.
     assert po.fit_predict(df.lazy(), [spec]).collect_schema()["r"] == out.schema["r"]
-    # `last_row()` is the struct's last row, Array and all.
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
-    assert bank.last_row().schema["coef"] == pl.Array(pl.Float64, k)
-    # `unnest` reads an Array, and a List of a file written before.
+    assert bank.last_row().schema["coef"] == _LIST
+    # `unnest` reads the list, and the Array a file written by such a build holds.
     flat = out.online.unnest([spec])
-    assert flat["coef_y_x1"].equals(out["r"].struct.field("coef").arr.get(2).alias("coef_y_x1"))
-    as_list = out.with_columns(
-        pl.col("r").struct.with_fields(pl.field("coef").cast(pl.List(pl.Float64)))
+    assert flat["coef_y_x1"].equals(out["r"].struct.field("coef").list.get(2).alias("coef_y_x1"))
+    as_array = out.with_columns(pl.col("r").struct.with_fields(pl.field("coef").list.to_array(k)))
+    assert as_array.online.unnest([spec])["coef_y_x1"].equals(flat["coef_y_x1"])
+
+
+def test_a_mostly_null_coef_costs_little():
+    """Task 250: why ``coef`` is a list. It is written on a group's last row
+    in each chunk, so over a long stream it is null on almost every row. A
+    dense ``Array(Float64, k)`` stores ``k`` doubles on every row, nulls
+    included: a 10-target ``ewridge`` at 20 features over 200,000 rows held
+    about 336 MB in its ``coef`` (210 doubles a row), and 1.6 GiB at a
+    million rows. A list stores an offset per row and its values only where
+    there are some: about 1.6 MB here."""
+    n, p, targets = 200_000, 20, 10
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((n, p))
+    beta = rng.standard_normal((p, targets))
+    y = x @ beta + 0.1 * rng.standard_normal((n, targets))
+    features = [f"x{i}" for i in range(p)]
+    names = [f"y{j}" for j in range(targets)]
+    df = pl.DataFrame(
+        {**dict(zip(features, x.T, strict=True)), **dict(zip(names, y.T, strict=True))}
     )
-    assert as_list.online.unnest([spec])["coef_y_x1"].equals(flat["coef_y_x1"])
-    micro = po.spec.micro("u", features=["x0", "x1"], eps=0.3, half_life=50.0)
-    assert po.spec.output_index(micro).filter(field="coef")["dtype"].item() == "list[f64]"
-    assert po.ModelBank([micro]).fit_predict(df)["u"].struct.field("coef").dtype == pl.List(
-        pl.Float64
+    spec = po.spec.ewridge("r", targets=names, features=features, half_life=1_000.0)
+    k = po.spec.coef_index(spec).height
+    assert k == targets * (p + 1)
+    bank = po.ModelBank([spec])
+    coef = pl.concat(
+        [bank.fit_predict(c)["r"].struct.field("coef") for c in df.iter_slices(50_000)]
     )
+    # Offsets (8 bytes a row) and the four rows' values; the dense layout
+    # is 8 * k bytes a row, 336 MB.
+    assert coef.estimated_size() < 4_000_000, coef.estimated_size()
+    assert coef.dtype == _LIST
+    assert coef.null_count() == n - 4  # one row a chunk carries it

@@ -566,7 +566,7 @@ def run(query, model):
     out = pl.concat(bank.fit_predict_batches(query, chunk_size=1_000)).unnest(model["name"])
     # x1's largest slope while it is held, and the error once it moves.
     held = out.filter((pl.col("t") >= 300) & (pl.col("t") < 3_300))
-    slope = held.select(pl.col("coef").arr.get(2).abs().max()).item()  # coef: [intercept, x0, x1]
+    slope = held.select(pl.col("coef").list.get(2).abs().max()).item()  # coef: [intercept, x0, x1]
     moved = out.filter(pl.col("t") >= 3_300)
     rmse = moved.select((pl.col("pred_y") - pl.col("y")).pow(2).mean().sqrt()).item()
     return bank, slope, rmse
@@ -899,8 +899,8 @@ def run(features):
         print(*row)
     # How well it predicts, and how far x0's coefficient wanders.
     r2 = out.select(1 - (pl.col("y") - pl.col("pred_y")).pow(2).mean() / pl.col("y").var()).item()
-    slope = out.select(pl.col("coef").arr.get(1)).to_series()  # coef: [intercept, x0, x1, (x2)]
-    whole = slope + 100 * out["coef"].arr.get(3) if "x2" in features else slope
+    slope = out.select(pl.col("coef").list.get(1)).to_series()  # coef: [intercept, x0, x1, (x2)]
+    whole = slope + 100 * out["coef"].list.get(3) if "x2" in features else slope
     print(
         f"R² {r2:.3f}; x0's coefficient from {slope.min():.2f} to {slope.max():.2f}; "
         f"x0's whole effect from {whole.min():.2f} to {whole.max():.2f}"
@@ -1192,7 +1192,7 @@ print(f"90% interval from sigma covers {gaussian:.3f}; conformal covers {conform
 print(f"sigma from {ew['sigma_y'].min():.3g} to {ew['sigma_y'].max():.3g}; drift flagged {flagged}")
 # How far each model's slope strays from 0.5.
 for name in ["ewridge", "huber"]:
-    slope = out.select(pl.col(name).struct.field("coef").arr.get(1))  # coef: [intercept, x]
+    slope = out.select(pl.col(name).struct.field("coef").list.get(1))  # coef: [intercept, x]
     within = slope.select((pl.all() - 0.5).abs().quantile(0.99)).item()
     print(f"{name:8} slope: 99% of rows within {within:.3f} of 0.5")
 ```

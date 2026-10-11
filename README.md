@@ -2533,7 +2533,7 @@ print(name, out["m"].struct.field(name).dtype)
 row = po.spec.coef_fields(grid).filter(                        # one row per coefficient: its list, position, and unnest column
     (pl.col("term") == "x1") & (pl.col("ridge") == 1e-6) & (pl.col("half_life") == 500.0)
 ).row(0, named=True)
-x1 = out["m"].struct.field(row["field"]).drop_nulls().arr.get(row["position"])
+x1 = out["m"].struct.field(row["field"]).drop_nulls().list.get(row["position"])
 print(row["field"], row["position"], f"{x1[-1]:.2f}")          # x1's coefficient on the last row
 ```
 
@@ -2613,6 +2613,18 @@ for t, x0 in path.filter(pl.col("t").is_in([0.0, 4.0, 40.0, 200.0, 396.0])).sele
 lf.online.fit_predict([ols], save_state="ols.state").sink_parquet("fitted.parquet")
 saved = pl.scan_parquet("fitted.parquet").online.unnest("ols.state").collect()
 print(saved.select(path.columns).equals(path))
+
+# 4. As a matrix: the rows that carry coef, fixed to the layout's width.
+k = po.spec.coef_index(ols).height   # 3: intercept, x0, x1
+matrix = (
+    pl.read_parquet("fitted.parquet")
+    .select(pl.col("ols").struct.field("coef"))
+    .filter(pl.col("coef").is_not_null())
+    .select(pl.col("coef").list.to_array(k))
+    .to_series()
+    .to_numpy()
+)
+print(matrix.shape)
 ```
 
 ```text
@@ -2623,15 +2635,15 @@ b0 at t  40: coef on x0 2.24
 b0 at t 200: coef on x0 2.06
 b0 at t 396: coef on x0 2.02
 True
+(400, 3)
 ```
 
 Stock `b0`'s rows are every fourth, from `t` 0. Its path starts at 0,
 since one row fixes no slope, is near 2 by its eleventh row, and ends on
 the 2.02 `bank.coef()` reports.
 
-**`coef_every=0` writes `coef` on every row but a skipped one**, as an
-array of one float per term: `to_numpy()` reads the field as a matrix, one
-of its rows per row of the output. Without a cadence the bank writes it on each
+**`coef_every=0` writes `coef` on every row but a skipped one**, as a list
+of one float per term. Without a cadence the bank writes it on each
 group's last accepted row in a chunk, and on none for a group whose rows
 there were all skipped. A cadence can be a number of clock units, or a
 duration such as `"5m"` on a temporal clock. It writes `coef` once the
@@ -2641,13 +2653,18 @@ clock has moved that far since the group's last `coef` row, as
 is written by whichever comes first. A cadence reads only the clock and the rows, so the
 rows that carry `coef` do not depend on the chunking.
 
-**To spread that array into columns, chain `.online.unnest(specs)` after
+**To spread that list into columns, chain `.online.unnest(specs)` after
 `fit_predict`.** It takes the specs, a bank, or the path of a saved state,
 and works on a saved output. With `separator="."` it names each column after
 its spec too, `ols.coef_y_x0`, as Polars' own `unnest(separator=)` does, so
 two specs that fit one target unnest side by side.
 
-**Several targets, or a grid, put several blocks in one `coef` array:** one
+**For a matrix, fix the list's width on the rows that carry it**, as item 4
+does with `.list.to_array(k)`, `k` being the height of
+`po.spec.coef_index(spec)`. `coef` is a list because a list stores nothing
+for a null row, and without a cadence `coef` is null on most rows.
+
+**Several targets, or a grid, put several blocks in one `coef` list:** one
 per target and point of a grid of `ridge` values, `feature_sets` or a
 `penalties`. Each half-life of a `half_life` grid has a `coef` field of its
 own. Here `grid`, as [Output field names](#output-field-names) builds it,

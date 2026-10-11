@@ -559,16 +559,6 @@ fn same_series(what: &str, got: &Series, want: &Series, tol: f64) {
                 same_series(&format!("{what}.{}", wf.name()), gf, &wf, tol);
             }
         }
-        // `coef` and the fields laid out like it, compared as lists.
-        DataType::Array(inner, _) if **inner == DataType::Float64 => {
-            let as_list = DataType::List(inner.clone());
-            same_series(
-                what,
-                &got.cast(&as_list).unwrap(),
-                &want.cast(&as_list).unwrap(),
-                tol,
-            );
-        }
         DataType::List(inner) if **inner == DataType::Float64 => {
             let (g, w) = (got.list().unwrap(), want.list().unwrap());
             for i in 0..want.len() {

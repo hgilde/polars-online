@@ -1320,8 +1320,8 @@ impl<'a> ParquetSink<'a> {
 }
 
 /// `df` as CSV can carry it: each struct column flattened into
-/// `<name>.<field>` columns, and each numeric list or array column --
-/// `coef` -- as JSON text (`[1.5,-0.25]`, empty for null), which
+/// `<name>.<field>` columns, and each numeric list column -- `coef` -- as
+/// JSON text (`[1.5,-0.25]`, empty for null), which
 /// `str.json_decode(pl.List(pl.Float64))` reads back. Anything else nested
 /// has no CSV form, and the error says which column and what to do.
 fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
@@ -1341,11 +1341,6 @@ fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
         match c.dtype() {
             DataType::List(inner) if inner.is_primitive_numeric() => {
                 let text = list_as_json(c)?;
-                flat.replace_column(i, text)?;
-            }
-            // `coef` and the fields laid out like it: the same JSON text.
-            DataType::Array(inner, _) if inner.is_primitive_numeric() => {
-                let text = list_as_json(&c.cast(&DataType::List(inner.clone()))?)?;
                 flat.replace_column(i, text)?;
             }
             dt if dt.is_nested() => polars_bail!(

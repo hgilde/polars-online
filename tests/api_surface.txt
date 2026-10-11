@@ -1040,8 +1040,8 @@
     weight_sum: Float64
     settled_frac: Float64
     withheld_reason: Enum[below_min_settled_frac, below_min_weight, above_max_error_inflation, below_warm_rows]
-    coef: Array[Float64, 3]
-    support_coef: Array[Float64, 3]
+    coef: List[Float64]
+    support_coef: List[Float64]
   ModelBank.marginal():
     spec: String
     group: String
@@ -1326,8 +1326,8 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
-    support_coef: array[f64, 2]
+    coef: list[f64]
+    support_coef: list[f64]
   ewridge full grid, every output:
     pred_y__a_r0.000001@h100: f64
     resid_y__a_r0.000001@h100: f64
@@ -1568,11 +1568,11 @@
     weight_sum@h100: f64
     settled_frac@h100: f64
     withheld_reason@h100: enum
-    coef@h100: array[f64, 24]
-    support_coef@h100: array[f64, 24]
-    se_coef@h100: array[f64, 24]
-    se_coef_hc0@h100: array[f64, 24]
-    se_coef_hac@h100: array[f64, 24]
+    coef@h100: list[f64]
+    support_coef@h100: list[f64]
+    se_coef@h100: list[f64]
+    se_coef_hc0@h100: list[f64]
+    se_coef_hac@h100: list[f64]
     pred_y__a_r0.000001@h500: f64
     resid_y__a_r0.000001@h500: f64
     pred_y__a_r0.5@h500: f64
@@ -1812,11 +1812,11 @@
     weight_sum@h500: f64
     settled_frac@h500: f64
     withheld_reason@h500: enum
-    coef@h500: array[f64, 24]
-    support_coef@h500: array[f64, 24]
-    se_coef@h500: array[f64, 24]
-    se_coef_hc0@h500: array[f64, 24]
-    se_coef_hac@h500: array[f64, 24]
+    coef@h500: list[f64]
+    support_coef@h500: list[f64]
+    se_coef@h500: list[f64]
+    se_coef_hc0@h500: list[f64]
+    se_coef_hac@h500: list[f64]
     pred_y__selected: f64
     selected_y: enum
     pred_z__selected: f64
@@ -1833,8 +1833,8 @@
     weight_sum@h100: f64
     settled_frac@h100: f64
     withheld_reason@h100: enum
-    coef@h100: array[f64, 4]
-    support_coef@h100: array[f64, 4]
+    coef@h100: list[f64]
+    support_coef@h100: list[f64]
     pred_y__r1e-300@h1e9: f64
     resid_y__r1e-300@h1e9: f64
     pred_y__r0.5@h1e9: f64
@@ -1842,8 +1842,8 @@
     weight_sum@h1e9: f64
     settled_frac@h1e9: f64
     withheld_reason@h1e9: enum
-    coef@h1e9: array[f64, 4]
-    support_coef@h1e9: array[f64, 4]
+    coef@h1e9: list[f64]
+    support_coef@h1e9: list[f64]
   lasso path:
     pred_y__p0.1: f64
     resid_y__p0.1: f64
@@ -1852,7 +1852,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 4]
+    coef: list[f64]
     penalty_selected_y: f64
   rls minimal:
     pred_y: f64
@@ -1860,7 +1860,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
+    coef: list[f64]
   lasso minimal:
     pred_y__p0.1: f64
     resid_y__p0.1: f64
@@ -1869,7 +1869,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 4]
+    coef: list[f64]
     penalty_selected_y: f64
   kalman minimal:
     pred_y: f64
@@ -1877,51 +1877,51 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
+    coef: list[f64]
   huber minimal:
     pred_y: f64
     resid_y: f64
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
-    support_coef: array[f64, 2]
+    coef: list[f64]
+    support_coef: list[f64]
   quantile minimal:
     pred_y: f64
     resid_y: f64
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
-    support_coef: array[f64, 2]
+    coef: list[f64]
+    support_coef: list[f64]
   sgd minimal:
     pred_y: f64
     resid_y: f64
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
+    coef: list[f64]
   pa minimal:
     pred_y: f64
     resid_y: f64
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
+    coef: list[f64]
   ftrl minimal:
     pred_y: f64
     resid_y: f64
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
+    coef: list[f64]
   holt minimal:
     pred_y: f64
     resid_y: f64
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 2]
+    coef: list[f64]
   ew_cov minimal:
     mean_x0: f64
     mean_x1: f64
@@ -1959,7 +1959,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 4]
+    coef: list[f64]
   micro minimal:
     cluster: i64
     dist: f64
@@ -1978,7 +1978,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 4]
+    coef: list[f64]
   seqtest minimal:
     log_e_pos_y: f64
     log_e_neg_y: f64
@@ -2045,7 +2045,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 6]
+    coef: list[f64]
   rcov minimal:
     weight_sum: f64
   deco minimal:
@@ -2055,7 +2055,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 1]
+    coef: list[f64]
   audit minimal:
     weight_sum: f64
   deco blocked:
@@ -2069,7 +2069,7 @@
     weight_sum: f64
     settled_frac: f64
     withheld_reason: enum
-    coef: array[f64, 3]
+    coef: list[f64]
 
 [closed_groups columns]  # column: dtype, in order: a column renamed, retyped, moved or added is a diff here
   shared:

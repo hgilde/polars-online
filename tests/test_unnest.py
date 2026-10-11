@@ -184,7 +184,7 @@ class TestUnnest:
             assert flat[field].equals(nested["ols"].struct.field(field))
         coef = nested["ols"].struct.field("coef")
         for pos, term in enumerate(["intercept", "x0", "x1"]):
-            assert flat[f"coef_y_{term}"].equals(coef.arr.get(pos).alias(f"coef_y_{term}"))
+            assert flat[f"coef_y_{term}"].equals(coef.list.get(pos).alias(f"coef_y_{term}"))
 
     def test_eager_and_function_forms_agree(self):
         nested = _frame().online.fit_predict([OLS, GRID])

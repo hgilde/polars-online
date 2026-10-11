@@ -1004,16 +1004,7 @@ class TestEdgeCases:
         idx = po.spec.output_index(spec())
         tail = ["weight_sum", "settled_frac", "withheld_reason", "coef"]
         assert idx["kind"].to_list() == ["cluster", "dist", "dist_second", *tail]
-        width = po.spec.coef_index(spec()).height
-        assert idx["dtype"].to_list() == [
-            "i64",
-            "f64",
-            "f64",
-            "f64",
-            "f64",
-            "enum",
-            f"array[f64, {width}]",
-        ]
+        assert idx["dtype"].to_list() == ["i64", "f64", "f64", "f64", "f64", "enum", "list[f64]"]
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 
     def test_lazy_path_equals_bank(self):

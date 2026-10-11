@@ -383,10 +383,7 @@ reinterpreted parameter, an output's dtype or a file to refit.
     `filtered_state<j>`/`predicted_state<j>`; a lasso's `__l<penalty>` ->
     `__p<penalty>`, and a one-point path writes none; `reset_<t>` ->
     `ramsey_reset_<t>`.
-  - **Dtypes:** `coef`, `support_coef`, `se_coef`, `se_coef_hc0` and
-    `se_coef_hac` are `Array(Float64, k)` (`to_numpy()` gives `(n, k)`; use
-    `.arr.get`), except `micro`'s ragged `coef` and `closed_groups().coef`,
-    which stay `List`. Every count is `Int64` in every frame and field.
+  - **Dtypes:** every count is `Int64` in every frame and field.
     `ew_class`'s `class`, `selected_<t>`, `describe().role` and
     `closed_groups().rcov_kind` are `Enum`s.
   - **Frame columns:** `groups()` `rows_processed` -> `rows_fed` (now the
@@ -1282,10 +1279,6 @@ project's versioning that is carried by the minor version before 1.0.
     coefficient moves (task 186): `sgd` went from 0.83 to 0.76.
   - `kmeans`' and `micro`'s centres are compensated pairs (task 215): 0.89
     to 0.81 and 0.81 to 0.76.
-  - `coef` and the fields laid out like it are `Array(Float64, k)` (task
-    244), `k` doubles on every row, a null row too: `ewridge` at ten
-    targets went from 0.90 to 0.72, and `sgd` from 0.67 to 0.63. The memory
-    is the next entry.
   - `bocpd` sets its prior from its first rows, with
     `degrees_of_freedom_prior` 3 under `diag` (task 195): 921,000 rows a
     second became 234,000 at four features, at `max_run` 20 or 200. Given
@@ -1295,13 +1288,6 @@ project's versioning that is carried by the minor version before 1.0.
     follows the prior, not the code.
   - The rest comes a few percent at a time from the corrections between
     0.13.0 and 1.0, the value checks of task 183 among them.
-- **A `coef` field holds its `k` doubles on every row** (task 244), since
-  an `Array` has no row without its slots, where a `List` stored nothing
-  for a null row. A ten-target `ewridge` at twenty features has 210
-  coefficients a row: over 1,000,000 rows its `coef` holds 1.6 GiB, where
-  0.13.0's held 7.8 MiB with one row carrying a value. The fit's peak
-  memory rose by 3.9 GiB, against 0.7 GiB. A stream read in chunks holds
-  one chunk's worth at a time.
 - **A sharded `marginal` (`shards=`) steps each target through a held
   batch in turn, and cuts its feature ranges on even features** (task
   127): on one thread up to 24% faster at thirty targets, and 9-16% where

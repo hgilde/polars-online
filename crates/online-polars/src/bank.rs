@@ -10,8 +10,8 @@ use online_core::{ClockCfg, Disorder};
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 use polars_arrow::array::{
-    Array as ArrowArray, BooleanArray, FixedSizeListArray, Float64Array, ListArray, PrimitiveArray,
-    StructArray, Utf8ViewArray,
+    Array as ArrowArray, BooleanArray, Float64Array, ListArray, PrimitiveArray, StructArray,
+    Utf8ViewArray,
 };
 use polars_arrow::bitmap::MutableBitmap;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
@@ -4654,63 +4654,10 @@ fn opt_bool_array(vals: &[Option<bool>]) -> Box<dyn ArrowArray> {
     ))
 }
 
-/// The `coef` field and the fields laid out like it, null where a row carried
-/// none: with a `width`, a `FixedSizeList` of it -- polars' `Array(Float64,
-/// width)`, every row `coef_index`'s height -- and without one (`micro`), a
-/// list ([`coef_list_array`]). Finite-or-null inside, as the list is.
-///
-/// # Errors
-///
-/// A row of another length than `width`, which no model writes: the layout
-/// `coef_index` reads is the models' own.
-fn coef_array(
-    coef: &[Option<&Vec<f64>>],
-    width: Option<usize>,
-) -> PolarsResult<Box<dyn ArrowArray>> {
-    let Some(k) = width else {
-        return Ok(coef_list_array(coef));
-    };
-    let mut values: Vec<f64> = Vec::with_capacity(coef.len() * k);
-    let mut inner = MutableBitmap::with_capacity(coef.len() * k);
-    let mut outer = MutableBitmap::with_capacity(coef.len());
-    for v in coef {
-        match v {
-            Some(flat) => {
-                polars_ensure!(
-                    flat.len() == k,
-                    ComputeError: "a coef row of {} entries where the spec lays out {k}",
-                    flat.len()
-                );
-                for &c in flat.iter() {
-                    let ok = c.is_finite();
-                    values.push(if ok { c } else { f64::NAN });
-                    inner.push(ok);
-                }
-                outer.push(true);
-            }
-            // A null row still holds `k` slots, masked by the row's bit.
-            None => {
-                values.extend(std::iter::repeat_n(f64::NAN, k));
-                inner.extend_constant(k, false);
-                outer.push(false);
-            }
-        }
-    }
-    let inner_validity = (inner.unset_bits() > 0).then(|| inner.into());
-    let child = PrimitiveArray::new(ArrowDataType::Float64, values.into(), inner_validity);
-    let outer_validity = (outer.unset_bits() > 0).then(|| outer.into());
-    Ok(Box::new(FixedSizeListArray::try_new(
-        FixedSizeListArray::default_datatype(ArrowDataType::Float64, k),
-        coef.len(),
-        Box::new(child),
-        outer_validity,
-    )?))
-}
-
-/// The `coef` field as a list per row, null where the row carried none: a
-/// `micro`'s, with no fixed width. Built by hand rather than through a builder
-/// because the nulls are nested -- a null list and a null *inside* a list are
-/// different things, and the finite-or-null contract applies to both.
+/// The `coef` field: a list per row, null where the row carried none. Built by
+/// hand rather than through a builder because the nulls are nested -- a null
+/// list and a null *inside* a list are different things, and the finite-or-null
+/// contract applies to both.
 fn coef_list_array(coef: &[Option<&Vec<f64>>]) -> Box<dyn ArrowArray> {
     let mut offsets: Vec<i64> = Vec::with_capacity(coef.len() + 1);
     offsets.push(0);
@@ -5037,7 +4984,7 @@ fn assemble(
                             }
                         }
                     }
-                    coef_array(&support, f.width)?
+                    coef_list_array(&support)
                 }
                 Source::SeCoef(mi) | Source::SeCoefHc0(mi) | Source::SeCoefHac(mi) => {
                     fn pick<'a>(src: &Source, ch: &'a ChunkOut) -> &'a [Vec<Option<Vec<f64>>>] {
@@ -5058,7 +5005,7 @@ fn assemble(
                             }
                         }
                     }
-                    coef_array(&se, f.width)?
+                    coef_list_array(&se)
                 }
                 Source::LamSelected(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
@@ -5098,7 +5045,7 @@ fn assemble(
                     }
                     // Finite-or-null inside the list too: an `ew_class` class
                     // no row has carried yet has NaN means, and a null says so.
-                    coef_array(&coef, f.width)?
+                    coef_list_array(&coef)
                 }
                 Source::ScoredClock => clock_array(n, chunks, clock_dtype, |ch| &ch.scored_clock),
                 Source::LearnedClock => clock_array(n, chunks, clock_dtype, |ch| &ch.learned_clock),

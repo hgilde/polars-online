@@ -1388,9 +1388,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         Null where no column set describes the field, as for a prediction.
     ``dtype``
         The type the bank declares to polars before the first row is read:
-        ``f64``, ``bool``, ``array[f64, <k>]`` (``coef`` and the fields laid
-        out like it, ``k`` wide, ``k`` being :func:`coef_index`'s height),
-        ``list[f64]`` (``micro``'s ``coef``, as long as its summaries), ``enum`` (an ``Enum`` of
+        ``f64``, ``bool``, ``list[f64]``, ``enum`` (an ``Enum`` of
         its values in their order: ``withheld_reason``'s, an ``ew_class``
         spec's ``classes`` for ``class``, a grid's slots for
         ``selected_<t>``), ``i64`` (every integer: a count, a state, a row
@@ -1484,7 +1482,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
             & (pl.col("ridge") == 0.5)
             & (pl.col("half_life") == 500.0)
         ).row(0, named=True)
-        slope = out["m"].struct.field(row["field"]).arr.get(row["position"])
+        slope = out["m"].struct.field(row["field"]).list.get(row["position"])
 
     Rendered by the Rust code that names the fields, from the slot order the
     models lay the list out in. That order is the intercept first when the spec
@@ -1549,7 +1547,7 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         pos = ci.filter(
             (pl.col("target") == "y") & (pl.col("ridge") == 0.5) & (pl.col("term") == "x1")
         )["position"].item()
-        slope = out["m"].struct.field("coef@h100").arr.get(pos)
+        slope = out["m"].struct.field("coef@h100").list.get(pos)
 
     Every instance's list has this layout; :func:`coef_fields` is the same
     table per instance, with the field each list sits in and the column name
@@ -4151,9 +4149,7 @@ def micro(
     ``coef``
         The established summaries, one ``[id, label, n, radius, c_1, ...,
         c_p]`` row each, flattened -- as many rows as there are, so
-        :func:`coef_index` is empty and the field is a ``List``, where every
-        other model's ``coef`` is an ``Array`` of fixed width. One row's list
-        reshaped to ``(-1, 4 + p)`` is its summaries, one per row.
+        :func:`coef_index` does not apply.
 
     .. rubric:: Example
 

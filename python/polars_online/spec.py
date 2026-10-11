@@ -371,13 +371,15 @@ releases none. A regression writes, with ``<t>`` a target:
 ``coef``
     The coefficients of the fit after the row's update, the ones the next row
     is predicted with (under an ``embargo``, as above). They are one flat
-    ``Array``, as wide as :func:`coef_index` is long, so ``to_numpy()`` reads
-    the field as a matrix: per (target, grid combination) slot in the order the
-    ``pred`` fields declare them, the intercept and then one entry per feature.
-    Null on rows where it is not filled (``coef_every``). :func:`coef_index`
-    maps each position to its term, and ``.arr.get(position)`` reads it.
-    :func:`coef_fields` names the column each becomes when the struct is
-    unnested.
+    list: per (target, grid combination) slot in the order the ``pred``
+    fields declare them, the intercept and then one entry per feature. Null
+    on rows where it is not filled (``coef_every``), which are most rows, and
+    a list stores nothing for a null row. :func:`coef_index` maps each
+    position to its term, and ``.list.get(position)`` reads it. For an
+    ``(n, k)`` matrix, ``k`` being :func:`coef_index`'s height, keep the rows
+    that carry it and fix the width: ``.list.to_array(k)``, then
+    ``to_numpy()``. :func:`coef_fields` names the column each becomes when
+    the struct is unnested.
 ``settled_frac``
     How far the decay window had filled toward steady state before this row:
     ``1 - 2 ** (-T / half_life)`` with ``T`` the decay time the models have

@@ -1096,8 +1096,8 @@ def _unnest_exprs(
             if base not in lists:
                 exprs.append(col.alias(named(field)))
                 continue
-            # An `Array` as the bank writes it, or a `List` as a file written
-            # before `coef` was one holds it.
+            # A `List` as the bank writes it, or an `Array` as a file written
+            # by a build that wrote one (task 244, reverted by task 250).
             get = col.arr.get if isinstance(dtypes[field], pl.Array) else col.list.get
             for position, name in (
                 coefs.filter(pl.col("field") == base).select("position", "name").iter_rows()
