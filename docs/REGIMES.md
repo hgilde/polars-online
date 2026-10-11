@@ -9,15 +9,13 @@ reports what the detectors find on such streams, and on Monte-Carlo draws
 whose null distribution is published: where each is right, and what it
 misses.
 
-Tasks 45–56 (E54–E64, 2026-09-06) added five models whose output is a
-claim about a stream: `deco`, `rcov`, `hmm`, `corrchange` and `bocpd`. This
-page and its script were written as that batch closed, and measure all
-five, with two remedies for [series that tick at their own
+Five models make a claim about a stream: `deco`, `rcov`, `hmm`,
+`corrchange` and `bocpd`. This page measures all five. It also measures two
+remedies for [series that tick at their own
 times](../README.md#series-that-tick-at-their-own-times): refresh-time
-sampling and the lagged co-moments of `ew_cov(lags=...)`. `deco` and
-`rcov` joined on 2026-09-27 (task 112), with `hmm` through a switch of
-regime and the size study at ten times the draws, and `corrchange`'s
-sequential detector on 2026-09-28 (task 114).
+sampling, and the lagged co-moments of `ew_cov(lags=...)`. Each model's
+entry in [MODELS.md](MODELS.md) gives its update rule and a recipe that
+runs it on a planted answer.
 
 | section | the question | measured on |
 |---|---|---|
@@ -33,13 +31,17 @@ sequential detector on 2026-09-28 (task 114).
 | [9. The sequential detector against its paper](#9-the-sequential-detector-against-its-paper) | how often a monitoring period ends in a flag when nothing changed | `corrchange`, `kind="sequential"` |
 | [10. Running them](#10-running-them) | how to reproduce every number, and how long it takes | |
 
-Every number comes from `scripts/regime_experiments.py`, run on 2026-09-27;
-sections 2 to 4 and 9 on 2026-09-28, after task 114 put the monitor's
-kernel on its paper's; section 8 on 2026-10-05, after task 158 read the
-pre-averaging bias's θ from the window run and task 159 formed CKP's first
-pre-averaged term, which moved two of its cells at the third decimal. Sections 1 to 4 end with a dated note that keeps
-the figures they first reported, on 2026-09-06, and 2 to 4 one with the
-figures before task 114.
+**Every number comes from `scripts/regime_experiments.py`, which
+generates its streams from seeds** ([10. Running them](#10-running-them)).
+Sections 1 and 5 to 7 were run on 2026-09-27. Sections 2 to 4 and 9 were
+run on 2026-09-28, after the monitor's long-run variance moved to its
+paper's kernel weights, `1 − l/γ`. Section 8 was run on 2026-10-05, after the
+pre-averaging bias's θ was read from the window the run uses and its first
+pre-averaged term was formed as Christensen, Kinnebrock and Podolskij form
+it. That moved two of its cells at the third decimal. Sections 1 to 4 end
+with a dated note that keeps the figures they first reported, on
+2026-09-06. Sections 2 to 4 have one more, which keeps the figures from
+before the change of weights.
 
 ## 0. The short version
 
@@ -52,24 +54,23 @@ nothing on before seeding. Given the covariances to start from, it puts
 median of 12 rows, where seeded from the rows it follows no switch at all
 ([§1](#1-does-hmm-recover-the-stream-that-made-it)).
 
-**A prior that is too wide is the failure to watch for, and it is the same
-failure in two models.** At 1.0, on returns whose variance is about 1.0,
+**Set each prior from the data's scale, because one set too wide fails the
+same way in `hmm` and in `bocpd`.** At 1.0, on returns whose variance is about 1.0,
 `hmm`'s `precision_prior` halves every correlation. The share of rows in
 the true state then falls from 98 % to 58 %. Set too large, `bocpd`'s
 `prior_scale` makes every row unsurprising, so a real break is never found
-([its entry in MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
-Set both from the data's scale
+([its entry in MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)),
+and §1 measures `hmm`'s
 ([§1](#1-does-hmm-recover-the-stream-that-made-it)).
 
 **`corrchange`'s monitor is close to its paper's tables.** Wied, Krämer and
 Dehling (WKD) tabulate its size and power for "i.i.d. bivariate `t_5`
 innovations", a phrase two distributions fit. At 20,000 draws a cell, the
-size under the shared-scale reading is within 0.004 of their Table 1, and
-under the independent reading 0.008 above it where `rho` is 0, so the
-size points to the shared scale. The power is within 0.035 of their Table
-2 under either. On Gaussian pairs the size runs from 0.041 to 0.047
-against the nominal 0.05, the level `tests/test_corrchange.py` holds it
-to
+size under the shared-scale reading is within 0.004 of their Table 1. Under
+the independent reading it is 0.008 above it where `rho` is 0, so the size
+points to the shared scale. The power is within 0.035 of their Table 2
+under either. On Gaussian pairs the size runs from 0.041 to 0.047 against
+the nominal 0.05, the level `tests/test_corrchange.py` holds it to
 ([§2](#2-is-the-monitor-the-size-its-paper-says),
 [§3](#3-and-is-it-the-power-its-paper-says)).
 
@@ -92,7 +93,7 @@ to 0.18 against a nominal 0.05, as the paper warns
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(kind="window")` finds a correlation break in a
 median of 25 rows and flags 54 rows per 1000 quiet ones. `bocpd` takes 121
-rows and raises 1.00 alarms per 1000. Neither is better: they answer
+rows and gives 1.00 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
@@ -115,16 +116,16 @@ the series are observed on different rows
 
 ## 1. Does `hmm` recover the stream that made it?
 
-`hmm` gives each row a probability for each of `k` hidden states. This
-section asks how many rows the filter puts in the state that generated
-them, for four ways of starting it.
+`hmm` gives each row a probability for each of `k` hidden states. Here
+the filter is started in four ways, and each is scored by how many rows it
+puts in the state that generated them.
 
-**No stream in this table switched regime; [the switch
-experiment](#through-a-switch) makes them switch.**
+**No stream in this first experiment switched regime.**
 `po.sim.regimes` draws one state per block, and with ten blocks at a 1 %
 chance per block of leaving state 0, every block of all eight seeds stayed
-there. The table below therefore measures the share of rows the filter
-puts in that one true state.
+there. So the first results table gives the share of rows the filter puts
+in that one true state. [The switch experiment](#through-a-switch) makes
+the streams switch.
 
 | condition | value |
 |---|---|
@@ -146,7 +147,7 @@ puts in that one true state.
 **Seeded from the rows, the filter splits zero-mean rows by direction.**
 The default seeding is k-means over the rows, and these returns have a
 mean of zero, so k-means finds two directions. The learned state means
-reach 0.64 in absolute value, where the truth is zero; that is the largest
+reach 0.64 in absolute value, where the truth is zero. That is the largest
 absolute mean per seed, averaged over the eight. The score counts the 500
 rows before seeding, which report nothing, as the true state. Over the 3499
 rows after seeding the share is about half: (0.568 × 3999 − 500) / 3499 ≈
@@ -158,9 +159,10 @@ the last row the filter does not learn, so `precision_prior` adds a ridge
 of 1.0 to each given covariance for the whole stream. The returns' variance
 is about 1.0, so each state's correlation is halved, and the correlation is
 the whole of the signal here. The share in the true state falls from 0.979
-to 0.580. That is `bocpd`'s `prior_scale` lesson ([its entry in
-MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)), in a
-second model.
+to 0.580. So keep `precision_prior` well below the data's variance, as
+[`hmm`'s entry in MODELS.md](MODELS.md#hmm--which-regime-are-we-in) says.
+`bocpd`'s `prior_scale` fails the same way when set too large ([its
+entry](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 The learned transition matrix is not read back through the public API, so
 what is scored is the state path, which is what a caller reads. The
@@ -247,9 +249,8 @@ nominal 0.05. `tests/test_corrchange.py` holds the test to that level on
 Gaussian pairs at `T = 500`, for `rho` of 0 and 0.5, and again at 0.5 with
 one column multiplied by 100. No test holds the size to WKD's own figure.
 
-> **Measured 2026-09-27, before task 114 put the kernel on WKD's `1 −
-> l/γ` (it was Newey–West's `1 − l/(γ+1)`), at 20,000 replications a
-> cell.** In the table's row order, the shared-scale `t_5` read 0.040,
+> **Measured 2026-09-27, before the kernel moved to WKD's `1 − l/γ` (it
+> was Newey–West's `1 − l/(γ+1)`), at 20,000 replications a cell.** In the table's row order, the shared-scale `t_5` read 0.040,
 > 0.031, 0.040, 0.035, 0.033 and 0.038; the independent `t_5` 0.042, 0.042,
 > 0.040, 0.041, 0.042 and 0.039; Gaussian pairs 0.045, 0.041, 0.046, 0.046,
 > 0.042 and 0.046. No cell moved by more than 0.001.
@@ -261,9 +262,8 @@ one column multiplied by 100. No test holds the size to WKD's own figure.
 > scale's 0.024 at `T = 500` and `rho = 0`, 2.2 standard errors from WKD's
 > 0.035, reads 0.031 at ten times the draws.
 
-> **Measured 2026-09-06, before the S3 fix of 2026-09-19, which corrected
-> `D-hat`'s gradient** ([docs/REVIEW-2026-09-18.md](REVIEW-2026-09-18.md)).
-> In the table's row order, the shared-scale `t_5` read 0.075, 0.025,
+> **Measured 2026-09-06, before `D-hat`'s gradient was corrected on
+> 2026-09-19.** In the table's row order, the shared-scale `t_5` read 0.075, 0.025,
 > 0.076, 0.071, 0.040 and 0.081. The independent `t_5` read 0.028, 0.046,
 > 0.025, 0.018, 0.040 and 0.021. Gaussian pairs read 0.048, 0.045, 0.054,
 > 0.042, 0.034 and 0.051.
@@ -309,14 +309,14 @@ quantile, from 1.317 to 1.352, is below the asymptotic 1.3581. So the
 size-adjusted power is the higher of the two in every row but the last,
 where both are 0.995.
 
-> **Measured 2026-09-27, before task 114's kernel.** In the table's row
-> order, as power, size-adjusted and empirical 95 %: at `T = 500`, t5 read
+> **Measured 2026-09-27, before the kernel moved to WKD's.** In the
+> table's row order, as power, size-adjusted and empirical 95 %: at `T = 500`, t5 read
 > 0.553, 0.582 and 1.321, t5_indep 0.585, 0.613 and 1.327, and normal 0.830,
 > 0.851 and 1.327. At `T = 1000`, t5 read 0.832, 0.844 and 1.324, t5_indep
 > 0.832, 0.857 and 1.307, and normal 0.994, 0.994 and 1.355.
 >
-> **Measured 2026-09-06, before the S3 fix of 2026-09-19, which corrected
-> `D-hat`'s gradient.** In the table's row order, as power, size-adjusted
+> **Measured 2026-09-06, before `D-hat`'s gradient was corrected on
+> 2026-09-19.** In the table's row order, as power, size-adjusted
 > and empirical 95 %: at `T = 500`, t5 read 0.525, 0.428 and 1.498,
 > t5_indep 0.400, 0.472 and 1.256, and normal 0.824, 0.837 and 1.335. At
 > `T = 1000`, t5 read 0.779, 0.733 and 1.452, t5_indep 0.648, 0.750 and
@@ -366,14 +366,14 @@ standard deviation falls from 0.111 to 0.072.
 
 The size in §2 and the power in §3 are close to WKD's tables even so.
 
-> **Measured 2026-09-27, before task 114's kernel.** In the table's row
-> order, as mean, median and sd, normal read 0.739, 0.742 and 0.060, then
+> **Measured 2026-09-27, before the kernel moved to WKD's.** In the
+> table's row order, as mean, median and sd, normal read 0.739, 0.742 and 0.060, then
 > 0.749, 0.751 and 0.033. The shared-scale t5 read 1.071, 1.020 and 0.257, then
 > 1.184, 1.097 and 0.353; the independent t5 0.811, 0.796 and 0.113, then
 > 0.828, 0.815 and 0.073.
 >
-> **Measured 2026-09-06, before the S3 fix of 2026-09-19, which corrected
-> `D-hat`'s gradient.** In the table's row order, as mean, median and sd:
+> **Measured 2026-09-06, before `D-hat`'s gradient was corrected on
+> 2026-09-19.** In the table's row order, as mean, median and sd:
 > normal read 0.739, 0.739 and 0.063, then 0.750, 0.750 and 0.034. The
 > shared-scale t5 read 1.050, 0.979 and 0.446, then 1.143, 1.032 and 0.464.
 > The independent t5 read 0.932, 0.877 and 0.216, then 0.953, 0.915 and
@@ -419,8 +419,8 @@ sequence is. Its run-length posterior has to accumulate that evidence,
 which takes a median of 121 rows and 207 at worst. In return it dates the
 regime, saying which row the current one began on. And it rarely says so
 when nothing has happened: 1.00 alarms per 1000 quiet rows. Half of those,
-20 of 40, come where the run has reached `max_run = 1200` rows and is
-folded into a younger run, whose start is later: a cap on a run's length
+20 of 40, come where the run has reached `max_run = 1200` rows. There it is
+folded into a younger run, whose start is later, so a cap on a run's length
 moves the start it reports.
 
 ## 6. The Epps effect, and the two ways out
@@ -476,7 +476,7 @@ passes its best point.** Too small, and the cross-covariance at longer
 lags is left out; too large, and the sum takes in noise. The mean over five
 seeds levels off at 0.775 from `L` = 256 to 512 and falls after, while its
 spread across seeds grows from 0.001 at 128 to 0.029 at 1024. Seed 7 peaks
-earlier, at 192. Anywhere from 128 to 512 reads within 0.01 of the best,
+at a smaller `L`, 192. Anywhere from 128 to 512 reads within 0.01 of the best,
 0.775, which is still short of the truth of 0.8.
 
 The lag inversion is here because its lagged co-moments are a state a bank
@@ -533,11 +533,11 @@ and 0.8, under four conditions:
 | noise, half observed, refresh time | the same rows through `po.stream.refresh_time`, block by block |
 
 Each cell is the bias of the block's correlation, its standard error, and
-the root-mean-square error, over 190 blocks: 10 seeds of 20 blocks, less
-the last block of each stream, which never closes. `block_rows`, which
-sizes the kernel's ring and pre-averaging's window, is each condition's
-own median rows a block: about 2000, and 602 under refresh time, which
-keeps only the rows where both series have moved.
+the root-mean-square error. There are 190 blocks: 10 seeds of 20 blocks,
+less the last block of each stream, which never closes. `block_rows` sizes
+the kernel's ring and pre-averaging's window. It is each condition's own
+median rows a block: about 2000, and 602 under refresh time, which keeps
+only the rows where both series have moved.
 
 | condition | `plain` | `kernel` | `preavg` | `preavg`, `psd=False` |
 |---|---|---|---|---|
@@ -550,8 +550,8 @@ keeps only the rows where both series have moved.
 against 0.042 for the kernel and 0.074 at best for pre-averaging. The
 other two trade variance for robustness that clean data does not need.
 
-**Noise costs `plain` a fifth of the correlation and the kernel almost
-nothing.** Noise adds variance to each series and nothing to their
+**Noise takes a fifth of `plain`'s correlation, and almost nothing of the
+kernel's.** Noise adds variance to each series and nothing to their
 covariance, so `plain` reads 0.177 low on average. The kernel's error moves
 from 0.042 to 0.045. Pre-averaging does not move at all at this precision:
 each block moves by about 0.003, and across 190 blocks those moves cancel
@@ -560,8 +560,8 @@ to the third decimal.
 **Asynchrony is the harder case.** Carried forward, a series that was not
 observed returns zero, and `plain` loses 0.420. The kernel, which sums its
 lags, keeps most of it, at a bias of −0.094. Pre-averaging is the least
-biased, at −0.017 and −0.021; its window, tens of rows long, spans the
-rows a series missed. Refresh time takes the kernel's bias to −0.017, on
+biased, at −0.017 and −0.021, because its window, tens of rows long,
+spans the rows a series missed. Refresh time takes the kernel's bias to −0.017, on
 602 rows a block, and pre-averaging's error rises there, to 0.150 and
 0.106, with fewer rows to average over.
 
@@ -574,10 +574,10 @@ the more accurate on these streams.
 
 ## 9. The sequential detector against its paper
 
-`kind="sequential"` is Wied and Galeano's (2013) monitoring procedure:
-`span_rows` rows of history, then each row of a monitoring period of
-`monitor_rows` rows tested against it as it arrives, until a flag or the
-period's end. Their `T` is `monitor_rows / span_rows`, and
+`kind="sequential"` is Wied and Galeano's (2013) monitoring procedure. It
+takes `span_rows` rows of history, then tests each row of a monitoring
+period of `monitor_rows` rows against it as the row arrives, until a flag
+or the period's end. Their `T` is `monitor_rows / span_rows`, and
 `boundary_gamma`, their `γ`, lowers the boundary early in the period. Its
 size is the share of monitoring periods that end in a flag when the
 correlation never changes. Their Table 2 gives it for two independent
@@ -618,21 +618,26 @@ difference between two such rates about √2 times that.
 
 **On their design the detector is within two standard errors of their
 table in every cell.** The largest gap at each `boundary_gamma` is at
-`m = 500`: at 0, the cell `T = 1` (0.052 against their 0.069); at 0.25,
-`T = 4` (0.054 against 0.077); and at 0.45, `T = 0.5` (0.155 against
-0.125). The gaps run in both directions. The critical values differ a
-little too. The
-paper simulates them on a grid, which reads the supremum low, and this
-library solves the law behind them
-(`crates/online-core/src/boundary.rs`). So its values are higher in 11 of
+`m = 500`, and the gaps run in both directions:
+
+| `boundary_gamma` | the cell | here | their Table 2 |
+|---|---|---|---|
+| 0 | `T = 1` | 0.052 | 0.069 |
+| 0.25 | `T = 4` | 0.054 | 0.077 |
+| 0.45 | `T = 0.5` | 0.155 | 0.125 |
+
+**The critical values differ a little too.** The paper simulates them on a
+grid, which reads the supremum low. This library solves the law behind them
+(`crates/online-core/src/boundary.rs`), so its values are higher in 11 of
 the 12 cells of their Table 1, and within 0.03 of it in all.
 
 **Neither is the nominal 5 %, and the paper says so.** At 0 and 0.25 the
 size runs from 0.043 to 0.088, a little above 0.05 at `m = 250` and
 closer at 500, as their asymptotics expect. At 0.45 it runs from 0.116 to
 0.176: the boundary is low at the start, and a noisy early correlation
-crosses it. That is the price of catching an early change sooner, which
-`tests/test_corrchange.py` holds it to on a change ten rows in.
+crosses it. The same low start is what catches an early change sooner, and
+`tests/test_corrchange.py` holds the detector to catching a change ten rows
+in.
 
 **Gaussian pairs read the same as GARCH ones:** 0.049 to 0.086 at 0 and
 0.25, and 0.123 to 0.167 at 0.45. The paper's assumptions admit GARCH, and
@@ -642,6 +647,9 @@ this design does not tell the two apart.
 between 2.5 % and 7.5 %, and the critical values to the paper's Table 1.
 
 ## 10. Running them
+
+Each experiment is one command of the script, named for what it measures,
+and `all` runs every one:
 
 ```sh
 uv run python scripts/regime_experiments.py all              # every experiment, in the order of the table below
@@ -671,11 +679,16 @@ written. Every figure the 2026-09-23 run gave that this one re-ran is
 unchanged.
 
 **Every stream is generated from a seed, so two runs of one build give the
-same numbers.** The seeds are derived with `zlib.crc32`, not `hash()`,
-because Python randomises the hash of a string in each process. Nothing
-downloads and nothing is cached. A different build can move the numbers,
-and the dated notes in sections 1 to 4 record where one did.
+same numbers.** The seeds are derived with `zlib.crc32`, because Python
+randomises a string's `hash()` in each process. Nothing downloads and
+nothing is cached. A different build can move the numbers, and the dated
+notes in sections 1 to 4 record where one did.
 
-The script is committed, and the gate does not run it: the size study
-alone is 20,000 replications a cell across three distributions, 264 s of
-the run.
+**A test holds sections 1 and 5 to 9 to what their experiments print.**
+`tests/test_regimes_doc.py` runs those experiments, in the extended tier,
+and checks every row of the sections' tables and every three-decimal figure
+in their prose against the output. It runs on macOS alone, where the page
+is generated, because another platform's libm can move a figure in its
+third decimal. Sections 2 to 4 are left to the script: the size study alone
+is 20,000 replications a cell across three distributions, 264 s of the
+run.

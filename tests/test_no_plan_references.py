@@ -68,6 +68,7 @@ FILES: list[str] = [
     "docs/MODELS.md",
     "docs/WINDOWS.md",
     "docs/GBDT.md",
+    "docs/REGIMES.md",
     *sorted(str(p.relative_to(REPO)) for p in REFERENCE.glob("*.rst")),
 ]
 
