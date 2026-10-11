@@ -495,8 +495,6 @@ def dtype_text(dtype: pl.DataType) -> str:
     Polars)."""
     if isinstance(dtype, pl.List):
         return f"List[{dtype_text(dtype.inner)}]"
-    if isinstance(dtype, pl.Array):
-        return f"Array[{dtype_text(dtype.inner)}, {dtype.size}]"
     if isinstance(dtype, pl.Enum):
         return f"Enum[{', '.join(dtype.categories.to_list())}]"
     if isinstance(dtype, pl.Struct):

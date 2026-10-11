@@ -94,8 +94,9 @@ def float_bits(s: pl.Series) -> tuple[np.ndarray, np.ndarray]:
 
 
 def same(a: pl.Series, b: pl.Series) -> bool:
-    # `coef` and the fields laid out like it became an `Array` before 1.0,
-    # from a `List` of the same numbers: compared as the list either holds.
+    # `coef` and the fields laid out like it were an `Array` in the builds
+    # between task 244 and task 250, a `List` of the same numbers before and
+    # after: compared as the list either holds.
     if isinstance(a.dtype, pl.Array) and isinstance(b.dtype, pl.List):
         a = a.cast(b.dtype)
     elif isinstance(b.dtype, pl.Array) and isinstance(a.dtype, pl.List):

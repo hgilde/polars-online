@@ -193,7 +193,7 @@ def _floats(frame: pl.DataFrame, prefix: str = "") -> dict[str, np.ndarray]:
         if s.dtype == pl.Struct:
             out.update(_floats(s.struct.unnest(), f"{prefix}{name}."))
             continue
-        if isinstance(s.dtype, (pl.List, pl.Array)):
+        if isinstance(s.dtype, pl.List):
             # Flattened by hand, not with `explode`, whose default polars is
             # changing: nulls stay NaN, empty lists add nothing.
             flat = _flatten(s.to_list())

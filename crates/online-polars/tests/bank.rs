@@ -558,14 +558,7 @@ fn coef_is_the_output_s_last_coef_per_group() {
     let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
     let out = bank.fit_predict(&df).unwrap().remove(0);
     let coef = out.struct_().unwrap().field_by_name("coef").unwrap();
-    // An `Array` of the layout's width, read through its list form.
-    assert_eq!(
-        coef.dtype(),
-        &DataType::Array(Box::new(DataType::Float64), 3)
-    );
-    let coef = coef
-        .cast(&DataType::List(Box::new(DataType::Float64)))
-        .unwrap();
+    assert_eq!(coef.dtype(), &DataType::List(Box::new(DataType::Float64)));
     let coef = coef.list().unwrap();
     let gs = df.column("g").unwrap().str().unwrap();
 

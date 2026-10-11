@@ -236,16 +236,13 @@ fn every_output_format_carries_the_banks_columns() {
                 let ridge = got.column("ridge").unwrap();
                 assert!(matches!(ridge.dtype(), DataType::Struct(_)), "{format:?}");
                 let coef = ridge.struct_().unwrap().field_by_name("coef").unwrap();
-                // As wide as the layout: the intercept and two features.
-                // Parquet and IPC keep the `Array`; JSON has no fixed-size
-                // list, so ndjson reads back the same numbers as a list.
-                let width = DataType::Array(Box::new(DataType::Float64), 3);
-                let want = if matches!(format, Format::Ndjson) {
-                    DataType::List(Box::new(DataType::Float64))
-                } else {
-                    width
-                };
-                assert_eq!(coef.dtype(), &want, "{format:?}");
+                // A list in every format, as the bank writes it: a mostly
+                // null `coef` stores nothing on the rows that carry none.
+                assert_eq!(
+                    coef.dtype(),
+                    &DataType::List(Box::new(DataType::Float64)),
+                    "{format:?}"
+                );
             }
         }
         files.push(output);
@@ -294,9 +291,6 @@ fn csv_lists_read_back_as_lists() {
     for start in (0..df.height()).step_by(64) {
         let cols = bank.fit_predict(&df.slice(start as i64, 64)).unwrap();
         let coef = cols[0].struct_().unwrap().field_by_name("coef").unwrap();
-        let coef = coef
-            .cast(&DataType::List(Box::new(DataType::Float64)))
-            .unwrap();
         want.extend(
             coef.list()
                 .unwrap()

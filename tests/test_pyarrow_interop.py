@@ -193,26 +193,27 @@ def test_a_reused_pyarrow_reader_plan_warns() -> None:
     assert "ConsumedSourceWarning" in got["second"], got["second"]
 
 
-def test_coef_crosses_as_a_fixed_size_list() -> None:
-    """``coef`` is an ``Array(Float64, k)``, which Arrow carries as a
-    ``FixedSizeList`` of ``k``: pyarrow reads it so, with the same numbers and
-    the same nulls, a null row and a null inside one apart, and polars reads
-    the pyarrow array back as the ``Array`` it was."""
+def test_coef_crosses_as_a_list() -> None:
+    """``coef`` is a ``List(Float64)``, which Arrow carries as a list of
+    doubles with 64-bit offsets: pyarrow reads it so, with the same numbers
+    and the same nulls, a null row and a null inside one apart, and polars
+    reads the pyarrow array back as the ``List`` it was. The matrix recipe
+    the docs show, ``.list.to_array(k)`` on the rows that carry it, gives
+    ``(n, k)``."""
     out = _child(
         """
         arr = pa.array(fresh())
         coef = arr.type.field("coef").type
-        result["fixed"] = pa.types.is_fixed_size_list(coef)
-        result["size"] = coef.list_size
+        result["list"] = pa.types.is_large_list(coef)
         result["inner"] = str(coef.value_type)
         back = pl.Series(arr).struct.unnest()
         result["dtype"] = str(back["coef"].dtype)
         result["same"] = back["coef"].equals(want["coef"], null_equal=True)
-        result["numpy"] = list(back["coef"].drop_nulls().to_numpy().shape)
+        result["numpy"] = list(back["coef"].drop_nulls().list.to_array(3).to_numpy().shape)
         """
     )
-    assert out["fixed"] and out["size"] == 3 and out["inner"] == "double", out
-    assert out["dtype"] == "Array(Float64, shape=(3,))" and out["same"], out
+    assert out["list"] and out["inner"] == "double", out
+    assert out["dtype"] == "List(Float64)" and out["same"], out
     assert out["numpy"][1] == 3, out
 
 

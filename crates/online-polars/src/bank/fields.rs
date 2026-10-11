@@ -52,7 +52,7 @@ pub struct FieldMeta {
     /// Columns an `ew_cov` statistic is over.
     pub columns: Option<Vec<String>>,
     /// The polars dtype the field is materialized with, as its string form
-    /// (`f64`, `i64`, `bool`, `enum`, `array[f64, 3]`, `list[f64]`, `clock`).
+    /// (`f64`, `i64`, `bool`, `enum`, `list[f64]`, `clock`).
     /// Set from `src`, so it is the same
     /// table `assemble` fills the buffers from, so a declared output struct and
     /// the values that land in it cannot disagree (docs/IMPROVEMENTS.md C1 — a
@@ -70,13 +70,6 @@ pub struct FieldMeta {
     /// every other field (`withheld_reason`'s are fixed).
     #[serde(skip)]
     pub(super) categories: Option<Vec<String>>,
-    /// The length of every row of a field laid out like `coef` (`coef`,
-    /// `support_coef`, `se_coef*`): `coef_index`'s height, which makes the
-    /// field an `Array(Float64, width)`. `None` for `micro`'s `coef`, one
-    /// row per summary and as many as there are, which stays a list, and
-    /// for every other field.
-    #[serde(skip)]
-    pub(super) width: Option<usize>,
 }
 
 /// The buffer a field's values are scattered into, with the index into it.
@@ -166,7 +159,6 @@ impl FieldMeta {
             dtype: String::new(),
             src: Source::Unset,
             categories: None,
-            width: None,
         }
     }
     /// An `Enum` field over these categories, in this order; set before
@@ -204,17 +196,11 @@ impl FieldMeta {
             Source::SelName(_) | Source::Label(_) => {
                 enum_of(self.categories.as_deref().unwrap_or_default())
             }
-            // As wide as `coef_index` is long, every row (task 244): an
-            // `Array`, which `to_numpy` reads as an `(n, k)` matrix. A
-            // `micro`'s `coef` has no fixed width and stays a list.
             Source::Coef(_)
             | Source::SupportCoef(_)
             | Source::SeCoef(_)
             | Source::SeCoefHc0(_)
-            | Source::SeCoefHac(_) => match self.width {
-                Some(k) => DataType::Array(Box::new(DataType::Float64), k),
-                None => DataType::List(Box::new(DataType::Float64)),
-            },
+            | Source::SeCoefHac(_) => DataType::List(Box::new(DataType::Float64)),
             Source::Reason(_) => DataType::from_frozen_categories(
                 polars::prelude::FrozenCategories::new(crate::stream::WITHHELD_REASONS)
                     .expect("distinct names"),
@@ -652,36 +638,7 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             _ => {}
         }
     }
-    with_clocks(spec, with_widths(spec, no_decay(spec, fields)))
-}
-
-/// The length of each instance's `coef` list: `coef_index`'s height, the
-/// slots times their terms. `None` for a spec with no named coefficient --
-/// `micro`, whose list is one row per summary, as many as there are.
-pub(super) fn coef_width(spec: &Spec) -> Option<usize> {
-    let cf = coef_fields(spec);
-    let first = cf.first()?;
-    Some(cf.iter().filter(|c| c.field == first.field).count())
-}
-
-/// The fields laid out like `coef` given their width, and their dtype with
-/// it ([`FieldMeta::width`]).
-fn with_widths(spec: &Spec, mut fields: Vec<FieldMeta>) -> Vec<FieldMeta> {
-    let width = coef_width(spec);
-    for f in &mut fields {
-        if matches!(
-            f.src,
-            Source::Coef(_)
-                | Source::SupportCoef(_)
-                | Source::SeCoef(_)
-                | Source::SeCoefHc0(_)
-                | Source::SeCoefHac(_)
-        ) {
-            f.width = width;
-            f.dtype = f.dtype().to_string();
-        }
-    }
-    fields
+    with_clocks(spec, no_decay(spec, fields))
 }
 
 /// A model that takes no decay -- `seqtest`, `rcov`, `corrchange`,

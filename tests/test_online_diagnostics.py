@@ -540,7 +540,7 @@ def test_a_held_feature_goes_quiet_long_before_rls_winds_up():
     )
     out = _run(df, spec)
     quiet = int(np.flatnonzero((t >= 300) & (out["spread_ratio_x1"].to_numpy() < 0.5))[0])
-    wound = int(np.flatnonzero((t >= 300) & (out["coef"].arr.get(2).abs().to_numpy() > 1.0))[0])
+    wound = int(np.flatnonzero((t >= 300) & (out["coef"].list.get(2).abs().to_numpy() > 1.0))[0])
     assert quiet - 300 < 3 * 20 < 40 * 20 < wound - 300, (quiet, wound)
 
 
@@ -575,7 +575,7 @@ def test_unnest_takes_the_robust_standard_errors_apart():
         assert field not in flat.columns
         for position, name in enumerate(names):
             assert flat.schema[name] == pl.Float64
-            want = out[field].arr.get(position, null_on_oob=True)
+            want = out[field].list.get(position, null_on_oob=True)
             assert flat[name].equals(want, null_equal=True), name
         assert flat[names[1]].drop_nulls().len() > 400, field
 

@@ -1005,10 +1005,10 @@ out = lf.online.fit_predict([model]).collect()
 # Each stream's slope and standard errors at its last row.
 last = out.group_by("stream", maintain_order=True).last().select(pl.col("m").struct.unnest())
 slope = last.select(
-    coef=pl.col("coef").arr.get(1),  # [intercept, x]
-    se=pl.col("se_coef").arr.get(1),
-    hc0=pl.col("se_coef_hc0").arr.get(1),
-    hac=pl.col("se_coef_hac").arr.get(1),
+    coef=pl.col("coef").list.get(1),  # [intercept, x]
+    se=pl.col("se_coef").list.get(1),
+    hc0=pl.col("se_coef_hc0").list.get(1),
+    hac=pl.col("se_coef_hac").list.get(1),
 )
 # The slope's real spread, and how often each standard error rejects the true 0.
 print(f"the slope's spread over the {streams} streams: {slope['coef'].std():.4f}")
