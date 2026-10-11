@@ -420,6 +420,96 @@ pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
     fit_half_life / (fit_half_life + own_half_life)
 }
 
+/// The share of a windowed CUSUM's plain variance its null has beside a
+/// fit that absorbs a level over a window of `window` clock units cut from
+/// a decay at `fit_half_life` (`inf` for none), its own sums at
+/// `own_half_life` (review round 7, A-3). [`cusum_null`] is the window's
+/// limit as it grows; read as an exponential of the window's Kish size, a
+/// window of 100 rows with no decay read 1/2 where this reads 0.703, and
+/// the CUSUM spread 1.19 on clean streams.
+///
+/// The fit's prediction is a weighted mean of the shocks before the row,
+/// `g(y)` the weight on the one `y` ago, so the residual is `e_t = ε_t −
+/// ∫ g(y) ε_{t−y} dy`. Summed at the rate `κ_c` (`ln 2` over the half-life,
+/// weights `w(x) = e^{−κ_c x}`), shock `ε_{t−x}` enters with `c = w − w ∗ g`,
+/// and since `∫ w(x) w(x − y) dx = e^{−κ_c |y|} / (2 κ_c)`, its square
+/// over the plain sum's `∫ w² = 1 / (2 κ_c)` is
+///
+/// ```text
+/// r = 1 − 2 ∫ g(y) e^{−κ_c y} dy + ∫∫ g(y) g(y') e^{−κ_c |y − y'|} dy dy'
+/// ```
+///
+/// With `u = κ_c W`, `v = κ_m W` (`κ_m` the decay's rate) and `F(a) = (1 −
+/// e^{−a}) / a`, `F(0) = 1`, the window's weights `g(y) = κ_m e^{−κ_m y} /
+/// (1 − e^{−v})` on `[0, W]` give, with `C = v / (1 − e^{−v})`,
+///
+/// ```text
+/// r = 1 − 2 C F(u + v) + (C² / v) (F(u + v) − e^{−2v} F(u − v))
+/// ```
+///
+/// and, with no decay (`v → 0`, `g = 1 / W`),
+///
+/// ```text
+/// r = 1 + 2 F'(u) = 1 + 2 e^{−u} / u − 2 (1 − e^{−u}) / u²
+/// ```
+///
+/// which is 0.703 at the window's Kish half-life (`u = 2`). The double
+/// integral is `2 C² / W²` times `∫_0^W e^{(κ_m − κ_c) p} ∫_p^W e^{−2 κ_m
+/// s} ds dp` over the lag `p = y − y'`. As the window grows past the decay
+/// (`u, v → ∞`), `r → u / (u + v)`, [`cusum_null`]'s `κ_c / (κ_m + κ_c)`.
+/// Near `v = 0` the decayed form cancels, so a `v` below `1e-8` reads the
+/// undecayed one (they part by about `v`); near `u = 0` so does `F'`, which
+/// a series reads below 0.1. `inf` for `own_half_life` reads 1, as
+/// [`cusum_null`] does for the run-once sums; an infinite or non-positive
+/// `window` is no window, and reads [`cusum_null`].
+pub fn cusum_null_window(window: f64, fit_half_life: f64, own_half_life: f64) -> f64 {
+    if !(window.is_finite() && window > 0.0) {
+        return cusum_null(fit_half_life, own_half_life);
+    }
+    if !own_half_life.is_finite() {
+        return 1.0;
+    }
+    let ln2 = std::f64::consts::LN_2;
+    let u = ln2 / own_half_life * window;
+    // 0 where nothing decays (`ln 2 / inf`).
+    let v = ln2 / fit_half_life * window;
+    if v < 1e-8 {
+        return 1.0 + 2.0 * d_absorbed(u);
+    }
+    let c = v / -(-v).exp_m1();
+    // `e^{−2v} F(u − v)`, kept from overflowing where `v > u`.
+    let tail = if u >= v {
+        (-2.0 * v).exp() * absorbed(u - v)
+    } else {
+        (-(u + v)).exp() * absorbed(v - u)
+    };
+    1.0 - 2.0 * c * absorbed(u + v) + c * c / v * (absorbed(u + v) - tail)
+}
+
+/// `F(a) = (1 − e^{−a}) / a`, 1 at 0: [`cusum_null_window`]'s weight on a
+/// rate `a` over a unit window.
+fn absorbed(a: f64) -> f64 {
+    if a == 0.0 { 1.0 } else { -(-a).exp_m1() / a }
+}
+
+/// `F'(u) = e^{−u} / u − (1 − e^{−u}) / u²`, by its series
+/// `Σ_{n≥1} (−1)^n n u^{n−1} / (n + 1)!` below 0.1, where the closed form
+/// cancels.
+fn d_absorbed(u: f64) -> f64 {
+    if u < 0.1 {
+        let (mut sum, mut pow, mut fact) = (0.0, 1.0, 1.0);
+        for n in 1..14 {
+            fact *= f64::from(n + 1);
+            let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
+            sum += sign * f64::from(n) * pow / fact;
+            pow *= u;
+        }
+        return sum;
+    }
+    let q = (-u).exp();
+    q / u - (1.0 - q) / (u * u)
+}
+
 /// The fast and slow fits of one target, and the sums their difference's
 /// variance reads: two exponentially weighted least-squares fits of the
 /// target on the features, one at the diagnostic's memory (fast) and one at
@@ -928,6 +1018,124 @@ mod tests {
         }
         assert_eq!(cusum_null(f64::INFINITY, 50.0), 1.0);
         assert_eq!(cusum_null(50.0, f64::INFINITY), 1.0);
+    }
+
+    /// The share beside a window by its definition (review round 7, A-3):
+    /// shock `x` ago enters the CUSUM with weight `c(x) = e^(−κ_c x) −
+    /// ∫_0^min(x,W) g(y) e^(−κ_c (x − y)) dy`, `g` the window's weights on
+    /// the shocks before a row -- uniform with no decay, `e^(−κ_m y)`
+    /// normalized beside one -- summed on a fine grid against the plain
+    /// sum's weights. The closed form agrees to the grid's error at short,
+    /// equal and long CUSUM memories (within 1e-4 here), with no decay, a decay much longer
+    /// than the window, one beside it and one much shorter; with no decay
+    /// it reads 0.703 at the window's Kish half-life whatever the window,
+    /// and it runs into [`cusum_null`] as the window grows past the decay.
+    #[test]
+    fn a_windows_cusum_null_share_is_its_absorption() {
+        let ln2 = std::f64::consts::LN_2;
+        let by_grid = |w: f64, hm: f64, hc: f64| {
+            let dt = 0.002 * w.min(hc);
+            let (km, kc) = (ln2 / hm, ln2 / hc);
+            let cells = (w / dt).round() as usize;
+            let total: f64 = (0..cells)
+                .map(|j| (-km * (j as f64 + 0.5) * dt).exp() * dt)
+                .sum();
+            // `acc` is `∫_0^min(x,W) g(y) e^(−κ_c (x − y)) dy` at the cell
+            // edge `x`, each cell's weight taken at its middle; `c²` and the
+            // plain sum's weights are integrated by the trapezoid rule.
+            let n = cells + (60.0 * hc / dt) as usize;
+            let (mut acc, mut c_lo, mut num, mut den) = (0.0, 1.0, 0.0, 0.0);
+            for i in 0..n {
+                let x = (i + 1) as f64 * dt;
+                acc *= (-kc * dt).exp();
+                if i < cells {
+                    let mid = (i as f64 + 0.5) * dt;
+                    acc += (-km * mid).exp() / total * dt * (-kc * dt / 2.0).exp();
+                }
+                let c_hi = (-kc * x).exp() - acc;
+                num += (c_lo * c_lo + c_hi * c_hi) / 2.0 * dt;
+                den += ((-2.0 * kc * (x - dt)).exp() + (-2.0 * kc * x).exp()) / 2.0 * dt;
+                c_lo = c_hi;
+            }
+            num / den
+        };
+        let inf = f64::INFINITY;
+        for w in [12.0f64, 100.0, 400.0] {
+            let kish = ln2 / ((w + 1.0) / (w - 1.0)).ln();
+            for hm in [inf, 1e7, 5.0 * w, w, 0.1 * w] {
+                for hc in [kish / 20.0, kish / 3.0, kish, 4.0 * kish, 50.0 * kish] {
+                    let got = cusum_null_window(w, hm, hc);
+                    let want = by_grid(w, hm, hc);
+                    assert!(
+                        (got - want).abs() < 5e-4 * want.max(0.05),
+                        "{w} {hm} {hc}: {got} vs {want}"
+                    );
+                }
+            }
+            // At the window's continuous Kish half-life, `W ln 2 / 2`.
+            let r = cusum_null_window(w, inf, w * ln2 / 2.0);
+            assert!((r - 0.70300).abs() < 1e-5, "{w}: {r}");
+        }
+        // The series and the closed form of `F'` meet at 0.1, and the
+        // decayed form meets the undecayed one at `v = 1e-8`.
+        let (lo, hi) = (d_absorbed(0.1 - 1e-12), d_absorbed(0.1));
+        assert!((lo - hi).abs() < 1e-12, "{lo} vs {hi}");
+        // A CUSUM far longer than the window, where `F'`'s closed form
+        // would lose every digit: `r = 2u/3 − u²/4 + u³/15 − …`.
+        for u in [1e-6, 1e-3] {
+            let r = cusum_null_window(1.0, inf, ln2 / u);
+            let want = 2.0 * u / 3.0 - u * u / 4.0 + u * u * u / 15.0;
+            assert!((r - want).abs() < 1e-9 * want, "{u}: {r} vs {want}");
+        }
+        // Each switch's edge reads the closed form, which parts from the
+        // other form in its last bits: `u = 0.1` reads `F'` in closed form,
+        // and `v = 1e-8` the decayed share.
+        let q = (-0.1f64).exp();
+        assert_eq!(hi, q / 0.1 - (1.0 - q) / (0.1 * 0.1));
+        let mut h = ln2 / 1e-8;
+        for _ in 0..64 {
+            if ln2 / h == 1e-8 {
+                break;
+            }
+            h = if ln2 / h > 1e-8 {
+                h.next_up()
+            } else {
+                h.next_down()
+            };
+        }
+        assert_eq!(ln2 / h, 1e-8);
+        let edge = cusum_null_window(1.0, h, 0.35);
+        let undecayed = 1.0 + 2.0 * d_absorbed(ln2 / 0.35);
+        assert!(
+            edge != undecayed && (edge - undecayed).abs() < 1e-6,
+            "{edge}"
+        );
+        let w = 100.0;
+        let at = |v: f64| cusum_null_window(w, ln2 * w / v, 30.0);
+        assert!((at(0.99e-8) - at(1.01e-8)).abs() < 1e-7);
+        assert!((at(1e-5) - at(1e-9)).abs() < 1e-4);
+        // Equal rates, where `F(u − v)` is `F(0) = 1`, lie on the same
+        // curve as their neighbours.
+        let (w, h) = (100.0, 30.0);
+        let equal = cusum_null_window(w, h, h);
+        let near = cusum_null_window(w, h, h * (1.0 + 1e-9));
+        assert!((equal - near).abs() < 1e-8, "{equal} vs {near}");
+        assert!((equal - by_grid(w, h, h)).abs() < 5e-4 * equal);
+        // Rates far apart either way, where `e^(|u − v|)` alone would
+        // overflow: a CUSUM far shorter than the window takes almost the
+        // whole of a sum, and a window far past a short decay is the
+        // exponential's share.
+        let short = cusum_null_window(1_000.0, 1_000.0, 0.5);
+        assert!(short > 0.999 && short <= 1.0, "{short}");
+        let past = cusum_null_window(1e5, 1.0, 50.0);
+        assert!((past - cusum_null(1.0, 50.0)).abs() < 1e-9, "{past}");
+        // A window far past the decay is the exponential's share.
+        let long = cusum_null_window(1e6, 50.0, 80.0);
+        assert!((long - cusum_null(50.0, 80.0)).abs() < 1e-9, "{long}");
+        assert_eq!(cusum_null_window(inf, 50.0, 80.0), cusum_null(50.0, 80.0));
+        assert_eq!(cusum_null_window(0.0, 50.0, 80.0), cusum_null(50.0, 80.0));
+        assert_eq!(cusum_null_window(100.0, 50.0, inf), 1.0);
+        assert_eq!(cusum_null_window(100.0, inf, inf), 1.0);
     }
 
     /// A zero weight, the first included, and a `v` that is not a number

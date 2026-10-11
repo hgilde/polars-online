@@ -1126,6 +1126,53 @@ def test_kalmans_cusum_null_share_reads_the_intercepts_memory(coef_half_life, be
     assert 0.95 < sq < 1.1, sq
 
 
+@pytest.mark.parametrize(
+    ("window_size", "half_life", "clock", "before"),
+    [
+        (100.0, float("inf"), False, 1.19),
+        (400.0, float("inf"), False, 1.17),
+        (50.0, float("inf"), True, 1.19),
+        (100.0, 200.0, False, 1.16),
+        (400.0, 200.0, False, 1.06),
+    ],
+)
+def test_a_windows_cusum_null_share_reads_the_window(window_size, half_life, clock, before):
+    """Under `window_size` the CUSUM's null share read the window as an
+    exponential at its Kish half-life, `h_fit / (h_fit + h)`, 1/2 at the
+    default memory; a window absorbs a level as a rolling mean, which takes
+    less of every sum than an exponential of the same Kish size (review
+    round 7, A-3). On 20 clean streams, over rows 3,000+, the CUSUM spread
+    1.19 and passed 3 on 1.2% of rows beside a window of 100 rows and 1.17
+    and 1.3% beside 400 (`before` is each spread), and 1.16 and 1.06 beside
+    those windows cut from a half-life of 200. Over the window's share,
+    0.703 with no decay, each reads about 1. On a clock at two rows a unit
+    a window of 50 units is the one of 100 rows. The CUSUM of squares
+    reads its scale's memory, and does not move."""
+    df = _clean(20, 6_000, 3)
+    extra = {}
+    if clock:
+        df = df.with_columns(t=pl.int_range(pl.len()).over("g") / 2.0)
+        extra = {"clock": "t", "gap_cap": 1.0}
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=half_life,
+        window_size=window_size,
+        group="g",
+        emit_breaks=True,
+        **extra,
+    )
+    out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 3_000)
+    late = out["cusum_y"].drop_nulls()
+    assert late.len() == 60_000
+    sd, past = late.std(), (late.abs() > 3).mean()
+    assert 0.95 < sd < 1.05, (sd, past, before)
+    assert past < 0.005, (sd, past, before)
+    sq = out["cusum_sq_y"].drop_nulls().std()
+    assert 0.95 < sq < 1.05, sq
+
+
 def test_the_cusum_of_squares_reads_the_measured_fourth_moment():
     """The CUSUM of squares divided by 2, a Gaussian's `E[z⁴] − 1`: on
     Student's t with 4 degrees of freedom it passed 1.96 on 18.5% of rows

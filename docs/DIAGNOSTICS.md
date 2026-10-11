@@ -173,7 +173,8 @@ Kish size of the decayed weights cut at the window. `kalman` forgets its
 coefficients at `coef_half_life`, so its diagnostics read at that, the
 shortest finite one where it gives one per coefficient; the CUSUM's null
 share alone reads the intercept's entry, since the intercept is what
-absorbs a level ([Has it broken?](#has-it-broken)). Beside
+absorbs a level. Under `window_size` that share reads the window itself
+([Has it broken?](#has-it-broken)). Beside
 `window_size=400` with no decay, `se_coef_hc0` read the window slope's
 spread over 200 streams, 0.0495 against 0.0498, where at the run-once
 memory it read a third of it. On 30 clean streams beside `window_size=100`,
@@ -585,6 +586,33 @@ indicators' CUSUM is divided by the same share. On 30 clean streams at
 `q = 0.5` and `0.9`, that CUSUM's spread read 1.03 to 1.06 at memories of
 50 and 200, and 1.10 to 1.25 at 800. `huber`, `holt` and the gradient
 fits absorb at a pace of their own, so they keep the plain sum.
+
+**A window absorbs a level as a mean over its rows, so its share is the
+window's own.** Under `window_size` the fit's prediction is a mean of the
+rows in the window, weighted by the decay inside it. A sum of its residuals
+cancels less than one beside an exponential of the same Kish size. With the
+fit's weights `g(y)` on the rows before it, the share is
+
+```text
+r = 1 − 2 ∫ g(y) e^(−κ y) dy + ∫∫ g(y) g(y') e^(−κ |y − y'|) dy dy'
+```
+
+with `κ = ln 2 / h`, `h` the CUSUM's memory. A window of `W` with no decay
+weighs its rows alike. With `u = W ln 2 / h` that gives `r = 1 + 2 e^(−u) / u
+− 2 (1 − e^(−u)) / u²`, 0.703 at the default memory, where read as an
+exponential it is one half. Beside a decay the weights are the decay's, cut
+at `W`. The share then runs from the window's form, for a window much
+shorter than the half-life, to `h_fit / (h_fit + h)`, for one much longer.
+The table is 20 sets of 20 clean streams of 6,000 rows beside `ewridge`,
+over rows 3,000 on:
+
+| window, half-life | spread of `cusum`, over the window's share | read as an exponential of its Kish size |
+|---|---:|---:|
+| 100 rows, none | 1.01 | 1.20 |
+| 400 rows, none | 1.00 | 1.19 |
+| 100 rows, 200 | 1.02 | 1.17 |
+| 400 rows, 200 | 1.01 | 1.08 |
+| 100 rows, 50 | 1.02 | 1.10 |
 
 **Beside a fit that keeps the plain sum, `|cusum| > 3` is conservative and
 finds less.** Its spread reads below 1 there. The table is measured at a

@@ -79,7 +79,8 @@ pub struct CheckCfg {
     /// one ([`Spec::nw_lags`]; task 232 (3)).
     nw: usize,
     /// The windowed CUSUM's and CUSUM of squares' null shares of their
-    /// plain variances ([`online_core::cusum_null`]; task 232 (4)).
+    /// plain variances ([`online_core::cusum_null_window`], [`online_core::cusum_null`]; task
+    /// 232 (4)).
     cusum_null: f64,
     cusum_sq_null: f64,
     /// A quantile fit's level: its calibration is a coverage and its CUSUM
@@ -180,11 +181,10 @@ impl CheckCfg {
         // reads 0.51-0.94 from its readiness on its trend (task 234). The
         // level is absorbed at the intercept's memory, which for a `kalman`
         // with a `coef_half_life` per coefficient is the intercept's entry,
-        // not the shortest (review round 7, A-1).
-        let (h_fit, h_breaks) = (
-            half_life_of(spec.level_memory(model)),
-            half_life_of(cfg.breaks),
-        );
+        // not the shortest (review round 7, A-1), and under `window_size`
+        // over the window, as a rolling mean weighted by the decay inside
+        // it, not as an exponential of the window's Kish size (A-3).
+        let ((h_fit, window), h_breaks) = (spec.level_absorber(model), half_life_of(cfg.breaks));
         let least_squares = matches!(
             spec.model,
             ModelKind::EwRidge { .. }
@@ -199,7 +199,7 @@ impl CheckCfg {
         // plain sum: over the share it read 0.98-1.51.
         let quantile_fit = matches!(spec.model, ModelKind::Quantile { .. });
         if (least_squares || quantile_fit) && spec.fit_intercept {
-            cfg.cusum_null = online_core::cusum_null(h_fit, h_breaks);
+            cfg.cusum_null = online_core::cusum_null_window(window, h_fit, h_breaks);
         }
         cfg.cusum_sq_null = online_core::cusum_null(h_breaks, h_breaks);
         cfg
