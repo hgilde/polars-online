@@ -1847,7 +1847,7 @@ class ModelBank:
            * - ``not_checked``
              - info
              - numpy is not installed, so ``collinear`` and ``leakage`` were
-               not checked
+               not checked on a spec with a Gram and a group to read it from
 
         An ``audit`` spec (:func:`polars_online.spec.audit`) has the counts
         no other spec keeps, and its findings are about the data whatever a
@@ -2044,9 +2044,8 @@ class ModelBank:
 
         ``spec`` and ``group`` narrow the frame as in :meth:`summary`
         (``KeyError`` / ``IndexError`` for a spec the bank has not got). A
-        bank that has seen no rows has nothing to say: the frame is empty,
-        apart from ``not_checked`` for a spec with a Gram when numpy is not
-        installed.
+        bank that has seen no rows has nothing to say, and the frame is
+        empty: ``not_checked`` is said only of a spec with a group to check.
         """
         from polars_online._check import check
 

@@ -498,9 +498,11 @@ def _spec_findings(
                         "set standardize=True, or rescale the feature upstream",
                     )
 
-    # (10), (11) from the Gram, and (11) from a marginal.
+    # (10), (11) from the Gram, and (11) from a marginal. Without numpy the
+    # Gram's checks are said not to have run only where there was a group
+    # to run them on: a bank that has seen no rows has nothing to say.
     if kind in _GRAMMED:
-        if np is None:
+        if np is None and groups:
             add(
                 "info",
                 "not_checked",
@@ -511,7 +513,7 @@ def _spec_findings(
                 "numpy is not installed, so collinearity and leakage were not "
                 "checked: pip install polars-online[numpy]",
             )
-        else:
+        elif np is not None:
             _gram_findings(bank, i, spec, keys, flagged, np, add)
     if kind == "marginal":
         pairs = bank._native.marginal(i, keys)
