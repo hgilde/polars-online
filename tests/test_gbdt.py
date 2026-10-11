@@ -601,6 +601,235 @@ def test_the_arguments_are_checked_by_name(data):
             build(data.head(0), label="y")
 
 
+_BOTH = ("xgboost", "lightgbm")
+_ENGINES = r"\('auto', 'native', 'python'\)"
+
+
+@pytest.mark.parametrize(
+    ("libs", "source", "kw", "exc", "match"),
+    [
+        (
+            _BOTH,
+            {"x0": [1.0]},
+            {},
+            TypeError,
+            r"source must be paths, a LazyFrame or a DataFrame, not dict",
+        ),
+        (_BOTH, [], {}, ValueError, r"source names no files"),
+        (
+            _BOTH,
+            ["a.parquet", "b.arrow"],
+            {},
+            ValueError,
+            r"source mixes Arrow IPC and Parquet files; pass one kind",
+        ),
+        (
+            _BOTH,
+            "/nonexistent/*.arrow",
+            {},
+            FileNotFoundError,
+            r"no file matches '/nonexistent/\*.arrow'",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features="x0"),
+            TypeError,
+            r"features is a list of column names, not one name",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features=["x0", "x1", "x0"]),
+            ValueError,
+            r"a feature is named twice in \['x0', 'x1', 'x0'\]",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features=["x0", "y"]),
+            ValueError,
+            r"\['y'\] named as a feature and as the label or weight",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features=["w", "x0"], weight="w"),
+            ValueError,
+            r"\['w'\] named as a feature and as the label or weight",
+        ),
+        (
+            _BOTH,
+            "label only",
+            {},
+            ValueError,
+            r"the source has no feature columns besides the label",
+        ),
+        (
+            _BOTH,
+            "with a string",
+            dict(label="s"),
+            ValueError,
+            r"the label column 's' is String, not numeric",
+        ),
+        (
+            _BOTH,
+            "with a string",
+            dict(weight="s"),
+            ValueError,
+            r"the weight column 's' is String, not numeric",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(weight="zz"),
+            ValueError,
+            r"the weight column 'zz' is not in the source",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(threads=0),
+            ValueError,
+            r"threads must be a positive integer or None, not 0",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(threads=True),
+            ValueError,
+            r"threads must be a positive integer or None, not True",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(threads="4"),
+            ValueError,
+            r"threads must be a positive integer or None, not '4'",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(max_bin="8"),
+            ValueError,
+            r"max_bin must be an integer of 2 or more, not '8'",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(max_bin=True),
+            ValueError,
+            r"max_bin must be an integer of 2 or more, not True",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(engine="rust"),
+            ValueError,
+            r"engine must be one of " + _ENGINES + r", not 'rust'",
+        ),
+        (
+            ("xgboost",),
+            "data",
+            dict(sample_rows=True),
+            ValueError,
+            r"sample_rows must be a positive integer or None, not True",
+        ),
+        (
+            ("xgboost",),
+            "data",
+            dict(sample_rows=2.5),
+            ValueError,
+            r"sample_rows must be a positive integer or None, not 2.5",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(categorical="i0"),
+            TypeError,
+            r"categorical is a list of column names, not one name",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(categorical=["zz"]),
+            ValueError,
+            r"categorical names 'zz', which is not a feature",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(in_memory=1),
+            ValueError,
+            r"in_memory must be True, False or 'auto', not 1",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(in_memory="yes"),
+            ValueError,
+            r"in_memory must be True, False or 'auto', not 'yes'",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(reference="train"),
+            TypeError,
+            r"reference must be a lightgbm.Dataset, not str",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(params={"num_threads": 2}),
+            ValueError,
+            r"params names 'num_threads'; pass it as threads= instead",
+        ),
+    ],
+)
+def test_it_refuses(data, libs, source, kw, exc, match):
+    """Every refusal of an argument, by name, through the public functions
+    (review 7, E-3: fourteen of them had no test). ``in_memory=1`` is
+    refused by type: ``1 in (True, False)`` holds in Python, and 1 is not an
+    answer."""
+    frames = {
+        "data": data,
+        "label only": data.select("y"),
+        "with a string": data.with_columns(pl.lit("a").alias("s")),
+    }
+    src = frames.get(source, source) if isinstance(source, str) else source
+    for lib in libs:
+        build = gbdt.xgboost_matrix if lib == "xgboost" else gbdt.lightgbm_dataset
+        with pytest.raises(exc, match=match):
+            build(src, **{"label": "y", **kw})
+
+
+def test_a_lightgbm_whose_dataset_holds_its_handle_elsewhere_is_refused_by_name(data, monkeypatch):
+    """The native engine hands its dataset to ``lightgbm.Dataset`` through
+    the private ``_handle``; a LightGBM whose class keeps it elsewhere is
+    refused by name, with the Python engine offered."""
+
+    class Elsewhere(lgb.Dataset):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._native = self.__dict__.pop("_handle")
+
+    monkeypatch.setattr(lgb, "Dataset", Elsewhere)
+    with pytest.raises(
+        ValueError, match=r"holds its native handle elsewhere than `_handle` \(lightgbm"
+    ):
+        gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="native")
+
+
+def test_a_package_that_does_not_say_which_file_it_loaded_is_refused():
+    """The native engine opens the library by the path the Python package
+    loaded it from (``xgboost.core._LIB.path``, ``lightgbm.basic._LIB._name``);
+    a package that records neither is refused, and ``engine="auto"`` falls
+    back to the Python engine on that refusal."""
+    with pytest.raises(ValueError, match="does not say which file it loaded"):
+        gbdt._library_path(object())
+    assert gbdt._library_path(xgb.core._LIB) == str(xgb.core._LIB.path)
+
+
 @pytest.mark.parametrize("engine", ["native", "python"])
 def test_a_source_whose_passes_differ_is_refused(data, engine):
     """A query that gives other rows each time it runs: the libraries read
