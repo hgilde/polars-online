@@ -24,8 +24,11 @@ two parquet files, read by a glob:
   quantiles over every row. This places the cuts from a uniform sample of
   ``sample_rows`` rows instead, which removes that pass, about half the time
   before the first round. The trees then differ from XGBoost's own sketch
-  within the spread a sample's seed already gives (``docs/GBDT-ADAPTER.md``
-  §4.5). ``sample_rows=None`` keeps XGBoost's sketch and its own trees.
+  by no more than a sample's seed moves them. On 10 million rows of 50
+  features, at 50 rounds, XGBoost's sketch scored a validation RMSE of
+  1.2379, and cuts from five seeds of a uniform sample 1.2347 to 1.2411.
+  LightGBM's own sampling spans 1.2298 to 1.2443 over five seeds.
+  ``sample_rows=None`` keeps XGBoost's sketch and its own trees.
 - :func:`lightgbm_dataset` returns a constructed ``lightgbm.Dataset``, binned
   on LightGBM's own sample: a first pass gathers the rows LightGBM samples, a
   second pushes every row as float32; or, when the data fits, the whole
@@ -50,6 +53,16 @@ the same way at prediction (pass the codes, ``pl.col(c).to_physical()``). A
 ``pl.Categorical`` is refused, since its codes depend on the process that
 made them; cast it to a ``pl.Enum``. The label and the weight are numeric,
 with no nulls and finite values (a weight not negative).
+
+**How the figures in these docstrings were measured.** On an Apple M4 Pro
+(14 cores, 48 GB), each route ran in a fresh process with 8 threads for the
+library, for Polars and for Rust. Other jobs shared the machine, so the
+routes ran interleaved, three times each, and a figure is the median, at a
+load average of 4.5 to 10. Memory is the peak physical footprint. The rows
+were seeded: 50 Float64 features of four kinds (normal, lognormal, uniform,
+and a normal rounded to 0.1), 5% nulls in every fifth column, one
+``pl.Enum`` of 32 levels drawn unevenly, and a target built from them plus
+noise. Accuracy is the validation RMSE on separate rows from another seed.
 
 Requires the library itself, which is not a dependency of this package
 (``pip install xgboost`` or ``lightgbm``), and numpy, which both libraries
@@ -372,10 +385,10 @@ def xgboost_matrix(
     ``sample_rows=None`` lets XGBoost sketch every row, and grows XGBoost's
     own trees.
 
-    **Measured** on 10 million rows of 50 features with nulls, at 8 threads
-    (``docs/GBDT-ADAPTER.md`` §7.4): the time before the first round, and the
-    peak memory. Polars' read-ahead holds the ``LazyFrame``'s 7.2 GB, and
-    the README's "Tuning memory with Polars' own settings" cuts it.
+    **Measured** as :mod:`polars_online.gbdt` describes, on 10 million rows
+    of 50 features: the time before the first round, and the peak memory.
+    Polars' read-ahead holds the ``LazyFrame``'s 7.2 GB, and the README's
+    "Tuning memory with Polars' own settings" cuts it.
 
     .. list-table::
        :header-rows: 1
@@ -670,9 +683,9 @@ def lightgbm_dataset(
     ``data_random_seed``, ...): LightGBM refuses, as it does for any
     constructed dataset. Pass them here, in ``params``.
 
-    **Measured** on 10 million rows of 50 features with nulls, from Arrow
-    IPC files, at 8 threads (``docs/GBDT-ADAPTER.md`` §7.4): the time before
-    the first round, and the peak memory.
+    **Measured** as :mod:`polars_online.gbdt` describes, on 10 million rows
+    of 50 features from Arrow IPC files: the time before the first round,
+    and the peak memory.
 
     .. list-table::
        :header-rows: 1
