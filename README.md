@@ -2486,8 +2486,8 @@ returns freed pages at once, holds 0.75 GB at 12M rows against 0.73 GB at
 | the rows a delay or a window holds | the delay or the window, times the rows' rate | never the stream's length |
 | whatever Polars' reader has read ahead | Polars' thread count | `POLARS_MAX_THREADS` shrinks it, and Polars' prefetch settings tune it directly ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) |
 
-**A saved state is the size of what the models keep, so it shows the first
-part directly.** This recipe fits one `ewridge` of 20 features on the first
+**Measure the first part by saving the state, whose size is what the models
+keep.** This recipe fits one `ewridge` of 20 features on the first
 10,000 rows of a generated file and on all 1,000,000, once with no groups
 and once over 64. The state stays the same size as the rows grow, and it
 grows with the groups:
@@ -2635,7 +2635,7 @@ in `targets` for less memory.** For the column form, call
 column it writes in the spec's `targets`, under the same `embargo`. Polars
 then runs the window and the bank at once, as two stages of one query. In
 the native form the bank resolves the windows itself, one after the other
-in the same source as the model, and with many groups it adds a Polars
+in the same source as the model. With many groups, that adds a Polars
 query per group per chunk on the calling thread.
 [Windows as a model's inputs and
 target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) runs both
@@ -2657,11 +2657,11 @@ like is [`sgd`](docs/MODELS.md#sgd--stochastic-gradient-descent), the cheap
 `O(k)` baseline: at the same constant step it gives `SGDRegressor`'s R² to
 four places, because the two run the same recursion.
 
-On one generated stream of 100,000 rows with `k = 20`, each contender at
-its best over a sweep of its own settings (`scripts/sklearn_comparison.py`,
-scikit-learn 1.9.0, 2026-09-08; `ewridge` solves on every row here, and its
-rate was re-measured on 2026-09-29), with the noise ceiling the R² of the
-generating signal itself:
+The comparison ran on one generated stream of 100,000 rows with `k = 20`,
+on 2026-09-08. Each contender ran at its best over a sweep of its own
+settings, by `scripts/sklearn_comparison.py` on scikit-learn 1.9.0.
+`ewridge` solves on every row here, and its rate was re-measured on
+2026-09-29. The noise ceiling is the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
 |---|---:|---:|---:|---|
@@ -2946,23 +2946,23 @@ function's top, a stub, an alias or a second column. Both warn with
 Each change to a state's layout ships a loader for the layout before it.
 A saved state of each kind, frozen in the test suite, checks it three
 ways. The current layout's fixtures load, continue to the bit, and save
-back byte for byte. A previous layout's load through the loader, continue
-to the bit, and save back as the current layout's fixture bytes of the
-same case: the loader turns a state into exactly what this build writes
-from the same rows. The two unstable formats, a window run's state and a
+back byte for byte. A previous layout's fixtures load through its loader,
+continue to the bit, and save back as the current layout's fixture bytes
+of the same case. So the loader turns a state into exactly what this build
+writes from the same rows. The two unstable formats, a window run's state and a
 formula target inside a bank's, are outside that promise. Before 1.0 there
 is no such promise: after upgrading across a release, refit a saved state
 from its input ([Saving, loading and serving](#saving-loading-and-serving)).
 
-**From 1.0, raising the Polars floor is a minor release, and dropping a
+**From 1.0, moving the Polars floor up is a minor release, and dropping a
 Polars major version a major one.** A resolver that installs the new
 release upgrades Polars with it, inside the same Polars major, so no code
-has to change for a raised floor:
+has to change for a higher floor:
 
 | a change to the Polars range | before 1.0 | from 1.0 |
 |---|---|---|
 | widening it to admit a newer Polars | minor | minor |
-| raising the floor | minor | minor |
+| moving the floor up | minor | minor |
 | capping it below a Polars that broke this library, as [How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves) describes | patch | patch |
 | dropping a Polars major version | minor | major |
 

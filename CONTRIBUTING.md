@@ -6,7 +6,7 @@ way to get a change merged is to match the conventions it already has.
 ## Getting set up
 
 **Install [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
-([rustup](https://rustup.rs)); nothing else is needed.** In each new shell,
+([rustup](https://rustup.rs)), and nothing else.** In each new shell,
 run `source scripts/env.sh`, or `. .\scripts\env.ps1` in PowerShell, to
 put both on the `PATH`. VS Code's terminal gets them from
 `.vscode/settings.json`.
@@ -92,12 +92,15 @@ within 1e-12 on every platform.
 
 ## Conventions
 
+The code and the docs keep a few house rules, each checked by the gate
+where a check is possible:
+
 - **Rust**: `cargo fmt`, `cargo clippy -D warnings`, small files, one model per
   file. No `unsafe` in `online-core`. `f64` everywhere.
 - **Python**: `ruff` (format + lint), `mypy` clean, type hints. The package
   depends on `polars` alone. A test may use any open-source library the
   package does not depend on, declared in the dev group and imported
-  plainly; `tests/test_dependency_policy.py` checks it.
+  plainly. `tests/test_dependency_policy.py` checks it.
 - **Docstrings state the math.** Every model's docs carry its update equations.
 - **Documentation follows [`docs/WRITING.md`](docs/WRITING.md)**, the README,
   the guides and the docstrings alike. Some docstring text is pinned by tests,
@@ -145,6 +148,9 @@ its §5 collects them.
 
 ## Commits and pull requests
 
+A commit and a pull request say what changed and why, and carry the docs
+and the API snapshot the change moves:
+
 - One logical change per commit, with a message that says what was measured or
   what defect it prevents.
 - Open the message with the piece of work the commit belongs to, as the
@@ -163,4 +169,4 @@ its §5 collects them.
 This project is Apache-2.0. Contributions follow the standard inbound =
 outbound convention: by submitting a pull request you agree that your
 contribution is licensed under Apache-2.0, per §5 of the license. There is no
-CLA to sign and no DCO bot; the pull request itself is the record.
+CLA to sign and no DCO bot: the pull request itself is the record.

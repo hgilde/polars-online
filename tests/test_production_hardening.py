@@ -653,6 +653,8 @@ def _names(code: str) -> tuple[set[str], list[str]]:
             stored.add(node.name)
         elif isinstance(node, ast.arg):
             stored.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:  # `except X as e`
+            stored.add(node.name)
     return stored, loaded
 
 
@@ -995,8 +997,7 @@ class TestReadmeExamples:
                 os.environ.update(env)
             # A line that reports a time or a rate is the machine's: its words are held.
             problems += [
-                f"README.md:{line}:\n{p}"
-                for p in differences(untimed(shown), untimed(printed))
+                f"README.md:{line}:\n{p}" for p in differences(untimed(shown), untimed(printed))
             ]
         assert not problems, "\n\n".join(problems)
 
