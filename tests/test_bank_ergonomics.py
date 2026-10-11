@@ -57,16 +57,17 @@ def test_repr_names_the_specs_groups_and_rows():
     assert repr(bank) == "ModelBank(['m', 'r'], groups=3, rows_fed=90)"
 
 
-def test_rows_fed_counts_fed_rows_and_groups_count_processed_ones():
+def test_rows_fed_counts_fed_rows_and_summary_counts_processed_ones():
     # A null feature skips the row (README, null policy): the bank still saw
-    # it, but the group's model did not process it.
+    # it, and so did the group, but the group's model did not process it.
     bank = po.ModelBank([po.spec.ewridge("m", group="g", **BASE)])
     df = _df(60).with_columns(
         pl.when(pl.col("t") < 6).then(None).otherwise(pl.col("x0")).alias("x0")
     )
     bank.fit_predict(df)
     assert bank.rows_fed() == 60
-    assert bank.groups()["rows_processed"].to_list() == [18, 18, 18]
+    assert bank.groups()["rows_fed"].to_list() == [20, 20, 20]
+    assert bank.summary()["rows_processed"].to_list() == [18, 18, 18]
 
 
 def test_rows_fed_is_one_specs_summary_count_until_a_group_is_dropped():
@@ -94,11 +95,14 @@ def test_rows_fed_is_one_specs_summary_count_until_a_group_is_dropped():
 def test_groups_is_one_row_per_spec_and_group():
     bank = _grouped_bank()
     assert bank.groups().height == 0
+    # `rows_fed`, as `summary()` and `rows_fed()` count the rows routed to a
+    # group, skipped ones included; it was `rows_processed`, which
+    # `summary()` gives the rows the models accepted under (task 244).
     assert bank.groups().schema == {
         "spec": pl.String,
         "group": pl.String,
-        "rows_processed": pl.UInt64,
-        "last_clock": pl.Float64,
+        "rows_fed": pl.Int64,
+        "clock_last": pl.Float64,
     }
     bank.fit_predict(_df(60))
     expected = pl.DataFrame(
@@ -106,15 +110,30 @@ def test_groups_is_one_row_per_spec_and_group():
             "spec": ["m", "m", "m", "r"],
             # An ungrouped spec has the one key "", as in solve_failures().
             "group": ["a", "b", "c", ""],
-            "rows_processed": [20, 20, 20, 60],
+            "rows_fed": [20, 20, 20, 60],
             # The last clock value each group saw; null on a row-count clock.
-            "last_clock": [57.0, 58.0, 59.0, None],
+            "clock_last": [57.0, 58.0, 59.0, None],
         },
         schema=bank.groups().schema,
     )
     plt.assert_frame_equal(bank.groups(), expected)
     plt.assert_frame_equal(bank.groups("m"), expected.head(3))
     plt.assert_frame_equal(bank.groups(1), expected.tail(1))
+
+
+def test_groups_counts_the_rows_fed_as_summary_does():
+    """A skipped row is fed: ``groups()``' count is ``summary()``'s
+    ``rows_fed``, by name and by value, where it was the processed rows."""
+    bank = _grouped_bank()
+    df = _df(60).with_columns(
+        x0=pl.when(pl.int_range(pl.len()) % 6 == 0).then(None).otherwise(pl.col("x0"))
+    )
+    bank.fit_predict(df)
+    summary = bank.summary().select("spec", "group", "rows_fed", "rows_processed")
+    assert summary["rows_processed"].to_list() != summary["rows_fed"].to_list()
+    plt.assert_frame_equal(
+        bank.groups().select("spec", "group", "rows_fed"), summary.drop("rows_processed")
+    )
 
 
 def test_groups_keeps_a_null_key_apart_from_the_empty_string():
@@ -165,7 +184,7 @@ def test_a_dropped_group_starts_cold_and_the_others_are_untouched():
     plt.assert_series_equal(out.filter(pl.col("g") == "b")["m"], fresh["m"])
     # rows_fed counts what was fed, not what is still held.
     assert bank.rows_fed() == 120
-    assert bank.groups("m").filter(pl.col("group") == "b")["rows_processed"].item() == 20
+    assert bank.groups("m").filter(pl.col("group") == "b")["rows_fed"].item() == 20
 
 
 # --- specs after load --------------------------------------------------------

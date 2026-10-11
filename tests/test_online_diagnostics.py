@@ -34,7 +34,7 @@ SWITCHES = {
     ),
     "emit_specification": (
         "specification_half_life",
-        ["ljung_box_y", "breusch_pagan_y", "reset_y"],
+        ["ljung_box_y", "breusch_pagan_y", "ramsey_reset_y"],
     ),
     "emit_tails": ("tails_half_life", ["skew_y", "kurtosis_y", "jarque_bera_y"]),
     "emit_influence": ("influence_half_life", ["influence_y"]),
@@ -693,7 +693,7 @@ def test_a_diagnostic_folds_from_readiness(build):
     out = _run(df, spec).with_columns(r=pl.int_range(pl.len()).over("g"))
     late = out.filter(pl.col("r") >= 1_000)
     assert (late["jarque_bera_y"].drop_nulls() > 5.991).mean() < 0.12
-    assert (late["reset_y"].drop_nulls() > 5.991).mean() < 0.12
+    assert (late["ramsey_reset_y"].drop_nulls() > 5.991).mean() < 0.12
     assert (late["cusum_sq_y"].drop_nulls().abs() > 1.96).mean() < 0.06
     first = out.filter(pl.col("g") == 0)
     settled = first["settled_frac"].to_numpy()
@@ -1004,7 +1004,7 @@ def test_under_a_horizon_each_test_is_near_its_size(phi):
         out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 1_500)
         for field, crit in (
             ("breusch_pagan_y", 5.991),
-            ("reset_y", 5.991),
+            ("ramsey_reset_y", 5.991),
             ("calibration_wald_y", 5.991),
         ):
             rate = (out[field].drop_nulls() > crit).mean()
@@ -1193,7 +1193,7 @@ FORMS = {
             "cusum_sq_y",
             "break_wald_y",
             "breusch_pagan_y",
-            "reset_y",
+            "ramsey_reset_y",
         ],
     ),
     "quantile": (

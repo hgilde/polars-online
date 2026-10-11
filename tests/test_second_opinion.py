@@ -273,7 +273,7 @@ class TestTheWindowIsAllTheModelSees:
                 solve_every=1e-9,
                 **common,
             )
-            f0, f1, tol = "pred_y0__l0", "pred_y1__l0", 1e-6
+            f0, f1, tol = "pred_y0", "pred_y1", 1e-6
         out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
         for i in range(170, n, 7):
             keep, w = _window((i - 1) - np.arange(i), self.HALFLIFE, self.WINDOW)
@@ -686,7 +686,7 @@ class TestNoInterceptIsNotCentred:
                 fit_intercept=intercept,
             )
             df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
-            pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y__l0")
+            pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
             for i in range(100, 400, 23):
                 b = _wls(x[:i], y[:i], np.ones(i), intercept=intercept)
                 want = b[0] + x[i] @ b[1:] if intercept else x[i] @ b
@@ -2047,7 +2047,7 @@ class TestAHopelessSerialFactorSaysSo:
     behind ``t`` by ``1 + 2·Σ ρ_x(l)·ρ_y(l)``, and two series whose
     autocorrelations have opposite signs take that below zero: an estimate
     outside the parameter space. The rule floored it at ``f64::MIN_POSITIVE``,
-    so ``n_serial`` came out ``+inf`` and ``t_serial`` ``±inf`` -- infinite
+    so ``n_serial`` came out ``+inf`` and ``t_stat_serial`` ``±inf`` -- infinite
     evidence from a correction that had failed. It is NaN now, the answer
     ``"geometric"`` already gives a factor it cannot form.
 
@@ -2093,11 +2093,11 @@ class TestAHopelessSerialFactorSaysSo:
         if 1.0 + 2.0 * rho_x * rho_y > 0.0:
             factor = 1.0 + 2.0 * row["lag_corr_xx"][0] * row["lag_corr_yy"][0]
             assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
-            assert np.isfinite(row["t_serial"])
+            assert np.isfinite(row["t_stat_serial"])
         else:
             # NaN in the model, null in the frame, as `phi_x` is.
             assert row["n_serial"] is None, row["n_serial"]
-            assert row["t_serial"] is None, row["t_serial"]
+            assert row["t_stat_serial"] is None, row["t_stat_serial"]
 
 
 class TestAWindowedLagIsTheWindows:
@@ -2195,7 +2195,7 @@ class TestTheBartlettSerialFactor:
         )
         assert factor > 0.0, factor
         assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
-        assert np.isfinite(row["t_serial"])
+        assert np.isfinite(row["t_stat_serial"])
 
 
 def _gappy(n: int, seed: int, level: float) -> tuple[np.ndarray, np.ndarray]:
@@ -2385,7 +2385,7 @@ class TestATargetWithGaps:
             max_iter=10_000,
             tol=1e-15,
         )
-        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y__l0")
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y__p0")
         ref = _own_rows_pred if target_gaps == "own_rows" else _pairwise_pred
         worst = max(abs(pred[t] - ref(x, y, t, h)) for t in range(100, n, 31))
         assert worst <= 1e-8, f"worst |pred - numpy| = {worst:.3e}"
@@ -4010,10 +4010,10 @@ class TestHmmIsHmmlearns:
     recursion. ``learn = False`` with given means, covariances and
     transition: each state's emission is the Gaussian of its covariance plus
     ``precision_prior`` on the diagonal, and the filter starts uniform, so
-    hmmlearn's start is ``[1/2, 1/2] @ Pi``. ``filtered_<k>`` on a row is
+    hmmlearn's start is ``[1/2, 1/2] @ Pi``. ``filtered_state<k>`` on a row is
     read before the row, so it is hmmlearn's filtered probability at the row
     before, the last of ``predict_proba`` over the rows up to it;
-    ``predicted_<k>`` is that times ``Pi``; and ``loglik`` is ``log p(x_t |
+    ``predicted_state<k>`` is that times ``Pi``; and ``loglik`` is ``log p(x_t |
     x_<t)``, the difference of ``score`` over the rows up to it and up to the
     row before. Measured: 1.4e-13, the probabilities absolute and the
     log-likelihoods relative."""
@@ -4056,10 +4056,10 @@ class TestHmmIsHmmlearns:
         scores = np.array([model.score(x[: t + 1]) for t in range(n)])
         loglik = np.diff(scores, prepend=0.0)
 
-        got = out.select("filtered_0", "filtered_1").to_numpy()
+        got = out.select("filtered_state0", "filtered_state1").to_numpy()
         np.testing.assert_allclose(got[0], [0.5, 0.5], rtol=0, atol=0)
         np.testing.assert_allclose(got[1:], filtered[:-1], rtol=0, atol=self.TOL)
-        predicted = out.select("predicted_0", "predicted_1").to_numpy()
+        predicted = out.select("predicted_state0", "predicted_state1").to_numpy()
         np.testing.assert_allclose(predicted[1:], filtered[:-1] @ pi, rtol=0, atol=self.TOL)
         np.testing.assert_allclose(out["loglik"].to_numpy(), loglik, rtol=self.TOL, atol=self.TOL)
         # And the states are told apart: the filter is no flat 1/2.
@@ -4695,14 +4695,14 @@ class TestAuditIsScipyAndStatsmodels:
         med = np.median(x)
         assert got["median"] == med
         assert got["mad"] == np.median(np.abs(x - med))
-        assert got["distinct"] == len(np.unique(x))
+        assert got["n_unique"] == len(np.unique(x))
 
     @pytest.mark.parametrize("level", [0.0, 1e6])
     def test_the_digest_reads_the_median_and_mad_to_a_rank(self, level):
         rng = np.random.default_rng(74)
         x = level + rng.lognormal(size=20_000)
         got = self._audit(x)
-        assert got["distinct"] is None, "past the cap: the digest answers"
+        assert got["n_unique"] is None, "past the cap: the digest answers"
         lo, hi = np.quantile(x, [0.49, 0.51])
         assert lo <= got["median"] <= hi
         dev = np.abs(x - np.median(x))

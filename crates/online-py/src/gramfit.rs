@@ -13,7 +13,7 @@ use pyo3::types::PyByteArray;
 
 /// One Gram as the Python layer hands it over: `k` and `weight_sum`, then
 /// `means`, `comoments`, `cross_moments`, `means_by_target`,
-/// `cross_centred`, `target_weights`, `target_means`, `target_vars` and
+/// `cross_centered`, `target_weights`, `target_means`, `target_vars` and
 /// `target_n_kish`, each a C-contiguous float64 buffer (a numpy array) --
 /// but `comoments`, which may be float32 and whole or packed (task 229) --
 /// and last `target_within_parts`, per target the parts a Gram pooled
@@ -215,7 +215,7 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
         comoments: Vec::new(),
         cross_moments: floats(py, &g.4, "cross_moments")?,
         means_by_target: floats(py, &g.5, "means_by_target")?,
-        cross_centred: floats(py, &g.6, "cross_centred")?,
+        cross_centred: floats(py, &g.6, "cross_centered")?,
         target_weights: floats(py, &g.7, "target_weights")?,
         target_means: floats(py, &g.8, "target_means")?,
         target_vars: floats(py, &g.9, "target_vars")?,
@@ -234,7 +234,7 @@ fn read(py: Python<'_>, g: &GramIn<'_>) -> PyResult<InGram> {
         ),
         ("cross_moments", base.cross_moments.len(), m * k),
         ("means_by_target", base.means_by_target.len(), m * k),
-        ("cross_centred", base.cross_centred.len(), m * k),
+        ("cross_centered", base.cross_centred.len(), m * k),
         ("target_means", base.target_means.len(), m),
         ("target_vars", base.target_vars.len(), m),
         ("target_n_kish", base.target_n_kish.len(), m),

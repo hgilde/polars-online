@@ -51,11 +51,20 @@ pred_y__r0.5@h500 y 0.5 500.0
 
 Each table lists the fields of the model's plainest spec, whose target is
 `y` and whose features are `x0`, and `x1` where the model needs two. Your
-own spec's fields carry your column names in their place. The names follow
-the grammar in the README's [Output field
-names](../README.md#output-field-names): `<stat>_<column>` for a per-column
-value, `_<a>_<b>` for a pair, and a suffix where a grid makes several of the
-same field.
+own spec's fields carry your column names in their place.
+
+**Every name follows one grammar, which is stable.** Read left to right, a
+name is the kind (`pred`, `abs_resid`, `lag_corr`), then its qualifier, then
+the target or the columns it is about (`_<t>`, `_<f>`, `_<a>_<b>`), then the
+grid point after `__` and the instance after `@`. A qualifier is a number
+glued to the letter that says what it is: `q` a quantile level, `l` a lag
+(`abs_resid_q0.05_y`, `mahal_q0.99`, `lag_corr_l1_x0_x1`). The grid point
+uses letters too, `r` a ridge and `p` a lasso penalty, and the instance `h`,
+a half-life. A thing the spec has several of is numbered where it is named,
+glued to its word: a principal component `pc0` (`pc0_var`), an `hmm` state
+`state0` (`filtered_state0`), a `kmeans` centre `cluster0`
+(`coef_cluster0_x1`). The README's [Output field
+names](../README.md#output-field-names) builds a grid and reads its fields.
 
 | in a name | stands for | in this page's tables |
 |---|---|---|
@@ -67,7 +76,7 @@ same field.
 | `__r<ridge>` | one value of a `ridge` grid | |
 | `__<set>` | one of the `feature_sets`, with one ridge value | |
 | `__<set>_r<ridge>` | one of the `feature_sets`, with one value of a `ridge` grid | |
-| `__l<lambda>` | one value of `lasso_path` | `__l0.1`, `__l0` |
+| `__p<penalty>` | one value of `lasso_path` | `__p0.1`, `__p0` |
 | `@h<half_life>` | one half-life of a grid, at the end of every field's name: `weight_sum@h500`, or `weight_sum@h10m` for a duration | |
 
 EW, in a meaning below, is short for exponentially weighted.
@@ -82,10 +91,14 @@ row, as `po.spec.output_index(spec)` lists it:
 | `f64` | `Float64` |
 | `i64` | `Int64` |
 | `bool` | `Boolean` |
-| `str` | `String` |
 | `list[f64]` | `List(Float64)` |
-| `enum` | an `Enum` of `withheld_reason`'s four values |
+| `enum` | an `Enum` of its values, in their order: `withheld_reason`'s four, an `ew_class` spec's `classes` for `class`, a grid's slots for `selected_<t>` |
 | `clock` | the clock column's own type |
+
+**Every integer is an `Int64`**, in a field and in every frame the bank and
+`po.spec` return: a count, a state, a cluster label, a position, a row's
+index. It is Polars' own default integer, so a join, a concatenation or a
+comparison between two frames never meets two widths.
 
 ### When a field is null
 
@@ -174,10 +187,10 @@ The fields of `po.spec.lasso("m", targets=["y"], features=["x0"], half_life=50.0
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `pred_y__l0.1` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
-| `resid_y__l0.1` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
-| `pred_y__l0` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
-| `resid_y__l0` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
+| `pred_y__p0.1` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
+| `resid_y__p0.1` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
+| `pred_y__p0` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
+| `resid_y__p0` | `f64` | `y - pred` for `<t>` | while withheld; where the target is null; and on every row of a target that is a window expression, whose value is not known at its row |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
@@ -373,7 +386,7 @@ The fields of `po.spec.ew_class("m", features=["x0"], half_life=50.0, label="y",
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `class` | `str` | the most likely class label | while withheld |
+| `class` | `enum` | the most likely class label | while withheld |
 | `p_a` | `f64` | posterior probability of class `<label>` | while withheld |
 | `p_b` | `f64` | posterior probability of class `<label>` | while withheld |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
@@ -432,11 +445,11 @@ The fields of `po.spec.hmm("m", features=["x0", "x1"], half_life=50.0, k=2, prec
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `filtered_0` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `filtered_1` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `predicted_0` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `predicted_1` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
-| `state` | `i64` | the most likely state for this row: the one with the largest `predicted_<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `filtered_state0` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `filtered_state1` | `f64` | posterior probability of state `<j>` before this row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `predicted_state0` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `predicted_state1` | `f64` | one-step-ahead probability of state `<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
+| `state` | `i64` | the most likely state for this row: the one with the largest `predicted_state<j>` | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `loglik` | `f64` | log predictive density of the row, under the model as it stood before the row | while withheld, and until `warm_rows` learned rows (default 50) have seeded the states |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |

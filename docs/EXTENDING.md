@@ -408,9 +408,10 @@ combo, and are the cases in `output_index`:
 |---|---|
 | `holt` | `level`, `trend` |
 | `ew_cov`, `seqtest`, `marginal` and `audit` | none |
-| `kmeans` | `k` slots `cluster{j}` in place of the targets, one coordinate per feature |
-| `ew_class` | one slot per class, named by the class, one coordinate per feature |
-| `micro` | none: its `coef` is one row per *live* summary, so the length is not a property of the spec, and `coef_index` refuses it by name |
+| `kmeans` | `k` slots `cluster{j}` in place of the targets, one coordinate per feature; the centre in `coef_index`'s `cluster` column, and no target |
+| `hmm` | `k` slots `state{j}`, one mean per feature; the state in `coef_index`'s `state` column, and no target |
+| `ew_class` | one slot per class, named by the class, one coordinate per feature; the class in `coef_index`'s `class` column, and the label column as its target |
+| `micro` | none: its `coef` is one row per *live* summary, so the length is not a property of the spec, and `coef_index` and `coef_fields` are empty for it |
 
 An output that is not an `f64` needs its own `Source` variant and dtype. NaN
 is null for all three:

@@ -472,8 +472,8 @@ class TestLaggedComoments:
         df = pl.DataFrame({"x0": a, "x1": np.concatenate([[0.0], a[:-1]])})
         spec = _spec(("x0", "x1"), lags=[1], stats=["lag_corr"], half_life=150.0)
         out = po.ModelBank([spec]).fit_predict(df)
-        assert _last(out, "lag_corr_x1_x0_l1") > 0.98
-        assert abs(_last(out, "lag_corr_x0_x1_l1")) < 0.15
+        assert _last(out, "lag_corr_l1_x1_x0") > 0.98
+        assert abs(_last(out, "lag_corr_l1_x0_x1")) < 0.15
 
     def test_lags_leave_the_contemporaneous_moments_bit_identical(self):
         df = _df(n=700)
@@ -531,7 +531,7 @@ class TestLaggedComoments:
             # The row after the break is the one with no partner one row back,
             # so its lag matrix only aged: the value it reports is the level
             # before it, and the row after *that* is the first to pair again.
-            return out["c"].struct.field("lag_corr_x0_x0_l1").to_list()
+            return out["c"].struct.field("lag_corr_l1_x0_x0").to_list()
 
         plain = run(base)
         # A gap of 4 at row 30: under the ceiling, so nothing is cleared.

@@ -492,7 +492,7 @@ class TestEdgeCases:
         assert bank.coef("m")["coef"].to_list()[4:] == [None, None]
         # The class means are the means of the rows labelled with the class.
         idx = po.spec.coef_index(spec(classes=("a", "b", "c")))
-        assert idx["target"].to_list() == ["a", "a", "b", "b", "c", "c"]
+        assert idx["class"].to_list() == ["a", "a", "b", "b", "c", "c"]
         assert idx["term"].to_list() == ["x0", "x1"] * 3
 
     def test_a_null_label_is_scored_not_learned(self):
@@ -514,7 +514,7 @@ class TestEdgeCases:
         keep = np.arange(400) % 5 != 0
         for name in "abc":
             want = X[keep & (ya == name)].mean(axis=0)
-            got = b.coef("m").filter(pl.col("target") == name)["coef"].to_numpy()
+            got = b.coef("m").filter(pl.col("class") == name)["coef"].to_numpy()
             assert np.allclose(got, want, rtol=1e-10, atol=1e-12), name
         assert not np.allclose(a.coef("m")["coef"].to_numpy(), b.coef("m")["coef"].to_numpy())
 
@@ -593,7 +593,7 @@ class TestEdgeCases:
         for c in "abc":
             assert got[f"p_{c}"].drop_nulls().is_finite().all()
         assert got["class"][-1] is not None
-        assert bank.solve_failures() == {"m": {"": 0}}
+        assert bank.solve_failures().rows() == [("m", "", 0)]
 
     def test_chunk_invariance(self):
         X, lab = gaussians(700, seed=18, **THREE)
@@ -654,7 +654,7 @@ class TestEdgeCases:
             "coef@h500",
         ]
         out = unnested(po.ModelBank([s]).fit_predict(frame(X, lab)))
-        assert out["class@h50"].dtype == pl.String
+        assert out["class@h50"].dtype == pl.Enum(["a", "b", "c"])
         assert out["weight_sum@h50"][-1] < out["weight_sum@h500"][-1]
         assert out["p_a@h50"].to_list() != out["p_a@h500"].to_list()
 
@@ -678,7 +678,7 @@ class TestEdgeCases:
             "coef_pos_w@h10",
         ]
         ci = po.spec.coef_index(s)
-        assert ci["target"].to_list() == ["neg"] * 3 + ["pos"] * 3
+        assert ci["class"].to_list() == ["neg"] * 3 + ["pos"] * 3
         assert ci["term"].to_list() == ["u", "v", "w"] * 2
         X, lab = gaussians(200, seed=23, means=[[0, 0, 0], [2, 2, 2]], covs=[np.eye(3), np.eye(3)])
         df = pl.DataFrame({"u": X[:, 0], "v": X[:, 1], "w": X[:, 2]}).with_columns(
@@ -691,7 +691,7 @@ class TestEdgeCases:
         assert set(names) <= set(flat.columns) and "coef" not in flat.columns
         assert "class" in flat.columns and "p_neg" in flat.columns
         c = bank.coef("m")
-        assert c["target"].to_list() == ["neg"] * 3 + ["pos"] * 3
+        assert c["class"].to_list() == ["neg"] * 3 + ["pos"] * 3
         assert c["coef"].to_list() == [flat[n][-1] for n in names]
         assert c["coef"].to_numpy() == pytest.approx(
             np.concatenate([X[lab == 0].mean(axis=0), X[lab == 1].mean(axis=0)]), abs=1e-9
@@ -703,7 +703,7 @@ class TestEdgeCases:
         assert idx["field"].to_list() == ["class", "p_a", "p_b", "p_c", *tail]
         assert idx["kind"].to_list() == ["class", "p", "p", "p", *tail]
         assert idx["dtype"].to_list() == [
-            "str",
+            "enum",
             "f64",
             "f64",
             "f64",
@@ -837,7 +837,7 @@ class TestRefusals:
             po.ModelBank([spec(covariance="shared")]).fit_predict(frame(X, lab, null_every=7))
         )
         assert got.equals(want, null_equal=True)
-        assert got["class"].dtype == pl.String
+        assert got["class"].dtype == pl.Enum(["a", "b", "c"])
 
 
 # --- phase-4 coverage: wider than six features, and a class seen once --------

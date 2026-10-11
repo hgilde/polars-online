@@ -21,6 +21,11 @@ pub struct FieldMeta {
     /// pred_selected / pred_averaged — or an `ew_cov` statistic name.
     pub kind: String,
     pub target: Option<String>,
+    /// The instance's field suffix (`"@h500"`, or `""` for a single
+    /// instance), as `coef()`, `gram()` and `closed_groups()` name it;
+    /// `None` on a field that chooses across the instances
+    /// (`emit_selected`, `emit_averaged`) or is the spec's own (the clocks).
+    pub instance: Option<String>,
     /// The instance's decay, as configured (present even when the suffix is
     /// empty because there is a single instance).
     pub half_life: Option<f64>,
@@ -34,9 +39,13 @@ pub struct FieldMeta {
     /// Lag, in learned rows, of an `ew_cov` `lag_corr_*` field
     /// (docs/ENHANCEMENTS.md E56); `None` for every other field.
     pub lag: Option<usize>,
-    /// The hidden state an `hmm` posterior is about, `filtered_<s>` and
-    /// `predicted_<s>`; `None` for every other field. With `lag` and
-    /// `class`, it makes every field's row unique apart from its name.
+    /// The principal component an `ew_cov` `pc<j>_*` field is about; `None`
+    /// for every other field.
+    pub component: Option<usize>,
+    /// The hidden state an `hmm` posterior is about, `filtered_state<s>`
+    /// and `predicted_state<s>`; `None` for every other field. With `lag`,
+    /// `component` and `class`, it makes every field's row unique apart
+    /// from its name.
     pub state: Option<usize>,
     /// The class an `ew_class` posterior `p_<class>` is about; `None` for
     /// every other field.
@@ -56,6 +65,11 @@ pub struct FieldMeta {
     /// calls (docs/SIMPLIFICATION.md S1).
     #[serde(skip)]
     pub(super) src: Source,
+    /// The categories of an `Enum` field in their order: `ew_class`'s
+    /// classes for `class`, the grid's slots for `selected_<t>`. `None` for
+    /// every other field (`withheld_reason`'s are fixed).
+    #[serde(skip)]
+    pub(super) categories: Option<Vec<String>>,
 }
 
 /// The buffer a field's values are scattered into, with the index into it.
@@ -130,6 +144,7 @@ impl FieldMeta {
             field,
             kind: kind.to_string(),
             target: None,
+            instance: None,
             half_life: None,
             lam: None,
             ridge: None,
@@ -137,12 +152,20 @@ impl FieldMeta {
             penalty: None,
             quantile: None,
             lag: None,
+            component: None,
             state: None,
             class: None,
             columns: None,
             dtype: String::new(),
             src: Source::Unset,
+            categories: None,
         }
+    }
+    /// An `Enum` field over these categories, in this order; set before
+    /// [`Self::src`], which renders the dtype.
+    fn categories(mut self, names: &[String]) -> Self {
+        self.categories = Some(names.to_vec());
+        self
     }
     fn src(mut self, src: Source) -> Self {
         // The clock fields take the clock column's own type, known only
@@ -159,9 +182,20 @@ impl FieldMeta {
 
     /// The dtype `assemble` materializes this field with.
     pub fn dtype(&self) -> DataType {
+        let enum_of = |names: &[String]| {
+            DataType::from_frozen_categories(
+                polars::prelude::FrozenCategories::new(names.iter().map(String::as_str))
+                    .expect("distinct names"),
+            )
+        };
         match self.src {
             Source::Drift(_) => DataType::Boolean,
-            Source::SelName(_) => DataType::String,
+            // An `Enum` over the slots or the classes, in their order: a
+            // value is one of them, and a sort or a comparison goes by that
+            // order (task 244).
+            Source::SelName(_) | Source::Label(_) => {
+                enum_of(self.categories.as_deref().unwrap_or_default())
+            }
             Source::Coef(_)
             | Source::SupportCoef(_)
             | Source::SeCoef(_)
@@ -173,12 +207,13 @@ impl FieldMeta {
             ),
             Source::Id(_) => DataType::Int64,
             Source::Flag(_) => DataType::Boolean,
-            Source::Label(_) => DataType::String,
             Source::Unset => unreachable!("every field is given a source in output_index"),
             _ => DataType::Float64,
         }
     }
-    fn decay(mut self, d: &online_core::Decay) -> Self {
+    /// The instance the field belongs to: its suffix and its decay.
+    fn decay(mut self, suffix: &str, d: &online_core::Decay) -> Self {
+        self.instance = Some(suffix.to_string());
         match d {
             online_core::Decay::Halflife(h) => self.half_life = Some(*h),
             online_core::Decay::Lam(l) => self.lam = Some(*l),
@@ -214,9 +249,11 @@ impl FieldMeta {
 /// `kmeans` reports its centres here: `k` slots named `cluster{j}` in place
 /// of the targets, each the centre's coordinate per feature, so
 /// `coef_cluster0_x1` is centre 0's `x1` and `coef_index` lays the list out
-/// as `(cluster, feature)`. `ew_class` does the same with its class means:
-/// one slot per class, named by the class, so `coef_a_x1` is class `a`'s
-/// mean of `x1`.
+/// as `(cluster, feature)`, the centre in `cluster` and no target. `hmm`
+/// does the same with its state means (`coef_state0_x1`, `state`), and
+/// `ew_class` with its class means: one slot per class, named by the class,
+/// so `coef_a_x1` is class `a`'s mean of `x1`, the class in `class` and the
+/// label column in `target`.
 pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     if matches!(
         spec.model,
@@ -248,7 +285,8 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
                     field: format!("coef{suffix}"),
                     position,
                     name: format!("coef_{slot}{suffix}"),
-                    target: slot.to_string(),
+                    target: Some(slot.to_string()),
+                    instance: suffix.clone(),
                     half_life: match d {
                         online_core::Decay::Halflife(h) => Some(h),
                         online_core::Decay::Lam(_) => None,
@@ -260,18 +298,61 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
                     ridge: None,
                     feature_set: None,
                     penalty: None,
+                    cluster: None,
+                    state: None,
+                    class: None,
                     term: "rho".to_string(),
                 });
             }
         }
         return out;
     }
-    let slots: Vec<String> = match &spec.model {
-        crate::ModelKind::KMeans { k, .. } => (0..*k).map(|j| format!("cluster{j}")).collect(),
+    // Each slot: the name its columns take, and the target, centre, state
+    // or class it is.
+    struct Slot {
+        name: String,
+        target: Option<String>,
+        cluster: Option<usize>,
+        state: Option<usize>,
+        class: Option<String>,
+    }
+    let slot = |name: String| Slot {
+        name,
+        target: None,
+        cluster: None,
+        state: None,
+        class: None,
+    };
+    let slots: Vec<Slot> = match &spec.model {
+        crate::ModelKind::KMeans { k, .. } => (0..*k)
+            .map(|j| Slot {
+                cluster: Some(j),
+                ..slot(format!("cluster{j}"))
+            })
+            .collect(),
         // One slot per hidden state, named as `kmeans` names its centres.
-        crate::ModelKind::Hmm { k, .. } => (0..*k).map(|j| format!("state{j}")).collect(),
-        crate::ModelKind::EwClass { classes, .. } => classes.clone(),
-        _ => spec.targets.to_vec(),
+        crate::ModelKind::Hmm { k, .. } => (0..*k)
+            .map(|j| Slot {
+                state: Some(j),
+                ..slot(format!("state{j}"))
+            })
+            .collect(),
+        crate::ModelKind::EwClass { classes, .. } => classes
+            .iter()
+            .map(|c| Slot {
+                target: Some(spec.targets[0].clone()),
+                class: Some(c.clone()),
+                ..slot(c.clone())
+            })
+            .collect(),
+        _ => spec
+            .targets
+            .iter()
+            .map(|t| Slot {
+                target: Some(t.clone()),
+                ..slot(t.clone())
+            })
+            .collect(),
     };
     let terms: Vec<String> = if matches!(spec.model, crate::ModelKind::Holt { .. }) {
         vec!["level".into(), "trend".into()]
@@ -305,13 +386,17 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
                     out.push(CoefField {
                         field: format!("coef{suffix}"),
                         position,
-                        name: format!("coef_{t}_{term}{}{suffix}", c.label),
-                        target: t.clone(),
+                        name: format!("coef_{}_{term}{}{suffix}", t.name, c.label),
+                        target: t.target.clone(),
+                        instance: suffix.clone(),
                         half_life,
                         lam,
                         ridge: c.ridge,
                         feature_set: c.feature_set.clone(),
                         penalty: c.lambda,
+                        cluster: t.cluster,
+                        state: t.state,
+                        class: t.class.clone(),
                         term: term.clone(),
                     });
                     position += 1;
@@ -369,6 +454,104 @@ pub fn duplicate_field(spec: &Spec) -> Option<String> {
     None
 }
 
+/// A `list[str]` column of these lists, null where a row has none.
+fn str_lists(name: &str, rows: &[Option<&Vec<String>>]) -> Column {
+    let mut b = ListStringChunkedBuilder::new(name.into(), rows.len(), 4);
+    for r in rows {
+        match r {
+            Some(v) => b.append_values_iter(v.iter().map(String::as_str)),
+            None => b.append_null(),
+        }
+    }
+    b.finish().into_series().into()
+}
+
+/// An `Int64` column of these indices, null where a row has none. Every
+/// integer a frame of this library writes is an `Int64`, polars' default.
+fn ints(name: &str, values: impl Iterator<Item = Option<usize>>) -> Column {
+    Column::new(
+        name.into(),
+        values
+            .map(|v| v.map(|v| i64::try_from(v).unwrap_or(i64::MAX)))
+            .collect::<Vec<Option<i64>>>(),
+    )
+}
+
+/// [`output_index`] as the frame `polars_online.spec.output_index` returns,
+/// typed here rather than through JSON, which has no infinity: an infinite
+/// half-life is `inf` in `half_life`, where JSON read it as null.
+///
+/// # Errors
+///
+/// None in practice: every column has one row per field.
+pub fn output_index_frame(spec: &Spec) -> PolarsResult<DataFrame> {
+    let idx = output_index(spec);
+    let str_col = |name: &str, f: &dyn Fn(&FieldMeta) -> Option<&str>| {
+        Column::new(name.into(), idx.iter().map(f).collect::<Vec<_>>())
+    };
+    let f64_col = |name: &str, f: &dyn Fn(&FieldMeta) -> Option<f64>| {
+        Column::new(name.into(), idx.iter().map(f).collect::<Vec<_>>())
+    };
+    let columns: Vec<Option<&Vec<String>>> = idx.iter().map(|m| m.columns.as_ref()).collect();
+    DataFrame::new(
+        idx.len(),
+        vec![
+            str_col("field", &|m| Some(m.field.as_str())),
+            str_col("kind", &|m| Some(m.kind.as_str())),
+            str_col("target", &|m| m.target.as_deref()),
+            str_col("instance", &|m| m.instance.as_deref()),
+            f64_col("half_life", &|m| m.half_life),
+            f64_col("lam", &|m| m.lam),
+            f64_col("ridge", &|m| m.ridge),
+            str_col("feature_set", &|m| m.feature_set.as_deref()),
+            f64_col("penalty", &|m| m.penalty),
+            f64_col("quantile", &|m| m.quantile),
+            ints("lag", idx.iter().map(|m| m.lag)),
+            ints("component", idx.iter().map(|m| m.component)),
+            ints("state", idx.iter().map(|m| m.state)),
+            str_col("class", &|m| m.class.as_deref()),
+            str_lists("columns", &columns),
+            str_col("dtype", &|m| Some(m.dtype.as_str())),
+        ],
+    )
+}
+
+/// [`coef_fields`] as the frame `polars_online.spec.coef_fields` returns,
+/// typed here, as [`output_index_frame`] is. Empty, with every column, for
+/// a spec with no named coefficient.
+///
+/// # Errors
+///
+/// None in practice: every column has one row per coefficient.
+pub fn coef_fields_frame(spec: &Spec) -> PolarsResult<DataFrame> {
+    let cf = coef_fields(spec);
+    let str_col = |name: &str, f: &dyn Fn(&CoefField) -> Option<&str>| {
+        Column::new(name.into(), cf.iter().map(f).collect::<Vec<_>>())
+    };
+    let f64_col = |name: &str, f: &dyn Fn(&CoefField) -> Option<f64>| {
+        Column::new(name.into(), cf.iter().map(f).collect::<Vec<_>>())
+    };
+    DataFrame::new(
+        cf.len(),
+        vec![
+            str_col("field", &|c| Some(c.field.as_str())),
+            ints("position", cf.iter().map(|c| Some(c.position))),
+            str_col("name", &|c| Some(c.name.as_str())),
+            str_col("target", &|c| c.target.as_deref()),
+            str_col("instance", &|c| Some(c.instance.as_str())),
+            f64_col("half_life", &|c| c.half_life),
+            f64_col("lam", &|c| c.lam),
+            f64_col("ridge", &|c| c.ridge),
+            str_col("feature_set", &|c| c.feature_set.as_deref()),
+            f64_col("penalty", &|c| c.penalty),
+            ints("cluster", cf.iter().map(|c| c.cluster)),
+            ints("state", cf.iter().map(|c| c.state)),
+            str_col("class", &|c| c.class.as_deref()),
+            str_col("term", &|c| Some(c.term.as_str())),
+        ],
+    )
+}
+
 /// Output field names for a spec, in struct order (used by Python for dtypes).
 pub fn output_fields(spec: &Spec) -> Vec<String> {
     output_index(spec).into_iter().map(|m| m.field).collect()
@@ -390,16 +573,23 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             | crate::ModelKind::Rcov { .. }
             | crate::ModelKind::Audit { .. }
     ) {
-        return with_clocks(spec, base);
+        return with_clocks(spec, no_decay(spec, base));
     }
     let mut fields = Vec::with_capacity(base.len() + 3 * spec.decays().map_or(1, |d| d.len()));
     for f in base {
         // The instance the field belongs to, as its `n_eff` or `coef`
         // carries it: the same suffix and the same decay (none, for a model
         // that does not decay -- `seqtest`'s fields carry no half-life).
-        let (src, suffix, half_life, lam) = (f.src.clone(), f.field.clone(), f.half_life, f.lam);
+        let (src, suffix, instance, half_life, lam) = (
+            f.src.clone(),
+            f.field.clone(),
+            f.instance.clone(),
+            f.half_life,
+            f.lam,
+        );
         fields.push(f);
         let like = |mut m: FieldMeta| {
+            m.instance = instance.clone();
             m.half_life = half_life;
             m.lam = lam;
             m
@@ -448,7 +638,21 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             _ => {}
         }
     }
-    with_clocks(spec, fields)
+    with_clocks(spec, no_decay(spec, fields))
+}
+
+/// A model that takes no decay -- `seqtest`, `rcov`, `corrchange`,
+/// `bocpd`, `audit` -- runs one undecayed instance, which `Spec::decays`
+/// gives as an infinite half-life. Its fields carry no decay, as its spec
+/// configures none; a spec that says `half_life = inf` carries `inf`.
+fn no_decay(spec: &Spec, mut fields: Vec<FieldMeta>) -> Vec<FieldMeta> {
+    if spec.half_life.is_none() && spec.lam.is_none() {
+        for f in &mut fields {
+            f.half_life = None;
+            f.lam = None;
+        }
+    }
+    fields
 }
 
 /// The clock fields, last, under `emit_clocks` (docs/PLAN.md task 152).
@@ -514,19 +718,19 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 // index.
                 let kind = l.split('_').next().unwrap_or(l).to_string();
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), &kind)
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Stat(mi * n_slots + slot));
                 m.columns = Some(cols_of(slot));
                 fields.push(m);
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
             fields.push(
                 FieldMeta::new(format!("coef{suffix}"), "coef")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Coef(mi)),
             );
         }
@@ -567,9 +771,15 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         // each i<j pair, or all of them; then the levels; then `k + 3` per
         // component, all over every column).
         let all = spec.features.clone();
-        // Statistic kind, the columns it is over, its quantile level and its
-        // lag, in label order.
-        type StatMeta = (String, Vec<String>, Option<f64>, Option<usize>);
+        // Statistic kind, the columns it is over, its quantile level, its
+        // lag and its principal component, in label order.
+        type StatMeta = (
+            String,
+            Vec<String>,
+            Option<f64>,
+            Option<usize>,
+            Option<usize>,
+        );
         let mut meta: Vec<StatMeta> = Vec::new();
         for (name, kind) in names.iter().zip(&kinds) {
             match kind {
@@ -577,10 +787,12 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 | online_core::EwCovStat::Var
                 | online_core::EwCovStat::Std => {
                     for col in &spec.features {
-                        meta.push((name.clone(), vec![col.clone()], None, None));
+                        meta.push((name.clone(), vec![col.clone()], None, None, None));
                     }
                 }
-                online_core::EwCovStat::Mahal => meta.push((name.clone(), all.clone(), None, None)),
+                online_core::EwCovStat::Mahal => {
+                    meta.push((name.clone(), all.clone(), None, None, None));
+                }
                 // One entry per (lag, ordered pair), the auto terms
                 // included: both orientations, since the lagged matrix is
                 // not symmetric.
@@ -593,6 +805,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                                     vec![a.clone(), b.clone()],
                                     None,
                                     Some(l),
+                                    None,
                                 ));
                             }
                         }
@@ -606,6 +819,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                                 vec![spec.features[i].clone(), spec.features[j].clone()],
                                 None,
                                 None,
+                                None,
                             ));
                         }
                     }
@@ -613,32 +827,35 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             }
         }
         for &q in &levels {
-            meta.push(("mahal_q".into(), all.clone(), Some(q), None));
+            meta.push(("mahal_q".into(), all.clone(), Some(q), None, None));
         }
-        for _ in 0..r {
-            meta.push(("pc_var".into(), all.clone(), None, None));
-            meta.push(("pc_share".into(), all.clone(), None, None));
+        for j in 0..r {
+            let pc = Some(j);
+            meta.push(("pc_var".into(), all.clone(), None, None, pc));
+            meta.push(("pc_share".into(), all.clone(), None, None, pc));
             for col in &spec.features {
-                meta.push(("pc_loading".into(), vec![col.clone()], None, None));
+                meta.push(("pc_loading".into(), vec![col.clone()], None, None, pc));
             }
-            meta.push(("pc_score".into(), all.clone(), None, None));
+            meta.push(("pc_score".into(), all.clone(), None, None, pc));
         }
         debug_assert_eq!(meta.len(), labels.len());
         let n_slots = labels.len();
         let mut fields = Vec::new();
         for (mi, (suffix, d)) in decays.iter().enumerate() {
-            for (slot, (l, (kind, cols, q, lag))) in labels.iter().zip(&meta).enumerate() {
+            for (slot, (l, (kind, cols, q, lag, component))) in labels.iter().zip(&meta).enumerate()
+            {
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Stat(mi * n_slots + slot));
                 m.columns = Some(cols.clone());
                 m.quantile = *q;
                 m.lag = *lag;
+                m.component = *component;
                 fields.push(m);
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
         }
@@ -657,27 +874,27 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             };
             fields.push(over(
                 FieldMeta::new(format!("cluster{suffix}"), "cluster")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Id(mi * n_slots)),
             ));
             fields.push(over(
                 FieldMeta::new(format!("dist{suffix}"), "dist")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Stat(mi * n_slots + 1)),
             ));
             fields.push(over(
                 FieldMeta::new(format!("dist_second{suffix}"), "dist_second")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Stat(mi * n_slots + 2)),
             ));
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
             fields.push(
                 FieldMeta::new(format!("coef{suffix}"), "coef")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Coef(mi)),
             );
         }
@@ -698,42 +915,42 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             let at = |slot: usize| mi * n_slots + slot;
             fields.push(over(
                 FieldMeta::new(format!("cluster{suffix}"), "cluster")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Id(at(0))),
             ));
             fields.push(over(
                 FieldMeta::new(format!("dist{suffix}"), "dist")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Stat(at(1))),
             ));
             fields.push(over(
                 FieldMeta::new(format!("micro_id{suffix}"), "micro_id")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Id(at(2))),
             ));
             fields.push(over(
                 FieldMeta::new(format!("outlier{suffix}"), "outlier")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Flag(at(3))),
             ));
             fields.push(over(
                 FieldMeta::new(format!("n_clusters{suffix}"), "n_clusters")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Id(at(4))),
             ));
             fields.push(over(
                 FieldMeta::new(format!("n_micro{suffix}"), "n_micro")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Id(at(5))),
             ));
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
             fields.push(
                 FieldMeta::new(format!("coef{suffix}"), "coef")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Coef(mi)),
             );
         }
@@ -757,9 +974,15 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 } else {
                     Source::Stat(at)
                 };
-                let kind = l.split('_').next().unwrap_or(l);
+                // The run-length fields keep their full stems; a predictive
+                // mean is `pred` about its column, as `columns` says.
+                let kind = if per_feature.contains(&slot) {
+                    "pred"
+                } else {
+                    l.as_str()
+                };
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(src);
                 m.columns = Some(if per_feature.contains(&slot) {
                     vec![spec.features[slot - 3].clone()]
@@ -770,7 +993,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
         }
@@ -792,13 +1015,15 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     "since_flag" | "since_change" => Source::Id(at),
                     _ => Source::Stat(at),
                 };
-                let mut m = FieldMeta::new(format!("{l}{suffix}"), l).decay(d).src(src);
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), l)
+                    .decay(suffix, d)
+                    .src(src);
                 m.columns = Some(spec.features.clone());
                 fields.push(m);
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
         }
@@ -821,23 +1046,27 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 } else {
                     Source::Stat(at)
                 };
-                let mut m =
-                    FieldMeta::new(format!("{l}{suffix}"), l.split('_').next().unwrap_or(l))
-                        .decay(d)
-                        .src(src);
+                // `filtered_state<s>` and `predicted_state<s>`: the kind, and
+                // the state they are about.
+                let (kind, state) = match l.split_once("_state") {
+                    Some((kind, s)) => (kind, s.parse().ok()),
+                    None => (l.as_str(), None),
+                };
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
+                    .decay(suffix, d)
+                    .src(src);
                 m.columns = Some(spec.features.clone());
-                // `filtered_<s>` and `predicted_<s>`: the state they are about.
-                m.state = l.split_once('_').and_then(|(_, s)| s.parse().ok());
+                m.state = state;
                 fields.push(m);
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
             fields.push(
                 FieldMeta::new(format!("coef{suffix}"), "coef")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Coef(mi)),
             );
         }
@@ -856,14 +1085,15 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             };
             fields.push(over(
                 FieldMeta::new(format!("class{suffix}"), "class")
-                    .decay(d)
+                    .decay(suffix, d)
                     .target(&spec.targets[0])
+                    .categories(classes)
                     .src(Source::Label(mi * n_slots)),
             ));
             for (c, class) in classes.iter().enumerate() {
                 let mut p = over(
                     FieldMeta::new(format!("p_{class}{suffix}"), "p")
-                        .decay(d)
+                        .decay(suffix, d)
                         .target(&spec.targets[0])
                         .src(Source::Stat(mi * n_slots + 1 + c)),
                 );
@@ -872,12 +1102,12 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi)),
             );
             fields.push(
                 FieldMeta::new(format!("coef{suffix}"), "coef")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::Coef(mi)),
             );
         }
@@ -894,31 +1124,31 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         } else {
             ["log_e_pos", "log_e_neg", "n_pos", "n_neg"]
         };
+        // One undecayed instance: its suffix is empty, as a single
+        // instance's is.
+        let one = |mut m: FieldMeta| {
+            m.instance = Some(String::new());
+            m
+        };
         let mut fields = Vec::new();
         for (t_i, t) in spec.targets.iter().enumerate() {
             let at = |slot: usize| t_i * n_slots + slot;
-            fields.push(
-                FieldMeta::new(format!("{}_{t}", names[0]), names[0])
-                    .target(t)
-                    .src(Source::Stat(at(0))),
-            );
-            fields.push(
-                FieldMeta::new(format!("{}_{t}", names[1]), names[1])
-                    .target(t)
-                    .src(Source::Stat(at(1))),
-            );
-            fields.push(
-                FieldMeta::new(format!("{}_{t}", names[2]), names[2])
-                    .target(t)
-                    .src(Source::Id(at(2))),
-            );
-            fields.push(
-                FieldMeta::new(format!("{}_{t}", names[3]), names[3])
-                    .target(t)
-                    .src(Source::Id(at(3))),
-            );
+            fields.push(one(FieldMeta::new(format!("{}_{t}", names[0]), names[0])
+                .target(t)
+                .src(Source::Stat(at(0)))));
+            fields.push(one(FieldMeta::new(format!("{}_{t}", names[1]), names[1])
+                .target(t)
+                .src(Source::Stat(at(1)))));
+            fields.push(one(FieldMeta::new(format!("{}_{t}", names[2]), names[2])
+                .target(t)
+                .src(Source::Id(at(2)))));
+            fields.push(one(FieldMeta::new(format!("{}_{t}", names[3]), names[3])
+                .target(t)
+                .src(Source::Id(at(3)))));
         }
-        fields.push(FieldMeta::new("weight_sum".into(), "weight_sum").src(Source::NEff(0)));
+        fields.push(one(
+            FieldMeta::new("weight_sum".into(), "weight_sum").src(Source::NEff(0))
+        ));
         return fields;
     }
     // rcov, marginal and audit emit nothing per row but `n_eff`, one per
@@ -936,7 +1166,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             .enumerate()
             .map(|(mi, (suffix, d))| {
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                    .decay(d)
+                    .decay(suffix, d)
                     .src(Source::NEff(mi))
             })
             .collect();
@@ -951,7 +1181,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         // nested loops written a second time.
         let mk = |kind: &str, t: &str, c: &crate::stream::Combo, src: Source| {
             FieldMeta::new(format!("{kind}_{t}{}{suffix}", c.label), kind)
-                .decay(d)
+                .decay(suffix, d)
                 .target(t)
                 .combo(c)
                 .src(src)
@@ -1020,7 +1250,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                         );
                         let idx = (li * n_models + mi) * m * nc + t_i * nc + c_i;
                         let mut f = FieldMeta::new(name, "abs_resid_q")
-                            .decay(d)
+                            .decay(suffix, d)
                             .target(t)
                             .combo(c)
                             .src(Source::Quantile(idx));
@@ -1057,7 +1287,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     // The feature it reads, so the index tells the fields
                     // apart (review round 6, F-9).
                     let mut m = FieldMeta::new(format!("{kind}_{f}{suffix}"), kind)
-                        .decay(d)
+                        .decay(suffix, d)
                         .src(Source::Health(which, mi, fi));
                     m.columns = Some(vec![f.clone()]);
                     fields.push(m);
@@ -1066,19 +1296,19 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
         }
         fields.push(
             FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")
-                .decay(d)
+                .decay(suffix, d)
                 .src(Source::NEff(mi)),
         );
         fields.push(
             FieldMeta::new(format!("coef{suffix}"), "coef")
-                .decay(d)
+                .decay(suffix, d)
                 .src(Source::Coef(mi)),
         );
         if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 fields.push(
                     FieldMeta::new(format!("penalty_selected_{t}{suffix}"), "penalty_selected")
-                        .decay(d)
+                        .decay(suffix, d)
                         .target(t)
                         .src(Source::LamSelected(mi * m + t_i)),
                 );
@@ -1095,6 +1325,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             fields.push(
                 FieldMeta::new(format!("selected_{t}"), "selected")
                     .target(t)
+                    .categories(&slot_labels(spec))
                     .src(Source::SelName(t_i)),
             );
         }

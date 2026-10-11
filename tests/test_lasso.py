@@ -27,7 +27,7 @@ def test_output_fields_include_lam_selected():
     spec = _spec([1.0, 0.1, 0.0])
     fields = po.spec.output_fields(spec)
     assert "penalty_selected_y0" in fields
-    assert "pred_y0__l1" in fields and "pred_y0__l0" in fields
+    assert "pred_y0__p1" in fields and "pred_y0__p0" in fields
 
 
 def test_zero_penalty_matches_ewridge():
@@ -44,8 +44,8 @@ def test_zero_penalty_matches_ewridge():
     b = po.ModelBank([po.spec.ewridge("m", ridge=1e-12, standardize=True, **common)]).fit_predict(
         df
     )
-    # lasso fields are always suffixed by their path point
-    pa = a["m"].struct.field("pred_y0__l0").to_numpy().astype(float)
+    # a path of one point writes no suffix, as a single ridge writes none
+    pa = a["m"].struct.field("pred_y0").to_numpy().astype(float)
     pb = b["m"].struct.field("pred_y0").to_numpy().astype(float)
     m = np.isfinite(pa) & np.isfinite(pb)
     assert m.sum() > 200
@@ -57,7 +57,7 @@ def test_heavy_penalty_predicts_the_mean():
     out = po.ModelBank([_spec([1e6, 0.0])]).fit_predict(df)
     # All slopes zeroed => prediction is the running EW mean of y, so it must be
     # constant across rows with very different x.
-    pred = out["m"].struct.field("pred_y0__l1000000").to_numpy().astype(float)
+    pred = out["m"].struct.field("pred_y0__p1000000").to_numpy().astype(float)
     finite = pred[np.isfinite(pred)]
     assert finite.std() < 0.5 * df["y0"].std()
 
@@ -104,7 +104,7 @@ def test_an_infinite_select_halflife_selects_on_the_plain_mean():
     path = [1.0, 0.1, 0.0]
     out = po.ModelBank([_spec(path, select_half_life=float("inf"))]).fit_predict(df)["m"]
     resid = np.array(
-        [out.struct.field(f"resid_y0__l{lab}").to_numpy() for lab in ("1", "0.1", "0")], float
+        [out.struct.field(f"resid_y0__p{lab}").to_numpy() for lab in ("1", "0.1", "0")], float
     )
     sel = out.struct.field("penalty_selected_y0").to_numpy().astype(float)
     counted = np.isfinite(resid[0])
@@ -188,7 +188,7 @@ class TestEachTargetsSelectionCountsFromItsOwnMinWeight:
         # `y0`'s threshold is the list's minimum both times: nothing of it
         # moves, and the model's predictions are the same ones throughout.
         assert listed["penalty_selected_y0"].equals(low["penalty_selected_y0"])
-        shown = listed["pred_y1__l0"].is_not_null()
+        shown = listed["pred_y1__p0"].is_not_null()
         for c in (c for c in listed.columns if c.startswith("pred_")):
             got, want = listed[c], low[c]
             if c.startswith("pred_y1"):

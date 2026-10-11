@@ -228,12 +228,12 @@ def test_the_frames_give_an_integer_clock_in_its_own_dtype(dtype, base):
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(df)
     s = bank.summary()
-    for col, want in (("clock_min", lo), ("clock_max", hi), ("last_clock", hi)):
+    for col, want in (("clock_min", lo), ("clock_max", hi), ("clock_last", hi)):
         assert s[col].dtype == dtype, col
         assert s[col].to_list() == [want], col
     g = bank.groups()
-    assert g["last_clock"].dtype == dtype
-    assert g["last_clock"].to_list() == [hi]
+    assert g["clock_last"].dtype == dtype
+    assert g["clock_last"].to_list() == [hi]
 
     cov = po.spec.ew_cov(
         "c",
@@ -258,7 +258,7 @@ def test_a_float_clock_stays_a_float():
     out = bank.fit_predict(df).unnest("m")
     assert out["scored_clock"].dtype == pl.Float64
     assert bank.summary()["clock_max"].dtype == pl.Float64
-    assert bank.groups()["last_clock"].dtype == pl.Float64
+    assert bank.groups()["clock_last"].dtype == pl.Float64
 
 
 def test_another_number_dtype_than_the_banks_is_refused():

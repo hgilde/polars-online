@@ -443,14 +443,14 @@ class TestSummaryAndWarnings:
         for col in (
             "settled_frac",
             "error_inflation",
-            "min_support_coef",
-            "min_support_coef_feature",
+            "support_coef_min",
+            "support_coef_min_feature",
             "n_coef",
         ):
             assert col in s.columns, col
         assert s["settled_frac"][0] == pytest.approx(1.0 - 2.0 ** (-99 / 20.0))
         assert 1.0 < s["error_inflation"][0] < 1.1
-        assert s["min_support_coef"][0] == pytest.approx(1.0, abs=1e-3)
+        assert s["support_coef_min"][0] == pytest.approx(1.0, abs=1e-3)
         assert s["n_coef"][0] == 3
 
     def test_a_coefficient_more_ridge_than_data_is_named_once(self):

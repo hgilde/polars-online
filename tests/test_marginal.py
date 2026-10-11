@@ -30,7 +30,7 @@ PAIR_FIELDS = [
     "beta",
     "t_stat",
 ]
-COLUMNS = ["group", "instance", "feature", "target", *PAIR_FIELDS]
+COLUMNS = ["spec", "group", "instance", "half_life", "lam", "feature", "target", *PAIR_FIELDS]
 
 
 def frame(
@@ -401,7 +401,7 @@ class TestPlumbing:
         desc = bank.describe("m")
         assert desc["column"].to_list() == ["x0", "x1", "x2", "y0", "y1"]
         assert desc["role"].to_list() == ["feature"] * 3 + ["target"] * 2
-        assert desc.filter(pl.col("column") == "y1")["null_count"].item() > 0
+        assert desc.filter(pl.col("column") == "y1")["unusable_count"].item() > 0
         assert bank.summary("m")["rows_learned"].item() == 100
 
     def test_refusals(self):

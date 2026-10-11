@@ -248,7 +248,7 @@ def check(
         np = numpy
     except ModuleNotFoundError:
         np = None
-    failures = bank.solve_failures()
+    failures = {(s, g): n for s, g, n in bank.solve_failures().iter_rows()}
     found: list[_Finding] = []
     for i in picked:
         found.extend(_spec_findings(bank, i, keys, failures, np))
@@ -277,7 +277,7 @@ def _spec_findings(
     bank: ModelBank,
     i: int,
     keys: list[str | None] | None,
-    failures: dict[str, dict[str | None, int]],
+    failures: dict[tuple[str, str | None], int],
     np: Any,
 ) -> list[_Finding]:
     spec = bank._specs[i]
@@ -332,11 +332,11 @@ def _spec_findings(
     for g, rows in cols_by_group.items():
         feats = []
         for r in rows:
-            fed = r["count"] + r["null_count"]
+            fed = r["count"] + r["unusable_count"]
             role, col = r["role"], r["column"]
             if fed == 0:
                 continue
-            share = r["null_count"] / fed
+            share = r["unusable_count"] / fed
             if role in ("feature", "weight") and share >= MISSING_SHARE:
                 sev = "error" if share == 1.0 else "warning"
                 add(
@@ -605,8 +605,8 @@ def _spec_findings(
                 f"below min_weight {_fmt(need)}, so its predictions will stay "
                 "null: lengthen the half-life, or lower min_weight",
             )
-        support = row["min_support_coef"]
-        feature = row["min_support_coef_feature"]
+        support = row["support_coef_min"]
+        feature = row["support_coef_min_feature"]
         if support is not None and support < SUPPORT and (g, feature) not in flagged:
             add(
                 "warning",
@@ -619,7 +619,7 @@ def _spec_findings(
                 "and the rest ridge: a duplicated or constant column, or a ridge "
                 "as large as the feature's variance",
             )
-        n_fail = failures.get(name, {}).get(g, 0)
+        n_fail = failures.get((name, g), 0)
         if kind == "lasso" and n_fail > LASSO_SWEEPS:
             add(
                 "info",
@@ -777,7 +777,7 @@ def _gram_findings(
             for f in live:
                 j = cols.index(f)
                 vx = float(g["comoments"][j][j])
-                corr = float(g["cross_centred"][t][j]) / math.sqrt(vx * vy)
+                corr = float(g["cross_centered"][t][j]) / math.sqrt(vx * vy)
                 if abs(corr) >= LEAKAGE:
                     key = (group, f, target)
                     worst_leak[key] = max(worst_leak.get(key, 0.0), min(abs(corr), 1.0))
@@ -817,8 +817,8 @@ def _worst_missing(
     out = {}
     for g, rows in cols_by_group.items():
         mine = [r for r in rows if r["role"] in roles]
-        best = max(mine, key=lambda r: r["null_count"], default=None)
-        if best is not None and best["null_count"] > 0:
+        best = max(mine, key=lambda r: r["unusable_count"], default=None)
+        if best is not None and best["unusable_count"] > 0:
             out[g] = best["column"]
     return out
 
@@ -946,7 +946,7 @@ def _audit_findings(
 
 def _audit_column(r: dict[str, Any], add: Any) -> None:
     """One column's findings, from its row of ``ModelBank.audit``."""
-    g, col, rows, n = r["group"], r["column"], r["rows"], r["count"]
+    g, col, rows, n = r["group"], r["column"], r["rows_fed"], r["count"]
     if rows == 0:
         return
     who = _who(g)
@@ -977,15 +977,15 @@ def _audit_column(r: dict[str, Any], add: Any) -> None:
             "model skips as it skips a null: a division by zero, or a sentinel "
             "such as 1e308, upstream; make them null, or fix the arithmetic",
         )
-    if r["nan"]:
+    if r["nan_count"]:
         add(
             "info",
             "sentinel",
             g,
             col,
-            float(r["nan"]),
+            float(r["nan_count"]),
             0.0,
-            f"column {col!r} is NaN, not null, on {r['nan']} rows of {who}: the "
+            f"column {col!r} is NaN, not null, on {r['nan_count']} rows of {who}: the "
             "models read it as missing, and Polars' fill_null, drop_nulls and "
             "null_count do not; fill_nan(None) makes them null",
         )
@@ -1004,7 +1004,7 @@ def _audit_column(r: dict[str, Any], add: Any) -> None:
             "target there is nothing to learn",
         )
         return
-    distinct = r["distinct"]
+    distinct = r["n_unique"]
     few = distinct is not None and distinct <= FEW_VALUES
     adjacent = r["adjacent"]
     # The zero-change atom (review 6, C-1): the repeats against the changes

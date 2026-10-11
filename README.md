@@ -1167,7 +1167,7 @@ per_stock = po.spec.ewridge(
 bank = po.ModelBank([per_stock])
 together = bank.fit_predict(df)
 for row in bank.groups().iter_rows(named=True):
-    print(f"group {row['group']}: {row['rows_processed']} rows, the last at t = {row['last_clock']}")
+    print(f"group {row['group']}: {row['rows_fed']} rows, the last at t = {row['clock_last']}")
 
 alone = {**per_stock, "group": None}           # the same spec without a group, fed stock b0's rows alone
 b0 = po.ModelBank([alone]).fit_predict(df.filter(pl.col("stock_id") == "b0"))
@@ -1513,7 +1513,7 @@ for way, frame in ways.items():
         scored = bank.predict(frame.slice(100, 1))            # scores row 100 and learns nothing
     else:
         scored = bank.fit_predict(frame.slice(100, 1))
-    clock = bank.groups()["last_clock"][0]
+    clock = bank.groups()["clock_last"][0]
     moved = bank.coef()["coef"].to_list() != before.coef()["coef"].to_list()
     after = bank.fit_predict(frame.slice(101, 1))["held"].struct.field("weight_sum")[0]
     is_scored = scored["held"].struct.field("pred_y")[0] is not None
@@ -1915,7 +1915,7 @@ bank.
 
 **A bank keeps every group until you drop it, so in a long-running bank,
 drop the quiet ones with `bank.drop_groups`.** `bank.groups()` gives each
-group's `last_clock` in the clock column's own dtype: a `Datetime` in its
+group's `clock_last` in the clock column's own dtype: a `Datetime` in its
 unit and zone, an integer clock in its own width, a float clock as a
 `Float64`. Compare it with the current time of the same kind. A dropped
 group starts over, with nothing learned, if it appears again. In `df` the
@@ -1927,10 +1927,10 @@ spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                        clock="t", half_life=600.0, gap_cap=300.0, group="stock_id")
 bank = po.ModelBank([spec])
 bank.fit(pl.scan_parquet("ticks.parquet"))
-for group, rows, last_clock in bank.groups().select("group", "rows_processed", "last_clock").iter_rows():
-    print(f"{group}: {rows} rows, the last at t = {last_clock:.0f}")
+for group, rows, clock_last in bank.groups().select("group", "rows_fed", "clock_last").iter_rows():
+    print(f"{group}: {rows} rows, the last at t = {clock_last:.0f}")
 now = df["t"].max()                                        # the current time on the clock t; on a temporal clock, a datetime
-stale = bank.groups().filter(pl.col("last_clock") < now - 2)   # quiet for more than 2 units of t
+stale = bank.groups().filter(pl.col("clock_last") < now - 2)   # quiet for more than 2 units of t
 print(f"dropped {bank.drop_groups(stale['group'])}; left: {bank.groups()['group'].to_list()}")
 ```
 
@@ -2303,7 +2303,7 @@ fitted.save("bank.state")
 
 bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
 print(repr(bank))                        # its specs, its groups, the rows it was fed
-print(bank.rows_fed(), bank.solve_failures())   # rows fed over every group; solves that needed help
+print(bank.rows_fed(), bank.solve_failures()["solve_failures"].to_list())   # rows fed; solves that needed help, per group
 print(bank.output_fields()["ridge"])     # the fields of the spec's column
 for spec_name, group, rows, last in bank.groups().iter_rows():   # one row per (spec, group)
     print(spec_name, group, rows, last)
@@ -2311,7 +2311,7 @@ for spec_name, group, rows, last in bank.groups().iter_rows():   # one row per (
 
 ```text
 ModelBank(['ridge'], groups=4, rows_fed=400)
-400 {'ridge': {'b0': 0, 'b1': 0, 'b2': 0, 'b3': 0}}
+400 [0, 0, 0, 0]
 ['pred_y', 'resid_y', 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
 ridge b0 100 396.0
 ridge b1 100 397.0
@@ -2379,8 +2379,8 @@ without decay.** They say what the model was trained on, and `predict`
 moves neither. So `summary()`'s `weight_sum` is 100 above, each stock's
 100 rows of weight 1, where the fit's own `weight_sum` has decayed below
 it. `describe()` counts a value as the models do: a null, a NaN, an
-infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
-`summary()`:
+infinity or a magnitude beyond 1e100 counts in `unusable_count`, not in
+`count`. The columns of `summary()`, each count an `Int64`:
 
 | columns | what they hold |
 |---|---|
@@ -2390,9 +2390,10 @@ infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
 | `rows_learned` | rows that moved the fit: a weight above zero and a target present. Under an embargo a row is counted as it arrives; a window target's row, when it is released |
 | `rows_zero_weight` | rows that advanced the clock and nothing else |
 | `weight_sum` | the sum of the accepted rows' weights, undecayed: 1 a row without a weight column |
-| `clock_min`, `clock_max`, `last_clock` | the clock's range and last value, in the clock column's own dtype |
+| `clock_min`, `clock_max`, `clock_last` | the clock's range and last value, in the clock column's own dtype |
 | `session_changes`, `clock_backwards`, `resets` | what the clock rules met |
-| `settled_frac`, `weight_sum_settled`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row. `weight_sum_settled` is the weight the stream settles at, which says whether a `min_weight` can be met |
+| `solve_failures` | solves that needed jitter or kept the previous fit, which `bank.solve_failures()` lists alone |
+| `settled_frac`, `weight_sum_settled`, `error_inflation`, `support_coef_min` and the feature it belongs to, `n_coef` | the warm-up readings after the last row. `weight_sum_settled` is the weight the stream settles at, which says whether a `min_weight` can be met |
 
 **All four cover every spec by default, with `spec` as the first column,
 so the tables of banks from different runs stack.** `coef()`,
@@ -2495,7 +2496,7 @@ scored_clock, learned_clock        under emit_clocks, once per spec
 | `__r{ridge}` | a ridge grid |
 | `__{set}` | feature sets, a single ridge |
 | `__{set}_r{ridge}` | feature sets and a ridge grid |
-| `__l{lambda}` | a lasso path |
+| `__p{penalty}` | a lasso path |
 
 | `{instance}` | when |
 |---|---|
@@ -2961,7 +2962,7 @@ row, the theory it rests on, and a recipe that runs with its output shown:
 | [is it scaled right?](docs/DIAGNOSTICS.md#is-it-scaled-right) | `emit_calibration` | `calibration_slope_<t>`, `calibration_intercept_<t>`, `calibration_wald_<t>` |
 | [has it broken?](docs/DIAGNOSTICS.md#has-it-broken) | `emit_breaks`, `emit_drift` | `studentized_<t>`, `cusum_<t>`, `cusum_sq_<t>`, `break_wald_<t>`, `drift_<t>` |
 | [can its t be trusted?](docs/DIAGNOSTICS.md#can-its-t-be-trusted) | `emit_se_coef`, `emit_robust_se` | `se_coef`, `se_coef_hc0`, `se_coef_hac`, on `coef`'s rows ([Coefficients](#coefficients)) |
-| [what is it missing?](docs/DIAGNOSTICS.md#what-is-it-missing) | `emit_specification`, `emit_autocorr` | `ljung_box_<t>`, `breusch_pagan_<t>`, `reset_<t>`, `autocorr_<t>` |
+| [what is it missing?](docs/DIAGNOSTICS.md#what-is-it-missing) | `emit_specification`, `emit_autocorr` | `ljung_box_<t>`, `breusch_pagan_<t>`, `ramsey_reset_<t>`, `autocorr_<t>` |
 | [are its tails heavy?](docs/DIAGNOSTICS.md#are-its-tails-heavy) | `emit_tails` | `skew_<t>`, `kurtosis_<t>`, `jarque_bera_<t>`; `drift_threshold` is set against the kurtosis |
 | [which row moved it?](docs/DIAGNOSTICS.md#which-row-moved-it) | `emit_influence` | `influence_<t>`: `ewridge`, `rls` and `kalman` |
 | [are its features healthy?](docs/DIAGNOSTICS.md#are-its-features-healthy) | `emit_feature_health` | `spread_ratio_<feature>`, `mean_shift_<feature>`, once per instance |

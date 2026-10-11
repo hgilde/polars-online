@@ -178,7 +178,7 @@ class TestValues:
         bank.fit_predict(df)
         row = bank.check().filter(code="missing").row(0, named=True)
         d = bank.describe().filter(column="x1").row(0, named=True)
-        assert row["value"] == d["null_count"] / (d["count"] + d["null_count"])
+        assert row["value"] == d["unusable_count"] / (d["count"] + d["unusable_count"])
         assert row["column"] == "x1"
         assert row["threshold"] == _check.MISSING_SHARE
 
@@ -343,7 +343,7 @@ class TestValues:
         bank = po.ModelBank(specs[:1])
         with pytest.warns(po.ReadinessWarning):
             bank.fit_predict(df)
-        assert bank.summary()["min_support_coef"][0] < _check.SUPPORT
+        assert bank.summary()["support_coef_min"][0] < _check.SUPPORT
         f = bank.check()
         assert set(f["code"]) == {"constant"}
 

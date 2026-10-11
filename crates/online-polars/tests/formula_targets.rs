@@ -528,19 +528,32 @@ fn describe_counts_a_formula_target_as_the_models_were_handed_it() {
             let std = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (k - 1.0)).sqrt();
             let min = values.iter().copied().fold(f64::INFINITY, f64::min);
             let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            // `role` is an `Enum` of the three roles: read as its text.
+            let roles = described
+                .column("role")
+                .unwrap()
+                .cast(&DataType::String)
+                .unwrap();
             let mask = described.column("group").unwrap().str().unwrap().equal(g)
-                & described
-                    .column("role")
-                    .unwrap()
-                    .str()
-                    .unwrap()
-                    .equal("target");
+                & roles.str().unwrap().equal("target");
             let target = described.filter(&mask).unwrap();
             assert_eq!(target.height(), 1, "{what}");
-            let u = |c: &str| target.column(c).unwrap().u64().unwrap().get(0);
+            let u = |c: &str| {
+                target
+                    .column(c)
+                    .unwrap()
+                    .i64()
+                    .unwrap()
+                    .get(0)
+                    .map(|v| v as u64)
+            };
             let f = |c: &str| target.column(c).unwrap().f64().unwrap().get(0);
             assert_eq!(u("count"), Some(values.len() as u64), "{what}");
-            assert_eq!(u("null_count"), Some(fed - values.len() as u64), "{what}");
+            assert_eq!(
+                u("unusable_count"),
+                Some(fed - values.len() as u64),
+                "{what}"
+            );
             let close = |a: Option<f64>, b: f64, rel: f64| {
                 a.is_some_and(|a| (a - b).abs() <= rel * b.abs().max(1.0))
             };
@@ -560,10 +573,10 @@ fn describe_counts_a_formula_target_as_the_models_were_handed_it() {
             let learned = summary
                 .column("rows_learned")
                 .unwrap()
-                .u64()
+                .i64()
                 .unwrap()
                 .get(gi);
-            assert_eq!(learned, Some(values.len() as u64), "{what}: rows_learned");
+            assert_eq!(learned, Some(values.len() as i64), "{what}: rows_learned");
         }
     }
 }

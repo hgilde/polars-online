@@ -521,7 +521,7 @@ class TestMerge:
             "target_n_kish",
             "cross_moments",
             "means_by_target",
-            "cross_centred",
+            "cross_centered",
         ):
             assert np.asarray(fixed[key], dtype=float) == pytest.approx(
                 np.asarray(whole[key], dtype=float), rel=1e-9, abs=1e-12
@@ -531,10 +531,10 @@ class TestMerge:
         # weights the Gram does not hold (docs/README-ITERATIONS.md, E12): that
         # leaves every target moment pooled with the early part over-weighted.
         weight_only = pg.merge([dict(early, weight_sum=early["weight_sum"] * decay), late])
-        for key in ("target_weights", "means_by_target", "cross_centred"):
+        for key in ("target_weights", "means_by_target", "cross_centered"):
             got = np.asarray(weight_only[key], dtype=float)
             want = np.asarray(whole[key], dtype=float)
-            live = want != 0.0  # cross_centred's intercept column is exactly 0 in both
+            live = want != 0.0  # cross_centered's intercept column is exactly 0 in both
             assert np.max(np.abs(got[live] - want[live]) / np.abs(want[live])) > 0.01, key
 
     def test_it_pools_groups(self):
@@ -1009,7 +1009,7 @@ def _gram_of_sums(s, columns):
         "comoments": np.array([[float(v) for v in r] for r in c]),
         "cross_moments": np.array([[float(v) for v in cross]]),
         "means_by_target": np.array([[float(v) for v in m]]),
-        "cross_centred": np.array([[float(v) for v in centred]]),
+        "cross_centered": np.array([[float(v) for v in centred]]),
         "target_weights": np.array([float(n)]),
         "target_means": np.array([float(ybar)]),
         "target_vars": np.array([float(syy / n - ybar * ybar)]),

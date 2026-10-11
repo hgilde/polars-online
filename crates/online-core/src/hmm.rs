@@ -560,11 +560,11 @@ impl Hmm {
         out.iter().all(|v| v.is_finite()).then_some(out)
     }
 
-    /// Output slot labels in emission order: `filtered_<k>`,
-    /// `predicted_<k>`, `state`, `loglik`.
+    /// Output slot labels in emission order: `filtered_state<k>`,
+    /// `predicted_state<k>`, `state`, `loglik`.
     pub fn labels(k: usize) -> Vec<String> {
-        let mut out: Vec<String> = (0..k).map(|s| format!("filtered_{s}")).collect();
-        out.extend((0..k).map(|s| format!("predicted_{s}")));
+        let mut out: Vec<String> = (0..k).map(|s| format!("filtered_state{s}")).collect();
+        out.extend((0..k).map(|s| format!("predicted_state{s}")));
         out.push("state".into());
         out.push("loglik".into());
         out
@@ -1235,8 +1235,11 @@ mod tests {
                 .collect();
             let z: f64 = (0..k).map(|l| pred[l] * f[l]).sum();
             for c in 0..k {
-                assert!((step.pred[c] - p[c]).abs() < 1e-12, "filtered_{c}");
-                assert!((step.pred[k + c] - pred[c]).abs() < 1e-12, "predicted_{c}");
+                assert!((step.pred[c] - p[c]).abs() < 1e-12, "filtered_state{c}");
+                assert!(
+                    (step.pred[k + c] - pred[c]).abs() < 1e-12,
+                    "predicted_state{c}"
+                );
             }
             assert!((step.pred[2 * k + 1] - z.ln()).abs() < 1e-9, "loglik");
             p = (0..k).map(|l| pred[l] * f[l] / z).collect();
@@ -1495,10 +1498,10 @@ mod tests {
         assert_eq!(
             Hmm::labels(2),
             [
-                "filtered_0",
-                "filtered_1",
-                "predicted_0",
-                "predicted_1",
+                "filtered_state0",
+                "filtered_state1",
+                "predicted_state0",
+                "predicted_state1",
                 "state",
                 "loglik"
             ]
@@ -1883,7 +1886,7 @@ mod tests {
             for c in 0..k {
                 assert!(
                     (step[k + c] - pred[c]).abs() < 1e-12,
-                    "row {t}: predicted_{c}"
+                    "row {t}: predicted_state{c}"
                 );
             }
             assert!(

@@ -1786,7 +1786,7 @@ impl EwCovModel {
                     for l in lags {
                         for a in names {
                             for b in names {
-                                out.push(format!("lag_corr_{a}_{b}_l{l}"));
+                                out.push(format!("lag_corr_l{l}_{a}_{b}"));
                             }
                         }
                     }
@@ -3216,20 +3216,20 @@ mod tests {
             labels,
             [
                 "corr_a_b",
-                "lag_corr_a_a_l1",
-                "lag_corr_a_b_l1",
-                "lag_corr_b_a_l1",
-                "lag_corr_b_b_l1",
-                "lag_corr_a_a_l3",
-                "lag_corr_a_b_l3",
-                "lag_corr_b_a_l3",
-                "lag_corr_b_b_l3",
+                "lag_corr_l1_a_a",
+                "lag_corr_l1_a_b",
+                "lag_corr_l1_b_a",
+                "lag_corr_l1_b_b",
+                "lag_corr_l3_a_a",
+                "lag_corr_l3_a_b",
+                "lag_corr_l3_b_a",
+                "lag_corr_l3_b_b",
             ]
         );
         assert_eq!(cfg.n_outputs(), labels.len());
 
-        // `b` is `a` delayed by one row, so `lag_corr_b_a_l1` -- b now against
-        // a one row ago -- goes to 1 and `lag_corr_a_b_l1` does not.
+        // `b` is `a` delayed by one row, so `lag_corr_l1_b_a` -- b now against
+        // a one row ago -- goes to 1 and `lag_corr_l1_a_b` does not.
         let mut m = EwCovModel::new(cfg).unwrap();
         let mut s = 4u64;
         let mut prev = 0.0;
@@ -3242,8 +3242,8 @@ mod tests {
                 crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
         }
         // Slots: corr_a_b, then the four at lag 1, then the four at lag 3.
-        assert!(last[3] > 0.95, "lag_corr_b_a_l1 is {}", last[3]);
-        assert!(last[2].abs() < 0.2, "lag_corr_a_b_l1 is {}", last[2]);
+        assert!(last[3] > 0.95, "lag_corr_l1_b_a is {}", last[3]);
+        assert!(last[2].abs() < 0.2, "lag_corr_l1_a_b is {}", last[2]);
         // And the auto terms at lag 1 are the series' own autocorrelation,
         // which for white noise is near zero.
         assert!(last[1].abs() < 0.2 && last[4].abs() < 0.2);

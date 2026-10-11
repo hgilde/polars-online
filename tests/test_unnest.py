@@ -60,11 +60,15 @@ class TestCoefFields:
             "position",
             "name",
             "target",
+            "instance",
             "half_life",
             "lam",
             "ridge",
             "feature_set",
             "penalty",
+            "cluster",
+            "state",
+            "class",
             "term",
         ]
         # Per instance: targets x combos slots, each the full term vector.
@@ -118,10 +122,10 @@ class TestCoefFields:
             min_weight=2.0,
         )
         assert po.spec.coef_fields(lasso)["name"].to_list() == [
-            "coef_y_intercept__l1",
-            "coef_y_x0__l1",
-            "coef_y_intercept__l0.1",
-            "coef_y_x0__l0.1",
+            "coef_y_intercept__p1",
+            "coef_y_x0__p1",
+            "coef_y_intercept__p0.1",
+            "coef_y_x0__p0.1",
         ]
         bare = po.spec.ewridge(
             "m", targets=["y"], features=["x0"], half_life=50.0, min_weight=2.0, fit_intercept=False
@@ -135,7 +139,15 @@ class TestCoefFields:
         cf = po.spec.coef_fields(GRID)
         ci = po.spec.coef_index(GRID)
         want = cf.filter(pl.col("field") == "coef@h50").select(
-            pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "penalty", "term"
+            "position",
+            "target",
+            "ridge",
+            "feature_set",
+            "penalty",
+            "cluster",
+            "state",
+            "class",
+            "term",
         )
         assert ci.equals(want)
 

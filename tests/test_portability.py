@@ -301,12 +301,12 @@ class TestOutputSchemaStability:
             half_life=100.0,
         )
         assert po.spec.output_fields(spec) == [
-            "pred_y0__l1",
-            "resid_y0__l1",
-            "pred_y0__l0.01",
-            "resid_y0__l0.01",
-            "pred_y0__l0",
-            "resid_y0__l0",
+            "pred_y0__p1",
+            "resid_y0__p1",
+            "pred_y0__p0.01",
+            "resid_y0__p0.01",
+            "pred_y0__p0",
+            "resid_y0__p0",
             "weight_sum",
             "settled_frac",
             "withheld_reason",
@@ -536,16 +536,17 @@ class TestOutputSchemaStability:
         out = po.ModelBank([spec]).fit_predict(df)
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
+        classes = pl.Enum(["neg", "pos"])
         names = {
             REASON_DTYPE: "enum",
+            classes: "enum",
             pl.Float64: "f64",
-            pl.String: "str",
             pl.List(pl.Float64): "list[f64]",
         }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
-        per_instance = [pl.String, pl.Float64, pl.Float64, pl.Float64]
+        per_instance = [classes, pl.Float64, pl.Float64, pl.Float64]
         per_instance += [pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
         n_instances = len(half_life) if isinstance(half_life, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances

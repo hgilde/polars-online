@@ -1409,7 +1409,7 @@ This code uses `df` from [Example data](../README.md#example-data):
 lagged = po.spec.ew_cov(
     "lagged", features=["x0", "x1"], half_life=500.0,
     lags=[1, 5],                 # in learned rows within the group
-    stats=["corr", "lag_corr"],   # lag_corr_<a>_<b>_l<l> for each lag and ordered pair
+    stats=["corr", "lag_corr"],   # lag_corr_l<l>_<a>_<b> for each lag and ordered pair
 )
 bank = po.ModelBank([lagged])
 lead = bank.fit_predict(df).unnest("lagged")
@@ -1534,12 +1534,12 @@ statistic `ew_cov(lags=)` computes, to the bit, under
 [`ew_cov`'s](#ew_cov--exponentially-weighted-moments) rules for the ring.
 `serial_rule` turns them into a count that allows for the resemblance, after
 Bartlett (1935): `n_serial = n_kish / (1 + 2 Σ_l ρ_x(l)·ρ_y(l))`. Under
-`"geometric"`, `|t_serial|` passed 1.96 on 5.4% of those pairs of AR(1)
+`"geometric"`, `|t_stat_serial|` passed 1.96 on 5.4% of those pairs of AR(1)
 series, the 5% the threshold stands for.
 
 | `serial_rule` | the sum over the kept lags | suits |
 |---|---|---|
-| not given | not taken: `n_serial` and `t_serial` are null | |
+| not given | not taken: `n_serial` and `t_stat_serial` are null | |
 | `"truncated"` | as it stands; null where the bracket reaches zero or below, as for two series whose autocorrelations have opposite signs | dense lags |
 | `"bartlett"` | lag `l` weighted `1 − l/(L + 1)`, `L` the longest kept lag, as Newey and West weight it, so the noisiest lags count least | dense lags, where the long ones are noisy |
 | `"geometric"` | `ρ(l) = φˡ` fitted to each series, and the tail summed in closed form, `2φ_xφ_y/(1 − φ_xφ_y)`; `phi_x` and `phi_y` are reported | exponentially weighted series, whose lags need not be dense |
@@ -1560,7 +1560,7 @@ table = bank.marginal("serial")
 # lag_corr_xx, lag_corr_yy      each series' own autocorrelation, one entry per lag
 # lag_corr_xy, lag_corr_yx      the feature now against the target l rows back, and the reverse, one entry per cross lag
 # n_serial                    n_kish over the serial_rule's bracket
-# t_serial                    the same statistic as t_stat, against that count
+# t_stat_serial               the same statistic as t_stat, against that count
 # phi_x, phi_y                the fitted per-row decays, under serial_rule="geometric"
 ```
 
@@ -1962,9 +1962,9 @@ Each statistic, its definition and its cost are in the builder's docstring.
 
 | measured per column | read as |
 |---|---|
-| `null`, `nan`, `pos_inf`, `neg_inf`, `beyond_bound` | what a model reads as missing, each kind counted apart |
+| `null_count`, `nan_count`, `pos_inf`, `neg_inf`, `beyond_bound` | what a model reads as missing, each kind counted apart, of the `rows_fed` |
 | `mean`, `std`, `skew`, `kurtosis`, `min`, `max` | the moments of the usable values, in one pass |
-| `distinct`, `top_value`, `top_count` | the distinct values, exact up to `distinct_cap` (default 256), and the most repeated one |
+| `n_unique`, `top_value`, `top_count` | the distinct values, exact up to `distinct_cap` (default 256), and the most repeated one |
 | `longest_run`, `equal_prev`, `equal_by_chance` | the longest run of one value, and the rows equal to the row before beside what independent rows would give |
 | `min_change`, `min_change_count` | the smallest nonzero change between consecutive rows, and how many changes sit at it: whether repeats are a step of the column's grid or a stale feed's |
 | `autocorr`, `unit_root_t` | the lag-1 autocorrelation and the Dickey-Fuller statistic, near 0 for a random walk |
@@ -2070,7 +2070,7 @@ out = po.ModelBank([km]).fit_predict(df).unnest("km")
 # cluster   the nearest centre's label, before the row is learned from
 # dist      the distance to it;  dist_second  the distance to the second-nearest
 # weight_sum, and coef: the centres, k rows of len(features)
-index = po.spec.coef_index(km)   # how coef is labelled: target = "cluster0", "cluster1", ..., term = the feature
+index = po.spec.coef_index(km)   # how coef is labelled: cluster = 0, 1, ..., term = the feature
 ```
 
 **Seeding waits for `warm_rows` rows, places the centres, and replays the
@@ -2870,10 +2870,10 @@ hidden = po.spec.hmm(
     transition_prior=1.0,        # the default Dirichlet pseudo-count per cell of the transition matrix
 )
 out = df.online.fit_predict([hidden]).unnest("regime")
-# filtered_0, filtered_1      the filtered state, before the row
-# predicted_0, predicted_1    the predicted state
-# state                       the most probable predicted state
-# loglik                      the row's surprise
+# filtered_state0, filtered_state1    the filtered state, before the row
+# predicted_state0, predicted_state1  the predicted state
+# state                               the most probable predicted state
+# loglik                              the row's surprise
 ```
 
 **Seeding decides which regimes the filter can find.** `warm_rows` seeds the

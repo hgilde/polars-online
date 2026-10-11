@@ -179,7 +179,7 @@ def test_the_new_output_names():
     hmm = _workload("hmm") if any(n == "hmm" for n, *_ in probe.WORKLOAD) else None
     if hmm is None:
         pytest.fail("the workload has no hmm spec; the hmm names are untested")
-    assert "filtered_0" in hmm and "predicted_0" in hmm and "p_0" not in hmm
+    assert "filtered_state0" in hmm and "predicted_state0" in hmm and "p_0" not in hmm
     assert "micro_id" in _workload("micro")
 
 
@@ -410,7 +410,7 @@ def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere()
         )
     s = po.spec.ew_cov("c", features=["x0", "x1"], stats=["lag_corr"], lags=[1], half_life=10.0)
     fields = po.spec.output_fields(s)
-    assert "lag_corr_x0_x1_l1" in fields and not any("lagcorr" in f for f in fields)
+    assert "lag_corr_l1_x0_x1" in fields and not any("lagcorr" in f for f in fields)
     assert "lagcorr" not in po.ModelBank([s]).to_json()
     m = po.spec.marginal("m", targets=["y"], features=["x"], lags=[1], half_life=10.0)
     rng = np.random.default_rng(196)

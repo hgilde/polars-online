@@ -129,7 +129,7 @@ def recovery(seeds: int = 8) -> None:
                 spec = po.spec.hmm("h", transition_prior=200.0, warm_rows=500, seed=seed, **common)
             bank = po.ModelBank([spec])
             got = bank.fit_predict(df)["h"].struct.unnest()
-            hot = np.asarray(got["filtered_1"].fill_null(0.5).to_list()) > 0.5
+            hot = np.asarray(got["filtered_state1"].fill_null(0.5).to_list()) > 0.5
             scores[name].append(
                 float(max((hot == (want == 1)).mean(), (hot == (want == 0)).mean()))
             )
@@ -229,7 +229,7 @@ def switch(seeds: int = 8) -> None:
                     **common,
                 )
             got = po.ModelBank([spec]).fit_predict(df)["h"].struct.unnest()
-            p1 = np.asarray(got["filtered_1"].to_list(), dtype=float)
+            p1 = np.asarray(got["filtered_state1"].to_list(), dtype=float)
             hot = np.where(np.isnan(p1), -1, (p1 > 0.5).astype(int))
             # The better of the two ways to match the filter's states to the
             # truth; the true start fixes it, the seeded one does not.
@@ -275,7 +275,7 @@ def switch(seeds: int = 8) -> None:
         f"\n{seeds} seeds, 4799 returns each, 0.1 -> 0.8 -> 0.1 -> 0.8 every 1200"
         f" rows; the true start's transition is the per-row hazard 1/1200;"
         f" a switch is followed once the filter holds the new state for {hold} rows"
-        " running; a row with no `filtered_1` counts as a miss"
+        " running; a row with no `filtered_state1` counts as a miss"
     )
 
 

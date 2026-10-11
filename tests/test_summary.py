@@ -21,36 +21,43 @@ TIER = "essential"
 
 BOUND = 1e100
 
+#: Every count an `Int64`, as in every frame the bank returns (task 244,
+#: decision 1); `<quantity>_<stat>` (`clock_last`, `support_coef_min`); and
+#: `solve_failures` among the counts, where it was a dict of its own (M-4).
 SUMMARY_SCHEMA = {
     "spec": pl.String,
     "group": pl.String,
-    "rows_fed": pl.UInt64,
-    "rows_processed": pl.UInt64,
-    "rows_skipped": pl.UInt64,
-    "rows_learned": pl.UInt64,
-    "rows_zero_weight": pl.UInt64,
+    "rows_fed": pl.Int64,
+    "rows_processed": pl.Int64,
+    "rows_skipped": pl.Int64,
+    "rows_learned": pl.Int64,
+    "rows_zero_weight": pl.Int64,
     "weight_sum": pl.Float64,
     "clock_min": pl.Float64,
     "clock_max": pl.Float64,
-    "last_clock": pl.Float64,
-    "session_changes": pl.UInt64,
-    "clock_backwards": pl.UInt64,
-    "resets": pl.UInt64,
+    "clock_last": pl.Float64,
+    "session_changes": pl.Int64,
+    "clock_backwards": pl.Int64,
+    "resets": pl.Int64,
+    "solve_failures": pl.Int64,
     # The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
     "settled_frac": pl.Float64,
     "weight_sum_settled": pl.Float64,
     "error_inflation": pl.Float64,
-    "min_support_coef": pl.Float64,
-    "min_support_coef_feature": pl.String,
-    "n_coef": pl.UInt64,
+    "support_coef_min": pl.Float64,
+    "support_coef_min_feature": pl.String,
+    "n_coef": pl.Int64,
 }
+#: ``unusable_count``, not Polars' ``null_count``: it counts every value a
+#: model cannot learn from, NaN, infinities and out-of-bound values with
+#: the nulls (O-3).
 DESCRIBE_SCHEMA = {
     "spec": pl.String,
     "group": pl.String,
     "column": pl.String,
-    "role": pl.String,
-    "count": pl.UInt64,
-    "null_count": pl.UInt64,
+    "role": pl.Enum(["feature", "target", "weight"]),
+    "count": pl.Int64,
+    "unusable_count": pl.Int64,
     "mean": pl.Float64,
     "std": pl.Float64,
     "min": pl.Float64,
@@ -151,7 +158,7 @@ def test_summary_is_the_frame_s_count_per_group(fitted):
                 weight_sum=pl.when(pl.col("accept")).then(pl.col("w")).otherwise(0.0).sum(),
                 clock_min=pl.col("t").min(),
                 clock_max=pl.col("t").max(),
-                last_clock=pl.col("t").last(),
+                clock_last=pl.col("t").last(),
             )
             .sort("g")
         )
@@ -165,7 +172,7 @@ def test_summary_is_the_frame_s_count_per_group(fitted):
         assert (
             got["rows_skipped"].to_list() == (want["rows_fed"] - want["rows_processed"]).to_list()
         )
-        for c in ("clock_min", "clock_max", "last_clock"):
+        for c in ("clock_min", "clock_max", "clock_last"):
             assert got[c].to_list() == want[c].to_list(), f"{name}: {c}"
         for a, b in zip(got["weight_sum"], want["weight_sum"], strict=True):
             assert math.isclose(a, b, rel_tol=1e-12), f"{name}: weight_sum"
@@ -173,12 +180,12 @@ def test_summary_is_the_frame_s_count_per_group(fitted):
         assert got["session_changes"].to_list() == [0, 0]
         assert got["clock_backwards"].to_list() == [0, 0]
         assert got["resets"].to_list() == [0, 0]
-    # `rows_processed` and `last_clock` are what `groups()` says.
+    # `rows_fed` and `clock_last` are what `groups()` says.
     g = bank.groups().sort("spec", "group")
     assert (
         s.sort("spec", "group")
-        .select("rows_processed", "last_clock")
-        .equals(g.select("rows_processed", "last_clock"))
+        .select("rows_fed", "clock_last")
+        .equals(g.select("rows_fed", "clock_last"))
     )
 
 
@@ -207,7 +214,7 @@ def test_describe_is_the_frame_s_statistics_per_column(fitted):
                 frame.group_by("g", maintain_order=True)
                 .agg(
                     count=v.count(),
-                    null_count=pl.len() - v.count(),
+                    unusable_count=pl.len() - v.count(),
                     mean=v.mean(),
                     std=v.std(ddof=1),
                     min=v.min(),
@@ -218,7 +225,9 @@ def test_describe_is_the_frame_s_statistics_per_column(fitted):
             got = d.filter((pl.col("spec") == name) & (pl.col("column") == column)).sort("group")
             assert got["role"].to_list() == [role, role]
             assert got["count"].to_list() == want["count"].to_list(), f"{name}/{column}"
-            assert got["null_count"].to_list() == want["null_count"].to_list(), f"{name}/{column}"
+            assert got["unusable_count"].to_list() == want["unusable_count"].to_list(), (
+                f"{name}/{column}"
+            )
             if name == "ew_class" and role == "target":
                 # A label column: counts only.
                 assert got.select("mean", "std", "min", "max").null_count().sum_horizontal()[0] == 8
@@ -285,7 +294,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
     assert rb["rows_zero_weight"] == 0 and rb["weight_sum"] == n
     for r in (rs, rb):
         assert r["rows_fed"] == n and r["rows_processed"] == n and r["rows_skipped"] == 0
-        assert r["clock_min"] == 0.0 and r["clock_max"] == n - 1 and r["last_clock"] == n - 1
+        assert r["clock_min"] == 0.0 and r["clock_max"] == n - 1 and r["clock_last"] == n - 1
 
 
 def test_a_row_count_clock_has_no_range():
@@ -296,7 +305,7 @@ def test_a_row_count_clock_has_no_range():
     s = bank.summary()
     assert s["clock_min"].null_count() == 2
     assert s["clock_max"].null_count() == 2
-    assert s["last_clock"].null_count() == 2
+    assert s["clock_last"].null_count() == 2
     assert s["rows_fed"].to_list() == [20, 20]
 
 

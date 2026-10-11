@@ -163,7 +163,7 @@ def hmm(
     learned (`docs/OUTPUTS.md#hmm
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#hmm>`_):
 
-    ``filtered_<j>``, ``predicted_<j>``
+    ``filtered_state<j>``, ``predicted_state<j>``
         The filtered probability of each state the rows before left (uniform
         before the first), and the probability predicted for this row from it.
     ``state``
@@ -191,7 +191,7 @@ def hmm(
             warm_rows=100,           # seeds the states from this many rows; null until then
         )
         out = po.ModelBank([h]).fit_predict(df).unnest("regime")
-        states = out.select("filtered_0", "filtered_1", "state", "loglik").tail(3)
+        states = out.select("filtered_state0", "filtered_state1", "state", "loglik").tail(3)
 
     .. rubric:: Raises
 

@@ -323,7 +323,8 @@ def _metric_exprs(min_samples: int, *, binary: bool = False, hit: bool = True) -
     m2_y = (pl.col("y") - pl.col("y").mean()).pow(2).sum()
     m2_pred = (pl.col("pred") - pl.col("pred").mean()).pow(2).sum()
     exprs = [
-        pl.len().alias("n"),
+        # Every count an Int64, as in every frame of the library (task 244).
+        pl.len().cast(pl.Int64).alias("n"),
         # Out-of-sample R^2 against the realized mean of y in the window --
         # the Brier skill score when `binary` (`pred` a probability, `y` a
         # 0/1 label): same formula, different name (docs/PLAN.md task 76).
@@ -871,7 +872,7 @@ def sums(
     return (
         long.group_by(keys)
         .agg(
-            pl.len().alias("n"),
+            pl.len().cast(pl.Int64).alias("n"),
             tw.alias("w"),
             my.alias("mean_y"),
             mp.alias("mean_pred"),

@@ -476,7 +476,7 @@ class TestExactness:
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
-        last = bank.groups()["last_clock"][0]
+        last = bank.groups()["clock_last"][0]
         assert last == t[-1]
         ahead = pl.DataFrame(
             {

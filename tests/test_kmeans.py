@@ -977,7 +977,7 @@ class TestEdgeCases:
             "coef_cluster1_c@h10",
         ]
         ci = po.spec.coef_index(s)
-        assert ci["target"].to_list() == ["cluster0"] * 3 + ["cluster1"] * 3
+        assert ci["cluster"].to_list() == [0] * 3 + [1] * 3
         assert ci["term"].to_list() == ["a", "b", "c"] * 2
         X, _ = blobs(n=200, seed=31, p=3)
         df = pl.DataFrame({"a": X[:, 0], "b": X[:, 1], "c": X[:, 2]})
@@ -996,7 +996,7 @@ class TestEdgeCases:
         assert set(names) <= set(flat.columns) and "coef" not in flat.columns
         # The bank's own `coef` reads the same centres, one row per position.
         c = bank.coef("m")
-        assert c["target"].to_list() == ["cluster0"] * 3 + ["cluster1"] * 3
+        assert c["cluster"].to_list() == [0] * 3 + [1] * 3
         assert c["coef"].to_list() == [flat[n][-1] for n in names]
 
     def test_output_index_declares_the_dtypes(self):

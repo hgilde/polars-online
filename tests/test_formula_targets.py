@@ -298,7 +298,7 @@ def test_a_row_exactly_one_window_later_waits_for_the_window_to_close() -> None:
     assert embargoed.summary()["rows_learned"].to_list() == [7]
     [a], [b] = plain.gram("m"), embargoed.gram("m")
     assert a["weight_sum"] == b["weight_sum"] > 0.0
-    for key in ("means", "comoments", "cross_centred", "target_weights", "target_means"):
+    for key in ("means", "comoments", "cross_centered", "target_weights", "target_means"):
         np.testing.assert_array_equal(a[key], b[key], err_msg=key)
 
 

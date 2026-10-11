@@ -18,6 +18,7 @@ from polars_online._spec import (
     _json,
     _renamed_keywords,
     coef_index,
+    output_index,
     target_name,
 )
 from polars_online._warnings import warn_unstable
@@ -29,6 +30,34 @@ _INTERCEPT = "intercept"
 #: Models whose Gram is over the features alone: they learn from no target,
 #: so there is no cross-moment and no intercept column in the accumulator.
 _NO_TARGET_GRAM = ("ew_cov",)
+
+#: The columns of :meth:`ModelBank.coef` before :func:`coef_index`'s: what
+#: every reader leads with -- the spec, the group, the instance with its
+#: decay -- and the weight behind the fit.
+_COEF_SCHEMA_HEAD: dict[str, Any] = {
+    "spec": pl.String,
+    "group": pl.String,
+    "instance": pl.String,
+    "half_life": pl.Float64,
+    "lam": pl.Float64,
+    "weight_sum": pl.Float64,
+}
+
+#: The last column of :meth:`ModelBank.coef`: the value.
+_COEF_VALUE: dict[str, Any] = {"coef": pl.Float64}
+
+#: Why :meth:`ModelBank.coef` refuses a named spec of a kind with no named
+#: coefficient, where saying so helps; every other kind "emits no
+#: coefficients".
+_NO_COEF = {
+    "ew_cov": "ew_cov emits statistics, not coefficients",
+    "seqtest": "seqtest emits evidence (log e-values and counts), not coefficients",
+    "micro": (
+        "micro's coef is one [id, label, n, radius, c_1, ..., c_p] row per established "
+        "summary, as many as there are; it has no fixed layout to index, and is read from "
+        "the output's coef field"
+    ),
+}
 
 __all__ = ["ModelBank"]
 
@@ -180,9 +209,10 @@ class ModelBank:
             The spec's name, and the group key as a string: ``""`` for a spec without
             a ``group`` column, null for rows whose key was null. A zoned ``Datetime``
             key is its instant, written as the UTC wall time.
-        ``rows_processed``
-            The group's rows that the null policy did not skip.
-        ``last_clock``
+        ``rows_fed``
+            The rows routed to the group, skipped ones included, as :meth:`summary`
+            counts them.
+        ``clock_last``
             Its last clock value, in the clock column's own dtype, exactly: a
             ``Datetime`` in its unit and zone, a ``Date``, a ``Duration``, an
             integer clock in its own width, and a ``Float64`` for a float clock (the
@@ -203,9 +233,9 @@ class ModelBank:
             )
             bank = po.ModelBank([spec])
             bank.fit_predict(df)
-            now = df["ts"].max()                   # last_clock is a Datetime, as ts is
+            now = df["ts"].max()                   # clock_last is a Datetime, as ts is
             month = pl.lit(now) - pl.duration(days=30)
-            stale = bank.groups().filter(pl.col("last_clock") < month)
+            stale = bank.groups().filter(pl.col("clock_last") < month)
             bank.drop_groups(stale["group"])     # the groups quiet for 30 days
 
         ``spec``, a name or a position, narrows the table to one spec: ``KeyError``
@@ -837,6 +867,10 @@ class ModelBank:
         ``spec``, ``group``, ``instance``
             The spec's name; the group key as :meth:`groups` reports it; the decay
             instance's field suffix (``"@h500"``, or ``""`` for a single one).
+        ``half_life``, ``lam``
+            The instance's decay, as :func:`polars_online.spec.output_index` gives it:
+            the half-life in clock units (``inf`` for no decay) or the ``lam``, the
+            other null.
         ``weight_sum``
             The accumulated weight behind the fit, what the next row's ``weight_sum`` field
             reports. The solve schedule decides when a stream first solves, not
@@ -848,6 +882,10 @@ class ModelBank:
             :func:`polars_online.spec.coef_index`'s columns: ``position`` indexes the
             flat ``coef`` list, ``term`` is ``"intercept"``, a feature name, or
             ``"level"`` / ``"trend"`` for ``holt``.
+        ``cluster``, ``state``, ``class``
+            ``coef_index``'s too, before ``term``: the ``kmeans`` centre, the
+            ``hmm`` state or the ``ew_class`` class a position belongs to, and
+            null for every other kind.
         ``coef``
             The value, in the features' original units; null until the stream's first
             solve, as ``coef`` is on those rows.
@@ -884,16 +922,7 @@ class ModelBank:
             # Every `coef()` frame's columns, `coef_index`'s among them, so
             # this one stacks with the others: it had seven columns of the
             # eleven, and a plain concat raised (review round 4, SF3).
-            return pl.DataFrame(
-                schema={
-                    "spec": pl.String,
-                    "group": pl.String,
-                    "instance": pl.String,
-                    "weight_sum": pl.Float64,
-                    **_coef_index_schema(),
-                    "coef": pl.Float64,
-                }
-            )
+            return pl.DataFrame(schema=_COEF_SCHEMA_HEAD | _coef_index_schema() | _COEF_VALUE)
         return pl.concat(frames, how="diagonal_relaxed")
 
     def _coef_try(self, idx: int, group: list[str | None] | None, name: str) -> pl.DataFrame | None:
@@ -904,8 +933,22 @@ class ModelBank:
             return None
 
     def _coef_one(self, idx: int, group: list[str | None] | None, name: str) -> pl.DataFrame:
-        layout = coef_index(self._specs[idx])
+        spec = self._specs[idx]
+        layout = coef_index(spec)
+        if layout.is_empty():
+            kind = spec["model"]["type"]
+            why = _NO_COEF.get(kind, f"{kind} emits no coefficients")
+            msg = f"spec {name!r}: {why}"
+            raise ValueError(msg)
         n = layout.height
+        # Each instance's decay, by its suffix, as `output_index` gives it.
+        decay = {
+            i: (h, lam)
+            for i, h, lam in output_index(spec)
+            .filter(pl.col("kind") == "weight_sum")
+            .select("instance", "half_life", "lam")
+            .iter_rows()
+        }
         groups: list[str | None] = []
         instances: list[str] = []
         n_effs: list[float] = []
@@ -925,12 +968,14 @@ class ModelBank:
         return body.with_columns(
             pl.Series("group", groups, pl.String),
             pl.Series("instance", instances, pl.String),
+            pl.Series("half_life", [decay[i][0] for i in instances], pl.Float64),
+            pl.Series("lam", [decay[i][1] for i in instances], pl.Float64),
             pl.Series("weight_sum", n_effs, pl.Float64),
             # Finite-or-null, as the output's `coef` field is: an `ew_class`
             # class no row has carried yet has NaN means.
             pl.Series("coef", values, pl.Float64).fill_nan(None),
             pl.Series("spec", [name] * len(instances), pl.String),
-        ).select("spec", "group", "instance", "weight_sum", *layout.columns, "coef")
+        ).select(*_COEF_SCHEMA_HEAD, *layout.columns, *_COEF_VALUE)
 
     def last_row(
         self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
@@ -998,7 +1043,7 @@ class ModelBank:
         ``spec``, ``group``
             As :meth:`groups` reports them.
         ``rows_fed``
-            Rows routed to the group, skipped or not.
+            Rows routed to the group, skipped or not, as :meth:`groups` counts them.
         ``rows_processed``
             Rows the models saw: every feature and the weight usable.
         ``rows_skipped``
@@ -1014,9 +1059,9 @@ class ModelBank:
         ``weight_sum``
             The sum of the processed rows' weights (1 per row without a
             weight column).
-        ``clock_min``, ``clock_max``, ``last_clock``
+        ``clock_min``, ``clock_max``, ``clock_last``
             The clock range fed and the last value, in the clock column's
-            own dtype, exactly, as :meth:`groups` gives ``last_clock``; null
+            own dtype, exactly, as :meth:`groups` gives ``clock_last``; null
             on a row-count clock.
         ``session_changes``
             Rows whose session differed from the previous row's.
@@ -1026,6 +1071,9 @@ class ModelBank:
         ``resets``
             Rows at which ``session_gap = "reset"`` or
             ``restart_after_step_back`` restarted the stream.
+        ``solve_failures``
+            The solves that needed jitter or kept the previous fit, what
+            :meth:`solve_failures` reports.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
             last row (`docs/DIAGNOSTICS.md, Is it ready?
@@ -1054,9 +1102,11 @@ class ModelBank:
             weight exactly, from the second row on. It says, before the stream
             gets there, whether a ``min_weight`` can be met. Null after a
             single row, with no decay, and under ``window_size``.
-        ``min_support_coef``, ``min_support_coef_feature``, ``n_coef``
+        ``support_coef_min``, ``support_coef_min_feature``, ``n_coef``
             The smallest coefficient's data share, the feature it belongs to,
             and the coefficients per target, likewise.
+
+        Every count is an ``Int64``, as in every frame and field of the library.
 
         An ``audit`` (:func:`polars_online.spec.audit`) reads every row and
         learns from none: its ``rows_processed`` is ``rows_fed`` and its
@@ -1085,10 +1135,11 @@ class ModelBank:
 
         ``column``, ``role``
             The column's name, and ``"feature"``, ``"target"`` or ``"weight"``.
-        ``count``, ``null_count``
+        ``count``, ``unusable_count``
             A partition of the rows fed: a value counts when finite and within the
-            input bound, as the models take it, and is a null otherwise -- polars
-            nulls, NaN, infinities and magnitudes beyond the bound alike.
+            input bound, as the models take it, and is unusable otherwise -- polars
+            nulls, NaN, infinities and magnitudes beyond the bound alike. Not
+            Polars' ``null_count``, which counts the nulls alone.
         ``mean``, ``std``, ``min``, ``max``
             Over the counted values, undecayed and in row order, so chunking cannot
             move them; ``std`` is the sample one (``ddof=1``), null below two values.
@@ -1173,7 +1224,7 @@ class ModelBank:
             present on every row the Gram learned (every target under ``target_gaps =
             "own_rows"``), and under ``"pairwise"`` a target's own means where it has
             gaps. :func:`polars_online.gram.solve` reads them. Empty for ``ew_cov``.
-        ``cross_centred``
+        ``cross_centered``
             Per target, the cross-moments centred at its column means and its own
             mean, ``E[(z - m_t) * (y - ybar_t)]``, shape ``(n_targets, k)``: what the
             model solves from, and what :func:`polars_online.gram.solve` reads. It
@@ -1273,7 +1324,7 @@ class ModelBank:
 
         .. code-block:: text
 
-            comoments[1:, 1:] @ beta[t][1:] == cross_centred[t][1:]
+            comoments[1:, 1:] @ beta[t][1:] == cross_centered[t][1:]
             beta[t][0] == ybar - m[1:] @ beta[t][1:]
 
         Values are in the features' original units. The intercept, when the spec has
@@ -1360,7 +1411,7 @@ class ModelBank:
                     "means_by_target": np.asarray(by_target, dtype=float).reshape(len(tidx), k)
                     if tidx
                     else np.zeros((0, k)),
-                    "cross_centred": np.asarray(centred, dtype=float).reshape(len(tidx), k)
+                    "cross_centered": np.asarray(centred, dtype=float).reshape(len(tidx), k)
                     if tidx
                     else np.zeros((0, k)),
                     "target_weights": np.asarray(tw),
@@ -1391,10 +1442,12 @@ class ModelBank:
         the bank that saved it would, and feeding the rows in one chunk or a thousand
         gives the same numbers to the bit. The columns:
 
-        ``group``, ``instance``
-            As :meth:`gram` reports them (``""`` for a spec without a ``group``
-            column; ``""`` for a single decay instance, else the field suffix such as
-            ``"@h500"``).
+        ``spec``, ``group``, ``instance``
+            The spec's name, and the group and instance as :meth:`gram` reports
+            them (``""`` for a spec without a ``group`` column; ``""`` for a single
+            decay instance, else the field suffix such as ``"@h500"``).
+        ``half_life``, ``lam``
+            The instance's decay, as :meth:`coef` gives it.
         ``feature``, ``target``
             The pair's feature column and the target's name (its column, unless
             a ``po.target`` table gave one).
@@ -1434,7 +1487,7 @@ class ModelBank:
             newest ``l`` rows, so a feature built from the same news shows
             ``lag_corr_xy`` above ``corr`` however it is sampled. Absent under
             ``cross_lags=[]``.
-        ``n_serial``, ``t_serial``
+        ``n_serial``, ``t_stat_serial``
             ``n_kish`` divided by Bartlett's serial-dependence factor, and the
             statistic against it. Null without ``serial_rule``.
         ``phi_x``, ``phi_y``
@@ -1508,28 +1561,32 @@ class ModelBank:
             clock = bank.audit(table="clock")         # one row per group
             everything = bank.audit(pooled=True)      # every group as one stream, no group column
 
-        ``table="columns"`` (the default) has ``group`` and ``column``, then:
+        Every table leads with ``spec``, as every reader of the bank does, and
+        counts in ``Int64``. ``table="columns"`` (the default) has ``spec``,
+        ``group`` and ``column``, then:
 
-        ``rows``, ``null``, ``nan``, ``pos_inf``, ``neg_inf``, ``beyond_bound``, ``count``
-            The rows read, then each kind of value a model cannot learn from,
-            counted apart (``beyond_bound`` is finite but past ``1e100`` in
-            magnitude), and ``count``, the usable values. The six add up to
-            ``rows``.
+        ``rows_fed``, ``null_count``, ``nan_count``
+            The rows read, then two kinds of value a model cannot learn from:
+            the nulls, as Polars' ``null_count`` counts them, and the NaNs.
+        ``pos_inf``, ``neg_inf``, ``beyond_bound``, ``count``
+            The other kinds, each counted apart (``beyond_bound`` is finite but
+            past ``1e100`` in magnitude), and ``count``, the usable values. The
+            six counts add up to ``rows_fed``.
         ``mean``, ``std``, ``skew``, ``kurtosis``, ``min``, ``max``
             Over the usable values: ``std`` with ``ddof = 1``; ``skew`` and
             the excess ``kurtosis`` scipy's biased estimators. Null where
             undefined (no usable value, one, or no spread).
         ``median``, ``mad``, ``robust_z``
             The median and the median absolute deviation, exact while
-            ``distinct`` is not null and from a t-digest past the cap
+            ``n_unique`` is not null and from a t-digest past the cap
             (about 1% of the rows in rank), and the largest robust z,
             ``max(max - median, median - min) / (1.4826 mad)``.
-        ``distinct``
-            The distinct usable values, ``-0`` read as ``0``; null past the
-            spec's ``distinct_cap``.
+        ``n_unique``
+            The distinct usable values, as Polars' ``n_unique`` counts them,
+            ``-0`` read as ``0``; null past the spec's ``distinct_cap``.
         ``top_value``, ``top_count``, ``second_count``, ``count_error``
             The most repeated value, its count and the next value's: exact
-            while ``distinct`` is, and each at most ``count_error`` short of
+            while ``n_unique`` is, and each at most ``count_error`` short of
             the truth past the cap, where a value not held has a count of at
             most ``count_error``.
         ``longest_run``, ``equal_prev``, ``adjacent``, ``equal_by_chance``
@@ -1554,21 +1611,21 @@ class ModelBank:
             ``+inf`` for a fit with no residual and a slope of 1, such as a
             row counter (``-inf`` below 1).
 
-        ``table="pairs"``, for a spec built with ``pairs=True``: ``group``,
-        ``column_a``, ``column_b``, and over the rows where both are usable,
+        ``table="pairs"``, for a spec built with ``pairs=True``: ``spec``,
+        ``group``, ``column_a``, ``column_b``, and over the rows where both are usable,
         ``count``, ``corr`` and ``equal``, the rows on which the two are
         equal.
 
-        ``table="clock"``: ``group``, ``steps`` (between consecutive rows),
+        ``table="clock"``: ``spec``, ``group``, ``steps`` (between consecutive rows),
         ``duplicates`` (steps of 0), ``gaps`` (steps at or past
         ``gap_cap``, which a clock requires), ``regular`` (the rest), and
         the regular steps' ``step_mean``, ``step_std`` (population) and
-        ``step_cv``, and ``max_step`` over every step. No rows for a spec
+        ``step_cv``, and ``step_max`` over every step. No rows for a spec
         without a ``clock``. A step is the time that passed between the two
         rows, uncapped: a model ages by at most ``gap_cap`` of it, and the
         audit counts all of it (across a session change under a numeric
         ``session_gap``, that gap). On a temporal clock ``step_mean``,
-        ``step_std`` and ``max_step`` are ``Duration`` in the clock column's
+        ``step_std`` and ``step_max`` are ``Duration`` in the clock column's
         unit (milliseconds for a ``Date``), on a number clock numbers in its
         units, and ``Float64`` before a chunk has said which. A step back is
         refused, as for every spec; with ``restart_after_step_back`` each one
@@ -1577,7 +1634,7 @@ class ModelBank:
         count them.
 
         ``pooled=True`` merges the groups the frame covers into one audit,
-        as if they were one stream, and drops ``group``: the counts and
+        as if they were one stream, and drops ``group`` (``spec`` stays): the counts and
         moments merge exactly, up to rounding, and the counters past the cap
         and the digests approximately, as the spec's docstring says.
 
@@ -1621,14 +1678,14 @@ class ModelBank:
         missing on different rows are fitted from Grams of their own). The
         common columns:
 
-        ``spec``, ``group``, ``instance``, ``session``
-            Which stream closed. ``session`` is the value of the span that
-            ended under ``group_close = "session"``, and null under
-            ``"monotone"``.
+        ``spec``, ``group``, ``instance``, ``half_life``, ``lam``, ``session``
+            Which stream closed, the instance with its decay as :meth:`coef`
+            gives it. ``session`` is the value of the span that ended under
+            ``group_close = "session"``, and null under ``"monotone"``.
         ``weight_sum``, ``n_kish``
             As :meth:`gram` reports them, at the moment of the close.
         ``rows_fed``, ``rows_learned``, ``clock_min``, ``clock_max``
-            The span's own :meth:`summary` counts, ``UInt64`` as there, and clock
+            The span's own :meth:`summary` counts, ``Int64`` as there, and clock
             range, in the clock column's own dtype as there.
 
         Then a block per kind, present when any spec of the bank closes
@@ -1645,7 +1702,7 @@ class ModelBank:
              - ``columns``, ``means``, ``comoments``, ``targets``,
                ``target_means``, ``target_vars``, ``target_weights``,
                ``target_n_kish``, ``cross_moments``, ``means_by_target`` and
-               ``cross_centred``
+               ``cross_centered``
              - packed: ``comoments`` is the upper triangle with the diagonal,
                row by row (``k(k+1)/2`` numbers), and the per-target arrays
                are row-major ``(n_targets, k)``.
@@ -1733,7 +1790,10 @@ class ModelBank:
             unreliable) or ``info``; an ``Enum`` in that order, worst first.
         ``code``
             Which check found it, a short name that stays the same across
-            releases. The table below lists them.
+            releases. The table below lists them. A ``String``, not an ``Enum``
+            as ``severity`` is: a minor release may add a check, and an
+            ``Enum``'s categories are part of its dtype, so a new code would
+            change the column's type under code that pins it.
         ``spec``, ``group``
             The stream, as :meth:`summary` names it. ``group`` is null for
             ``not_checked``, which is about the spec as a whole.
@@ -1979,8 +2039,10 @@ class ModelBank:
 
         return check(self, spec, group)
 
-    def solve_failures(self) -> dict[str, dict[str | None, int]]:
-        """Jittered or failed matrix factorizations so far, per spec and group.
+    def solve_failures(
+        self, spec: str | int | None = None, group: str | Iterable[str | None] | None = None
+    ) -> pl.DataFrame:
+        """Jittered or failed matrix factorizations so far: one row per (spec, group).
 
         A solve never returns NaN silently: a near-singular system is retried with
         escalating diagonal jitter, and total failure keeps the previous coefficients.
@@ -2006,13 +2068,33 @@ class ModelBank:
 
         Every other model reports 0 because it counts nothing, not because nothing can
         fail: ``rls`` and ``kalman`` track an inverse, and the gradient models keep no
-        second moment to factorize. Returns ``{spec name: {group key: count}}``.
+        second moment to factorize.
+
+        The columns are ``spec``, ``group`` (as :meth:`groups` reports it) and
+        ``solve_failures``, an ``Int64``: the same count :meth:`summary` carries in
+        its column of that name, without the rest of the summary. ``spec`` and
+        ``group`` narrow the frame as in :meth:`summary`.
+
+        .. code-block:: python
+
+            bank = po.ModelBank.load("bank.state")
+            failing = bank.solve_failures().filter(pl.col("solve_failures") > 0)
         """
         names = self._native.spec_names()
-        return {
-            name: dict(pairs)
-            for name, pairs in zip(names, self._native.solve_failures(), strict=True)
-        }
+        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        wanted = _group_keys(group)
+        native = self._native.solve_failures()
+        rows = [
+            (names[i], key, count)
+            for i in picked
+            for key, count in native[i]
+            if wanted is None or key in wanted
+        ]
+        return pl.DataFrame(
+            rows,
+            schema={"spec": pl.String, "group": pl.String, "solve_failures": pl.Int64},
+            orient="row",
+        )
 
     def output_fields(self) -> dict[str, list[str]]:
         """Spec name to the field names of its output struct, in order:

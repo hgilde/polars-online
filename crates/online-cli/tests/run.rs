@@ -1121,7 +1121,7 @@ type = "ewridge"
         &lines[wrote + 1..],
         [
             r#"spec "held": 2 groups whose last row was withheld (below_min_weight 2)"#,
-            r#"spec "dup": 2 groups with min_support_coef < 0.5"#,
+            r#"spec "dup": 2 groups with support_coef_min < 0.5"#,
         ],
         "{stdout}"
     );

@@ -207,7 +207,7 @@ def test_a_closed_marginal_row_carries_its_lags_and_bins():
         "lag_corr_xy",
         "lag_corr_yx",
         "n_serial",
-        "t_serial",
+        "t_stat_serial",
         "phi_x",
         "phi_y",
         "bin_edges",

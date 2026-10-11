@@ -984,7 +984,7 @@ impl LastReasons {
 
 /// The run's closing lines (docs/WARMUP-AND-CONVERGENCE.md §7.9): per spec,
 /// the groups whose last row in the run was withheld, counted by reason, and
-/// the groups whose smallest data share (`min_support_coef` in the summary)
+/// the groups whose smallest data share (`support_coef_min` in the summary)
 /// is below 0.5; nothing for a spec with neither.
 fn readiness_lines(bank: &Bank, last: &LastReasons) -> Vec<String> {
     let groups = |n: usize| if n == 1 { "group" } else { "groups" };
@@ -1000,7 +1000,7 @@ fn readiness_lines(bank: &Bank, last: &LastReasons) -> Vec<String> {
             .summary(si, None)
             .ok()
             .and_then(|df| {
-                let c = df.column("min_support_coef").ok()?.f64().ok()?.clone();
+                let c = df.column("support_coef_min").ok()?.f64().ok()?.clone();
                 Some(c.iter().flatten().filter(|v| *v < 0.5).count())
             })
             .unwrap_or(0);
@@ -1015,7 +1015,7 @@ fn readiness_lines(bank: &Bank, last: &LastReasons) -> Vec<String> {
             ));
         }
         if low > 0 {
-            parts.push(format!("{low} {} with min_support_coef < 0.5", groups(low)));
+            parts.push(format!("{low} {} with support_coef_min < 0.5", groups(low)));
         }
         if !parts.is_empty() {
             lines.push(format!("spec {:?}: {}", spec.name, parts.join("; ")));

@@ -832,8 +832,9 @@ class TestEdgeCases:
         assert (last[:, 3] <= 0.1 * math.sqrt(2) * (1 + 1e-12)).all()
         # The layout has no fixed positions: nothing to name, nothing to index.
         assert po.spec.coef_fields(s).height == 0
+        assert po.spec.coef_index(s).height == 0
         with pytest.raises(ValueError, match="micro's coef is one .* row per established summary"):
-            po.spec.coef_index(s)
+            po.ModelBank([s]).coef("m")
         flat = po.ModelBank([s]).fit_predict(frame(X)).online.unnest([s])
         assert "coef" in flat.columns and flat["coef"].dtype == pl.List(pl.Float64)
         assert flat["coef"].to_list() == coef.to_list()

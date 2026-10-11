@@ -69,7 +69,7 @@ def python_lasso_path(
         m = pg._means_of(np, g, t)
         ybar = cross[icept]
         c = como[np.ix_(slots, slots)]
-        rhs = pg._cross_centred(np, g, t, m, ybar)[slots]
+        rhs = pg._cross_centered(np, g, t, m, ybar)[slots]
     else:
         c = como[np.ix_(slots, slots)] + np.outer(means[slots], means[slots])
         rhs = cross[slots]
@@ -149,7 +149,7 @@ class TestLassoPathIsTheLoopItReplaced:
 
     def test_a_mapping_without_the_centred_forms_forms_them(self):
         g = gram(stream(seed=5))
-        bare = dict(g, means_by_target=None, cross_centred=None)
+        bare = dict(g, means_by_target=None, cross_centered=None)
         got = pg.lasso_path(bare, PENALTIES)
         assert np.abs(got - python_lasso_path(bare, PENALTIES)).max() < 1e-12
         assert got == pytest.approx(pg.lasso_path(g, PENALTIES), abs=1e-9)
@@ -503,8 +503,8 @@ class TestSolveSubsets:
             pg.solve_subsets([], [[0]])
         with pytest.raises(ValueError, match="same columns and targets"):
             pg.solve_subsets([grams[0], pg.subset(grams[1], ["intercept", "x0"])], [[0, 1]])
-        bare = dict(grams[1], cross_centred=None)
-        with pytest.raises(ValueError, match="cross_centred"):
+        bare = dict(grams[1], cross_centered=None)
+        with pytest.raises(ValueError, match="cross_centered"):
             pg.solve_subsets([grams[0], bare], [[0, 1]])
         old = dict(grams[1], target_vars=None)
         with pytest.raises(ValueError, match="no target moments"):

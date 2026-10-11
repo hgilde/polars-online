@@ -811,13 +811,12 @@ class TestEdgeCases:
         s = spec()
         assert "coef" not in po.spec.output_fields(s)
         assert po.spec.coef_fields(s).height == 0
-        with pytest.raises(ValueError, match="seqtest emits evidence .* not coefficients"):
-            po.spec.coef_index(s)
+        assert po.spec.coef_index(s).height == 0
         bank = po.ModelBank([s])
         bank.fit_predict(frame(n=20))
         with pytest.raises(ValueError, match="seqtest emits evidence"):
             bank.coef("m")
-        assert bank.solve_failures() == {"m": {"": 0}}
+        assert bank.solve_failures().rows() == [("m", "", 0)]
         assert bank.gram("m") == []
 
     def test_unpack_says_what_a_seqtest_struct_holds(self):

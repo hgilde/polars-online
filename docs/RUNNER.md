@@ -247,8 +247,8 @@ error.** The summary is the lines a run prints when it ends, such as `wrote
 After `wrote`, a spec whose groups ended the run not ready has a line of
 its own. It counts the groups whose last row was withheld, by
 `withheld_reason`, and those with a coefficient more ridge than data
-(`min_support_coef < 0.5`), as
-`spec "ridge": 2 groups whose last row was withheld (below_min_weight 2); 1 group with min_support_coef < 0.5`.
+(`support_coef_min < 0.5`), as
+`spec "ridge": 2 groups whose last row was withheld (below_min_weight 2); 1 group with support_coef_min < 0.5`.
 A spec with neither has no line, as in every run on this page.
 Standard error carries the progress, which `--quiet` turns off, the timings
 `ONLINE_TIMING=1` asks for, and the error of a run that fails. It also

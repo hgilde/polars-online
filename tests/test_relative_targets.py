@@ -253,7 +253,7 @@ def test_a_renamed_column_is_the_name_everywhere():
     assert bank.gram("m")[0]["targets"] == ["ret"]
     desc = bank.describe("m").filter(pl.col("role") == "target")
     assert desc["column"].to_list() == ["ret"]
-    assert desc["null_count"].to_list() == [5]
+    assert desc["unusable_count"].to_list() == [5]
     assert bank.summary("m")["rows_learned"].item() == len(df) - 5
     assert bank.specs[0]["targets"] == [{"column": "p", "name": "ret"}]
     plain = po.ModelBank([po.spec.ewridge("m", targets=[po.target("p", name="p")], **common())])

@@ -7,7 +7,7 @@ rather than skipped silently:
 
 - `rls` is predict-only for **all** targets when **any** target is null,
   because `P` is shared across targets (documented deviation, PLAN section 4.2).
-- `lasso` names its output slots by path point (`pred_y0__l0.1`), because the
+- `lasso` names its output slots by path point (`pred_y0__p0.1`), because the
   selected penalty is part of the output semantics.
 - `ftrl` predicts a probability, so it is fed a 0/1 target.
 """

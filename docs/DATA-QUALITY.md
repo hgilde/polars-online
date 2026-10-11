@@ -1337,7 +1337,7 @@ in clock units weighs rows by time, as it should. A lag or a window counted
 in rows means a different span of time on each row.
 
 **An audit counts the clock as it ran.** Its clock table, `bank.audit(table="clock")`,
-takes each step as the time that passed, uncapped, so `max_step` is the
+takes each step as the time that passed, uncapped, so `step_max` is the
 longest quiet spell, not `gap_cap`. On a `Datetime` clock the step columns
 are `Duration`s in the column's unit. An audit reads the stream's clock,
 so it refuses a step back as a model does. To count the steps back

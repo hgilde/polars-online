@@ -1007,26 +1007,27 @@ fn validate_spec(spec_json: &str) -> PyResult<()> {
     spec.check().map_err(PyValueError::new_err)
 }
 
-/// The output index as JSON: one object per field with the machine values its
-/// name encodes (kind, target, half-life/lam, ridge, feature_set, penalty,
-/// quantile, columns). JSON keeps the FFI trivial; the Python side turns it
-/// into a DataFrame.
+/// The output index as a frame: one row per field with the machine values
+/// its name encodes (`online_polars::output_index_frame`). A frame rather
+/// than JSON, which has no infinity: an infinite half-life read null.
 #[pyfunction]
-fn spec_output_index(spec_json: &str) -> PyResult<String> {
+fn spec_output_index(spec_json: &str) -> PyResult<PyDataFrame> {
     let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.check().map_err(PyValueError::new_err)?;
-    serde_json::to_string(&online_polars::output_index(&spec))
+    online_polars::output_index_frame(&spec)
+        .map(PyDataFrame)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Every coefficient of a spec's output as JSON: the `coef` field and
+/// Every coefficient of a spec's output as a frame: the `coef` field and
 /// position it sits at, the column name `unnest` gives it, and the machine
-/// values (target, half-life/lam, ridge, feature_set, penalty, term).
+/// values (`online_polars::coef_fields_frame`).
 #[pyfunction]
-fn spec_coef_fields(spec_json: &str) -> PyResult<String> {
+fn spec_coef_fields(spec_json: &str) -> PyResult<PyDataFrame> {
     let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.check().map_err(PyValueError::new_err)?;
-    serde_json::to_string(&online_polars::coef_fields(&spec))
+    online_polars::coef_fields_frame(&spec)
+        .map(PyDataFrame)
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 

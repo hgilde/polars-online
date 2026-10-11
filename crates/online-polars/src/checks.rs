@@ -47,7 +47,9 @@ pub fn value_names(spec: &Spec) -> Vec<&'static str> {
         out.extend(["studentized", "cusum", "cusum_sq", "break_wald"]);
     }
     if spec.emit_specification {
-        out.extend(["ljung_box", "breusch_pagan", "reset"]);
+        // Ramsey's RESET by its author's name: `reset` alone read as the
+        // clock rules' `resets` and `drift_action = "reset"` (task 244).
+        out.extend(["ljung_box", "breusch_pagan", "ramsey_reset"]);
     }
     if spec.emit_tails {
         out.extend(["skew", "kurtosis", "jarque_bera"]);

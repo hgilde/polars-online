@@ -424,7 +424,7 @@ def _spec_rows(
 class TestSpecificationTestsAreStatsmodels:
     """Task 221 (d). Run once, on the bank's out-of-sample residuals of the
     rows before each row: ``ljung_box`` is ``acorr_ljungbox``,
-    ``breusch_pagan`` is ``het_breuschpagan``'s ``n R2``, and ``reset`` is
+    ``breusch_pagan`` is ``het_breuschpagan``'s ``n R2``, and ``ramsey_reset`` is
     ``compare_lm_test`` of the residual on ``p, p2, p3`` against ``p``.
     Past a horizon ``ljung_box`` is the definition with Bartlett's
     covariance, from ``statsmodels``' ``acf``; on planted curvature it
@@ -462,7 +462,9 @@ class TestSpecificationTestsAreStatsmodels:
             q = pt - pt[0]
             full = sm.OLS(rt, sm.add_constant(np.column_stack([q, q**2, q**3]))).fit()
             base = sm.OLS(rt, sm.add_constant(q)).fit()
-            np.testing.assert_allclose(out["reset_y"][t], full.compare_lm_test(base)[0], rtol=1e-7)
+            np.testing.assert_allclose(
+                out["ramsey_reset_y"][t], full.compare_lm_test(base)[0], rtol=1e-7
+            )
 
     def test_past_a_horizon_it_reads_bartletts_covariance(self):
         from statsmodels.tsa.stattools import acf
@@ -497,7 +499,7 @@ class TestSpecificationTestsAreStatsmodels:
 
         for seed, curve in ((63, 0.4), (64, 0.0), (65, 0.4), (66, 0.0)):
             df = _spec_rows(1500, seed, curve=curve, hetero=False)
-            ours = self._run(df)["reset_y"][-1] > 5.991
+            ours = self._run(df)["ramsey_reset_y"][-1] > 5.991
             X = sm.add_constant(df.select("x0", "x1").to_numpy())
             fit = sm.OLS(df["y"].to_numpy(), X).fit()
             theirs = linear_reset(fit, power=3, test_type="fitted", use_f=False).statistic > 5.991
@@ -579,7 +581,7 @@ class TestUnderAHorizonTheTestsAreNeweyWest:
             Zq = np.column_stack([np.ones_like(q), q, q**2, q**3])
             beta = sm.OLS(es, Zq).fit().params
             want = wald(Zq, r, beta[2:], [2, 3])
-            np.testing.assert_allclose(out["reset_y"][t], want, rtol=1e-6)
+            np.testing.assert_allclose(out["ramsey_reset_y"][t], want, rtol=1e-6)
             checked += 1
         assert checked == 3
 

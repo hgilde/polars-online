@@ -17,6 +17,8 @@ import re
 import typing
 from pathlib import Path
 
+import polars as pl
+
 import polars_online as po
 import test_api_surface
 import test_edge_cases
@@ -107,6 +109,76 @@ def _build(name: str) -> dict:
     return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
 
 
+#: Every switch a spec's output can grow by, offered to each kind in turn by
+#: :func:`fullest`: the grids first, so ``emit_selected`` and
+#: ``emit_averaged`` find one to choose across, then every ``emit_*`` of the
+#: common parameters, then the intervals and the quantiles.
+_GROWTH: list[dict[str, object]] = [
+    {"ridge": [1e-6, 0.5]},
+    {"feature_sets": {"a": ["x0"], "b": ["x0", "x1"]}},
+    {
+        "stats": ["mean", "var", "std", "cov", "corr", "partial_corr", "mahal", "lag_corr"],
+        "precision_prior": 1e-6,
+        "lags": [1, 3],
+    },
+    {"mahal_quantiles": [0.5, 0.99]},
+    {"pca": 2},
+    {"lags": [1, 2]},
+    {"bins": 4},
+    *(
+        {name: True}
+        for name in (
+            "emit_error_inflation",
+            "emit_se_coef",
+            "emit_clocks",
+            "emit_sigma",
+            "emit_zscore",
+            "emit_selected",
+            "emit_averaged",
+            "emit_metrics",
+            "emit_autocorr",
+            "emit_drift",
+            "emit_calibration",
+            "emit_breaks",
+            "emit_robust_se",
+            "emit_specification",
+            "emit_tails",
+            "emit_influence",
+            "emit_feature_health",
+        )
+    ),
+    {"conformal": 0.9},
+    {"resid_quantiles": [0.05, 0.95]},
+]
+
+
+def fullest(name: str) -> dict:
+    """Kind ``name`` at its fullest: two targets where it takes any, two
+    features, a half-life grid where it decays, and every switch of
+    ``_GROWTH`` its builder takes. A switch is offered only where the
+    builder has the keyword, and one the kind refuses (a ``ValueError``
+    naming it, or a ``TypeError`` for a value of another type, as
+    ``huber``'s scalar ``ridge``) is left out."""
+    kw: dict[str, object] = {"targets": ["y", "z"], "features": ["x0", "x1"], "half_life": 50.0}
+    kw.update(MINIMAL[name])
+    kw = {k: v for k, v in kw.items() if v is not None}
+    builder = getattr(po.spec, name)
+    takes = set(inspect.signature(builder).parameters) | set(
+        inspect.signature(_spec._common).parameters
+    )
+    growth = ([{"half_life": [50.0, 200.0]}] if "half_life" in kw else []) + _GROWTH
+    for more in growth:
+        if any(k in MINIMAL[name] for k in more) or not set(more) <= takes:
+            continue
+        try:
+            spec = builder("m", **{**kw, **more})
+            po.spec.output_fields(spec)
+        except (TypeError, ValueError):
+            continue
+        kw = {**kw, **more}
+    return builder("m", **kw)
+
+
 #: What ``polars_online.spec`` exports besides builders.
 HELPERS = {"output_fields", "coef_fields", "coef_index", "output_index"}
 
@@ -119,19 +191,20 @@ def test_minimal_names_every_builder():
     assert set(MINIMAL) == _builders()
 
 
-def test_coef_index_is_a_layout_or_a_reason_for_every_kind():
+def test_coef_index_and_coef_fields_agree_for_every_kind():
     """``coef_index`` refused three of the kinds with no ``coef`` by name and
-    the others with whatever polars raises on an empty series
-    (review 2026-09-12, S26)."""
+    the others with whatever polars raises on an empty series (review
+    2026-09-12, S26), then every one by name while ``coef_fields`` gave the
+    empty frame. Both give the same layout now: the first instance's rows
+    of ``coef_fields``, empty for a kind with no named coefficient."""
     for name in sorted(MINIMAL):
         spec = _build(name)
-        kind = spec["model"]["type"]
-        try:
-            index = po.spec.coef_index(spec)
-        except ValueError as e:
-            assert kind in str(e), (name, str(e))
-            continue
+        index, fields = po.spec.coef_index(spec), po.spec.coef_fields(spec)
         assert index["position"].to_list() == list(range(index.height)), name
+        first = (
+            fields.filter(pl.col("field") == fields["field"].first()) if fields.height else fields
+        )
+        assert first.select(index.columns).equals(index), name
 
 
 def test_coef_every_is_taken_exactly_where_there_is_a_coef():
@@ -470,7 +543,7 @@ def test_output_index_names_every_dtype_it_declares():
         emit_clocks=True,
     )
     seen |= set(po.spec.output_index(clocks)["dtype"].to_list())
-    documented = {"f64", "bool", "str", "list[f64]", "enum", "i64", "clock"}
+    documented = {"f64", "bool", "list[f64]", "enum", "i64", "clock"}
     assert seen == documented, seen ^ documented
     doc = po.spec.output_index.__doc__ or ""
     assert all(f"``{d}``" in doc for d in documented)

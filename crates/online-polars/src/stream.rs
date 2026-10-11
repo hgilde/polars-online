@@ -1316,10 +1316,17 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::CorrChange { .. }
         | ModelKind::Bocpd { .. }
         | ModelKind::Audit { .. } => vec![Combo::default()],
+        // `p` for the penalty, since `l` is a lag's (`lag_corr_l1_a_b`); and
+        // no label for a path of one point, as a single ridge or half-life
+        // writes none, while the machine value says which it is.
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {
-                label: format!("__l{}", crate::spec::num_label(*l)),
+                label: if lasso_path.len() == 1 {
+                    String::new()
+                } else {
+                    format!("__p{}", crate::spec::num_label(*l))
+                },
                 ridge: None,
                 feature_set: None,
                 lambda: Some(*l),

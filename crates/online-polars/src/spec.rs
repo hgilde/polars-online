@@ -48,7 +48,7 @@ pub(crate) mod diagnostics;
 mod readiness;
 
 /// A number rendered for a **field name** (`__r{ridge}`, `@h{half_life}`,
-/// `abs_resid_q{level}`, `__l{lambda}`).
+/// `abs_resid_q{level}`, `__p{penalty}`).
 ///
 /// Rust's `Display` for `f64` never uses scientific notation, so a perfectly
 /// legal `ridge = 1e-300` produced a **311-character field name** (three
@@ -995,7 +995,7 @@ pub enum ModelKind {
         /// (docs/ENHANCEMENTS.md E56): strictly increasing, `>= 1` and at
         /// most 2^20 (`online_core::MAX_LAG`, the ring being sized before the
         /// first row), counted in *learned rows within the group*. Read from `gram()`
-        /// as `lags`/`lag_comoments`, or emitted as `lag_corr_<a>_<b>_l<l>`
+        /// as `lags`/`lag_comoments`, or emitted as `lag_corr_l<l>_<a>_<b>`
         /// by adding `"lag_corr"` to `stats`.
         #[serde(default)]
         lags: Option<Vec<usize>>,

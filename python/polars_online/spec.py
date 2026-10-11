@@ -335,10 +335,9 @@ change of clocks for summer time neither stretches nor folds the clock. Where a
 clock quantity reaches an output, it is in seconds: ``holt``'s trend is per
 second. :meth:`polars_online.ModelBank.summary`,
 :meth:`polars_online.ModelBank.groups` and
-:meth:`polars_online.ModelBank.closed_groups` give clock values as seconds
-since 1970. ``emit_clocks``' two fields are the exception: they are clock
-values in the clock column's own type. A ``Time`` column is refused, because a
-time of day starts again at midnight.
+:meth:`polars_online.ModelBank.closed_groups` give clock values in the clock
+column's own type, as ``emit_clocks``' two fields do. A ``Time`` column is
+refused, because a time of day starts again at midnight.
 
 .. rubric:: What a spec writes
 
@@ -419,7 +418,7 @@ target, so their fields take no suffix:
     resid_{target}{combo}{instance}             | __r{ridge}      ridge grid
     sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
     weight_sum{instance}                        | __{set}_r{ridge}
-    settled_frac{instance}                      | __l{lambda}     lasso_path point
+    settled_frac{instance}                      | __p{penalty}    lasso_path point
     withheld_reason{instance}
     coef{instance}                     instance = ""             single half-life
     support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
@@ -429,6 +428,18 @@ target, so their fields take no suffix:
     selected_{target}                           emit_selected: the chosen slot
     pred_{target}__selected                     emit_selected: its prediction
     pred_{target}__averaged                     emit_averaged
+
+**Every name follows one grammar, which is stable.** Read left to right, a
+name is the kind (``pred``, ``abs_resid``, ``lag_corr``), then its qualifier,
+then the target or the columns it is about, then the grid point after ``__``
+and the instance after ``@``. A qualifier is a number glued to the letter that
+says what it is: ``q`` a quantile level, ``l`` a lag (``abs_resid_q0.05_y``,
+``mahal_q0.99``, ``lag_corr_l1_x0_x1``). The grid point uses letters too:
+``r`` a ridge and ``p`` a lasso penalty, and the instance ``h``, a half-life.
+A thing the spec has several of is numbered where it is named, glued to its
+word: a principal component ``pc0`` (``pc0_var``, ``pc0_loading_x0``), an
+``hmm`` state ``state0`` (``filtered_state0``), a ``kmeans`` centre
+``cluster0`` (``coef_cluster0_x1``).
 
 ``<slot>`` below is a target with its suffix. :func:`output_index` gives every
 field with the values its name encodes, so a field is reached without building
@@ -520,7 +531,9 @@ The diagnostics add, per slot:
    * - ``emit_selected``
      - ``selected_<t>``, ``pred_<t>__selected``
      - The grid slot with the lowest EW out-of-sample squared error so
-       far, and its prediction. Needs more than one slot per target. Each
+       far, an ``Enum`` of the slots' labels in grid order (``@h50``,
+       ``r0.5``, ``a_r0.5``), and its prediction. Needs more than one slot
+       per target. Each
        slot's error decays at its own instance's half-life: like for like
        within a ridge or feature-set grid. Across a half-life grid a short
        half-life is ranked on fewer, more recent rows than a long one.
@@ -699,7 +712,7 @@ The diagnostics add, per slot:
        values on 6-9% of rows and ``break_wald`` on 2.5-4.7%, where the
        plain forms passed on 13-63%.
    * - ``emit_specification``
-     - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``reset_<slot>``
+     - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``ramsey_reset_<slot>``
      - What the fit is missing, each at ``specification_half_life`` and
        Kish's size ``n``. ``ljung_box``: Box and Pierce's ``Q = n *
        sum(rho_l**2)`` over ``ljung_box_lags`` lags of the residuals
@@ -715,7 +728,7 @@ The diagnostics add, per slot:
        the rows of five-row look-ahead streams with nothing missing, this one
        on 6.0-6.7%. ``breusch_pagan``: ``n R2`` of ``resid**2`` on the
        slot's features (Koenker's form), ``chi2(k)``: a spread that moves
-       with them. ``reset``: Ramsey's test, the Lagrange multiplier for
+       with them. ``ramsey_reset``: Ramsey's test, the Lagrange multiplier for
        ``pred**2`` and ``pred**3`` beside ``pred`` in a regression of the
        residual, ``chi2(2)``: a curvature the fit is missing. Run once they
        are statsmodels' ``acorr_ljungbox``, ``het_breuschpagan`` and
@@ -724,7 +737,7 @@ The diagnostics add, per slot:
        streams missing nothing, run once or windowed, and on 98-100% of
        those missing what it looks for: an AR(1) at 0.3, a spread linear in
        a feature, a square of one. Under a horizon ``breusch_pagan`` and
-       ``reset`` are Wald's tests of the same coefficients with Newey and
+       ``ramsey_reset`` are Wald's tests of the same coefficients with Newey and
        West's variance at twice it in lags: beside a five-row look-ahead
        target and AR(1) features at 0.5-0.95 their ``n R2`` forms passed
        their 5% values on 10-39% of rows, the Wald forms on 3.1-5.2%.

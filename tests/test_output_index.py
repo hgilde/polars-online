@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from test_model_registry import MINIMAL, fullest
 
 TIER = "essential"
 
@@ -202,8 +203,6 @@ def _every_kind():
     fields once differed only in their names: ``ew_cov``'s ``lag_corr`` at
     two lags, ``hmm`` at three states, ``ew_class`` at three classes and
     ``bocpd`` over three columns."""
-    from test_model_registry import MINIMAL
-
     specs = {}
     for name, extra in MINIMAL.items():
         kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
@@ -219,26 +218,189 @@ def _every_kind():
         "m", label="y", features=["a"], classes=["u", "v", "w"], precision_prior=1.0, half_life=10.0
     )
     specs["bocpd"] = po.spec.bocpd("m", features=["a", "b", "c"])
+    specs["ew_cov pca=2"] = po.spec.ew_cov("m", features=["a", "b"], pca=2, half_life=10.0)
+    for name in MINIMAL:
+        specs[f"{name} at its fullest"] = fullest(name)
     return specs
 
 
 @pytest.mark.parametrize(("label", "spec"), list(_every_kind().items()))
 def test_no_two_rows_match_apart_from_the_field(label, spec):
     """The index reaches every field by its values alone: no two rows
-    match apart from ``field``. ``lag`` tells ``lag_corr`` at its lags
-    apart, ``state`` an ``hmm`` posterior, ``class`` an ``ew_class`` one,
-    and ``columns`` a ``bocpd`` prediction, which is about its own column."""
+    match apart from ``field``, which ``output_index``'s docstring promises.
+    ``lag`` tells ``lag_corr`` at its lags apart, ``component`` a principal
+    component's fields, ``state`` an ``hmm`` posterior, ``class`` an
+    ``ew_class`` one, ``columns`` a ``bocpd`` prediction, which is about its
+    own column, and ``instance`` an instance of a grid. Each kind is held at
+    its fullest too, every switch it takes turned on: the PCA's fields once
+    matched apart from their names, which only ``pca=2`` showed."""
     idx = po.spec.output_index(spec)
     rest = [c for c in idx.columns if c != "field"]
     same = idx.filter(pl.struct(rest).is_duplicated())["field"].to_list()
     assert not same, f"{label}: {same}"
 
 
+def test_a_principal_component_is_told_apart_by_its_component():
+    idx = po.spec.output_index(po.spec.ew_cov("m", features=["a", "b"], pca=2, half_life=10.0))
+    assert idx.schema["component"] == pl.Int64
+    pc = idx.filter(pl.col("kind").str.starts_with("pc_"))
+    assert pc.select("field", "component").rows() == [
+        ("pc0_var", 0),
+        ("pc0_share", 0),
+        ("pc0_loading_a", 0),
+        ("pc0_loading_b", 0),
+        ("pc0_score", 0),
+        ("pc1_var", 1),
+        ("pc1_share", 1),
+        ("pc1_loading_a", 1),
+        ("pc1_loading_b", 1),
+        ("pc1_score", 1),
+    ]
+    assert idx.filter(~pl.col("kind").str.starts_with("pc_"))["component"].null_count() == (
+        idx.height - pc.height
+    )
+
+
+def test_bocpd_kinds_keep_their_full_stems():
+    """The kind was the name cut at its first ``_``, so ``p_change`` read
+    ``p`` and ``run_mode`` and ``run_mean`` both read ``run``."""
+    idx = po.spec.output_index(po.spec.bocpd("m", features=["a", "b"]))
+    assert idx.select("field", "kind").rows()[:6] == [
+        ("p_change", "p_change"),
+        ("run_mode", "run_mode"),
+        ("run_mean", "run_mean"),
+        ("pred_a", "pred"),
+        ("pred_b", "pred"),
+        ("loglik", "loglik"),
+    ]
+
+
+def test_every_field_names_its_instance():
+    """The instance's suffix as ``coef()``, ``gram()`` and ``closed_groups()``
+    report it, beside the decay it encodes: ``""`` for a single instance,
+    null on a field that chooses across the instances or is the spec's own."""
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0"],
+        half_life=["100s", "5m"],
+        clock="t",
+        gap_cap="1h",
+        emit_selected=True,
+        emit_clocks=True,
+    )
+    idx = po.spec.output_index(spec)
+    assert idx.columns[:5] == ["field", "kind", "target", "instance", "half_life"]
+    rows = dict(idx.select("field", "instance").iter_rows())
+    assert rows["pred_y@h100s"] == "@h100s"
+    assert rows["coef@h5m"] == "@h5m"
+    assert rows["withheld_reason@h5m"] == "@h5m"
+    assert rows["selected_y"] is None
+    assert rows["scored_clock"] is None
+    single = po.spec.output_index(
+        po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0)
+    )
+    assert set(single["instance"].to_list()) == {""}
+    seq = po.spec.output_index(po.spec.seqtest("m", targets=["y"]))
+    assert set(seq["instance"].to_list()) == {""}
+    cf = po.spec.coef_fields(spec)
+    assert cf.columns[:6] == ["field", "position", "name", "target", "instance", "half_life"]
+    assert set(cf["instance"].to_list()) == {"@h100s", "@h5m"}
+
+
+def test_an_infinite_half_life_is_written_as_inf():
+    """The tables travelled as JSON, which has no infinity, so an infinite
+    half-life read null, as ``lam`` does, and a filter for it found nothing."""
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=[float("inf"), 100.0])
+    for table in (po.spec.output_index(spec), po.spec.coef_fields(spec)):
+        hinf = table.filter(pl.col("half_life") == float("inf"))
+        assert hinf.height > 0
+        assert all(f.endswith("@hinf") for f in hinf["field"].to_list())
+        assert table.filter(pl.col("half_life").is_null()).height == 0
+
+
+def test_a_one_point_lasso_path_drops_its_label():
+    """A single ridge or half-life writes no suffix; a single path point
+    wrote ``__l0.1``. The index still carries the penalty."""
+    spec = po.spec.lasso("m", targets=["y"], features=["x0"], half_life=10.0, lasso_path=[0.1])
+    assert po.spec.output_fields(spec)[:2] == ["pred_y", "resid_y"]
+    idx = po.spec.output_index(spec)
+    assert idx.filter(pl.col("kind") == "pred")["penalty"].to_list() == [0.1]
+    assert po.spec.coef_fields(spec)["name"].to_list() == ["coef_y_intercept", "coef_y_x0"]
+
+
+def test_one_rule_places_every_qualifier():
+    """A qualifier -- a letter glued to its value -- follows the kind and
+    comes before the columns: ``lag_corr_l1_x0_x1`` (it was
+    ``lag_corr_x0_x1_l1``) as ``abs_resid_q0.05_y``; an ``hmm`` state is
+    numbered where it is named, as a component is (``pc0_var``) and a
+    centre (``coef_cluster0_x1``): ``filtered_state0``; and a lasso
+    penalty is ``__p``, since ``l`` is a lag's."""
+    cov = po.spec.ew_cov(
+        "m", features=["x0", "x1"], stats=["lag_corr"], lags=[1, 5], half_life=10.0
+    )
+    lag = po.spec.output_index(cov).filter(pl.col("kind") == "lag_corr")
+    assert lag["field"].to_list()[:4] == [
+        "lag_corr_l1_x0_x0",
+        "lag_corr_l1_x0_x1",
+        "lag_corr_l1_x1_x0",
+        "lag_corr_l1_x1_x1",
+    ]
+    assert lag.filter(pl.col("field") == "lag_corr_l5_x1_x0")["columns"].to_list() == [["x1", "x0"]]
+    hmm = po.spec.output_fields(
+        po.spec.hmm("m", features=["x0"], k=2, precision_prior=1.0, half_life=10.0)
+    )
+    assert hmm[:4] == ["filtered_state0", "filtered_state1", "predicted_state0", "predicted_state1"]
+    lasso = po.spec.lasso(
+        "m", targets=["y"], features=["x0"], half_life=10.0, lasso_path=[0.1, 0.0]
+    )
+    assert po.spec.output_fields(lasso)[:4] == [
+        "pred_y__p0.1",
+        "resid_y__p0.1",
+        "pred_y__p0",
+        "resid_y__p0",
+    ]
+
+
+def test_a_centre_a_state_and_a_class_are_columns_of_their_own():
+    """``coef_index`` gave a ``kmeans`` centre's slot as the target
+    ``"cluster0"``, an ``hmm`` state's as ``"state0"`` and an ``ew_class``
+    class's as the class: each is now its own column, typed as
+    ``output_index`` types ``state`` and ``class``, and ``target`` is the
+    target or null."""
+    km = po.spec.coef_index(po.spec.kmeans("m", features=["x0", "x1"], k=2, half_life=10.0))
+    assert km.schema["cluster"] == pl.Int64 and km.schema["state"] == pl.Int64
+    assert km.select("cluster", "term").rows() == [(0, "x0"), (0, "x1"), (1, "x0"), (1, "x1")]
+    assert km["target"].null_count() == km.height
+    hmm = po.spec.coef_index(
+        po.spec.hmm("m", features=["x0"], k=2, precision_prior=1.0, half_life=10.0)
+    )
+    assert hmm.select("state", "term").rows() == [(0, "x0"), (1, "x0")]
+    cls = po.spec.coef_index(
+        po.spec.ew_class(
+            "m",
+            label="lab",
+            features=["x0"],
+            classes=["a", "b"],
+            precision_prior=1.0,
+            half_life=10.0,
+        )
+    )
+    assert cls.select("target", "class", "term").rows() == [("lab", "a", "x0"), ("lab", "b", "x0")]
+    ridge = po.spec.coef_index(po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0))
+    assert ridge.select("cluster", "state", "class").null_count().row(0) == (2, 2, 2)
+    # The unnested columns keep their names.
+    names = po.spec.coef_fields(po.spec.kmeans("m", features=["x0", "x1"], k=2, half_life=10.0))[
+        "name"
+    ].to_list()
+    assert names[:2] == ["coef_cluster0_x0", "coef_cluster0_x1"]
+
+
 def test_the_values_that_tell_the_fields_apart():
     specs = _every_kind()
     lag = po.spec.output_index(specs["ew_cov lag_corr"]).filter(pl.col("kind") == "lag_corr")
     assert sorted(set(lag["lag"].to_list())) == [1, 3]
-    assert lag.filter(pl.col("field") == "lag_corr_b_a_l3")["columns"].to_list() == [["b", "a"]]
+    assert lag.filter(pl.col("field") == "lag_corr_l3_b_a")["columns"].to_list() == [["b", "a"]]
     hmm = po.spec.output_index(specs["hmm k=3"])
     filtered = hmm.filter(pl.col("kind") == "filtered")
     assert filtered["state"].to_list() == [0, 1, 2]
@@ -296,10 +458,21 @@ class TestCoefIndex:
         )
         assert po.spec.coef_index(spec)["term"].to_list() == ["x0"]
 
-    def test_ew_cov_is_refused(self):
+    def test_a_spec_without_coefficients_has_an_empty_layout(self):
+        """``coef_index`` raised for a kind with no coefficients where
+        ``coef_fields`` gave an empty frame: both give the empty frame now,
+        with their columns, as ``ModelBank.coef()``'s sweep does."""
         spec = po.spec.ew_cov("m", features=["a"], stats=["mean"], half_life=10.0, min_weight=2.0)
-        with pytest.raises(ValueError, match="statistics, not coefficients"):
-            po.spec.coef_index(spec)
+        index, fields = po.spec.coef_index(spec), po.spec.coef_fields(spec)
+        assert index.is_empty() and fields.is_empty()
+        ridge = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0)
+        assert index.schema == po.spec.coef_index(ridge).schema
+        assert fields.schema == po.spec.coef_fields(ridge).schema
+
+    def test_position_is_int64_in_both_tables(self):
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=10.0)
+        assert po.spec.coef_fields(spec).schema["position"] == pl.Int64
+        assert po.spec.coef_index(spec).schema["position"] == pl.Int64
 
 
 class TestUnpackWithSpec:

@@ -196,7 +196,7 @@ POLICIES = [
 def _at_the_last_clock(bank, df: pl.DataFrame, rows) -> pl.DataFrame:
     """`df` with `rows` dated at the bank's last learned clock: what scoring
     reads a row before it as -- a step of 0 (task 120)."""
-    last = bank.groups()["last_clock"][0]
+    last = bank.groups()["clock_last"][0]
     return df.with_columns(
         t=pl.when(pl.int_range(pl.len()).is_in(list(rows))).then(last).otherwise(pl.col("t"))
     )
@@ -419,7 +419,7 @@ def test_holt_extrapolates_over_the_clock_distance():
     spec = po.spec.holt("h", targets=["y"], features=[], half_life=10.0, clock="t", gap_cap=20.0)
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
-    last = bank.groups()["last_clock"][0]
+    last = bank.groups()["clock_last"][0]
     assert last == 49.0
     ahead = pl.DataFrame({"t": [50.0, 55.0, 60.0, 69.0, 80.0, 200.0, 49.0, 30.0]})
     out = bank.predict(ahead)["h"]

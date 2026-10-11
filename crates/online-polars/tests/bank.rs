@@ -651,20 +651,23 @@ fn coef_fields_name_every_slot_of_every_list() {
     for (i, f) in fields.iter().enumerate() {
         assert_eq!(f.position, i % per_instance);
         assert_eq!(f.field, format!("coef@h{}", f.half_life.unwrap() as i64));
+        assert_eq!(f.field, format!("coef{}", f.instance));
+        let target = f
+            .target
+            .as_deref()
+            .expect("a regression's slot is a target");
         let pred = preds
             .iter()
             .find(|m| {
-                m.target.as_deref() == Some(f.target.as_str())
+                m.target.as_deref() == Some(target)
                     && m.ridge == f.ridge
                     && m.feature_set == f.feature_set
                     && m.half_life == f.half_life
+                    && m.instance.as_deref() == Some(f.instance.as_str())
             })
             .unwrap_or_else(|| panic!("no pred field for {f:?}"));
-        let suffix = pred
-            .field
-            .strip_prefix(&format!("pred_{}", f.target))
-            .unwrap();
-        assert_eq!(f.name, format!("coef_{}_{}{suffix}", f.target, f.term));
+        let suffix = pred.field.strip_prefix(&format!("pred_{target}")).unwrap();
+        assert_eq!(f.name, format!("coef_{target}_{}{suffix}", f.term));
     }
     let terms: Vec<_> = fields[..3].iter().map(|f| f.term.as_str()).collect();
     assert_eq!(terms, ["intercept", "x0", "x1"]);
