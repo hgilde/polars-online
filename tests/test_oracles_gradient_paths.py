@@ -203,6 +203,8 @@ class TestPassiveAggressive:
         df = _stream(1)
         x, y, dc, w = _inputs(df)
         kw = {"mode": mode, "c": 0.3, "eps": 0.1, "half_life": 50.0, "min_weight": 5.0}
+        # `"pa"` reads no `c`, and refuses one; the oracle ignores it there.
+        given = {k: v for k, v in kw.items() if not (k == "c" and mode == "pa")}
         spec = po.spec.pa(
             "m",
             targets=TARGETS,
@@ -212,7 +214,7 @@ class TestPassiveAggressive:
             weight="w",
             coef_every=0,
             standardize=False,  # the oracle reads the features as they stand
-            **kw,
+            **given,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         _held(out, pa_ref(x, y, dc, w, gap_cap=MAX_DCLOCK, **kw), y)
@@ -375,6 +377,8 @@ class TestStandardized:
         df = _scaled(_stream(6))
         x, y, dc, w = _inputs(df)
         kw = {"mode": mode, "c": 0.3, "eps": 0.05, "half_life": 50.0, "min_weight": 5.0}
+        # `"pa"` reads no `c`, and refuses one; the oracle ignores it there.
+        given = {k: v for k, v in kw.items() if not (k == "c" and mode == "pa")}
         spec = po.spec.pa(
             "m",
             targets=TARGETS,
@@ -385,7 +389,7 @@ class TestStandardized:
             coef_every=0,
             standardize=True,
             fit_intercept=fit_intercept,
-            **kw,
+            **given,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         ref = pa_ref(

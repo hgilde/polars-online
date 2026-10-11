@@ -510,7 +510,8 @@ class TestOracle:
             half_life=50.0,
             min_weight=5.0,
             mode=mode,
-            c=0.2,
+            # `"pa"` reads no `c`, and refuses one.
+            **({} if mode == "pa" else {"c": 0.2}),
             eps=0.05,
             clock="t",
             weight="w",
