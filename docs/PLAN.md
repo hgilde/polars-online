@@ -9793,8 +9793,11 @@ tick, and that the series holding it up has a count near 1.
       (3) `sccache` as `RUSTC_WRAPPER`, so a worktree reuses compiled
       crates by content hash (a shared `target/` clobbers the main build,
       so it is not the answer) -- a dev tool on the user's machine, not
-      linked into the wheel or CLI: **confirm the install with the user
-      when the task starts**; (4) a `dev-wheel` profile (release without
+      linked into the wheel or CLI: **install approved by the user,
+      2026-10-11** (installed then with `cargo install sccache --version
+      0.18.0 --locked --no-default-features`, a native arm64 build: the
+      machine's Homebrew is the Intel prefix with a core tap 4.5 years old,
+      which offers 0.3.0; it is not turned on until this task); (4) a `dev-wheel` profile (release without
       LTO, many codegen units, incremental) for `maturin develop` in
       worktrees and the inner loop, the shipped wheel, CI and the pre-push
       gate keeping `release`, kept only if the golden tests show the bits
