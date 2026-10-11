@@ -1060,17 +1060,19 @@ def test_each_handle_is_freed_once(data, valid, monkeypatch):
     assert [freed[h] for h in handles] == [1, 1, 1, 1]
 
 
-@pytest.mark.extended(reason="memory: RSS over sixty builds of each library, several seconds")
+@pytest.mark.extended(reason="memory: RSS over hundreds of builds of each library, seconds")
 @pytest.mark.serial
 def test_many_builds_do_not_leak():
     """A leak of either object grows by its size per build: 20,000 rows of
-    7 bins is 140 kB to 560 kB, 3.5 to 14 times the limit of 40 kB a build.
-    The check is `test_ffi_memory`'s, which measures only once the
-    allocator's ramp is over and finds where that is. In a process that
-    has run little before this test, as when the gate runs the `serial`
-    tests on their own, RSS rose for about 100 builds before it held
-    (2026-10-11), and the fixed window this used, builds 20 to 60, read
-    that ramp as a leak."""
+    7 bins is 140 kB to 560 kB, 2 to 8 times the limit of 70 kB a build
+    (the fixed window this used allowed 100 kB). The check is
+    `test_ffi_memory`'s, which measures only once the allocator's ramp is
+    over and finds where that is. In a process that has run little before
+    this test, as when the gate runs the `serial` tests on their own, RSS
+    rose for about 100 builds before it held (2026-10-11), and the window,
+    builds 20 to 60, read that ramp as a leak. Blocks of 25 builds: in
+    blocks of 10, RSS swung by a megabyte from one block to the next with
+    no leak, a 100 kB a build either way."""
     from test_ffi_memory import assert_plateaus
 
     df = frame(20_000)
@@ -1080,7 +1082,7 @@ def test_many_builds_do_not_leak():
         d = gbdt.lightgbm_dataset(df, label="y", params=LGB_DATA)
         del m, d
 
-    assert_plateaus(build, per_block=10, kb_per_iter=40.0)
+    assert_plateaus(build, per_block=25, kb_per_iter=70.0)
 
 
 #: A source larger than a build may hold: 6 million rows of 20 float64
