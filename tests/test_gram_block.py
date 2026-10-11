@@ -83,7 +83,7 @@ def run(df: pl.DataFrame, block: int | None, chunk: int | None = None, **kw):
 def ridge_state(bank: po.ModelBank) -> dict:
     """The one `ewridge` instance's state in the JSON export: spec 0, its
     one group, model instance 0."""
-    doc = json.loads(bank.to_json())
+    doc = json.loads(bank.write_json())
     return doc["states"][0][0][1]["models"][0]["model"]["EwRidge"]
 
 

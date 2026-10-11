@@ -206,8 +206,37 @@ fn save_err(path: &str, e: std::io::Error) -> PyErr {
 fn run_err(e: &PolarsError) -> PyErr {
     match e {
         PolarsError::IO { error, .. } => os_err(error.kind(), e.to_string()),
+        _ => bank_err(e),
+    }
+}
+
+/// A bank's error as Python sees it: a column a spec reads that the frame
+/// has not got is `polars_online.ColumnNotFoundError`, which is both
+/// Polars' `ColumnNotFoundError` and a `ValueError`, with the message alone
+/// (a `PolarsError`'s display puts `not found: ` in front of it); every
+/// other refusal is the `ValueError` with the message (task 244, M-1).
+fn bank_err(e: &PolarsError) -> PyErr {
+    match e {
+        PolarsError::ColumnNotFound(msg) => column_not_found(msg.to_string()),
         _ => PyValueError::new_err(e.to_string()),
     }
+}
+
+/// `polars_online.ColumnNotFoundError(msg)`. The class is defined in Python
+/// (`_errors.py`), since it derives from Polars' Python class; should the
+/// module not import, the `ValueError` the class derives from is raised
+/// instead, with the same message.
+fn column_not_found(msg: String) -> PyErr {
+    Python::attach(|py| {
+        match py
+            .import("polars_online._errors")
+            .and_then(|m| m.getattr("ColumnNotFoundError"))
+            .and_then(|c| Ok(c.cast_into::<pyo3::types::PyType>()?))
+        {
+            Ok(cls) => PyErr::from_type(cls, msg),
+            Err(_) => PyValueError::new_err(msg),
+        }
+    })
 }
 
 /// The error for a bank reached from a second thread while `fit_predict` is
@@ -339,7 +368,7 @@ impl PyModelBank {
         let cols = slf
             .py()
             .detach(|| bank.fit_predict_from_with(&df, row_base, learn_only))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(cols
             .into_iter()
             .map(|c| PySeries(c.take_materialized_series()))
@@ -358,7 +387,7 @@ impl PyModelBank {
         let cols = slf
             .py()
             .detach(|| bank.predict_from(&df, row_base))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(cols
             .into_iter()
             .map(|c| PySeries(c.take_materialized_series()))
@@ -388,7 +417,7 @@ impl PyModelBank {
                 let chunk = chunk_from_frame(&df, bank.specs())?;
                 bank.fit_predict_arrow(&chunk)
             })
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(wrap_arrow(bank.specs(), arrays))
     }
 
@@ -404,7 +433,7 @@ impl PyModelBank {
                 let chunk = chunk_from_frame(&df, bank.specs())?;
                 bank.predict_arrow(&chunk)
             })
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(|e| bank_err(&e))?;
         Ok(wrap_arrow(bank.specs(), arrays))
     }
 

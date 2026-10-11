@@ -3363,7 +3363,12 @@ class TestPoEvalIsSklearnsMetrics:
 
     def test_the_regression_metrics(self):
         from scipy.stats import pearsonr
-        from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
+        from sklearn.metrics import (
+            accuracy_score,
+            mean_squared_error,
+            r2_score,
+            root_mean_squared_error,
+        )
 
         out, scored = self.regression()
         got = po.eval.metrics(out, "m", group=["g"], min_samples=1)
@@ -3375,6 +3380,7 @@ class TestPoEvalIsSklearnsMetrics:
             assert row["n"] == len(y) and (~signed).sum() > 5
             assert row["r2"] == pytest.approx(r2_score(y, pred), rel=1e-12)
             assert row["mse"] == pytest.approx(mean_squared_error(y, pred), rel=1e-12)
+            assert row["rmse"] == pytest.approx(root_mean_squared_error(y, pred), rel=1e-12)
             assert row["ic"] == pytest.approx(pearsonr(pred, y).statistic, rel=1e-12)
             want = accuracy_score(np.sign(y[signed]), np.sign(pred[signed]))
             assert row["hit_rate"] == pytest.approx(want, rel=1e-12)
@@ -3414,15 +3420,15 @@ class TestPoEvalIsSklearnsMetrics:
             min_weight=50.0,
         )
         out = po.ModelBank([spec]).fit_predict(df)
-        got = po.eval.metrics(out, "m", binary=True, min_samples=1).row(0, named=True)
+        got = po.eval.metrics(out, spec, min_samples=1).row(0, named=True)  # binary, by its loss
         scored = out.with_columns(pred=pl.col("m").struct.field("pred_y")).drop_nulls("pred")
         y, p = scored["y"].to_numpy(), scored["pred"].to_numpy()
         assert p.min() > 1e-15 and p.max() < 1.0 - 1e-15, "the clip is not in play"
-        assert got["hit_rate"] == pytest.approx(accuracy_score(y, p > 0.5), rel=1e-12)
+        assert got["accuracy"] == pytest.approx(accuracy_score(y, p > 0.5), rel=1e-12)
         assert got["log_loss"] == pytest.approx(log_loss(y, p), rel=1e-12)
-        assert got["r2"] == pytest.approx(r2_score(y, p), rel=1e-12), "the Brier skill score"
+        assert got["brier_skill"] == pytest.approx(r2_score(y, p), rel=1e-12), "the Brier skill"
         assert got["ic"] == pytest.approx(pearsonr(p, y).statistic, rel=1e-12)
-        assert 0.6 < got["hit_rate"] < 0.95
+        assert 0.6 < got["accuracy"] < 0.95
 
 
 class TestShrinkToTheIdentityIsSklearnsLedoitWolf:

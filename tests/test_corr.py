@@ -568,6 +568,9 @@ def test_fisher_se_is_its_closed_forms():
 
 
 def test_matrix_reads_an_array_a_gram_and_a_closed_row():
+    """Every function here reads its matrix argument through `_matrix`; its
+    public name, `po.corr.matrix`, forwards to it with a deprecation warning,
+    since a Gram's correlation is `po.gram.correlation` (task 244)."""
     df = pl.DataFrame({f"x{i}": v for i, v in enumerate(sample(300, 3, 0.5, 15).T)})
     df = df.with_columns(g=pl.int_range(pl.len()) // 150)
     spec = po.spec.ew_cov(
@@ -576,10 +579,10 @@ def test_matrix_reads_an_array_a_gram_and_a_closed_row():
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
     row = bank.closed_groups()
-    from_row = corr.matrix(row)
-    from_gram = corr.matrix(po.gram.from_row(row))
+    from_row = corr._matrix(row)
+    from_gram = corr._matrix(po.gram.from_row(row))
     assert np.allclose(from_row, from_gram)
-    assert np.allclose(corr.matrix(from_row), from_row)
+    assert np.allclose(corr._matrix(from_row), from_row)
     assert np.allclose(np.diag(from_row), 1.0)
     with pytest.raises(ValueError, match="expected a square matrix"):
-        corr.matrix(np.zeros((2, 3)))
+        corr._matrix(np.zeros((2, 3)))

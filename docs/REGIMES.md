@@ -167,7 +167,7 @@ entry](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 The learned transition matrix is not read back through the public API, so
 what is scored is the state path, which is what a caller reads. The
-matrix's decayed counts are in the state that `ModelBank.to_json()`
+matrix's decayed counts are in the state that `ModelBank.write_json()`
 exports, but no method returns the matrix.
 
 > **Measured 2026-09-06:** the seeded row read 0.559, or 56 % (worst seed

@@ -1,21 +1,24 @@
 """The warnings of the library's promise: a name on its way out, and a surface
 that is not yet promised (docs/PLAN.md task 198; review round 4, D2 and D5).
 
-The rename mechanism has two halves: a name renamed before 1.0 is refused,
-naming the new one (:mod:`polars_online._renamed`), and one renamed after is
-forwarded here, with a warning, until the next major version moves it to the
-refusals. Nothing here imports the rest of the package, so every module can
-use it.
+The rename mechanism has two halves: a name renamed before the API was
+settled for 1.0 is refused, naming the new one (:mod:`polars_online._renamed`),
+and one renamed since (task 244 on) is forwarded here, with a warning, until
+the next major version moves it to the refusals. Nothing here imports the
+rest of the package, so every module can use it.
 """
 
 from __future__ import annotations
 
 import functools
+import inspect
 import os
 import threading
 import warnings
 from collections.abc import Callable, Mapping
 from typing import Any
+
+from polars.exceptions import UnstableWarning as _PolarsUnstableWarning
 
 #: The parameters renamed after 1.0, old -> new: a builder's keyword or a
 #: spec dict's key under the old name is read as the new one, with a
@@ -35,34 +38,60 @@ _DEPRECATED: dict[str, str] = {}
 UNSTABLE_VAR = "POLARS_ONLINE_WARN_UNSTABLE"
 
 
-class PolarsOnlineDeprecationWarning(DeprecationWarning):
-    """A name renamed after 1.0, used by its old spelling.
+class PolarsOnlineWarning(Warning):
+    """The base of every warning this library raises.
+
+    Each warning keeps the standard category it belongs to as well:
+    :class:`~polars_online.ReadinessWarning`,
+    :class:`~polars_online.OrderNotGuaranteedWarning`,
+    :class:`~polars_online.ConsumedSourceWarning` and
+    :class:`~polars_online.UnstableWarning` are each a ``UserWarning``, and
+    :class:`~polars_online.PolarsOnlineDeprecationWarning` is a
+    ``DeprecationWarning``. So one filter covers every warning of this
+    library, as Polars' ``PolarsWarning`` covers Polars' own, and a filter
+    on the standard category goes on working:
+
+    .. code-block:: python
+
+        import warnings
+
+        warnings.simplefilter("ignore", po.PolarsOnlineWarning)   # every one of them
+    """
+
+
+class PolarsOnlineDeprecationWarning(PolarsOnlineWarning, DeprecationWarning):
+    """A renamed name, used by its old spelling.
 
     The old name still works -- read as the new one -- until the next major
     version, which refuses it naming the new one; the message names both.
     A spec parameter goes through a forwarding table, at any depth of a
-    spec. Any other name renamed after 1.0 ships a forwarding of its own
-    that raises this warning: a check at the function's top, a stub, an
-    alias or a second column. That covers another function's keyword, a
-    function, a word a parameter takes, a flag, an environment variable, an
-    output field and a frame column.
+    spec. Any other renamed name ships a forwarding of its own that raises
+    this warning: a check at the function's top, a stub, an alias or a
+    second column. That covers another function's keyword, a function, a
+    word a parameter takes, a flag, an environment variable, an output field
+    and a frame column.
 
-    A rename made before 1.0 was never forwarded: the old name is refused
-    outright (``TypeError`` from a builder, ``ValueError`` from a spec dict),
-    so no name warns today. Python shows a ``DeprecationWarning`` raised from
-    a library only in ``__main__`` and under test runners; to see it
-    everywhere, ``warnings.simplefilter("default",
+    The names renamed as the API was settled for 1.0 are forwarded this way,
+    and the changelog lists them. The renames made earlier were never
+    forwarded: each old name is refused outright, naming the new one
+    (``TypeError`` from a builder, ``ValueError`` from a spec dict).
+
+    Python shows a ``DeprecationWarning`` raised from a library only in
+    ``__main__`` and under test runners; to see it everywhere,
+    ``warnings.simplefilter("default",
     polars_online.PolarsOnlineDeprecationWarning)``, and to make it an error,
     ``"error"``.
     """
 
 
-class UnstableWarning(UserWarning):
+class UnstableWarning(PolarsOnlineWarning, UserWarning, _PolarsUnstableWarning):
     """A surface that is not yet promised, used.
 
     Raised only when the environment variable ``POLARS_ONLINE_WARN_UNSTABLE``
     is ``1``, as Polars raises its own ``UnstableWarning`` under
-    ``POLARS_WARN_UNSTABLE``. Each such surface says so in its docstring,
+    ``POLARS_WARN_UNSTABLE``. It is a subclass of Polars' class too, so a
+    filter on ``polars.exceptions.UnstableWarning`` covers this library's
+    unstable surfaces as well. Each such surface says so in its docstring,
     and may change in any release without that counting as a breaking
     change:
 
@@ -149,3 +178,95 @@ def forward_deprecated(
         )
         out[new] = out.pop(old)
     return out
+
+
+#: The attribute that marks a name kept only to forward or refuse its old
+#: spelling: the API snapshot and the reference leave such a name out, so
+#: both show the new name only (``_renamed.is_renamed`` reads it).
+RENAMED_MARK = "__polars_online_renamed__"
+
+
+def deprecated_keywords[**P, R](
+    who: str, table: Mapping[str, str]
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A decorator reading each old keyword of ``table`` as its new name, with
+    a :class:`PolarsOnlineDeprecationWarning` pointed at the caller's line
+    (:func:`forward_deprecated`). The signature ``inspect`` and the
+    reference show is ``fn``'s own, the new names alone."""
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            if any(old in kwargs for old in table):
+                kwargs = forward_deprecated(who, kwargs, table)  # type: ignore[assignment]
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def keyword_only_forwarded[**P, R](
+    who: str, names: tuple[str, ...]
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A decorator for a function whose ``names``, once positional, became
+    keyword-only: a call that still passes them by position has each read as
+    its keyword, with a :class:`PolarsOnlineDeprecationWarning` naming it.
+    The signature shown is ``fn``'s own, with the names keyword-only."""
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        params = inspect.signature(fn).parameters.values()
+        kinds = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        n_pos = sum(p.kind in kinds for p in params)
+
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            if len(args) > n_pos:
+                extra = args[n_pos:]
+                if len(extra) > len(names):
+                    raise TypeError(
+                        f"{who}() takes {n_pos} positional arguments but {len(args)} were given"
+                    )
+                for name, value in zip(names, extra, strict=False):
+                    if name in kwargs:
+                        raise TypeError(f"{who}() got multiple values for argument {name!r}")
+                    warnings.warn(
+                        f"{who}: {name} given by position is deprecated: pass it by keyword, "
+                        f"as {name}=... It is read until the next major version, which "
+                        "refuses it",
+                        PolarsOnlineDeprecationWarning,
+                        stacklevel=2,
+                    )
+                    kwargs[name] = value
+                args = args[:n_pos]  # type: ignore[assignment]
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def deprecated_alias[**P, R](
+    old: str, new: str, more: str = ""
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A decorator for a function kept under its old name ``old`` after it was
+    renamed ``new``: each call raises a :class:`PolarsOnlineDeprecationWarning`
+    naming the new name (and ``more``, what else the rename changed), then
+    runs. The function is marked (:data:`RENAMED_MARK`), so the API snapshot
+    and the reference show the new name only."""
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            warnings.warn(
+                f"{old} is deprecated: it was renamed {new}{more}. It works as before until "
+                "the next major version, which refuses it",
+                PolarsOnlineDeprecationWarning,
+                stacklevel=2,
+            )
+            return fn(*args, **kwargs)
+
+        setattr(wrapper, RENAMED_MARK, new)
+        return wrapper
+
+    return decorate

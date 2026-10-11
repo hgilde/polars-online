@@ -137,7 +137,14 @@ def describe_api(cli: Path | None = None) -> str:
     w("")
 
     w("[ModelBank]  # name and signature: a parameter added or a default moved is a diff here")
+    from polars_online._renamed import is_renamed
+
     for name in sorted(dir(po.ModelBank)):
+        # A name kept only under its old spelling (a refusal stub, or a
+        # forwarding with a deprecation warning) is left out, as the module
+        # stubs are by `__all__`: the snapshot shows the new name alone.
+        if is_renamed(inspect.getattr_static(po.ModelBank, name)):
+            continue
         if not name.startswith("_") or name in ("__init__", "__reduce__"):
             obj = getattr(po.ModelBank, name)
             try:
@@ -702,21 +709,22 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
         return refuse
 
-    for op in (
-        "ewm_mean",
-        "ewm_rate",
-        "ewm_std",
-        "ewm_sum",
-        "ewm_var",
-        "rewm_mean",
-        "rewm_rate",
-        "rewm_sum",
-    ):
+    # Each operator, and the three that look ahead under `reverse=True` (the
+    # form that replaced `rewm_*`, task 244), which check their words apart.
+    ops: list[tuple[str, str, dict[str, object]]] = [
+        (op, op, {}) for op in ("ewm_mean", "ewm_rate", "ewm_std", "ewm_sum", "ewm_var")
+    ]
+    ops += [
+        (f"{op}(reverse=True)", op, {"reverse": True}) for op in ("ewm_mean", "ewm_rate", "ewm_sum")
+    ]
+    for label, op, extra in ops:
         for key in ("closed", "partial"):
             refuse = python_refusal(
-                getattr(po, op), {"input": "X", "half_life": 10.0, "window_size": 5.0}, key
+                getattr(po, op),
+                {"input": "X", "half_life": 10.0, "window_size": 5.0, **extra},
+                key,
             )
-            out.append(f"  po.{op}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
+            out.append(f"  po.{label}.{key}: {', '.join(sorted(taken_words(key, refuse)))}")
     reasons = (
         po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
         .fit_predict(pl.DataFrame({"x": [1.0, 2.0], "y": [1.0, 2.0]}))["m"]

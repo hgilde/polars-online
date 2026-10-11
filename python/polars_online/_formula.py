@@ -479,11 +479,14 @@ def operator(
     min_samples: int = 1,
     partial: str | None = None,
     bias: Any = None,
+    who: str | None = None,
 ) -> pl.Expr:
     """The expression of operator ``name`` over ``input`` with these
     parameters, checked here so a wrong value names its parameter; ``bias``
-    a variance's alone."""
-    who = f"po.{name}"
+    a variance's alone. ``who`` is the call a message names, ``po.<name>``
+    unless given: a window looking ahead is ``ewm_*(reverse=True)`` to the
+    caller and ``rewm_*`` in the tree."""
+    who = who or f"po.{name}"
     tree = _input_tree(who, input)
     if name == "increment":
         return operator_column(["increment", tree])

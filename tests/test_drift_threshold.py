@@ -134,7 +134,7 @@ def test_a_bank_resumes_with_its_duration_threshold():
     whole = po.ModelBank([s]).fit_predict(df)["m"].struct.field("drift_y")
     first = po.ModelBank([s])
     first.fit_predict(df.head(1500))
-    assert '"drift_threshold": "20m"' in first.to_json()
+    assert '"drift_threshold": "20m"' in first.write_json()
     resumed = po.ModelBank.load_bytes(first.save_bytes(), specs=[s])
     tail = resumed.fit_predict(df.slice(1500))["m"].struct.field("drift_y")
     assert tail.equals(whole.slice(1500), null_equal=True)

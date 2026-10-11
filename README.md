@@ -92,7 +92,7 @@ local = po.spec.ewridge(
 betas = pl.scan_parquet("prices.parquet").online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
 
 # 4. A target that looks ahead: each row's mean return over the next ten minutes.
-fwd_ret = po.rewm_mean("ret", half_life=float("inf"), window_size="10m").alias("fwd_ret")
+fwd_ret = po.ewm_mean("ret", half_life=float("inf"), window_size="10m", reverse=True).alias("fwd_ret")
 ahead = po.spec.ewridge(
     "ahead", targets=[fwd_ret], features=["signal_a", "signal_b"], group="stock_id",
     clock="ts", half_life="10m", gap_cap="5m",
@@ -171,7 +171,7 @@ Each hour from 10:30, stock A's beta on `signal_a` climbs with the true one:
 | 15:30:00 | 0.72 | -0.18 |
 
 **Step 4 forecasts a target that looks ahead.** `fwd_ret`, a Polars
-expression written with `po.rewm_mean`, is the time-weighted mean of the
+expression written with `po.ewm_mean(..., reverse=True)`, is the time-weighted mean of the
 stock's returns over the next ten minutes.
 
 `fit_predict` requires an `embargo` of at least the target's `window_size`;
@@ -458,7 +458,7 @@ flows = pl.scan_parquet("trades.parquet").with_columns(                   # a qu
     flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
 )
 fwd_move = (
-    po.rewm_mean("price", half_life=float("inf"), window_size="5m")       # the mean trade price over the next five minutes
+    po.ewm_mean("price", half_life=float("inf"), window_size="5m", reverse=True)       # the mean trade price over the next five minutes
     - pl.col("mid")                                                        # less the mid at the row
 ).alias("fwd_move")                                                        # the alias names the target
 ahead_5m = po.spec.ewridge("ahead_5m", targets=[fwd_move], features=["flow"],
@@ -488,7 +488,7 @@ better?](docs/DIAGNOSTICS.md#is-another-model-better)). A plain ratio sits
 about 1, where two positive numbers always agree, so its `hit_rate` reads
 1.0 whatever the fit. A difference sits about zero too. A target that looks
 ahead takes the same forms: `(next_5m / pl.col("mid")).log()`, where
-`next_5m` is the `po.rewm_mean("price", ...)` inside `fwd_move` above, and `mid * exp(pred)` turns its
+`next_5m` is the `po.ewm_mean("price", ..., reverse=True)` inside `fwd_move` above, and `mid * exp(pred)` turns its
 prediction back into a price. This code regresses four forms of a trade's
 price against the mid at its row on the same signed size, `flow`.
 It reads `trades.parquet` from [Example data](#example-data):
@@ -518,7 +518,7 @@ hit_rate of diff: 0.51
 ```
 
 **A target expression requires an operator that looks ahead
-(`po.rewm_mean`, `po.rewm_sum` or `po.rewm_rate`); otherwise, make the
+(`po.ewm_mean`, `po.ewm_sum` or `po.ewm_rate` with `reverse=True`); otherwise, make the
 target a column with Polars' `with_columns`, chained in the query before
 the bank, and name it in `targets`.** The bank's refusal names the call
 that makes the column. Here the target, how far from the mid each trade
@@ -1557,9 +1557,9 @@ run:
 
 A window operator of `po.ops` returns a Polars expression whose value on
 each row is computed over the rows near it on the clock. A window that
-looks back from the row makes a feature, and one that looks ahead makes a
-target. `po.ewm_mean` and its mirror `po.rewm_mean` are time-weighted
-means, as Polars' `ewm_mean_by` computes one, and the sums and rates divide
+looks back from the row makes a feature, and one that looks ahead, under
+`reverse=True`, makes a target. `po.ewm_mean` in either direction is a
+time-weighted mean, as Polars' `ewm_mean_by` computes one, and the sums and rates divide
 into weighted means such as a VWAP (volume-weighted average price). Each
 operator keeps running sums, so it does the same work on a row however long
 its window.
@@ -1580,10 +1580,10 @@ This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
 notional = pl.col("price") * pl.col("quantity")
-next_minute = dict(half_life="10s", window_size="1m")     # weights halve every 10 s from the row; the window ends a minute on
+next_minute = dict(half_life="10s", window_size="1m", reverse=True)   # weights halve every 10 s from the row; the window ends a minute on
 windowed = pl.scan_parquet("trades.parquet").online.with_windows(
     mid_trend=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),     # a feature: looks back
-    fwd_edge=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute) - pl.col("mid"),   # a target: looks ahead
+    fwd_edge=po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute) - pl.col("mid"),   # a target: looks ahead
     clock="ts", gap_cap="5m", group="symbol",              # the clock, the longest step it ages by, and one set of windows per symbol
 ).collect()
 print("time      symbol  mid      mid_trend  fwd_edge")
@@ -1856,7 +1856,7 @@ except ValueError as e:
 ```
 
 ```text
-not found: spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
+spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
 ```
 
 **With a type checker, call `po.fit_predict`,
@@ -1893,7 +1893,7 @@ bank = po.ModelBank([spec])                                # nothing learned yet
 for out in bank.fit_predict_batches(pl.scan_parquet("ticks.parquet"), chunk_size=100):
     # out: the chunk's columns, plus one column per spec. Between chunks, the bank answers questions:
     x0 = bank.coef().filter(pl.col("group") == "b0", pl.col("term") == "x0")["coef"][0]
-    print(f"after {bank.rows_fed()} rows: b0's coefficient on x0 is {x0:.3f}")
+    print(f"after {bank.rows_fed} rows: b0's coefficient on x0 is {x0:.3f}")
 bank.save("bank.state")                                    # written whole or not at all: a temporary file, then a rename
 
 # With chunks of your own: for chunk in pl.scan_parquet("ticks.parquet").collect_batches(): bank.fit_predict(chunk)
@@ -2051,7 +2051,7 @@ recipe. The three uses:
 |---|---|---|
 | resume | `po.ModelBank.load(path)`, or `load_state=` on a query | the next row is learned as one run would learn it |
 | serve | `bank.predict(frame)`, or `lf.online.predict(path)` | each row is scored as `fit_predict` would score it as the next row, and the state never moves |
-| read elsewhere | `bank.to_json()` | everything `save` writes, as JSON |
+| read elsewhere | `bank.write_json()` | everything `save` writes, as JSON |
 
 This code fits `df`, saves the bank, and loads it back. Served, the first
 row of `today` gets the prediction one run over `df` and `today` gives it.
@@ -2142,7 +2142,7 @@ every group's clock back, which the bank refuses unless
 rows after each group's last clock (a row at that clock counts as learned)
 and every row of a group the bank has not seen. It keeps a `LazyFrame`
 lazy. For a bank whose specs all count rows, it raises `ValueError`; drop
-the learned rows with `frame.slice(bank.rows_fed())` instead, when the
+the learned rows with `frame.slice(bank.rows_fed)` instead, when the
 input starts where the saved one did.
 
 **A query abandoned before its last row, or ended by an error inside the
@@ -2244,7 +2244,8 @@ the same coefficients score every row. How `predict` reads a row:
 ### Reading a state without this library
 
 To read a state from a program without this library, export it with
-`bank.to_json()`, or write it to a file with `bank.save_json(path)`. Keep
+`bank.write_json()`, which returns the text, or write it to a file with
+`bank.write_json(path)`. Keep
 the binary file for resuming, since `load` reads only that form. Every
 export is read back and checked against the state before you get it, and
 one that does not match raises `ValueError`.
@@ -2260,8 +2261,8 @@ import json
 
 bank = po.ModelBank([po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
 bank.fit_predict(df)
-text = bank.to_json()                     # everything save() writes, as JSON
-bank.save_json("bank.json")               # the same, to a file
+text = bank.write_json()                  # everything save() writes, as JSON
+bank.write_json("bank.json")              # the same, to a file
 state = json.loads(text)                  # any JSON reader
 half_life = state["specs"][0]["half_life"]
 print(f"{state['magic']}: half_life {half_life!r}, as a number {float(half_life)}")
@@ -2303,8 +2304,8 @@ fitted.save("bank.state")
 
 bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
 print(repr(bank))                        # its specs, its groups, the rows it was fed
-print(bank.rows_fed(), bank.solve_failures())   # rows fed over every group; solves that needed help
-print(bank.output_fields()["ridge"])     # the fields of the spec's column
+print(bank.rows_fed, bank.solve_failures())     # rows fed over every group; solves that needed help
+print(bank.output_fields["ridge"])       # the fields of the spec's column
 for spec_name, group, rows, last in bank.groups().iter_rows():   # one row per (spec, group)
     print(spec_name, group, rows, last)
 ```
@@ -2758,8 +2759,8 @@ print(pl.read_parquet("blocks.parquet").select("group", "rows_fed").rows())
 ### Reading a correlation matrix
 
 `po.corr` repairs, shrinks, summarizes and scores a correlation matrix,
-given as an array, a `gram()` dict or a closed row (`po.corr.matrix`
-turns any of them into an array). Each function needs only numpy, and
+given as an array, a `gram()` dict or a closed row (`po.gram.correlation`
+turns a Gram into one). Each function needs only numpy, and
 follows the paper it names. A matrix pieced together pair by pair, each
 pair on its own rows, need not be a correlation matrix at all, as here:
 its smallest eigenvalue is negative. `po.corr.nearest` repairs it.

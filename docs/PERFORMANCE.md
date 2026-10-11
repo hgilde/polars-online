@@ -4620,12 +4620,12 @@ times moved up to 13%, and the sub-second scan-and-sink's up to a third.
 `c061b7a`. An Apple M4 Pro. Load: 5.0 rising to 5.7 for the sweep, and
 5.7 to 6.0 for the comparison with §32's core.*
 
-The window core rewritten around operators (`po.ewm_mean`, `po.rewm_sum`
+The window core rewritten around operators (`po.ewm_mean`, `po.ewm_sum(reverse=True)`
 and the rest) on the stream §32 measured: about two
 rows a second (exponential gaps), three in ten of them trades, parquet in
 and `sink_parquet` out, one group. Each run is its own process, peak RSS
 from `getrusage`. The forward VWAP is now two decayed sums and a formula --
-`po.rewm_sum(price * quantity) / po.rewm_sum(quantity)` -- where §32's was
+`po.ewm_sum(price * quantity, reverse=True) / po.ewm_sum(quantity, reverse=True)` -- where §32's was
 one weighted window. The four cases are §32's: the window alone, the
 `rolling` recipe, the window as an `ewridge` target under an `embargo` of
 `H`, and the model alone on the written column. Two cases are new: `k`

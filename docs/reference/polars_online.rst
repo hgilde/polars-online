@@ -10,6 +10,10 @@
 .. autoclass:: polars_online.ArrowStruct
    :members:
 
+.. autoclass:: polars_online.ColumnNotFoundError
+
+.. autoclass:: polars_online.PolarsOnlineWarning
+
 .. autoclass:: polars_online.OrderNotGuaranteedWarning
 
 .. autoclass:: polars_online.ConsumedSourceWarning
