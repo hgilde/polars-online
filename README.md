@@ -253,7 +253,7 @@ These hold for every spec, however a bank is run:
 | **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([Warm-up](#warm-up)) |
 | **a clock policy** | a spec with a clock caps each step at `gap_cap`, and applies `session_gap` at a session boundary. A step back the model would learn from is refused, naming the row, unless `restart_after_step_back` makes it a restart ([Sessions, gaps and steps back](#sessions-gaps-and-steps-back)) |
 | **named mistakes** | every keyword is checked against its type when the spec is built, and a missing column is reported, with the spec that wanted it and the role it had there, before the bank learns any row |
-| **tested** | 1,215 Rust tests and 3,840 Python cases (counted on 2026-10-03), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
+| **tested** | 2,207 Rust tests and 6,262 Python cases (counted on 2026-10-11), held to independent libraries such as scikit-learn, statsmodels and river and to adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
 ### Install
 
@@ -1758,10 +1758,11 @@ default). Run it with `collect()` for one frame, `sink_parquet()` to write
 a file without holding the result in memory, or `collect_batches()` for one
 chunk at a time.
 
-**The chunk size never changes the numbers.** It trades memory for
-overhead: memory is the bank's state plus one chunk, however long the
-files. The recipe runs the same spec over `ticks/*.parquet` in one chunk,
-and over `ticks.parquet` one row at a time, and the two agree to the bit.
+**The chunk size trades memory for overhead, and never changes the
+numbers** ([Row order and the two guarantees](#row-order-and-the-two-guarantees)).
+Memory is the bank's state plus one chunk, however long the files. Here the
+query runs the same spec over `ticks/*.parquet` in one chunk, and over
+`ticks.parquet` one row at a time, and the two agree to the bit.
 `df`'s `y` is `1 + 2·x0 − x1` plus noise, so the fit of each stock finds
 those coefficients, and 0 for `x2`.
 This code uses the files `ticks.parquet` and `ticks/*.parquet` from [Example data](#example-data):
@@ -3189,8 +3190,9 @@ hmm puts 94% of the rows after seeding in their true regime
 
 **Read a regime's age from `bocpd`'s `run_mode`.** Fifty rows after each
 switch, `bocpd` dates the new regime to within three rows of the truth. Its
-alarm, `p_change`, scores each row on its own, so it barely moves when only
-the spread changes: no single row of the wider regime is surprising.
+alarm, `p_change`, scores each row on its own, so it barely moves when the
+spread grows 2.7 times: no single row of the wider regime is surprising
+enough on its own.
 
 **Tell `hmm` that regimes last.** One return says little about which regime
 it came from. A sticky `transition` matrix, counted by `transition_prior`
@@ -4113,8 +4115,8 @@ values at ±1e8, zero weights and tiny groups:
 | zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/online-core/tests/model_contract.rs`) |
 | each model's numbers | a reference written from its update equations, and another library wherever one computes the same quantity, such as statsmodels, scipy and [river](https://riverml.xyz) |
 
-The suite has 1,215 Rust tests and 3,840 pytest cases, counted on
-2026-10-03. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
+The suite has 2,207 Rust tests and 6,262 pytest cases, counted on
+2026-10-11. It runs on Linux at Python 3.12, 3.13 and 3.14, and on macOS
 and Windows at 3.12 and 3.14, at every push to `main` and every pull
 request. [docs/TESTING.md](docs/TESTING.md) is the ledger of what each part
 proves: every reference and its agreement, every invariant, and [where the

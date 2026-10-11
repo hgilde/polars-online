@@ -285,8 +285,8 @@ def bocpd(
            * - the break
              - ``p_change``
              - the run length
-           * - a tenfold variance step
-             - 0.83 on the row itself
+           * - the spread steps tenfold, under a prior of the rows' scale
+             - 0.83 on the row of the break
              - found within a few rows, dated to the right row
            * - a four-sigma mean shift under a diffuse prior
              - barely lifts

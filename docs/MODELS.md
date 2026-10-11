@@ -2735,12 +2735,16 @@ average.
 
 **Read the regime's age from `run_mode`, and use `p_change` only as an
 alarm.** `p_change` is a per-row likelihood ratio, so it is spiky, and its
-height depends on the size of the break against the prior scale. On three
-kinds of break:
+height depends on the size of the break against the prior scale. A break
+one row makes plain lifts it on that row. A break that takes several rows
+to show, as the recipe's fourfold spread does, lifts it hardly at all,
+since by the time the evidence is in, the new run is longer than the one
+row `p_change` reads: the recipe's peak is 0.02. On three kinds of break,
+measured on streams of their own:
 
 | the break | `p_change` | the run length |
 |---|---|---|
-| a ten-fold variance step | 0.83 on the row itself | finds it one to three rows later, and dates it to the right row |
+| the spread steps tenfold, under a prior of the rows' scale (`prior_nu=2`, `prior_scale=2e-4`, Adams and MacKay's) and `hazard=250` | 0.83 on the row of the break | finds it one to three rows later, and dates it to the right row |
 | a four-sigma mean shift, with a diffuse prior | barely lifts | finds it one to three rows later, and dates it to the right row |
 | a change in correlation alone | never moves at all | reaches it only under `emission="gaussian"`, a median of 121 rows later ([docs/REGIMES.md §5](REGIMES.md#5-two-changepoint-detectors-on-the-same-break)) |
 

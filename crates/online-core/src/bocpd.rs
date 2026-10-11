@@ -230,8 +230,9 @@ use crate::solve::SpdFactor;
 /// row instead (the module docs), so after the row the mass at `r = 0` is 0
 /// and `P(r ≤ 1)` is the chance that the row began a run.
 ///
-/// It is an alarm and not the answer. Measured: a tenfold variance step
-/// takes it to 0.83 on the row of the break; a four-sigma mean shift under
+/// It is an alarm and not the answer. Measured: a tenfold step in the
+/// standard deviation, under a prior of the rows' scale, takes it to 0.83
+/// on the row of the break; a four-sigma mean shift under
 /// a diffuse prior barely lifts it; a change in the correlation alone never
 /// moves it at all. `run_mode` finds all three -- one to three rows later,
 /// and dated to the right row, since it is the pre-row run length and so

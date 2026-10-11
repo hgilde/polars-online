@@ -5,8 +5,8 @@ suite and wants the evidence: what each part proves, what it has found, and
 where it is thin. Its emphasis is on edge cases, and on comparing behaviour
 against reference implementations, including [river](https://riverml.xyz).
 
-**The suite has 1,215 Rust tests and 3,840 pytest cases, counted on
-2026-10-03.** `cargo test --workspace --exclude online-py -- --list` and
+**The suite has 2,207 Rust tests and 6,262 pytest cases, counted on
+2026-10-11.** `cargo test --workspace --exclude online-py -- --list` and
 `pytest --collect-only` did the counting. Each model is held to a reference
 it cannot share a bug with. The bank is held to the invariants it promises:
 the same numbers whether a stream arrives in one chunk or many, runs on one
@@ -21,6 +21,7 @@ from 2026-09-27 ([Measured coverage](#measured-coverage)).
 | 2026-09-24 | 831 | 1,564 functions, 2,838 cases |
 | 2026-09-25 | 976 | 3,265 cases |
 | 2026-10-03 | 1,215 | 3,840 cases |
+| 2026-10-11 | 2,207 | 6,262 cases |
 
 The 2 opt-in soak tests are outside every count. They run with
 `pytest -m soak`, and the weekly leak-check workflow runs them. The counts
