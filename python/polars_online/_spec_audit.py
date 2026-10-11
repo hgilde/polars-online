@@ -115,18 +115,35 @@ def audit(
     ``distinct_cap`` counters. A value not held costs a pass over them,
     ``O(distinct_cap)``: below the cap the counters after it move to make room,
     and past it every counter gives up one. A continuous column, whose values
-    are nearly all new, pays that pass on nearly every row. On 100,000 rows,
-    under a load average of 6 to 12, one such column ran at 5.5 to 6.1 million
-    rows a second at 256 counters, 2.4 million at 8,192 and 0.31 million at
-    65,536. The digest compresses every 256 rows, a few comparisons a row
-    amortized, and ``pairs`` costs ``k(k - 1)/2`` pair updates a row. Ten
-    columns ran at 1.3 million rows a second, and 1.2 million with their pairs,
-    where an ``ewridge`` on the same columns ran at 4.1 million (500,000 rows
-    on an Apple M4 Pro, under a load average of 10). Memory does not grow with
-    the rows: about 10 KiB a column at the defaults (``distinct_cap`` counters
-    of 16 bytes, a digest of at most about 200 centroids and 256 values
-    waiting), and 72 bytes a pair, in every group. A saved state held 4.8 KB a
-    column.
+    are nearly all new, pays that pass on nearly every row. The digest
+    compresses every 256 rows, a few comparisons a row amortized, and
+    ``pairs`` costs ``k(k - 1)/2`` pair updates a row. Memory does not grow
+    with the rows: about 10 KiB a column at the defaults (``distinct_cap``
+    counters of 16 bytes, a digest of at most about 200 centroids and 256
+    values waiting), and 72 bytes a pair, in every group.
+
+    Measured through :meth:`~polars_online.ModelBank.fit_predict` on frames
+    in memory, of columns drawn from ``N(0, 1)``, the best of seven runs on an
+    Apple M4 Pro under a load average of 3 to 4 (polars 2.0.0):
+
+    .. list-table::
+       :header-rows: 1
+       :widths: 64 36
+
+       * - what ran
+         - million rows a second
+       * - one column, 100,000 rows, at 256 / 8,192 / 65,536 counters
+         - 8.8 / 2.6 / 0.34
+       * - ten columns, 500,000 rows
+         - 1.47
+       * - the same, with ``pairs=True``
+         - 1.33
+       * - an ``ewridge`` on the same columns (nine features, one target)
+         - 4.4
+
+    The saved state of those ten columns held 4.9 KB a column
+    (:meth:`~polars_online.ModelBank.save_bytes`, 48,654 bytes, of which an
+    unfed bank is 988), and 4.7 KB a column at fifty.
 
     **Every row is read.** Another model skips a row whose feature is not
     usable; an audit counts it, which is the point. A restart, at a session
@@ -137,11 +154,11 @@ def audit(
     set ``restart_after_step_back`` (``0`` restarts at each), and
     :meth:`~polars_online.ModelBank.summary`'s ``clock_backwards`` and
     ``check()``'s ``step_back`` count them.
-    :meth:`~polars_online.ModelBank.predict`
-    counts nothing, as it teaches nothing. The counts are the same whether
-    the stream comes in one chunk or a thousand (hard rule 3), and are kept
-    in the state, so an audit saved after one file goes on over the next.
-    Hard rule 2, out of sample by construction, has nothing to apply to.
+    :meth:`~polars_online.ModelBank.predict` counts nothing, as it teaches
+    nothing. The counts are the same whether the stream comes in one chunk
+    or a thousand, and are kept in the state, so an audit saved after one
+    file goes on over the next. An audit predicts nothing, so it has no
+    prediction to keep out of sample.
 
     **Groups merge.** ``ModelBank.audit(pooled=True)`` reads one audit of
     every group, as if they were one stream. The counts, the moments

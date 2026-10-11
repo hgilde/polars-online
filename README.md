@@ -2838,9 +2838,12 @@ priors, defined in the means and scales as they stand, are carried into the
 anchor's coordinates exactly. When a scale moves past twice or half the
 anchor's, or a mean by more than the anchor's scale, the state is mapped
 to the new coordinates, `b ← A b` and `P ← A P Aᵀ`. So no prediction moves
-because the scaler did. Read through the scaler as it stood, its own wander
-under a half-life of 50 cost 223 noise variances of out-of-sample error at
-R² 0.99998. A map of more than 1024 times a scale is not followed. The old
+because the scaler did. Read through the scaler as it stood, as release
+0.13.0 read it, its own wander under a half-life of 50 cost 223 noise
+variances of out-of-sample error at R² 0.99998: one feature, 30,000 rows,
+the median of five seeds. This filter costs 0.014 there, as an
+unstandardized one does. A map of more than 1024 times a scale is not
+followed. The old
 reading, a coefficient per current standard deviation, is this filter on a
 column z-scored in the stream with `standardize=False`, as in
 [Features in units of their spread](#features-in-units-of-their-spread).
@@ -3471,8 +3474,8 @@ for a constant feature, and `t` at `n_kish ≤ 2`.
 neither independent nor Gaussian. `t` is built on `n_kish`, the right count
 for unequal weights, which says nothing about rows that resemble their
 neighbours. So on a smooth stream it claims evidence that is not there:
-two *independent* AR(1) series with `φ = 0.9` and `0.8` come out at
-`t = 2.39`.
+over 1,000 pairs of *independent* AR(1) series with `φ = 0.9` and `0.8`,
+3,000 rows each, `|t|` passed 1.96 on 45% of them.
 
 Five settings extend the pairs, the first two with views that are off by
 default ([docs/MARGINAL-LAGS-AND-BINS.md](docs/MARGINAL-LAGS-AND-BINS.md)
@@ -3496,8 +3499,8 @@ statistic `ew_cov(lags=)` computes, to the bit, under
 [`ew_cov`'s](#ew_cov--exponentially-weighted-moments) rules for the ring.
 `serial_rule` turns them into a count that allows for the resemblance, after
 Bartlett (1935): `n_serial = n_kish / (1 + 2 Σ_l ρ_x(l)·ρ_y(l))`. Under
-`"geometric"`, the two AR(1) series that gave `t = 2.39` come out at
-`t_serial = 1.03`: no evidence, which is the truth.
+`"geometric"`, `|t_serial|` passed 1.96 on 5.4% of those pairs of AR(1)
+series, the 5% the threshold stands for.
 
 | `serial_rule` | the sum over the kept lags | suits |
 |---|---|---|

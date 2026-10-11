@@ -666,3 +666,65 @@ def test_a_large_offset_and_a_tiny_scale_leave_the_centred_moments():
     assert vt == pytest.approx(v * 1e-200, rel=1e-6)
     assert rt == pytest.approx(r, rel=1e-9)
     assert np.isfinite([vt, rt]).all()
+
+
+def test_a_window_is_polars_rolling_with_an_exponential_weight():
+    """The docstring's agreement with Polars: under a ``window_size``, each
+    field is ``df.rolling(clock, period=window_size)`` over the rows each row
+    weighted ``2 ** (-age / half_life)`` from the window's last row, shifted
+    one row, since a row's moments are read before the row. 20,000 rows
+    about a minute apart, a three-hour window and a half-life of 30 minutes,
+    a column near 100 that wanders: measured 8.5e-14 for its mean, 6.3e-14
+    for its variance and 4.3e-14 for the correlation; held to 1e-12."""
+    from datetime import datetime, timedelta
+
+    n = 20_000
+    rng = np.random.default_rng(0)
+    stamps = np.cumsum(rng.exponential(60.0, n) + 1e-3)  # strictly increasing
+    t0 = datetime(2024, 1, 2)
+    z = rng.standard_normal((n, 2))
+    df = pl.DataFrame(
+        {
+            "t": [t0 + timedelta(microseconds=int(u * 1e6)) for u in stamps],
+            "x0": 100.0 + np.cumsum(0.1 * z[:, 0]),
+            "x1": 0.5 * z[:, 0] + z[:, 1],
+        }
+    ).with_columns(pl.col("t").dt.cast_time_unit("us"))
+    spec = po.spec.ew_cov(
+        "c",
+        features=["x0", "x1"],
+        stats=["mean", "var", "cov", "corr"],
+        clock="t",
+        half_life="30m",
+        window_size="3h",
+        gap_cap="1d",  # past every gap here, so no gap is capped
+        min_weight=0.0,
+    )
+    got = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
+
+    age = (pl.col("t").max() - pl.col("t")).dt.total_microseconds() / 1e6
+    w = 2.0 ** (-age / 1800.0)
+    m0 = (w * pl.col("x0")).sum() / w.sum()
+    m1 = (w * pl.col("x1")).sum() / w.sum()
+    v0 = (w * (pl.col("x0") - m0) ** 2).sum() / w.sum()
+    v1 = (w * (pl.col("x1") - m1) ** 2).sum() / w.sum()
+    c01 = (w * (pl.col("x0") - m0) * (pl.col("x1") - m1)).sum() / w.sum()
+    want = (
+        df.rolling("t", period="3h", closed="right")
+        .agg(
+            m0.alias("mean_x0"),
+            m1.alias("mean_x1"),
+            v0.alias("var_x0"),
+            v1.alias("var_x1"),
+            c01.alias("cov_x0_x1"),
+            (c01 / (v0 * v1).sqrt()).alias("corr_x0_x1"),
+        )
+        .with_columns(pl.exclude("t").shift(1))
+    )
+    worst = {}
+    for col in ["mean_x0", "mean_x1", "var_x0", "var_x1", "cov_x0_x1", "corr_x0_x1"]:
+        a = got[col].to_numpy()[50:].astype(float)  # past the first, nearly empty windows
+        b = want[col].to_numpy()[50:].astype(float)
+        assert np.isfinite(a).all() and np.isfinite(b).all(), col
+        worst[col] = float(np.max(np.abs(a - b)))
+    assert max(worst.values()) <= 1e-12, worst

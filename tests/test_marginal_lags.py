@@ -100,6 +100,49 @@ def test_t_claims_significance_that_t_serial_does_not():
     assert row["n_serial"] < row["n_kish"] / 3, "the correction should bite hard at phi=0.9/0.8"
 
 
+def test_over_many_null_streams_t_serial_rejects_at_its_level():
+    """The docstring's figures: 1,000 pairs of independent AR(1) series
+    (``phi_x = 0.9``, ``phi_y = 0.8``, 3,000 rows each, one group each, no
+    decay, ``LAGS``, ``"geometric"``). Bartlett's factor is ``1 + 2 * 0.72 /
+    (1 - 0.72) = 6.14``, so ``t`` spreads ``sqrt(6.14) = 2.48`` and passes
+    1.96 on far more than 5% of the streams, where ``t_serial`` spreads about
+    1. Measured: ``sd(t)`` 2.52 and 45.5% past 1.96, ``sd(t_serial)`` 1.04 and
+    5.4%, median ``n_serial`` 511 (``3000 / 6.14 = 488``). The bounds are
+    about three standard errors of 1,000 draws either side."""
+    reps, n = 1000, 3000
+    frames = []
+    for seed in range(reps):
+        rng = np.random.default_rng(10_000 + seed)
+        e = rng.standard_normal((2, n))
+        e[:, 0] = 0.0
+        x = lfilter([math.sqrt(1 - 0.81)], [1.0, -0.9], e[0])  # as `ar1`, from x_0 = 0
+        y = lfilter([math.sqrt(1 - 0.64)], [1.0, -0.8], e[1])
+        frames.append(pl.DataFrame({"g": seed, "t": np.arange(n, dtype=float), "x": x, "y": y}))
+    spec = po.spec.marginal(
+        "m",
+        targets=["y"],
+        features=["x"],
+        clock="t",
+        half_life=float("inf"),
+        gap_cap=1e12,
+        min_weight=2.0,
+        lags=LAGS,
+        serial_rule="geometric",
+        group="g",
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(pl.concat(frames))
+    table = bank.marginal("m")
+    assert table.height == reps
+    t = table["t_stat"].to_numpy()
+    ts = table["t_serial"].to_numpy()
+    assert 2.25 < t.std(ddof=1) < 2.75, t.std(ddof=1)
+    assert 0.40 < np.mean(np.abs(t) > 1.96) < 0.51, np.mean(np.abs(t) > 1.96)
+    assert 0.95 < ts.std(ddof=1) < 1.13, ts.std(ddof=1)
+    assert 0.033 < np.mean(np.abs(ts) > 1.96) < 0.075, np.mean(np.abs(ts) > 1.96)
+    assert 470 < np.median(table["n_serial"].to_numpy()) < 550
+
+
 def test_the_geometric_fit_recovers_the_decays():
     row = pairs(stream(seed=5, phi_x=0.9, phi_y=0.8), serial_rule="geometric")
     assert row["phi_x"] == pytest.approx(0.9, abs=0.06)

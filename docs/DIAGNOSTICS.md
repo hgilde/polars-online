@@ -923,8 +923,9 @@ coefficient's standard error and t from a Gram, such as one loaded from a
 state, at `n = target_n_kish` ([The running sums behind a
 fit](../README.md#the-running-sums-behind-a-fit)). Read its t as a scale for
 comparing coefficients. `marginal`'s `t_serial` corrects each pair's count
-for rows that resemble their neighbours, after Bartlett (1935): on two
-independent AR(1) series, `t = 2.39` became `t_serial = 1.03`
+for rows that resemble their neighbours, after Bartlett (1935): over
+1,000 pairs of independent AR(1) series, `|t|` passed 1.96 on 45% of them
+and `|t_serial|` on 5.4%
 ([`marginal`](../README.md#marginal--every-pairs-moments-kept-in-the-state)).
 
 **What to do.** For a target that looks ahead, read `se_coef_hac`, with

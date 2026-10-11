@@ -2031,13 +2031,17 @@ def kalman(
         raw reading of a feature reaches the state, and features scaled by a
         power of two predict the same to the bit. A filter read through the
         moments as they stand instead has a finite half-life's own wander move
-        every prediction: at a half-life of 50 and R² 0.99998 its out-of-sample
-        error was 223 noise variances above the noise. The anchor gives the
-        same filter, to rounding, as a re-map on every row, and is a fifth
-        cheaper a row at ten features (221 against 277 nanoseconds). A re-map
-        past what a stretch of data makes -- a scale by more than 1024 times
-        either way, or a mean by more than 1024 of the anchor's scale -- is not
-        followed, and the state is read in the new coordinates.
+        every prediction. Release 0.13.0 read it that way: on ``y = 2 x + e``
+        with one feature ``x ~ N(0, 1)``, R² 0.99998, 30,000 rows and both
+        half-lives 50, its out-of-sample error over rows 10,000 on stood 223
+        noise variances above the noise (the median of seeds 0 to 4, 212 to
+        244). This filter stands 0.014 above it there, as the unstandardized
+        one does. The anchor gives the same filter, to rounding, as a re-map on
+        every row, and is a fifth cheaper a row at ten features (221 against
+        277 nanoseconds). A re-map past what a stretch of data makes -- a scale
+        by more than 1024 times either way, or a mean by more than 1024 of the
+        anchor's scale -- is not followed, and the state is read in the new
+        coordinates.
 
         For a coefficient per current standard deviation, which moves with the
         scale, z-score the column in the stream and give it with
@@ -2694,10 +2698,15 @@ def ew_cov(
 
     One O(k²) update per row, which replaces the O(k²) passes a pure-Polars
     pairwise EW correlation needs. For moments on data that fits in memory,
-    polars already does this: ``df.rolling(clock, period=...).agg(...)`` with
-    an exponential weight agrees to 1e-14. The reason to reach for the spec is
-    a stream, a saved state, or the work: polars recomputes each window,
-    ``O(n * W)``, where this is ``O(n)``.
+    polars already does this under a ``window_size``:
+    ``df.rolling(clock, period=window_size).agg(...)``, each row weighted
+    ``2 ** (-age / half_life)`` from the window's last row, and shifted one
+    row, since a row's moments are read before the row. On 20,000 rows about a
+    minute apart, a three-hour window (about 180 rows) and a half-life of 30
+    minutes, the mean of a column near 100 agreed to 8.5e-14, its variance to
+    6.3e-14 and its correlation with a second column to 4.3e-14. The reason to
+    reach for the spec is a stream, a saved state, or the work: polars
+    recomputes each window, ``O(n * W)``, where this is ``O(n)``.
 
     .. rubric:: Parameters
 
@@ -3347,7 +3356,7 @@ def pa(
     a target scaled by ``k`` fits as the unscaled one, scaled by ``k``; under
     ``"pa1"`` only while the cap does not bind.
 
-    **On a level that moves, raise ``c`` or difference the target.** The fit
+    **On a level that moves, raise c or difference the target.** The fit
     starts from zero coefficients, and a ``pa1`` cap of 1 moves the intercept
     about one unit a row. On a target falling from 1,000 to -1,000 at 0.5 a row
     (half-life 200, noise 0.3), the intercept stood at 51.5 at row 50 and 401
@@ -4549,13 +4558,17 @@ def marginal(
                dense; the fitted ``phi_x`` and ``phi_y`` are reported
              - fewer than two kept lags are positive on either side
 
-        Measured on two independent AR(1) series with ``phi_x = 0.9`` and
-        ``phi_y = 0.8``: ``t_stat = 2.39``, significance that is not there,
-        against ``t_serial = 1.03``, with ``n_kish = 3000`` becoming
-        ``n_serial = 557``. The lags add ``(L + 2C) * p * T + L * T`` doubles
-        beside the pair moments, for ``L`` lags of which ``C`` keep the cross
-        terms. They also hold a ring of ``max(lags)`` learned rows: the one
-        place ``marginal`` holds rows rather than state.
+        Measured on 1,000 pairs of independent AR(1) series, ``phi_x = 0.9``
+        and ``phi_y = 0.8``, each 3,000 rows with no decay,
+        ``lags = [1, 2, 3, 5, 8, 13]`` and ``"geometric"``: ``t_stat`` spread
+        with a standard deviation of 2.52, near Bartlett's
+        ``sqrt(1 + 2 * 0.72 / (1 - 0.72)) = 2.48``, and passed 1.96 on 45% of
+        them: significance that is not there. ``t_serial`` spread 1.04 and
+        passed on 5.4%, its ``n_serial`` a median 511 of ``n_kish = 3000``. The
+        lags add ``(L + 2C) * p * T + L * T`` doubles beside the pair moments,
+        for ``L`` lags of which ``C`` keep the cross terms. They also hold a
+        ring of ``max(lags)`` learned rows: the one place ``marginal`` holds
+        rows rather than state.
     ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``, ``bin_budget``
         The nonlinear view. Every statistic above is linear, and a feature can
         be strongly related to a target with ``corr`` at zero: a threshold, a
