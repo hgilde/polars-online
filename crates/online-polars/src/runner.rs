@@ -256,7 +256,7 @@ impl RunConfig {
             return Err("config has no [[specs]] entries".into());
         }
         if self.chunk_size == 0 {
-            return Err("chunk_size must be > 0".into());
+            return Err("chunk_size must be at least 1, got 0".into());
         }
         // Named first: a scoring run learns nothing, so it can save no state
         // and close no group, and the refusal below asked for one of the two
@@ -734,7 +734,7 @@ fn run_with(
     mut progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
     let chunk_size = NonZeroUsize::new(opts.chunk_size)
-        .ok_or_else(|| polars_err!(ComputeError: "chunk_size must be > 0"))?;
+        .ok_or_else(|| polars_err!(ComputeError: "chunk_size must be at least 1, got 0"))?;
     // The schema of an empty output, when the source turns out to be empty
     // and no frame ever reaches the bank.
     let empty_input = match &input {

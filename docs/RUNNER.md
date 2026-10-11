@@ -20,7 +20,8 @@ data](../README.md#example-data) writes (`ticks.parquet` and
 from `ticks.parquet`. It also holds `today.csv` and `feed.dat`, the same
 rows in two other formats. `tests/test_production_hardening.py` runs each command
 through the built `polars-online` and holds what it prints, standard output and
-standard error as a terminal shows them, to what is shown.
+standard error together, to what is shown. The progress line is drawn only
+on a terminal, so the outputs shown leave it out.
 
 | section | what it covers |
 |---|---|
@@ -96,16 +97,17 @@ chunk_size: 100000
 
 **A plain run fits the specs over the input and writes the output.** What
 depends on the rows themselves, such as a clock that steps back, only the
-run can find. The first line is the progress, rewritten in place as each
-chunk is read, and `--quiet` turns it off:
+run can find. On a terminal, a progress line above the summary counts the
+rows as each chunk is read, rewritten in place. It is drawn only when
+standard error is a terminal, so a log or a pipe never holds it, and
+`--quiet` turns it off:
 
 ```sh
 polars-online --config job.toml
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 ```
 
 ### Saving, resuming and scoring
@@ -121,8 +123,7 @@ polars-online --config job.toml --input today.parquet --load-state run.state --s
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 saved state to run.state
 ```
 
@@ -151,16 +152,14 @@ polars-online --config job.toml --input today.parquet --load-state run.state --s
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 saved state to run.state
-
 wrote 0 rows (0 chunks) to fitted.parquet
 saved state to run.state
 ```
 
-The second run keeps no row: its progress line is empty, it writes an
-output with no rows, and it saves the state it loaded, byte for byte. Without `--skip-learned` it would stop
+The second run keeps no row: it writes an output with no rows, and it
+saves the state it loaded, byte for byte. Without `--skip-learned` it would stop
 at its first row, whose clock is 399 behind the state's last.
 
 **`--predict` scores against the resumed state and learns nothing:**
@@ -170,8 +169,7 @@ polars-online --config job.toml --load-state run.state --predict --input today.p
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 ```
 
 It drops the configuration's `save_state` and `closed_groups`, so one TOML
@@ -189,8 +187,7 @@ polars-online --config job.toml --no-output --save-state gram.state
 ```
 
 ```text
-400 rows in 1 chunks
-processed 400 rows (1 chunks), no output
+processed 400 rows (1 chunk), no output
 saved state to gram.state
 ```
 
@@ -215,8 +212,7 @@ polars-online --config blocks.toml --no-output --closed-groups blocks.parquet
 ```
 
 ```text
-400 rows in 1 chunks
-processed 400 rows (1 chunks), no output
+processed 400 rows (1 chunk), no output
 wrote closed groups to blocks.parquet
 ```
 
@@ -243,18 +239,24 @@ A script can tell how a run ended from its exit status:
 
 **The summary goes to standard output, and everything else to standard
 error.** The summary is the lines a run prints when it ends, such as `wrote
-400 rows (1 chunks) to fitted.parquet` and `saved state to run.state`.
+400 rows (1 chunk) to fitted.parquet` and `saved state to run.state`.
 After `wrote`, a spec whose groups ended the run not ready has a line of
 its own. It counts the groups whose last row was withheld, by
 `withheld_reason`, and those with a coefficient more ridge than data
 (`min_support_coef < 0.5`), as
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2); 1 group with min_support_coef < 0.5`.
 A spec with neither has no line, as in every run on this page.
-Standard error carries the progress, which `--quiet` turns off, the timings
+Standard error carries the progress line on a terminal, the timings
 `POLARS_ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
 carries the notices about a model's warm-up, led by `polars-online:` as an error
 is. So read a failure from the exit status: a line on standard error does
 not mean the run failed.
+
+**The exit status and the files a run writes are the command line's
+contract, and what it prints is not.** The summary, the notices, the
+errors and the timing lines are text for a person, which a minor release
+may reword. So a script reads the exit status and the files, never the
+words.
 
 ## The configuration file
 
@@ -281,7 +283,7 @@ A flag given on the command line wins over its key in the TOML file:
 | `--closed-groups` | `closed_groups` | write the groups that closed to a sidecar file; needs a spec with `group_close` |
 | `--predict` | `predict` | score against the resumed state and learn nothing; needs `--load-state` or `load_state`, drops the TOML's `save_state` and `closed_groups`, and refuses `--save-state` and `--closed-groups` |
 | `--dry-run` | | check the configuration, the input's schema and the bank as the run would, and print the output schema, feeding the bank no row |
-| `-q`, `--quiet` | | suppress the per-chunk progress |
+| `-q`, `--quiet` | | suppress the progress line, which is drawn only when standard error is a terminal |
 | | `keep_columns` | the input columns to keep; all of them when it is empty |
 | | `[[specs]]` | the specs, one table each |
 
@@ -305,10 +307,8 @@ polars-online --config job.toml --input feed.dat --input-format ipc --output out
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to scored.ndjson
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to out.parquet
+wrote 400 rows (1 chunk) to scored.ndjson
+wrote 400 rows (1 chunk) to out.parquet
 ```
 
 **A glob or a directory is read file by file, in the order of the paths as
@@ -449,7 +449,6 @@ polars-online --config job.toml --chunk-size 7 --output small-chunks.parquet
 ```
 
 ```text
-400 rows in 58 chunks
 wrote 400 rows (58 chunks) to small-chunks.parquet
 ```
 
@@ -470,6 +469,9 @@ file, a callback or `Discard`, and `RunOptions`, whose `learn_only` is the
 ### Versioning
 
 The command line needs no Python: it carries its own Rust Polars, 0.55.2.
+`polars-online --version` prints three lines: the package's version, the
+state schema its saved states are written in, and the Rust Polars it
+carries. `-V` prints the first line alone.
 So the py-polars floor applies only to the Python calls this guide names.
 That floor is `LazyFrame.collect_batches`, which `lf.online.fit_predict`
 and `ModelBank.fit_predict_batches` read with, and which py-polars added in

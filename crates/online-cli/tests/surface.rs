@@ -172,3 +172,92 @@ fn a_relative_path_is_the_config_files_in_the_toml_and_the_working_directorys_in
     assert!(!dir.join("run.state").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+/// C-9: the progress line is drawn only when standard error is a terminal,
+/// so a log or a pipe carries none of its carriage returns; and the summary
+/// counts in the singular at one.
+#[test]
+fn the_progress_is_for_a_terminal_and_the_summary_counts_in_the_singular() {
+    let dir = fresh_dir("progress");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    for (rows, chunk_size, said) in [
+        (50, 100, "50 rows (1 chunk)"),
+        (50, 7, "50 rows (8 chunks)"),
+        (1, 100, "1 row (1 chunk)"),
+    ] {
+        write_input(&input, rows);
+        let cfg = job(
+            &dir,
+            text(&input),
+            text(&output),
+            &format!("chunk_size = {chunk_size}"),
+        );
+        let (code, stdout, err) = run(cli().args(["--config", text(&cfg)]));
+        assert_eq!(code, Some(0), "{err}");
+        assert!(!err.contains("rows in") && !err.contains('\r'), "{err:?}");
+        let wrote = format!("wrote {said} to {}", output.display());
+        assert!(
+            stdout.lines().any(|l| l == wrote),
+            "{wrote:?} in {stdout:?}"
+        );
+        let (code, stdout, err) = run(cli().args([
+            "--config",
+            text(&cfg),
+            "--no-output",
+            "--save-state",
+            text(&dir.join("s.state")),
+        ]));
+        assert_eq!(code, Some(0), "{err}");
+        let processed = format!("processed {said}, no output");
+        assert!(
+            stdout.lines().any(|l| l == processed),
+            "{processed:?} in {stdout:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// C-11: `--version` names what a state file and a bug report need beside
+/// the package: the state schema this build writes, and the Rust Polars it
+/// carries. `-V` stays the one line.
+#[test]
+fn version_names_the_state_schema_and_the_rust_polars() {
+    let (code, stdout, err) = run(cli().arg("--version"));
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        stdout,
+        format!(
+            "polars-online {}\nstate schema {}\nRust Polars {}\n",
+            env!("CARGO_PKG_VERSION"),
+            online_polars::online_core::SCHEMA_VERSION,
+            polars::VERSION,
+        )
+    );
+    let (code, stdout, err) = run(cli().arg("-V"));
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        stdout,
+        format!("polars-online {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+/// A `chunk_size` of 0 is refused in the words Python uses for it, from the
+/// TOML file and from the flag alike.
+#[test]
+fn a_chunk_size_of_0_is_refused_as_python_refuses_it() {
+    let dir = fresh_dir("chunk0");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 10);
+    for (extra, flag) in [
+        ("chunk_size = 0", &[][..]),
+        ("", &["--chunk-size", "0"][..]),
+    ] {
+        let cfg = job(&dir, text(&input), text(&output), extra);
+        let (code, _, err) = run(cli().args(["--config", text(&cfg)]).args(flag));
+        assert_eq!(code, Some(1), "{err}");
+        assert!(
+            err.contains("chunk_size must be at least 1, got 0"),
+            "{extra} {flag:?}: {err}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

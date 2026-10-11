@@ -5,13 +5,15 @@
 //!
 //! ```sh
 //! polars-online --config examples/bank.toml
-//! polars-online --config examples/bank.toml --input other.parquet --load-state state.msgpack
-//! polars-online --config examples/bank.toml --input today.parquet --load-state state.msgpack --predict
+//! polars-online --config examples/bank.toml --input other.parquet --load-state bank.state
+//! polars-online --config examples/bank.toml --input today.parquet --load-state bank.state --predict
 //! polars-online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::LazyLock;
 
 use clap::{CommandFactory, Parser};
 use online_polars::{Format, RunConfig, run_config_reported};
@@ -27,8 +29,36 @@ fn parse_format(s: &str) -> Result<Format, String> {
         })
 }
 
+/// What `--version` prints after the name: the package's version, the
+/// state schema this build saves in, and the Rust Polars it carries, which a
+/// state file and a bug report need beside the version (task 244, C-11).
+/// `-V` prints the version alone.
+static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\nstate schema {}\nRust Polars {}",
+        env!("CARGO_PKG_VERSION"),
+        online_polars::online_core::SCHEMA_VERSION,
+        online_polars::POLARS_VERSION,
+    )
+});
+
+/// `n` and its noun, singular at one: `1 chunk`, `8 chunks`.
+fn counted(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "polars-online", version, about, long_about = None)]
+#[command(
+    name = "polars-online",
+    version,
+    long_version = LONG_VERSION.as_str(),
+    about,
+    long_about = None
+)]
 struct Cli {
     /// TOML file describing the model bank specs and the input/output paths.
     /// A relative path inside it is read from the file's own directory, and
@@ -107,7 +137,8 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
-    /// Suppress per-chunk progress.
+    /// Suppress the progress line, which is drawn only when standard error
+    /// is a terminal.
     #[arg(long, short)]
     quiet: bool,
 }
@@ -401,32 +432,31 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let quiet = cli.quiet;
+    // Rewritten in place with a carriage return, which only a terminal
+    // renders as intended: a log or a pipe gets none (task 244, C-9).
+    let progress = !cli.quiet && std::io::stderr().is_terminal();
     let (stats, readiness) = run_config_reported(&cfg, |s| {
-        if !quiet {
-            eprint!("\r{} rows in {} chunks", s.rows, s.chunks);
+        if progress {
+            eprint!(
+                "\r{} in {}",
+                counted(s.rows, "row"),
+                counted(s.chunks, "chunk")
+            );
         }
         Ok(())
     })
     .map_err(|e| e.to_string())?;
-    if !quiet {
+    if progress && stats.chunks > 0 {
         eprintln!();
     }
+    let (rows, chunks) = (counted(stats.rows, "row"), counted(stats.chunks, "chunk"));
     if cfg.no_output() {
         // Under `--no-output` the path is empty, so name the outcome rather
         // than print a trailing "to " with nothing after it (review
         // 2026-09-18, minor).
-        println!(
-            "processed {} rows ({} chunks), no output",
-            stats.rows, stats.chunks
-        );
+        println!("processed {rows} ({chunks}), no output");
     } else {
-        println!(
-            "wrote {} rows ({} chunks) to {}",
-            stats.rows,
-            stats.chunks,
-            cfg.output.display()
-        );
+        println!("wrote {rows} ({chunks}) to {}", cfg.output.display());
     }
     // Where each spec's groups stand on readiness after their last row
     // (docs/WARMUP-AND-CONVERGENCE.md §7.9): the groups whose last row was

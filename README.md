@@ -1984,14 +1984,14 @@ polars-online --config bank.toml
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 saved state to bank.state
 ```
 
-The first line is the progress, which `--quiet` turns off. After `wrote`,
-a run prints a line for each spec that ended with groups not ready, and
-nothing for the others. Such a line reads
+On a terminal, a progress line above the summary counts the rows as the
+run goes, and `--quiet` turns it off. After `wrote`, a run prints a line
+for each spec that ended with groups not ready, and nothing for the
+others. Such a line reads
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
 
 ### Output as Arrow
@@ -4010,9 +4010,9 @@ in any minor release:
 
 | | what it covers |
 |---|---|
-| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags and exit status; and the environment variables the package reads |
+| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags, its exit status and the files it writes; and the environment variables the package reads |
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
-| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
+| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version; and the text the command line prints (its summary, notices and errors) and the timing lines `POLARS_ONLINE_TIMING=1` asks for, which are written for a person and may be reworded in a minor release |
 
 **A changed default or meaning needs a major release, and a fix to numbers
 that were wrong a minor one.** A number is wrong when it disagrees with
