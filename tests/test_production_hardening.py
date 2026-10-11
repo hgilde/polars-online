@@ -1023,8 +1023,13 @@ class TestReadmeExamples:
             _readme_namespace(here)  # writes bank.toml, bank.state and the inputs
             printed = ""
             for command in (c for c in code.splitlines() if c.strip()):
-                res = subprocess.run(  # bytes: text mode would turn a carriage return into a newline
-                    command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
+                # Bytes: text mode would turn a carriage return into a newline.
+                res = subprocess.run(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
                 )
                 out = res.stdout.decode("utf-8")
                 assert res.returncode == 0, f"RUNNER.md:{line}: {command}\n{out}"
