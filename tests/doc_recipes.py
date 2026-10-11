@@ -1,17 +1,21 @@
 """The recipes of a docs page that shows each program's output under it:
 ``docs/DATA-QUALITY.md`` (``tests/test_data_quality.py``) and
-``docs/DIAGNOSTICS.md`` (``tests/test_diagnostics_page.py``).
+``docs/DIAGNOSTICS.md`` (``tests/test_diagnostics_page.py``), and those of
+the README and ``docs/RUNNER.md`` (``tests/test_production_hardening.py``).
 
 Each python block of such a page is followed by a ```text block of what it
 prints. A test runs the block and holds what it printed to the text block:
 the same lines, the same words, and each number within two units of its last
-printed digit (docs/WRITING.md §3, "Every code block runs").
+printed digit (docs/WRITING.md §3, "Every code block runs"). The README and
+the runner guide mix recipes with blocks whose output is not shown, so there
+only a block followed by a ```text block is held (``shown_outputs``).
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import itertools
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -24,10 +28,9 @@ NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:e[+-]?\d+)?(?![\w.])")
 BLOWN_UP = 1e6
 
 
-def recipes(page: Path) -> list[tuple[int, str, str]]:
-    """Each python block of ``page``, with the line its fence opens on and the
-    text block that must follow it: what the recipe prints."""
-    out: list[tuple[int, str, str]] = []
+def fenced_blocks(page: Path) -> list[tuple[str, int, str]]:
+    """Every fenced block of ``page``: its info string (``python``, ``text``,
+    ``sh`` ...), the line its fence opens on, and its body."""
     blocks: list[tuple[str, int, str]] = []
     fence, start, buf = None, 0, []
     for i, line in enumerate(page.read_text(encoding="utf-8").splitlines(), 1):
@@ -39,6 +42,33 @@ def recipes(page: Path) -> list[tuple[int, str, str]]:
             fence = None
         elif fence is not None:
             buf.append(line)
+    return blocks
+
+
+def shown_outputs(page: Path, kind: str = "python") -> list[tuple[int, str, str]]:
+    """Each ``kind`` block of ``page`` whose output is shown under it: a
+    ```text block that opens after its closing fence with only blank lines
+    between, as every recipe's is. A ```text block after prose is an
+    equation or a message quoted by hand, not a block's output. The README
+    and the runner guide mix recipes with blocks whose output is not shown,
+    so only the blocks followed by one are held to what they print."""
+    lines = page.read_text(encoding="utf-8").splitlines()
+    blocks = fenced_blocks(page)
+    out = []
+    for (fence, line, code), (after, start, shown) in itertools.pairwise(blocks):
+        # The closing fence: the first bare ``` after the opening one (1-based).
+        closing = next(i for i in range(line + 1, start) if lines[i - 1].strip() == "```")
+        between = lines[closing : start - 1]
+        if fence == kind and after == "text" and not any(s.strip() for s in between):
+            out.append((line, code, shown))
+    return out
+
+
+def recipes(page: Path) -> list[tuple[int, str, str]]:
+    """Each python block of ``page``, with the line its fence opens on and the
+    text block that must follow it: what the recipe prints."""
+    out: list[tuple[int, str, str]] = []
+    blocks = fenced_blocks(page)
     for j, (kind, line, code) in enumerate(blocks):
         if kind != "python":
             continue
@@ -75,9 +105,12 @@ def differences(shown: str, printed: str) -> list[str]:
     return problems
 
 
-def run(code: str, page: Path) -> str:
-    """What a recipe prints, run in a namespace of its own."""
+def run(code: str, page: Path, namespace: dict[str, object] | None = None) -> str:
+    """What a recipe prints, run in a namespace of its own: an empty one, or
+    a copy of ``namespace`` (the README's recipes run in what its *Example
+    data* block builds)."""
+    ns: dict[str, object] = {"__name__": "__recipe__", **(namespace or {})}
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        exec(compile(code, str(page), "exec"), {"__name__": "__recipe__"})
+        exec(compile(code, str(page), "exec"), ns)
     return buf.getvalue()

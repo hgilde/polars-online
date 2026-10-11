@@ -35,6 +35,8 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from doc_recipes import differences, shown_outputs
+from doc_recipes import run as run_recipe
 from polars_version import needs_polars
 from test_ffi_memory import run_isolated
 
@@ -623,6 +625,15 @@ def _names(code: str) -> tuple[set[str], list[str]]:
 #: The README's own python blocks, in order: the README's definitions.
 README_ONLY = [b for b in README_BLOCKS if b[0] == "README.md"]
 
+#: The README's recipes: each python block whose output a ```text block shows
+#: under it, held to what it prints in the namespace *Example data* builds
+#: (README-ITERATIONS, I8's V5). The rest of its blocks only have to run.
+README_RECIPES = shown_outputs(REPO / "README.md")
+
+#: The runner guide's shell blocks whose output a ```text block shows, held
+#: to what `online` prints, stdout and stderr as a terminal interleaves them.
+RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
+
 
 def _built_by_the_readme(code: str, line: int, ns: dict, memo: dict) -> dict:
     """``ns``, with each name ``code`` reads and does not build itself
@@ -893,7 +904,13 @@ class TestReadmeExamples:
         assert len(README_BLOCKS) >= 8, README_BLOCKS
 
     @pytest.mark.parametrize(
-        ("path", "line", "code"), [_block_param(*block) for block in README_BLOCKS]
+        ("path", "line", "code"),
+        [
+            _block_param(*block)
+            for block in README_BLOCKS
+            # A recipe runs, and is held to its output, in the test after this.
+            if not (block[0] == "README.md" and block[1] in {ln for ln, _, _ in README_RECIPES})
+        ],
     )
     def test_a_readme_block_runs(self, path, line, code, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # the doc examples write next to the inputs
@@ -909,6 +926,77 @@ class TestReadmeExamples:
         finally:
             os.environ.clear()
             os.environ.update(env)
+
+    def test_a_readme_recipe_prints_what_it_shows(self, tmp_path, monkeypatch):
+        """A recipe is complete: it reads what *Example data* builds and
+        nothing else, and the ```text block under it is what it prints
+        (README-ITERATIONS, I8's V5). So each runs alone, in a directory of
+        its own, in the namespace the README's *Example data* block builds
+        there -- not `_readme_namespace`'s, which also hands out the specs,
+        banks and outputs other sections built -- and what it prints is held
+        to the text by `doc_recipes.differences`: the same lines and words,
+        each number within two units of its last digit. One test for every
+        recipe, so a README with none yet passes rather than skips."""
+        problems = []
+        for line, code, shown in README_RECIPES:
+            here = tmp_path / f"L{line}"
+            here.mkdir()
+            monkeypatch.chdir(here)
+            env = dict(os.environ)
+            try:
+                printed = run_recipe(code, Path(f"README.md:{line}"), _example_data(here))
+            finally:
+                os.environ.clear()
+                os.environ.update(env)
+            problems += [f"README.md:{line}:\n{p}" for p in differences(shown, printed)]
+        assert not problems, "\n\n".join(problems)
+
+    def test_a_runner_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, online_cli):
+        """The runner guide's shell blocks that show their output: each runs
+        through the built `online`, as `test_a_shell_block_runs` runs every
+        one, and what its commands print, stdout and stderr in the order a
+        terminal shows them, is held to the ```text block under it."""
+        monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
+        problems = []
+        for line, code, shown in RUNNER_RECIPES:
+            here = tmp_path / f"L{line}"
+            here.mkdir()
+            monkeypatch.chdir(here)
+            _readme_namespace(here)  # writes bank.toml, bank.state and the inputs
+            printed = ""
+            for command in (c for c in code.splitlines() if c.strip()):
+                res = subprocess.run(
+                    command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                )
+                assert res.returncode == 0, f"RUNNER.md:{line}: {command}\n{res.stdout}"
+                printed += res.stdout
+            problems += [f"docs/RUNNER.md:{line}:\n{p}" for p in differences(shown, printed)]
+        assert not problems, "\n\n".join(problems)
+
+    def test_the_recipe_runner_catches_a_planted_mismatch(self, tmp_path):
+        """The two tests above pass on a page with no recipe, so this holds
+        the parts they rest on to a page with three blocks: a recipe whose
+        text is what it prints, one whose text is not, and a block that a
+        ```text block follows only after prose, which is a quotation, not a
+        recipe."""
+        page = tmp_path / "PAGE.md"
+        page.write_text(
+            "```python\nprint(f'slope {2.0:.2f}')\n```\n\n```text\nslope 2.00\n```\n\n"
+            "```python\nprint(f'slope {2.0:.2f}')\n```\n\n```text\nslope 2.50\n```\n\n"
+            "```python\nx = 1\n```\n\nThe message reads:\n\n```text\nan error\n```\n",
+            encoding="utf-8",
+        )
+        found = shown_outputs(page)
+        assert [line for line, _, _ in found] == [1, 9], found
+        (_, good, good_shown), (_, bad, bad_shown) = found
+        assert differences(good_shown, run_recipe(good, page)) == []
+        assert differences(bad_shown, run_recipe(bad, page)) != []
 
     def test_the_readme_builds_the_frames_its_examples_read(self, tmp_path, monkeypatch):
         """*Example data* shows the code that builds `df`, `trades` and
