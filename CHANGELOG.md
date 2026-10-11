@@ -18,6 +18,14 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **Every capability in the docs is shown by a recipe whose printed output
+  a test holds** (task 238): the README (57 recipes), a recipe per model in
+  `docs/MODELS.md`, and the WINDOWS, RUNNER, STATE-WORKFLOW, GBDT and
+  PERFORMANCE pages. Every guide has a README section that leads to it, and
+  no reader-facing doc, docstring or error message cites the plan, a task, a
+  review or a record. The model entries moved to `docs/MODELS.md`, the
+  window operators to `docs/WINDOWS.md`, and `po.gbdt`'s guide is
+  `docs/GBDT.md`.
 - **`po.gbdt` (unstable): XGBoost and LightGBM inputs built from Arrow, as
   fast as they go** (task 242). `xgboost_matrix` returns an
   `xgboost.QuantileDMatrix` and `lightgbm_dataset` a constructed

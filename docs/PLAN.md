@@ -9482,6 +9482,34 @@ tick, and that the series holding it up has a count near 1.
       better name"; chose "Data quality"): `docs/DATA-ISSUES.md` is
       `docs/DATA-QUALITY.md`, its title "Data quality", its README section
       "Checking your data's quality"; `check()` and `audit` keep their names.
+      *Written 2026-10-11* by six writers (A: Introduction and *How a bank
+      sees a stream*; B: Preparing/Running/Saving, WINDOWS, RUNNER,
+      STATE-WORKFLOW; C: Reading the fit, Checking, GRAM, DIAGNOSTICS,
+      DATA-QUALITY, OUTPUTS; D1: Models and MODELS' linear family; D2:
+      MODELS' other families, REGIMES, *Detecting changes and regimes*; E:
+      Performance, Scope, Versions, GBDT, PERFORMANCE, TESTING,
+      RELEASE-READINESS, CONTRIBUTING), merged `5e8bd64`..`e97d79b`: every
+      capability shown by a recipe whose printed output a test holds (README
+      2 -> 57 recipes; MODELS a recipe per model, `test_models_page`,
+      `test_models_families`; WINDOWS, STATE-WORKFLOW, GBDT, PERFORMANCE
+      pages each a test), wrong examples found and fixed (a filter that kept
+      no rows, a `drop_groups` that dropped nothing, `marginal`'s `t_stat`,
+      bocpd's prior, kalman's prior sizing, the window target's "same
+      predictions" at embargo = window), 501 citations gone from
+      PERFORMANCE/TESTING/RELEASE-READINESS alone. Error and warning
+      messages held to the rule too (`86dfb83`: six readiness notices cited
+      a record). *Assembled 2026-10-11* (`ccd4a3d`..`a0ce079`): contents
+      table and anchors; V4 `test_every_guide_has_a_readme_section`; every
+      guide held by `test_every_guide_is_held` (EXTENDING, WRITING,
+      VALIDATION rewritten to it); WRITING's rules for recipes, README
+      sections and citations; V5 integers held exactly (found one wrong
+      count); cold read by five readers and a GitHub render of 19 pages;
+      counts after in I8 (README prose 25,802 -> 15,614 words, 35+ sentences
+      19 -> 4). Full tier 6260 passed. Follow-ups (`task238-fu`): one dtype
+      for `cluster`, the formula refusal's list, numbers that disagree
+      between pages, STATE-WORKFLOW's record IDs, RUNNER's `bank.toml`,
+      MODELS' notation. The user's verdict on I8 is pending; the README's
+      *Versions* still teaches 0.x pinning beside the 1.0 note (the user's).
 - [x] 239. **A review of every API doc** -- the user, 2026-10-10; run
       **before** task 238's rewrite (the user: "You can flip the api and
       [docs] rewrite if that would be better"), so the guides are rewritten
