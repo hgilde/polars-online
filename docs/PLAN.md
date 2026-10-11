@@ -9937,6 +9937,13 @@ tick, and that the series holding it up has a count near 1.
       (the temporal-clock rule). Target: every row back near 0.95x of 0.13.0,
       or a measured reason a decided semantic costs more. The 1.0 release
       (task 247) waits on this.
+      **Decided 2026-10-11** (the user: "Let's revert coef to list"):
+      `coef`, `support_coef` and the `se_coef*` fields go back to
+      `List(Float64)` (task 244's decision (2) reversed on the measured
+      memory: a dense Array stores k doubles on every row, and `coef` is null
+      on most); the docs show `.list.to_array(k)` on the rows that carry it
+      for an `(n, k)` matrix. Built first, so the profiling measures the
+      build that ships.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
