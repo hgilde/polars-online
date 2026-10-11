@@ -1,13 +1,13 @@
-//! `online` — run a model bank over a stream of rows, config from TOML
+//! `polars-online` — run a model bank over a stream of rows, config from TOML
 //! (docs/PLAN.md §11 task 15). Reads and writes parquet, ipc, csv and ndjson,
 //! each told from its extension or named with `--input-format` /
 //! `--output-format`.
 //!
 //! ```sh
-//! online --config examples/bank.toml
-//! online --config examples/bank.toml --input other.parquet --load-state state.msgpack
-//! online --config examples/bank.toml --input today.parquet --load-state state.msgpack --predict
-//! online --config examples/bank.toml --input ticks.csv --output scored.ndjson
+//! polars-online --config examples/bank.toml
+//! polars-online --config examples/bank.toml --input other.parquet --load-state state.msgpack
+//! polars-online --config examples/bank.toml --input today.parquet --load-state state.msgpack --predict
+//! polars-online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ fn parse_format(s: &str) -> Result<Format, String> {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "online", version, about, long_about = None)]
+#[command(name = "polars-online", version, about, long_about = None)]
 struct Cli {
     /// TOML file describing the model bank specs and the input/output paths.
     #[arg(long)]
@@ -212,7 +212,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("online: {e}");
+            eprintln!("polars-online: {e}");
             ExitCode::FAILURE
         }
     }
@@ -246,7 +246,7 @@ fn run() -> Result<(), String> {
     let (text, notices) = forward_deprecated_toml(&text, online_polars::DEPRECATED)
         .map_err(|e| format!("parsing {}: {e}", cli.config.display()))?;
     for notice in notices {
-        eprintln!("online: warning: {notice}");
+        eprintln!("polars-online: warning: {notice}");
     }
     let mut cfg: RunConfig = toml::from_str(&text).map_err(|e| {
         // A Windows path in a TOML basic string is the most common way this
@@ -316,7 +316,7 @@ fn run() -> Result<(), String> {
     if std::env::var(UNSTABLE_VAR).is_ok_and(|v| v == "1")
         && cfg.specs.iter().any(|s| s.targets.any_formula())
     {
-        eprintln!("online: {FORMULA_UNSTABLE}");
+        eprintln!("polars-online: {FORMULA_UNSTABLE}");
     }
     // `validate` leaves the input to the run; a dry run wants to know now.
     let input_format = cfg.input_format()?;

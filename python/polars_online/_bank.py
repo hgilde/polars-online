@@ -98,7 +98,7 @@ class ModelBank:
     on any OS (:meth:`load`), and scored against without moving (:meth:`predict`).
 
     The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
-    (:mod:`polars_online._frame`), and as a file-to-file job, the ``online``
+    (:mod:`polars_online._frame`), and as a file-to-file job, the ``polars-online``
     command line. This class is the in-process form, for a plan you hand it to
     chunk (:meth:`fit_predict_batches`, :meth:`fit`) or frames you already have.
 

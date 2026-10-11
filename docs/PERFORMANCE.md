@@ -24,7 +24,7 @@ each reads as of its date, with the names of its day.
 | [12. The chunk plan, revisited](#12-the-chunk-plan-revisited-2026-09-04) | you are choosing a chunk size and a thread count | [the plan](#the-plan-as-it-stood) · [the sections](#what-the-sections-said) · [the artifact](#the-benchmark-artifact) · [where it ended up](#where-it-ended-up) · [`chunk_rows`, swept](#chunk_rows-swept) · [the README's numbers](#the-readmes-numbers-regenerated) · [the row floor](#the-row-floor) · [what is left](#what-is-left-and-why-it-stays) |
 | **[Each way of running a bank](#each-way-of-running-a-bank)** | | |
 | [9. `predict`](#9-predict-2026-09-02) | you score without learning, and want the speed against `fit_predict` | |
-| [10. The runner](#10-the-runner-every-format-every-source-2026-09-02) | you run the `online` command line on files: its formats, its timing line, and what its custom parts are worth | [the pipeline](#the-pipeline) · [every format](#every-format) · [why py-polars reads](#why-py-polars-reads-for-the-python-path) · [the custom parts](#what-the-custom-parts-are-worth) · [not a polars node](#why-the-bank-is-not-a-polars-node) · [before and after](#before-and-after-the-one-thread-runner-against-the-pipeline) · [writers](#writers) |
+| [10. The runner](#10-the-runner-every-format-every-source-2026-09-02) | you run the `polars-online` command line on files: its formats, its timing line, and what its custom parts are worth | [the pipeline](#the-pipeline) · [every format](#every-format) · [why py-polars reads](#why-py-polars-reads-for-the-python-path) · [the custom parts](#what-the-custom-parts-are-worth) · [not a polars node](#why-the-bank-is-not-a-polars-node) · [before and after](#before-and-after-the-one-thread-runner-against-the-pipeline) · [writers](#writers) |
 | [11. Memory](#11-memory-which-surface-is-odata-2026-09-02) | memory is the question: which surface is O(data) and which O(state), with the numbers, and what Polars holds before the bank | [the plugin](#the-plugin-was-odata-nothing-else-is) · [the constant](#what-the-constant-is) · [the fix](#the-query-shaped-trap-and-the-fix) · [before the bank](#what-comes-before-the-bank) · [the window](#where-the-window-comes-from) · [what shrinks it](#what-shrinks-the-window) · [filter after the bank](#filter-after-the-bank) · [levers not taken](#two-levers-not-taken) · [Polars' own windows](#polars-own-windowed-operations-do-the-same-thing) · [how it was measured](#how-it-was-measured-and-why-not-rss) |
 | [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
 | **[Model by model](#model-by-model)** | | |
@@ -189,7 +189,7 @@ message names the new one.
 | `po.corr.shift` | `po.corr.absorption_shift` | 2026-10-07 |
 | `po.gram.lasso_path`'s `lambdas` | `penalties` | 2026-10-07 |
 | `corrchange`'s `horizon` and `window`; `rcov`'s `window` | `span_rows`; `preavg_rows` | 0.3.0 |
-| `po.run`, the Python runner | removed: the `online` command line, or `ModelBank.fit(lf)` | 0.7.0 |
+| `po.run`, the Python runner | removed: the `polars-online` command line, or `ModelBank.fit(lf)` | 0.7.0 |
 | the expression plugin: `pl.col(...).online.<model>`, `po.online` and `InMemoryExpressionWarning` | removed, because a stateful expression is handed its whole column: `lf.online.fit_predict` | 0.7.0 |
 | `po.window.ewm` and `po.window.lookahead_rewm` (`lookahead_rewm` in §32), with `split=` | removed: the operators of §33, such as `po.ewm_mean` and `po.rewm_sum`, run by `with_windows` or as a spec's target | 2026-10-03 |
 | a spec's `type = "ew_ridge"` | `type = "ewridge"`, the builder's spelling | 2026-10-07 |
@@ -1188,7 +1188,7 @@ inlined copy of the same loop.
 
 *Read since 2026-09-17:* `po.run`, the Python entry to this
 runner, was removed; the numbers below stand as the record of what they
-measured. The pipeline they measured runs today as the `online` CLI (the
+measured. The pipeline they measured runs today as the `polars-online` CLI (the
 Rust reader, `Input::Lazy`) and, in Python, as `ModelBank.fit(lf)` /
 `fit_predict_batches(lf)`. Those have the same `collect_batches` read and
 the same bank, without the writer thread. `Input::Batches` remains for a
@@ -1262,7 +1262,7 @@ a filter or a UDF, a `DataFrame`, an iterable of frames. The GIL is
 released for the run, and reacquired only to take each batch.
 
 The CLI still scans in Rust, so on a stable toolchain **a large CSV is
-faster through `po.run` than through `online`**. On parquet the CLI is ~15%
+faster through `po.run` than through `polars-online`**. On parquet the CLI is ~15%
 behind too: 0.83 s / 2.55 s, against `po.run`'s 0.72 s / 2.12 s. Its timing
 line says why it is not the reader: `read_wait=0.06s bank=2.42s`, against
 `bank=2.07s` in Python, for the same code on the same chunks. Rechunking
@@ -1315,7 +1315,7 @@ calling thread, re-planning the scan thirty times and overlapping nothing.
 Same machine, same file, same spec, best of 3, the earlier wheel and binary
 built from `62d74a1` in a worktree:
 
-| parquet → parquet | one-thread `po.run` | pipeline `po.run` | one-thread `online` | pipeline `online` |
+| parquet → parquet | one-thread `po.run` | pipeline `po.run` | one-thread `polars-online` | pipeline `polars-online` |
 |---|---:|---:|---:|---:|
 | groups interleaved | 1.93 s | **0.72 s** | 2.14 s | **0.83 s** |
 | group-sorted | 3.30 s | **2.12 s** | 3.84 s | **2.55 s** |
@@ -1370,12 +1370,12 @@ only the data grows. The spec is `ewridge` k=20 with clock, weights and
 |---|---:|---:|---:|
 | plugin, `sink_parquet(engine="streaming")` (`collect` is the same) | 1.98 GB | 3.73 GB | 7.35 GB |
 | the same query without the plugin (`pl.col("y0") * 2`) | 0.81 GB | — | 2.08 GB |
-| `online` CLI | 0.73 GB | 0.72 GB | 0.75 GB |
+| `polars-online` CLI | 0.73 GB | 0.72 GB | 0.75 GB |
 | `po.run` | 0.95 GB | 1.29 GB | 1.41 GB |
 | `ModelBank` loop over `collect_batches` | 0.80 GB | 1.09 GB | 1.24 GB |
 | `po.run`, jemalloc told to release freed pages at once | — | 0.87 GB | 0.86 GB |
 | `ModelBank` loop, the same | — | 0.73 GB | 0.74 GB |
-| `online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
+| `polars-online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
 | `po.run` / bank loop, prefetch 1 and pages released | — | — | 0.46 GB / 0.31 GB |
 | **`lf.online.fit_predict`, `sink_parquet(engine="streaming")`** | 0.90 GB | 1.13 GB | 1.35 GB |
 | the same, pages released / plus prefetch 1 | — | — | 0.78 GB / 0.37 GB |

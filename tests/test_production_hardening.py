@@ -682,10 +682,10 @@ RECIPE_BLOCKS = {
 }
 
 #: The runner guide's shell blocks whose output a ```text block shows, held
-#: to what `online` prints, stdout and stderr as a terminal interleaves them.
+#: to what `polars-online` prints, stdout and stderr as a terminal interleaves them.
 RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
 
-#: The README's one shell block whose output it shows: `online` run on the
+#: The README's one shell block whose output it shows: `polars-online` run on the
 #: README's TOML block, held by the test of that block.
 README_CLI_RECIPES = shown_outputs(REPO / "README.md", "sh")
 
@@ -742,7 +742,7 @@ def _example_data_block() -> str:
     return blocks[0]
 
 
-#: The runner guide's shell blocks, run against the built `online` binary.
+#: The runner guide's shell blocks, run against the built `polars-online` binary.
 #: Only this document's: the README's ```sh blocks are `pip install`, `uv sync`
 #: and the development commands, which must never run from a test.
 SHELL_BLOCKS = _doc_blocks("docs/RUNNER.md", "sh")
@@ -1048,7 +1048,7 @@ class TestReadmeExamples:
 
     def test_a_runner_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, online_cli):
         """The runner guide's shell blocks that show their output: each runs
-        through the built `online`, as `test_a_shell_block_runs` runs every
+        through the built `polars-online`, as `test_a_shell_block_runs` runs every
         one, and what its commands print, stdout and stderr in the order a
         terminal shows them, is held to the ```text block under it."""
         monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
@@ -1273,7 +1273,7 @@ class TestReadmeExamples:
     def test_a_shell_block_runs(self, path, line, code, tmp_path, monkeypatch, online_cli):
         """The runner guide is all command line now, so its examples are shell.
         They run the same way the python blocks do: against the files the
-        fixture writes, in a directory of their own, with the built `online` on
+        fixture writes, in a directory of their own, with the built `polars-online` on
         PATH so the block runs exactly as written.
 
         Only this document's: the README's ```sh blocks install the package and
@@ -1317,14 +1317,14 @@ class TestReadmeExamples:
         self, tmp_path, monkeypatch, online_cli
     ):
         """The README's TOML block mirrors its Python `spec` and says the
-        `online` command line gives "the numbers the bank gives in Python".
+        `polars-online` command line gives "the numbers the bank gives in Python".
         So the block runs here as written, on the example data's
         `ticks.parquet`, and every prediction, residual and weight it writes
         must be that spec's in Python, bit for bit. The coefficients are left
         out: they come on each group's last accepted row of each chunk, and the two
         runs chunk differently (PLAN §3). The README runs it with the shell
         line under it, whose output it shows: that line runs here as written,
-        with the built `online` on PATH, the block saved as the `bank.toml` it
+        with the built `polars-online` on PATH, the block saved as the `bank.toml` it
         names, and what it prints is held to the text block under it."""
         here = tmp_path / "readme"
         here.mkdir()
@@ -1335,7 +1335,7 @@ class TestReadmeExamples:
         (here / "bank.toml").write_text(shown[0], encoding="utf-8")
         assert len(README_CLI_RECIPES) == 1, README_CLI_RECIPES
         (_, command, output), *_ = README_CLI_RECIPES
-        assert command.strip() == "online --config bank.toml", command
+        assert command.strip() == "polars-online --config bank.toml", command
         monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
         res = subprocess.run(  # bytes: text mode would turn a carriage return into a newline
             command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False

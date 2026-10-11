@@ -50,7 +50,7 @@ fn job(dir: &Path, input: &str, output: &str, extra: &str) -> PathBuf {
 
 /// The binary, with none of the variables these tests set inherited.
 fn cli() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_online"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_polars-online"));
     for var in [
         "POLARS_ONLINE_TIMING",
         "ONLINE_TIMING",

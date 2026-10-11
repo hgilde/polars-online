@@ -93,7 +93,7 @@ def unstable_label(name: str) -> str:
 
 
 def describe_api(cli: Path | None = None) -> str:
-    """The snapshot's text. `cli` is the `online` executable (the
+    """The snapshot's text. `cli` is the `polars-online` executable (the
     `online_cli` fixture): its configuration's own keys, its flags and the
     words its format options take are read from it, and left out without it
     (`test_model_registry` reads the field grammar alone)."""
@@ -746,7 +746,7 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
 
 def _cli_refusal(cli: Path, config: str, args: list[str] | None = None) -> str:
-    """What `online` says, on stderr, to `config` and `args`; empty when it
+    """What `polars-online` says, on stderr, to `config` and `args`; empty when it
     exits 0 (it never does here: no config below has specs)."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "bank.toml"
@@ -772,7 +772,7 @@ _WRITERS: dict[str, Callable[[pl.DataFrame, Path], None]] = {
 
 
 def _format_refusal(cli: Path, where: str, word: str) -> str:
-    """What `online --dry-run` says to a complete config whose format, under
+    """What `polars-online --dry-run` says to a complete config whose format, under
     the TOML key or the flag `where`, is `word`; empty when it takes it. A
     word is taken when the dry run exits 0, as `taken_words` requires
     (review round 5, E2): a config with no specs was refused for every word
@@ -846,16 +846,16 @@ def toml_keys_section(cli: Path | None) -> list[str]:
 
 
 def cli_flags_section(cli: Path) -> list[str]:
-    """`online --help`'s usage line and options, each with the value it
+    """`polars-online --help`'s usage line and options, each with the value it
     takes, if any; the help text beside them is not pinned."""
     text = subprocess.run(
         [str(cli), "--help"], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout
     out = [
-        "[cli flags]  # `online --help`: a flag added, renamed or removed, or one that starts or"
-        " stops taking a value, is a diff here"
+        "[cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that"
+        " starts or stops taking a value, is a diff here"
     ]
-    # clap names the program by the file it was run from: `online.exe` on
+    # clap names the program by the file it was run from: `polars-online.exe` on
     # Windows.
     out.extend(
         f"  {line.strip().replace(cli.name, cli.stem)}"

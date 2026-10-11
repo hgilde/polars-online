@@ -1,4 +1,4 @@
-# Running a bank as a job: the `online` command line
+# Running a bank as a job: the `polars-online` command line
 
 A *model bank* is a set of models fitted together over the same rows
 ([the README's introduction](../README.md#introduction) defines the words
@@ -6,7 +6,7 @@ this guide uses). The README's
 [Running a bank](../README.md#running-a-bank) drives the rows through a
 bank from a live Python process: a Polars query, or a loop over chunks. A
 scheduled job, or a deployment with no Python at all, runs the same bank
-from an input file to an output file instead, with the standalone `online`
+from an input file to an output file instead, with the standalone `polars-online`
 program and a configuration file. This part of the library is the
 *runner*. It takes the same specs as Python, reads and writes the same
 state file, and gives the same numbers.
@@ -19,7 +19,7 @@ data](../README.md#example-data) writes (`ticks.parquet` and
 `today.parquet`), and `run.state`, which the configuration's spec saved
 from `ticks.parquet`. It also holds `today.csv` and `feed.dat`, the same
 rows in two other formats. `tests/test_production_hardening.py` runs each command
-through the built `online` and holds what it prints, standard output and
+through the built `polars-online` and holds what it prints, standard output and
 standard error as a terminal shows them, to what is shown.
 
 | section | what it covers |
@@ -76,7 +76,7 @@ embargo short of its window. It names each spec's output fields as
 `<spec>.<field>`:
 
 ```sh
-online --config job.toml --dry-run
+polars-online --config job.toml --dry-run
 ```
 
 ```text
@@ -100,7 +100,7 @@ run can find. The first line is the progress, rewritten in place as each
 chunk is read, and `--quiet` turns it off:
 
 ```sh
-online --config job.toml
+polars-online --config job.toml
 ```
 
 ```text
@@ -117,7 +117,7 @@ what the spec learned from `ticks.parquet`, and the run learns on through
 `today.parquet`, the 400 rows that follow:
 
 ```sh
-online --config job.toml --input today.parquet --load-state run.state --save-state run.state
+polars-online --config job.toml --input today.parquet --load-state run.state --save-state run.state
 ```
 
 ```text
@@ -146,8 +146,8 @@ overlap would be learned twice. Here the second run feeds `today.parquet`
 again, which the first has just learned, and learns none of it twice:
 
 ```sh
-online --config job.toml --input today.parquet --load-state run.state --save-state run.state
-online --config job.toml --input today.parquet --load-state run.state --save-state run.state --skip-learned
+polars-online --config job.toml --input today.parquet --load-state run.state --save-state run.state
+polars-online --config job.toml --input today.parquet --load-state run.state --save-state run.state --skip-learned
 ```
 
 ```text
@@ -166,7 +166,7 @@ at its first row, whose clock is 399 behind the state's last.
 **`--predict` scores against the resumed state and learns nothing:**
 
 ```sh
-online --config job.toml --load-state run.state --predict --input today.parquet
+polars-online --config job.toml --load-state run.state --predict --input today.parquet
 ```
 
 ```text
@@ -185,7 +185,7 @@ new to save.
 running sums of a fit, has no use for it:
 
 ```sh
-online --config job.toml --no-output --save-state gram.state
+polars-online --config job.toml --no-output --save-state gram.state
 ```
 
 ```text
@@ -211,7 +211,7 @@ over a stream that does not fit in memory. Here `blocks.toml` holds one
 at each change of the `session` column (`group_close = "session"`):
 
 ```sh
-online --config blocks.toml --no-output --closed-groups blocks.parquet
+polars-online --config blocks.toml --no-output --closed-groups blocks.parquet
 ```
 
 ```text
@@ -238,7 +238,7 @@ A script can tell how a run ended from its exit status:
 | status | the run |
 |---|---|
 | 0 | finished, and wrote what it was asked for; or `--dry-run`, `--help` or `--version` printed its answer |
-| 1 | was refused or failed: a configuration, a state file or a value the bank refuses, or a file it cannot read or write. Standard error carries the message, led by `online:` |
+| 1 | was refused or failed: a configuration, a state file or a value the bank refuses, or a file it cannot read or write. Standard error carries the message, led by `polars-online:` |
 | 2 | could not parse its command line, such as a flag it does not know or a flag with its value missing. Standard error says what is wrong |
 
 **The summary goes to standard output, and everything else to standard
@@ -252,7 +252,7 @@ its own. It counts the groups whose last row was withheld, by
 A spec with neither has no line, as in every run on this page.
 Standard error carries the progress, which `--quiet` turns off, the timings
 `POLARS_ONLINE_TIMING=1` asks for, and the error of a run that fails. It also
-carries the notices about a model's warm-up, led by `online:` as an error
+carries the notices about a model's warm-up, led by `polars-online:` as an error
 is. So read a failure from the exit status: a line on standard error does
 not mean the run failed.
 
@@ -292,8 +292,8 @@ Read and write any of the four formats. The extension decides, unless
 extension does not say needs one:
 
 ```sh
-online --config job.toml --input today.csv --output scored.ndjson
-online --config job.toml --input feed.dat --input-format ipc --output out.parquet
+polars-online --config job.toml --input today.csv --output scored.ndjson
+polars-online --config job.toml --input feed.dat --input-format ipc --output out.parquet
 ```
 
 ```text
@@ -398,8 +398,8 @@ features, parquet in and out: the same measurement as the README's
 
 | what you run | 3M rows | 12M rows |
 |---|---:|---:|
-| `online --config` | 0.74 GB | 0.77 GB |
-| `online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.24 GB | 0.24 GB |
+| `polars-online --config` | 0.74 GB | 0.77 GB |
+| `polars-online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.24 GB | 0.24 GB |
 
 It is flat: the bank's memory does not grow with the rows, and this
 process keeps none of the freed pages the Python surfaces in the README's
@@ -437,7 +437,7 @@ smaller chunks report them more often. Under `coef_every` or
 `max_rows_between_coefs` they do not move:
 
 ```sh
-online --config job.toml --chunk-size 7 --output small-chunks.parquet
+polars-online --config job.toml --chunk-size 7 --output small-chunks.parquet
 ```
 
 ```text

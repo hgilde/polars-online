@@ -1121,7 +1121,7 @@ class LazyFrameOnlineNamespace:
         last row: a run abandoned before then, or one the bank ended with an error,
         leaves the file as it was. A node after the bank failing does not stop the
         bank, so the state is written then. Where the output and the state must be
-        tied together, the ``online`` CLI saves only after its output is committed.
+        tied together, the ``polars-online`` CLI saves only after its output is committed.
         A dated ``save_state`` per batch of data keeps a rerun from learning it twice.
 
         The plan runs through polars' streaming engine, and an online model learns

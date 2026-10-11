@@ -15,7 +15,7 @@ kept in [`records/`](records/), and its row links it there.
 | **Using the library** | |
 | [MODELS.md](MODELS.md) | you are choosing a model, or want to know how one learns — each model's entry under its family: when to reach for it, its update rule, its parameters and what it is checked against |
 | [WINDOWS.md](WINDOWS.md) | you make features or targets from windows over the stream — the window operators of `po.ops` as columns before the bank and as a model's inputs and target, features in units of their spread, and saving and resuming a window run |
-| [RUNNER.md](RUNNER.md) | you run a bank as a job — the `online` command line from a configuration file — with no live Python process driving it |
+| [RUNNER.md](RUNNER.md) | you run a bank as a job — the `polars-online` command line from a configuration file — with no live Python process driving it |
 | [STATE-WORKFLOW.md](STATE-WORKFLOW.md) | you save a bank from a query, serve from it, or resume it, or resume a window run — what each step guarantees and what a saved state carries, followed by the dated research the guarantees rest on |
 | [DIAGNOSTICS.md](DIAGNOSTICS.md) | you want to know whether a model is working — one section per question (is it scaled right, has it broken, can its t be trusted, what is it missing, are its tails heavy, which row moved it, are its features healthy, is another model better, is it ready, how wide is its error): each diagnostic's definition, threshold and false-alarm rate, cost, the theory, and a recipe that runs |
 | [DATA-QUALITY.md](DATA-QUALITY.md) | `bank.check()` found a problem in your data, or you want to know what can go wrong before you fit — one section per finding: what it does to each model, the fix in Polars, the theory, and a recipe that runs |

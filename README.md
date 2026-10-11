@@ -222,7 +222,7 @@ from windows](#making-features-and-targets-from-windows)).
 **A model bank runs three ways, with the same numbers from each.** It runs
 inside a Polars query with `.online.fit_predict`, in your own Python loop
 calling `ModelBank.fit_predict` on each chunk, or from the standalone
-`online` command line, without Python ([Running a bank](#running-a-bank)).
+`polars-online` command line, without Python ([Running a bank](#running-a-bank)).
 
 ### Terminology
 
@@ -1746,7 +1746,7 @@ Arrow, for a consumer that is not Polars:
 |---|---|---|---|
 | inside a Polars query | `lf.online.fit_predict(specs)` | ordinary Polars steps chained after the bank | [As a query](#as-a-query-lfonlinefit_predict) |
 | in your own Python loop | `bank.fit_predict(chunk)` | reading the bank between chunks | [In a loop](#in-a-loop-modelbank) |
-| from a standalone command line, with no live Python at all | `online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
+| from a standalone command line, with no live Python at all | `polars-online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
 | output as Arrow, from a bank object | `fit_predict_arrow`, `predict_arrow` | a consumer that is not Polars | [Output as Arrow](#output-as-arrow) |
 
 ### As a query: `lf.online.fit_predict`
@@ -1945,13 +1945,13 @@ dropped 1; left: ['b1', 'b2', 'b3']
 ### Running a bank as a job, without Python
 
 For a scheduled job, or a deployment with no Python, run the same bank from
-a file to a file with the standalone `online` command line, a binary on
+a file to a file with the standalone `polars-online` command line, a binary on
 each GitHub release. [docs/RUNNER.md](docs/RUNNER.md) has every key and
 flag, with a recipe for each kind of run: a check before the run,
 resuming, scoring, a run that writes only its state, and the groups that
 close.
 
-`online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
+`polars-online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
 its `[specs.model]` table names the model and takes the model's own. This
 `bank.toml` is the first example's spec of [As a
 query](#as-a-query-lfonlinefit_predict):
@@ -1980,7 +1980,7 @@ Run it from the directory that holds `bank.toml` and the example data's
 bank's in Python, bit for bit:
 
 ```sh
-online --config bank.toml
+polars-online --config bank.toml
 ```
 
 ```text
