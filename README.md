@@ -349,7 +349,8 @@ relation: its mid is a random walk.
 The parameters every spec shares say how its model reads the stream, one
 chunk at a time. Most models take all of them, and the
 [`polars_online.spec`](https://hgilde.github.io/polars-online/spec.html)
-reference gives their units and defaults.
+reference gives their units and defaults. With a `group`, every parameter
+applies within each group, the clock included.
 
 | the question | the parameters | the subsection |
 |---|---|---|
@@ -365,17 +366,13 @@ reference gives their units and defaults.
 | when a label may be learned | `embargo` | [Labels that arrive late](#labels-that-arrive-late) |
 | what a null does, and how to keep a row from teaching a model | a null, a weight of 0, `predict` | [Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back) |
 
-With a `group`, every parameter applies within each group, the clock
-included.
-
 ### What a spec names
 
 A spec describes one model: which model it is, the columns it reads, and
 how it treats time. The name of the spec (the first parameter) is used to
-name the output column, for example `po.spec.ewridge("ridge", ...)` adds a
-column named `ridge`. The input's columns pass through untouched, and the
-bank refuses a spec named like one of them, since its output column would
-replace it.
+name the output column: `po.spec.ewridge("ridge", ...)` adds a column named
+`ridge`. Each row of that column is a record of the model's fields for the
+row, and the input's columns pass through untouched.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -386,13 +383,46 @@ ridge_spec = po.spec.ewridge(
     fit_intercept=True,            # the default: the fit has a level of its own
     clock="t", half_life=600.0, gap_cap=300.0,   # how it treats time: Time and decay, below
 )
-po.ModelBank([ridge_spec]).fit_predict(df).columns   # df's 13 columns, then "ridge"
+fitted = po.ModelBank([ridge_spec]).fit_predict(df)
+print(len(df.columns), "columns in, then", fitted.columns[len(df.columns):])
+print("each row of ridge holds", fitted["ridge"].struct.fields)
 ```
 
-**The bank refuses a text column in `targets` or `features`, so convert it
-with Polars' `with_columns` in the query before the bank.** Use
-`cast(pl.Float64)` for numbers stored as text, as the error suggests, and a
-comparison such as `pl.col("venue") == "X"` for a category.
+```text
+13 columns in, then ['ridge']
+each row of ridge holds ['pred_y', 'resid_y', 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
+```
+
+**The bank refuses a spec named like an input column, since its output
+column would replace that column.** It refuses a text column in `targets`
+or `features` too. Convert such a column with Polars' `with_columns`, in
+the query before the bank: `cast(pl.Float64)` for numbers stored as text,
+as the error suggests, and a comparison such as `pl.col("venue") == "X"`
+for a category. This code prints both refusals, then fits the venue as a
+comparison: its last line finds the truth planted in `y`, an intercept of
+1, 2 on `x0`, −1 on `x1`, and nothing on the venue.
+It reads `df` and `lf` from [Example data](#example-data):
+
+```python
+for refused in [
+    po.spec.ewridge("x0", targets=["y"], features=["x1"], half_life=600.0),          # named like a column
+    po.spec.ewridge("by_venue", targets=["y"], features=["venue"], half_life=600.0),  # a text feature
+]:
+    try:
+        po.ModelBank([refused]).fit_predict(df)
+    except ValueError as err:
+        print(err)
+
+by_venue = po.spec.ewridge("by_venue", targets=["y"], features=["x0", "x1", "is_x"], half_life=float("inf"))
+coded = lf.with_columns(is_x=pl.col("venue") == "X").online.fit_predict([by_venue]).collect()
+print("intercept, x0, x1, venue X:", [round(c, 2) for c in coded["by_venue"].struct.field("coef")[-1]])
+```
+
+```text
+duplicate: spec "x0" has the same name as an input column; the output struct would replace it. Rename the spec.
+spec "by_venue": feature column "venue" has dtype str; it must be numeric (cast it, e.g. pl.col("venue").cast(pl.Float64))
+intercept, x0, x1, venue X: [1.02, 1.99, -1.01, -0.05]
+```
 
 #### Relative and look-ahead targets
 
@@ -405,12 +435,20 @@ fitting a probability or a count.
 
 **To use a target computed from the rows after its row, write it as a
 Polars expression and put it in the spec's `targets`.** Its `.alias` names
-the output fields, as `pred_fwd_move`. The bank learns each row once the
-expression's window has closed, so give the spec an `embargo` of at least
-the window's `window_size`. [Windows as a model's inputs and
-target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) gives the rule in full,
-with what to do for a shorter one. This example runs on `trades.parquet`, the
-quotes and trades saved in [Example data](#example-data):
+the output fields, as `pred_fwd_move`. The bank scores each row where it
+sits and learns it once the expression's window has closed, so give the
+spec an `embargo` of at least the window's `window_size`. [Windows as a
+model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)
+gives the rule in full, with what to do for a shorter one. `pred`,
+`resid`, `sigma` and the metrics are on the target's scale, so
+`pred + mid` predicts the mean trade price itself.
+
+The expression is the column `po.stream.with_windows` makes from it, fed
+back to the bank, so both forms give the same predictions. Only the
+residual tells them apart: a column holds the outcome at the row, so the
+bank can score it there, while the expression's outcome is not known until
+its window closes. This code runs on `trades.parquet`, the quotes and
+trades saved in [Example data](#example-data):
 
 ```python
 flows = pl.scan_parquet("trades.parquet").with_columns(                   # a query, and a feature in it: a trade's signed size
@@ -423,31 +461,67 @@ fwd_move = (
 ahead_5m = po.spec.ewridge("ahead_5m", targets=[fwd_move], features=["flow"],
                            clock="ts", gap_cap="5m", half_life="30m", embargo="5m", group="symbol")
 moves = flows.online.fit_predict([ahead_5m]).online.unnest([ahead_5m]).collect()   # does buying predict the price rising?
+
+# The same target as a column, made in the query by with_windows on the spec's clock, then named in targets.
+as_column = {**ahead_5m, "targets": ["fwd_move"]}
+made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])
+column = made.online.unnest([as_column]).collect()
+
+same = (moves["pred_fwd_move"] == column["pred_fwd_move"]).sum()
+print(f"rows predicted: {moves['pred_fwd_move'].count()} by the expression, {column['pred_fwd_move'].count()} by the column, {same} equal")
+# The rows of the last five minutes have no outcome yet in either form.
+print(f"residuals: {moves['resid_fwd_move'].count()} from the expression, {column['resid_fwd_move'].count()} from the column")
 ```
 
-`pred`, `resid`, `sigma` and the metrics are on the target's scale, so
-`pred + mid` predicts the mean trade price itself. `hit_rate` asks whether
-prediction and outcome fall on the same side of zero ([Is another model
-better?](docs/DIAGNOSTICS.md#is-another-model-better)), so write a ratio target to sit about
-zero, as the quotient less 1 or as its `.log()`:
+```text
+rows predicted: 733 by the expression, 733 by the column, 733 equal
+residuals: 0 from the expression, 556 from the column
+```
+
+**Write a ratio target to sit about zero, as the quotient less 1 or as its
+`.log()`.** `hit_rate` asks whether prediction and outcome fall on the same
+side of zero ([Is another model
+better?](docs/DIAGNOSTICS.md#is-another-model-better)). A plain ratio sits
+about 1, where two positive numbers always agree, so its `hit_rate` reads
+1.0 whatever the fit. A difference sits about zero too. A target that looks
+ahead takes the same forms: `(next_5m / pl.col("mid")).log()`, with
+`next_5m` the `po.rewm_mean` above, and `mid * exp(pred)` turns its
+prediction back into a price. This code regresses four forms of a trade's
+price against the mid at its row on the same signed size, `flow`.
+It reads `trades.parquet` from [Example data](#example-data):
 
 ```python
-next_5m = po.rewm_mean("price", half_life=float("inf"), window_size="5m")   # the mean trade price over the next five minutes
-fwd_return = (next_5m / pl.col("mid") - 1).alias("fwd_return")            # the quotient less 1, about zero
-fwd_log = (next_5m / pl.col("mid")).log().alias("fwd_log")                # the quotient's log, about zero too
-ratios = po.spec.ewridge("ratios", targets=[fwd_return, fwd_log], features=["flow"],
-                         clock="ts", gap_cap="5m", half_life="30m", embargo="5m", group="symbol")
-by_ratio = flows.online.fit_predict([ratios]).online.unnest([ratios]).collect()   # pred_fwd_return, pred_fwd_log, ...
-level = by_ratio["mid"] * (1 + by_ratio["pred_fwd_return"])                   # the mean trade price predicted, back from the ratio
+flows = pl.scan_parquet("trades.parquet").with_columns(
+    flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
+)
+returns = flows.with_columns(
+    ratio=pl.col("price") / pl.col("mid"),                              # price / mid, about 1
+    fwd_return=pl.col("price") / pl.col("mid") - 1,                     # the quotient less 1, about zero
+    log_ret=(pl.col("price") / pl.col("mid")).log(),                    # ln(price / mid), about zero
+    diff=pl.col("price") - pl.col("mid"),                               # price - mid, about zero
+)
+vs_mid = po.spec.ewridge("vs_mid", targets=["ratio", "fwd_return", "log_ret", "diff"], features=["flow"],
+                         clock="ts", gap_cap="5m", half_life="30m", group="symbol", emit_metrics=True)
+against_mid = returns.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()
+for target in ["ratio", "fwd_return", "log_ret", "diff"]:
+    print(f"hit_rate of {target}: {against_mid[f'hit_rate_{target}'].drop_nulls()[-1]:.2f}")
+```
+
+```text
+hit_rate of ratio: 1.00
+hit_rate of fwd_return: 0.51
+hit_rate of log_ret: 0.51
+hit_rate of diff: 0.51
 ```
 
 **A target expression requires an operator that looks ahead
 (`po.rewm_mean`, `po.rewm_sum` or `po.rewm_rate`); otherwise, make the
 target a column with Polars' `with_columns`, chained in the query before
-the bank, and name it in `targets`.** The bank's refusal names
-the call that makes the column. Here the target, how far from the mid each
-trade printed, is known at the trade's own row, so the spec needs no
-embargo.
+the bank, and name it in `targets`.** The bank's refusal names the call
+that makes the column. Here the target, how far from the mid each trade
+printed, is known at the trade's own row, so the spec needs no embargo.
+The quotes have no `quantity`, so the bank skips them, as it skips any row
+with a null feature.
 This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
@@ -455,37 +529,28 @@ edges = pl.scan_parquet("trades.parquet").with_columns(edge=(pl.col("price") - p
 by_size = po.spec.ewridge("by_size", targets=["edge"], features=["quantity"],
                           clock="ts", gap_cap="5m", half_life="30m", group="symbol")
 printed = edges.online.fit_predict([by_size]).online.unnest([by_size]).collect()   # does a larger trade print farther from the mid?
+is_trade = printed["quantity"].is_not_null()
+print(f"trades predicted: {printed.filter(is_trade)['pred_edge'].count()} of {is_trade.sum()}")
+print(f"quotes predicted: {printed.filter(~is_trade)['pred_edge'].count()} of {(~is_trade).sum()}")
 ```
 
-The quotes have no `quantity`, so the bank skips them. If a column holds
-a value from after its row, such as the price five minutes on, give the
-spec an `embargo` of that horizon ([Labels that arrive
-late](#labels-that-arrive-late)). To make a column from a window over the
-stream, looking back or ahead, use `po.stream.with_windows` in the query
-before the bank ([Windows as columns](docs/WINDOWS.md#windows-as-columns)).
-
-**To take a trade's price against the mid of its row, make the target a
-column with `with_columns` in the same way.** For a return, use a log ratio
-or a difference, which sit about zero. A plain ratio sits about 1, where
-two positive numbers always agree, so its `hit_rate` would read 1.0 whatever
-the fit. This code regresses both on the `flow` of the first example:
-
-```python
-returns = flows.with_columns(
-    log_ret=(pl.col("price") / pl.col("mid")).log(),                    # ln(price / mid), about zero
-    diff=pl.col("price") - pl.col("mid"),                               # price - mid, about zero too
-)
-vs_mid = po.spec.ewridge("vs_mid", targets=["log_ret", "diff"], features=["flow"],
-                         clock="ts", gap_cap="5m", half_life="30m", group="symbol")
-against_mid = returns.online.fit_predict([vs_mid]).online.unnest([vs_mid]).collect()   # pred_log_ret, pred_diff
-level = against_mid["mid"] * against_mid["pred_log_ret"].exp()                         # the trade price predicted, back from the log ratio
+```text
+trades predicted: 893 of 899
+quotes predicted: 0 of 2101
 ```
+
+If a column holds a value from after its row, such as the price five
+minutes on, give the spec an `embargo` of that horizon ([Labels that
+arrive late](#labels-that-arrive-late)). To make a column from a window
+over the stream, looking back or ahead, use `po.stream.with_windows` in the
+query before the bank ([Windows as
+columns](docs/WINDOWS.md#windows-as-columns)).
 
 The command line has no `with_columns`, so make such a column in the file
-it reads. Before 1.0, `po.target` took `relative_to=` and `relative=` for
-this. Both are now refused, and the error shows the `with_columns` form.
+it reads. `po.target`'s `relative_to=` and `relative=` are refused, and the
+error shows the `with_columns` form.
 [`po.target`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.target)
-now only names a target's output fields apart from its column.
+only names a target's output fields apart from its column.
 
 ### Time and decay
 
@@ -515,13 +580,50 @@ change with how densely the rows arrive.** The clock parameters are
 `half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`,
 `drift_threshold` and `coef_every`, and a model's `window_size`, its cadences
 (`window_every`, `solve_every`, `pca_every`, `prune_every`) and its own
-half-lives. A few things still count rows, and each model's page names
-them.
+half-lives. A few things still count rows, and each model's entry in
+[docs/MODELS.md](docs/MODELS.md) names them.
+
+**Quantities measured on a temporal clock reach the output in seconds.**
+`holt`'s trend, for one, is per second. The clocks themselves keep the
+clock column's own type: `emit_clocks` ([Labels that arrive
+late](#labels-that-arrive-late)), and the clock columns of `summary()`,
+`groups()` and `closed_groups()`. This code fits `holt`, a level and its
+trend, to `t`, a column that rises by one each minute, once on the numeric
+clock `t` and once on the `Datetime` clock `ts`. The two clocks mark the
+same rows, so the weights agree, and the trend is the same rate in two
+units.
+It reads `df` from [Example data](#example-data):
+
+```python
+import textwrap
+
+on_t = po.spec.holt("on_t", targets=["t"], clock="t", half_life=100.0, gap_cap=300.0)       # numbers: t counts minutes
+on_ts = po.spec.holt("on_ts", targets=["t"], clock="ts", half_life="100m", gap_cap="300m")  # durations: ts is a Datetime
+last = po.ModelBank([on_t, on_ts]).fit_predict(df).tail(1)
+for name, unit in [("on_t", "per unit of t, a minute"), ("on_ts", "per second")]:
+    fields = last[name].struct
+    print(f"{name}: weight_sum {fields.field('weight_sum')[0]:.2f}, trend {fields.field('coef')[0][1]:.6f} {unit}")
+
+try:
+    po.ModelBank([po.spec.holt("wrong", targets=["t"], clock="ts", half_life=100.0, gap_cap=300.0)]).fit_predict(df)
+except ValueError as err:   # a plain number on a Datetime clock
+    print(textwrap.fill(str(err), 100))
+```
+
+```text
+on_t: weight_sum 135.66, trend 1.000406 per unit of t, a minute
+on_ts: weight_sum 135.66, trend 0.016673 per second
+spec "wrong": clock column "ts" has dtype datetime[μs], a temporal clock, but half_life is a plain
+number, which it cannot read: a number has no unit, and the column's own (e.g. epoch microseconds)
+would silently become it. Give half_life and the other clock parameters as durations, e.g.
+pl.duration(minutes=10), timedelta(minutes=10) or "10m"; or cast the clock to the unit you mean,
+e.g. pl.col("ts").dt.epoch("s").cast(pl.Float64), and use that column.
+```
 
 **The bank refuses a clock parameter of the wrong kind** before it reads a
-row, and its error names the column, the parameter and the fix. Only `0`
-and `inf`, which mean the same in every unit, may stay numbers where a
-parameter takes them:
+row, as the last lines show, and its error names the column, the parameter
+and the fix. Only `0` and `inf`, which mean the same in every unit, may
+stay numbers where a parameter takes them:
 
 | refused | on | because |
 |---|---|---|
@@ -543,20 +645,18 @@ whatever the stream's age.
 `Int64` or `UInt8` to `UInt64`. The step between two rows is taken in
 integers before it becomes a double. Every decision on the clock is taken on
 the integers too: a step back, a gap past `gap_cap`, a cadence, a window's
-edge and an embargo's release. So an `Int64` column of epoch nanoseconds keeps
-its nanoseconds, where a double near 1.8e18 resolves 256 of them. Its clock
-parameters stay numbers, and a fractional one such as `gap_cap=0.5` is
-compared as the number it is. A `UInt64` value past the largest `Int64` is
-refused by row, and an `Int128` or `UInt128` column by name: cast it to
-`Int64` if its values fit, or after subtracting an origin. A `UInt128`
-column is refused wherever it is in the frame, since no frame carrying one
-can reach the bank. A later chunk whose clock is a
-float, or an integer of another width, is refused by name.
+edge and an embargo's release. So an `Int64` column of epoch nanoseconds
+keeps its nanoseconds, where a double near 1.8e18 resolves 256 of them. Its
+clock parameters stay numbers, and a fractional one such as `gap_cap=0.5` is
+compared as the number it is.
 
-**Quantities measured on a temporal clock reach the output in seconds.**
-`holt`'s trend is per second. The clocks themselves keep the clock column's
-own type: `emit_clocks` ([Labels that arrive late](#labels-that-arrive-late)),
-and the clock columns of `summary()`, `groups()` and `closed_groups()`.
+**A clock column the bank cannot read exactly is refused, by row or by
+name.** A `UInt64` value past the largest `Int64` is refused by row. An
+`Int128` or `UInt128` column is refused by name: cast it to `Int64` if its
+values fit, or after subtracting an origin. A `UInt128` column is refused
+wherever it is in the frame, since no frame carrying one can reach the
+bank. A later chunk whose clock is a float, or an integer of another width,
+is refused by name.
 
 #### Sessions, gaps and steps back
 
@@ -575,24 +675,49 @@ the session changes.** A model that keeps past rows by position, as a lag
 does, empties them at a break, where the previous row no longer stands for
 the moment just before.
 
-```python
-timed = po.spec.ewridge(
-    "timed", targets=["y"], features=["x0", "x1"],
-    clock="ts",                           # a Datetime column, so every clock parameter is a duration
-    half_life=pl.duration(minutes=10),    # a row's weight halves every ten minutes of ts
-    gap_cap=pl.duration(minutes=5),       # the most one step between learned rows can count
-    restart_after_step_back=pl.duration(minutes=1),  # a larger step back starts the model over
-    session="session",                    # a column whose value changes at a session boundary ...
-    session_gap=pl.duration(minutes=1),   # ... and the clock step to apply there
-)
+**Each policy shows in `weight_sum`, the weight behind each row's
+prediction.** To show each, this code moves the afternoon session of `df`
+two days on, which puts a weekend between rows 199 and 200 (counting from
+0), and fits one regression under four policies:
 
-counted = po.spec.ewridge(
-    "counted", targets=["y"], features=["x0", "x1"],
-    clock="t",                 # a numeric column, so every clock parameter is a number of its units
-    half_life=600.0,           # a row's weight halves every 600 units of t (or lam=, the weight kept per unit)
-    gap_cap=300.0,
-    session="session", session_gap=60.0,
-)
+| spec | its policy | the weekend counts as |
+|---|---|---|
+| `capped` | `gap_cap="5m"` | five minutes: the fit ages a little |
+| `uncapped` | `gap_cap="3d"` | two days: about a hundred half-lives empty the fit |
+| `one_minute` | `session="session"`, `session_gap="1m"` | one minute, the step chosen for the session boundary |
+| `reset` | `session="session"`, `session_gap="reset"` | a fresh start: the model forgets everything |
+
+`weight_sum` is read before a row's own step, so a reset shows on row 200
+itself, and a step's decay on row 201. A numeric clock takes the same
+parameters as numbers of its units, such as `half_life=600.0,
+gap_cap=300.0` on `t`, and `lam`, the weight kept per unit, may stand in
+for `half_life`.
+This code uses `df` from [Example data](#example-data):
+
+```python
+afternoon = pl.col("session") == "a"
+df.with_columns(ts=pl.when(afternoon).then(pl.col("ts") + pl.duration(days=2)).otherwise(pl.col("ts"))) \
+  .write_parquet("weekend.parquet")
+
+common = dict(targets=["y"], features=["x0", "x1"], clock="ts", half_life="30m")   # ts is a Datetime: durations
+policies = [
+    po.spec.ewridge("capped", gap_cap="5m", **common),                             # the weekend counts as five minutes
+    po.spec.ewridge("uncapped", gap_cap="3d", **common),                           # the weekend counts in full
+    po.spec.ewridge("one_minute", gap_cap="5m", session="session", session_gap="1m", **common),   # one minute at the boundary
+    po.spec.ewridge("reset", gap_cap="5m", session="session", session_gap="reset", **common),  # a fresh start there
+]
+fitted = pl.scan_parquet("weekend.parquet").online.fit_predict(policies).collect()
+print("row" + "".join(f"{p['name']:>12}" for p in policies))
+for row in [199, 200, 201, 202]:
+    print(f"{row:<3}" + "".join(f"{fitted[p['name']].struct.field('weight_sum')[row]:>12.2f}" for p in policies))
+```
+
+```text
+row      capped    uncapped  one_minute       reset
+199       43.34       43.34       43.34       43.34
+200       43.35       43.35       43.35        0.00
+201       39.62        1.00       43.36        1.00
+202       39.72        1.98       43.37        1.98
 ```
 
 ### Convergence without a decay
@@ -616,6 +741,33 @@ half-life still forgets, a little.** Under `half_life=1e12`, `settled_frac`
 stays near zero until the stream has run for about 10¹² clock units, so a
 `min_settled_frac` gate ([Warm-up](#warm-up)) stays closed.
 
+This code fits `ewridge` with no decay to `df`'s rows in their order,
+reversed and shuffled, and solves the same least squares with numpy. The
+last line reads `settled_frac` on the last row under `half_life=1e12`.
+It reads `df` from [Example data](#example-data):
+
+```python
+batch = po.spec.ewridge("batch", targets=["y"], features=["x0", "x1", "x2"],
+                        half_life=float("inf"),   # no clock, no decay
+                        ridge=0.0)                 # plain least squares, in place of the default ridge of 1e-6
+for order, rows in [("in order", df), ("reversed", df.reverse()), ("shuffled", df.sample(fraction=1.0, shuffle=True, seed=1))]:
+    coef = po.ModelBank([batch]).fit_predict(rows)["batch"].struct.field("coef")[-1]   # the fit after the last row
+    print(f"{order:<9}", " ".join(f"{c:9.6f}" for c in coef))
+design = np.column_stack([np.ones(df.height), df["x0"], df["x1"], df["x2"]])
+print(f"{'numpy':<9}", " ".join(f"{c:9.6f}" for c in np.linalg.lstsq(design, df["y"], rcond=None)[0]))
+
+huge = po.spec.ewridge("huge", targets=["y"], features=["x0"], clock="t", half_life=1e12, gap_cap=300.0)
+print(f"settled_frac after 399 units of t under half_life=1e12: {po.ModelBank([huge]).fit_predict(df)['huge'].struct.field('settled_frac')[-1]:.1e}")
+```
+
+```text
+in order   0.992088  1.994121 -1.007945 -0.026134
+reversed   0.992088  1.994121 -1.007945 -0.026134
+shuffled   0.992088  1.994121 -1.007945 -0.026134
+numpy      0.992088  1.994121 -1.007945 -0.026134
+settled_frac after 399 units of t under half_life=1e12: 2.8e-10
+```
+
 ### A hard window
 
 A half-life never forgets entirely: three half-lives back still carries
@@ -634,12 +786,39 @@ Polars' `rolling_*_by(closed=)` does.** Under `"right"`, the default, that
 row has left, as it has in the [window operators](#making-features-and-targets-from-windows) and in
 `rolling_sum_by`. Under `"both"` it stays. A model's window always holds the
 row it ends at, because the model reads its fit after it has learned that
-row, so `"left"` and `"none"` are refused, and so is `"both"` without a
+row. So `"left"` and `"none"` are refused, and so is `"both"` without a
 `window_size`.
 
 **Inside the window the weights still halve every `half_life`, so the
 newest row counts most.** For a flat rolling fit with equal weights, give
 `half_life=float("inf")` with the `window_size`.
+
+**A window forgets a break that a half-life still holds.** In `df`, the
+beta of `ret` on `signal_a` flips from 0.8 to −0.8 at row 200 (counting
+from 0). This code follows it with a half-life of 100 rows, and with a flat
+window of 100 rows. A hundred rows after the break, the window holds only
+rows after it and reads the new beta, while the half-life still gives the
+old rows half their weight.
+It reads `df` from [Example data](#example-data):
+
+```python
+common = dict(targets=["ret"], features=["signal_a"], clock="t", gap_cap=300.0, coef_every=0)   # the beta on every row
+decayed = po.spec.ewridge("decayed", half_life=100.0, **common)                              # a half-life of 100 rows
+windowed = po.spec.ewridge("windowed", half_life=float("inf"), window_size=100.0, **common)  # the last 100 rows, equally weighted
+fitted = po.ModelBank([decayed, windowed]).fit_predict(df)
+print("row  decayed  windowed")
+for row in [199, 250, 300, 399]:
+    beta = [fitted[name].struct.field("coef")[row][1] for name in ("decayed", "windowed")]   # [intercept, signal_a]
+    print(f"{row:<4} {beta[0]:7.2f}  {beta[1]:8.2f}")
+```
+
+```text
+row  decayed  windowed
+199     0.77      0.83
+250     0.29      0.01
+300     0.00     -0.78
+399    -0.39     -0.78
+```
 
 **The cut is exact.** At time `t`, the rows learned at or before a time `u`
 contribute `0.5 ** ((t − u) / half_life)` times the running sum as it stood
@@ -656,13 +835,32 @@ Under `window_every` the effective window is in
 `[window_size − window_every, window_size]`, whatever the row rate, with
 `window_every` the spacing in force: a thinning `window_budget` doubles it.
 
+**`weight_sum` is the weight inside the window.** This code fits `ew_cov`
+over a window of 150 units of `t` with a half-life of 50, and a snapshot
+every 10 units. The weight a row a unit apart adds settles at
+`1 / (1 − 0.5 ** (1 / 50))`, about 72.6, without a window. A window keeps
+the share of it younger than its effective edge, `1 − 0.5 ** (edge / 50)`,
+with the edge between 140 and 150 units back.
+It reads `df` from [Example data](#example-data):
+
 ```python
 cut = po.spec.ew_cov(
-    "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=500.0,
-    window_size=1500.0,            # a row this many clock units old or older contributes exactly nothing
+    "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0,
+    window_size=150.0,             # a row this many clock units old or older contributes exactly nothing
     window_every=10,               # a snapshot every 10 units of t
     window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring
 )
+whole = po.spec.ew_cov("whole", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0)
+last = po.ModelBank([cut, whole]).fit_predict(df).tail(1)
+ceiling = 1 / (1 - 0.5 ** (1 / 50))
+print(f"without a window: weight_sum {last['whole'].struct.field('weight_sum')[0]:.2f}, the ceiling {ceiling:.2f}")
+print(f"inside the window: weight_sum {last['cut'].struct.field('weight_sum')[0]:.2f}, "
+      f"between {ceiling * (1 - 0.5 ** (140 / 50)):.2f} and {ceiling * (1 - 0.5 ** (150 / 50)):.2f}")
+```
+
+```text
+without a window: weight_sum 72.35, the ceiling 72.64
+inside the window: weight_sum 63.43, between 62.21 and 63.56
 ```
 
 Five things to know before reading a windowed model's numbers:
@@ -688,13 +886,7 @@ What the window truncates depends on the model:
 **`window_budget` caps the snapshots' memory, per ring, in MiB.** The
 ring's memory grows with the window: for an `ew_cov` over 20 columns, a
 1,000-row window holds about 3 MB per group, divided by the rows between
-snapshots. A
-refusal comes before the bank learns any of the chunk, except for two
-overruns found only as the rows go in. One is under
-`drift_action="reset"`. The other is a snapshot that grows within the
-chunk, as an `ewridge`'s or a `lasso`'s does when its targets first go
-missing on different rows. After either, the bank refuses every call that
-follows, so rebuild it from its last save with `po.ModelBank.load`.
+snapshots.
 
 | `window_budget` | when a chunk would take a ring past the cap |
 |---|---|
@@ -703,44 +895,75 @@ follows, so rebuild it from its last save with `po.ModelBank.load`.
 | `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, on the clock or in rows, which, like `window_every`, only ever shortens the window |
 | `{"refuse": float("inf")}` | nothing: no cap |
 
+**A refusal comes before the bank learns any of the chunk, except for two
+overruns found only as the rows go in.** One is under
+`drift_action="reset"`. The other is a snapshot that grows within the
+chunk, as an `ewridge`'s or a `lasso`'s does when its targets first go
+missing on different rows. After either, the bank refuses every call that
+follows, so rebuild it from its last save with `po.ModelBank.load`.
+
 ### A local fit along any feature
 
-To fit any model locally along a feature, sort the frame by that feature
-with Polars' `sort` before the bank, and name the feature as the spec's
-`clock`. `half_life` is then a bandwidth in that feature's units. Each row
-is fitted on the rows before it in that order, each weighted by
-`0.5 ** (Δx / half_life)`, with `Δx` its distance from the row in that
-feature: an exponential kernel.
-This code uses `df` from [Example data](#example-data):
-
-```python
-curve = df.sort("x0")
-kernel = po.spec.ewridge(
-    "kernel",
-    targets=["y"],
-    features=["x0"],
-    clock="x0",                 # the clock is a feature: the decay is a kernel in it
-    half_life=0.5,              # the bandwidth, in x0's own units
-    gap_cap=1.0,                # a wider gap decays as if it were this wide
-    max_rows_between_solves=1,  # refit at every row
-    coef_every=0,               # write the coefficients on every row
-    min_weight=10.0,
-)
-fitted = po.ModelBank([kernel]).fit_predict(curve).unnest("kernel")
-# pred_y  is the fitted curve, read at each row's own x0
-# coef    is the line through that row's neighbourhood
-```
-
-The fit is a local regression from running sums that do not grow, and
-agrees to 1e-12 with a kernel-weighted least squares recomputed from
-scratch at every row.
+To fit any model locally along a feature, sort the rows by that feature
+with Polars' `sort` in the query before the bank, and name the feature as
+the spec's `clock`. `half_life` is then a bandwidth in that feature's
+units. Each row is fitted on the rows before it in that order, each
+weighted by `0.5 ** (Δx / half_life)`, with `Δx` its distance from the row
+in that feature: an exponential kernel. The fit is a local regression from
+running sums that do not grow. It agrees to 1e-12 with a kernel-weighted
+least squares recomputed from scratch at every row, which
+`tests/test_ewridge.py` holds it to.
 
 **The kernel is one-sided, so the fit lags.** Narrow the bandwidth to lag
-less, and widen it to smooth the noise. Take 1,200 points of `sin(x)`,
-plus noise of standard deviation 0.1, for x between −3 and 3
-(`tests/test_ewridge.py`). At a bandwidth of 0.25, the fit's root-mean-square
-distance from the curve is 0.08, where the best straight line's is 0.39. At
-a bandwidth of 1.0 it is 0.29, most of the way back to the line.
+less, and widen it to smooth the noise. This code makes 1,200 points of
+`sin(x)` plus noise of standard deviation 0.1, for x between −3 and 3, and
+fits a straight line in `x` locally at two bandwidths. It prints each fit's
+root-mean-square distance from the curve, beside the best straight line's:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(1)
+x = rng.uniform(-3.0, 3.0, 1200)
+pl.DataFrame({"x": x, "y": np.sin(x) + 0.1 * rng.standard_normal(1200)}).write_parquet("curve.parquet")
+
+def local(bandwidth):
+    kernel = po.spec.ewridge(
+        "kernel", targets=["y"], features=["x"],
+        clock="x",                  # the clock is a feature: the decay is a kernel in it
+        half_life=bandwidth,        # the bandwidth, in x's own units
+        gap_cap=1.0,                # a wider gap decays as if it were this wide
+        max_rows_between_solves=1,  # refit at every row
+        coef_every=0,               # write the coefficients on every row: the line through the row's neighbourhood
+        min_weight=20.0,
+    )
+    query = pl.scan_parquet("curve.parquet").sort("x")   # sorted by the feature, in the query before the bank
+    return query.online.fit_predict([kernel]).online.unnest([kernel]).collect()   # pred_y: the curve at each row's x
+
+narrow, wide = local(0.25), local(1.0)
+fit = narrow["pred_y"].is_not_null()                    # the rows past the warm-up
+curve = narrow.filter(fit)
+truth = np.sin(curve["x"].to_numpy())
+line = np.polyval(np.polyfit(narrow["x"], narrow["y"], 1), curve["x"].to_numpy())
+
+def rms(pred):
+    return float(np.sqrt(np.mean((np.asarray(pred) - truth) ** 2)))
+
+print(f"bandwidth 0.25: {rms(curve['pred_y']):.2f}")
+print(f"bandwidth 1.0:  {rms(wide.filter(fit)['pred_y']):.2f}")
+print(f"straight line:  {rms(line):.2f}")
+```
+
+```text
+bandwidth 0.25: 0.08
+bandwidth 1.0:  0.29
+straight line:  0.39
+```
+
+The narrow kernel follows the curve the straight line cannot. The wide one
+is most of the way back to the line.
 
 **The clock column can stay out of `features`.** With other columns as
 features, the fit is a regression whose coefficients move along the clock.
@@ -750,17 +973,41 @@ features, the fit is a regression whose coefficients move along the clock.
 Two guarantees hold for every run, and both rest on a fixed row order,
 which the caller supplies.
 
-- **Every prediction and diagnostic is out-of-sample.** Each row is scored
-  from the state as it stood before the row's own target was learned, so
-  no row's outcome reaches its own prediction or the diagnostics measured
-  on it.
-- **Chunk invariance.** One chunk or a thousand, with or without a save and
-  resume in the middle, gives bit-identical numbers. Only which rows carry
-  `coef`, and `support_coef` beside it, can differ, and only by default:
-  the bank then writes them on each group's last accepted row in every
-  chunk, so
-  smaller chunks report them more often. Under `coef_every` or
-  `max_rows_between_coefs` they do not move ([Coefficients](#coefficients)).
+**Every prediction and diagnostic is out-of-sample.** Each row is scored
+from the state as it stood before the row's own target was learned, so no
+row's outcome reaches its own prediction or the diagnostics measured on
+it.
+
+**The numbers do not depend on the chunking.** One chunk or a thousand,
+with or without a save and resume in the middle, gives bit-identical
+numbers. Only which rows carry `coef`, and `support_coef` beside it, can
+differ, and only by default. The bank then writes them on each group's last
+accepted row in every chunk, so smaller chunks report them more often.
+Under `coef_every` or `max_rows_between_coefs` they do not move
+([Coefficients](#coefficients)).
+
+This code checks both on `df`. It predicts row 300 with a bank that has
+learned only rows 0 to 299, and compares that with the same row of one
+run over every row. It then runs the stream again one row per chunk.
+It reads `df` from [Example data](#example-data):
+
+```python
+honest = po.spec.ewridge("honest", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0)
+one_run = po.ModelBank([honest]).fit_predict(df)["honest"].struct.field("pred_y")
+
+first_300 = po.ModelBank([honest])
+first_300.fit_predict(df.head(300))                           # learns rows 0 to 299
+alone = first_300.predict(df.slice(300, 1))["honest"].struct.field("pred_y")[0]
+print(f"row 300: {one_run[300]:.6f} in one run, {alone:.6f} from rows 0 to 299 alone")
+
+by_row = pl.concat(po.ModelBank([honest]).fit_predict_batches(df, chunk_size=1))   # 400 chunks of one row
+print(f"one chunk against 400: {(one_run - by_row['honest'].struct.field('pred_y')).abs().max()} largest difference")
+```
+
+```text
+row 300: 2.142699 in one run, 2.142699 from rows 0 to 299 alone
+one chunk against 400: 0.0 largest difference
+```
 
 **A model learns in row order, so a query whose row order Polars does not
 guarantee can give a different model each time it runs.** Run a chunk at a
@@ -786,15 +1033,46 @@ query and refusing a chunk that runs backwards before learning any of it.
 | the clock | each group's clock, row by row, for every spec with a `clock` | refuses the chunk on a backwards step the settings below do not allow |
 | the group keys | with `group_close="monotone"`, the keys in the column's own order, an integer column as numbers and any other as text | refuses the chunk on a key below the one before it, since a closed group cannot reopen |
 
+**The query check names the step and its fix.** This code joins each
+row's venue to a fee, once as Polars' `join` does by default and once with
+`maintain_order="left"`, and prints what the bank warns of each.
+It reads `lf` from [Example data](#example-data):
+
+```python
+import textwrap
+import warnings
+
+pl.DataFrame({"venue": ["X", "Y"], "fee": [0.1, 0.2]}).write_parquet("fees.parquet")
+priced = po.spec.ewridge("priced", targets=["y"], features=["x0", "fee"], half_life=100.0)
+for order in [None, "left"]:
+    joined = lf.join(pl.scan_parquet("fees.parquet"), on="venue", **({"maintain_order": order} if order else {}))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        joined.online.fit_predict([priced]).collect()
+    said = [str(w.message) for w in caught if issubclass(w.category, po.OrderNotGuaranteedWarning)]
+    print(f"maintain_order={order!r}:", textwrap.fill(said[0], 100) if said else "no warning")
+```
+
+```text
+maintain_order=None: lf.online.fit_predict: the plan's row order is not guaranteed, and an online model learns in row
+order. 1 node(s) leave it unspecified: a join without maintain_order (pass maintain_order="left" to
+keep the order of the left input). The streaming engine that runs the plan may deliver rows in an
+order lf.collect() would not, and it may differ between runs. Give the plan a fixed order --
+maintain_order="left" on a join, maintain_order=True on a group_by, a sort after a unique() or
+before the bank -- or, for a plan whose order is fixed by other means,
+warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning).
+maintain_order='left': no warning
+```
+
 **The query check is best-effort.** It reads the query's `explain()` text,
 and walks the query's steps only when that names a join, an aggregation, a
-`unique` or a `sort`. A step followed by a `sort` counts as
-ordered, unless that sort is by several keys without `maintain_order=True`.
-Such a sort leaves rows with equal keys in no particular order: 2,109 of
-10,000 rows moved when measured. A join with `maintain_order="left"` is
-followed on its left side only. A query Polars cannot serialize passes
-without a warning, and the check never fails a run. For a query whose order
-you know, silence the warning with
+`unique` or a `sort`. A step followed by a `sort` counts as ordered, unless
+that sort is by several keys without `maintain_order=True`. Such a sort
+leaves rows with equal keys in no particular order: 2,109 of 10,000 rows
+moved when measured. A join with `maintain_order="left"` is followed on its
+left side only. A query Polars cannot serialize passes without a warning,
+and the check never fails a run. For a query whose order you know, silence
+the warning with
 `warnings.simplefilter("ignore", po.OrderNotGuaranteedWarning)`.
 
 **`ModelBank.fit` does not warn when its state cannot depend on the row
@@ -808,8 +1086,8 @@ rounding, and `fit` keeps only the state.
 **The clock is checked group by group,** so groups may interleave freely:
 only the rows of one group need to be in clock order. Equal clock values
 are zero apart. A row with a null feature is skipped, but its clock is
-still checked. A row that `predict` scores is never refused ([Serving without
-learning](#serving-without-learning)).
+still checked. A row that `predict` scores is never refused ([Serving
+without learning](#serving-without-learning)).
 
 **`restart_after_step_back` and the size of a step back decide what it
 means.** It has no default, since only the caller knows how late a row can
@@ -822,10 +1100,6 @@ be, and `0` restarts the model at every step back:
 | larger than `restart_after_step_back` | a new start, such as a replayed day or a restarted feed | restarts the model |
 | any size, on a row whose `session` value changes | a new session, where the step is no measure of time | applies `session_gap`, or restarts the model under `session_gap="reset"` |
 
-**The summary counts what the clock rules met.** `bank.summary()` reports
-`clock_backwards`, the rows whose clock fell below the previous row's
-within a session, and `resets`, the rows where a stream restarted.
-
 **A refused chunk leaves the bank as it was.** The bank runs the clock of
 every group of every spec over the chunk before it learns any row. So one
 late row in one group changes nothing: correct the chunk and feed it again.
@@ -833,33 +1107,75 @@ To resume a saved state on input that overlaps it, pass the input through
 `bank.skip_learned(...)`, which drops the rows the state has learned ([Save
 and load](#save-and-load)).
 
-**The error locates the step and names the way out.** The row it names is
-counted from the start of the input however it arrives (one frame,
-batches, a query or the CLI's file). On a temporal clock the step is a
-duration.
+**The error locates the step and names the way out, and the summary counts
+what the clock rules met.** The row the error names is counted from the
+start of the input however it arrives (one frame, batches, a query or the
+command line's file). On a temporal clock the step is a duration.
+`bank.summary()` reports `clock_backwards`, the rows whose clock fell below
+the previous row's within a session, and `resets`, the rows where a stream
+restarted. This code feeds ten rows of `df` with the row at `t = 6` two
+rows late, first with `restart_after_step_back` unset, then set below the
+step:
+It reads `df` from [Example data](#example-data):
+
+```python
+import textwrap
+
+late = df.head(10)[[0, 1, 2, 3, 4, 5, 7, 8, 6, 9]]           # t runs 0 ... 5, 7, 8, 6, 9
+strict = po.spec.ewridge("strict", targets=["y"], features=["x0"], clock="t", half_life=100.0, gap_cap=300.0)
+try:
+    po.ModelBank([strict]).fit_predict(late)
+except ValueError as err:
+    print(textwrap.fill(str(err), 100))
+
+lenient = po.spec.ewridge("lenient", targets=["y"], features=["x0"], clock="t", half_life=100.0, gap_cap=300.0,
+                          restart_after_step_back=1.0)       # a step back larger than 1 starts the model over
+bank = po.ModelBank([lenient])
+bank.fit_predict(late)
+counts = bank.summary().row(0, named=True)
+print(f"{counts['spec']}: clock_backwards {counts['clock_backwards']}, resets {counts['resets']}")
+```
 
 ```text
-spec "m": clock column "t" goes backwards by 30 at row 6 (restart_after_step_back is unset, so
+spec "strict": clock column "t" goes backwards by 2 at row 8 (restart_after_step_back is unset, so
 every step back is refused); the bank was not updated. Sort each group by the clock; to resume a
 saved state on input that overlaps it, drop the rows it has learned, with
 ModelBank.skip_learned(frame) in Python or --skip-learned on the command line; or, if a step back
-this large starts the stream over, set restart_after_step_back below it (a step back no larger
-than the setting is a late row).
+this large starts the stream over, set restart_after_step_back below it (a step back no larger than
+the setting is a late row).
+lenient: clock_backwards 1, resets 1
 ```
 
 ### Groups
 
 To fit one model per value of a column, name the column with `group`: the
-bank fits a separate model for each distinct value, in the same pass.
-`group_close` says when a group is finished, which keeps a bank's memory
-bounded when new group values never stop appearing.
+bank fits a separate model for each distinct value, in the same pass. Each
+group's model sees only its own rows, on its own clock, so a group's
+numbers are those of the same spec fitted to that group's rows alone.
+This code uses `df` from [Example data](#example-data):
 
 ```python
 per_stock = po.spec.ewridge(
     "per_stock", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0,
     group="stock_id",           # one model per distinct value of this column
-    group_close="monotone",     # or "session": when a group is finished, write it out and free its memory
 )
+bank = po.ModelBank([per_stock])
+together = bank.fit_predict(df)
+for row in bank.groups().iter_rows(named=True):
+    print(f"group {row['group']}: {row['rows_processed']} rows, the last at t = {row['last_clock']}")
+
+alone = {**per_stock, "group": None}           # the same spec without a group, fed stock b0's rows alone
+b0 = po.ModelBank([alone]).fit_predict(df.filter(pl.col("stock_id") == "b0"))
+in_bank = together.filter(pl.col("stock_id") == "b0")["per_stock"].struct.field("pred_y")
+print(f"b0 in the bank against b0 alone: {(in_bank - b0['per_stock'].struct.field('pred_y')).abs().max()} largest difference")
+```
+
+```text
+group b0: 100 rows, the last at t = 396.0
+group b1: 100 rows, the last at t = 397.0
+group b2: 100 rows, the last at t = 398.0
+group b3: 100 rows, the last at t = 399.0
+b0 in the bank against b0 alone: 0.0 largest difference
 ```
 
 **A group or session column keeps the type its first chunk had.** A key is
@@ -875,21 +1191,17 @@ the groups that have gone quiet, find them with `bank.groups()` and drop
 them with `bank.drop_groups(...)` ([In a loop](#in-a-loop-modelbank)).
 
 **With `group_close`, the bank writes out a finished group's running sums
-and frees its memory.** `"monotone"` finishes a group once a higher key
-arrives, and `"session"` once its `session` value changes. [One row per
-finished group](#one-row-per-finished-group) shows what is written.
+and frees its memory,** which keeps its memory bounded when new group
+values never stop appearing. `group_close="monotone"` finishes a group once
+a higher key arrives, so it needs the keys in order, as a block number or a
+date is. `group_close="session"` finishes a group once its `session` value
+changes. [One row per finished group](#one-row-per-finished-group) shows
+what is written.
 
 ### Weights
 
 To make some rows count more than others, name a column of row weights
-with `weight`.
-
-```python
-weighted = po.spec.ewridge(
-    "weighted", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0,
-    weight="w",                # a column of row weights: here a row of weight 2 counts as two rows of weight 1
-)
-```
+with `weight`. A row of weight 2 counts as two rows of weight 1.
 
 **A weight of 0 is legal, and a negative weight is refused.** A row of
 weight 0 is scored and moves the clock, but teaches the model nothing
@@ -897,7 +1209,33 @@ weight 0 is scored and moves the clock, but teaches the model nothing
 
 **In a model that keeps means, scaling every weight by the same factor
 changes nothing but `weight_sum`, so scale `min_weight` by the same
-factor.**
+factor.** This code gives row 100 a weight of 0 and every other row a
+weight of 1, then scales every weight by 10. With no decay, `weight_sum`
+counts the weight learned before each row: row 100 is scored, but the row
+after it finds the weight unchanged.
+It reads `df` from [Example data](#example-data):
+
+```python
+weighted = po.spec.ewridge(
+    "weighted", targets=["y"], features=["x0", "x1"], half_life=float("inf"),
+    weight="w",                # a column of row weights
+)
+ones = df.with_columns(w=pl.when(pl.int_range(pl.len()) == 100).then(0.0).otherwise(1.0))
+tens = ones.with_columns(pl.col("w") * 10)
+fields = [po.ModelBank([weighted]).fit_predict(frame)["weighted"].struct for frame in (ones, tens)]
+for row in [99, 100, 101, 102]:
+    print(f"row {row}: pred_y {fields[0].field('pred_y')[row]:.4f}, weight_sum {fields[0].field('weight_sum')[row]:g}")
+print(f"weights times 10: pred_y moves by at most {(fields[0].field('pred_y') - fields[1].field('pred_y')).abs().max():g}, "
+      f"weight_sum is {fields[1].field('weight_sum')[-1] / fields[0].field('weight_sum')[-1]:g} times as large")
+```
+
+```text
+row 99: pred_y -2.2004, weight_sum 99
+row 100: pred_y 0.6661, weight_sum 100
+row 101: pred_y 2.5369, weight_sum 100
+row 102: pred_y 2.4487, weight_sum 101
+weights times 10: pred_y moves by at most 0, weight_sum is 10 times as large
+```
 
 **Eight models read a weight differently**, and
 `tests/test_weight_scale.py` holds every other model to that rule:
@@ -917,9 +1255,9 @@ factor.**
 
 A model should not report a number it is not yet informed enough to give.
 Every model with a decay shares two gates that say what "informed enough"
-means, and the linear fits add a third, on by default on `ewridge` alone
-([docs/WARMUP-AND-CONVERGENCE.md](docs/WARMUP-AND-CONVERGENCE.md)). The
-gates hold back output only: the model learns from every row either way.
+means, and the linear fits add a third, on by default on `ewridge` alone.
+The gates hold back output only: the model learns from every row either
+way.
 
 | setting | default | withholds a prediction while | read from |
 |---|---|---|---|
@@ -961,7 +1299,7 @@ shorter history would not represent.
 **`max_error_inflation` follows the size of the fit:** add a feature, and
 the gate holds predictions back longer. It reads Kish's count, so one row
 carrying a hundred times the weight of the others counts as barely one. Each
-model that has it reads its own estimation variance; the others refuse the
+model that has it reads its own estimation variance. The others refuse the
 setting and say why:
 
 | model | `error_inflation` | |
@@ -971,26 +1309,34 @@ setting and say why:
 | `lasso` | `sqrt(1 + df / n_kish)` per penalty, `df` the active coefficients and the intercept | off unless set |
 | `kalman` | `sqrt(1 + z' P z / R)` for each row: the prediction's own variance, its coefficients' covariance carried through the row's clock gap, over the noise | off unless set; read per row, so a row far from the design is held back where others pass |
 
-**Each row says how ready its model was.** `summary()` carries the same
-readings per group, with `weight_sum_settled`, the weight the stream settles at,
-and once the stream is 95% settled a `ReadinessWarning` names, once, a
-coefficient more ridge than data. It also names a noise gate or a
-`min_weight` that has withheld every row for a further half-life, and that
-the rows, at their rate so far, would not meet. It gives the half-life or
-the ceiling that would change that, and promises nothing of rows that come
-faster. The command line closes a run with one line per spec whose
-groups ended withheld or with a coefficient more ridge than data.
-This code uses `df` from [Example data](#example-data):
+**Each row says how ready its model was, and why a prediction is
+missing.** `withheld_reason` names the gate that held a row back, and the
+gates are checked in the order of its values, so the first that applies is
+the one named. This code sets all three gates on one spec and counts the
+rows each withholds:
+It reads `df` from [Example data](#example-data):
 
 ```python
 warm = po.spec.ewridge(
     "warm", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0,
-    max_error_inflation=1.1,    # withhold while estimation error would add more than 10% over the noise floor
-    min_settled_frac=0.5,       # and until the decay window is half full: one half_life of history
-    emit_error_inflation=True,  # also each row's own ratio, against the row's own features
+    min_settled_frac=0.02,      # withhold until the decay window is 2% full
+    min_weight=8.0,             # and until the weight behind the fit reaches 8
+    max_error_inflation=1.05,   # and while estimation error would add more than 5% over the noise floor
 )
 rows = po.ModelBank([warm]).fit_predict(df).unnest("warm")
-rows.select("pred_y", "settled_frac", "withheld_reason", "error_inflation_y")
+counts = rows.group_by("withheld_reason").len().sort("withheld_reason", nulls_last=True)
+for reason, n in counts.iter_rows():
+    print(f"{reason or 'predicted'}: {n} rows")
+first = rows.filter(pl.col("pred_y").is_not_null()).row(0, named=True)
+print(f"first prediction at t = {first['t']:g}: weight_sum {first['weight_sum']:.2f}, settled_frac {first['settled_frac']:.3f}")
+```
+
+```text
+below_min_settled_frac: 4 rows
+below_min_weight: 5 rows
+above_max_error_inflation: 21 rows
+predicted: 370 rows
+first prediction at t = 30: weight_sum 27.18, settled_frac 0.182
 ```
 
 The readiness fields:
@@ -1002,6 +1348,18 @@ The readiness fields:
 | `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
 | `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
 | `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
+
+**`summary()` carries the same readings per group, and warns of a gate
+that will not open.** It adds `weight_sum_settled`, the weight the stream
+settles at. Once the stream is 95% settled, a `ReadinessWarning` names,
+once, a coefficient more ridge than data. It also names a noise gate or a
+`min_weight` that has withheld every row for a further half-life, and that
+the rows, at their rate so far, would not meet. It gives the half-life or
+the ceiling that would change that, and promises nothing of rows that come
+faster. The command line closes a run with one line per spec whose groups
+ended withheld or with a coefficient more ridge than data. [Is it
+ready?](docs/DIAGNOSTICS.md#is-it-ready) reads these fields to decide
+when a model can be trusted.
 
 ### Labels that arrive late
 
@@ -1022,10 +1380,31 @@ Everything computed from the labels sees only those that had arrived: the
 prediction, `sigma`, `zscore`, the metrics, break detection, the conformal
 interval, `weight_sum` and the `min_weight` gate.
 
+This code fits `df`'s minute-apart rows under `embargo="5m"`, with
+`emit_clocks=True`, and prints the clocks of five rows, counting from 0.
+Each row is scored from the rows at least five minutes older, the one
+exactly five minutes older included, so the first five rows have learned
+nothing.
+It reads `df` from [Example data](#example-data):
+
 ```python
-fwd = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
+fwd = po.spec.ewridge("fwd", targets=["y"], features=["x0", "x1"],
                       clock="ts", gap_cap="1h", half_life="30m",
-                      embargo="5m")      # the return takes five minutes to be known: learned five minutes later
+                      embargo="5m",      # a label takes five minutes to arrive: learned five minutes later
+                      emit_clocks=True)  # scored_clock and learned_clock on every row
+rows = po.ModelBank([fwd]).fit_predict(df).unnest("fwd")
+for row in [0, 4, 5, 6, 300]:
+    r = rows.row(row, named=True)
+    learned = f"the rows up to {r['learned_clock']:%H:%M}" if r["learned_clock"] else "no row yet"
+    print(f"row {row}: scored at {r['scored_clock']:%H:%M}, having learned {learned}, weight_sum {r['weight_sum']:.2f}")
+```
+
+```text
+row 0: scored at 09:30, having learned no row yet, weight_sum 0.00
+row 4: scored at 09:34, having learned no row yet, weight_sum 0.00
+row 5: scored at 09:35, having learned the rows up to 09:30, weight_sum 1.00
+row 6: scored at 09:36, having learned the rows up to 09:31, weight_sum 1.98
+row 300: scored at 14:30, having learned the rows up to 14:25, weight_sum 43.74
 ```
 
 | case | what `embargo` does |
@@ -1051,15 +1430,6 @@ the model. It returns every row twice: a copy to score at `t` with weight
 group is not enough, since the call merges the two copies by the clock
 alone. It adds two columns: `_online_role`, which says which copy a row is,
 and `_online_role_weight`, which you pass to the spec's `weight`.
-This code uses `lf` from [Example data](#example-data):
-
-```python
-doubled = po.stream.embargo(lf, clock="t", delay=5.0)     # every row twice, in clock order
-scored = doubled.online.fit_predict(
-    [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
-                     half_life=50.0, weight="_online_role_weight")]   # 0 on the copies to score, 1 on the rest
-).filter(pl.col("_online_role") == "predict").collect()               # keep the scored copies
-```
 
 **The built-in delay agrees with the doubled stream to the bit on `pred`,
 `resid` and `weight_sum` when each row's `t + delay` is another row's
@@ -1074,6 +1444,31 @@ of the prediction the row was scored with. The doubled stream's learning
 copy forms its residual at `t + delay`, from a model that has since learned
 every row before it.
 
+This code doubles `lf`, whose clock `t` moves a row at a time, and holds
+the scored copies to the built-in delay of the same five units.
+It reads `lf` from [Example data](#example-data):
+
+```python
+doubled = po.stream.embargo(lf, clock="t", delay=5.0)     # every row twice, in clock order
+scored = doubled.online.fit_predict(
+    [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0,
+                     half_life=50.0, weight="_online_role_weight")]   # 0 on the copies to score, 1 on the rest
+).filter(pl.col("_online_role") == "predict").collect()               # keep the scored copies
+
+# The built-in delay on the same rows: t is a row apart, so each t + 5 is another row's clock.
+built_in = lf.online.fit_predict(
+    [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", gap_cap=10.0, half_life=50.0, embargo=5.0)]
+).collect()
+for field in ["pred_y", "weight_sum"]:
+    a, b = scored["m"].struct.field(field), built_in["m"].struct.field(field)
+    print(f"{field}: {a.count()} rows, {(a == b).sum()} equal to the bit")
+```
+
+```text
+pred_y: 393 rows, 393 equal to the bit
+weight_sum: 400 rows, 400 equal to the bit
+```
+
 ### Nulls, and three ways to hold a row back
 
 A null skips an update but never stops the clock. NaN, ±inf and any
@@ -1086,6 +1481,47 @@ model, beside a weight of 0 and `predict`:
 | **a null target** | yes | yes | not that target's, except under `target_gaps="pairwise"` | counts the row. In a regression model the target's own weight only decays, so a long stretch of nulls can take that target below its `min_weight` | leave a label out |
 | **weight `0`** | yes | yes | no | keeps decaying, so a long stretch can fall below `min_weight` | keep a row's place in the stream |
 | **`predict`** | yes | no | no | frozen | serve ([Serving without learning](#serving-without-learning)) |
+
+This code holds row 100 of `df` back from a model in each of the three
+ways, beside a run that learns it. For each it prints whether row 100 was
+scored, the clock the model stands at after it, whether the fit moved, and
+`weight_sum` on the row after it, on `df` from [Example data](#example-data):
+
+```python
+held = po.spec.ewridge("held", targets=["y"], features=["x0", "x1"], clock="t", half_life=100.0, gap_cap=300.0,
+                       weight="w", max_rows_between_solves=1)   # a solve on every row, so each fit read is current
+rows = df.with_columns(w=pl.lit(1.0))
+row_100 = pl.int_range(pl.len()) == 100
+ways = {
+    "learned": rows,
+    "a null target": rows.with_columns(y=pl.when(row_100).then(None).otherwise(pl.col("y"))),
+    "weight 0": rows.with_columns(w=pl.when(row_100).then(0.0).otherwise(pl.col("w"))),
+    "predict": rows,
+}
+before = po.ModelBank([held])
+before.fit_predict(rows.head(100))                            # rows 0 to 99
+print(f"{'':<14} {'scored':>6} {'clock':>6} {'fit moved':>9} {'weight_sum':>10}")
+for way, frame in ways.items():
+    bank = po.ModelBank([held])
+    bank.fit_predict(frame.head(100))
+    if way == "predict":
+        scored = bank.predict(frame.slice(100, 1))            # scores row 100 and learns nothing
+    else:
+        scored = bank.fit_predict(frame.slice(100, 1))
+    clock = bank.groups()["last_clock"][0]
+    moved = bank.coef()["coef"].to_list() != before.coef()["coef"].to_list()
+    after = bank.fit_predict(frame.slice(101, 1))["held"].struct.field("weight_sum")[0]
+    is_scored = scored["held"].struct.field("pred_y")[0] is not None
+    print(f"{way:<14} {'yes' if is_scored else 'no':>6} {clock:>6g} {'yes' if moved else 'no':>9} {after:>10.2f}")
+```
+
+```text
+               scored  clock fit moved weight_sum
+learned           yes    100       yes      72.89
+a null target     yes    100        no      72.89
+weight 0          yes    100        no      71.89
+predict           yes     99        no      72.39
+```
 
 **A null in any feature, or in the weight, skips the row**: its outputs are
 null, and no update happens.

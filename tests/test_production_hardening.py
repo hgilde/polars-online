@@ -640,8 +640,9 @@ def _block_param(path: str, line: int, code: str):
 
 
 def _names(code: str) -> tuple[set[str], list[str]]:
-    """The names a block builds -- assigns, imports, defines or takes as an
-    argument -- and the names it reads, in order."""
+    """The names a block builds -- assigns, imports, defines, takes as an
+    argument or binds with ``except ... as`` -- and the names it reads, in
+    order."""
     stored: set[str] = set()
     loaded: list[str] = []
     for node in ast.walk(ast.parse(code)):
@@ -650,6 +651,8 @@ def _names(code: str) -> tuple[set[str], list[str]]:
         elif isinstance(node, ast.Import | ast.ImportFrom):
             stored.update((a.asname or a.name).split(".")[0] for a in node.names)
         elif isinstance(node, ast.FunctionDef | ast.ClassDef):
+            stored.add(node.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
             stored.add(node.name)
         elif isinstance(node, ast.arg):
             stored.add(node.arg)
