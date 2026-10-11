@@ -95,7 +95,7 @@ def test_every_po_gram_function_is_on_the_page():
 
 def test_the_readme_the_map_and_llms_txt_link_the_page():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n### The running sums behind a fit")
+    start = readme.index("\n### Fitting many features from one pass")
     section = readme[start : readme.index("\n### ", start + 1)]
     assert "docs/GRAM.md" in section
     assert "](GRAM.md)" in (REPO / "docs" / "README.md").read_text(encoding="utf-8")

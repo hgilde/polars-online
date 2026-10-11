@@ -103,6 +103,6 @@ def test_the_readme_links_the_page_beside_check_and_audit():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
     start = readme.index("\n### Checking your data's quality\n")
     section = readme[start : readme.index("\n### ", start + 1)]
-    for anchor in ("**`check()` reads these tables", "**Run it beside the models"):
+    for anchor in ("**`bank.check()` reads what a bank kept", "[`audit`](docs/MODELS.md#audit"):
         assert anchor in section, anchor
     assert "docs/DATA-QUALITY.md" in section

@@ -12,10 +12,40 @@ the same question at runtime, for the exact spec you built.
 | [Clustering and classification](MODELS.md#clustering-and-classification) | [`kmeans`](#kmeans) · [`micro`](#micro) · [`ew_class`](#ew_class) |
 | [Sequential tests and regimes](MODELS.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`bocpd`](#bocpd) · [`hmm`](#hmm) |
 
-Each field below comes with its dtype, what it holds, and the rows on which
-it is null.
-
 ## Reading this page
+
+Each model's table lists the fields of its plainest spec, each with its
+dtype, what it holds, and the rows on which it is null.
+
+### The fields of your own spec
+
+A spec of your own can carry a grid, several targets or another name, and
+each changes its fields' names. Ask the spec itself:
+`po.spec.output_fields` lists every field it writes, and
+`po.spec.output_index` gives each field with the target, ridge and
+half-life its name encodes, and its dtype. Here a spec with two half-lives
+and two ridge values has four predictions of `y`, one per pair:
+
+```python
+import polars_online as po
+
+grid = po.spec.ewridge(
+    "ridge", targets=["y"], features=["x0", "x1"],
+    half_life=[100.0, 500.0], ridge=[1e-6, 0.5],  # a grid: one fit per pair of values
+)
+print(po.spec.output_fields(grid))  # every field, by name
+index = po.spec.output_index(grid)  # every field, with the values its name encodes
+for row in index.filter(kind="pred").select("field", "target", "ridge", "half_life").iter_rows():
+    print(*row)
+```
+
+```text
+['pred_y__r0.000001@h100', 'resid_y__r0.000001@h100', 'pred_y__r0.5@h100', 'resid_y__r0.5@h100', 'weight_sum@h100', 'settled_frac@h100', 'withheld_reason@h100', 'coef@h100', 'support_coef@h100', 'pred_y__r0.000001@h500', 'resid_y__r0.000001@h500', 'pred_y__r0.5@h500', 'resid_y__r0.5@h500', 'weight_sum@h500', 'settled_frac@h500', 'withheld_reason@h500', 'coef@h500', 'support_coef@h500']
+pred_y__r0.000001@h100 y 1e-06 100.0
+pred_y__r0.5@h100 y 0.5 100.0
+pred_y__r0.000001@h500 y 1e-06 500.0
+pred_y__r0.5@h500 y 0.5 500.0
+```
 
 ### Field names
 
@@ -114,6 +144,8 @@ hand: change the generator, then run
 
 ## `ewridge`
 
+The fields of `po.spec.ewridge("m", targets=["y"], features=["x0"], half_life=50.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -126,6 +158,8 @@ hand: change the generator, then run
 
 ## `rls`
 
+The fields of `po.spec.rls("m", targets=["y"], features=["x0"], half_life=50.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -136,6 +170,8 @@ hand: change the generator, then run
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `lasso`
+
+The fields of `po.spec.lasso("m", targets=["y"], features=["x0"], half_life=50.0, lasso_path=[0.1, 0.0])`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -151,6 +187,8 @@ hand: change the generator, then run
 
 ## `kalman`
 
+The fields of `po.spec.kalman("m", targets=["y"], features=["x0"], half_life=50.0, coef_half_life=50.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -161,6 +199,8 @@ hand: change the generator, then run
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `huber`
+
+The fields of `po.spec.huber("m", targets=["y"], features=["x0"], half_life=50.0)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -174,6 +214,8 @@ hand: change the generator, then run
 
 ## `quantile`
 
+The fields of `po.spec.quantile("m", targets=["y"], features=["x0"], half_life=50.0, quantile=0.5)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -186,6 +228,8 @@ hand: change the generator, then run
 
 ## `sgd`
 
+The fields of `po.spec.sgd("m", targets=["y"], features=["x0"], half_life=50.0, learning_rate=0.01)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -196,6 +240,8 @@ hand: change the generator, then run
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `pa`
+
+The fields of `po.spec.pa("m", targets=["y"], features=["x0"], half_life=50.0)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -208,6 +254,8 @@ hand: change the generator, then run
 
 ## `ftrl`
 
+The fields of `po.spec.ftrl("m", targets=["y"], features=["x0"], half_life=50.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -219,6 +267,8 @@ hand: change the generator, then run
 
 ## `holt`
 
+The fields of `po.spec.holt("m", targets=["y"], half_life=50.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `pred_y` | `f64` | the prediction for `<t>`, computed from the state **before** this row | while withheld |
@@ -229,6 +279,8 @@ hand: change the generator, then run
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `ew_cov`
+
+The fields of `po.spec.ew_cov("m", features=["x0", "x1"], half_life=50.0)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -245,11 +297,15 @@ hand: change the generator, then run
 
 `marginal` writes nothing per row but `weight_sum`. Its product is the state, and `ModelBank.marginal()` reads the pairs from it.
 
+The fields of `po.spec.marginal("m", targets=["y"], features=["x0"], half_life=50.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 
 ## `deco`
+
+The fields of `po.spec.deco("m", features=["x0", "x1"], half_life=50.0)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -265,6 +321,8 @@ hand: change the generator, then run
 
 `rcov` writes nothing per row but `weight_sum`. Its product is the closed block, in the row `ModelBank.closed_groups()` gives when a group closes (`group_close`). That row's `rcov_psd_repaired` is null where the repair could not run, on an estimate with an entry that is not finite.
 
+The fields of `po.spec.rcov("m", features=["x0", "x1"], group="g", group_close="monotone", block_rows=100)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
@@ -273,11 +331,15 @@ hand: change the generator, then run
 
 `audit` writes nothing per row but `weight_sum`, the rows before this one. Its product is the state, and `ModelBank.audit()` reads what it counted from it.
 
+The fields of `po.spec.audit("m", columns=["x0", "x1"])`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 
 ## `kmeans`
+
+The fields of `po.spec.kmeans("m", features=["x0", "x1"], half_life=50.0, k=2)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -290,6 +352,8 @@ hand: change the generator, then run
 | `coef` | `list[f64]` | the numbers behind the fit as one list ([shared field](#fields-most-models-write)) | on the rows `coef_every` or `max_rows_between_coefs` does not fill, and before the model has anything to report |
 
 ## `micro`
+
+The fields of `po.spec.micro("m", features=["x0", "x1"], half_life=50.0, eps=0.3)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -306,6 +370,8 @@ hand: change the generator, then run
 
 ## `ew_class`
 
+The fields of `po.spec.ew_class("m", features=["x0"], half_life=50.0, label="y", classes=["a", "b"], precision_prior=1.0)`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `class` | `str` | the most likely class label | while withheld |
@@ -318,6 +384,8 @@ hand: change the generator, then run
 
 ## `seqtest`
 
+The fields of `po.spec.seqtest("m", targets=["y"])`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `log_e_pos_y` | `f64` | log of the e-process betting the sign of `<t>` is positive: 0 is no evidence, and `log(20)`, 3.0, is evidence at level 0.05 | while withheld |
@@ -329,6 +397,8 @@ hand: change the generator, then run
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
 
 ## `corrchange`
+
+The fields of `po.spec.corrchange("m", features=["x0", "x1"], span_rows=20)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -343,6 +413,8 @@ hand: change the generator, then run
 
 ## `bocpd`
 
+The fields of `po.spec.bocpd("m", features=["x0", "x1"])`:
+
 | field | dtype | what it holds | also null |
 |---|---|---|---|
 | `p_change` | `f64` | `P(run length <= 1)`: the mass sitting on a change at or just before this row | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
@@ -356,6 +428,8 @@ hand: change the generator, then run
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
 
 ## `hmm`
+
+The fields of `po.spec.hmm("m", features=["x0", "x1"], half_life=50.0, k=2, precision_prior=0.1)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|

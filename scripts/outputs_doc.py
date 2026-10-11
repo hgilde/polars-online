@@ -17,6 +17,8 @@ Run: `uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -25,6 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 import polars_online as po  # noqa: E402
 from test_model_registry import MINIMAL, _build  # noqa: E402
+
+#: The keywords `_build` gives every model before `MINIMAL`'s own.
+BASE_KWARGS: dict[str, object] = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
 
 #: The README's model table, family by family and in its order. The family's
 #: name is also its heading in `docs/MODELS.md`, so the anchor is derived from it.
@@ -357,11 +362,57 @@ DTYPES: list[tuple[str, str]] = [
 ]
 
 
-READING = f"""\
-Each field below comes with its dtype, what it holds, and the rows on which
-it is null.
+#: The recipe in *Reading this page*: run here, so the page shows what it prints.
+RECIPE = """\
+import polars_online as po
 
+grid = po.spec.ewridge(
+    "ridge", targets=["y"], features=["x0", "x1"],
+    half_life=[100.0, 500.0], ridge=[1e-6, 0.5],  # a grid: one fit per pair of values
+)
+print(po.spec.output_fields(grid))  # every field, by name
+index = po.spec.output_index(grid)  # every field, with the values its name encodes
+for row in index.filter(kind="pred").select("field", "target", "ridge", "half_life").iter_rows():
+    print(*row)
+"""
+
+
+def printed(code: str) -> str:
+    """What `code` prints, run in a namespace of its own."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(compile(code, "outputs_doc.RECIPE", "exec"), {"__name__": "__recipe__"})
+    return out.getvalue().rstrip("\n")
+
+
+def call(name: str) -> str:
+    """The builder call `_build` makes for `name`, as a reader would type it."""
+    kw = {**BASE_KWARGS, **MINIMAL[name]}
+    args = ", ".join(f"{k}={v!r}" for k, v in kw.items() if v is not None)
+    return f'po.spec.{name}("m", {args})'.replace("'", '"')
+
+
+READING = f"""\
 ## Reading this page
+
+Each model's table lists the fields of its plainest spec, each with its
+dtype, what it holds, and the rows on which it is null.
+
+### The fields of your own spec
+
+A spec of your own can carry a grid, several targets or another name, and
+each changes its fields' names. Ask the spec itself:
+`po.spec.output_fields` lists every field it writes, and
+`po.spec.output_index` gives each field with the target, ridge and
+half-life its name encodes, and its dtype. Here a spec with two half-lives
+and two ridge values has four predictions of `y`, one per pair:
+
+```python
+{RECIPE}```
+
+```text
+{printed(RECIPE)}
+```
 
 ### Field names
 
@@ -494,6 +545,7 @@ def main() -> None:
             print(f"\n## `{name}`\n")
             if name in STATE_ONLY:
                 print(f"{STATE_ONLY[name]}\n")
+            print(f"The fields of `{call(name)}`:\n")
             rows = []
             for f, dtype in declared.items():
                 s = stem(f, targets, features)
