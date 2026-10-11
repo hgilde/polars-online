@@ -4641,6 +4641,7 @@ impl Spec {
                 split_merge,
                 split_merge_every_rows,
                 dead_frac,
+                standardize,
                 scale_floor,
                 ..
             } => {
@@ -4687,6 +4688,14 @@ impl Spec {
                         self.name
                     ));
                 }
+                if *standardize == Some(false) && scale_floor.is_some() {
+                    return Err(format!(
+                        "spec {:?}: scale_floor floors the variance distances are measured in \
+                         under standardize; standardize = false measures in the features' own \
+                         units, so there is none to floor: leave scale_floor out",
+                        self.name
+                    ));
+                }
             }
             ModelKind::Micro {
                 eps,
@@ -4694,6 +4703,7 @@ impl Spec {
                 max_clusters,
                 prune_every,
                 macro_link,
+                standardize,
                 scale_floor,
                 ..
             } => {
@@ -4735,6 +4745,14 @@ impl Spec {
                     return Err(format!(
                         "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance \
                          alone), got {v}",
+                        self.name
+                    ));
+                }
+                if *standardize == Some(false) && scale_floor.is_some() {
+                    return Err(format!(
+                        "spec {:?}: scale_floor floors the variance distances are measured in \
+                         under standardize; standardize = false measures in the features' own \
+                         units, so there is none to floor: leave scale_floor out",
                         self.name
                     ));
                 }

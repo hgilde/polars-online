@@ -416,7 +416,7 @@ def test_holt_extrapolates_over_the_clock_distance():
     previous scored row. `coef` is `[level, trend]`, so the oracle is exact."""
     t = np.arange(50.0)
     df = pl.DataFrame({"y": 3.0 + 0.5 * t, "t": t})
-    spec = po.spec.holt("h", targets=["y"], features=[], half_life=10.0, clock="t", gap_cap=20.0)
+    spec = po.spec.holt("h", targets=["y"], half_life=10.0, clock="t", gap_cap=20.0)
     bank = po.ModelBank([spec])
     bank.fit_predict(df)
     last = bank.groups()["last_clock"][0]

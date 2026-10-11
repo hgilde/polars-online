@@ -501,6 +501,14 @@ _RENAMED = {
     "level_half_life": "half_life",
 }
 
+#: The builders with no ``features`` keyword (task 244, P-6), and what each
+#: reads instead. A spec dict or a TOML table still says ``features = []``:
+#: every spec has the key there.
+_NO_FEATURES = {
+    "holt": "it reads only its targets, their own level and trend",
+    "seqtest": "it reads only its targets, or the residuals of `a` and `b`",
+}
+
 #: The parameters renamed in one builder whose old name another keeps
 #: (docs/PLAN.md task 195, N11): ``rls``'s ``ridge`` is ``delta``, and
 #: ``ridge`` is still :func:`ewridge`'s, :func:`huber`'s and :func:`quantile`'s.
@@ -551,6 +559,10 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                     if isinstance(t, dict) and any(k in t for k in _RELATIVE_KEYS):
                         what = t.get("column", t.get("name"))
                         raise TypeError(f"{who}: target {json.dumps(what)}: {_RELATIVE_REMOVED}")
+            if key == "features" and fn.__name__ in _NO_FEATURES:
+                raise TypeError(
+                    f"{who}: {fn.__name__}() takes no features; {_NO_FEATURES[fn.__name__]}"
+                )
             hint = own.get(key, shared.get(key))
             if hint is None:
                 if key in _RENAMED:
@@ -3692,7 +3704,6 @@ def holt(
     targets: TargetList,
     trend_half_life: float | Duration | None = None,
     trend: bool = True,
-    features: list[str] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Holt's linear trend: the target's own level and slope, extrapolated.
@@ -3751,9 +3762,6 @@ def holt(
         ``0.5 ** (age / half_life)``, which is pandas'
         ``ewm(adjust=True)`` for unit weights. ``trend_half_life`` is refused
         beside it. Default ``True``.
-    ``features``
-        Taken only empty: the model reads no feature, and a list that names one
-        is refused.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -3798,9 +3806,10 @@ def holt(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` for a
-    non-empty ``features``, a ``trend_half_life`` not above 0, and
-    ``trend_half_life`` beside ``trend=False``.
+    As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
+    ``features``, which this model has not got; and ``ValueError`` for a
+    ``trend_half_life`` not above 0, and ``trend_half_life`` beside
+    ``trend=False``.
     """
     model: dict[str, Any] = {
         "type": "holt",
@@ -3810,7 +3819,7 @@ def holt(
         # Absent when on, as the Rust spec leaves it out, so a bank reports
         # the dict this made (`ModelBank.specs`).
         model["trend"] = False
-    return _common(name, model, targets=targets, features=features or [], **common)
+    return _common(name, model, targets=targets, features=[], **common)
 
 
 @_checked
@@ -3826,7 +3835,7 @@ def kmeans(
     split_merge: float | None = None,
     split_merge_every_rows: int | None = None,
     dead_frac: float | None = None,
-    standardize: bool | None = None,
+    standardize: bool = True,
     scale_floor: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -3917,19 +3926,21 @@ def kmeans(
         Measure distances in units of each feature's EW standard deviation,
         tracked alongside the centres; the coordinates themselves are never
         rescaled, so the centres stay in the features' units. Default
-        ``True``.
+        ``True``; ``False`` measures in the features' own units.
     ``scale_floor``
-        The metric's variance is floored at this fraction of the feature's
-        long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
-        half-lives of a feature going quiet (a flag that stops firing, a sensor
-        at rest): a million at twenty, and the row on which the feature moves
-        again is then infinitely far from every centre. Floored, the weight
+        Under ``standardize``, the metric's variance is floored at this
+        fraction of the feature's long-run variance. ``1 / var`` alone grows
+        as ``2^Q`` over ``Q`` half-lives of a feature going quiet (a flag that
+        stops firing, a sensor at rest): a million at twenty, and the row on
+        which the feature moves again is then infinitely far from every
+        centre. Floored, the weight
         grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The long-run
         variance is tracked at eight times the half-life, a feature at a time.
         Each row's weight and deviation are clipped against it, and its start
         is the medians of the feature's first five rows, so a row at the input
         bound moves it by a factor of 26 at most, which a few of its half-lives
-        undo. Default ``0.1``; ``0`` is the EW variance alone.
+        undo. Default ``0.1``; ``0`` is the EW variance alone. Refused
+        beside ``standardize=False``, which reads no variance to floor.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -3983,7 +3994,8 @@ def kmeans(
       past 256 MiB;
     - a ``seed_rule`` not in the list;
     - ``split_merge``, ``dead_frac`` or ``scale_floor`` below 0 or not finite,
-      and ``dead_frac`` above 0 beside ``split_merge = 0``.
+      ``dead_frac`` above 0 beside ``split_merge = 0``, and ``scale_floor``
+      beside ``standardize=False``.
     """
     model: dict[str, Any] = {
         "type": "kmeans",
@@ -4013,7 +4025,7 @@ def micro(
     prune_every: float | Duration | None = None,
     max_rows_between_prunes: int | None = None,
     macro_link: float | None = None,
-    standardize: bool | None = None,
+    standardize: bool = True,
     scale_floor: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -4120,19 +4132,21 @@ def micro(
         bridges another.
     ``standardize``
         Measure in units of each feature's EW standard deviation. Default
-        ``True``.
+        ``True``; ``False`` measures in the features' own units.
     ``scale_floor``
-        The metric's variance is floored at this fraction of the feature's
-        long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
-        half-lives of a feature going quiet (a flag that stops firing, a sensor
-        at rest): a million at twenty, and the row on which the feature moves
-        again is then infinitely far from every centre. Floored, the weight
+        Under ``standardize``, the metric's variance is floored at this
+        fraction of the feature's long-run variance. ``1 / var`` alone grows
+        as ``2^Q`` over ``Q`` half-lives of a feature going quiet (a flag that
+        stops firing, a sensor at rest): a million at twenty, and the row on
+        which the feature moves again is then infinitely far from every
+        centre. Floored, the weight
         grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The long-run
         variance is tracked at eight times the half-life, a feature at a time.
         Each row's weight and deviation are clipped against it, and its start
         is the medians of the feature's first five rows, so a row at the input
         bound moves it by a factor of 26 at most, which a few of its half-lives
-        undo. Default ``0.1``; ``0`` is the EW variance alone.
+        undo. Default ``0.1``; ``0`` is the EW variance alone. Refused
+        beside ``standardize=False``, which reads no variance to floor.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -4192,8 +4206,9 @@ def micro(
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets``, which this model has not got; ``ValueError`` for an ``eps``
-    or ``beta_mu`` not above 0, a ``max_clusters`` of 0, and a
-    ``prune_every``, ``macro_link`` or ``scale_floor`` below 0 or not finite.
+    or ``beta_mu`` not above 0, a ``max_clusters`` of 0, a
+    ``prune_every``, ``macro_link`` or ``scale_floor`` below 0 or not finite,
+    and ``scale_floor`` beside ``standardize=False``.
     """
     model: dict[str, Any] = {
         "type": "micro",
@@ -4405,7 +4420,6 @@ def seqtest(
     b: str | None = None,
     a_suffix: str | None = None,
     b_suffix: str | None = None,
-    features: list[str] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """A sequential test of a sign, by betting: an e-process, read at any row.
@@ -4473,8 +4487,8 @@ def seqtest(
     e-process. A session change restarts it under ``session_gap = "reset"`` or
     ``group_close = "session"``, and so does a step back past
     ``restart_after_step_back``. ``min_weight`` defaults to 0. No ``features``
-    (the column is the test; the keyword is taken so that a frame namespace can
-    pass ``[]``, and a non-empty list is refused), no ``coef``, and nothing
+    (the column is the test; a spec dict or a TOML table says
+    ``features = []``), no ``coef``, and nothing
     residual-based applies -- there is no prediction.
     :func:`polars_online.eval.seqtest` is the same computation in polars
     expressions over a frame in memory.
@@ -4516,9 +4530,10 @@ def seqtest(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` for
-    ``weight``, ``half_life`` or ``lam``, a non-empty ``features``, ``a``
-    without ``b`` or the reverse, and a suffix without them. The bank refuses
+    As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
+    ``features``, which this model has not got; and ``ValueError`` for
+    ``weight``, ``half_life`` or ``lam``, ``a`` without ``b`` or the reverse,
+    and a suffix without them. The bank refuses
     the comparisons above when it is built.
     """
     model: dict[str, Any] = {
@@ -4528,7 +4543,7 @@ def seqtest(
         "a_suffix": a_suffix,
         "b_suffix": b_suffix,
     }
-    return _common(name, model, targets=targets, features=features or [], **common)
+    return _common(name, model, targets=targets, features=[], **common)
 
 
 @_checked
