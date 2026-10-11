@@ -49,9 +49,13 @@ LGB_DATA = {"verbose": -1, "bin_construct_sample_cnt": 5000}
 
 
 def frame(n: int = 20_000, seed: int = 0) -> pl.DataFrame:
-    """Floats of four shapes (one with 5% nulls, one of few distinct
-    values), an integer, a Boolean, an Enum of five uneven levels, a label
-    and a weight."""
+    """Floats of four shapes (one of few distinct values), an integer, a
+    Boolean, an Enum of five uneven levels, a label and a weight. The label
+    depends on ``x0``, ``x2``, ``i0``, ``b0`` and ``cat``, so the trees
+    split on each of them, and ``x0`` has 5% nulls: a null read as 0 there
+    moves a split, where one on a feature the trees never split on would
+    leave the tree hash unchanged (review 7, C-2). ``x1`` and ``x3`` are
+    noise."""
     rng = np.random.default_rng(seed)
     x0 = rng.normal(size=n)
     x1 = rng.normal(size=n)
@@ -64,13 +68,14 @@ def frame(n: int = 20_000, seed: int = 0) -> pl.DataFrame:
         2 * x0
         + np.where(x2 > 1.5, 1.0, -0.5)
         + 0.3 * i0
+        + 1.5 * b0
         + cat * 0.7
         + rng.normal(scale=0.5, size=n)
     )
     return pl.DataFrame(
         {
-            "x0": x0,
-            "x1": pl.Series(x1).set(pl.Series(rng.random(n) < 0.05), None),
+            "x0": pl.Series(x0).set(pl.Series(rng.random(n) < 0.05), None),
+            "x1": x1,
             "x2": x2,
             "x3": x3,
             "i0": i0,
@@ -108,10 +113,13 @@ def lgb_trees(bst: lgb.Booster) -> str:
 
 
 def xgb_own(
-    df: pl.DataFrame, ref: xgb.DMatrix | None = None, weight: bool = True
+    df: pl.DataFrame,
+    ref: xgb.DMatrix | None = None,
+    weight: bool = True,
+    x: np.ndarray | None = None,
 ) -> xgb.QuantileDMatrix:
     return xgb.QuantileDMatrix(
-        numpy_x(df),
+        numpy_x(df) if x is None else x,
         label=df["y"].to_numpy(),
         weight=df["w"].to_numpy() if weight else None,
         feature_names=FEATURES,
@@ -122,9 +130,14 @@ def xgb_own(
     )
 
 
-def lgb_own(df: pl.DataFrame, params: dict, reference: lgb.Dataset | None = None) -> lgb.Dataset:
+def lgb_own(
+    df: pl.DataFrame,
+    params: dict,
+    reference: lgb.Dataset | None = None,
+    x: np.ndarray | None = None,
+) -> lgb.Dataset:
     return lgb.Dataset(
-        numpy_x(df, np.float32),
+        numpy_x(df, np.float32) if x is None else x,
         label=df["y"].to_numpy(),
         weight=df["w"].to_numpy(),
         feature_name=FEATURES,
@@ -434,6 +447,40 @@ def test_training_may_not_change_a_dataset_parameter(data):
     with pytest.raises(lgb.basic.LightGBMError, match="max_bin"):
         lgb.train({**LGB, "max_bin": 63}, ds, 2)
     lgb.train({**LGB, "max_bin": 255, "seed": 3}, ds, 2)
+
+
+# -------------------------------------------------------------- the oracle
+
+
+@pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
+def test_the_tree_hash_sees_a_null_read_as_zero(data, lib):
+    """A planted defect: the library's own route with every null of ``x0``
+    read as 0 grows other trees than po.gbdt's, so the hash the tests above
+    compare would catch a null handed over as 0; and the trees split on
+    ``x0`` and on the Boolean, which the hash cannot see otherwise (review 7,
+    C-2: with the nulls on a feature the trees never split on, LightGBM's
+    hash was the same with them read as 0)."""
+    j = FEATURES.index("x0")
+    if lib == "xgboost":
+        m = gbdt.xgboost_matrix(data, label="y", weight="w")
+        bst = xgb.train(XGB, m, 20)
+        ours = xgb_trees(bst)
+        splits = bst.get_score(importance_type="weight")
+        x = numpy_x(data)
+        assert np.isnan(x[:, j]).sum() > 500
+        x[np.isnan(x[:, j]), j] = 0.0
+        theirs = xgb_trees(xgb.train(XGB, xgb_own(data, ref=m, x=x), 20))
+    else:
+        ds = gbdt.lightgbm_dataset(data, label="y", weight="w", params=LGB_DATA)
+        bst = lgb.train(LGB, ds, 20)
+        ours = lgb_trees(bst)
+        splits = dict(zip(FEATURES, bst.feature_importance("split"), strict=True))
+        x = numpy_x(data, np.float32)
+        assert np.isnan(x[:, j]).sum() > 500
+        x[np.isnan(x[:, j]), j] = 0.0
+        theirs = lgb_trees(lgb.train(LGB, lgb_own(data, LGB_DATA, x=x), 20))
+    assert splits["x0"] > 0 and splits["b0"] > 0, splits
+    assert ours != theirs, "a null read as 0 would go unseen"
 
 
 # ---------------------------------------------------------------- refusals
