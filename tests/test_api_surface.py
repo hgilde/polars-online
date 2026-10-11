@@ -167,7 +167,10 @@ def describe_api(cli: Path | None = None) -> str:
             w(f"    {name}{signature_of(getattr(module, name))}")
     w("")
 
-    w("[output field grammar]  # the strings users index the output struct by")
+    w(
+        "[output field grammar]  # name: dtype, the strings users index the output struct by,"
+        " each with the dtype output_index declares"
+    )
     cases: list[tuple[str, dict]] = [
         ("ewridge minimal", dict(targets=["y"], features=["x0"], half_life=100.0)),
         (
@@ -187,6 +190,19 @@ def describe_api(cli: Path | None = None) -> str:
                 conformal=0.9,
                 emit_selected=True,
                 emit_averaged=True,
+                # Every other `emit_*` too, so each field a switch adds is
+                # held here with its dtype.
+                emit_error_inflation=True,
+                emit_se_coef=True,
+                emit_clocks=True,
+                emit_calibration=True,
+                emit_breaks=True,
+                emit_robust_se=True,
+                robust_se_lags=2,
+                emit_specification=True,
+                emit_tails=True,
+                emit_influence=True,
+                emit_feature_health=True,
             ),
         ),
         (
@@ -206,8 +222,8 @@ def describe_api(cli: Path | None = None) -> str:
         )
         s = getattr(po.spec, model)("m", min_weight=2.0, **kw)
         w(f"  {label}:")
-        for f in po.spec.output_fields(s):
-            w(f"    {f}")
+        for f, dtype in po.spec.output_index(s).select("field", "dtype").iter_rows():
+            w(f"    {f}: {dtype}")
     for model, kw in [
         ("rls", dict(targets=["y"], features=["x0"], half_life=100.0)),
         ("lasso", dict(targets=["y"], features=["x0"], half_life=100.0, lasso_path=[0.1, 0.0])),
@@ -289,8 +305,8 @@ def describe_api(cli: Path | None = None) -> str:
         gate = {} if model == "audit" else {"min_weight": 2.0}
         s = getattr(po.spec, model.split(" ")[0])("m", **gate, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")
-        for f in po.spec.output_fields(s):
-            w(f"    {f}")
+        for f, dtype in po.spec.output_index(s).select("field", "dtype").iter_rows():
+            w(f"    {f}: {dtype}")
     w("")
 
     # The frame `closed_groups` drains is as much API as an output field
@@ -312,6 +328,7 @@ def describe_api(cli: Path | None = None) -> str:
     # the bank unread (review 6, C-3).
     variants = [(name, dict(MINIMAL[name])) for name in sorted(MINIMAL) if name != "audit"] + [
         ("ew_cov with pca", {**MINIMAL["ew_cov"], "pca": 2}),
+        ("ew_cov with lags", {**MINIMAL["ew_cov"], "lags": [1]}),
         ("marginal with lags and bins", {**MINIMAL["marginal"], "lags": [1], "bins": 4}),
     ]
     frames: list[tuple[str, list[str]]] = []
@@ -518,6 +535,8 @@ def frame_columns_section() -> list[str]:
         ("ModelBank.audit(table='pairs')", bank.audit("audit", table="pairs")),
         ("ModelBank.audit(table='clock')", timed.audit(table="clock")),
         ("ModelBank.audit(pooled=True)", bank.audit("audit", pooled=True)),
+        ("ModelBank.check()", bank.check()),
+        ("ModelBank.solve_failures()", bank.solve_failures()),
         ("po.spec.output_index()", po.spec.output_index(ridge)),
         ("po.spec.coef_index()", po.spec.coef_index(ridge)),
         ("po.spec.coef_fields()", po.spec.coef_fields(ridge)),

@@ -964,11 +964,11 @@ of its lines carry no promise:
 | the defaults that resolve in Rust, `min_weight`'s per-kind rule included | `[resolved defaults]`, read off the bank's own build of each kind (`_polars_online.resolved_defaults`); `tests/test_spec_defaults.py` holds the README's warm-up tables to it |
 | `ModelBank`'s methods, `__init__` included | `[ModelBank]` |
 | the `.online` namespace | `[frame namespaces]` |
-| the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
+| the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `audit()`, `check()`, `solve_failures()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
 | the closed-groups frame's columns | `[closed_groups columns]`, each column with its dtype, in order |
 | the helper modules' functions, each with its signature | `[helper modules]` |
 | `po.stream.embargo`'s two columns, `_online_role` and `_online_role_weight` | `[helper modules]`, as the default of `embargo`'s `role`, the first column's name, which the second's extends; `tests/test_label_delay.py` reads both |
-| output field names | `[output field grammar]` |
+| output field names and their dtypes | `[output field grammar]`, every `emit_*` turned on in one spec |
 | the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |
 | the TOML config keys: the run config's, a spec's, and each model type's | `[toml keys]`, read from serde's refusal of a key a table has not got |
 | the CLI's flags, and whether each takes a value | `[cli flags]`, from `online --help` |
