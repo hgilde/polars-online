@@ -615,6 +615,152 @@ which every push runs anyway, so it spends no minutes timing the
 essentials (the user, 2026-10-08). Each test
 that moved gives its reason in its mark.
 
+### Iterating
+
+**Run the tests for what you changed while you work, the essentials before
+each commit, and every test before each push.** Each level reaches what the
+one before it cannot, and costs more. The times are this machine's, a
+14-core Mac shared with another user's jobs, measured on 2026-10-11 at the
+load each row gives.
+
+| when | what runs | command | time |
+|---|---|---|---|
+| after each change, inside a task | the tests that cover the changed paths | `scripts/quick.sh` | seconds to a minute |
+| before each commit | every check, and the tests' essentials | `scripts/gate.sh` | 48 s in 8 processes at a load of 4; 111 s in 2 at a load of 20; 139 to 191 s in one |
+| once a group of branches is merged to `main` | every check and every test, on `main` | `scripts/gate.sh --extended` | 224 s in 6 processes at a load of 8; 487 to 501 s in one |
+| before every push, always | the same, on the exact commit pushed | `scripts/gate.sh --extended` | the same |
+
+**`scripts/quick.sh` runs the tests that cover the paths a branch changed,
+and nothing else.** It reads the paths from `git diff` against the
+merge-base with `main`, with uncommitted edits and new files included. A
+Rust source change runs that crate's `cargo test` and rebuilds the
+extension before pytest, which would otherwise test the old binary. A
+Python module runs the test files named after it, and any path runs the
+test files that name it. `--dry-run` prints the plan without running it.
+Its verdict says it covers the mapped tests only, because a change can
+break a test the map does not reach.
+
+**Inside a task, the extension is built with the `dev-wheel` profile,
+which takes seconds after an edit where `release` takes minutes.** The
+profile is `release` with incremental compilation and 256 codegen units,
+and without thin LTO, so a rebuild redoes only what changed. `quick.sh`
+builds with it, and so can `uv run maturin develop --profile dev-wheel -m
+crates/online-py/Cargo.toml`.
+
+| the extension's build | `release` | `dev-wheel` |
+|---|---|---|
+| from nothing | 241 s (load 10) | 130 s (load 5 to 18) |
+| after a new function in `ewridge.rs` | 189 s (load 8 to 11) | 4.5 s (load 14 to 24) |
+| after an edit inside `solve()`, which every model's fit calls | 189 s | 37 s (load 9 to 15) |
+| the Python essentials on it, one process | 116 s | 118 to 123 s |
+
+**A `dev-wheel` build computes the same bits as a `release` build.** Rust
+fuses no floating-point operations and reorders none unless the code asks,
+so neither LTO nor the number of codegen units can move a result. That was
+checked rather than assumed. `scripts/release_probe.py`, which runs every
+spec over a stream built to reach every path, gave 297 output columns over
+400 rows identical in every bit under both builds. Its 31 saved states were
+identical byte for byte. All 6,665 Python tests passed on the dev build,
+the goldens and the saved-state tests among them. The gate, CI and the shipped wheel still build `release`, because
+what ships is what a push is tested on.
+
+**The gate runs the tests in parallel.** cargo-nextest runs each Rust test
+as a process of its own, and pytest-xdist runs the Python tests in several
+processes. Both run every test that the serial run runs, with the same
+results:
+
+| tests | one process | in parallel |
+|---|---|---|
+| the Rust essentials | 19 s, `cargo test` | 12 s: 9.5 s under nextest and 2.6 s for the 5 doctests |
+| every Rust test | 182 s | 78 to 86 s under nextest, and the doctests |
+| the Python essentials | 116 to 123 s | 30 s in 8 processes (39 s in 4) |
+| every Python test | 302 to 318 s | 134 s: 59 s in 8 processes, then 75 s for the 20 `serial` tests alone |
+
+**The gate starts as many processes as the machine has cores free, from 2
+to 8.** It reads that as the core count less the last minute's load
+average (`scripts/workers.py`), so it does not crowd out another user's
+jobs, and `GATE_WORKERS=4` overrides it. Past 8, more processes buy little
+and crowd the machine: 12 took the Python essentials from 30 s to 27 s and
+the load average from 23 to 51. The load average counts the gate's own
+last run too, so a gate started right after another runs in fewer
+processes. nextest runs no doctests, so the gate runs `cargo test --doc`
+beside it, and it runs `cargo test` as before where nextest is not
+installed. `scripts/gate.sh --serial` runs every test in one process.
+
+**A test that reads its process's memory runs alone, after the rest.** The
+leak checks of `tests/test_ffi_memory.py` and `tests/test_gbdt.py` carry the
+`serial` mark. Memory that other processes take can make macOS compress or
+swap pages, which moves the resident size these tests read. The gate's
+parallel run leaves them out, and a second run takes them in one process,
+75 s for the 20 of them. Run that way, each still fails a planted leak:
+keeping a bank's every output read 155 KB a call, and keeping every
+tree-model build 1,505 KB a build, while the loop without the leak passed.
+The leak checks run before the tests that read a 2 GB source, which leave
+the allocator so much freed memory that a planted leak of the tree-model
+builds went unseen after them.
+
+**A test that writes outside its own temporary directory must write a whole
+file in one step.** Several processes now share `.cache/`, where the
+downloads land. A download is written to a file named for the writing
+process and renamed into place (`tests/data.py::write_atomically`), so a
+reader sees no file or the whole one. The released versions' environments,
+which `scripts/compare_release.py` builds, are built under a per-process
+name and renamed the same way.
+
+**About four agents can build at once on this machine.** Each worktree
+has its own `target/` and compiles Polars there: 66 s for the Rust tests
+and 130 s for the `dev-wheel` extension, from nothing, at a load near 5.
+Eight agents at once, with the other user's jobs, have driven the load to
+31 on 14 cores, where every build and test run slows in proportion.
+
+**A compiler cache does not speed up a new worktree, so it is off unless
+asked for.** sccache, turned on with `POLARS_ONLINE_SCCACHE=1` in
+`scripts/env.sh`, caches each crate rustc compiles, keyed by its inputs. In
+a checkout whose path it had seen, a build from nothing took 33 s for the
+Rust tests and 91 s for the `release` extension, against 66 s and 241 s
+without it. A new worktree has a new path, and from a new path a third of
+the crates missed. A crate that includes a file its build script wrote
+names that file by its absolute path, which differs per checkout. Every
+crate built on such a crate misses with it, serde and Polars among them.
+The misses cost more than the hits saved: 92 s and 519 s, slower than no
+cache. CI never turns it on (`tests/test_dev_loop.py`).
+
+### Caches and when to clear them
+
+**The builds and the tests fill these directories, and each can be deleted
+at any time.** The next build or run refills what it needs, at the cost the
+last column gives. The sizes were measured on this machine on 2026-10-11.
+
+| what | where | filled by | size | the next build after deleting it |
+|---|---|---|---|---|
+| the Rust tests' build | `target/debug/` in each checkout | `cargo test`, `cargo nextest`, `cargo clippy` | 21 to 23 GB, most of it incremental state | 66 s to build the tests again |
+| the gate's extension | `target/release/` | `maturin develop --release` | 1.5 GB | 241 s |
+| the inner loop's extension | `target/dev-wheel/` | `maturin develop --profile dev-wheel` | 2.3 to 2.4 GB | 130 s |
+| each agent worktree's builds | `target/` under `.claude/worktrees/<name>/` | the three builds above | up to 27 GB each | removed with the worktree, by `git worktree remove` |
+| sccache's cache, when turned on | `~/Library/Caches/Mozilla.sccache` on macOS | builds with `POLARS_ONLINE_SCCACHE=1` | 0.8 GB per checkout path, capped at 10 GB (`SCCACHE_CACHE_SIZE`), oldest out first | a build from nothing |
+| downloaded test data | `.cache/` in each checkout | `tests/data.py`, `scripts/compare_release.py` | 1.1 GB after a full run in a new worktree; 7.1 GB in the main checkout, with the experiments' data | the downloads again, about a minute on a fast line; offline, the tests that need them skip |
+| pytest's temporary directories | `pytest-of-<user>/` in the system's temporary directory | every test's `tmp_path` | about 2 GB for each full run, since the tree-model tests write a 2 GB source, and the last three runs are kept | nothing; pytest keeps three and deletes the rest itself |
+| Hypothesis's examples | `.hypothesis/` | every property test | under 3 MB | the property tests lose the failing cases they replay first |
+| uv's cache | `~/.cache/uv`, shared by every project | `uv sync`, `uv run` | 23 GB | the next sync downloads what it lacks; `uv cache prune` removes only unused entries |
+| the Python environment | `.venv/` in each checkout | `uv sync` | 0.9 GB | `uv sync`, seconds from uv's cache |
+
+pytest-xdist and cargo-nextest leave nothing of their own: xdist's workers
+use pytest's temporary directories, under the same base as a serial run,
+and nextest writes no files unless asked for a report.
+
+**`scripts/clear_caches.sh` clears the build caches and prints what each
+freed.** By default it removes this checkout's `target/` and sccache's
+cache, after stopping the sccache server. `--worktrees` adds every other
+worktree's `target/`, `--test-data` adds `.cache/` and `.hypothesis/`, and
+`--uv` runs `uv cache prune`. `--dry-run` prints what it would remove and
+removes nothing. It touches nothing outside the repository and sccache's
+own directory unless a flag names it (`tests/test_dev_loop.py`).
+
+**Clear the build caches after each push wave, once its branches and
+worktrees are removed, or when free disk falls below 100 GB.** Run
+`scripts/clear_caches.sh --worktrees` from the main checkout. The 100 GB
+leaves room for four agent worktrees' builds at up to 27 GB each.
+
 ### Where the suite runs
 
 **Every push to `main` and every pull request runs the suite on Linux,
@@ -625,7 +771,7 @@ own schedule:
 
 | when | where | what runs |
 |---|---|---|
-| each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, `cargo test`'s essentials, `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials, and Sphinx with `-W` |
+| each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); every output compared with the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
