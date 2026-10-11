@@ -126,7 +126,7 @@ def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
 
 
 #: `online_core::INPUT_BOUND`: a magnitude beyond it is a missing value to
-#: the bank (docs/PLAN.md section 3), so it is one to :func:`seqtest` too.
+#: the bank, so it is one to :func:`seqtest` too.
 _INPUT_BOUND = 1e100
 
 #: Column names :func:`unpack` produces. Input columns with these names are
@@ -281,24 +281,24 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
 def _group_keys(group: str | Iterable[str]) -> list[str]:
     """``group`` as the list of its key columns: a bare string is one key,
     as in Polars' ``group_by`` and ``over`` and a spec's ``group``. Iterated
-    as it was, ``by="group"`` was the keys ``g``, ``r``, ``o``, ``u``, ``p``
-    (review round 4, YB16)."""
+    as a sequence, ``group="group"`` would be the keys ``g``, ``r``, ``o``,
+    ``u``, ``p``."""
     return [group] if isinstance(group, str) else list(group)
 
 
 def _usable(value: pl.Expr) -> pl.Expr:
     """Whether a float is one the bank learns from: finite, and within its
-    input bound (docs/PLAN.md section 3); null where ``value`` is."""
+    input bound of 1e100; null where ``value`` is."""
     return value.is_finite() & (value.abs() <= _INPUT_BOUND)
 
 
 def _scored(long: pl.DataFrame) -> pl.DataFrame:
     """The rows of :func:`unpack`'s long form whose prediction and target are
     both values the bank would learn from: not null, not NaN, not infinite and
-    not past its input bound (docs/PLAN.md section 3). The bank reads such a
-    target as missing and still predicts its row, so dropping nulls alone kept
-    the row, and ``r2``, ``ic`` and ``mse`` came out NaN while ``hit_rate``
-    was quietly lowered (review 2026-10-05, YB4)."""
+    not past its input bound of 1e100. The bank reads such a target as
+    missing and still predicts its row. Dropping nulls alone would keep the
+    row, make ``r2``, ``ic`` and ``mse`` NaN, and quietly lower
+    ``hit_rate``."""
     return long.filter(
         _usable(pl.col("pred").cast(pl.Float64)) & _usable(pl.col("y").cast(pl.Float64))
     )
@@ -309,7 +309,7 @@ def _no_hit(spec: dict | None) -> bool:
     the bank's ``emit_metrics`` nulls: a Poisson ``sgd`` (``loss =
     "poisson"``), where a rate is positive and a count never negative, so
     the sign test about zero agrees on every row and reads 1.0 whatever the
-    fit (docs/PLAN.md task 195, S5; review round 5, E1). Without ``spec``
+    fit. Without ``spec``
     the loss cannot be known, and the sign test is read."""
     model = (spec or {}).get("model") or {}
     return model.get("type") == "sgd" and model.get("loss") == "poisson"
@@ -545,7 +545,7 @@ def window_metrics(
 
 
 #: Renamed :func:`window_metrics`, and its ``window_size`` ``every``, before
-#: 1.0 (docs/PLAN.md task 197; review round 4, YB5).
+#: 1.0: the old names are refused, and the error names the new ones.
 rolling_metrics = renamed_function(
     "po.eval.rolling_metrics", "po.eval.window_metrics", ", and window_size was renamed every"
 )
@@ -1140,7 +1140,7 @@ def _ew_test(
 def _check_half_life(who: str, half_life: float) -> None:
     """The per-row form's ``half_life``: above 0, and finite. An infinite
     one reached polars' ``ewm_mean`` as ``alpha = 0``, which it refuses
-    with no word of the parameter (task 239)."""
+    with no word of the parameter."""
     if not half_life > 0:
         msg = f"{who}: half_life must be > 0, got {half_life}"
         raise ValueError(msg)
