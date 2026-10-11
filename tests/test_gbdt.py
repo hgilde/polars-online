@@ -483,6 +483,51 @@ def test_the_tree_hash_sees_a_null_read_as_zero(data, lib):
     assert ours != theirs, "a null read as 0 would go unseen"
 
 
+@pytest.mark.parametrize("engine", ["native", "python"])
+def test_a_ref_or_reference_on_an_enum_of_other_categories_is_refused_by_name(data, valid, engine):
+    """A ``pl.Enum``'s codes mean its categories in order, and a validation
+    set is binned on the training cuts by its codes: the same Enum is
+    accepted, one listing the levels in another order is refused by name,
+    and so is a reference with the features in another order (review 7,
+    C-1: a reversed Enum was accepted, and predicted the levels' effects
+    permuted). A reference built by the library itself is checked by its
+    feature names alone."""
+    reordered = valid.with_columns(pl.col("cat").cast(pl.String).cast(pl.Enum(LEVELS[::-1])))
+    enum = (
+        r"as a pl.Enum of \['a', 'b', 'c', 'd', 'e'\].*as a pl.Enum of \['e', 'd', 'c', 'b', 'a'\]"
+    )
+    train = gbdt.xgboost_matrix(data, label="y", weight="w", engine=engine)
+    gbdt.xgboost_matrix(valid, label="y", weight="w", ref=train, engine=engine)
+    with pytest.raises(ValueError, match=r"ref was built with 'cat' " + enum):
+        gbdt.xgboost_matrix(reordered, label="y", weight="w", ref=train, engine=engine)
+    as_codes = valid.with_columns(pl.col("cat").to_physical())
+    with pytest.raises(ValueError, match=r"'cat' as a pl.Enum of .* has it as not a pl.Enum"):
+        gbdt.xgboost_matrix(as_codes, label="y", weight="w", ref=train, engine=engine)
+    own = xgb_own(data)
+    gbdt.xgboost_matrix(reordered, label="y", weight="w", ref=own, engine=engine)
+    with pytest.raises(ValueError, match="needs the same features in order"):
+        gbdt.xgboost_matrix(
+            valid, label="y", weight="w", features=FEATURES[::-1], ref=own, engine=engine
+        )
+
+    td = gbdt.lightgbm_dataset(data, label="y", weight="w", params=LGB_DATA, engine=engine)
+    gbdt.lightgbm_dataset(valid, label="y", weight="w", reference=td, engine=engine)
+    with pytest.raises(ValueError, match=r"reference was built with 'cat' " + enum):
+        gbdt.lightgbm_dataset(reordered, label="y", weight="w", reference=td, engine=engine)
+    with pytest.raises(
+        ValueError, match="a dataset binned on another's bins needs the same features"
+    ):
+        gbdt.lightgbm_dataset(
+            valid, label="y", weight="w", features=FEATURES[::-1], reference=td, engine=engine
+        )
+    own_d = lgb_own(data, LGB_DATA)
+    gbdt.lightgbm_dataset(reordered, label="y", weight="w", reference=own_d, engine=engine)
+    with pytest.raises(ValueError, match="needs the same features in order"):
+        gbdt.lightgbm_dataset(
+            valid, label="y", weight="w", features=FEATURES[::-1], reference=own_d, engine=engine
+        )
+
+
 # ---------------------------------------------------------------- refusals
 
 

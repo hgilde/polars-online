@@ -88,7 +88,7 @@ Each step of a build, for each library:
 | bins | a bottom-k sample: the 200,000 rows of smallest SplitMix64 hash of their index, the same rows however the source is batched; edges at the sample's quantiles, or a bin per value for a feature of at most `max_bin` values; built into a dense `ref` | LightGBM's own: `LGBM_SampleIndices`, those rows gathered in the first pass, `LGBM_DatasetCreateFromSampledColumn` |
 | hand-over | each batch's columns as array interfaces on their Arrow buffers, the validity bitmap as the mask, into `XGQuantileDMatrixCreateFromCallback` | float32 rows built in parallel, `LGBM_DatasetPushRows`; or in memory, every batch as float32 Arrow, `LGBM_DatasetCreateFromArrowStream` |
 | categoricals | a `pl.Enum`'s codes, feature type `c`, its levels planted in the `ref` | a `pl.Enum`'s codes in `categorical_feature`, and any integer column named |
-| refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a library version outside the range the native engine is built for (XGBoost from 2.1, the first whose C API takes Arrow columns, to before 4.0) | the same, with LightGBM from 4.0 to before 5.0, and more than 2³¹ − 1 rows |
+| refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a `ref` built here on other features or on a `pl.Enum` of other categories, a library version outside the range the native engine is built for (XGBoost from 2.1, the first whose C API takes Arrow columns, to before 4.0) | the same, with LightGBM from 4.0 to before 5.0, and more than 2³¹ − 1 rows |
 
 ### XGBoost places its cuts where they are planted
 
@@ -166,7 +166,10 @@ reads them the same way at prediction. A `pl.Categorical`'s codes depend on
 the process that made them. XGBoost bins a category code missing from the
 `ref` without an error, so codes that meant something else in another
 process would go unnoticed. Cast such a column to a `pl.Enum` with
-`pl.col(c).cast(pl.Enum(levels))` before the build. This recipe gives each
+`pl.col(c).cast(pl.Enum(levels))` before the build. A `ref=` or
+`reference=` built here records each feature's levels, and a later frame
+whose `pl.Enum` lists them in another order is refused by name, since its
+codes would be read as the training levels. This recipe gives each
 of four venues its own shift of the target, and predicts with the same
 `pl.Enum` through `po.gbdt` itself, on the training bins:
 
