@@ -28,6 +28,20 @@ NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:e[+-]?\d+)?(?![\w.])")
 BLOWN_UP = 1e6
 
 
+#: A printed line that starts so reports what the machine decides, a wall
+#: time or a rate, so it is held to its words and its numbers are left free
+#: (``untimed``). The README's *Performance* recipes print such lines.
+TIMED = "time"
+
+
+def untimed(text: str) -> str:
+    """``text`` with the numbers of each timed line replaced, so the line is
+    held to its words alone."""
+    return "\n".join(
+        NUMBER.sub("#", line) if line.startswith(TIMED) else line for line in text.splitlines()
+    )
+
+
 def fenced_blocks(page: Path) -> list[tuple[str, int, str]]:
     """Every fenced block of ``page``: its info string (``python``, ``text``,
     ``sh`` ...), the line its fence opens on, and its body."""
