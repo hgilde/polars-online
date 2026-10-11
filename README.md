@@ -399,7 +399,7 @@ or `features` too. Convert such a column with Polars' `with_columns`, in
 the query before the bank: `cast(pl.Float64)` for numbers stored as text,
 as the error suggests, and a comparison such as `pl.col("venue") == "X"`
 for a category. This code prints both refusals, then fits the venue as a
-comparison: its last line finds the truth planted in `y`, an intercept of
+comparison. Its last line finds the truth planted in `y`: an intercept of
 1, 2 on `x0`, −1 on `x1`, and nothing on the venue.
 It reads `df` and `lf` from [Example data](#example-data):
 
