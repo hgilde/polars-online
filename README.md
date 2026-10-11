@@ -1570,69 +1570,95 @@ stood after the last row it learned from.
 
 | to read | call | subsection |
 |---|---|---|
-| what a bank holds, what it was fed, and what is wrong with the data | `repr(bank)`, `bank.groups()`, `bank.summary()`, `bank.describe()`, `bank.last_row()`, `bank.check()`, `bank.audit()` | [What a bank holds](#what-a-bank-holds) |
+| what a bank holds and what it was fed | `repr(bank)`, `bank.groups()`, `bank.coef()`, `bank.summary()`, `bank.describe()`, `bank.last_row()` | [What a bank holds](#what-a-bank-holds) |
 | any field of the output, by name | `po.spec.output_index`, `po.spec.coef_fields` | [Output field names](#output-field-names) |
 | the coefficients, at the end or row by row | `bank.coef()`, or `coef_every=0` and `.online.unnest` | [Coefficients](#coefficients) |
-| the running sums a fit is solved from, and the algebra on them | `bank.gram(spec)`, `po.gram` | [The running sums behind a fit](#the-running-sums-behind-a-fit) |
+| fits over any subset of the rows and columns, from the running sums one pass leaves | `bank.gram(spec)`, `po.gram` | [Fitting many features from one pass](#fitting-many-features-from-one-pass) |
 | a finished group's running sums | `bank.closed_groups()` | [One row per finished group](#one-row-per-finished-group) |
 | what a correlation matrix says, from an array, a `gram()` dict or a closed row | `po.corr` | [Reading a correlation matrix](#reading-a-correlation-matrix) |
+| what is wrong with the data | `bank.check()`, `bank.audit()` | [Checking your data's quality](#checking-your-datas-quality) |
 
 ### What a bank holds
 
 A bank describes itself without its data, live or loaded from its file.
-Six calls say what it holds, and four tables say how each fit is doing and
-what it was fed.
+Here a spec with a group per stock learns from `lf`, and the bank it saves
+is loaded back with nothing but the file.
+This code uses `lf` from [Example data](#example-data):
 
 ```python
-bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t", gap_cap=300.0,
+                       half_life=600.0, group="stock_id")
+fitted = po.ModelBank([spec])
+fitted.fit(lf)                           # learn from every row of the file, keep only the state
+fitted.save("bank.state")
 
-repr(bank)                # ModelBank(['ridge'], groups=4, rows_fed=400)
-bank.specs                # every spec back, as the dict its builder made
-bank.groups()             # one row per (spec, group):
-                          #   ┌───────┬───────┬────────────────┬────────────┐
-                          #   │ spec  ┆ group ┆ rows_processed ┆ last_clock │
-                          #   │ ridge ┆ b0    ┆ 100            ┆ 396.0      │
-                          #   │ ridge ┆ b1    ┆ 100            ┆ 397.0      │
-                          #   │ ridge ┆ b2    ┆ 100            ┆ 398.0      │
-                          #   │ ridge ┆ b3    ┆ 100            ┆ 399.0      │
-                          #   └───────┴───────┴────────────────┴────────────┘
-bank.output_fields()      # {'ridge': ['pred_y__r0.000001', ..., 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', ...]}
-bank.rows_fed()           # rows fed, over every chunk and group
-bank.solve_failures()     # per spec, per group: solves that needed jitter or kept the previous fit
+bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
+print(repr(bank))                        # its specs, its groups, the rows it was fed
+print(bank.rows_fed(), bank.solve_failures())   # rows fed over every group; solves that needed help
+print(bank.output_fields()["ridge"])     # the fields of the spec's column
+for spec_name, group, rows, last in bank.groups().iter_rows():   # one row per (spec, group)
+    print(spec_name, group, rows, last)
 ```
+
+```text
+ModelBank(['ridge'], groups=4, rows_fed=400)
+400 {'ridge': {'b0': 0, 'b1': 0, 'b2': 0, 'b3': 0}}
+['pred_y', 'resid_y', 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
+ridge b0 100 396.0
+ridge b1 100 397.0
+ridge b2 100 398.0
+ridge b3 100 399.0
+```
+
+`bank.groups()` gives each group's rows and its last clock, and
+`bank.solve_failures()` counts the solves that needed jitter or kept the
+previous fit: none here. `bank.specs` gives every spec back, as the dict
+its builder made.
 
 **`bank.specs` returns a read-only copy.** The bank runs the state it was
 built from, so an editable list could drift from it and mislabel what
 `coef()` reports. To change a spec, build and feed a new bank.
-This code uses `df` from [Example data](#example-data):
+
+**Four tables say how each fit is doing and what it was fed.** Each has
+a row per group, or per group and coefficient or column. Here each stock's
+coefficients come back near `df`'s truth: intercept 1, `x0` 2, `x1` −1
+and `x2` 0.
+This code uses `lf` from [Example data](#example-data):
 
 ```python
-bank = po.ModelBank.load("bank.state")
-last = bank.last_row("ridge")     # one row per group: what fit_predict wrote on the last row it learned from
-betas = bank.coef()               # one row per coefficient, with the term it belongs to
-fed = bank.summary("ridge")       # one row per group: what it was fed, and its warm-up readings
-cols = bank.describe("ridge")     # one row per input column per group: column, role, count, null_count, mean, std, min, max
-problems = bank.check()           # one row per problem found in the data, the worst first
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t", gap_cap=300.0,
+                       half_life=600.0, group="stock_id")
+bank = po.ModelBank([spec])
+bank.fit(lf)
 
-# Fit many models, save each in a folder of its own, and compare them in one table:
-from pathlib import Path
-Path("fits").mkdir(exist_ok=True)
-for name, half_life in [("fast", 100.0), ("slow", 1000.0)]:
-    one = po.ModelBank([po.spec.ewridge(name, targets=["y"], features=["x0", "x1"], clock="t",
-                                        gap_cap=300.0, half_life=half_life)])
-    one.fit_predict(df)
-    one.save(f"fits/{name}.state")
-table = pl.concat(
-    [po.ModelBank.load(f).last_row() for f in sorted(Path("fits").glob("*.state"))],
-    how="diagonal_relaxed",
-)
+betas = bank.coef()                    # one row per coefficient: spec, group, instance, ..., term, coef
+fed = bank.summary("ridge")            # one row per group: what it was fed, and its warm-up readings
+cols = bank.describe("ridge")          # one row per input column per group: role, count, nulls, moments
+last = bank.last_row("ridge")          # one row per group: the record fit_predict wrote on its last row
+
+wide = betas.pivot("term", index="group", values="coef")   # a row per group, a column per term
+for row in wide.iter_rows(named=True):
+    print(row["group"], " ".join(f"{t} {row[t]:.2f}" for t in ["intercept", "x0", "x1", "x2"]))
+for g, n_fed, n_learned, w in fed.select("group", "rows_fed", "rows_learned", "weight_sum").iter_rows():
+    print(f"{g}: fed {n_fed}, learned {n_learned}, weight_sum {w:.1f}")
+for c, role, n, mean, std in cols.filter(group="b0").select("column", "role", "count", "mean", "std").iter_rows():
+    print(f"b0 {c} ({role}): {n} values, mean {mean:.2f}, std {std:.2f}")
 ```
 
-**All four cover every spec by default, with `spec` as the first column.**
-`coef()`, `summary()` and `describe()` have the same columns for every
-spec, so a plain `concat` stacks the tables of banks from different runs.
-The fields of `last_row()` differ between specs, so stack it with
-`"diagonal_relaxed"`, which fills a missing field with nulls.
+```text
+b0 intercept 1.00 x0 2.02 x1 -1.02 x2 -0.01
+b1 intercept 1.01 x0 2.02 x1 -1.06 x2 0.05
+b2 intercept 0.93 x0 1.94 x1 -0.99 x2 -0.04
+b3 intercept 1.04 x0 1.99 x1 -0.97 x2 -0.13
+b0: fed 100, learned 100, weight_sum 100.0
+b1: fed 100, learned 100, weight_sum 100.0
+b2: fed 100, learned 100, weight_sum 100.0
+b3: fed 100, learned 100, weight_sum 100.0
+b0 x0 (feature): 100 values, mean -0.04, std 0.95
+b0 x1 (feature): 100 values, mean 0.03, std 1.01
+b0 x2 (feature): 100 values, mean -0.09, std 0.99
+b0 y (target): 100 values, mean 0.88, std 2.12
+```
 
 **`last_row()` matches `fit_predict` field for field:** `pred`, `sigma`,
 the metrics and the interval when the spec asks for them
@@ -1641,8 +1667,10 @@ carried it. Until a group learns from a row, its record is all nulls.
 
 **`summary()`'s counts and `describe()` cover every row fed to the group,
 without decay.** They say what the model was trained on, and `predict`
-moves neither. `describe()` counts a value as the models do: a null, a NaN,
-an infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
+moves neither. So `summary()`'s `weight_sum` is 100 above, each stock's
+100 rows of weight 1, where the fit's own `weight_sum` has decayed below
+it. `describe()` counts a value as the models do: a null, a NaN, an
+infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
 `summary()`:
 
 | columns | what they hold |
@@ -1652,25 +1680,60 @@ an infinity or a magnitude beyond 1e100 is a `null_count`. The columns of
 | `rows_skipped` | rows the model skipped, because a feature or the weight was missing |
 | `rows_learned` | rows that moved the fit: a weight above zero and a target present. Under an embargo a row is counted as it arrives; a window target's row, when it is released |
 | `rows_zero_weight` | rows that advanced the clock and nothing else |
-| `weight_sum`, `clock_min`, `clock_max`, `last_clock` | the weight behind the state, and the clock's range and last value, in the clock column's own dtype |
+| `weight_sum` | the sum of the accepted rows' weights, undecayed: 1 a row without a weight column |
+| `clock_min`, `clock_max`, `last_clock` | the clock's range and last value, in the clock column's own dtype |
 | `session_changes`, `clock_backwards`, `resets` | what the clock rules met |
-| `settled_frac`, `weight_sum_settled`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row; `weight_sum_settled` is the weight the stream settles at, which says whether a `min_weight` can be met |
+| `settled_frac`, `weight_sum_settled`, `error_inflation`, `min_support_coef` and the feature it belongs to, `n_coef` | the warm-up readings after the last row. `weight_sum_settled` is the weight the stream settles at, which says whether a `min_weight` can be met |
+
+**All four cover every spec by default, with `spec` as the first column,
+so the tables of banks from different runs stack.** `coef()`,
+`summary()` and `describe()` have the same columns for every spec, so a
+plain `concat` stacks them. The fields of `last_row()` differ between
+specs, so stack it with `"diagonal_relaxed"`, which fills a missing field
+with nulls. Here two fits at different half-lives are saved to files of
+their own and compared in one table.
+This code uses `lf` from [Example data](#example-data):
+
+```python
+from pathlib import Path
+
+Path("fits").mkdir(exist_ok=True)
+for name, half_life in [("fast", 50.0), ("slow", 1000.0)]:    # two half-lives, a bank and a file each
+    one = po.ModelBank([po.spec.ewridge(name, targets=["y"], features=["x0", "x1"], clock="t",
+                                        gap_cap=300.0, half_life=half_life)])
+    one.fit(lf)
+    one.save(f"fits/{name}.state")
+
+banks = [po.ModelBank.load(f) for f in sorted(Path("fits").glob("*.state"))]
+betas = pl.concat([b.coef() for b in banks])                          # the same columns for every spec
+last = pl.concat([b.last_row() for b in banks], how="diagonal_relaxed")   # fields that differ by spec
+for row in betas.pivot("term", index="spec", values="coef").iter_rows(named=True):
+    print(row["spec"], " ".join(f"{t} {row[t]:.3f}" for t in ["intercept", "x0", "x1"]))
+print(last.columns)
+```
+
+```text
+fast intercept 0.994 x0 1.936 x1 -1.004
+slow intercept 0.993 x0 1.992 x1 -1.007
+['spec', 'group', 'pred_y', 'resid_y', 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
+```
 
 ### Output field names
 
-Your code reads the output by field name, so a test holds every name,
-default and signature to a checked-in snapshot, and no release renames your
-columns silently ([Versioning and the Polars pin](#versioning-and-the-polars-pin)).
-To find a name without building it, filter one of two tables:
+Your code reads the output by field name, and
+[docs/OUTPUTS.md](docs/OUTPUTS.md) lists every field of every model. To
+find a name without building it, filter one of two tables:
 `po.spec.output_index` for every field, or `po.spec.coef_fields` for every
 coefficient. The code that renders the names builds both from the spec, so
-they always agree with the output. [docs/OUTPUTS.md](docs/OUTPUTS.md) lists
-every field of every model.
+they always agree with the output. A test holds every name, default and
+signature to a checked-in snapshot, so no release renames your columns
+silently ([Versioning and the Polars pin](#versioning-and-the-polars-pin)).
 
 Give a spec several values of `ridge` or `half_life`, several
 `feature_sets` or a `lasso_path`, and it fits a *grid*: one fit per
 combination of values, each a *point* of the grid. A field's name says
-which point it holds. Here `grid` has two half-lives and two ridge values.
+which point it holds. Here `grid` has two half-lives and two ridge values,
+and its coefficient on `x1` at the smaller ridge comes back as `df`'s −1.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -1680,13 +1743,19 @@ out = df.online.fit_predict([grid])  # df's columns, plus the spec's column "m"
 
 idx = po.spec.output_index(grid)     # every field, with the values its name encodes, and its dtype
 name = idx.filter((pl.col("kind") == "pred") & (pl.col("target") == "y")
-                  & (pl.col("ridge") == 0.5) & (pl.col("half_life") == 500.0))["field"].item()
-out["m"].struct.field(name)                                    # "pred_y__r0.5@h500"
+                  & (pl.col("ridge") == 1e-6) & (pl.col("half_life") == 500.0))["field"].item()
+print(name, out["m"].struct.field(name).dtype)
 
 row = po.spec.coef_fields(grid).filter(                        # one row per coefficient: its list, position, and unnest column
-    (pl.col("term") == "x1") & (pl.col("ridge") == 0.5) & (pl.col("half_life") == 500.0)
+    (pl.col("term") == "x1") & (pl.col("ridge") == 1e-6) & (pl.col("half_life") == 500.0)
 ).row(0, named=True)
-out["m"].struct.field(row["field"]).list.get(row["position"])  # field "coef@h500", position 5
+x1 = out["m"].struct.field(row["field"]).drop_nulls().list.get(row["position"])
+print(row["field"], row["position"], f"{x1[-1]:.2f}")          # x1's coefficient on the last row
+```
+
+```text
+pred_y__r0.000001@h500 Float64
+coef@h500 2 -1.00
 ```
 
 **If your own code parses the field names after the bank, keep `__` and
@@ -1695,8 +1764,8 @@ renders like a ridge grid on `y`. Filtering `po.spec.output_index` needs no
 such care.
 
 **Each name follows a grammar, so you can read it by eye.** A number in a
-name renders as a plain decimal in `[1e-6, 1e7)`, and in compact scientific
-notation outside it.
+name renders as a plain decimal in `[1e-6, 1e7)`, as `0.000001` above, and
+in compact scientific notation outside it.
 
 ```
 pred_{target}{combo}{instance}
@@ -1730,8 +1799,9 @@ Read the coefficients from the bank with `bank.coef()`, or from the
 output, as columns that show the fit as it moved. Both are the fit *after*
 a row's update: `bank.coef()` after the last row each group learned from,
 and the output's `coef` after its own row. A row's own `pred` came from the
-fit *before* it.
-This code uses `df` and `lf` from [Example data](#example-data):
+fit *before* it. Here the bank, the output and a saved output each give
+the same fit, near `df`'s truth.
+This code uses `lf` from [Example data](#example-data):
 
 ```python
 ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
@@ -1740,9 +1810,10 @@ ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
 
 # 1. From a bank -- live, or loaded from a state file with no data at hand.
 bank = po.ModelBank([ols])
-bank.fit_predict(df)
+bank.fit(lf)
 betas = bank.coef()                  # one row per coefficient: spec, group, instance, weight_sum, ..., term, coef
 wide = betas.pivot("term", index=["group", "instance"], values="coef")   # a row per (group, instance), a column per term
+print(wide.select("group", pl.col("intercept", "x0", "x1").round(2)).rows())
 
 # 2. From the output, as columns: the fit as it moved, one row per row.
 path = (
@@ -1751,20 +1822,38 @@ path = (
     .select("t", "stock_id", "^coef_.*$")
     .collect()
 )
+for t, x0 in path.filter(pl.col("t").is_in([0.0, 4.0, 40.0, 200.0, 396.0])).select("t", "coef_y_x0").iter_rows():
+    print(f"b0 at t {t:>3.0f}: coef on x0 {x0:.2f}")
 
 # 3. From a saved output: unnest takes the specs, a bank, or the path of the state the run saved.
 lf.online.fit_predict([ols], save_state="ols.state").sink_parquet("fitted.parquet")
 saved = pl.scan_parquet("fitted.parquet").online.unnest("ols.state").collect()
+print(saved.select(path.columns).equals(path))
 ```
+
+```text
+[('b0', 1.0, 2.02, -1.01), ('b1', 1.01, 2.03, -1.06), ('b2', 0.93, 1.94, -0.99), ('b3', 1.03, 1.99, -0.97)]
+b0 at t   0: coef on x0 0.00
+b0 at t   4: coef on x0 0.66
+b0 at t  40: coef on x0 2.24
+b0 at t 200: coef on x0 2.06
+b0 at t 396: coef on x0 2.02
+True
+```
+
+Stock `b0`'s rows are every fourth, from `t` 0. Its path starts at 0,
+since one row fixes no slope, is near 2 by its eleventh row, and ends on
+the 2.02 `bank.coef()` reports.
 
 **`coef_every=0` writes `coef` on every row but a skipped one**, as a list
 of one float per term. Without a cadence the bank writes it on each
 group's last accepted row in a chunk, and on none for a group whose rows
-there were all skipped. A number of clock units, or a duration such as
-`"5m"` on a temporal clock, writes it once the clock has moved that far
-since the group's last `coef` row, as `solve_every` schedules a solve.
-`max_rows_between_coefs` writes it after that many rows, and with both,
-whichever comes first. A cadence reads only the clock and the rows, so the
+there were all skipped. A cadence can be a number of clock units, or a
+duration such as `"5m"` on a temporal clock. It writes `coef` once the
+clock has moved that far since the group's last `coef` row, as
+`solve_every` schedules a solve.
+`max_rows_between_coefs` writes it after that many rows. With both, it
+is written by whichever comes first. A cadence reads only the clock and the rows, so the
 rows that carry `coef` do not depend on the chunking.
 
 **To spread that list into columns, chain `.online.unnest(specs)` after
@@ -1774,122 +1863,104 @@ and works on a saved output.
 **Several targets, or a grid, put several blocks in one `coef` list:** one
 per target and point of a grid of `ridge` values, `feature_sets` or a
 `lasso_path`. Each half-life of a `half_life` grid has a `coef` field of its
-own. Here `grid`, from [Output field names](#output-field-names), has two
-half-lives and two ridge values.
+own. Here `grid`, as [Output field names](#output-field-names) builds it,
+has two half-lives and two ridge values, and the ridge of 0.5 shrinks each
+slope by more than a third.
 This code uses `df` from [Example data](#example-data):
 
 ```python
+grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
+                       gap_cap=300.0, half_life=[100.0, 500.0], ridge=[1e-6, 0.5])
 grid_bank = po.ModelBank([grid])
-cols = grid_bank.fit_predict(df).online.unnest([grid])     # coef@h100 and coef@h500, spread into columns
-cols.select("pred_y__r0.5@h500", "coef_y_x0__r0.5@h500")    # each block's columns named the way its pred field is
+out = grid_bank.fit_predict(df)                             # df's columns, plus "m"
+cols = out.online.unnest([grid])                            # coef@h100 and coef@h500, spread into columns
+print(cols.select("pred_y__r0.5@h500", "coef_y_x0__r0.5@h500").columns)   # each block's columns named the way its pred field is
 betas = grid_bank.coef()                                    # target, ridge, feature_set and penalty tell the blocks apart
-blocks_wide = betas.pivot("term", index=["group", "instance", "ridge"], values="coef")   # a row per block ...
-one_block = betas.filter(pl.col("ridge") == 0.5).pivot("term", index=["group", "instance"], values="coef")   # ... or one block
+blocks_wide = betas.pivot("term", index=["instance", "ridge"], values="coef")   # a row per block
+for instance, ridge, b0, b1, b2 in blocks_wide.sort("instance", "ridge").iter_rows():
+    print(f"{instance} ridge {ridge}: intercept {b0:.2f}, x0 {b1:.2f}, x1 {b2:.2f}")
 ```
 
-### The running sums behind a fit
+```text
+['pred_y__r0.5@h500', 'coef_y_x0__r0.5@h500']
+@h100 ridge 1e-06: intercept 0.99, x0 1.97, x1 -1.00
+@h100 ridge 0.5: intercept 0.97, x0 1.25, x1 -0.60
+@h500 ridge 1e-06: intercept 0.99, x0 1.99, x1 -1.00
+@h500 ridge 0.5: intercept 0.97, x0 1.30, x1 -0.63
+```
+
+### Fitting many features from one pass
+
+<a id="the-running-sums-behind-a-fit"></a>
 
 Three models, `ewridge`, `lasso` and `ew_cov`, keep a matrix of running
-sums, their *Gram* in least-squares terms. It summarizes every row the
-model has seen, as a sufficient statistic, so a saved state can answer
-questions the run never asked. `bank.gram(spec)` returns it per group and
-per half-life, or an empty list for any other model. `gram()` and
-`po.gram` need numpy, an optional extra.
+sums, their *Gram* in least-squares terms: the weight of the rows, the
+columns' means and co-moments, and each target's moments. Every
+least-squares fit on those columns reads its rows only through the Gram,
+whose size depends on the number of columns alone. So one pass over a
+stream too large to hold can leave a Gram per week, or per hour, and every
+fit after the pass reads those Grams and never the rows. `bank.gram(spec)`
+returns them as numpy arrays, one dict per group, and `po.gram` fits
+them, as [docs/GRAM.md](docs/GRAM.md) shows for each task. Both need
+numpy, an optional extra, which `pip install polars-online[numpy]` adds.
 
-Four things to know before reading a Gram:
+**Give the spec a block column as its `group`, and the bank keeps a Gram
+for each block.** Here a column made in the query names each row's hour,
+and one pass leaves eight hourly Grams of `df`'s five features. Pooled,
+they give least squares on all 400 rows, with `df`'s truth and the t of
+each coefficient. Any run of hours, on any of the columns, is one more
+call.
+This code uses `lf` from [Example data](#example-data):
 
-| | why |
+```python
+features = ["x0", "x1", "x2", "signal_a", "signal_b"]
+hours = po.spec.ewridge(
+    "hours", targets=["y"], features=features, group="hour",   # a Gram per hour
+    half_life=float("inf"), solve_every=1e18,                  # least squares' sums; the pass solves nothing
+)
+bank = po.ModelBank([hours])
+bank.fit(lf.with_columns(hour=pl.col("ts").dt.truncate("1h")))   # the hour, made in the query
+hourly = bank.gram("hours")                 # one dict of numpy arrays per hour, oldest first
+
+pooled = po.gram.merge(hourly)              # the Gram of all the hours' rows
+coef = po.gram.solve(pooled)                # least squares: the intercept, then the features
+t = po.gram.coef_stats(pooled, coef)["t"]   # and each coefficient's t
+print(f"{len(hourly)} hourly Grams, pooled over {pooled['weight_sum']:.0f} rows")
+for name, b, tb in zip(pooled["columns"], coef, t):
+    print(f"{name:>9} {b:+.2f}  t {tb:+6.1f}")
+morning = po.gram.solve(po.gram.merge(hourly[:3]), features=["x0", "x1"])   # any hours, any columns, from the same pass
+print("x0 and x1 before 12:00:", " ".join(f"{b:+.2f}" for b in morning[1:3]))
+```
+
+```text
+8 hourly Grams, pooled over 400 rows
+intercept +0.99  t  +39.1
+       x0 +1.99  t  +78.3
+       x1 -1.01  t  -39.9
+       x2 -0.03  t   -1.0
+ signal_a +0.02  t   +0.6
+ signal_b +0.03  t   +1.3
+x0 and x1 before 12:00: +2.00 -1.05
+```
+
+**The same code serves thousands of columns.** A Gram of 200 features
+and an intercept is 323 KB, and one of 10,000 columns 800 MB, whatever
+its rows.
+
+[docs/GRAM.md](docs/GRAM.md) is the guide to fitting from Grams. It gives
+the theory, the keys of a Gram and what a Gram cannot answer, with a
+recipe that runs for each task:
+
+| task | its section of GRAM.md |
 |---|---|
-| `weight_sum` counts weight, not rows | `n_kish = weight_sum² / Σw²` is the number of equally weighted rows the moments are worth, which is what a standard error divides by. It does not fall when a stream goes quiet; `weight_sum` does |
-| a spec can have several Grams | under the default `target_gaps="own_rows"`, a target that goes missing on different rows from the others is fitted from a Gram of its own. `gram()` returns one dict per Gram, each naming its `targets` |
-| `coef()` and `gram()` can disagree | `bank.coef()` is as of the model's last *solve*, which its `solve_every` schedule decides, while `gram()` is as of the last row |
-| under a `window_size`, a Gram covers only the window | every array does, the target moments included, so `po.gram.solve` on it fits the window |
-
-This code uses `df` from [Example data](#example-data):
-
-```python
-ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1", "x2"],
-                      half_life=500.0, ridge=1e-9, standardize=False)
-fitted = po.ModelBank([ols])
-fitted.fit_predict(df)
-
-g = fitted.gram("ols")[0]      # one dict per (group, half_life, Gram); this spec has one
-g["columns"]                              # the k terms of a row z: "intercept" first, then the features
-g["targets"]                              # the targets fitted from this Gram
-g["means"], g["comoments"]                # the feature means, and the centred k x k co-moment matrix
-g["cross_moments"], g["target_weights"]   # per target: the uncentred E[z*y], and the weight behind it
-g["means_by_target"]                      # per target: the column means m over the rows it was present on
-g["cross_centred"]                        # per target: E[(z - m)(y - ybar)], ybar its own mean: what the fit is solved from
-g["target_means"], g["target_vars"]       # per target: the target's own mean and centred variance
-g["weight_sum"], g["n_kish"], g["target_n_kish"]   # the accumulated weight, and Kish's effective sample size (features, and per target)
-
-# The model's algebra by hand, on the centred system, which keeps a feature far from zero precise:
-slopes = np.linalg.solve(g["comoments"][1:, 1:], g["cross_centred"][0][1:])   # column 0 is the intercept
-intercept = g["cross_moments"][0][0] - g["means_by_target"][0][1:] @ slopes
-resid_var = g["target_vars"][0] - slopes @ g["comoments"][1:, 1:] @ slopes
-r2 = 1 - resid_var / g["target_vars"][0]
-```
-
-The [`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
-reference states every array and the identities that relate them.
-[Wide fits from Grams](docs/GRAM.md) is the guide to fitting from Grams,
-with the theory and a recipe that runs for each task: a Gram per week
-from one pass, pooling weeks with or without their weekly levels, a ridge
-with its t, the lasso path, stability selection and its null by sign
-flips, compact exports and `gram_threads`.
-
-**`po.gram` does the same algebra in one call**, on any Gram, such as one
-read from a saved state. Two calls need care:
-
-| limit | what to do |
-|---|---|
-| `po.gram.solve` solves a plain ridge | read a `ridge_scale="sum"` or `coef_prior` fit from `bank.coef()`, since `solve` does not reproduce it |
-| `po.gram.merge` pools parts that share a weighting, such as one Gram per group or per shard of a pass | before merging two halves of a decayed stream, multiply the earlier half's `weight_sum` and `target_weights` by `0.5 ** (dt / half_life)`, with `dt` the clock from its last row to the later half's last row. Halves run with `half_life=float("inf")` merge as they are |
-
-```python
-g = po.ModelBank.load("bank.state").gram("ridge")[0]   # the first group's Gram, from a saved state
-# a quarter of the bytes: comoments in float32 and as its upper triangle; po.gram reads it in float64
-small = po.ModelBank.load("bank.state").gram("ridge", dtype="float32", layout="packed")[0]
-
-# residual variance, R², standard errors and t:
-r2 = po.gram.coef_stats(g, po.gram.solve(g, ridge=1e-9))["r2"]
-# the model's own ridge, in original units; a list of ridges is one eigendecomposition:
-ridges = po.gram.solve(g, ridge=[0.0, 0.01, 0.1, 1.0], standardize=True)
-worst = po.gram.condition(g)["kappa"]   # Belsley's condition indexes and variance-decomposition proportions
-po.gram.correlation(g)                  # the correlation matrix
-po.gram.vif(g)                          # variance inflation factors
-po.gram.subset(g, ["x0", "x1"])         # the Gram of some of the columns: a sub-block, not a recomputation
-po.gram.merge([g, g])                   # pools the Grams of disjoint row sets into the Gram of their union
-po.gram.merge([g, g], within=True)      # pools each part about its own means: a fit with an intercept per part
-po.gram.lasso_path(g, [0.1, 0.01])      # the lasso model's coordinate descent, offline
-po.gram.lars_path(g, max_active=2)      # the lasso path's knots, by least angle regression, stopped early
-po.gram.lars_paths([g, g], max_steps=5) # many Grams and targets at once, on the bank's thread pool
-po.gram.solve_subsets([g, g], [[0], [0, 1]], ridge=0.1)   # merge each subset, then its ridge, se and t
-po.gram.solve_subsets([g, g], [[0, 1]], within=True)      # each subset pooled within its parts
-po.gram.solve_subsets([g, g], [[0, 1]], within=True, target_signs=[[1.0], [-1.0]])   # a run with the second Gram's target negated
-```
-
-**Before merging two halves of a decayed stream, age the earlier half to
-the later half's end.** Here each half of `df` is fitted on its own.
-This code uses `df` from [Example data](#example-data):
-
-```python
-halves = po.spec.ewridge("halves", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0,
-                         half_life=100.0)
-
-
-def gram_of(rows):                                        # one bank per part, as a shard or a day is fitted
-    part = po.ModelBank([halves])
-    part.fit_predict(rows)
-    return part.gram("halves")[0]
-
-
-early, late = gram_of(df.head(200)), gram_of(df.tail(200))
-decay = 0.5 ** ((df["t"][399] - df["t"][199]) / 100.0)   # dt: from the earlier half's last row to the later half's last row
-early = dict(early, weight_sum=early["weight_sum"] * decay, target_weights=early["target_weights"] * decay)
-pooled = po.gram.merge([early, late])
-assert np.allclose(pooled["comoments"], gram_of(df)["comoments"])   # the Gram of one run over all 400 rows
-```
+| a Gram per week from one pass | [Weekly blocks from one pass](docs/GRAM.md#weekly-blocks-from-one-pass) |
+| pool any weeks, and score a fit on others | [Pooling blocks](docs/GRAM.md#pooling-blocks) |
+| pool decayed blocks, each aged first | [Aging a block before it is pooled](docs/GRAM.md#aging-a-block-before-it-is-pooled) |
+| pool weeks and leave their levels out | [Pooling within blocks](docs/GRAM.md#pooling-within-blocks) |
+| a ridge and its t | [A ridge and its t](docs/GRAM.md#a-ridge-and-its-t) |
+| the lasso path | [Choosing columns on the lasso path](docs/GRAM.md#choosing-columns-on-the-lasso-path) |
+| columns chosen on most halves of the weeks, and a null for them | [Stability selection over halves of the weeks](docs/GRAM.md#stability-selection-over-halves-of-the-weeks) |
+| a quarter of the bytes, and one wide Gram on several threads | [A compact Gram](docs/GRAM.md#a-compact-gram), [`gram_threads`](docs/GRAM.md#one-wide-gram-on-several-threads) |
 
 ### One row per finished group
 
@@ -1900,6 +1971,15 @@ half-life and per Gram, and frees its state. Without it, every group's
 state stays until `bank.drop_groups` removes it. `group_close` is refused
 beside an `embargo` or a window target, since both hold a group's rows past
 its end.
+
+**Each closed row holds, bit for bit, what `bank.gram()` would have
+returned for that group just before it closed**, its matrix packed as the
+upper triangle. It adds the span's own `rows_fed`, `rows_learned`,
+`clock_min` and `clock_max`. A model with coefficients adds its `coef`, an
+`ew_cov` with `pca` its eigendecomposition, and a `marginal` its pairs.
+Here block 0's closed row is set beside the Gram of a bank that has seen
+only block 0's rows, and the two agree to the bit. Blocks 0 to 2 close,
+and block 3, the last, stays open.
 This code uses `df` from [Example data](#example-data):
 
 ```python
@@ -1909,22 +1989,25 @@ by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)   # a block id t
 
 bank = po.ModelBank([blocks])
 bank.fit_predict(by_block)
-
 closed = bank.closed_groups()          # blocks 0, 1 and 2, oldest first: one half-life and one Gram, so one row each
+print(closed.select("group", "rows_fed", "rows_learned").rows())
+
+# Block 0 in a bank that has seen only its rows, so it is still open: its Gram, packed as a closed row's is.
+open_bank = po.ModelBank([blocks])
+open_bank.fit_predict(by_block.head(100))
+still_open = open_bank.gram("cov", layout="packed")[0]
+row = closed.row(0, named=True)
+print(all(row[k] == still_open[k].tolist() for k in ["means", "comoments"]), row["weight_sum"] == still_open["weight_sum"])
+
 first = po.gram.from_row(closed.head(1))   # block 0's row, as the dict gram() returns
-corr = po.gram.correlation(first)      # everything in po.gram works on it
+print(f"{po.gram.correlation(first)[0, 1]:.3f}")   # everything in po.gram works on it: x0 and x1's correlation in block 0
 ```
 
-**Each closed row holds, bit for bit, what `bank.gram()` would have
-returned for that group just before it closed**, its matrix packed as the
-upper triangle. It adds the span's own `rows_fed`, `rows_learned`,
-`clock_min` and `clock_max`. A model with coefficients adds its `coef`, an
-`ew_cov` with `pca` its eigendecomposition, and a `marginal` its pairs.
-
-**Closed rows wait in the bank until `bank.closed_groups()` takes them
-out.** Called with `drop=False`, it reads them and leaves them queued. Rows
-not yet read are saved with the state, so a loop that saves between chunks
-loses none.
+```text
+[('0', 100, 100), ('1', 100, 100), ('2', 100, 100)]
+True True
+0.021
+```
 
 **Two modes decide when a group is finished.** In either, the last group
 never closes, since no row proves it finished, and `bank.gram()` still
@@ -1939,48 +2022,83 @@ reads it.
 String or `Categorical` key as text, so `"9"` comes after `"10"`.** Polars'
 own `sort` agrees, so sort the input by the key before the bank.
 
+**Closed rows wait in the bank until `bank.closed_groups()` takes them
+out.** Called with `drop=False`, it reads them and leaves them queued. Rows
+not yet read are saved with the state, so a loop that saves between chunks
+loses none.
+
 **To write the closed rows to a file as the run goes, pass a path as
 `closed_groups=`** to `lf.online.fit_predict`, `fit_predict_batches` or
 `fit`, or `--closed-groups` to the command line
 ([docs/RUNNER.md](docs/RUNNER.md)). With `fit`, which keeps no per-row
 output, the file is the run's whole product: a stream too large for memory
-goes in, and one row per block comes out. Here `by_block` is saved to
-disk, `blocks` learns from the file as it is read back, and each closed
-block's row goes to `blocks.parquet`:
+goes in, and one row per block comes out. Here the blocked stream is saved
+to disk, learned from as it is read back, and each closed block's row
+goes to `blocks.parquet`.
+This code uses `df` from [Example data](#example-data):
 
 ```python
-by_block.write_parquet("by_block.parquet")                                             # the stream, on disk
+blocks = po.spec.ew_cov("cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone")
+df.with_columns(block=pl.int_range(pl.len()) // 100).write_parquet("by_block.parquet")   # the stream, on disk
 po.ModelBank([blocks]).fit(pl.scan_parquet("by_block.parquet"), closed_groups="blocks.parquet")   # read back as a query
+print(pl.read_parquet("blocks.parquet").select("group", "rows_fed").rows())
+```
+
+```text
+[('0', 100), ('1', 100), ('2', 100)]
 ```
 
 ### Reading a correlation matrix
 
 `po.corr` repairs, shrinks, summarizes and scores a correlation matrix,
-given as an array, a `gram()` dict or a closed row. Each function needs
-only numpy, and follows the paper it names.
+given as an array, a `gram()` dict or a closed row (`po.corr.matrix`
+turns any of them into an array). Each function needs only numpy, and
+follows the paper it names. A matrix pieced together pair by pair, each
+pair on its own rows, need not be a correlation matrix at all, as here:
+its smallest eigenvalue is negative. `po.corr.nearest` repairs it.
 
 ```python
-r = po.corr.matrix(closed.head(1))         # an array, a gram() dict, or a closed row -> a correlation matrix
+r = np.array([[1.0, 0.9, 0.7],          # three correlations estimated pair by pair, each on its own rows:
+              [0.9, 1.0, 0.1],          # x0 follows both x1 and x2 closely, yet x1 and x2 barely move together,
+              [0.7, 0.1, 1.0]])         # which no single set of rows can give
+print(f"smallest eigenvalue {np.linalg.eigvalsh(r).min():+.3f}")
 fixed, dist, iters = po.corr.nearest(r)    # Higham (2002): the nearest correlation matrix, by alternating projections
-shrunk, alpha = po.corr.shrink(r, alpha=0.2)   # Ledoit-Wolf shrinkage toward a constant-correlation (or identity) target
-z = po.corr.to_z(r); back = po.corr.from_z(z)  # Fisher's transform, clipped so a degenerate +-1 is finite
-rho = po.corr.equicorr(r)                  # deco's one number for the whole matrix, offline
-vals, vecs = po.corr.spectral(r, 1)        # the top eigenpairs ...
-po.corr.from_spectral(vals, vecs)          # ... and the completion back to a correlation matrix
-po.corr.absorption(r, 1)                   # the absorption ratio: how much of the variance the top k eigenpairs carry
-lo, hi = po.corr.mp_edge(n=2000, m=50)     # the Marchenko–Pastur edges: eigenvalues inside them are what pure noise gives
-po.corr.fisher_se(n=2000, rho=0.3)         # the standard error of a correlation; phi_a= and phi_b= add the AR(1) inflation, with its caveats
+print(f"repaired: smallest eigenvalue within 1e-8 of 0: {abs(np.linalg.eigvalsh(fixed).min()) < 1e-8}, moved by {dist:.3f}")
+print(np.round(fixed, 3).tolist())
+shrunk, alpha = po.corr.shrink(fixed, alpha=0.2)   # Ledoit-Wolf shrinkage toward a constant-correlation target
+lo, hi = po.corr.mp_edge(n=2000, m=50)     # the Marchenko-Pastur edges: eigenvalues inside them are what pure noise gives
+print(f"noise edges for 50 series over 2,000 rows: {lo:.3f} to {hi:.3f}")
+print(f"standard error of a correlation of 0.3 over 2,000 rows: {po.corr.fisher_se(n=2000, rho=0.3):.4f}")
 ```
 
-Nine more, by kind, each with its arguments in the [API
+```text
+smallest eigenvalue -0.093
+repaired: smallest eigenvalue within 1e-8 of 0: True, moved by 0.120
+[[1.0, 0.837, 0.655], [0.837, 1.0, 0.135], [0.655, 0.135, 1.0]]
+noise edges for 50 series over 2,000 rows: 0.709 to 1.341
+standard error of a correlation of 0.3 over 2,000 rows: 0.0204
+```
+
+The repair lands on the edge of the valid matrices, so its smallest
+eigenvalue is 0 to the iteration's tolerance. It moves each correlation a
+little, 0.120 in all as a Frobenius distance.
+
+The rest, by kind, each with its arguments in the [API
 reference](https://hgilde.github.io/polars-online/corr.html):
 
 | kind | function | what it gives |
 |---|---|---|
-| spectrum | `mp_density` | the Marchenko–Pastur density |
+| input | `matrix` | a correlation matrix from an array, a `gram()` dict, or a closed row |
+| shrinkage | `shrink` | Ledoit-Wolf shrinkage toward a constant-correlation (or identity) target, and its weight |
+| transform | `to_z`, `from_z` | Fisher's transform and its inverse, clipped so a degenerate ±1 is finite |
+| spectrum | `spectral`, `from_spectral` | the top eigenpairs, and the completion back to a correlation matrix |
+| spectrum | `absorption` | the absorption ratio: how much of the variance the top `k` eigenpairs carry |
+| spectrum | `mp_edge`, `mp_density` | the Marchenko–Pastur edges and density: what pure noise gives |
 | spectrum | `shift` | the standardised absorption shift, `(fast − slow) / scale` |
-| one number | `equicorr_row` | the equicorrelation estimate of one standardised row, the `u` [`deco`](docs/MODELS.md#deco--one-correlation-for-the-whole-matrix) computes per row |
+| one number | `equicorr` | [`deco`](docs/MODELS.md#deco--one-correlation-for-the-whole-matrix)'s one number for the whole matrix, offline |
+| one number | `equicorr_row` | the equicorrelation estimate of one standardised row, the `u` `deco` computes per row |
 | one number | `equicorr_loglik` | the Gaussian log-density of a standardised row under an equicorrelation matrix |
+| sampling error | `fisher_se` | the standard error of a correlation; `phi_a=` and `phi_b=` add the AR(1) inflation, with its caveats |
 | sampling error | `signal_share` | how much of a correlation's movement between blocks is not sampling noise, at Kish's sample size |
 | blocks | `block_means`, `from_blocks` | the mean correlation within and between labelled blocks, and the block matrix back from those means |
 | scale | `epps_invert` | the correlation at a coarser scale, from `ew_cov`'s lagged co-moments |
@@ -1988,51 +2106,148 @@ reference](https://hgilde.github.io/polars-online/corr.html):
 
 ## Checking the data and the model
 
+A fit can go wrong for two kinds of reason, and the library checks each.
+The data can be wrong, such as a feed that writes `-999` where it measured
+nothing, so that no model can learn from it well. Or the model can be
+wrong for data that is fine, such as a relationship that broke halfway.
+Each kind has its call or switch, and a guide of its own.
+
+| to check | call or switch | guide |
+|---|---|---|
+| whether the data can be learned from at all | `bank.check()`, beside an `audit` spec | [Checking your data's quality](#checking-your-datas-quality), [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) |
+| whether the model learned from it well | a spec's `emit_*` switches, and `po.eval` after the run | [Checking that a model works](#checking-that-a-model-works), [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) |
+
 ### Checking your data's quality
 
-**`check()` reads these tables, and the Gram where a spec keeps one, and
-says what is wrong with the data.** Each row is a finding: its `severity`
-(`error`, `warning` or `info`), a `code` such as `missing`, `constant`,
-`collinear` or `leakage`, the `spec`, `group` and `column`, the measured
-`value` beside its `threshold`, and a `message` that says what to do. It
-costs the run nothing, so call it after a first pass and before trusting a
-fit. Every threshold was measured: on five clean shapes over ten seeds no
-check raised an error or a warning, and each planted problem was found on
-every seed. The docstring of `ModelBank.check` lists the checks with their
-thresholds. A bank keeps no count of sentinel values, frozen feeds,
-duplicated columns or the clock's gaps; an [`audit`](docs/MODELS.md#audit--what-a-streams-columns-hold)
-spec does, and `check()` reads it. Each message ends with a link to the
-section of [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) on its `code`. That
-section shows what the problem does to each model and how to fix it with
-Polars before the bank, in a program that runs, with the theory behind it.
+**`bank.check()` reads what a bank kept during a pass and lists what is
+wrong with the data,** with what to do about each finding.
+[docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) has a section on each
+finding. An [`audit`](docs/MODELS.md#audit--what-a-streams-columns-hold)
+spec in the same bank counts what no model keeps, so run it beside the
+models in the same pass. It keeps about 10 KiB of state a column,
+whatever the rows. Here three faults are planted in `df`: a sentinel, a
+missing feature and a constant one. An audit and a ridge regression learn
+from the faulty file, and `check()` names each fault.
+This code uses `df` from [Example data](#example-data):
 
-**Run it beside the models in the same pass** (`po.ModelBank([audit,
-model])`) to check the data a fit was made from, at the cost of one more
-spec. `check()` lists an audit's findings with the models' own, and the
-docstring of `ModelBank.check` gives each threshold with the rate at which
-it found a planted problem and stayed silent on clean data.
-[docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) has a recipe for each finding:
-the problem planted, the model left alone, the fix in Polars, and the model
-after it.
+```python
+faulty = df.with_columns(
+    x1=pl.when(pl.col("t") % 20 == 0).then(-999.0).otherwise(pl.col("x1")),  # -999 where x1 was not measured: 5% of rows
+    x2=pl.when(pl.col("t") % 3 == 0).then(None).otherwise(pl.col("x2")),     # x2 missing on a third of the rows
+    x3=pl.lit(1.0),                                                          # a feature that never moves
+)
+faulty.write_parquet("faulty.parquet")
+
+features = ["x0", "x1", "x2", "x3"]
+audit = po.spec.audit("audit", columns=[*features, "y"], clock="t", gap_cap=300.0)   # counts what no model keeps
+model = po.spec.ewridge("ridge", targets=["y"], features=features, clock="t", gap_cap=300.0, half_life=100.0)
+bank = po.ModelBank([audit, model])
+bank.fit(pl.scan_parquet("faulty.parquet"))
+
+findings = bank.check()                     # one row per problem, the worst first
+for row in findings.select("severity", "code", "spec", "column", pl.col("value").round_sig_figs(3)).iter_rows():
+    print(*row)
+print(findings.row(0, named=True)["message"])   # what to do, and the section of docs/DATA-QUALITY.md on it
+```
+
+```text
+warning constant audit x3 0.0
+warning sentinel audit x1 0.0475
+warning constant ridge x3 0.0
+warning missing ridge x2 0.335
+info heavy_tails audit x1 969.0
+info missing audit x2 0.335
+column 'x3' took one value (1) on every usable row of the stream: as a feature it is collinear with the intercept, and as a target there is nothing to learn. See https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#constant
+```
+
+The audit finds all three faults: `x3` constant, `-999` on 4.75% of
+`x1`'s values, and `x2` missing on a third of the rows. It also finds the
+heavy tail the sentinel gives `x1`, a value 969 robust standard
+deviations from the median. The ridge regression finds the two faults it
+can measure. To a model `-999` is a number like any other, so only the
+audit sees a sentinel.
+
+**Each finding is a row, the worst first.** Its `severity` is `error` (the
+model cannot learn), `warning` (the fit is unreliable) or `info`. Its
+`code` names the check, such as `missing`, `constant`, `collinear` or
+`leakage`. The `spec`, `group` and `column` say where it was found, the
+measured `value` sits beside its `threshold`, and the `message` says what
+to do.
+
+**`check()` adds no work to the run,** because it reads only what the bank
+keeps anyway: the tables of [What a bank holds](#what-a-bank-holds), and
+the Gram where a spec keeps one. So call it after a first pass, before
+trusting a fit, on a live bank or one loaded from its file. Without an
+audit in the bank, it says nothing about sentinels, frozen feeds,
+duplicated columns or the clock's gaps.
+
+**Every threshold was measured** for how often it finds a planted problem
+and how often it fires on clean data. On five clean shapes over ten seeds
+no check raised an error or a warning, and each planted problem was found
+on every seed. Each message ends with a link to the section of
+[docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) on its `code`. That section
+shows what the problem does to each model and how to fix it with Polars
+before the bank, in a recipe that runs, with the theory behind it. The
+docstring of `ModelBank.check` lists every check with its threshold.
 
 ### Checking that a model works
 
 Judge a model as the stream runs, by switching diagnostics on in its spec,
-or after the run, by passing its output to `po.eval`. A spec's diagnostics
-and selection measure each row against what the models learned before it,
-never against the row's own outcome. Their memory does not grow with the
-stream. Every switch but `emit_clocks` and `emit_feature_health` reads the
-residuals, and feature health reads the features a fit's coefficients lean
-on, so only the ten [linear models](docs/MODELS.md#linear-models), which predict a
-target, take them, and any other model refuses them by name. A switch adds its fields to the
-spec's output, one per *slot*: one prediction of one target, at one point
-of a grid.
+or after the run, by passing its output to `po.eval`.
+[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) takes each question about a
+model in turn. A spec's diagnostics measure each row against what the
+models learned before it, never against the row's own outcome, and their
+memory does not grow with the stream.
+
+**`emit_breaks` asks whether the relationship has broken.** Its
+`break_wald` compares two fits of the same regression, one at the
+diagnostic's memory and one at four times it, and grows when a
+coefficient moves. Here it finds `df`'s planted break: the beta of `ret`
+on `signal_a` flips from 0.8 to −0.8 at row 200.
+This code uses `lf` from [Example data](#example-data):
+
+```python
+beta = po.spec.ewridge(
+    "beta", targets=["ret"], features=["signal_a"], clock="t", gap_cap=300.0, half_life=100.0,
+    coef_every=0,      # the coefficients on every row
+    emit_breaks=True,  # studentized_ret, cusum_ret, cusum_sq_ret, break_wald_ret
+)
+out = lf.online.fit_predict([beta]).online.unnest([beta]).collect()
+
+# break_wald is chi2 with a degree of freedom per coefficient, here 2, whose 0.01% value is 18.4.
+wald = out.select("t", "coef_ret_signal_a", "break_wald_ret")
+print(f"largest break_wald before row 200: {wald.filter(pl.col('t') < 200)['break_wald_ret'].max():.1f}")
+first = wald.filter(pl.col("break_wald_ret") > 18.4)["t"].min()
+for row, b, w in wald.filter(pl.col("t").is_in([199.0, first, 299.0, 399.0])).iter_rows():
+    print(f"row {row:.0f}: beta on signal_a {b:+.2f}, break_wald {w:.1f}")
+```
+
+```text
+largest break_wald before row 200: 17.5
+row 199: beta on signal_a +0.77, break_wald 3.4
+row 235: beta on signal_a +0.41, break_wald 19.5
+row 299: beta on signal_a -0.01, break_wald 60.9
+row 399: beta on signal_a -0.39, break_wald 48.8
+```
+
+`break_wald` stays below 18.4 for the 200 rows before the flip, and
+passes it at row 235, 35 rows after. By then the fit's beta has moved only
+from 0.77 to 0.41, and at a half-life of 100 rows it is still on its way
+to −0.8 at the end. The CUSUMs of the same switch stay null on this short
+stream: they wait until the fit has settled, 4.3 half-lives in.
+
+**Every switch but `emit_clocks` and `emit_feature_health` reads the
+residuals,** and feature health reads the features a fit's coefficients
+lean on. So only the ten [linear models](docs/MODELS.md#linear-models),
+which predict a target, take them, and any other model refuses them by
+name. A switch adds its fields to the spec's output, one per *slot*: one
+prediction of one target, at one point of a grid.
 
 [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) answers "is this model
 working?" one question at a time. For each diagnostic it gives the
-definition and its update, the threshold that means something with its
-false-alarm rate as measured, its cost a row, the theory it rests on, and a
-recipe that runs with its output shown:
+definition and its update, and the threshold that means something, with
+its false-alarm rate as measured. It gives the time the diagnostic adds a
+row, the theory it rests on, and a recipe that runs with its output shown:
 
 | question | switch or call | fields, per slot `<t>` |
 |---|---|---|
