@@ -1028,12 +1028,11 @@ class ModelBank:
             ``restart_after_step_back`` restarted the stream.
         ``settled_frac``, ``error_inflation``
             The warm-up readings of the stream's first instance after the
-            last row (`docs/WARMUP-AND-CONVERGENCE.md
-            <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`__).
-            ``settled_frac`` is
-            how full the decay window is: the fraction the next row's
-            ``settled_frac`` reads, which under ``embargo`` counts the clock
-            the held rows have covered too. ``error_inflation`` is the
+            last row (`docs/DIAGNOSTICS.md, Is it ready?
+            <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__).
+            ``settled_frac`` is how full the decay window is: the fraction
+            the next row's ``settled_frac`` reads, which under ``embargo``
+            counts the clock the held rows have covered too. ``error_inflation`` is the
             largest noise-gate ratio over its slots: ``ewridge``'s
             ``sqrt(1 + edf / n_kish)``, ``rls``'s
             ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s

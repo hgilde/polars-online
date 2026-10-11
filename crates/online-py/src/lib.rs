@@ -235,9 +235,12 @@ fn busy(what: &str) -> PyErr {
 ///
 /// .. warning::
 ///     The Arrow output is considered **unstable**: it may change in any
-///     release without that counting as a breaking change (docs/PLAN.md
-///     task 198, D5). Under ``POLARS_ONLINE_WARN_UNSTABLE=1`` the calls that
-///     return one raise ``polars_online.UnstableWarning``.
+///     release without that counting as a breaking change. Its input still
+///     arrives as a Polars frame, and the path that would take Arrow in as
+///     well is not built, so the pair is not yet in its final form
+///     (``docs/RELEASE-READINESS.md``, *Keeping the API stable*). Under
+///     ``POLARS_ONLINE_WARN_UNSTABLE=1`` the calls that return one raise
+///     ``polars_online.UnstableWarning``.
 #[pyclass(name = "ArrowStruct", module = "polars_online._polars_online")]
 struct PyArrowStruct {
     name: String,
