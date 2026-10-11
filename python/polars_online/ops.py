@@ -91,14 +91,13 @@ exact in nanoseconds on a temporal clock, as Polars decides it, at any age
 of the stream. ``min_samples`` (Polars' name) nulls a window holding fewer
 rows with a value. A value that is NaN, infinite or beyond 1e100 in
 magnitude is read as missing, as a null is: every model reads its inputs
-within that bound, where a weight of 1e100 times a square of 1e100 is
-1e300, still inside a double's range. At a row whose value is missing the operator gives the
-window as it stands, where Polars' ``ewm_mean_by`` gives null. A row is in
-a window by its stamp, but a mean weighs it
-by its held interval inside the window. So a row exactly one window old
-under ``"left"`` or ``"both"`` counts for ``min_samples`` and weighs
-nothing, since its interval ends at its row, and a mean with no other value
-in the window is null.
+within that bound, where a weight of 1e100 times a square of 1e100 is 1e300,
+still inside a double's range. At a row whose value is missing the operator
+gives the window as it stands, where Polars' ``ewm_mean_by`` gives null. A
+row is in a window by its stamp, but a mean weighs it by its held interval
+inside the window. So a row exactly one window old under ``"left"`` or
+``"both"`` counts for ``min_samples`` and weighs nothing, since its interval
+ends at its row, and a mean with no other value in the window is null.
 
 **A weighted mean is a ratio of two sums.** A VWAP is decayed notional over
 decayed volume, the time mass cancelling. A side's VWAP puts ``when/then``
