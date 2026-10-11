@@ -988,7 +988,10 @@ mod tests {
             assert!(!m.seeded(), "row {i}: not before the 21st step");
             let w = if i == 4 { 0.0 } else { 1.0 };
             let out = m.step(x, &[], 1.0, w);
-            assert!(out.pred.iter().all(|v| v.is_nan()), "row {i} reports nothing");
+            assert!(
+                out.pred.iter().all(|v| v.is_nan()),
+                "row {i} reports nothing"
+            );
             if i == 20 {
                 break;
             }
@@ -998,7 +1001,10 @@ mod tests {
         let mut given = cfg(2, 2);
         given.means = Some(vec![-3.0, -3.0, 3.0, 3.0]);
         given.covs = Some(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]);
-        assert!(Hmm::new(given).unwrap().seeded(), "given states need no rows");
+        assert!(
+            Hmm::new(given).unwrap().seeded(),
+            "given states need no rows"
+        );
     }
 
     /// The warm-up replay gives each state its rows' weights as the clock has
