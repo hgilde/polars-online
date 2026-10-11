@@ -312,8 +312,8 @@ def shrink(
     ``R`` and ``T``: pass ``x`` as the ``T x k`` sample the matrix came from (the
     standardised rows), or pass ``alpha`` yourself. One of the two is required.
 
-    **``x`` has to be the sample ``r`` is of.** ``s_ij`` above is the plain
-    covariance of ``x``, and ``gamma`` compares the target with it. So an ``r``
+    **The sample has to be the one the matrix is of.** ``s_ij`` above is the
+    plain covariance of ``x``, and ``gamma`` compares the target with it. So an ``r``
     that is some other estimate of the same pairs (a decayed one out of a bank,
     say) makes ``kappa`` a comparison of two different matrices. The intensity
     is still in ``[0, 1]`` and the result still a shrunk matrix, but it is not
