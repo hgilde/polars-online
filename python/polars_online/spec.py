@@ -13,27 +13,26 @@ keyword from a missing one at the call.
 
 .. rubric:: The stream parameters
 
-Every builder takes these after its own parameters. The README's *How a bank
-sees a stream* is the guide to them. This is the reference.
+Every builder takes these after its own parameters, with the meaning, units and
+refusals below. The README's *How a bank sees a stream* shows them at work.
 
 ``targets``, ``features``
     Column names. A target is what the model predicts. A feature is what it
     reads from the same row. A model with no target (``ew_cov``, ``kmeans``,
-    ``micro``, ``deco``, ``bocpd``, ``corrchange``, ``hmm`` and ``rcov``)
-    takes ``features`` alone. ``ew_class`` takes a ``label`` column in the
-    target's place. ``holt`` takes no features. A target computed from its
-    own row's columns, such as a return against the mid, is a column: make
-    it with Polars' ``with_columns`` before the bank, as a log ratio
-    ``(pl.col("price_5m") / pl.col("mid")).log()`` or a difference, which
-    sit about zero where ``hit_rate`` takes its sign. A
-    :func:`polars_online.target` is a column under a name of its own. A
-    target may also be a window expression looking ahead
-    (:mod:`polars_online.ops`), named by its alias:
-    ``(po.rewm_mean("mid", half_life="10s", window_size="1m") -
-    pl.col("mid")).alias("fwd")``. The bank resolves it when the row's window
-    closes, and learns the row then, under the ``embargo``. ``fit_predict``
-    asks the embargo to cover the longest forward ``window_size``. Under
-    ``group`` it needs a ``clock``.
+    ``micro``, ``deco``, ``bocpd``, ``corrchange``, ``hmm`` and ``rcov``) takes
+    ``features`` alone, and ``audit`` takes ``columns`` in their place.
+    ``ew_class`` takes a ``label`` column in the target's place. ``holt`` and
+    ``seqtest`` take no features. A target computed from its own row's columns,
+    such as a return against the mid, is a column: make it with Polars'
+    ``with_columns`` before the bank. A log ratio ``(pl.col("price_5m") /
+    pl.col("mid")).log()`` or a difference sits about zero, where ``hit_rate``
+    takes its sign. A :func:`polars_online.target` is a column under a name of
+    its own. A target may also be a window expression looking ahead
+    (:mod:`polars_online.ops`), named by its alias: ``(po.rewm_mean("mid",
+    half_life="10s", window_size="1m") - pl.col("mid")).alias("fwd")``. The
+    bank resolves it when the row's window closes, and learns the row then,
+    under the ``embargo``. ``fit_predict`` asks the embargo to cover the
+    longest forward ``window_size``. Under ``group`` it needs a ``clock``.
     :func:`polars_online.stream.with_windows` with ``like=`` the spec writes
     the same target as a column (docs/PLAN.md task 104).
 ``fit_intercept``
@@ -56,16 +55,16 @@ sees a stream* is the guide to them. This is the reference.
     forgets nothing. A list of half-lives fits one instance per value, side by
     side. Units: clock units.
 ``gap_cap``
-    Why: a gap in the stream, a weekend or a feed that stopped, would
-    otherwise forget everything at once. What: a ceiling on the clock step
-    between two rows a model learns from, finite and above ``0``, and
-    required with ``clock``. The ceiling also caps the step a run of skipped
-    rows hands the row after them, however long the run. A step the ceiling
-    cut is a break. ``ew_cov`` and ``marginal`` clear their lagged
-    co-moments there, because a lag counts rows, and the row before such a
-    gap is not one row back from the row after it. A break releases nothing
-    an ``embargo`` holds (its entry, below). For no forgetting at all, set
-    ``half_life = "inf"``. Units: clock units.
+    Why: a gap in the stream, a weekend or a feed that stopped, would otherwise
+    forget everything at once. What: a ceiling on the clock step between two
+    rows a model learns from, finite and above ``0``, and required with
+    ``clock``. The ceiling also caps the step a run of skipped rows hands the
+    row after them, however long the run. A step the ceiling cut is a break.
+    ``ew_cov`` and ``marginal`` clear their lagged co-moments there, and
+    ``rcov`` and ``corrchange`` their rings, because a lag counts rows, and the
+    row before such a gap is not one row back from the row after it. A break
+    releases nothing an ``embargo`` holds (its entry, below). For no forgetting
+    at all, set ``half_life = "inf"``. Units: clock units.
 ``restart_after_step_back``
     What a clock that runs backwards within a group means. Why: a step back
     can be a new start, such as a replayed day or a restarted feed. Or it can
@@ -86,24 +85,25 @@ sees a stream* is the guide to them. This is the reference.
     instead. Units: clock units.
 ``weight``
     A row-weight column. A row of weight 0 is scored, advances the clock and
-    teaches nothing; a null weight skips the row. ``seqtest`` and ``rcov``
-    count rows, and take no weight or only 0 and 1.
+    teaches nothing; a null weight skips the row. ``seqtest`` and ``audit``
+    refuse a weight column, and ``rcov`` takes only weights of 0 and 1, since
+    each counts rows: a chunk with another weight is refused, naming the row.
 ``min_weight``
     Why: a model should report only once it has seen enough data to have
     converged, so it never reports a number it is not yet informed enough to
-    give. What: the weight a model must have seen before its outputs stop
-    being null; the model learns from every row either way. A list gives one
-    threshold per target. Ten models keep a weight per target: ``ewridge``,
+    give. What: the weight a model must have seen before its outputs stop being
+    null; the model learns from every row either way. A list gives one
+    threshold per target. Eleven models keep a weight per target: ``ewridge``,
     ``lasso``, ``kalman``, ``huber``, ``quantile``, ``holt``, ``sgd``, ``pa``,
-    ``ftrl`` and ``rls``. Each checks a target's threshold against that
-    target's own weight: the rows it was present on, at their raw weights,
-    decayed, and inside the window under one. ``rls`` learns only from rows
-    on which every target is present, so its targets' weights are equal. The
-    other models check the shared ``weight_sum``. The ``weight_sum``
-    field is the shared weight in every model. So a target that is often null
-    is gated on its own rows, and its first prediction comes later than the
-    others'. Units: ``weight_sum`` units, not rows. The default depends on
-    the model:
+    ``ftrl``, ``rls`` and ``marginal``, whose table's ``corr``, ``beta`` and
+    ``t_stat`` are gated per target. Each checks a target's threshold against
+    that target's own weight: the rows it was present on, at their raw weights,
+    decayed, and inside the window under one. ``rls`` learns only from rows on
+    which every target is present, so its targets' weights are equal. The other
+    models check the shared ``weight_sum``. The ``weight_sum`` field is the
+    shared weight in every model. So a target that is often null is gated on
+    its own rows, and its first prediction comes later than the others'. Units:
+    ``weight_sum`` units, not rows. The default depends on the model:
 
     .. list-table::
        :header-rows: 1
@@ -121,8 +121,9 @@ sees a stream* is the guide to them. This is the reference.
          - ``marginal``, ``deco``
        * - 1
          - ``bocpd``
-       * - 0, each having a gate of its own
-         - ``ewridge``, ``seqtest``, ``rcov``, ``hmm``, ``corrchange``
+       * - 0, each having a gate of its own or nothing to gate
+         - ``ewridge``, ``seqtest``, ``rcov``, ``hmm``, ``corrchange``,
+           ``audit``
 ``min_settled_frac``
     Why: a history shorter than the half-life may not represent the process,
     such as regimes or seasons the half-life was chosen to average across.
@@ -209,54 +210,59 @@ sees a stream* is the guide to them. This is the reference.
     over an unbounded key space bounded. Without it every key ever seen stays
     in memory.
 the diagnostics
-    ``emit_sigma``, ``emit_zscore``, ``emit_selected``, ``emit_averaged``
-    with ``average_eta``, ``emit_metrics``, ``conformal`` with
-    ``conformal_rate`` (default 0.05), ``resid_quantiles``, ``emit_autocorr``
-    with ``resid_autocorr_lag``, ``emit_drift`` with ``drift_delta``,
-    ``drift_threshold`` and ``drift_action``, ``emit_calibration`` with
-    ``calibration_half_life``, ``emit_breaks`` with ``breaks_half_life``,
-    ``emit_robust_se`` with ``robust_se_half_life`` and ``robust_se_lags``,
-    ``emit_specification`` with ``specification_half_life`` and
-    ``ljung_box_lags``, ``horizon_rows`` beside any of those four,
+    ``emit_sigma``, ``emit_zscore``, ``emit_se_coef``, ``emit_selected``,
+    ``emit_averaged`` with ``average_eta``, ``emit_metrics``, ``conformal``
+    with ``conformal_rate`` (default 0.05), ``resid_quantiles``,
+    ``emit_autocorr`` with ``resid_autocorr_lag``, ``emit_drift`` with
+    ``drift_delta``, ``drift_threshold`` and ``drift_action``,
+    ``emit_calibration`` with ``calibration_half_life``, ``emit_breaks`` with
+    ``breaks_half_life``, ``emit_robust_se`` with ``robust_se_half_life`` and
+    ``robust_se_lags``, ``emit_specification`` with ``specification_half_life``
+    and ``ljung_box_lags``, ``horizon_rows`` beside any of those four,
     ``emit_tails`` with ``tails_half_life``, ``emit_influence`` with
     ``influence_half_life``, ``emit_feature_health`` with
     ``feature_health_half_life``, and ``emit_clocks``. Each adds fields to the
-    output, listed below. A model with no residual refuses them by name.
-    A ``*_half_life`` beside a switch is that diagnostic's own memory, in
-    clock units: when left out, four times the fit's memory for the
-    calibration and the fit's memory for the others; ``inf`` is the
+    output, listed below. A model with no residual refuses them by name, all
+    but ``emit_clocks``. A ``*_half_life`` beside a switch is that diagnostic's
+    own memory, in clock units: when left out, four times the fit's memory for
+    the calibration and the fit's memory for the others; ``inf`` is the
     run-once form, which forgets nothing. The fit's memory is the instance's
-    half-life, but under ``window_size`` the half-life whose weights have
-    the window's Kish size -- ``ln 2 / ln((W + 1) / (W - 1))`` rows, about
-    ``W / 2.885``, or ``W ln 2 / 2`` clock units on a clock column -- and
-    for ``kalman`` its ``coef_half_life``. A diagnostic folds a row
-    only once the instance is ready: the row's prediction past every gate,
-    the stream 95% settled on the longest finite memory the model keeps
-    where it forgets, and a standardizing ``sgd`` or ``pa`` past its
-    scaler's warm-up. That memory is the fit's, but ``holt``'s trend
-    (``trend_half_life``, four times its level's by default), the longest
-    of ``kalman``'s ``coef_half_life`` and ``half_life``, ``ewridge``'s
-    ``long_half_life`` and ``lasso``'s ``select_half_life``. The twin fits
-    of ``break_wald`` and feature health read no prediction, and fold every
-    row.
-    ``horizon_rows`` is the target's horizon in rows: the rows a target
-    that looks ahead shares its shocks over, so that its residuals overlap.
-    Without a clock column it defaults to ``embargo``, rounded up; with
-    one it is 0 unless given, since ``embargo`` is in clock units there, and
-    each diagnostic that reads it says so once in a
-    :class:`polars_online.ReadinessWarning`. Under it the calibration's,
-    Breusch and Pagan's and RESET's tests take Newey and West's variance at
-    twice it in lags, the CUSUMs and ``break_wald`` the long-run variance,
-    Ljung and Box skip the lags inside it, and ``se_coef_hac``'s lags
-    default to twice it.
-    `docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
+    half-life, with two exceptions. Under ``window_size`` it is the half-life
+    whose exponential weights have the window's Kish size ``n``,
+    ``ln 2 / ln((n + 1) / (n - 1))`` rows. With nothing decaying inside the
+    window ``n`` is ``window_size``, and the half-life is about
+    ``window_size / 2.885`` rows, or ``window_size * ln 2 / 2`` clock units on
+    a clock column. Beside a decay ``n`` is the Kish size of the decayed
+    weights inside the window, taken in its continuous form on a clock column.
+    For ``kalman`` the fit's memory is its ``coef_half_life``, the shortest
+    finite one where a list gives one per coefficient. A diagnostic folds a row
+    only once the instance is ready: the row's prediction past every gate, the
+    stream 95% settled on the longest finite memory the model keeps where it
+    forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.
+    That memory is the fit's, but ``holt``'s trend (``trend_half_life``, four
+    times its level's by default), the longest of ``kalman``'s
+    ``coef_half_life`` and ``half_life``, ``ewridge``'s ``long_half_life`` and
+    ``lasso``'s ``select_half_life``. The twin fits of ``break_wald`` and
+    feature health read no prediction, and fold every row. ``horizon_rows`` is
+    the target's horizon in rows: the rows a target that looks ahead shares its
+    shocks over, so that its residuals overlap. Without a clock column it
+    defaults to ``embargo``, rounded up; with one it is 0 unless given, since
+    ``embargo`` is in clock units there, and each diagnostic that reads it says
+    so once in a :class:`polars_online.ReadinessWarning`. Under it the
+    calibration's, Breusch and Pagan's and RESET's tests take Newey and West's
+    variance at twice it in lags, the CUSUMs and ``break_wald`` the long-run
+    variance, and Ljung and Box skip the lags inside it. ``se_coef_hac``'s lags
+    default to twice ``horizon_rows``, or to twice ``embargo``, rounded up,
+    where the horizon is read from ``embargo``. A horizon read from ``embargo``
+    gives at most 64 lags, and a :class:`polars_online.ReadinessWarning` says
+    so past it. `docs/DIAGNOSTICS.md
+    <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
     orders them by the question each answers, with their thresholds,
-    false-alarm rates, costs and the theory behind them, and a recipe for
-    each.
+    false-alarm rates, costs and the theory behind them, and a recipe for each.
 
-``standardize``, which seven models take, defaults to ``False`` in
-``ewridge``, ``huber``, ``quantile`` and ``sgd``, and to ``True`` in
-``kalman``, ``kmeans`` and ``micro``. Each builder says what it scales.
+``standardize``, which eight models take, defaults to ``False`` in ``ewridge``,
+``huber`` and ``quantile``, and to ``True`` in ``kalman``, ``sgd``, ``pa``,
+``kmeans`` and ``micro``. Each builder says what it scales.
 
 .. rubric:: Clock units
 
@@ -281,16 +287,15 @@ clock column decides which:
      - ``half_life=pl.duration(minutes=10)``
 
 A duration is a polars expression that reads no column, such as
-``pl.duration(minutes=10)``, or a :class:`datetime.timedelta`. It may also be
+``pl.duration(minutes=10)``, or a ``datetime.timedelta``. It may also be
 polars' duration text, such as ``"10m"`` or ``"1h30m"``: whole numbers of
 ``ns``, ``us``, ``ms``, ``s``, ``m``, ``h``, ``d`` or ``w``, added up in any
 order, as polars reads them (``"30m1h"`` is ``"1h30m"``). A month, a quarter
 and a year have no fixed length, so ``"1mo"``, ``"1q"`` and ``"1y"`` are
 refused. The spec keeps a duration as text, the form the command line's TOML
 takes. A ``half_life`` grid names its instances by it (``@h10m``). ``0`` and
-``inf`` mean the same in every unit, so they may stay numbers beside
-durations; the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the
-number.
+``inf`` mean the same in every unit, so they may stay numbers beside durations;
+the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the number.
 
 The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
 ``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
@@ -325,25 +330,27 @@ timestamp keeps its nanoseconds whatever the stream's age. The previous row's
 instant is part of the state, so a loaded bank goes on exactly. A clock must
 lie between the years 1677 and 2262, the range nanoseconds in a 64-bit integer
 cover. A ``Date`` or a coarse ``Datetime`` past that is refused, naming the
-row. A time zone changes nothing, because a ``Datetime`` is stored in UTC, so
-a change of clocks for summer time neither stretches nor folds the clock.
-Where a clock quantity reaches an output, it is in seconds: ``holt``'s trend
-is per second. :meth:`polars_online.ModelBank.summary`,
+row. A time zone changes nothing, because a ``Datetime`` is stored in UTC, so a
+change of clocks for summer time neither stretches nor folds the clock. Where a
+clock quantity reaches an output, it is in seconds: ``holt``'s trend is per
+second. :meth:`polars_online.ModelBank.summary`,
 :meth:`polars_online.ModelBank.groups` and
 :meth:`polars_online.ModelBank.closed_groups` give clock values as seconds
-since 1970. A ``Time`` column is refused, because a time of day starts again
-at midnight.
+since 1970. ``emit_clocks``' two fields are the exception: they are clock
+values in the clock column's own type. A ``Time`` column is refused, because a
+time of day starts again at midnight.
 
 .. rubric:: What a spec writes
 
 A bank adds one struct column per spec, named after the spec. Every field but
-``coef``, ``support_coef`` and ``se_coef`` is computed from the state
-*before* the row updates it, so a prediction is out-of-sample and a diagnostic
-never sees the row it describes. Those three report the fit *after* the
-row: ``coef`` on row *t* is the fit row *t + 1* is predicted with. Under an
-``embargo`` the row's own update waits for the delay, so ``coef`` on row *t*
-is the fit after the rows *t* released, and row *t + 1* is predicted with it
-only when *t + 1* releases none. A regression writes, with ``<t>`` a target:
+``coef``, ``support_coef`` and the standard errors (``se_coef``,
+``se_coef_hc0`` and ``se_coef_hac``) is computed from the state *before* the
+row updates it, so a prediction is out-of-sample and a diagnostic never sees
+the row it describes. Those fields report the fit *after* the row: ``coef`` on
+row *t* is the fit row *t + 1* is predicted with. Under an ``embargo`` the
+row's own update waits for the delay, so ``coef`` on row *t* is the fit after
+the rows *t* released, and row *t + 1* is predicted with it only when *t + 1*
+releases none. A regression writes, with ``<t>`` a target:
 
 ``pred_<t>``
     The prediction. Null until ``min_weight`` is reached, and on a row the
@@ -358,14 +365,13 @@ only when *t + 1* releases none. A regression writes, with ``<t>`` a target:
     weight, not a count of rows: at a half-life of 600 with rows 0.1 apart it
     settles near 8,657, and Kish's ``n_kish`` is the sample size.
 ``coef``
-    The coefficients of the fit after the row's update, the ones the next
-    row is predicted with (under an ``embargo``, as above), as one flat
-    list: per (target, grid combination) slot in the order the ``pred``
-    fields declare them, the intercept and then one entry per feature. Null
-    on rows where it is not filled (``coef_every``). :func:`coef_index` maps
-    each position to its term.
-    :func:`coef_fields` names the column each becomes when the struct is
-    unnested.
+    The coefficients of the fit after the row's update, the ones the next row
+    is predicted with (under an ``embargo``, as above). They are one flat list:
+    per (target, grid combination) slot in the order the ``pred`` fields
+    declare them, the intercept and then one entry per feature. Null on rows
+    where it is not filled (``coef_every``). :func:`coef_index` maps each
+    position to its term. :func:`coef_fields` names the column each becomes
+    when the struct is unnested.
 ``settled_frac``
     How far the decay window had filled toward steady state before this row:
     ``1 - 2 ** (-T / half_life)`` with ``T`` the decay time the models have
@@ -374,21 +380,22 @@ only when *t + 1* releases none. A regression writes, with ``<t>`` a target:
     (`docs/WARMUP-AND-CONVERGENCE.md
     <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_).
 ``withheld_reason``
-    Why the row's predictions are null, as a categorical --
+    Which gate withheld the row's predictions, as an ``Enum`` --
     ``below_min_settled_frac``, ``below_min_weight`` or
     ``above_max_error_inflation``, the first in that order that withheld
-    anything -- and null where nothing was withheld. A categorical rather
-    than a string, because a string column costs sixteen bytes a row even
-    when every value is null.
+    anything -- and null where no gate did. Fields null for another reason,
+    such as a skipped row, a warm-up of the model's own or a statistic not yet
+    due, leave it null. An ``Enum`` rather than a string, because a string
+    column costs sixteen bytes a row even when every value is null.
 ``support_coef``
-    On ``coef``'s rows, for ``ewridge``, ``huber`` and ``quantile``, and of the
-    same fit after the row: each coefficient's data share,
-    ``1 - ridge * (S^-1)_jj`` in ``[0, 1]`` with ``S`` the system the solve
-    inverts (for the robust models, the Gram as the loss weighs the rows),
-    laid out like ``coef`` -- how much of it the data determined rather than
-    the ridge. A duplicated pair reads ``0.5`` each, a clean design ``1``, a
-    column the standardiser dropped ``0``; the intercept is not a share and
-    is null. Not ``lasso``, whose L1 penalty has no such matrix.
+    Each coefficient's data share, how much of it the data determined rather
+    than the ridge: on ``coef``'s rows, of the same fit after the row, for
+    ``ewridge``, ``huber`` and ``quantile``. It is ``1 - ridge * (S^-1)_jj`` in
+    ``[0, 1]``, with ``S`` the system the solve inverts (for the robust models,
+    the Gram as the loss weighs the rows), laid out like ``coef``. A duplicated
+    pair reads ``0.5`` each, a clean design ``1``, a column the standardiser
+    dropped ``0``; the intercept is not a share and is null. Not ``lasso``,
+    whose L1 penalty has no such matrix.
 
 A model that is not a regression writes fields of its own, which its builder
 describes. Per model, the fields of the plainest spec are listed in
@@ -396,10 +403,13 @@ describes. Per model, the fields of the plainest spec are listed in
 <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_, and
 :func:`output_fields` lists them for the exact spec you built.
 
-A grid writes one set of fields per instance, suffixed. A grid is a list of
-half-lives, a list of ``ridge`` values, ``feature_sets`` or a ``lasso_path``.
-``lasso`` also writes the path point it has selected, once per instance.
-``emit_selected`` and ``emit_averaged`` choose across every slot of a
+A grid writes one set of fields per instance or slot, suffixed. A grid is a
+list of half-lives, a list of ``ridge`` values, two or more ``feature_sets``,
+or a ``lasso_path``. A half-life grid is one instance per entry, and suffixes
+every field (``@h…``). The other grids are slots within an instance, and suffix
+the fields of each slot, ``pred``, ``resid`` and the per-slot diagnostics, by
+its combination. ``lasso`` also writes the path point it has selected, once per
+instance. ``emit_selected`` and ``emit_averaged`` choose across every slot of a
 target, so their fields take no suffix:
 
 .. code-block:: text
@@ -469,8 +479,8 @@ The diagnostics add, per slot:
        carries the estimation error, ``sqrt(1 + h)`` too large, so the error
        errs large there too; null until there is one. A report, not a gate.
        Refused for ``lasso`` (post-selection), ``huber`` and ``quantile``
-       (an M-estimator's covariance is a sandwich), and the gradient models
-       (no second moment).
+       (an M-estimator's covariance is a sandwich), ``holt`` (no covariance
+       of its coefficients) and the gradient models (no second moment).
    * - ``emit_robust_se``
      - ``se_coef_hc0``, ``se_coef_hac``
      - Beside ``se_coef``, on ``coef``'s rows and laid out like it, the
@@ -483,12 +493,12 @@ The diagnostics add, per slot:
        estimation error where the classical sandwich's in-sample residual
        does not: run once on 1,500 rows it read 0.9-1.3% above
        statsmodels' ``cov_type="HC0"`` and ``"HAC"``, and on 3,000 rows
-       under a 5- to 20-row embargo 2-9% above. The lags default to twice the
-       target's horizon in rows: ``horizon_rows``, or ``embargo`` on a spec
-       with no clock column (then at most 64, with a notice past it: each
-       lag costs a slot ``(k + 1)**2`` numbers), ``0`` otherwise. On a
-       target summing the next ``h`` rows' shocks against a persistent
-       feature, the coefficient's true spread
+       under a 5- to 20-row embargo 2-9% above. The lags default to twice
+       ``horizon_rows``, or to twice ``embargo``, rounded up, on a spec with
+       no clock column, and to ``0`` otherwise. Read from ``embargo`` they
+       are at most 64, with a notice past it: each lag costs a slot
+       ``(k + 1)**2`` numbers. On a target summing the next ``h`` rows'
+       shocks against a persistent feature, the coefficient's true spread
        was 2.1-2.3 times ``se_coef`` at ``h = 5`` and 3.1-4.2 times at
        ``h = 20`` (``sqrt(h)`` is 2.2 and 4.5), and ``se_coef_hac`` read
        83-97% of it at ``L = h`` and 90-104% at ``2h``. ``ewridge`` and
@@ -531,8 +541,8 @@ The diagnostics add, per slot:
      - Exponentially weighted correlation of prediction with target,
        out-of-sample R² against the running mean, and the share of rows
        whose sign the prediction got right, a row whose target or
-       prediction is exactly 0 (1 for a ratio target) left out, as
-       ``po.eval.metrics`` leaves it out. On a logistic ``sgd`` or
+       prediction is exactly 0 left out, as ``po.eval.metrics`` leaves it
+       out. On a logistic ``sgd`` or
        ``ftrl`` fit: the point-biserial correlation, the Brier skill score
        and accuracy at a 0.5 threshold, under the same names. On a Poisson
        ``sgd`` fit ``hit_rate`` is null: a positive rate against a count
@@ -632,10 +642,10 @@ The diagnostics add, per slot:
        one (all but ``ewridge``, ``rls`` and ``kalman``). ``cusum`` and
        ``cusum_sq`` are the EW sums of the studentized residuals before the
        row and of their squares less 1, each standardized, so each is about
-       ``N(0, 1)`` with no break: ``cusum_sq`` over the measured variance of
-       a squared residual, ``E[z**4] - 1`` at four times the memory, where a
-       Gaussian's 2 once stood (on Student's t with 3 to 5 degrees of
-       freedom it passed 1.96 on 11-33% of rows, and now on 4.7-5.5%). Run
+       ``N(0, 1)`` with no break. ``cusum_sq`` is over the measured variance
+       of a squared residual, ``E[z**4] - 1`` at four times the memory, not
+       a Gaussian's 2: on Student's t with 3 to 5 degrees of freedom it
+       passed 1.96 on 4.7-5.5% of rows, where over 2 it passed on 11-33%. Run
        once (``inf``) ``cusum`` is Brown, Durbin and Evans' CUSUM, ``cusum *
        sqrt(r)`` the path over ``r`` rows, read against ``±0.948 * (sqrt(T)
        + 2 r / sqrt(T))`` over a run of ``T`` (5%); ``cusum_sq`` is not
@@ -644,9 +654,9 @@ The diagnostics add, per slot:
        fit (``ewridge``, ``rls``, ``lasso``, ``kalman``) with an intercept
        absorbs a level at its own memory ``h_fit``, so ``cusum``'s variance
        is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
-       ``cusum_sq``'s scale shares its memory, a half; each is divided by
-       it, and their spreads read 1.01-1.10 on clean streams where they read
-       0.48-0.94. ``quantile`` with an intercept absorbs its coverage the
+       ``cusum_sq``'s scale shares its memory, a half. Each is divided by
+       that share, and their spreads read 1.01-1.10 on clean streams, where
+       undivided they read 0.48-0.94. ``quantile`` with an intercept absorbs its coverage the
        same way, and its indicators' ``cusum`` is divided by the same share:
        over it, 1.03-1.06 at memories of 50 and 200 and 1.10-1.25 at 800.
        The other fits keep the plain sum, whose spread reads below 1 beside
@@ -665,10 +675,11 @@ The diagnostics add, per slot:
        is the Wald distance between two least-squares fits of the target on
        the slot's features, one at the memory and one at four times it,
        over the exact variance of their difference, about ``chi2(k)`` with
-       no break and null run once (over the slow fit's Gram for both, a
+       no break and null run once. Over the slow fit's Gram for both, a
        feature whose spread fell tenfold with nothing broken passed 21.1 on
-       85% of streams; now on none). On 200 streams of 3,000 rows with a break at 1,500:
-       run once, the CUSUM crossed on 3.5% with no break and on every
+       85% of streams; over the exact variance, on none. On 200 streams of
+       3,000 rows with a break at 1,500, run once, the CUSUM crossed on 3.5%
+       with no break and on every
        stream whose intercept moved half a noise sd, 244 rows after it
        (statsmodels' own: 5.0% and 277). It does not see a slope that moves
        on a centred feature, whose residuals keep a zero mean: it crossed on
@@ -780,24 +791,37 @@ takes::
 It raises ``ValueError``, naming the spec, the parameter and the value, for a
 value the model refuses:
 
-- a count below 0, or past what the Rust side holds it in (``2^32 - 1`` for
-  the ``max_rows_between_*`` caps, ``max_iter``, ``update_every_rows`` and
-  ``split_merge_every_rows``; ``2^64 - 1`` for the other counts), or ``NaN``
-  anywhere;
-- a count that sizes memory before the first row past its ceiling: a lag
-  or ``n_perm`` past 2^20, ``kmeans``' ``k`` past 2^16 or its warm-up buffer
+- a count below 0, or below 1 for a count there must be one of (the lags,
+  ``k``, ``shards``, ``gram_threads``, ``max_iter``, ``max_clusters``, the
+  ``*_every_rows`` counts and the ``max_rows_between_*`` caps), or past what
+  the Rust side holds it in (``2^32 - 1`` for the ``max_rows_between_*`` caps,
+  ``max_iter``, ``update_every_rows`` and ``split_merge_every_rows``;
+  ``2^64 - 1`` for the other counts), or ``NaN`` anywhere;
+- a count that sizes memory before the first row past its ceiling: a lag or
+  ``n_perm`` past 2^20, ``horizon_rows`` past 2^19, ``kmeans``' ``k`` past
+  2^16, ``hmm``'s ``k`` past 2^10, a ``kmeans`` or ``bocpd`` warm-up buffer
   past 256 MiB, ``rcov``'s lagged products past 256 MiB;
-- ``inf`` where it means nothing (it is allowed where it does --
-  ``half_life``, ``min_weight``, ``average_eta``, each diagnostic's
-  ``*_half_life`` and the model parameters that say so);
-- neither ``half_life`` nor ``lam``;
-- ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0``;
+- ``inf`` where it means nothing (it is allowed where it does -- ``half_life``,
+  ``min_weight``, ``average_eta``, ``max_error_inflation``, ``window_budget``,
+  each diagnostic's ``*_half_life`` and the model parameters that say so);
+- neither ``half_life`` nor ``lam`` on a model that decays (all but
+  ``seqtest``, ``audit``, ``rcov``, ``corrchange`` and ``bocpd``), or both; a
+  ``lam`` outside ``(0, 1]``, and an empty ``half_life`` grid or one that
+  repeats a value;
+- ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0`` or ``inf``;
+- a ``session_gap`` below 0 or infinite, and ``session`` without
+  ``session_gap`` unless ``group_close = "session"``;
+- ``group_close`` without ``group``, beside ``embargo`` or beside a window
+  target, and ``group_close = "session"`` without ``session`` or beside
+  ``session_gap``;
 - ``emit_drift`` with a ``clock`` and no ``drift_threshold``;
 - a window target beside ``group`` without ``clock``;
 - a column listed twice, or as both target and feature;
+- a ``min_weight`` list whose length is not the number of targets;
+- ``emit_feature_health`` on a model with no features (``holt``);
 - a level outside ``(0, 1)``, or an option not in the list the message
   gives;
-- and each model's own rules.
+- and each model's own rules, which its builder lists.
 
 A parameter whose switch is off is refused rather than ignored:
 
@@ -809,24 +833,32 @@ A parameter whose switch is off is refused rather than ignored:
   ``ljung_box_lags``), without its switch;
 - ``long_half_life`` without ``session_shrink``;
 - ``session_gap`` without ``session``;
-- ``restart_after_step_back`` without ``clock``;
+- ``gap_cap`` or ``restart_after_step_back`` without ``clock``;
+- ``conformal_rate`` without ``conformal``, and ``horizon_rows`` without a
+  diagnostic that reads it;
+- ``window_every``, ``max_rows_between_snapshots``, ``window_budget`` or
+  ``closed = "both"`` without ``window_size``;
 - ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
-  not use it, and its ``power`` beside a schedule other than
-  ``"inv_scaling"``;
+  not use it, its ``strict_binary`` beside a loss other than ``"logistic"``,
+  and its ``power`` beside a schedule other than ``"inv_scaling"``;
+- ``ftrl``'s ``strict_binary`` beside ``loss = "squared"``;
+- ``holt``'s ``trend_half_life`` beside ``trend = False``;
 - ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``;
 - ``hmm``'s ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
   its ``warm_rows``, ``seed_rule`` or ``seed`` beside given ``means`` and
   ``covs``;
-- ``rcov``'s ``jitter`` or ``max_bandwidth`` under a kind other than
-  ``"kernel"``, and its ``theta`` under one other than ``"preavg"``;
+- ``rcov``'s ``bandwidth``, ``max_bandwidth`` or ``jitter`` under a kind other
+  than ``"kernel"``, and its ``theta`` or ``preavg_rows`` under one other than
+  ``"preavg"``;
 - ``kalman``'s ``coef_half_life`` beside ``q``, which it would derive;
 - and ``coef_every`` or ``max_rows_between_coefs`` on a model that reports
   no coefficients.
 
-Names are checked too: a feature set named twice, a column twice in one set,
-an empty set, an empty ``feature_sets`` or ``blocks``, an empty target name,
-an empty ``mahal_quantiles``, and a spec named ``""``, ``"spec"`` or
-``"group"``, which the bank's tables use for their own columns.
+Names and lists are checked too: a feature set named twice, a column twice in
+one set, an empty set, an empty ``feature_sets`` or ``blocks``, an empty target
+name, an empty ``mahal_quantiles`` or ``resid_quantiles``, and a ``ridge``
+value listed twice. So is a spec named ``""``, ``"spec"`` or ``"group"``, names
+the bank's tables use for their own columns.
 
 A spec that came back from a builder is valid. One edited afterwards is
 checked again wherever it is used, and a key no spec has is refused there

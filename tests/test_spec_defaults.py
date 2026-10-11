@@ -154,3 +154,94 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
         derived = resolved(po.spec.bocpd("m", **feats, emission=emission))["derived"]
         assert derived["prior_nu"] == nu, emission
         assert derived["warm_rows"] == 5, emission
+
+
+def _spec_module_doc() -> str:
+    import inspect
+
+    from polars_online import spec as spec_module
+
+    # `cleandoc` first: CPython 3.13+ dedents a docstring at compile time.
+    return inspect.cleandoc(spec_module.__doc__ or "")
+
+
+def _list_table_after(doc: str, marker: str) -> list[list[str]]:
+    """The cells of the first ``list-table`` after `marker` in `doc`, the
+    header row dropped and each cell's wrapped lines joined."""
+    lines = doc[doc.index(marker) :].splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == ".. list-table::")
+    rows: list[list[str]] = []
+    for line in lines[start + 1 :]:
+        s = line.strip()
+        if s.startswith(":") or not s:
+            if rows and not s and rows[-1]:
+                continue
+            continue
+        if s.startswith("* - "):
+            rows.append([s[4:]])
+        elif s.startswith("- ") and rows:
+            rows[-1].append(s[2:])
+        elif rows and not line.startswith((" " * 4, "\t")):
+            break
+        elif rows:
+            rows[-1][-1] += " " + s
+    return [[cell.replace("``", "`") for cell in row] for row in rows[1:]]
+
+
+def test_the_spec_module_min_weight_table_is_what_the_bank_resolves():
+    """Task 239: the `min_weight` default table in :mod:`polars_online.spec`'s
+    own docstring, held to the bank as the README's is above. It left out
+    `audit`, which resolves 0 and refuses a `min_weight`."""
+    rows = _list_table_after(_spec_module_doc(), "The default depends on")
+    assert [row[0] for row in rows] == list(RULES), "the docstring's table changed its rows"
+    named = [model for row in rows for model in re.findall(r"`([a-z_]+)`", row[1])]
+    assert sorted(named) == sorted(MINIMAL), "the table names every model exactly once"
+    for row in rows:
+        for name in re.findall(r"`([a-z_]+)`", row[1]):
+            takes_features = MINIMAL[name].get("features", ["x0"]) is not None
+            k = 2 if takes_features else 0
+            got = resolved(build(name, k, True))["stream"]["min_weight"]
+            assert got and got == [float(RULES[row[0]](k, True))] * len(got), (name, got)
+
+
+def test_the_spec_module_states_each_standardize_default():
+    """Task 239: the module docstring's sentence on ``standardize`` named
+    seven models and gave ``sgd`` the wrong default, and left out ``pa``.
+    Every builder that takes it is named once, under the default the bank
+    resolves."""
+    doc = " ".join(_spec_module_doc().split())
+    found = re.search(
+        r"``standardize``, which (\w+) models take, defaults to ``False`` in (.*?), and to "
+        r"``True`` in (.*?)\. ",
+        doc,
+    )
+    assert found, "no standardize sentence"
+    off = set(re.findall(r"``([a-z_]+)``", found.group(2)))
+    on = set(re.findall(r"``([a-z_]+)``", found.group(3)))
+    takes = {
+        name
+        for name in MINIMAL
+        if "standardize" in getattr(po.spec, name).__wrapped__.__code__.co_varnames
+    }
+    assert off | on == takes and not off & on, (off, on, takes)
+    words = {7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+    assert found.group(1) == words[len(takes)]
+    for name in takes:
+        model = resolved(build(name, 2, True))["model"]
+        assert model["standardize"] is (name in on), name
+
+
+def test_the_spec_module_lists_every_clock_parameter():
+    """Task 239: *Clock units* lists the parameters measured in clock units.
+    Each one a builder's annotation lets take a duration is there, and
+    nothing else, but for ``bocpd``'s ``hazard``, which the next paragraph
+    gives its own two forms, and the diagnostics' memories, which the list
+    names as ``*_half_life``."""
+    doc = _spec_module_doc()
+    para = doc[doc.index("The clock parameters are") :].split("\n\n", 1)[0]
+    named = set(re.findall(r"``([a-z_*]+)``", para)) - set(MINIMAL)
+    assert "*_half_life" in named
+    diagnostics = {k for k in _spec._CLOCK_KEYS if k.endswith("_half_life")} & set(
+        _spec._common.__code__.co_varnames
+    ) - {"half_life"}
+    assert named - {"*_half_life"} == _spec._CLOCK_KEYS - diagnostics - {"hazard"}
