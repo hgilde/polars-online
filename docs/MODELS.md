@@ -22,9 +22,7 @@ running sums in *accumulators* of three kinds:
 ## Linear models
 
 Ten models predict a numeric target. Nine regress it on features, and
-`holt`, a baseline, uses none. Start with `ewridge`, and change to another
-when your data need what it adds. Several of them take the same
-parameters:
+`holt`, a baseline, uses none. Several of them take the same parameters:
 
 | parameters | taken by | explained under |
 |---|---|---|
