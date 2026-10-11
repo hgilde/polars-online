@@ -967,6 +967,12 @@ pub enum ModelKind {
         /// Default: mean + std + corr.
         #[serde(default)]
         stats: Option<Vec<String>>,
+        /// Polars' `bias`, with its default `false`: every second moment is
+        /// multiplied by `W² / (W² − Σw²)`, the correction Polars'
+        /// `ewm_var(bias=False)` applies; `true` reports the weighted means
+        /// as kept ([`online_core::EwCovCfg::bias`]).
+        #[serde(default)]
+        bias: bool,
         /// Prior for the precision matrix, required by "partial_corr" and "mahal".
         #[serde(default)]
         precision_prior: Option<f64>,
@@ -4421,6 +4427,8 @@ impl Spec {
             }
             ModelKind::EwCov {
                 stats,
+                // Either value is a choice.
+                bias: _,
                 precision_prior,
                 mahal_quantiles,
                 pca,

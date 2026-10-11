@@ -653,7 +653,12 @@ pub use window::{
 ///   RESET's, and `Breaks` the lag products of its studentized residuals
 ///   and their ring. Without a horizon none is written. Pre-1.0 no loader
 ///   is written.
-pub const SCHEMA_VERSION: u32 = 60;
+/// - 61 (2026-10-11, task 244): an `ew_cov`'s configuration keeps `bias`
+///   (`EwCovCfg::bias`), and its components' variances are the scaled
+///   co-moments' when `bias` is off, the default. A state from before 61
+///   would read as unbiased numbers it never wrote, so it is refused by its
+///   number; pre-1.0 no loader is written.
+pub const SCHEMA_VERSION: u32 = 61;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -677,7 +682,9 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums
+/// **61 since task 244** (2026-10-11): `ew_cov`'s `bias`; a state from
+/// before 61 is refused by its number, and the fixtures are regenerated at
+/// 61. **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums
 /// under a horizon; a state from before 60 is refused by its number, and
 /// the fixtures are regenerated at 60.
 /// **57 since review round 6** (2026-10-09, B-5 and A-6): the tails'
@@ -779,7 +786,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 60;
+pub const MIN_SCHEMA_VERSION: u32 = 61;
 
 #[cfg(test)]
 mod tests {

@@ -419,6 +419,30 @@ impl EwCov {
         self.q_sum
     }
 
+    /// The factor that makes these moments' covariance unbiased,
+    /// `W² / (W² − Q)` with `Q = Σw²` beside `W = Σw`: Polars' correction
+    /// for `ewm_var(bias=False)`, in its arithmetic (`polars-compute`'s
+    /// `ewm/cov.rs`, `EwmCovState::update_iter`), and the reliability
+    /// weights' `V₁² / (V₁² − V₂)`. It is `n / (n − 1)` at Kish's size
+    /// `n = W² / Q` ([`Self::n_kish`]), Bessel's correction at the number of
+    /// equally weighted rows the moments are worth, so `n` unit rows with
+    /// no decay give `n / (n − 1)`, `ddof = 1`.
+    ///
+    /// NaN where it is not defined: `W² − Q` is `2 Σᵢ<ⱼ wᵢwⱼ`, zero with at
+    /// most one row of weight -- before any, on the first, and where every
+    /// other row weighed 0 -- and a single value has no spread to correct,
+    /// as Polars gives null there. NaN too where `Q` is not known or is 0
+    /// beside a weight (a window whose sum of squares kept no digit,
+    /// [`crate::truncated`]), as [`Self::n_kish`] gives `None`. Read, never
+    /// stored: the moments themselves stay the weighted means.
+    pub fn unbiased_factor(&self) -> f64 {
+        let w2 = self.w_sum * self.w_sum;
+        match self.q_sum {
+            Some(q) if q > 0.0 && w2 - q > 0.0 && w2.is_finite() => w2 / (w2 - q),
+            _ => f64::NAN,
+        }
+    }
+
     #[inline]
     pub fn prior_scale(&self) -> f64 {
         self.prior_scale
@@ -1178,6 +1202,17 @@ pub struct EwCovCfg {
     /// Mahalanobis slots below, which do not need a statistic in this list.
     pub stats: Vec<EwCovStat>,
     pub min_weight: f64,
+    /// Polars' `bias` (its `ewm_var`, `ewm_std`), with its default:
+    /// `false` multiplies every second moment the model reports by
+    /// [`EwCov::unbiased_factor`], `c = W² / (W² − Σw²)`, the unbiased form
+    /// under unequal weights; `true` reports the weighted means as kept.
+    /// The co-moments and the ridge on them are scaled together, `c·(C +
+    /// s·prior·I)`, so `var`, `std`, `cov` and the components' variances
+    /// move with `c`, `mahal` with `1/√c`, and the correlations --
+    /// `corr`, `partial_corr`, `lag_corr`, the components' shares --
+    /// not at all. The state is the same either way.
+    #[serde(default)]
+    pub bias: bool,
     /// Prior for the precision matrix `(C + s·prior·I)⁻¹`. Required by
     /// [`EwCovStat::PartialCorr`] and [`EwCovStat::Mahal`], its consumers.
     #[serde(default)]
@@ -1472,6 +1507,17 @@ impl Pca {
     pub fn r(&self) -> usize {
         self.eig.len()
     }
+
+    /// The components of `scale` times the matrix: each variance and the
+    /// trace multiplied by it, and the loadings, unit vectors, as they are.
+    #[must_use]
+    pub fn scaled(mut self, scale: f64) -> Self {
+        for e in &mut self.eig {
+            *e *= scale;
+        }
+        self.trace *= scale;
+        self
+    }
 }
 
 /// [`EwCov`] exposed as a model in its own right (docs/PLAN.md §4.7), so EW
@@ -1633,10 +1679,46 @@ impl EwCovModel {
     /// the whole history's mean in the whole history's metric, emitted beside
     /// a windowed mean and variance (review 2026-09-12, C14).
     pub fn mahal(&self, x: &[f64]) -> f64 {
-        Self::mahal_of(&self.view(), x)
+        let view = self.view();
+        Self::mahal_of(&view, x, self.second_moment_scale(&view))
     }
 
-    fn mahal_of(cov: &EwCov, x: &[f64]) -> f64 {
+    /// What the second moments read from `cov` are multiplied by
+    /// ([`EwCovCfg::bias`]): 1 under `bias`, and otherwise
+    /// [`EwCov::unbiased_factor`], NaN while the read holds fewer than two
+    /// rows of weight. One weighted row leaves the co-moments exactly zero
+    /// and its spread undefined, and `W² − Q` alone cannot always say so:
+    /// once a row of weight 0 has aged that one row, `W²` and `Q` are two
+    /// roundings of the same number, and their difference can land a hair
+    /// above zero, where the factor would turn a variance of 0/0 into 0.
+    fn second_moment_scale(&self, cov: &EwCov) -> f64 {
+        if self.cfg.bias {
+            1.0
+        } else if self.rows_read() < 2 {
+            f64::NAN
+        } else {
+            cov.unbiased_factor()
+        }
+    }
+
+    /// The rows of positive weight the statistics are read from: every one
+    /// the accumulator has learned, or under a window those since its
+    /// boundary, counted as [`Self::view`] draws it.
+    fn rows_read(&self) -> u64 {
+        let live = self.cov.rows_learned();
+        let Some(win) = self.win.as_ref() else {
+            return live;
+        };
+        match win.snaps.boundary() {
+            Some((_, old)) if old.w != 0.0 => old.rows.map_or(live, |r| live.saturating_sub(r)),
+            _ => live,
+        }
+    }
+
+    /// The Mahalanobis distance of `x` from `cov`'s moments in the metric of
+    /// `scale·(C + s·prior·I)`: the co-moments and their ridge scaled
+    /// together, so the squared distance is divided by `scale`.
+    fn mahal_of(cov: &EwCov, x: &[f64], scale: f64) -> f64 {
         if !cov.has_precision_prior() {
             return f64::NAN;
         }
@@ -1653,7 +1735,7 @@ impl EwCovModel {
         }
         match crate::solve::solve_spd(&m, &delta, k, 1) {
             Some((sol, _)) => {
-                let d2: f64 = delta.iter().zip(&sol).map(|(d, s)| d * s).sum();
+                let d2 = delta.iter().zip(&sol).map(|(d, s)| d * s).sum::<f64>() / scale;
                 if d2.is_finite() {
                     d2.max(0.0).sqrt()
                 } else {
@@ -1672,14 +1754,19 @@ impl EwCovModel {
         // and the loadings were the whole history's while `pc<j>_score` was
         // centred on the window's mean -- a loading from one history applied
         // about the centre of another (review 2026-09-12, C14).
+        // The variances along the components are the scaled co-moments'
+        // (`EwCovCfg::bias`), as of this refresh; a common factor moves no
+        // loading.
         let fresh = {
             let view = self.view();
+            let scale = self.second_moment_scale(&view);
             Pca::of(
                 view.comoments(),
                 self.cfg.n_features,
                 self.cfg.pca,
                 self.pca.as_ref(),
             )
+            .map(|p| p.scaled(scale))
         };
         if let Some(p) = fresh {
             self.pca = Some(p);
@@ -1808,6 +1895,10 @@ impl EwCovModel {
     fn read(&self, cov: &EwCov, x: &[f64]) -> Vec<f64> {
         let k = self.cfg.n_features;
         let mut out = Vec::with_capacity(self.cfg.n_outputs());
+        // `bias`'s factor on every second moment, 1 under `bias`, where the
+        // multiplication is exact. The correlations read the co-moments as
+        // kept: the factor cancels from them.
+        let scale = self.second_moment_scale(cov);
         // One O(k³) solve per row, only when partial correlations are wanted.
         let precision = self
             .cfg
@@ -1818,12 +1909,12 @@ impl EwCovModel {
         for stat in &self.cfg.stats {
             match stat {
                 EwCovStat::Mean => (0..k).for_each(|i| out.push(cov.mean(i))),
-                EwCovStat::Var => (0..k).for_each(|i| out.push(cov.var(i))),
-                EwCovStat::Std => (0..k).for_each(|i| out.push(cov.var(i).sqrt())),
+                EwCovStat::Var => (0..k).for_each(|i| out.push(scale * cov.var(i))),
+                EwCovStat::Std => (0..k).for_each(|i| out.push((scale * cov.var(i)).sqrt())),
                 EwCovStat::Cov => {
                     for i in 0..k {
                         for j in (i + 1)..k {
-                            out.push(cov.cov(i, j));
+                            out.push(scale * cov.cov(i, j));
                         }
                     }
                 }
@@ -1854,7 +1945,7 @@ impl EwCovModel {
                         }
                     }
                 }
-                EwCovStat::Mahal => out.push(Self::mahal_of(cov, x)),
+                EwCovStat::Mahal => out.push(Self::mahal_of(cov, x, scale)),
                 EwCovStat::LagCorr => {
                     // `C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`: the lagged
                     // covariance over the contemporaneous standard
@@ -2173,6 +2264,9 @@ impl crate::OnlineModel for EwCovModel {
 }
 
 #[cfg(test)]
+mod bias_tests;
+
+#[cfg(test)]
 mod damaged_state_tests;
 
 #[cfg(test)]
@@ -2245,6 +2339,7 @@ mod tests {
 
     fn model_cfg(k: usize, stats: Vec<EwCovStat>) -> EwCovCfg {
         EwCovCfg {
+            bias: true,
             n_features: k,
             decay: crate::Decay::Halflife(f64::INFINITY),
             stats,
@@ -4506,6 +4601,7 @@ mod tests {
     #[test]
     fn ew_covs_window_reads_a_held_feature_as_no_spread() {
         let mut m = EwCovModel::new(EwCovCfg {
+            bias: true,
             n_features: 2,
             decay: crate::Decay::Halflife(10.0),
             stats: vec![EwCovStat::Var, EwCovStat::Corr],
@@ -4555,6 +4651,7 @@ mod tests {
     #[test]
     fn a_window_the_live_state_cannot_resolve_reads_as_no_spread() {
         let mut m = EwCovModel::new(EwCovCfg {
+            bias: true,
             n_features: 2,
             decay: crate::Decay::Halflife(20.0),
             stats: vec![EwCovStat::Var, EwCovStat::Corr],

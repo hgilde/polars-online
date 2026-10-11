@@ -195,8 +195,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// audit keeps each column's smallest change and the changes at it; a file
 /// from before it is refit. **60 since task 232** (the same day): under a
 /// horizon the diagnostics keep Newey and West's sums; a file from before
-/// it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 60;
+/// it is refit. **61 since task 244** (2026-10-11): an `ew_cov` keeps
+/// `bias`, its spec writes it, and its components' variances follow it; a
+/// file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 61;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

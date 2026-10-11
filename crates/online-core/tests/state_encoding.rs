@@ -136,6 +136,7 @@ fn ew_cov_round_trips_with_every_optional_part_present_or_absent() {
                 continue;
             }
             let cfg = online_core::EwCovCfg {
+                bias: true,
                 n_features: 2,
                 decay: Decay::Halflife(10.0),
                 stats: vec![online_core::EwCovStat::Mean, online_core::EwCovStat::Corr],

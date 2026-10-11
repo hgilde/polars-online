@@ -843,6 +843,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         }
         ModelKind::EwCov {
             stats,
+            bias,
             precision_prior,
             mahal_quantiles,
             pca,
@@ -880,6 +881,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // Floored at 2 (`gate_floors`): a covariance below two rows
                 // has nothing to report (review 2026-09-18, minor).
                 min_weight: gate_floors(spec)[0],
+                bias: *bias,
                 precision_prior: *precision_prior,
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
                 pca: pca.unwrap_or(0),

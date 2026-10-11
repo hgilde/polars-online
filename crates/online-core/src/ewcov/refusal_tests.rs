@@ -21,6 +21,7 @@ fn lcg(state: &mut u64) -> f64 {
 #[test]
 fn a_refused_row_takes_no_slot_in_the_lag_ring() {
     let cfg = EwCovCfg {
+        bias: false,
         n_features: 2,
         decay: crate::Decay::Halflife(20.0),
         stats: vec![EwCovStat::Mean, EwCovStat::LagCorr],

@@ -959,18 +959,19 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     with a memory of their own (54 refused); 56 since its parts (d)-(h)
     (55 refused); 57 since review round 6, for the tails' central sums
     and a held row's scored inflation (56 refused); 59 since task 233, for
-    an audit's smallest change (58 refused); and 60 since task 232, for the
-    diagnostics' Newey-West sums under a horizon (59 refused)."""
+    an audit's smallest change (58 refused); 60 since task 232, for the
+    diagnostics' Newey-West sums under a horizon (59 refused); and 61 since
+    task 244, for ``ew_cov``'s ``bias`` (60 refused)."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 60, state[i]
-    for before in range(25, 60):
+    assert state[i] == 61, state[i]
+    for before in range(25, 61):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
-            ValueError, match=rf"schema version {before} not supported \(this build loads 60"
+            ValueError, match=rf"schema version {before} not supported \(this build loads 61"
         ):
             po.ModelBank.load_bytes(old)
 
