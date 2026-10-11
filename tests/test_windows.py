@@ -15,6 +15,7 @@ interleaved trades and quotes, three VWAPs as ratios of two sums.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from datetime import date, time, timedelta
 from pathlib import Path
@@ -646,6 +647,53 @@ def test_what_is_not_element_wise_is_refused_by_name() -> None:
     assert (
         "y"
         in po.stream.with_windows(df, po.ewm_mean("x", half_life=2.0).alias("y"), **CLOCK).columns
+    )
+
+
+def _heads(tree: Any) -> set[str]:
+    if not isinstance(tree, list) or not tree or not isinstance(tree[0], str):
+        return set()
+    return {tree[0]}.union(*(_heads(a) for a in tree[1:]))
+
+
+def test_the_refusal_lists_exactly_what_a_formula_reads() -> None:
+    """Task 238 (follow-up 2): the windows guide's table allowed negation,
+    ``&``, ``|`` and ``is_not_null``, and the refusal left them out (the Rust
+    reader's left out ``pow`` and ``is_null`` too). One list now writes both
+    messages. Its nodes are the ones an expression using every construct
+    reads into, its words are the guide's table cell, and the Rust reader's
+    list is the same."""
+    from polars_online._formula import ACCEPTED, OPERATORS, accepted_text
+
+    x, w = pl.col("x"), po.ewm_mean("x", half_life=2.0)
+    every = (
+        pl.when((w > 0) & (w >= 1) | (w < 2) & (w <= 3) | (w == 4) | (w != 5) | w.is_null())
+        .then(-(((w + 1) - (x * 2) / pl.lit(3.0)) ** 2))
+        .otherwise(w.log(2).exp().abs().sqrt().clip(0.0, 1.0).fill_null(x.is_not_null()))
+        .cast(pl.Float32)
+        .alias("y")
+    )
+    read = _heads(to_tree(every)) - set(OPERATORS)
+    listed = {n for _, nodes in ACCEPTED for n in nodes}
+    assert read == listed, read ^ listed
+
+    with pytest.raises(FormulaError) as refused:
+        po.stream.with_windows(ticks(50, 1), y=w.shift(1), **CLOCK)
+    assert f"element-wise: {accepted_text()} over the operators;" in str(refused.value)
+
+    guide = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text()
+    cell = re.search(r"^\| allowed, around at least one operator \| (.*) \|$", guide, re.M)
+    assert cell, "no allowed row in the windows guide"
+    assert cell.group(1).replace("`", "").replace("\\|", "|") == accepted_text()
+
+    rust = (
+        Path(__file__).resolve().parent.parent / "crates" / "online-polars" / "src" / "formula.rs"
+    ).read_text()
+    block = re.search(r"^const ACCEPTED: .*?^\];", rust, re.S | re.M)
+    assert block, "no ACCEPTED in formula.rs"
+    pairs = re.findall(r'\("([^"]+)", &\[([^\]]*)\]\)', block.group(0))
+    assert [(word, tuple(re.findall(r'"([^"]+)"', nodes))) for word, nodes in pairs] == list(
+        ACCEPTED
     )
 
 

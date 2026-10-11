@@ -161,7 +161,7 @@ for formula in [lagged, spread]:
 ```
 
 ```text
-a window formula is element-wise: columns, literals, arithmetic, comparisons, log/exp/abs/sqrt/pow/clip/fill_null/is_null, when/then/otherwise, cast and alias over the operators; the function 'Shift' is not read
+a window formula is element-wise: columns, literals, arithmetic, negation, comparisons, & and |, log, exp, abs, sqrt, pow, clip, fill_null, is_null, is_not_null, when/then/otherwise, cast and alias over the operators; the function 'Shift' is not read
 with_windows: 'out' holds no operator; a formula of the row alone is Polars' with_columns
 ```
 
