@@ -14060,3 +14060,61 @@ and `vif`'s docstring).
       wider than the brief's no-decay rule, which missed a short stream under
       a long half-life); float32 refused out of range; the audit's clock
       uncapped, in Durations; `vif`'s docstring.
+
+## 21. Review round 7 (2026-10-11): everything since round 6, code and concepts
+
+The user, 2026-10-11: "Review the recent changes including Int64 and the
+bocpd fold. Are these the right changes, is there something smarter to be
+done? Review the code and test case coverage." then "review other recent
+changes since the last review". The coordinator reviewed the fold, Int64
+and the formula list itself (the fold's defect at `prune_below = 0`, task
+243b, was found there and built on the user's "We will make this change";
+Int64's declared-vs-realized gap closed by a registry-wide test, `8aa55f6`);
+then five read-only reviewers over `926ee17..8aa55f6` (213 commits: A the
+diagnostics after round 6, B Grams/LARS/the sharded marginal, C `po.gbdt`,
+D infrastructure, E concepts with a 1.0 lens), every finding shown by a
+probe. Findings and probes: the session scratchpad, `review7/FINDINGS-*.md`
+and `review7/<slice>/`.
+
+**Found:** no high. A: A-1 (the CUSUM's null share beside a `kalman` with a
+`coef_half_life` list read the shortest memory; a level is absorbed at the
+intercept's: spread 1.40), A-2 (a quantile fit's `break_wald` under a
+horizon scaled by the indicators' long-run variance, not the residuals':
+10.8% past 7.815 on quiet streams against 5.9%), A-3 (a no-decay window's
+share read as an exponential at its Kish half-life: spread 1.19). B: none
+(within fits to statsmodels at 1e-14 under weights, decay, singleton and
+zero-weight parts; LARS ties at the KKT conditions to 2e-15 on 800 planted
+knots where scikit-learn misses by 0.30; the sharded marginal to the bit at
+every shard count and chunking). C: C-1 (a `ref` on a `pl.Enum` of other
+categories accepted, codes meaning other levels), C-2 (the null-handling
+tests put nulls on a feature the target ignores: unexercised), C-3 (the
+XGBoost floor is 2.1, `XGProxyDMatrixSetDataColumnar` absent from 2.0.3),
+C-4 (bin cuts unweighted under `weight=` where XGBoost's sketch is
+weighted: 2 of 15 cuts above 1.0 against 14). D: D-1 (the message scanner
+cut a file at its *first* `#[cfg(test)] mod`: `spec.rs`'s 621 shipped
+refusals never read, a planted citation passed), D-2 (TESTING's 226 was
+225), D-3 (the shard size 30 in the workflow, 40 in every test). E: E-1
+(two settled clocks -- the notices and `settled_frac` on the model's own
+decay, the diagnostics on the longest memory -- stated as one in
+DIAGNOSTICS.md:226 and a `stream.rs` comment), E-2 (two guides list three
+`withheld_reason` values), E-3 (fourteen `po.gbdt` refusals untested).
+
+**Fixed, one right answer:** D-1..D-3 (`9b20cc5`); A-1, A-2, E-2
+(`review7-fix1`); C-1 (a `ref` built here records each feature's Enum
+categories and refuses a mismatch by name), C-2, C-3, E-3 and `in_memory=1`
+(`review7-fix2`; stopped once by a permission prompt, resumed on the user's
+"Resume").
+
+**Decided 2026-10-11** (the user: "Your reco all", with "we are not
+worried about doing more work now and want the best outcomes"; the fixes
+delegated at the user's word to Opus at high effort): A-3 (a) the window's
+own form of the null, derived in closed form and held to spread 1.0 (what a
+window beside a decay reads is measured and stated); E-1 (a) keep both
+clocks, state them, test holt's two rows (`review7-fix3`); C-4 (b) weights
+carried into the sample and weighted quantiles, so the cuts are XGBoost's,
+plus the docstring sentence for LightGBM's unweighted binning
+(`review7-fix5`, after fix2); B-D1 the behaviour stays (the pairwise
+convention), one sentence in GRAM.md; the README's *Versions* rewritten for
+1.x beside the user's 1.0 note (`review7-fix4`). Not changed: the Int64
+choice (Polars' data integer; its index type UInt32 is for positions), the
+pairwise convention, the two settled rules.
