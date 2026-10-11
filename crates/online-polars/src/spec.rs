@@ -2557,8 +2557,16 @@ pub const DEPRECATED: &[(&str, &str)] = &[];
 
 /// `msg`, a deserialization error, with the rename named when the field it
 /// refuses as unknown is an old name, or the model `type` it refuses as an
-/// unknown variant is an old tag.
+/// unknown variant is an old tag, and the table's key named when the field
+/// is a builder keyword a table spells otherwise ([`BUILDER_KEYWORDS`]).
 pub fn name_renamed(msg: &str) -> String {
+    for (keyword, builder, key) in BUILDER_KEYWORDS {
+        if msg.contains(&format!("unknown field `{keyword}`")) {
+            return format!(
+                "{msg}; `{keyword}` is {builder}'s builder keyword; a spec table says `{key}`"
+            );
+        }
+    }
     // No citation: a wheel's user has no docs/PLAN.md (review 2026-10-06,
     // PC11).
     for (old, new) in RENAMED {

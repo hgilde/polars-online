@@ -325,9 +325,15 @@ string starts an escape sequence.
 
 ### Specs in TOML
 
-A TOML spec takes the names a Python builder takes, and a key under an
-old name is refused, naming the new one: `halflife` is `half_life`, for
-one. A spec for a model that learns from no target, such as `ew_cov`,
+A TOML spec takes the names a Python builder takes, but for the columns
+of two models: a table names its columns `targets` and `features` for every
+model, where `ew_class`'s builder calls its target `label` and `audit`'s
+calls its columns `columns`. A table that says `label` or `columns` is
+refused, naming the key to use. A key under an old name is refused, naming
+the new one: `halflife` is `half_life`, for one. A key renamed when the
+parameters took the names they keep at 1.0 is still read, with a warning on
+stderr naming the new one, until the next major version: `kmeans`' `k` is
+`n_clusters`, for one. A spec for a model that learns from no target, such as `ew_cov`,
 `kmeans` or `micro`, may leave `targets` out. It is filled the way the
 Python builders fill it: with `features[0]`, or, for a `bocpd` spec with a
 `hazard_col` and an `hmm` spec with an `exog_tvtp`, with that column. The

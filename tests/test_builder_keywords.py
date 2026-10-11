@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 
 import polars as pl
 import pytest
@@ -230,3 +231,45 @@ def test_the_new_words_are_scikit_learns():
     with pytest.raises(ValueError, match="robust_beta tempers the per-feature predictive"):
         _build("bocpd", {"covariance_type": "full", "robust_beta": 0.1})
 
+
+# --- C-7: a table says targets and features ----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("spec", "key", "says"),
+    [
+        (
+            {
+                "name": "m",
+                "model": {"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0},
+                "label": "y",
+                "features": ["x0"],
+                "half_life": 10.0,
+            },
+            "label",
+            'is ew_class\'s builder keyword; a spec table says `targets = ["<the label column>"]`',
+        ),
+        (
+            {"name": "m", "model": {"type": "audit"}, "columns": ["x0", "x1"]},
+            "columns",
+            "is audit's builder keyword; a spec table says `features = [...]`",
+        ),
+    ],
+    ids=["ew_class.label", "audit.columns"],
+)
+def test_a_table_with_a_builder_keyword_is_told_the_tables_key(spec, key, says):
+    """``ew_class(label=)`` and ``audit(columns=)`` name their columns for
+    what they are to the model; a spec dict or a TOML table names them
+    ``targets`` and ``features`` as for every model, and one that says the
+    builder's word is told which key to use, where it read only "unknown
+    field"."""
+    with pytest.raises(ValueError, match=re.escape(f"`{key}` {says}")):
+        po.ModelBank([spec])
+    built = (
+        po.spec.ew_class(
+            "m", features=["x0"], label="y", classes=["a", "b"], precision_prior=1.0, half_life=10.0
+        )
+        if key == "label"
+        else po.spec.audit("m", columns=["x0", "x1"])
+    )
+    assert key not in built and ("targets" if key == "label" else "features") in built

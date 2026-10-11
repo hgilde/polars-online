@@ -282,6 +282,16 @@ fn forward_into(
     Ok(())
 }
 
+/// The builder keywords a spec table spells another way, `(keyword,
+/// builder, the table's key)`: a builder names its columns for what they
+/// are to the model, and every table names them `targets` and `features`
+/// (task 244, C-7). A table that says the builder's word is refused naming
+/// the table's ([`super::name_renamed`]).
+pub const BUILDER_KEYWORDS: &[(&str, &str, &str)] = &[
+    ("label", "ew_class", "targets = [\"<the label column>\"]"),
+    ("columns", "audit", "features = [...]"),
+];
+
 #[cfg(test)]
 mod tests {
     /// The forwarding table is empty before 1.0: a rename made before it is
@@ -357,6 +367,39 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(plain, before);
+    }
+
+    /// A spec table that says a builder keyword is told the table's key
+    /// (task 244, C-7): `ew_class`'s `label` is `targets`, `audit`'s
+    /// `columns` is `features`, from JSON and from TOML.
+    #[test]
+    fn a_builder_keyword_in_a_table_is_told_the_tables_key() {
+        let json = serde_json::from_str::<crate::spec::Spec>(
+            r#"{"name": "m", "model": {"type": "ew_class", "classes": ["a", "b"],
+                "precision_prior": 1.0}, "label": "y", "features": ["x"], "half_life": 10}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        let json = crate::spec::name_renamed(&json);
+        assert!(
+            json.contains(
+                "`label` is ew_class's builder keyword; a spec table says \
+                 `targets = [\"<the label column>\"]`"
+            ),
+            "{json}"
+        );
+        let toml = toml::from_str::<crate::spec::Spec>(
+            "name = \"a\"\ncolumns = [\"x\", \"y\"]\n[model]\ntype = \"audit\"\n",
+        )
+        .unwrap_err()
+        .to_string();
+        let toml = crate::spec::name_renamed(&toml);
+        assert!(
+            toml.contains(
+                "`columns` is audit's builder keyword; a spec table says `features = [...]`"
+            ),
+            "{toml}"
+        );
     }
 
     /// The renames made for 1.0, one model's at a time (task 244): a key and
