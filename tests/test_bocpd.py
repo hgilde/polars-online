@@ -328,6 +328,28 @@ def test_max_run_caps_the_run_length_under_pruning(prune_below):
         assert out["run_mean"].max() <= 19.0
 
 
+def test_the_cap_keeps_the_dominant_runs_memory_under_heavy_pruning():
+    """The runs that reach ``max_run - 1`` rows fold into the oldest, scaled
+    back to that many rows, so heavy pruning does not reset the run that
+    dominates a quiet stream. Folding into the youngest run at the cap, which
+    pruning can leave a few rows long, did: on these 600 rows at
+    ``max_run = 20`` and ``prune_below = 1e-2``, ``p_change`` summed to 34.8,
+    28 rows read it at 0.5 or more, and ``run_mode`` fell from the cap at
+    once. Scaled in place, it sums to 7.09 beside the 7.11 of the whole
+    posterior (``max_run = 10_000``, ``prune_below = 0``), one row reads 0.5
+    or more in each, and ``run_mode`` sits at the cap on 581 rows."""
+    kw = dict(prior_mean=[0.0], prior_scale=[1.0], min_weight=0.0, hazard=200.0)
+    x = normals(600, 0)
+    capped = run(x, max_run=20, prune_below=1e-2, **kw)
+    whole = run(x, max_run=10_000, prune_below=0.0, **kw)
+    p, p_whole = capped["p_change"].drop_nulls(), whole["p_change"].drop_nulls()
+    assert p.sum() < 1.25 * p_whole.sum(), (p.sum(), p_whole.sum())
+    assert (p >= 0.5).sum() <= 2
+    mode = capped["run_mode"].drop_nulls().to_numpy()
+    assert (mode == 19).sum() > 500
+    assert np.diff(mode).min() >= -5, np.diff(mode).min()
+
+
 def test_the_prior_scale_sets_what_counts_as_surprising():
     """The one parameter a caller must set from their data. `prior_scale` is
     the prior guess at the variance, and the failure when it is too large is

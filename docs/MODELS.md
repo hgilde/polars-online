@@ -1981,7 +1981,7 @@ Two settings bound the runs kept, and a third sets the hazard row by row:
 | setting | what it does |
 |---|---|
 | `prune_below` | drops the runs holding less than this share of the mass |
-| `max_run` | 10,000 by default: folds every longer run into the last kept one. In a stream that seldom breaks, this is what bounds the runs kept |
+| `max_run` | 10,000 by default: folds the runs that reach `max_run - 1` rows into the oldest, whose weight and scatter are scaled back to `max_run - 1` rows. In a stream that seldom breaks, this is what bounds the runs kept |
 | `hazard_col` | reads a per-row hazard from a column instead: its value at a row sets the chance of a break after that row. A null falls back to `hazard`, a value of 1 or less is an error naming the row, and a duration `hazard` beside it is refused |
 
 ### `hmm` — which regime are we in

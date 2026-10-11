@@ -471,15 +471,6 @@ them all"""
 
 [[equivalent]]
 file = "crates/online-core/src/bocpd.rs"
-function = "Bocpd::prune"
-mutation = "replace < with <="
-line_has = "if let (Some(last), true) = (kept.checked_sub(1), kept < self.runs.len()) {"
-why = """with every run inside the cap the fold sums one entry, the last: \
-`log_sum_exp([l]) = l + ln 1 = l`, to the bit, and the truncation drops \
-nothing"""
-
-[[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
 function = "<impl crate::OnlineModel for Bocpd>::step"
 mutation = "replace > with >="
 line_has = "let (rel, w_mean, w_rows) = if weight > 0.0 {"

@@ -534,7 +534,15 @@ def switched_signature() -> dict[str, float | str | None]:
 #: Task 223 (b) (2026-10-09) added the 75 lines of ``audit``, a new spec in
 #: the same bank; nothing else moved. Its statistics are held to their
 #: definitions in ``audit/tests.rs`` and to scipy and statsmodels in
-#: ``tests/test_audit.py``.
+#: ``tests/test_audit.py``. Task 243 (2026-10-11) moved 5, ``bocpd``'s at
+#: row 119: the runs that reach ``max_run - 1 = 49`` rows fold into the
+#: oldest of them, scaled back to 49 rows' weight, where they folded into
+#: the youngest. Rows 25 and 60 come before either group has 49 rows (31 at
+#: most), so no run can reach the cap and they kept their bits; by row 119
+#: each group has 60. ``bocpd.rs``'s ``max_run_folds_the_tail`` holds the
+#: scaled run to a replica of the step and the scale, and
+#: ``the_fold_at_max_run_keeps_every_runs_mass`` the fold's mass and its
+#: statistics to the bit; nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -964,22 +972,22 @@ GOLDEN: dict[str, float | str | None] = {
     "deco.withheld_reason@119": None,
     "bocpd.p_change@25": 0.02628246584085018,
     "bocpd.p_change@60": 0.027730092663944658,
-    "bocpd.p_change@119": 0.06922058473266716,
+    "bocpd.p_change@119": 0.06807509479647987,
     "bocpd.run_mode@25": 11,
     "bocpd.run_mode@60": 29,
     "bocpd.run_mode@119": 49,
     "bocpd.run_mean@25": 10.530689528178458,
     "bocpd.run_mean@60": 23.803185886723877,
-    "bocpd.run_mean@119": 45.47861212922035,
+    "bocpd.run_mean@119": 45.543971636189475,
     "bocpd.pred_x0@25": 0.08622170400348289,
     "bocpd.pred_x0@60": 0.5193042747383524,
-    "bocpd.pred_x0@119": -0.0756610549307658,
+    "bocpd.pred_x0@119": -0.03850848988674341,
     "bocpd.pred_x1@25": 1.2136644279052489,
     "bocpd.pred_x1@60": 1.712608799264034,
-    "bocpd.pred_x1@119": 2.3863758622295497,
+    "bocpd.pred_x1@119": 2.09340948522182,
     "bocpd.loglik@25": -5.554086833699265,
     "bocpd.loglik@60": -7.0867959219070595,
-    "bocpd.loglik@119": -3.259762464576387,
+    "bocpd.loglik@119": -3.2335170491144485,
     "bocpd.weight_sum@25": 11.0,
     "bocpd.weight_sum@60": 28.5,
     "bocpd.weight_sum@119": 57.0,

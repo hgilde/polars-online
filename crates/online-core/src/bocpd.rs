@@ -35,8 +35,10 @@
 //!
 //! The run vector would grow by one every row, so runs whose normalised
 //! mass falls below `prune_below` are dropped and the rest renormalised, and
-//! `max_run` caps a run's length, folding every run that reaches it into the
-//! oldest run shorter than that. Both are approximations
+//! `max_run` caps a run's length. The runs that reach `max_run − 1` rows are
+//! folded into the oldest of them, which keeps its place and its statistics,
+//! scaled back to `max_run − 1` rows' weight as a decay would scale them.
+//! Both are approximations
 //! with a knob, and a test measures what the knob costs. In a stationary
 //! stream the pruning bounds little: one regime makes every "it began `j`
 //! rows ago" hypothesis about as likely as the next, and the posterior
@@ -287,12 +289,15 @@ pub struct BocpdCfg {
     pub robust_beta: f64,
     /// Drop runs below this normalised mass.
     pub prune_below: f64,
-    /// Cap a run's length here: a run that reaches `max_run` rows is
-    /// folded into the oldest run shorter than that, which then holds their
-    /// summed mass and its own statistics -- the youngest of the folded
-    /// group, since the vector runs newest-first. So `max_run` bounds the
-    /// memory of a run, and with it the vector, at most `max_run` lengths
-    /// (`0 ..= max_run − 1`), and `run_mode` saturates one below it.
+    /// Cap a run's length here. The runs that reach `max_run − 1` rows are
+    /// folded into the oldest of them, which holds their summed mass and
+    /// keeps its own statistics, scaled back to `max_run − 1` rows: its
+    /// weight and scatter times `(max_run − 1) / len`, its mean unchanged.
+    /// So `max_run` bounds the memory of a run, and with it the vector, at
+    /// most `max_run` lengths (`0 ..= max_run − 1`), and `run_mode`
+    /// saturates one below it. The run that dominates a quiet stream keeps
+    /// its memory at the cap, however far pruning has thinned the runs
+    /// younger than it.
     pub max_run: usize,
     pub min_weight: f64,
     /// Learned rows buffered to set the prior from, where `prior_mean` or
@@ -683,6 +688,20 @@ impl Run {
             crate::comp::add(m, lo, b * di);
         }
         self.n = n_new;
+    }
+
+    /// Scale the run back to `len` rows, as a decay scales a run's
+    /// statistics: the weight `n` and the scatter by `len / self.len`, the
+    /// mean left where it is. The run's predictive keeps its centre and its
+    /// spread and loses confidence in both, as a run of `len` rows like
+    /// these would have.
+    fn shrink_to(&mut self, len: f64) {
+        let ratio = len / self.len;
+        self.n *= ratio;
+        for s in self.m2.iter_mut() {
+            *s *= ratio;
+        }
+        self.len = len;
     }
 }
 
@@ -1210,7 +1229,7 @@ impl Bocpd {
         (out, Some(update))
     }
 
-    /// Drop the runs below `prune_below` and fold the runs `max_run` long.
+    /// Drop the runs below `prune_below` and fold the runs at the length cap.
     ///
     /// The joint is **not** renormalised, deliberately. Subtracting `z` here
     /// would keep it near zero, and every output is a difference against `z`
@@ -1249,26 +1268,31 @@ impl Bocpd {
                 });
             }
         }
-        // Fold every run that has reached `max_run` rows into the oldest run
-        // shorter than that: it takes their summed mass and keeps its own
-        // statistics. The vector runs newest-first, its lengths rising, so
-        // that is the *youngest* of the folded group, and no run is ever
-        // longer than `max_run - 1` rows -- a bounded memory, and so a
-        // bounded vector, of at most `max_run` lengths. The cap is on the
-        // length, not the position: once pruning has dropped runs from the
-        // middle, the slot at `max_run - 1` holds a run far longer than
-        // that, and a cap on the position let a stationary stream's oldest
-        // run grow without bound (a `run_mode` of 599 at `max_run = 20`).
-        // Without pruning a slot's position is its length, and the two caps
-        // are one. `max_run_folds_the_tail` and
+        // Fold every run that has reached `max_run - 1` rows into the oldest
+        // of them, scaled back to `max_run - 1` rows: it takes their summed
+        // mass, keeps its own statistics and keeps its place, so no run is
+        // ever longer than `max_run - 1` rows -- a bounded memory, and so a
+        // bounded vector, of at most `max_run` lengths. The vector runs
+        // newest-first, its lengths rising, so the runs at the cap are its
+        // tail, and the oldest is the last. Keeping the oldest's statistics
+        // is what keeps the dominant run's memory: once pruning has dropped
+        // runs from the middle, the youngest run at or past the cap can be
+        // far younger than the run carrying the mass, and folding into it
+        // reset that run's memory and moved `run_mode` down by up to
+        // `max_run - 1` on quiet data, each reset read as a change. The cap
+        // is on the length, not the position, since a slot's position stops
+        // being its length after a prune. `max_run_folds_the_tail` and
         // `max_run_caps_the_length_after_a_prune` pin both halves.
         let cap = (self.cfg.max_run - 1) as f64;
-        let kept = self.runs.iter().take_while(|r| r.len <= cap).count();
-        if let (Some(last), true) = (kept.checked_sub(1), kept < self.runs.len()) {
-            let tail = log_sum_exp(&self.logjoint[last..]);
-            self.logjoint.truncate(kept);
-            self.runs.truncate(kept);
-            self.logjoint[last] = tail;
+        let kept = self.runs.iter().take_while(|r| r.len < cap).count();
+        if kept < self.runs.len() {
+            let tail = log_sum_exp(&self.logjoint[kept..]);
+            let oldest = self.runs.len() - 1;
+            self.runs.swap(kept, oldest);
+            self.runs.truncate(kept + 1);
+            self.runs[kept].shrink_to(cap);
+            self.logjoint.truncate(kept + 1);
+            self.logjoint[kept] = tail;
         }
     }
 }
@@ -1787,9 +1811,73 @@ mod tests {
         assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(p[19] > 0.5, "the tail holds the mass of every longer run");
         // And the memory is bounded with the vector: after 200 rows no run
-        // has seen more than `max_run - 1` of them.
+        // is longer than `max_run - 1` of them.
         let longest = m.runs.iter().map(|r| r.len).fold(0.0, f64::max);
-        assert_eq!(longest, 19.0, "the fold keeps the youngest of the group");
+        assert_eq!(longest, 19.0, "the fold caps the length");
+        // The tail is the run that began on the first row, scaled back to
+        // 19 rows' weight each time it reaches 20: a weighted Welford step,
+        // then `n` and the scatter times `19 / 20`, the mean left alone.
+        let mut n = Normals::new(11);
+        let (mut len, mut w, mut mean, mut m2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for _ in 0..200 {
+            let x = n.normal();
+            let w_new = w + 1.0;
+            m2 += w / w_new * (x - mean) * (x - mean);
+            mean += (x - mean) / w_new;
+            (w, len) = (w_new, len + 1.0);
+            if len > 19.0 {
+                let ratio = 19.0 / len;
+                (w, m2, len) = (w * ratio, m2 * ratio, 19.0);
+            }
+        }
+        let tail = m.runs.last().unwrap();
+        assert_eq!(tail.len, len);
+        assert!((tail.n - w).abs() < 1e-12, "n {} vs {w}", tail.n);
+        assert!(
+            (tail.mean[0] - mean).abs() < 1e-12,
+            "mean {} vs {mean}",
+            tail.mean[0]
+        );
+        assert!(
+            (tail.m2[0] - m2).abs() < 1e-9,
+            "scatter {} vs {m2}",
+            tail.m2[0]
+        );
+        assert!((w - 19.0).abs() < 1e-12, "19 rows' weight: {w}");
+    }
+
+    /// Under heavy pruning the run that dominates a stationary stream keeps
+    /// its memory at the cap. Pruning leaves a gap below `max_run`, so the
+    /// youngest run at the cap can be a few rows long. Folding the capped
+    /// run into that one, as the fold once did, reset the dominant run's
+    /// memory on these 600 quiet rows: `run_mode` sat at the cap on 34 of
+    /// them and fell by up to 19 at once, and each reset read as evidence of
+    /// a change, `p_change` summing to 34.1. Scaled in place, the capped run
+    /// is the mode on 581 rows, `run_mode` never falls, and `p_change` sums
+    /// to 5.9, about `1 / hazard` a row.
+    #[test]
+    fn heavy_pruning_keeps_the_dominant_runs_memory_at_the_cap() {
+        let mut m = Bocpd::new(BocpdCfg {
+            max_run: 20,
+            prune_below: 1e-2,
+            hazard: 200.0,
+            ..cfg(1)
+        })
+        .unwrap();
+        let mut n = Normals::new(5);
+        let (mut p_sum, mut prev, mut worst_drop, mut capped) = (0.0, 0.0, 0.0f64, 0);
+        for i in 0..600 {
+            let out = m.step(&[n.normal()], &[], 1.0, 1.0);
+            if i > 0 {
+                p_sum += out.pred[0];
+                worst_drop = worst_drop.max(prev - out.pred[1]);
+                capped += usize::from(out.pred[1] == 19.0);
+                prev = out.pred[1];
+            }
+        }
+        assert!(capped > 500, "the cap was the mode on {capped} rows");
+        assert!(worst_drop <= 5.0, "run_mode fell by {worst_drop}");
+        assert!(p_sum < 12.0, "p_change summed to {p_sum}");
     }
 
     /// `max_run` caps a run's length, not its position. Once pruning has
@@ -2720,8 +2808,8 @@ mod tests {
         assert_eq!(out.pred[1], 0.0);
     }
 
-    /// The fold at `max_run` keeps the mass: the last kept run takes the
-    /// summed probability of itself and of every longer run, and each
+    /// The fold at `max_run` keeps the mass: the folded slot takes the
+    /// summed probability of every run that reached the cap, and each
     /// shorter run keeps its own.
     #[test]
     fn the_fold_at_max_run_keeps_every_runs_mass() {
@@ -2733,6 +2821,7 @@ mod tests {
         let p = m.run_posterior();
         assert_eq!(p.len(), 31);
         let cut = 10;
+        let before = m.clone();
         m.cfg.max_run = cut;
         m.prune();
         let q = m.run_posterior();
@@ -2751,6 +2840,17 @@ mod tests {
             "{} vs {tail}",
             q[cut - 1]
         );
+        // The folded slot keeps the oldest run's statistics, scaled to
+        // `cut - 1` rows as a decay would scale them: `n` and the scatter
+        // by `9 / 30`, the mean untouched.
+        let ratio = (cut - 1) as f64 / 30.0;
+        let (old, kept) = (&before.runs[30], &m.runs[cut - 1]);
+        assert_eq!(kept.len, (cut - 1) as f64);
+        assert_eq!(kept.n, old.n * ratio);
+        assert_eq!(kept.m2, vec![old.m2[0] * ratio]);
+        assert_eq!((&kept.mean, &kept.mean_lo), (&old.mean, &old.mean_lo));
+        // Every shorter run is untouched.
+        assert_eq!(m.runs[..cut - 1], before.runs[..cut - 1]);
     }
 
     /// A state's shape is its emission's: a `gaussian` state of three
