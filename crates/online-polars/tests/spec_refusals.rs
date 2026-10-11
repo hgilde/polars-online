@@ -310,7 +310,10 @@ fn the_empties_are_refused() {
     // where `ew_cov` refuses it; `cross_lags = []` is a choice, the least
     // memory, and stays.
     refused(
-        &unsup(r#"{"type": "ew_cov", "lags": []}"#, r#", "half_life": 10.0"#),
+        &unsup(
+            r#"{"type": "ew_cov", "lags": []}"#,
+            r#", "half_life": 10.0"#,
+        ),
         &["ew_cov lags must be non-empty"],
     );
     refused(
@@ -321,7 +324,10 @@ fn the_empties_are_refused() {
         &sup(r#"{"type": "marginal", "lags": [], "cross_lags": []}"#, ""),
         &["marginal lags must be non-empty"],
     );
-    accepted(&sup(r#"{"type": "marginal", "lags": [1, 2], "cross_lags": []}"#, ""));
+    accepted(&sup(
+        r#"{"type": "marginal", "lags": [1, 2], "cross_lags": []}"#,
+        "",
+    ));
     accepted(&sup(r#"{"type": "marginal", "lags": null}"#, ""));
 }
 

@@ -306,7 +306,12 @@ fn a_ridge_fit_solves_its_system_and_its_statistics_are_the_residuals() {
             };
             let se0 = (q * fit.sigma2 / n).sqrt();
             close(&[fit.se[0]], &[se0], 1e-10, "the intercept's se");
-            close(&[fit.t[0]], &[fit.coef[0] / se0], 1e-10, "the intercept's t");
+            close(
+                &[fit.t[0]],
+                &[fit.coef[0] / se0],
+                1e-10,
+                "the intercept's t",
+            );
         }
     }
 }
@@ -374,10 +379,16 @@ fn without_an_intercept_the_system_is_the_raw_moments() {
     let n = res.len() as f64;
     let ms = res.iter().map(|e| e * e).sum::<f64>() / n;
     let rm = res.iter().sum::<f64>() / n;
-    assert!(rm.abs() > 0.1, "a residual mean to tell the two apart: {rm}");
+    assert!(
+        rm.abs() > 0.1,
+        "a residual mean to tell the two apart: {rm}"
+    );
     close(&[fit.resid_var], &[ms], 1e-10, "resid_var");
     close(&[fit.sigma2], &[ms * n / (n - 2.0)], 1e-10, "sigma2");
-    let yy = (0..r.z.len()).map(|i| r.y[i][0].unwrap().powi(2)).sum::<f64>() / n;
+    let yy = (0..r.z.len())
+        .map(|i| r.y[i][0].unwrap().powi(2))
+        .sum::<f64>()
+        / n;
     close(&[fit.r2], &[1.0 - ms / yy], 1e-10, "r2, uncentred");
     let inv = oracle::inverse(&raw);
     for p in 0..2 {

@@ -26,9 +26,7 @@ fn a_c_under_the_mode_that_reads_none_is_refused() {
     ] {
         let err = pa(model).check().unwrap_err();
         assert!(
-            err.contains(
-                r#"spec "m": pa c is for mode "pa1" or "pa2"; mode "pa" does not use it"#
-            ),
+            err.contains(r#"spec "m": pa c is for mode "pa1" or "pa2"; mode "pa" does not use it"#),
             "{model}: {err}"
         );
     }

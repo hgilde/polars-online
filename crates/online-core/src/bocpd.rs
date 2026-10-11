@@ -1827,7 +1827,10 @@ mod tests {
                 assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-12, "row {i}");
             }
             assert_eq!(longest, 19.0, "{prune_below}: the cap was reached");
-            assert!(moved, "{prune_below}: pruning dropped a run from the middle");
+            assert!(
+                moved,
+                "{prune_below}: pruning dropped a run from the middle"
+            );
         }
         // Without pruning a run's position is its length, so the length cap
         // folds exactly where the position cap did.

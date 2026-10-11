@@ -19,7 +19,9 @@ fn spec(json: &str) -> Spec {
 fn frame(n: usize) -> DataFrame {
     let mut s: u64 = 7;
     let mut draw = || {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
     };
     let x0: Vec<f64> = (0..n).map(|_| draw()).collect();
@@ -48,7 +50,12 @@ fn run(spec: &Spec, df: &DataFrame, size: usize) -> (Vec<bool>, Vec<String>) {
         start += size;
     }
     let out = out.unwrap();
-    let fields = out.column("m").unwrap().struct_().unwrap().fields_as_series();
+    let fields = out
+        .column("m")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .fields_as_series();
     let first = &fields[0];
     let null: Vec<bool> = first.is_null().iter().map(|v| v.unwrap()).collect();
     let reason = fields
@@ -74,7 +81,12 @@ fn check(json: &str, want: &[(&str, usize)]) {
     let df = frame(80);
     let (null, reason) = run(&s, &df, 80);
     for (i, (n, r)) in null.iter().zip(&reason).enumerate() {
-        assert_eq!(*n, !r.is_empty(), "{}: row {i} null {n}, reason {r:?}", s.name);
+        assert_eq!(
+            *n,
+            !r.is_empty(),
+            "{}: row {i} null {n}, reason {r:?}",
+            s.name
+        );
     }
     let mut expected = Vec::new();
     for (r, rows) in want {

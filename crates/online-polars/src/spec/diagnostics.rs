@@ -557,7 +557,11 @@ mod tests {
         for (embargo, horizon) in [(2.5, 3), (0.3, 1), (4.0, 4), (31.5, 32), (40.2, 41)] {
             let s = robust(&format!(r#", "embargo": {embargo}"#));
             assert_eq!(s.horizon(), horizon, "embargo {embargo}");
-            assert_eq!(s.robust_se_lags_or_default(), s.nw_lags(), "embargo {embargo}");
+            assert_eq!(
+                s.robust_se_lags_or_default(),
+                s.nw_lags(),
+                "embargo {embargo}"
+            );
             assert_eq!(
                 s.robust_se_lags_or_default(),
                 (2 * horizon).min(NW_LAG_CAP),

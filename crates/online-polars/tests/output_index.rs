@@ -22,7 +22,13 @@ fn assert_unique(s: &Spec) {
     let idx = output_index(s);
     for (i, a) in idx.iter().enumerate() {
         for b in &idx[i + 1..] {
-            assert_ne!(rest(a), rest(b), "{} and {} differ only in name", a.field, b.field);
+            assert_ne!(
+                rest(a),
+                rest(b),
+                "{} and {} differ only in name",
+                a.field,
+                b.field
+            );
         }
     }
 }
@@ -85,7 +91,10 @@ fn bocpd_predictions_carry_their_column() {
     let idx = output_index(&s);
     let all = ["a", "b", "c"].map(String::from).to_vec();
     for f in ["a", "b", "c"] {
-        assert_eq!(by_name(&idx, &format!("pred_{f}")).columns, Some(vec![f.to_string()]));
+        assert_eq!(
+            by_name(&idx, &format!("pred_{f}")).columns,
+            Some(vec![f.to_string()])
+        );
     }
     for f in ["p_change", "run_mode", "run_mean", "loglik"] {
         assert_eq!(by_name(&idx, f).columns.as_ref(), Some(&all), "{f}");
