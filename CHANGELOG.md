@@ -37,6 +37,14 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
   At 1e7 rows x 50 features XGBoost reaches its first round in 4.0 s
   against 7.0 s from numpy, and LightGBM builds in 1.45 s at 2.9 GB
   against 1.54 s at 8.9 GB from a collected frame.
+  A `ref=`/`reference=` built by `po.gbdt` records each feature's
+  `pl.Enum` categories, and a later frame whose Enum lists other
+  categories, or (LightGBM, as XGBoost already) other features in order,
+  is refused by name; a reference built elsewhere is checked by its
+  feature names alone. `in_memory=1` is refused, as the docstring says.
+  The native engine's XGBoost floor is 2.1, the first whose C API takes
+  Arrow columns (`XGProxyDMatrixSetDataColumnar`); 2.0.x fell back to the
+  Python engine with a message that did not name the floor.
 - **`po.gram.merge(..., within=True)` and `solve_subsets(..., within=True)`:
   pooling within parts** (task 240). Each part's moments are pooled about
   its own means, without the between-part term: the Gram of the rows

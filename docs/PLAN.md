@@ -14103,7 +14103,7 @@ DIAGNOSTICS.md:226 and a `stream.rs` comment), E-2 (two guides list three
 (`review7-fix1`); C-1 (a `ref` built here records each feature's Enum
 categories and refuses a mismatch by name), C-2, C-3, E-3 and `in_memory=1`
 (`review7-fix2`; stopped once by a permission prompt, resumed on the user's
-"Resume").
+"Resume"); merged 2026-10-11, full tier 6302 passed).
 
 **Decided 2026-10-11** (the user: "Your reco all", with "we are not
 worried about doing more work now and want the best outcomes"; the fixes
