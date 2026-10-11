@@ -82,6 +82,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A million rows of 20 features, and a ridge over them.
 rng = np.random.default_rng(9)
 n = 1_000_000
 features = [f"x{j}" for j in range(20)]
@@ -91,12 +92,14 @@ pl.DataFrame(
 spec = po.spec.ewridge("ridge", targets=["y"], features=features, half_life=1000.0)
 
 
+# Millions of rows a second through one run.
 def rows_a_second(run):
     start = time.perf_counter()
     run()
     return n / (time.perf_counter() - start) / 1e6
 
 
+# Each part of a run, timed on its own.
 query = pl.scan_parquet("rows.parquet")
 bank = po.ModelBank([spec])
 print(f"time to read the file:      {rows_a_second(lambda: query.collect()):.1f} million rows a second")

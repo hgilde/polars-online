@@ -83,6 +83,7 @@ slope = 1.0 + 2.0 * np.arange(n) / n
 y = slope * x + 0.5 * rng.standard_normal(n)
 pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y}).write_parquet("drift.parquet")
 
+# One spec holds the whole grid, fitted in one pass.
 drift = po.spec.ewridge(
     "drift", targets=["y"], features=["x"], clock="t", gap_cap=10.0,
     half_life=[200.0, 20_000.0],   # a grid of two half-lives, one set of running sums each ...
@@ -90,6 +91,7 @@ drift = po.spec.ewridge(
 )
 bank = po.ModelBank([drift])
 bank.fit(pl.scan_parquet("drift.parquet"))   # learn every row, keep no output
+# The truth at the last row, beside each fit's slope.
 print(f"the true slope at the last row: {slope[-1]:.2f}")
 for r in bank.coef().filter(pl.col("term") == "x").iter_rows(named=True):
     print(f"half-life {r['instance']}, ridge {r['ridge']:g}: slope {r['coef']:.2f}")
@@ -276,6 +278,7 @@ x0, x1 = rng.standard_normal((2, n))
 y = 0.5 + (1.0 + np.arange(n) / n) * x0 - x1 + 0.3 * rng.standard_normal(n)
 pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1, "y": y}).write_parquet("rls.parquet")
 
+# rls beside the ewridge it equals, on the same rows.
 common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=10.0, half_life=300.0)
 specs = [
     po.spec.rls("rls", delta=2.0, **common),                      # A starts at 2·I, a prior that fades
@@ -283,6 +286,7 @@ specs = [
                     max_rows_between_solves=1, **common),         # ... solved on every row
 ]
 out = pl.scan_parquet("rls.parquet").online.fit_predict(specs).collect()
+# The largest gap between their predictions, then rls's fit.
 gap = (out["rls"].struct.field("pred_y") - out["sum"].struct.field("pred_y")).abs().max()
 print(f"the two predictions differ by less than 1e-9 on every row: {gap < 1e-9}")
 print("rls's coefficients at the last row:", [round(c, 2) for c in out["rls"].struct.field("coef").drop_nulls()[-1]])
@@ -379,6 +383,7 @@ y = 2.0 * x[:, 0] - 1.5 * x[:, 1] + 1.0 * x[:, 2] + rng.standard_normal(n)
 names = [f"x{i}" for i in range(k)]
 pl.DataFrame(x, schema=names).with_columns(y=y).write_parquet("wide.parquet")
 
+# A path of penalties, the best so far chosen as the stream runs.
 las = po.spec.lasso(
     "las", targets=["y"], features=names,
     half_life=float("inf"),                  # every row counts the same
@@ -386,6 +391,7 @@ las = po.spec.lasso(
 )
 bank = po.ModelBank([las])
 out = pl.concat(bank.fit_predict_batches(pl.scan_parquet("wide.parquet")))   # the output, chunk by chunk
+# The penalty chosen at the last row, and the features it keeps.
 chosen = out["las"].struct.field("penalty_selected_y")[-1]
 betas = bank.coef().filter(pl.col("penalty") == chosen, pl.col("term") != "intercept")
 kept = betas.filter(pl.col("coef") != 0.0)
@@ -464,12 +470,14 @@ slope = np.where(np.arange(n) < 2_000, 1.0, 3.0)
 y = slope * x + 0.5 * rng.standard_normal(n)
 pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y}).write_parquet("jump.parquet")
 
+# kalman, whose slope may drift, beside ewridge's running sums.
 common = dict(targets=["y"], features=["x"], clock="t", gap_cap=10.0, half_life=200.0, coef_every=0)
 specs = [
     po.spec.kalman("kalman", coef_half_life=20.0, **common),            # a coefficient may drift
     po.spec.ewridge("ewridge", max_rows_between_solves=1, **common),    # solved on every row
 ]
 out = pl.scan_parquet("jump.parquet").online.fit_predict(specs).collect()
+# Each model's slope just before the jump and after it.
 for row in (1_999, 2_010, 2_050, 2_200):
     k = out["kalman"].struct.field("coef")[row][1]     # [intercept, slope] after the row
     e = out["ewridge"].struct.field("coef")[row][1]
@@ -654,6 +662,7 @@ wild = (rng.random(n) < 0.04) & (x > 0)
 y[wild] += 50.0
 pl.DataFrame({"x": x, "y": y}).write_parquet("wild.parquet")
 
+# Least squares beside the two robust models, every row weighed the same.
 common = dict(targets=["y"], features=["x"], half_life=float("inf"))
 specs = [
     po.spec.ewridge("ewridge", **common),
@@ -662,6 +671,7 @@ specs = [
 ]
 bank = po.ModelBank(specs)
 bank.fit(pl.scan_parquet("wild.parquet"))
+# Each model's slope, beside the truth.
 print(f"wild rows: {wild.sum()} of {n}; the true slope: 2")
 for r in bank.coef().filter(pl.col("term") == "x").iter_rows(named=True):
     print(f"{r['spec']}: slope {r['coef']:.2f}")
@@ -767,6 +777,7 @@ x0, x1 = rng.standard_normal((2, n))
 y = rng.poisson(np.exp(0.5 + 0.3 * x0 - 0.2 * x1)).astype(float)
 pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("counts.parquet")
 
+# The Poisson loss, fitted one gradient step per row.
 counts = po.spec.sgd(
     "counts", targets=["y"], features=["x0", "x1"], half_life=float("inf"),
     loss="poisson",                          # a negative target refuses the chunk, naming the row
@@ -931,6 +942,7 @@ x0, x1 = rng.standard_normal((2, n))
 y = 1.0 + 2.0 * x0 - 1.0 * x1 + 0.3 * rng.standard_normal(n)
 pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("pa.parquet")
 
+# The same pa twice, the second with its slopes capped.
 common = dict(targets=["y"], features=["x0", "x1"], half_life=float("inf"), c=0.1)
 specs = [
     po.spec.pa("free", **common),
@@ -938,6 +950,7 @@ specs = [
 ]
 bank = po.ModelBank(specs)
 bank.fit(pl.scan_parquet("pa.parquet"))
+# What each fit settled on.
 for name in ("free", "capped"):
     fitted = {r["term"]: round(r["coef"], 2) for r in bank.coef().filter(pl.col("spec") == name).iter_rows(named=True)}
     print(f"{name}: {fitted}")
@@ -1078,6 +1091,7 @@ up = (rng.random(n) < 1.0 / (1.0 + np.exp(-logit))).astype(float)
 names = [f"x{i}" for i in range(k)]
 pl.DataFrame(x, schema=names).with_columns(up=up).write_parquet("clicks.parquet")
 
+# One ftrl over all 50 features, each row scored before it is learned.
 sparse = po.spec.ftrl(
     "sparse", targets=["up"], features=names, half_life=float("inf"),
     l1=300.0,                      # zero a coefficient whose summed evidence stays under 300
@@ -1085,8 +1099,10 @@ sparse = po.spec.ftrl(
 )
 bank = po.ModelBank([sparse])
 out = pl.concat(bank.fit_predict_batches(pl.scan_parquet("clicks.parquet")))
+# The features the L1 penalty kept.
 betas = bank.coef().filter(pl.col("term") != "intercept")
 kept = betas.filter(pl.col("coef") != 0.0)["term"].to_list()
+# How often the second half's rows are classed right, out of sample.
 p_up = out["sparse"].struct.field("pred_up")      # each row's probability, from the fit before the row
 hits = ((p_up > 0.5).cast(pl.Float64) == out["up"])[n // 2:].mean()
 print(f"coefficients left nonzero: {len(kept)} of {betas.height}: {kept}")
@@ -1195,6 +1211,7 @@ level = 0.02 * t + np.cumsum(0.1 * rng.standard_normal(n))
 y = level + 2.0 * x + 0.5 * rng.standard_normal(n)
 pl.DataFrame({"t": t, "x": x, "y": y}).write_parquet("trend.parquet")
 
+# A regression on x, holt alone, and a test of which predicts closer.
 common = dict(targets=["y"], clock="t", gap_cap=10.0, half_life=20.0, emit_sigma=True)   # sigma_y: the error's spread
 specs = [
     po.spec.ewridge("with_x", features=["x"], **common),    # the feature, and an intercept that follows the level
@@ -1202,6 +1219,7 @@ specs = [
     po.spec.seqtest("gain", targets=["y"], a="with_x", b="naive"),   # evidence that with_x predicts closer
 ]
 out = pl.scan_parquet("trend.parquet").online.fit_predict(specs).collect()
+# Each model's error spread, then when the evidence for with_x is enough.
 for name in ("with_x", "naive"):
     print(f"{name}: sigma_y at the last row {out[name].struct.field('sigma_y')[-1]:.2f}")
 passed = out["gain"].struct.field("log_e_a_y") >= math.log(20)   # the 5% level, read at any row
@@ -1289,12 +1307,14 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Two columns whose correlation jumps partway through.
 rng = np.random.default_rng(1)
 n = 4000
 rho = np.where(np.arange(n) < 2000, 0.2, 0.8)                 # the truth: 0.2, then 0.8 from row 2000
 a, e = rng.standard_normal((2, n))
 pl.DataFrame({"a": a, "b": rho * a + np.sqrt(1 - rho**2) * e}).write_parquet("pair.parquet")
 
+# Fit, and read corr_a_b around the jump.
 mv = po.spec.ew_cov("mv", features=["a", "b"], half_life=200.0, stats=["corr"])   # no clock: a half-life of 200 rows
 out = pl.scan_parquet("pair.parquet").online.fit_predict([mv]).collect()
 corr = out["mv"].struct.field("corr_a_b")
@@ -1444,6 +1464,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Many features, of which only a few move the target.
 rng = np.random.default_rng(2)
 n, p = 2000, 500
 x = rng.standard_normal((n, p))
@@ -1451,6 +1472,7 @@ y = x[:, [7, 42, 99, 250, 401]] @ np.array([0.5, -0.4, 0.3, 0.3, -0.2]) + rng.st
 features = [f"f{j}" for j in range(p)]
 pl.DataFrame(x, schema=features).with_columns(y=y).write_parquet("screen.parquet")
 
+# Screen every pair in one pass, then rank by |t_stat|.
 screen = po.spec.marginal("screen", targets=["y"], features=features, half_life=float("inf"))   # every row weighs the same
 bank = po.ModelBank([screen])
 bank.fit(pl.scan_parquet("screen.parquet"))                  # learn, and keep only the state
@@ -1690,6 +1712,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Ten series whose common correlation rises partway through.
 rng = np.random.default_rng(3)
 n, m = 4000, 10
 rho = np.where(np.arange(n) < 2000, 0.2, 0.6)                 # the truth: every pair at 0.2, then 0.6 from row 2000
@@ -1697,9 +1720,11 @@ common, own = rng.standard_normal(n), rng.standard_normal((m, n))
 names = [f"s{i}" for i in range(m)]
 pl.DataFrame(dict(zip(names, np.sqrt(rho) * common + np.sqrt(1 - rho) * own))).write_parquet("ten.parquet")
 
+# deco beside an ew_cov over the same columns.
 eq = po.spec.deco("eq", features=names, half_life=100.0)
 pairs = po.spec.ew_cov("pairs", features=names, half_life=100.0, stats=["corr"])
 out = pl.scan_parquet("ten.parquet").online.fit_predict([eq, pairs]).collect()
+# rho beside the mean pairwise correlation, before and after the rise.
 level = out["eq"].struct.field("rho")
 mean_corr = out["pairs"].struct.unnest().select(pl.mean_horizontal(pl.selectors.starts_with("corr_"))).to_series()
 for row in (1999, 3999):
@@ -1791,6 +1816,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Blocks of two noisy prices whose underlying returns correlate.
 rng = np.random.default_rng(4)
 blocks, rows = 20, 1000
 z = rng.standard_normal((2, blocks * rows))
@@ -1801,6 +1827,7 @@ pl.DataFrame({
     "p1": observed[0], "p2": observed[1],
 }).write_parquet("blocks.parquet")
 
+# Each price's returns within its block, fed to both estimators.
 returns = pl.scan_parquet("blocks.parquet").with_columns(pl.col("p1", "p2").diff().over("block"))   # within each block
 specs = [
     po.spec.rcov(kind, features=["p1", "p2"], group="block", group_close="monotone", kind=kind, block_rows=rows)
@@ -1808,6 +1835,7 @@ specs = [
 ]
 bank = po.ModelBank(specs)
 bank.fit(returns)
+# Each estimator's mean correlation over the blocks that closed.
 for kind in ("plain", "kernel"):
     closed = bank.closed_groups(kind)                        # one row per block that closed
     corr = closed["rcorr"].list.get(1)                         # vech of [[1, r], [r, 1]] is [1, r, 1]
@@ -1862,6 +1890,7 @@ rk = po.spec.rcov(
 returns = by_block.with_columns(
     pl.col("x0", "x1").diff().over("block")   # each row's change since the row before it, within its block
 )
+# Fit, and read the estimate of each block that closed.
 bank = po.ModelBank([rk])
 bank.fit_predict(returns)
 finished = bank.closed_groups()
@@ -1932,6 +1961,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A feed with two faults planted: a frozen price and a sentinel size.
 rng = np.random.default_rng(5)
 n = 2000
 price = 100 + np.cumsum(rng.normal(0.0, 0.1, n))
@@ -1940,6 +1970,7 @@ size = rng.exponential(1.0, n)
 size[::40] = -999.0                                           # a sentinel standing for "missing", on one row in 40
 pl.DataFrame({"price": price, "size": size, "flow": rng.standard_normal(n)}).write_parquet("feed.parquet")
 
+# Audit the three columns, then print the counts and what they mean.
 bank = po.ModelBank([po.spec.audit("audit", columns=["price", "size", "flow"])])
 bank.fit(pl.scan_parquet("feed.parquet"))
 for r in bank.audit().iter_rows(named=True):                  # what each column holds
@@ -2026,6 +2057,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Three round clusters, and a fourth that appears halfway through.
 rng = np.random.default_rng(6)
 n = 8000
 centres = np.array([[0.0, 0.0], [6.0, 0.0], [0.0, 6.0], [6.0, 6.0]])
@@ -2035,6 +2067,7 @@ blob[late] = rng.integers(0, 4, late.sum())                   # ... and a fourth
 xy = centres[blob] + rng.standard_normal((n, 2))
 pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1]}).write_parquet("blobs.parquet")
 
+# Label every row, then count each label's rows before the birth and at the end.
 km = po.spec.kmeans("km", features=["x", "y"], half_life=1000.0, n_clusters=4, warm_rows=500)
 label = pl.scan_parquet("blobs.parquet").online.fit_predict([km]).collect()["km"].struct.field("cluster")
 for lo, hi in ((3000, 4000), (7000, 8000)):
@@ -2133,19 +2166,23 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Two rings, an inner and an outer, as points in the plane.
 rng = np.random.default_rng(7)
 n = 10000
 ring = rng.integers(0, 2, n)                                  # 0: the inner ring, radius 1; 1: the outer, radius 3
 angle = rng.uniform(0.0, 2 * np.pi, n)
 radius = np.where(ring == 0, 1.0, 3.0) + rng.normal(0.0, 0.1, n)
 xy = np.column_stack([radius * np.cos(angle), radius * np.sin(angle)])
+# Scatter some rows as noise, and keep the truth to score against.
 noise = rng.random(n) < 0.05                                  # one row in twenty is scattered at random
 xy[noise] = rng.uniform(-4.0, 4.0, (noise.sum(), 2))
 pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "ring": ring, "noise": noise}).write_parquet("rings.parquet")
 
+# Fit, and score only the last rows.
 mc = po.spec.micro("mc", features=["x", "y"], half_life=3000.0, eps=0.07)
 out = pl.scan_parquet("rings.parquet").online.fit_predict([mc]).collect().unnest("mc")
 late = out.tail(4000)                                         # once the summaries have formed
+# How many clusters, and how each ring and the noise are labelled.
 print(f"clusters: {late['n_clusters'][-1]}")
 for name, ring_id in (("inner ring", 0), ("outer ring", 1)):
     rows = late.filter(~pl.col("noise") & (pl.col("ring") == ring_id))
@@ -2261,6 +2298,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Three Gaussian classes, each with its own spread.
 rng = np.random.default_rng(8)
 n = 6000
 means = np.array([[0.0, 0.0], [2.0, 0.0], [1.0, 2.0]])
@@ -2269,10 +2307,12 @@ label = rng.integers(0, 3, n)                                 # three classes, e
 xy = means[label] + rng.standard_normal((n, 2)) * spread[label]
 pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "kind": np.array(["a", "b", "c"])[label]}).write_parquet("classes.parquet")
 
+# Class the last rows, each before its own label is learned.
 cl = po.spec.ew_class("cl", features=["x", "y"], label="kind", classes=["a", "b", "c"],
                       precision_prior=0.1, half_life=float("inf"))
 scored = pl.scan_parquet("classes.parquet").online.fit_predict([cl]).collect().unnest("cl").tail(5000)
 print(f"classed right, out of sample: {(scored['class'] == scored['kind']).mean():.3f}")
+# The Bayes rule that knows the true distributions, on the same rows.
 z = (xy[:, None, :] - means[None]) / spread[None]             # the Bayes rule, from the true means and spreads
 best = np.argmax(-0.5 * (z**2).sum(axis=2) - np.log(spread).sum(axis=1), axis=1)
 print(f"the Bayes rule, on the same rows: {(best == label)[-5000:].mean():.3f}")
@@ -2367,6 +2407,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# One column with a slight positive edge, and one with none.
 rng = np.random.default_rng(9)
 n = 3000
 pl.DataFrame({
@@ -2374,6 +2415,7 @@ pl.DataFrame({
     "none": rng.normal(0.0, 1.0, n),                           # positive half the time
 }).write_parquet("signs.parquet")
 
+# Test both signs, and find the first row each passes the 5% level.
 sign = po.spec.seqtest("sign", targets=["edge", "none"])
 out = pl.scan_parquet("signs.parquet").online.fit_predict([sign]).collect().unnest("sign")
 for col in ("edge", "none"):
@@ -2490,12 +2532,14 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# Two columns that start to correlate partway through.
 rng = np.random.default_rng(10)
 n = 4000
 rho = np.where(np.arange(n) < 2200, 0.0, 0.7)                 # the truth: uncorrelated, then 0.7 from row 2200
 a, e = rng.standard_normal((2, n))
 pl.DataFrame({"a": a, "b": rho * a + np.sqrt(1 - rho**2) * e}).write_parquet("break.parquet")
 
+# The sequential test, then each row it flags.
 watch = po.spec.corrchange(
     "watch", features=["a", "b"],
     kind="sequential",           # each row tested against a stable history as it arrives
@@ -2650,14 +2694,17 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A column whose spread quadruples partway through.
 rng = np.random.default_rng(11)
 n = 2000
 scale = np.where(np.arange(n) < 1000, 1.0, 4.0)               # the truth: the spread quadruples at row 1000
 pl.DataFrame({"x": rng.standard_normal(n) * scale}).write_parquet("spread.parquet")
 
+# Fit, and date each row's current run from run_mode.
 runs = po.spec.bocpd("runs", features=["x"], hazard=500.0)    # a break expected every 500 rows
 out = pl.scan_parquet("spread.parquet").online.fit_predict([runs]).collect().unnest("runs")
 out = out.with_row_index("row").with_columns(began=pl.col("row") - pl.col("run_mode"))   # the row the current run began on
+# The dating of the break, and how little p_change moved.
 found = out.filter((pl.col("row") >= 1000) & (pl.col("began") >= 1000)).row(0, named=True)
 print(f"first row whose run began after the break: {found['row']}, dated to row {found['began']}")
 for row in (1050, 1999):
@@ -2832,6 +2879,7 @@ import numpy as np
 import polars as pl
 import polars_online as po
 
+# A sticky two-state chain, and two overlapping blobs it switches between.
 rng = np.random.default_rng(12)
 n = 6000
 state = np.zeros(n, dtype=int)
@@ -2841,6 +2889,7 @@ centres = np.array([[-0.75, -0.75], [0.75, 0.75]])            # two blobs of uni
 xy = centres[state] + rng.standard_normal((n, 2))
 pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "truth": state}).write_parquet("states.parquet")
 
+# Filter the states, then score the last rows against the nearest true centre.
 hidden = po.spec.hmm("hidden", features=["x", "y"], n_components=2, precision_prior=1e-2,
                      warm_rows=500, half_life=float("inf"))
 rows = pl.scan_parquet("states.parquet").online.fit_predict([hidden]).collect().unnest("hidden").tail(5000)

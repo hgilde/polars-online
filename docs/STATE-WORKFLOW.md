@@ -65,6 +65,7 @@ stream = pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1,
                        "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise})
 stream.head(1_500).write_parquet("2025.parquet")    # the stream so far
 stream.tail(500).write_parquet("2026.parquet")      # the rows that follow it
+# A ridge with a clock, the one spec every step uses.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
                        clock="t", half_life=600.0, gap_cap=300.0)
 
@@ -132,14 +133,17 @@ import polars as pl
 
 import polars_online as po
 
+# The planted stream, saved to one file.
 rng = np.random.default_rng(3)
 x0, x1, noise = rng.standard_normal((3, 2_000))
 pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
               "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise}).write_parquet("stream.parquet")
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 
+# A query that saves its state, built but not yet run.
 query = pl.scan_parquet("stream.parquet").online.fit_predict([spec], save_state="run.state")
 print(f"after building the query, the file exists: {Path('run.state').exists()}")
+# Run it twice, then under head(100), reading the file after each.
 query.collect()
 first = Path("run.state").read_bytes()
 query.collect()
@@ -206,16 +210,19 @@ import polars as pl
 
 import polars_online as po
 
+# The planted stream, and a rerun file that overlaps the save.
 rng = np.random.default_rng(3)
 x0, x1, noise = rng.standard_normal((3, 2_000))
 stream = pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
                        "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise})
 stream.slice(1_400).write_parquet("rerun.parquet")        # starts 100 rows before the save
+# A bank saved after the first 1,500 rows.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 saved = po.ModelBank([spec])
 saved.fit_predict(stream.head(1_500))
 saved.save("ridge.state")
 
+# The rerun as it stands is refused; skip_learned keeps the rows after the save.
 bank = po.ModelBank.load("ridge.state")
 try:
     bank.fit_predict(pl.read_parquet("rerun.parquet"))    # refused: the bank is untouched
@@ -224,6 +231,7 @@ except ValueError as e:
 kept = bank.skip_learned(pl.scan_parquet("rerun.parquet"))   # a query
 print(f"skip_learned keeps {kept.collect().height} of {pl.scan_parquet('rerun.parquet').collect().height} rows")
 
+# Learn on from the kept rows, and compare with one run over the whole stream.
 (kept.online.fit_predict(load_state="ridge.state", save_state="ridge.state")
      .sink_parquet("rerun_scored.parquet"))
 one_run = po.ModelBank([spec])
@@ -277,18 +285,21 @@ import polars as pl
 
 import polars_online as po
 
+# The planted stream, cut into two files at row 1,500.
 rng = np.random.default_rng(3)
 x0, x1, noise = rng.standard_normal((3, 2_000))
 stream = pl.DataFrame({"t": np.arange(2_000.0), "x0": x0, "x1": x1,
                        "y": 0.5 + 1.5 * x0 - 2.0 * x1 + 0.1 * noise})
 stream.head(1_500).write_parquet("2025.parquet")
 stream.tail(500).write_parquet("2026.parquet")
+# Two specs whose state holds rows: one learns late, one looks ahead.
 clock = dict(clock="t", gap_cap=300.0, half_life=600.0)
 late = po.spec.ewridge("late", targets=["y"], features=["x0", "x1"], embargo=50.0, **clock)     # each row learned 50 units later
 y_ahead = po.ewm_mean("y", half_life=10.0, window_size=20.0, reverse=True).alias("y_ahead")                   # the next 20 units' mean of y
 window = po.spec.ewridge("window", targets=[y_ahead], features=["x0", "x1"], embargo=20.0, **clock)
 specs = [late, window]
 
+# Save part-way, resume on the second file, and compare with one run.
 pl.scan_parquet("2025.parquet").online.fit_predict(specs, save_state="carry.state").sink_parquet("2025_scored.parquet")
 resumed = pl.scan_parquet("2026.parquet").online.fit_predict(load_state="carry.state").collect()
 one_run = po.ModelBank(specs).fit_predict(stream).tail(500)

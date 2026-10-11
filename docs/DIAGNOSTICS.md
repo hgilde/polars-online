@@ -30,6 +30,7 @@ y = 1.0 * x0 + np.where(np.arange(n) < at, 0.5, -0.5) * x1 + rng.standard_normal
 pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1, "y": y}).write_parquet("flip.parquet")
 lf = pl.scan_parquet("flip.parquet")
 
+# A ridge with one diagnostic for each of the three questions.
 model = po.spec.ewridge(
     "ridge", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=200.0,
     emit_metrics=True,  # how good is it: ic_y, r2_y, hit_rate_y
@@ -52,6 +53,7 @@ for name, flag in flags.items():
     share_after = out.filter(after).select(flag.mean()).item()
     first = out.filter(after & flag)["t"].min()
     print(f"{name:24} {share_before:>17.1%} {share_after:>17.1%} {'-' if first is None else f'{first:.0f}':>16}")
+# R² just before the flip, and as the fit relearns after it.
 r2 = out.filter(pl.col("t").is_in([2_999.0, 3_100.0, 3_300.0, 5_999.0]))["r2_y"]
 print("r2_y at rows 2,999, 3,100, 3,300 and 5,999: " + ", ".join(f"{v:.2f}" for v in r2))
 ```
@@ -311,6 +313,7 @@ import polars as pl
 
 import polars_online as po
 
+# Two thousand rows of y = x0 + 0.5 x1 + noise.
 rng = np.random.default_rng(16)
 n = 2_000
 x0, x1 = rng.standard_normal((2, n))
@@ -319,6 +322,7 @@ pl.DataFrame(
 ).write_parquet("every.parquet")
 lf = pl.scan_parquet("every.parquet")
 
+# One spec with every switch on.
 every = po.spec.ewridge(
     "every", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=200.0,
     emit_sigma=True,              # sigma_y: EW standard deviation of the out-of-sample residuals
@@ -347,6 +351,7 @@ every = po.spec.ewridge(
     robust_se_lags=10,            #   ... with Newey and West's lags to this many rows
     emit_clocks=True,             # scored_clock, learned_clock: every model takes it
 )
+# Fit, and list every field the switches added, six to a line.
 out = lf.online.fit_predict([every]).online.unnest([every]).collect()
 fields = [c for c in out.columns if c not in ("t", "x0", "x1", "y")]
 for i in range(0, len(fields), 6):
@@ -471,6 +476,7 @@ features = [f"x{j}" for j in range(k)]
 pl.DataFrame({"t": np.arange(n, dtype=float), "y": y} | {f: x[:, j] for j, f in enumerate(features)}).write_parquet("wide.parquet")
 lf = pl.scan_parquet("wide.parquet")
 
+# The three fits: too much ridge, too short a memory, and neither fault.
 common = dict(targets=["y"], features=features, clock="t", gap_cap=5.0, emit_calibration=True)
 specs = [
     po.spec.ewridge("shrunk", half_life=2_000.0, ridge=1.0, **common),  # a ridge the size of each feature's variance
@@ -479,6 +485,7 @@ specs = [
 ]
 out = lf.online.fit_predict(specs).slice(5_000).collect()
 
+# Each fit's calibration, and its error before and after rescaling.
 print(f"{'spec':8} {'slope':>6} {'wald > 5.99':>12} {'mse':>6} {'mse rescaled':>13}")
 for spec in specs:
     rows = out.select("y", pl.col(spec["name"]).struct.unnest())
@@ -740,12 +747,14 @@ path = out.select(
 )
 T = path["r"].max()
 path = path.with_columns(bound=0.948 * (T**0.5 + 2 * pl.col("r") / T**0.5))
+# The first row past the boundary, and the path at a few rows around the break.
 crossed = path.filter(pl.col("path").abs() > pl.col("bound"))["t"].min()
 print(f"the path crossed its boundary at row {crossed:.0f}")
 for row, value, bound in path.filter(pl.col("t").is_in([1_000.0, 2_000.0, 2_200.0, crossed])).select("t", "path", "bound").iter_rows():
     print(f"  row {row:>5.0f}: path {value:>6.1f}, boundary {bound:.1f}")
 
 
+# Refit over all of a query's rows: the whole stream, or from the crossing on.
 def coef(query):
     """The coefficients of a fit over every row of the query."""
     bank = po.ModelBank([po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
@@ -802,6 +811,7 @@ streams = {
 pl.DataFrame({"x0": x0, "x1": x1} | {f"y_{k}": v for k, v in streams.items()}).write_parquet("breaks.parquet")
 lf = pl.scan_parquet("breaks.parquet").with_row_index("row")
 
+# One ridge per stream, with the windowed break tests and drift.
 specs = [
     po.spec.ewridge(
         kind, targets=[f"y_{kind}"], features=["x0", "x1"], half_life=200.0,
@@ -812,6 +822,7 @@ specs = [
 ]
 out = lf.online.fit_predict(specs).collect()
 
+# The four flags, each a test on one stream's fields.
 flags = {
     "|cusum| > 3": lambda y: pl.col(f"cusum_{y}").abs() > 3,
     "|cusum_sq| > 3": lambda y: pl.col(f"cusum_sq_{y}").abs() > 3,
@@ -823,6 +834,7 @@ flagged_before = 0
 for kind in streams:
     rows = out.select("row", pl.col(kind).struct.unnest())
     cells = []
+    # Each flag's first row after the break, and its count on the stable rows before it.
     for flag in flags.values():
         first = rows.filter((pl.col("row") >= at) & flag(f"y_{kind}"))["row"].min()
         cells.append("-" if first is None else str(first))
@@ -975,12 +987,14 @@ for s in range(streams):
     u = rng.standard_normal(n)
     for i in range(1, n):
         x[i] = 0.95 * x[i - 1] + u[i]
+    # The target sums the next h shocks, so neighbouring targets share h - 1 of them.
     e = rng.standard_normal(n + h)
     fwd = np.convolve(e, np.ones(h), "valid")[1 : n + 1]  # e[i+1] + ... + e[i+h]
     frames.append(pl.DataFrame({"stream": s, "x": x, "fwd": fwd}))
 pl.concat(frames).write_parquet("overlap.parquet")
 lf = pl.scan_parquet("overlap.parquet")
 
+# One slope per stream, with its plain, HC0 and HAC standard errors.
 model = po.spec.ewridge(
     "m", targets=["fwd"], features=["x"], half_life=float("inf"), group="stream",
     embargo=h,  # a row's label is known h rows later, and is learned only then
@@ -988,6 +1002,7 @@ model = po.spec.ewridge(
     emit_robust_se=True,  # se_coef_hc0, and se_coef_hac to 2 * embargo = 20 lags
 )
 out = lf.online.fit_predict([model]).collect()
+# Each stream's slope and standard errors at its last row.
 last = out.group_by("stream", maintain_order=True).last().select(pl.col("m").struct.unnest())
 slope = last.select(
     coef=pl.col("coef").arr.get(1),  # [intercept, x]
@@ -995,6 +1010,7 @@ slope = last.select(
     hc0=pl.col("se_coef_hc0").arr.get(1),
     hac=pl.col("se_coef_hac").arr.get(1),
 )
+# The slope's real spread, and how often each standard error rejects the true 0.
 print(f"the slope's spread over the {streams} streams: {slope['coef'].std():.4f}")
 for se in ["se", "hc0", "hac"]:
     rejected = (slope["coef"] / slope[se]).abs().gt(1.96).mean()
@@ -1112,6 +1128,7 @@ ar = np.zeros(n)  # noise that carries 0.4 of the row before
 for i in range(1, n):
     ar[i] = 0.4 * ar[i - 1] + e[i]
 base = 1.0 * x0 + 0.5 * x1
+# A clean stream and one stream per fault.
 pl.DataFrame(
     {
         "x0": x0,
@@ -1129,6 +1146,7 @@ lf = pl.scan_parquet("missing.parquet").with_columns(
 )
 
 
+# A ridge with the three specification tests, on each stream and each fix.
 def spec(name, target, features):
     return po.spec.ewridge(
         name, targets=[target], features=features, half_life=1_000.0,
@@ -1284,6 +1302,7 @@ def report(name, out, flag):
     print(f"{name:18} {false:>6} flags before the break, first after it {'never' if found is None else f'{found - at} rows in'}")
 
 
+# Drift at the default threshold, then at the one the kurtosis called for.
 for value in [20.0, threshold]:
     spec = po.spec.ewridge(
         "m", targets=["y"], features=["x0", "x1"], half_life=200.0,
@@ -1291,6 +1310,7 @@ for value in [20.0, threshold]:
     )
     out = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
     report(f"drift at {value:.0f}", out, pl.col("drift_y"))
+# Two other detectors, read off the last fit.
 report("|cusum_sq| > 3", out, pl.col("cusum_sq_y").abs() > 3)
 report("sigma past 2x", out, pl.col("sigma_y") > 2.0 * level)
 ```
@@ -1364,12 +1384,14 @@ rng = np.random.default_rng(7)
 n = 10_000
 x0, x1, e = rng.standard_normal((3, n))
 y = 1.0 * x0 + 0.5 * x1 + e
+# The bad prints: a far-out x0 whose y sits far off the line.
 bad = [2_500, 6_000, 8_200]
 x0[bad] = 6.0  # six spreads out ...
 y[bad] = 1.0 * x0[bad] + 0.5 * x1[bad] - 6.0  # ... and six noise sds off the line
 pl.DataFrame({"x0": x0, "x1": x1, "y": y}).write_parquet("prints.parquet")
 lf = pl.scan_parquet("prints.parquet").with_row_index("row")
 
+# A ridge that reports each row's influence, with its coefficients on every row.
 model = po.spec.ewridge(
     "m", targets=["y"], features=["x0", "x1"], half_life=200.0,
     emit_influence=True,  # influence_y: how far the row moved the fit
@@ -1378,6 +1400,7 @@ model = po.spec.ewridge(
 out = lf.online.fit_predict([model]).online.unnest([model]).collect().slice(1_000)  # past the warm-up
 moved = out.with_columns(step=pl.col("coef_y_x0").diff().abs())  # how far x0's coefficient moved
 
+# The rows that moved the fit most, beside the clean rows for scale.
 print("the five rows that moved the fit most:")
 top = moved.sort(pl.col("influence_y").abs(), descending=True, nulls_last=True).head(5)
 for row, influence, step in top.select("row", "influence_y", "step").iter_rows():
@@ -1464,10 +1487,12 @@ n = 3_500
 t = np.arange(n, dtype=float)
 x0, x1 = rng.standard_normal((2, n))
 y = x0 + 0.5 * x1 + 0.2 * rng.standard_normal(n)
+# The fault: x1 held at its row-299 value until row 3,300.
 held = (t >= 300) & (t < 3_300)
 pl.DataFrame({"t": t, "x0": x0, "x1": np.where(held, x1[299], x1), "y": y}).write_parquet("feed.parquet")
 lf = pl.scan_parquet("feed.parquet")
 
+# rls, with its coefficients and each feature's health on every row.
 model = po.spec.rls(
     "m", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, half_life=20.0,
     coef_every=0,  # the coefficients on every row
@@ -1475,6 +1500,7 @@ model = po.spec.rls(
 )
 out = lf.online.fit_predict([model]).online.unnest([model]).collect()
 
+# When x1's spread collapsed, and when rls's coefficient on it ran away.
 quiet = out.filter((pl.col("t") >= 300) & (pl.col("spread_ratio_x1") < 0.5))["t"].min()
 wound = out.filter((pl.col("t") >= 300) & (pl.col("coef_y_x1").abs() > 1.0))["t"].min()
 print(f"x1 held from row 300; its spread_ratio fell below 0.5 at row {quiet:.0f}")
@@ -1577,6 +1603,7 @@ b = 1.0 + np.cumsum(rng.normal(0, 0.01, n))
 pl.DataFrame({"t": np.arange(n, dtype=float), "x0": x0, "x1": x1, "y": b * x0 + 0.5 * x1 + e}).write_parquet("wander.parquet")
 lf = pl.scan_parquet("wander.parquet")
 
+# One spec, five half-lives, and the best of them chosen as the stream goes.
 grid = po.spec.ewridge(
     "grid", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0,
     half_life=[25.0, 100.0, 400.0, 1_600.0, 6_400.0],  # one fit per half-life, from the same rows
@@ -1672,6 +1699,7 @@ pl.DataFrame(
 ).write_parquet("nested.parquet")
 lf = pl.scan_parquet("nested.parquet")
 
+# The two nested fits, one group per stream, every row weighed alike.
 common = dict(targets=["y"], half_life=float("inf"), group="stream", min_weight=20.0)
 small = po.spec.ewridge("small", features=["x0"], **common)
 big = po.spec.ewridge("big", features=["x0", "x1"], **common)
@@ -1685,6 +1713,7 @@ tests = (
     .join(dm.select("stream", "dm", dm_p="p_value"), on="stream")
     .join(cw.select("stream", cw_p="p_value"), on="stream")
 )
+# The share of streams on which each test finds big better, by the true c.
 found = tests.group_by("c").agg(
     diebold_mariano=((pl.col("dm") > 0) & (pl.col("dm_p") < 0.10)).mean(),  # one-sided at 5%
     clark_west=(pl.col("cw_p") < 0.05).mean(),
@@ -1736,6 +1765,7 @@ pl.DataFrame(
 ).sort("t", "stock").write_parquet("stocks.parquet")
 lf = pl.scan_parquet("stocks.parquet")
 
+# A ridge and a Kalman filter over the same three stocks.
 common = dict(targets=["y"], features=["x0", "x1"], clock="t", gap_cap=5.0, group="stock")
 ridge = po.spec.ewridge("ridge", half_life=500.0, **common)
 kalman = po.spec.kalman("kalman", half_life=500.0, coef_half_life=100.0, **common)  # coefficients that drift
@@ -1880,6 +1910,7 @@ features = [f"x{j}" for j in range(k)]
 pl.DataFrame({"t": np.arange(n, dtype=float), "y": y} | {f: x[:, j] for j, f in enumerate(features)}).write_parquet("ready.parquet")
 lf = pl.scan_parquet("ready.parquet")
 
+# The same ridge under each readiness gate.
 common = dict(targets=["y"], features=features, clock="t", gap_cap=5.0, half_life=300.0)
 specs = [
     po.spec.ewridge("default", **common),  # max_error_inflation=sqrt(2), the one gate on by default
@@ -1889,6 +1920,7 @@ specs = [
 ]
 out = lf.online.fit_predict(specs).collect()
 
+# Each gate's first prediction, what held it back, and its early error.
 for spec in specs:
     rows = out.select("t", pl.col(spec["name"]).struct.unnest())
     first = rows.filter(pl.col("pred_y").is_not_null())["t"].min()
@@ -1974,6 +2006,7 @@ noise = {"gauss": rng.standard_normal(n), "t3": rng.standard_t(3, n) / np.sqrt(3
 pl.DataFrame({"x0": x0, "x1": x1} | {f"y_{k}": 1.0 * x0 + 0.5 * x1 + v for k, v in noise.items()}).write_parquet("width.parquet")
 lf = pl.scan_parquet("width.parquet")
 
+# One ridge per stream, with each of the three intervals.
 specs = [
     po.spec.ewridge(
         k, targets=[f"y_{k}"], features=["x0", "x1"], half_life=500.0,
@@ -1985,6 +2018,7 @@ specs = [
 ]
 out = lf.online.fit_predict(specs).slice(5_000).collect()
 
+# Each interval's share of rows covered, and its mean half-width.
 print(f"{'noise':6} {'interval':>20} {'covered':>8} {'half-width':>11}")
 for k in noise:
     rows = out.select(pl.col(k).struct.unnest(), y=pl.col(f"y_{k}"))
@@ -2055,11 +2089,13 @@ import polars_online as po
 rng = np.random.default_rng(12)
 n = 60_000
 p = 100 + np.cumsum(rng.normal(0, 0.01, n))
+# The transient u, which halves every 30 s.
 phi = 0.5 ** (1 / 30)
 u = np.zeros(n)
 shocks = rng.normal(0, 0.05 * np.sqrt(1 - phi**2), n)
 for i in range(1, n):
     u[i] = phi * u[i - 1] + shocks[i]
+# Three factors that follow p with noise of their own, and a quote a second.
 s = np.array([1.0, 0.8, 1.2])[:, None] * p + np.cumsum(rng.normal(0, 0.002, (3, n)), axis=1)
 ts = [datetime(2026, 1, 5) + timedelta(seconds=i) for i in range(n)]
 pl.DataFrame({"ts": ts, "mid": p + u, "s1": s[0], "s2": s[1], "s3": s[2]}).write_parquet("quotes.parquet")
@@ -2091,6 +2127,7 @@ revert = po.spec.ewridge("revert", features=["resid_A"], **stage2)
 joint = po.spec.ewridge("joint", features=["A", "x1", "x2", "x3"], **stage2)  # one stage in place of two
 both = po.spec.ewridge("both", features=["resid_A", "x1", "x2", "x3"], **stage2)  # do the factors add?
 
+# Run both stages in one pass over the file.
 out = (
     signals.online.fit_predict([fair])
     .online.unnest([fair])  # pred_A, resid_A
@@ -2098,6 +2135,7 @@ out = (
     .collect()
 )
 
+# Each stage-2 fit's calibration, and each coefficient's t by both standard errors.
 for spec in [revert, joint, both]:
     name = spec["name"]
     last = out.select(pl.col(name).struct.unnest()).filter(pl.col("se_coef").is_not_null()).tail(1)

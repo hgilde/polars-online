@@ -41,6 +41,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -55,10 +56,12 @@ bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
+# Pool the forty weeks, and fit with standard errors as if on the rows.
 pooled = po.gram.merge(blocks)  # the Gram of all 20,160 rows
 coef = po.gram.solve(pooled)  # least squares: the intercept, then x0 .. x199
 stats = po.gram.coef_stats(pooled, coef)  # its standard errors and t
 
+# What the pass kept, then each planted coefficient beside its estimate.
 columns = pooled["columns"]
 print(f"{len(blocks)} weekly Grams of {len(columns)} columns, pooled over {pooled['weight_sum']:,.0f} rows")
 print(f"{'column':>6} {'truth':>6} {'coef':>6} {'t':>6}")
@@ -66,6 +69,7 @@ truth = {"x0": 0.5, "x5": 0.4, "x10": 0.3, "x15": 0.2, "x20": 0.1, "x25": b25.me
 for name, b in truth.items():
     i = columns.index(name)
     print(f"{name:>6} {b:>6.3f} {coef[i]:>6.3f} {stats['t'][i]:>6.1f}")
+# The columns with no effect, and how many look as if they had one.
 rest = np.abs([stats["t"][columns.index(f)] for f in features if f not in truth])
 print(f"the other {len(rest)} columns: {(rest > 3).sum()} with |t| above 3, the largest {rest.max():.1f}")
 ```
@@ -320,6 +324,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -334,6 +339,7 @@ bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
+# What one week's block holds, and its size.
 first = blocks[0]
 print(f"{len(blocks)} blocks, the first for the week of {first['group'][:10]}")
 print(f"weight_sum {first['weight_sum']:.0f} and n_kish {first['n_kish']:.0f}: its rows, weighed alike")
@@ -416,6 +422,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -431,6 +438,7 @@ bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
 
+# Score a fit on any set of weeks, without reading their rows.
 def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]
@@ -439,6 +447,7 @@ def mean_squared_error(g, coef):
     return spread + gap**2
 
 
+# Fit on the early weeks; score it in sample and on the weeks held out.
 train = po.gram.merge(blocks[:30])  # weeks 1 to 30
 held_out = po.gram.merge(blocks[30:])  # weeks 31 to 40
 coef = po.gram.solve(train)
@@ -505,6 +514,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -529,6 +539,7 @@ for block, end in zip(blocks, last):
         dict(block, weight_sum=block["weight_sum"] * decay, target_weights=block["target_weights"] * decay)
     )
 
+# Pool the weeks as they are and aged, each against the whole stream's fit.
 for how, parts in [("as they are", blocks), ("aged", aged)]:
     gap = np.abs(po.gram.solve(po.gram.merge(parts)) - po.gram.solve(whole)).max()
     shown = "below 1e-12" if gap < 1e-12 else f"{gap:.3f}"
@@ -625,6 +636,7 @@ slow = slow / slow.std()
 quick = rng.standard_normal(n)
 level = 0.3 * rng.standard_normal(n_weeks)  # y's level in each week
 y = 0.05 * quick + level.repeat(per_week) + rng.standard_normal(n)
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, "slow": slow, "quick": quick, "y": y}).write_parquet("levels.parquet")
@@ -639,14 +651,17 @@ bank = po.ModelBank([spec])
 bank.fit(lf)
 blocks = bank.gram("blocks")
 
+# The chance correlation of the forty weekly means.
 weekly = np.array([[g["means"][1], g["target_means"][0]] for g in blocks])  # each week's mean of slow and of y
 print(f"the weekly means of slow and y correlate at {np.corrcoef(weekly.T)[0, 1]:.2f} over {n_weeks} weeks")
+# Slow and quick, pooled as one union and pooled within weeks.
 print(f"{'pooled':>12} {'slow':>7} {'t':>5} {'quick':>7} {'t':>5}")
 for how, pooled in [("as a union", po.gram.merge(blocks)), ("within weeks", po.gram.merge(blocks, within=True))]:
     coef = po.gram.solve(pooled)  # within weeks, coef[0], the intercept, is nan
     t = po.gram.coef_stats(pooled, coef)["t"]
     print(f"{how:>12} {coef[1]:>7.3f} {t[1]:>5.1f} {coef[2]:>7.3f} {t[2]:>5.1f}")
 
+# Each week alone, and a t from the spread of the weekly coefficients.
 each = po.gram.solve_subsets(blocks, [[i] for i in range(n_weeks)])  # each week alone
 weekly_slow = np.array([fits[0]["coef"][1] for fits in each])
 t_weeks = weekly_slow.mean() / (weekly_slow.std(ddof=1) / np.sqrt(n_weeks))  # Fama and MacBeth's t
@@ -742,6 +757,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -757,6 +773,7 @@ bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
 
+# Score a fit on any set of weeks, without reading their rows.
 def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]
@@ -765,6 +782,7 @@ def mean_squared_error(g, coef):
     return spread + gap**2
 
 
+# Pick the ridge by its error on the weeks held out.
 train, held_out = po.gram.merge(blocks[:2]), po.gram.merge(blocks[2:])  # fit on two weeks, judge on 38
 ridges = [0.0, 0.01, 0.03, 0.1, 0.3, 1.0]
 grid = po.gram.solve(train, ridge=ridges, standardize=True)  # a row per ridge, one eigendecomposition
@@ -854,6 +872,7 @@ y = x @ [0.5, 0.4, 0.3, 0.2, 0.1] + rng.standard_normal(n)
 features = ["x0", "x1", "x2", "x3", "x4", "x5"]
 pl.DataFrame({**dict(zip(features, [*x.T, x5])), "y": y}).write_parquet("near.parquet")
 
+# One pass leaves one Gram of the six features.
 spec = po.spec.ewridge(
     "fit", targets=["y"], features=features, half_life=float("inf"), solve_every=1e18
 )
@@ -861,11 +880,13 @@ bank = po.ModelBank([spec])
 bank.fit(pl.scan_parquet("near.parquet"))
 g = bank.gram("fit")[0]
 
+# Belsley's indexes, each column's share of the last component, and the VIFs.
 cond = po.gram.condition(g)  # Belsley's diagnostics, with the intercept among the columns
 print("condition indexes: " + ", ".join(f"{v:.1f}" for v in cond["condition_indexes"]))
 last = cond["proportions"][-1]  # each column's share of its variance in the last component
 print("shares of the last: " + ", ".join(f"{c} {p:.2f}" for c, p in zip(cond["columns"], last)))
 print("VIF: " + ", ".join(f"{c} {v:.0f}" for c, v in zip(features, po.gram.vif(g))))
+# The t with x5 in the fit, and without it.
 for cols in (features, features[:5]):
     part = po.gram.subset(g, ["intercept", *cols])  # without "intercept", a fit through the origin
     t = po.gram.coef_stats(part, po.gram.solve(part))["t"]
@@ -953,6 +974,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -968,6 +990,7 @@ bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
 
+# Score a fit on any set of weeks, without reading their rows.
 def mean_squared_error(g, coef):
     """A fit's mean squared error over the rows behind g, from g's arrays alone."""
     b0, b = coef[0], coef[1:]
@@ -1092,6 +1115,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -1106,17 +1130,20 @@ bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
+# The halves the selection runs on.
 halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
 splitter = np.random.default_rng(1)
 for _ in range(50):
     order = splitter.permutation(n_weeks)
     halves += [sorted(order[:20]), sorted(order[20:])]
 
+# Merge each half and walk its lasso path, timed.
 t0 = time.perf_counter()
 merged = [po.gram.merge([blocks[i] for i in half]) for half in halves]
 paths = po.gram.lars_paths(merged, max_active=8)  # a list per half, a path per target
 seconds = time.perf_counter() - t0
 
+# Count how often the halves chose each column.
 chosen, sizes = np.zeros(k), []  # how many halves chose each column, and how many each half chose
 for (path,) in paths:
     ever = set().union(*path["active"])  # active at any knot, up to the stop
@@ -1124,6 +1151,7 @@ for (path,) in paths:
     chosen[[features.index(c) for c in ever]] += 1
 freq = dict(zip(features, chosen / len(halves)))
 
+# The planted columns, the most chosen of the rest, and the stable set's bound.
 planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
 print("planted: " + ", ".join(f"{c} {freq[c]:.2f}" for c in planted))
 rest = sorted((f for f in features if f not in planted), key=lambda f: -freq[f])
@@ -1132,6 +1160,7 @@ q, threshold = np.mean(sizes), 0.75
 print(f"chosen on at least {threshold:.0%} of the halves: {' '.join(f for f in features if freq[f] >= threshold)}")
 print(f"{q:.1f} columns a half, so at most {q**2 / ((2 * threshold - 1) * k):.2f} false selections expected")
 
+# The same paths from solve_subsets in one call, timed beside the loop.
 t0 = time.perf_counter()
 same = po.gram.solve_subsets(blocks, halves, path={"max_active": 8})  # the same paths, in one call
 agree = all(a[0]["active"] == b[0]["active"] for a, b in zip(same, paths))
@@ -1207,6 +1236,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -1221,6 +1251,7 @@ bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
+# The same hundred halves of the weeks.
 halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
 splitter = np.random.default_rng(1)
 for _ in range(50):
@@ -1228,6 +1259,7 @@ for _ in range(50):
     halves += [sorted(order[:20]), sorted(order[20:])]
 
 
+# Selection frequencies, read alike from the real run and from each null run.
 def frequencies(run):
     """The share of the halves that chose each column: active at any knot of its path."""
     chosen = np.zeros(k)
@@ -1236,13 +1268,16 @@ def frequencies(run):
     return chosen / len(run)
 
 
+# The selection on the real target, and on 100 draws of a sign for each week.
 signs = np.random.default_rng(2).choice([-1.0, 1.0], size=(n_weeks, 100))  # a sign per week, 100 draws
 real = po.gram.solve_subsets(blocks, halves, path={"max_active": 8}, within=True)
 null = po.gram.solve_subsets(blocks, halves, path={"max_active": 8}, within=True, target_signs=signs)
 
+# Each column's frequency, and a threshold from the null runs' most chosen column.
 freq = dict(zip(features, frequencies(real)))
 null_max = np.array([frequencies(run).max() for run in null])  # each null run's most chosen column
 threshold = np.quantile(null_max, 0.95)
+# The planted columns, the most chosen of the rest, and what clears the threshold.
 planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
 print("planted: " + ", ".join(f"{c} {freq[c]:.2f}" for c in planted))
 rest = sorted((f for f in features if f not in planted), key=lambda f: -freq[f])
@@ -1308,6 +1343,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -1322,16 +1358,19 @@ bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
+# The six chosen columns, fit each week alone and pooled over all forty.
 chosen = ["x0", "x5", "x10", "x15", "x20", "x25"]
 each = po.gram.solve_subsets(blocks, [[i] for i in range(n_weeks)], features=chosen)  # each week alone
 pooled = po.gram.merge(blocks)
 coef = po.gram.solve(pooled, features=chosen)
 t = po.gram.coef_stats(pooled, coef, features=chosen)["t"]
 
+# The pooled fit beside the weekly ones, column by column.
 columns = pooled["columns"]
 print(f"{'column':>6} {'pooled':>7} {'t':>5} {'weekly mean':>12} {'sd':>6} {'t':>5} {'same sign':>10}")
 for name in chosen:
     i = columns.index(name)
+    # The column's forty weekly coefficients, read as a sample.
     weekly = np.array([fits[0]["coef"][i] for fits in each])
     sd = weekly.std(ddof=1)
     t_weeks = weekly.mean() / (sd / np.sqrt(n_weeks))  # Fama and MacBeth's t
@@ -1408,6 +1447,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -1438,6 +1478,7 @@ m = len(row["columns"])  # the intercept and the 200 features
 cov = np.zeros((m, m))
 cov[np.triu_indices(m)] = row["comoments"]  # the upper triangle, row by row
 cov += np.triu(cov, 1).T
+# The slopes from the centred system, and the intercept from the means.
 slopes = np.linalg.solve(cov[1:, 1:], np.asarray(row["cross_centered"])[1:])
 intercept = row["cross_moments"][0] - np.asarray(row["means_by_target"])[1:] @ slopes
 same = np.allclose(np.r_[intercept, slopes], po.gram.solve(blocks[0]), rtol=0, atol=1e-10)
@@ -1510,6 +1551,7 @@ b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
 y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
 y += rng.standard_normal(n)
 features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
 start = datetime(2025, 1, 6)  # a Monday
 ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
 pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
@@ -1524,11 +1566,13 @@ bank = po.ModelBank([spec])
 bank.fit(lf)  # learns from every row, and keeps only the state
 blocks = bank.gram("blocks")  # one dict per week, oldest first
 
+# The float64 fit as the reference, and the condition number that bounds the loss.
 pooled = po.gram.merge(blocks)
 reference = po.gram.solve(pooled)
 r = po.gram.correlation(pooled)  # row and column 0, the constant intercept's, are nan
 kappa = np.linalg.cond(r[1:, 1:])  # of the features' correlation matrix
 print(f"condition number {kappa:.1f}; float32's rounding times it, {kappa * 2**-24:.1e}")
+# Each dtype and layout: its bytes a week, and how far the fit moves.
 for dtype in ("float64", "float32"):
     for layout in ("full", "packed"):
         parts = bank.gram("blocks", dtype=dtype, layout=layout)
@@ -1542,6 +1586,7 @@ pl.DataFrame({"a": 1e20 * rng.standard_normal(1_000), "y": rng.standard_normal(1
 huge = po.spec.ewridge("huge", targets=["y"], features=["a"], half_life=float("inf"), solve_every=1e18)
 bank = po.ModelBank([huge])
 bank.fit(pl.scan_parquet("huge.parquet"))
+# Asking for it in float32 is refused, with the column named.
 try:
     bank.gram("huge", dtype="float32")
 except ValueError as e:
@@ -1618,6 +1663,7 @@ y = x[:, :10].sum(axis=1) + rng.standard_normal(n, dtype=np.float32)
 features = [f"x{j}" for j in range(k)]
 pl.DataFrame({**dict(zip(features, x.T)), "y": y}).write_parquet("wide.parquet")
 
+# Learn the same stream on one thread and on eight, keeping each Gram and time.
 grams, seconds = {}, {}
 for threads in (1, 8):
     spec = po.spec.ewridge(
@@ -1630,6 +1676,7 @@ for threads in (1, 8):
     seconds[threads] = time.perf_counter() - t0
     grams[threads] = bank.gram("wide")[0]["comoments"]
 
+# The two Grams compared bit for bit, and the speed-up.
 print(f"the Gram on 1 thread and on 8, bit for bit: {grams[1].tobytes() == grams[8].tobytes()}")
 print(f"time to learn: {seconds[1]:.2f} s on 1 thread, {seconds[8]:.2f} s on 8, {seconds[1] / seconds[8]:.1f} times as fast")
 ```
