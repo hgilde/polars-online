@@ -578,3 +578,48 @@ def test_a_field_name_has_one_dtype_across_the_registry():
             dtypes.setdefault(field.split("@")[0], {}).setdefault(dtype, set()).add(name)
     split = {field: by for field, by in dtypes.items() if len(by) > 1}
     assert not split, split
+
+
+def test_every_models_realized_dtypes_are_the_ones_output_index_declares():
+    """What ``fit_predict`` materializes is what ``output_index`` promised,
+    for every model, not only ``micro`` (``test_portability`` holds that one
+    by hand). The declared dtype comes from ``FieldMeta::dtype`` and the
+    materialized one from the matching ``assemble`` branch, two tables that
+    can drift apart: an integer output declared ``i64`` and built as
+    ``i32`` would pass every per-field test and fail a reader's join."""
+    import numpy as np
+    import polars as pl
+
+    rng = np.random.default_rng(0)
+    n = 200
+    frame = pl.DataFrame(
+        {
+            "x0": rng.standard_normal(n),
+            "x1": rng.standard_normal(n),
+            "y": rng.standard_normal(n),
+            "g": ["a"] * (n // 2) + ["b"] * (n // 2),  # monotone, for a closing spec
+            "t": np.arange(n, dtype=float),
+        }
+    )
+    names = {
+        pl.Float64: "f64",
+        pl.Int64: "i64",
+        pl.Boolean: "bool",
+        pl.String: "str",
+        pl.List(pl.Float64): "list[f64]",
+    }
+    mismatched = {}
+    for name in sorted(MINIMAL):
+        spec = _build(name)
+        df = frame
+        if name == "ew_class":
+            df = frame.with_columns(pl.Series("y", ["a", "b"] * (n // 2)))
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        declared = dict(
+            zip(*(po.spec.output_index(spec)[c].to_list() for c in ("field", "dtype")), strict=True)
+        )
+        for field in out.dtype.fields:
+            realized = "enum" if isinstance(field.dtype, pl.Enum) else names.get(field.dtype)
+            if realized != declared[field.name]:
+                mismatched[f"{name}.{field.name}"] = (declared[field.name], str(field.dtype))
+    assert not mismatched, mismatched
