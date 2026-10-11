@@ -11,7 +11,8 @@ is generated, seeded, into OUTDIR (default `.cache/windows_bench`, which git
 ignores) and reused by later runs. Each case runs in a fresh process, parquet
 in and `sink_parquet` out, and prints its wall time and peak RSS:
 
-- `with_windows`: `lf.online.with_windows(fwd_vwap=rewm_sum(p q) / rewm_sum(q))`;
+- `with_windows`: `lf.online.with_windows(fwd_vwap=ewm_sum(p q) / ewm_sum(q))`, both
+  `reverse=True`;
 - `rolling`: `rolling(period=H, offset="0s", closed="none")`, with each
   window's weights taken from its own anchor;
 - `embargoed`: the window as an `ewridge` target learned `H` after its row
@@ -76,8 +77,8 @@ def one(out: Path, case: str, n: int, h: str) -> None:
         embargo=h,
     )
     notional = pl.col("price") * pl.col("quantity")
-    fwd_vwap = po.rewm_sum(notional, half_life="10s", window_size=h) / po.rewm_sum(
-        "quantity", half_life="10s", window_size=h
+    fwd_vwap = po.ewm_sum(notional, half_life="10s", window_size=h, reverse=True) / po.ewm_sum(
+        "quantity", half_life="10s", window_size=h, reverse=True
     )
     columns = out / f"windows_{n}_{h}.parquet"
     start = time.perf_counter()

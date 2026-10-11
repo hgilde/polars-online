@@ -119,9 +119,11 @@ from polars_online.ops import (
     ewm_sum,
     ewm_var,
     increment,
-    rewm_mean,
-    rewm_rate,
-    rewm_sum,
+    # The old names of `ewm_*(reverse=True)`, forwarded with a deprecation
+    # warning and kept out of `__all__`, so the reference shows the new form.
+    rewm_mean,  # noqa: F401
+    rewm_rate,  # noqa: F401
+    rewm_sum,  # noqa: F401
 )
 
 __version__ = "0.13.0"
@@ -134,16 +136,13 @@ __all__ = [
     "ewm_var",
     "increment",
     "ops",
-    "rewm_mean",
-    "rewm_rate",
-    "rewm_sum",
-    "ColumnNotFoundError",
     "ArrowStruct",
+    "ColumnNotFoundError",
     "ConsumedSourceWarning",
     "ModelBank",
     "OrderNotGuaranteedWarning",
-    "PolarsOnlineWarning",
     "PolarsOnlineDeprecationWarning",
+    "PolarsOnlineWarning",
     "ReadinessWarning",
     "UnstableWarning",
     "__version__",

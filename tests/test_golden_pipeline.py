@@ -382,7 +382,9 @@ def switched_specs() -> list[dict]:
         min_weight=4.0,
     )
     timed = dict(common, clock="ts", gap_cap="6m", half_life="25m")
-    fwd = (po.rewm_mean("mid", half_life=5.0, window_size=10.0) - pl.col("mid")).alias("fwd")
+    fwd = (po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")).alias(
+        "fwd"
+    )
     unsupervised = {k: v for k, v in timed.items() if k not in ("targets", "min_weight")}
     return [
         # Under `closed="both"`, the edge every window had before task 196,

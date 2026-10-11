@@ -285,7 +285,7 @@ stream.head(1_500).write_parquet("2025.parquet")
 stream.tail(500).write_parquet("2026.parquet")
 clock = dict(clock="t", gap_cap=300.0, half_life=600.0)
 late = po.spec.ewridge("late", targets=["y"], features=["x0", "x1"], embargo=50.0, **clock)     # each row learned 50 units later
-y_ahead = po.rewm_mean("y", half_life=10.0, window_size=20.0).alias("y_ahead")                   # the next 20 units' mean of y
+y_ahead = po.ewm_mean("y", half_life=10.0, window_size=20.0, reverse=True).alias("y_ahead")                   # the next 20 units' mean of y
 window = po.spec.ewridge("window", targets=[y_ahead], features=["x0", "x1"], embargo=20.0, **clock)
 specs = [late, window]
 

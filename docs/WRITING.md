@@ -329,7 +329,7 @@ them.** Where a spec takes a Polars expression, the example writes one, and
 a helper that does the same job comes second, if at all. The user found the
 expressions clearer than `po.target("price_5m", relative_to="mid")`, and
 that helper was removed for the `with_columns` expression that does its
-job. An expression such as `(po.rewm_mean("price", ...) -
+job. An expression such as `(po.ewm_mean("price", ..., reverse=True) -
 pl.col("mid")).alias("fwd_move")` shows what is computed and over which
 rows, in a language the reader already knows.
 

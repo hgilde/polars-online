@@ -719,11 +719,11 @@ def with_windows(
     Reads like ``with_columns``: each expression adds a column named by its
     keyword or its ``.alias()``, and the input's columns come through
     unchanged, in order. The operators -- :func:`~polars_online.ops.ewm_mean`,
-    :func:`~polars_online.ops.rewm_mean`, :func:`~polars_online.ops.ewm_sum`,
-    :func:`~polars_online.ops.rewm_sum`, :func:`~polars_online.ops.ewm_rate`,
-    :func:`~polars_online.ops.rewm_rate`, :func:`~polars_online.ops.ewm_var`,
-    :func:`~polars_online.ops.ewm_std` and :func:`~polars_online.ops.increment`
-    -- are stateful kernels computed by the core, each distinct one once. The
+    :func:`~polars_online.ops.ewm_sum` and :func:`~polars_online.ops.ewm_rate`,
+    each looking back or, under ``reverse=True``, ahead,
+    :func:`~polars_online.ops.ewm_var`, :func:`~polars_online.ops.ewm_std`
+    and :func:`~polars_online.ops.increment` -- are stateful kernels computed
+    by the core, each distinct one once. The
     formula around them is element-wise Polars, evaluated on each chunk
     emitted. Over ``trades``, quotes with a ``mid`` and trades between them
     with a ``side``, a ``quantity`` and a ``price``, a trailing mean of the
@@ -733,13 +733,14 @@ def with_windows(
 
         notional = pl.col("price") * pl.col("quantity")
         buys = pl.when(pl.col("side") == "buy")
+        ahead = {"half_life": "10s", "window_size": "1m", "reverse": True}
         out = po.stream.with_windows(
             trades,
             mid_trend=po.ewm_mean("mid", half_life="5s", window_size="1m") - pl.col("mid"),
-            fwd_vwap=po.rewm_sum(notional, half_life="10s", window_size="1m")
-                     / po.rewm_sum("quantity", half_life="10s", window_size="1m"),
-            fwd_buy_vwap=po.rewm_sum(buys.then(notional), half_life="10s", window_size="1m")
-                         / po.rewm_sum(buys.then("quantity"), half_life="10s", window_size="1m"),
+            fwd_vwap=po.ewm_sum(notional, half_life="10s", window_size="1m", reverse=True)
+                     / po.ewm_sum("quantity", half_life="10s", window_size="1m", reverse=True),
+            fwd_buy_vwap=po.ewm_sum(buys.then(notional), **ahead)
+                         / po.ewm_sum(buys.then("quantity"), **ahead),
             clock="ts", gap_cap="5m", group="symbol",
         )
 

@@ -421,7 +421,9 @@ def test_a_formula_target_the_frame_has_no_column_for_is_refused_by_name():
     df = pl.DataFrame(
         {"t": np.arange(60, dtype=float), "x": np.sin(np.arange(60.0)), "mid": np.arange(60.0)}
     )
-    fwd = (po.rewm_mean("mid", half_life=5.0, window_size=5.0) - pl.col("mid")).alias("fwd")
+    fwd = (po.ewm_mean("mid", half_life=5.0, window_size=5.0, reverse=True) - pl.col("mid")).alias(
+        "fwd"
+    )
     spec = po.spec.ewridge(
         "m",
         targets=[fwd],

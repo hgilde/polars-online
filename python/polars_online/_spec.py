@@ -639,9 +639,11 @@ def target_columns(t: str | Target | FormulaTarget) -> list[str]:
     return [t["column"]]
 
 
-def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
+def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
     """A window expression as a target table (docs/PLAN.md task 104): named by
-    its alias, holding at least one operator looking ahead."""
+    its alias, holding at least one operator looking ahead. A bare column
+    under an alias, ``pl.col("p").alias("price")``, is Polars' spelling of
+    ``po.target("p", name="price")``, and is read as it (task 244, M-11)."""
     from polars_online import _formula
 
     tree = _formula.to_tree(expr)
@@ -650,6 +652,15 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
     if isinstance(tree, list) and tree and tree[0] == "alias":
         name = tree[2]
         tree = tree[1]
+    if isinstance(tree, list) and len(tree) == 2 and tree[0] == "col":
+        column = tree[1]
+        if name == column:
+            raise ValueError(
+                f"{who}: target pl.col({column!r}) is the column itself: write the string "
+                f"{column!r} in targets, or name it with .alias(...), which "
+                f'po.target({column!r}, name="...") also does'
+            )
+        return target(column, name=name)
     if name.startswith(_formula.PREFIX):
         raise ValueError(
             f"{who}: a target expression whose name would be an operator's needs a name: "
@@ -672,9 +683,9 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
         else:
             make = "it holds no operator at all, so add it as a column with Polars' with_columns"
         raise ValueError(
-            f"{who}: target {name!r} holds no operator looking ahead (rewm_mean, rewm_sum or "
-            f"rewm_rate), so it is known at its own row: {make}, and name the column as the "
-            f"target"
+            f"{who}: target {name!r} holds no operator looking ahead (ewm_mean, ewm_sum or "
+            f"ewm_rate with reverse=True), so it is known at its own row: {make}, and name the "
+            "column as the target"
         )
     return {"name": name, "formula": tree}
 
@@ -685,7 +696,9 @@ def target(column: str, *, name: str | None = None) -> Target:
 
     ``po.target("p", name="price")`` in a spec's ``targets`` has the model
     learn the column ``p`` as it is, and name its output fields after
-    ``price``: ``pred_price`` and the rest. A string target is the same as
+    ``price``: ``pred_price`` and the rest. Polars' own spelling of a column
+    under another name, ``pl.col("p").alias("price")``, is read in
+    ``targets`` as this same target. A string target is the same as
     ``po.target`` with no ``name``, and so is a ``name`` equal to the column.
     A target's column used as a feature is refused, whatever its name.
 

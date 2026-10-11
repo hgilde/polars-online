@@ -2026,7 +2026,7 @@ fair = po.spec.ewridge("fair", targets=["A"], features=["x1", "x2", "x3"], half_
 
 # Stage 2, reversion: the next 150 s's 30-second EWMA of the mid, less the mid, regressed on
 # resid_A. Each row is learned once its window has closed (embargo), and its residuals overlap.
-fwd = (po.rewm_mean("mid", half_life="30s", window_size="150s") - pl.col("mid")).alias("B")
+fwd = (po.ewm_mean("mid", half_life="30s", window_size="150s", reverse=True) - pl.col("mid")).alias("B")
 stage2 = dict(
     targets=[fwd], half_life=float("inf"), embargo="150s", min_weight=1_000.0,
     emit_se_coef=True, emit_robust_se=True,
