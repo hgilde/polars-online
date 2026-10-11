@@ -22,7 +22,7 @@ import pytest
 import polars_online as po
 from polars_online import gram as pg
 
-TIER = "essential"
+TIER = "mixed"
 
 
 def stream(n=4000, k=3, seed=0, collinear=False):
