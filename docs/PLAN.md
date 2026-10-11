@@ -9944,6 +9944,17 @@ tick, and that the series holding it up has a count near 1.
       on most); the docs show `.list.to_array(k)` on the rows that carry it
       for an `(n, k)` matrix. Built first, so the profiling measures the
       build that ships.
+      Then (the user, 2026-10-11: "After that do the profiling and fix the
+      performance issues"): phase 1 profiles alone on a quiet machine and
+      ranks; phase 2 fixes, without waiting for a ranked list, in workers on
+      disjoint areas (the clock path, sgd/pa, bocpd, kmeans/micro, the
+      bank's per-row overhead), each fix held bit-identical by the golden,
+      fixture and release-comparison tests, or, where a state layout must
+      change, with the schema bumped and the fixtures regenerated. A fix
+      that would change *behaviour* -- a number, a default, what a field
+      means -- rather than speed comes back to the user first. The final
+      benchmark against 0.13.0's wheel runs once, alone, after the fixes
+      merge.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
