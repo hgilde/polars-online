@@ -346,8 +346,9 @@ run as it stands and check: it generates its data, or reads the files
 *Example data* writes, saves what it reads to parquet and scans it back,
 and prints its result. A ```` ```text ```` block right under it shows what
 it prints, and a test holds the two together with `tests/doc_recipes.py`'s
-`differences`: the same lines, the same words, and each number within two
-units of its last printed digit. A line that
+`differences`: the same lines, the same words, each integer exactly, since
+an integer is a count and a count one off is wrong, and each other number
+within two units of its last printed digit. A line that
 starts with `time` reports what the machine decides, so it is held to its
 words alone. The result printed shows the capability working, so a recipe
 plants an answer and prints it beside what the library found: a planted

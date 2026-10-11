@@ -56,6 +56,16 @@ def test_the_comparison_holds_words_digits_and_blow_ups():
     assert differences("a\nb", "a")
 
 
+def test_the_comparison_holds_a_count_exactly():
+    """A number with no decimal point is a count, the same on every run, so
+    one off is a wrong count; a decimal keeps its two units of slack."""
+    assert not differences("rows 217 of 400", "rows 217 of 400")
+    assert differences("rows 217 of 400", "rows 218 of 400")
+    assert differences("flagged at row 3001", "flagged at row 3000")
+    assert differences("rows 217", "rows 217.0")
+    assert not differences("R² 0.578 on 400 rows", "R² 0.579 on 400 rows")
+
+
 def _anchors() -> set[str]:
     text = PAGE.read_text(encoding="utf-8")
     return set(re.findall(r'<a id="([^"]+)"></a>', text)) | {

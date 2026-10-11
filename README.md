@@ -1832,7 +1832,7 @@ print(f"rows scored: {scored} of {fitted.height}; weight_sum on the last row: {f
 ```
 
 ```text
-rows scored: 397 of 400; weight_sum on the last row: 200
+rows scored: 395 of 400; weight_sum on the last row: 200
 ```
 
 **`lf.online.fit_predict` checks each spec against the query's columns when

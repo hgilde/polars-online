@@ -5,8 +5,9 @@ the README and ``docs/RUNNER.md`` (``tests/test_production_hardening.py``).
 
 Each python block of such a page is followed by a ```text block of what it
 prints. A test runs the block and holds what it printed to the text block:
-the same lines, the same words, and each number within two units of its last
-printed digit (docs/WRITING.md §3, "Every code block runs"). The README and
+the same lines, the same words, each integer exactly, and each other number
+within two units of its last printed digit (docs/WRITING.md §3, "A
+capability is shown by a recipe"). The README and
 the runner guide mix recipes with blocks whose output is not shown, so there
 only a block followed by a ```text block is held (``shown_outputs``).
 """
@@ -22,6 +23,9 @@ from pathlib import Path
 
 #: A number as a recipe prints it, not a digit inside a name such as ``x1``.
 NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:e[+-]?\d+)?(?![\w.])")
+
+#: A number printed with no decimal point or exponent: a count, held exactly.
+INTEGER = re.compile(r"-?\d+")
 
 #: A number this large is a model that diverged: its digits are the platform's
 #: rounding, so only its sign and its size are held (the pages say so).
@@ -96,7 +100,10 @@ def recipes(page: Path) -> list[tuple[int, str, str]]:
 
 def differences(shown: str, printed: str) -> list[str]:
     """Where ``printed`` is not what the page shows: the same lines, the same
-    words, and each number within two units of its last printed digit."""
+    words, each integer exactly, and each other number within two units of
+    its last printed digit. An integer is a count -- rows, groups, a row's
+    index, a round -- which is the same on every run and every platform, so
+    a count one off is a wrong count, not rounding."""
     want, got = shown.splitlines(), printed.rstrip("\n").splitlines()
     if len(want) != len(got):
         return [f"{len(got)} lines printed, {len(want)} shown:\n{printed}"]
@@ -107,7 +114,9 @@ def differences(shown: str, printed: str) -> list[str]:
             continue
         for x, y in zip(NUMBER.findall(a), NUMBER.findall(b), strict=True):
             e, g = float(x), float(y)
-            if abs(e) >= BLOWN_UP:
+            if INTEGER.fullmatch(x):
+                ok = INTEGER.fullmatch(y) is not None and int(x) == int(y)
+            elif abs(e) >= BLOWN_UP:
                 ok = abs(g) >= BLOWN_UP and (e > 0) == (g > 0)
             else:
                 unit = 10.0 ** Decimal(x.split("e")[0]).as_tuple().exponent

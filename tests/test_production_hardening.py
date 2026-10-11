@@ -671,6 +671,16 @@ README_ONLY = sorted(
 #: (README-ITERATIONS, I8's V5). The rest of its blocks only have to run.
 README_RECIPES = shown_outputs(REPO / "README.md")
 
+#: Every recipe among ``README_BLOCKS``, as (path, line): the README's, held
+#: by the test of its recipes, and each moved page's, held by the page's own
+#: test (``tests/test_models_page.py``, ``test_windows_page.py``,
+#: ``test_gbdt_page.py``), so none runs twice.
+RECIPE_BLOCKS = {
+    (page, line)
+    for page in ("README.md", *MOVED_PAGES)
+    for line, _, _ in shown_outputs(REPO / page)
+}
+
 #: The runner guide's shell blocks whose output a ```text block shows, held
 #: to what `online` prints, stdout and stderr as a terminal interleaves them.
 RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
@@ -967,8 +977,9 @@ class TestReadmeExamples:
         [
             _block_param(*block)
             for block in README_BLOCKS
-            # A recipe runs, and is held to its output, in the test after this.
-            if not (block[0] == "README.md" and block[1] in {ln for ln, _, _ in README_RECIPES})
+            # A recipe runs, and is held to its output, in the test after this
+            # (the README's) or in its page's own test (a moved page's).
+            if block[:2] not in RECIPE_BLOCKS
         ],
     )
     def test_a_readme_block_runs(self, path, line, code, tmp_path, monkeypatch):
