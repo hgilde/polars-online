@@ -313,3 +313,92 @@ def test_quick_is_not_the_gate():
     assert re.search(
         r"PASS \(the mapped tests only; the gate still runs before each commit\)", text
     )
+
+
+# --- scripts/clear_caches.sh ----------------------------------------------------
+
+
+def _sandbox(tmp_path: Path) -> tuple[Path, dict[str, str], list[Path], list[Path]]:
+    """A copy of the script in a repository of its own, a HOME of its own
+    and a stand-in `sccache` that records its calls: the caches it may
+    clear, and the files beside them it must not touch."""
+    repo, home, bin_ = tmp_path / "repo", tmp_path / "home", tmp_path / "bin"
+    (repo / "scripts").mkdir(parents=True)
+    script = (REPO / "scripts" / "clear_caches.sh").read_text(encoding="utf-8")
+    (repo / "scripts" / "clear_caches.sh").write_text(script, encoding="utf-8")
+    bin_.mkdir()
+    calls = tmp_path / "sccache-calls"
+    (bin_ / "sccache").write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\n', encoding="utf-8")
+    (bin_ / "sccache").chmod(0o755)
+    sccache_dir = home / "sccache-cache"
+    caches = [
+        repo / "target" / "debug" / "a.rlib",
+        repo / "target" / "dev-wheel" / "b.so",
+        sccache_dir / "0" / "entry",
+    ]
+    kept = [
+        repo / ".cache" / "BTCUSDT.parquet",
+        repo / ".hypothesis" / "examples" / "x",
+        repo / "src.rs",
+        home / "Library" / "Caches" / "other" / "y",
+        tmp_path / "outside",
+    ]
+    for f in [*caches, *kept]:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x" * 2048)
+    env = {
+        "PATH": f"{bin_}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(home),
+        "SCCACHE_DIR": str(sccache_dir),
+    }
+    return repo, env, caches, kept
+
+
+def _clear(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(repo / "scripts" / "clear_caches.sh"), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@posix_shell
+def test_clear_caches_dry_run_removes_nothing(tmp_path):
+    repo, env, caches, kept = _sandbox(tmp_path)
+    res = _clear(repo, env, "--dry-run")
+    assert res.returncode == 0, res.stderr
+    assert all(f.exists() for f in [*caches, *kept])
+    assert "dry run: nothing removed" in res.stdout
+    assert "would free" in res.stdout and str(repo / "target") in res.stdout
+    assert not (tmp_path / "sccache-calls").exists(), "a dry run stops no server"
+
+
+@posix_shell
+def test_clear_caches_removes_its_list_and_nothing_else(tmp_path):
+    repo, env, caches, kept = _sandbox(tmp_path)
+    res = _clear(repo, env)
+    assert res.returncode == 0, res.stderr
+    assert not any(f.exists() for f in caches), res.stdout
+    assert all(f.exists() for f in kept), res.stdout
+    assert (tmp_path / "sccache-calls").read_text(encoding="utf-8").split() == ["--stop-server"]
+    assert "clear_caches: freed" in res.stdout
+
+
+@posix_shell
+def test_clear_caches_takes_the_test_data_only_when_asked(tmp_path):
+    repo, env, _, kept = _sandbox(tmp_path)
+    res = _clear(repo, env, "--test-data")
+    assert res.returncode == 0, res.stderr
+    assert not (repo / ".cache").exists() and not (repo / ".hypothesis").exists()
+    rest = [f for f in kept if ".cache" not in f.parts and ".hypothesis" not in f.parts]
+    assert all(f.exists() for f in rest)
+
+
+@posix_shell
+def test_clear_caches_refuses_a_cache_directory_that_is_not_sccaches(tmp_path):
+    repo, env, caches, kept = _sandbox(tmp_path)
+    res = _clear(repo, {**env, "SCCACHE_DIR": env["HOME"]})
+    assert res.returncode == 2 and "refusing" in res.stderr
+    assert all(f.exists() for f in [*caches, *kept])
