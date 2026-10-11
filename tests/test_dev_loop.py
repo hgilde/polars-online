@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -140,3 +141,38 @@ def test_no_workflow_turns_the_local_compiler_cache_on():
             if "sccache" in step.get("with", {}) and where != MATURIN_ACTION_CACHE:
                 found.append(f"{path.name}: {step.get('name')!r} asks for sccache")
     assert not found, found
+
+
+# --- the dev-wheel profile ---------------------------------------------------
+
+
+def test_the_dev_wheel_profile_is_release_without_its_slow_parts():
+    dev = CARGO["profile"]["dev-wheel"]
+    assert dev == {
+        "inherits": "release",
+        "lto": False,
+        "codegen-units": 256,
+        "incremental": True,
+        "strip": "none",
+    }
+    # What the shipped wheel is built with does not move.
+    assert CARGO["profile"]["release"] == {"lto": "thin", "codegen-units": 1, "strip": "symbols"}
+
+
+#: A build with the dev profile, as a command line or an argument list.
+BUILDS_DEV = re.compile(r"""--profile["',\s]+dev-wheel""")
+
+
+def test_what_ships_and_what_gates_a_push_build_release():
+    """The dev build is for the loop inside a task alone: the gate's own
+    build, every workflow and the release build the extension `--release`,
+    and nothing but `scripts/quick.py` builds with the dev profile."""
+    assert "maturin develop --release" in GATE
+    for path in [*WORKFLOWS, *ACTIONS]:
+        assert "dev-wheel" not in path.read_text(encoding="utf-8"), path.name
+    named = sorted(
+        str(p.relative_to(REPO))
+        for p in (REPO / "scripts").glob("*")
+        if p.is_file() and BUILDS_DEV.search(p.read_text(encoding="utf-8", errors="replace"))
+    )
+    assert set(named) <= {"scripts/quick.py"}, named
