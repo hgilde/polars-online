@@ -171,7 +171,7 @@ fn the_sample_is_the_same_rows_however_the_stream_is_cut() {
     let lay = layout(2, false);
     let pool = pool();
     let draw = |cut: i64| {
-        let mut s = Sampler::new(lay.kinds.clone(), 500, 7);
+        let mut s = Sampler::new(lay.kinds.clone(), 500, 7, false);
         let mut at = 0;
         while at < 20_000 {
             let end = (at + cut).min(20_000);
@@ -186,13 +186,115 @@ fn the_sample_is_the_same_rows_however_the_stream_is_cut() {
     assert_eq!(one, draw(1));
     assert_eq!(one, draw(333));
     // A short stream is kept whole.
-    let mut s = Sampler::new(lay.kinds.clone(), 500, 7);
+    let mut s = Sampler::new(lay.kinds.clone(), 500, 7, false);
     s.push_frame(&frame(0..40), &lay, &pool).unwrap();
     assert_eq!(s.rows_kept(), 40);
     match &s.planted(256, &pool)[1] {
         Planted::Values(v) => assert_eq!(v, &(0..11).map(|c| c as f32).collect::<Vec<_>>()),
         other => panic!("{other:?}"),
     }
+}
+
+/// `frame(rows)` with a weight column `w`, `w(i)` for row `i`.
+fn weighted(rows: std::ops::Range<i64>, w: impl Fn(i64) -> f64) -> DataFrame {
+    let mut df = frame(rows.clone());
+    let w: Vec<f64> = rows.map(w).collect();
+    df.with_column(Column::new("w".into(), w)).unwrap();
+    df
+}
+
+fn draw(lay: &Layout, k: usize, cut: i64, n: i64, w: &dyn Fn(i64) -> f64) -> Sampler {
+    let pool = pool();
+    let mut s = Sampler::new(lay.kinds.clone(), k, 7, lay.weight.is_some());
+    let mut at = 0;
+    while at < n {
+        let end = (at + cut).min(n);
+        let df = if lay.weight.is_some() {
+            weighted(at..end, w)
+        } else {
+            frame(at..end)
+        };
+        s.push_frame(&df, lay, &pool).unwrap();
+        at = end;
+    }
+    s
+}
+
+#[test]
+fn a_weighted_sample_is_the_same_rows_however_the_stream_is_cut() {
+    let lay = layout(2, true);
+    let pool = pool();
+    let w = |i: i64| 0.25 + (i % 13) as f64 + if i % 97 == 0 { 300.0 } else { 0.0 };
+    let one = draw(&lay, 500, 20_000, 20_000, &w).ref_matrix(64, &pool);
+    assert_eq!(one, draw(&lay, 500, 1, 20_000, &w).ref_matrix(64, &pool));
+    assert_eq!(one, draw(&lay, 500, 333, 20_000, &w).ref_matrix(64, &pool));
+}
+
+#[test]
+fn equal_weights_draw_and_plant_the_unweighted_sample_to_the_bit() {
+    let pool = pool();
+    let plain = draw(&layout(2, false), 500, 333, 20_000, &|_| 1.0).ref_matrix(64, &pool);
+    for x in [1.0, 3.7, 1e-3, 1e300] {
+        let s = draw(&layout(2, true), 500, 333, 20_000, &|_| x);
+        assert_eq!(plain, s.ref_matrix(64, &pool), "{x}");
+    }
+    // A stream shorter than the sample too.
+    let plain = draw(&layout(2, false), 500, 7, 300, &|_| 1.0).ref_matrix(64, &pool);
+    assert_eq!(
+        plain,
+        draw(&layout(2, true), 500, 7, 300, &|_| 0.5).ref_matrix(64, &pool)
+    );
+}
+
+#[test]
+fn a_row_heavier_than_tau_is_always_kept_and_weight_zero_never_counts() {
+    let lay = layout(2, true);
+    let pool = pool();
+    // Rows 1000, 2000, .., 19000 carry a weight far above tau: all 19 kept.
+    // x0 is i / 2 (a null at i % 7 == 3), so those rows hold every edge.
+    let s = draw(&lay, 200, 999, 20_000, &|i| {
+        if i % 1000 == 0 && i > 0 { 1e9 } else { 1.0 }
+    });
+    assert_eq!(s.rows_kept(), 200);
+    match &s.planted(5, &pool)[0] {
+        // 16 of them hold a value (x0 is null at rows 4000, 11000 and
+        // 18000), 500, 1000, 1500, 2500, .., each nearly 1/16 of the weight:
+        // the edges at 1/5 .. 4/5 of it fall on the 4th, 7th, 10th and 13th
+        // of them, and the 183 light rows' weight, under 1e-4 of the total,
+        // cannot move an edge.
+        Planted::Values(v) => assert_eq!(&v[1..], &[2500.0, 4000.0, 6000.0, 7500.0]),
+        other => panic!("{other:?}"),
+    }
+    // Weight 0 on every row of x0 >= 100 (i >= 200): those rows place no
+    // edge, though the stream is shorter than the sample.
+    let s = draw(&lay, 5_000, 333, 2_000, &|i| {
+        if i >= 200 { 0.0 } else { 2.0 }
+    });
+    assert_eq!(s.rows_kept(), 2_000);
+    match &s.planted(16, &pool)[0] {
+        Planted::Values(v) => assert!(v.iter().all(|&e| e < 100.0), "{v:?}"),
+        other => panic!("{other:?}"),
+    }
+    // No weight at all: one value, as for a feature never seen.
+    let s = draw(&lay, 50, 333, 2_000, &|_| 0.0);
+    assert_eq!(s.planted(16, &pool)[0], Planted::Values(vec![0.0]));
+}
+
+#[test]
+fn the_sample_refuses_a_negative_weight_by_row() {
+    let lay = layout(2, true);
+    let pool = pool();
+    let mut s = Sampler::new(lay.kinds.clone(), 50, 7, true);
+    s.push_frame(&weighted(0..100, |_| 1.0), &lay, &pool)
+        .unwrap();
+    let e = s
+        .push_frame(
+            &weighted(100..200, |i| if i == 150 { -1.0 } else { 1.0 }),
+            &lay,
+            &pool,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("holds -1.0 at row 150"), "{e}");
 }
 
 #[test]
@@ -202,7 +304,7 @@ fn a_category_plants_its_levels() {
         ..layout(2, false)
     };
     let pool = pool();
-    let mut s = Sampler::new(lay.kinds.clone(), 100, 0);
+    let mut s = Sampler::new(lay.kinds.clone(), 100, 0, false);
     s.push_frame(&frame(0..1000), &lay, &pool).unwrap();
     let (m, rows) = s.ref_matrix(256, &pool);
     let cat: Vec<f32> = (0..rows).map(|r| m[r * 2 + 1]).collect();
