@@ -49,9 +49,13 @@ LGB_DATA = {"verbose": -1, "bin_construct_sample_cnt": 5000}
 
 
 def frame(n: int = 20_000, seed: int = 0) -> pl.DataFrame:
-    """Floats of four shapes (one with 5% nulls, one of few distinct
-    values), an integer, a Boolean, an Enum of five uneven levels, a label
-    and a weight."""
+    """Floats of four shapes (one of few distinct values), an integer, a
+    Boolean, an Enum of five uneven levels, a label and a weight. The label
+    depends on ``x0``, ``x2``, ``i0``, ``b0`` and ``cat``, so the trees
+    split on each of them, and ``x0`` has 5% nulls: a null read as 0 there
+    moves a split, where one on a feature the trees never split on would
+    leave the tree hash unchanged (review 7, C-2). ``x1`` and ``x3`` are
+    noise."""
     rng = np.random.default_rng(seed)
     x0 = rng.normal(size=n)
     x1 = rng.normal(size=n)
@@ -64,13 +68,14 @@ def frame(n: int = 20_000, seed: int = 0) -> pl.DataFrame:
         2 * x0
         + np.where(x2 > 1.5, 1.0, -0.5)
         + 0.3 * i0
+        + 1.5 * b0
         + cat * 0.7
         + rng.normal(scale=0.5, size=n)
     )
     return pl.DataFrame(
         {
-            "x0": x0,
-            "x1": pl.Series(x1).set(pl.Series(rng.random(n) < 0.05), None),
+            "x0": pl.Series(x0).set(pl.Series(rng.random(n) < 0.05), None),
+            "x1": x1,
             "x2": x2,
             "x3": x3,
             "i0": i0,
@@ -108,10 +113,13 @@ def lgb_trees(bst: lgb.Booster) -> str:
 
 
 def xgb_own(
-    df: pl.DataFrame, ref: xgb.DMatrix | None = None, weight: bool = True
+    df: pl.DataFrame,
+    ref: xgb.DMatrix | None = None,
+    weight: bool = True,
+    x: np.ndarray | None = None,
 ) -> xgb.QuantileDMatrix:
     return xgb.QuantileDMatrix(
-        numpy_x(df),
+        numpy_x(df) if x is None else x,
         label=df["y"].to_numpy(),
         weight=df["w"].to_numpy() if weight else None,
         feature_names=FEATURES,
@@ -122,9 +130,14 @@ def xgb_own(
     )
 
 
-def lgb_own(df: pl.DataFrame, params: dict, reference: lgb.Dataset | None = None) -> lgb.Dataset:
+def lgb_own(
+    df: pl.DataFrame,
+    params: dict,
+    reference: lgb.Dataset | None = None,
+    x: np.ndarray | None = None,
+) -> lgb.Dataset:
     return lgb.Dataset(
-        numpy_x(df, np.float32),
+        numpy_x(df, np.float32) if x is None else x,
         label=df["y"].to_numpy(),
         weight=df["w"].to_numpy(),
         feature_name=FEATURES,
@@ -436,6 +449,85 @@ def test_training_may_not_change_a_dataset_parameter(data):
     lgb.train({**LGB, "max_bin": 255, "seed": 3}, ds, 2)
 
 
+# -------------------------------------------------------------- the oracle
+
+
+@pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
+def test_the_tree_hash_sees_a_null_read_as_zero(data, lib):
+    """A planted defect: the library's own route with every null of ``x0``
+    read as 0 grows other trees than po.gbdt's, so the hash the tests above
+    compare would catch a null handed over as 0; and the trees split on
+    ``x0`` and on the Boolean, which the hash cannot see otherwise (review 7,
+    C-2: with the nulls on a feature the trees never split on, LightGBM's
+    hash was the same with them read as 0)."""
+    j = FEATURES.index("x0")
+    if lib == "xgboost":
+        m = gbdt.xgboost_matrix(data, label="y", weight="w")
+        bst = xgb.train(XGB, m, 20)
+        ours = xgb_trees(bst)
+        splits = bst.get_score(importance_type="weight")
+        x = numpy_x(data)
+        assert np.isnan(x[:, j]).sum() > 500
+        x[np.isnan(x[:, j]), j] = 0.0
+        theirs = xgb_trees(xgb.train(XGB, xgb_own(data, ref=m, x=x), 20))
+    else:
+        ds = gbdt.lightgbm_dataset(data, label="y", weight="w", params=LGB_DATA)
+        bst = lgb.train(LGB, ds, 20)
+        ours = lgb_trees(bst)
+        splits = dict(zip(FEATURES, bst.feature_importance("split"), strict=True))
+        x = numpy_x(data, np.float32)
+        assert np.isnan(x[:, j]).sum() > 500
+        x[np.isnan(x[:, j]), j] = 0.0
+        theirs = lgb_trees(lgb.train(LGB, lgb_own(data, LGB_DATA, x=x), 20))
+    assert splits["x0"] > 0 and splits["b0"] > 0, splits
+    assert ours != theirs, "a null read as 0 would go unseen"
+
+
+@pytest.mark.parametrize("engine", ["native", "python"])
+def test_a_ref_or_reference_on_an_enum_of_other_categories_is_refused_by_name(data, valid, engine):
+    """A ``pl.Enum``'s codes mean its categories in order, and a validation
+    set is binned on the training cuts by its codes: the same Enum is
+    accepted, one listing the levels in another order is refused by name,
+    and so is a reference with the features in another order (review 7,
+    C-1: a reversed Enum was accepted, and predicted the levels' effects
+    permuted). A reference built by the library itself is checked by its
+    feature names alone."""
+    reordered = valid.with_columns(pl.col("cat").cast(pl.String).cast(pl.Enum(LEVELS[::-1])))
+    enum = (
+        r"as a pl.Enum of \['a', 'b', 'c', 'd', 'e'\].*as a pl.Enum of \['e', 'd', 'c', 'b', 'a'\]"
+    )
+    train = gbdt.xgboost_matrix(data, label="y", weight="w", engine=engine)
+    gbdt.xgboost_matrix(valid, label="y", weight="w", ref=train, engine=engine)
+    with pytest.raises(ValueError, match=r"ref was built with 'cat' " + enum):
+        gbdt.xgboost_matrix(reordered, label="y", weight="w", ref=train, engine=engine)
+    as_codes = valid.with_columns(pl.col("cat").to_physical())
+    with pytest.raises(ValueError, match=r"'cat' as a pl.Enum of .* has it as not a pl.Enum"):
+        gbdt.xgboost_matrix(as_codes, label="y", weight="w", ref=train, engine=engine)
+    own = xgb_own(data)
+    gbdt.xgboost_matrix(reordered, label="y", weight="w", ref=own, engine=engine)
+    with pytest.raises(ValueError, match="needs the same features in order"):
+        gbdt.xgboost_matrix(
+            valid, label="y", weight="w", features=FEATURES[::-1], ref=own, engine=engine
+        )
+
+    td = gbdt.lightgbm_dataset(data, label="y", weight="w", params=LGB_DATA, engine=engine)
+    gbdt.lightgbm_dataset(valid, label="y", weight="w", reference=td, engine=engine)
+    with pytest.raises(ValueError, match=r"reference was built with 'cat' " + enum):
+        gbdt.lightgbm_dataset(reordered, label="y", weight="w", reference=td, engine=engine)
+    with pytest.raises(
+        ValueError, match="a dataset binned on another's bins needs the same features"
+    ):
+        gbdt.lightgbm_dataset(
+            valid, label="y", weight="w", features=FEATURES[::-1], reference=td, engine=engine
+        )
+    own_d = lgb_own(data, LGB_DATA)
+    gbdt.lightgbm_dataset(reordered, label="y", weight="w", reference=own_d, engine=engine)
+    with pytest.raises(ValueError, match="needs the same features in order"):
+        gbdt.lightgbm_dataset(
+            valid, label="y", weight="w", features=FEATURES[::-1], reference=own_d, engine=engine
+        )
+
+
 # ---------------------------------------------------------------- refusals
 
 
@@ -509,6 +601,235 @@ def test_the_arguments_are_checked_by_name(data):
             build(data.head(0), label="y")
 
 
+_BOTH = ("xgboost", "lightgbm")
+_ENGINES = r"\('auto', 'native', 'python'\)"
+
+
+@pytest.mark.parametrize(
+    ("libs", "source", "kw", "exc", "match"),
+    [
+        (
+            _BOTH,
+            {"x0": [1.0]},
+            {},
+            TypeError,
+            r"source must be paths, a LazyFrame or a DataFrame, not dict",
+        ),
+        (_BOTH, [], {}, ValueError, r"source names no files"),
+        (
+            _BOTH,
+            ["a.parquet", "b.arrow"],
+            {},
+            ValueError,
+            r"source mixes Arrow IPC and Parquet files; pass one kind",
+        ),
+        (
+            _BOTH,
+            "/nonexistent/*.arrow",
+            {},
+            FileNotFoundError,
+            r"no file matches '/nonexistent/\*.arrow'",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features="x0"),
+            TypeError,
+            r"features is a list of column names, not one name",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features=["x0", "x1", "x0"]),
+            ValueError,
+            r"a feature is named twice in \['x0', 'x1', 'x0'\]",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features=["x0", "y"]),
+            ValueError,
+            r"\['y'\] named as a feature and as the label or weight",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(features=["w", "x0"], weight="w"),
+            ValueError,
+            r"\['w'\] named as a feature and as the label or weight",
+        ),
+        (
+            _BOTH,
+            "label only",
+            {},
+            ValueError,
+            r"the source has no feature columns besides the label",
+        ),
+        (
+            _BOTH,
+            "with a string",
+            dict(label="s"),
+            ValueError,
+            r"the label column 's' is String, not numeric",
+        ),
+        (
+            _BOTH,
+            "with a string",
+            dict(weight="s"),
+            ValueError,
+            r"the weight column 's' is String, not numeric",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(weight="zz"),
+            ValueError,
+            r"the weight column 'zz' is not in the source",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(threads=0),
+            ValueError,
+            r"threads must be a positive integer or None, not 0",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(threads=True),
+            ValueError,
+            r"threads must be a positive integer or None, not True",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(threads="4"),
+            ValueError,
+            r"threads must be a positive integer or None, not '4'",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(max_bin="8"),
+            ValueError,
+            r"max_bin must be an integer of 2 or more, not '8'",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(max_bin=True),
+            ValueError,
+            r"max_bin must be an integer of 2 or more, not True",
+        ),
+        (
+            _BOTH,
+            "data",
+            dict(engine="rust"),
+            ValueError,
+            r"engine must be one of " + _ENGINES + r", not 'rust'",
+        ),
+        (
+            ("xgboost",),
+            "data",
+            dict(sample_rows=True),
+            ValueError,
+            r"sample_rows must be a positive integer or None, not True",
+        ),
+        (
+            ("xgboost",),
+            "data",
+            dict(sample_rows=2.5),
+            ValueError,
+            r"sample_rows must be a positive integer or None, not 2.5",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(categorical="i0"),
+            TypeError,
+            r"categorical is a list of column names, not one name",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(categorical=["zz"]),
+            ValueError,
+            r"categorical names 'zz', which is not a feature",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(in_memory=1),
+            ValueError,
+            r"in_memory must be True, False or 'auto', not 1",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(in_memory="yes"),
+            ValueError,
+            r"in_memory must be True, False or 'auto', not 'yes'",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(reference="train"),
+            TypeError,
+            r"reference must be a lightgbm.Dataset, not str",
+        ),
+        (
+            ("lightgbm",),
+            "data",
+            dict(params={"num_threads": 2}),
+            ValueError,
+            r"params names 'num_threads'; pass it as threads= instead",
+        ),
+    ],
+)
+def test_it_refuses(data, libs, source, kw, exc, match):
+    """Every refusal of an argument, by name, through the public functions
+    (review 7, E-3: fourteen of them had no test). ``in_memory=1`` is
+    refused by type: ``1 in (True, False)`` holds in Python, and 1 is not an
+    answer."""
+    frames = {
+        "data": data,
+        "label only": data.select("y"),
+        "with a string": data.with_columns(pl.lit("a").alias("s")),
+    }
+    src = frames.get(source, source) if isinstance(source, str) else source
+    for lib in libs:
+        build = gbdt.xgboost_matrix if lib == "xgboost" else gbdt.lightgbm_dataset
+        with pytest.raises(exc, match=match):
+            build(src, **{"label": "y", **kw})
+
+
+def test_a_lightgbm_whose_dataset_holds_its_handle_elsewhere_is_refused_by_name(data, monkeypatch):
+    """The native engine hands its dataset to ``lightgbm.Dataset`` through
+    the private ``_handle``; a LightGBM whose class keeps it elsewhere is
+    refused by name, with the Python engine offered."""
+
+    class Elsewhere(lgb.Dataset):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._native = self.__dict__.pop("_handle")
+
+    monkeypatch.setattr(lgb, "Dataset", Elsewhere)
+    with pytest.raises(
+        ValueError, match=r"holds its native handle elsewhere than `_handle` \(lightgbm"
+    ):
+        gbdt.lightgbm_dataset(data, label="y", params=LGB_DATA, engine="native")
+
+
+def test_a_package_that_does_not_say_which_file_it_loaded_is_refused():
+    """The native engine opens the library by the path the Python package
+    loaded it from (``xgboost.core._LIB.path``, ``lightgbm.basic._LIB._name``);
+    a package that records neither is refused, and ``engine="auto"`` falls
+    back to the Python engine on that refusal."""
+    with pytest.raises(ValueError, match="does not say which file it loaded"):
+        gbdt._library_path(object())
+    assert gbdt._library_path(xgb.core._LIB) == str(xgb.core._LIB.path)
+
+
 @pytest.mark.parametrize("engine", ["native", "python"])
 def test_a_source_whose_passes_differ_is_refused(data, engine):
     """A query that gives other rows each time it runs: the libraries read
@@ -534,7 +855,8 @@ def test_a_library_or_version_the_native_engine_does_not_call_is_refused_by_name
     # A library without the functions: LightGBM's file is no XGBoost.
     with pytest.raises(ValueError, match="has no `XGBoostVersion`"):
         native.GbdtXgboost(gbdt._library_path(lgb.basic._LIB))
-    assert native.GbdtXgboost(gbdt._library_path(xgb.core._LIB)).version >= (2, 0, 0)
+    # The floor is 2.1, the first XGBoost whose C API takes Arrow columns.
+    assert native.GbdtXgboost(gbdt._library_path(xgb.core._LIB)).version >= (2, 1, 0)
 
 
 def test_auto_falls_back_to_the_python_engine_with_a_warning(data, monkeypatch):

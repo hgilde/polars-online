@@ -290,6 +290,39 @@ class _Columns:
                 )
 
 
+def _enum_of(categories: list[str] | None) -> str:
+    return "not a pl.Enum" if categories is None else f"a pl.Enum of {categories}"
+
+
+def _check_ref(
+    who: str, what: str, ref: Any, names: Sequence[str] | None, cols: _Columns, binned: str
+) -> None:
+    """Refuse a ``ref``/``reference`` built on other features, or (one built
+    here, which records them) on a ``pl.Enum`` of other categories: its
+    codes would be read as the training levels in order."""
+    if names is not None and list(names) != cols.names:
+        raise ValueError(
+            f"{who}: {what} has the features {list(names)}, and this source "
+            f"{cols.names}: {binned} needs the same features in order"
+        )
+    theirs = getattr(ref, "_po_categories", None)
+    if theirs is None or len(theirs) != len(cols.names):
+        return
+    for name, a, b in zip(cols.names, theirs, cols.categories, strict=True):
+        if a != b:
+            raise ValueError(
+                f"{who}: {what} was built with {name!r} as {_enum_of(a)}, and this source has "
+                f"it as {_enum_of(b)}: a pl.Enum's codes mean its categories in order, so "
+                f"{binned} needs the same categories"
+            )
+
+
+def _record(obj: Any, cols: _Columns) -> None:
+    """Record each feature's Enum categories on the returned object, for the
+    check of a later ``ref``/``reference`` of it."""
+    obj._po_categories = list(cols.categories)
+
+
 def _check_common(who: str, max_bin: int, threads: int | None, engine: str) -> None:
     if isinstance(max_bin, bool) or not isinstance(max_bin, int) or max_bin < 2:
         raise ValueError(f"{who}: max_bin must be an integer of 2 or more, not {max_bin!r}")
@@ -436,7 +469,11 @@ def xgboost_matrix(
     ``ref``
         The training matrix, for a validation or test matrix binned on its
         cuts (``xgb.train`` refuses a ``QuantileDMatrix`` evaluation set
-        without it). The returned matrix keeps a weak reference to it.
+        without it). It must have the same features in order, and a ``ref``
+        built here must have each ``pl.Enum`` feature of the same
+        categories in order, since a code is read as the training level at
+        that position; a ``ref`` built elsewhere is checked by its feature
+        names alone. The returned matrix keeps a weak reference to it.
     ``threads``
         Threads for XGBoost's construction and the conversions; all by
         default.
@@ -458,7 +495,8 @@ def xgboost_matrix(
       (a ``pl.Categorical`` among them);
     - a null or non-finite label or weight, or a negative weight;
     - an empty source, or one whose passes give different rows;
-    - a ``ref`` binned on other features;
+    - a ``ref`` binned on other features, or built here on a ``pl.Enum``
+      of other categories;
     - (``engine="native"``) an XGBoost the native engine does not support.
 
     ``TypeError`` for a ``ref`` that is not an ``xgboost.DMatrix``, a source
@@ -479,11 +517,8 @@ def xgboost_matrix(
         raise TypeError(f"{who}: ref must be an xgboost.DMatrix, not {type(ref).__name__}")
     plan, files = _plan(source, who)
     cols = _Columns(plan, label=label, weight=weight, features=features, who=who)
-    if ref is not None and ref.feature_names is not None and list(ref.feature_names) != cols.names:
-        raise ValueError(
-            f"{who}: ref has the features {list(ref.feature_names)}, and this source "
-            f"{cols.names}: a matrix binned on another's cuts needs the same features in order"
-        )
+    if ref is not None:
+        _check_ref(who, "ref", ref, ref.feature_names, cols, "a matrix binned on another's cuts")
     native = _native_or_none(
         lambda: _xgb_native(_library_path(xgb.core._LIB)), engine, "XGBoost", 4
     )
@@ -512,6 +547,7 @@ def xgboost_matrix(
         out = _xgb_python(xgb, cols, max_bin, sample_rows, ref, threads, seed)
     if ref is not None:
         out.ref = weakref.ref(ref)
+    _record(out, cols)
     return out
 
 
@@ -732,7 +768,11 @@ def lightgbm_dataset(
         this function's own arguments.
     ``reference``
         The training dataset, for a validation dataset binned on its bins;
-        one pass.
+        one pass. It must have the same features in order, when it records
+        its feature names, and a ``reference`` built here must have each
+        ``pl.Enum`` feature of the same categories in order, since a code
+        is read as the training level at that position; a ``reference``
+        built elsewhere is checked by its feature names alone.
     ``in_memory``
         Hand LightGBM the whole stream at once, held in memory: as Arrow
         under the native engine, as a float32 numpy array under the Python
@@ -762,6 +802,8 @@ def lightgbm_dataset(
     - a null or non-finite label or weight, or a negative weight;
     - an empty source, more rows than LightGBM's 32-bit row count holds, or
       a source whose passes give different rows;
+    - a ``reference`` that records other features, or built here on a
+      ``pl.Enum`` of other categories;
     - (``engine="native"``) a LightGBM the native engine does not support.
 
     ``TypeError`` for a ``reference`` that is not a ``lightgbm.Dataset`` (one
@@ -773,7 +815,8 @@ def lightgbm_dataset(
 
     who = "lightgbm_dataset"
     _check_common(who, max_bin, threads, engine)
-    if in_memory not in (True, False, "auto"):
+    # By type: `1 in (True, False)` holds, and 1 is not an answer.
+    if not isinstance(in_memory, bool) and in_memory != "auto":
         raise ValueError(f"{who}: in_memory must be True, False or 'auto', not {in_memory!r}")
     if reference is not None:
         if not isinstance(reference, lgb.Dataset):
@@ -787,6 +830,18 @@ def lightgbm_dataset(
             raise ValueError(f"{who}: params names {key!r}; pass it as {arg}= instead")
     plan, files = _plan(source, who)
     cols = _Columns(plan, label=label, weight=weight, features=features, who=who)
+    if reference is not None:
+        # LightGBM's own dataset records its names when given them, and one
+        # built here always does.
+        named = reference.feature_name
+        _check_ref(
+            who,
+            "reference",
+            reference,
+            named if isinstance(named, (list, tuple)) else None,
+            cols,
+            "a dataset binned on another's bins",
+        )
     if categorical is None:
         cats = [j for j, k in enumerate(cols.kinds) if k == "category"]
     else:
@@ -868,8 +923,10 @@ def lightgbm_dataset(
         ds._handle = ctypes.c_void_p(handle)
         ds.feature_name = list(cols.names)
         ds.categorical_feature = cat_attr
-        return ds
-    return _lgb_python(lgb, cols, rows, dparams, build, cat_attr, reference, memory)
+    else:
+        ds = _lgb_python(lgb, cols, rows, dparams, build, cat_attr, reference, memory)
+    _record(ds, cols)
+    return ds
 
 
 def _lgb_python(

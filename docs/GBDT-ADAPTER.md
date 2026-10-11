@@ -501,7 +501,7 @@ its categorical features under `categorical_column`, the key LightGBM's own
 | bins | a bottom-k sample: the 200,000 rows of smallest SplitMix64 hash of their index, the same rows however the source is batched; edges at the sample's quantiles, or a bin per value for a feature of at most `max_bin` values; built into a dense `ref` | LightGBM's own: `LGBM_SampleIndices`, those rows gathered in the first pass, `LGBM_DatasetCreateFromSampledColumn` |
 | hand-over | each batch's columns as array interfaces on their Arrow buffers, the validity bitmap as the mask, into `XGQuantileDMatrixCreateFromCallback` | float32 rows built in parallel, `LGBM_DatasetPushRows`; or in memory, every batch as float32 Arrow, `LGBM_DatasetCreateFromArrowStream` |
 | categoricals | a `pl.Enum`'s codes, feature type `c`, its levels planted in the `ref` | a `pl.Enum`'s codes in `categorical_feature`, and any integer column named |
-| refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a library version outside the C API's range (XGBoost 2.0 to 4.0, LightGBM 4.0 to 5.0) | the same, and more than 2³¹ − 1 rows |
+| refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a library version outside the C API's range (XGBoost 2.1 to 4.0, LightGBM 4.0 to 5.0) | the same, and more than 2³¹ − 1 rows |
 
 **XGBoost places its cuts exactly where they are planted.** A `ref` column
 of `d <= max_bin` distinct values `u_0 < .. < u_{d-1}` comes back as the

@@ -19,8 +19,11 @@ use super::GbdtError;
 pub(crate) type Handle = *mut c_void;
 
 /// The XGBoost versions the native engine is built for: the C API it calls
-/// is the same from 2.0 through 3.x (measured on 3.4.1).
-pub const XGB_VERSIONS: ((i32, i32), (i32, i32)) = ((2, 0), (4, 0));
+/// is the same from 2.1 through 3.x (measured on 3.4.1).
+/// `XGProxyDMatrixSetDataColumnar`, the Arrow hand-over, is absent from
+/// 2.0.3's library and present from 2.1.0's (`nm -gU` on the PyPI macOS
+/// wheels; review 7, C-3).
+pub const XGB_VERSIONS: ((i32, i32), (i32, i32)) = ((2, 1), (4, 0));
 /// The LightGBM versions the native engine is built for (measured on 4.7.0).
 pub const LGB_VERSIONS: ((i32, i32), (i32, i32)) = ((4, 0), (5, 0));
 
@@ -267,6 +270,14 @@ mod tests {
         assert_eq!(parse_version("4.10rc1"), Some((4, 10)));
         assert_eq!(parse_version("5"), Some((5, 0)));
         assert_eq!(parse_version("x"), None);
+    }
+
+    #[test]
+    fn the_xgboost_floor_is_the_first_version_with_the_columnar_setter() {
+        // `XGProxyDMatrixSetDataColumnar` first ships in 2.1.0 (review 7,
+        // C-3): a 2.0.x passes no version check, so that the refusal names
+        // the range rather than the missing symbol.
+        assert_eq!(XGB_VERSIONS, ((2, 1), (4, 0)));
     }
 
     #[test]
