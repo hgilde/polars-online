@@ -9828,7 +9828,8 @@ tick, and that the series holding it up has a count near 1.
       LTO, many codegen units, incremental) for `maturin develop` in
       worktrees and the inner loop, the shipped wheel, CI and the pre-push
       gate keeping `release`, kept only if the golden tests show the bits
-      unchanged; (5) `pytest-xdist` and `cargo-nextest` (test-only), the
+      unchanged; (5) `pytest-xdist` and `cargo-nextest` (test-only; nextest's install
+      approved by the user 2026-10-11: "Approved to install cargo-nextest"), the
       memory and timing tests (`test_ffi_memory`, the timed recipes) in a
       serial group; (6) `scripts/quick.sh` mapping changed paths to their
       test files for the loop inside a task.
