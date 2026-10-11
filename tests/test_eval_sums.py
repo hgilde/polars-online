@@ -19,7 +19,7 @@ import pytest
 
 import polars_online as po
 
-TIER = "essential"
+TIER = "mixed"
 
 
 def fitted(n=3000, seed=0, offset=0.0, groups=1, weight=False):
