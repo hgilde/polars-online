@@ -63,3 +63,21 @@ codegen-units = 1
 # string, which lives in the binary, not the symbol table -- so the diagnostic
 # that names the bug is intact and only the frame list goes.
 strip = "symbols"
+
+# The extension for the loop inside a task: `maturin develop --profile
+# dev-wheel` (scripts/quick.sh, docs/TESTING.md "Iterating"). The release
+# profile above without its two slow parts: thin LTO and one codegen unit
+# make the linker and the optimizer see the whole crate graph at once,
+# which is what a rebuild after a one-line change spends its minutes on.
+# Many codegen units and incremental compilation let a rebuild redo only
+# what changed. The optimization level and every setting that decides a
+# number (overflow checks and debug assertions off, panics unwinding) are
+# release's, so the same tests pass on it bit for bit; it is a dev build
+# only, and the shipped wheel, CI and the pre-push gate use `release`.
+# `strip = "none"`: the symbols stay, so a backtrace names its frames.
+[profile.dev-wheel]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+strip = "none"

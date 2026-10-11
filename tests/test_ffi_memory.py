@@ -32,9 +32,14 @@ import child
 import polars_online as po
 
 TIER = "extended"
-pytestmark = pytest.mark.extended(
-    reason="memory: RSS across the FFI boundary, block after block, 41 s in all"
-)
+pytestmark = [
+    pytest.mark.extended(
+        reason="memory: RSS across the FFI boundary, block after block, 41 s in all"
+    ),
+    # Alone on the machine: memory another process takes can make macOS
+    # compress or swap pages, which moves RSS (`assert_plateaus`).
+    pytest.mark.serial,
+]
 
 PROC = psutil.Process(os.getpid())
 

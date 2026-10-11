@@ -6,7 +6,9 @@ way to get a change merged is to match the conventions it already has.
 ## Getting set up
 
 **Install [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
-([rustup](https://rustup.rs)), and nothing else.** In each new shell,
+([rustup](https://rustup.rs)). [cargo-nextest](https://nexte.st) is
+optional:** `cargo install cargo-nextest --locked` makes the gate's Rust
+tests about twice as fast, and the gate runs `cargo test` without it. In each new shell,
 run `source scripts/env.sh`, or `. .\scripts\env.ps1` in PowerShell, to
 put both on the `PATH`. VS Code's terminal gets them from
 `.vscode/settings.json`.
@@ -20,8 +22,11 @@ Offline, the tests that need a download are skipped.
 ```sh
 uv sync                                                # Python env (CPython 3.12 or newer)
 source scripts/env.sh                                  # PATH for cargo and uv; `. .\scripts\env.ps1` on Windows
+./scripts/quick.sh                                     # the tests for what the branch changed: inside a task
 ./scripts/gate.sh                                      # every check, the tests' essentials: each commit
 ./scripts/gate.sh --extended                           # every check and every test: before every push
+./scripts/gate.sh --serial                             # either tier with every test in one process
+./scripts/clear_caches.sh --dry-run                    # what the build caches hold; without --dry-run, clear them
 uv run cargo test --workspace --exclude online-py      # Rust tests; `-- --include-ignored` for all
 uv run maturin develop --release -m crates/online-py/Cargo.toml   # the extension, into the env
 uv run pytest                                          # Python tests
@@ -48,10 +53,13 @@ steps, in this order:
 
 1. `cargo fmt --check`
 2. `cargo clippy -D warnings`
-3. `cargo test --workspace --exclude online-py`, since online-py has no Rust
-   tests and would link libpython into every test binary. `--extended` adds
-   `-- --include-ignored`, which runs the tests marked
-   `#[ignore = "extended: ..."]`
+3. the Rust tests of the workspace without online-py, since online-py has
+   no Rust tests and would link libpython into every test binary. They run
+   under `cargo nextest run`, with `cargo test --doc` for the doctests,
+   which nextest does not run; where nextest is not installed, under
+   `cargo test --workspace --exclude online-py`. `--extended` adds the tests
+   marked `#[ignore = "extended: ..."]` (`--run-ignored all`, or
+   `-- --include-ignored` for `cargo test`)
 4. `uv lock --check`, before any `uv run` could rewrite a stale lock file
 5. `ruff format --check`
 6. `ruff check`
@@ -62,9 +70,18 @@ steps, in this order:
 9. `pytest`, which also runs every README code block, every docstring
    example and the structure check of every Markdown file. The essentials
    leave out the tests marked `extended`, and draw fewer examples in the
-   property tests
+   property tests. It runs in several processes (pytest-xdist), and the
+   tests marked `serial`, which read their own process's memory, run after
+   the rest in one process
 10. a `sphinx-build -W` of the API reference, so a docstring that is not
     valid RST fails the gate, not the docs deploy.
+
+**The tests run in parallel, in as many processes as the machine has
+cores free.** That is its core count less the last minute's load average,
+at least 2 and at most 8 (`scripts/workers.py`); `GATE_WORKERS=4` sets it.
+`--serial` runs every test in one process, as the gate did before; the same
+tests run either way, with the same results. [docs/TESTING.md,
+"Iterating"](docs/TESTING.md#iterating) has the measurements.
 
 Its first line names the tier, and its last line is `gate: PASS` or
 `gate: FAIL` with the tier beside it. The essentials' verdict says it is not
