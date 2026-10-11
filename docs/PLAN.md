@@ -9734,7 +9734,7 @@ tick, and that the series holding it up has a count near 1.
       half-life `ln 2 / ln((cap+1)/cap)` ≈ `0.69 (max_run - 1)` rows,
       pinned by a test. No layout change; GOLDEN unmoved; scoped mutants
       6/6 after a tie test closed the one survivor.
-- [ ] 244. **The API standardized before 1.0** -- the user, 2026-10-11:
+- [x] 244. **The API standardized before 1.0** -- the user, 2026-10-11:
       "What else should we do before 1.0? Examine the api for improvements
       and standardization that is better done now", then "Your reco for
       all" (to the consolidated list and to the model split: Opus, xhigh
@@ -9774,6 +9774,27 @@ tick, and that the series holding it up has a count near 1.
       *Built as five workers* (`task244-{out,spec,bank,cli,bias}`), each a
       disjoint part; schema numbers and regenerated fixtures reconciled at
       the merge.
+      *Done 2026-10-11*, merged in order bank (`6cc5c98`), cli (`5d268ba`),
+      bias (`ea41629`), out (ff `6b1178c`, which merged main itself), spec
+      (ff `a072080`, likewise), then `6076d13`. Decided by the workers
+      inside the decisions: `bocpd` drops `emission` (`covariance_type`
+      `"full"`/`"diag"`; giving `robust_beta` turns on the tempered
+      predictive; defaults unchanged); the pca pair is `pca_every` /
+      `max_rows_between_pcas`; `corrchange`'s action is `change_action`;
+      forwarding per model (`_DEPRECATED_IN`, `_DEPRECATED_WORDS_IN`, twinned
+      in Rust) through `forward_deprecated`; hmm's fields `filtered_state<j>`;
+      micro's and `closed_groups()`'s `coef` stay `List`; `ew_cov`'s ridge
+      scales with the co-moments and `gram()`/closed rows report the
+      moments as kept; the old `ONLINE_TIMING` is refused with a notice,
+      not forwarded, so 1.0's env vars freeze no old name; no alias for the
+      old binary. The coordinator settled out's three open choices
+      (`_count` on audit's three, `class` in the coef tables, `rows_fed`'s
+      new value) and aligned `po.gram.lasso_path`'s `tol` to 1e-10 (the
+      spec worker measured no reason for 1e-7). Schema 61, shared with
+      review 7's A-2; fixtures regenerated once from the merged code. Every
+      new test failed on the base; the deprecation filter makes the suite
+      fail on any old name. `release.yml` changed (the binary): rehearse
+      before the next release.
 - [ ] 245. **Faster dev iterations** -- the user, 2026-10-11: "Iterations
       are slow now due to large number of tests and other things, what
       should we do to speed up dev iterations", then "Put it on the list

@@ -18,6 +18,25 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **Added with the API's standardization** (task 244):
+  `po.ColumnNotFoundError` (both Polars' `ColumnNotFoundError` and
+  `ValueError`) for a missing spec column; `po.PolarsOnlineWarning`, the
+  base of every warning (`UnstableWarning` also derives from Polars' own);
+  `Literal` annotations on every word-valued parameter; `rmse` in every
+  `po.eval` metric frame; `chunk_size` on the eager frame forms;
+  `load_state=` takes a `ModelBank`; `save`/`load` take file objects and
+  `load` takes bytes; `ewm_mean`/`ewm_sum`/`ewm_rate` take `reverse=True`;
+  `pl.col(c).alias(n)` accepted as a target; `po.gram.Gram`, a TypedDict;
+  `solve_subsets` takes a ridge grid; `unnest(separator=)`, as Polars 2.0's;
+  a leading `spec` column on `marginal()` and `audit()`; `half_life`/`lam`
+  on `coef()`, `marginal()` and `closed_groups()`; `instance` and
+  `component` in `output_index`; `cluster`/`state`/`class` in the coef
+  tables; `solve_failures` in `summary()`; `polars-online --version` names
+  the state schema and the Rust Polars; the runner guide shows a TOML
+  file's `[[specs]]` building the same bank in Python. The exit status and
+  the files written are the command line's contract; its printed text may
+  be reworded in a minor release. The test suite treats a deprecation
+  warning as an error, so no recipe or test uses an old name.
 - **The README's versioning is written for 1.x** (task 238 follow-up,
   review 7). 1.0 starts the API promise: pin `~=1.0` or `>=1,<2`, and the
   minor too to hold the numbers; 0.x code needs the *Changed (breaking)*
@@ -351,6 +370,82 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Changed (breaking)
 
+- **The API standardized before 1.0** (task 244). A renamed *parameter*
+  is read under its old name with a `PolarsOnlineDeprecationWarning` until
+  2.0; a renamed *output field or frame column* cannot be, so these are
+  breaking now, and the field grammar is declared stable from 1.0.
+  - **Output fields** follow one grammar: kind, qualifier, columns,
+    `__`grid point, `@`instance. `lag_corr_<a>_<b>_l<l>` ->
+    `lag_corr_l<l>_<a>_<b>`; `filtered_<j>`/`predicted_<j>` ->
+    `filtered_state<j>`/`predicted_state<j>`; a lasso's `__l<penalty>` ->
+    `__p<penalty>`, and a one-point path writes none; `reset_<t>` ->
+    `ramsey_reset_<t>`.
+  - **Dtypes:** `coef`, `support_coef`, `se_coef`, `se_coef_hc0` and
+    `se_coef_hac` are `Array(Float64, k)` (`to_numpy()` gives `(n, k)`; use
+    `.arr.get`), except `micro`'s ragged `coef` and `closed_groups().coef`,
+    which stay `List`. Every count is `Int64` in every frame and field.
+    `ew_class`'s `class`, `selected_<t>`, `describe().role` and
+    `closed_groups().rcov_kind` are `Enum`s.
+  - **Frame columns:** `groups()` `rows_processed` -> `rows_fed` (now the
+    rows fed, skipped ones included, as `summary()` counts them) and
+    `last_clock` -> `clock_last`; `summary()` `last_clock` -> `clock_last`,
+    `min_support_coef(_feature)` -> `support_coef_min(_feature)`;
+    `describe()` `null_count` (every unusable value) -> `unusable_count`;
+    `audit()` `rows` -> `rows_fed`, `null` -> `null_count`, `nan` ->
+    `nan_count`, `pos_inf`/`neg_inf`/`beyond_bound` -> `*_count`,
+    `distinct` -> `n_unique`, and its clock table's `max_step` -> `step_max`;
+    `marginal()` `t_serial` -> `t_stat_serial`; `closed_groups()`
+    `pair_t_serial` -> `pair_t_stat_serial`; the `gram()` key and closed
+    column `cross_centred` -> `cross_centered` (`po.gram.from_row` still
+    reads the old key). `solve_failures()` returns a frame;
+    `output_index`'s `half_life` is `inf`, not null, for an infinite one;
+    `coef_index` returns an empty frame for a spec with no named
+    coefficient, as `coef_fields` does.
+  - **`po.eval`:** under `binary` (now read from a logistic spec by
+    default) the columns are `brier_skill` and `accuracy`, not `r2` and
+    `hit_rate`; a key below `min_samples` keeps its row with null metrics.
+    The LARS paths' `stop` value is `"max_iter"`, not `"max_steps"`.
+  - **`ew_cov`'s variances are unbiased by default, as Polars'**:
+    `ew_cov(bias=False)` is Polars' name and default; `var`, `std`, `cov`
+    and `pc<j>_var` carry `W²/(W² - Σw²)`, Kish's `n/(n-1)` (1.018 in
+    steady state at a half-life of 20 rows, 1.207 at 2), matching Polars'
+    `ewm_var(bias=False)` to 2.8e-15; `mahal` is divided by its square
+    root; no correlation moves; with one row of weight the variance is
+    null. `bias=True` keeps the old numbers. `gram()` and closed groups
+    report the moments as kept, with `n_kish` beside them.
+  - **The command line is `polars-online`**, not `online` (release assets
+    `polars-online-<target>[.exe]`, messages prefixed `polars-online:`).
+    `ONLINE_TIMING` is `POLARS_ONLINE_TIMING`, on at `1` only; the old name
+    turns nothing on and prints a notice. A relative path in a TOML config
+    is read from the config file's directory; a flag's path still from the
+    working directory. The progress line is drawn only on a terminal.
+  - **Spec keywords renamed (forwarded):** `kmeans(k=)` -> `n_clusters`,
+    `hmm(k=)` -> `n_components`; `seed_rule` -> `init` (`"kmeanspp"` ->
+    `"k-means++"`); `hmm`/`ew_class` `covariance` -> `covariance_type`
+    (`"shared"` -> `"tied"`, `"diagonal"` -> `"diag"`; `ew_class` defaults to
+    `"full"`); `bocpd` `emission` -> `covariance_type` (`"gaussian"` ->
+    `"full"`; `"robust"` -> giving `robust_beta`, defaults unchanged);
+    `bocpd`'s `prior_mean`/`prior_kappa`/`prior_nu`/`prior_scale` ->
+    `mean_prior`/`mean_precision_prior`/`degrees_of_freedom_prior`/
+    `covariance_prior` (scikit-learn's names); `window_every` ->
+    `snapshot_every`; `max_rows_between_pca` -> `max_rows_between_pcas`;
+    `lasso(lasso_path=)` -> `penalties=`; `corrchange` `span_rows` ->
+    `window_rows`, `reset_on_flag` -> `change_action` (`"flag"`/`"reset"`).
+    Spec dicts, `ModelBank.specs`, saved states and the resolved defaults
+    write only the new names. `holt`/`seqtest` lose `features=`;
+    `kmeans`/`micro` show `standardize=True`, and `scale_floor` beside
+    `standardize=False` is refused. Every refusal of a word outside a list
+    reads `spec "m": <param> must be one of ...; got "x"`.
+  - **Methods and helpers renamed (forwarded):** `fit`/`fit_predict_batches`
+    take their options by keyword; `save(path=)` -> `file`, `load(path=)`
+    -> `source`; `to_json`/`save_json` -> `write_json(file=None)`;
+    `rows_fed()`/`output_fields()` -> properties; `po.rewm_*` ->
+    `po.ewm_*(..., reverse=True)`; `po.eval` `spec_name` -> `spec` (a str
+    or the spec dict), `spec_names` -> `specs`; `po.gram.subset(cols=)` ->
+    `columns`; `lars_path`/`lars_paths(max_steps=)` -> `max_iter`;
+    `po.corr.matrix` -> `po.gram.correlation`. `po.gram.lasso_path`'s
+    `tol` is the `lasso` model's 1e-10 (was 1e-7). Saved banks are refused
+    (schema 61).
 - **Every integer output is `Int64`** (task 238): `kmeans`' `cluster`,
   `micro`'s `n_clusters` and `n_micro`, and `hmm`'s `state` were `Int32`,
   while `micro`'s `cluster` and every id, count and run length was `Int64`,
