@@ -87,11 +87,19 @@ fn ew_class_posteriors_carry_their_class() {
 #[test]
 fn ew_class_fills_each_posterior_from_its_own_class() {
     use polars::prelude::*;
+    // Two instances, so each instance's block of slots is read too: at
+    // half-lives this far apart their posteriors differ.
     let s = spec(
         r#"{"name": "c", "model": {"type": "ew_class", "classes": ["u", "v", "w"],
             "precision_prior": 1.0}, "targets": ["y"], "features": ["a"],
-            "half_life": 1000, "min_weight": 3}"#,
+            "half_life": [5, 3000], "min_weight": 3}"#,
     );
+    let suffixes: Vec<String> = output_index(&s)
+        .iter()
+        .filter(|m| m.kind == "class")
+        .map(|m| m.field["class".len()..].to_string())
+        .collect();
+    assert_eq!(suffixes.len(), 2, "{suffixes:?}");
     let n = 300;
     let label = |i: usize| ["u", "v", "w"][i % 3];
     let a: Vec<f64> = (0..n)
@@ -107,33 +115,49 @@ fn ew_class_fills_each_posterior_from_its_own_class() {
         .struct_()
         .unwrap()
         .fields_as_series();
-    let get = |name: &str| fields.iter().find(|f| f.name().as_str() == name).unwrap();
-    let cls: Vec<Option<String>> = get("class")
-        .cast(&DataType::String)
-        .unwrap()
-        .str()
-        .unwrap()
-        .iter()
-        .map(|v| v.map(String::from))
-        .collect();
-    let p: Vec<Vec<Option<f64>>> = ["p_u", "p_v", "p_w"]
-        .iter()
-        .map(|f| get(f).f64().unwrap().iter().collect())
-        .collect();
-    let mut read = 0;
-    for i in 0..n {
-        let Some(c) = &cls[i] else { continue };
-        let row: Vec<f64> = p.iter().map(|col| col[i].unwrap()).collect();
-        assert!(
-            (row.iter().sum::<f64>() - 1.0).abs() < 1e-9,
-            "row {i}: {row:?}"
-        );
-        let best = (0..3).max_by(|&x, &y| row[x].total_cmp(&row[y])).unwrap();
-        assert_eq!(c, ["u", "v", "w"][best], "row {i}: {row:?}");
-        assert_eq!(c, label(i), "row {i}: the classes are apart");
-        read += 1;
+    let get = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name().as_str() == name)
+            .unwrap_or_else(|| panic!("no field {name}"))
+    };
+    let mut each = Vec::new();
+    for suffix in &suffixes {
+        let cls: Vec<Option<String>> = get(&format!("class{suffix}"))
+            .cast(&DataType::String)
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .map(|v| v.map(String::from))
+            .collect();
+        let p: Vec<Vec<Option<f64>>> = ["u", "v", "w"]
+            .iter()
+            .map(|c| {
+                get(&format!("p_{c}{suffix}"))
+                    .f64()
+                    .unwrap()
+                    .iter()
+                    .collect()
+            })
+            .collect();
+        let mut read = 0;
+        for i in 0..n {
+            let Some(c) = &cls[i] else { continue };
+            let row: Vec<f64> = p.iter().map(|col| col[i].unwrap()).collect();
+            assert!(
+                (row.iter().sum::<f64>() - 1.0).abs() < 1e-9,
+                "{suffix} row {i}: {row:?}"
+            );
+            let best = (0..3).max_by(|&x, &y| row[x].total_cmp(&row[y])).unwrap();
+            assert_eq!(c, ["u", "v", "w"][best], "{suffix} row {i}: {row:?}");
+            assert_eq!(c, label(i), "{suffix} row {i}: the classes are apart");
+            read += 1;
+        }
+        assert!(read > 250, "{suffix}: {read} rows read");
+        each.push(p);
     }
-    assert!(read > 250, "{read} rows read");
+    assert_ne!(each[0], each[1], "each instance reads its own posteriors");
 }
 
 #[test]
