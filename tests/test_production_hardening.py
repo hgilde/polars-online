@@ -885,13 +885,23 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     fed = po.ModelBank([spec])
     fed.fit_predict(df)
     fed.save(tmp_path / "bank.state")  # what section 2's `bank.save` left behind
+    # The runner guide's `job.toml`: a name of its own, since the README's
+    # `bank.toml` is another configuration (task 238), and a clock, so that
+    # its resume recipe drops the rows the state has learned.
     cli_spec = po.spec.ewridge(
-        "ridge", targets=["y"], features=["x0"], half_life=500.0, min_weight=5.0
+        "ridge",
+        targets=["y"],
+        features=["x0"],
+        clock="t",
+        half_life=500.0,
+        gap_cap=300.0,
+        min_weight=5.0,
     )
-    (tmp_path / "bank.toml").write_text(
+    (tmp_path / "job.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
-        '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'
-        'half_life = 500.0\nmin_weight = 5.0\n[specs.model]\ntype = "ewridge"\n',
+        '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\nclock = "t"\n'
+        "half_life = 500.0\ngap_cap = 300.0\nmin_weight = 5.0\n"
+        '[specs.model]\ntype = "ewridge"\n',
         encoding="utf-8",
     )
     # The guide's `--load-state` examples need a state *its own config's* spec
@@ -1047,7 +1057,7 @@ class TestReadmeExamples:
             here = tmp_path / f"L{line}"
             here.mkdir()
             monkeypatch.chdir(here)
-            _readme_namespace(here)  # writes bank.toml, bank.state and the inputs
+            _readme_namespace(here)  # writes job.toml, run.state and the inputs
             printed = ""
             for command in (c for c in code.splitlines() if c.strip()):
                 # Bytes: text mode would turn a carriage return into a newline.
@@ -1269,7 +1279,7 @@ class TestReadmeExamples:
         Only this document's: the README's ```sh blocks install the package and
         drive the toolchain, which a test must not do."""
         monkeypatch.chdir(tmp_path)
-        _readme_namespace(tmp_path)  # writes bank.toml, bank.state and the inputs
+        _readme_namespace(tmp_path)  # writes job.toml, run.state and the inputs
         monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
         for command in (c for c in code.splitlines() if c.strip()):
             res = subprocess.run(
@@ -1283,9 +1293,12 @@ class TestReadmeExamples:
             assert res.returncode == 0, f"{command}\n{res.stderr}"
 
     def test_the_config_the_guide_shows_is_the_one_its_blocks_run(self, tmp_path):
-        """The runner guide shows the `bank.toml` its shell blocks run against,
+        """The runner guide shows the `job.toml` its shell blocks run against,
         and the fixture writes that file itself. Parsed, the two must be one
-        configuration, or the guide would show a config its examples never ran."""
+        configuration, or the guide would show a config its examples never ran.
+        And every block runs that file: the README's `bank.toml` is another
+        configuration, and the guide once ran a file of that name with other
+        content (task 238)."""
         import tomllib
 
         shown = [
@@ -1295,8 +1308,10 @@ class TestReadmeExamples:
         ]
         assert len(shown) == 1, shown
         _readme_namespace(tmp_path)
-        written = (tmp_path / "bank.toml").read_text(encoding="utf-8")
+        written = (tmp_path / "job.toml").read_text(encoding="utf-8")
         assert tomllib.loads(shown[0]) == tomllib.loads(written)
+        configs = {c for _, _, code in SHELL_BLOCKS for c in re.findall(r"--config (\S+)", code)}
+        assert configs == {"job.toml", "blocks.toml"}, configs
 
     def test_the_readme_config_gives_the_numbers_its_python_spec_gives(
         self, tmp_path, monkeypatch, online_cli
