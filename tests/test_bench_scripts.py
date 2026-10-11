@@ -18,6 +18,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 BENCHMARKS = [
     "benchmark",
     "diagnostics_rates",
+    "memory_bench",
     "parallel_bench",
     "plan_inspection_bench",
     "regime_experiments",

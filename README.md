@@ -1809,9 +1809,9 @@ feeds the bank the first 5 rows and no more.
 
 **Filter after the bank, not before it.** A `filter` after the bank keeps
 the query running a chunk at a time. One before the bank makes Polars hold
-several blocks of each parquet file per thread: 2.5 GB at 12M rows,
-against 0.78 GB for the same filter after
-([docs/PERFORMANCE.md](docs/PERFORMANCE.md) §11).
+several blocks of each parquet file per thread: 3.1 GB at 12M rows,
+against 1.8 GB for the same filter after, which is what the query takes
+with no filter at all ([Memory](#memory) says how this was measured).
 
 **To keep rows from teaching the model, give them weight `0` before the
 bank, in place of a filter:** make the column with `with_columns`, and name
@@ -3546,20 +3546,24 @@ once: three on the command line, and a few more in Python
 **Memory grows with the models' state and the rows a delay or a window
 holds, and never with the number of rows that have passed.** Every way of
 running a bank works a chunk at a time. Measured as the most memory the
-process ever held, on one file of `ewridge` with 20 features, parquet in
-and parquet out
-([PERFORMANCE §11](docs/PERFORMANCE.md#11-memory-which-surface-is-odata-2026-09-02)):
+process ever held (macOS's peak footprint), with Polars 2.0.0 on 14
+cores. The file has 20 features over 32 groups, parquet in and parquet out,
+and `ewridge` reads it with a clock, a weight and a group per row. The 12M
+rows are the 3M rows four times over, so the state is the same at both
+sizes. `scripts/memory_bench.py` makes the file and runs each case:
 
 | what you write | 3M rows | 12M rows | what it is |
 |---|---:|---:|---|
-| `lf.online.fit_predict([spec])` | 0.90 GB | 1.35 GB | the bank inside a query |
-| `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 0.80 GB | 1.24 GB | your own loop |
+| `lf.online.fit_predict([spec])` | 1.2 GB | 1.8 GB | the bank inside a query |
+| `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 1.1 GB | 1.5 GB | your own loop |
 
 The bank does not grow from 3M to 12M rows: the growth is the memory
-allocator keeping pages it has freed. Of the rest, nearly all is Polars
+allocator keeping pages it has freed. Told to return them at once, with
+`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, the query holds
+0.86 GB at 3M rows and 0.95 GB at 12M. Of the rest, nearly all is Polars
 reading ahead in the parquet file. The command line, whose allocator
-returns freed pages at once, holds 0.75 GB at 12M rows against 0.73 GB at
-3M ([docs/RUNNER.md](docs/RUNNER.md)).
+returns freed pages at once, holds 0.77 GB at 12M rows against 0.74 GB at
+3M ([docs/RUNNER.md](docs/RUNNER.md#memory)).
 
 **Memory has four parts, each with its own bound:**
 

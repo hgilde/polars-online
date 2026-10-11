@@ -398,16 +398,17 @@ features, parquet in and out: the same measurement as the README's
 
 | what you run | 3M rows | 12M rows |
 |---|---:|---:|
-| `online --config` | 0.73 GB | 0.75 GB |
-| `online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | | 0.15 GB |
+| `online --config` | 0.74 GB | 0.77 GB |
+| `online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.24 GB | 0.24 GB |
 
 It is flat: the bank's memory does not grow with the rows, and this
 process keeps none of the freed pages the Python surfaces in the README's
 table hold on to as they run longer. Nearly all of it is Polars reading
-ahead in the parquet file. With
-`POLARS_ROW_GROUP_PREFETCH_SIZE=1`, a run takes 0.15 GB at the same
-speed. [docs/PERFORMANCE.md](PERFORMANCE.md) §11 has these measurements,
-and §26 re-measures the command line, CSV and NDJSON included.
+ahead in the parquet file, and with
+`POLARS_ROW_GROUP_PREFETCH_SIZE=1` a run takes 0.24 GB.
+`scripts/memory_bench.py` makes these measurements, on Polars 2.0.0 and 14
+cores, and [docs/PERFORMANCE.md](PERFORMANCE.md) §26 re-measures the command
+line, CSV and NDJSON included.
 
 ### The pipeline and its threads
 
