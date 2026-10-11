@@ -9944,6 +9944,15 @@ tick, and that the series holding it up has a count near 1.
       on most); the docs show `.list.to_array(k)` on the rows that carry it
       for an `(n, k)` matrix. Built first, so the profiling measures the
       build that ships.
+      *Built 2026-10-11* (`6a82ccf`, merged, full gate on the branch): every
+      path back to `List(Float64)`; `unnest` and `compare_release.py` still
+      read an Array file; the recipe is
+      `.select(pl.col("coef").list.to_array(k)).to_series().to_numpy()` (a
+      one-column frame's `to_numpy()` is `(n, 1)` of objects on 1.34.0 and
+      2.0.0); three tests fail on the Array build (the memory one: 341 MB
+      against a 4 MB budget at 200,000 rows). Measured: `coef` 7.8 MiB at
+      1M rows (Array 1.6 GiB), peak +767 MiB (0.13.0 +696, Array +3.9 GiB);
+      the 10-target ewridge row 0.90x of 0.13.0 (Array 0.72).
       Then (the user, 2026-10-11: "After that do the profiling and fix the
       performance issues"): phase 1 profiles alone on a quiet machine and
       ranks; phase 2 fixes, without waiting for a ranked list, in workers on
