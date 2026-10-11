@@ -257,7 +257,7 @@ A flag given on the command line wins over its key in the TOML file:
 | `--skip-learned` | `skip_learned` | drop the input's rows the loaded state has learned; needs `--load-state` or `load_state`, and a spec that reads a clock |
 | `--save-state` | `save_state` | save the state when the run ends, after the output is committed |
 | `--closed-groups` | `closed_groups` | write the groups that closed to a sidecar file; needs a spec with `group_close` |
-| `--predict` | `predict` | score against the resumed state and learn nothing; needs `--load-state` or `load_state`, drops the TOML's `save_state`, and refuses `--save-state` |
+| `--predict` | `predict` | score against the resumed state and learn nothing; needs `--load-state` or `load_state`, drops the TOML's `save_state` and `closed_groups`, and refuses `--save-state` and `--closed-groups` |
 | `--dry-run` | | check the configuration, the input's schema and the bank as the run would, and print the output schema, feeding the bank no row |
 | `-q`, `--quiet` | | suppress the per-chunk progress |
 | | `keep_columns` | the input columns to keep; all of them when it is empty |
@@ -379,8 +379,10 @@ features, parquet in and out: the same measurement as the README's
 | `online --config` | 0.73 GB | 0.75 GB |
 | `online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | | 0.15 GB |
 
-It is flat, like the two streaming surfaces in the README. Nearly all of
-it is Polars reading ahead in the parquet file. With
+It is flat: the bank's memory does not grow with the rows, and this
+process keeps none of the freed pages the Python surfaces in the README's
+table hold on to as they run longer. Nearly all of it is Polars reading
+ahead in the parquet file. With
 `POLARS_ROW_GROUP_PREFETCH_SIZE=1`, a run takes 0.15 GB at the same
 speed. [docs/PERFORMANCE.md](PERFORMANCE.md) §11 has these measurements,
 and §26 re-measures the command line, CSV and NDJSON included.
@@ -440,9 +442,6 @@ The command line needs no Python: it carries its own Rust Polars, 0.55.2.
 So the py-polars floor applies only to the Python calls this guide names.
 That floor is `LazyFrame.collect_batches`, which `lf.online.fit_predict`
 and `ModelBank.fit_predict_batches` read with, and which py-polars added in
-1.34.0. The suite passed on 1.34.0,
-1.38.1 and 1.44.1 on 2026-09-02, on 2.0.0-rc.1 on 2026-09-18 and on 1.44.2,
-the pin until 2026-10-08, with identical numbers, and passes on 2.0.0, the
-pin, at every change. The README's
+1.34.0. The README's
 [Versioning and the Polars pin](../README.md#versioning-and-the-polars-pin)
-has the full matrix and which interfaces carry a promise.
+has the versions the suite passes on and which interfaces carry a promise.

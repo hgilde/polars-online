@@ -49,7 +49,7 @@ The words this ledger uses:
 |---|---|
 | oracle | a reference a model cannot share a bug with; its four forms are in [An oracle, not a golden number](#an-oracle-not-a-golden-number) |
 | golden number | an exact expected output from a fixed stream, embedded in a test. It pins the arithmetic against any change, but it is not an oracle |
-| second opinion | another library's computation of the same quantity, held beside the model's in `tests/test_second_opinion.py` (the diagnostics' in `tests/test_second_opinion_diagnostics.py`, split from it at the 250 KB cap) or `tests/test_river.py` |
+| second opinion | another library's computation of the same quantity, held beside the model's in `tests/test_second_opinion.py` (the diagnostics' in `tests/test_second_opinion_diagnostics.py`, split from it when it grew past 250 KB) or `tests/test_river.py` |
 | mutant | one small change `cargo mutants` makes to the source, such as a flipped operator or a function body replaced with a constant, before it reruns the tests. A mutant is *caught* when some test fails, and *missed*, a survivor, when every test still passes (`scripts/mutants.sh`) |
 | equivalent mutant | a mutant that no test can kill: on every input the code can receive, the mutated line computes what the original does |
 | IC | the correlation of prediction with target, `po.eval`'s `ic` |
@@ -610,9 +610,9 @@ it.** The essentials aim at pytest under 90 s and `cargo test`'s run under
 cores, pytest's essentials took 72 s against the full suite's 196 s, and
 `cargo test`'s ran 29 s against 146 s. `gate.sh` names its tier on its
 first and last lines and prints each step's time, so a slow test that
-creeps into the essentials shows where they run. CI runs only the full tier
-and spends no minutes timing the essentials. The user asked for that on
-2026-10-08: "Do the work before the push just to save ci time". Each test
+creeps into the essentials shows where they run. CI runs only the full tier,
+which every push runs anyway, so it spends no minutes timing the
+essentials (the user, 2026-10-08). Each test
 that moved gives its reason in its mark.
 
 ### Where the suite runs

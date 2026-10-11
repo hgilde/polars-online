@@ -140,7 +140,7 @@ seeded, of 2,000 rows unless the table says otherwise, and each ran on ten
 seeds. Fifteen specs, every model `check()` reads, ran on the first five
 clean shapes, and no check gave an error or a warning in the 750 runs. An
 audit of every column ran on all twelve, and gave none either. The one
-clean shape an audit has information on is the target missing on 60% of
+clean shape on which an audit gives an `info` finding is the target missing on 60% of
 its rows. Each problem planted in the same streams was found on every
 seed, for every spec it harms, and for no other. Each problem's section
 below gives the numbers for its own codes, and `tests/test_check.py` runs

@@ -434,8 +434,8 @@ A low R² with a slope of 1 is a model with too little information, which
 no rescaling repairs.
 
 The recipe fits one stream three ways: with a ridge as large as the
-features' variance, with a half-life too short for twenty coefficients,
-and with neither fault.
+features' variance, with a half-life too short for 21 coefficients (twenty
+features and the intercept), and with neither fault.
 
 ```python
 import numpy as np
@@ -781,8 +781,8 @@ flags on rows 1,000-2,999, before any break: 18
 ```
 
 Each cell is the first row the flag fired after the break. Before row
-3,000 the flags fired on 18 of the 18,000 flag-rows of the three streams,
-0.1%, as on any stream with no break, and `drift` fired on none of the
+3,000 the flags fired on 18 of the 24,000 flag-rows (four flags on 2,000
+rows of each of the three streams), under 0.1%, as on any stream with no break, and `drift` fired on none of the
 breaks. Read together, the other three flags tell the breaks apart:
 
 | break | `cusum` | `cusum_sq` | `break_wald` |

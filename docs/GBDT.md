@@ -69,8 +69,8 @@ seeds of a uniform sample 1.2347 to 1.2411. LightGBM's own sampling spans
 constructed `lgb.Dataset`, binned on LightGBM's own sample, and holds the
 data in memory only when it fits.
 
-**The first round begins sooner than either library's own route from
-Polars.** On those 10 million rows, it began after 4.0 seconds for XGBoost,
+**The first round begins sooner than XGBoost's own route from Polars, and
+as soon as LightGBM's at a third of the memory.** On those 10 million rows, it began after 4.0 seconds for XGBoost,
 against 8.7 for XGBoost's own iterator over Polars batches. For LightGBM it
 began after 1.7 seconds streamed and 1.5 in memory, against 1.5 for its own
 route from a collected frame at three times the memory. Each time is the
@@ -210,11 +210,12 @@ a pl.Categorical is refused: ValueError
 ### A LightGBM dataset takes its binning parameters when it is built
 
 **Pass `max_bin`, and every other parameter that changes the bins, to
-`lightgbm_dataset`, because training cannot change them.** A dataset built
-here is constructed, as any whose raw data is freed. `lgb.train` passes its
+`lightgbm_dataset`, because training cannot change them.** The dataset
+it returns is already *constructed*, LightGBM's word for a dataset whose
+bins are set and whose raw data is freed. `lgb.train` passes its
 parameters through `LGBM_DatasetUpdateParamChecking`, which refuses a
-changed `max_bin`, `data_random_seed`, `min_data_in_bin` and the rest
-(`c_api.cpp:248`), as it refuses for LightGBM's own constructed dataset.
+changed `max_bin`, `data_random_seed`, `min_data_in_bin` and the rest, as
+it refuses for LightGBM's own constructed dataset.
 `max_bin` has a keyword of its own, and the others go in `params=`. The
 dataset records its categorical features under `categorical_column`, the
 key LightGBM's own `Dataset` records them under, so a validation set you

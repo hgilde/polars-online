@@ -1,14 +1,15 @@
 # Models
 
-Each model's entry says when to reach for it, states its update rule,
-shows its parameters, and says what it is checked against. The README's
+Each model's entry says when to reach for it, shows it working in a recipe
+on data whose answer is known, states its update rule and shows its
+parameters. Most also say what the model is checked against. The README's
 [Models](../README.md#models) has the table of all twenty-two, how each
 learns from a row, and which to choose for which question.
 
 **The update rules share one notation.** `z` is `[1, x]` when there is an
 intercept, and `x` when there is not. `w` is the row's weight, and `W` the
-weight accumulated before the row. `λ` is the row's decay,
-`0.5 ** (Δclock / half_life)`, with `Δclock` the clock's step from the row
+weight accumulated before the row. `λ` is the row's decay (`lam=` on a
+spec gives it directly), `0.5 ** (Δclock / half_life)`, with `Δclock` the clock's step from the row
 before, capped at `gap_cap` ([Time and decay](../README.md#time-and-decay)).
 Without a clock column, each row is one unit of clock. A model keeps its
 running sums in *accumulators* of three kinds:
@@ -902,7 +903,7 @@ caller's units even under `standardize=True`.
 *API:* [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) — *Rust:* [`pa.rs`](../crates/online-core/src/pa.rs) — *Outputs:* [fields](OUTPUTS.md#pa)
 
 Use `pa` to step on every row without tuning a learning rate. Each row asks
-the fit to come within `eps·σ` of its target, `σ` the target's own
+the fit to come within `eps·s_y` of its target, `s_y` the target's own
 exponentially weighted standard deviation, as `sgd`'s tube is drawn in. The
 update is the smallest change that does so.
 
@@ -943,7 +944,7 @@ With `p` the prediction, and the intercept's 1 inside `z`, a row takes the
 step its `mode` sets:
 
 ```
-loss = max(0, |y − p| − eps·σ)      s = ‖z‖²
+loss = max(0, |y − p| − eps·s_y)      s = ‖z‖²
 pa    τ = loss / s          pa1  τ = min(c, loss/s)      pa2  τ = loss / (s + 1/(2c))
 β    += min(w, 1) · τ · sign(y − p) · z
 ```
@@ -956,7 +957,7 @@ and past the scaler's warm-up the step is mapped into the caller's units as
 In the target's units, a tube of 0.1 held a target in hundredths on every
 row, and the model never learned it. In the residuals' spread, a fit from
 zero on a target at 1,000 drew a tube about 100 wide from its first
-residuals, and without decay stopped learning: R² −52. `σ` reads `y` alone,
+residuals, and without decay stopped learning: R² −52. `s_y` reads `y` alone,
 so until the target has two weighted rows of different values the tube has
 no width. `eps` is 0.01 and `c` is 1 by default.
 
@@ -973,7 +974,7 @@ row, at a half-life of 200 and noise 0.3, the intercept met the level near
 row 670. With the level as a feature too, the capped steps, mapped into the
 caller's units through the scaler, swung the fit far past the level
 instead. A drift the intercept carries alone keeps a lag of about 2 at any
-`c`, half of it the tube's, since `σ` holds the drift. Differencing the
+`c`, half of it the tube's, since `s_y` holds the drift. Differencing the
 target and the moving features, `y − y.shift(1)`, takes the level out of
 the fit, and the level is the last row's `y` plus the predicted change.
 Measured as `pred − y`:
@@ -1122,18 +1123,18 @@ p_up = fit["rise"].struct.field("pred_up")   # per row: the probability that ret
 weights and the rows' density.** So a heavier or denser stream overcomes
 them sooner, and a shorter half-life shrinks the fit more. At the defaults,
 with unit weights and rows one clock unit apart, they act in steady state
-as a ridge of `(1 − λ)(β/α + l2)` on the mean scale. A constant target of 5
-then settles at 4.65 at `half_life=100`, and at 4.96 at 1000. For a
+as a ridge of `(1 − λ)(β/α + l2)` on the mean scale. Under
+`loss="squared"`, a constant target of 5 then settles at 4.65 at `half_life=100`, and at 4.96 at 1000. For a
 penalty that weight and density leave alone, use
 [`lasso`](#lasso--lasso-path-its-penalty-chosen-as-it-runs), whose penalty
 is on the mean scale.
 
 **`ftrl` does not centre a feature, so give it features near 0.** A
 coefficient's error reaches the prediction multiplied by the feature's
-value, so a feature at a level `L` carries it at `L` times its size. On the
-stream of `crates/online-core/tests/held_values.rs`, with one of three
-features at `L`, the squared loss's error is about `0.018·L`. That is 18.3
-at 1,000 and at -1,000, and 1.8e6 at 1e8, where it is 0.75 at 0.5. Standardize or
+value, so a feature at a level `L` carries it at `L` times its size. On a
+stream of three features, one of them held at `L`, the squared loss's error
+is about `0.018·L` once the level is large: 18.3 at 1,000 and at -1,000,
+and 1.8e6 at 1e8, against 0.75 for the feature held at 0.5. Standardize or
 z-score such a feature in the query before the bank, as
 [Features in units of their spread](WINDOWS.md#features-in-units-of-their-spread)
 shows. `ftrl` has no `standardize` because `l1` zeroes a coefficient in the
@@ -1432,11 +1433,11 @@ n, p = 2000, 500
 x = rng.standard_normal((n, p))
 y = x[:, [7, 42, 99, 250, 401]] @ np.array([0.5, -0.4, 0.3, 0.3, -0.2]) + rng.standard_normal(n)   # five matter
 features = [f"f{j}" for j in range(p)]
-pl.DataFrame(x, schema=features).with_columns(y=y).write_parquet("wide.parquet")
+pl.DataFrame(x, schema=features).with_columns(y=y).write_parquet("screen.parquet")
 
 screen = po.spec.marginal("screen", targets=["y"], features=features, half_life=float("inf"))   # every row weighs the same
 bank = po.ModelBank([screen])
-bank.fit(pl.scan_parquet("wide.parquet"))                    # learn, and keep only the state
+bank.fit(pl.scan_parquet("screen.parquet"))                  # learn, and keep only the state
 table = bank.marginal("screen").sort(pl.col("t_stat").abs(), descending=True)
 for r in table.head(6).iter_rows(named=True):
     print(f"{r['feature']}: corr {r['corr']:+.2f}, t_stat {r['t_stat']:+.1f}")
@@ -1839,7 +1840,7 @@ rk = po.spec.rcov(
     group="block", group_close="monotone",
     kind="kernel",               # the realised kernel; or "plain" or "preavg"
     psd=True,                    # the default: clip any negative eigenvalue
-    block_rows=2000,             # a sizing hint for the ring
+    block_rows=100,              # a sizing hint for the ring: the block's expected length
     bandwidth=None,              # a fixed H; left out, set from the data
 )
 returns = by_block.with_columns(
@@ -2218,8 +2219,10 @@ to hold a share `s` of the stream, give `beta_mu ≈ 1.44·s·v·h`.
 Measured at 20k rows and a half-life of 3,000, moons, rings and five Gaussians
 in twenty dimensions all score an adjusted Rand index (ARI) of 1.000 against
 the truth. Their `eps` were 0.07, 0.1 and 0.3, and `kmeans` cannot follow the
-first two. At `eps=0.07`, uniform noise is flagged `outlier` 94% of the time,
-and real rows 0.3%. A cluster born mid-stream had a label 31 rows in.
+first two. In that measurement, at `eps=0.07`, uniform noise over the whole
+plane was flagged `outlier` 94% of the time, and real rows 0.3%. The
+recipe's scattered rows read 61% because many land near a ring and take its
+label. A cluster born mid-stream had a label 31 rows in.
 
 ### `ew_class` — Gaussian classification on `ew_cov` moments
 
@@ -2559,12 +2562,12 @@ as `1/(1/2 − γ)`: seconds at 0.49 and hours just under 1/2. So
 `boundary_gamma` above 0.49 is refused.
 
 **Increase `boundary_gamma`, the `γ` of `w(b)`, to catch an early change
-sooner.** Above 0 the boundary starts lower, and so it flags more stable
-streams:
+sooner.** Above 0 the boundary starts lower, and near the top of the range
+it flags more stable streams:
 
 | `boundary_gamma` | a change soon after the history | stable streams flagged, at a nominal 0.05 |
 |---|---|---|
-| 0, the default | caught latest | 0.04 to 0.09, the size nearest nominal |
+| 0, the default | caught latest | 0.04 to 0.09 |
 | 0.25 | caught sooner | 0.04 to 0.09 |
 | 0.45 | caught soonest | 0.12 to 0.18 |
 
@@ -2715,11 +2718,12 @@ started = out.with_columns(      # the row each group's current run began on, co
 ```
 
 **Leave `prior_mean` and `prior_scale` out, and the first rows set them.**
-The first `warm_rows` learned rows, `d + 2` by default, report null. Their
+The first `warm_rows` learned rows, `p + 2` by default with `p` the
+number of features, report null. Their
 mean and covariance (the diagonal under `"diag"` and `"robust"`) become the
 prior, and the rows are then read as rows of a model that had it from the
 start. `prior_nu` defaults to the smallest value that gives the prior's
-variance a mean, `d + 2` under `"gaussian"` and 3 otherwise, and at it the
+variance a mean, `p + 2` under `"gaussian"` and 3 otherwise, and at it the
 prior's mean variance is that covariance.
 
 **A prior you give must be in the data's units, because it decides what
@@ -2729,7 +2733,8 @@ under a prior of unit precision (`prior_mean=[0.0]`, `prior_scale=[2.0]`,
 `prior_nu=2.0`). The prior set from its first rows dated the break to row
 500. Too narrow or off-centre, and a run that begins on a row has no density
 for it. `prior_nu` and `prior_scale` are 2a and 2b in the gamma
-parametrisation. So the parameter tour's values are Adams and MacKay's own
+parametrisation. So the values in the code above, `prior_nu=2.0` and
+`prior_scale=[2e-4]` with `hazard=250.0`, are Adams and MacKay's own
 finance example (a = 1, b = 1e-4, hazard = 250), a precision of 1e4 on
 average.
 
@@ -2761,7 +2766,7 @@ Give `emission` to choose each run's model of the rows:
 | `emission` | each run's model | note |
 |---|---|---|
 | `"diag"`, as in the example | a normal-inverse-gamma per feature | |
-| `"gaussian"` | a normal-inverse-Wishart over all of them, O(runs d²) a row | the one that can see a break in the *correlation* alone |
+| `"gaussian"` | a normal-inverse-Wishart over all of them, O(runs p²) a row | the one that can see a break in the *correlation* alone |
 | `"robust"` | each row's contribution weighted by `(pi(x)/pi(mode))**robust_beta` | one 20-sigma row moves nothing; without it, that row is a changepoint at `p_change` 0.91. Not free of the data's units |
 
 **Keep `robust_beta` below about 0.2.** Above it, the weighting forgives the
@@ -2814,11 +2819,11 @@ for i in range(1, n):                                         # a sticky chain: 
     state[i] = 1 - state[i - 1] if rng.random() < 0.005 else state[i - 1]
 centres = np.array([[-0.75, -0.75], [0.75, 0.75]])            # two blobs of unit spread
 xy = centres[state] + rng.standard_normal((n, 2))
-pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "truth": state}).write_parquet("blobs.parquet")
+pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "truth": state}).write_parquet("states.parquet")
 
 hidden = po.spec.hmm("hidden", features=["x", "y"], k=2, precision_prior=1e-2, warm_rows=500,
                      half_life=float("inf"))
-rows = pl.scan_parquet("blobs.parquet").online.fit_predict([hidden]).collect().unnest("hidden").tail(5000)
+rows = pl.scan_parquet("states.parquet").online.fit_predict([hidden]).collect().unnest("hidden").tail(5000)
 right = (rows["state"] == rows["truth"]).mean()               # the states are numbered as seeded, so read either way
 nearest = ((rows["x"] + rows["y"] > 0).cast(pl.Int64) == rows["truth"]).mean()   # the nearest true centre
 print(f"rows in their true state: the filter {max(right, 1 - right):.2f}, the nearest true centre {nearest:.2f}")

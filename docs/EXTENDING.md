@@ -104,7 +104,7 @@ Each such case overrides a method, and each has its check:
 | reads a number out of `y` rather than regressing it | **`predict_with(x, y, d_clock)`** | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
 | counts a value that is not usable rather than refusing it, as `audit` does | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a restart must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
 | solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share`. The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
-| reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (the README's [*Warm-up*](../README.md#warm-up) says what each gates). Only `ewridge` does today: `Spec::has_error_inflation` in `crates/online-polars/src/spec.rs` refuses `max_error_inflation` and `emit_error_inflation` for every other model, and names a new one that reports them | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
+| reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (the README's [*Warm-up*](../README.md#warm-up) says what each gates). Which models report them is the table of predicates under [What a model reads for the diagnostics](#what-a-model-reads-for-the-diagnostics), and `Spec::validate` refuses the parameters that read them for every other model, so a new one that reports them is added there | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
 
 **Row-lagged state.** The stream calls `clear_lags` on a session change and on
 a capped clock gap (`ClockAdvance::capped`). Those are the two events after
@@ -190,11 +190,11 @@ the encoding. `crates/online-polars/tests/summary.rs`'s corruption sweeps cut
 and bit-flip a saved state of every model kind and run `fit_predict` on every
 one that loads, failing on a panic
 (`every_model_kind_refuses_or_loads_a_corrupt_file_never_panics`, held to
-`ModelKind::KINDS`). A state from before the means' low parts must load and go
-on as the whole one does: `model_contract.rs`'s
-`every_model_resumes_from_a_state_without_the_low_parts` drops every `_lo`
-field of every model's state and compares the two, so a new `_lo` field needs
-`#[serde(default)]`.
+`ModelKind::KINDS`). A state without the means' low parts is refused, since
+it is of a layout before this build's schema: `model_contract.rs`'s
+`every_model_refuses_a_state_without_the_low_parts` drops every `_lo` field
+of every model's state and requires the load to fail, so a new model's
+`_lo` fields go into that test.
 
 ### Step 2 — `src/lib.rs`
 
@@ -271,7 +271,7 @@ Two predicates classify a model that is not a regression:
 | predicate | the model it takes | what it changes |
 |---|---|---|
 | `ModelKind::predicts_no_target` | a model that predicts no target | `validate` refuses every residual-based flag (`emit_sigma`, `emit_metrics`, `resid_quantiles`, `conformal`, ...) for it by name, rather than emitting nothing, and the bank counts its output slots from the schema |
-| `ModelKind::is_unsupervised` | as well, a model with **no target column at all**: `ew_cov`, `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange`, `bocpd` | the leak check exempts it |
+| `ModelKind::is_unsupervised` | as well, a model with **no target column at all**: `ew_cov`, `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange`, `bocpd`, `audit` | the leak check exempts it |
 
 `ew_class`, `seqtest` and `marginal` are in the first and not the second. For
 `ew_class`, the label column travels as `targets[0]`, so everything that reads
@@ -317,7 +317,7 @@ exhaustive over them:
 |---|---|---|
 | **`Spec::decays()`** | the model has no decay at all. Without the arm, the spec will demand a `half_life` it cannot use; `validate` should then refuse `half_life`/`lam` for it by name | `seqtest` counts trials, `rcov` accumulates a block, `corrchange` runs a test and `bocpd` has a run-length posterior instead |
 | **`default_min_periods`** | the schema's own warm-up is the gate rather than `k + 1` | `corrchange`'s span, `bocpd`'s row one, `hmm`'s `warm_rows` |
-| **`Spec::validate`'s refusal of a relative or a window target** | the model does not regress its targets, so neither form applies; the match ends in `_ => None`, so a new model accepts both silently until it has an arm | `ew_class`, `seqtest`, a logistic `ftrl`, a logistic or Poisson `sgd` |
+| **`Spec::validate`'s refusal of a window target** | the model does not regress its targets, so a target computed from a window does not apply; the match ends in `_ => None`, so a new model accepts one silently until it has an arm | `ew_class`, `seqtest`, a logistic `ftrl`, a logistic or Poisson `sgd` |
 
 **Check:** none is exhaustive; `tests/test_<model>.py` is where each refusal
 and the gate get pinned.
@@ -400,7 +400,7 @@ combo, and are the cases in `output_index`:
 | `rcov` | `weight_sum` alone: its block leaves through `Bank::closed_groups` |
 | `hmm` | a state and its posteriors, `ew_class`'s shape without the labels |
 | `corrchange` | a statistic, a critical value, a flag and a counter, on the rows where a span closes |
-| `bocpd` | a changepoint probability, two run lengths, a predictive mean per feature and a log score |
+| `bocpd` | a changepoint probability, two run lengths, a predictive mean per feature and a log-likelihood, `loglik` |
 
 `coef_fields` names the slots, and these are its special cases:
 
@@ -615,16 +615,17 @@ and a `STATE_ONLY` note if the model writes only `weight_sum`; then
 `test_outputs_doc`'s `test_the_document_is_what_the_generator_writes`,
 `test_every_model_has_a_section` and `test_no_field_is_left_undocumented`.
 
-**`llms.txt`** says how many models there are ("all 21"): bump it. **Check:**
+**`llms.txt`** says how many models there are ("all 22"): bump it. **Check:**
 `test_llms_txt::test_it_says_how_many_models_there_are`, and
-`test_it_warns_about_the_one_name_spelled_two_ways`, which fails when a new
-builder's name differs from its kind.
+`test_every_builder_is_its_spec_type`, which fails when a new builder's name
+differs from its kind.
 
 ### Step 16 — `CHANGELOG.md` and the design note
 
-**`CHANGELOG.md`**, and the design note in the record where the model was
-proposed, which [docs/README.md](README.md#records) lists under *The
-plan*.
+**`CHANGELOG.md`**, and a design note: the update equations, the
+alternatives weighed and why they lost, and the measurements behind the
+defaults, kept with the project's records ([docs/README.md](README.md#records)
+lists them).
 
 **No check.**
 

@@ -143,7 +143,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 | stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); the README's *Parallelism* calls it a task. A single stream is one spec over one group, or with no `group` at all |
 | instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
 | slot | one value an instance writes for every row: a target's prediction, or one of `ew_cov`'s 230 statistics (§13) |
-| section | one part of a chunk's work, as `ONLINE_TIMING=1` times it: `group` (row indices per key), `extract` (the columns), `process` (the models) and `assemble` (the output columns) (§12) |
+| section | one part of a chunk's work, as `ONLINE_TIMING=1` times it: `extract` (the columns), `group` (row indices per key), `process` (the models) and `assemble` (the output columns), in the order it prints them (§12) |
 | run | the rows a stream feeds through one set of output buffers, `ChunkOut::run_rows` of them (§13) |
 | stride, gather | a stride reads one group's values from every n-th row of an interleaved column. A gather copies them into one contiguous run first (§12, P9) |
 | the Gram | the `k × k` co-moment matrix a regression keeps (§14, §18) |

@@ -357,7 +357,7 @@ checks held them (§5, C1–C8b). Why the alternatives were rejected is §3 and
 | R3 | `load_state` and `predict(path)` are read when the query is built, so a query run twice gives the same result | F2 | C8b |
 | R4 | the bank is fed exactly the rows the query pulled | F4 | C1, C4, C4b |
 | R5 | `predict` refuses `save_state`, as `online --predict` does | | `predict(save_state=)` refused (§8) |
-| R6 | a failure after the bank still writes the state: [the one gap](#the-one-gap-a-failure-after-the-bank) | F5 | C7 |
+| R6 | a failure after the bank still writes the state on py-polars 1.x, and on 2.0 only for a stream short enough to finish first: [the one gap](#the-one-gap-a-failure-after-the-bank) | F5 | C7 |
 | R7 | building a query writes nothing | F3 | |
 
 ## The research behind it, 2026-09-03

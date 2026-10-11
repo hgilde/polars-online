@@ -6,7 +6,7 @@
 > command line over files. Memory is O(state), not O(data), so a model fits a stream
 > that does not fit in RAM.
 
-Python 3.12+, `polars>=1.34,<3`. `pip install polars-online`. `numpy` is an optional
+Python 3.12+, `polars>=1.34.0,<3`. `pip install polars-online`. `numpy` is an optional
 extra, needed only by `ModelBank.gram()` and by `po.gram`, `po.corr` and `po.sim`.
 No pandas.
 
@@ -45,8 +45,8 @@ bank.save("bank.state")
   state as it stands *before* the update that uses that row's target. Never fit a row
   and then score it: the `pred` the library returns is already out-of-sample.
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
-  gives identical output, bit for bit, and a test enforces it. The one exception is
-  which rows carry `coef`, and `support_coef` and `se_coef` on the same rows, by default: they are
+  gives identical output, bit for bit, and a test enforces it. Apart from that,
+  only which rows carry `coef`, and `support_coef` and `se_coef` on the same rows, can move, and only by default: they are
   filled on each group's last accepted row in every chunk, so that schedule follows the
   chunking. Under a cadence those rows do not move either: `coef_every` is a clock
   parameter, as `solve_every` is (`0` every row, `"5m"` a row once five minutes of the
@@ -148,6 +148,9 @@ Windows alike.
   their spread, saving and resuming a window run
 - [Training XGBoost and LightGBM](https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md):
   `po.gbdt` on files larger than memory
+- [Running a bank as a job](https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md):
+  the `online` command line, its TOML configuration (every key and flag) and each kind of
+  run, with no Python
 - [State workflow](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md):
   fit, save, serve, learn on — what each step guarantees
 - [Diagnostics](https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md):

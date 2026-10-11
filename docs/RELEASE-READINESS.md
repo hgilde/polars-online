@@ -76,7 +76,7 @@ page, and GitHub emails when one is waiting.
 
 **The job asks for approval only after every job it needs is green.** The
 legs that move a dependency leave out two pytest markers. `soak` marks the
-opt-in long runs over millions of rows. `pins` marks the three tests that
+opt-in long runs over millions of rows. `pins` marks the tests that
 assert this repository's own Polars pin, which cannot pass once Polars has
 moved (`pyproject.toml`).
 
@@ -761,7 +761,7 @@ and 2.0.0rc1, `chunk_size` and `maintain_order` included.
 #### R6 narrows, as `docs/STATE-WORKFLOW.md` said it might
 
 **`docs/STATE-WORKFLOW.md` §4 states its rule R6, the one gap in the
-plan's state workflow.** Polars drains a Python source before surfacing a
+state workflow.** Polars drains a Python source before surfacing a
 later node's error. So a query that fails *after* the bank still writes
 `save_state` with the whole stream's state, while its own output is
 missing. The stability note in that document's §6 says "R6 narrows if
@@ -1088,8 +1088,8 @@ the helper modules**, as counted on 2026-09-06. All are keyword-only, so
 positional order is not API, but every *name* is. On that date 29 of the
 parameters were the `CommonKwargs` every spec shares. Today
 `python/polars_online/_kwargs.py` declares them, and the snapshot's
-`[common parameters]` lists them once. The constructors are still
-twenty-one. The four helper modules named then were `po.corr`, `po.sim`,
+`[common parameters]` lists them once. The constructors are twenty-two
+today. The four helper modules named then were `po.corr`, `po.sim`,
 `po.gram` and `po.prep` (`po.stream` since 0.12.0), whose functions are
 read the same way. `tests/api_surface.txt` pins the constructors and their
 keyword names. It pins every helper module the package has, read from the
@@ -1179,7 +1179,7 @@ numbers, applied to the names. That is why the proposal chose this shape
 rather than more unit tests.
 
 Regenerate with `UPDATE_API_SURFACE=1` set:
-`UPDATE_API_SURFACE=1 pytest tests/test_api_surface.py`. It was verified to
+`UPDATE_API_SURFACE=1 uv run pytest tests/test_api_surface.py`. It was verified to
 fail loudly on a simulated rename, with a unified diff and "needs a version
 bump" in the message.
 
@@ -1233,7 +1233,7 @@ was done:
 | kept | rather than | why |
 |---|---|---|
 | `fit_predict`'s name | | sklearn readers may expect in-sample fit-then-predict. Ours is predict-then-update, which is strictly better for them. A docstring note suffices, and the fused call *is* the out-of-sample guarantee |
-| the `emit_*` booleans, seven then and nine today (`tests/api_surface.txt`) | a stringly `outputs=[...]` list | they are discoverable in signatures |
+| the `emit_*` booleans, seven then and seventeen today (`tests/api_surface.txt`) | a stringly `outputs=[...]` list | they are discoverable in signatures |
 | spec dicts | spec objects | they are JSON-ready and printable, and validation already happens at construction |
 | wide struct output | a native long format | `eval.unpack` already provides long form on demand |
 

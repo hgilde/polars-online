@@ -117,8 +117,8 @@ nothing.** So `whole`, a ridge regression solved from running sums, converges
 to the batch fit over every row it has seen. Its state is a complete summary
 of those rows, worth saving and serving.
 
-`fit_predict` adds one column per spec, holding a record of fields in each
-row, and `.online.unnest`, chained after it, spreads them into columns. For
+`fit_predict` adds one column per spec, holding a record of named fields
+in each row (a Polars `Struct` column), and `.online.unnest`, chained after it, spreads them into columns. For
 stock A, `flat` begins:
 
 | ts | ret | pred_ret | resid_ret | weight_sum | withheld_reason |
@@ -466,8 +466,8 @@ ahead_5m = po.spec.ewridge("ahead_5m", targets=[fwd_move], features=["flow"],
 moves = flows.online.fit_predict([ahead_5m]).online.unnest([ahead_5m]).collect()   # does buying predict the price rising?
 
 # The same target as a column, made in the query by with_windows on the spec's clock, then named in targets.
-as_column = {**ahead_5m, "targets": ["fwd_move"]}
-made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])
+as_column = {**ahead_5m, "targets": ["fwd_move"]}                      # a spec is a dict: a copy with the column as target
+made = po.stream.with_windows(flows, fwd_move, like=ahead_5m).online.fit_predict([as_column])   # like= takes the spec's clock, gap_cap and group
 column = made.online.unnest([as_column]).collect()
 
 same = (moves["pred_fwd_move"] == column["pred_fwd_move"]).sum()
@@ -487,8 +487,8 @@ side of zero ([Is another model
 better?](docs/DIAGNOSTICS.md#is-another-model-better)). A plain ratio sits
 about 1, where two positive numbers always agree, so its `hit_rate` reads
 1.0 whatever the fit. A difference sits about zero too. A target that looks
-ahead takes the same forms: `(next_5m / pl.col("mid")).log()`, with
-`next_5m` the `po.rewm_mean` above, and `mid * exp(pred)` turns its
+ahead takes the same forms: `(next_5m / pl.col("mid")).log()`, where
+`next_5m` is the `po.rewm_mean("price", ...)` inside `fwd_move` above, and `mid * exp(pred)` turns its
 prediction back into a price. This code regresses four forms of a trade's
 price against the mid at its row on the same signed size, `flow`.
 It reads `trades.parquet` from [Example data](#example-data):
@@ -669,7 +669,7 @@ clock's *policy*:
 
 | the stream has | the parameter | what it does |
 |---|---|---|
-| a **session** boundary, such as the start of a trading day, where the clock's jump is not elapsed time | `session`, a column whose value changes at a session boundary, and `session_gap`, required with it | applies a step you choose, `session_gap`, in place of the jump, capped at `gap_cap` like any step. `session_gap="reset"` starts the model over instead |
+| a **session** boundary, such as the start of a trading day, where the clock's jump is not elapsed time | `session`, a column whose value changes at a session boundary, and `session_gap`, required with it unless `group_close="session"` closes the group at the change instead ([One row per finished group](#one-row-per-finished-group)) | applies a step you choose, `session_gap`, in place of the jump, capped at `gap_cap` like any step. `session_gap="reset"` starts the model over instead |
 | a **gap** in the clock, such as an hour with no rows | `gap_cap`, required with a clock, finite and above 0 | caps each step between two rows a model learns from, so a quiet hour ages the fit no more than `gap_cap` would. After a run of skipped rows, the next row's step is capped too, however long the run |
 | a clock that **steps back**, such as a replayed day | `restart_after_step_back` | starts the model over at a step back larger than the setting, and refuses one no larger as a late row. Unset, the default, every step back is refused ([what each step back means](#how-a-bank-detects-rows-out-of-order)) |
 
@@ -886,8 +886,8 @@ What the window truncates depends on the model:
 | `ew_class` | each class's moments, so the classifier follows class means that move | |
 | `marginal` | every pair's weight, means and second moments, so `corr`, `beta` and `t_stat` describe the window. Its lag moments, under `window_lags=True`, are an estimate rather than exact | `bins`, `feature_moments="shared"`, and `lags` unless `window_lags=True` |
 
-**`window_budget` caps the snapshots' memory, per ring, in MiB.** The
-ring's memory grows with the window: for an `ew_cov` over 20 columns, a
+**`window_budget` caps the snapshots' memory, per ring (one per spec and
+group), in MiB.** The ring's memory grows with the window: for an `ew_cov` over 20 columns, a
 1,000-row window holds about 3 MB per group, divided by the rows between
 snapshots.
 
@@ -983,15 +983,16 @@ it.
 
 **The numbers do not depend on the chunking.** One chunk or a thousand,
 with or without a save and resume in the middle, gives bit-identical
-numbers. Only which rows carry `coef`, and `support_coef` beside it, can
-differ, and only by default. The bank then writes them on each group's last
+numbers. Only which rows carry `coef`, and `support_coef` and the standard
+errors of `emit_se_coef` beside it, can differ, and only by default. The bank then writes them on each group's last
 accepted row in every chunk, so smaller chunks report them more often.
 Under `coef_every` or `max_rows_between_coefs` they do not move
 ([Coefficients](#coefficients)).
 
 This code checks both on `df`. It predicts row 300 with a bank that has
 learned only rows 0 to 299, and compares that with the same row of one
-run over every row. It then runs the stream again one row per chunk.
+run over every row. It then runs the stream again one row per chunk,
+through `fit_predict_batches` ([In a loop](#in-a-loop-modelbank)).
 It reads `df` from [Example data](#example-data):
 
 ```python
@@ -1038,7 +1039,8 @@ query and refusing a chunk that runs backwards before learning any of it.
 
 **The query check names the step and its fix.** This code joins each
 row's venue to a fee, once as Polars' `join` does by default and once with
-`maintain_order="left"`, and prints what the bank warns of each.
+`maintain_order="left"`, and prints what the bank warns of each. The
+warning calls the query a *plan*, and its steps *nodes*, as Polars does.
 It reads `lf` from [Example data](#example-data):
 
 ```python
@@ -1548,7 +1550,7 @@ run:
 
 | tool | what it makes | where it runs | subsection |
 |---|---|---|---|
-| the window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html) | exponentially weighted means, sums and rates over a window of the clock, looking back or ahead | in [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows), before the bank, as columns; or in a spec's `targets`, as a target the bank computes | [Making features and targets from windows](#making-features-and-targets-from-windows) |
+| the window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html) | exponentially weighted means, variances, sums and rates over a window of the clock, looking back or ahead | in [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows), before the bank, as columns; or in a spec's `targets`, as a target the bank computes | [Making features and targets from windows](#making-features-and-targets-from-windows) |
 | [`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time) | one grid for series that tick at their own times | before the bank | [Series that tick at their own times](#series-that-tick-at-their-own-times) |
 
 ### Making features and targets from windows
@@ -1677,12 +1679,12 @@ assert pl.concat([first, rest]).equals(                      # the two grids tog
 with Polars' `diff()`, and give the specs the grid's clock, `time_refresh`.**
 Given a query, `refresh_time` returns one, so
 [`lf.online.fit_predict(specs)`](#as-a-query-lfonlinefit_predict) chained
-after it runs the grid and the models in one pass. The recipe plants a
+after it runs the grid and the models in one pass. This code plants a
 correlation: three prices share one move and add one of their own, as
 large, so their changes correlate at 0.5. Each is observed at times of its
 own, about once per clock unit. `ew_cov` reads the correlations on the
 grid, and `ewridge` regresses one series' change on the other two's, whose
-true coefficients are 1/3 each. The recipe then reads the same ticks on a
+true coefficients are 1/3 each. It then reads the same ticks on a
 grid every 0.1 clock units, each series' last price carried forward:
 
 ```python
@@ -1951,7 +1953,7 @@ close.
 
 `online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
 its `[specs.model]` table names the model and takes the model's own. This
-`bank.toml` is the first recipe's spec of [As a
+`bank.toml` is the first example's spec of [As a
 query](#as-a-query-lfonlinefit_predict):
 
 ```toml
@@ -2051,7 +2053,7 @@ recipe. The three uses:
 | serve | `bank.predict(frame)`, or `lf.online.predict(path)` | each row is scored as `fit_predict` would score it as the next row, and the state never moves |
 | read elsewhere | `bank.to_json()` | everything `save` writes, as JSON |
 
-The recipe fits `df`, saves the bank, and loads it back. Served, the first
+This code fits `df`, saves the bank, and loads it back. Served, the first
 row of `today` gets the prediction one run over `df` and `today` gives it.
 Resumed on input that overlaps the state, through `skip_learned`, the bank
 learns each row once and gives one run's predictions on every row.
@@ -2607,7 +2609,7 @@ stream too large to hold can leave a Gram per week, or per hour, and every
 fit after the pass reads those Grams and never the rows. `bank.gram(spec)`
 returns them as numpy arrays, one dict per group, and `po.gram` fits
 them, as [docs/GRAM.md](docs/GRAM.md) shows for each task. Both need
-numpy, an optional extra, which `pip install polars-online[numpy]` adds.
+numpy, an optional extra, which `pip install "polars-online[numpy]"` adds.
 
 **Give the spec a block column as its `group`, and the bank keeps a Gram
 for each block.** Here a column made in the query names each row's hour,
@@ -3028,8 +3030,9 @@ your data need.** Each model has an entry in
 [docs/MODELS.md](docs/MODELS.md): when to reach for it, its update rule,
 its parameters, a recipe on data whose answer is known, and what it is
 checked against. That page opens with the notation the update rules share.
-The regime models, `bocpd` and `hmm`, have a section of their own,
-[Detecting changes and regimes](#detecting-changes-and-regimes).
+The four models that watch for change, `seqtest`, `corrchange`, `bocpd`
+and `hmm`, have a section of their own, [Detecting changes and
+regimes](#detecting-changes-and-regimes).
 
 | your question | the family | start with | change to another when |
 |---|---|---|---|
@@ -3062,9 +3065,9 @@ ridge: slope at the last row 0.10
 kalman: slope at the last row -0.66
 ```
 
-**A moments model tracks how columns vary and move together, and reads
-each row's value from the rows before it.** So a row's value can serve as
-a feature for that row without leaking it. Here the correlation of
+**A moments model tracks how columns vary and move together, and computes
+each row's statistics from the rows before it.** So a row's correlation
+can serve as a feature for that row without leaking the row's own values. Here the correlation of
 `signal_a` and `ret` changes sign after the break at row 200.
 This code uses `df` from [Example data](#example-data):
 
@@ -3213,7 +3216,7 @@ you expected. Every figure was measured on one Apple M4 Pro with 14 cores
 
 **A model's speed is set by the work it does on each row.** `ewridge`
 solves a system of `k` features, so it does `O(k²)` work a row, and ten
-times the features take several times as long. This recipe writes 200,000
+times the features take several times as long. This code writes 200,000
 rows of 50 features to a file, then times one `ewridge` over it at 5
 features and at 50, best of three runs. `ModelBank.fit` learns from every
 row and keeps no output, so the time is the reading and the model:
@@ -3247,6 +3250,10 @@ for k in (5, 50):
 time at 5 features: 2.2 million rows a second
 time at 50 features: 0.8 million rows a second
 ```
+
+These rates sit below the table's, most of all at five features, because
+they include reading the file. The table times `fit_predict` on a frame
+already in memory, which is the model alone.
 
 ### Throughput
 
@@ -3368,10 +3375,10 @@ process, by design ([What this is not](#what-this-is-not)).
 | a Python thread that reads ahead | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` | |
 
 **Specs run side by side, and each gives the numbers it gives alone.**
-This recipe reproduces the table's second row on a generated file: eight
-`ewridge` specs of 20 features, one per half-life, in one bank and then one
-at a time. The times are your machine's, and the outputs are equal to the
-bit:
+This code runs the comparison of the table's second row on a generated
+parquet file: eight `ewridge` specs of 20 features, one per half-life, in
+one bank and then one at a time. Its times include reading the file, and
+are your machine's, and the outputs are equal to the bit:
 
 ```python
 import time
@@ -3496,7 +3503,7 @@ chunk, whatever its size.
 
 **The chunk size changes the speed and the memory, never a prediction.**
 It changes only which rows carry `coef` and `support_coef`: each group's
-last accepted row of every chunk. This recipe reads the same file 10 rows
+last accepted row of every chunk. This code reads the same file 10 rows
 at a time and all at once, with four groups, so the small chunks write the
 coefficients on 4 rows of each of 40 chunks.
 This code uses the file `ticks.parquet` and `df` from [Example data](#example-data):
@@ -3558,13 +3565,13 @@ returns freed pages at once, holds 0.75 GB at 12M rows against 0.73 GB at
 
 | part | grows with | what bounds it |
 |---|---|---|
-| the state | the models and their settings, and the number of groups: a bank's `group=` keeps one set of running sums per group, and grows with the number of groups, not the number of rows | it does not grow with the stream, but a window's snapshots and `marginal`'s bins grow with their settings, and each is capped per group, at 256 MiB by default |
+| the state | the models and their settings, and the number of groups: a bank's `group=` keeps one set of running sums per group, and grows with the number of groups, not the number of rows | it does not grow with the stream, but a window's snapshots and `marginal`'s bins grow with their settings, and each group's is capped, at 256 MiB by default |
 | the chunks in flight | `chunk_size` | a few chunks at once, three on the command line ([Chunk size](#chunk-size)) |
 | the rows a delay or a window holds | the delay or the window, times the rows' rate | never the stream's length |
 | whatever Polars' reader has read ahead | Polars' thread count | `POLARS_MAX_THREADS` shrinks it, and Polars' prefetch settings tune it directly ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) |
 
 **Measure the first part by saving the state, whose size is what the models
-keep.** This recipe fits one `ewridge` of 20 features on the first
+keep.** This code fits one `ewridge` of 20 features on the first
 10,000 rows of a generated file and on all 1,000,000, once with no groups
 and once over 64. The state stays the same size as the rows grow, and it
 grows with the groups:
@@ -3795,7 +3802,7 @@ training objects from files too large to hold.
 ### What this is not
 
 **When a spec names a `clock`, sort the rows by it before the bank, because
-polars-online has no policy for rows that arrive late.** A row that
+polars-online neither buffers nor reorders rows that arrive late.** A row that
 arrives out of clock order is refused, unless its step back is larger than
 `restart_after_step_back`, which starts the model over. A label that
 arrives late can be held back with [`embargo`](#labels-that-arrive-late).
@@ -3867,7 +3874,7 @@ To run a bank inside a [Pathway](https://pathway.com) pipeline, wrap a
 `ModelBank` in a stateful operator. The operator calls `fit_predict` on
 each batch Pathway hands it, and Pathway checkpoints it with `save_bytes`
 and `load_bytes`. Pathway does the ingestion, the event-time alignment and
-the windowing before the operator. This recipe feeds the operator two
+the windowing before the operator. This code feeds the operator two
 plain batches with a checkpoint and a restore between them, and its
 predictions equal one run's over the same rows.
 This code uses `df` from [Example data](#example-data):
@@ -3922,7 +3929,7 @@ hands each library one batch at a time.
 handed, and what Polars' read-ahead does to its memory. `po.gbdt` is
 unstable: its keywords may change in any release.
 
-This recipe writes a training file and a validation file whose target
+This code writes a training file and a validation file whose target
 depends on `x0` and `x1` but not `x2`, with noise of spread 0.3. The
 validation rows are binned on the training rows' bins (`ref=train`), as
 XGBoost requires of a set it evaluates on:

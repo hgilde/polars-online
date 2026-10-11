@@ -92,7 +92,10 @@ MEANING: dict[str, str] = {
     "log_e_neg_<t>": "log of the e-process betting it is negative",
     "n_pos_<t>": "learned rows whose `<t>` was positive",
     "n_neg_<t>": "learned rows whose `<t>` was negative",
-    "u": "the equicorrelation this row alone implies (Lemma 2.3, from the standardized row)",
+    "u": (
+        "the equicorrelation this row alone implies"
+        " (Engle and Kelly's Lemma 2.3, from the standardized row)"
+    ),
     "rho": "the block's equicorrelation level, the smoothed value `u` is folded into",
     "stat": "the test statistic for the span, the pair of windows or the monitored row",
     "crit": "the critical value `stat` is compared against",

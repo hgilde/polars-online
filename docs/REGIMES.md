@@ -40,7 +40,7 @@ pre-averaging bias's θ was read from the window the run uses and its first
 pre-averaged term was formed as Christensen, Kinnebrock and Podolskij form
 it. That moved two of its cells at the third decimal. Sections 1 to 4 end
 with a dated note that keeps the figures they first reported, on
-2026-09-06. Sections 2 to 4 have one more, which keeps the figures from
+2026-09-06. Sections 2 to 4 have more, which keep the figures from
 before the change of weights.
 
 ## 0. The short version
@@ -60,8 +60,9 @@ about 1.0, `hmm`'s `precision_prior` halves every correlation. The share of
 rows in the true state then falls from 98 % to 58 %. Set too large,
 `bocpd`'s `prior_scale` makes every row unsurprising, so a real break is
 never found ([its entry in
-MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)), and §1
-measures `hmm`'s ([§1](#1-does-hmm-recover-the-stream-that-made-it)).
+MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
+[§1](#1-does-hmm-recover-the-stream-that-made-it) measures the `hmm`
+case.
 
 **`corrchange`'s monitor is close to its paper's tables.** Wied, Krämer and
 Dehling (WKD) tabulate its size and power for "i.i.d. bivariate `t_5`
@@ -85,8 +86,8 @@ even so ([§4](#4-where-the-heavy-tails-go-d-hat)).
 and Galeano tabulate the rate at which a monitoring period ends in a flag
 when nothing changes, on GARCH pairs. Over about 1000 cycles a cell, on
 their design, the detector here is within 0.023 of their Table 2 at
-`boundary_gamma` of 0 and 0.25, and within 0.030 at 0.45. That is under
-two standard errors of the difference in every cell. At 0.45 both read 0.12
+`boundary_gamma` of 0 and 0.25, and within 0.030 at 0.45. That is within
+about two standard errors of the difference in every cell. At 0.45 both read 0.12
 to 0.18 against a nominal 0.05, as the paper warns
 ([§9](#9-the-sequential-detector-against-its-paper)).
 
@@ -480,7 +481,7 @@ more from the next seeds, so its noise is printed beside it:
 | 768  | 0.760  | 0.771           | 0.026           |
 | 1024 | 0.756  | 0.769           | 0.029           |
 
-**`L` is the same trade-off the sampling interval is, and the sweep now
+**`L` is the same trade-off the sampling interval is, and the sweep
 passes its best point.** Too small, and the cross-covariance at longer
 lags is left out; too large, and the sum takes in noise. The mean over five
 seeds levels off at 0.775 from `L` = 256 to 512 and falls after, while its
@@ -577,8 +578,8 @@ with fewer rows to average over.
 **`psd=False` is the better pre-averaging form here.** It has the lower
 error in every condition, 0.074 against 0.113 on clean data. `psd=True` is
 the default because its estimate is always positive semi-definite: it
-clips a negative eigenvalue where one appears, and the balanced form
-promises neither. For a correlation read on its own, the balanced form was
+clips a negative eigenvalue where one appears, and the balanced form,
+`psd=False`, does not promise that. For a correlation read on its own, the balanced form was
 the more accurate on these streams.
 
 ## 9. The sequential detector against its paper
@@ -625,8 +626,8 @@ The nominal level is 0.05 in every row. A rate from 1000 draws has a
 standard error of about 0.008 at 0.07 and 0.011 at 0.15, and the
 difference between two such rates about √2 times that.
 
-**On their design the detector is within two standard errors of their
-table in every cell.** The largest gap at each `boundary_gamma` is at
+**On their design the detector is within about two standard errors of
+their table in every cell.** The largest gap at each `boundary_gamma` is at
 `m = 500`, and the gaps run in both directions:
 
 | `boundary_gamma` | the cell | here | their Table 2 |

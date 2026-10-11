@@ -110,7 +110,7 @@ These are the words of the library that the page uses:
 | `ewridge`, `lasso`, `ew_cov` | the three models whose state holds a Gram: a ridge regression, a lasso, and the moments of columns with no target. [The README's model table](../README.md#models) lists every model |
 | Gram | a fit's running sums, as `bank.gram(spec)` returns them: one dict per group, whose keys the next table lists |
 | column | one axis of a Gram: `"intercept"` first when the spec fits one, then the spec's features |
-| block | the rows of one value of a spec's `group` column, and the Gram the bank keeps for them. Every recipe here makes a week a block |
+| block | the rows of one value of a spec's `group` column, and the Gram the bank keeps for them. Most recipes here make a week a block |
 | pool | merge the Grams of disjoint rows into the Gram of all of them, with `po.gram.merge` |
 | clock, `gap_cap` | the column a spec's `half_life`, `gap_cap` and `solve_every` are measured on, as `clock="ts"`, or the row count for a spec without one. `gap_cap` is the longest step between two rows that the bank ages a Gram by, and a spec with a clock needs one |
 | `half_life` | each row's weight halves every `half_life` of the clock. `float("inf")` weighs every row alike, so a Gram holds plain least squares' sums |
@@ -125,7 +125,8 @@ The keys of a Gram, in the names the formulas on this page give them:
 
 | key | what it holds |
 |---|---|
-| `group`, `instance` | the block's key, as text: here the week's Monday. And the half-life's suffix of the output's field names, such as `"@h500"`, or `""` for a spec with one half-life |
+| `group` | the block's key, as text: here the week's Monday |
+| `instance` | the half-life's suffix of the output's field names, such as `"@h500"`, or `""` for a spec with one half-life |
 | `columns`, `targets` | the names along each axis |
 | `weight_sum`, `n_kish` | the weight behind the Gram, `W`, and its Kish size |
 | `means` | the columns' weighted means, `m` |
@@ -1153,10 +1154,10 @@ and `lars_paths` took 0.19 s, at a load average near 14 on 14 cores.
 
 **Negate each week's target at random and run the selection again, to see
 what it chooses where no effect keeps its sign across the weeks.**
-Stability selection's bound assumes that the columns with no effect are
-chosen exchangeably, and no better than at random. A path that always
-stops at eight columns, among columns that share families, need not meet
-that. A null run measures the selection instead. Draw a sign for each
+Stability selection's bound, in Shah and Samworth's form, counts only the
+columns with no effect whose chance of being chosen on a half is at most
+`q / p`. A path that always stops at eight columns, among columns that
+share families, can choose some of them more often than that. A null run measures the selection instead. Draw a sign for each
 week, negate that week's target, and rerun every half. A column whose
 effect keeps its sign across the weeks loses that in a null run. The run
 keeps everything else: each week's columns, their correlations, and the

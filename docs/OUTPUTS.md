@@ -309,7 +309,7 @@ The fields of `po.spec.deco("m", features=["x0", "x1"], half_life=50.0)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `u` | `f64` | the equicorrelation this row alone implies (Lemma 2.3, from the standardized row) | while withheld |
+| `u` | `f64` | the equicorrelation this row alone implies (Engle and Kelly's Lemma 2.3, from the standardized row) | while withheld |
 | `rho` | `f64` | the block's equicorrelation level, the smoothed value `u` is folded into | while withheld |
 | `loglik` | `f64` | log predictive density of the row, under the model as it stood before the row | while withheld |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |

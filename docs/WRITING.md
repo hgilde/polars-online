@@ -4,8 +4,9 @@ The rules the reader-facing docs are held to: the README first, then the
 docstrings and the guides under `docs/`. Each rule was drawn from a
 reader's report on a draft. Most reports named a problem, and one confirmed
 an approach that worked, so each rule gives the case it came from, and can
-be checked against it. Where two rules pull against each other, the
-lower-numbered one wins.
+be checked against it. Where two rules pull against each other, the one
+in the lower-numbered section wins, and the principles below stand above
+every section.
 
 Every rule serves one test: **can this sentence be understood by a reader
 who has not yet been told what it is about?** The writer already has the
@@ -14,7 +15,7 @@ forms: a term used before it is named, a cost that does not say what is
 spent, a mechanism alluded to rather than stated, and a document that
 assumes the reader has the author's map of it.
 
-Nine principles sit above the numbered rules. They generalize the user's
+Ten principles sit above the numbered rules. They generalize the user's
 verdicts on the README's rewrites, and
 were written down at the user's word on 2026-10-04: "Write all the rules".
 Each numbered rule is one way to keep one of them.
@@ -136,7 +137,7 @@ ten top-level sections suit a document the size of the README, which had
 seventeen. Group them by what the reader is doing: learning the idea,
 running a bank, reading what it produced, choosing a model, tuning it, and
 deciding whether to trust it. A catalogue goes one level down, under
-families, rather than flat. The twenty-one models sit under four families, and
+families, rather than flat. The twenty-two models sit under four families, and
 each family opens with one line on what its members share.
 
 **The contents is a table.** One row per section, with its subsections
@@ -158,7 +159,7 @@ and the parameters that answer it. Otherwise the opener is one to three
 sentences that say what the section offers: *here is a first model fit, and
 an introduction to the library*. What every subsection obeys is stated here
 too, before the first subsection rather than inside one: the rules both of
-*Windowed means*' subsections follow sat inside the first of them. A
+the windows section's subsections follow once sat inside the first of them. A
 heading followed directly by a subheading, a table, a list or a code block
 is a section with no opener. On 2026-10-04 sixteen of the README's headings
 were. Four were top-level sections that went straight to a subheading:
@@ -212,7 +213,7 @@ their level, as `docs/EXTENDING.md` step 15 says.
 
 **Every paragraph serves the heading.** A section about the clock does not
 explain grouping, cite a test, or survey which models the clock applies to.
-A section titled *Groups, weights and warm-up* whose prose is entirely
+A section once titled *Groups, weights and warm-up*, whose prose is entirely
 about warm-up is two sections that have not been separated yet. When a
 paragraph does not serve its heading, the section that owns it usually
 exists already. Move the paragraph there rather than widening the heading.
@@ -278,8 +279,8 @@ code returns, as `tests/test_refresh_time.py` holds that grid.
 starts with nothing and runs the examples in order, so a frame described in
 prose is a frame they cannot make. A frame that several sections read is
 built once, in *Example data* after *Install*, and a section that runs on
-it links there. I4 answered R1's *introduce every frame an example reads*
-with a paragraph that listed `df`'s columns. It sat at the end of a section
+it links there. An earlier pass answered a reviewer's *introduce every
+frame an example reads* with a paragraph that listed `df`'s columns. It sat at the end of a section
 about parameters for four rewrites, until the user found it "out of
 context" and "very hard to understand". No test could see it, because the
 README test's namespace hands every block `df` ready-made. So
@@ -345,10 +346,10 @@ concept, and it stays as text, above the code and not repeated inside it.
 run as it stands and check: it generates its data, or reads the files
 *Example data* writes, saves what it reads to parquet and scans it back,
 and prints its result. A ```` ```text ```` block right under it shows what
-it prints, and a test holds the two together with `tests/doc_recipes.py`'s
-`differences`: the same lines, the same words, each integer exactly, since
-an integer is a count and a count one off is wrong, and each other number
-within two units of its last printed digit. A line that
+it prints. A test holds the two together with `tests/doc_recipes.py`'s
+`differences`: the same lines and the same words, each integer exactly,
+and each other number within two units of its last printed digit. An
+integer is a count, so a count one off is wrong. A line that
 starts with `time` reports what the machine decides, so it is held to its
 words alone. The result printed shows the capability working, so a recipe
 plants an answer and prints it beside what the library found: a planted
@@ -379,7 +380,7 @@ moments local in it, and `marginal` does the same pair by pair* was one.
 
 **A fact about some models is not a fact about the bank.** *With decay off,
 the bank is plain least squares* is true of the five models that solve a
-normal equation, and false of the sixteen that do not. *The order of the
+normal equation, and false of the seventeen that do not. *The order of the
 rows matters only when a model forgets* was false of the models that step,
 filter or test, which depend on the order either way. Shared sections state
 what is shared: the concept and the API. Each model's own section states
@@ -433,7 +434,7 @@ grep for
 
 **Cite no plan, no task, no review and no record: state the reason
 itself.** A reader has none of the project's plan, a task's number, a
-review's finding or a record, so a citation of one tells them only that a
+review's finding or a record. A citation of one tells them only that a
 reason exists somewhere else (the user, 2026-10-10: "No doc should
 reference the plan, everything should be explained from first
 principals"). The README, every guide in `docs/README.md`'s *Guides*
@@ -486,8 +487,7 @@ merges (§6).
 
 **Lead a rule with its claim, in bold, then give the reason.** A reader
 scanning for what to do finds it without reading the argument. In the
-README, *Filter after the bank, not before it, unless the model must skip
-those rows* is in bold, and the memory figures behind it follow.
+README, *Filter after the bank, not before it* is in bold, and the memory figures behind it follow.
 
 **A sweep belongs in a table.** Six things behind semicolons is a table
 that has not been drawn yet. §7 has the shapes.
@@ -635,7 +635,7 @@ FILE.md` lists every hit of the eleven numbered ones, in this order:
 | 7. bold leads of the form *An X … is a Z* | a definition where a procedure belongs (§5) |
 | 8. nouns defined by what they lack (*that needs no*, *with no*) | a definition by negation, where the thing itself belongs (§5) |
 | 9. *first*, *later*, *earlier*, *upstream*, *downstream* with no reference, and *from here on*, *below* or *above* pointing into the document | a step, or a place, the reader must find for themselves (§5) |
-| 10. prose that names three or more of the library's own names (a parameter, a call, an output field or a quoted value) that no code block under the same heading shows, a parameter as `name=`, a call as `name(`, a value verbatim | a parameter, a structure or a call described where an example with comments belongs (§3). It ranked the `po.target` paragraph third of 25 on the I7 README; about a third of what it lists should be code, and the rest are rules and lists of names |
+| 10. prose that names three or more of the library's own names (a parameter, a call, an output field or a quoted value) that no code block under the same heading shows, a parameter as `name=`, a call as `name(`, a value verbatim | a parameter, a structure or a call described where an example with comments belongs (§3). It ranked the `po.target` paragraph third of 25 on one README draft; about a third of what it lists should be code, and the rest are rules and lists of names |
 | 11. *exception* outside an error, *raise* meaning *increase*, table cells included | a word whose Python meaning the reader will hear first (§5) |
 
 The cost words, as one pattern for `grep -E`, are
@@ -683,12 +683,12 @@ A bullet list of things that differ along the same dimensions makes the
 reader build the comparison in their head. A table builds it for them, so
 use one whenever the items share dimensions:
 
-| the content | the table | where the README does it |
+| the content | the table | where the docs do it |
 |---|---|---|
 | options compared | a row per option, a column per dimension | the three ways to hold a row back: scored, clock advances, fit moves, `weight_sum`, use it to |
 | settings | the setting, its default, what it does, what it reads | the two warm-up gates |
-| caveats | the caveat, and why | the three things to know before reading a Gram |
-| failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps` |
+| caveats | the caveat, and why | the five things to know before reading a windowed model's numbers |
+| failure modes | what you see, what it means, what to do | `micro`'s two wrong values of `eps`, in MODELS.md |
 | a sweep of measurements | the setting, and the number at each | `bocpd`'s `prune_below`; the two thread configurations |
 | a translation | the problem, and its fix | the query steps that can reorder rows |
 | a catalogue | the item, how it works, what it is | the model table, grouped by family |

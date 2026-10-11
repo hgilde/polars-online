@@ -82,5 +82,6 @@ out-of-date one, its row here says what became of it.
 ## Section numbers
 
 **Sections keep their numbers, even where the order inside a file has been
-tidied.** The code and the README cite them by number and by entry ID
-(`docs/PERFORMANCE.md §11`, `docs/PLAN.md §4.4`, `E56`, `C5`).
+tidied.** The guides cite PERFORMANCE's sections by number, as
+`docs/PERFORMANCE.md §11`, and the code also cites the records' sections
+and entry IDs (`docs/PLAN.md §4.4`, `E56`, `C5`).

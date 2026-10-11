@@ -6,8 +6,8 @@ rows near it on the clock: those before it, or those after it. A window
 that looks back makes a feature, such as the last minute's time-weighted
 mid. A window that looks ahead makes a target, such as the next minute's
 VWAP (volume-weighted average price). Each operator does the same work on
-a row however long its window, since it keeps running sums and never
-gathers the window's rows again, as Polars' `rolling` does
+a row however long its window, since it keeps running sums, where
+Polars' `rolling` gathers the window's rows again for every row
 ([Window operators](../README.md#window-operators) has the timings). The
 operators follow one set of rules in each of three uses:
 
@@ -370,7 +370,8 @@ its window closed would score the rows that window covers in sample. So
 shorter embargo, or none, use `bank.fit` or the command line's
 `--no-output`, which keep no predictions.
 
-**`resid_<name>` is null on every row (`resid_fwd_edge` here), because a
+**`resid_<name>` is null on every row (`resid_fwd_edge` in the recipe
+below), because a
 row's target is not known when the row is scored.** The diagnostics take
 each row in when it is learned, as under any `embargo` ([Labels that arrive
 late](../README.md#labels-that-arrive-late)).
@@ -438,7 +439,7 @@ z-score a column with `po.ewm_mean` and `po.ewm_std` in `with_windows`,
 chained in the query before the bank, and name the columns in the spec's
 `features`.
 
-`df`'s `y` is `1 + 2·x0 − x1` plus noise, so per standard deviation of
+`ticks.parquet` holds the README's `df`, whose `y` is `1 + 2·x0 − x1` plus noise, so per standard deviation of
 `x0` the response is 2 times that spread. The recipe prints the spread
 `po.ewm_std` gives against Polars' own `ewm_std`, and the fitted
 coefficients against the truth.
@@ -472,21 +473,22 @@ per standard deviation: z_x0 1.81 (truth 2 x 0.95 = 1.90), z_x1 -0.92 (truth -1 
 The fitted responses sit within about a tenth of the truth, each read at
 the feature's spread on the last row.
 
-**On a clock that steps by 1 a row, `po.ewm_mean` and `po.ewm_std` are
-Polars' `ewm_mean` and `ewm_std` with `adjust=False`.** On any other clock
-they weigh each row by the time it covers. They run over a stream in one
-pass, where Polars' own forms need the column in memory.
+**The operators run over a stream in one pass, where Polars' own forms
+need the column in memory.** On any clock but one that steps by 1 a row,
+where they are Polars' forms with `adjust=False` (the table of operators
+above), they weigh each row by the time it covers.
 
 **A z-score adds one column per feature, and it works with every model.**
 Each z-score is one more column, made by two operators on one queue in the
 `with_windows` pass. A model reads it as any other column, so `ewridge`,
-`rls`, `kalman` and the rest take it alike. `kalman` keeps its
-coefficients per unit, as every model does, so give it the z-scored
-columns for a model per standard deviation.
+`rls`, `kalman` and the rest take it alike. A model's coefficients are per
+unit of its features, so z-scored features give coefficients per standard
+deviation.
 
 **On minute returns, every model lost less with z-scored features.**
-Section 6 of [docs/VALIDATION.md](VALIDATION.md) fits four models to
-BTCUSDT's next one and next five minutes of log returns, each at a
+Section 6 of [docs/VALIDATION.md](VALIDATION.md) fits three models, four ways, to
+BTCUSDT's next one and next five minutes of log returns (`ewridge` at two
+solve cadences, `rls` and `kalman`), each at a
 half-life of 500 minutes and with the features raw, then z-scored. No model
 predicts these returns better than their mean, so every R² is below 0, but
 each is closer to 0 on the z-scores:

@@ -82,8 +82,8 @@ definition.** Every row is predicted before its own target is learned, and
 a stream gives the same numbers in one chunk or a thousand, with or
 without a save and resume in the middle. The README's [Row order and the
 two guarantees](README.md#row-order-and-the-two-guarantees) states both,
-and says which rows carry `coef` and `support_coef`, the one output that
-moves with the chunking.
+and says which rows carry `coef`, and `support_coef` and the standard
+errors beside it, the only fields whose rows move with the chunking.
 
 **If a change moves a golden number, that is the finding, so understand
 why before regenerating it.** `crates/online-core/tests/golden.rs` and
@@ -153,8 +153,8 @@ and the API snapshot the change moves:
 
 - One logical change per commit, with a message that says what was measured or
   what defect it prevents.
-- Open the message with the piece of work the commit belongs to, as the
-  history does: its number, or the review and the finding IDs it answers.
+- Open the message with a short name for the change; a maintainer's
+  commits open with the piece of work they belong to.
 - Update the relevant doc in the same commit: the README,
   `CHANGELOG.md`'s unreleased entry, `docs/TESTING.md`,
   `docs/PERFORMANCE.md`, `docs/OUTPUTS.md` regenerated where an output
