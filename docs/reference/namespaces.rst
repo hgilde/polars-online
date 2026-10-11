@@ -2,8 +2,10 @@ The ``online`` namespaces
 =========================
 
 Importing ``polars_online`` registers ``online`` on ``pl.LazyFrame`` and
-``pl.DataFrame``. Both run a model bank over the frame -- as a plan that
-streams, or eagerly.
+``pl.DataFrame``. Each runs a model bank over the frame (``fit_predict``,
+``predict``, ``unnest``) and adds windows over it as columns
+(``with_windows``). ``lf.online`` does it inside a query, which streams its
+rows through when it runs, and ``df.online`` at once, on a frame in memory.
 
 ``lf.online`` / ``df.online``
 -----------------------------
