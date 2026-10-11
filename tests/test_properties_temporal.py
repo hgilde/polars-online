@@ -277,7 +277,7 @@ class TestDurationText:
         # ... and the Rust side, which a config or a hand-written dict reaches
         # without it, trims it too; the state keeps the trimmed text.
         bank = po.ModelBank([{**spec, "half_life": [padded, other]}])
-        assert f"pred_y@h{text}" in bank.output_fields()["m"]
+        assert f"pred_y@h{text}" in bank.output_fields["m"]
         assert po.ModelBank.load_bytes(bank.save_bytes()).specs[0]["half_life"] == [text, other]
 
     @SPECS

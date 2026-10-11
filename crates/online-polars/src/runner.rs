@@ -1,4 +1,4 @@
-//! Streaming runner behind the `online` CLI (docs/PLAN.md
+//! Streaming runner behind the `polars-online` CLI (docs/PLAN.md
 //! §11 task 15; docs/ENHANCEMENTS.md E32).
 //!
 //! Any source polars can scan comes in, any file format polars can write goes
@@ -256,7 +256,7 @@ impl RunConfig {
             return Err("config has no [[specs]] entries".into());
         }
         if self.chunk_size == 0 {
-            return Err("chunk_size must be > 0".into());
+            return Err("chunk_size must be at least 1, got 0".into());
         }
         // Named first: a scoring run learns nothing, so it can save no state
         // and close no group, and the refusal below asked for one of the two
@@ -387,7 +387,7 @@ impl RunConfig {
         }
     }
 
-    /// What `online --dry-run` checks beyond [`Self::validate`], reading no
+    /// What `polars-online --dry-run` checks beyond [`Self::validate`], reading no
     /// row: the input's schema as the run's scan resolves it -- a parquet
     /// footer, a CSV's first rows, a glob's first file, `keep_columns`
     /// applied -- the bank as the run opens it ([`Self::open_bank`]), and
@@ -734,19 +734,19 @@ fn run_with(
     mut progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
     let chunk_size = NonZeroUsize::new(opts.chunk_size)
-        .ok_or_else(|| polars_err!(ComputeError: "chunk_size must be > 0"))?;
+        .ok_or_else(|| polars_err!(ComputeError: "chunk_size must be at least 1, got 0"))?;
     // The schema of an empty output, when the source turns out to be empty
     // and no frame ever reaches the bank.
     let empty_input = match &input {
         Input::Lazy(lf) => Empty::Plan(Box::new(lf.clone().limit(0))),
         Input::Batches { schema, .. } => Empty::Frame(DataFrame::empty_with_schema(schema)),
     };
-    // Where the run's time goes, to stderr when ONLINE_TIMING is set: how
+    // Where the run's time goes, to stderr under POLARS_ONLINE_TIMING=1: how
     // long this thread waited for the reader, spent in the bank, and waited
     // for the writer, and how long the writer was busy. The waits are the
     // pipeline's slack -- a run that waits on the reader is read-bound, one
     // that waits on the writer is write-bound (docs/PERFORMANCE.md).
-    let timing = std::env::var_os("ONLINE_TIMING").is_some();
+    let timing = crate::timing::timing_on();
     let t_start = Instant::now();
     let mut t_read_wait = Duration::ZERO;
     let mut t_bank = Duration::ZERO;
@@ -911,7 +911,7 @@ fn run_with(
         };
         if timing {
             eprintln!(
-                "ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}s \
+                "POLARS_ONLINE_TIMING run rows={} chunks={} read_wait={:.2}s bank={:.2}s \
                  write_wait={:.2}s writer_busy={:.2}s total={:.2}s",
                 stats.rows,
                 stats.chunks,

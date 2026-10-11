@@ -171,7 +171,10 @@ worth `W` rows, and weights `λ^i` are worth `(1 + λ)/(1 − λ)`. So `λ = (W 
 half-life is `W ln 2 / 2` of them. A window beside a half-life takes the
 Kish size of the decayed weights cut at the window. `kalman` forgets its
 coefficients at `coef_half_life`, so its diagnostics read at that, the
-shortest finite one where it gives one per coefficient. Beside
+shortest finite one where it gives one per coefficient; the CUSUM's null
+share alone reads the intercept's entry, since the intercept is what
+absorbs a level. Under `window_size` that share reads the window itself
+([Has it broken?](#has-it-broken)). Beside
 `window_size=400` with no decay, `se_coef_hc0` read the window slope's
 spread over 200 streams, 0.0495 against 0.0498, where at the run-once
 memory it read a third of it. On 30 clean streams beside `window_size=100`,
@@ -223,8 +226,9 @@ break on the median.
 prediction a gate withheld has no residual, so `min_weight`,
 `max_error_inflation` and `min_settled_frac` keep it out. Beside a fit that
 forgets, a diagnostic also waits until the stream is 95% settled on the
-longest finite memory the model keeps. That is 4.3 of its half-lives, the
-point from which the readiness notices judge a stream. A fit with several
+longest finite memory the model keeps, 4.3 of that memory's half-lives.
+Under `window_size` with no decay that memory is the window's Kish
+half-life, so a diagnostic starts about `1.5 W` rows in. A fit with several
 memories has settled only once the longest has, so four models count a
 memory beside their half-life:
 
@@ -242,6 +246,21 @@ none. `sgd` and `pa` under `standardize` fold from the row their scaler
 switches the fit to the caller's units, 22 rows of Kish's size in. The
 fields of the twin fits and of feature health read the target and the
 features alone, and fold every row.
+
+**The readiness notices read the model's own half-life, so they can judge
+a stream long before its diagnostics start.** `settled_frac`,
+`min_settled_frac`, `summary()` and the notices that a gate is not met read
+the decay `half_life` sets. A notice projects the weight a stream tops out
+at, `1 / (1 − λ^d)`, or the noise gate's ratio, and both settle on that
+clock. A diagnostic waits for the longest memory, because a residual from
+before that memory has settled carries its warm-up bias, which reads as a
+break. On `holt` at a half-life of 50, with its trend at the default 200,
+the stream is 95% settled on the level at row 218. A `min_weight` above
+the weight's ceiling of 72.6 is named at row 268, a half-life later. The
+first `cusum` comes at row 878, past the trend's 95% at row 866. Under
+`window_size` with no decay nothing settles, so `settled_frac` is null and
+no notice judges the stream. Its diagnostics still start 4.3 of the
+window's Kish half-lives in.
 
 **A fit far from its truth carries its warm-up error for many
 half-lives.** `rls` and `kalman` learn the intercept from a prior at 0, so
@@ -560,7 +579,14 @@ before each row, so its residual is the shock less that mean. A sum of
 those residuals at a memory `h` therefore cancels much of itself. In
 continuous time the sum's variance is `r = h_fit / (h_fit + h)` of the
 plain sum's, whatever the rows' rate: one half at equal memories, a
-standard deviation of 0.71. The CUSUM of squares is studentized by a scale
+standard deviation of 0.71. `h_fit` is the memory at which the fit absorbs
+a level, the fit's own, but for a `kalman` whose `coef_half_life` gives
+each coefficient its own: a level is absorbed by the intercept's
+coefficient alone, so `h_fit` is the intercept's entry, and `inf` there
+pins it, absorbs nothing, and leaves the plain sum. Read at the shortest
+entry instead, `[inf, 30, 30]` spread 1.40 on clean streams and `[30, 10,
+10]` 1.29, where `[30, 30, 30]` read 1.03; at the intercept's each reads
+about 1.03. The CUSUM of squares is studentized by a scale
 at its own memory, which absorbs the squares' level the same way, so its
 share is one half. Each is divided by its share. On 30 clean streams
 beside `ewridge`, `rls`, `lasso` and `kalman` at a half-life of 200, at
@@ -576,6 +602,33 @@ indicators' CUSUM is divided by the same share. On 30 clean streams at
 `q = 0.5` and `0.9`, that CUSUM's spread read 1.03 to 1.06 at memories of
 50 and 200, and 1.10 to 1.25 at 800. `huber`, `holt` and the gradient
 fits absorb at a pace of their own, so they keep the plain sum.
+
+**A window absorbs a level as a mean over its rows, so its share is the
+window's own.** Under `window_size` the fit's prediction is a mean of the
+rows in the window, weighted by the decay inside it. A sum of its residuals
+cancels less than one beside an exponential of the same Kish size. With the
+fit's weights `g(y)` on the rows before it, the share is
+
+```text
+r = 1 − 2 ∫ g(y) e^(−κ y) dy + ∫∫ g(y) g(y') e^(−κ |y − y'|) dy dy'
+```
+
+with `κ = ln 2 / h`, `h` the CUSUM's memory. A window of `W` with no decay
+weighs its rows alike. With `u = W ln 2 / h` that gives `r = 1 + 2 e^(−u) / u
+− 2 (1 − e^(−u)) / u²`, 0.703 at the default memory, where read as an
+exponential it is one half. Beside a decay the weights are the decay's, cut
+at `W`. The share then runs from the window's form, for a window much
+shorter than the half-life, to `h_fit / (h_fit + h)`, for one much longer.
+The table is 20 sets of 20 clean streams of 6,000 rows beside `ewridge`,
+over rows 3,000 on:
+
+| window, half-life | spread of `cusum`, over the window's share | read as an exponential of its Kish size |
+|---|---:|---:|
+| 100 rows, none | 1.01 | 1.20 |
+| 400 rows, none | 1.00 | 1.19 |
+| 100 rows, 200 | 1.02 | 1.17 |
+| 400 rows, 200 | 1.01 | 1.08 |
+| 100 rows, 50 | 1.02 | 1.10 |
 
 **Beside a fit that keeps the plain sum, `|cusum| > 3` is conservative and
 finds less.** Its spread reads below 1 there. The table is measured at a
@@ -2026,7 +2079,7 @@ fair = po.spec.ewridge("fair", targets=["A"], features=["x1", "x2", "x3"], half_
 
 # Stage 2, reversion: the next 150 s's 30-second EWMA of the mid, less the mid, regressed on
 # resid_A. Each row is learned once its window has closed (embargo), and its residuals overlap.
-fwd = (po.rewm_mean("mid", half_life="30s", window_size="150s") - pl.col("mid")).alias("B")
+fwd = (po.ewm_mean("mid", half_life="30s", window_size="150s", reverse=True) - pl.col("mid")).alias("B")
 stage2 = dict(
     targets=[fwd], half_life=float("inf"), embargo="150s", min_weight=1_000.0,
     emit_se_coef=True, emit_robust_se=True,

@@ -639,9 +639,11 @@ def target_columns(t: str | Target | FormulaTarget) -> list[str]:
     return [t["column"]]
 
 
-def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
+def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
     """A window expression as a target table (docs/PLAN.md task 104): named by
-    its alias, holding at least one operator looking ahead."""
+    its alias, holding at least one operator looking ahead. A bare column
+    under an alias, ``pl.col("p").alias("price")``, is Polars' spelling of
+    ``po.target("p", name="price")``, and is read as it (task 244, M-11)."""
     from polars_online import _formula
 
     tree = _formula.to_tree(expr)
@@ -650,6 +652,15 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
     if isinstance(tree, list) and tree and tree[0] == "alias":
         name = tree[2]
         tree = tree[1]
+    if isinstance(tree, list) and len(tree) == 2 and tree[0] == "col":
+        column = tree[1]
+        if name == column:
+            raise ValueError(
+                f"{who}: target pl.col({column!r}) is the column itself: write the string "
+                f"{column!r} in targets, or name it with .alias(...), which "
+                f'po.target({column!r}, name="...") also does'
+            )
+        return target(column, name=name)
     if name.startswith(_formula.PREFIX):
         raise ValueError(
             f"{who}: a target expression whose name would be an operator's needs a name: "
@@ -672,9 +683,9 @@ def formula_target(who: str, expr: pl.Expr) -> FormulaTarget:
         else:
             make = "it holds no operator at all, so add it as a column with Polars' with_columns"
         raise ValueError(
-            f"{who}: target {name!r} holds no operator looking ahead (rewm_mean, rewm_sum or "
-            f"rewm_rate), so it is known at its own row: {make}, and name the column as the "
-            f"target"
+            f"{who}: target {name!r} holds no operator looking ahead (ewm_mean, ewm_sum or "
+            f"ewm_rate with reverse=True), so it is known at its own row: {make}, and name the "
+            "column as the target"
         )
     return {"name": name, "formula": tree}
 
@@ -685,7 +696,9 @@ def target(column: str, *, name: str | None = None) -> Target:
 
     ``po.target("p", name="price")`` in a spec's ``targets`` has the model
     learn the column ``p`` as it is, and name its output fields after
-    ``price``: ``pred_price`` and the rest. A string target is the same as
+    ``price``: ``pred_price`` and the rest. Polars' own spelling of a column
+    under another name, ``pl.col("p").alias("price")``, is read in
+    ``targets`` as this same target. A string target is the same as
     ``po.target`` with no ``name``, and so is a ``name`` equal to the column.
     A target's column used as a feature is refused, whatever its name.
 
@@ -1971,7 +1984,10 @@ def kalman(
         scalar, or one value per slot with the intercept first; ``inf`` pins
         that coefficient; every value above 0. Required unless ``q`` is given,
         and refused beside it. Not the spec's ``half_life``, which drives the
-        standardization and the residual variance.
+        standardization and the residual variance. The diagnostics' default
+        memory is the shortest finite entry; the windowed CUSUM's null share
+        reads the intercept's entry, the memory at which a level in the
+        target is absorbed, and ``inf`` there leaves the plain sum.
 
         Under ``standardize`` the drift is per standard deviation of each
         feature as the moments stand. A slope's random walk in the caller's
@@ -2654,6 +2670,7 @@ def ew_cov(
     *,
     features: list[str],
     stats: list[str] | None = None,
+    bias: bool = False,
     precision_prior: float | None = None,
     mahal_quantiles: list[float] | None = None,
     pca: int | None = None,
@@ -2679,22 +2696,29 @@ def ew_cov(
     .. rubric:: The recursion
 
     The means and the centred co-moments ``C`` are kept as weighted means, in
-    Welford's form:
+    Welford's form, beside the sum of the squared weights ``Q``:
 
     .. code-block:: text
 
         W'     = lam * W + w
+        Q'     = lam**2 * Q + w**2
         a      = lam * W / W'        b = w / W'        (a + b = 1)
         delta  = x - m
         m'     = m + b * delta
         C'_ij  = a * C_ij + a * b * delta_i * delta_j
 
-    so ``var_i = C_ii``, ``cov_ij = C_ij`` and
-    ``corr_ij = C_ij / sqrt(C_ii C_jj)`` are read off directly. A variance
-    stays accurate when the columns sit on a large offset, where the raw
-    ``E[x^2] - m^2`` form loses it. With ``P = (C + s * precision_prior *
-    I)^-1``, read before the row, ``s`` the prior's scale (1 on the first row,
-    times ``a`` on each row after):
+    The second moments are read off ``C`` times a factor ``c``, and
+    ``corr_ij = C_ij / sqrt(C_ii C_jj)``, from which ``c`` cancels:
+
+    .. code-block:: text
+
+        c       = W**2 / (W**2 - Q)       (1 under bias=True)
+        var_i   = c * C_ii        std_i = sqrt(var_i)        cov_ij = c * C_ij
+
+    A variance stays accurate when the columns sit on a large offset, where
+    the raw ``E[x^2] - m^2`` form loses it. With ``P = (c * (C + s *
+    precision_prior * I))^-1``, read before the row, ``s`` the prior's scale
+    (1 on the first row, times ``a`` on each row after):
 
     .. code-block:: text
 
@@ -2705,13 +2729,14 @@ def ew_cov(
     pairwise EW correlation needs. For moments on data that fits in memory,
     polars already does this under a ``window_size``:
     ``df.rolling(clock, period=window_size).agg(...)``, each row weighted
-    ``2 ** (-age / half_life)`` from the window's last row, and shifted one
-    row, since a row's moments are read before the row. On 20,000 rows about a
-    minute apart, a three-hour window (about 180 rows) and a half-life of 30
-    minutes, the mean of a column near 100 agreed to 8.5e-14, its variance to
-    6.3e-14 and its correlation with a second column to 4.3e-14. The reason to
-    reach for the spec is a stream, a saved state, or the work: polars
-    recomputes each window, ``O(n * W)``, where this is ``O(n)``.
+    ``2 ** (-age / half_life)`` from the window's last row, ``c`` from those
+    weights, and shifted one row, since a row's moments are read before the
+    row. On 20,000 rows about a minute apart, a three-hour window (about 180
+    rows) and a half-life of 30 minutes, the mean of a column near 100 agreed
+    to 8.5e-14, its variance to 6.4e-14 and its correlation with a second
+    column to 4.3e-14. The reason to reach for the spec is a stream, a saved
+    state, or the work: polars recomputes each window, ``O(n * W)``, where
+    this is ``O(n)``.
 
     .. rubric:: Parameters
 
@@ -2726,6 +2751,21 @@ def ew_cov(
         then its state, read back with :meth:`polars_online.ModelBank.gram` and
         :meth:`polars_online.ModelBank.describe`. That is the form for a wide
         set of columns, where even the means are k values per row nobody reads.
+    ``bias``
+        Polars' ``bias``, with its default ``False``: ``var``, ``std`` and
+        ``cov`` are then Polars' ``ewm_var`` and ``ewm_std`` and the
+        covariance they imply, on a clock of one row a step and with Polars'
+        default ``adjust=True``. The factor ``c`` above is ``n / (n - 1)`` at
+        Kish's effective size ``n = W**2 / Q``, the number of equally weighted
+        rows the moments are worth: Bessel's correction, ``ddof=1`` for ``n``
+        unit rows with no decay. At a half-life of 20 rows it is 1.018 in
+        steady state, at 2 rows 1.207. A second moment is null while the
+        moments hold one row of weight, which has no spread to correct, as
+        Polars' is. ``True`` reports the weighted means as kept, which is what
+        :meth:`polars_online.ModelBank.gram` returns under either. ``c``
+        multiplies the ridge on the co-moments with them, so it divides
+        ``mahal`` by ``sqrt(c)``, multiplies ``pc<j>_var`` by its value at the
+        refresh, and moves no correlation, share, loading or score.
     ``precision_prior``
         A ridge on the co-moments, needed by ``partial_corr`` and ``mahal``,
         above 0: the precision matrix ``P`` above, solved on each row it is
@@ -2867,8 +2907,9 @@ def ew_cov(
         since a row's fields are read before its own decay, as ``weight_sum``
         is. The rows after it report nulls rather than stale numbers, until the
         window holds ``min_weight`` again. ``mahal``, ``partial_corr`` and the
-        PCA read the window's moments too, and the PCA refresh is gated on the
-        window's weight. ``window_size`` does not combine with ``lags`` or
+        PCA read the window's moments too, ``bias``'s factor is the window's
+        ``W`` and ``Q``, and the PCA refresh is gated on the window's weight.
+        ``window_size`` does not combine with ``lags`` or
         ``mahal_quantiles``, which accumulate over a history it does not
         truncate; both are refused by name.
 
@@ -2894,9 +2935,11 @@ def ew_cov(
     in `docs/OUTPUTS.md#ew_cov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_.
     The moments themselves are :meth:`polars_online.ModelBank.gram`'s
-    ``means``, ``comoments``, ``lags`` and ``lag_comoments``. A group that
-    closes writes them to :meth:`polars_online.ModelBank.closed_groups` with
-    ``eig_vals`` and ``eig_vecs`` under ``pca``.
+    ``means``, ``comoments``, ``lags`` and ``lag_comoments``, the weighted
+    means as kept whatever ``bias`` is, with ``n_kish`` to correct them by. A
+    group that closes writes them to
+    :meth:`polars_online.ModelBank.closed_groups` with ``eig_vals`` and
+    ``eig_vecs`` of those ``comoments`` under ``pca``.
 
     .. rubric:: Example
 
@@ -2931,6 +2974,7 @@ def ew_cov(
     model: dict[str, Any] = {
         "type": "ew_cov",
         "stats": stats,
+        "bias": bias,
         "precision_prior": precision_prior,
         "mahal_quantiles": mahal_quantiles,
         "pca": pca,

@@ -44,6 +44,7 @@ fn ridge(k: usize, window: Option<f64>) -> EwRidgeCfg {
 /// value is its state, and `n_eff` the one number a row reads.
 fn cov(k: usize, window: Option<f64>) -> EwCovCfg {
     EwCovCfg {
+        bias: false,
         n_features: k,
         decay: Decay::Halflife(500.0),
         stats: vec![],

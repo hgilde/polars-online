@@ -1013,6 +1013,39 @@ def test_under_a_horizon_each_test_is_near_its_size(phi):
             assert (out["break_wald_y"].drop_nulls() > 7.815).mean() < 0.10
 
 
+def test_a_quantile_fits_break_wald_under_a_horizon_is_near_its_size():
+    """Under a horizon `break_wald`'s noise variance was scaled by the
+    long-run factor of the CUSUM's terms, on a quantile fit the
+    indicators', whose autocorrelation under an overlap is smaller than
+    the residuals' (the arcsine law), so the statistic ran large: on 30
+    quiet five-row look-ahead streams at a half-life of 200 it passed
+    `chi2(3)`'s 5% value on 10.8% of rows 1,500+ with a mean of 3.88, where
+    `ewridge` on the same streams read 5.9% and 3.05 (review round 7,
+    A-2). Scaled by the residuals' factor, the quantile fit reads about
+    the same rate and mean as `ewridge`."""
+    df = _look_ahead(30, 3_000, 5, 0.8, 21)
+    common = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        embargo=5.0,
+        min_weight=10.0,
+        emit_breaks=True,
+    )
+    rates = {}
+    for name, spec in (
+        ("ewridge", po.spec.ewridge("m", **common)),
+        ("quantile", po.spec.quantile("m", quantile=0.5, **common)),
+    ):
+        out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 1_500)
+        bw = out["break_wald_y"].drop_nulls()
+        rates[name] = (float((bw > 7.815).mean()), float(bw.mean()))
+    assert rates["ewridge"][0] < 0.08, rates
+    assert rates["quantile"][0] < rates["ewridge"][0] + 0.02, rates
+    assert rates["quantile"][1] < 3.4, rates
+
+
 # --- the nulls standardized (task 232 (4)) -----------------------------------
 
 
@@ -1053,6 +1086,91 @@ def test_a_windowed_cusum_reads_its_own_null():
         for field in ("cusum_y", "cusum_sq_y"):
             sd = out[field].drop_nulls().std()
             assert 0.9 < sd < 1.2, (memory, field, sd)
+
+
+@pytest.mark.parametrize(
+    ("coef_half_life", "before"),
+    [
+        ([30.0, 30.0, 30.0], 1.03),
+        ([float("inf"), 30.0, 30.0], 1.40),
+        ([30.0, 10.0, 10.0], 1.29),
+    ],
+)
+def test_kalmans_cusum_null_share_reads_the_intercepts_memory(coef_half_life, before):
+    """The windowed CUSUM's null share, `h_fit / (h_fit + h)`, read `h_fit`
+    as the diagnostics' memory beside `kalman`, the shortest finite
+    `coef_half_life`; a level is absorbed by the intercept's coefficient
+    at its own entry, and `inf` there pins it, absorbing nothing (review
+    round 7, A-1). On 20 clean streams, over rows 3,000+, the CUSUM beside
+    `[inf, 30, 30]` spread 1.40 and passed 3 on 3.3% of rows, and beside
+    `[30, 10, 10]` 1.29 and 1.8%, where `[30, 30, 30]` read 1.03 and 0.35%
+    (`before` is each spread); at the intercept's entry each reads about
+    1.03. The CUSUM of squares reads the scale's memory, and does not
+    move."""
+    df = _clean(20, 6_000, 7)
+    spec = po.spec.kalman(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=30.0,
+        coef_half_life=coef_half_life,
+        group="g",
+        emit_breaks=True,
+    )
+    out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 3_000)
+    late = out["cusum_y"].drop_nulls()
+    sd, past = late.std(), (late.abs() > 3).mean()
+    assert 0.95 < sd < 1.1, (sd, past, before)
+    assert past < 0.01, (sd, past, before)
+    sq = out["cusum_sq_y"].drop_nulls().std()
+    assert 0.95 < sq < 1.1, sq
+
+
+@pytest.mark.parametrize(
+    ("window_size", "half_life", "clock", "before"),
+    [
+        (100.0, float("inf"), False, 1.19),
+        (400.0, float("inf"), False, 1.17),
+        (50.0, float("inf"), True, 1.19),
+        (100.0, 200.0, False, 1.16),
+        (400.0, 200.0, False, 1.06),
+    ],
+)
+def test_a_windows_cusum_null_share_reads_the_window(window_size, half_life, clock, before):
+    """Under `window_size` the CUSUM's null share read the window as an
+    exponential at its Kish half-life, `h_fit / (h_fit + h)`, 1/2 at the
+    default memory; a window absorbs a level as a rolling mean, which takes
+    less of every sum than an exponential of the same Kish size (review
+    round 7, A-3). On 20 clean streams, over rows 3,000+, the CUSUM spread
+    1.19 and passed 3 on 1.2% of rows beside a window of 100 rows and 1.17
+    and 1.3% beside 400 (`before` is each spread), and 1.16 and 1.06 beside
+    those windows cut from a half-life of 200. Over the window's share,
+    0.703 with no decay, each reads about 1. On a clock at two rows a unit
+    a window of 50 units is the one of 100 rows. The CUSUM of squares
+    reads its scale's memory, and does not move."""
+    df = _clean(20, 6_000, 3)
+    extra = {}
+    if clock:
+        df = df.with_columns(t=pl.int_range(pl.len()).over("g") / 2.0)
+        extra = {"clock": "t", "gap_cap": 1.0}
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=half_life,
+        window_size=window_size,
+        group="g",
+        emit_breaks=True,
+        **extra,
+    )
+    out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 3_000)
+    late = out["cusum_y"].drop_nulls()
+    assert late.len() == 60_000
+    sd, past = late.std(), (late.abs() > 3).mean()
+    assert 0.95 < sd < 1.05, (sd, past, before)
+    assert past < 0.005, (sd, past, before)
+    sq = out["cusum_sq_y"].drop_nulls().std()
+    assert 0.95 < sq < 1.05, sq
 
 
 def test_the_cusum_of_squares_reads_the_measured_fourth_moment():

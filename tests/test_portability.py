@@ -764,7 +764,9 @@ class TestConfigParsing:
         # literal string); this pins that the parser keeps it intact, which is
         # what T-W3 will exercise for real on Windows. The dry run opens the
         # input as the run would (task 160, YB12), and no host has this one,
-        # so it names the path in its refusal, as it read it.
+        # so it names the path in its refusal, as it read it. Off Windows the
+        # path is relative, so it is read from the config's directory (task
+        # 244, C-2), and the refusal names it with that directory in front.
         cfg = tmp_path / "win.toml"
         cfg.write_text(
             'input = "C:\\\\data\\\\in.parquet"\n'
@@ -779,7 +781,10 @@ class TestConfigParsing:
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode != 0, res.stdout
-        assert "input C:\\data\\in.parquet:" in res.stderr, res.stderr[-1500:]
+        want = "input C:\\data\\in.parquet:"
+        if sys.platform != "win32":
+            want = "input " + str(cfg.parent / "C:\\data\\in.parquet") + ":"
+        assert want in res.stderr, res.stderr[-1500:]
 
     def test_paths_with_spaces(self, tmp_path):
         d = tmp_path / "a directory with spaces"

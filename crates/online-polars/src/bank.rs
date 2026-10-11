@@ -195,8 +195,12 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// audit keeps each column's smallest change and the changes at it; a file
 /// from before it is refit. **60 since task 232** (the same day): under a
 /// horizon the diagnostics keep Newey and West's sums; a file from before
+/// it is refit. **61 since review round 7 and task 244** (2026-10-11): a
+/// quantile fit's breaks keep its residuals' lag products under a horizon
+/// beside its indicators' (A-2), and an `ew_cov` keeps `bias`, its spec
+/// writes it, and its components' variances follow it; a file from before
 /// it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 60;
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 61;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -3606,9 +3610,9 @@ impl Bank {
         clock_dtypes: &[Option<crate::stream::ClockDtype>],
         key_dtypes: &[[Option<KeyDtype>; 2]],
     ) -> PolarsResult<Vec<StructArray>> {
-        // Section timings to stderr when ONLINE_TIMING is set; costs one env
-        // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
-        let timing = std::env::var_os("ONLINE_TIMING").is_some();
+        // Section timings to stderr under POLARS_ONLINE_TIMING=1; costs two
+        // env reads per chunk. This is how docs/PERFORMANCE.md's numbers are made.
+        let timing = crate::timing::timing_on();
         let t0 = std::time::Instant::now();
         let n = chunk.height();
         self.refuse_if_broken()?;
@@ -3989,7 +3993,7 @@ impl Bank {
         if timing {
             let total = t0.elapsed();
             eprintln!(
-                "ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
+                "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
                  assemble={:.1}ms total={:.1}ms ({:.0} rows/s)",
                 t_extract.as_secs_f64() * 1e3,
                 t_group.as_secs_f64() * 1e3,

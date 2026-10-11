@@ -843,6 +843,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         }
         ModelKind::EwCov {
             stats,
+            bias,
             precision_prior,
             mahal_quantiles,
             pca,
@@ -880,6 +881,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // Floored at 2 (`gate_floors`): a covariance below two rows
                 // has nothing to report (review 2026-09-18, minor).
                 min_weight: gate_floors(spec)[0],
+                bias: *bias,
                 precision_prior: *precision_prior,
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
                 pca: pca.unwrap_or(0),
@@ -4859,8 +4861,15 @@ fn run_instance(
         // its residuals (task 232 (1); review round 6, F-1), read before the
         // step as the gates are: the model past its own warm-up, and the
         // stream 95% settled on the longest finite memory the model keeps
-        // (task 234: `holt`'s trend, `kalman`'s longest) where it forgets -- the
-        // point the readiness notices judge from. Each gate's withholding
+        // (task 234: `holt`'s trend, `kalman`'s longest) where it forgets.
+        // That is a second clock (review round 7, E-1): the readiness
+        // notices, `settled_frac` and its gate read the instance's own decay
+        // above, since the weight's ceiling `1/(1-lam^d)` and the noise
+        // gate's ratio they project settle on it; a diagnostic waits for
+        // every memory the fit keeps, else the long memory's warm-up bias
+        // reads as a break (`holt` at 50: the notice at row 268, the first
+        // `cusum` at 878). Under a window with no decay the notices never
+        // judge and this reads the window's Kish half-life. Each gate's withholding
         // already keeps a row out, since a row with no prediction has no
         // residual. A stream that forgets nothing never settles and waits
         // on the gates alone.

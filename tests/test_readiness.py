@@ -514,6 +514,59 @@ class TestSummaryAndWarnings:
             warnings.simplefilter("error", po.ReadinessWarning)
             po.ModelBank([spec()]).fit_predict(frame(300))
 
+    def test_the_notices_and_the_diagnostics_settle_on_two_clocks(self):
+        """`settled_frac`, `summary()` and the readiness notices read the
+        model's own half-life: the notices project the weight's ceiling `1 /
+        (1 - lam ** d)` and the noise gate's ratio, which settle on that
+        clock. A diagnostic folds a residual only once every memory the fit
+        keeps has settled, else the long memory's warm-up bias reads as a
+        break (review round 7, E-1). `holt` at a half-life of 50 keeps its
+        trend at 200: with `min_weight` one above the ceiling, 72.6, the
+        notice comes a half-life after the stream is 95% settled on the
+        level, row 218, where the first `cusum` waits for the trend, 95%
+        settled at row 866. Under `window_size` with no decay nothing
+        settles: `settled_frac` is null and no notice judges, while a
+        diagnostic starts 4.3 of the window's Kish half-lives in."""
+        n, h = 1_200, 50.0
+        rng = np.random.default_rng(1)
+        df = pl.DataFrame({"y": 0.5 + rng.standard_normal(n)})
+        ceiling = 1.0 / (1.0 - 2.0 ** (-1.0 / h))
+        floored = po.spec.holt("m", targets=["y"], half_life=h, min_weight=ceiling + 1.0)
+        bank = po.ModelBank([floored])
+        noticed = []
+        for i in range(n):
+            if _fit_noting(bank, df.slice(i, 1)).notices:
+                noticed.append(i)
+        assert len(noticed) == 1, noticed
+        level_settled = 1 + int(np.ceil(h * np.log2(20.0)))
+        assert level_settled == 218
+        assert 215 <= noticed[0] <= level_settled + h, noticed
+        assert bank.summary("m")["settled_frac"][0] == pytest.approx(1.0 - 2.0 ** (-(n - 1) / h))
+
+        plain = po.spec.holt("m", targets=["y"], half_life=h, emit_breaks=True)
+        out = po.ModelBank([plain]).fit_predict(df)
+        first = first_present(field(out, "cusum_y"))
+        trend_settled = 1 + int(np.ceil(4.0 * h * np.log2(20.0)))
+        assert trend_settled == 866
+        assert first > trend_settled > 860, first
+        assert field(out, "settled_frac")[first - 1] > 0.9999
+
+        w = 100.0
+        frame_ = frame(600)
+        common = dict(half_life=float("inf"), window_size=w)
+        quiet = po.ModelBank([spec(min_weight=w + 1.0, **common)])
+        fitted = _fit_noting(quiet, frame_)
+        assert fitted.notices == [], fitted.notices
+        assert field(fitted.out, "settled_frac").null_count() == 600
+        assert field(fitted.out, "pred_y").null_count() == 600
+        out = po.ModelBank([spec(emit_tails=True, **common)]).fit_predict(frame_)
+        assert field(out, "settled_frac").null_count() == 600
+        kish = math.log(2.0) / math.log((w + 1.0) / (w - 1.0))
+        want = int(np.ceil(kish * math.log2(20.0)))
+        assert want == 150
+        first = first_present(field(out, "kurtosis_y"))
+        assert want + 1 <= first <= want + 3, (first, want)
+
 
 class TestInvariants:
     def test_the_new_fields_are_chunk_invariant(self):

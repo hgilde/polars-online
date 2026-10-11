@@ -60,8 +60,8 @@ The words this ledger uses:
 | hard rule N | the numbered hard rules in `CLAUDE.md` |
 | a kind | one of the 22 model types a spec can name; `MINIMAL` in `tests/test_model_registry.py` holds one spec of each |
 | the ten regression models | the models the per-model sweeps run: `ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl` and `holt`, which `REGRESSIONS` in `tests/test_model_registry.py` lists |
-| the window operators | exponentially weighted means, variances, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_var` and `po.ewm_std` look back, and `po.rewm_mean`, `po.rewm_sum` and `po.rewm_rate` look ahead |
-| a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.rewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed |
+| the window operators | exponentially weighted means, variances, sums and rates of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_var` and `po.ewm_std` look back, and the first three look ahead under `reverse=True` |
+| a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.ewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed |
 | the column form | the same window expression written as a column by `with_windows(like=spec)` and fed back as a plain target under the same `embargo`: what a formula target is held to |
 | the brute force | `brute()` in `crates/online-polars/src/windows.rs`, which computes each row's window from the definition by scanning every row of its stretch, with no running sums |
 | the time-reversal identity | a forward window over a stream is a backward one over the same stream reversed in time, with the row itself left out, so a forward `closed="right"` is a backward `"left"` |
@@ -121,7 +121,7 @@ each model's `predict` to its `step`, row by row.
 `crates/online-polars/tests/runner.rs` holds every input format (parquet,
 ipc, csv, ndjson), every output format, `Input::Batches` ≡ a plan, and the
 failure paths to the numbers `ModelBank` gives on the same rows. CSV's
-flattened columns and JSON-text `coef` decode bit-exact. The `online` command
+flattened columns and JSON-text `coef` decode bit-exact. The `polars-online` command
 line is held to the same numbers through `run_online` in `tests/conftest.py`
 (`test_closed_groups`, `test_hardening`, `test_predict`, `test_no_output`,
 `test_label_delay`), and every `sh` block of `docs/RUNNER.md` runs. The
@@ -1423,7 +1423,7 @@ has it.
 | T-W3b | ~~P1~~ **found a real bug, fixed** | TOML path escaping in the CLI tests | executed on Windows CI |
 | T-W3b (original) | superseded by T-W3 (done 2026-09-24); UNC share paths stay untested | **Path handling through the CLI**, as first written: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | |
 | T-W4 | ~~P2~~ **mitigated + tested locally** | **CRLF line endings in the TOML config** | |
-| T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `online.exe` vs `online` | executed on Windows CI |
+| T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `polars-online.exe` vs `polars-online` | executed on Windows CI |
 | T-W6 | ~~P2~~ **pinned locally** | **Float formatting in output field names** | |
 | T-W7 | ~~P2~~ **done** | **Numeric reproducibility across OS/CPU** | compared at 1e-12 on Windows |
 | T-W8 | P3, **partly done**: file locking (the atomic rewrite in `atomic.rs`) and long paths (`\\?\`) are tested; case-insensitivity is not | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | executed on Windows CI |
@@ -1500,14 +1500,14 @@ parse as checked out.
 
 **T-W5.** `tests/test_release_packaging.py` stages what `download-artifact`
 leaves behind: one directory per matrix job, two of them holding a file
-called plain `online`. It then runs the workflow's own bash against it. The
+called plain `polars-online`. It then runs the workflow's own bash against it. The
 shell is *extracted from `release.yml`* rather than copied, so editing the
 workflow changes what the test runs. That was verified by breaking the
 workflow and watching three tests fail. Pinned: exactly the Windows artifact
 keeps `.exe`, the two unix binaries do not collapse onto one name, and
 contents are copied as well as renamed. The PyPI job's `dist/` takes the
 packages, the wheels and the sdist, and no CLI binary. What still needed a
-runner, as first written, is whether the Windows job produces `online.exe`
+runner, as first written, is whether the Windows job produces `polars-online.exe`
 in the first place.
 
 **T-W6.** The exact field-name list for a grid spec is asserted, so a
@@ -1646,7 +1646,23 @@ pass or replaces it while it waits: the next pass lists only its own diff. On
 2026-10-09 the share became thirty and each shard's stop 160 minutes (the
 job's limit 180): the push of `f54d1e5`'s slowest shard of forty took 83 of
 its 100 minutes, and the Rust suite every mutant runs had grown from 146 s
-to 209 s (the user: "Yes mutants sharding").
+to 209 s (the user: "Yes mutants sharding"). On 2026-10-11 each shard's stop
+became 300 minutes inside a limit of 330, three times the push of
+`5cb8f7e`'s slowest shard (98 minutes), and the weekly shard's 325 inside
+350.
+
+**A mutant cannot take its runner down.** Every test process a mutant runs
+is capped in memory: cargo runs each test binary through `prlimit --data`
+(the job's `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER`), at 6 GiB for the
+changed lines' two mutants at a time and 3 GiB for the weekly pass's four,
+12 GiB of a runner's 16 either way. A mutant whose loop keeps allocating
+then fails its own allocation, and is counted caught. Before the cap, the
+push of `5cb8f7e` lost 8 of its 111 shards to "The runner has received a
+shutdown signal", every one of them dealt `audit.rs`'s `Moments` mutants,
+and their outcomes never reached the report. online-core's largest test
+binary peaks at 497 MiB with the extended tier at four test threads, the
+others under 82 MiB, and the baseline runs under the same cap, so a cap too
+small fails the shard loudly.
 A pull request's runs share one group, and a newer commit cancels the
 older, since it lists the whole pull request's diff again.
 

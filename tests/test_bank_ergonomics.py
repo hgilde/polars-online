@@ -53,7 +53,7 @@ def test_repr_names_the_specs_groups_and_rows():
     bank.fit_predict(_df(60))
     assert repr(bank) == "ModelBank(['m', 'r'], groups=3, rows_fed=60)"
     bank.fit_predict(_df(30).with_columns(pl.col("t") + 60.0))
-    assert bank.rows_fed() == 90
+    assert bank.rows_fed == 90
     assert repr(bank) == "ModelBank(['m', 'r'], groups=3, rows_fed=90)"
 
 
@@ -65,7 +65,7 @@ def test_rows_fed_counts_fed_rows_and_summary_counts_processed_ones():
         pl.when(pl.col("t") < 6).then(None).otherwise(pl.col("x0")).alias("x0")
     )
     bank.fit_predict(df)
-    assert bank.rows_fed() == 60
+    assert bank.rows_fed == 60
     assert bank.groups()["rows_fed"].to_list() == [20, 20, 20]
     assert bank.summary()["rows_processed"].to_list() == [18, 18, 18]
 
@@ -83,10 +83,10 @@ def test_rows_fed_is_one_specs_summary_count_until_a_group_is_dropped():
     bank.fit_predict(df)
     per_spec = bank.summary().group_by("spec").agg(pl.col("rows_fed").sum())
     assert sorted(per_spec["rows_fed"].to_list()) == [60, 60]
-    assert bank.rows_fed() == 60
+    assert bank.rows_fed == 60
     bank.drop_groups(["a"])
     assert bank.summary("m")["rows_fed"].sum() == 40
-    assert bank.rows_fed() == 60
+    assert bank.rows_fed == 60
 
 
 # --- groups() ----------------------------------------------------------------
@@ -183,7 +183,7 @@ def test_a_dropped_group_starts_cold_and_the_others_are_untouched():
     fresh = _grouped_bank().fit_predict(second.filter(pl.col("g") == "b"))
     plt.assert_series_equal(out.filter(pl.col("g") == "b")["m"], fresh["m"])
     # rows_fed counts what was fed, not what is still held.
-    assert bank.rows_fed() == 120
+    assert bank.rows_fed == 120
     assert bank.groups("m").filter(pl.col("group") == "b")["rows_fed"].item() == 20
 
 
@@ -219,7 +219,7 @@ def test_specs_survive_the_state_file_and_pickle():
     bank.fit_predict(_df(60))
     loaded = po.ModelBank.load_bytes(bank.save_bytes())
     assert loaded.specs == bank.specs
-    assert loaded.rows_fed() == 60
+    assert loaded.rows_fed == 60
     assert repr(loaded) == repr(bank)
     plt.assert_frame_equal(loaded.groups(), bank.groups())
     assert pickle.loads(pickle.dumps(bank)).specs == bank.specs
@@ -309,7 +309,7 @@ def test_fit_leaves_the_state_fit_predict_batches_leaves():
     quiet = po.ModelBank([_one()])
     assert quiet.fit(df.lazy(), chunk_size=9) is None
     assert quiet.save_bytes() == kept.save_bytes()
-    assert quiet.rows_fed() == kept.rows_fed() == df.height
+    assert quiet.rows_fed == kept.rows_fed == df.height
 
 
 def test_a_frame_with_chunk_size_is_fed_in_slices():
@@ -367,8 +367,8 @@ def test_fit_over_an_empty_plan_is_not_an_error():
     """Nothing to learn from is a no-op that still leaves a loadable state."""
     bank = po.ModelBank([_one()])
     bank.fit(_stream().clear().lazy())
-    assert bank.rows_fed() == 0
-    assert po.ModelBank.load_bytes(bank.save_bytes()).rows_fed() == 0
+    assert bank.rows_fed == 0
+    assert po.ModelBank.load_bytes(bank.save_bytes()).rows_fed == 0
 
 
 def test_fit_predict_batches_drains_the_closed_groups_as_it_goes(tmp_path):
@@ -509,12 +509,12 @@ def test_a_state_file_describes_itself(tmp_path):
 
     names = [s["name"] for s in loaded.specs]
     assert names == ["ridge", "cov"]
-    assert set(loaded.output_fields()) == set(names)
+    assert set(loaded.output_fields) == set(names)
     assert loaded.groups()["spec"].unique().sort().to_list() == sorted(names)
     for frame in (loaded.last_row(), loaded.summary(), loaded.describe()):
         assert frame.columns[0] == "spec", "every table leads with the spec"
         assert set(frame["spec"].unique()) == set(names), "and defaults to all of them"
-    assert loaded.rows_fed() == 60
+    assert loaded.rows_fed == 60
     # the model kind is in there too, so a caller can branch on it
     assert loaded.specs[0]["model"]["type"] == "ewridge"
     assert loaded.specs[1]["model"]["type"] == "ew_cov"

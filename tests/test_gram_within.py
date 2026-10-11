@@ -451,7 +451,7 @@ class TestTargetSigns:
 
     def test_every_sign_plus_one_is_no_signs(self):
         grams = blocks(frame(seed=16))
-        for case in (dict(ridge=0.1), dict(path={"max_steps": 4})):
+        for case in (dict(ridge=0.1), dict(path={"max_iter": 4})):
             plain = pg.solve_subsets(grams, SUBSETS, within=True, **case)
             (signed,) = pg.solve_subsets(
                 grams, SUBSETS, within=True, target_signs=np.ones((6, 1)), **case

@@ -8,7 +8,7 @@ One Rust core, run three ways, with the same numbers from each:
 2. :class:`ModelBank`, a bank fed one chunk at a time, with memory O(state)
    rather than O(data); hand it a ``LazyFrame`` and it does the chunking
    (:meth:`ModelBank.fit_predict_batches`, :meth:`ModelBank.fit`);
-3. the ``online`` command line: parquet, ipc, csv or ndjson in and out, with
+3. the ``polars-online`` command line: parquet, ipc, csv or ndjson in and out, with
    the state saved and resumed between runs (`docs/RUNNER.md
    <https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md>`_).
 
@@ -61,6 +61,10 @@ part of it applies:
    * - a value that is refused: a spec parameter, a config key, what a
        column holds
      - ``ValueError``, naming the spec and the parameter or column
+   * - a column a spec reads that the frame has not got
+     - :class:`ColumnNotFoundError`, naming the spec, the column's role and
+       the column: Polars' ``ColumnNotFoundError`` and a ``ValueError``
+       both, so either ``except`` catches it
    * - a wrong type
      - ``TypeError``
    * - a spec name or position a bank has not got
@@ -87,6 +91,7 @@ from polars_online import (
     stream,
 )
 from polars_online._bank import ModelBank
+from polars_online._errors import ColumnNotFoundError
 from polars_online._frame import (
     ConsumedSourceWarning,
     OrderNotGuaranteedWarning,
@@ -102,7 +107,11 @@ from polars_online._polars_online import (
     thread_pool_size,
 )
 from polars_online._spec import FormulaTarget, Target, target
-from polars_online._warnings import PolarsOnlineDeprecationWarning, UnstableWarning
+from polars_online._warnings import (
+    PolarsOnlineDeprecationWarning,
+    PolarsOnlineWarning,
+    UnstableWarning,
+)
 from polars_online.ops import (
     ewm_mean,
     ewm_rate,
@@ -110,9 +119,11 @@ from polars_online.ops import (
     ewm_sum,
     ewm_var,
     increment,
-    rewm_mean,
-    rewm_rate,
-    rewm_sum,
+    # The old names of `ewm_*(reverse=True)`, forwarded with a deprecation
+    # warning and kept out of `__all__`, so the reference shows the new form.
+    rewm_mean,  # noqa: F401
+    rewm_rate,  # noqa: F401
+    rewm_sum,  # noqa: F401
 )
 
 __version__ = "0.13.0"
@@ -125,14 +136,13 @@ __all__ = [
     "ewm_var",
     "increment",
     "ops",
-    "rewm_mean",
-    "rewm_rate",
-    "rewm_sum",
     "ArrowStruct",
+    "ColumnNotFoundError",
     "ConsumedSourceWarning",
     "ModelBank",
     "OrderNotGuaranteedWarning",
     "PolarsOnlineDeprecationWarning",
+    "PolarsOnlineWarning",
     "ReadinessWarning",
     "UnstableWarning",
     "__version__",

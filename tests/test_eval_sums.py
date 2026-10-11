@@ -58,19 +58,26 @@ class TestItIsTheSameAnswer:
         by = ["venue"] if groups > 1 else []
         want = po.eval.metrics(out, "m", group=by)
         got = po.eval.from_sums(po.eval.sums(out, "m", group=by))
-        close(want, got.drop("rmse"))
+        close(want, got)
 
     def test_rmse_is_the_root_of_mse(self):
         got = po.eval.from_sums(po.eval.sums(fitted(), "m"))
         assert got["rmse"].to_numpy() == pytest.approx(np.sqrt(got["mse"].to_numpy()))
 
-    def test_min_samples_drops_a_thin_key_as_metrics_does(self):
+    def test_min_samples_nulls_a_thin_key_as_metrics_does(self):
+        """A key below ``min_samples`` keeps its row, its ``n`` read and its
+        metrics null, as Polars' ``min_samples`` gives null rather than
+        dropping a row (task 244, M-6); both forms agree."""
         out = fitted(n=200, groups=2)
         # One venue gets 100 rows; ask for more than that.
-        assert (
-            po.eval.from_sums(po.eval.sums(out, "m", group=["venue"]), min_samples=1000).height == 0
-        )
-        assert po.eval.metrics(out, "m", group=["venue"], min_samples=1000).height == 0
+        got = po.eval.from_sums(po.eval.sums(out, "m", group=["venue"]), min_samples=1000)
+        want = po.eval.metrics(out, "m", group=["venue"], min_samples=1000)
+        for frame in (got, want):
+            assert frame.height == 2
+            assert frame["n"].null_count() == 0
+            for c in ("r2", "ic", "hit_rate", "mse", "rmse"):
+                assert frame[c].null_count() == 2, c
+        assert got["n"].to_list() == want["n"].to_list()
 
     def test_weights_are_respected(self):
         """A weighted mean squared error is not the unweighted one, and the
@@ -112,7 +119,7 @@ class TestItIsTheSameAnswer:
         out = pl.DataFrame({"y": y}).with_columns(
             m=pl.struct(pl.Series("pred_y", pred), pl.Series("resid_y", [0.0] * len(y)))
         )
-        want = po.eval.from_sums(po.eval.sums(out, "m"), min_samples=1).drop("rmse")
+        want = po.eval.from_sums(po.eval.sums(out, "m"), min_samples=1)
         got = po.eval.metrics(out, "m", min_samples=1)
         assert got.columns == want.columns
         undefined = [c for c in ("r2", "ic", "hit_rate") if want[c][0] is None]
@@ -210,7 +217,7 @@ class TestTheShape:
         out = po.ModelBank([spec]).fit_predict(df)
         s = po.eval.sums(out, "m", spec=spec)
         assert s.height == 4, "two targets x two half_lives"
-        close(po.eval.from_sums(s).drop("rmse"), po.eval.metrics(out, "m"))
+        close(po.eval.from_sums(s), po.eval.metrics(out, "m"))
 
     def test_it_raises_where_unpack_does(self):
         out = fitted(n=300)

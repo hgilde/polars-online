@@ -4,7 +4,8 @@ A least-squares fit reads its rows only through a few running sums: the
 weight of the rows, the columns' means and co-moments, and each target's
 mean, variance and cross-moments with the columns. Together they are the
 fit's *Gram*. `ewridge`, `lasso` and `ew_cov` keep one in their state, and
-`bank.gram()` returns it as numpy arrays. A Gram's size depends on its
+`bank.gram()` returns it as numpy arrays, in a dict typed
+`po.gram.Gram` for a type checker. A Gram's size depends on its
 number of columns alone, so one pass over a stream too large to hold can
 leave a Gram for each week. Every fit after the pass reads those Grams and
 never the rows. It can pool any set of weeks, fit a ridge with its t, walk
@@ -916,7 +917,7 @@ descent for a grid of penalties:**
 | | `lars_path`, and `lars_paths` for many Grams | `lasso_path` |
 |---|---|---|
 | computes | each knot exactly, from the largest penalty down | the solution at each penalty given, each started from the one before |
-| stops | after `max_steps` knots, or at the first knot with at least `max_active` columns active | at the last penalty |
+| stops | after `max_iter` knots, or at the first knot with at least `max_active` columns active | at the last penalty |
 | time, measured at a load average near 12 | 4 ms for the whole path, 201 knots, at 200 columns. Its reference gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
 | takes | a weight `w_j` above 0 for each column | a weight of 0, which keeps a column in the fit at every penalty, and an elastic net (`l1_ratio` below 1), whose path is not piecewise linear (Zou and Hastie 2005) |
 | use it for | the first columns to enter: a selection, and [stability selection](#stability-selection-over-halves-of-the-weeks) | a penalty chosen by held-out error, an elastic net, a column that must stay in |
@@ -1384,7 +1385,7 @@ into the dict `gram()` returns. numpy reads it as it stands: lay
 and solve.
 
 **A state can be exported as JSON for a program in another language,**
-with `bank.save_json(path)` ([Reading a state without this library](../README.md#reading-a-state-without-this-library)).
+with `bank.write_json(path)` ([Reading a state without this library](../README.md#reading-a-state-without-this-library)).
 The forty open weeks' state was 19 MB as `bank.save` wrote it, and 106 MB
 as JSON.
 

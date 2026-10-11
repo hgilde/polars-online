@@ -1318,15 +1318,21 @@ The model keeps `m` and `C`, the weighted means of `x` and of
 form, `E[x xᵀ] − m mᵀ`, loses a variance when the columns sit far from zero:
 
 ```
-W' = λW + w      a = λW / W'      b = w / W'      δ = x − m          (a + b = 1)
+W' = λW + w      Q' = λ²Q + w²      a = λW / W'      b = w / W'      δ = x − m      (a + b = 1)
 m' = m + b·δ     C'ᵢⱼ = a·Cᵢⱼ + a·b·δᵢδⱼ
-varᵢ = Cᵢᵢ       covᵢⱼ = Cᵢⱼ      corrᵢⱼ = Cᵢⱼ / √(CᵢᵢCⱼⱼ)
+c = W² / (W² − Q)       (1 under bias=True)
+varᵢ = c·Cᵢᵢ     covᵢⱼ = c·Cᵢⱼ     corrᵢⱼ = Cᵢⱼ / √(CᵢᵢCⱼⱼ)
 ```
 
-**To compare a variance or a covariance with Polars', give Polars `ddof=0`
-or `bias=True`.** The model's are the population form, `C` itself, with no
-`ddof` correction, where Polars' `var` and `ewm_var` default to the
-unbiased form.
+**A variance or a covariance is Polars' `ewm_var` under its default,
+`bias=False`.** `C` is a weighted mean, which reads low when a few rows
+carry most of the weight. `c` corrects it as Polars' `ewm_var` does: `c` is
+`n / (n − 1)` at Kish's effective number of rows, `n = W² / Q`, which is
+Bessel's correction. At a half-life of 20 rows `c` is 1.018 once the
+weights have settled, and at 2 rows 1.207. Give `bias=True` for `C` itself,
+Polars' `bias=True` and `ddof=0`. No correlation moves, since `c` cancels
+from each. While the moments hold one row of weight, a variance is null,
+since one value has no spread to correct; Polars' is null there too.
 
 Give `stats` the statistics each row writes, `["mean", "std", "corr"]` when
 left out:
@@ -1357,7 +1363,7 @@ first = scores.select("pc0_share", "pc0_loading_x0", "pc0_loading_x1", "pc0_load
 ```
 
 **`mahal` measures the row's distance from the mean in standard deviations,
-allowing for the correlations.** It is `√(δᵀ (C + s·prior·I)⁻¹ δ)`, with
+allowing for the correlations.** It is `√(δᵀ (c·(C + s·prior·I))⁻¹ δ)`, with
 `δ = x − m` and `s` a scale on the prior that decays with the co-moments.
 With one column it is `|z|`. On Gaussian columns `mahal²` is only roughly χ²
 with `k` degrees of freedom, since the moments are estimated and the prior
@@ -1381,8 +1387,9 @@ writes `pc0_var`, `pc0_share` (of the trace), `pc0_loading_<feature>` and
 
 **`window_size` cuts the history off at a fixed age** ([A hard
 window](../README.md#a-hard-window)). For a frame that fits in memory, Polars'
-`df.rolling("t", period="3h").agg(...)` with an exponential weight gives the
-same numbers to about 1e-13, but recomputes every window, in `O(n·W)` time,
+`df.rolling("t", period="3h").agg(...)` with an exponential weight, and `c`
+from the weights inside the window, gives the same numbers to about 1e-13,
+but recomputes every window, in `O(n·W)` time,
 where the spec takes `O(n)`. So use the spec for a stream, a state to save, or
 speed: measured, it ran 24 times as fast at a 74-row window and 1,100 times
 at a 4,680-row one.
@@ -2241,7 +2248,8 @@ Reach for `ew_class` to classify rows by a label column: name the column in
 `label` and list its values in `classes`. It keeps one `ew_cov` state per
 class, a weight `n_c`, a mean `μ_c` and a centred covariance `C_c`, and
 scores a row by Bayes' rule over Gaussian classes. `C_c` is in the
-population form, with no `ddof` correction, as `ew_cov`'s is.
+population form, with no `ddof` correction, as `ew_cov`'s is under
+`bias=True`.
 
 **Out of sample, it classes about as well as the Bayes rule that knows the
 true distributions.** This code makes three Gaussian classes with their own

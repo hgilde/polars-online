@@ -33,12 +33,27 @@ name: Mutants
 # given. So the report says when a run tested fewer, and fails on it: a job
 # killed at its limit would report nothing at all.
 #
+# Every test process a mutant runs is capped in memory, with `prlimit
+# --data` as cargo's test runner (the job's
+# CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER), so a mutant whose loop keeps
+# allocating fails its own allocation and is counted caught. Without the cap
+# it took the runner with it: the push of 5cb8f7e lost 8 of its 111 shards
+# to "The runner has received a shutdown signal", 12 to 81 minutes in, every
+# one of them dealt `audit.rs`'s `Moments::rescale`/`add`/`merge` mutants,
+# and their outcomes never uploaded. The cap applies to the test binaries
+# only, not to rustc. Measured 2026-10-11 on online-core's test binaries with
+# the extended tier at four test threads: the largest peaked at 497 MiB, the
+# rest under 82 MiB. Each job's cap times the mutants it runs at once stays
+# at 12 GiB of the runner's 16, six times and more the measured peak; the
+# baseline runs under the same cap, so a cap too small fails the shard
+# loudly rather than counting a survivor.
+#
 # Scope: online-core, and online-polars' span.rs, whose duration parser its own
 # Rust tests pin. cargo-mutants runs `cargo test` only, so the rest of
 # online-polars and online-py, which the pytest suite covers through the
 # extension, would report most mutants as survivors when they are not.
 #
-# COST POLICY (ci.yml): the weekly pass is ninety-six shards of up to four
+# COST POLICY (ci.yml): the weekly pass is ninety-six shards of up to six
 # hours, so it runs on its schedule only while the repo is public, and by hand.
 on:
   push:
@@ -127,7 +142,14 @@ jobs:
     name: mutants on the changed lines, shard ${{ matrix.shard }} of ${{ needs.changed-list.outputs.shards }}
     needs: changed-list
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # The stop below is 300 minutes inside this 330 (GitHub's own limit is
+    # 360): the push of 5cb8f7e's slowest shard of thirty took 98 minutes,
+    # so a shard may run three times slower, or the suite grow threefold,
+    # before one stops short. A public repository pays nothing for the room.
+    timeout-minutes: 330
+    env:
+      # Two mutants at a time (`-j 2`), each test process capped at 6 GiB.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=6442450944 --
     permissions:
       contents: read
     strategy:
@@ -187,9 +209,9 @@ jobs:
           # A listing that failed would read as a shard dealt nothing.
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           if [ -s listed.txt ]; then
-            # Stopped inside the job's 180 minutes, setup included, so the
+            # Stopped inside the job's 330 minutes, setup included, so the
             # report still runs and counts what a large diff left untested.
-            timeout --signal=INT --kill-after=2m 160m cargo mutants "${args[@]}" \
+            timeout --signal=INT --kill-after=2m 300m cargo mutants "${args[@]}" \
               --cargo-test-arg=--tests --timeout-multiplier 10 \
               -j 2 --minimum-test-timeout 30 --output mutants-out -- -- --include-ignored
             code=$?
@@ -236,7 +258,11 @@ jobs:
       (github.event_name == 'schedule' && github.event.repository.private == false)
       || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # The stop below is 325 minutes inside this 350 (GitHub's limit is 360).
+    timeout-minutes: 350
+    env:
+      # Four mutants at a time (`-j 4`), each test process capped at 3 GiB.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=3221225472 --
     permissions:
       contents: read
     strategy:
@@ -273,9 +299,9 @@ jobs:
           set +e
           args=(--package online-core --shard ${{ matrix.shard }}/96 --sharding round-robin)
           cargo mutants --list "${args[@]}" > listed.txt
-          # Stopped inside the job's four hours, setup included, so the shard
+          # Stopped inside the job's 350 minutes, setup included, so the shard
           # still uploads what it finished and the report counts the rest.
-          timeout --signal=INT --kill-after=2m 215m cargo mutants "${args[@]}" \
+          timeout --signal=INT --kill-after=2m 325m cargo mutants "${args[@]}" \
             --cargo-test-arg=--tests --timeout-multiplier 10 \
             -j 4 --minimum-test-timeout 10 --output shard -- -- --include-ignored
           code=$?

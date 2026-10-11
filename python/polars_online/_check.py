@@ -21,6 +21,7 @@ import polars as pl
 
 if TYPE_CHECKING:
     from polars_online._bank import ModelBank
+    from polars_online.gram import Gram
 
 #: The page that explains each finding, with a recipe for it: a message ends
 #: with this address and ``#<code>``, the anchor of that code's section
@@ -803,7 +804,7 @@ def _gram_findings(
         add(*_leak(group, f, target, corr))
 
 
-def _variance(g: dict[str, Any], col: str) -> float:
+def _variance(g: Gram, col: str) -> float:
     cols = list(g["columns"])
     j = cols.index(col)
     return float(g["comoments"][j][j])

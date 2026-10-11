@@ -382,7 +382,9 @@ def switched_specs() -> list[dict]:
         min_weight=4.0,
     )
     timed = dict(common, clock="ts", gap_cap="6m", half_life="25m")
-    fwd = (po.rewm_mean("mid", half_life=5.0, window_size=10.0) - pl.col("mid")).alias("fwd")
+    fwd = (po.ewm_mean("mid", half_life=5.0, window_size=10.0, reverse=True) - pl.col("mid")).alias(
+        "fwd"
+    )
     unsupervised = {k: v for k, v in timed.items() if k not in ("targets", "min_weight")}
     return [
         # Under `closed="both"`, the edge every window had before task 196,
@@ -542,7 +544,11 @@ def switched_signature() -> dict[str, float | str | None]:
 #: each group has 60. ``bocpd.rs``'s ``max_run_folds_the_tail`` holds the
 #: scaled run to a replica of the step and the scale, and
 #: ``the_fold_at_max_run_keeps_every_runs_mass`` the fold's mass and its
-#: statistics to the bit; nothing else moved.
+#: statistics to the bit; nothing else moved. Task 244 (2026-10-11) moved 6,
+#: ``moments``' variances: ``ew_cov``'s default ``bias=False`` multiplies
+#: them by ``W**2 / (W**2 - sum(w**2))``, 1.04 to 1.13 at these rows, which
+#: ``tests/test_ew_cov_bias.py`` holds to Polars and numpy; its means and
+#: correlations kept their bits, and nothing else moved.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.25563207972202284,
@@ -790,12 +796,12 @@ GOLDEN: dict[str, float | str | None] = {
     "moments.mean_x1@25": 1.3170476393181616,
     "moments.mean_x1@60": 1.503050612553659,
     "moments.mean_x1@119": 2.055605486339294,
-    "moments.var_x0@25": 1.1771092288363498,
-    "moments.var_x0@60": 1.1318174907805318,
-    "moments.var_x0@119": 1.0228349789270739,
-    "moments.var_x1@25": 11.367059553916071,
-    "moments.var_x1@60": 5.058876857932047,
-    "moments.var_x1@119": 7.436220266507603,
+    "moments.var_x0@25": 1.3324937654135034,
+    "moments.var_x0@60": 1.1972093809025777,
+    "moments.var_x0@119": 1.0651986840630365,
+    "moments.var_x1@25": 12.867570498661806,
+    "moments.var_x1@60": 5.35115853967803,
+    "moments.var_x1@119": 7.744213099356213,
     "moments.corr_x0_x1@25": 0.1950011675208187,
     "moments.corr_x0_x1@60": 0.3160753290419023,
     "moments.corr_x0_x1@119": 0.2439860537587861,

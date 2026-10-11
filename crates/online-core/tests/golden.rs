@@ -757,6 +757,7 @@ fn ew_cov_golden() {
     // Slots in emission order: mean x0, mean x1, var x0, var x1, corr x0x1.
     // The correlation is the one that reads every accumulator at once.
     let mut m = EwCovModel::new(EwCovCfg {
+        bias: true,
         n_features: 2,
         decay: Decay::Halflife(20.0),
         stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
@@ -1360,6 +1361,7 @@ fn rcov_psd_golden() {
 #[test]
 fn ew_cov_paths_golden() {
     let cfg = || EwCovCfg {
+        bias: true,
         n_features: 2,
         decay: Decay::Halflife(20.0),
         stats: vec![EwCovStat::Corr],

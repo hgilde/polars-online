@@ -343,8 +343,8 @@ def test_every_count_in_every_frame_is_int64():
         if name == "ewridge":
             from polars_online import eval as ev
 
-            frames["eval.metrics"] = ev.metrics(out, "m", spec=spec, min_samples=1)
-            frames["eval.sums"] = ev.sums(out, "m", spec=spec)
+            frames["eval.metrics"] = ev.metrics(out, spec, min_samples=1)
+            frames["eval.sums"] = ev.sums(out, spec)
             frames["eval.from_sums"] = ev.from_sums(frames["eval.sums"], min_samples=1)
         for label, frame in frames.items():
             assert isinstance(frame, pl.DataFrame), (name, label)
@@ -538,7 +538,7 @@ def test_rows_fed_is_the_frames_count_and_rows_seen_names_it():
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(30))
     bank.drop_groups(["0"])
-    assert bank.rows_fed() == 30
+    assert bank.rows_fed == 30
     assert bank.summary()["rows_fed"].sum() < 30
     assert "rows_fed=30" in repr(bank)
     with pytest.raises(AttributeError, match=r"rows_seen was renamed rows_fed"):

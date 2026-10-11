@@ -13,8 +13,9 @@
 //! XGBoost reads the stream three times with a `ref` (counting, indexing,
 //! the column matrix) and four without, the extra pass sketching each
 //! feature's quantiles over every row. With `sample_rows`, one pass of this
-//! module's own draws a uniform sample ([`Sampler`]) and builds a small
-//! matrix whose columns plant the cuts, which goes to XGBoost as the `ref`.
+//! module's own draws a sample ([`Sampler`]), weighted when the rows are,
+//! and builds a small matrix whose columns plant the cuts, which goes to
+//! XGBoost as the `ref`.
 //! A validation matrix takes the training matrix as its `ref` instead.
 
 use std::collections::VecDeque;
@@ -265,7 +266,7 @@ fn sample_ref<'a>(
     names: &[CString],
     types: &[CString],
 ) -> Result<Owned<'a>, GbdtError> {
-    let mut s = Sampler::new(layout.kinds.clone(), k, opts.seed);
+    let mut s = Sampler::new(layout.kinds.clone(), k, opts.seed, layout.weight.is_some());
     while let Some(frame) = reader.next()? {
         s.push_any(frame, layout, pool)?;
     }

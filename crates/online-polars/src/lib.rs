@@ -59,6 +59,7 @@ mod spec_diff;
 mod stream;
 mod summary;
 mod targets;
+mod timing;
 mod windows;
 mod windows_frame;
 
@@ -85,6 +86,9 @@ pub use bank::{
 pub use defaults::resolved_defaults;
 pub use formula::{Formula, Literal, Node, OpNode};
 pub use online_core;
+/// The Rust Polars this crate is built against, which the command line's
+/// `--version` names.
+pub use polars::VERSION as POLARS_VERSION;
 pub use pool::{THREADS_VAR, pool, thread_pool_size};
 pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::FeatureRows;
@@ -104,6 +108,7 @@ pub use stream::{
 };
 pub use summary::{ColumnStats, DataSummary, Role};
 pub use targets::{TargetDef, Targets};
+pub use timing::{TIMING_VAR, renamed_timing_notice};
 pub use windows::{
     Closed, Direction, Emitted, KernelDef, OpDef, OpKind, Partial, Refusal, RowIn, Stat, Windows,
 };

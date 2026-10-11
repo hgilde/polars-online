@@ -493,11 +493,11 @@ class TestChunkingAndResume:
         ):
             bank = po.ModelBank([spec])
             bank.fit_predict(df.head(77))
-            doc = json.loads(bank.to_json())
+            doc = json.loads(bank.write_json())
             assert "coef_cadence" in json.dumps(doc), spec
         unset = po.ModelBank([temporal()])
         unset.fit_predict(df.head(77))
-        assert "coef_cadence" not in unset.to_json(), "a default spec writes what it did"
+        assert "coef_cadence" not in unset.write_json(), "a default spec writes what it did"
 
 
 class TestRefusals:

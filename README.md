@@ -92,7 +92,7 @@ local = po.spec.ewridge(
 betas = pl.scan_parquet("prices.parquet").online.fit_predict([local]).online.unnest([local]).collect()   # a row of betas per input row
 
 # 4. A target that looks ahead: each row's mean return over the next ten minutes.
-fwd_ret = po.rewm_mean("ret", half_life=float("inf"), window_size="10m").alias("fwd_ret")
+fwd_ret = po.ewm_mean("ret", half_life=float("inf"), window_size="10m", reverse=True).alias("fwd_ret")
 ahead = po.spec.ewridge(
     "ahead", targets=[fwd_ret], features=["signal_a", "signal_b"], group="stock_id",
     clock="ts", half_life="10m", gap_cap="5m",
@@ -171,7 +171,7 @@ Each hour from 10:30, stock A's beta on `signal_a` climbs with the true one:
 | 15:30:00 | 0.72 | -0.18 |
 
 **Step 4 forecasts a target that looks ahead.** `fwd_ret`, a Polars
-expression written with `po.rewm_mean`, is the time-weighted mean of the
+expression written with `po.ewm_mean(..., reverse=True)`, is the time-weighted mean of the
 stock's returns over the next ten minutes.
 
 `fit_predict` requires an `embargo` of at least the target's `window_size`;
@@ -222,7 +222,7 @@ from windows](#making-features-and-targets-from-windows)).
 **A model bank runs three ways, with the same numbers from each.** It runs
 inside a Polars query with `.online.fit_predict`, in your own Python loop
 calling `ModelBank.fit_predict` on each chunk, or from the standalone
-`online` command line, without Python ([Running a bank](#running-a-bank)).
+`polars-online` command line, without Python ([Running a bank](#running-a-bank)).
 
 ### Terminology
 
@@ -458,7 +458,7 @@ flows = pl.scan_parquet("trades.parquet").with_columns(                   # a qu
     flow=pl.when(pl.col("side") == "buy").then(pl.col("quantity")).otherwise(-pl.col("quantity"))
 )
 fwd_move = (
-    po.rewm_mean("price", half_life=float("inf"), window_size="5m")       # the mean trade price over the next five minutes
+    po.ewm_mean("price", half_life=float("inf"), window_size="5m", reverse=True)       # the mean trade price over the next five minutes
     - pl.col("mid")                                                        # less the mid at the row
 ).alias("fwd_move")                                                        # the alias names the target
 ahead_5m = po.spec.ewridge("ahead_5m", targets=[fwd_move], features=["flow"],
@@ -488,7 +488,7 @@ better?](docs/DIAGNOSTICS.md#is-another-model-better)). A plain ratio sits
 about 1, where two positive numbers always agree, so its `hit_rate` reads
 1.0 whatever the fit. A difference sits about zero too. A target that looks
 ahead takes the same forms: `(next_5m / pl.col("mid")).log()`, where
-`next_5m` is the `po.rewm_mean("price", ...)` inside `fwd_move` above, and `mid * exp(pred)` turns its
+`next_5m` is the `po.ewm_mean("price", ..., reverse=True)` inside `fwd_move` above, and `mid * exp(pred)` turns its
 prediction back into a price. This code regresses four forms of a trade's
 price against the mid at its row on the same signed size, `flow`.
 It reads `trades.parquet` from [Example data](#example-data):
@@ -518,7 +518,7 @@ hit_rate of diff: 0.51
 ```
 
 **A target expression requires an operator that looks ahead
-(`po.rewm_mean`, `po.rewm_sum` or `po.rewm_rate`); otherwise, make the
+(`po.ewm_mean`, `po.ewm_sum` or `po.ewm_rate` with `reverse=True`); otherwise, make the
 target a column with Polars' `with_columns`, chained in the query before
 the bank, and name it in `targets`.** The bank's refusal names the call
 that makes the column. Here the target, how far from the mid each trade
@@ -1557,9 +1557,9 @@ run:
 
 A window operator of `po.ops` returns a Polars expression whose value on
 each row is computed over the rows near it on the clock. A window that
-looks back from the row makes a feature, and one that looks ahead makes a
-target. `po.ewm_mean` and its mirror `po.rewm_mean` are time-weighted
-means, as Polars' `ewm_mean_by` computes one, and the sums and rates divide
+looks back from the row makes a feature, and one that looks ahead, under
+`reverse=True`, makes a target. `po.ewm_mean` in either direction is a
+time-weighted mean, as Polars' `ewm_mean_by` computes one, and the sums and rates divide
 into weighted means such as a VWAP (volume-weighted average price). Each
 operator keeps running sums, so it does the same work on a row however long
 its window.
@@ -1580,10 +1580,10 @@ This code uses `trades.parquet` from [Example data](#example-data):
 
 ```python
 notional = pl.col("price") * pl.col("quantity")
-next_minute = dict(half_life="10s", window_size="1m")     # weights halve every 10 s from the row; the window ends a minute on
+next_minute = dict(half_life="10s", window_size="1m", reverse=True)   # weights halve every 10 s from the row; the window ends a minute on
 windowed = pl.scan_parquet("trades.parquet").online.with_windows(
     mid_trend=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),     # a feature: looks back
-    fwd_edge=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute) - pl.col("mid"),   # a target: looks ahead
+    fwd_edge=po.ewm_sum(notional, **next_minute) / po.ewm_sum("quantity", **next_minute) - pl.col("mid"),   # a target: looks ahead
     clock="ts", gap_cap="5m", group="symbol",              # the clock, the longest step it ages by, and one set of windows per symbol
 ).collect()
 print("time      symbol  mid      mid_trend  fwd_edge")
@@ -1746,7 +1746,7 @@ Arrow, for a consumer that is not Polars:
 |---|---|---|---|
 | inside a Polars query | `lf.online.fit_predict(specs)` | ordinary Polars steps chained after the bank | [As a query](#as-a-query-lfonlinefit_predict) |
 | in your own Python loop | `bank.fit_predict(chunk)` | reading the bank between chunks | [In a loop](#in-a-loop-modelbank) |
-| from a standalone command line, with no live Python at all | `online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
+| from a standalone command line, with no live Python at all | `polars-online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
 | output as Arrow, from a bank object | `fit_predict_arrow`, `predict_arrow` | a consumer that is not Polars | [Output as Arrow](#output-as-arrow) |
 
 ### As a query: `lf.online.fit_predict`
@@ -1856,7 +1856,7 @@ except ValueError as e:
 ```
 
 ```text
-not found: spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
+spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
 ```
 
 **With a type checker, call `po.fit_predict`,
@@ -1893,7 +1893,7 @@ bank = po.ModelBank([spec])                                # nothing learned yet
 for out in bank.fit_predict_batches(pl.scan_parquet("ticks.parquet"), chunk_size=100):
     # out: the chunk's columns, plus one column per spec. Between chunks, the bank answers questions:
     x0 = bank.coef().filter(pl.col("group") == "b0", pl.col("term") == "x0")["coef"][0]
-    print(f"after {bank.rows_fed()} rows: b0's coefficient on x0 is {x0:.3f}")
+    print(f"after {bank.rows_fed} rows: b0's coefficient on x0 is {x0:.3f}")
 bank.save("bank.state")                                    # written whole or not at all: a temporary file, then a rename
 
 # With chunks of your own: for chunk in pl.scan_parquet("ticks.parquet").collect_batches(): bank.fit_predict(chunk)
@@ -1945,13 +1945,13 @@ dropped 1; left: ['b1', 'b2', 'b3']
 ### Running a bank as a job, without Python
 
 For a scheduled job, or a deployment with no Python, run the same bank from
-a file to a file with the standalone `online` command line, a binary on
+a file to a file with the standalone `polars-online` command line, a binary on
 each GitHub release. [docs/RUNNER.md](docs/RUNNER.md) has every key and
 flag, with a recipe for each kind of run: a check before the run,
 resuming, scoring, a run that writes only its state, and the groups that
 close.
 
-`online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
+`polars-online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
 its `[specs.model]` table names the model and takes the model's own. This
 `bank.toml` is the first example's spec of [As a
 query](#as-a-query-lfonlinefit_predict):
@@ -1975,24 +1975,30 @@ ridge = [1e-6, 0.1]
 standardize = true
 ```
 
-Run it from the directory that holds `bank.toml` and the example data's
-`ticks.parquet`. The predictions, residuals and weights it writes are the
-bank's in Python, bit for bit:
+Save it beside the example data's `ticks.parquet`: a relative path in the
+file is read from the file's own directory. The predictions, residuals and
+weights the run writes are the bank's in Python, bit for bit:
 
 ```sh
-online --config bank.toml
+polars-online --config bank.toml
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 saved state to bank.state
 ```
 
-The first line is the progress, which `--quiet` turns off. After `wrote`,
-a run prints a line for each spec that ended with groups not ready, and
-nothing for the others. Such a line reads
+On a terminal, a progress line above the summary counts the rows as the
+run goes, and `--quiet` turns it off. After `wrote`, a run prints a line
+for each spec that ended with groups not ready, and nothing for the
+others. Such a line reads
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
+
+**The same file builds the same bank in Python**, as
+`po.ModelBank(tomllib.load(f)["specs"])` with the file opened in binary
+mode. `tomllib` reads each `[[specs]]` table as the dict a builder
+returns, and [Specs in TOML](docs/RUNNER.md#specs-in-toml) in the runner
+guide checks both the spec and the predictions against the command line's.
 
 ### Output as Arrow
 
@@ -2051,7 +2057,7 @@ recipe. The three uses:
 |---|---|---|
 | resume | `po.ModelBank.load(path)`, or `load_state=` on a query | the next row is learned as one run would learn it |
 | serve | `bank.predict(frame)`, or `lf.online.predict(path)` | each row is scored as `fit_predict` would score it as the next row, and the state never moves |
-| read elsewhere | `bank.to_json()` | everything `save` writes, as JSON |
+| read elsewhere | `bank.write_json()` | everything `save` writes, as JSON |
 
 This code fits `df`, saves the bank, and loads it back. Served, the first
 row of `today` gets the prediction one run over `df` and `today` gives it.
@@ -2142,7 +2148,7 @@ every group's clock back, which the bank refuses unless
 rows after each group's last clock (a row at that clock counts as learned)
 and every row of a group the bank has not seen. It keeps a `LazyFrame`
 lazy. For a bank whose specs all count rows, it raises `ValueError`; drop
-the learned rows with `frame.slice(bank.rows_fed())` instead, when the
+the learned rows with `frame.slice(bank.rows_fed)` instead, when the
 input starts where the saved one did.
 
 **A query abandoned before its last row, or ended by an error inside the
@@ -2244,7 +2250,8 @@ the same coefficients score every row. How `predict` reads a row:
 ### Reading a state without this library
 
 To read a state from a program without this library, export it with
-`bank.to_json()`, or write it to a file with `bank.save_json(path)`. Keep
+`bank.write_json()`, which returns the text, or write it to a file with
+`bank.write_json(path)`. Keep
 the binary file for resuming, since `load` reads only that form. Every
 export is read back and checked against the state before you get it, and
 one that does not match raises `ValueError`.
@@ -2260,8 +2267,8 @@ import json
 
 bank = po.ModelBank([po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
 bank.fit_predict(df)
-text = bank.to_json()                     # everything save() writes, as JSON
-bank.save_json("bank.json")               # the same, to a file
+text = bank.write_json()                  # everything save() writes, as JSON
+bank.write_json("bank.json")              # the same, to a file
 state = json.loads(text)                  # any JSON reader
 half_life = state["specs"][0]["half_life"]
 print(f"{state['magic']}: half_life {half_life!r}, as a number {float(half_life)}")
@@ -2303,8 +2310,8 @@ fitted.save("bank.state")
 
 bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
 print(repr(bank))                        # its specs, its groups, the rows it was fed
-print(bank.rows_fed(), bank.solve_failures()["solve_failures"].to_list())   # rows fed; solves that needed help, per group
-print(bank.output_fields()["ridge"])     # the fields of the spec's column
+print(bank.rows_fed, bank.solve_failures()["solve_failures"].to_list())   # rows fed; solves that needed help, per group
+print(bank.output_fields["ridge"])       # the fields of the spec's column
 for spec_name, group, rows, last in bank.groups().iter_rows():   # one row per (spec, group)
     print(spec_name, group, rows, last)
 ```
@@ -2762,8 +2769,8 @@ print(pl.read_parquet("blocks.parquet").select("group", "rows_fed").rows())
 ### Reading a correlation matrix
 
 `po.corr` repairs, shrinks, summarizes and scores a correlation matrix,
-given as an array, a `gram()` dict or a closed row (`po.corr.matrix`
-turns any of them into an array). Each function needs only numpy, and
+given as an array, a `gram()` dict or a closed row (`po.gram.correlation`
+turns a Gram into one). Each function needs only numpy, and
 follows the paper it names. A matrix pieced together pair by pair, each
 pair on its own rows, need not be a correlation matrix at all, as here:
 its smallest eigenvalue is negative. `po.corr.nearest` repairs it.
@@ -4014,9 +4021,9 @@ in any minor release:
 
 | | what it covers |
 |---|---|
-| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags and exit status; and the environment variables the package reads |
+| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags, its exit status and the files it writes; and the environment variables the package reads |
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
-| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
+| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version; and the text the command line prints (its summary, notices and errors) and the timing lines `POLARS_ONLINE_TIMING=1` asks for, which are written for a person and may be reworded in a minor release |
 
 **A changed default or meaning needs a major release, and a fix to numbers
 that were wrong a minor one.** A number is wrong when it disagrees with

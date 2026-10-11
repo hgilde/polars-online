@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import copy
+import io
+import os
 import warnings
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Iterator
 from pathlib import Path
-from typing import Any, NoReturn, overload
+from typing import IO, TYPE_CHECKING, Any, Literal, overload
 
 import polars as pl
 
 from polars_online import _polars_online as _native
 from polars_online._polars_online import ArrowStruct
+from polars_online._renamed import renamed_method
 from polars_online._spec import (
     _coef_index_schema,
     _from_json,
@@ -21,7 +24,16 @@ from polars_online._spec import (
     output_index,
     target_name,
 )
-from polars_online._warnings import warn_unstable
+from polars_online._warnings import (
+    PolarsOnlineDeprecationWarning,
+    deprecated_alias,
+    deprecated_keywords,
+    keyword_only_forwarded,
+    warn_unstable,
+)
+
+if TYPE_CHECKING:
+    from polars_online.gram import Gram
 
 #: What `gram()` calls the constant column a spec's `fit_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
@@ -60,6 +72,33 @@ _NO_COEF = {
 }
 
 __all__ = ["ModelBank"]
+
+
+class _CalledInt(int):
+    """:attr:`ModelBank.rows_fed`'s value, which still answers the call it
+    was before it became a property, with the deprecation warning."""
+
+    def __call__(self) -> int:
+        _warn_called("rows_fed")
+        return int(self)
+
+
+class _CalledDict(dict[str, list[str]]):
+    """:attr:`ModelBank.output_fields`'s value, which still answers the call
+    it was before it became a property, with the deprecation warning."""
+
+    def __call__(self) -> dict[str, list[str]]:
+        _warn_called("output_fields")
+        return dict(self)
+
+
+def _warn_called(name: str) -> None:
+    warnings.warn(
+        f"ModelBank.{name} is a property: read bank.{name}, without the call. The call "
+        "works until the next major version, which refuses it",
+        PolarsOnlineDeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def _group_keys(group: str | Iterable[str | None] | None) -> list[str | None] | None:
@@ -127,7 +166,7 @@ class ModelBank:
     on any OS (:meth:`load`), and scored against without moving (:meth:`predict`).
 
     The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
-    (:mod:`polars_online._frame`), and as a file-to-file job, the ``online``
+    (:mod:`polars_online._frame`), and as a file-to-file job, the ``polars-online``
     command line. This class is the in-process form, for a plan you hand it to
     chunk (:meth:`fit_predict_batches`, :meth:`fit`) or frames you already have.
 
@@ -184,8 +223,9 @@ class ModelBank:
     def __repr__(self) -> str:
         names = ", ".join(repr(s["name"]) for s in self._specs)
         n_groups = max(self._native.group_counts(), default=0)
-        return f"ModelBank([{names}], groups={n_groups}, rows_fed={self.rows_fed()})"
+        return f"ModelBank([{names}], groups={n_groups}, rows_fed={self.rows_fed})"
 
+    @property
     def rows_fed(self) -> int:
         """Rows fed so far, over every chunk and group, each counted once however
         many specs the bank holds.
@@ -194,13 +234,15 @@ class ModelBank:
         count per (spec, group). So do the rows of groups since dropped
         (:meth:`drop_groups`) or closed (``group_close``), which :meth:`summary`
         no longer lists.
-        """
-        return self._native.rows_fed()
 
-    def rows_seen(self) -> NoReturn:
-        """Renamed :meth:`rows_fed`, the frames' word for the same count."""
-        msg = "ModelBank.rows_seen was renamed rows_fed"
-        raise AttributeError(msg)
+        A property, as :attr:`specs` is, and as Polars' ``height`` is: a count
+        the bank keeps, read without work. Before 1.0 it was a method, and
+        ``bank.rows_fed()`` still answers, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
+        """
+        return _CalledInt(self._native.rows_fed())
+
+    rows_seen = renamed_method("ModelBank", "rows_seen", "rows_fed")
 
     def groups(self, spec: str | int | None = None) -> pl.DataFrame:
         """The groups the bank holds state for: one row per (spec, group).
@@ -369,7 +411,9 @@ class ModelBank:
         ``ValueError``, naming the spec and the column, when:
 
         - a column a spec reads (target, feature, clock, session, weight,
-          group) is not in the frame;
+          group) is not in the frame, as
+          :class:`~polars_online.ColumnNotFoundError`, which is both a
+          ``ValueError`` and Polars' ``ColumnNotFoundError``;
         - a target, feature or weight column is not numeric;
         - a column is ``UInt128``, read or not: the extension cannot take one
           in, so the column is named with a cast to make, a clock in the
@@ -599,13 +643,15 @@ class ModelBank:
             msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
         raise TypeError(msg)
 
+    @keyword_only_forwarded("ModelBank.fit_predict_batches", ("closed_groups", "chunk_size"))
     @_renamed_keywords
     def fit_predict_batches(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        closed_groups: str | Path | None = None,
+        *,
+        closed_groups: str | os.PathLike[str] | None = None,
         chunk_size: int | None = None,
-    ) -> Iterable[pl.DataFrame]:
+    ) -> Iterator[pl.DataFrame]:
         """:meth:`fit_predict` over a plan or an iterator of chunks, lazily.
 
         Give it a ``LazyFrame`` and it does the chunking: the plan is read
@@ -652,10 +698,10 @@ class ModelBank:
     def _batches(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        closed_groups: str | Path | None,
+        closed_groups: str | os.PathLike[str] | None,
         chunk_size: int | None,
         what: str,
-    ) -> Iterable[pl.DataFrame]:
+    ) -> Iterator[pl.DataFrame]:
         """The run behind :meth:`fit_predict_batches` and :meth:`fit`: the
         arguments checked eagerly, then a generator. ``what`` is the public
         method the caller used, for the messages that name it."""
@@ -715,7 +761,7 @@ class ModelBank:
         learn_only: bool = False,
         started: int | None = None,
         what: str = "fit_predict_batches",
-    ) -> Iterable[pl.DataFrame]:
+    ) -> Iterator[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
         checked: a generator, so nothing here runs until a caller asks.
 
@@ -783,14 +829,22 @@ class ModelBank:
             return batches.iter_slices(n_rows=chunk_size)
         return batches
 
+    @keyword_only_forwarded("ModelBank.fit", ("closed_groups", "chunk_size"))
     @_renamed_keywords
     def fit(
         self,
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
-        closed_groups: str | Path | None = None,
+        *,
+        closed_groups: str | os.PathLike[str] | None = None,
         chunk_size: int | None = None,
     ) -> None:
         """Learn from every row and keep nothing: the run whose product is the state.
+
+        **It goes on from the state the bank holds**, as scikit-learn's
+        ``partial_fit`` does, not as its ``fit``, which starts over. Two calls
+        over two days of rows leave the state one call over both would have,
+        and :meth:`fit_predict` after it goes on from there too. A bank that
+        starts with nothing learned is a new :class:`ModelBank`.
 
         :meth:`fit_predict_batches` with the output dropped as it comes, so no
         chunk's result is ever held and no frame is assembled from them. An
@@ -1080,9 +1134,15 @@ class ModelBank:
             <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__).
             ``settled_frac`` is how full the decay window is: the fraction
             the next row's ``settled_frac`` reads, which under ``embargo``
-            counts the clock the held rows have covered too. ``error_inflation`` is the
-            largest noise-gate ratio over its slots: ``ewridge``'s
-            ``sqrt(1 + edf / n_kish)``, ``rls``'s
+            counts the clock the held rows have covered too. It reads the
+            model's own decay, ``half_life``, as ``min_settled_frac`` and the
+            readiness notices do, not a second memory the model keeps beside
+            it, such as ``holt``'s trend: the diagnostics wait for the
+            longest of those instead (`docs/DIAGNOSTICS.md, One memory per
+            diagnostic
+            <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
+            ``error_inflation`` is the largest noise-gate ratio over its
+            slots: ``ewridge``'s ``sqrt(1 + edf / n_kish)``, ``rls``'s
             ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
             ``sqrt(1 + df / n_kish)``. ``kalman``'s gate reads each row's own
             value, so its reading is the gate's mean field over the design,
@@ -1167,8 +1227,8 @@ class ModelBank:
         group: str | Iterable[str | None] | None = None,
         *,
         dtype: Any = "float64",
-        layout: str = "full",
-    ) -> list[dict[str, Any]]:
+        layout: Literal["full", "packed"] = "full",
+    ) -> list[Gram]:
         """The running sums behind a spec's fit, per group and instance, as numpy arrays.
 
         One dict per (group, decay instance), and per Gram where a spec reads more
@@ -1387,7 +1447,7 @@ class ModelBank:
         if spec_dict.get("fit_intercept", True) and not unsupervised:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
-        out = []
+        out: list[Gram] = []
         native = self._native.gram(idx, _group_keys(group), float32, packed, columns)
         for row, lag, (tidx, by_target, centred) in native:
             g, instance, k, weight_sum, n_kish, means, como, cross, tw = row[:9]
@@ -1539,7 +1599,7 @@ class ModelBank:
         spec: str | int | None = None,
         group: str | Iterable[str | None] | None = None,
         *,
-        table: str = "columns",
+        table: Literal["columns", "pairs", "clock"] = "columns",
         pooled: bool = False,
     ) -> pl.DataFrame:
         """What an ``audit`` spec counted (:func:`polars_online.spec.audit`): one row
@@ -2099,30 +2159,44 @@ class ModelBank:
             orient="row",
         )
 
+    @property
     def output_fields(self) -> dict[str, list[str]]:
         """Spec name to the field names of its output struct, in order:
         :func:`polars_online.spec.output_fields` for every spec in the bank.
 
         The fields are fixed by the spec, so this is the output schema before any row
-        is fed.
+        is fed. A property, as :attr:`specs` is. Before 1.0 it was a method, and
+        ``bank.output_fields()`` still answers, with a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`.
         """
-        return dict(zip(self._native.spec_names(), self._native.output_fields(), strict=True))
+        return _CalledDict(
+            zip(self._native.spec_names(), self._native.output_fields(), strict=True)
+        )
 
-    def save(self, path: str | Path) -> None:
+    @deprecated_keywords("ModelBank.save", {"path": "file"})
+    def save(self, file: str | os.PathLike[str] | IO[bytes]) -> None:
         """Write the state to a file: versioned msgpack, loadable on any supported OS.
 
-        Written to a temporary sibling and renamed into place, so an interrupted save
-        leaves the previous state where it was rather than truncating it. The rename
-        is preceded by a filesystem sync, so a power loss cannot replace a good state
-        file with an empty one. The sync takes about 4 ms on macOS, against about 0.5 ms for
-        serializing 500 groups. Save every chunk and the sync dominates; save every
-        hundredth and it disappears.
+        ``file`` is a path, or a file object opened for binary writing (an
+        ``open(..., "wb")`` or an ``io.BytesIO``), as Polars' ``write_*``
+        methods take either. :meth:`save_bytes` gives the same bytes.
+
+        A path is written to a temporary sibling and renamed into place, so an
+        interrupted save leaves the previous state where it was rather than truncating
+        it. The rename is preceded by a filesystem sync, so a power loss cannot replace
+        a good state file with an empty one. The sync takes about 4 ms on macOS, against
+        about 0.5 ms for serializing 500 groups. Save every chunk and the sync
+        dominates; save every hundredth and it disappears. A file object is handed
+        the bytes in one ``write``, after the state is serialized: whether the write
+        is atomic is up to whoever opened it.
 
         Raises the ``OSError`` for what went wrong, with the path in the message:
         ``FileNotFoundError`` for a directory that is not there, ``PermissionError``
         for one that cannot be written. The file, if it existed, is untouched.
         ``RuntimeError`` while a ``fit_predict`` is in flight on another thread, and
         ``ValueError`` for a bank a refused chunk left broken (:meth:`fit_predict`).
+        ``TypeError`` for a ``file`` that is neither a path nor a binary file
+        object.
 
         .. warning::
             A spec's formula target (:func:`polars_online.target` over a window
@@ -2133,19 +2207,31 @@ class ModelBank:
             holds one raises :class:`~polars_online.UnstableWarning`. The rest of
             the file is promised.
         """
-        self._warn_formula_form()
-        self._native.save(str(path))
+        if isinstance(file, (str, os.PathLike)):
+            # One frame more than `save_bytes`: the keyword forwarding's.
+            self._warn_formula_form(stacklevel=5)
+            self._native.save(os.fspath(file))
+            return
+        if not callable(getattr(file, "write", None)):
+            msg = (
+                "ModelBank.save takes a path or a file object opened for binary writing, "
+                f"got {type(file).__name__}"
+            )
+            raise TypeError(msg)
+        self._warn_formula_form(stacklevel=5)
+        file.write(bytes(self._native.save_bytes()))
 
-    def _warn_formula_form(self) -> None:
+    def _warn_formula_form(self, stacklevel: int = 4) -> None:
         """:class:`~polars_online.UnstableWarning` for a bank whose specs hold a
         formula target, whose written form is not promised (docs/PLAN.md task
-        198, D5); a caller's caller is the user's line."""
+        198, D5). ``stacklevel`` 4 is the caller's caller, the user's line under
+        a method that calls this; a method under a decorator passes 5."""
         if any(
             isinstance(t, dict) and "formula" in t
             for spec in self._specs
             for t in spec.get("targets") or ()
         ):
-            warn_unstable("a formula target's written form in a state file", stacklevel=4)
+            warn_unstable("a formula target's written form in a state file", stacklevel=stacklevel)
 
     def save_bytes(self) -> bytes:
         """What :meth:`save` writes, as bytes, for a store that is not a file
@@ -2158,9 +2244,30 @@ class ModelBank:
         self._warn_formula_form()
         return bytes(self._native.save_bytes())
 
-    def to_json(self, *, pretty: bool = True) -> str:
+    @overload
+    def write_json(self, file: None = None, *, pretty: bool = True) -> str: ...
+
+    @overload
+    def write_json(
+        self, file: str | os.PathLike[str] | IO[str] | IO[bytes], *, pretty: bool = True
+    ) -> None: ...
+
+    def write_json(
+        self,
+        file: str | os.PathLike[str] | IO[str] | IO[bytes] | None = None,
+        *,
+        pretty: bool = True,
+    ) -> str | None:
         """The state as JSON: everything :meth:`save` writes, in a form that can be read
         without this library.
+
+        Returned as a string when ``file`` is ``None``, as Polars'
+        ``DataFrame.write_json()`` returns its JSON. Otherwise written to
+        ``file``, a path or a file object, text or binary (UTF-8), and ``None``
+        is returned. A path is written plainly, not with :meth:`save`'s atomic
+        rename: this is an export of a state that lives elsewhere, so a
+        half-written one is mended by writing it again. ``pretty=False`` writes
+        it on one line.
 
         An export, not a second state format: :meth:`load` reads msgpack and only
         msgpack. Use it to look at a state, diff two of them, or hand one to something
@@ -2174,22 +2281,66 @@ class ModelBank:
         wrong. ``RuntimeError`` while a ``fit_predict`` is in flight on another
         thread, as :meth:`save` does. A formula target's written form is
         unstable, as :meth:`save` says, and the export carries the same tree.
+
+        .. code-block:: python
+
+            spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=100.0)
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            import json
+
+            state = json.loads(bank.write_json())     # the state, as Python objects
+            bank.write_json("bank.json")               # the same text, in a file
         """
         self._warn_formula_form()
-        return str(self._native.save_json_string(pretty))
+        text = str(self._native.save_json_string(pretty))
+        if file is None:
+            return text
+        if isinstance(file, (str, os.PathLike)):
+            Path(file).write_text(text, encoding="utf-8")
+        elif isinstance(file, io.TextIOBase):
+            file.write(text)
+        elif callable(getattr(file, "write", None)):
+            # A binary file object, or one that does not say which: bytes, as
+            # UTF-8, and the text where it takes no bytes.
+            writer: Any = file
+            try:
+                writer.write(text.encode("utf-8"))
+            except TypeError:
+                writer.write(text)
+        else:
+            msg = (
+                "ModelBank.write_json takes a path, a file object or None, "
+                f"got {type(file).__name__}"
+            )
+            raise TypeError(msg)
+        return None
 
-    def save_json(self, path: str | Path, *, pretty: bool = True) -> None:
-        """Write :meth:`to_json` to ``path``.
+    @deprecated_alias("ModelBank.to_json", "ModelBank.write_json", ", which returns the same text")
+    def to_json(self, *, pretty: bool = True) -> str:
+        """Renamed :meth:`write_json`: called without a file it returns the same
+        string. Each call raises a
+        :class:`~polars_online.PolarsOnlineDeprecationWarning`."""
+        return self.write_json(pretty=pretty)
 
-        A plain ``write_text``, not :meth:`save`'s atomic rename: this is an export of
-        a state that lives elsewhere, so a half-written one is mended by writing it
-        again.
-        """
-        Path(path).write_text(self.to_json(pretty=pretty), encoding="utf-8")
+    @deprecated_alias("ModelBank.save_json", "ModelBank.write_json", ", which takes the same path")
+    def save_json(self, path: str | os.PathLike[str], *, pretty: bool = True) -> None:
+        """Renamed :meth:`write_json`, which takes the same path. Each call
+        raises a :class:`~polars_online.PolarsOnlineDeprecationWarning`."""
+        self.write_json(path, pretty=pretty)
 
     @classmethod
-    def load(cls, path: str | Path, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
-        """A bank from a file :meth:`save` wrote, on this or any other OS.
+    @deprecated_keywords("ModelBank.load", {"path": "source"})
+    def load(
+        cls,
+        source: str | os.PathLike[str] | bytes | IO[bytes],
+        specs: Iterable[dict[str, Any]] | None = None,
+    ) -> ModelBank:
+        """A bank from a state :meth:`save` wrote, on this or any other OS.
+
+        ``source`` is a path, the bytes (:meth:`save_bytes`), or a file object
+        opened for binary reading (an ``open(..., "rb")`` or an ``io.BytesIO``),
+        as Polars' ``read_*`` functions take any of the three.
 
         The file carries the specs, so none need be given. Passing ``specs`` asserts
         they are the file's, which is how a resuming job checks that the state it
@@ -2202,7 +2353,8 @@ class ModelBank:
             bank.fit_predict(today)                    # and the stream goes on
 
         Raises ``FileNotFoundError`` (or the ``OSError`` for what went wrong) when the
-        file cannot be read, and ``ValueError`` when it can but is not a bank this
+        file cannot be read, ``TypeError`` for a ``source`` that is none of the
+        three, and ``ValueError`` when it can be read but is not a bank this
         build loads:
 
         - not a bank state file at all;
@@ -2228,18 +2380,47 @@ class ModelBank:
         :class:`~polars_online.UnstableWarning` under
         ``POLARS_ONLINE_WARN_UNSTABLE=1``.
         """
-        return cls.load_bytes(Path(path).read_bytes(), specs)
+        if isinstance(source, (bytes, bytearray, memoryview)):
+            data = bytes(source)
+        elif isinstance(source, (str, os.PathLike)):
+            data = Path(source).read_bytes()
+        elif callable(getattr(source, "read", None)):
+            data = source.read()
+            if not isinstance(data, (bytes, bytearray)):
+                msg = (
+                    "ModelBank.load: the file object gave "
+                    f"{type(data).__name__}; open the file in binary mode ('rb')"
+                )
+                raise TypeError(msg)
+            data = bytes(data)
+        else:
+            msg = (
+                "ModelBank.load takes a path, bytes or a file object opened for binary "
+                f"reading, got {type(source).__name__}"
+            )
+            raise TypeError(msg)
+        # One frame more than `load_bytes`: the keyword forwarding's.
+        return cls._load_bytes(data, specs, stacklevel=5)
 
     @classmethod
     def load_bytes(cls, data: bytes, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
         """:meth:`load` from the bytes :meth:`save_bytes` gave, with the same ``specs``
         check and the same ``ValueError`` for bytes that are not a bank this build
-        loads.
+        loads. :meth:`load` takes the bytes too.
         """
+        return cls._load_bytes(data, specs, stacklevel=4)
+
+    @classmethod
+    def _load_bytes(
+        cls, data: bytes, specs: Iterable[dict[str, Any]] | None, stacklevel: int
+    ) -> ModelBank:
+        """:meth:`load_bytes`, with the formula form's warning pointed
+        ``stacklevel`` frames up from :meth:`_warn_formula_form`, so a public
+        method's caller is named however many frames it adds."""
         specs_json = _json(list(specs)) if specs is not None else None
         native = _native.ModelBank.load_bytes(data, specs_json)
         bank = cls._wrap(native)
-        bank._warn_formula_form()
+        bank._warn_formula_form(stacklevel=stacklevel + 1)
         return bank
 
     @classmethod

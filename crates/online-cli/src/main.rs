@@ -1,20 +1,22 @@
-//! `online` — run a model bank over a stream of rows, config from TOML
+//! `polars-online` — run a model bank over a stream of rows, config from TOML
 //! (docs/PLAN.md §11 task 15). Reads and writes parquet, ipc, csv and ndjson,
 //! each told from its extension or named with `--input-format` /
 //! `--output-format`.
 //!
 //! ```sh
-//! online --config examples/bank.toml
-//! online --config examples/bank.toml --input other.parquet --load-state state.msgpack
-//! online --config examples/bank.toml --input today.parquet --load-state state.msgpack --predict
-//! online --config examples/bank.toml --input ticks.csv --output scored.ndjson
+//! polars-online --config examples/bank.toml
+//! polars-online --config examples/bank.toml --input other.parquet --load-state bank.state
+//! polars-online --config examples/bank.toml --input today.parquet --load-state bank.state --predict
+//! polars-online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
-use std::path::PathBuf;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::LazyLock;
 
 use clap::{CommandFactory, Parser};
-use online_polars::{Format, RunConfig, run_config_reported};
+use online_polars::{Format, RunConfig, RunStats, run_config_reported};
 
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
 fn parse_format(s: &str) -> Result<Format, String> {
@@ -27,10 +29,77 @@ fn parse_format(s: &str) -> Result<Format, String> {
         })
 }
 
+/// What `--version` prints after the name: the package's version, the
+/// state schema this build saves in, and the Rust Polars it carries, which a
+/// state file and a bug report need beside the version (task 244, C-11).
+/// `-V` prints the version alone.
+static LONG_VERSION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "{}\nstate schema {}\nRust Polars {}",
+        env!("CARGO_PKG_VERSION"),
+        online_polars::online_core::SCHEMA_VERSION,
+        online_polars::POLARS_VERSION,
+    )
+});
+
+/// `n` and its noun, singular at one: `1 chunk`, `8 chunks`.
+fn counted(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// The progress line, rewritten in place with a carriage return as each
+/// chunk is read. Only a terminal renders that as intended, so it is drawn
+/// only on a terminal standard error, and not under `--quiet`: a log or a
+/// pipe gets none of it (task 244, C-9).
+struct Progress {
+    draw: bool,
+}
+
+impl Progress {
+    fn new(quiet: bool, terminal: bool) -> Self {
+        Self {
+            draw: !quiet && terminal,
+        }
+    }
+
+    /// The line as it stands after `s`. A failed write to standard error
+    /// is not the run's failure, so it is dropped.
+    fn update(&self, s: RunStats, out: &mut impl Write) {
+        if self.draw {
+            let _ = write!(
+                out,
+                "\r{} in {}",
+                counted(s.rows, "row"),
+                counted(s.chunks, "chunk")
+            );
+        }
+    }
+
+    /// The line ended, once the run is over; a run that read no chunk drew
+    /// none, and ends none.
+    fn finish(&self, s: RunStats, out: &mut impl Write) {
+        if self.draw && s.chunks > 0 {
+            let _ = writeln!(out);
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "online", version, about, long_about = None)]
+#[command(
+    name = "polars-online",
+    version,
+    long_version = LONG_VERSION.as_str(),
+    about,
+    long_about = None
+)]
 struct Cli {
     /// TOML file describing the model bank specs and the input/output paths.
+    /// A relative path inside it is read from the file's own directory, and
+    /// one given as a flag from the working directory.
     #[arg(long)]
     config: PathBuf,
 
@@ -43,10 +112,9 @@ struct Cli {
     output: Option<PathBuf>,
 
     /// Write no per-row output: the run's product is the state it saves, or
-    /// the closed groups it writes (docs/ENHANCEMENTS.md E50). Needs
-    /// `save_state` or `closed_groups`, in the config or as a flag. An
-    /// accumulator-only spec emits `weight_sum` a row and nothing else, which over
-    /// a billion rows is 8 GB of file written so it can be deleted.
+    /// the closed groups it writes. Needs `save_state` or `closed_groups`,
+    /// in the config or as a flag. A run that only accumulates has no use
+    /// for a row of output per row of input.
     #[arg(long)]
     no_output: bool,
 
@@ -65,8 +133,7 @@ struct Cli {
     #[arg(long)]
     chunk_size: Option<usize>,
 
-    /// The old name of `--chunk-size`, refused naming it (docs/PLAN.md task
-    /// 196, N2).
+    /// The old name of `--chunk-size`, refused naming it.
     #[arg(long = "chunk-rows", hide = true, value_name = "N")]
     chunk_rows: Option<String>,
 
@@ -74,8 +141,7 @@ struct Cli {
     #[arg(long)]
     load_state: Option<PathBuf>,
 
-    /// The old name of `--load-state`, refused naming it (docs/PLAN.md task
-    /// 196, N15).
+    /// The old name of `--load-state`, refused naming it.
     #[arg(long, hide = true, value_name = "PATH")]
     resume: Option<String>,
 
@@ -91,8 +157,7 @@ struct Cli {
     save_state: Option<PathBuf>,
 
     /// Write the groups that closed during the run to this file, beside the
-    /// output (docs/ENHANCEMENTS.md E54). Its format comes from the
-    /// extension. Needs a spec with `group_close`; overrides the config's
+    /// output. Its format comes from the extension. Needs a spec with `group_close`; overrides the config's
     /// `closed_groups`.
     #[arg(long)]
     closed_groups: Option<PathBuf>,
@@ -109,7 +174,8 @@ struct Cli {
     #[arg(long)]
     dry_run: bool,
 
-    /// Suppress per-chunk progress.
+    /// Suppress the progress line, which is drawn only when standard error
+    /// is a terminal.
     #[arg(long, short)]
     quiet: bool,
 }
@@ -152,7 +218,13 @@ const UNSTABLE_VAR: &str = "POLARS_ONLINE_WARN_UNSTABLE";
 /// What the command line says of a formula target under [`UNSTABLE_VAR`]:
 /// its tree is read from the TOML file and written into the state, and that
 /// written form is not promised.
-const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the      TOML file and in a saved state -- is considered unstable. It may be changed at any point      without it being considered a breaking change (unset POLARS_ONLINE_WARN_UNSTABLE to      silence this)";
+/// Worded as Python's `UnstableWarning` is. Each line ends in a `\`, which
+/// drops the next line's indentation: without them the notice kept six
+/// spaces inside each sentence (task 244, C-4).
+const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the TOML \
+     file and in a saved state -- is considered unstable. It may be changed at any point \
+     without it being considered a breaking change (set POLARS_ONLINE_WARN_UNSTABLE=0 or \
+     unset it to silence this).";
 
 /// `text`, a TOML config, with each key `table` deprecates read as its new
 /// name at any depth, and a notice for each (`online_polars::DEPRECATED`,
@@ -206,11 +278,33 @@ fn forward_deprecated_toml(
     Ok((text, notices))
 }
 
+/// `cfg`'s relative paths, read from `dir`, the config file's directory, so
+/// that a config runs the same from any working directory, as a path in a
+/// ruff or Cargo config does (task 244, C-2). An empty path, a run with no
+/// output, stays empty; an absolute one stays as it is.
+fn relative_to(cfg: &mut RunConfig, dir: &Path) {
+    let from_dir = |p: &mut PathBuf| {
+        if !p.as_os_str().is_empty() && p.is_relative() {
+            *p = dir.join(&*p);
+        }
+    };
+    from_dir(&mut cfg.input);
+    from_dir(&mut cfg.output);
+    [
+        &mut cfg.load_state,
+        &mut cfg.save_state,
+        &mut cfg.closed_groups,
+    ]
+    .into_iter()
+    .flatten()
+    .for_each(from_dir);
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("online: {e}");
+            eprintln!("polars-online: {e}");
             ExitCode::FAILURE
         }
     }
@@ -244,7 +338,7 @@ fn run() -> Result<(), String> {
     let (text, notices) = forward_deprecated_toml(&text, online_polars::DEPRECATED)
         .map_err(|e| format!("parsing {}: {e}", cli.config.display()))?;
     for notice in notices {
-        eprintln!("online: warning: {notice}");
+        eprintln!("polars-online: warning: {notice}");
     }
     let mut cfg: RunConfig = toml::from_str(&text).map_err(|e| {
         // A Windows path in a TOML basic string is the most common way this
@@ -267,6 +361,8 @@ fn run() -> Result<(), String> {
         )
     })?;
 
+    // Before the flags: a path given as a flag is the working directory's.
+    relative_to(&mut cfg, cli.config.parent().unwrap_or(Path::new("")));
     if let Some(p) = cli.input {
         cfg.input = p;
     }
@@ -314,7 +410,7 @@ fn run() -> Result<(), String> {
     if std::env::var(UNSTABLE_VAR).is_ok_and(|v| v == "1")
         && cfg.specs.iter().any(|s| s.targets.any_formula())
     {
-        eprintln!("online: {FORMULA_UNSTABLE}");
+        eprintln!("polars-online: {FORMULA_UNSTABLE}");
     }
     // `validate` leaves the input to the run; a dry run wants to know now.
     let input_format = cfg.input_format()?;
@@ -373,32 +469,21 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let quiet = cli.quiet;
+    let progress = Progress::new(cli.quiet, std::io::stderr().is_terminal());
     let (stats, readiness) = run_config_reported(&cfg, |s| {
-        if !quiet {
-            eprint!("\r{} rows in {} chunks", s.rows, s.chunks);
-        }
+        progress.update(s, &mut std::io::stderr());
         Ok(())
     })
     .map_err(|e| e.to_string())?;
-    if !quiet {
-        eprintln!();
-    }
+    progress.finish(stats, &mut std::io::stderr());
+    let (rows, chunks) = (counted(stats.rows, "row"), counted(stats.chunks, "chunk"));
     if cfg.no_output() {
         // Under `--no-output` the path is empty, so name the outcome rather
         // than print a trailing "to " with nothing after it (review
         // 2026-09-18, minor).
-        println!(
-            "processed {} rows ({} chunks), no output",
-            stats.rows, stats.chunks
-        );
+        println!("processed {rows} ({chunks}), no output");
     } else {
-        println!(
-            "wrote {} rows ({} chunks) to {}",
-            stats.rows,
-            stats.chunks,
-            cfg.output.display()
-        );
+        println!("wrote {rows} ({chunks}) to {}", cfg.output.display());
     }
     // Where each spec's groups stand on readiness after their last row
     // (docs/WARMUP-AND-CONVERGENCE.md §7.9): the groups whose last row was
@@ -418,6 +503,60 @@ fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use online_polars::RunStats;
+
+    /// A relative path is read from the config's directory, an absolute one
+    /// stays as it is, and an empty one -- `output` left out, a run with no
+    /// output -- stays empty, rather than become the directory itself.
+    #[test]
+    fn a_relative_path_is_the_configs_and_an_empty_one_stays_empty() {
+        let abs = std::env::temp_dir().join("c.parquet");
+        let text = format!(
+            "input = 'in.parquet'\nsave_state = 's.state'\nclosed_groups = '{}'\n\
+             [[specs]]\nname = 'm'\ntargets = ['y']\nfeatures = ['x']\nhalf_life = 1.0\n\
+             [specs.model]\ntype = 'ewridge'\n",
+            abs.display()
+        );
+        let mut cfg: online_polars::RunConfig = toml::from_str(&text).unwrap();
+        let dir = std::path::Path::new("conf");
+        super::relative_to(&mut cfg, dir);
+        assert_eq!(cfg.input, dir.join("in.parquet"));
+        assert_eq!(cfg.save_state, Some(dir.join("s.state")));
+        assert_eq!(cfg.closed_groups, Some(abs));
+        assert!(cfg.output.as_os_str().is_empty() && cfg.load_state.is_none());
+    }
+
+    /// The progress line is drawn on a terminal without `--quiet`, and
+    /// nowhere else; it counts in the singular at one, and a run that read
+    /// no chunk ends no line.
+    #[test]
+    fn the_progress_line_is_drawn_on_a_terminal_without_quiet_alone() {
+        for (quiet, terminal, drawn) in [
+            (false, true, true),
+            (true, true, false),
+            (false, false, false),
+            (true, false, false),
+        ] {
+            let progress = super::Progress::new(quiet, terminal);
+            let mut out = Vec::new();
+            progress.update(RunStats { rows: 7, chunks: 1 }, &mut out);
+            let end = RunStats {
+                rows: 50,
+                chunks: 8,
+            };
+            progress.update(end, &mut out);
+            progress.finish(end, &mut out);
+            let want = if drawn {
+                "\r7 rows in 1 chunk\r50 rows in 8 chunks\n"
+            } else {
+                ""
+            };
+            assert_eq!(String::from_utf8(out).unwrap(), want, "{quiet} {terminal}");
+        }
+        let mut out = Vec::new();
+        super::Progress::new(false, true).finish(RunStats::default(), &mut out);
+        assert!(out.is_empty());
+    }
     /// A key the table deprecates is read as its new name at any depth, a
     /// spec's own and its model's, with a notice each; an old and a new name
     /// side by side are refused; the production table, empty before 1.0,

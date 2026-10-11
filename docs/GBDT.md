@@ -58,16 +58,35 @@ XGBoost:  validation RMSE 0.312 after 50 rounds
 LightGBM: validation RMSE 0.313 after 50 rounds
 ```
 
-**XGBoost's cuts come from a uniform sample of 200,000 rows, which removes
+**XGBoost's cuts come from a sample of 200,000 rows, which removes
 XGBoost's pass that sketches every row.** That pass is about half the time
 before the first round. `sample_rows=None` keeps it, and with it XGBoost's
-own trees. Otherwise the trees differ from XGBoost's own by no more than a
-sample's seed moves them. On 10 million rows of 50 features, at 50 rounds,
-XGBoost's sketch scored a validation RMSE of 1.2379, and cuts from five
-seeds of a uniform sample 1.2347 to 1.2411. LightGBM's own sampling spans
-1.2298 to 1.2443 over five seeds. `po.gbdt.lightgbm_dataset` returns a
-constructed `lgb.Dataset`, binned on LightGBM's own sample, and holds the
-data in memory only when it fits.
+own trees. Without weights the sample is uniform. On 10 million unweighted
+rows of 50 features, at 50 rounds, XGBoost's sketch scored a validation
+RMSE of 1.2379, and cuts from five seeds of the sample 1.2347 to 1.2411.
+LightGBM's own sampling spans 1.2298 to 1.2443 over five seeds.
+`po.gbdt.lightgbm_dataset` returns a constructed `lgb.Dataset`, binned on
+LightGBM's own sample, and holds the data in memory only when it fits.
+
+**With `weight=`, XGBoost's cuts follow the weights, as its own sketch
+does, and LightGBM's bins do not, as its own do not.** XGBoost's sketch
+weights every row, so `xgboost_matrix` draws its sample in proportion to
+the weights (priority sampling) and places the cuts at the sample's
+weighted quantiles. A row of weight 0 places no cut. LightGBM's sample is
+uniform, and `LGBM_DatasetCreateFromSampledColumn`, the call that bins it,
+takes no weights, so `lightgbm_dataset` bins as LightGBM does. Measured on
+50,000 normal values with weight 50 above 1.0 and `max_bin=16`:
+
+| bins | bounds | above 1.0 | heaviest bin's share of the weight |
+|---|---:|---:|---:|
+| XGBoost's own weighted sketch | 15 | 14 | 6.47% |
+| `xgboost_matrix` | 15 | 14 | 6.26% |
+| LightGBM's own, and `lightgbm_dataset`'s | 14 | 2 | 35% |
+
+The ideal share is 1/16, 6.25%. LightGBM's bounds are those its trees
+split at over 50 rounds, the same with the weights as without. The
+docstring of `xgboost_matrix` defines the sample and states its sampling
+error.
 
 **The first round begins sooner than XGBoost's own route from Polars, and
 as soon as LightGBM's at a third of the memory.** On those 10 million rows, it began after 4.0 seconds for XGBoost,
@@ -85,7 +104,7 @@ Each step of a build, for each library:
 | step | XGBoost | LightGBM |
 |---|---|---|
 | read | Arrow IPC files in Rust, a record batch at a time (polars-arrow's reader); Parquet and a `LazyFrame` through Polars' `collect_batches`, each frame's chunks joined into one on the reader thread; two batches ready ahead | the same |
-| bins | a bottom-k sample: the 200,000 rows of smallest SplitMix64 hash of their index, the same rows however the source is batched; edges at the sample's quantiles, or a bin per value for a feature of at most `max_bin` values; built into a dense `ref` | LightGBM's own: `LGBM_SampleIndices`, those rows gathered in the first pass, `LGBM_DatasetCreateFromSampledColumn` |
+| bins | a sample of 200,000 rows by the SplitMix64 hash of their index, the same rows however the source is batched: the rows of smallest hash, or with weights the rows of largest `w / u`, `u` uniform from the hash (priority sampling); edges at the sample's weighted quantiles, or a bin per value for a feature of at most `max_bin` values; built into a dense `ref` | LightGBM's own, unweighted: `LGBM_SampleIndices`, those rows gathered in the first pass, `LGBM_DatasetCreateFromSampledColumn` |
 | hand-over | each batch's columns as array interfaces on their Arrow buffers, the validity bitmap as the mask, into `XGQuantileDMatrixCreateFromCallback` | float32 rows built in parallel, `LGBM_DatasetPushRows`; or in memory, every batch as float32 Arrow, `LGBM_DatasetCreateFromArrowStream` |
 | categoricals | a `pl.Enum`'s codes, feature type `c`, its levels planted in the `ref` | a `pl.Enum`'s codes in `categorical_feature`, and any integer column named |
 | refusals | a null or non-finite label or weight, a negative weight, a `pl.Categorical`, a column of another type, a source whose passes give different rows, a `ref` built here on other features or on a `pl.Enum` of other categories, a library version outside the range the native engine is built for (XGBoost from 2.1, the first whose C API takes Arrow columns, to before 4.0) | the same, with LightGBM from 4.0 to before 5.0, and more than 2³¹ − 1 rows |

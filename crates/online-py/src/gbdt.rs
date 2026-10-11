@@ -297,7 +297,12 @@ impl PySampler {
     ) -> PyResult<Self> {
         let layout = layout(names, kinds, levels, label, weight)?;
         Ok(Self {
-            inner: Sampler::new(layout.kinds.clone(), sample_rows, seed),
+            inner: Sampler::new(
+                layout.kinds.clone(),
+                sample_rows,
+                seed,
+                layout.weight.is_some(),
+            ),
             layout,
             pool: conversion_pool(threads).map_err(to_py)?,
         })

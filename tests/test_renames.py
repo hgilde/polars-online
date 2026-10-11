@@ -411,7 +411,7 @@ def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere()
     s = po.spec.ew_cov("c", features=["x0", "x1"], stats=["lag_corr"], lags=[1], half_life=10.0)
     fields = po.spec.output_fields(s)
     assert "lag_corr_l1_x0_x1" in fields and not any("lagcorr" in f for f in fields)
-    assert "lagcorr" not in po.ModelBank([s]).to_json()
+    assert "lagcorr" not in po.ModelBank([s]).write_json()
     m = po.spec.marginal("m", targets=["y"], features=["x"], lags=[1], half_life=10.0)
     rng = np.random.default_rng(196)
     df = pl.DataFrame({"x": rng.standard_normal(50), "y": rng.standard_normal(50)})
@@ -558,8 +558,8 @@ def test_an_eval_keyword_renamed_is_refused_naming_the_new_one(case):
 
 def test_the_new_eval_keywords_are_the_old_ones_renamed():
     out = _scored_fit()
-    m = po.eval.metrics(out, "m", group=["g"], min_samples=150)
-    assert m.is_empty()
+    m = po.eval.metrics(out, "m", group=["g"], min_samples=150)  # too few: null, not dropped
+    assert m.height == 2 and m["r2"].null_count() == 2
     m = po.eval.metrics(out, "m", group=["g"], min_samples=50)
     scored = out.group_by("g").agg(pl.col("m").struct.field("pred_y").is_not_null().sum()).sort("g")
     assert m["g"].to_list() == ["a", "b"] and m["n"].to_list() == scored["pred_y"].to_list()
@@ -619,7 +619,7 @@ def test_rows_seen_is_rows_fed():
     bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x"], half_life=10.0)])
     with pytest.raises(AttributeError, match=r"^ModelBank\.rows_seen was renamed rows_fed$"):
         bank.rows_seen()
-    assert bank.rows_fed() == 0
+    assert bank.rows_fed == 0
 
 
 def test_corr_shift_is_absorption_shift():
