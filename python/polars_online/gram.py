@@ -787,7 +787,7 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     read off a ``k``-column stream all come from one pass.
 
     ``cols`` are names or positions, and the intercept may be selected like any
-    other column. **Leave ``"intercept"`` out and every fit on the subset goes
+    other column. **Leave the intercept out, and every fit on the subset goes
     through the origin**, as a spec with ``fit_intercept=False`` does:
     :func:`solve` and the paths read the raw moments, ``E[z z']`` and
     ``E[z y]``, and centre nothing. Keep it for a fit with an intercept.
@@ -1716,7 +1716,7 @@ def coef_stats(
     (``target_within_parts``), and ``r2`` is the share of the variance inside
     the parts that the fit explains.
 
-    **For a ridge fit, ``se`` is least squares' standard error at the
+    **For a ridge fit, the standard errors are least squares' at the
     ridge's residual variance.** ``inv(C)`` is the unpenalized matrix's, so
     the errors take no account of the shrinkage, which makes a ridge's
     coefficients less variable than least squares', nor of the bias it adds.
