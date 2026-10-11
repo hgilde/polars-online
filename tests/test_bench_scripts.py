@@ -17,6 +17,8 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 #: Every script whose output is a measurement the documents cite.
 BENCHMARKS = [
     "benchmark",
+    "diagnostics_rates",
+    "memory_bench",
     "parallel_bench",
     "plan_inspection_bench",
     "regime_experiments",

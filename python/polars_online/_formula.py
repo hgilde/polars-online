@@ -98,6 +98,40 @@ _DTYPES = {
 }
 
 
+#: What a formula reads around the operators, in the words a reader looks
+#: for, each with the nodes of the compact tree it stands for. The refusal
+#: message lists these words, and a test holds their nodes to the ones
+#: :func:`from_tree` rebuilds and to the Rust reader's list, and their words
+#: to the table in the windows guide, so the message cannot leave out a node
+#: that is accepted.
+ACCEPTED: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("columns", ("col",)),
+    ("literals", ("lit",)),
+    ("arithmetic", ("+", "-", "*", "/")),
+    ("negation", ("neg",)),
+    ("comparisons", ("==", "!=", "<", "<=", ">", ">=")),
+    ("& and |", ("&", "|")),
+    ("log", ("log",)),
+    ("exp", ("exp",)),
+    ("abs", ("abs",)),
+    ("sqrt", ("sqrt",)),
+    ("pow", ("**",)),
+    ("clip", ("clip",)),
+    ("fill_null", ("fill_null",)),
+    ("is_null", ("is_null",)),
+    ("is_not_null", ("is_not_null",)),
+    ("when/then/otherwise", ("when",)),
+    ("cast", ("cast",)),
+    ("alias", ("alias",)),
+)
+
+
+def accepted_text() -> str:
+    """The words of :data:`ACCEPTED` as one English list."""
+    words = [word for word, _ in ACCEPTED]
+    return ", ".join(words[:-1]) + " and " + words[-1]
+
+
 class FormulaError(ValueError):
     """An expression a formula cannot carry: a node that is not element-wise,
     a literal with no JSON form, a cast to a dtype not read."""
@@ -105,9 +139,8 @@ class FormulaError(ValueError):
 
 def _refuse(kind: str, detail: str = "") -> FormulaError:
     return FormulaError(
-        f"a window formula is element-wise: columns, literals, arithmetic, comparisons, "
-        f"log/exp/abs/sqrt/pow/clip/fill_null/is_null, when/then/otherwise, cast and alias "
-        f"over the operators; {kind} is not read{detail}. A shift, a cumulative or rolling "
+        f"a window formula is element-wise: {accepted_text()} over the operators; "
+        f"{kind} is not read{detail}. A shift, a cumulative or rolling "
         f"function, an aggregation or a window would depend on the chunking: the formula "
         f"is evaluated a chunk at a time, row by row, so a node that reads other rows would "
         f"read only the chunk's, and one stream fed in two chunkings would give two answers."

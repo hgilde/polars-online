@@ -561,3 +561,18 @@ def test_the_field_grammar_names_every_field_a_grid_writes():
     assert "penalty_selected_y@h10" in fields and "selected_y" in fields, fields
     missing = [f for f in fields if not any(re.fullmatch(p, f) for p in patterns)]
     assert not missing, (missing, names)
+
+
+def test_a_field_name_has_one_dtype_across_the_registry():
+    """Task 238 (follow-up 1): a field two models both write is read the same
+    way from either. ``kmeans`` wrote ``cluster`` as ``i32`` and ``micro`` as
+    ``i64``, so code reading the column from one model broke on the other's.
+    Each field of every model's plainest spec, its instance suffix
+    (``@h50``) dropped, has one dtype over the whole registry."""
+    dtypes: dict[str, dict[str, set[str]]] = {}
+    for name in MINIMAL:
+        index = po.spec.output_index(_build(name))
+        for field, dtype in zip(index["field"], index["dtype"], strict=True):
+            dtypes.setdefault(field.split("@")[0], {}).setdefault(dtype, set()).add(name)
+    split = {field: by for field, by in dtypes.items() if len(by) > 1}
+    assert not split, split

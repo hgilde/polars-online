@@ -100,10 +100,10 @@
 //! residuals are the target's whole level. Outside the Huber cut the
 //! gradient is clipped, not zero, so a cut drawn wide by those residuals
 //! still lets every row teach, and narrows as they leave the mean. Inside
-//! the tube the gradient is zero: a tube drawn in the residual's spread on
-//! a target at 1,000 in a spread of 2 was about 100 wide, held every row,
-//! and without decay never narrowed, so the fit stopped where it stood
-//! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
+//! the tube the gradient is zero: a tube of `eps = 0.1` drawn in the
+//! residual's spread on a target at 1,000 in a spread of 2 was about 100
+//! wide, held every row, and without decay never narrowed, so the fit
+//! stopped where it stood (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
 //! **The tube in units of the noise** (docs/PLAN.md task 207). On a target
 //! a fit predicts to `R²`, `s_y = σ_noise / √(1 − R²)`, so the tube is

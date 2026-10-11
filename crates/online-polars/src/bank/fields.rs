@@ -111,12 +111,12 @@ pub(super) enum Source {
     /// An `ew_cov` statistic, or a `kmeans` / `micro` distance, which rides
     /// in the `pred` buffer.
     Stat(usize),
-    /// A `kmeans` assignment, or a `micro` count: the `pred` buffer holds a
-    /// small non-negative integer as an f64 (NaN = null), materialized as
-    /// `i32`.
+    /// A `micro` count or an `hmm` state: the `pred` buffer holds a small
+    /// non-negative integer as an f64 (NaN = null), materialized as `i32`.
     Cluster(usize),
-    /// A `micro` id or label, or a `seqtest` count: monotone and never
-    /// reused, so `i64`, the same way.
+    /// A cluster label (`kmeans`' and `micro`'s alike: a field two models
+    /// write has one dtype, task 238), a `micro` id, or a count: `i64`, the
+    /// same way.
     Id(usize),
     /// A `micro` flag: `1.0` / `0.0` in the `pred` buffer (NaN = null),
     /// materialized as `Boolean`.
@@ -661,7 +661,7 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
             fields.push(over(
                 FieldMeta::new(format!("cluster{suffix}"), "cluster")
                     .decay(d)
-                    .src(Source::Cluster(mi * n_slots)),
+                    .src(Source::Id(mi * n_slots)),
             ));
             fields.push(over(
                 FieldMeta::new(format!("dist{suffix}"), "dist")

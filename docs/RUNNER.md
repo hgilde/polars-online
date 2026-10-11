@@ -13,7 +13,8 @@ state file, and gives the same numbers.
 
 **Every shell example here is a recipe: the commands, then what they
 print.** Each runs against the configuration below, saved as
-`bank.toml`. Its directory holds the files the README's [Example
+`job.toml`: a smaller file than the README's `bank.toml`, with one feature
+and no groups, so that its output is short. Its directory holds the files the README's [Example
 data](../README.md#example-data) writes (`ticks.parquet` and
 `today.parquet`), and `run.state`, which the configuration's spec saved
 from `ticks.parquet`. It also holds `today.csv` and `feed.dat`, the same
@@ -40,7 +41,7 @@ The runner is a bank packaged as one binary and one TOML file
 ([examples/bank.toml](../examples/bank.toml) is a fuller one). The
 binaries are attached to each GitHub release. The configuration names the
 input, the output and the specs. Every example on this page runs against
-this one, saved as `bank.toml`:
+this one, saved as `job.toml`:
 
 ```toml
 input = "ticks.parquet"      # read a chunk at a time; the extension names the format
@@ -50,7 +51,9 @@ output = "fitted.parquet"    # the input's columns, plus one column per spec
 name = "ridge"               # the name of the spec's output column
 targets = ["y"]              # or a table: { column = "p", name = "price" }, as po.target
 features = ["x0"]
-half_life = 500.0            # in rows, since the spec names no clock column
+clock = "t"                  # the clock column, which lets a resumed run tell the rows it has learned
+half_life = 500.0            # in units of t
+gap_cap = 300.0              # the longest step of t that decays the fit
 min_weight = 5.0             # the floor, in weight_sum units, below which no prediction is made
 [specs.model]
 type = "ewridge"
@@ -73,7 +76,7 @@ embargo short of its window. It names each spec's output fields as
 `<spec>.<field>`:
 
 ```sh
-online --config bank.toml --dry-run
+online --config job.toml --dry-run
 ```
 
 ```text
@@ -97,7 +100,7 @@ run can find. The first line is the progress, rewritten in place as each
 chunk is read, and `--quiet` turns it off:
 
 ```sh
-online --config bank.toml
+online --config job.toml
 ```
 
 ```text
@@ -109,10 +112,12 @@ wrote 400 rows (1 chunks) to fitted.parquet
 
 **`--save-state` saves the bank when the run ends, and `--load-state` starts a
 run from a saved one.** One file can serve as both, so a run resumes from
-the state a previous run left and saves over it:
+the state a previous run left and saves over it. Here `run.state` holds
+what the spec learned from `ticks.parquet`, and the run learns on through
+`today.parquet`, the 400 rows that follow:
 
 ```sh
-online --config bank.toml --load-state run.state --save-state run.state
+online --config job.toml --input today.parquet --load-state run.state --save-state run.state
 ```
 
 ```text
@@ -128,23 +133,40 @@ file is the one a query's `load_state` and `save_state` read and write on
 the same whichever wrote them
 ([Saving, loading and serving](../README.md#saving-loading-and-serving)).
 
-**Input that overlaps the state is refused, with a clock column, unless
-`--skip-learned` drops the overlap.** A rerun steps every group's clock
-back, and the run stops at the first row it would learn twice.
-`--skip-learned` (the TOML key `skip_learned`) drops the rows the state has
-learned, as Python's `ModelBank.skip_learned` does. In every spec that
-reads a clock, it keeps a row whose clock is after its group's last learned
-one, a row of a group the state has not seen, and a row with a null clock.
-A row at its group's last clock counts as learned. It needs `--load-state`, and a spec that reads a clock:
-the configuration above names none, so it refuses `--skip-learned`, since
-with no clock there is nothing to compare and an overlap is learned twice.
-With a clock, `--load-state run.state --skip-learned --save-state
-run.state` reruns a day that overlaps the state and learns each row once.
+**Input that overlaps the state is refused unless `--skip-learned` drops
+the overlap.** A rerun steps the clock back, and the run stops at the first
+row it would learn twice. `--skip-learned` (the TOML key `skip_learned`)
+drops the rows the state has learned, as Python's
+`ModelBank.skip_learned` does. In every spec that reads a clock, it keeps
+a row whose clock is after its group's last learned one, a row of a group
+the state has not seen, and a row with a null clock. A row at its group's
+last clock counts as learned. It needs `--load-state`, and a spec that
+reads a clock, since with no clock there is nothing to compare, and the
+overlap would be learned twice. Here the second run feeds `today.parquet`
+again, which the first has just learned, and learns none of it twice:
+
+```sh
+online --config job.toml --input today.parquet --load-state run.state --save-state run.state
+online --config job.toml --input today.parquet --load-state run.state --save-state run.state --skip-learned
+```
+
+```text
+400 rows in 1 chunks
+wrote 400 rows (1 chunks) to fitted.parquet
+saved state to run.state
+
+wrote 0 rows (0 chunks) to fitted.parquet
+saved state to run.state
+```
+
+The second run keeps no row: its progress line is empty, it writes an
+output with no rows, and it saves the state it loaded, byte for byte. Without `--skip-learned` it would stop
+at its first row, whose clock is 399 behind the state's last.
 
 **`--predict` scores against the resumed state and learns nothing:**
 
 ```sh
-online --config bank.toml --load-state run.state --predict --input today.parquet
+online --config job.toml --load-state run.state --predict --input today.parquet
 ```
 
 ```text
@@ -163,7 +185,7 @@ new to save.
 running sums of a fit, has no use for it:
 
 ```sh
-online --config bank.toml --no-output --save-state gram.state
+online --config job.toml --no-output --save-state gram.state
 ```
 
 ```text
@@ -270,8 +292,8 @@ Read and write any of the four formats. The extension decides, unless
 extension does not say needs one:
 
 ```sh
-online --config bank.toml --input today.csv --output scored.ndjson
-online --config bank.toml --input feed.dat --input-format ipc --output out.parquet
+online --config job.toml --input today.csv --output scored.ndjson
+online --config job.toml --input feed.dat --input-format ipc --output out.parquet
 ```
 
 ```text
@@ -376,16 +398,17 @@ features, parquet in and out: the same measurement as the README's
 
 | what you run | 3M rows | 12M rows |
 |---|---:|---:|
-| `online --config` | 0.73 GB | 0.75 GB |
-| `online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | | 0.15 GB |
+| `online --config` | 0.74 GB | 0.77 GB |
+| `online --config`, with `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.24 GB | 0.24 GB |
 
 It is flat: the bank's memory does not grow with the rows, and this
 process keeps none of the freed pages the Python surfaces in the README's
 table hold on to as they run longer. Nearly all of it is Polars reading
-ahead in the parquet file. With
-`POLARS_ROW_GROUP_PREFETCH_SIZE=1`, a run takes 0.15 GB at the same
-speed. [docs/PERFORMANCE.md](PERFORMANCE.md) §11 has these measurements,
-and §26 re-measures the command line, CSV and NDJSON included.
+ahead in the parquet file, and with
+`POLARS_ROW_GROUP_PREFETCH_SIZE=1` a run takes 0.24 GB.
+`scripts/memory_bench.py` makes these measurements, on Polars 2.0.0 and 14
+cores, and [docs/PERFORMANCE.md](PERFORMANCE.md) §26 re-measures the command
+line, CSV and NDJSON included.
 
 ### The pipeline and its threads
 
@@ -414,7 +437,7 @@ smaller chunks report them more often. Under `coef_every` or
 `max_rows_between_coefs` they do not move:
 
 ```sh
-online --config bank.toml --chunk-size 7 --output small-chunks.parquet
+online --config job.toml --chunk-size 7 --output small-chunks.parquet
 ```
 
 ```text

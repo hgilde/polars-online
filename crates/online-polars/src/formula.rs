@@ -177,6 +177,41 @@ const CALLS: &[(&str, usize)] = &[
     ("alias", 2),
 ];
 
+/// What a formula reads around the window operators, in the words a reader
+/// looks for, each with the nodes it stands for. The refusal names these
+/// words; a unit test holds their nodes to `CALLS` with `col` and `lit`, and
+/// `tests/test_windows.py` holds this list to Python's `ACCEPTED`, so the
+/// message cannot leave out a node that is read (task 238).
+const ACCEPTED: &[(&str, &[&str])] = &[
+    ("columns", &["col"]),
+    ("literals", &["lit"]),
+    ("arithmetic", &["+", "-", "*", "/"]),
+    ("negation", &["neg"]),
+    ("comparisons", &["==", "!=", "<", "<=", ">", ">="]),
+    ("& and |", &["&", "|"]),
+    ("log", &["log"]),
+    ("exp", &["exp"]),
+    ("abs", &["abs"]),
+    ("sqrt", &["sqrt"]),
+    ("pow", &["**"]),
+    ("clip", &["clip"]),
+    ("fill_null", &["fill_null"]),
+    ("is_null", &["is_null"]),
+    ("is_not_null", &["is_not_null"]),
+    ("when/then/otherwise", &["when"]),
+    ("cast", &["cast"]),
+    ("alias", &["alias"]),
+];
+
+/// The words of `ACCEPTED` as one English list.
+fn accepted_text() -> String {
+    let words: Vec<&str> = ACCEPTED.iter().map(|(w, _)| *w).collect();
+    match words.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => words.concat(),
+    }
+}
+
 /// The dtypes a `cast` may name, as Polars spells them. `Date` and `Time`
 /// are how a date or time-of-day literal keeps its dtype: Python carries one
 /// as `["cast", ["lit", n], "Date"]`, `n` the days since 1970 (for `Time`,
@@ -442,10 +477,10 @@ impl Node {
                 Ok(Node::Op(op))
             }
             other => Err(format!(
-                "formula node {other:?} is not read: a formula is element-wise, from columns, \
-                 literals, arithmetic, comparisons, log/exp/abs/sqrt/clip/fill_null, when/then, \
-                 cast and alias over the window operators; a shift, a cumulative or rolling \
-                 function or an aggregation would depend on the chunking"
+                "formula node {other:?} is not read: a formula is element-wise, from {} over \
+                 the window operators; a shift, a cumulative or rolling function or an \
+                 aggregation would depend on the chunking",
+                accepted_text()
             )),
         }
     }
@@ -889,6 +924,31 @@ mod tests {
             .alias("out");
         let got = df.lazy().select([e]).collect().unwrap();
         assert_eq!(got.column("out").unwrap().f64().unwrap().get(0), Some(0.25));
+    }
+
+    /// The refusal's list of what is read names every node that is read,
+    /// and nothing else: it once left out `pow`, negation, `&`, `|`,
+    /// `is_null` and `is_not_null` (task 238).
+    #[test]
+    fn the_refusal_lists_every_node_that_is_read() {
+        let mut listed: Vec<&str> = ACCEPTED
+            .iter()
+            .flat_map(|(_, n)| n.iter().copied())
+            .collect();
+        let mut read: Vec<&str> = CALLS.iter().map(|(n, _)| *n).collect();
+        read.extend(["col", "lit"]);
+        listed.sort_unstable();
+        read.sort_unstable();
+        assert_eq!(listed, read);
+        let err = Node::from_json(&json!(["shift", ["col", "a"]])).unwrap_err();
+        assert!(
+            err.contains(
+                "from columns, literals, arithmetic, negation, comparisons, & and |, log, exp, \
+                 abs, sqrt, pow, clip, fill_null, is_null, is_not_null, when/then/otherwise, \
+                 cast and alias over"
+            ),
+            "{err}"
+        );
     }
 
     /// What is not element-wise, or not a formula at all, is refused by

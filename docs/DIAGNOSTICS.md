@@ -524,11 +524,13 @@ nulls' shares below.
 weights `Σω²` is the row count `r`, so `cusum · sqrt(r)` is their CUSUM
 path, read against the 5% boundary `±0.948 (sqrt(T) + 2r / sqrt(T))` over
 a run of `T` rows. `T` is the length of the run being tested, so a monitor
-fixes it in advance as the horizon it will watch. On 200 streams of 3,000
-rows with an intercept break of half a noise sd at row 1,500, the CUSUM
-crossed on every one, 244 rows after the break on the median. It crossed
-on 3.5% of the streams with no break, where statsmodels' own crossed on
-5.0%, and found the breaks 277 rows after.
+fixes it in advance as the horizon it will watch. On 1,000 streams of
+3,000 rows with an intercept break of half a noise sd at row 1,500, the
+CUSUM crossed on every one, 236 rows after the break on the median, and
+statsmodels' own crossed 241 rows after. On the same streams with no
+break, both crossed on 6.0% of them, within about one standard error, 0.75
+points, of the boundary's 5%. `scripts/diagnostics_rates.py run_once`
+makes these streams and counts the crossings.
 
 **The CUSUM of squares is not Brown, Durbin and Evans' CUSUM of squares.**
 Theirs, `s_r`, is the share of a whole run's squares that fell in its
@@ -604,14 +606,16 @@ Beside `pa` it held on every clean row, whose predictions here were not
 calibrated.
 
 Beside a fit at a half-life of 200, each flag found its break as below.
-The breaks are on 200 streams of 3,000 rows, at row 1,500, and the rows
-flagged with no break are on 40 streams of 25,000 rows:
+The breaks are on 200 streams of 3,000 rows, at row 1,500. The rows
+flagged with no break are on 200 streams of 25,000 rows, the Gaussian
+streams of [Are its tails heavy?](#are-its-tails-heavy), made by
+`scripts/diagnostics_rates.py windowed`:
 
 | flag | the breaks it found | median delay | rows flagged with no break |
 |---|---|---:|---:|
-| `\|cusum\| > 3` | every intercept break | 62 rows | 0.24% |
-| `\|cusum_sq\| > 3` | every variance break | 17 rows | 0.22% |
-| `break_wald > 21.1`, `chi2(3)`'s 0.01% value | every slope break | 102 rows | 0.025% |
+| `\|cusum\| > 3` | every intercept break | 62 rows | 0.31% |
+| `\|cusum_sq\| > 3` | every variance break | 17 rows | 0.31% |
+| `break_wald > 21.1`, `chi2(3)`'s 0.01% value | every slope break | 102 rows | 0.011% |
 
 A normal variable passes 3 on 0.27% of draws. Not divided by their
 null's share, the two CUSUMs held on 0.002% and 0.011% of the rows with
@@ -637,9 +641,11 @@ a half-life of 20 its mean was 20.7, for `chi2(21)`'s 21.
 
 **The CUSUM cannot see a slope that moves on a feature centred at zero.**
 The residuals of the old fit on the new relationship are `(b_new − b_old)
-· x + noise`, whose mean is zero when `x`'s mean is. Run once over 200
-streams, the CUSUM crossed on 2.5% of streams whose slope moved, the same
-as with no break. `break_wald` exists for this case.
+· x + noise`, whose mean is zero when `x`'s mean is. Run once over the
+same 1,000 streams as the intercept breaks above, with `x0`'s slope rising
+by half at row 1,500, the CUSUM crossed on 6.5% of them, against 6.0% of
+the streams with no break: within one standard error of each other.
+`break_wald` exists for this case.
 
 **`drift` sees a rise in the residuals' level, and little else.** It is
 scaled by `sigma`, which adapts to a larger spread within a half-life. Beside
@@ -1144,28 +1150,34 @@ are more common there, and nothing has broken.
 | threshold | `jarque_bera > 5.99`: 4.7% to 5.0% of the rows of Gaussian residuals on 200 streams, and every row of Student's t with 5 degrees of freedom |
 | cost, models | 157 ns a row at 5 features; the ten linear models |
 
-**`drift_threshold` is set against the residuals' kurtosis.** On 40
-streams of 25,000 rows at a half-life of 200, read as the mean of
-`kurtosis` over each stream, the default threshold of 20 flagged:
+**`drift_threshold` is set against the residuals' kurtosis.** On 200
+streams of 25,000 rows at a half-life of 200, `y = 0.5 + x0 − x1` plus
+noise, `drift` flagged as below. `kurtosis` is read as its mean over each
+stream, averaged over the streams.
+`scripts/diagnostics_rates.py windowed` makes the streams and every figure
+in this section's tables:
 
 | noise | mean `kurtosis` | flags per 100,000 rows at 20 | at 30 | at 50 | at 80 |
 |---|---:|---:|---:|---:|---:|
-| Gaussian, Student's t with 10, 6 or 5 degrees of freedom | under 4 | 0 | 0 | 0 | 0 |
-| Student's t, 4 degrees of freedom | 8.6 | 0.4 | 0 | 0 | 0 |
-| Student's t, 3 degrees of freedom | 36 | 6.3 | 2.1 | 0.4 | 0 |
+| Gaussian, Student's t with 10 or 6 degrees of freedom | under 3 | 0 | 0 | 0 | 0 |
+| Student's t, 5 degrees of freedom | 3.9 | 0.1 | 0 | 0 | 0 |
+| Student's t, 4 degrees of freedom | 8.8 | 0.8 | 0.1 | 0 | 0 |
+| Student's t, 3 degrees of freedom | 30 | 5.6 | 1.6 | 0.3 | 0.1 |
 
 **The CUSUM of squares reads the tails it is given.** It standardizes
 the sum of `z² − 1` by the measured variance of `z²`, `E[z⁴] − 1`, and
 not by a Gaussian's 2. Under an excess kurtosis `κ` that variance is
-`2 + κ`. On 40 streams of 25,000 rows at a half-life of 200,
-`|cusum_sq| > 3` held on these shares of rows:
+`2 + κ`. On the same 200 streams, `|cusum_sq| > 3` held on these
+shares of rows. The bank writes the first column; the second is the same
+statistic rebuilt from `studentized` with 2 in its place, a rebuild that
+gives the bank's own `cusum_sq` back within 1e-11:
 
 | noise | over `E[z⁴] − 1` | over 2 |
 |---|---:|---:|
-| Gaussian | 0.31% | 0.01% |
-| Student's t, 5 degrees of freedom | 0.49% | 2.8% |
-| Student's t, 4 degrees of freedom | 0.63% | 6.8% |
-| Student's t, 3 degrees of freedom | 1.0% | 19% |
+| Gaussian | 0.31% | 0.42% |
+| Student's t, 5 degrees of freedom | 0.57% | 8.6% |
+| Student's t, 4 degrees of freedom | 0.77% | 15% |
+| Student's t, 3 degrees of freedom | 1.0% | 31% |
 
 On the same streams `|cusum| > 3` held on 0.31% to 0.75% of rows, and
 `break_wald > 21.1` on 0.11% or fewer, even with 3 degrees of freedom.
@@ -1174,9 +1186,9 @@ much that a change of spread takes longer to stand out from it.
 
 **A windowed kurtosis is itself noisy under heavy tails.** The kurtosis of
 Student's t with 3 degrees of freedom is infinite, so a windowed estimate
-never settles. Over the rows of those 40 streams its median was 13 and its
-mean 32. Read the mean over a long stable stretch, as the measurements in
-the table did.
+never settles. Over the rows of those 200 streams its median was 11.5,
+and its mean 30, the table's figure. Read the mean over a long stable
+stretch, as the measurements in the table did.
 
 The recipe measures the tails and `sigma` over a stretch known to be
 stable, and sets `drift_threshold` from them. Then it counts each
@@ -1241,14 +1253,15 @@ sigma past 2x        1270 flags before the break, first after it 126 rows in
 
 The stretch reads an excess kurtosis of 16.6, which calls for a
 `drift_threshold` of 50. At the default 20, `drift` flagged 11 of the
-200,000 stable rows, and at 50 it flagged one. Neither found the break: when
+200,000 stable rows, the table's rate of 5.6 per 100,000, and at 50 it
+flagged one. Neither found the break: when
 the noise triples, `sigma` triples with it, and `drift` scores each
 residual against `sigma`. Its first flag after the break at 20 is a false alarm,
 15,011 rows in. The CUSUM of squares flagged 2,044 of the stable rows,
 1.0% of them, and found the break only 4,717 rows in. With an infinite
 fourth moment, the squares' own spread swamps a tripling for a long time.
-Over 2, a Gaussian's variance of `z²`, it had flagged 17% of the stable
-rows and found the break 18 rows in. `sigma` itself, past twice its level
+Over 2, a Gaussian's variance of `z²`, it would have flagged 29% of the
+stable rows, so its flag 4 rows after the break would have said nothing. `sigma` itself, past twice its level
 over the stretch, flagged 0.6% of the stable rows and found the break 126
 rows in.
 

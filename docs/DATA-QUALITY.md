@@ -1116,8 +1116,11 @@ for several half-lives, the more the larger `k` is. When the residuals have infi
 Student's t with 2 degrees of freedom does, `sigma` never settles. A
 Gaussian interval then over-covers in calm stretches, since `sigma` is
 inflated by the last large row. `drift` fires on stable data whose tails
-are heavier than its threshold allows: Student's t with 3 degrees of
-freedom flagged 3 to 10 rows in every 200,000 at `drift_threshold=20`. A
+are heavier than its threshold allows: on ten streams of 200,000 stable
+rows with Student's t noise of 3 degrees of freedom, `drift_threshold=20`
+flagged 7 to 14 rows in each, 11 on average
+([Are its tails heavy?](DIAGNOSTICS.md#are-its-tails-heavy) has the
+thresholds that flag fewer). A
 conformal interval tracks a quantile of `|resid|` directly, so its
 long-run coverage is the one asked for whatever the tails (Vovk, Gammerman and
 Shafer 2005).

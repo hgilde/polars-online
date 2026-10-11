@@ -695,16 +695,16 @@ def lightgbm_dataset(
          - seconds
          - peak, GB
        * - this, streamed in two passes
-         - 1.7
+         - 1.68
          - 1.7
        * - this, ``in_memory``
          - 1.45
          - 2.9
        * - LightGBM's own route from a collected Polars frame
-         - 1.5
+         - 1.54
          - 8.9
        * - LightGBM's ``Sequence``
-         - 2.2
+         - 2.17
          - 2.7
 
     .. rubric:: Parameters

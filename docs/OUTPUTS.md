@@ -343,7 +343,7 @@ The fields of `po.spec.kmeans("m", features=["x0", "x1"], half_life=50.0, k=2)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `cluster` | `i32` | the nearest cluster's label, read before the row is learned from | while withheld, and before seeding, which waits for `warm_rows` learned rows (at least `k`; by default 500, or `k` where that is more) |
+| `cluster` | `i64` | the nearest cluster's label, read before the row is learned from | while withheld, and before seeding, which waits for `warm_rows` learned rows (at least `k`; by default 500, or `k` where that is more) |
 | `dist` | `f64` | distance from the row to the centre `cluster` was read from | where `cluster` is |
 | `dist_second` | `f64` | distance to the second-nearest centre, so `dist_second - dist` is the margin | where `cluster` is |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |

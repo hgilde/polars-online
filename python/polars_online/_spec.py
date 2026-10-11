@@ -915,8 +915,8 @@ def ewridge(
 
         W_j' = lam * W_j + w
         S_j' = (lam * W_j * S_j + w * z z') / W_j'
-        r_j' = (lam * W_j * r_j + w * z * y_j) / W_j'
-        on the schedule:  (S_j + ridge * D) beta_j = r_j      D = I with a 0 in the intercept slot
+        eta_j' = (lam * W_j * eta_j + w * z * y_j) / W_j'
+        on the schedule:  (S_j + ridge * D) beta_j = eta_j      D = I with a 0 in the intercept slot
 
     The sums are means, not totals, so they stay bounded over a stream of any
     length. The second moments are kept centred (a weighted Welford update),
@@ -1376,10 +1376,11 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``dtype``
         The type the bank declares to polars before the first row is read:
         ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum``
-        (``withheld_reason``), ``i32`` (``kmeans``' cluster and ``hmm``'s
-        state, ``micro``'s live counts), ``i64`` (a count, a row index or an
-        id, and ``micro``'s cluster label), or ``clock`` (``scored_clock`` and
-        ``learned_clock``, in the clock column's own type).
+        (``withheld_reason``), ``i32`` (``hmm``'s state, ``micro``'s live
+        counts), ``i64`` (a count, a row index or an id, and the cluster
+        label of ``kmeans`` and ``micro`` alike), or ``clock``
+        (``scored_clock`` and ``learned_clock``, in the clock column's own
+        type).
 
     This is how to reach a field without constructing its name; the string
     grammar (:mod:`polars_online.spec`, "What a spec writes") stays an
@@ -1922,7 +1923,7 @@ def kalman(
 
     .. code-block:: text
 
-        b_j <- Phi b_j                     Phi = diag(2 ** (-d / r_i))      the reversion
+        b_j <- Phi b_j                     Phi = diag(2 ** (-d / kappa_i))  the reversion
         P_j <- Phi P_j Phi                                                  every row
         D_j <- D_j + d                     the clock since P_j's last observation
         P_j <- P_j + Q * D_j ** 2, D_j <- 0                                 the drift, on a row
@@ -2065,24 +2066,25 @@ def kalman(
         <polars_online.ops.ewm_mean>` and :func:`polars_online.ewm_std
         <polars_online.ops.ewm_std>`.
     ``revert_half_life``
-        A reversion half-life ``r_i`` per slot, above 0: between observations
-        the coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a
+        A reversion half-life ``kappa_i`` per slot, above 0: between
+        observations the coefficient shrinks toward zero by ``2 ** (-d /
+        kappa_i)``, so a
         coefficient no row has supported for a while is forgotten rather than
         carried. Default ``inf``, the random walk, which adds nothing. A scalar
         applies to every slot, the intercept included; a list gives one per
-        slot, intercept first, and ``[inf, r, r]`` leaves the intercept a
+        slot, intercept first, and ``[inf, h, h]`` leaves the intercept a
         random walk. The pull is toward zero in the standardized coordinates
         when ``standardize`` is on: a slope toward "no effect", the intercept
         toward "the target averages zero". A reverting slot's process noise for
         an observation ``D`` after the last is ``q_i * g_i(D) ** 2``, with
-        ``g_i(D) = (1 - 2 ** (-D / r_i)) / theta_i`` and
-        ``theta_i = ln 2 / r_i``. That is ``q_i * D ** 2`` for a gap well under
-        ``r_i``, and never more than ``q_i / theta_i ** 2``, so a coefficient's
+        ``g_i(D) = (1 - 2 ** (-D / kappa_i)) / theta_i`` and
+        ``theta_i = ln 2 / kappa_i``. That is ``q_i * D ** 2`` for a gap well
+        under ``kappa_i``, and never more than ``q_i / theta_i ** 2``, so a coefficient's
         uncertainty stays bounded across a run of rows that observe nothing. At
         observations one clock unit apart that is short of ``q_i`` by about
-        ``ln 2 / r_i``. A reverting slot settles, at observations ``D`` apart,
+        ``ln 2 / kappa_i``. A reverting slot settles, at observations ``D`` apart,
         at the prior variance ``q_i * g_i(D) ** 2 / (1 - phi_i ** 2)`` with
-        ``phi_i = 2 ** (-D / r_i)``, a stationary AR(1) instead of an unbounded
+        ``phi_i = 2 ** (-D / kappa_i)``, a stationary AR(1) instead of an unbounded
         walk. The reversion runs on every row, a row that observes nothing
         included, being the same over a gap however it is cut. A prediction
         propagates the state by the same ``Phi`` over the row's clock gap.
@@ -2144,7 +2146,7 @@ def kalman(
     describes them. :meth:`polars_online.ModelBank.predict` moves the coefficients
     by ``Phi`` over the clock distance from the last learned row, capped by
     ``gap_cap``. So however far past the data, a coefficient has shrunk by
-    ``2 ** (-gap_cap / r_i)`` at most, and the prediction is the intercept
+    ``2 ** (-gap_cap / kappa_i)`` at most, and the prediction is the intercept
     alone only where ``gap_cap`` spans several of the slopes' reversion
     half-lives and the intercept's is ``inf``.
 
@@ -2213,13 +2215,13 @@ def huber(
 
     .. rubric:: The fit
 
-    With ``d = huber_delta`` and ``s`` the EW root mean square of the target's
-    residuals, about 0:
+    With ``e`` the row's residual, ``d = huber_delta`` and ``s`` the EW root
+    mean square of the target's residuals, about 0:
 
     .. code-block:: text
 
-        w_robust = 1              if |r| <= d * s
-                 = d * s / |r|    otherwise
+        w_robust = 1              if |e| <= d * s
+                 = d * s / |e|    otherwise
         the ewridge update, at weight w * w_robust
 
     The weights are per target, so the sums are per target here (one accumulator
@@ -2345,15 +2347,15 @@ def quantile(
 
     .. rubric:: The fit
 
-    With ``psi(r) = tau - 1{r < 0}``, ``s`` the EW root mean square of the
-    target's residuals, about 0, ``w`` the row's weight and ``h`` the band's
-    half-width:
+    With ``e`` the row's residual, ``psi(e) = tau - 1{e < 0}``, ``s`` the EW
+    root mean square of the target's residuals, about 0, ``w`` the row's
+    weight and ``h`` the band's half-width:
 
     .. code-block:: text
 
-        |r| <  h:  a least-squares row, with target y + 2h (tau - 1/2)
-        |r| >= h:  no weight in the sums; w * 2h * psi(r) * z into the cross-moment,
-                   over the band's weight, capped at |r| / (1 + u' A^-1 u)
+        |e| <  h:  a least-squares row, with target y + 2h (tau - 1/2)
+        |e| >= h:  no weight in the sums; w * 2h * psi(e) * z into the cross-moment,
+                   over the band's weight, capped at |e| / (1 + u' A^-1 u)
 
     The cap reads the row's full leverage against the band's system ``A``, with
     ``u`` the row's deviation from the means: a nudge brings the row's own
@@ -2361,9 +2363,9 @@ def quantile(
 
     The smoothed loss has the same curvature on either side of the fit, so the
     rows' own history cancels and the fit converges to the quantile regression.
-    Reweighting the rows by the check loss's IRLS weight, ``psi(r) / r``, does
+    Reweighting the rows by the check loss's IRLS weight, ``psi(e) / e``, does
     not converge to it. That weight is the secant of this step where the step
-    is its tangent, and it is unbounded as ``r`` goes to zero; a row whose
+    is its tangent, and it is unbounded as ``e`` goes to zero; a row whose
     prior residual happened to be near zero then holds the fit near the fit it
     was scored by. Measured at the median of a skewed noise after 20 000 rows
     against ``statsmodels``' ``QuantReg``, the step is 0.005 away, inside
@@ -3055,9 +3057,10 @@ def sgd(
     zero coefficients, so its first residuals are the target's whole level.
     Beyond the cut the Huber gradient is clipped, not zero, so a cut those
     residuals widen still lets every row teach. Inside the tube the gradient is
-    zero. A tube drawn in the residual's std on a target at 1,000 with a spread
-    of 2 would be about 100 wide and hold every row. Without decay it would
-    never narrow, and the fit would stop where it stood.
+    zero. On a target at 1,000 with a spread of 2, the first residuals put the
+    residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
+    about 100 wide and hold every row. Without decay it would never narrow,
+    and the fit would stop where it stood.
 
     .. rubric:: Parameters
 
@@ -3442,9 +3445,10 @@ def pa(
 
     ``sigma`` is not the residual's std, as :func:`huber`'s cut is. The fit
     starts from zero coefficients, so its first residuals are the target's
-    whole level. On a target at 1,000 with a spread of 2, a tube drawn from
-    them would be about 100 wide and hold every row. Without decay it would
-    never narrow: R² -52 at a half-life of 1e9.
+    whole level. On a target at 1,000 with a spread of 2 they put the
+    residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
+    about 100 wide and hold every row. Without decay it would never narrow:
+    R² -52 at a half-life of 1e9.
 
     The coefficients keep no accumulators, so there is nothing in them for the
     clock to decay: each step fully satisfies the current row, and older rows
@@ -3864,7 +3868,7 @@ def kmeans(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#kmeans>`_):
 
     ``cluster``
-        The nearest centre's index (``i32``), before the row is learned from;
+        The nearest centre's index (``i64``), before the row is learned from;
         null until seeding.
     ``dist``, ``dist_second``
         The distance to that centre, and to the runner-up, the second-nearest
@@ -3951,7 +3955,7 @@ def micro(
 
     .. rubric:: The recursion
 
-    A summary is ``(n, c, r2)``: decayed weight, centre, and the EW mean
+    A summary is ``(n, c, nu2)``: decayed weight, centre, and the EW mean
     squared distance of its rows from the centre (DenStream's radius, with the
     fading function being the decay). Distances are measured in the metric
     ``mw_i = 1 / var_i`` when ``standardize`` (the default), so ``eps`` is a
@@ -3962,10 +3966,10 @@ def micro(
 
         n_j <- lam n_j                                   every summary
         j   = the nearest potential summary, if absorbing a row of the mean weight keeps
-              a r2_j + a b |x - c_j|^2 <= E,   a = n_j/(n_j+w_bar), b = w_bar/(n_j+w_bar)
+              a nu2_j + a b |x - c_j|^2 <= E,  a = n_j/(n_j+w_bar), b = w_bar/(n_j+w_bar)
               else the nearest outlier summary by the same test
               else a new summary at x with the next id
-        n_j <- n_j + w,  c_j <- c_j + w/n_j (x - c_j),  r2_j <- min(., E)
+        n_j <- n_j + w,  c_j <- c_j + w/n_j (x - c_j),  nu2_j <- min(., E)
 
     A summary is potential (established) once ``n >= beta_mu * w_bar`` and
     outlier below, ``w_bar`` the EW mean weight of the rows learned from. A new
@@ -4166,10 +4170,10 @@ def ew_class(
     .. code-block:: text
 
         pi_c = n_c / sum_c' n_c'
-        r_c  = precision_prior * s_c         s_c: the class's prior scale
-        M_c  = C_c + r_c I                                  ("full", QDA)
-        M    = sum_c pi_c (C_c + r_c I)                     ("shared", LDA)
-        M_c  = diag(C_c) + r_c I                        ("diagonal", naive Bayes)
+        omega_c = precision_prior * s_c      s_c: the class's prior scale
+        M_c  = C_c + omega_c I                              ("full", QDA)
+        M    = sum_c pi_c (C_c + omega_c I)                 ("shared", LDA)
+        M_c  = diag(C_c) + omega_c I                    ("diagonal", naive Bayes)
         l_c  = ln pi_c - 1/2 ln det M_c - 1/2 (x - mu_c)' M_c^-1 (x - mu_c)
         p_c  = exp(l_c - max_c' l_c') / sum_c' exp(l_c' - max l)
 
@@ -4866,13 +4870,13 @@ def deco(
     .. rubric:: The recursion
 
     The row is standardised against the pre-row means and variances of an EW
-    accumulator, ``r_i = (x_i - m_i) / sqrt(v_i)``. With ``S1 = sum(r)`` and
-    ``S2 = sum(r * r)`` over the ``n`` features the row's estimate is their
-    Lemma 2.3:
+    accumulator, ``zeta_i = (x_i - m_i) / sqrt(v_i)``. With ``S1 = sum(zeta)``
+    and ``S2 = sum(zeta * zeta)`` over the ``n`` features the row's estimate
+    is their Lemma 2.3:
 
     .. code-block:: text
 
-        u = (S1**2 - S2) / ((n - 1) * S2)      = mean_{i != j} r_i r_j / mean_i r_i**2
+        u = (S1**2 - S2) / ((n - 1) * S2)      = mean_{i != j} zeta_i zeta_j / mean_i zeta_i**2
 
     which lies in ``[-1 / (n - 1), 1]``, both ends reached. Between two blocks
     ``A`` and ``B`` the estimate is ``u_AB = S1_A S1_B / sqrt(n_A n_B S2_A
@@ -4905,8 +4909,8 @@ def deco(
     permits ``alpha + beta`` slightly above 1 under numerical bounds, where
     this refuses it. The paper also notes that ``u`` is a downward biased
     estimate of the equicorrelation (``E[u]`` is about 0.20 for a true 0.30
-    at ``m = 6``). It offers an alternative, ``1 - (1 / (n - 1)) * sum((r_i -
-    rbar)**2)``, which this does not compute. Use ``u`` as a signal that
+    at ``m = 6``). It offers an alternative, ``1 - (1 / (n - 1)) *
+    sum((zeta_i - zeta_bar)**2)``, which this does not compute. Use ``u`` as a signal that
     moves with the market's correlation, not as the correlation. ``rho`` is
     not an ``ew_cov``'s ``corr`` over the columns, since the mean of a ratio
     is not the ratio of means.
