@@ -195,8 +195,10 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// audit keeps each column's smallest change and the changes at it; a file
 /// from before it is refit. **60 since task 232** (the same day): under a
 /// horizon the diagnostics keep Newey and West's sums; a file from before
-/// it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 60;
+/// it is refit. **61 since review round 7** (2026-10-11, A-2): a quantile
+/// fit's breaks keep its residuals' lag products under a horizon beside
+/// its indicators'; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 61;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.

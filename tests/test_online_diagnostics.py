@@ -1013,6 +1013,39 @@ def test_under_a_horizon_each_test_is_near_its_size(phi):
             assert (out["break_wald_y"].drop_nulls() > 7.815).mean() < 0.10
 
 
+def test_a_quantile_fits_break_wald_under_a_horizon_is_near_its_size():
+    """Under a horizon `break_wald`'s noise variance was scaled by the
+    long-run factor of the CUSUM's terms, on a quantile fit the
+    indicators', whose autocorrelation under an overlap is smaller than
+    the residuals' (the arcsine law), so the statistic ran large: on 30
+    quiet five-row look-ahead streams at a half-life of 200 it passed
+    `chi2(3)`'s 5% value on 10.8% of rows 1,500+ with a mean of 3.88, where
+    `ewridge` on the same streams read 5.9% and 3.05 (review round 7,
+    A-2). Scaled by the residuals' factor, the quantile fit reads about
+    the same rate and mean as `ewridge`."""
+    df = _look_ahead(30, 3_000, 5, 0.8, 21)
+    common = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=200.0,
+        group="g",
+        embargo=5.0,
+        min_weight=10.0,
+        emit_breaks=True,
+    )
+    rates = {}
+    for name, spec in (
+        ("ewridge", po.spec.ewridge("m", **common)),
+        ("quantile", po.spec.quantile("m", quantile=0.5, **common)),
+    ):
+        out = _run(df, spec).filter(pl.int_range(pl.len()).over("g") >= 1_500)
+        bw = out["break_wald_y"].drop_nulls()
+        rates[name] = (float((bw > 7.815).mean()), float(bw.mean()))
+    assert rates["ewridge"][0] < 0.08, rates
+    assert rates["quantile"][0] < rates["ewridge"][0] + 0.02, rates
+    assert rates["quantile"][1] < 3.4, rates
+
+
 # --- the nulls standardized (task 232 (4)) -----------------------------------
 
 

@@ -478,8 +478,14 @@ impl Checks {
                 put(v + 1, slot, b.cusum(cfg.cusum_null));
                 put(v + 2, slot, b.cusum_sq(cfg.cusum_sq_null));
                 // Under a horizon the noise's variance is the long-run one,
-                // read from the slot's own studentized residuals.
-                let long_run = if cfg.nw > 0 { b.long_run() } else { Some(1.0) };
+                // read from the slot's own studentized residuals -- on a
+                // quantile fit too, whose CUSUM sums indicators (review
+                // round 7, A-2).
+                let long_run = if cfg.nw > 0 {
+                    b.long_run_residuals()
+                } else {
+                    Some(1.0)
+                };
                 let wald = self.twin.get(slot / nc).and_then(|t| {
                     t.wald(cfg.combo_features.get(slot % nc)?, cfg.intercept, long_run?)
                 });

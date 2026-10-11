@@ -653,7 +653,12 @@ pub use window::{
 ///   RESET's, and `Breaks` the lag products of its studentized residuals
 ///   and their ring. Without a horizon none is written. Pre-1.0 no loader
 ///   is written.
-pub const SCHEMA_VERSION: u32 = 60;
+/// - 61 (2026-10-11, review round 7, A-2): on a quantile fit under a
+///   horizon, `Breaks` keeps the studentized residuals' lag products and
+///   their ring beside the indicators', which `break_wald`'s noise reads.
+///   Every other fit, and one without a horizon, writes neither. Pre-1.0
+///   no loader is written.
+pub const SCHEMA_VERSION: u32 = 61;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -677,6 +682,9 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
+/// **61 since review round 7** (2026-10-11, A-2): a quantile fit's
+/// residuals' lag products under a horizon; a state from before 61 is
+/// refused by its number, and the fixtures are regenerated at 61.
 /// **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums
 /// under a horizon; a state from before 60 is refused by its number, and
 /// the fixtures are regenerated at 60.
@@ -779,7 +787,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 60;
+pub const MIN_SCHEMA_VERSION: u32 = 61;
 
 #[cfg(test)]
 mod tests {
