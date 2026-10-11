@@ -653,6 +653,8 @@ def _names(code: str) -> tuple[set[str], list[str]]:
             stored.add(node.name)
         elif isinstance(node, ast.arg):
             stored.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:  # `except ValueError as e`
+            stored.add(node.name)
     return stored, loaded
 
 

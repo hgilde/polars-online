@@ -1,9 +1,15 @@
 # Windowed means, looking back or ahead
 
-Each operator of [`po.ops`](https://hgilde.github.io/polars-online/ops.html)
-returns a Polars expression. The examples run on `trades`, the quotes and
-trades built in [Example data](../README.md#example-data). The operators follow one set
-of rules in each of three uses:
+A window operator of [`po.ops`](https://hgilde.github.io/polars-online/ops.html)
+returns a Polars expression whose value on each row is computed over the
+rows near it on the clock: those before it, or those after it. A window
+that looks back makes a feature, such as the last minute's time-weighted
+mid. A window that looks ahead makes a target, such as the next minute's
+VWAP (volume-weighted average price). Each operator does the same work on
+a row however long its window, since it keeps running sums and never
+gathers the window's rows again, as Polars' `rolling` does
+([Window operators](../README.md#window-operators) has the timings). The
+operators follow one set of rules in each of three uses:
 
 | use | the call | subsection |
 |---|---|---|
@@ -11,9 +17,17 @@ of rules in each of three uses:
 | a look-ahead as the target a model learns, its windows computed inside the bank | a spec's `targets` | [Windows as a model's inputs and target](#windows-as-a-models-inputs-and-target) |
 | a `with_windows` run fed in parts, each resuming where the one before it stopped | `save_state=`, then `load_state=` | [Saving and resuming a window run](#saving-and-resuming-a-window-run) |
 
-Nine operators make the expressions. Each takes the same work on a row
-however long its window, while Polars' `rolling` gathers a window's rows
-again for every row ([Window operators](../README.md#window-operators)):
+**Every example on this page is a recipe: a complete program, with what it
+prints shown under it.** Most read `trades`, the quotes and trades that
+[Example data](../README.md#example-data) builds and saves as
+`trades.parquet`, and the line above each says which. Its `mid` is on every
+row, and `side`, `quantity` and `price` are null on a quote.
+`tests/test_windows_page.py` runs each recipe and holds what it prints to
+what is shown.
+
+Nine operators make the expressions. `half_life` and `window_size` are in
+the clock's units: numbers on a numeric clock, and durations (`"10s"`, a
+`timedelta`, `pl.duration`) on a temporal one:
 
 | operator | the window of row *t* | what it computes |
 |---|---|---|
@@ -24,9 +38,37 @@ again for every row ([Window operators](../README.md#window-operators)):
 | `po.ewm_var(x, ...)`, `po.ewm_std(x, ...)` | as for `po.ewm_mean`; they look back only | the variance about `po.ewm_mean`, each value weighed as the mean weighs it, and its square root. With `bias=False`, the default, the variance is corrected for the weights' number and inequality as Polars' `ewm_var` corrects it, so a window that one row's weight fills is null. On a clock that steps by 1 a row, with `half_life` in rows, they are Polars' `ewm_var` and `ewm_std` with `adjust=False` (Polars before 1.44 gave the first row 0.0 under `bias=False` where it now gives null, as these do). A window that holds one value gives 0 exactly |
 | `po.increment(x)` | back to the last row with a value, within the group and session | `x_t − x_{t−1}`: null on a session's first row and after a restart, and in seconds when `x` is a temporal column |
 
-Every operator except `po.increment` takes these keywords, `half_life` and
-`window_size` in the clock's units. `po.ewm_var` and `po.ewm_std` also take
-Polars' `bias`.
+**Each operator computes what the Polars function it is named after
+computes.** On one symbol's rows, where no gap cuts a window, the running
+mean is Polars' `ewm_mean_by`. An evenly weighted sum over the last minute
+(`half_life=float("inf")`) is Polars' `rolling_sum_by` over the same
+minute, on a stream whose stamps are distinct, as these are.
+This code uses `trades.parquet` from [Example data](../README.md#example-data):
+
+```python
+aaa = pl.read_parquet("trades.parquet").filter(pl.col("symbol") == "AAA")   # one symbol's quotes and trades
+aaa.write_parquet("aaa.parquet")
+ours = pl.scan_parquet("aaa.parquet").online.with_windows(
+    mean=po.ewm_mean("mid", half_life="5s"),                                 # every row since the stream began
+    volume=po.ewm_sum("quantity", half_life=float("inf"), window_size="1m"), # evenly weighted: the last minute's volume
+    clock="ts", gap_cap="5m",
+).collect()
+polars = aaa.with_columns(
+    mean=pl.col("mid").ewm_mean_by("ts", half_life="5s"),
+    volume=pl.col("quantity").fill_null(0.0).rolling_sum_by("ts", "1m"),    # a quote adds no volume
+)
+for name in ["mean", "volume"]:
+    print(f"{name}: largest difference from Polars {(ours[name] - polars[name]).abs().max():.12f}")
+```
+
+```text
+mean: largest difference from Polars 0.000000000000
+volume: largest difference from Polars 0.000000000000
+```
+
+Every operator except `po.increment` takes these keywords. `po.ewm_var`
+and `po.ewm_std` also take Polars' `bias`. Here `min_samples=3` nulls the
+first two rows of each symbol, whose windows hold fewer than three values.
 This code uses `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
@@ -38,7 +80,14 @@ mid_mean = po.ewm_mean(
     min_samples=3,      # the fewest rows with a value the window must hold; fewer give null
     partial="keep",     # what a window gives when a gap or a session change cuts it short
 )
-windowed_mid = pl.scan_parquet("trades.parquet").online.with_windows(mid_mean=mid_mean, clock="ts", gap_cap="5m", group="symbol").collect()
+windowed_mid = pl.scan_parquet("trades.parquet").online.with_windows(
+    mid_mean=mid_mean, clock="ts", gap_cap="5m", group="symbol",
+).collect()
+print(f"{windowed_mid.height} rows, {windowed_mid['mid_mean'].null_count()} of them null")
+```
+
+```text
+3000 rows, 4 of them null
 ```
 
 **A window holds the rows Polars' `rolling_*_by` would give it.** Windows
@@ -54,29 +103,83 @@ window that looks back has its value:
 | `"both"` | both ends | at the next distinct stamp | both ends |
 | `"none"` | neither end | as the stamp arrives | neither end |
 
+Counting the rows in each window shows the rule. An evenly weighted sum of
+a column of ones is the number of rows in the window. Five rows on a
+numeric clock, two of them at the stamp 1.0, with a window of 2:
+
+```python
+stamps = pl.DataFrame({"t": [0.0, 1.0, 1.0, 2.0, 3.5], "one": 1.0})
+counts = po.stream.with_windows(
+    stamps,
+    **{f"back_{c}": po.ewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c) for c in ["right", "left"]},
+    **{f"ahead_{c}": po.rewm_sum("one", half_life=float("inf"), window_size=2.0, closed=c) for c in ["right", "left"]},
+    clock="t", gap_cap=10.0,
+)
+show = lambda v: "null" if v is None else f"{v:.0f}"
+print("   t  back_right  back_left  ahead_right  ahead_left")
+for r in counts.iter_rows(named=True):
+    print(f"{r['t']:4.1f}  {show(r['back_right']):>10}  {show(r['back_left']):>9}"
+          f"  {show(r['ahead_right']):>11}  {show(r['ahead_left']):>10}")
+```
+
+```text
+   t  back_right  back_left  ahead_right  ahead_left
+ 0.0           1       null            3           3
+ 1.0           3          1            1           3
+ 1.0           3          1            1           3
+ 2.0           3          3         null        null
+ 3.5           2          1         null        null
+```
+
+Both rows at 1.0 get one window. Looking back under `"right"`, it is
+`(−1, 1]`: the row at 0.0 and both rows at 1.0. Under `"left"` it is
+`[−1, 1)`, the row at 0.0 alone, and the row at 0.0 has an empty window,
+so null. Looking ahead from 0.0 under `"right"`, `(0, 2]` holds both rows
+at 1.0 and the row at 2.0. The last two rows' windows ahead are still open
+when the input ends, so they are null.
+
 **Around the operators, write element-wise Polars,** since the formula is
 evaluated one chunk at a time:
 
 | | in a formula |
 |---|---|
-| allowed, around at least one operator | columns, literals, arithmetic, negation, comparisons, `log`, `exp`, `abs`, `sqrt`, `pow`, `clip`, `fill_null`, `is_null`, `is_not_null`, `when/then/otherwise`, `cast` and `alias` |
+| allowed, around at least one operator | columns, literals, arithmetic, negation, comparisons, `&` and `\|`, `log`, `exp`, `abs`, `sqrt`, `pow`, `clip`, `fill_null`, `is_null`, `is_not_null`, `when/then/otherwise`, `cast` and `alias` |
 | refused by name when the query is built, since each would depend on where a chunk ended | a `shift`, a cumulative or rolling function, `over` or an aggregation |
 | refused by name when the query is built: write it with Polars' own `with_columns` | a formula with no operator |
+
+This code uses `trades` from [Example data](../README.md#example-data):
+
+```python
+clock = dict(clock="ts", gap_cap="5m", group="symbol")
+lagged = po.ewm_mean("mid", half_life="5s").shift(1)       # reads the row before: a chunk's first row has none
+spread = pl.col("price") - pl.col("mid")                    # reads the row alone, and no operator
+for formula in [lagged, spread]:
+    try:
+        po.stream.with_windows(trades, out=formula, **clock)
+    except ValueError as e:
+        print(str(e).split(". ")[0])
+```
+
+```text
+a window formula is element-wise: columns, literals, arithmetic, comparisons, log/exp/abs/sqrt/pow/clip/fill_null/is_null, when/then/otherwise, cast and alias over the operators; the function 'Shift' is not read
+with_windows: 'out' holds no operator; a formula of the row alone is Polars' with_columns
+```
 
 **An operator's input can be a formula of the same kind, `po.increment`
 included, but not another operator.** So to window an operator's output,
 make it a column in one `with_windows` call, and window that column in a
 second. Here a rate of traded volume comes from a column of cumulative
-volume.
-This code uses `trades.parquet` from [Example data](../README.md#example-data):
+volume, as a feed prints it. Each symbol trades about 1.56 units a second
+over the whole stream, and the rate, read per second, sits near that.
+This code uses `trades` and `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
 volume = (
     pl.scan_parquet("trades.parquet")
-    .with_columns(cum_volume=pl.col("quantity").cum_sum().over("symbol"))   # a running volume, as a feed prints it: null on the quotes
+    .with_columns(cum_volume=pl.col("quantity").cum_sum().over("symbol"))   # a running volume: null on the quotes
     .online.with_windows(                                                    # the first call: an operator over an increment
-        volume_rate=po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m"),   # the volume traded per second
+        volume_rate=po.ewm_rate(po.increment("cum_volume"), half_life="30s", window_size="5m"),   # units traded per second
         **clock,
     )
     .online.with_windows(                                                    # the second call: that rate, windowed again
@@ -85,20 +188,29 @@ volume = (
     )
     .collect()
 )
+seconds = (trades["ts"].max() - trades["ts"].min()).total_seconds()
+print(f"units traded a second by each symbol, over the stream: {trades['quantity'].sum() / seconds / 2:.2f}")
+for symbol, rate, trend in volume.group_by("symbol").agg(pl.col("volume_rate", "rate_trend").median()).sort("symbol").iter_rows():
+    print(f"{symbol}: volume_rate's median {rate:.2f}, rate_trend's median {trend:.2f}")
+```
+
+```text
+units traded a second by each symbol, over the stream: 1.56
+AAA: volume_rate's median 1.61, rate_trend's median 1.51
+BBB: volume_rate's median 1.59, rate_trend's median 1.52
 ```
 
 **The operators read a spec's clock keywords:** `clock`, `gap_cap`,
 `restart_after_step_back`, `session`, `session_gap` and `group`. Pass them
-to `with_windows` once, for every formula in the call. A window target
-reads them from its spec. With `group`, each group keeps its own sessions.
+to `with_windows` once, for every formula in the call. `gap_cap` is
+required with a clock. A window target reads them from its spec. With
+`group`, each group keeps its own sessions and windows.
 
 **A gap longer than `gap_cap`, or a session change, ends every window open
 across it, and the operator's `partial` sets what the cut window gives.**
 A window that looks back is cut short in the same way where it reaches back
 past the stream's first row, or past the first row after a break or a
-restart. So under `partial="null"` the rows less than `window_size` after
-the stream's first row give null, and under `"drop"` they leave the
-output. A restart (a step back larger than `restart_after_step_back`, or a
+restart. A restart (a step back larger than `restart_after_step_back`, or a
 session change under `session_gap="reset"`) discards the open windows
 instead, so their rows come out null, never dropped:
 
@@ -107,6 +219,27 @@ instead, so their rows come out null, never dropped:
 | `"keep"` | the value over what it saw, the window ending at the last row seen | learned from what the window saw | looking back |
 | `"null"` | null | not learned | looking ahead |
 | `"drop"` | nothing: the row leaves the output | not learned, as under `"null"`, while its other targets still are | |
+
+`partial` needs a `window_size`, since without one no window is cut short.
+On `trades`, a window of a minute looking back is cut short on each
+symbol's first minute of rows, 102 rows in all.
+This code uses `trades` from [Example data](../README.md#example-data):
+
+```python
+for partial in ["keep", "null", "drop"]:
+    out = po.stream.with_windows(
+        trades,
+        mid_mean=po.ewm_mean("mid", half_life="5s", window_size="1m", partial=partial),
+        clock="ts", gap_cap="5m", group="symbol",
+    )
+    print(f'partial="{partial}": {out.height} rows, {out["mid_mean"].null_count()} null')
+```
+
+```text
+partial="keep": 3000 rows, 0 null
+partial="null": 3000 rows, 102 null
+partial="drop": 2898 rows, 0 null
+```
 
 **A window that looks ahead under `closed="right"` or `"both"` is whole
 when its far edge is the last row before a break or a restart.** That row
@@ -122,13 +255,16 @@ adds one column per formula after the input's columns, named by its keyword
 or its `.alias()`. In a chain, write it as `lf.online.with_windows(...)` on
 a query or `df.online.with_windows(...)` on a `DataFrame`.
 
-For a weighted mean such as a VWAP (volume-weighted average price), divide
-one decayed sum by another: decayed notional (price times quantity) by
-decayed volume, to which the quotes add nothing. For one side's VWAP, put
-the same `when/then` inside both sums.
+**For a weighted mean such as a VWAP, divide one decayed sum by another:**
+decayed notional (price times quantity) by decayed volume, to which the
+quotes add nothing. For one side's VWAP, put the same `when/then` inside
+both sums. The recipe computes one row's VWAP again by hand, from the
+trades in the minute after it, each weighed by `0.5 ** (age / 10 s)`.
 This code uses `trades` and `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
+from datetime import timedelta
+
 notional = pl.col("price") * pl.col("quantity")
 buys = pl.when(pl.col("side") == "buy")
 next_minute = dict(half_life="10s", window_size="1m")
@@ -139,12 +275,26 @@ windowed = po.stream.with_windows(
     fwd_buy_vwap=po.rewm_sum(buys.then(notional), **next_minute) / po.rewm_sum(buys.then("quantity"), **next_minute),   # the same, buys only
     clock="ts", gap_cap="5m", group="symbol",
 )
-# every input column, then mid_trend, fwd_vwap, fwd_buy_vwap
+print(windowed.columns)
+
+row = windowed.row(1000, named=True)
+ahead = trades.filter(                                         # the trades in (ts, ts + 1m] of the row's symbol
+    pl.col("symbol") == row["symbol"], pl.col("price").is_not_null(),
+    pl.col("ts") > row["ts"], pl.col("ts") <= row["ts"] + timedelta(minutes=1),
+)
+weight = 0.5 ** ((ahead["ts"] - row["ts"]).dt.total_microseconds() / 1e6 / 10)
+by_hand = (weight * ahead["price"] * ahead["quantity"]).sum() / (weight * ahead["quantity"]).sum()
+print(f"row 1000: {ahead.height} trades in the next minute; fwd_vwap {row['fwd_vwap']:.6f}, by hand {by_hand:.6f}")
 
 (pl.scan_parquet("trades.parquet")
     .online.with_windows(fwd_vwap=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute),
                          clock="ts", gap_cap="5m", group="symbol")
     .sink_parquet("with_windows.parquet"))     # streams, holding about one window of rows
+```
+
+```text
+['ts', 'symbol', 'mid', 'side', 'quantity', 'price', 'mid_trend', 'fwd_vwap', 'fwd_buy_vwap']
+row 1000: 22 trades in the next minute; fwd_vwap 99.516156, by hand 99.516156
 ```
 
 **Feed `with_windows` the rows in clock order across all groups, as one
@@ -154,6 +304,28 @@ than `restart_after_step_back`, which restarts every group. A gap past
 `gap_cap` on it ends every group's windows. So sort an input ordered by
 group with `sort("ts", maintain_order=True)` before the call. A query whose
 row order Polars does not guarantee draws an `OrderNotGuaranteedWarning`.
+The refusal arrives as the library's `ValueError` under py-polars 2.0, and
+as `polars.exceptions.ComputeError` carrying the same message under 1.x.
+This code uses `trades` from [Example data](../README.md#example-data):
+
+```python
+import re
+
+by_symbol = trades.sort("symbol")                          # every AAA row, then every BBB row
+try:
+    po.stream.with_windows(by_symbol, mid_mean=po.ewm_mean("mid", half_life="5s"),
+                           clock="ts", gap_cap="5m", group="symbol")
+except (ValueError, pl.exceptions.ComputeError) as e:
+    print(re.search(r'clock column .* at row \d+', str(e)).group())
+in_order = by_symbol.sort("ts", maintain_order=True)       # back in clock order across the symbols
+print(po.stream.with_windows(in_order, mid_mean=po.ewm_mean("mid", half_life="5s"),
+                             clock="ts", gap_cap="5m", group="symbol").height)
+```
+
+```text
+clock column "ts" goes backwards by 24m45s118ms961us at row 1502
+3000
+```
 
 **`with_windows` returns the rows in input order, each once every window
 over it has its value,** so the output trails the input by the longest
@@ -189,26 +361,6 @@ Make it with `with_windows` if it reads a window that looks back, or with
 Polars' `with_columns` if it reads only its own row. The builder refuses
 `group_close` beside a window target, and `group` without `clock`, as
 `with_windows` does.
-This code uses `trades.parquet` from [Example data](../README.md#example-data):
-
-```python
-clock = dict(clock="ts", gap_cap="5m", group="symbol")             # one clock for the windows and the model
-trends = pl.scan_parquet("trades.parquet").online.with_windows(    # the features: windows that look back
-    trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),
-    trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
-    **clock,
-)
-notional = pl.col("price") * pl.col("quantity")
-next_minute = dict(half_life="10s", window_size="1m")
-fwd_edge = (po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute) - pl.col("mid")).alias("fwd_edge")   # the target: the next minute's VWAP, less the mid
-edge = po.spec.ewridge("edge", targets=[fwd_edge], features=["trend_5s", "trend_30s"],
-                       half_life="30m", embargo="1m", **clock)   # each row learned once the next minute is known
-fitted = trends.online.fit_predict([edge]).collect()      # trades, the two trends, and the column edge
-as_column = trends.online.with_windows(fwd_edge, like=edge).collect()   # the target the model learned, as a column
-by_column = po.spec.ewridge("by_column", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
-                            half_life="30m", embargo="1m", **clock)     # the same model, its target named as that column
-column_form = as_column.online.fit_predict([by_column])                 # the column form: the same predictions as fitted's
-```
 
 **Each row is scored where it sits, and learned from once its window has
 closed and its `embargo` has passed.** A state that learned a row before
@@ -225,15 +377,55 @@ late](../README.md#labels-that-arrive-late)).
 
 **To see the targets the model learned, write the target as a column with
 `with_windows(fwd_edge, like=edge)`, on a frame that holds the spec's
-features, as `trends` does.** `like=edge` takes the clock keywords from
-`edge`, and refuses any given beside it. It nulls the target on every row
-the spec would not learn from.
+features, as `trends` does in the recipe.** `like=edge` takes the clock
+keywords from `edge`, and refuses any given beside it. It nulls the target
+on every row the spec would not learn from.
 
 **Named in `targets` under the same `embargo`, that column gives the same
 predictions row for row, except when the embargo equals the window under
-`closed="right"`, as in the example.** Then the column form learns each row
-at the row exactly one window after it, and the expression in `targets` at
-the next distinct stamp after that.
+`closed="right"`.** Then the column form learns each row at the row exactly
+one window after it, and the expression in `targets` at the next distinct
+stamp after that. The recipe gives the embargo two minutes, past the
+window's one, and the two forms agree on every row.
+This code uses `trades.parquet` from [Example data](../README.md#example-data):
+
+```python
+clock = dict(clock="ts", gap_cap="5m", group="symbol")             # one clock for the windows and the model
+trends = pl.scan_parquet("trades.parquet").online.with_windows(    # the features: windows that look back
+    trend_5s=pl.col("mid") - po.ewm_mean("mid", half_life="5s", window_size="2m"),
+    trend_30s=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),
+    **clock,
+)
+notional = pl.col("price") * pl.col("quantity")
+next_minute = dict(half_life="10s", window_size="1m")
+fwd_edge = (po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute) - pl.col("mid")).alias("fwd_edge")   # the target: the next minute's VWAP, less the mid
+edge = po.spec.ewridge("edge", targets=[fwd_edge], features=["trend_5s", "trend_30s"],
+                       half_life="30m", embargo="2m", **clock)   # each row learned two minutes later, once its minute is known
+fitted = trends.online.fit_predict([edge]).collect()      # trades, the two trends, and the column edge
+
+as_column = trends.online.with_windows(fwd_edge, like=edge).collect()   # the target the model learned, as a column
+by_column = po.spec.ewridge("by_column", targets=["fwd_edge"], features=["trend_5s", "trend_30s"],
+                            half_life="30m", embargo="2m", **clock)     # the same model, its target named as that column
+column_form = as_column.online.fit_predict([by_column])
+
+expression, column = fitted["edge"].struct, column_form["by_column"].struct
+print(f"rows {fitted.height}, of which predicted {fitted.height - expression.field('pred_fwd_edge').null_count()}")
+print(f"largest difference between the two forms: {(expression.field('pred_fwd_edge') - column.field('pred_fwd_edge')).abs().max()}")
+print(f"resid_fwd_edge null on {expression.field('resid_fwd_edge').null_count()} rows")
+
+short = po.spec.ewridge("short", targets=[fwd_edge], features=["trend_5s"], half_life="30m", embargo="30s", **clock)
+try:
+    trends.online.fit_predict([short])                    # refused when the query is built
+except ValueError as e:
+    print(str(e).split(" (got")[0])
+```
+
+```text
+rows 3000, of which predicted 2761
+largest difference between the two forms: 0.0
+resid_fwd_edge null on 3000 rows
+spec "short": fit_predict needs an embargo of at least 1m, the longest window_size among its formula targets' forward operators
+```
 
 ## Features in units of their spread
 
@@ -245,30 +437,52 @@ deviation, at the feature's spread as it stands on that row. Make each
 z-score a column with `po.ewm_mean` and `po.ewm_std` in `with_windows`,
 chained in the query before the bank, and name the columns in the spec's
 `features`.
+
+`df`'s `y` is `1 + 2·x0 − x1` plus noise, so per standard deviation of
+`x0` the response is 2 times that spread. The recipe prints the spread
+`po.ewm_std` gives against Polars' own `ewm_std`, and the fitted
+coefficients against the truth.
 This code uses `ticks.parquet` from [Example data](../README.md#example-data):
 
 ```python
-row_clock = dict(clock="t", gap_cap=10.0)                # one clock for the z-scores and the model
+row_clock = dict(clock="t", gap_cap=10.0)                # one clock for the z-scores and the model; t steps by 1 a row
 spread = dict(half_life=100.0)                           # how fast the mean and the spread forget, in the clock's units
 zscored = pl.scan_parquet("ticks.parquet").online.with_windows(
     z_x0=(pl.col("x0") - po.ewm_mean("x0", **spread)) / po.ewm_std("x0", **spread),   # x0 in units of its current spread
     z_x1=(pl.col("x1") - po.ewm_mean("x1", **spread)) / po.ewm_std("x1", **spread),
+    sd_x0=po.ewm_std("x0", **spread), sd_x1=po.ewm_std("x1", **spread),
     **row_clock,
 )
 per_sd = po.spec.ewridge("per_sd", targets=["y"], features=["z_x0", "z_x1"], half_life=100.0, **row_clock)
-fitted = zscored.online.fit_predict([per_sd]).collect()   # the rows, z_x0, z_x1 and the column per_sd
+fitted = zscored.online.fit_predict([per_sd]).collect()   # the rows, the z-scores, the spreads and the column per_sd
+
+polars_sd = pl.read_parquet("ticks.parquet")["x0"].ewm_std(half_life=100.0, adjust=False)
+print(f"po.ewm_std against Polars' ewm_std: largest difference {(fitted['sd_x0'] - polars_sd).abs().max():.12f}")
+last = fitted.row(-1, named=True)
+intercept, b0, b1 = last["per_sd"]["coef"]
+print(f"per standard deviation: z_x0 {b0:.2f} (truth 2 x {last['sd_x0']:.2f} = {2 * last['sd_x0']:.2f}), "
+      f"z_x1 {b1:.2f} (truth -1 x {last['sd_x1']:.2f} = {-last['sd_x1']:.2f})")
 ```
 
-**On a frame in memory, Polars' own `ewm_mean` and `ewm_std` make the same
-column.** On a clock that steps by 1 a row, `po.ewm_std("x0",
-half_life=100.0)` is `pl.col("x0").ewm_std(half_life=100.0, adjust=False)`
-to rounding, and so is the mean. The window operators read the clock
-rather than the row count, and run over a stream in one pass.
+```text
+po.ewm_std against Polars' ewm_std: largest difference 0.000000000000
+per standard deviation: z_x0 1.81 (truth 2 x 0.95 = 1.90), z_x1 -0.92 (truth -1 x 0.98 = -0.98)
+```
 
-**The recipe costs a column per feature, and it works with every model.**
+The fitted responses sit within about a tenth of the truth, each read at
+the feature's spread on the last row.
+
+**On a clock that steps by 1 a row, `po.ewm_mean` and `po.ewm_std` are
+Polars' `ewm_mean` and `ewm_std` with `adjust=False`.** On any other clock
+they weigh each row by the time it covers. They run over a stream in one
+pass, where Polars' own forms need the column in memory.
+
+**A z-score adds one column per feature, and it works with every model.**
 Each z-score is one more column, made by two operators on one queue in the
 `with_windows` pass. A model reads it as any other column, so `ewridge`,
-`rls`, `kalman` and the rest take it alike.
+`rls`, `kalman` and the rest take it alike. `kalman` keeps its
+coefficients per unit, as every model does, so give it the z-scored
+columns for a model per standard deviation.
 
 **On minute returns, every model lost less with z-scored features.**
 Section 6 of [docs/VALIDATION.md](VALIDATION.md) fits four models to
@@ -284,25 +498,24 @@ each is closer to 0 on the z-scores:
 | `rls` | -0.0644 | -0.0412 | -0.1108 | -0.0475 |
 | `kalman` | -0.0592 | -0.0412 | -0.0746 | -0.0585 |
 
-**`kalman` fitted this model on its own in 0.13.0.** It standardized each
-feature by the feature's moving moments, and kept its coefficients per
-standard deviation. It now keeps them per unit, as every other model does.
-For the model per standard deviation, give `kalman` the z-scored columns.
-
 ## Saving and resuming a window run
 
 To feed `with_windows` a stream in two runs, give the first `save_state=`
 and the second `load_state=`. The second run returns the rows the first
-left waiting before its own, so two runs give what one run gives. An input
-that starts before the last row the first run read is refused as a step
-back. A state loads only into a call with the same formulas, clock keywords
-and kind of clock; otherwise `load_state=` raises `ValueError`. A window
-target is saved with its bank's state instead ([Saving, loading and
-serving](../README.md#saving-loading-and-serving)).
+left waiting before its own, so two runs give what one run gives. A state
+loads only into a call with the same formulas, clock keywords and kind of
+clock; otherwise `load_state=` raises `ValueError`. A window target is
+saved with its bank's state instead ([Saving, loading and
+serving](../README.md#saving-loading-and-serving)). The state file's format
+is not promised: a state one release saved need not load in the next.
 
-Under a slice such as `head(500)`, the run reads the input only until the
+**Under a slice such as `head(500)`, the run reads the input only until the
 windows of the last row asked for have closed, and the state records how
-many input rows it consumed.
+many input rows it consumed.** A run resumed on the same input, unsliced,
+skips those rows and goes on. The recipe cuts `trades` in two files, and
+also stops a run after 500 rows: each pair of runs gives what one run
+gives. An input that starts before the last row the state read is refused
+as a step back.
 This code uses `trades` and `trades.parquet` from [Example data](../README.md#example-data):
 
 ```python
@@ -311,15 +524,32 @@ vwap = dict(fwd_vwap=po.rewm_sum(pl.col("price") * pl.col("quantity"), **next_mi
 clock = dict(clock="ts", gap_cap="5m", group="symbol")
 one_run = po.stream.with_windows(trades, **vwap, **clock)            # one run
 
-day1, day2 = trades.head(2000), trades.slice(2000)                   # the same stream as two files
-first = po.stream.with_windows(day1, **vwap, **clock, save_state="w.state")    # its last rows wait
-second = po.stream.with_windows(day2, **vwap, **clock, load_state="w.state")   # they come out first
-assert pl.concat([first, second]).equals(one_run)
+trades.head(2000).write_parquet("day1.parquet")                       # the same stream as two files
+trades.slice(2000).write_parquet("day2.parquet")
+first = pl.scan_parquet("day1.parquet").online.with_windows(**vwap, **clock, save_state="w.state").collect()   # its last rows wait
+second = pl.scan_parquet("day2.parquet").online.with_windows(**vwap, **clock, load_state="w.state").collect()  # they come out first
+print(f"two files: {first.height} rows, then {second.height}; one run's output: {pl.concat([first, second]).equals(one_run)}")
 
 head = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, save_state="h.state").head(500).collect()
-rest = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()
-assert pl.concat([head, rest]).equals(one_run)                       # the same input, unsliced: it skips them
+rest = pl.scan_parquet("trades.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()  # the same file: it skips the rows read
+print(f"head(500), then the rest: {head.height} rows, then {rest.height}; one run's output: {pl.concat([head, rest]).equals(one_run)}")
+
+trades.slice(300).write_parquet("overlap.parquet")                   # starts before the last row the state read
+try:
+    pl.scan_parquet("overlap.parquet").online.with_windows(**vwap, **clock, load_state="h.state").collect()
+except (ValueError, pl.exceptions.ComputeError) as e:                # ComputeError under py-polars 1.x
+    message = str(e)[str(e).index("with_windows"):]
+    print(message.split(". ")[0])
 ```
+
+```text
+two files: 1884 rows, then 1116; one run's output: True
+head(500), then the rest: 500 rows, then 2500; one run's output: True
+with_windows: the state was saved under a slice of another input: this input starts before the last row the state read, a step back the clock policy refuses
+```
+
+The first run returns 1,884 of its 2,000 rows. The other 116 wait in the
+state for the next minute of trades, and the second run returns them first.
 
 **A state saved under a slice records its input's first row (clock and
 session) and the last rows it read, so it refuses the wrong input, never
