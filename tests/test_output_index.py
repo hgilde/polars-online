@@ -197,6 +197,66 @@ class TestOutputIndex:
         assert name == "pred_y__r1e-300@h1e9"
 
 
+def _every_kind():
+    """Each kind's spec as the registry builds it, and the kinds whose
+    fields once differed only in their names: ``ew_cov``'s ``lag_corr`` at
+    two lags, ``hmm`` at three states, ``ew_class`` at three classes and
+    ``bocpd`` over three columns."""
+    from test_model_registry import MINIMAL
+
+    specs = {}
+    for name, extra in MINIMAL.items():
+        kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
+        kw.update(extra)
+        specs[name] = getattr(po.spec, name)(
+            "m", **{k: v for k, v in kw.items() if v is not None}
+        )
+    specs["ew_cov lag_corr"] = po.spec.ew_cov(
+        "m", features=["a", "b"], stats=["lag_corr", "corr"], lags=[1, 3], half_life=10.0
+    )
+    specs["hmm k=3"] = po.spec.hmm(
+        "m", features=["a", "b"], k=3, precision_prior=1.0, half_life=10.0
+    )
+    specs["ew_class"] = po.spec.ew_class(
+        "m", label="y", features=["a"], classes=["u", "v", "w"], precision_prior=1.0, half_life=10.0
+    )
+    specs["bocpd"] = po.spec.bocpd("m", features=["a", "b", "c"])
+    return specs
+
+
+@pytest.mark.parametrize(("label", "spec"), list(_every_kind().items()))
+def test_no_two_rows_match_apart_from_the_field(label, spec):
+    """The index reaches every field by its values alone: no two rows
+    match apart from ``field``. ``lag`` tells ``lag_corr`` at its lags
+    apart, ``state`` an ``hmm`` posterior, ``class`` an ``ew_class`` one,
+    and ``columns`` a ``bocpd`` prediction, which is about its own column."""
+    idx = po.spec.output_index(spec)
+    rest = [c for c in idx.columns if c != "field"]
+    same = idx.filter(pl.struct(rest).is_duplicated())["field"].to_list()
+    assert not same, f"{label}: {same}"
+
+
+def test_the_values_that_tell_the_fields_apart():
+    specs = _every_kind()
+    lag = po.spec.output_index(specs["ew_cov lag_corr"]).filter(pl.col("kind") == "lag_corr")
+    assert sorted(set(lag["lag"].to_list())) == [1, 3]
+    assert lag.filter(pl.col("field") == "lag_corr_b_a_l3")["columns"].to_list() == [["b", "a"]]
+    hmm = po.spec.output_index(specs["hmm k=3"])
+    filtered = hmm.filter(pl.col("kind") == "filtered")
+    assert filtered["state"].to_list() == [0, 1, 2]
+    assert hmm.filter(pl.col("field") == "state")["state"].to_list() == [None]
+    cls = po.spec.output_index(specs["ew_class"]).filter(pl.col("kind") == "p")
+    assert cls.select("field", "class").rows() == [("p_u", "u"), ("p_v", "v"), ("p_w", "w")]
+    boc = po.spec.output_index(specs["bocpd"])
+    pred = boc.filter(pl.col("kind") == "pred")
+    assert pred["columns"].to_list() == [["a"], ["b"], ["c"]]
+    assert boc.filter(pl.col("field") == "p_change")["columns"].to_list() == [["a", "b", "c"]]
+    # Typed for a filter: integers and a string, null on every other field.
+    assert boc.schema["lag"] == pl.Int64 and boc.schema["state"] == pl.Int64
+    assert boc.schema["class"] == pl.String
+    assert boc.select("lag", "state", "class").null_count().row(0) == (boc.height,) * 3
+
+
 class TestCoefIndex:
     def test_positions_recover_the_generating_coefficients(self):
         rng = np.random.default_rng(1)

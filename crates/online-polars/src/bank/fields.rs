@@ -33,8 +33,14 @@ pub struct FieldMeta {
     pub quantile: Option<f64>,
     /// Lag, in learned rows, of an `ew_cov` `lag_corr_*` field
     /// (docs/ENHANCEMENTS.md E56); `None` for every other field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lag: Option<usize>,
+    /// The hidden state an `hmm` posterior is about, `filtered_<s>` and
+    /// `predicted_<s>`; `None` for every other field. With `lag` and
+    /// `class`, it makes every field's row unique apart from its name.
+    pub state: Option<usize>,
+    /// The class an `ew_class` posterior `p_<class>` is about; `None` for
+    /// every other field.
+    pub class: Option<String>,
     /// Columns an `ew_cov` statistic is over.
     pub columns: Option<Vec<String>>,
     /// The polars dtype the field is materialized with, as its string form
@@ -133,6 +139,8 @@ impl FieldMeta {
             penalty: None,
             quantile: None,
             lag: None,
+            state: None,
+            class: None,
             columns: None,
             dtype: String::new(),
             src: Source::Unset,
@@ -740,6 +748,9 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
     if matches!(spec.model, crate::ModelKind::Bocpd { .. }) {
         let labels = online_core::Bocpd::labels(&spec.features);
         let n_slots = labels.len();
+        // `pred_<column>` follows the three run-length fields, one per
+        // feature in order: each is about its own column alone.
+        let per_feature = 3..3 + spec.features.len();
         let mut fields = Vec::new();
         for (mi, (suffix, d)) in decays.iter().enumerate() {
             for (slot, l) in labels.iter().enumerate() {
@@ -753,7 +764,11 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
                     .decay(d)
                     .src(src);
-                m.columns = Some(spec.features.clone());
+                m.columns = Some(if per_feature.contains(&slot) {
+                    vec![spec.features[slot - 3].clone()]
+                } else {
+                    spec.features.clone()
+                });
                 fields.push(m);
             }
             fields.push(
@@ -814,6 +829,8 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                         .decay(d)
                         .src(src);
                 m.columns = Some(spec.features.clone());
+                // `filtered_<s>` and `predicted_<s>`: the state they are about.
+                m.state = l.split_once('_').and_then(|(_, s)| s.parse().ok());
                 fields.push(m);
             }
             fields.push(
@@ -847,12 +864,14 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Label(mi * n_slots)),
             ));
             for (c, class) in classes.iter().enumerate() {
-                fields.push(over(
+                let mut p = over(
                     FieldMeta::new(format!("p_{class}{suffix}"), "p")
                         .decay(d)
                         .target(&spec.targets[0])
                         .src(Source::Stat(mi * n_slots + 1 + c)),
-                ));
+                );
+                p.class = Some(class.clone());
+                fields.push(p);
             }
             fields.push(
                 FieldMeta::new(format!("weight_sum{suffix}"), "weight_sum")

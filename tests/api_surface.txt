@@ -1174,6 +1174,9 @@
     feature_set: String
     penalty: Float64
     quantile: Float64
+    lag: Int64
+    state: Int64
+    class: String
     columns: List[String]
     dtype: String
   po.spec.coef_index():

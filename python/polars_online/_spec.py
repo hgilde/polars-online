@@ -1347,14 +1347,22 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         path point; null where the spec has no such grid.
     ``quantile``
         The level of a ``resid_quantiles`` or ``mahal_quantiles`` field.
+    ``lag``
+        The lag, in learned rows, of an ``ew_cov`` ``lag_corr`` field.
+    ``state``
+        The hidden state an ``hmm`` posterior is about (``filtered_<s>``,
+        ``predicted_<s>``).
+    ``class``
+        The class an ``ew_class`` posterior is about (``p_<class>``).
     ``columns``
         The columns the field is computed from:
 
-        - one for an ``ew_cov`` mean, variance or standard deviation, and for a
-          feature-health field;
+        - one for an ``ew_cov`` mean, variance or standard deviation, for a
+          feature-health field, and for ``bocpd``'s predictive mean of a
+          column (``pred_<column>``);
         - the pair for a correlation or a covariance, ordered for ``lag_corr``;
-        - every feature for ``mahal``, the principal components and the fields
-          of ``kmeans``, ``micro``, ``ew_class``, ``hmm``, ``bocpd`` and
+        - every feature for ``mahal``, the principal components and the other
+          fields of ``kmeans``, ``micro``, ``ew_class``, ``hmm``, ``bocpd`` and
           ``corrchange``;
         - a block or a pair of blocks for ``deco``.
 
@@ -1369,10 +1377,8 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
 
     This is how to reach a field without constructing its name; the string
     grammar (:mod:`polars_online.spec`, "What a spec writes") stays an
-    implementation detail. A few fields share every column here but ``field``:
-    ``ew_cov``'s ``lag_corr`` at different lags, ``hmm``'s per-state and
-    ``ew_class``'s per-class probabilities, and ``bocpd``'s per-feature
-    predictions. Those are told apart by ``field`` alone:
+    implementation detail. No two rows hold the same values apart from
+    ``field``, so a filter on the other columns reaches each field alone:
 
     .. code-block:: python
 
@@ -1406,6 +1412,9 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
             "feature_set": pl.String,
             "penalty": pl.Float64,
             "quantile": pl.Float64,
+            "lag": pl.Int64,
+            "state": pl.Int64,
+            "class": pl.String,
             "columns": pl.List(pl.String),
             "dtype": pl.String,
         },
