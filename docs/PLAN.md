@@ -9795,7 +9795,7 @@ tick, and that the series holding it up has a count near 1.
       new test failed on the base; the deprecation filter makes the suite
       fail on any old name. `release.yml` changed (the binary): rehearse
       before the next release.
-- [ ] 245. **Faster dev iterations** -- the user, 2026-10-11: "Iterations
+- [x] 245. **Faster dev iterations** -- the user, 2026-10-11: "Iterations
       are slow now due to large number of tests and other things, what
       should we do to speed up dev iterations", then "Put it on the list
       after the current work is done" (after task 244 and review 7's fix
@@ -9841,6 +9841,21 @@ tick, and that the series holding it up has a count near 1.
       to delete and what the next build costs; `scripts/clear_caches.sh`
       (a dry-run flag, never the test data in `.cache/`); a "Caches and when
       to clear them" section with the rule for when to run it.
+      *Done 2026-10-11* (`task245-fast`, merged): dev-wheel (4.5-37 s
+      rebuilds against 189 s, bit-identical over `release_probe.py`'s 297
+      columns and 31 states, the whole suite passing on it); nextest and
+      xdist in the gate (full gate 501 -> about 230 s, essentials 139-191
+      -> 48 s, counts identical serial and parallel; memory tests in a
+      serial phase, planted leaks still caught); `quick.sh`;
+      `clear_caches.sh` with the cache table and the rule (after each push
+      wave, or under 100 GB free). sccache measured and left opt-in (a
+      third of the crates miss from a new path, on `OUT_DIR` in their
+      hash; slower there). `release.yml`'s maturin-action `sccache: "true"`
+      (that action's own GitHub cache, predating this task) kept by the
+      coordinator: content-keyed, unrelated to the local cache; the test
+      allows exactly that step. CLAUDE.md gained the commands and the
+      iterating practice. CI's Linux legs on nextest (about 100 s each) left
+      as a follow-up.
 - [x] 246. **The mutants run's headroom** -- the user, 2026-10-11: "Ensure
       that the GitHub mutants run has plenty of headroom not to fail its
       next run", then "Can we just run future mutants with a memory limit

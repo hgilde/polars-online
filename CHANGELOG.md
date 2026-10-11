@@ -1817,6 +1817,25 @@ The output names task 144 renamed:
 
 ### Tests and documents
 
+- **Faster dev iterations** (task 245). The gate runs tests in parallel:
+  cargo-nextest where installed (with `cargo test --doc` beside it) and
+  pytest-xdist, in as many processes as the machine has cores free (2 to
+  8; `--serial`, `GATE_WORKERS`); the tests that read their process's
+  memory run afterwards, alone, and still fail on a planted leak. The full
+  gate fell from 501 s to about 230 s, the essentials from 139-191 s to
+  48 s, with the same tests and results both ways. A `dev-wheel` Cargo
+  profile rebuilds the extension in 4.5-37 s after an edit, against
+  release's 189 s, with bit-identical outputs; the gate, CI and the
+  shipped wheel keep `release`. `scripts/quick.sh` runs the tests for a
+  branch's changed paths; `scripts/clear_caches.sh` clears the build
+  caches (dry-run first), and TESTING has "Iterating" and "Caches and when
+  to clear them". `.cache` downloads and the release comparison's venvs
+  are written atomically, so parallel workers never read a half-written
+  file; the gbdt leak check measures after the allocator's ramp. sccache
+  was measured and left opt-in: from a new worktree path a third of the
+  crates miss its cache (their build scripts' absolute paths enter its
+  hash), so a fresh worktree built slower with it (92 s against 66 s for
+  the tests, 519 s against 241 s for the wheel).
 - Every public docstring was read against the code (task 239): about 120
   wrong facts corrected, about 150 refusals the code made now stated, no
   docstring cites the plan, a task or a record

@@ -48,7 +48,20 @@ uv run pytest -x                         # every Python test (downloads/generate
 HYPOTHESIS_PROFILE=essential uv run pytest -m "not extended and not soak"   # Python essentials
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference (gate + CI)
 cargo run -p online-cli -- --config examples/bank.toml
+scripts/quick.sh                         # inside a task: tests for what the branch changed (dev-wheel build)
+scripts/gate.sh --serial                 # either tier in one process (the gate runs tests in parallel)
+scripts/clear_caches.sh --worktrees      # build caches: after each push wave, or under 100 GB free
 ```
+
+Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to
+clear them"): workers run `scripts/quick.sh` while iterating and
+`scripts/gate.sh` (essentials) before each commit; the full tier runs once
+per merge wave on `main` and, always, before every push on the exact sha.
+Run at most about four agents at once on this machine. After each push
+wave and its branch and worktree cleanup, run `scripts/clear_caches.sh
+--worktrees` (or whenever free disk is under 100 GB). sccache stays off:
+from a new worktree path a third of the crates miss its cache, so it is
+slower there; `POLARS_ONLINE_SCCACHE=1` turns it on for one checkout.
 
 Two tiers of tests (docs/TESTING.md, "Two tiers"; PLAN task 210). The
 essentials gate each commit while a task is in progress, for speed of
