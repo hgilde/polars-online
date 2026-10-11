@@ -214,3 +214,18 @@ def test_no_public_docstring_cites_the_plan_a_task_a_review_or_a_record():
 def test_no_reader_facing_file_cites_the_plan_a_task_a_review_or_a_record(path):
     found = citations((REPO / path).read_text(encoding="utf-8"))
     assert not found, "\n".join(found)
+
+
+#: Files that hold a guide and then a record: the guide is held, up to the
+#: heading the record starts at, and the record stays as written.
+GUIDE_PARTS: dict[str, str] = {
+    "docs/STATE-WORKFLOW.md": "\n## The research behind it, 2026-09-03\n",
+}
+
+
+@pytest.mark.parametrize("path", sorted(GUIDE_PARTS))
+def test_no_guide_part_cites_the_plan_a_task_a_review_or_a_record(path):
+    text = (REPO / path).read_text(encoding="utf-8")
+    assert GUIDE_PARTS[path] in text, f"{path}: the record's heading moved"
+    found = citations(text[: text.index(GUIDE_PARTS[path])])
+    assert not found, "\n".join(found)
