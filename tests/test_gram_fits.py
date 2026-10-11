@@ -54,10 +54,11 @@ def python_lasso_path(
     target=0,
     features=None,
     max_iter=1000,
-    tol=1e-7,
+    tol=1e-10,
 ):
     """``po.gram.lasso_path`` as 0.13.0 ran it, in Python: the reference the
-    Rust descent is held to."""
+    Rust descent is held to. Its defaults follow the Rust function's (``tol``
+    1e-10 since 1.0, the ``lasso`` model's; 0.13.0 ran 1e-7)."""
     t = pg._target_index(g, target)
     slots, icept = pg._feature_slots(g, features)
     k = len(pg._columns(g))
