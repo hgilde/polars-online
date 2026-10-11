@@ -1376,10 +1376,11 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``dtype``
         The type the bank declares to polars before the first row is read:
         ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum``
-        (``withheld_reason``), ``i32`` (``kmeans``' cluster and ``hmm``'s
-        state, ``micro``'s live counts), ``i64`` (a count, a row index or an
-        id, and ``micro``'s cluster label), or ``clock`` (``scored_clock`` and
-        ``learned_clock``, in the clock column's own type).
+        (``withheld_reason``), ``i32`` (``hmm``'s state, ``micro``'s live
+        counts), ``i64`` (a count, a row index or an id, and the cluster
+        label of ``kmeans`` and ``micro`` alike), or ``clock``
+        (``scored_clock`` and ``learned_clock``, in the clock column's own
+        type).
 
     This is how to reach a field without constructing its name; the string
     grammar (:mod:`polars_online.spec`, "What a spec writes") stays an
@@ -3864,7 +3865,7 @@ def kmeans(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#kmeans>`_):
 
     ``cluster``
-        The nearest centre's index (``i32``), before the row is learned from;
+        The nearest centre's index (``i64``), before the row is learned from;
         null until seeding.
     ``dist``, ``dist_second``
         The distance to that centre, and to the runner-up, the second-nearest

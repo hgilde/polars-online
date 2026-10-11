@@ -1291,7 +1291,7 @@ more arm to each.
 
 | field | type | meaning |
 |---|---|---|
-| `cluster` | `i32` | the assigned cluster, `null` before seeding or under `min_periods` |
+| `cluster` | `i64` | the assigned cluster, `null` before seeding or under `min_periods` |
 | `dist` | `f64` | distance to that centre, in the model's metric |
 | `dist2` | `f64` | distance to the second-nearest centre (a simplified silhouette costs O(k) from these two) |
 | `n_eff` | `f64` | rule 8, unchanged |

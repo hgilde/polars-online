@@ -423,7 +423,7 @@ class TestOutputSchemaStability:
     @pytest.mark.parametrize("half_life", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
     def test_kmeans_names_match_the_realized_struct(self, half_life, coef_every):
-        """`kmeans` has no targets either: an `i32` assignment, two distances,
+        """`kmeans` has no targets either: an `i64` assignment, two distances,
         `weight_sum` and the centres as `coef`, per instance."""
         spec = po.spec.kmeans(
             "m",
@@ -440,7 +440,7 @@ class TestOutputSchemaStability:
         names = {
             REASON_DTYPE: "enum",
             pl.Float64: "f64",
-            pl.Int32: "i32",
+            pl.Int64: "i64",
             pl.List(pl.Float64): "list[f64]",
         }
         for f in out.schema["m"].fields:

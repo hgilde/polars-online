@@ -417,8 +417,8 @@ is null for all four:
 
 | variant | materialized as | what it carries |
 |---|---|---|
-| `Source::Cluster` | `i32` | a small count, read out of the `pred` buffer |
-| `Source::Id` | an `i64` | `micro`'s id, `seqtest`'s counts |
+| `Source::Cluster` | `i32` | a small count, read out of the `pred` buffer: `micro`'s live counts, `hmm`'s state |
+| `Source::Id` | an `i64` | a cluster label (`kmeans`' and `micro`'s), `micro`'s id, `seqtest`'s counts |
 | `Source::Flag` | a `Boolean` | |
 | `Source::Label` | its name (`F64Column::finish_label_array`) | a class index |
 

@@ -4686,7 +4686,7 @@ fn assemble(
     // and the schema says so (`Source::Stat`), so one assembler covers both
     // (docs/SIMPLIFICATION.md S2). Only `pred` and `n_eff` are populated for
     // it; every other buffer is length zero and never indexed. `kmeans` is
-    // the same shape with an `i32` slot (`Source::Cluster`) and `coef`.
+    // the same shape with an `i64` slot (`Source::Id`) and `coef`.
     let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
 
     // Online selection across every slot of a target: pick the slot with the
