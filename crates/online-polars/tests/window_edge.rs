@@ -46,7 +46,7 @@ const MODELS: [(&str, &str, &str); 5] = [
     ),
     (
         "lasso",
-        r#"{"type": "lasso", "lasso_path": [0.1, 0.01], {window}}"#,
+        r#"{"type": "lasso", "penalties": [0.1, 0.01], {window}}"#,
         r#""targets": ["y"],"#,
     ),
     (
@@ -660,9 +660,9 @@ fn window_every_spaces_the_snapshots_exactly(closed: &str) {
             });
             (
                 if closed == "right" {
-                    r#""window_size": 1.0, "window_every": 0.3, "closed": "right""#
+                    r#""window_size": 1.0, "snapshot_every": 0.3, "closed": "right""#
                 } else {
-                    r#""window_size": 1.0, "window_every": 0.3, "closed": "both""#
+                    r#""window_size": 1.0, "snapshot_every": 0.3, "closed": "both""#
                 },
                 frame(
                     Series::new("t".into(), num.clone()),
@@ -680,9 +680,9 @@ fn window_every_spaces_the_snapshots_exactly(closed: &str) {
             });
             (
                 if closed == "right" {
-                    r#""window_size": "1s", "window_every": "300ms", "closed": "right""#
+                    r#""window_size": "1s", "snapshot_every": "300ms", "closed": "right""#
                 } else {
-                    r#""window_size": "1s", "window_every": "300ms", "closed": "both""#
+                    r#""window_size": "1s", "snapshot_every": "300ms", "closed": "both""#
                 },
                 frame(
                     Series::new("t".into(), ns.clone())

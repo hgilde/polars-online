@@ -47,7 +47,7 @@ fn accepted(json: &str) {
 /// `marginal(lags=[2^62])` panicked "capacity overflow" inside the builder.
 #[test]
 fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
-    let window = r#""kind": "window", "span_rows": 10"#;
+    let window = r#""kind": "window", "window_rows": 10"#;
     refused(
         &unsup(
             &format!(r#"{{"type": "corrchange", {window}, "n_perm": 1048577}}"#),
@@ -101,14 +101,17 @@ fn a_lag_or_n_perm_past_the_ceiling_is_refused_by_name() {
 fn kmeans_sizes_have_ceilings_and_micro_needs_none() {
     refused(
         &unsup(
-            r#"{"type": "kmeans", "k": 65537, "warm_rows": 65537}"#,
+            r#"{"type": "kmeans", "n_clusters": 65537, "warm_rows": 65537}"#,
             r#", "half_life": 10.0"#,
         ),
-        &["kmeans: k must be at most 65536 (2^16)", "got 65537"],
+        &[
+            "kmeans: n_clusters must be at most 65536 (2^16)",
+            "got 65537",
+        ],
     );
     refused(
         &unsup(
-            r#"{"type": "kmeans", "k": 3, "warm_rows": 5592406}"#,
+            r#"{"type": "kmeans", "n_clusters": 3, "warm_rows": 5592406}"#,
             r#", "half_life": 10.0"#,
         ),
         &[
@@ -129,14 +132,19 @@ fn kmeans_sizes_have_ceilings_and_micro_needs_none() {
 fn hmm_k_has_a_ceiling() {
     let hmm = |k: u64| {
         unsup(
-            &format!(r#"{{"type": "hmm", "k": {k}, "warm_rows": {k}, "precision_prior": 0.1}}"#),
+            &format!(
+                r#"{{"type": "hmm", "n_components": {k}, "warm_rows": {k}, "precision_prior": 0.1}}"#
+            ),
             r#", "half_life": 10.0"#,
         )
     };
     for k in [1025u64, 1 << 62] {
         refused(
             &hmm(k),
-            &["hmm: k must be at most 1024 (2^10)", &format!("got {k}")],
+            &[
+                "hmm: n_components must be at most 1024 (2^10)",
+                &format!("got {k}"),
+            ],
         );
     }
     accepted(&hmm(1024));
@@ -169,15 +177,17 @@ fn rcov_lagged_products_have_a_byte_ceiling() {
 fn kmeans_refuses_a_dead_rule_with_no_check_and_too_few_warm_rows() {
     let km = |model: &str| unsup(model, r#", "half_life": 10.0"#);
     refused(
-        &km(r#"{"type": "kmeans", "k": 3, "split_merge": 0.0, "dead_frac": 0.5}"#),
+        &km(r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0, "dead_frac": 0.5}"#),
         &["kmeans: dead_frac", "split_merge = 0", "0.5"],
     );
-    accepted(&km(r#"{"type": "kmeans", "k": 3, "split_merge": 0.0}"#));
+    accepted(&km(
+        r#"{"type": "kmeans", "n_clusters": 3, "split_merge": 0.0}"#,
+    ));
     refused(
-        &km(r#"{"type": "kmeans", "k": 3, "warm_rows": 1}"#),
-        &["kmeans: warm_rows must be at least k (3)", "got 1"],
+        &km(r#"{"type": "kmeans", "n_clusters": 3, "warm_rows": 1}"#),
+        &["kmeans: warm_rows must be at least n_clusters (3)", "got 1"],
     );
-    accepted(&km(r#"{"type": "kmeans", "k": 600}"#));
+    accepted(&km(r#"{"type": "kmeans", "n_clusters": 600}"#));
 }
 
 /// CE4: a parameter its mode does not read is refused by name: hmm's
@@ -189,7 +199,7 @@ fn kmeans_refuses_a_dead_rule_with_no_check_and_too_few_warm_rows() {
 fn a_parameter_its_mode_does_not_read_is_refused() {
     let hmm = |extra: &str| {
         format!(
-            r#"{{"name": "m", "model": {{"type": "hmm", "k": 2, "precision_prior": 0.1{extra}}},
+            r#"{{"name": "m", "model": {{"type": "hmm", "n_components": 2, "precision_prior": 0.1{extra}}},
                 "features": ["x0", "x1"], "half_life": 10.0}}"#
         )
     };
@@ -206,11 +216,7 @@ fn a_parameter_its_mode_does_not_read_is_refused() {
         );
     }
     accepted(&with_z(hmm(tvtp)));
-    for (param, value) in [
-        ("warm_rows", "20"),
-        ("seed_rule", "\"first\""),
-        ("seed", "3"),
-    ] {
+    for (param, value) in [("warm_rows", "20"), ("init", "\"first\""), ("seed", "3")] {
         refused(
             &hmm(&format!(r#"{given}, "{param}": {value}"#)),
             &[&format!(
@@ -250,23 +256,24 @@ fn a_parameter_its_mode_does_not_read_is_refused() {
     ));
 }
 
-/// A `covariance` shape not offered is refused naming the model it was
-/// given to, the value and the shapes there are: `hmm`'s said "unknown
-/// ew_class covariance" (task 190's find, folded into task 193).
+/// A `covariance_type` shape not offered is refused naming the spec, the
+/// parameter, the value and the shapes there are: `hmm`'s said "unknown
+/// ew_class covariance" (task 190's find, folded into task 193), and the
+/// parameter is one word on every surface now (task 244, P-4).
 #[test]
-fn a_covariance_refusal_names_its_own_model() {
+fn a_covariance_refusal_names_the_spec_and_the_parameter() {
     refused(
         &unsup(
-            r#"{"type": "hmm", "k": 2, "precision_prior": 0.1, "covariance": "lda"}"#,
+            r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1, "covariance_type": "lda"}"#,
             r#", "half_life": 10.0"#,
         ),
-        &["covariance must be one of \"full\", \"shared\", \"diagonal\"; got \"lda\""],
+        &["covariance_type must be one of \"full\", \"tied\", \"diag\"; got \"lda\""],
     );
     refused(
         r#"{"name": "m", "model": {"type": "ew_class", "classes": ["a", "b"],
-            "precision_prior": 1.0, "covariance": "lda"}, "targets": ["y"],
+            "precision_prior": 1.0, "covariance_type": "lda"}, "targets": ["y"],
             "features": ["x0"], "half_life": 10.0}"#,
-        &["covariance must be one of \"full\", \"shared\", \"diagonal\"; got \"lda\""],
+        &["covariance_type must be one of \"full\", \"tied\", \"diag\"; got \"lda\""],
     );
 }
 
@@ -371,7 +378,7 @@ fn a_refused_value_is_named() {
             "got 1.5",
         ),
         (
-            sup(r#"{"type": "lasso", "lasso_path": [0.1], "tol": 0.0}"#, ""),
+            sup(r#"{"type": "lasso", "penalties": [0.1], "tol": 0.0}"#, ""),
             "tol must be finite and > 0, got 0",
         ),
         (
@@ -391,7 +398,7 @@ fn a_refused_value_is_named() {
         ),
         (
             unsup(
-                r#"{"type": "kmeans", "k": 2, "dead_frac": -1.0}"#,
+                r#"{"type": "kmeans", "n_clusters": 2, "dead_frac": -1.0}"#,
                 r#", "half_life": 10.0"#,
             ),
             "dead_frac must be finite and >= 0 (0 disables it), got -1",
@@ -424,7 +431,7 @@ fn a_models_refusal_names_the_spec() {
         &["sgd: clip_gradient must be > 0"],
     );
     for model in [
-        r#"{"type": "lasso", "lasso_path": [0.1], "window_size": "inf"}"#,
+        r#"{"type": "lasso", "penalties": [0.1], "window_size": "inf"}"#,
         r#"{"type": "marginal", "window_size": "inf"}"#,
     ] {
         refused(

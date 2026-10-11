@@ -14,7 +14,7 @@ def _spec(path, **kw):
     defaults = dict(
         targets=["y0"],
         features=["x0", "x1", "x2"],
-        lasso_path=path,
+        penalties=path,
         half_life=1e9,
         max_rows_between_solves=1,
         min_weight=10.0,
@@ -40,7 +40,7 @@ def test_zero_penalty_matches_ewridge():
         max_rows_between_solves=1,
         min_weight=10.0,
     )
-    a = po.ModelBank([po.spec.lasso("m", lasso_path=[0.0], **common)]).fit_predict(df)
+    a = po.ModelBank([po.spec.lasso("m", penalties=[0.0], **common)]).fit_predict(df)
     b = po.ModelBank([po.spec.ewridge("m", ridge=1e-12, standardize=True, **common)]).fit_predict(
         df
     )
@@ -167,7 +167,7 @@ class TestEachTargetsSelectionCountsFromItsOwnMinWeight:
             clock="t",
             gap_cap=5.0,
             half_life=float("inf"),
-            lasso_path=[0.5, 0.1, 0.01, 0.0],
+            penalties=[0.5, 0.1, 0.01, 0.0],
             select_half_life=float("inf"),
             min_weight=min_weight,
             solve_every=0.0,

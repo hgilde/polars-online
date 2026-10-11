@@ -60,7 +60,7 @@ fn rich_spec() -> Spec {
 fn other_specs() -> Vec<Spec> {
     let lasso = r#"{
         "name": "l",
-        "model": {"type": "lasso", "lasso_path": [0.1, 0.0]},
+        "model": {"type": "lasso", "penalties": [0.1, 0.0]},
         "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
         "half_life": 20.0, "gap_cap": 30.0, "group": "g"
     }"#;

@@ -39,7 +39,7 @@ import reference
 
 TIER = "essential"
 
-SHAPES = ["full", "shared", "diagonal"]
+SHAPES = ["full", "tied", "diag"]
 NAMES = np.array(["a", "b", "c", "d"])
 
 
@@ -158,7 +158,7 @@ class Oracle:
         ell = np.full(self.nc, -np.inf)
         seen = [c for c in range(self.nc) if self.n[c] > 0.0]
         x = np.asarray(x, float)
-        if self.covariance == "shared":
+        if self.covariance == "tied":
             M = np.zeros((self.k, self.k))
             for c in seen:
                 pi = self.n[c] / total
@@ -266,7 +266,7 @@ class TestOracle:
         X, lab = gaussians(1500, seed=1, **THREE)
         df = frame(X, lab)
         params = dict(half_life=150.0, min_weight=3.0, precision_prior=0.7)
-        bank = po.ModelBank([spec(covariance=covariance, **params)])
+        bank = po.ModelBank([spec(covariance_type=covariance, **params)])
         got = unnested(bank.fit_predict(df))
         rows, o = replay(
             X, lab.tolist(), covariance=covariance, prior=0.7, half_life=150.0, min_weight=3.0
@@ -293,7 +293,7 @@ class TestOracle:
             pl.Series("y", [None if v is None else str(NAMES[v]) for v in y], pl.String)
         )
         params = dict(half_life=60.0, min_weight=2.0, precision_prior=0.3)
-        s = spec(clock="t", gap_cap=20.0, weight="w", covariance=covariance, **params)
+        s = spec(clock="t", gap_cap=20.0, weight="w", covariance_type=covariance, **params)
         bank = po.ModelBank([s])
         got = unnested(bank.fit_predict(df))
         rows, o = replay(
@@ -395,8 +395,8 @@ class TestLargeData:
         X, lab = gaussians(60_000, seed=6, **p)
         df = frame(X, lab)
         out = {}
-        for shape in ("full", "shared"):
-            s = spec(half_life=5000.0, min_weight=20.0, covariance=shape, precision_prior=0.1)
+        for shape in ("full", "tied"):
+            s = spec(half_life=5000.0, min_weight=20.0, covariance_type=shape, precision_prior=0.1)
             out[shape] = np.array(
                 unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[30_000:]
             )
@@ -404,7 +404,7 @@ class TestLargeData:
         ceiling = bayes_rate(X[30_000:], lab[30_000:], p["means"], p["covs"])
         for shape in out:
             assert np.mean(out[shape] == truth) >= ceiling - 0.01, shape
-        assert np.mean(out["full"] == out["shared"]) > 0.98
+        assert np.mean(out["full"] == out["tied"]) > 0.98
 
     def test_only_qda_sees_a_spread(self):
         # Same mean, different spread: LDA pools the covariances and has
@@ -418,11 +418,11 @@ class TestLargeData:
         assert ceiling > 0.8
         acc = {}
         for shape in SHAPES:
-            s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance=shape)
+            s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance_type=shape)
             got = unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
             acc[shape] = float(np.mean(np.array(got) == truth))
-        assert acc["full"] >= ceiling - 0.01 and acc["diagonal"] >= ceiling - 0.01, acc
-        assert acc["shared"] < 0.6, acc
+        assert acc["full"] >= ceiling - 0.01 and acc["diag"] >= ceiling - 0.01, acc
+        assert acc["tied"] < 0.6, acc
 
     def test_only_a_full_covariance_sees_a_correlation(self):
         # Same marginals, opposite correlations: naive Bayes sees two
@@ -437,12 +437,12 @@ class TestLargeData:
         ceiling = bayes_rate(X[20_000:], lab[20_000:], p["means"], p["covs"])
         assert ceiling > 0.85
         acc = {}
-        for shape in ("full", "diagonal"):
-            s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance=shape)
+        for shape in ("full", "diag"):
+            s = spec(classes=("a", "b"), half_life=5000.0, min_weight=20.0, covariance_type=shape)
             got = unnested(po.ModelBank([s]).fit_predict(df))["class"].to_list()[20_000:]
             acc[shape] = float(np.mean(np.array(got) == truth))
         assert acc["full"] >= ceiling - 0.01, acc
-        assert acc["diagonal"] < 0.6, acc
+        assert acc["diag"] < 0.6, acc
 
     def test_a_swap_of_two_classes_is_relearned_within_a_few_halflives(self):
         X, lab = gaussians(30_000, seed=9, **THREE)
@@ -598,7 +598,7 @@ class TestEdgeCases:
     def test_chunk_invariance(self):
         X, lab = gaussians(700, seed=18, **THREE)
         df = frame(X, lab, null_every=9)
-        s = spec(min_weight=1.0, covariance="shared")
+        s = spec(min_weight=1.0, covariance_type="tied")
         one = unnested(po.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
             bank = po.ModelBank([s])
@@ -614,7 +614,7 @@ class TestEdgeCases:
     def test_save_load(self, tmp_path):
         X, lab = gaussians(600, seed=19, **THREE)
         df = frame(X, lab)
-        s = spec(min_weight=1.0, covariance="diagonal")
+        s = spec(min_weight=1.0, covariance_type="diag")
         for cut in (3, 100, 500):
             a = po.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
@@ -755,8 +755,8 @@ class TestRefusals:
             ({"classes": ["a", "b", "a"]}, 'classes lists "a" more than once'),
             ({"classes": ["a", ""]}, "classes must not contain an empty name"),
             (
-                {"covariance": "spherical"},
-                'covariance must be one of "full", "shared", "diagonal"; got "spherical"',
+                {"covariance_type": "spherical"},
+                'covariance_type must be one of "full", "tied", "diag"; got "spherical"',
             ),
             ({"precision_prior": 0.0}, "precision_prior must be finite and > 0"),
             ({"precision_prior": -1.0}, "precision_prior must be finite and > 0"),
@@ -782,9 +782,9 @@ class TestRefusals:
         with pytest.raises(TypeError, match="label must be a str, got list"):
             build(label=["y"])
         with pytest.raises(
-            TypeError, match='covariance must be one of "full", "shared", "diagonal", got int'
+            TypeError, match='covariance_type must be one of "full", "tied", "diag", got int'
         ):
-            build(covariance=1)
+            build(covariance_type=1)
         with pytest.raises(TypeError, match="precision_prior must be a number, got str"):
             build(precision_prior="1")
         with pytest.raises(ValueError, match="precision_prior must be finite"):
@@ -831,7 +831,7 @@ class TestRefusals:
                     "[specs.model]",
                     'type = "ew_class"',
                     'classes = ["a", "b", "c"]',
-                    'covariance = "shared"',
+                    'covariance_type = "tied"',
                     "precision_prior = 1.0",
                 ]
             )
@@ -839,7 +839,7 @@ class TestRefusals:
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))
         want = unnested(
-            po.ModelBank([spec(covariance="shared")]).fit_predict(frame(X, lab, null_every=7))
+            po.ModelBank([spec(covariance_type="tied")]).fit_predict(frame(X, lab, null_every=7))
         )
         assert got.equals(want, null_equal=True)
         assert got["class"].dtype == pl.String

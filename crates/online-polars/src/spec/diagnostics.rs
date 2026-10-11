@@ -530,7 +530,7 @@ mod tests {
         );
         let long = r#"{"type": "ewridge", "session_shrink": 0.5, "long_half_life": 70.0}"#;
         assert_eq!(ready(long, h), Decay::Halflife(70.0));
-        let select = r#"{"type": "lasso", "lasso_path": [0.1], "select_half_life": 90.0}"#;
+        let select = r#"{"type": "lasso", "penalties": [0.1], "select_half_life": 90.0}"#;
         assert_eq!(ready(select, h), Decay::Halflife(90.0));
         let plain = r#"{"type": "ewridge"}"#;
         assert_eq!(ready(plain, h), h);

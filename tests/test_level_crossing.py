@@ -33,13 +33,13 @@ MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
-    ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
+    ("lasso", {"penalties": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("ftrl", {"loss": "squared"}),
     ("sgd", {}),
     ("pa", {}),
-    ("holt", {"features": []}),
+    ("holt", {"features": None}),  # no features keyword
 ]
 IDS = [m for m, _ in MODELS]
 
@@ -69,6 +69,8 @@ def build(model: str, extra: dict, **kw) -> dict:
     )
     opts.update(extra)
     opts.update(kw)
+    if opts.get("features", ()) is None:
+        del opts["features"]  # a model with no features keyword (holt)
     return getattr(po.spec, model)("m", **opts)
 
 
@@ -158,7 +160,7 @@ def _decayed_least_squares(df: pl.DataFrame, rows: range) -> np.ndarray:
     ("model", "extra"),
     [
         ("ewridge", {"ridge": 0.0, "max_rows_between_solves": 1}),
-        ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1, "tol": 1e-14}),
+        ("lasso", {"penalties": [0.0], "max_rows_between_solves": 1, "tol": 1e-14}),
         ("huber", {"huber_delta": 1e9, "ridge": 0.0, "max_rows_between_solves": 1}),
     ],
     ids=["ewridge", "lasso", "huber"],

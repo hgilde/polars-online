@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import numpy as np
 import polars as pl
@@ -41,7 +42,7 @@ import reference_cluster as ref
 
 TIER = "mixed"
 
-RULES = ["first", "farthest", "kmeanspp", "lloyd"]
+RULES = ["first", "farthest", "k-means++", "lloyd"]
 
 
 def blobs(n=3000, k=3, p=2, seed=0, scale=0.7, spread=5.0):
@@ -63,7 +64,7 @@ def frame(X, **cols):
 
 
 def spec(features=("x0", "x1"), k=3, **kw):
-    d = dict(features=list(features), k=k, half_life=200.0, min_weight=5.0, warm_rows=30)
+    d = dict(features=list(features), n_clusters=k, half_life=200.0, min_weight=5.0, warm_rows=30)
     d.update(kw)
     return po.spec.kmeans("m", **d)
 
@@ -126,7 +127,7 @@ class TestOracle:
             half_life=150.0,
             min_weight=3.0,
             warm_rows=40,
-            seed_rule=rule,
+            init=rule,
             seed=11,
             standardize=standardize,
         )
@@ -204,7 +205,7 @@ class TestOracle:
         X, _ = blobs(n=400, seed=6)
         rows += X.tolist()
         df = frame(np.array(rows))
-        params = dict(k=3, half_life=float("inf"), min_weight=1.0, warm_rows=5, seed_rule="first")
+        params = dict(k=3, half_life=float("inf"), min_weight=1.0, warm_rows=5, init="first")
         out = unnested(po.ModelBank([spec(**params)]).fit_predict(df))
         want = ref.kmeans_ref(rows, **params)
         _same(out, want, "first at the cap")
@@ -253,7 +254,7 @@ class TestLargeData:
         s = po.spec.kmeans(
             "m",
             features=[f"x{i}" for i in range(p)],
-            k=k,
+            n_clusters=k,
             half_life=20_000.0,
             min_weight=100.0,
             warm_rows=2000,
@@ -509,7 +510,7 @@ class TestDefinitions:
             half_life=half_life,
             min_weight=0.0,
             warm_rows=k,
-            seed_rule="first",
+            init="first",
             split_merge=0.0,
             standardize=False,
             update_every_rows=update_every_rows,
@@ -828,8 +829,8 @@ class TestEdgeCases:
         seeds on the k-th row, as the floor did."""
         with pytest.raises(
             ValueError,
-            match=r'spec "m": kmeans: warm_rows must be at least k \(10\) to seed that many '
-            r"centres, got 1",
+            match=r'spec "m": kmeans: warm_rows must be at least n_clusters \(10\) to seed '
+            r"that many centres, got 1",
         ):
             spec(k=10, warm_rows=1, min_weight=1.0)
         X, _ = blobs(n=100, k=3, seed=22)
@@ -1149,10 +1150,12 @@ class TestRefusals:
     @pytest.mark.parametrize(
         ("kw", "msg"),
         [
-            ({"k": 0}, "k must be >= 1"),
+            ({"n_clusters": 0}, "n_clusters must be >= 1"),
             (
-                {"seed_rule": "random"},
-                'seed_rule must be one of "first", "farthest", "kmeanspp", "lloyd"; got "random"',
+                {"init": "random"},
+                re.escape(
+                    'init must be one of "first", "farthest", "k-means++", "lloyd"; got "random"'
+                ),
             ),
             ({"update_every_rows": 0}, "update_every_rows must be >= 1"),
             ({"split_merge_every_rows": 0}, "split_merge_every_rows must be >= 1"),
@@ -1169,7 +1172,7 @@ class TestRefusals:
 
     def test_no_targets_and_no_intercept_leak(self):
         with pytest.raises(TypeError, match=r"kmeans\(\) takes no targets"):
-            po.spec.kmeans("m", features=["x0"], targets=["x0"], k=2, half_life=10.0)
+            po.spec.kmeans("m", features=["x0"], targets=["x0"], n_clusters=2, half_life=10.0)
         # A feature named like the plumbing target is not a leak.
         assert spec(features=("x0",), k=2)["targets"] == ["x0"]
 

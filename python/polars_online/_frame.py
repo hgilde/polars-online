@@ -614,7 +614,7 @@ _ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
     # may carry (docs/PLAN.md task 196).
     "closed": ("right",),
     "window_budget": (None,),
-    "window_every": (None,),
+    "snapshot_every": (None,),
     "max_rows_between_snapshots": (None,),
     "embargo": (None,),
     "gram_block_rows": (None,),

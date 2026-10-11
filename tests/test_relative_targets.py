@@ -151,9 +151,10 @@ def test_a_target_made_by_with_columns_runs_the_same_on_every_way_in(tmp_path, m
     path = tmp_path / "quotes.parquet"
     frame().write_parquet(path)
     kw = {"coef_half_life": 200.0} if model == "kalman" else {}
+    opts = common(**kw)
     if model == "holt":
-        kw["features"] = []
-    spec = getattr(po.spec, model)("m", targets=["ret"], **common(**kw))
+        del opts["features"]  # holt reads its target alone
+    spec = getattr(po.spec, model)("m", targets=["ret"], **opts)
     lazy = pl.scan_parquet(path).with_columns(ret=HOW["log_ratio"])
     got = lazy.online.fit_predict([spec]).collect()
     want = po.ModelBank([spec]).fit_predict(

@@ -10,7 +10,7 @@
 //! spread as it stood before each learned row, decayed to that row,
 //! subtracted at the oldest snapshot still inside the window. It is taken on
 //! the rows the model learns, with its `window` and its snapshot cadence
-//! (`window_every` clock units or `max_rows_between_snapshots` rows,
+//! (`snapshot_every` clock units or `max_rows_between_snapshots` rows,
 //! whichever comes first: [`online_core::Cadence`], docs/PLAN.md task 162),
 //! keyed by the stamps the model's window is keyed by, each row's decayed
 //! clock held exactly ([`online_core::Stamp`], task 175), beside a clock

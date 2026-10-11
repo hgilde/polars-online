@@ -55,7 +55,7 @@ fn ew_cov_lag_corr_carries_its_lag() {
 #[test]
 fn hmm_posteriors_carry_their_state() {
     let s = spec(
-        r#"{"name": "h", "model": {"type": "hmm", "k": 3, "precision_prior": 1.0},
+        r#"{"name": "h", "model": {"type": "hmm", "n_components": 3, "precision_prior": 1.0},
             "targets": ["a"], "features": ["a", "b"], "half_life": 10}"#,
     );
     assert_unique(&s);

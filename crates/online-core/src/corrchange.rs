@@ -222,7 +222,7 @@ impl CorrChangeCfg {
             CorrChangeKind::Monitor => {
                 if self.span_rows < 8 {
                     return Err(
-                        "corrchange: kind = \"monitor\" needs span_rows of at least 8; the \
+                        "corrchange: kind = \"monitor\" needs window_rows of at least 8; the \
                          statistic is a maximum over the span"
                             .into(),
                     );
@@ -234,7 +234,7 @@ impl CorrChangeCfg {
             CorrChangeKind::Sequential => {
                 if self.span_rows < 8 {
                     return Err(
-                        "corrchange: kind = \"sequential\" needs span_rows of at least 8; the \
+                        "corrchange: kind = \"sequential\" needs window_rows of at least 8; the \
                          history's long-run variance is read from them"
                             .into(),
                     );
@@ -299,7 +299,7 @@ impl CorrChangeCfg {
             CorrChangeKind::Window => {
                 if self.span_rows < 3 {
                     return Err(
-                        "corrchange: kind = \"window\" needs span_rows of at least 3".into(),
+                        "corrchange: kind = \"window\" needs window_rows of at least 3".into(),
                     );
                 }
                 if self.crit.is_none() && self.n_perm < 20 {
@@ -316,7 +316,7 @@ impl CorrChangeCfg {
                 }
                 if self.perm_block == 0 || self.perm_block > self.span_rows {
                     return Err(format!(
-                        "corrchange: perm_block must be 1..={} (span_rows)",
+                        "corrchange: perm_block must be 1..={} (window_rows)",
                         self.span_rows
                     ));
                 }
@@ -2282,7 +2282,7 @@ mod tests {
                 span_rows: 4,
                 ..cfg(2, CorrChangeKind::Monitor)
             },
-            "span_rows of at least 8",
+            "window_rows of at least 8",
         );
         bad(
             CorrChangeCfg {
@@ -2304,7 +2304,7 @@ mod tests {
                 span_rows: 2,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "span_rows of at least 3",
+            "window_rows of at least 3",
         );
         bad(
             CorrChangeCfg {
@@ -2727,7 +2727,7 @@ mod tests {
             let e = CorrChange::new(c).unwrap_err();
             assert!(e.contains(msg), "{e}");
         };
-        bad(seq_cfg(2, 7, 10, 0.0), "span_rows of at least 8");
+        bad(seq_cfg(2, 7, 10, 0.0), "window_rows of at least 8");
         bad(seq_cfg(2, 20, 1, 0.0), "monitor_rows of at least 2");
         for g in [0.5, -0.1, f64::NAN, f64::INFINITY] {
             bad(seq_cfg(2, 20, 10, g), "boundary_gamma must be in [0, 0.49]");

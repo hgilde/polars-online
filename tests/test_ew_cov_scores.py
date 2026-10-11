@@ -694,8 +694,8 @@ class TestValidation:
         assert spec(2, pca=1, pca_every=0)["model"]["pca_every"] == 0
         with pytest.raises(ValueError, match="pca_every needs `pca`"):
             spec(2, pca_every=3)
-        with pytest.raises(ValueError, match="max_rows_between_pca needs `pca`"):
-            spec(2, max_rows_between_pca=3)
+        with pytest.raises(ValueError, match="max_rows_between_pcas needs `pca`"):
+            spec(2, max_rows_between_pcas=3)
         with pytest.raises(ValueError, match="pca = 0 asks for no component"):
             spec(2, pca=0, pca_every=3)
         with pytest.raises(ValueError, match="pca must be >= 0"):
@@ -728,7 +728,9 @@ class TestValidation:
             po.ModelBank([s])
 
     def test_mahal_is_listed_as_a_statistic(self):
-        with pytest.raises(ValueError, match="mean, var, std, cov, corr, partial_corr, mahal"):
+        with pytest.raises(
+            ValueError, match='"mean", "var", "std", "cov", "corr", "partial_corr", "mahal"'
+        ):
             spec(2, stats=["nonsense"])
 
 

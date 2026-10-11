@@ -301,7 +301,7 @@ The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``
 ``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
 and each diagnostic's own ``*_half_life`` below, and in the models
 ``window_size``,
-``window_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
+``snapshot_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
 ``revert_half_life`` and ``trend_half_life``.
@@ -406,7 +406,7 @@ describes. Per model, the fields of the plainest spec are listed in
 
 A grid writes one set of fields per instance or slot, suffixed. A grid is a
 list of half-lives, a list of ``ridge`` values, two or more ``feature_sets``,
-or a ``lasso_path``. A half-life grid is one instance per entry, and suffixes
+or ``penalties``. A half-life grid is one instance per entry, and suffixes
 every field (``@h…``). The other grids are slots within an instance, and suffix
 the fields of each slot, ``pred``, ``resid`` and the per-slot diagnostics, by
 its combination. ``lasso`` also writes the path point it has selected, once per
@@ -419,7 +419,7 @@ target, so their fields take no suffix:
     resid_{target}{combo}{instance}             | __r{ridge}      ridge grid
     sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
     weight_sum{instance}                        | __{set}_r{ridge}
-    settled_frac{instance}                      | __l{lambda}     lasso_path point
+    settled_frac{instance}                      | __l{lambda}     penalties point
     withheld_reason{instance}
     coef{instance}                     instance = ""             single half-life
     support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
@@ -839,16 +839,18 @@ A parameter whose switch is off is refused rather than ignored:
 - ``gap_cap`` or ``restart_after_step_back`` without ``clock``;
 - ``conformal_rate`` without ``conformal``, and ``horizon_rows`` without a
   diagnostic that reads it;
-- ``window_every``, ``max_rows_between_snapshots``, ``window_budget`` or
+- ``snapshot_every``, ``max_rows_between_snapshots``, ``window_budget`` or
   ``closed = "both"`` without ``window_size``;
 - ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
   not use it, its ``strict_binary`` beside a loss other than ``"logistic"``,
   and its ``power`` beside a schedule other than ``"inv_scaling"``;
 - ``ftrl``'s ``strict_binary`` beside ``loss = "squared"``;
 - ``holt``'s ``trend_half_life`` beside ``trend = False``;
-- ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``;
+- ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``, and its and
+  ``micro``'s ``scale_floor`` beside ``standardize = False``;
+- ``bocpd``'s ``robust_beta`` beside ``covariance_type = "full"``;
 - ``hmm``'s ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
-  its ``warm_rows``, ``seed_rule`` or ``seed`` beside given ``means`` and
+  its ``warm_rows``, ``init`` or ``seed`` beside given ``means`` and
   ``covs``;
 - ``rcov``'s ``bandwidth``, ``max_bandwidth`` or ``jitter`` under a kind other
   than ``"kernel"``, and its ``theta`` or ``preavg_rows`` under one other than

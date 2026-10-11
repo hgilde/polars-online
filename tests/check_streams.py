@@ -37,7 +37,7 @@ def every_model(features: list[str], half_life: float = 200.0, **kw: Any) -> lis
     return [
         po.spec.ewridge("ewridge", **c),
         po.spec.ewridge("ewridge_std", standardize=True, **c),
-        po.spec.lasso("lasso", lasso_path=[1e-3], **c),
+        po.spec.lasso("lasso", penalties=[1e-3], **c),
         po.spec.huber("huber", **c),
         po.spec.quantile("quantile", quantile=0.5, **c),
         po.spec.kalman("kalman", coef_half_life=1e6, **c),

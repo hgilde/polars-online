@@ -98,7 +98,7 @@ fn ewridge_drops_the_count_floor_and_the_others_keep_theirs() {
         vec![0.0]
     );
     assert_eq!(
-        parsed("", "type = \"lasso\"\nlasso_path = [0.1]").min_periods_per_target(),
+        parsed("", "type = \"lasso\"\npenalties = [0.1]").min_periods_per_target(),
         vec![3.0]
     );
     assert_eq!(
@@ -293,16 +293,17 @@ fn the_models_derive_what_their_spec_leaves_unset() {
     };
     assert_eq!(
         bocpd("")["derived"],
-        json!({"prior_mean": "data", "prior_nu": 3.0, "prior_scale": "data", "warm_rows": 4})
+        json!({"mean_prior": "data", "degrees_of_freedom_prior": 3.0, "covariance_prior": "data", "warm_rows": 4})
     );
     assert_eq!(
-        bocpd("emission = \"gaussian\"\nwarm_rows = 9")["derived"],
-        json!({"prior_mean": "data", "prior_nu": 4.0, "prior_scale": "data", "warm_rows": 9})
+        bocpd("covariance_type = \"full\"\nwarm_rows = 9")["derived"],
+        json!({"mean_prior": "data", "degrees_of_freedom_prior": 4.0, "covariance_prior": "data", "warm_rows": 9})
     );
-    let given = bocpd("prior_nu = 7.0\nprior_scale = [2.0]\nprior_mean = [1.0, -1.0]");
+    let given =
+        bocpd("degrees_of_freedom_prior = 7.0\ncovariance_prior = [2.0]\nmean_prior = [1.0, -1.0]");
     assert_eq!(
         given["derived"],
-        json!({"prior_mean": [1.0, -1.0], "prior_nu": 7.0, "prior_scale": [2.0, 0.0, 0.0, 2.0], "warm_rows": null})
+        json!({"mean_prior": [1.0, -1.0], "degrees_of_freedom_prior": 7.0, "covariance_prior": [2.0, 0.0, 0.0, 2.0], "warm_rows": null})
     );
     let rcov = resolved(
         "name = \"m\"\nfeatures = [\"x0\", \"x1\"]\ngroup = \"g\"\ngroup_close = \"monotone\"\n\

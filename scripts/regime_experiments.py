@@ -112,7 +112,7 @@ def recovery(seeds: int = 8) -> None:
         for name, start, learn, prior in setups:
             common = dict(
                 features=["x0", "x1"],
-                k=2,
+                n_components=2,
                 precision_prior=prior,
                 learn=learn,
                 half_life=4000.0,
@@ -154,7 +154,7 @@ def recovery(seeds: int = 8) -> None:
         f"state means reach {np.mean(drift):.2f} in absolute value where the truth\n"
         "is zero. A covariance regime needs the covariances to start from (or a\n"
         "feature in which the regime is a location shift).\n"
-        "\nAnd the last row is `bocpd`'s `prior_scale` lesson in a second model:\n"
+        "\nAnd the last row is `bocpd`'s `covariance_prior` lesson in a second model:\n"
         "with the filter not learning, a ridge of 1.0 added to data whose\n"
         "variance is about 1.0 halves every correlation, which is the whole of\n"
         "the signal here."
@@ -209,7 +209,7 @@ def switch(seeds: int = 8) -> None:
         for rho in (0.1, 0.8):
             covs += [v[0], rho * sd[0] * sd[1], rho * sd[0] * sd[1], v[1]]
         for name, start, learn in setups:
-            common = dict(features=["x0", "x1"], k=2, learn=learn, half_life=4000.0)
+            common = dict(features=["x0", "x1"], n_components=2, learn=learn, half_life=4000.0)
             if start == "true":
                 spec = po.spec.hmm(
                     "h",
@@ -307,7 +307,7 @@ def _draw(t: int, rho: np.ndarray | float, rng: np.random.Generator, dist: str) 
 def _monitor_flags(x: np.ndarray, horizon: int, alpha: float) -> list[bool]:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
     spec = po.spec.corrchange(
-        "c", features=["x0", "x1"], span_rows=horizon, alpha=alpha, alpha_adjust="none"
+        "c", features=["x0", "x1"], window_rows=horizon, alpha=alpha, alpha_adjust="none"
     )
     out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return [f for f in out["flag"].to_list() if f is not None]
@@ -370,7 +370,7 @@ def size(reps: int = 20_000, alpha: float = 0.05) -> None:
 def _monitor_stat(x: np.ndarray, horizon: int) -> float:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
     spec = po.spec.corrchange(
-        "c", features=["x0", "x1"], span_rows=horizon, alpha=0.05, alpha_adjust="none"
+        "c", features=["x0", "x1"], window_rows=horizon, alpha=0.05, alpha_adjust="none"
     )
     out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return float(out["stat"].drop_nulls().to_list()[0])
@@ -512,7 +512,7 @@ def delay(seeds: int = 20) -> None:
         "w",
         features=["x0", "x1", "x2"],
         kind="window",
-        span_rows=100,
+        window_rows=100,
         n_perm=100,
         permute_every_rows=100,
         alpha=0.05,
@@ -522,9 +522,9 @@ def delay(seeds: int = 20) -> None:
         "b",
         features=["x0", "x1", "x2"],
         hazard=500.0,
-        emission="gaussian",
-        prior_nu=5.0,
-        prior_scale=[0.1],
+        covariance_type="full",
+        degrees_of_freedom_prior=5.0,
+        covariance_prior=[0.1],
         prune_below=1e-8,
         max_run=1200,
     )
@@ -904,7 +904,7 @@ def _cycles_flagged(x: np.ndarray, m: int, ratio: float, gamma: float) -> tuple[
         "c",
         features=["x0", "x1"],
         kind="sequential",
-        span_rows=m,
+        window_rows=m,
         monitor_rows=int(m * ratio),
         boundary_gamma=gamma,
         alpha_adjust="none",

@@ -58,7 +58,7 @@ median of 12 rows, where seeded from the rows it follows no switch at all
 same way in `hmm` and in `bocpd`.** At 1.0, on returns whose variance is
 about 1.0, `hmm`'s `precision_prior` halves every correlation. The share of
 rows in the true state then falls from 98 % to 58 %. Set too large,
-`bocpd`'s `prior_scale` makes every row unsurprising, so a real break is
+`bocpd`'s `covariance_prior` makes every row unsurprising, so a real break is
 never found ([its entry in
 MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 [§1](#1-does-hmm-recover-the-stream-that-made-it) measures the `hmm`
@@ -162,7 +162,7 @@ is about 1.0, so each state's correlation is halved, and the correlation is
 the whole of the signal here. The share in the true state falls from 0.979
 to 0.580. So keep `precision_prior` well below the data's variance, as
 [`hmm`'s entry in MODELS.md](MODELS.md#hmm--which-regime-are-we-in) says.
-`bocpd`'s `prior_scale` fails the same way when set too large ([its
+`bocpd`'s `covariance_prior` fails the same way when set too large ([its
 entry](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 The learned transition matrix is not read back through the public API, so
@@ -393,12 +393,12 @@ number of rows from row 1000 to the first alarm at or after it.
 
 | detector | settings | what counts as its alarm |
 |---|---|---|
-| `corrchange(kind="window")` | `kind="window"`, `span_rows=100`, `n_perm=100`, `permute_every_rows=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
-| `bocpd` | `emission="gaussian"`, `hazard=500`, `prior_nu=5`, `prior_scale=[0.1]`, `prior_mean` left out (the first 5 rows' mean), `prune_below=1e-8`, `max_run=1200` | its own alarm, `p_change`, cannot see this break, so here: the row that `t - run_mode` names as the current run's start jumps forward by more than 50 |
+| `corrchange(kind="window")` | `kind="window"`, `window_rows=100`, `n_perm=100`, `permute_every_rows=100`, `alpha=0.05`, `seed=0` | `flag`: the change between two adjacent 100-row windows is above a permutation quantile |
+| `bocpd` | `covariance_type="full"`, `hazard=500`, `degrees_of_freedom_prior=5`, `covariance_prior=[0.1]`, `mean_prior` left out (the first 5 rows' mean), `prune_below=1e-8`, `max_run=1200` | its own alarm, `p_change`, cannot see this break, so here: the row that `t - run_mode` names as the current run's start jumps forward by more than 50 |
 
-**`bocpd` is measured with `emission="gaussian"`, not its default
+**`bocpd` is measured with `covariance_type="full"`, not its default
 `"diag"`.** The default models each feature on its own, and only the
-Gaussian emission can see a break in the correlation alone ([its entry in
+full covariance can see a break in the correlation alone ([its entry in
 MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
@@ -596,9 +596,9 @@ the more accurate on these streams.
 ## 9. The sequential detector against its paper
 
 `kind="sequential"` is Wied and Galeano's (2013) monitoring procedure. It
-takes `span_rows` rows of history, then tests each row of a monitoring
+takes `window_rows` rows of history, then tests each row of a monitoring
 period of `monitor_rows` rows against it as the row arrives, until a flag
-or the period's end. Their `T` is `monitor_rows / span_rows`, and
+or the period's end. Their `T` is `monitor_rows / window_rows`, and
 `boundary_gamma`, their `γ`, lowers the boundary early in the period. Its
 size is the share of monitoring periods that end in a flag when the
 correlation never changes. Their Table 2 gives it for two independent

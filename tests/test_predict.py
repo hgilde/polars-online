@@ -107,6 +107,8 @@ def _spec(model, extra, **kw):
     )
     opts.update(extra)
     opts.update(kw)
+    if opts.get("features", ()) is None:
+        del opts["features"]  # a model with no features keyword (holt)
     return getattr(po.spec, model)("m", **opts)
 
 
@@ -159,7 +161,6 @@ def test_all_the_shared_options_at_once():
         po.spec.holt(
             "h",
             targets=["y0"],
-            features=[],
             half_life=20.0,
             clock="t",
             group="group",
@@ -173,7 +174,7 @@ def test_all_the_shared_options_at_once():
             clock="t",
             gap_cap=100.0,
             group="group",
-            lasso_path=[1.0, 0.1, 0.0],
+            penalties=[1.0, 0.1, 0.0],
         ),
     ]
     bank = po.ModelBank(specs)

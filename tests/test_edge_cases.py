@@ -24,13 +24,13 @@ MODELS = [
     ("ewridge", {}),
     ("rls", {}),
     ("kalman", {"coef_half_life": 100.0}),
-    ("lasso", {"lasso_path": [0.0]}),
+    ("lasso", {"penalties": [0.0]}),
     ("huber", {}),
     ("quantile", {"quantile": 0.5}),
     ("ftrl", {}),
     ("sgd", {"learning_rate": 0.01}),
     ("pa", {}),
-    ("holt", {"features": []}),
+    ("holt", {"features": None}),  # no features keyword
 ]
 
 
@@ -40,6 +40,8 @@ def _spec(model="ewridge", **kw):
         # Solve every row, so each case reads a fit of every row before it.
         d["max_rows_between_solves"] = 1
     d.update(kw)
+    if d.get("features", ()) is None:
+        del d["features"]  # a model with no features keyword (holt)
     return getattr(po.spec, model)("m", **d)
 
 
@@ -354,7 +356,7 @@ class TestDegenerateSolves:
         ("model", "extra"),
         [
             ("ewridge", {}),
-            ("lasso", {"lasso_path": [0.0]}),
+            ("lasso", {"penalties": [0.0]}),
             ("huber", {}),
             ("quantile", {"quantile": 0.5}),
         ],

@@ -472,7 +472,7 @@ def test_an_accumulator_with_no_decay_is_recognised_as_order_free(free):
             id="reweighting-model",
         ),
         pytest.param(
-            po.spec.lasso("m", targets=["y"], features=["x0"], lam=1.0, lasso_path=[0.1, 0.01]),
+            po.spec.lasso("m", targets=["y"], features=["x0"], lam=1.0, penalties=[0.1, 0.01]),
             id="selecting-model",
         ),
         pytest.param(
@@ -633,7 +633,7 @@ def test_a_lasso_selects_by_the_order_where_its_path_commutes():
     `fit` leaves selected moves with a shuffle where no coefficient does."""
     frame = _rows_with_outliers()
     spec = po.spec.lasso(
-        "m", targets=["y"], features=["x0"], lam=1.0, lasso_path=[1.0, 0.1, 0.01, 0.001]
+        "m", targets=["y"], features=["x0"], lam=1.0, penalties=[1.0, 0.1, 0.01, 0.001]
     )
 
     def fitted(f: pl.DataFrame) -> tuple[list[float], float]:

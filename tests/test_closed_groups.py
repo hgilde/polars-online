@@ -510,7 +510,7 @@ def test_predict_scores_a_new_session_as_the_row_after_the_close():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"group_close": "nope"}, 'must be "monotone" or "session"'),
+        ({"group_close": "nope"}, 'must be one of "monotone", "session"; got "nope"'),
         ({"group_close": "monotone", "group": None}, "needs a group column"),
         ({"group_close": "session"}, "needs a session column"),
         (
@@ -857,7 +857,7 @@ def test_schema_version_is_current():
     same day (task 174:
     `lasso` keeps each target's own `min_weight` for its selection), after 30
     the same day (task 162: a model window's snapshots are spaced on the
-    clock, `window_every` in clock units beside `max_rows_between_snapshots`),
+    clock, `snapshot_every` in clock units beside `max_rows_between_snapshots`),
     after 29 the same day (task 163: `micro`'s pruning on the clock) and 28
     (task 161: `ew_cov`'s configuration and state carry its PCA cadence on
     the clock); 27 since
@@ -881,7 +881,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 60
+    assert po.schema_version() == 61
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

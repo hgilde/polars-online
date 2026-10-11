@@ -59,7 +59,9 @@ fn shards_read_a_count_or_auto_and_refuse_the_rest() {
         let err = spec_json(bad).unwrap_err();
         assert!(err.contains(what), "{bad}: {err}");
         assert!(
-            err.contains("at least 1") || err.contains("number"),
+            err.contains("at least 1")
+                || err.contains("number")
+                || err.contains("must be an int or one of \"auto\""),
             "{bad}: {err}"
         );
     }

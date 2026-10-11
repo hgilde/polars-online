@@ -118,7 +118,7 @@ impl HmmCfg {
             return Err("hmm: n_features must be >= 1".into());
         }
         if self.k < 2 {
-            return Err("hmm: k must be >= 2 (one state is not a Markov chain)".into());
+            return Err("hmm: n_components must be >= 2 (one state is not a Markov chain)".into());
         }
         // Before anything reads `k * k` (review 2026-10-06, CF2's sibling).
         Hmm::check_k(self.k)?;
@@ -197,7 +197,7 @@ impl HmmCfg {
                 }
                 if self.warm_rows < k {
                     return Err(format!(
-                        "hmm: warm_rows must be at least k ({k}) to seed that many states"
+                        "hmm: warm_rows must be at least n_components ({k}) to seed that many states"
                     ));
                 }
             }
@@ -297,7 +297,7 @@ impl Hmm {
     pub fn check_k(k: usize) -> Result<(), String> {
         if k > Self::MAX_K {
             return Err(format!(
-                "hmm: k must be at most {} (2^10), got {k}: the transition matrix holds k² cells \
+                "hmm: n_components must be at most {} (2^10), got {k}: the transition matrix holds k² cells \
                  and every state its own moments, all sized before the first row",
                 Self::MAX_K
             ));
@@ -1513,13 +1513,13 @@ mod tests {
             let e = Hmm::new(c).unwrap_err();
             assert!(e.contains(msg), "{e}");
         };
-        bad(HmmCfg { k: 1, ..cfg(2, 1) }, "k must be >= 2");
+        bad(HmmCfg { k: 1, ..cfg(2, 1) }, "n_components must be >= 2");
         bad(
             HmmCfg {
                 warm_rows: 1025,
                 ..cfg(2, 1025)
             },
-            "k must be at most 1024 (2^10), got 1025",
+            "n_components must be at most 1024 (2^10), got 1025",
         );
         bad(
             HmmCfg {
@@ -1554,7 +1554,7 @@ mod tests {
                 warm_rows: 1,
                 ..cfg(2, 2)
             },
-            "warm_rows must be at least k",
+            "warm_rows must be at least n_components",
         );
         // docs/REVIEW-E54-E64.md H4: given states that cannot be filtered
         // with. Two 2x2 blocks, the first one wrong in each case.
@@ -1598,7 +1598,7 @@ mod tests {
                     panic!("accepted k = {k}")
                 };
                 assert!(
-                    e.contains("hmm: k must be at most 1024 (2^10)")
+                    e.contains("hmm: n_components must be at most 1024 (2^10)")
                         && e.contains(&format!("got {k}")),
                     "{e}"
                 );
@@ -1618,7 +1618,7 @@ mod tests {
         let Err(crate::StateError::Invalid(e)) = Hmm::restore(&state) else {
             panic!("a state with k past the ceiling loaded")
         };
-        assert!(e.contains("k must be at most 1024"), "{e}");
+        assert!(e.contains("n_components must be at most 1024"), "{e}");
     }
 
     /// Under `tvtp` the matrix is `softmax(A + B·z)` and the counts are not

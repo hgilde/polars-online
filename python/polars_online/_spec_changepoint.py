@@ -20,11 +20,11 @@ def bocpd(
     features: list[str],
     hazard: float | Duration = 250.0,
     hazard_col: str | None = None,
-    emission: Literal["gaussian", "diag", "robust"] = "diag",
-    prior_mean: list[float] | None = None,
-    prior_kappa: float | None = None,
-    prior_nu: float | None = None,
-    prior_scale: list[float] | None = None,
+    covariance_type: Literal["full", "diag"] = "diag",
+    mean_prior: list[float] | None = None,
+    mean_precision_prior: float | None = None,
+    degrees_of_freedom_prior: float | None = None,
+    covariance_prior: list[float] | None = None,
     robust_beta: float | None = None,
     prune_below: float | None = None,
     max_run: int | None = None,
@@ -68,8 +68,8 @@ def bocpd(
     hypothesis says preceded this one in the run. So slot 0 holds none and its
     predictive is the prior's, which is what makes "a new run starts here"
     something the data can vote on. A row takes ``O(runs * d)`` under
-    ``"diag"`` and ``"robust"``, and ``O(runs * d³)`` under ``"gaussian"``,
-    which factors each run's scale. The run vector would grow by one every row.
+    ``covariance_type="diag"``, tempered or not, and ``O(runs * d³)`` under
+    ``"full"``, which factors each run's scale. The run vector would grow by one every row.
     So runs below ``prune_below`` of the mass are dropped. The runs that reach
     ``max_run - 1`` rows are folded into the one of them carrying the most
     mass, the oldest among equals, which takes their mass and the tail's
@@ -91,8 +91,8 @@ def bocpd(
     statistics and in the likelihood it passes the recursion, so a heavier
     row is more evidence of both kinds, and a constant multiple of every
     weight changes nothing. What the row reports is read as a row of the
-    mean weight, which is all ``predict`` can know. ``prior_kappa`` and
-    ``prior_nu`` are in rows of that mean weight.
+    mean weight, which is all ``predict`` can know. ``mean_precision_prior`` and
+    ``degrees_of_freedom_prior`` are in rows of that mean weight.
 
     .. rubric:: Parameters
 
@@ -134,49 +134,50 @@ def bocpd(
         naming the row. A duration ``hazard`` puts its chance before each
         row, so the two are refused together.
         :meth:`polars_online.ModelBank.predict` reads the column too.
-    ``emission``
-        The predictive each run keeps, all exact conjugate updates:
+    ``covariance_type``
+        The covariance each run's predictive keeps, scikit-learn's words, both
+        exact conjugate updates:
 
         .. list-table::
            :header-rows: 1
            :widths: 18 40 42
 
-           * - ``emission``
+           * - ``covariance_type``
              - the predictive
              - what it adds
            * - ``"diag"`` (the default)
              - a normal-inverse-gamma per feature
              -
-           * - ``"gaussian"``
+           * - ``"full"``
              - a normal-inverse-Wishart over all of them
              - the one that can see a break in the correlation with the
                marginals unchanged: in ``run_mode``, since ``p_change`` never
                moves, and late, a median of 121 rows after the break in
                ``docs/REGIMES.md`` §5
-           * - ``"robust"``
-             - each row weighted by ``(pi(x) / pi(mode)) ** robust_beta`` in
-               what the run learns and in the message it passes on
-             - a 20-sigma row is atypical under every run, every tempered
-               likelihood is about 1, and nothing moves. Not free of the
-               data's units: centre and scale the features for it
 
-        Without ``"robust"`` that one row is a changepoint (``p_change``
-        0.91), and the run it starts carries the outlier in its mean.
-        ``"gaussian"`` and ``"diag"`` are free of the data's units: a change of
-        units multiplies every run's predictive density by one constant, which
-        the posterior's normalisation takes out. ``"robust"`` is not. Its
-        tempered message ``pi ** w`` carries that constant as ``c ** w``, and
-        ``w`` differs from run to run, so the runs' odds move with the units. At
-        a level of ``1e4`` with a spread of ``1e-2``, ``p_change`` moved by up
-        to 0.86 against the same stream at level 0 and spread 1. Centre and
-        scale the features before a ``"robust"`` run.
+        Both are free of the data's units: a change of units multiplies every
+        run's predictive density by one constant, which the posterior's
+        normalisation takes out.
     ``robust_beta``
-        The tempering under ``"robust"``. A trade: a whole new regime is a
-        run of individually forgiven rows, so above about 0.2 nothing is
-        ever detected again. The default, 0.1, ignores the outlier and still
-        dates a four-sigma shift to the right row.
-    ``prior_mean``, ``prior_kappa``, ``prior_nu``, ``prior_scale``
-        The conjugate prior:
+        Temper the ``"diag"`` predictive: each row weighted by ``(pi(x) /
+        pi(mode)) ** robust_beta`` in what the run learns and in the message it
+        passes on. Left out (the default), nothing is tempered, and a single
+        20-sigma row is a changepoint (``p_change`` 0.91) whose run carries the
+        outlier in its mean. Tempered, the row is atypical under every run,
+        every tempered likelihood is about 1, and nothing moves. A trade: a
+        whole new regime is a run of individually forgiven rows, so above about
+        0.2 nothing is ever detected again; 0.1 ignores the outlier and still
+        dates a four-sigma shift to the right row. Above 0, and refused beside
+        ``"full"``. The tempered predictive is not free of the data's units:
+        its message ``pi ** w`` carries the constant a change of units
+        multiplies the density by as ``c ** w``, and ``w`` differs from run to
+        run, so the runs' odds move with the units. At a level of ``1e4`` with
+        a spread of ``1e-2``, ``p_change`` moved by up to 0.86 against the same
+        stream at level 0 and spread 1. Centre and scale the features before a
+        tempered run.
+    ``mean_prior``, ``mean_precision_prior``, ``degrees_of_freedom_prior``, ``covariance_prior``
+        The conjugate prior, under scikit-learn's ``BayesianGaussianMixture``
+        names:
 
         .. list-table::
            :header-rows: 1
@@ -185,48 +186,48 @@ def bocpd(
            * - parameter
              - what it is
              - default
-           * - ``prior_mean``
+           * - ``mean_prior``
              - ``mu_0``
              - the first ``warm_rows`` rows' mean
-           * - ``prior_kappa``
+           * - ``mean_precision_prior``
              - the weight of that mean in rows
              - 1.0
-           * - ``prior_nu``
+           * - ``degrees_of_freedom_prior``
              - the degrees of freedom
              - the smallest integer that gives the prior's variance a mean:
-               ``d + 2`` under ``"gaussian"``, whose inverse-Wishart needs
-               ``nu > d + 1``, and 3 under ``"diag"`` and ``"robust"``, whose
-               per-feature normal-inverse-gamma needs ``nu > 2`` whatever ``d``
-           * - ``prior_scale``
+               ``d + 2`` under ``"full"``, whose inverse-Wishart needs
+               ``nu > d + 1``, and 3 under ``"diag"``, whose per-feature
+               normal-inverse-gamma needs ``nu > 2`` whatever ``d``
+           * - ``covariance_prior``
              - the prior scale of the variance as a list, in the data's units:
                one positive number ``[s]`` for ``s`` times the identity, or the
                ``d * d`` entries of a symmetric positive-definite matrix, row by
                row
              - the first ``warm_rows`` rows' covariance, its diagonal under
-               ``"diag"`` and ``"robust"``
+               ``"diag"``
 
         A prior in the data's units decides what counts as surprising. Too
         wide, and the model goes quiet, because no row is surprising under a
         predictive that wide. Too narrow or off-centre, and every run that
         begins on a row has no density for it. So the defaults are the data's
-        own. With ``prior_mean`` or ``prior_scale`` left out, the first
+        own. With ``mean_prior`` or ``covariance_prior`` left out, the first
         ``warm_rows`` learned rows report null and are held. Their weighted
         mean and covariance (``numpy.cov``'s with ``aweights``, the sample
         covariance at equal weights) set what was left out, and then they are
         read, in order, as rows of a model that had that prior from the start.
-        At the default ``prior_nu`` the prior's mean variance is then that
-        covariance. A feature that does not move over those rows has no
+        At the default ``degrees_of_freedom_prior`` the prior's mean
+        variance is then that covariance. A feature that does not move over those rows has no
         variance to give; it takes ``2**-52 * max(mean**2, 1)``, the spread of
         a value known to ``2**-26`` of its level, since a predictive of no
-        spread has no density. Under ``"gaussian"`` a covariance that is not
+        spread has no density. Under ``"full"`` a covariance that is not
         positive definite, two features that are one, gives its diagonal. With
-        both given there is no warm-up. ``prior_nu`` and ``prior_scale`` are
-        ``2a`` and ``2b`` in the gamma parametrisation, which is how Adams and
-        MacKay give their own finance example (``a = 1``, ``b = 1e-4``,
-        ``hazard = 250``).
+        both given there is no warm-up. ``degrees_of_freedom_prior`` and
+        ``covariance_prior`` are ``2a`` and ``2b`` in the gamma
+        parametrisation, which is how Adams and MacKay give their own finance
+        example (``a = 1``, ``b = 1e-4``, ``hazard = 250``).
     ``warm_rows``
-        The learned rows held to set the prior from, where ``prior_mean`` or
-        ``prior_scale`` is left out. Default ``d + 2``, one more than
+        The learned rows held to set the prior from, where ``mean_prior`` or
+        ``covariance_prior`` is left out. Default ``d + 2``, one more than
         ``d + 1``, the smallest count whose covariance is positive definite in
         general; :func:`hmm` and :func:`kmeans` name theirs the same way. The
         prior is set once from those rows and kept for the stream's life, so at
@@ -323,8 +324,9 @@ def bocpd(
         b = po.spec.bocpd(
             "regime", features=["ret"], group="stock_id",
             hazard=250.0,            # the expected run length
-            prior_nu=2.0, prior_scale=[2e-4],   # 2a and 2b: Adams and MacKay's own finance example
-            emission="diag",
+            degrees_of_freedom_prior=2.0,    # 2a and 2b: Adams and MacKay's own
+            covariance_prior=[2e-4],         # finance example
+            covariance_type="diag",
             prune_below=1e-6,        # drop the runs thinner than this
         )
         out = po.ModelBank([b]).fit_predict(df).unnest("regime")
@@ -340,13 +342,13 @@ def bocpd(
     - a number ``hazard`` of 1 or less, and a duration ``hazard`` with no
       clock, beside a plain-number clock parameter, at 0 or below, or beside
       ``hazard_col``;
-    - a ``prior_mean`` of the wrong length, a ``prior_kappa`` not above 0, a
-      ``prior_nu`` below its floor, and a ``prior_scale`` that is neither
-      ``[s]`` nor ``d * d`` entries, or is not positive, symmetric and positive
-      definite (checked whole, even under ``"diag"``, which reads its
-      diagonal);
-    - ``robust_beta`` beside another ``emission``, and at 0, below it or not
-      finite under ``"robust"``;
+    - a ``mean_prior`` of the wrong length, a ``mean_precision_prior`` not
+      above 0, a ``degrees_of_freedom_prior`` below its floor, and a
+      ``covariance_prior`` that is neither ``[s]`` nor ``d * d`` entries, or is
+      not positive, symmetric and positive definite (checked whole, even
+      under ``"diag"``, which reads its diagonal);
+    - a ``robust_beta`` beside ``covariance_type="full"``, and one at 0, below
+      it or not finite;
     - a ``prune_below`` outside ``[0, 1)``, a ``max_run`` below 2, and a
       warm-up buffer past 256 MiB.
     """
@@ -354,11 +356,11 @@ def bocpd(
         "type": "bocpd",
         "hazard": hazard,
         "hazard_col": hazard_col,
-        "emission": emission,
-        "prior_mean": prior_mean,
-        "prior_kappa": prior_kappa,
-        "prior_nu": prior_nu,
-        "prior_scale": prior_scale,
+        "covariance_type": covariance_type,
+        "mean_prior": mean_prior,
+        "mean_precision_prior": mean_precision_prior,
+        "degrees_of_freedom_prior": degrees_of_freedom_prior,
+        "covariance_prior": covariance_prior,
         "robust_beta": robust_beta,
         "prune_below": prune_below,
         "max_run": max_run,
@@ -375,7 +377,7 @@ def corrchange(
     *,
     features: list[str],
     kind: Literal["monitor", "sequential", "window"] = "monitor",
-    span_rows: int | None = None,
+    window_rows: int | None = None,
     alpha: float = 0.05,
     alpha_adjust: Literal["bonferroni", "none"] = "bonferroni",
     bandwidth: int | None = None,
@@ -386,7 +388,7 @@ def corrchange(
     perm_block: int | None = None,
     norm: Literal["l1", "linf"] = "l1",
     seed: int | None = None,
-    reset_on_flag: bool = False,
+    change_action: Literal["flag", "reset"] = "flag",
     monitor_rows: int | None = None,
     boundary_gamma: float | None = None,
     **common: Unpack[CommonKwargs],
@@ -407,14 +409,14 @@ def corrchange(
     .. rubric:: The tests
 
     ``"monitor"`` is the closed-sample constancy test of Wied, Krämer &
-    Dehling (2012), run over consecutive spans of ``span_rows`` rows. At the
+    Dehling (2012), run over consecutive spans of ``window_rows`` rows. At the
     last row of a span, per pair:
 
     .. code-block:: text
 
         Q = max_{2 <= j <= m} (j / sqrt(m)) * |rho_j - rho_m| / D
 
-    ``m`` is ``span_rows``, and ``rho_j`` the sample correlation of the span's
+    ``m`` is ``window_rows``, and ``rho_j`` the sample correlation of the span's
     first ``j`` rows. ``D``
     is the delta-method long-run standard deviation of ``rho``. It takes the
     five raw moments ``(x², y², x, y, xy)`` centred at their span means and
@@ -429,14 +431,14 @@ def corrchange(
     the series, not pinned, and it reproduces the published 1.3581 at 5%. Over
     the pairs the statistic is the maximum and the level is ``alpha / npairs``.
     A span reports on its last row only, so a change is found at most
-    ``span_rows`` rows late, against a null with published tables.
+    ``window_rows`` rows late, against a null with published tables.
     ``docs/REGIMES.md`` §2 and §3 measure its size and power against those
     tables, and ``tests/test_corrchange.py`` holds its size near the nominal
     level.
 
     ``"sequential"`` is the monitoring procedure of Wied & Galeano (2013): a
     history taken as stable, then every row of a monitoring period tested
-    against it as it arrives. A cycle is ``span_rows`` learned rows of
+    against it as it arrives. A cycle is ``window_rows`` learned rows of
     history (``m``), from which each pair's correlation ``rho_hist`` and its
     long-run standard deviation ``D`` are read with the estimator
     ``"monitor"`` uses (bandwidth ``floor(ln m)``). Then the ``k``-th
@@ -455,7 +457,7 @@ def corrchange(
     the first monitored row, since a correlation needs two.
 
     The critical value is Wied & Galeano's: with ``T = monitor_rows /
-    span_rows``, ``crit = (T / (1 + T)) ** (1/2 - boundary_gamma) * q``.
+    window_rows``, ``crit = (T / (1 + T)) ** (1/2 - boundary_gamma) * q``.
     ``q`` is the ``1 - alpha`` quantile of ``sup_{0 < s <= 1} |W(s)| / s **
     boundary_gamma`` for a Brownian motion ``W`` (their Eq. 7; ``alpha /
     npairs`` under Bonferroni). At ``boundary_gamma = 0`` it comes from that
@@ -505,7 +507,7 @@ def corrchange(
     absorb is measured against one level.
 
     ``"window"`` is ``norm(vech(R_pre - R_post))`` over two adjacent blocks of
-    ``span_rows`` rows -- how big the change is, rather than whether the span
+    ``window_rows`` rows -- how big the change is, rather than whether the span
     was constant. ``crit`` is a fixed threshold. Without one the critical
     value is a permutation quantile: ``n_perm`` draws of the pooled rows
     shuffled between the two windows, redrawn every ``permute_every_rows`` rows.
@@ -524,7 +526,7 @@ def corrchange(
 
     ``kind``
         ``"monitor"`` (the default), ``"sequential"`` or ``"window"``.
-    ``span_rows``
+    ``window_rows``
         Required by every kind: the span ``"monitor"`` tests (at least 8),
         the history ``"sequential"`` monitors against (at least 8), or each
         of ``"window"``'s two windows (at least 3).
@@ -540,7 +542,7 @@ def corrchange(
         more than the 0.03 Wied and Galeano's own table is good to.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
-        ``floor(ln span_rows)``, for the span and for the history alike. At 1
+        ``floor(ln window_rows)``, for the span and for the history alike. At 1
         only lag 0 is left,
         and 0 is refused.
     ``scalar``
@@ -553,7 +555,7 @@ def corrchange(
         kind decays anything else, so they are refused otherwise.
     ``monitor_rows``
         ``"sequential"``: the rows monitored after each history, the paper's
-        ``floor(m T)``; default ``span_rows`` (``T = 1``). At least 2.
+        ``floor(m T)``; default ``window_rows`` (``T = 1``). At least 2.
     ``boundary_gamma``
         ``"sequential"``: the boundary's exponent, ``0 <= boundary_gamma <=
         0.49``; default 0, the straight boundary ``1 + k/m``. At 0.5 the
@@ -567,14 +569,16 @@ def corrchange(
         ``"window"``'s permutation quantile: ``n_perm`` draws (default 200, at
         least 20 and at most 2^20), redrawn every ``permute_every_rows`` rows
         (default 50, at least 1), in blocks of ``perm_block`` rows (default 1,
-        at most ``span_rows``). ``seed`` (default 0) seeds the draws, so two
+        at most ``window_rows``). ``seed`` (default 0) seeds the draws, so two
         runs with the same seed report the same critical values.
     ``norm``
         ``"window"``: ``"l1"`` (the default) or ``"linf"``.
-    ``reset_on_flag``
-        ``"window"``: empty the windows at a flag. Default ``False``. A
-        ``"monitor"`` span and a ``"sequential"`` cycle end at their flag
-        already.
+    ``change_action``
+        ``"window"``: what a flag does, in the words ``drift_action`` takes:
+        ``"flag"`` (the default) flags and carries on, and ``"reset"``
+        empties the windows and starts over. A ``"monitor"`` span and a
+        ``"sequential"`` cycle end at their flag already, so ``"reset"`` is
+        refused there.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -622,14 +626,14 @@ def corrchange(
         c = po.spec.corrchange(
             "break", features=["x0", "x1"],
             kind="monitor",      # the constancy test; "window": how big the change is
-            span_rows=100,       # nothing is reported until a span closes
+            window_rows=100,       # nothing is reported until a span closes
         )
         out = po.ModelBank([c]).fit_predict(df).unnest("break")
         due = out.filter(pl.col("stat").is_not_null()).select("t", "stat", "crit", "flag")
         watch = po.spec.corrchange(
             "watch", features=["x0", "x1"],
             kind="sequential",
-            span_rows=500,       # 500 rows of history, then
+            window_rows=500,       # 500 rows of history, then
             monitor_rows=1000,   # each of up to 1000 rows tested as it arrives (T = 2)
             boundary_gamma=0.25, # a lower boundary early in the period
         )
@@ -640,7 +644,7 @@ def corrchange(
     ``targets``; ``ValueError`` for:
 
     - fewer than two features, and an ``alpha`` outside ``(0, 1)``;
-    - ``span_rows`` below the kind's minimum;
+    - ``window_rows`` below the kind's minimum;
     - a parameter of another kind;
     - a ``bandwidth`` of 0, a ``crit`` not above 0, and an ``n_perm``,
       ``permute_every_rows`` or ``perm_block`` outside the range above;
@@ -651,7 +655,7 @@ def corrchange(
     model: dict[str, Any] = {
         "type": "corrchange",
         "kind": kind,
-        "span_rows": span_rows,
+        "window_rows": window_rows,
         "alpha": alpha,
         "alpha_adjust": alpha_adjust,
         "bandwidth": bandwidth,
@@ -662,7 +666,7 @@ def corrchange(
         "perm_block": perm_block,
         "norm": norm,
         "seed": seed,
-        "reset_on_flag": reset_on_flag,
+        "change_action": change_action,
         "monitor_rows": monitor_rows,
         "boundary_gamma": boundary_gamma,
     }

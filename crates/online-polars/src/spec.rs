@@ -45,7 +45,10 @@ impl WindowBudgetSpec {
 }
 
 pub(crate) mod diagnostics;
+mod names;
 mod readiness;
+
+pub use names::*;
 
 /// A number rendered for a **field name** (`__r{ridge}`, `@h{half_life}`,
 /// `abs_resid_q{level}`, `__l{lambda}`).
@@ -156,73 +159,6 @@ mod kinds_tests {
             "{sgd}"
         );
     }
-
-    /// The forwarding table is empty before 1.0: a rename made before it is
-    /// refused by name (task 144's rule), never forwarded, and no name is
-    /// both refused and forwarded (docs/PLAN.md task 198, D2).
-    #[test]
-    fn the_forwarding_table_is_empty_before_1_0() {
-        let major: u32 = env!("CARGO_PKG_VERSION")
-            .split('.')
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        if major < 1 {
-            assert!(super::DEPRECATED.is_empty(), "{:?}", super::DEPRECATED);
-        }
-        for (old, _) in super::DEPRECATED {
-            assert!(
-                super::RENAMED.iter().all(|(r, _)| r != old),
-                "{old} is both refused and forwarded"
-            );
-        }
-    }
-
-    /// An entry forwards an old name to the new one at any depth -- a spec's
-    /// own key and its model's -- with a notice each, and the spec it makes
-    /// is the one the new name makes; an old and a new name side by side are
-    /// refused, naming both.
-    #[test]
-    fn a_deprecated_name_is_forwarded_with_a_notice() {
-        let table = [("half_lyfe", "half_life"), ("rigde", "ridge")];
-        let mut old: serde_json::Value = serde_json::from_str(
-            r#"[{"name": "m", "model": {"type": "ewridge", "rigde": 0.5}, "targets": ["y"],
-                 "features": ["x"], "half_lyfe": 10.0}]"#,
-        )
-        .unwrap();
-        let notices = super::forward_deprecated_with(&mut old, &table).unwrap();
-        assert_eq!(
-            notices,
-            [
-                super::deprecation_notice("half_lyfe", "half_life"),
-                super::deprecation_notice("rigde", "ridge"),
-            ]
-        );
-        assert!(notices[0].contains("renamed half_life") && notices[0].contains("next major"));
-        let new: serde_json::Value = serde_json::from_str(
-            r#"[{"name": "m", "model": {"type": "ewridge", "ridge": 0.5}, "targets": ["y"],
-                 "features": ["x"], "half_life": 10.0}]"#,
-        )
-        .unwrap();
-        let (a, b): (Vec<super::Spec>, Vec<super::Spec>) = (
-            serde_json::from_value(old).unwrap(),
-            serde_json::from_value(new).unwrap(),
-        );
-        assert_eq!(a, b);
-        let mut both: serde_json::Value =
-            serde_json::from_str(r#"{"half_lyfe": 1.0, "half_life": 2.0}"#).unwrap();
-        let err = super::forward_deprecated_with(&mut both, &table).unwrap_err();
-        assert!(
-            err.contains("half_lyfe") && err.contains("half_life"),
-            "{err}"
-        );
-        // The production table, empty, leaves a spec as it is.
-        let mut plain: serde_json::Value = serde_json::from_str(r#"{"half_life": 3.0}"#).unwrap();
-        let before = plain.clone();
-        assert!(super::forward_deprecated(&mut plain).unwrap().is_empty());
-        assert_eq!(plain, before);
-    }
 }
 
 #[cfg(test)]
@@ -242,7 +178,7 @@ mod fill_tests {
         for (model, col) in [
             (r#"{"type": "bocpd", "hazard_col": "h"}"#, "h"),
             (
-                r#"{"type": "hmm", "k": 2, "precision_prior": 0.1, "exog_tvtp": "z"}"#,
+                r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1, "exog_tvtp": "z"}"#,
                 "z",
             ),
         ] {
@@ -275,12 +211,12 @@ mod fill_tests {
     /// names were compared, and the first put column `z` in the slot).
     #[test]
     fn a_renamed_table_cannot_smuggle_another_column_into_the_hazard_slot() {
-        // `hmm` wants its `k`, a prior, the tvtp coefficients and a
+        // `hmm` wants its `n_components`, a prior, the tvtp coefficients and a
         // half-life, which `bocpd` refuses.
         for (model, key, top) in [
             ("\"bocpd\"", "hazard_col", ""),
             (
-                "\"hmm\", \"k\": 2, \"precision_prior\": 1.0, \
+                "\"hmm\", \"n_components\": 2, \"precision_prior\": 1.0, \
                  \"tvtp_coef\": [[0.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5]]",
                 "exog_tvtp",
                 ", \"half_life\": 20.0",
@@ -813,7 +749,7 @@ pub enum ModelKind {
         /// (docs/PLAN.md task 162). With `max_rows_between_snapshots` too,
         /// whichever comes first; with neither, every row.
         #[serde(default)]
-        window_every: Option<Span>,
+        snapshot_every: Option<Span>,
         /// At most this many rows between the window's snapshots, as
         /// `max_rows_between_solves` is between solves; `1` is every row,
         /// and `0`, no schedule, is refused (tasks 162 and 196).
@@ -827,7 +763,7 @@ pub enum ModelKind {
     },
     Lasso {
         /// Decreasing penalties on standardized stats; required.
-        lasso_path: Vec<f64>,
+        penalties: Vec<f64>,
         /// 1.0 = lasso, < 1.0 = elastic net.
         #[serde(default)]
         l1_ratio: Option<f64>,
@@ -860,7 +796,7 @@ pub enum ModelKind {
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
-        window_every: Option<Span>,
+        snapshot_every: Option<Span>,
         /// At most this many rows between the window's snapshots; `1` is
         /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
@@ -985,7 +921,7 @@ pub enum ModelKind {
         /// Clock units between refreshes of the components, as `solve_every`
         /// is the regressions': a number of the clock column's units, or a
         /// duration on a temporal clock, `0` every row (docs/PLAN.md task
-        /// 161). With `max_rows_between_pca` too, whichever comes first;
+        /// 161). With `max_rows_between_pcas` too, whichever comes first;
         /// with neither, every row.
         #[serde(default)]
         pca_every: Option<Span>,
@@ -993,7 +929,7 @@ pub enum ModelKind {
         /// `max_rows_between_solves` is the regressions'; `1` is every row,
         /// and `0` is refused (tasks 161 and 196).
         #[serde(default)]
-        max_rows_between_pca: Option<u32>,
+        max_rows_between_pcas: Option<u32>,
         /// Lags to accumulate cross-moments at, in output order
         /// (docs/ENHANCEMENTS.md E56): strictly increasing, `>= 1` and at
         /// most 2^20 (`online_core::MAX_LAG`, the ring being sized before the
@@ -1025,7 +961,7 @@ pub enum ModelKind {
         /// the memory and shortens the effective window by at most one
         /// spacing -- never lengthens it.
         #[serde(default)]
-        window_every: Option<Span>,
+        snapshot_every: Option<Span>,
         /// At most this many rows between the window's snapshots; `1` is
         /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
@@ -1181,7 +1117,10 @@ pub enum ModelKind {
     /// before the row is learned.
     #[serde(rename = "kmeans")]
     KMeans {
-        /// Number of clusters, `1 ..= 2^16` (`online_core::KMeans::MAX_K`).
+        /// Number of clusters, `1 ..= 2^16` (`online_core::KMeans::MAX_K`):
+        /// `n_clusters`, scikit-learn's `KMeans` name (task 244, P-9), kept
+        /// `k` here as the core's configuration calls it.
+        #[serde(rename = "n_clusters")]
         k: usize,
         /// Learned rows buffered before seeding, at least `k`: fewer is
         /// refused by name, as `hmm` refuses it, where it was floored to `k`
@@ -1190,10 +1129,12 @@ pub enum ModelKind {
         /// (`online_core::KMeans::WARM_BUDGET_MIB`).
         #[serde(default)]
         warm_rows: Option<usize>,
-        /// "lloyd" (default), "kmeanspp", "farthest" or "first".
+        /// "lloyd" (default), "k-means++", "farthest" or "first": how the
+        /// first centres are placed, scikit-learn's `init` and its spelling
+        /// of k-means++ (task 244).
         #[serde(default)]
-        seed_rule: Option<String>,
-        /// Seed of the generator behind "kmeanspp" and "lloyd". Default 0.
+        init: Option<String>,
+        /// Seed of the generator behind "k-means++" and "lloyd". Default 0.
         #[serde(default)]
         seed: Option<u64>,
         /// Learned rows between centre updates. Default 1 (every row).
@@ -1277,15 +1218,16 @@ pub enum ModelKind {
         /// The classes, in output order; a label value not listed here is
         /// an error, a null label scores the row without learning from it.
         classes: Vec<String>,
-        /// "full" (default: one covariance per class, QDA), "shared" (one
-        /// pooled covariance, LDA) or "diagonal" (naive Bayes).
+        /// "full" (default: one covariance per class, QDA), "tied" (one
+        /// pooled covariance, LDA) or "diag" (naive Bayes): scikit-learn's
+        /// `GaussianMixture` words (task 244, P-2).
         #[serde(default)]
-        covariance: Option<String>,
+        covariance_type: Option<String>,
         /// Ridge on every class covariance, finite and `> 0`; it decays as
         /// the class accumulates data, like `ew_cov`'s `precision_prior`.
         precision_prior: f64,
         /// Clock units of history each class's moments are computed from,
-        /// with a **hard** cutoff (docs/PLAN.md §13). `covariance = "full"`
+        /// with a **hard** cutoff (docs/PLAN.md §13). `covariance_type = "full"`
         /// pays one factorization per class per row under a window, because
         /// the truncated covariance moves every row where a decayed one does
         /// not; the other shapes are unaffected.
@@ -1299,7 +1241,7 @@ pub enum ModelKind {
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
-        window_every: Option<Span>,
+        snapshot_every: Option<Span>,
         /// At most this many rows between the window's snapshots; `1` is
         /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
@@ -1438,7 +1380,7 @@ pub enum ModelKind {
         /// Clock units between the window's snapshots, `0` every row, as
         /// for `EwRidge` (docs/PLAN.md task 162).
         #[serde(default)]
-        window_every: Option<Span>,
+        snapshot_every: Option<Span>,
         /// At most this many rows between the window's snapshots; `1` is
         /// every row, and `0` is refused (tasks 162 and 196).
         #[serde(default)]
@@ -1556,11 +1498,14 @@ pub enum ModelKind {
     /// to the next.
     #[serde(rename = "hmm")]
     Hmm {
-        /// Hidden states, `2 ..= 1024` (`online_core::Hmm::MAX_K`).
+        /// Hidden states, `2 ..= 1024` (`online_core::Hmm::MAX_K`):
+        /// `n_components`, scikit-learn's `GaussianMixture` and hmmlearn's
+        /// name (task 244, P-9), kept `k` here as the core calls it.
+        #[serde(rename = "n_components")]
         k: usize,
-        /// `"full"` (default), `"shared"` or `"diagonal"`, as `ew_class`.
+        /// `"full"` (default), `"tied"` or `"diag"`, as `ew_class`.
         #[serde(default)]
-        covariance: Option<String>,
+        covariance_type: Option<String>,
         /// Ridge on every state covariance; **required**, since a state's
         /// centred co-moments start at zero.
         precision_prior: f64,
@@ -1585,13 +1530,13 @@ pub enum ModelKind {
         covs: Option<Vec<f64>>,
         /// Learned rows buffered before the states are seeded (default 50).
         /// With `means` and `covs` given nothing is seeded, and it, like
-        /// `seed_rule` and `seed`, is refused (review 2026-10-06, CE4).
+        /// `init` and `seed`, is refused (review 2026-10-06, CE4).
         #[serde(default)]
         warm_rows: Option<usize>,
-        /// `"first"`, `"farthest"`, `"kmeanspp"` or `"lloyd"` (default), as
+        /// `"first"`, `"farthest"`, `"k-means++"` or `"lloyd"` (default), as
         /// `kmeans`.
         #[serde(default)]
-        seed_rule: Option<String>,
+        init: Option<String>,
         #[serde(default)]
         seed: Option<u64>,
         /// A column whose value drives the transition matrix through
@@ -1605,10 +1550,10 @@ pub enum ModelKind {
     /// Has the correlation structure changed? (docs/ENHANCEMENTS.md E59)
     ///
     /// `"monitor"` is Wied, Krämer & Dehling's closed-sample constancy
-    /// test, run over consecutive spans of `span_rows` rows; `"sequential"`
-    /// is Wied & Galeano's detector, a history of `span_rows` rows and then
+    /// test, run over consecutive spans of `window_rows` rows; `"sequential"`
+    /// is Wied & Galeano's detector, a history of `window_rows` rows and then
     /// every row of a monitoring period tested against it; `"window"` is
-    /// the size of the change between two adjacent blocks of `span_rows`,
+    /// the size of the change between two adjacent blocks of `window_rows`,
     /// against a fixed threshold or a permutation critical value. A
     /// parameter that belongs to another kind is refused.
     #[serde(rename = "corrchange")]
@@ -1621,7 +1566,7 @@ pub enum ModelKind {
         /// `"sequential"` monitors against (at least 8), or the length of
         /// each of the two adjacent blocks `"window"` compares (at least 3).
         #[serde(default)]
-        span_rows: Option<usize>,
+        window_rows: Option<usize>,
         /// Nominal level; default 0.05.
         #[serde(default)]
         alpha: Option<f64>,
@@ -1629,7 +1574,7 @@ pub enum ModelKind {
         #[serde(default)]
         alpha_adjust: Option<String>,
         /// `"monitor"` and `"sequential"`: the Bartlett bandwidth, `⌊ln T⌋`
-        /// (or `⌊ln span_rows⌋`) when unset.
+        /// (or `⌊ln window_rows⌋`) when unset.
         #[serde(default)]
         bandwidth: Option<usize>,
         /// `"monitor"` and `"sequential"`: test the equicorrelation of the
@@ -1655,13 +1600,15 @@ pub enum ModelKind {
         norm: Option<String>,
         #[serde(default)]
         seed: Option<u64>,
-        /// Empty the rings at a flag and start over (`"window"` only;
-        /// `"monitor"`'s spans are disjoint already, and a `"sequential"`
-        /// cycle ends at its flag).
+        /// `"reset"` empties the rings at a flag and starts over;
+        /// `"flag"`, the default, flags and carries on: the words
+        /// `drift_action` takes (task 244). `"window"` only: `"monitor"`'s
+        /// spans are disjoint already, and a `"sequential"` cycle ends at its
+        /// flag.
         #[serde(default)]
-        reset_on_flag: Option<bool>,
+        change_action: Option<String>,
         /// `"sequential"`: the rows monitored after each history, Wied &
-        /// Galeano's `⌊mT⌋`; default `span_rows` (`T = 1`).
+        /// Galeano's `⌊mT⌋`; default `window_rows` (`T = 1`).
         #[serde(default)]
         monitor_rows: Option<usize>,
         /// `"sequential"`: the boundary's exponent `γ`, `0 ≤ γ < 1/2`;
@@ -1687,24 +1634,32 @@ pub enum ModelKind {
         /// `hazard`.
         #[serde(default)]
         hazard_col: Option<String>,
-        /// `"gaussian"`, `"diag"` (default) or `"robust"`.
+        /// `"full"`, a normal-inverse-Wishart over all the features, or
+        /// `"diag"` (default), a normal-inverse-gamma per feature:
+        /// scikit-learn's covariance words (task 244, P-2), where `emission`
+        /// said `"gaussian"` and `"diag"`.
         #[serde(default)]
-        emission: Option<String>,
+        covariance_type: Option<String>,
         /// `μ₀`; absent, the first `warm_rows` learned rows' sample mean.
+        /// scikit-learn's `BayesianGaussianMixture` names the four priors
+        /// (task 244, P-3).
         #[serde(default)]
-        prior_mean: Option<Vec<f64>>,
+        mean_prior: Option<Vec<f64>>,
+        /// `κ₀`, the mean's weight in rows.
         #[serde(default)]
-        prior_kappa: Option<f64>,
-        /// `ν₀`; absent, `d + 2` under `"gaussian"` and 3 under `"diag"`
-        /// and `"robust"` (docs/PLAN.md task 195, U5).
+        mean_precision_prior: Option<f64>,
+        /// `ν₀`; absent, `d + 2` under `"full"` and 3 under `"diag"`
+        /// (docs/PLAN.md task 195, U5).
         #[serde(default)]
-        prior_nu: Option<f64>,
+        degrees_of_freedom_prior: Option<f64>,
         /// A scalar for `sI`, or a `d x d` matrix, in the data's units;
         /// absent, the first `warm_rows` learned rows' sample covariance
-        /// (its diagonal under `"diag"` and `"robust"`; task 195, U4).
+        /// (its diagonal under `"diag"`; task 195, U4).
         #[serde(default)]
-        prior_scale: Option<Vec<f64>>,
-        /// `"robust"`'s β.
+        covariance_prior: Option<Vec<f64>>,
+        /// Temper each row by `(π(x) / π(mode)) ** robust_beta`, the robust
+        /// predictive, under `"diag"`; absent, the predictive untempered.
+        /// It was `emission = "robust"`, whose default β was 0.1.
         #[serde(default)]
         robust_beta: Option<f64>,
         #[serde(default)]
@@ -1712,8 +1667,8 @@ pub enum ModelKind {
         #[serde(default)]
         max_run: Option<usize>,
         /// Learned rows held, reporting nothing, to set the priors left out
-        /// from; default `d + 2`. Refused beside both `prior_mean` and
-        /// `prior_scale` (task 195, U4).
+        /// from; default `d + 2`. Refused beside both `mean_prior` and
+        /// `covariance_prior` (task 195, U4).
         #[serde(default)]
         warm_rows: Option<usize>,
     },
@@ -1920,36 +1875,36 @@ impl ModelKind {
         })
     }
 
-    /// A windowed kind's `window_every` and `max_rows_between_snapshots`, as
+    /// A windowed kind's `snapshot_every` and `max_rows_between_snapshots`, as
     /// the spec gives them; `None` for a kind with no window (docs/PLAN.md
     /// task 162).
     pub fn window_cadence(&self) -> Option<(Option<&Span>, Option<u32>)> {
         match self {
             ModelKind::EwRidge {
-                window_every,
+                snapshot_every,
                 max_rows_between_snapshots,
                 ..
             }
             | ModelKind::Lasso {
-                window_every,
+                snapshot_every,
                 max_rows_between_snapshots,
                 ..
             }
             | ModelKind::EwCov {
-                window_every,
+                snapshot_every,
                 max_rows_between_snapshots,
                 ..
             }
             | ModelKind::EwClass {
-                window_every,
+                snapshot_every,
                 max_rows_between_snapshots,
                 ..
             }
             | ModelKind::Marginal {
-                window_every,
+                snapshot_every,
                 max_rows_between_snapshots,
                 ..
-            } => Some((window_every.as_ref(), *max_rows_between_snapshots)),
+            } => Some((snapshot_every.as_ref(), *max_rows_between_snapshots)),
             _ => None,
         }
     }
@@ -2003,9 +1958,9 @@ impl ModelKind {
                 "solve_every",
             )),
             ModelKind::EwCov {
-                max_rows_between_pca,
+                max_rows_between_pcas,
                 ..
-            } => caps.push(("max_rows_between_pca", *max_rows_between_pca, "pca_every")),
+            } => caps.push(("max_rows_between_pcas", *max_rows_between_pcas, "pca_every")),
             ModelKind::Micro {
                 max_rows_between_prunes,
                 ..
@@ -2017,7 +1972,7 @@ impl ModelKind {
             _ => {}
         }
         if let Some((_, rows)) = self.window_cadence() {
-            caps.push(("max_rows_between_snapshots", rows, "window_every"));
+            caps.push(("max_rows_between_snapshots", rows, "snapshot_every"));
         }
         caps
     }
@@ -2149,7 +2104,7 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "long_half_life",
             "solve_every",
             "window_size",
-            "window_every",
+            "snapshot_every",
         ],
     ),
     (
@@ -2158,17 +2113,17 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
             "select_half_life",
             "solve_every",
             "window_size",
-            "window_every",
+            "snapshot_every",
         ],
     ),
     ("kalman", &["coef_half_life", "revert_half_life"]),
     ("huber", &["solve_every"]),
     ("quantile", &["solve_every"]),
-    ("ew_cov", &["pca_every", "window_size", "window_every"]),
+    ("ew_cov", &["pca_every", "window_size", "snapshot_every"]),
     ("holt", &["trend_half_life"]),
     ("micro", &["prune_every"]),
-    ("ew_class", &["window_size", "window_every"]),
-    ("marginal", &["window_size", "window_every"]),
+    ("ew_class", &["window_size", "snapshot_every"]),
+    ("marginal", &["window_size", "snapshot_every"]),
 ];
 
 /// The parameters that take a duration on a temporal clock or a number that
@@ -2402,25 +2357,25 @@ impl Spec {
                 long_half_life,
                 solve_every,
                 window_size: window,
-                window_every,
+                snapshot_every,
                 ..
             } => {
                 put(&mut out, "long_half_life", long_half_life.as_ref());
                 put(&mut out, "solve_every", solve_every.as_ref());
                 put(&mut out, "window_size", window.as_ref());
-                put(&mut out, "window_every", window_every.as_ref());
+                put(&mut out, "snapshot_every", snapshot_every.as_ref());
             }
             ModelKind::Lasso {
                 select_half_life,
                 solve_every,
                 window_size: window,
-                window_every,
+                snapshot_every,
                 ..
             } => {
                 put(&mut out, "select_half_life", select_half_life.as_ref());
                 put(&mut out, "solve_every", solve_every.as_ref());
                 put(&mut out, "window_size", window.as_ref());
-                put(&mut out, "window_every", window_every.as_ref());
+                put(&mut out, "snapshot_every", snapshot_every.as_ref());
             }
             ModelKind::Kalman {
                 coef_half_life,
@@ -2436,25 +2391,25 @@ impl Spec {
             ModelKind::EwCov {
                 pca_every,
                 window_size: window,
-                window_every,
+                snapshot_every,
                 ..
             } => {
                 put(&mut out, "pca_every", pca_every.as_ref());
                 put(&mut out, "window_size", window.as_ref());
-                put(&mut out, "window_every", window_every.as_ref());
+                put(&mut out, "snapshot_every", snapshot_every.as_ref());
             }
             ModelKind::EwClass {
                 window_size: window,
-                window_every,
+                snapshot_every,
                 ..
             }
             | ModelKind::Marginal {
                 window_size: window,
-                window_every,
+                snapshot_every,
                 ..
             } => {
                 put(&mut out, "window_size", window.as_ref());
-                put(&mut out, "window_every", window_every.as_ref());
+                put(&mut out, "snapshot_every", snapshot_every.as_ref());
             }
             ModelKind::Holt {
                 trend_half_life, ..
@@ -2565,7 +2520,7 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("add_intercept", "fit_intercept"),
     ("max_cd_iters", "max_iter"),
     ("cd_tol", "tol"),
-    ("reset", "reset_on_flag"),
+    ("reset", "change_action"),
     // Task 196 (docs/PLAN.md §18, N14): a count of rows says so, so that a
     // clock form can come later under the plain name.
     ("update_every", "update_every_rows"),
@@ -2599,115 +2554,6 @@ pub const RENAMED_VALUES: &[(&str, &str)] = &[("ew_ridge", "ewridge"), ("lagcorr
 /// refused by name, task 144's rule. A rename after 1.0 goes here, beside
 /// its twin in `python/polars_online/_warnings.py`'s `_DEPRECATED`.
 pub const DEPRECATED: &[(&str, &str)] = &[];
-
-/// The one refusal of a word outside the words a parameter takes (task 244,
-/// P-4): `<param> must be one of "a", "b"; got "x"`, after the spec's name
-/// where the caller has one ([`spec_words_refusal`]). Every word parameter
-/// says it the same way -- a builder in Python, a spec dict, a TOML file --
-/// so the words read the same wherever a caller meets them, and the API
-/// snapshot reads them from this one shape.
-pub fn words_refusal(param: &str, words: &[&str], got: &str) -> String {
-    format!("{param} {}", words_body(words, got))
-}
-
-/// [`words_refusal`] without the parameter: `must be one of "a", "b"; got
-/// "x"`.
-pub fn words_body(words: &[&str], got: &str) -> String {
-    let list = words
-        .iter()
-        .map(|w| format!("{w:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("must be one of {list}; got {got:?}")
-}
-
-/// [`words_refusal`] after `spec "<name>": `.
-pub fn spec_words_refusal(spec: &str, param: &str, words: &[&str], got: &str) -> String {
-    format!("spec {spec:?}: {}", words_refusal(param, words, got))
-}
-
-/// A deserializer's refusal of a word, `msg`, as [`words_body`] words it:
-/// `must be one of "a", "b"; got "x"`. serde words an enum's unknown
-/// variant as ``unknown variant `x`, expected `a` or `b` `` (or ``expected
-/// one of `a`, `b`, `c` ``), and a spec's own deserializers say ``must be
-/// ...`` already. `None` for any other message, which is not about a word.
-pub fn word_refusal_body(msg: &str) -> Option<String> {
-    if msg.starts_with("must be ") {
-        return Some(msg.to_string());
-    }
-    let rest = msg.strip_prefix("unknown variant `")?;
-    let (got, rest) = rest.split_once('`')?;
-    let list = rest.strip_prefix(", expected ")?;
-    let list = list.strip_prefix("one of ").unwrap_or(list);
-    let words: Vec<&str> = list
-        .split(['`', ','])
-        .map(str::trim)
-        .filter(|w| !w.is_empty() && *w != "or")
-        .collect();
-    if words.is_empty() {
-        return None;
-    }
-    Some(words_body(&words, got))
-}
-
-/// What a deprecated name is told: that it was renamed, that it still
-/// works, and until when.
-pub fn deprecation_notice(old: &str, new: &str) -> String {
-    format!(
-        "{old} is deprecated: it was renamed {new}. It is read as {new} until the next major \
-         version, which refuses it"
-    )
-}
-
-/// `v` -- a spec, a list of specs or a windows config, as JSON -- with each
-/// key [`DEPRECATED`] names renamed to its new name, at any depth (a model's
-/// own parameters are a level down), and a notice for each. A map naming
-/// both an old name and its new one is refused, naming both.
-pub fn forward_deprecated(v: &mut serde_json::Value) -> Result<Vec<String>, String> {
-    forward_deprecated_with(v, DEPRECATED)
-}
-
-/// [`forward_deprecated`] by `table`.
-pub fn forward_deprecated_with(
-    v: &mut serde_json::Value,
-    table: &[(&str, &str)],
-) -> Result<Vec<String>, String> {
-    let mut notices = Vec::new();
-    forward_into(v, table, &mut notices)?;
-    Ok(notices)
-}
-
-fn forward_into(
-    v: &mut serde_json::Value,
-    table: &[(&str, &str)],
-    notices: &mut Vec<String>,
-) -> Result<(), String> {
-    match v {
-        serde_json::Value::Object(map) => {
-            for (old, new) in table {
-                if let Some(value) = map.remove(*old) {
-                    if map.contains_key(*new) {
-                        return Err(format!(
-                            "{old} was renamed {new}, and both are given: give {new} alone"
-                        ));
-                    }
-                    map.insert((*new).to_string(), value);
-                    notices.push(deprecation_notice(old, new));
-                }
-            }
-            for value in map.values_mut() {
-                forward_into(value, table, notices)?;
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for value in items {
-                forward_into(value, table, notices)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
 
 /// `msg`, a deserialization error, with the rename named when the field it
 /// refuses as unknown is an old name, or the model `type` it refuses as an
@@ -3052,7 +2898,7 @@ pub struct Spec {
     /// take Newey and West's variance at `2h` lags, the CUSUMs and
     /// `break_wald` the long-run variance, Ljung and Box skip the lags
     /// inside it, and `se_coef_hac`'s lags default to `2h`. A count of
-    /// rows, named `*_rows` as `warm_rows` and `span_rows` are: a row
+    /// rows, named `*_rows` as `warm_rows` and `window_rows` are: a row
     /// count is what the residuals overlap by, whatever the clock.
     #[serde(default)]
     pub horizon_rows: Option<usize>,
@@ -4142,7 +3988,7 @@ impl Spec {
             (self.model.window_parts(), self.model.window_cadence())
         {
             for (key, given) in [
-                ("window_every", every.is_some()),
+                ("snapshot_every", every.is_some()),
                 ("max_rows_between_snapshots", rows.is_some()),
             ] {
                 if given && window.is_none() {
@@ -4151,7 +3997,7 @@ impl Spec {
             }
             if let Some(e) = every.filter(|e| !non_negative(e.value()) || !e.value().is_finite()) {
                 return Err(format!(
-                    "spec {:?}: window_every must be finite and >= 0 clock units (0 snapshots \
+                    "spec {:?}: snapshot_every must be finite and >= 0 clock units (0 snapshots \
                      every row), got {e}",
                     self.name
                 ));
@@ -4475,13 +4321,13 @@ impl Spec {
                 mahal_quantiles,
                 pca,
                 pca_every,
-                max_rows_between_pca,
+                max_rows_between_pcas,
                 lags,
                 // Checked with `ew_ridge`'s (`gram_threads_given`).
                 gram_threads: _,
                 window_size: window,
                 // Checked with every windowed kind's (`window_cadence`).
-                window_every: _,
+                snapshot_every: _,
                 max_rows_between_snapshots: _,
                 window_budget: _,
                 closed: _,
@@ -4624,7 +4470,7 @@ impl Spec {
                 }
                 for (key, given) in [
                     ("pca_every", pca_every.is_some()),
-                    ("max_rows_between_pca", max_rows_between_pca.is_some()),
+                    ("max_rows_between_pcas", max_rows_between_pcas.is_some()),
                 ] {
                     if given && pca.is_none_or(|r| r == 0) {
                         return Err(format!(
@@ -4636,7 +4482,7 @@ impl Spec {
             }
             ModelKind::KMeans {
                 k,
-                seed_rule,
+                init,
                 update_every_rows,
                 split_merge,
                 split_merge_every_rows,
@@ -4647,15 +4493,14 @@ impl Spec {
             } => {
                 if *k == 0 {
                     return Err(format!(
-                        "spec {:?}: kmeans k must be >= 1, got 0",
+                        "spec {:?}: kmeans n_clusters must be >= 1, got 0",
                         self.name
                     ));
                 }
-                if let Some(rule) = seed_rule {
-                    const OK: [&str; 4] = ["first", "farthest", "kmeanspp", "lloyd"];
-                    if !OK.contains(&rule.as_str()) {
-                        return Err(spec_words_refusal(&self.name, "seed_rule", &OK, rule));
-                    }
+                if let Some(rule) = init
+                    && !INIT_WORDS.contains(&rule.as_str())
+                {
+                    return Err(spec_words_refusal(&self.name, "init", &INIT_WORDS, rule));
                 }
                 if update_every_rows.is_some_and(|v| v == 0) {
                     return Err(format!(
@@ -4759,11 +4604,11 @@ impl Spec {
             }
             ModelKind::EwClass {
                 classes,
-                covariance,
+                covariance_type,
                 precision_prior,
                 window_size: window,
                 // Checked with every windowed kind's (`window_cadence`).
-                window_every: _,
+                snapshot_every: _,
                 max_rows_between_snapshots: _,
                 window_budget: _,
                 closed: _,
@@ -4803,7 +4648,7 @@ impl Spec {
                         self.name
                     ));
                 }
-                if let Some(c) = covariance {
+                if let Some(c) = covariance_type {
                     online_core::Covariance::parse(c)
                         .map_err(|e| format!("spec {:?}: {e}", self.name))?;
                 }
@@ -5231,33 +5076,30 @@ impl Spec {
                 }
             }
             ModelKind::Lasso {
-                lasso_path,
+                penalties,
                 l1_ratio,
                 select_half_life,
                 solve_every,
                 tol,
                 ..
             } => {
-                if lasso_path.is_empty() {
-                    return Err(format!(
-                        "spec {:?}: lasso_path must be non-empty",
-                        self.name
-                    ));
+                if penalties.is_empty() {
+                    return Err(format!("spec {:?}: penalties must be non-empty", self.name));
                 }
-                if let Some(l) = lasso_path
+                if let Some(l) = penalties
                     .iter()
                     .find(|l| !non_negative(**l) || !l.is_finite())
                 {
                     return Err(format!(
-                        "spec {:?}: lasso_path values must be finite and >= 0, got {l}",
+                        "spec {:?}: penalties must each be finite and >= 0, got {l}",
                         self.name
                     ));
                 }
                 // Strictly: a repeated penalty is two identical slots with the
                 // same field name.
-                if let Some(w) = lasso_path.windows(2).find(|w| w[0] <= w[1]) {
+                if let Some(w) = penalties.windows(2).find(|w| w[0] <= w[1]) {
                     return Err(format!(
-                        "spec {:?}: lasso_path must be strictly decreasing, got {} then {}",
+                        "spec {:?}: penalties must be strictly decreasing, got {} then {}",
                         self.name, w[0], w[1]
                     ));
                 }

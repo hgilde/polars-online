@@ -180,12 +180,23 @@ fn specs() -> Vec<Spec> {
 /// before the save, from which the diagnostics fold (task 232 (1)). And an
 /// `audit` with its pairs (task 223 (b), schema 54): a spec the bank's file
 /// names, which reads every row. It moved here from the first file when the
-/// fourth `withheld_reason` (task 239) took that file past the cap.
+/// fourth `withheld_reason` (task 239) took that file past the cap. And
+/// the keys and words a spec took at 1.0 (task 244, schema 61), each in the
+/// file's specs: `kmeans`' `n_clusters` and `init = "k-means++"`, `hmm`'s
+/// `n_components` and `covariance_type = "tied"`, `bocpd`'s
+/// `covariance_type = "full"` and its four priors, `corrchange`'s
+/// `window_rows` and `change_action = "reset"`, and `ew_cov`'s
+/// `max_rows_between_pcas` and `snapshot_every`.
 fn diagnosed_specs() -> Vec<Spec> {
     [
         r#"{"name": "diagnosed", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "horizon_rows": 2, "emit_calibration": true, "calibration_half_life": 90.0, "emit_breaks": true, "emit_robust_se": true, "robust_se_lags": 2, "coef_every": 4.0, "emit_specification": true, "ljung_box_lags": 3, "emit_tails": true, "emit_influence": true, "emit_feature_health": true}"#,
         r#"{"name": "quantiled", "model": {"type": "quantile", "quantile": 0.8}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "embargo": 2.0, "horizon_rows": 2, "emit_calibration": true, "emit_breaks": true}"#,
         r#"{"name": "audited", "model": {"type": "audit", "pairs": true}, "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t", "gap_cap": 50.0}"#,
+        r#"{"name": "clustered", "model": {"type": "kmeans", "n_clusters": 2, "init": "k-means++", "warm_rows": 8}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0}"#,
+        r#"{"name": "regimes", "model": {"type": "hmm", "n_components": 2, "covariance_type": "tied", "precision_prior": 0.01, "warm_rows": 8, "init": "first"}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0}"#,
+        r#"{"name": "changing", "model": {"type": "bocpd", "covariance_type": "full", "mean_prior": [0.0, 0.0], "mean_precision_prior": 1.0, "degrees_of_freedom_prior": 5.0, "covariance_prior": [1.0], "max_run": 40}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 50.0}"#,
+        r#"{"name": "corr_window", "model": {"type": "corrchange", "kind": "window", "window_rows": 10, "change_action": "reset", "n_perm": 20}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 50.0}"#,
+        r#"{"name": "components", "model": {"type": "ew_cov", "pca": 1, "max_rows_between_pcas": 5, "window_size": 12.0, "snapshot_every": 3.0}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -976,6 +987,51 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
                 p.contains(".breaks.") && p.ends_with(".c2") && v.as_f64().is_some_and(|f| f != 0.0)
             },
         ),
+        // Schema 61 (task 244): a spec's keys and words as they stand at
+        // 1.0.
+        ("bank_diagnosed", "kmeans' n_clusters", |p, v| {
+            p.ends_with(".model.n_clusters") && v.as_u64() == Some(2)
+        }),
+        ("bank_diagnosed", "init = \"k-means++\"", |p, v| {
+            p.ends_with(".model.init") && v.as_str() == Some("k-means++")
+        }),
+        ("bank_diagnosed", "hmm's n_components", |p, v| {
+            p.ends_with(".model.n_components") && v.as_u64() == Some(2)
+        }),
+        ("bank_diagnosed", "covariance_type = \"tied\"", |p, v| {
+            p.ends_with(".model.covariance_type") && v.as_str() == Some("tied")
+        }),
+        ("bank_diagnosed", "covariance_type = \"full\"", |p, v| {
+            p.ends_with(".model.covariance_type") && v.as_str() == Some("full")
+        }),
+        ("bank_diagnosed", "bocpd's mean_prior", |p, v| {
+            p.contains(".model.mean_prior.") && v.as_f64().is_some()
+        }),
+        ("bank_diagnosed", "bocpd's mean_precision_prior", |p, v| {
+            p.ends_with(".model.mean_precision_prior") && v.as_f64().is_some()
+        }),
+        (
+            "bank_diagnosed",
+            "bocpd's degrees_of_freedom_prior",
+            |p, v| p.ends_with(".model.degrees_of_freedom_prior") && v.as_f64().is_some(),
+        ),
+        ("bank_diagnosed", "bocpd's covariance_prior", |p, v| {
+            p.contains(".model.covariance_prior.") && v.as_f64().is_some()
+        }),
+        ("bank_diagnosed", "corrchange's window_rows", |p, v| {
+            p.ends_with(".model.window_rows") && v.as_u64() == Some(10)
+        }),
+        ("bank_diagnosed", "change_action = \"reset\"", |p, v| {
+            p.ends_with(".model.change_action") && v.as_str() == Some("reset")
+        }),
+        (
+            "bank_diagnosed",
+            "ew_cov's max_rows_between_pcas",
+            |p, v| p.ends_with(".model.max_rows_between_pcas") && v.as_u64() == Some(5),
+        ),
+        ("bank_diagnosed", "a window's snapshot_every", |p, v| {
+            p.ends_with(".model.snapshot_every") && !v.is_nil()
+        }),
         ("bank_diagnosed", "a slot's fourth moment", |p, v| {
             p.contains(".breaks.") && p.ends_with(".z4") && v.as_f64().is_some_and(|f| f != 0.0)
         }),

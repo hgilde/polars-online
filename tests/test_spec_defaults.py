@@ -112,7 +112,7 @@ def test_the_readme_readiness_gate_defaults_are_what_the_bank_resolves():
     for spec in (
         po.spec.rls("m", **kw),
         po.spec.kalman("m", coef_half_life=50.0, **kw),
-        po.spec.lasso("m", lasso_path=[0.1], **kw),
+        po.spec.lasso("m", penalties=[0.1], **kw),
     ):
         assert resolved(spec)["stream"]["max_error_inflation"] == "inf", spec["model"]
     # The two readiness row fields are opt-in on every model that has them
@@ -133,7 +133,7 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     value, task 207 measured it against a residual-scaled band and kept
     it), `pa`'s `c` is 1 in the target's units, `sgd` and `pa`
     standardize, `bocpd`'s `nu`
-    is the smallest integer giving each emission's variance a mean, and
+    is the smallest integer giving each predictive's variance a mean, and
     `rls`'s prior strength is `delta`."""
     kw = {"targets": ["y"], "features": ["x0", "x1", "x2"], "half_life": 50.0}
     assert resolved(po.spec.huber("m", **kw))["model"]["loss"] == {"huber": {"delta": 1.345}}
@@ -150,9 +150,13 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
     assert resolved(po.spec.pa("m", **kw, eps=0.1))["model"]["eps"] == 0.1
     assert resolved(po.spec.rls("m", **kw))["model"]["delta"] == 1.0
     feats = {"features": kw["features"]}
-    for emission, nu in (("diag", 3.0), ("robust", 3.0), ("gaussian", 5.0)):
-        derived = resolved(po.spec.bocpd("m", **feats, emission=emission))["derived"]
-        assert derived["prior_nu"] == nu, emission
+    for emission, nu in (
+        ({"covariance_type": "diag"}, 3.0),
+        ({"robust_beta": 0.1}, 3.0),
+        ({"covariance_type": "full"}, 5.0),
+    ):
+        derived = resolved(po.spec.bocpd("m", **feats, **emission))["derived"]
+        assert derived["degrees_of_freedom_prior"] == nu, emission
         assert derived["warm_rows"] == 5, emission
 
 

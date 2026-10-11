@@ -513,6 +513,22 @@ pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
         .collect()
 }
 
+/// `kmeans`' and `hmm`'s `init` as the core's [`SeedRule`]: scikit-learn's
+/// words, `"k-means++"` among them (task 244), `"lloyd"` when absent.
+pub(crate) fn init_rule(init: Option<&str>) -> Result<SeedRule, String> {
+    match init {
+        None | Some("lloyd") => Ok(SeedRule::Lloyd),
+        Some("k-means++") => Ok(SeedRule::Kmeanspp),
+        Some("farthest") => Ok(SeedRule::Farthest),
+        Some("first") => Ok(SeedRule::First),
+        Some(other) => Err(crate::words_refusal(
+            "init",
+            &crate::spec::INIT_WORDS,
+            other,
+        )),
+    }
+}
+
 /// The slope constraint of `sgd` / `pa` from the spec's `coef_min`,
 /// `coef_max` and `coef_sum`: a scalar bound is broadcast to every feature,
 /// a list is taken as given (its length is checked by the model's config,
@@ -598,7 +614,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             gram_threads: _,
             target_gaps,
             window_size: window,
-            window_every,
+            snapshot_every,
             max_rows_between_snapshots,
             window_budget: _,
             closed: _,
@@ -649,7 +665,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 gram_block_rows: gram_block_rows.unwrap_or(0),
                 target_gaps: *target_gaps,
                 window: window.as_ref().map(Span::value),
-                window_every: window_every.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
                 max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             let mut m = EwRidge::new(cfg)?;
@@ -677,7 +693,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             Ok(AnyModel::Rls(Box::new(Rls::new(cfg)?)))
         }
         ModelKind::Lasso {
-            lasso_path,
+            penalties,
             l1_ratio,
             select_half_life,
             solve_every,
@@ -686,7 +702,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             tol,
             target_gaps,
             window_size: window,
-            window_every,
+            snapshot_every,
             max_rows_between_snapshots,
             window_budget: _,
             closed: _,
@@ -696,7 +712,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_targets: spec.m(),
                 fit_intercept: spec.fit_intercept,
                 decay,
-                lasso_path: lasso_path.clone(),
+                lasso_path: penalties.clone(),
                 l1_ratio: l1_ratio.unwrap_or(1.0),
                 select_half_life: select_half_life.as_ref().map(Span::value),
                 min_weight: spec.min_periods_or_default(),
@@ -709,7 +725,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 window: window.as_ref().map(Span::value),
-                window_every: window_every.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
                 max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
                 max_iter: max_iter.unwrap_or(100),
                 tol: tol.unwrap_or(1e-10),
@@ -849,11 +865,11 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             mahal_quantiles,
             pca,
             pca_every,
-            max_rows_between_pca,
+            max_rows_between_pcas,
             lags,
             gram_threads: _,
             window_size: window,
-            window_every,
+            snapshot_every,
             max_rows_between_snapshots,
             window_budget: _,
             closed: _,
@@ -887,15 +903,15 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 pca: pca.unwrap_or(0),
                 // The regressions' schedule (task 161): the clock, the rows,
                 // or every row when neither is given.
-                pca_every: match (pca_every, max_rows_between_pca) {
+                pca_every: match (pca_every, max_rows_between_pcas) {
                     (Some(e), _) => e.value(),
                     (None, Some(_)) => f64::INFINITY,
                     (None, None) => 0.0,
                 },
-                max_rows_between_pca: max_rows_between_pca.unwrap_or(u32::MAX),
+                max_rows_between_pca: max_rows_between_pcas.unwrap_or(u32::MAX),
                 lags: lags.clone().unwrap_or_default(),
                 window: window.as_ref().map(Span::value),
-                window_every: window_every.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
                 max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
@@ -1021,7 +1037,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::KMeans {
             k,
             warm_rows,
-            seed_rule,
+            init,
             seed,
             update_every_rows,
             split_merge,
@@ -1030,15 +1046,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             standardize,
             scale_floor,
         } => {
-            let seed_rule = match seed_rule.as_deref() {
-                None | Some("lloyd") => SeedRule::Lloyd,
-                Some("kmeanspp") => SeedRule::Kmeanspp,
-                Some("farthest") => SeedRule::Farthest,
-                Some("first") => SeedRule::First,
-                // Unreachable after `Spec::validate`; a stale string is a bug
-                // in the caller, not a runtime condition to swallow.
-                Some(other) => return Err(format!("unknown kmeans seed_rule {other:?}")),
-            };
+            let seed_rule = crate::stream::init_rule(init.as_deref())?;
             let cfg = KMeansCfg {
                 n_features: spec.k(),
                 k: *k,
@@ -1096,10 +1104,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         }
         ModelKind::EwClass {
             classes,
-            covariance,
+            covariance_type,
             precision_prior,
             window_size: window,
-            window_every,
+            snapshot_every,
             max_rows_between_snapshots,
             window_budget: _,
             closed: _,
@@ -1109,13 +1117,13 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_classes: classes.len(),
                 decay,
                 min_weight: spec.min_periods_per_target()[0],
-                covariance: match covariance {
+                covariance: match covariance_type {
                     Some(c) => Covariance::parse(c)?,
                     None => Covariance::Full,
                 },
                 precision_prior: *precision_prior,
                 window: window.as_ref().map(Span::value),
-                window_every: window_every.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
                 max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
@@ -1130,7 +1138,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         }
         ModelKind::Marginal {
             window_size: window,
-            window_every,
+            snapshot_every,
             max_rows_between_snapshots,
             window_budget: _,
             closed: _,
@@ -1202,7 +1210,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     }
                 },
                 window: window.as_ref().map(Span::value),
-                window_every: window_every.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
                 max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
             };
             Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
@@ -1320,7 +1328,7 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::CorrChange { .. }
         | ModelKind::Bocpd { .. }
         | ModelKind::Audit { .. } => vec![Combo::default()],
-        ModelKind::Lasso { lasso_path, .. } => lasso_path
+        ModelKind::Lasso { penalties, .. } => penalties
             .iter()
             .map(|l| Combo {
                 label: format!("__l{}", crate::spec::num_label(*l)),
@@ -2291,7 +2299,7 @@ pub struct Stream {
 impl Stream {
     /// The first of this stream's windows to pass a refusing budget -- a
     /// model instance's, or a spread's ring (S1): its ring's bytes and its
-    /// cadence, `window_every` and `max_rows_between_snapshots` (review
+    /// cadence, `snapshot_every` and `max_rows_between_snapshots` (review
     /// 2026-09-12, P4; docs/PLAN.md task 162).
     pub fn window_over_budget(&self) -> Option<(usize, online_core::Cadence)> {
         self.models

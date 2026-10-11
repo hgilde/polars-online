@@ -216,7 +216,7 @@ def test_a_model_with_no_prediction_refuses_the_switch(switch):
     [
         (po.spec.ewridge, {}),
         (po.spec.rls, {}),
-        (po.spec.lasso, {"lasso_path": [0.01]}),
+        (po.spec.lasso, {"penalties": [0.01]}),
         (po.spec.kalman, {"coef_half_life": 100.0}),
         (po.spec.huber, {}),
         (po.spec.quantile, {"quantile": 0.5}),
@@ -400,7 +400,7 @@ def test_robust_se_lags_default_to_the_horizons_twice_its_rows():
     ("build", "extra", "why"),
     [
         (po.spec.kalman, {"coef_half_life": 100.0}, "random walk"),
-        (po.spec.lasso, {"lasso_path": [0.01]}, "post-selection"),
+        (po.spec.lasso, {"penalties": [0.01]}, "post-selection"),
         (po.spec.huber, {}, "M-estimator"),
         (po.spec.sgd, {}, "gradient fit"),
     ],
@@ -724,7 +724,7 @@ _FEATURES = dict(_LEVEL, features=["x0", "x1"])
             ),
             70.0,
         ),
-        (po.spec.lasso, dict(_FEATURES, lasso_path=[0.01], select_half_life=90.0), 90.0),
+        (po.spec.lasso, dict(_FEATURES, penalties=[0.01], select_half_life=90.0), 90.0),
         (po.spec.ewridge, _FEATURES, 20.0),
     ],
 )

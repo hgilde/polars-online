@@ -40,7 +40,7 @@ ridge = po.spec.ewridge(
     emit_se_coef=True,
 )
 cov = po.spec.ew_cov(
-    "c", features=features, half_life=200.0, stats=[], pca=2, max_rows_between_pca=60,
+    "c", features=features, half_life=200.0, stats=[], pca=2, max_rows_between_pcas=60,
 )
 out = po.ModelBank([ridge, cov]).fit_predict(df)
 print(hashlib.sha256(str(out.to_dict(as_series=False)).encode()).hexdigest())

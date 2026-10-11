@@ -113,7 +113,7 @@ class TestCoefFields:
             "l",
             targets=["y"],
             features=["x0"],
-            lasso_path=[1.0, 0.1],
+            penalties=[1.0, 0.1],
             half_life=50.0,
             min_weight=2.0,
         )

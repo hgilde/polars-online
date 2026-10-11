@@ -34,7 +34,14 @@ from polars_online._polars_online import (
     validate_spec,
 )
 from polars_online._renamed import removed_keywords, renamed_keywords
-from polars_online._warnings import forward_deprecated
+from polars_online._spec_words import (
+    _WORD_REASONS,
+    _bad_word,
+    _one_of,
+    word_reason,
+    words_refusal,
+)
+from polars_online._warnings import forward_deprecated, forward_model
 
 
 def _who(name: Any) -> str:
@@ -75,6 +82,9 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
             # warning, at any depth -- a model's own keys are a level down --
             # as the Rust side forwards a TOML file's (`DEPRECATED`).
             v = forward_deprecated(_who(who), v, _warnings._DEPRECATED, stacklevel=5)
+            # A model table's keys and words renamed in that model alone.
+            if isinstance(v.get("type"), str):
+                v = forward_model(_who(who), v["type"], v, stacklevel=5)
             return {k: enc(x, k, who) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
             return [enc(x, key, who) for x in v]
@@ -218,65 +228,6 @@ def _describe(hint: Any, plural: bool = False) -> str:
     return many if plural else one
 
 
-def _one_of(words: Sequence[str]) -> str:
-    """``one of "a", "b"``: how every refusal names the words a parameter
-    takes, here and on the Rust side (``online_polars::words_refusal``)."""
-    return "one of " + ", ".join(json.dumps(w) for w in words)
-
-
-def _bad_word(v: Any, hint: Any) -> tuple[str, tuple[str, ...]] | None:
-    """The word ``v`` gives outside the words ``hint`` takes, and those
-    words, where ``v`` has the shape the hint asks for but a word it does
-    not take: a str for a ``Literal``, an entry of a list of them, or a key
-    of a dict keyed by them. ``None`` where the shape itself is wrong, which
-    is a ``TypeError``, not a word outside a list."""
-    origin = typing.get_origin(hint)
-    if origin in (types.UnionType, typing.Union):
-        for a in typing.get_args(hint):
-            if (found := _bad_word(v, a)) is not None:
-                return found
-        return None
-    if origin is Literal:
-        words = typing.get_args(hint)
-        if isinstance(v, str) and v not in words:
-            return v, words
-        return None
-    if origin in (list, Sequence) and isinstance(v, (list, tuple)):
-        (inner,) = typing.get_args(hint)
-        if typing.get_origin(inner) is Literal and all(isinstance(x, str) for x in v):
-            words = typing.get_args(inner)
-            return next(((x, words) for x in v if x not in words), None)
-        return None
-    if origin is dict and isinstance(v, dict):
-        key, _ = typing.get_args(hint)
-        if typing.get_origin(key) is Literal and all(isinstance(k, str) for k in v):
-            words = typing.get_args(key)
-            return next(((k, words) for k in v if k not in words), None)
-    return None
-
-
-#: Why a parameter takes the words it does, where a caller would ask: said
-#: after the refusal, as the Rust side says it.
-_WORD_REASONS = {
-    ("rcov", "kernel"): (
-        "the Bartlett kernel is not consistent for this estimator, and Parzen beats "
-        "the quadratic spectral on efficiency (BNHLS 2011)"
-    ),
-}
-
-
-def words_refusal(who: str, key: str, got: str, words: Sequence[str], hint: Any = None) -> str:
-    """The one refusal of a word outside the words a parameter takes
-    (task 244, P-4): ``spec "m": <key> must be one of "a", "b"; got "x"``,
-    the shape the Rust side gives a spec dict and a TOML file too. A
-    parameter that also takes something other than a word (``hint``, its
-    annotation) names that first: ``an int or one of "auto"``."""
-    others = [a for a in typing.get_args(hint) if a in (int, float)]
-    kinds = " or ".join(_describe(a) for a in others)
-    taken = f"{kinds} or {_one_of(words)}" if kinds else _one_of(words)
-    return f"{who}: {key} must be {taken}; got {json.dumps(got)}"
-
-
 def _got(v: Any) -> str:
     r = repr(v)
     return f"{type(v).__name__} {r if len(r) <= 60 else r[:57] + '...'}"
@@ -393,7 +344,8 @@ _AT_LEAST_ONE = frozenset(
         "max_clusters",
         "resid_autocorr_lag",
         "ljung_box_lags",
-        "k",
+        "n_clusters",
+        "n_components",
         # A lasso of no sweeps never descends: every solve is a failure, and
         # the coefficients read like a fit (review 2026-10-05, PB7).
         "max_iter",
@@ -403,7 +355,7 @@ _AT_LEAST_ONE = frozenset(
         "max_rows_between_coefs",
         "max_rows_between_solves",
         "max_rows_between_snapshots",
-        "max_rows_between_pca",
+        "max_rows_between_pcas",
         "max_rows_between_prunes",
     }
 )
@@ -419,7 +371,7 @@ _U32 = frozenset(
         "max_rows_between_coefs",
         "max_rows_between_solves",
         "max_rows_between_snapshots",
-        "max_rows_between_pca",
+        "max_rows_between_pcas",
         "max_rows_between_prunes",
         "max_iter",
         "update_every_rows",
@@ -442,11 +394,11 @@ _CEILING = {
     "n_perm": 2**20,
 }
 
-#: A ceiling one builder's count has under a name another builder shares:
-#: ``hmm``'s ``k`` sizes its transition matrix, ``k^2`` cells, and its states
-#: before the first row (``online_core::Hmm::MAX_K``), where ``kmeans``' ``k``
-#: is held to 2^16 by the Rust side.
-_CEILING_OF = {"hmm": {"k": 2**10}}
+#: A ceiling one builder's count has that its width does not say:
+#: ``hmm``'s ``n_components`` sizes its transition matrix, its square in
+#: cells, and its states before the first row (``online_core::Hmm::MAX_K``),
+#: where ``kmeans``' ``n_clusters`` is held to 2^16 by the Rust side.
+_CEILING_OF = {"hmm": {"n_components": 2**10}}
 
 
 def _int_ceiling(key: str, builder: str = "") -> int:
@@ -492,7 +444,7 @@ _RENAMED = {
     "add_intercept": "fit_intercept",
     "max_cd_iters": "max_iter",
     "cd_tol": "tol",
-    "reset": "reset_on_flag",
+    "reset": "change_action",
     # Task 196 (docs/PLAN.md §18, N14 and N16): a count of rows says so, and
     # holt's level takes the spec's `half_life`, one knob under one name.
     "update_every": "update_every_rows",
@@ -548,6 +500,8 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
         # A keyword renamed after 1.0, read as its new name with a warning
         # pointed at the caller's line.
         given = forward_deprecated(who, kwargs, _warnings._DEPRECATED, stacklevel=3)
+        # And a keyword or a word renamed in this model alone (task 244).
+        given = forward_model(who, fn.__name__, given, stacklevel=3)
         for key, value in given.items():
             if key == "name":
                 continue
@@ -577,6 +531,8 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 # error, in the shape every surface gives it (task 244, P-4);
                 # anything else of the wrong shape is a type error.
                 if (bad := _bad_word(value, hint)) is not None:
+                    if (reason := word_reason(who, key, bad[0])) is not None:
+                        raise ValueError(reason)
                     why = _WORD_REASONS.get((fn.__name__, key))
                     said = words_refusal(who, key, *bad, hint=hint)
                     raise ValueError(f"{said}: {why}" if why else said)
@@ -970,7 +926,7 @@ def ewridge(
     target_gaps: Literal["own_rows", "pairwise"] = "own_rows",
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
-    window_every: float | Duration | None = None,
+    snapshot_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     **common: Unpack[CommonKwargs],
@@ -1172,7 +1128,7 @@ def ewridge(
 
         ``weight_sum`` counts every row either way, and a null target is
         still predicted.
-    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``snapshot_every``, ``window_budget``
         A hard cutoff on the history the fit is solved from, in clock units,
         finite and above 0. A row ``window_size`` old or older is not in the
         sums at all, where the exponential weight alone would leave
@@ -1197,7 +1153,7 @@ def ewridge(
         ``window_size``.
 
         The ring takes a snapshot on every row unless told otherwise.
-        ``window_every`` spaces them on the clock, as ``solve_every`` spaces
+        ``snapshot_every`` spaces them on the clock, as ``solve_every`` spaces
         solves: a number of the clock's units, a duration on a temporal clock
         (``"1m"``), or ``0`` for every row. ``max_rows_between_snapshots`` caps
         the rows between them, as ``max_rows_between_solves`` caps the rows
@@ -1205,12 +1161,12 @@ def ewridge(
         weight zero counts, a gap capped at ``gap_cap`` counts as the cap, and
         without a clock column the clock is the row's number. A coarser cadence
         divides the memory and can only shorten the effective window. Under a
-        clock spacing, every row at most ``window_size - window_every`` old is
+        clock spacing, every row at most ``window_size - snapshot_every`` old is
         kept and none older than ``window_size``. So the effective window is in
-        ``[window_size - window_every, window_size]`` in clock units, exactly,
-        with ``window_every`` the spacing in force: a thinning
+        ``[window_size - snapshot_every, window_size]`` in clock units, exactly,
+        with ``snapshot_every`` the spacing in force: a thinning
         ``window_budget`` doubles it. A burst of rows inside one spacing takes
-        no snapshot of its own. ``window_every``,
+        no snapshot of its own. ``snapshot_every``,
         ``max_rows_between_snapshots`` and ``window_budget`` are refused
         without ``window_size``.
 
@@ -1226,7 +1182,7 @@ def ewridge(
            * - ``{"thin": mib}``
              - drops every other snapshot and doubles the spacing between the
                rest, the clock's or the rows' or both, as often as it takes;
-               like ``window_every``, that can only shorten the window
+               like ``snapshot_every``, that can only shorten the window
            * - ``{"refuse": mib}``
              - refuses the chunk, naming the ring's size and its cadence
            * - unset
@@ -1343,7 +1299,7 @@ def ewridge(
         "target_gaps": target_gaps,
         "window_size": window_size,
         "closed": closed,
-        "window_every": window_every,
+        "snapshot_every": snapshot_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
@@ -1813,14 +1769,14 @@ def lasso(
     *,
     targets: TargetList,
     features: list[str],
-    lasso_path: list[float],
+    penalties: list[float],
     l1_ratio: float | None = None,
     select_half_life: float | Duration | None = None,
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
-    window_every: float | Duration | None = None,
+    snapshot_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     max_iter: int | None = None,
@@ -1839,7 +1795,7 @@ def lasso(
 
     .. rubric:: The fit
 
-    For each penalty ``l`` in ``lasso_path``, with ``C`` the feature correlation
+    For each penalty ``l`` in ``penalties``, with ``C`` the feature correlation
     matrix and ``c_i = cov(x_i, y) / s_i``, each feature's covariance with the
     target over the feature's standard deviation. The descent runs until no
     coefficient moves by more than ``tol``:
@@ -1859,7 +1815,7 @@ def lasso(
 
     .. rubric:: Parameters
 
-    ``lasso_path``
+    ``penalties``
         The penalties, strictly decreasing, each finite and at least 0;
         required, and not empty. One slot per point, reported as
         ``pred_<t>__l<lambda>``.
@@ -1878,7 +1834,7 @@ def lasso(
         from the output adds no error, so one target's choice does not depend
         on another's threshold. Before the first scored row
         ``penalty_selected_<t>`` is the path's last point, and a tie between
-        points keeps the first in ``lasso_path`` order.
+        points keeps the first in ``penalties`` order.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``
@@ -1894,11 +1850,11 @@ def lasso(
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
         :func:`ewridge`. The cross-correlations are centred at the target's own
         means either way.
-    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``snapshot_every``, ``window_budget``
         A hard cutoff on the history the path is fitted from, in clock units,
         as for :func:`ewridge`. A row ``window_size`` old or older is not in
         the sums, and ``closed="both"`` keeps the one exactly that old, as for
-        :func:`ewridge`. ``window_every`` spaces the snapshots on the clock and
+        :func:`ewridge`. ``snapshot_every`` spaces the snapshots on the clock and
         ``max_rows_between_snapshots`` caps the rows between them, whichever
         comes first, as for :func:`ewridge`; ``window_budget`` bounds each ring
         in MiB and thins or refuses past the bound. Each of the three is
@@ -1944,7 +1900,7 @@ def lasso(
         las = po.spec.lasso(
             "las", targets=["y"], features=["x0", "x1", "x2"],
             clock="t", gap_cap=300.0, half_life=600.0,
-            lasso_path=[0.1, 0.01, 0.001],   # decreasing; every point is predicted
+            penalties=[0.1, 0.01, 0.001],   # decreasing; every point is predicted
             l1_ratio=1.0,                    # below 1: an elastic net
         )
         out = po.ModelBank([las]).fit_predict(df)
@@ -1952,14 +1908,14 @@ def lasso(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`); ``lasso_path`` is
+    As every builder does (:mod:`polars_online.spec`); ``penalties`` is
     required, and ``ValueError`` names a path that is empty or not strictly
     decreasing, an ``l1_ratio`` outside ``[0, 1]``, and a ``select_half_life``
     or ``tol`` that is not above 0.
     """
     model: dict[str, Any] = {
         "type": "lasso",
-        "lasso_path": lasso_path,
+        "penalties": penalties,
         "l1_ratio": l1_ratio,
         "select_half_life": select_half_life,
         "solve_every": solve_every,
@@ -1969,7 +1925,7 @@ def lasso(
         "target_gaps": target_gaps,
         "window_size": window_size,
         "closed": closed,
-        "window_every": window_every,
+        "snapshot_every": snapshot_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
@@ -2754,12 +2710,12 @@ def ew_cov(
     mahal_quantiles: list[float] | None = None,
     pca: int | None = None,
     pca_every: float | Duration | None = None,
-    max_rows_between_pca: int | None = None,
+    max_rows_between_pcas: int | None = None,
     lags: list[int] | None = None,
     gram_threads: int | None = None,
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
-    window_every: float | Duration | None = None,
+    snapshot_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     **common: Unpack[CommonKwargs],
@@ -2859,9 +2815,9 @@ def ew_cov(
         components are the same to the bit whatever the bank's thread count
         (``POLARS_ONLINE_MAX_THREADS``): the eigensolver runs at a fixed
         parallel degree of eight.
-    ``pca_every``, ``max_rows_between_pca``
+    ``pca_every``, ``max_rows_between_pcas``
         The eigendecomposition, O(k³), is refreshed after the row is folded in,
-        every ``pca_every`` clock units or every ``max_rows_between_pca`` rows,
+        every ``pca_every`` clock units or every ``max_rows_between_pcas`` rows,
         whichever comes first (both refused without ``pca``), as
         ``solve_every`` and ``max_rows_between_solves`` schedule a regression's
         solve. ``pca_every`` is a number of the clock's units, a duration on a
@@ -2905,7 +2861,7 @@ def ew_cov(
         times as fast on eight threads and 3.1 times on fourteen
         (``docs/PERFORMANCE.md`` §37). Below 725 features a row's update stays
         on one thread, and the lagged cross-moments of ``lags`` always do.
-    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``snapshot_every``, ``window_budget``
         A hard cutoff on the history, in clock units: a row ``window_size`` old
         or older contributes nothing at all, where the exponential weight alone
         would still leave ``0.5 ** (age / half_life)`` of it, 12.5% at three
@@ -2919,12 +2875,12 @@ def ew_cov(
         a ring of snapshots, one per row by default: the one place in this
         library where memory grows with a window rather than with the state. A
         snapshot is ``k² + k + 3`` eight-byte numbers, so a 1,000-row window
-        over 20 columns is about 3 MB per group. ``window_every`` spaces the
+        over 20 columns is about 3 MB per group. ``snapshot_every`` spaces the
         snapshots on the clock (``"1m"``, or a number of the clock's units) and
         ``max_rows_between_snapshots`` caps the rows between them, whichever
         comes first, as for :func:`ewridge`. Either divides the memory, and a
         clock spacing alone holds a ring to at most
-        ``window_size / window_every + 2`` snapshots whatever the row rate.
+        ``window_size / snapshot_every + 2`` snapshots whatever the row rate.
         ``window_budget`` bounds each ring in MiB and thins or refuses past the
         bound, as for :func:`ewridge`.
 
@@ -2941,9 +2897,9 @@ def ew_cov(
                so what is dropped is always a superset of what the window
                excludes; under a coarser cadence the effective window is
                shorter than asked by at most one snapshot's spacing, never
-               longer: in ``[window_size - window_every, window_size]`` in
+               longer: in ``[window_size - snapshot_every, window_size]`` in
                clock units, exactly, under a clock spacing, with
-               ``window_every`` the spacing in force (a thinning budget
+               ``snapshot_every`` the spacing in force (a thinning budget
                doubles it)
            * - the clock is the decayed one
              - ``window_size`` is measured on the clock the decay uses, after
@@ -3020,7 +2976,7 @@ def ew_cov(
     - an empty ``mahal_quantiles``, one without ``mahal``, or a level outside
       ``(0, 1)``;
     - a ``pca`` of 0 or past the features, and ``pca_every`` or
-      ``max_rows_between_pca`` without ``pca``;
+      ``max_rows_between_pcas`` without ``pca``;
     - a ``window_size`` not above 0, and ``window_size`` beside ``lags`` or
       ``mahal_quantiles``.
     """
@@ -3031,12 +2987,12 @@ def ew_cov(
         "mahal_quantiles": mahal_quantiles,
         "pca": pca,
         "pca_every": pca_every,
-        "max_rows_between_pca": max_rows_between_pca,
+        "max_rows_between_pcas": max_rows_between_pcas,
         "lags": lags,
         "gram_threads": gram_threads,
         "window_size": window_size,
         "closed": closed,
-        "window_every": window_every,
+        "snapshot_every": snapshot_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
@@ -3827,9 +3783,9 @@ def kmeans(
     name: str,
     *,
     features: list[str],
-    k: int,
+    n_clusters: int,
     warm_rows: int | None = None,
-    seed_rule: Literal["first", "farthest", "kmeanspp", "lloyd"] | None = None,
+    init: Literal["first", "farthest", "k-means++", "lloyd"] | None = None,
     seed: int | None = None,
     update_every_rows: int | None = None,
     split_merge: float | None = None,
@@ -3842,7 +3798,7 @@ def kmeans(
     """Exponentially weighted k-means over the feature columns.
 
     Not a regression: there are no targets. Each row is assigned to the
-    nearest of ``k`` centres before it is learned, so the label is
+    nearest of ``n_clusters`` centres before it is learned, so the label is
     out-of-sample like every prediction here. Each centre is the decayed
     weighted mean of the rows assigned to it: :func:`ew_cov`'s mean
     recursion, per cluster.
@@ -3863,34 +3819,34 @@ def kmeans(
 
     .. rubric:: Parameters
 
-    ``k``
+    ``n_clusters``
         The number of centres; required, and at most 65,536 (2^16): every row
-        is scored against every centre, and seeding is ``O(k^2)``.
-    ``warm_rows``, ``seed_rule``, ``seed``
+        is scored against every centre, and seeding is ``O(n_clusters^2)``.
+    ``warm_rows``, ``init``, ``seed``
         Seeding. The first ``warm_rows`` learned rows are buffered: at least
-        ``k``, and a smaller value is refused; default 500, or ``k`` where
+        ``n_clusters``, and a smaller value is refused; default 500, or ``n_clusters`` where
         that is more. The buffer is held to 256 MiB, each row its values and
-        its weight. Then the centres are placed by ``seed_rule``:
+        its weight. Then the centres are placed by ``init``:
 
         .. list-table::
            :header-rows: 1
            :widths: 24 76
 
-           * - ``seed_rule``
+           * - ``init``
              - the centres
            * - ``"lloyd"`` (the default)
              - the best, by inertia, of ten k-means++ starts, each followed by
                ten weighted Lloyd iterations over the buffer
-           * - ``"kmeanspp"``
+           * - ``"k-means++"``
              - k-means++
            * - ``"farthest"``
              - Gonzalez, from the first row
            * - ``"first"``
-             - the first ``k`` distinct rows
+             - the first ``n_clusters`` distinct rows
 
         ``seed`` (default 0) drives the two random rules; the same seed gives
         the same centres. Under ``"first"``, seeding waits past ``warm_rows``
-        if it must for ``k`` distinct rows, holding up to
+        if it must for ``n_clusters`` distinct rows, holding up to
         ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
         and freed, so the model is O(state) again from that row on. Outputs are
         null until seeding and until ``weight_sum`` reaches ``min_weight``.
@@ -3915,10 +3871,10 @@ def kmeans(
         until the rows are learned again.
     ``dead_frac``
         Re-place a centre whose weight has decayed below ``dead_frac *
-        weight_sum / k`` the same way, on whatever far rows there are
+        weight_sum / n_clusters`` the same way, on whatever far rows there are
         (default 0.05; ``0`` disables). A centre whose cluster vanished is
         re-placed ``log2(1 / dead_frac)`` half-lives later (4.3 at the
-        default, 2 at 0.25). A cluster lighter than ``dead_frac / k`` of the
+        default, 2 at 0.25). A cluster lighter than ``dead_frac / n_clusters`` of the
         stream loses its centre whenever any row is far. The rule runs at a
         split-merge check, so beside ``split_merge = 0``, which runs none,
         the default is 0 and a value above 0 is refused.
@@ -3957,7 +3913,7 @@ def kmeans(
         null until seeding.
     ``dist``, ``dist_second``
         The distance to that centre, and to the runner-up, the second-nearest
-        (null when ``k == 1``), so ``dist_second - dist`` is the margin.
+        (null when ``n_clusters == 1``), so ``dist_second - dist`` is the margin.
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
@@ -3965,7 +3921,7 @@ def kmeans(
         decays, and which gate withheld the row's fields, null where none did:
         ``below_warm_rows`` on the rows held to seed the centres from.
     ``coef``
-        The centres: ``k`` rows of ``len(features)``, flattened
+        The centres: ``n_clusters`` rows of ``len(features)``, flattened
         cluster-major. :func:`coef_index` lays it out, with ``target``
         reading ``"cluster0"``, ``"cluster1"``, ... and ``term`` the feature
         whose coordinate the position holds.
@@ -3976,9 +3932,9 @@ def kmeans(
 
         km = po.spec.kmeans(
             "km", features=["x0", "x1", "x2"], clock="t", half_life=2000.0, gap_cap=300.0,
-            k=3,
+            n_clusters=3,
             warm_rows=100,           # seeding waits for this many rows, then replays them
-            seed_rule="lloyd",       # ten k-means++ starts, each refined by Lloyd iterations
+            init="lloyd",       # ten k-means++ starts, each refined by Lloyd iterations
             split_merge=0.5,         # two centres in one blob: one moves to the far rows
             dead_frac=0.05,         # a centre whose blob vanished is re-placed 4.3 half-lives later
         )
@@ -3990,18 +3946,18 @@ def kmeans(
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets``, which this model has not got; ``ValueError`` for:
 
-    - ``k`` of 0 or past 2^16, ``warm_rows`` below ``k``, and a warm-up buffer
+    - ``n_clusters`` of 0 or past 2^16, ``warm_rows`` below ``n_clusters``, and a warm-up buffer
       past 256 MiB;
-    - a ``seed_rule`` not in the list;
+    - a ``init`` not in the list;
     - ``split_merge``, ``dead_frac`` or ``scale_floor`` below 0 or not finite,
       ``dead_frac`` above 0 beside ``split_merge = 0``, and ``scale_floor``
       beside ``standardize=False``.
     """
     model: dict[str, Any] = {
         "type": "kmeans",
-        "k": k,
+        "n_clusters": n_clusters,
         "warm_rows": warm_rows,
-        "seed_rule": seed_rule,
+        "init": init,
         "seed": seed,
         "update_every_rows": update_every_rows,
         "split_merge": split_merge,
@@ -4232,11 +4188,11 @@ def ew_class(
     features: list[str],
     label: str,
     classes: list[str],
-    covariance: Literal["full", "shared", "diagonal"] | None = None,
+    covariance_type: Literal["full", "tied", "diag"] = "full",
     precision_prior: float,
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
-    window_every: float | Duration | None = None,
+    snapshot_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     **common: Unpack[CommonKwargs],
@@ -4261,8 +4217,8 @@ def ew_class(
         pi_c = n_c / sum_c' n_c'
         omega_c = precision_prior * s_c      s_c: the class's prior scale
         M_c  = C_c + omega_c I                              ("full", QDA)
-        M    = sum_c pi_c (C_c + omega_c I)                 ("shared", LDA)
-        M_c  = diag(C_c) + omega_c I                    ("diagonal", naive Bayes)
+        M    = sum_c pi_c (C_c + omega_c I)                 ("tied", LDA)
+        M_c  = diag(C_c) + omega_c I                    ("diag", naive Bayes)
         l_c  = ln pi_c - 1/2 ln det M_c - 1/2 (x - mu_c)' M_c^-1 (x - mu_c)
         p_c  = exp(l_c - max_c' l_c') / sum_c' exp(l_c' - max l)
 
@@ -4294,14 +4250,14 @@ def ew_class(
         Every value the label can hold, in the order the ``p_<class>`` fields
         are written; required. A non-null value it does not list is an error
         naming the row.
-    ``covariance``
+    ``covariance_type``
         The shape, and the work a row takes:
 
         .. list-table::
            :header-rows: 1
            :widths: 20 36 44
 
-           * - ``covariance``
+           * - ``covariance_type``
              - the shape
              - per row
            * - ``"full"`` (the default)
@@ -4310,10 +4266,10 @@ def ew_class(
                teaches is refactored: one ``k x k`` factorization per learned
                row; under a ``window_size`` every class's covariance moves on
                every row, so every class is refactored
-           * - ``"shared"``
+           * - ``"tied"``
              - the weight-averaged one, so the decision boundaries are linear
              - one factorization
-           * - ``"diagonal"``
+           * - ``"diag"``
              - the variances alone, which cannot see a correlation
              -
     ``precision_prior``
@@ -4324,14 +4280,14 @@ def ew_class(
         decays by ``lam * n_c / (lam * n_c + w)`` on every row the class
         learns. So the ridge washes out as the class fills in, exactly as
         :func:`ew_cov`'s ``precision_prior`` does.
-    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``snapshot_every``, ``window_budget``
         A hard cutoff on the history each class's moments are computed from,
         in clock units, as for :func:`ewridge`: a row ``window_size`` old or
         older contributes to no class (``closed="both"`` keeps the one
         exactly that old, as for :func:`ewridge`). That is what lets a
         classifier follow class means that move; over a long history two
         regimes average together and the labels go to chance.
-        ``window_every`` spaces the snapshots on the clock and
+        ``snapshot_every`` spaces the snapshots on the clock and
         ``max_rows_between_snapshots`` caps the rows between them, whichever
         comes first, as for :func:`ewridge`; ``window_budget`` bounds each
         ring in MiB. ``weight_sum`` is the weight inside the window, in
@@ -4377,7 +4333,7 @@ def ew_class(
         cl = po.spec.ew_class(
             "cl", features=["x0", "x1", "x2"], clock="t", half_life=200.0, gap_cap=300.0,
             label="dir", classes=["down", "up"],
-            covariance="shared",         # pooled by class weight: linear boundaries
+            covariance_type="tied",         # pooled by class weight: linear boundaries
             precision_prior=0.1,         # the ridge that makes a class scoreable from its first row
             min_weight=20.0,
         )
@@ -4390,18 +4346,18 @@ def ew_class(
     ``targets`` -- this model takes ``label``; ``ValueError`` for:
 
     - fewer than two ``classes``, and a class listed twice or named ``""``;
-    - a ``covariance`` not in the list;
+    - a ``covariance_type`` not in the list;
     - a ``precision_prior`` or a ``window_size`` not above 0;
     - a ``label`` also listed as a feature.
     """
     model: dict[str, Any] = {
         "type": "ew_class",
         "classes": classes,
-        "covariance": covariance,
+        "covariance_type": covariance_type,
         "precision_prior": precision_prior,
         "window_size": window_size,
         "closed": closed,
-        "window_every": window_every,
+        "snapshot_every": snapshot_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
     }
@@ -4563,7 +4519,7 @@ def marginal(
     shards: int | Literal["auto"] | None = None,
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
-    window_every: float | Duration | None = None,
+    snapshot_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
     window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     window_lags: bool = False,
@@ -4755,7 +4711,7 @@ def marginal(
         10,000 features on 14 threads, ``"auto"`` ran 1.2 times as fast at one
         target and 4.9 times with nine targets, lags and bins; the bank's own
         work on each row does not split (``docs/PERFORMANCE.md`` §25).
-    ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
+    ``window_size``, ``closed``, ``snapshot_every``, ``window_budget``
         A hard cutoff on the history the pairs are computed from, in
         clock units, as for :func:`ewridge`: a row ``window_size`` old or older
         contributes nothing (``closed="both"`` keeps the one exactly that old,
@@ -4764,7 +4720,7 @@ def marginal(
         weight, both means and the three centred second moments), so ``corr``,
         ``beta`` and ``t_stat`` describe the window and nothing else. That
         matters most for a screen: two regimes of opposite sign average to
-        nothing over a long history. ``window_every`` spaces the snapshots on
+        nothing over a long history. ``snapshot_every`` spaces the snapshots on
         the clock and ``max_rows_between_snapshots`` caps the rows between
         them, whichever comes first, as for :func:`ewridge`; ``window_budget``
         bounds each ring in MiB. The ``weight_sum`` the struct writes and the
@@ -4920,7 +4876,7 @@ def marginal(
         "shards": shards,
         "window_size": window_size,
         "closed": closed,
-        "window_every": window_every,
+        "snapshot_every": snapshot_every,
         "max_rows_between_snapshots": max_rows_between_snapshots,
         "window_budget": window_budget,
         "window_lags": window_lags or None,

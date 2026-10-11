@@ -407,7 +407,7 @@ impl BocpdCfg {
             );
         }
         if !(self.prior_kappa > 0.0 && self.prior_kappa.is_finite()) {
-            return Err("bocpd: prior_kappa must be finite and > 0".into());
+            return Err("bocpd: mean_precision_prior must be finite and > 0".into());
         }
         let nu = self.nu0();
         // The normal-inverse-Wishart predictive is a `t` on `ν − d + 1`
@@ -422,19 +422,19 @@ impl BocpdCfg {
         };
         if !(nu > floor && nu.is_finite()) {
             return Err(format!(
-                "bocpd: prior_nu must be finite and > {floor} for this emission (got {nu}); \
+                "bocpd: degrees_of_freedom_prior must be finite and > {floor} for this covariance_type (got {nu}); \
                  below it the predictive has no finite {what}"
             ));
         }
         if let Some(v) = &self.prior_scale {
             if v.len() != 1 && v.len() != d * d {
                 return Err(format!(
-                    "bocpd: prior_scale is a scalar or a {d}x{d} matrix, got {} values",
+                    "bocpd: covariance_prior is a scalar or a {d}x{d} matrix, got {} values",
                     v.len()
                 ));
             }
             if v.iter().any(|x| !x.is_finite()) {
-                return Err("bocpd: prior_scale must be finite".into());
+                return Err("bocpd: covariance_prior must be finite".into());
             }
             // A scale matrix that is not positive definite gives a
             // predictive with no density: every row would report nulls and
@@ -442,7 +442,7 @@ impl BocpdCfg {
             // (docs/REVIEW-E54-E64.md B2).
             if v.len() == 1 && v[0] <= 0.0 {
                 return Err(format!(
-                    "bocpd: a scalar prior_scale is the prior scale of the variance and must be \
+                    "bocpd: a scalar covariance_prior is the prior scale of the variance and must be \
                      > 0 (got {})",
                     v[0]
                 ));
@@ -453,7 +453,7 @@ impl BocpdCfg {
                         let (a, b) = (v[i * d + j], v[j * d + i]);
                         if (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs())) {
                             return Err(format!(
-                                "bocpd: a matrix prior_scale must be symmetric; [{i}][{j}] is \
+                                "bocpd: a matrix covariance_prior must be symmetric; [{i}][{j}] is \
                                  {a} and [{j}][{i}] is {b}"
                             ));
                         }
@@ -461,7 +461,7 @@ impl BocpdCfg {
                 }
                 if !matches!(SpdFactor::of(v, d), Some(f) if f.attempts() == 0) {
                     return Err(
-                        "bocpd: a matrix prior_scale must be positive definite -- it is the \
+                        "bocpd: a matrix covariance_prior must be positive definite -- it is the \
                          prior's scale matrix Ψ₀, and the predictive has no density without one"
                             .into(),
                     );
@@ -471,12 +471,12 @@ impl BocpdCfg {
         if let Some(m) = &self.prior_mean {
             if m.len() != d {
                 return Err(format!(
-                    "bocpd: prior_mean must be {d} values, got {}",
+                    "bocpd: mean_prior must be {d} values, got {}",
                     m.len()
                 ));
             }
             if m.iter().any(|x| !x.is_finite()) {
-                return Err("bocpd: prior_mean must be finite".into());
+                return Err("bocpd: mean_prior must be finite".into());
             }
         }
         if self.robust_beta < 0.0 || !self.robust_beta.is_finite() {
@@ -484,13 +484,15 @@ impl BocpdCfg {
         }
         if self.robust_beta > 0.0 && self.emission != BocpdEmission::Robust {
             return Err(format!(
-                "bocpd: robust_beta applies to emission = \"robust\", not {:?}",
+                "bocpd: robust_beta tempers the per-feature predictive (covariance_type = \
+                 \"diag\"), not {:?}",
                 self.emission
             ));
         }
         if self.emission == BocpdEmission::Robust && self.robust_beta <= 0.0 {
             return Err(
-                "bocpd: emission = \"robust\" needs robust_beta > 0; at 0 it is \"diag\"".into(),
+                "bocpd: the tempered predictive needs robust_beta > 0; at 0 it is untempered"
+                    .into(),
             );
         }
         if !(0.0..1.0).contains(&self.prune_below) || self.prune_below.is_nan() {
@@ -2561,28 +2563,28 @@ mod tests {
                 prior_kappa: 0.0,
                 ..cfg(1)
             },
-            "prior_kappa must be finite and > 0",
+            "mean_precision_prior must be finite and > 0",
         );
         bad(
             BocpdCfg {
                 prior_nu: Some(0.5),
                 ..cfg(1)
             },
-            "prior_nu must be finite and >",
+            "degrees_of_freedom_prior must be finite and >",
         );
         bad(
             BocpdCfg {
                 robust_beta: 1.0,
                 ..cfg(1)
             },
-            "robust_beta applies to",
+            "robust_beta tempers the per-feature predictive",
         );
         bad(
             BocpdCfg {
                 emission: BocpdEmission::Robust,
                 ..cfg(1)
             },
-            "needs robust_beta > 0",
+            "the tempered predictive needs robust_beta > 0",
         );
         // Named by the parameter a caller has: `truncate` named none
         // (review 2026-10-05, CD2).
@@ -2607,21 +2609,21 @@ mod tests {
                 prior_mean: Some(vec![0.0, 0.0]),
                 ..cfg(1)
             },
-            "prior_mean must be 1 values",
+            "mean_prior must be 1 values",
         );
         bad(
             BocpdCfg {
                 prior_scale: Some(vec![1.0, 2.0]),
                 ..cfg(1)
             },
-            "prior_scale is a scalar or a 1x1 matrix",
+            "covariance_prior is a scalar or a 1x1 matrix",
         );
         bad(
             BocpdCfg {
                 prior_scale: Some(vec![0.0]),
                 ..cfg(1)
             },
-            "scalar prior_scale",
+            "scalar covariance_prior",
         );
         bad(
             BocpdCfg {
@@ -2644,7 +2646,7 @@ mod tests {
                 prior_mean: Some(vec![f64::NAN]),
                 ..cfg(1)
             },
-            "prior_mean must be finite",
+            "mean_prior must be finite",
         );
     }
 
@@ -3356,7 +3358,10 @@ mod tests {
             prior_nu: Some(nu),
             ..cfg(2)
         };
-        bad(gaussian(3.0), "prior_nu must be finite and > 3 ");
+        bad(
+            gaussian(3.0),
+            "degrees_of_freedom_prior must be finite and > 3 ",
+        );
         // The floor buys a finite variance under the Wishart, a finite mean
         // under the gamma, and the message says which (task 159, D2).
         bad(gaussian(3.0), "no finite variance");
@@ -3366,7 +3371,7 @@ mod tests {
                 prior_nu: Some(1.0),
                 ..cfg(1)
             },
-            "prior_nu must be finite and > 1 ",
+            "degrees_of_freedom_prior must be finite and > 1 ",
         );
         bad(
             BocpdCfg {

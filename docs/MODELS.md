@@ -382,7 +382,7 @@ pl.DataFrame(x, schema=names).with_columns(y=y).write_parquet("wide.parquet")
 las = po.spec.lasso(
     "las", targets=["y"], features=names,
     half_life=float("inf"),                  # every row counts the same
-    lasso_path=[0.3, 0.1, 0.03, 0.01],       # the penalties, decreasing
+    penalties=[0.3, 0.1, 0.03, 0.01],        # the penalties, decreasing
 )
 bank = po.ModelBank([las])
 out = pl.concat(bank.fit_predict_batches(pl.scan_parquet("wide.parquet")))   # the output, chunk by chunk
@@ -402,7 +402,7 @@ coefficients left nonzero: 3 of 20: {'x0': 1.97, 'x1': -1.44, 'x2': 0.99}
 It runs coordinate descent on the standardized sums, warm-started along the
 path and from one solve to the next. `C` is the features' correlation
 matrix, and `c_i` is feature `i`'s covariance with the target over the
-feature's standard deviation. For each penalty `l` in `lasso_path`, the
+feature's standard deviation. For each penalty `l` in `penalties`, the
 sweep repeats until no coefficient moves by more than `tol`:
 
 ```
@@ -412,7 +412,7 @@ sweep repeats until no coefficient moves by more than `tol`:
 
 After the sweeps the slopes are unscaled, and the intercept is `ȳ − m·β`,
 with `m` the features' means. The target is centred but not scaled, so the
-L1 threshold `l·l1_ratio` is in the target's units. So scale `lasso_path`
+L1 threshold `l·l1_ratio` is in the target's units. So scale `penalties`
 with the target: for a pure lasso, a target ten times larger needs
 penalties ten times larger to zero the same coefficients. A descent that
 runs out of its `max_iter` sweeps is counted in `bank.solve_failures()`,
@@ -421,7 +421,7 @@ so if that count is above zero, give a larger `max_iter`.
 ```python
 las = po.spec.lasso(
     "las", targets=["y"], features=["x0", "x1", "x2"], clock="t", gap_cap=300.0, half_life=600.0,
-    lasso_path=[0.1, 0.01, 0.001],   # the penalties, decreasing
+    penalties=[0.1, 0.01, 0.001],    # the penalties, decreasing
     select_half_life=None,           # the half_life of the error that ranks them (default: the model's)
     l1_ratio=1.0,                    # below 1: an elastic net
     max_iter=100, tol=1e-10,         # the defaults
@@ -1373,7 +1373,7 @@ at the `half_life` and within 0.78%.
 the principal components on a schedule.** It counts the clock's units, as a
 regression's `solve_every` does: `pca_every=20` refreshes them every 20
 units of `t`, a row each here, and a temporal clock takes a duration such as
-`"5m"`. `max_rows_between_pca` caps the rows between refreshes, and
+`"5m"`. `max_rows_between_pcas` caps the rows between refreshes, and
 whichever comes first refreshes. The default is every row, and the rows
 between refreshes are scored on the last loadings. With `pca=1`, each row
 writes `pc0_var`, `pc0_share` (of the trace), `pc0_loading_<feature>` and
@@ -2011,7 +2011,7 @@ blob vanished.
 
 **The split–merge move gives a cluster born after seeding a centre of its
 own.** This code makes three round clusters, and a fourth that appears at
-row 4,000. It fits `k=4` and counts each label's rows before the fourth
+row 4,000. It fits `n_clusters=4` and counts each label's rows before the fourth
 appears and at the end:
 
 ```python
@@ -2028,7 +2028,7 @@ blob[late] = rng.integers(0, 4, late.sum())                   # ... and a fourth
 xy = centres[blob] + rng.standard_normal((n, 2))
 pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1]}).write_parquet("blobs.parquet")
 
-km = po.spec.kmeans("km", features=["x", "y"], half_life=1000.0, k=4, warm_rows=500)
+km = po.spec.kmeans("km", features=["x", "y"], half_life=1000.0, n_clusters=4, warm_rows=500)
 label = pl.scan_parquet("blobs.parquet").online.fit_predict([km]).collect()["km"].struct.field("cluster")
 for lo, hi in ((3000, 4000), (7000, 8000)):
     counts = label[lo:hi].value_counts().sort("cluster")
@@ -2057,9 +2057,9 @@ This code uses `df` from [Example data](../README.md#example-data):
 ```python
 km = po.spec.kmeans(
     "km", features=["x0", "x1", "x2"], clock="t", half_life=2000.0, gap_cap=300.0,
-    k=3,
+    n_clusters=3,
     warm_rows=100,               # rows to seed from (default 500)
-    seed_rule="lloyd",           # the default: the best of ten k-means++ starts
+    init="lloyd",                # the default: the best of ten k-means++ starts
     split_merge=0.5,             # two centres nearer than this times the sum of their radii are one blob
     split_merge_every_rows=200,       # rows between split–merge checks
     dead_frac=0.05,              # under this share of an equal share, a centre is re-placed
@@ -2075,7 +2075,7 @@ index = po.spec.coef_index(km)   # how coef is labelled: target = "cluster0", "c
 
 **Seeding waits for `warm_rows` rows, places the centres, and replays the
 rows.** One k-means++ start lands in the wrong partition a third of the time
-on five blobs in four dimensions. So the default, `seed_rule="lloyd"`, takes
+on five blobs in four dimensions. So the default, `init="lloyd"`, takes
 ten starts, refines each by ten Lloyd iterations, and keeps the one of least
 inertia. `seed=` fixes the random draws.
 
@@ -2090,9 +2090,9 @@ so they neither drag a centre nor widen its radius.
 centres on one blob. Once at least three rows far from every centre carry 5%
 of the weight learned since the last check, the move frees the emptier of
 the two and places it on those rows. It needs `k` of at least 3, so at
-`k=2` only the dead rule acts. It cannot see one centre that owns two blobs,
+`n_clusters=2` only the dead rule acts. It cannot see one centre that owns two blobs,
 whose rows all sit within its own radius, so keep the default
-`seed_rule="lloyd"`, which prevents that. `split_merge=0` turns off the move
+`init="lloyd"`, which prevents that. `split_merge=0` turns off the move
 and the dead rule, which leaves plain sequential k-means.
 
 **Increase `dead_frac` when regimes change faster than a dead centre is
@@ -2291,13 +2291,13 @@ p_c = exp(ℓ_c − max ℓ) / Σ exp(ℓ − max ℓ)                  class = 
 n_c ← λ n_c + w·[y = c]        μ_c, C_c ← weighted Welford on the row's own class
 ```
 
-Give `covariance` to set what each class keeps:
+Give `covariance_type`, scikit-learn's words, to set what each class keeps:
 
-| `covariance` | what each class keeps | the right choice when |
+| `covariance_type` | what each class keeps | the right choice when |
 |---|---|---|
 | `"full"`, the default (QDA) | its own covariance, and its Cholesky factor, which only the row's own class refactors (under a `window_size`, every class on every row) | in general |
-| `"shared"` (LDA) | one covariance pooled by class weight, factorized once per row | the classes differ in location but not in spread; it then labels more than 98% of rows as `"full"` does in the tests, with fewer parameters to learn |
-| `"diagonal"` (Gaussian naive Bayes) | variances only | speed matters most, since it runs about five times as fast as the other two ([Throughput](../README.md#throughput)); it cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
+| `"tied"` (LDA) | one covariance pooled by class weight, factorized once per row | the classes differ in location but not in spread; it then labels more than 98% of rows as `"full"` does in the tests, with fewer parameters to learn |
+| `"diag"` (Gaussian naive Bayes) | variances only | speed matters most, since it runs about five times as fast as the other two ([Throughput](../README.md#throughput)); it cannot see a correlation, so two classes with the same marginals and opposite correlations are one class to it |
 
 **Give `window_size` when the class means move,** because over a long history
 two regimes average together. Each class's moments then cover only the
@@ -2312,7 +2312,7 @@ cl = po.spec.ew_class(
     "cl", features=["x0", "x1", "x2"], clock="t", half_life=200.0, gap_cap=300.0, min_weight=20.0,
     label="dir",                 # the label column
     classes=["down", "up"],      # declared up front
-    covariance="shared",         # one covariance pooled by class weight
+    covariance_type="tied",      # one covariance pooled by class weight
     precision_prior=0.1,         # required: the ridge that makes a class scoreable from its first row
 )
 out = po.ModelBank([cl]).fit_predict(labelled).unnest("cl")
@@ -2465,9 +2465,9 @@ name have changed. Give `kind` to pick one of its three tests:
 
 | `kind` | the question | reports | against | a change is found |
 |---|---|---|---|---|
-| `"monitor"` | was the correlation constant over a span? | on a span's last row | the span's own correlation | at the span's end, up to `span_rows` rows late |
-| `"sequential"` | has it left the level a stable history set? | on each row tested against the history, from the second on | a history of `span_rows` rows | as soon as it crosses a boundary |
-| `"window"` | how big is the change? | on every row once both windows are full, `2·span_rows` rows in | the window before | as soon as the two windows differ |
+| `"monitor"` | was the correlation constant over a span? | on a span's last row | the span's own correlation | at the span's end, up to `window_rows` rows late |
+| `"sequential"` | has it left the level a stable history set? | on each row tested against the history, from the second on | a history of `window_rows` rows | as soon as it crosses a boundary |
+| `"window"` | how big is the change? | on every row once both windows are full, `2·window_rows` rows in | the window before | as soon as the two windows differ |
 
 Every kind writes the same five fields, `stat`, `crit`, `flag`,
 `since_flag` and `since_change`. A parameter that belongs to another kind
@@ -2491,7 +2491,7 @@ pl.DataFrame({"a": a, "b": rho * a + np.sqrt(1 - rho**2) * e}).write_parquet("br
 watch = po.spec.corrchange(
     "watch", features=["a", "b"],
     kind="sequential",           # each row tested against a stable history as it arrives
-    span_rows=500,               # 500 rows of history ...
+    window_rows=500,             # 500 rows of history ...
     monitor_rows=1000,           # ... then up to 1000 rows monitored: a cycle of 1500 rows, the second from row 1500
 )
 out = pl.scan_parquet("break.parquet").online.fit_predict([watch]).collect().unnest("watch")
@@ -2513,9 +2513,9 @@ pairs, and the level `alpha` (0.05 by default) is spread over the pairs as
 correlation's level, however many columns, give either kind `scalar=True`,
 which runs it on the equicorrelation of the standardised row (`deco`'s `u`).
 
-**`kind="monitor"` tests each span of `span_rows` rows for a constant
+**`kind="monitor"` tests each span of `window_rows` rows for a constant
 correlation,** with the closed-sample constancy test of Wied, Krämer and
-Dehling (2012). With `m = span_rows`, `ρ̂_j` the correlation of the
+Dehling (2012). With `m = window_rows`, `ρ̂_j` the correlation of the
 span's first `j` rows, and `D̂` the delta-method long-run standard deviation
 of `ρ̂`, the last row of a span reports, per pair:
 
@@ -2532,7 +2532,7 @@ This code uses `df` from [Example data](../README.md#example-data):
 monitor = po.spec.corrchange(
     "break", features=["x0", "x1"],
     kind="monitor",              # the constancy test, span by span
-    span_rows=500,               # nothing is reported until a span closes: a delay of at most this many rows
+    window_rows=500,             # nothing is reported until a span closes: a delay of at most this many rows
     alpha=0.05,                  # the level, the default
     scalar=False,                # True: one test on the equicorrelation instead of one per pair
 )
@@ -2545,7 +2545,7 @@ out = df.online.fit_predict([monitor]).unnest("break")
 ```
 
 **`kind="sequential"` tests each new row against a stable history,** with
-the monitoring procedure of Wied and Galeano (2013). A cycle is `span_rows`
+the monitoring procedure of Wied and Galeano (2013). A cycle is `window_rows`
 rows of history, taken as stable, then up to `monitor_rows` rows, each tested
 against the history as it arrives. A flag, or the cycle's last monitored row,
 ends the cycle, and the row after it starts a new history. From the history
@@ -2553,7 +2553,7 @@ it reads each pair's correlation `ρ̂_h` and its long-run standard deviation
 `D̂`, with the monitor's estimator. The `k`-th monitored row then reports
 
 ```
-V_k  = (k/√m)·(ρ̂_k − ρ̂_h) / D̂           m = span_rows, ρ̂_k over the k monitored rows
+V_k  = (k/√m)·(ρ̂_k − ρ̂_h) / D̂           m = window_rows, ρ̂_k over the k monitored rows
 stat = max over pairs of |V_k| / w(k/m)
 w(b) = (1 + b)·(b/(1 + b))^γ               γ = boundary_gamma, 0 ≤ γ ≤ 0.49
 ```
@@ -2561,7 +2561,7 @@ w(b) = (1 + b)·(b/(1 + b))^γ               γ = boundary_gamma, 0 ≤ γ ≤ 0
 and flags where `stat` passes `crit`.
 
 The critical value is the paper's Eq. 7, `crit = (T/(1+T))^(1/2−γ)·q`, with
-`T = monitor_rows/span_rows` and `q` a quantile of `sup_{0<s≤1} |W(s)|/s^γ`
+`T = monitor_rows/window_rows` and `q` a quantile of `sup_{0<s≤1} |W(s)|/s^γ`
 for a Brownian motion `W`. At `γ = 0` and `T = 1`, `crit` is 1.5849 at 5%.
 Where the paper simulates `q`, above `γ = 0`, this library solves it as a
 diffusion with an absorbing boundary
@@ -2584,14 +2584,14 @@ it flags more stable streams:
 watch = po.spec.corrchange(
     "watch", features=["x0", "x1"],
     kind="sequential",
-    span_rows=500,               # 500 rows of history, assumed stable (kind="monitor" over them checks it)
+    window_rows=500,             # 500 rows of history, assumed stable (kind="monitor" over them checks it)
     monitor_rows=1000,           # then each of up to 1000 rows tested as it arrives: the paper's T = 2
     boundary_gamma=0.25,         # between the size of 0 and the early catch of 0.45
 )
 ```
 
 **`kind="window"` measures how big the change is,** as
-`||vech(R_pre - R_post)||` over two adjacent windows of `span_rows` rows
+`||vech(R_pre - R_post)||` over two adjacent windows of `window_rows` rows
 each. `R_pre` and `R_post` are the windows' correlation matrices, and `vech`
 stacks their upper triangles into one list. It compares that with a
 permutation quantile: `n_perm` shuffles of the pooled rows between the
@@ -2609,11 +2609,11 @@ applies.
 size = po.spec.corrchange(
     "size", features=["x0", "x1"],
     kind="window",               # the size of the change between two adjacent windows
-    span_rows=100,
+    window_rows=100,
     n_perm=200, permute_every_rows=500,   # 200 shuffles, redrawn every 500 rows
     perm_block=10,               # shuffled in blocks of 10 rows
     seed=0,                      # the default
-    reset_on_flag=False,         # the default; True empties both windows at a flag
+    change_action="flag",        # the default; "reset" empties both windows at a flag
 )
 ```
 
@@ -2708,9 +2708,9 @@ This code uses `df` from [Example data](../README.md#example-data):
 runs = po.spec.bocpd(
     "regime", features=["ret"], group="stock_id",
     hazard=250.0,                # the expected run length: H = 1/hazard is the chance of a break after each row
-    prior_nu=2.0,                # the prior on the variance, as 2a ...
-    prior_scale=[2e-4],          # ... and 2b; left out, both come from the first rows
-    emission="diag",             # the default: a normal-inverse-gamma per feature
+    degrees_of_freedom_prior=2.0,  # the prior on the variance, as 2a ...
+    covariance_prior=[2e-4],     # ... and 2b; left out, both come from the first rows
+    covariance_type="diag",      # the default: a normal-inverse-gamma per feature
     prune_below=1e-6,            # drop the runs holding less than this share of the mass
     max_run=None,                # 10,000 by default
     hazard_col=None,             # a column of per-row hazards instead
@@ -2726,24 +2726,26 @@ started = out.with_columns(      # the row each group's current run began on, co
 )
 ```
 
-**Leave `prior_mean` and `prior_scale` out, and the first rows set them.**
-The first `warm_rows` learned rows, `p + 2` by default with `p` the
-number of features, report null. Their
-mean and covariance (the diagonal under `"diag"` and `"robust"`) become the
+**Leave `mean_prior` and `covariance_prior` out, and the first rows set
+them.** The four priors take the names scikit-learn's
+`BayesianGaussianMixture` gives them. The first `warm_rows` learned rows,
+`p + 2` by default with `p` the number of features, report null. Their
+mean and covariance (the diagonal under `covariance_type="diag"`) become the
 prior, and the rows are then read as rows of a model that had it from the
-start. `prior_nu` defaults to the smallest value that gives the prior's
-variance a mean, `p + 2` under `"gaussian"` and 3 otherwise, and at it the
-prior's mean variance is that covariance.
+start. `degrees_of_freedom_prior` defaults to the smallest value that gives
+the prior's variance a mean, `p + 2` under `"full"` and 3 under `"diag"`, and
+at it the prior's mean variance is that covariance.
 
 **A prior you give must be in the data's units, because it decides what
 counts as surprising.** Too wide, and no row is surprising. A column of
 spread 1e-4 whose spread grew tenfold at row 500 was never found to break
-under a prior of unit precision (`prior_mean=[0.0]`, `prior_scale=[2.0]`,
-`prior_nu=2.0`). The prior set from its first rows dated the break to row
-500. Too narrow or off-centre, and a run that begins on a row has no density
-for it. `prior_nu` and `prior_scale` are 2a and 2b in the gamma
-parametrisation. So the values in the code above, `prior_nu=2.0` and
-`prior_scale=[2e-4]` with `hazard=250.0`, are Adams and MacKay's own
+under a prior of unit precision (`mean_prior=[0.0]`,
+`covariance_prior=[2.0]`, `degrees_of_freedom_prior=2.0`). The prior set from
+its first rows dated the break to row 500. Too narrow or off-centre, and a
+run that begins on a row has no density for it. `degrees_of_freedom_prior`
+and `covariance_prior` are 2a and 2b in the gamma parametrisation. So the
+values in the code above, `degrees_of_freedom_prior=2.0` and
+`covariance_prior=[2e-4]` with `hazard=250.0`, are Adams and MacKay's own
 finance example (a = 1, b = 1e-4, hazard = 250), a precision of 1e4 on
 average.
 
@@ -2758,9 +2760,9 @@ measured on streams of their own:
 
 | the break | `p_change` | the run length |
 |---|---|---|
-| the spread steps tenfold, under a prior of the rows' scale (`prior_nu=2`, `prior_scale=2e-4`, Adams and MacKay's) and `hazard=250` | 0.83 on the row of the break | finds it one to three rows later, and dates it to the right row |
+| the spread steps tenfold, under a prior of the rows' scale (`degrees_of_freedom_prior=2`, `covariance_prior=2e-4`, Adams and MacKay's) and `hazard=250` | 0.83 on the row of the break | finds it one to three rows later, and dates it to the right row |
 | a four-sigma mean shift, with a diffuse prior | barely lifts | finds it one to three rows later, and dates it to the right row |
-| a change in correlation alone | never moves at all | reaches it only under `emission="gaussian"`, a median of 121 rows later ([docs/REGIMES.md §5](REGIMES.md#5-two-changepoint-detectors-on-the-same-break)) |
+| a change in correlation alone | never moves at all | reaches it only under `covariance_type="full"`, a median of 121 rows later ([docs/REGIMES.md §5](REGIMES.md#5-two-changepoint-detectors-on-the-same-break)) |
 
 **`p_change` reports `P(r ≤ 1)`, because `P(r = 0)` equals `H` on every
 row:** the two branches share one predictive, so the normalised mass at
@@ -2770,23 +2772,24 @@ at `r = 0` after it, so `p_change` is the chance that the row began a run. Row
 one of a group reports nothing under the default `min_weight` of 1, since
 `P(r ≤ 1)` is 1 there however the row looks.
 
-Give `emission` to choose each run's model of the rows:
+Give `covariance_type`, scikit-learn's words, to choose each run's model
+of the rows, and `robust_beta` to temper it:
 
-| `emission` | each run's model | note |
+| setting | each run's model | note |
 |---|---|---|
-| `"diag"`, as in the example | a normal-inverse-gamma per feature | |
-| `"gaussian"` | a normal-inverse-Wishart over all of them, O(runs p²) a row | the one that can see a break in the *correlation* alone |
-| `"robust"` | each row's contribution weighted by `(pi(x)/pi(mode))**robust_beta` | one 20-sigma row moves nothing; without it, that row is a changepoint at `p_change` 0.91. Not free of the data's units |
+| `covariance_type="diag"`, as in the example | a normal-inverse-gamma per feature | |
+| `covariance_type="full"` | a normal-inverse-Wishart over all of them, O(runs p²) a row | the one that can see a break in the *correlation* alone |
+| `robust_beta=0.1`, under `"diag"` | each row's contribution weighted by `(pi(x)/pi(mode))**robust_beta` | one 20-sigma row moves nothing; untempered, that row is a changepoint at `p_change` 0.91. Not free of the data's units |
 
 **Keep `robust_beta` below about 0.2.** Above it, the weighting forgives the
-rows of a new regime one at a time, so no change is ever detected again. The
-default of 0.1 ignores a single 20-sigma row and still finds a four-sigma
-shift within three rows, dated to the right one.
+rows of a new regime one at a time, so no change is ever detected again.
+At 0.1 it ignores a single 20-sigma row and still finds a four-sigma shift
+within three rows, dated to the right one. Left out, nothing is tempered.
 
-**Centre and scale the features for `emission="robust"`.** A change of
-units multiplies every run's predictive density by one constant. Under
-`"diag"` and `"gaussian"` the posterior's normalisation takes it out.
-`"robust"` tempers each run's message by a power that differs from run to
+**Centre and scale the features for a tempered run.** A change of units
+multiplies every run's predictive density by one constant. Untempered, under
+`"diag"` and `"full"`, the posterior's normalisation takes it out.
+`robust_beta` tempers each run's message by a power that differs from run to
 run, so the constant does not cancel, and the runs' odds move with the
 units. At a level of 1e4 with a spread of 1e-2, `p_change` moved by up to
 0.86 against the same stream at level 0 and spread 1.
@@ -2830,8 +2833,8 @@ centres = np.array([[-0.75, -0.75], [0.75, 0.75]])            # two blobs of uni
 xy = centres[state] + rng.standard_normal((n, 2))
 pl.DataFrame({"x": xy[:, 0], "y": xy[:, 1], "truth": state}).write_parquet("states.parquet")
 
-hidden = po.spec.hmm("hidden", features=["x", "y"], k=2, precision_prior=1e-2, warm_rows=500,
-                     half_life=float("inf"))
+hidden = po.spec.hmm("hidden", features=["x", "y"], n_components=2, precision_prior=1e-2,
+                     warm_rows=500, half_life=float("inf"))
 rows = pl.scan_parquet("states.parquet").online.fit_predict([hidden]).collect().unnest("hidden").tail(5000)
 right = (rows["state"] == rows["truth"]).mean()               # the states are numbered as seeded, so read either way
 nearest = ((rows["x"] + rows["y"] > 0).cast(pl.Int64) == rows["truth"]).mean()   # the nearest true centre
@@ -2862,9 +2865,9 @@ This code uses `df` from [Example data](../README.md#example-data):
 ```python
 hidden = po.spec.hmm(
     "regime", features=["x0", "x1"], half_life=500.0,
-    k=2,                         # the number of hidden states
+    n_components=2,              # the number of hidden states
     precision_prior=1e-2,        # required: a state's centred co-moments start at zero, and a zero matrix has no density
-    covariance="full",           # the default; "shared" or "diagonal", as for ew_class
+    covariance_type="full",      # the default; "tied" or "diag", as for ew_class
     warm_rows=400,               # seed the states from this many learned rows; every output is null until then
     means=None, covs=None,       # or give the states outright, and learn=False to freeze them
     transition_prior=1.0,        # the default Dirichlet pseudo-count per cell of the transition matrix
@@ -2877,7 +2880,7 @@ out = df.online.fit_predict([hidden]).unnest("regime")
 ```
 
 **Seeding decides which regimes the filter can find.** `warm_rows` seeds the
-states from that many learned rows with `kmeans`' rule (`seed_rule="lloyd"`,
+states from that many learned rows with `kmeans`' rule (`init="lloyd"`,
 `seed=0`). Give a `warm_rows` large enough for those rows to span more than
 one regime; otherwise the seeds split one regime in two.
 

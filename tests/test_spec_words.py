@@ -99,15 +99,13 @@ def test_the_annotation_names_the_words_the_rust_side_takes(probe):
 def test_a_builder_refuses_a_word_in_python_as_the_rust_side_does(probe):
     """The builder's own check reads the annotation, so the word is refused
     before the spec is serialized, with the Rust side's words in the Rust
-    side's order (``rcov``'s ``kernel`` adds its reason there)."""
+    side's order, and ``rcov``'s ``kernel`` with its reason."""
     label, name, needs, path, shape, *_ = probe
     spec, _ = _registry_spec(name, needs)
     rust = _spec_refusal(spec, path, _shaped(BOGUS, shape)).replace('"Probe"', '"m"')
     with pytest.raises(ValueError) as caught:
         _registry_spec(name, {**needs, _keyword(path): _shaped(BOGUS, shape)})
-    python = str(caught.value)
-    assert rust.startswith(python), (python, rust)
-    assert python.endswith(f'; got "{BOGUS}"'), python
+    assert str(caught.value) == rust
 
 
 def test_a_word_parameter_given_a_value_of_another_kind_is_a_type_error():

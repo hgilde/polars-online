@@ -101,9 +101,9 @@ fn derived(model: &AnyModel) -> Option<Value> {
         AnyModel::Bocpd(m) => {
             let c = m.cfg();
             Some(json!({
-                "prior_mean": c.prior_mean.as_ref().map_or(json!("data"), |_| numbers(&c.mu0())),
-                "prior_nu": number(c.nu0()),
-                "prior_scale": c.prior_scale.as_ref().map_or(json!("data"), |_| numbers(&c.psi0())),
+                "mean_prior": c.prior_mean.as_ref().map_or(json!("data"), |_| numbers(&c.mu0())),
+                "degrees_of_freedom_prior": number(c.nu0()),
+                "covariance_prior": c.prior_scale.as_ref().map_or(json!("data"), |_| numbers(&c.psi0())),
                 "warm_rows": if c.warms_up() { json!(c.warm_rows_or_default()) } else { Value::Null },
             }))
         }

@@ -26,14 +26,14 @@ MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
-    ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
+    ("lasso", {"penalties": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("ftrl", {}),
     ("sgd", {"learning_rate": 0.01}),
     ("pa", {}),
     # Holt is the one model with no features, so it opts out of the shared set.
-    ("holt", {"features": []}),
+    ("holt", {"features": None}),  # no features keyword
 ]
 
 #: A second configuration of a model above, swept through the same
@@ -59,6 +59,8 @@ def build(model, extra, **kw):
     opts = dict(targets=["y0"], features=["x0", "x1"], half_life=200.0, min_weight=2.0)
     opts.update(extra)
     opts.update(kw)
+    if opts.get("features", ()) is None:
+        del opts["features"]  # a model with no features keyword (holt)
     return getattr(po.spec, model)("m", **opts)
 
 

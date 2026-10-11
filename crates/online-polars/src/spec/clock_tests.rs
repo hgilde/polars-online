@@ -147,7 +147,7 @@ fn with_duration(owner: &str, field: &str) -> Spec {
         "*" => r#"{"type": "ewridge"}"#.to_string(),
         kind => {
             let required = match kind {
-                "lasso" => r#", "lasso_path": [0.1]"#,
+                "lasso" => r#", "penalties": [0.1]"#,
                 "kalman" if field != "coef_half_life" => r#", "coef_half_life": "1h""#,
                 "quantile" => r#", "quantile": 0.5"#,
                 "ew_class" => r#", "classes": ["a", "b"], "precision_prior": 1.0"#,

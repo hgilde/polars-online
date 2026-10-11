@@ -582,7 +582,7 @@ A duration is written three ways: `pl.duration(minutes=10)`,
 change with how densely the rows arrive.** The clock parameters are
 `half_life`, `gap_cap`, `restart_after_step_back`, `session_gap`, `embargo`,
 `drift_threshold` and `coef_every`, and a model's `window_size`, its cadences
-(`window_every`, `solve_every`, `pca_every`, `prune_every`) and its own
+(`snapshot_every`, `solve_every`, `pca_every`, `prune_every`) and its own
 half-lives. A few things still count rows, and each model's entry in
 [docs/MODELS.md](docs/MODELS.md) names them.
 
@@ -830,13 +830,13 @@ of snapshots for this, one every row by default. The edge is the oldest
 snapshot inside the window, so a coarse spacing discards a little more
 than asked, never less.
 
-**`window_every` spaces the snapshots on the clock, as `solve_every`
+**`snapshot_every` spaces the snapshots on the clock, as `solve_every`
 spaces a regression's solves.** It takes a number of clock units, or a
 duration such as `"1m"` on a temporal clock. `max_rows_between_snapshots`
 caps the rows between them, and whichever comes first takes a snapshot.
-Under `window_every` the effective window is in
-`[window_size − window_every, window_size]`, whatever the row rate, with
-`window_every` the spacing in force: a thinning `window_budget` doubles it.
+Under `snapshot_every` the effective window is in
+`[window_size − snapshot_every, window_size]`, whatever the row rate, with
+`snapshot_every` the spacing in force: a thinning `window_budget` doubles it.
 
 **`weight_sum` is the weight inside the window.** This code fits `ew_cov`
 over a window of 150 units of `t` with a half-life of 50, and a snapshot
@@ -850,7 +850,7 @@ It reads `df` from [Example data](#example-data):
 cut = po.spec.ew_cov(
     "cut", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0,
     window_size=150.0,             # a row this many clock units old or older contributes exactly nothing
-    window_every=10,               # a snapshot every 10 units of t
+    snapshot_every=10,             # a snapshot every 10 units of t
     window_budget={"refuse": 64},  # at most 64 MiB of snapshots per ring
 )
 whole = po.spec.ew_cov("whole", features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=50.0)
@@ -895,7 +895,7 @@ snapshots.
 |---|---|
 | not given | the chunk is refused past 256 MiB |
 | `{"refuse": 64}` | the chunk is refused before any of it is learned, and the bank goes on as it was. The error names the ring's size, its snapshot cadence and the ways to lift the cap |
-| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, on the clock or in rows, which, like `window_every`, only ever shortens the window |
+| `{"thin": 64}` | the ring drops every other snapshot and doubles its spacing, on the clock or in rows, which, like `snapshot_every`, only ever shortens the window |
 | `{"refuse": float("inf")}` | nothing: no cap |
 
 **A refusal comes before the bank learns any of the chunk, except for two
@@ -2439,7 +2439,7 @@ and signature to a checked-in snapshot, no release renames your columns
 silently ([Versioning and the Polars pin](#versioning-and-the-polars-pin)).
 
 Give a spec several values of `ridge` or `half_life`, several
-`feature_sets` or a `lasso_path`, and it fits a *grid*: one fit per
+`feature_sets` or `penalties`, and it fits a *grid*: one fit per
 combination of values, each a *point* of the grid. A field's name says
 which point it holds. Here `grid` has two half-lives and two ridge values,
 and its coefficient on `x1` at the smaller ridge comes back as `df`'s −1.
@@ -2571,7 +2571,7 @@ and works on a saved output.
 
 **Several targets, or a grid, put several blocks in one `coef` list:** one
 per target and point of a grid of `ridge` values, `feature_sets` or a
-`lasso_path`. Each half-life of a `half_life` grid has a `coef` field of its
+`penalties`. Each half-life of a `half_life` grid has a `coef` field of its
 own. Here `grid`, as [Output field names](#output-field-names) builds it,
 has two half-lives and two ridge values, and the ridge of 0.5 shrinks each
 slope by more than a third.
@@ -3093,7 +3093,7 @@ centres = np.array([[0.0, 0.0], [6.0, 0.0], [0.0, 6.0]])             # three clu
 points = centres[rng.integers(0, 3, 3000)] + rng.standard_normal((3000, 2))
 pl.DataFrame(points, schema=["a", "b"]).write_parquet("points.parquet")
 
-clusters = po.spec.kmeans("clusters", features=["a", "b"], k=3, half_life=float("inf"))
+clusters = po.spec.kmeans("clusters", features=["a", "b"], n_clusters=3, half_life=float("inf"))
 bank = po.ModelBank([clusters])
 bank.fit(pl.scan_parquet("points.parquet"))
 found = bank.coef()["coef"].to_numpy().reshape(3, 2).round(1)       # one row of (a, b) per centre
@@ -3166,7 +3166,7 @@ returns = pl.scan_parquet("regimes.parquet").with_columns(pl.col("x_1", "x_2").d
 
 age = po.spec.bocpd("age", features=["x_1", "x_2"], hazard=500.0)   # how long has this regime lasted?
 which = po.spec.hmm(                                          # which regime is this row in?
-    "which", features=["x_1", "x_2"], k=2, half_life=float("inf"),
+    "which", features=["x_1", "x_2"], n_components=2, half_life=float("inf"),
     precision_prior=1e-2, warm_rows=500,
     transition=[0.998, 0.002, 0.002, 0.998], transition_prior=500.0,   # a regime lasts about 500 rows
 )
@@ -3315,7 +3315,7 @@ The models of [clustering and classification](docs/MODELS.md#clustering-and-clas
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
 | `ew_class` | k=20, 3 classes, full covariance | 466,466 | a `k × k` matrix factored by Cholesky once per *learned* row |
-| `ew_class` | k=20, 3 classes, shared covariance | 531,384 | |
+| `ew_class` | k=20, 3 classes, tied covariance | 531,384 | |
 | `ew_class` | k=20, 3 classes, diagonal | 2,448,700 | |
 | `kmeans` | 4 features, K=8 | 4,590,376 | a distance to each centre |
 | `kmeans` | k=20, K=8 | 2,383,197 | a distance to each centre |
@@ -3326,7 +3326,7 @@ The [sequential tests and regimes](docs/MODELS.md#sequential-tests-and-regimes):
 | model | settings | rows/sec | what sets its speed |
 |---|---|---:|---|
 | `seqtest` | sign of one column | 14,919,853 | a handful of operations |
-| `corrchange` | 4 features, monitor, `span_rows=500` | 449,526 | |
+| `corrchange` | 4 features, monitor, `window_rows=500` | 449,526 | |
 | `corrchange` | 4 features, window 100, permute every 500 | 173,711 | its permutation null (below) |
 | `bocpd` | 4 features, diagonal, `max_run=200` | 884,387 | the number of runs it keeps (below) |
 | `bocpd` | 4 features, full covariance, `max_run=200` | 568,724 | the number of runs it keeps (below) |

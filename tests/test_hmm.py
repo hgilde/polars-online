@@ -6,6 +6,8 @@ things earn that here: the filter reduces to the classifier when the chain
 is uniform, and it is the longhand Hamilton recursion at fixed parameters.
 """
 
+import re
+
 import numpy as np
 import polars as pl
 import pytest
@@ -27,14 +29,14 @@ def blobs(n=2000, run=100, sep=4.0, seed=0, d=2):
 def spec(**kw):
     d = {
         "features": ["x0", "x1"],
-        "k": 2,
+        "n_components": 2,
         "precision_prior": 1e-2,
         "half_life": 1e9,
     }
     # The warm-up's parameters where a warm-up runs: with the states given
     # nothing is seeded, and they are refused (review 2026-10-06, CE4).
     if "means" not in kw and "covs" not in kw:
-        d |= {"warm_rows": 100, "seed_rule": "lloyd"}
+        d |= {"warm_rows": 100, "init": "lloyd"}
     d.update(kw)
     return po.spec.hmm("h", **d)
 
@@ -302,15 +304,15 @@ def test_a_missing_exogenous_value_is_the_base_transition():
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
-        ({"k": 1}, "k must be >= 2"),
+        ({"n_components": 1}, "n_components must be >= 2"),
         ({"precision_prior": 0.0}, "precision_prior must be finite"),
         ({"learn": False}, "nothing to filter with"),
         ({"means": [0.0] * 4}, "means and covs go together"),
         ({"transition": [0.5, 0.4, 0.5, 0.5]}, "not a distribution"),
-        ({"warm_rows": 1}, "warm_rows must be at least k"),
+        ({"warm_rows": 1}, "warm_rows must be at least n_components"),
         (
-            {"seed_rule": "nope"},
-            'seed_rule must be one of "first", "farthest", "kmeanspp", "lloyd"; got "nope"',
+            {"init": "nope"},
+            re.escape('init must be one of "first", "farthest", "k-means++", "lloyd"; got "nope"'),
         ),
         ({"tvtp_coef": [[0.0] * 4, [0.0] * 4]}, "tvtp_coef needs exog_tvtp"),
         ({"exog_tvtp": "z"}, "needs tvtp_coef"),
@@ -360,7 +362,7 @@ def test_the_filter_at_three_states_and_one_feature_is_the_hamilton_recursion():
     pi = np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]])
     out = run(
         df,
-        k=k,
+        n_components=k,
         features=["x0"],
         learn=False,
         means=means,
@@ -399,7 +401,7 @@ def test_the_full_covariance_filter_recovers_states_at_four_features():
     reach d = 2. Four features, two well-separated blobs (review 2026-09-18,
     phase 4)."""
     df = blobs(n=4000, run=200, sep=4.0, d=4, seed=3)
-    out = run(df, features=["x0", "x1", "x2", "x3"], warm_rows=200, covariance="full")
+    out = run(df, features=["x0", "x1", "x2", "x3"], warm_rows=200, covariance_type="full")
     live = out.drop("coef", "withheld_reason").drop_nulls()
     assert live.height > 3000
     state = out["state"].to_numpy()

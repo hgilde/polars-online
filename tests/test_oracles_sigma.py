@@ -85,7 +85,7 @@ def _spec(model, half_life):
     if model == "ewridge":
         return po.spec.ewridge("m", ridge=[1e-6, 0.5], max_error_inflation=float("inf"), **kw)
     if model == "lasso":
-        return po.spec.lasso("m", lasso_path=[0.1, 0.0], **kw)
+        return po.spec.lasso("m", penalties=[0.1, 0.0], **kw)
     if model == "huber":
         return po.spec.huber("m", **kw)
     return po.spec.sgd("m", learning_rate=0.02, **kw)

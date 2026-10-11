@@ -75,7 +75,7 @@ SHAPES = {
     "window": {"window_size": 40.0, "max_rows_between_snapshots": 4},
     # Snapshots on the clock, four units apart (docs/PLAN.md task 162): the
     # flush before each must come where the clock says, in every group.
-    "window_clock": {"window_size": 40.0, "window_every": 4.0},
+    "window_clock": {"window_size": 40.0, "snapshot_every": 4.0},
 }
 
 #: The shapes for the ``"auto"`` legs: a window flushes before every snapshot,

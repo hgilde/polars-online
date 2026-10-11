@@ -187,7 +187,7 @@ pub(crate) fn check_cadence(
 ) -> Result<(), String> {
     if window.is_none() {
         if every.is_some() {
-            return Err(format!("{model}: window_every needs `window_size`"));
+            return Err(format!("{model}: snapshot_every needs `window_size`"));
         }
         if max_rows.is_some() {
             return Err(format!(
@@ -199,7 +199,7 @@ pub(crate) fn check_cadence(
         && !(e.is_finite() && e >= 0.0)
     {
         return Err(format!(
-            "{model}: window_every must be finite and >= 0 clock units (0 snapshots every row), \
+            "{model}: snapshot_every must be finite and >= 0 clock units (0 snapshots every row), \
              got {e}"
         ));
     }
@@ -207,7 +207,7 @@ pub(crate) fn check_cadence(
     // (docs/PLAN.md task 196, U7).
     if max_rows == Some(0) {
         return Err(format!(
-            "{model}: max_rows_between_snapshots must be >= 1 (window_every = 0 snapshots every \
+            "{model}: max_rows_between_snapshots must be >= 1 (snapshot_every = 0 snapshots every \
              row), got 0"
         ));
     }
@@ -2610,7 +2610,12 @@ mod tests {
             assert!(got.is_ok(), "{window:?} {every:?} {rows:?}: {got:?}");
         }
         for (window, every, rows, want) in [
-            (None, Some(1.0), None, "m: window_every needs `window_size`"),
+            (
+                None,
+                Some(1.0),
+                None,
+                "m: snapshot_every needs `window_size`",
+            ),
             (
                 None,
                 None,
@@ -2621,19 +2626,19 @@ mod tests {
                 Some(10.0),
                 Some(-1.0),
                 None,
-                "window_every must be finite and >= 0",
+                "snapshot_every must be finite and >= 0",
             ),
             (
                 Some(10.0),
                 Some(f64::INFINITY),
                 None,
-                "window_every must be finite",
+                "snapshot_every must be finite",
             ),
             (
                 Some(10.0),
                 Some(f64::NAN),
                 None,
-                "window_every must be finite",
+                "snapshot_every must be finite",
             ),
         ] {
             match check_cadence("m", window, every, rows) {

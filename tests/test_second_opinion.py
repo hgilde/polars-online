@@ -226,7 +226,7 @@ class TestTheWindowIsAllTheModelSees:
         if kind == "ewridge":
             return po.spec.ewridge("m", targets=["y0"], features=feats, ridge=1e-10, **common)
         if kind == "lasso":
-            return po.spec.lasso("m", targets=["y0"], features=feats, lasso_path=[0.0], **common)
+            return po.spec.lasso("m", targets=["y0"], features=feats, penalties=[0.0], **common)
         if kind == "marginal":
             return po.spec.marginal("m", targets=["y0"], features=feats, **common)
         if kind == "ew_class":
@@ -269,7 +269,7 @@ class TestTheWindowIsAllTheModelSees:
                 "m",
                 targets=["y0", "y1"],
                 features=feats,
-                lasso_path=[0.0],
+                penalties=[0.0],
                 solve_every=1e-9,
                 **common,
             )
@@ -330,7 +330,7 @@ class TestWindowedSpread:
             **kw,
         )
         if kind == "lasso":
-            return po.spec.lasso("m", lasso_path=[0.01], **common)
+            return po.spec.lasso("m", penalties=[0.01], **common)
         return po.spec.ewridge("m", **common)
 
     @staticmethod
@@ -434,7 +434,7 @@ class TestWindowedGaussian:
     WINDOW, PRIOR = 80.0, 1e-9
 
     @pytest.mark.parametrize("window", [None, 80.0])
-    @pytest.mark.parametrize("shape", ["full", "diagonal", "shared"])
+    @pytest.mark.parametrize("shape", ["full", "diag", "tied"])
     def test_ew_class_is_the_scipy_gaussian_of_the_rows_inside_the_window(self, shape, window):
         """And ``coef``, the class means, is ``numpy``'s mean of each class's
         rows inside the window, on the row before: the whole history's
@@ -450,7 +450,7 @@ class TestWindowedGaussian:
             features=["x0", "x1"],
             label="c",
             classes=["a", "b"],
-            covariance=shape,
+            covariance_type=shape,
             precision_prior=self.PRIOR,
             half_life=float("inf"),
             window_size=window,
@@ -468,9 +468,9 @@ class TestWindowedGaussian:
                 means.append(rc.mean(axis=0))
                 covs.append(np.cov(rc.T, ddof=0) + self.PRIOR * np.eye(2))
                 priors.append(len(rc) / len(rows))
-            if shape == "diagonal":
+            if shape == "diag":
                 covs = [np.diag(np.diag(cv)) for cv in covs]
-            elif shape == "shared":
+            elif shape == "tied":
                 pooled = priors[0] * covs[0] + priors[1] * covs[1]
                 covs = [pooled, pooled]
             logp = np.array(
@@ -678,7 +678,7 @@ class TestNoInterceptIsNotCentred:
                 "m",
                 targets=["y"],
                 features=["x0", "x1"],
-                lasso_path=[0.0],
+                penalties=[0.0],
                 half_life=float("inf"),
                 solve_every=1e-9,
                 max_iter=100_000,
@@ -1302,7 +1302,7 @@ class TestTheGramIsCentredToo:
         g = halves[0]
         want_h = _centred_fit(x[:700], y[:700])
         path = po.gram.lasso_path(g, [0.0], max_iter=100_000, tol=1e-15)[0]
-        self._same_fit(path, want_h, x[:700], 1e3 * tol, "lasso_path")
+        self._same_fit(path, want_h, x[:700], 1e3 * tol, "penalties")
         stats = po.gram.coef_stats(g, want_h)
         z = np.column_stack([np.ones(700), x[:700]])
         resid = y[:700] - z @ want_h
@@ -1541,8 +1541,8 @@ class TestBocpdAtALevel:
     The second opinion is ``bayesian_changepoint_detection``, whose
     ``StudentT`` runs the conjugate update centred, ``β += κ(x − μ)²/(2(κ +
     1))``: the normal-inverse-gamma model ``emission = "diag"`` is at one
-    feature, with ``alpha = prior_nu/2``, ``beta = prior_scale/2``, ``kappa =
-    prior_kappa`` and ``mu = prior_mean``, through Adams and MacKay's
+    feature, with ``alpha = degrees_of_freedom_prior/2``, ``beta = covariance_prior/2``, ``kappa =
+    mean_precision_prior`` and ``mu = mean_prior``, through Adams and MacKay's
     recursion at a constant hazard with nothing pruned. ``R[0, t+1] + R[1,
     t+1]`` is our ``p_change`` on row ``t``, ``argmax R[:, t]`` our
     ``run_mode`` and ``Σ r·R[r, t]`` our ``run_mean``. At ``1e6`` and ``1e8``
@@ -1562,11 +1562,11 @@ class TestBocpdAtALevel:
             "b",
             features=["x"],
             hazard=hazard,
-            emission="diag",
-            prior_mean=[offset],
-            prior_kappa=kappa0,
-            prior_nu=nu0,
-            prior_scale=[psi0],
+            covariance_type="diag",
+            mean_prior=[offset],
+            mean_precision_prior=kappa0,
+            degrees_of_freedom_prior=nu0,
+            covariance_prior=[psi0],
             prune_below=0.0,
             max_run=n + 2,
             min_weight=0.0,
@@ -2378,7 +2378,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            lasso_path=[0.5, 0.0],
+            penalties=[0.5, 0.0],
             half_life=h,
             target_gaps=target_gaps,
             max_rows_between_solves=1,
@@ -2514,7 +2514,7 @@ class TestATargetWithGaps:
             "m",
             targets=["y"],
             features=["x0", "x1", "x2"],
-            lasso_path=[lam],
+            penalties=[lam],
             l1_ratio=l1_ratio,
             half_life=float("inf"),
             max_rows_between_solves=1,
@@ -4035,7 +4035,7 @@ class TestHmmIsHmmlearns:
         spec = po.spec.hmm(
             "h",
             features=["x0", "x1"],
-            k=2,
+            n_components=2,
             precision_prior=ridge,
             half_life=1e9,
             learn=False,

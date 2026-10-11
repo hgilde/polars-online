@@ -123,7 +123,7 @@ fn prepass_against_the_ring(spec: &Spec, df: &DataFrame, size: usize) -> Option<
 fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
     let df = frame(600, 80);
     let short = frame(600, 16);
-    let ridge = r#"{"type": "ewridge", "window_size": 200.0, "window_every": 1,
+    let ridge = r#"{"type": "ewridge", "window_size": 200.0, "snapshot_every": 1,
                     "window_budget": {"refuse": 0.004}}"#;
     // (label, spec, frame, whether the ring reaches the budget)
     let cases: Vec<(&str, Spec, &DataFrame, bool)> = vec![
@@ -139,7 +139,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "ewridge every 3 clock units",
             spec(
-                r#"{"type": "ewridge", "window_size": 600.0, "window_every": 3,
+                r#"{"type": "ewridge", "window_size": 600.0, "snapshot_every": 3,
                     "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -159,7 +159,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
         (
             "ewridge every 8 clock units or 2 rows",
             spec(
-                r#"{"type": "ewridge", "window_size": 600.0, "window_every": 8,
+                r#"{"type": "ewridge", "window_size": 600.0, "snapshot_every": 8,
                     "max_rows_between_snapshots": 2, "window_budget": {"refuse": 0.004}}"#,
                 r#", "targets": ["y"]"#,
             ),
@@ -227,7 +227,7 @@ fn the_prepass_refuses_what_the_ring_would_and_leaves_the_bank_as_it_was() {
 fn under_drift_resets_the_ring_still_stops_the_run() {
     let df = frame(400, 80);
     let s = spec(
-        r#"{"type": "ewridge", "window_size": 200.0, "window_every": 1,
+        r#"{"type": "ewridge", "window_size": 200.0, "snapshot_every": 1,
             "window_budget": {"refuse": 0.004}}"#,
         r#", "targets": ["y"], "emit_drift": true, "drift_threshold": 20.0,
             "drift_action": "reset""#,

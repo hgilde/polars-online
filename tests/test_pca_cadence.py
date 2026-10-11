@@ -1,5 +1,5 @@
 """``ew_cov``'s principal components refresh on the clock (docs/PLAN.md
-task 161): every ``pca_every`` clock units or every ``max_rows_between_pca``
+task 161): every ``pca_every`` clock units or every ``max_rows_between_pcas``
 rows, whichever comes first, as the regressions' ``solve_every`` and
 ``max_rows_between_solves`` schedule a solve; every row with neither.
 
@@ -146,7 +146,7 @@ class TestTheSchedule:
 
     def test_a_row_cap_refreshes_whatever_the_clock(self):
         steps = irregular()
-        out = run(spec(max_rows_between_pca=25), frame(steps))
+        out = run(spec(max_rows_between_pcas=25), frame(steps))
         want = expected(steps, out, every=None, cap=25, gap_cap=600.0)
         assert observed(out) == want
         assert set(np.diff(want)) == {25}, want
@@ -155,7 +155,7 @@ class TestTheSchedule:
         steps = irregular()
         # Fifteen rows average about fifteen minutes here, so each binds
         # first somewhere.
-        out = run(spec(pca_every="15m", max_rows_between_pca=15), frame(steps))
+        out = run(spec(pca_every="15m", max_rows_between_pcas=15), frame(steps))
         got = observed(out)
         assert got == expected(steps, out, every=900.0, cap=15, gap_cap=600.0)
         by_clock = expected(steps, out, every=900.0, cap=None, gap_cap=600.0)
@@ -227,7 +227,7 @@ class TestTheSchedule:
 class TestChunkingAndResume:
     def test_the_refreshes_do_not_depend_on_the_chunking(self):
         df = frame(irregular())
-        s = spec(pca_every="15m", max_rows_between_pca=12)
+        s = spec(pca_every="15m", max_rows_between_pcas=12)
         whole = po.ModelBank([s]).fit_predict(df)
         for rows in (1, 7, 37):
             parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
@@ -238,7 +238,7 @@ class TestChunkingAndResume:
 
     def test_a_save_between_refreshes_resumes_where_the_unbroken_run_does(self):
         df = frame(irregular())
-        s = spec(pca_every="15m", max_rows_between_pca=40)
+        s = spec(pca_every="15m", max_rows_between_pcas=40)
         whole = run(s, df)
         refreshes = observed(whole)
         for cut in (refreshes[3] + 2, refreshes[8] + 5):
@@ -284,7 +284,7 @@ def test_the_state_exports_to_json_under_a_row_cap_alone():
     writes as null and cannot read back: `to_json` refused every such bank
     (task 161's miss, fixed in task 163)."""
     df = frame(irregular())
-    for kw in ({"max_rows_between_pca": 12}, {"pca_every": "15m"}, {}):
+    for kw in ({"max_rows_between_pcas": 12}, {"pca_every": "15m"}, {}):
         bank = po.ModelBank([spec(**kw)])
         bank.fit_predict(df.head(60))
         assert '"pca_every"' in bank.to_json(), kw

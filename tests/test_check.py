@@ -227,7 +227,7 @@ class TestValues:
         c = dict(targets=["y"], features=["p1", "p2"], half_life=500.0)
         specs = [
             po.spec.ewridge("ewridge", **c),
-            po.spec.lasso("lasso", lasso_path=[1e-3], **c),
+            po.spec.lasso("lasso", penalties=[1e-3], **c),
             po.spec.ew_cov("ew_cov", features=["p1", "p2"], half_life=500.0),
             po.spec.ewridge("through_origin", fit_intercept=False, **c),
         ]

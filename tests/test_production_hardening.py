@@ -89,7 +89,7 @@ class TestLeakageAndDuplicateRejection:
         for name, extra in [
             ("rls", {}),
             ("kalman", {"coef_half_life": 100.0}),
-            ("lasso", {"lasso_path": [0.0]}),
+            ("lasso", {"penalties": [0.0]}),
             ("sgd", {"learning_rate": 0.01}),
             ("ftrl", {}),
         ]:
@@ -233,7 +233,7 @@ class TestParameterExtremes:
         ("sgd", {"learning_rate": 1e-9}),
         ("sgd", {"learning_rate": 0.5, "clip_gradient": float("inf")}),
         ("ftrl", {"alpha": 1e-6, "l1": 100.0}),
-        ("lasso", {"lasso_path": [1e6, 0.0]}),
+        ("lasso", {"penalties": [1e6, 0.0]}),
     ]
 
     @pytest.mark.parametrize(
@@ -271,7 +271,7 @@ class TestParameterExtremes:
             "m",
             targets=["y0"],
             features=["x0", "x1"],
-            lasso_path=[1e-10],
+            penalties=[1e-10],
             l1_ratio=0.0,
             half_life=1e9,
             min_weight=5.0,

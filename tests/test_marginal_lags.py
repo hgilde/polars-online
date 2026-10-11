@@ -429,7 +429,7 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
         # Taken as no lags, where `ew_cov(lags=[])` is refused.
         ({"lags": []}, 'spec "m": marginal lags must be non-empty; leave it out for none'),
         ({"serial_rule": "geometric"}, "serial_rule needs `lags`"),
-        ({"lags": [1], "serial_rule": "nope"}, "unknown serial_rule"),
+        ({"lags": [1], "serial_rule": "nope"}, 'serial_rule must be one of "truncated"'),
     ],
 )
 def test_a_bad_lag_spec_is_refused_by_name(kw, msg):

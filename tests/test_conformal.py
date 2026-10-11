@@ -225,7 +225,7 @@ MODELS = [
     ("ewridge", {"ridge": [1e-6, 1.0], "feature_sets": {"a": ["x0"], "b": ["x0", "x1"]}}),
     ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
-    ("lasso", {"lasso_path": [0.1, 0.0], "max_rows_between_solves": 1}),
+    ("lasso", {"penalties": [0.1, 0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("sgd", {"learning_rate": 0.02}),
@@ -619,7 +619,7 @@ class TestValidation:
         ("builder", "kw"),
         [
             (po.spec.ew_cov, {"features": ["x0"], "half_life": 10.0}),
-            (po.spec.kmeans, {"features": ["x0"], "k": 2, "half_life": 10.0}),
+            (po.spec.kmeans, {"features": ["x0"], "n_clusters": 2, "half_life": 10.0}),
             (po.spec.micro, {"features": ["x0"], "eps": 0.3, "half_life": 10.0}),
         ],
         ids=["ew_cov", "kmeans", "micro"],

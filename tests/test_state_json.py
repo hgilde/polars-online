@@ -58,7 +58,7 @@ EVERY_MODEL = {
         **B,
     ),
     "rls": po.spec.rls("s", half_life=INF, **B),
-    "lasso": po.spec.lasso("s", half_life=INF, lasso_path=[0.1, 0.01], **B),
+    "lasso": po.spec.lasso("s", half_life=INF, penalties=[0.1, 0.01], **B),
     "kalman": po.spec.kalman("s", half_life=50.0, coef_half_life=INF, **B),
     "sgd": po.spec.sgd("s", half_life=INF, clip_gradient=INF, **B),
     "pa": po.spec.pa("s", half_life=INF, **B),
@@ -76,11 +76,11 @@ EVERY_MODEL = {
         bin_warm_rows=20,
         **B,
     ),
-    "kmeans": po.spec.kmeans("s", features=["x0", "x1"], k=2, half_life=INF),
+    "kmeans": po.spec.kmeans("s", features=["x0", "x1"], n_clusters=2, half_life=INF),
     "micro": po.spec.micro("s", features=["x0", "x1"], eps=0.5, half_life=INF),
     "deco": po.spec.deco("s", features=["x0", "x1"], half_life=INF),
     "seqtest": po.spec.seqtest("s", targets=["y"]),
-    "corrchange": po.spec.corrchange("s", features=["x0", "x1"], span_rows=40),
+    "corrchange": po.spec.corrchange("s", features=["x0", "x1"], window_rows=40),
     "bocpd": po.spec.bocpd("s", features=["x0"]),
 }
 

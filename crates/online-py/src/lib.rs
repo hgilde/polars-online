@@ -59,6 +59,14 @@ fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<
         // shape every surface gives it, naming the spec (task 244, P-4):
         // serde's own words for it named neither the spec nor, beyond the
         // path, the parameter.
+        // A word refused for a reason of its own (`closed = "left"`) names
+        // the spec the same way.
+        if let Some(param) = path.rsplit('.').next()
+            && msg.starts_with(&format!("{param} = "))
+            && let Some(spec) = spec_name(json, &path)
+        {
+            return format!("spec {spec:?}: {msg}");
+        }
         if let Some(body) = online_polars::word_refusal_body(&msg)
             && let Some(param) = path
                 .rsplit('.')

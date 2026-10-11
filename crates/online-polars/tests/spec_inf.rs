@@ -35,7 +35,7 @@ const MEANS_SOMETHING: [(&str, &str); 9] = [
     ),
     (
         "",
-        "type = \"lasso\"\nlasso_path = [0.1]\nselect_half_life = inf",
+        "type = \"lasso\"\npenalties = [0.1]\nselect_half_life = inf",
     ),
     ("features = []\nhalf_life = inf", "type = \"holt\""),
     ("", "type = \"pa\"\nc = inf"),

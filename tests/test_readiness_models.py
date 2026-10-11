@@ -54,7 +54,7 @@ def build(kind: str, **kw: Any) -> dict:
     if kind == "kalman":
         base.setdefault("coef_half_life", 30.0)
     if kind == "lasso":
-        base.setdefault("lasso_path", [0.05])
+        base.setdefault("penalties", [0.05])
     return getattr(po.spec, kind)("m", **base)
 
 
@@ -214,7 +214,7 @@ class TestLasso:
         feats = [f"x{j}" for j in range(k)]
         h = 40.0
         s = po.spec.lasso(
-            "m", targets=["y"], features=feats, half_life=h, lasso_path=[0.3], coef_every=0
+            "m", targets=["y"], features=feats, half_life=h, penalties=[0.3], coef_every=0
         )
         bank = po.ModelBank([s])
         out = unnest(bank.fit_predict(df))

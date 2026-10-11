@@ -42,7 +42,7 @@ fn the_refusal_says_how_to_raise_the_budget() {
         "window_budget = {\"refuse\": MiB} with a larger number of MiB",
         "{\"refuse\": inf} for no bound",
         "float(\"inf\")",
-        "raise window_every (4 now)",
+        "raise snapshot_every (4 now)",
         "window_budget = {\"thin\": MiB}",
         "group \"a\"",
         "300.000 MiB",
@@ -80,35 +80,35 @@ fn the_refusal_names_the_cadence_in_force() {
     };
     for (s, cadence, want) in [
         (
-            temporal(r#", "window_every": "90s""#),
+            temporal(r#", "snapshot_every": "90s""#),
             clock(90.0),
-            "raise window_every (90s now);",
+            "raise snapshot_every (90s now);",
         ),
         (
-            temporal(r#", "window_every": "90s""#),
+            temporal(r#", "snapshot_every": "90s""#),
             clock(180.0),
-            "raise window_every (3m now);",
+            "raise snapshot_every (3m now);",
         ),
         (
-            temporal(r#", "window_every": "90s", "max_rows_between_snapshots": 25"#),
+            temporal(r#", "snapshot_every": "90s", "max_rows_between_snapshots": 25"#),
             both,
-            "raise window_every (90s now) and max_rows_between_snapshots (25 now)",
+            "raise snapshot_every (90s now) and max_rows_between_snapshots (25 now)",
         ),
         (
             spec(r#", "max_rows_between_snapshots": 25"#),
             rows,
-            "raise max_rows_between_snapshots (25 now), or give window_every",
+            "raise max_rows_between_snapshots (25 now), or give snapshot_every",
         ),
         (
             spec(""),
             Cadence::EVERY_ROW,
-            "set window_every to the clock between snapshots, or max_rows_between_snapshots \
+            "set snapshot_every to the clock between snapshots, or max_rows_between_snapshots \
              to the rows between them (every row now)",
         ),
         (
-            spec(r#", "window_every": 2.5"#),
+            spec(r#", "snapshot_every": 2.5"#),
             clock(2.5),
-            "raise window_every (2.5 now)",
+            "raise snapshot_every (2.5 now)",
         ),
     ] {
         let got = say(&s, cadence);

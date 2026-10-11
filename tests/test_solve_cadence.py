@@ -24,7 +24,7 @@ TIER = "essential"
 
 MODELS = [
     ("ewridge", {}),
-    ("lasso", {"lasso_path": [0.0]}),
+    ("lasso", {"penalties": [0.0]}),
     ("huber", {}),
     ("quantile", {"quantile": 0.5}),
 ]

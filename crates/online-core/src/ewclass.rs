@@ -56,9 +56,12 @@ pub enum Covariance {
     Full,
     /// One matrix pooled over the classes by their priors: linear
     /// discriminant analysis. The decision boundaries are hyperplanes.
+    /// `"tied"`, scikit-learn's `GaussianMixture` word (task 244, P-2).
+    #[serde(rename = "tied")]
     Shared,
     /// Per-class variances only, the features taken as conditionally
-    /// independent: Gaussian naive Bayes.
+    /// independent: Gaussian naive Bayes. `"diag"`, scikit-learn's word.
+    #[serde(rename = "diag")]
     Diagonal,
 }
 
@@ -66,8 +69,8 @@ impl Covariance {
     pub fn name(self) -> &'static str {
         match self {
             Covariance::Full => "full",
-            Covariance::Shared => "shared",
-            Covariance::Diagonal => "diagonal",
+            Covariance::Shared => "tied",
+            Covariance::Diagonal => "diag",
         }
     }
 
@@ -78,10 +81,10 @@ impl Covariance {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s {
             "full" => Ok(Covariance::Full),
-            "shared" => Ok(Covariance::Shared),
-            "diagonal" => Ok(Covariance::Diagonal),
+            "tied" => Ok(Covariance::Shared),
+            "diag" => Ok(Covariance::Diagonal),
             other => Err(format!(
-                "covariance must be one of \"full\", \"shared\", \"diagonal\"; got {other:?}"
+                "covariance_type must be one of \"full\", \"tied\", \"diag\"; got {other:?}"
             )),
         }
     }
@@ -1549,13 +1552,13 @@ mod tests {
             let err = EwClass::new(bad).unwrap_err();
             assert!(err.contains(msg), "{err}");
         }
-        assert_eq!(Covariance::parse("shared").unwrap(), Covariance::Shared);
+        assert_eq!(Covariance::parse("tied").unwrap(), Covariance::Shared);
         // The refusal names the parameter, its words and the value.
         assert_eq!(
             Covariance::parse("spherical").unwrap_err(),
-            "covariance must be one of \"full\", \"shared\", \"diagonal\"; got \"spherical\""
+            "covariance_type must be one of \"full\", \"tied\", \"diag\"; got \"spherical\""
         );
-        assert_eq!(Covariance::Diagonal.name(), "diagonal");
+        assert_eq!(Covariance::Diagonal.name(), "diag");
         assert_eq!(
             EwClass::labels(&["a".into(), "b".into()]),
             vec!["class", "p_a", "p_b"]

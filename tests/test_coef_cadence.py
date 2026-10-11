@@ -111,7 +111,7 @@ def kind(name: str, h: float | str, **common) -> dict:
     two = ["x1", "x2"]
     own: dict[str, object] = {
         "ewridge": dict(targets=["y"], features=two),
-        "lasso": dict(targets=["y"], features=two, lasso_path=[0.1, 0.0]),
+        "lasso": dict(targets=["y"], features=two, penalties=[0.1, 0.0]),
         "rls": dict(targets=["y"], features=two),
         "kalman": dict(targets=["y"], features=two, coef_half_life=h),
         "huber": dict(targets=["y"], features=two),
@@ -120,10 +120,10 @@ def kind(name: str, h: float | str, **common) -> dict:
         "sgd": dict(targets=["y"], features=two),
         "pa": dict(targets=["y"], features=two),
         "holt": dict(targets=["y"]),
-        "kmeans": dict(features=two, k=2, warm_rows=50),
+        "kmeans": dict(features=two, n_clusters=2, warm_rows=50),
         "micro": dict(features=two, eps=0.3),
         "ew_class": dict(label="c", classes=["a", "b"], features=two, precision_prior=1.0),
-        "hmm": dict(features=two, k=2, precision_prior=0.1),
+        "hmm": dict(features=two, n_components=2, precision_prior=0.1),
         "deco": dict(features=two),
     }[name]
     return getattr(po.spec, name)("m", half_life=h, weight="w", **own, **common)

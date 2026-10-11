@@ -451,7 +451,7 @@ def clock_specs(draw, model: str, step: int, cap: int):
             if gap != "reset" and "window_size" not in kw and draw(st.booleans()):
                 kw |= dict(session_shrink=0.5, long_half_life=steps(1, 120))
     elif model == "lasso":
-        kw |= xy | dict(lasso_path=[0.1, 0.0], select_half_life=steps(1, 60))
+        kw |= xy | dict(penalties=[0.1, 0.0], select_half_life=steps(1, 60))
         kw |= maybe("window_size", 1, 60) | maybe("solve_every", 1, 5)
     elif model == "kalman":
         kw |= xy | dict(coef_half_life=steps(1, 60)) | maybe("revert_half_life", 1, 600)
@@ -476,7 +476,12 @@ def clock_specs(draw, model: str, step: int, cap: int):
         # Task 179: the hazard on the clock, each step's chance of a break
         # applied before the row it leads into, ties and capped gaps among
         # the steps drawn.
-        kw |= dict(features=["x0", "x1"], hazard=steps(1, 60), prior_nu=2.0, prior_scale=[1.0])
+        kw |= dict(
+            features=["x0", "x1"],
+            hazard=steps(1, 60),
+            degrees_of_freedom_prior=2.0,
+            covariance_prior=[1.0],
+        )
     else:
         assert model == "rls", model
         kw |= xy | maybe("embargo", 1, 5)

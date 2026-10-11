@@ -943,7 +943,7 @@ class TestRefusals:
     @pytest.mark.parametrize(
         "kw, msg",
         [
-            (dict(features=["x0"]), "seqtest takes no features"),
+            (dict(features=["x0"]), r"seqtest\(\) takes no features"),
             (dict(a="p"), "seqtest a and b go together"),
             (dict(b="q"), "seqtest a and b go together"),
             (dict(a="p", b="p"), 'seqtest a and b are both "p" with the same suffix'),

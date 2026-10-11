@@ -130,7 +130,7 @@ fn kmeans_rows_before_seeding_name_warm_rows() {
     // 20 learned rows: rows 0, 7, 14 and 21 weigh 0, so the 20th learned
     // row is row 23, which reports nothing and seeds the centres.
     check(
-        r#"{"name": "m", "model": {"type": "kmeans", "k": 3, "warm_rows": 20},
+        r#"{"name": "m", "model": {"type": "kmeans", "n_clusters": 3, "warm_rows": 20},
             "targets": ["x0"], "features": ["x0", "x1"], "half_life": 50, "weight": "w"}"#,
         &[("below_min_weight", 5), ("below_warm_rows", 19)],
     );
@@ -139,7 +139,7 @@ fn kmeans_rows_before_seeding_name_warm_rows() {
 #[test]
 fn hmm_rows_before_seeding_name_warm_rows() {
     check(
-        r#"{"name": "m", "model": {"type": "hmm", "k": 2, "precision_prior": 1.0,
+        r#"{"name": "m", "model": {"type": "hmm", "n_components": 2, "precision_prior": 1.0,
             "warm_rows": 10}, "targets": ["x0"], "features": ["x0", "x1"],
             "half_life": 50, "weight": "w"}"#,
         &[("below_warm_rows", 12)],

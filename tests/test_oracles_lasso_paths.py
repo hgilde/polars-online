@@ -111,7 +111,7 @@ def _fit(df: pl.DataFrame, **kw):
         "m",
         targets=TARGETS,
         features=FEATURES,
-        lasso_path=PATH,
+        penalties=PATH,
         clock="t",
         gap_cap=MAX_DCLOCK,
         weight="w",

@@ -143,7 +143,7 @@ class TestShape:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            lasso_path=[0.1, 0.0],
+            penalties=[0.1, 0.0],
             half_life=1e9,
             min_weight=3.0,
         )
@@ -363,7 +363,7 @@ class TestTheCompleteSufficientStatistic:
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            lasso_path=[0.1, 0.0],
+            penalties=[0.1, 0.0],
             half_life=1e12,
             min_weight=3.0,
         )

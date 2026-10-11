@@ -21,7 +21,7 @@ MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 100.0}),
-    ("lasso", {"lasso_path": [0.0], "max_rows_between_solves": 1}),
+    ("lasso", {"penalties": [0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("ftrl", {}),

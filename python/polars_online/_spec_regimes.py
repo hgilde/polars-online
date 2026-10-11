@@ -17,16 +17,16 @@ def hmm(
     name: str,
     *,
     features: list[str],
-    k: int,
+    n_components: int,
     precision_prior: float,
-    covariance: Literal["full", "shared", "diagonal"] = "full",
+    covariance_type: Literal["full", "tied", "diag"] = "full",
     learn: bool = True,
     transition_prior: float | None = None,
     transition: list[float] | None = None,
     means: list[float] | None = None,
     covs: list[float] | None = None,
     warm_rows: int | None = None,
-    seed_rule: Literal["first", "farthest", "kmeanspp", "lloyd"] | None = None,
+    init: Literal["first", "farthest", "k-means++", "lloyd"] | None = None,
     seed: int | None = None,
     exog_tvtp: str | None = None,
     tvtp_coef: list[list[float]] | None = None,
@@ -98,37 +98,39 @@ def hmm(
 
     .. rubric:: Parameters
 
-    ``k``
+    ``n_components``
         The number of hidden states, from 2 to 1,024; required.
     ``precision_prior``
         A ridge on every state's covariance, above 0, required here as it is
         for :func:`ew_class`, because a state's centred co-moments start at
         zero and a zero matrix has no density.
-    ``covariance``
-        ``"full"`` (the default), ``"shared"`` or ``"diagonal"``, as for
+    ``covariance_type``
+        ``"full"`` (the default), ``"tied"`` or ``"diag"``, as for
         :func:`ew_class`.
     ``learn``
         Whether the states and the transition counts move with the rows.
         ``False`` with no states given is refused: there would be nothing to
         filter with.
     ``transition_prior``, ``transition``
-        The Dirichlet pseudo-count per cell (default 1, at least 0), and a
-        ``k x k`` matrix whose rows are distributions, to spread that mass over
-        instead of flat, so the given matrix is the prior mean. A row with no
+        The Dirichlet pseudo-count per cell (default 1, at least 0), and an
+        ``n_components x n_components`` matrix whose rows are distributions,
+        to spread that mass over instead of flat, so the given matrix is the
+        prior mean. A row with no
         counts is that mean, the given matrix or uniform,
         ``transition_prior = 0`` included. Both are refused beside
         ``tvtp_coef``, which learns no count.
     ``means``, ``covs``
-        The states given outright (``K x d`` and ``K`` matrices of ``d x d``,
-        both flattened row-major and finite, and given together), and then
+        The states given outright (``n_components x d``, and ``n_components``
+        matrices of ``d x d``, both flattened row-major and finite, and given
+        together), and then
         there is no warm-up. Each ``covs`` block must be symmetric and positive
         definite, and the pair enters at one row's weight. So under
         ``learn = True`` the stream washes the given states out at the ordinary
         rate, and under ``learn = False`` they are held exactly.
-    ``warm_rows``, ``seed_rule``, ``seed``
+    ``warm_rows``, ``init``, ``seed``
         Without given states, the first ``warm_rows`` learned rows (default 50,
-        at least ``k``) are buffered. :func:`kmeans`' ``seed_rule``
-        (``"lloyd"`` by default; ``"first"``, ``"farthest"``, ``"kmeanspp"``)
+        at least ``n_components``) are buffered. :func:`kmeans`' ``init``
+        (``"lloyd"`` by default; ``"first"``, ``"farthest"``, ``"k-means++"``)
         chooses centres among them with ``seed`` (default 0), and the buffer is
         replayed through those centres as hard assignments. Every field but
         ``weight_sum`` and ``settled_frac`` is null until then. The buffered
@@ -140,7 +142,7 @@ def hmm(
     ``exog_tvtp``, ``tvtp_coef``
         A column (declared like ``weight``, not a feature) whose value drives
         the matrix instead: ``Pi_kl(t) = softmax_l(A_kl + B_kl z_t)`` from the
-        fixed ``tvtp_coef = [A, B]``, each ``k x k`` flattened row-major. The
+        fixed ``tvtp_coef = [A, B]``, each ``n_components x n_components`` flattened row-major. The
         two are given together. The count-based learning is off under it; ``A``
         and ``B`` are fitted elsewhere. A row whose ``exog_tvtp`` is null or
         non-finite is filtered with ``z = 0``, the base transition, and is
@@ -186,7 +188,7 @@ def hmm(
 
         h = po.spec.hmm(
             "regime", features=["x0", "x1"], half_life=500.0,
-            k=2,
+            n_components=2,
             precision_prior=1e-2,    # required: a zero matrix has no density
             warm_rows=100,           # seeds the states from this many rows; null until then
         )
@@ -198,24 +200,24 @@ def hmm(
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets``; ``ValueError`` for:
 
-    - a ``k`` outside 2 to 1,024, a ``precision_prior`` not above 0, and a
+    - a ``n_components`` outside 2 to 1,024, a ``precision_prior`` not above 0, and a
       ``transition_prior`` below 0;
     - ``learn = False`` without states;
     - ``means`` without ``covs`` or the reverse, either of the wrong shape or
       not finite, or a ``covs`` block that is not symmetric and positive
       definite;
-    - a ``transition`` that is not ``k x k`` or has a row that is not a
+    - a ``transition`` that is not ``n_components x n_components`` or has a row that is not a
       distribution;
-    - a ``warm_rows`` below ``k``;
+    - a ``warm_rows`` below ``n_components``;
     - ``exog_tvtp`` without ``tvtp_coef`` or the reverse, and a ``tvtp_coef``
-      whose ``A`` and ``B`` are not ``k x k``;
+      whose ``A`` and ``B`` are not ``n_components x n_components``;
     - ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
-      ``warm_rows``, ``seed_rule`` or ``seed`` beside given states.
+      ``warm_rows``, ``init`` or ``seed`` beside given states.
     """
     model: dict[str, Any] = {
         "type": "hmm",
-        "k": k,
-        "covariance": covariance,
+        "n_components": n_components,
+        "covariance_type": covariance_type,
         "precision_prior": precision_prior,
         "learn": learn,
         "transition_prior": transition_prior,
@@ -223,7 +225,7 @@ def hmm(
         "means": means,
         "covs": covs,
         "warm_rows": warm_rows,
-        "seed_rule": seed_rule,
+        "init": init,
         "seed": seed,
         "exog_tvtp": exog_tvtp,
         "tvtp_coef": tvtp_coef,

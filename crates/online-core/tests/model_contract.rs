@@ -1390,14 +1390,14 @@ fn every_core_validate_refuses_what_the_spec_refuses() {
                 lasso_path: vec![nan],
                 ..lasso_cfg()
             }),
-            "lasso: lasso_path values must be finite and >= 0, got NaN",
+            "lasso: penalties must each be finite and >= 0, got NaN",
         ),
         (
             lasso(LassoCfg {
                 lasso_path: vec![inf, 0.1],
                 ..lasso_cfg()
             }),
-            "lasso: lasso_path values must be finite and >= 0, got inf",
+            "lasso: penalties must each be finite and >= 0, got inf",
         ),
         (
             lasso(LassoCfg {

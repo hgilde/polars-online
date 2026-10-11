@@ -45,12 +45,12 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "bocpd",
-        r#"{"type": "bocpd", "hazard": 250.0, "emission": "diag"}"#,
+        r#"{"type": "bocpd", "hazard": 250.0, "covariance_type": "diag"}"#,
         r#""targets": ["x0"], "features": ["x0", "x1"]"#,
     ),
     (
         "corrchange",
-        r#"{"type": "corrchange", "kind": "monitor", "span_rows": 20, "alpha": 0.05, "alpha_adjust": "bonferroni", "scalar": false, "norm": "l1", "reset_on_flag": false}"#,
+        r#"{"type": "corrchange", "kind": "monitor", "window_rows": 20, "alpha": 0.05, "alpha_adjust": "bonferroni", "scalar": false, "norm": "l1", "change_action": "flag"}"#,
         r#""targets": ["x0"], "features": ["x0", "x1"]"#,
     ),
     (
@@ -80,7 +80,7 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "hmm",
-        r#"{"type": "hmm", "k": 2, "covariance": "full", "precision_prior": 0.1, "learn": true}"#,
+        r#"{"type": "hmm", "n_components": 2, "covariance_type": "full", "precision_prior": 0.1, "learn": true}"#,
         r#""targets": ["x0"], "features": ["x0", "x1"], "half_life": 50.0"#,
     ),
     (
@@ -100,12 +100,12 @@ const SPECS: &[(&str, &str, &str)] = &[
     ),
     (
         "kmeans",
-        r#"{"type": "kmeans", "k": 2}"#,
+        r#"{"type": "kmeans", "n_clusters": 2}"#,
         r#""targets": ["x0"], "features": ["x0", "x1"], "half_life": 50.0"#,
     ),
     (
         "lasso",
-        r#"{"type": "lasso", "lasso_path": [0.1, 0.0], "target_gaps": "own_rows"}"#,
+        r#"{"type": "lasso", "penalties": [0.1, 0.0], "target_gaps": "own_rows"}"#,
         r#""targets": ["y"], "features": ["x0"], "half_life": 50.0"#,
     ),
     (

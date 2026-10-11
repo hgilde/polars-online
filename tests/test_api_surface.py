@@ -195,14 +195,14 @@ def describe_api(cli: Path | None = None) -> str:
         ),
         (
             "lasso path",
-            dict(targets=["y"], features=["x0"], lasso_path=[0.1, 0.0], half_life=100.0),
+            dict(targets=["y"], features=["x0"], penalties=[0.1, 0.0], half_life=100.0),
         ),
     ]
     for label, kw in cases:
         model = (
             kw.pop("_model", "ewridge")
             if "_model" in kw
-            else ("lasso" if "lasso_path" in kw else "ewridge")
+            else ("lasso" if "penalties" in kw else "ewridge")
         )
         s = getattr(po.spec, model)("m", min_weight=2.0, **kw)
         w(f"  {label}:")
@@ -210,7 +210,7 @@ def describe_api(cli: Path | None = None) -> str:
             w(f"    {f}")
     for model, kw in [
         ("rls", dict(targets=["y"], features=["x0"], half_life=100.0)),
-        ("lasso", dict(targets=["y"], features=["x0"], half_life=100.0, lasso_path=[0.1, 0.0])),
+        ("lasso", dict(targets=["y"], features=["x0"], half_life=100.0, penalties=[0.1, 0.0])),
         ("kalman", dict(targets=["y"], features=["x0"], half_life=100.0, coef_half_life=50.0)),
         ("huber", dict(targets=["y"], features=["x0"], half_life=100.0)),
         ("quantile", dict(targets=["y"], features=["x0"], half_life=100.0, quantile=0.5)),
@@ -236,7 +236,7 @@ def describe_api(cli: Path | None = None) -> str:
                 half_life=100.0,
             ),
         ),
-        ("kmeans", dict(features=["x0", "x1"], k=2, half_life=100.0)),
+        ("kmeans", dict(features=["x0", "x1"], n_clusters=2, half_life=100.0)),
         ("micro", dict(features=["x0", "x1"], eps=0.3, half_life=100.0)),
         (
             "ew_class",
@@ -263,11 +263,11 @@ def describe_api(cli: Path | None = None) -> str:
                 half_life=100.0,
             ),
         ),
-        ("bocpd", dict(features=["x0", "x1"], prior_scale=[1.0])),
-        ("corrchange", dict(features=["x0", "x1"], span_rows=100)),
+        ("bocpd", dict(features=["x0", "x1"], covariance_prior=[1.0])),
+        ("corrchange", dict(features=["x0", "x1"], window_rows=100)),
         (
             "hmm",
-            dict(features=["x0", "x1"], k=3, precision_prior=0.1, half_life=100.0),
+            dict(features=["x0", "x1"], n_components=3, precision_prior=0.1, half_life=100.0),
         ),
         (
             "rcov",
@@ -360,12 +360,12 @@ RESOLVED_VARIANTS: list[tuple[str, dict[str, object]]] = [
     ("sgd", {"loss": "huber"}),
     ("sgd", {"loss": "epsilon_insensitive"}),
     ("sgd", {"schedule": "inv_scaling"}),
-    ("ew_cov", {"pca": 2, "max_rows_between_pca": 10}),
+    ("ew_cov", {"pca": 2, "max_rows_between_pcas": 10}),
     ("micro", {"prune_every": 10.0}),
     ("marginal", {"bins": 4}),
     ("corrchange", {"kind": "sequential"}),
     ("rcov", {"kind": "preavg"}),
-    ("bocpd", {"emission": "robust"}),
+    ("bocpd", {"robust_beta": 0.1}),
 ]
 
 
@@ -569,10 +569,17 @@ ENUM_PROBES: list[
         "session_gap",
         "word",
     ),
-    ("bocpd.emission", "bocpd", {}, "model.emission", "word"),
+    ("bocpd.covariance_type", "bocpd", {}, "model.covariance_type", "word"),
     ("corrchange.alpha_adjust", "corrchange", {}, "model.alpha_adjust", "word"),
     ("corrchange.kind", "corrchange", {}, "model.kind", "word"),
     ("corrchange.norm", "corrchange", {"kind": "window"}, "model.norm", "word"),
+    (
+        "corrchange.change_action",
+        "corrchange",
+        {"kind": "window"},
+        "model.change_action",
+        "word",
+    ),
     # `"linear"` needs both of its coefficients.
     (
         "deco.dynamics",
@@ -590,7 +597,7 @@ ENUM_PROBES: list[
     ("ewridge.closed", "ewridge", {"window_size": 100.0}, "model.closed", "word"),
     ("lasso.closed", "lasso", {"window_size": 100.0}, "model.closed", "word"),
     ("marginal.closed", "marginal", {"window_size": 100.0}, "model.closed", "word"),
-    ("ew_class.covariance", "ew_class", {}, "model.covariance", "word"),
+    ("ew_class.covariance_type", "ew_class", {}, "model.covariance_type", "word"),
     ("ew_class.window_budget", "ew_class", {"window_size": 100.0}, "model.window_budget", "key"),
     # `mahal` and `partial_corr` need the prior, `lag_corr` the lags.
     ("ew_cov.stats", "ew_cov", {"precision_prior": 1e-6, "lags": [1]}, "model.stats", "list"),
@@ -599,9 +606,9 @@ ENUM_PROBES: list[
     ("ewridge.target_gaps", "ewridge", {}, "model.target_gaps", "word"),
     ("ewridge.window_budget", "ewridge", {"window_size": 100.0}, "model.window_budget", "key"),
     ("ftrl.loss", "ftrl", {}, "model.loss", "word"),
-    ("hmm.covariance", "hmm", {}, "model.covariance", "word"),
-    ("hmm.seed_rule", "hmm", {}, "model.seed_rule", "word"),
-    ("kmeans.seed_rule", "kmeans", {}, "model.seed_rule", "word"),
+    ("hmm.covariance_type", "hmm", {}, "model.covariance_type", "word"),
+    ("hmm.init", "hmm", {}, "model.init", "word"),
+    ("kmeans.init", "kmeans", {}, "model.init", "word"),
     ("lasso.target_gaps", "lasso", {}, "model.target_gaps", "word"),
     ("lasso.window_budget", "lasso", {"window_size": 100.0}, "model.window_budget", "key"),
     ("marginal.bin_rule", "marginal", {"bins": 4}, "model.bin_rule", "word"),
@@ -618,7 +625,9 @@ ENUM_PROBES: list[
 ]
 
 _QUOTED = re.compile(r'"([^"]*)"|`([^`]*)`|\'([^\']*)\'')
-_WORD = re.compile(r"[a-z][a-z0-9_]*")
+#: A word a parameter takes: lowercase, with `_`, and `-` and `+` for
+#: scikit-learn's `"k-means++"`.
+_WORD = re.compile(r"[a-z][a-z0-9_+-]*")
 
 
 def words_in(message: str, parameter: str) -> list[str]:

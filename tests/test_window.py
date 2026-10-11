@@ -218,11 +218,11 @@ def test_a_long_step_empties_the_window(kind, field):
         ({"window_size": 0.0}, "window_size must be finite and > 0"),
         ({"window_size": -1.0}, "window_size must be finite and > 0"),
         ({"window_size": float("inf")}, "window_size must be finite"),
-        ({"window_every": 5}, "window_every needs"),
+        ({"snapshot_every": 5}, "snapshot_every needs"),
         ({"max_rows_between_snapshots": 5}, "max_rows_between_snapshots needs"),
         (
-            {"window_size": 10.0, "window_every": -1.0},
-            "window_every must be finite and >= 0 clock units",
+            {"window_size": 10.0, "snapshot_every": -1.0},
+            "snapshot_every must be finite and >= 0 clock units",
         ),
         ({"window_size": 10.0, "lags": [1]}, "window_size and lags do not combine"),
         ({"window_size": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),
@@ -235,7 +235,7 @@ def test_a_bad_window_is_refused_by_name(kw, msg):
 
 WINDOWED = {
     "ewridge": lambda **kw: po.spec.ewridge("m", targets=["y"], features=["x"], **kw),
-    "lasso": lambda **kw: po.spec.lasso("m", targets=["y"], features=["x"], lasso_path=[0.1], **kw),
+    "lasso": lambda **kw: po.spec.lasso("m", targets=["y"], features=["x"], penalties=[0.1], **kw),
     "ew_cov": lambda **kw: po.spec.ew_cov("m", features=["x"], stats=["mean"], **kw),
     "ew_class": lambda **kw: po.spec.ew_class(
         "m", features=["x"], label="c", classes=["a", "b"], precision_prior=1.0, **kw
@@ -269,8 +269,9 @@ def test_only_the_models_that_can_honour_it_accept_it(model):
     """The identity holds where the state is a sum of per-row contributions.
     Everywhere else the keyword is refused, naming the model, rather than
     accepted and quietly ignored."""
+    columns = {} if model == "holt" else {"features": ["x"]}  # holt reads its target alone
     with pytest.raises(TypeError, match=f"{model}.*unexpected keyword argument 'window_size'"):
-        getattr(po.spec, model)("m", targets=["y"], features=["x"], window_size=10.0)
+        getattr(po.spec, model)("m", targets=["y"], window_size=10.0, **columns)
 
 
 # --- the same cutoff on a regression -----------------------------------------
@@ -410,7 +411,7 @@ def test_a_row_exactly_one_window_old_on_a_temporal_clock(unit, closed):
     specs = [
         po.spec.ewridge("ewridge", targets=["y"], features=["x"], **window, **common),
         po.spec.lasso(
-            "lasso", targets=["y"], features=["x"], lasso_path=[0.1, 0.01], **window, **common
+            "lasso", targets=["y"], features=["x"], penalties=[0.1, 0.01], **window, **common
         ),
         po.spec.ew_cov("ew_cov", features=["x"], stats=["mean"], **window, **common),
         po.spec.ew_class(
@@ -479,7 +480,7 @@ def lasso_spec(window_size=None, **kw):
         half_life=HALFLIFE,
         gap_cap=1e12,
         min_weight=2.0,
-        lasso_path=[0.05],
+        penalties=[0.05],
         max_rows_between_solves=1,
     )
     d.update(kw)
@@ -582,7 +583,7 @@ def test_a_windowed_classifier_follows_a_swap_the_full_history_blurs():
             half_life=120.0,
             gap_cap=1e12,
             min_weight=2.0,
-            covariance="diagonal",
+            covariance_type="diag",
             precision_prior=1e-3,
             window_size=window,
         )
@@ -651,7 +652,7 @@ def test_a_windowed_sigma_with_none_of_the_targets_rows_inside_reads_none(
             "m", ridge=1e-6, standardize=True, max_error_inflation=math.inf, **common
         )
     else:
-        spec = po.spec.lasso("m", lasso_path=[0.1, 0.0], **common)
+        spec = po.spec.lasso("m", penalties=[0.1, 0.0], **common)
 
     def run(gap: int, fresh: bool) -> pl.DataFrame:
         out = po.ModelBank([spec]).fit_predict(_absent_then_back(gap, fresh, back))

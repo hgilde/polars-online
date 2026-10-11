@@ -108,7 +108,7 @@ SHAPES = [
         "targets must be a list of strs, po.target tables or window expressions "
         "looking ahead, got list [None]",
     ),
-    (po.spec.lasso, dict(lasso_path=0.1), "lasso_path must be a list of numbers, got float"),
+    (po.spec.lasso, dict(penalties=0.1), "penalties must be a list of numbers, got float"),
     (po.spec.ewridge, dict(bogus=1), "ewridge() got an unexpected keyword argument 'bogus'"),
 ]
 
@@ -133,7 +133,7 @@ def test_ew_cov_has_no_targets():
 
 def test_kmeans_has_no_targets():
     with pytest.raises(TypeError, match='spec "m": kmeans\\(\\) takes no targets'):
-        po.spec.kmeans("m", features=["x0", "y"], targets=["y"], k=2, half_life=10.0)
+        po.spec.kmeans("m", features=["x0", "y"], targets=["y"], n_clusters=2, half_life=10.0)
 
 
 def test_ew_class_takes_a_label_not_targets():
@@ -172,8 +172,8 @@ VALUES = [
     ),
     # No sweep is no descent: every solve a failure, and coefficients that
     # read like a fit (review 2026-10-05, PB7).
-    (po.spec.lasso, dict(lasso_path=[0.1], max_iter=-1), "max_iter must be >= 1, got -1"),
-    (po.spec.lasso, dict(lasso_path=[0.1], max_iter=0), "max_iter must be >= 1, got 0"),
+    (po.spec.lasso, dict(penalties=[0.1], max_iter=-1), "max_iter must be >= 1, got -1"),
+    (po.spec.lasso, dict(penalties=[0.1], max_iter=0), "max_iter must be >= 1, got 0"),
     (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
     (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
     (po.spec.rls, dict(delta=-INF), "delta must be finite, got float -inf"),
@@ -221,8 +221,8 @@ VALUES = [
     ),
     (
         po.spec.ew_cov,
-        dict(features=["x0", "y"], targets=None, max_rows_between_pca=20),
-        "ew_cov max_rows_between_pca needs `pca`",
+        dict(features=["x0", "y"], targets=None, max_rows_between_pcas=20),
+        "ew_cov max_rows_between_pcas needs `pca`",
     ),
     (
         po.spec.ew_class,
@@ -241,15 +241,23 @@ VALUES = [
     ),
     (
         po.spec.ew_class,
-        dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0, covariance="lda"),
-        'covariance must be one of "full", "shared", "diagonal"; got "lda"',
+        dict(
+            targets=None, label="y", classes=["a", "b"], precision_prior=1.0, covariance_type="lda"
+        ),
+        'covariance_type must be one of "full", "tied", "diag"; got "lda"',
     ),
     # `hmm`'s named `ew_class` (task 190's find, folded into task 193); now
     # neither names a model, but the parameter and its words (task 244, P-4).
     (
         po.spec.hmm,
-        dict(features=["x0", "y"], targets=None, k=2, precision_prior=0.1, covariance="lda"),
-        'covariance must be one of "full", "shared", "diagonal"; got "lda"',
+        dict(
+            features=["x0", "y"],
+            targets=None,
+            n_components=2,
+            precision_prior=0.1,
+            covariance_type="lda",
+        ),
+        'covariance_type must be one of "full", "tied", "diag"; got "lda"',
     ),
     (
         po.spec.ew_class,
@@ -294,8 +302,8 @@ VALUES = [
     ),
     (
         po.spec.ewridge,
-        dict(window_size=5.0, window_every=-1.0),
-        "window_every must be finite and >= 0 clock units (0 snapshots every row), got -1",
+        dict(window_size=5.0, snapshot_every=-1.0),
+        "snapshot_every must be finite and >= 0 clock units (0 snapshots every row), got -1",
     ),
     (
         po.spec.ewridge,
@@ -344,20 +352,20 @@ VALUES = [
     ),
     (
         po.spec.lasso,
-        dict(lasso_path=[0.1], select_half_life=-1.0),
+        dict(penalties=[0.1], select_half_life=-1.0),
         "select_half_life must be > 0, got -1",
     ),
-    (po.spec.lasso, dict(lasso_path=[0.1], tol=-1.0), "tol must be finite and > 0, got -1"),
-    (po.spec.lasso, dict(lasso_path=[0.1], l1_ratio=2.0), "l1_ratio must be in [0, 1], got 2"),
+    (po.spec.lasso, dict(penalties=[0.1], tol=-1.0), "tol must be finite and > 0, got -1"),
+    (po.spec.lasso, dict(penalties=[0.1], l1_ratio=2.0), "l1_ratio must be in [0, 1], got 2"),
     (
         po.spec.lasso,
-        dict(lasso_path=[0.1, 0.2]),
-        "lasso_path must be strictly decreasing, got 0.1 then 0.2",
+        dict(penalties=[0.1, 0.2]),
+        "penalties must be strictly decreasing, got 0.1 then 0.2",
     ),
     (
         po.spec.lasso,
-        dict(lasso_path=[0.1, -0.1]),
-        "lasso_path values must be finite and >= 0, got -0.1",
+        dict(penalties=[0.1, -0.1]),
+        "penalties must each be finite and >= 0, got -0.1",
     ),
     (
         po.spec.kalman,
@@ -388,17 +396,17 @@ VALUES = [
     (po.spec.rls, dict(delta=-1.0), "rls delta must be finite and > 0, got -1"),
     (
         po.spec.kmeans,
-        dict(features=["x0", "y"], targets=None, k=2, split_merge=-1.0),
+        dict(features=["x0", "y"], targets=None, n_clusters=2, split_merge=-1.0),
         "split_merge must be finite and >= 0 (0 disables it), got -1",
     ),
     (
         po.spec.kmeans,
-        dict(features=["x0", "y"], targets=None, k=2, dead_frac=-1.0),
+        dict(features=["x0", "y"], targets=None, n_clusters=2, dead_frac=-1.0),
         "dead_frac must be finite and >= 0 (0 disables it), got -1",
     ),
     (
         po.spec.kmeans,
-        dict(features=["x0", "y"], targets=None, k=2, scale_floor=-1.0),
+        dict(features=["x0", "y"], targets=None, n_clusters=2, scale_floor=-1.0),
         "scale_floor must be finite and >= 0 (0 is the EW variance alone), got -1",
     ),
     (
@@ -445,7 +453,7 @@ def test_numpy_scalars_are_plain_numbers():
 BUILDERS = {
     po.spec.ewridge: {},
     po.spec.rls: {},
-    po.spec.lasso: dict(lasso_path=[0.1]),
+    po.spec.lasso: dict(penalties=[0.1]),
     po.spec.kalman: dict(coef_half_life=10.0),
     po.spec.huber: {},
     po.spec.quantile: dict(quantile=0.5),
@@ -454,7 +462,7 @@ BUILDERS = {
     po.spec.sgd: {},
     po.spec.pa: {},
     po.spec.holt: dict(features=None),
-    po.spec.kmeans: dict(features=["x0", "y"], targets=None, k=2),
+    po.spec.kmeans: dict(features=["x0", "y"], targets=None, n_clusters=2),
     po.spec.ew_class: dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0),
     po.spec.marginal: {},
     # The seven the sweeps below never saw until task 111.
@@ -469,8 +477,8 @@ BUILDERS = {
         group_close="monotone",
         block_rows=100,
     ),
-    po.spec.hmm: dict(features=["x0", "y"], targets=None, k=2, precision_prior=0.1),
-    po.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, span_rows=20),
+    po.spec.hmm: dict(features=["x0", "y"], targets=None, n_components=2, precision_prior=0.1),
+    po.spec.corrchange: dict(features=["x0", "y"], targets=None, half_life=None, window_rows=20),
     po.spec.bocpd: dict(features=["x0", "y"], targets=None, half_life=None),
     po.spec.audit: dict(columns=["x0", "y"], features=None, targets=None, half_life=None),
 }
@@ -558,10 +566,10 @@ def _float_parameters(builder) -> dict[str, typing.Any]:
 
 #: What a parameter needs beside it to be refused for its value rather than
 #: for a companion it lacks: a clock under ``gap_cap`` (with a finite cap to
-#: build with), a window under ``window_every``.
+#: build with), a window under ``snapshot_every``.
 COMPANIONS: dict[str, dict[str, typing.Any]] = {
     "gap_cap": {"clock": "t", "gap_cap": 1.0},
-    "window_every": {"window_size": 10.0},
+    "snapshot_every": {"window_size": 10.0},
     # `q` is the process noise `coef_half_life` would derive, and `kalman`
     # takes exactly one of the two (review round 4, PC6): a finite `q`, one
     # entry per coefficient of `BASE`'s, stands in until the sweep's own.
@@ -584,7 +592,7 @@ def test_the_inf_table_matches_the_rust_side(builder):
 
     And it took any ``ValueError`` as that refusal: 39 of 330 pairs were
     refused for something else, ``gap_cap`` for want of a clock,
-    ``window_every`` of a window, ``q`` for its length (review 2026-10-06,
+    ``snapshot_every`` of a window, ``q`` for its length (review 2026-10-06,
     YA10). Each now has its companion and the right shape, and the refusal
     must speak of the value being infinite, or, for a parameter the kind
     does not take at all (``coef_every`` where there is no coefficient,
@@ -1180,7 +1188,7 @@ EMPTY_HALF_LIFE = 'spec "m": half_life names no half-life; give one or a grid'
         (po.spec.sgd, dict(half_life=[]), EMPTY_HALF_LIFE),
         # The other lists that make a grid were refused already, each by name.
         (po.spec.ewridge, dict(ridge=[]), "ridge grid must have at least one value"),
-        (po.spec.lasso, dict(lasso_path=[]), 'spec "m": lasso_path must be non-empty'),
+        (po.spec.lasso, dict(penalties=[]), 'spec "m": penalties must be non-empty'),
     ],
 )
 def test_an_empty_grid_is_refused_by_name(builder, kw, msg):
@@ -1267,7 +1275,7 @@ def test_an_int_past_the_rust_width_is_refused_by_name(builder):
 
 def test_a_count_past_its_width_is_named_in_python():
     with pytest.raises(ValueError, match=r'spec "m": seed must be <= 18446744073709551615, got 1'):
-        po.spec.kmeans("m", features=["x0", "y"], k=2, seed=2**64, half_life=10.0)
+        po.spec.kmeans("m", features=["x0", "y"], n_clusters=2, seed=2**64, half_life=10.0)
     with pytest.raises(
         ValueError, match=r'spec "m": max_rows_between_solves must be <= 4294967295, got 4294967296'
     ):
@@ -1290,7 +1298,7 @@ def test_a_count_past_its_width_is_named_in_python():
                 targets=None,
                 half_life=None,
                 kind="window",
-                span_rows=10,
+                window_rows=10,
                 n_perm=2**21,
             ),
             "n_perm must be <= 1048576, got 2097152",
@@ -1328,16 +1336,18 @@ def test_hmm_k_has_a_ceiling():
     from a dict, by the Rust side in its own words (review 2026-10-06, CF2's
     sibling). At the ceiling it builds."""
     kw = dict(features=["x0", "y"], half_life=10.0, precision_prior=0.1)
-    with pytest.raises(ValueError, match=re.escape('spec "m": k must be <= 1024, got 1025')):
-        po.spec.hmm("m", k=1025, warm_rows=1025, **kw)
-    spec = po.spec.hmm("m", k=2, **kw)
-    spec["model"]["k"] = spec["model"]["warm_rows"] = 2**62
+    with pytest.raises(
+        ValueError, match=re.escape('spec "m": n_components must be <= 1024, got 1025')
+    ):
+        po.spec.hmm("m", n_components=1025, warm_rows=1025, **kw)
+    spec = po.spec.hmm("m", n_components=2, **kw)
+    spec["model"]["n_components"] = spec["model"]["warm_rows"] = 2**62
     with pytest.raises(
         ValueError,
-        match=re.escape(f'spec "m": hmm: k must be at most 1024 (2^10), got {2**62}'),
+        match=re.escape(f'spec "m": hmm: n_components must be at most 1024 (2^10), got {2**62}'),
     ):
         po.ModelBank([spec])
-    po.ModelBank([po.spec.hmm("m", k=1024, warm_rows=1024, **kw)])
+    po.ModelBank([po.spec.hmm("m", n_components=1024, warm_rows=1024, **kw)])
 
 
 def test_kmeans_k_and_buffer_have_ceilings_and_micro_needs_none():
@@ -1348,10 +1358,12 @@ def test_kmeans_k_and_buffer_have_ceilings_and_micro_needs_none():
     at most (4,096 potential summaries) and is ``O(m)`` memory past it, so
     its cap needs none."""
     kw = dict(features=["x0", "y"], half_life=10.0)
-    with pytest.raises(ValueError, match=r'spec "m": kmeans: k must be at most 65536 \(2\^16\)'):
-        po.spec.kmeans("m", k=2**16 + 1, warm_rows=2**16 + 1, **kw)
+    with pytest.raises(
+        ValueError, match=r'spec "m": kmeans: n_clusters must be at most 65536 \(2\^16\)'
+    ):
+        po.spec.kmeans("m", n_clusters=2**16 + 1, warm_rows=2**16 + 1, **kw)
     with pytest.raises(ValueError, match=r"the warm-up buffer would hold 256\.00003 MiB"):
-        po.spec.kmeans("m", k=3, warm_rows=5_592_406, **kw)
+        po.spec.kmeans("m", n_clusters=3, warm_rows=5_592_406, **kw)
     po.spec.micro("m", eps=0.3, max_clusters=10**7, **kw)
 
 
@@ -1387,7 +1399,7 @@ def test_a_models_refusal_names_the_spec():
         po.spec.sgd("m", clip_gradient=0.0, **BASE)
     assert str(exc.value).startswith('spec "m": sgd: clip_gradient must be > 0'), str(exc.value)
     for model in (
-        {"type": "lasso", "lasso_path": [0.1], "window_size": "inf"},
+        {"type": "lasso", "penalties": [0.1], "window_size": "inf"},
         {"type": "marginal", "window_size": "inf"},
     ):
         spec = {"name": "m", "model": model, "targets": ["y"], "features": ["x0"], "half_life": 10}

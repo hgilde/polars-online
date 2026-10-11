@@ -382,7 +382,7 @@ class TestPerTargetMinPeriods:
         solves = dict(features=["x0"], max_rows_between_solves=1)
         spec = {
             "ewridge": lambda: po.spec.ewridge("m", **solves, **common),
-            "lasso": lambda: po.spec.lasso("m", lasso_path=[1e-6], **solves, **common),
+            "lasso": lambda: po.spec.lasso("m", penalties=[1e-6], **solves, **common),
             "kalman": lambda: po.spec.kalman(
                 "m", features=["x0"], coef_half_life=float("inf"), **common
             ),

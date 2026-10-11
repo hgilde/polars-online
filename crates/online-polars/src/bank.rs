@@ -110,7 +110,7 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// positional, so a 27 file holding one would not decode. **29 since task
 /// 163** (2026-10-06): `micro`'s, for its pruning on the clock. **30 since
 /// task 162** (the same day): a window's snapshots are spaced on the clock,
-/// so `window_every` in a 29 file's spec counts rows where this build reads
+/// so `snapshot_every` in a 29 file's spec counts rows where this build reads
 /// clock units, and its rings carry no spacing; the five windowed models'
 /// configurations changed shape with them. **31 since task 174** (the same
 /// day): a `lasso` keeps each target's own `min_weight` for its selection,
@@ -195,8 +195,9 @@ const BANK_FORMAT_VERSION: u32 = 3;
 /// audit keeps each column's smallest change and the changes at it; a file
 /// from before it is refit. **60 since task 232** (the same day): under a
 /// horizon the diagnostics keep Newey and West's sums; a file from before
-/// it is refit.
-pub const MIN_BANK_SCHEMA_VERSION: u32 = 60;
+/// it is refit. **61 since task 244** (2026-10-11): a spec's keys and words
+/// take the names they keep at 1.0; a file from before it is refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 61;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
 /// duration in a spec.
@@ -1162,7 +1163,7 @@ fn over_budget(
     polars_err!(ComputeError: "{}", over_budget_message(spec, key, bytes, cadence))
 }
 
-/// A clock spacing as the spec writes `window_every`: its own text where the
+/// A clock spacing as the spec writes `snapshot_every`: its own text where the
 /// ring runs at it, otherwise in the same form -- a duration on a temporal
 /// spec, a number of clock units on any other.
 fn spacing_label(spec: &Spec, spacing: f64) -> String {
@@ -1182,21 +1183,24 @@ fn spacing_label(spec: &Spec, spacing: f64) -> String {
 fn sparser_ring(spec: &Spec, cadence: online_core::Cadence) -> String {
     match (cadence.clock(), cadence.row_cap()) {
         (Some(spacing), Some(rows)) => format!(
-            "raise window_every ({} now) and max_rows_between_snapshots ({rows} now), since \
+            "raise snapshot_every ({} now) and max_rows_between_snapshots ({rows} now), since \
              whichever comes first takes a snapshot",
             spacing_label(spec, spacing)
         ),
         (Some(spacing), None) => {
-            format!("raise window_every ({} now)", spacing_label(spec, spacing))
+            format!(
+                "raise snapshot_every ({} now)",
+                spacing_label(spec, spacing)
+            )
         }
-        (None, Some(1)) => "set window_every to the clock between snapshots, or \
+        (None, Some(1)) => "set snapshot_every to the clock between snapshots, or \
                             max_rows_between_snapshots to the rows between them (every row now)"
             .to_string(),
         (None, Some(rows)) => format!(
-            "raise max_rows_between_snapshots ({rows} now), or give window_every, the clock \
+            "raise max_rows_between_snapshots ({rows} now), or give snapshot_every, the clock \
              between snapshots, in its place"
         ),
-        (None, None) => "set window_every or max_rows_between_snapshots".to_string(),
+        (None, None) => "set snapshot_every or max_rows_between_snapshots".to_string(),
     }
 }
 

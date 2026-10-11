@@ -101,22 +101,22 @@ REJECTED = [
     (po.spec.rls, dict(half_life=10.0, delta=-1.0), "rls delta must be finite and > 0"),
     (
         po.spec.lasso,
-        dict(half_life=10.0, lasso_path=[0.1, 0.1]),
-        "lasso_path must be strictly decreasing",
+        dict(half_life=10.0, penalties=[0.1, 0.1]),
+        "penalties must be strictly decreasing",
     ),
     (
         po.spec.lasso,
-        dict(half_life=10.0, lasso_path=[0.1, -0.1]),
-        "lasso_path values must be finite and >= 0",
+        dict(half_life=10.0, penalties=[0.1, -0.1]),
+        "penalties must each be finite and >= 0",
     ),
     (
         po.spec.lasso,
-        dict(half_life=10.0, lasso_path=[0.1], select_half_life=0.0),
+        dict(half_life=10.0, penalties=[0.1], select_half_life=0.0),
         "select_half_life must be > 0",
     ),
     (
         po.spec.lasso,
-        dict(half_life=10.0, lasso_path=[0.1], tol=0.0),
+        dict(half_life=10.0, penalties=[0.1], tol=0.0),
         "tol must be finite and > 0",
     ),
     (po.spec.kalman, dict(half_life=10.0, coef_half_life=NAN), "coef_half_life must not be NaN"),
@@ -226,8 +226,8 @@ REJECTED = [
     # either is every row, below.
     (
         po.spec.ewridge,
-        dict(half_life=10.0, window_size=5.0, window_every=-1.0),
-        "window_every must be finite and >= 0 clock units",
+        dict(half_life=10.0, window_size=5.0, snapshot_every=-1.0),
+        "snapshot_every must be finite and >= 0 clock units",
     ),
     (
         po.spec.ewridge,
@@ -249,7 +249,7 @@ REJECTED = [
     ),
     (
         po.spec.lasso,
-        dict(half_life=10.0, lasso_path=[0.1], max_rows_between_solves=0),
+        dict(half_life=10.0, penalties=[0.1], max_rows_between_solves=0),
         "max_rows_between_solves must be >= 1, got 0",
     ),
     (
@@ -269,13 +269,13 @@ ACCEPTED = [
     (po.spec.ewridge, dict(half_life=10.0, solve_every=0.0)),
     # Every row, as `solve_every = 0` solves on every row (task 162), and a
     # cap of one row (task 196, U7).
-    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, window_every=0)),
+    (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, snapshot_every=0)),
     (po.spec.ewridge, dict(half_life=10.0, window_size=5.0, max_rows_between_snapshots=1)),
     (po.spec.ewridge, dict(half_life=10.0, max_rows_between_solves=1)),
     (po.spec.ewridge, dict(half_life=INF)),
     (po.spec.ewridge, dict(half_life=[10.0, 20.0])),
     (po.spec.huber, dict(half_life=10.0, ridge=0.0)),
-    (po.spec.lasso, dict(half_life=10.0, lasso_path=[0.1, 0.0])),
+    (po.spec.lasso, dict(half_life=10.0, penalties=[0.1, 0.0])),
     (po.spec.kalman, dict(half_life=10.0, coef_half_life=INF)),
     (po.spec.kalman, dict(half_life=10.0, q=[0.0, 0.0])),
     (po.spec.ewridge, dict(half_life=10.0, feature_sets={"a": ["x0"]})),
@@ -366,7 +366,7 @@ ROW_CAPS_AT_ZERO = [
     (po.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_solves"),
     (
         po.spec.lasso,
-        dict(targets=["y"], features=["x0"], lasso_path=[0.1]),
+        dict(targets=["y"], features=["x0"], penalties=[0.1]),
         "max_rows_between_solves",
     ),
     (
@@ -384,7 +384,7 @@ ROW_CAPS_AT_ZERO = [
         dict(features=["x0", "y"], window_size=5.0, stats=["mean"]),
         "max_rows_between_snapshots",
     ),
-    (po.spec.ew_cov, dict(features=["x0", "y"], pca=1), "max_rows_between_pca"),
+    (po.spec.ew_cov, dict(features=["x0", "y"], pca=1), "max_rows_between_pcas"),
     (po.spec.micro, dict(features=["x0", "y"], eps=1.0), "max_rows_between_prunes"),
     (po.spec.ewridge, dict(targets=["y"], features=["x0"]), "max_rows_between_coefs"),
 ]
@@ -432,7 +432,7 @@ def test_holt_takes_a_trend_halflife_only_with_a_trend():
     [
         (po.spec.ew_cov, dict(features=["x0", "y"], half_life=10.0)),
         (po.spec.marginal, dict(**BASE, half_life=10.0)),
-        (po.spec.bocpd, dict(features=["x0"], prior_scale=[1.0])),
+        (po.spec.bocpd, dict(features=["x0"], covariance_prior=[1.0])),
     ],
     ids=["ew_cov", "marginal", "bocpd"],
 )
@@ -503,7 +503,7 @@ def test_every_door_fills_validates_and_builds_a_spec_alike():
 
 
 _TWO = dict(features=["x0", "y"])
-_HMM = dict(**_TWO, k=2, precision_prior=0.1, half_life=10.0)
+_HMM = dict(**_TWO, n_components=2, precision_prior=0.1, half_life=10.0)
 _TVTP = dict(exog_tvtp="s2", tvtp_coef=[[0.0] * 4, [0.0] * 4])
 _GIVEN = dict(means=[-1.0, -1.0, 1.0, 1.0], covs=[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
 _RCOV = dict(**_TWO, group="g", group_close="monotone", block_rows=100)
@@ -516,7 +516,7 @@ IGNORED = [
     (po.spec.hmm, dict(**_HMM, **_TVTP, transition=[0.9, 0.1, 0.2, 0.8]), "hmm: transition"),
     (po.spec.hmm, dict(**_HMM, **_TVTP, transition_prior=2.0), "hmm: transition_prior"),
     (po.spec.hmm, dict(**_HMM, **_GIVEN, warm_rows=20), "hmm: warm_rows does not apply"),
-    (po.spec.hmm, dict(**_HMM, **_GIVEN, seed_rule="first"), "hmm: seed_rule does not apply"),
+    (po.spec.hmm, dict(**_HMM, **_GIVEN, init="first"), "hmm: init does not apply"),
     (po.spec.hmm, dict(**_HMM, **_GIVEN, seed=3), "hmm: seed does not apply"),
     (po.spec.rcov, dict(**_RCOV, kind="plain", jitter=3), 'jitter applies to kind = "kernel"'),
     (po.spec.rcov, dict(**_RCOV, kind="plain", theta=2.0), 'theta applies to kind = "preavg"'),
@@ -534,13 +534,13 @@ IGNORED = [
     ),
     (
         po.spec.kmeans,
-        dict(**_KMEANS, k=3, split_merge=0.0, dead_frac=0.5),
+        dict(**_KMEANS, n_clusters=3, split_merge=0.0, dead_frac=0.5),
         "kmeans: dead_frac re-places a centre at a split-merge check",
     ),
     (
         po.spec.kmeans,
-        dict(**_KMEANS, k=3, warm_rows=1),
-        "kmeans: warm_rows must be at least k (3) to seed that many centres, got 1",
+        dict(**_KMEANS, n_clusters=3, warm_rows=1),
+        "kmeans: warm_rows must be at least n_clusters (3) to seed that many centres, got 1",
     ),
     (
         po.spec.deco,
@@ -561,9 +561,9 @@ IGNORED_NOT = [
     (po.spec.rcov, dict(**_RCOV, jitter=3, max_bandwidth=5)),
     (po.spec.rcov, dict(**_RCOV, kind="preavg", theta=2.0)),
     (po.spec.rcov, dict(**_RCOV, kind="plain")),
-    (po.spec.kmeans, dict(**_KMEANS, k=3, split_merge=0.0)),
-    (po.spec.kmeans, dict(**_KMEANS, k=3, warm_rows=3)),
-    (po.spec.kmeans, dict(**_KMEANS, k=600)),
+    (po.spec.kmeans, dict(**_KMEANS, n_clusters=3, split_merge=0.0)),
+    (po.spec.kmeans, dict(**_KMEANS, n_clusters=3, warm_rows=3)),
+    (po.spec.kmeans, dict(**_KMEANS, n_clusters=600)),
 ]
 
 

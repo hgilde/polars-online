@@ -849,7 +849,7 @@ reads it.** On a spec with no clock column it is `embargo`, rounded up,
 since a row is a unit there. On a clock column `embargo` is in clock units,
 and the rows it spans are not known before the stream, so the spec gives
 `horizon_rows`, the rows the target looks ahead. It is a count of rows,
-named as `warm_rows` and `span_rows` are, because the residuals overlap by
+named as `warm_rows` and `window_rows` are, because the residuals overlap by
 rows whatever the clock. A spec with a clock column, an `embargo` and no
 `horizon_rows` has a horizon of 0, and each diagnostic that reads one says
 so once, in a `ReadinessWarning`. Under a horizon of `h` rows:

@@ -914,7 +914,7 @@ fn every_kind_refuses_or_loads_corruption(prefix_step: usize, flip_step: usize) 
         ),
         (
             "lasso",
-            r#"{"type": "lasso", "lasso_path": [0.1]}"#,
+            r#"{"type": "lasso", "penalties": [0.1]}"#,
             r#"["y"]"#,
             r#"["x0", "x1"]"#,
             true,
@@ -978,7 +978,7 @@ fn every_kind_refuses_or_loads_corruption(prefix_step: usize, flip_step: usize) 
         ),
         (
             "kmeans",
-            r#"{"type": "kmeans", "k": 2, "warm_rows": 10}"#,
+            r#"{"type": "kmeans", "n_clusters": 2, "warm_rows": 10}"#,
             "[]",
             r#"["x0", "x1"]"#,
             true,
@@ -1015,14 +1015,14 @@ fn every_kind_refuses_or_loads_corruption(prefix_step: usize, flip_step: usize) 
         ),
         (
             "hmm",
-            r#"{"type": "hmm", "k": 2, "precision_prior": 0.1}"#,
+            r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1}"#,
             "[]",
             r#"["x0", "x1"]"#,
             true,
         ),
         (
             "corrchange",
-            r#"{"type": "corrchange", "span_rows": 20}"#,
+            r#"{"type": "corrchange", "window_rows": 20}"#,
             "[]",
             r#"["x0", "x1"]"#,
             false,

@@ -177,7 +177,7 @@ ALSO_NULL: dict[str, str] = {
 BOCPD_STEMS = ("p_change", "run_mode", "run_mean", "pred_<f>", "loglik")
 BOCPD_WARM = (
     "while withheld, and on the first `warm_rows` learned rows (by default the feature count "
-    "plus 2) where `prior_mean` or `prior_scale` is left out, which set it"
+    "plus 2) where `mean_prior` or `covariance_prior` is left out, which set it"
 )
 
 #: A model whose rule for a stem differs from `ALSO_NULL`'s.
@@ -227,7 +227,7 @@ NAME_PARTS: list[tuple[str, str, str]] = [
     ("`__r<ridge>`", "one value of a `ridge` grid", ""),
     ("`__<set>`", "one of the `feature_sets`, with one ridge value", ""),
     ("`__<set>_r<ridge>`", "one of the `feature_sets`, with one value of a `ridge` grid", ""),
-    ("`__l<lambda>`", "one value of `lasso_path`", "`__l0.1`, `__l0`"),
+    ("`__l<lambda>`", "one value of `penalties`", "`__l0.1`, `__l0`"),
     (
         "`@h<half_life>`",
         "one half-life of a grid, at the end of every field's name: `weight_sum@h500`, or "

@@ -260,7 +260,7 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
         (dict(bins=8, window_size=100.0), "bins and window"),
         (dict(bins=8, bin_warm_rows=4), "bin_warm_rows"),
         (dict(bins=1), "at least 2"),
-        (dict(bins=8, bin_rule="tertiles"), "unknown bin_rule"),
+        (dict(bins=8, bin_rule="tertiles"), 'bin_rule must be one of "quantile", "fixed"'),
         (dict(bin_edges=[[1.0, 0.0]]), "strictly increasing"),
         (dict(bin_edges=[[0.0], [1.0]]), "one list per feature"),
         (dict(bin_edges={"z": [0.0]}), "missing"),

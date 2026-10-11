@@ -160,13 +160,13 @@ impl KMeansCfg {
             return Err("kmeans: n_features must be >= 1".into());
         }
         if self.k == 0 {
-            return Err("kmeans: k must be >= 1".into());
+            return Err("kmeans: n_clusters must be >= 1".into());
         }
         // A count the spec sizes the centres and the seeding by before the
         // stream says anything (review 2026-10-06, CF2).
         if self.k > KMeans::MAX_K {
             return Err(format!(
-                "kmeans: k must be at most {} (2^16), got {}: every row is scored against every \
+                "kmeans: n_clusters must be at most {} (2^16), got {}: every row is scored against every \
                  centre, and seeding is O(k²) over the warm-up buffer",
                 KMeans::MAX_K,
                 self.k
@@ -177,7 +177,7 @@ impl KMeansCfg {
         // 2026-10-06, PC8).
         if self.warm_rows < self.k {
             return Err(format!(
-                "kmeans: warm_rows must be at least k ({}) to seed that many centres, got {}",
+                "kmeans: warm_rows must be at least n_clusters ({}) to seed that many centres, got {}",
                 self.k, self.warm_rows
             ));
         }
@@ -185,7 +185,7 @@ impl KMeansCfg {
         if mib > KMeans::WARM_BUDGET_MIB {
             return Err(format!(
                 "kmeans: the warm-up buffer would hold {} MiB (warm_rows {} rows of {} features), \
-                 over the {} MiB it is held to; lower warm_rows (at least k), or narrow the \
+                 over the {} MiB it is held to; lower warm_rows (at least n_clusters), or narrow the \
                  features",
                 crate::budget::mib_over(mib, KMeans::WARM_BUDGET_MIB),
                 self.warm_rows,
@@ -1072,7 +1072,7 @@ mod tests {
         match KMeans::restore(&s) {
             Err(StateError::Invalid(e)) => {
                 assert!(
-                    e.contains("configuration") && e.contains("k must be >= 1"),
+                    e.contains("configuration") && e.contains("n_clusters must be >= 1"),
                     "{e}"
                 );
             }
@@ -2138,7 +2138,7 @@ mod tests {
             panic!("accepted")
         };
         assert!(
-            e.contains("kmeans: warm_rows must be at least k (3)") && e.contains("got 2"),
+            e.contains("kmeans: warm_rows must be at least n_clusters (3)") && e.contains("got 2"),
             "{e}"
         );
         assert!(
@@ -2196,7 +2196,8 @@ mod tests {
             panic!("accepted")
         };
         assert!(
-            e.contains("kmeans: k must be at most 65536") && e.contains(&format!("got {k}")),
+            e.contains("kmeans: n_clusters must be at most 65536")
+                && e.contains(&format!("got {k}")),
             "{e}"
         );
         // A buffered row of two features is its vector (24 bytes), its two

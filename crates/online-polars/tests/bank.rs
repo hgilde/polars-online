@@ -853,7 +853,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
     // shows up here rather than as an index out of bounds in `assemble`.
     let kinds = [
         r#"{"type": "ewridge", "ridge": 1e-6}"#,
-        r#"{"type": "lasso", "lasso_path": [0.1]}"#,
+        r#"{"type": "lasso", "penalties": [0.1]}"#,
         r#"{"type": "kalman", "coef_half_life": 100.0}"#,
         r#"{"type": "huber"}"#,
         r#"{"type": "quantile", "quantile": 0.5}"#,
@@ -863,7 +863,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
         r#"{"type": "holt"}"#,
         r#"{"type": "rls"}"#,
         r#"{"type": "ew_cov", "stats": ["mean"]}"#,
-        r#"{"type": "kmeans", "k": 2}"#,
+        r#"{"type": "kmeans", "n_clusters": 2}"#,
         r#"{"type": "micro", "eps": 1.0}"#,
         r#"{"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0}"#,
         r#"{"type": "seqtest"}"#,
@@ -875,7 +875,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
         // schema.
         r#"{"type": "deco"}"#,
         r#"{"type": "rcov"}"#,
-        r#"{"type": "hmm", "k": 2, "precision_prior": 0.1}"#,
+        r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1}"#,
         r#"{"type": "corrchange"}"#,
         r#"{"type": "bocpd"}"#,
         r#"{"type": "audit"}"#,

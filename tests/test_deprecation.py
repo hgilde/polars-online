@@ -2,17 +2,25 @@
 next major version refuses it (docs/PLAN.md task 198; review round 4, D2, AP9,
 CI4 and DA16).
 
-Built and tested now and empty: a rename made before 1.0 stays refused by name
-(task 144's rule, ``tests/test_renames.py``), and one made after goes in the
-forwarding table -- ``_DEPRECATED`` for a builder's keyword and a spec dict's
-key, and its twin ``online_polars::DEPRECATED`` for a TOML file, which the
-command line forwards the same way (``crates/online-cli/src/main.rs``). Each
-entry is removed at the next major, when the old name moves to the refusal
-table.
+The shared table is built and tested and empty: a rename made before 1.0
+stays refused by name (task 144's rule, ``tests/test_renames.py``), and one
+made after goes in the forwarding table -- ``_DEPRECATED`` for a builder's
+keyword and a spec dict's key, and its twin ``online_polars::DEPRECATED`` for
+a TOML file, which the command line forwards the same way
+(``crates/online-cli/src/main.rs``). Each entry is removed at the next major,
+when the old name moves to the refusal table.
+
+The names standardized for 1.0 (task 244) are forwarded already, so a spec
+written for 0.13 runs on 1.0 with a warning: one model's own keys and words
+in ``_DEPRECATED_IN`` and ``_DEPRECATED_WORDS_IN``, with twins of the same
+names on the Rust side, and ``bocpd``'s ``emission`` and ``corrchange``'s
+``reset_on_flag``, which became other keys with values of their own
+(``tests/test_builder_keywords.py``).
 """
 
 from __future__ import annotations
 
+import inspect
 import re
 import warnings
 from pathlib import Path
@@ -36,6 +44,56 @@ def _rust_table() -> dict[str, str]:
     body = re.search(r"pub const DEPRECATED: &\[\(&str, &str\)\] = &\[(.*?)\];", text, re.S)
     assert body, "spec.rs keeps its forwarding table as DEPRECATED"
     return dict(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', body.group(1)))
+
+
+def _rust_model_table() -> dict[str, dict[str, str]]:
+    """``online_polars::DEPRECATED_IN`` as spec/names.rs writes it."""
+    text = (REPO / "crates/online-polars/src/spec/names.rs").read_text(encoding="utf-8")
+    body = re.search(
+        r"pub const DEPRECATED_IN: &\[\(&str, &str, &str\)\] = &\[(.*?)\];", text, re.S
+    )
+    assert body, "spec/names.rs keeps its per-model forwarding table as DEPRECATED_IN"
+    out: dict[str, dict[str, str]] = {}
+    for kind, old, new in re.findall(r'\("([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\)', body.group(1)):
+        out.setdefault(kind, {})[old] = new
+    return out
+
+
+def _rust_word_table() -> dict[str, dict[str, dict[str, str]]]:
+    """``online_polars::DEPRECATED_WORDS_IN`` as spec/names.rs writes it."""
+    text = (REPO / "crates/online-polars/src/spec/names.rs").read_text(encoding="utf-8")
+    body = re.search(
+        r"pub const DEPRECATED_WORDS_IN: &\[\(&str, &str, &str, &str\)\] = &\[(.*?)\];", text, re.S
+    )
+    assert body, "spec/names.rs keeps its per-model word table as DEPRECATED_WORDS_IN"
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    rows = re.findall(r'\("([^"]+)",\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\)', body.group(1))
+    for kind, key, old, new in rows:
+        out.setdefault(kind, {}).setdefault(key, {})[old] = new
+    return out
+
+
+def test_the_per_model_tables_agree_and_name_current_keys():
+    """The renames made at 1.0 in one model alone (``kmeans``' ``k`` is
+    ``n_clusters``, ``hmm``'s ``n_components``): the two sides keep one
+    table, each new name is a keyword of the model's builder, and no old
+    name is still one."""
+    assert _rust_model_table() == _warnings._DEPRECATED_IN
+    assert _rust_word_table() == _warnings._DEPRECATED_WORDS_IN
+    for kind, table in _warnings._DEPRECATED_IN.items():
+        params = inspect.signature(getattr(po.spec, kind)).parameters
+        for old, new in table.items():
+            assert new in params and old not in params, (kind, old, new)
+
+
+def test_no_test_and_no_recipe_meets_a_deprecated_name():
+    """A deprecated name is an error under the suite, so no test, and no
+    recipe of the README, a guide or a docstring that the suite runs, reads
+    an old name without saying so with ``pytest.warns``."""
+    config = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"error::polars_online.PolarsOnlineDeprecationWarning"' in config
+    with pytest.raises(po.PolarsOnlineDeprecationWarning):
+        po.spec.kmeans("m", features=["x0"], half_life=10.0, k=2)
 
 
 def test_the_warning_is_a_deprecation_warning_and_exported():

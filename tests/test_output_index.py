@@ -44,7 +44,7 @@ class TestOutputIndex:
                 "m",
                 targets=["y"],
                 features=["x0"],
-                lasso_path=[0.1, 0.0],
+                penalties=[0.1, 0.0],
                 half_life=50.0,
                 min_weight=2.0,
             ),
@@ -213,7 +213,7 @@ def _every_kind():
         "m", features=["a", "b"], stats=["lag_corr", "corr"], lags=[1, 3], half_life=10.0
     )
     specs["hmm k=3"] = po.spec.hmm(
-        "m", features=["a", "b"], k=3, precision_prior=1.0, half_life=10.0
+        "m", features=["a", "b"], n_components=3, precision_prior=1.0, half_life=10.0
     )
     specs["ew_class"] = po.spec.ew_class(
         "m", label="y", features=["a"], classes=["u", "v", "w"], precision_prior=1.0, half_life=10.0

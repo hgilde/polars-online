@@ -927,7 +927,9 @@ pub fn all() -> Vec<Case> {
                 n_features: K,
                 k: 2,
                 decay: decay(),
-                covariance: Covariance::Full,
+                // The pooled shape, so the fixture freezes its word, "tied"
+                // (task 244, schema 61); `ew_class_window`'s is "diag".
+                covariance: Covariance::Shared,
                 precision_prior: 1e-2,
                 min_weight: 0.0,
                 learn: true,

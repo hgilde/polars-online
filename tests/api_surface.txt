@@ -35,7 +35,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size()
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State') -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 60
+  schema_version = 61
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -105,11 +105,11 @@
     features
     hazard = 250.0
     hazard_col = None
-    emission = 'diag'
-    prior_mean = None
-    prior_kappa = None
-    prior_nu = None
-    prior_scale = None
+    covariance_type = 'diag'
+    mean_prior = None
+    mean_precision_prior = None
+    degrees_of_freedom_prior = None
+    covariance_prior = None
     robust_beta = None
     prune_below = None
     max_run = None
@@ -123,7 +123,7 @@
     name
     features
     kind = 'monitor'
-    span_rows = None
+    window_rows = None
     alpha = 0.05
     alpha_adjust = 'bonferroni'
     bandwidth = None
@@ -134,7 +134,7 @@
     perm_block = None
     norm = 'l1'
     seed = None
-    reset_on_flag = False
+    change_action = 'flag'
     monitor_rows = None
     boundary_gamma = None
     common
@@ -151,11 +151,11 @@
     features
     label
     classes
-    covariance = None
+    covariance_type = 'full'
     precision_prior
     window_size = None
     closed = 'right'
-    window_every = None
+    snapshot_every = None
     max_rows_between_snapshots = None
     window_budget = None
     common
@@ -167,12 +167,12 @@
     mahal_quantiles = None
     pca = None
     pca_every = None
-    max_rows_between_pca = None
+    max_rows_between_pcas = None
     lags = None
     gram_threads = None
     window_size = None
     closed = 'right'
-    window_every = None
+    snapshot_every = None
     max_rows_between_snapshots = None
     window_budget = None
     common
@@ -194,7 +194,7 @@
     target_gaps = 'own_rows'
     window_size = None
     closed = 'right'
-    window_every = None
+    snapshot_every = None
     max_rows_between_snapshots = None
     window_budget = None
     common
@@ -212,16 +212,16 @@
   hmm:
     name
     features
-    k
+    n_components
     precision_prior
-    covariance = 'full'
+    covariance_type = 'full'
     learn = True
     transition_prior = None
     transition = None
     means = None
     covs = None
     warm_rows = None
-    seed_rule = None
+    init = None
     seed = None
     exog_tvtp = None
     tvtp_coef = None
@@ -231,7 +231,6 @@
     targets
     trend_half_life = None
     trend = True
-    features = None
     common
   huber:
     name
@@ -258,29 +257,29 @@
   kmeans:
     name
     features
-    k
+    n_clusters
     warm_rows = None
-    seed_rule = None
+    init = None
     seed = None
     update_every_rows = None
     split_merge = None
     split_merge_every_rows = None
     dead_frac = None
-    standardize = None
+    standardize = True
     scale_floor = None
     common
   lasso:
     name
     targets
     features
-    lasso_path
+    penalties
     l1_ratio = None
     select_half_life = None
     solve_every = None
     max_rows_between_solves = None
     window_size = None
     closed = 'right'
-    window_every = None
+    snapshot_every = None
     max_rows_between_snapshots = None
     window_budget = None
     max_iter = None
@@ -302,7 +301,7 @@
     shards = None
     window_size = None
     closed = 'right'
-    window_every = None
+    snapshot_every = None
     max_rows_between_snapshots = None
     window_budget = None
     window_lags = False
@@ -317,7 +316,7 @@
     prune_every = None
     max_rows_between_prunes = None
     macro_link = None
-    standardize = None
+    standardize = True
     scale_floor = None
     common
   output_fields:
@@ -376,7 +375,6 @@
     b = None
     a_suffix = None
     b_suffix = None
-    features = None
     common
   sgd:
     name
@@ -431,9 +429,9 @@
     stream.specification_half_life = "inf"
     stream.tails_half_life = "inf"
   bocpd(features=['x0', 'x1']):
-    derived.prior_mean = "data"
-    derived.prior_nu = 3.0
-    derived.prior_scale = "data"
+    derived.covariance_prior = "data"
+    derived.degrees_of_freedom_prior = 3.0
+    derived.mean_prior = "data"
     derived.warm_rows = 4
     model.emission = "diag"
     model.hazard = 250.0
@@ -457,7 +455,7 @@
     stream.robust_se_half_life = "inf"
     stream.specification_half_life = "inf"
     stream.tails_half_life = "inf"
-  corrchange(features=['x0', 'x1'], span_rows=20):
+  corrchange(features=['x0', 'x1'], window_rows=20):
     model.alpha = 0.05
     model.alpha_adjust = "bonferroni"
     model.bandwidth = null
@@ -591,7 +589,7 @@
     stream.robust_se_half_life = 50.0
     stream.specification_half_life = 50.0
     stream.tails_half_life = 50.0
-  hmm(features=['x0', 'x1'], half_life=50.0, k=2, precision_prior=0.1):
+  hmm(features=['x0', 'x1'], half_life=50.0, n_components=2, precision_prior=0.1):
     model.covariance = "full"
     model.covs = null
     model.decay.Halflife = 50.0
@@ -675,7 +673,7 @@
     stream.robust_se_half_life = 50.0
     stream.specification_half_life = 50.0
     stream.tails_half_life = 50.0
-  kmeans(features=['x0', 'x1'], half_life=50.0, k=2):
+  kmeans(features=['x0', 'x1'], half_life=50.0, n_clusters=2):
     model.dead_frac = 0.05
     model.decay.Halflife = 50.0
     model.k = 2
@@ -698,7 +696,7 @@
     stream.robust_se_half_life = 50.0
     stream.specification_half_life = 50.0
     stream.tails_half_life = 50.0
-  lasso(features=['x0'], half_life=50.0, lasso_path=[0.1, 0.0], targets=['y']):
+  lasso(features=['x0'], half_life=50.0, penalties=[0.1, 0.0], targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
     model.l1_ratio = 1.0
@@ -913,7 +911,7 @@
     model.loss.epsilon_insensitive.eps = 0.01
   sgd(features=['x0'], half_life=50.0, schedule='inv_scaling', targets=['y']), the lines that differ from sgd's:
     model.schedule.inv_scaling.power = 0.5
-  ew_cov(features=['x0', 'x1'], half_life=50.0, max_rows_between_pca=10, pca=2), the lines that differ from ew_cov's:
+  ew_cov(features=['x0', 'x1'], half_life=50.0, max_rows_between_pcas=10, pca=2), the lines that differ from ew_cov's:
     model.max_rows_between_pca = 10
     model.pca = 2
     model.pca_every = "inf"
@@ -926,13 +924,13 @@
     model.bins.n_bins = 4
     model.bins.rule = "quantile"
     model.bins.warm_rows = 1000
-  corrchange(features=['x0', 'x1'], kind='sequential', span_rows=20), the lines that differ from corrchange's:
+  corrchange(features=['x0', 'x1'], kind='sequential', window_rows=20), the lines that differ from corrchange's:
     model.kind = "sequential"
     model.monitor_rows = 20
   rcov(block_rows=100, features=['x0', 'x1'], group='g', group_close='monotone', kind='preavg'), the lines that differ from rcov's:
     derived.max_bandwidth = 0
     model.kind = "preavg"
-  bocpd(emission='robust', features=['x0', 'x1']), the lines that differ from bocpd's:
+  bocpd(features=['x0', 'x1'], robust_beta=0.1), the lines that differ from bocpd's:
     model.emission = "robust"
     model.robust_beta = 0.1
 
@@ -1995,17 +1993,18 @@
   spec.drift_action: flag, reset
   spec.group_close: monotone, session
   spec.session_gap: reset
-  bocpd.emission: diag, gaussian, robust
+  bocpd.covariance_type: diag, full
   corrchange.alpha_adjust: bonferroni, none
   corrchange.kind: monitor, sequential, window
   corrchange.norm: l1, linf
+  corrchange.change_action: flag, reset
   deco.dynamics: ew, linear
   ew_class.closed: both, right
   ew_cov.closed: both, right
   ewridge.closed: both, right
   lasso.closed: both, right
   marginal.closed: both, right
-  ew_class.covariance: diagonal, full, shared
+  ew_class.covariance_type: diag, full, tied
   ew_class.window_budget: refuse, thin
   ew_cov.stats: corr, cov, lag_corr, mahal, mean, partial_corr, std, var
   ew_cov.window_budget: refuse, thin
@@ -2013,9 +2012,9 @@
   ewridge.target_gaps: own_rows, pairwise
   ewridge.window_budget: refuse, thin
   ftrl.loss: logistic, squared
-  hmm.covariance: diagonal, full, shared
-  hmm.seed_rule: farthest, first, kmeanspp, lloyd
-  kmeans.seed_rule: farthest, first, kmeanspp, lloyd
+  hmm.covariance_type: diag, full, tied
+  hmm.init: farthest, first, k-means++, lloyd
+  kmeans.init: farthest, first, k-means++, lloyd
   lasso.target_gaps: own_rows, pairwise
   lasso.window_budget: refuse, thin
   marginal.bin_rule: fixed, quantile
@@ -2123,20 +2122,20 @@
     weight
   [specs.model], by type:
     audit: distinct_cap, pairs
-    bocpd: emission, hazard, hazard_col, max_run, prior_kappa, prior_mean, prior_nu, prior_scale, prune_below, robust_beta, warm_rows
-    corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every_rows, reset_on_flag, scalar, seed, span_rows
+    bocpd: covariance_prior, covariance_type, degrees_of_freedom_prior, hazard, hazard_col, max_run, mean_precision_prior, mean_prior, prune_below, robust_beta, warm_rows
+    corrchange: alpha, alpha_adjust, bandwidth, boundary_gamma, change_action, crit, kind, monitor_rows, n_perm, norm, perm_block, permute_every_rows, scalar, seed, window_rows
     deco: alpha, beta, blocks, dynamics
-    ew_class: classes, closed, covariance, max_rows_between_snapshots, precision_prior, window_budget, window_every, window_size
-    ew_cov: closed, gram_threads, lags, mahal_quantiles, max_rows_between_pca, max_rows_between_snapshots, pca, pca_every, precision_prior, stats, window_budget, window_every, window_size
-    ewridge: closed, coef_prior, feature_sets, gram_block_rows, gram_threads, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, solve_every, standardize, target_gaps, window_budget, window_every, window_size
+    ew_class: classes, closed, covariance_type, max_rows_between_snapshots, precision_prior, snapshot_every, window_budget, window_size
+    ew_cov: closed, gram_threads, lags, mahal_quantiles, max_rows_between_pcas, max_rows_between_snapshots, pca, pca_every, precision_prior, snapshot_every, stats, window_budget, window_size
+    ewridge: closed, coef_prior, feature_sets, gram_block_rows, gram_threads, long_half_life, max_rows_between_snapshots, max_rows_between_solves, ridge, ridge_scale, session_shrink, snapshot_every, solve_every, standardize, target_gaps, window_budget, window_size
     ftrl: alpha, beta, l1, l2, loss, strict_binary
-    hmm: covariance, covs, exog_tvtp, k, learn, means, precision_prior, seed, seed_rule, transition, transition_prior, tvtp_coef, warm_rows
+    hmm: covariance_type, covs, exog_tvtp, init, learn, means, n_components, precision_prior, seed, transition, transition_prior, tvtp_coef, warm_rows
     holt: trend, trend_half_life
     huber: huber_delta, max_rows_between_solves, ridge, solve_every, standardize
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
-    kmeans: dead_frac, k, scale_floor, seed, seed_rule, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
-    lasso: closed, l1_ratio, lasso_path, max_iter, max_rows_between_snapshots, max_rows_between_solves, select_half_life, solve_every, target_gaps, tol, window_budget, window_every, window_size
-    marginal: bin_budget, bin_edges, bin_rule, bin_warm_rows, bins, closed, cross_lags, feature_moments, lags, max_rows_between_snapshots, serial_rule, shards, window_budget, window_every, window_lags, window_size
+    kmeans: dead_frac, init, n_clusters, scale_floor, seed, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
+    lasso: closed, l1_ratio, max_iter, max_rows_between_snapshots, max_rows_between_solves, penalties, select_half_life, snapshot_every, solve_every, target_gaps, tol, window_budget, window_size
+    marginal: bin_budget, bin_edges, bin_rule, bin_warm_rows, bins, closed, cross_lags, feature_moments, lags, max_rows_between_snapshots, serial_rule, shards, snapshot_every, window_budget, window_lags, window_size
     micro: beta_mu, eps, macro_link, max_clusters, max_rows_between_prunes, prune_every, scale_floor, standardize
     pa: c, coef_max, coef_min, coef_sum, eps, mode, standardize
     quantile: max_rows_between_solves, quantile, quantile_eps, ridge, solve_every, standardize

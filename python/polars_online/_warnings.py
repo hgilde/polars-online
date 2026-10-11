@@ -30,6 +30,51 @@ from typing import Any
 #: used, as ``_warnings._DEPRECATED``, so one table serves every caller.
 _DEPRECATED: dict[str, str] = {}
 
+#: The keys renamed in one model, model type -> old -> new: a builder's
+#: keyword, or a key of a model table whose ``type`` is the model's, is read
+#: as the new name with a :class:`PolarsOnlineDeprecationWarning` until the
+#: next major version refuses it. A model's own table, not
+#: :data:`_DEPRECATED`, because one old name went two ways (``kmeans``' ``k``
+#: is ``n_clusters``, ``hmm``'s ``n_components``) and because a name another
+#: model still takes, or a feature called ``k`` in a table keyed by feature,
+#: must not move. The names taken at 1.0 (docs/PLAN.md task 244): sklearn's
+#: for the mixture and clustering models, and one name per concept across the
+#: models. Its twin is the Rust side's ``online_polars::DEPRECATED_IN``, which
+#: ``tests/test_deprecation.py`` holds equal to this one.
+_DEPRECATED_IN: dict[str, dict[str, str]] = {
+    "kmeans": {"k": "n_clusters", "seed_rule": "init"},
+    "hmm": {"k": "n_components", "seed_rule": "init", "covariance": "covariance_type"},
+    "ew_class": {"covariance": "covariance_type", "window_every": "snapshot_every"},
+    "ewridge": {"window_every": "snapshot_every"},
+    "lasso": {"window_every": "snapshot_every", "lasso_path": "penalties"},
+    "ew_cov": {"window_every": "snapshot_every", "max_rows_between_pca": "max_rows_between_pcas"},
+    "marginal": {"window_every": "snapshot_every"},
+    "bocpd": {
+        "prior_mean": "mean_prior",
+        "prior_kappa": "mean_precision_prior",
+        "prior_nu": "degrees_of_freedom_prior",
+        "prior_scale": "covariance_prior",
+    },
+    "corrchange": {"span_rows": "window_rows"},
+}
+
+#: The words renamed in one model's parameter, model type -> key -> old ->
+#: new, read as :data:`_DEPRECATED_IN` reads a key. Its twin is
+#: ``online_polars::DEPRECATED_WORDS_IN``.
+_DEPRECATED_WORDS_IN: dict[str, dict[str, dict[str, str]]] = {
+    "kmeans": {"init": {"kmeanspp": "k-means++"}},
+    "hmm": {
+        "init": {"kmeanspp": "k-means++"},
+        "covariance_type": {"shared": "tied", "diagonal": "diag"},
+    },
+    "ew_class": {"covariance_type": {"shared": "tied", "diagonal": "diag"}},
+}
+
+#: ``bocpd``'s ``emission`` word -> its ``covariance_type`` and whether it
+#: was the tempered predictive, which ``robust_beta`` turns on now (0.1, its
+#: default then, where none is given).
+_EMISSION = {"gaussian": ("full", False), "diag": ("diag", False), "robust": ("diag", True)}
+
 #: The environment variable that turns :class:`UnstableWarning` on, as
 #: ``POLARS_WARN_UNSTABLE`` does Polars' own: ``1`` and nothing else.
 UNSTABLE_VAR = "POLARS_ONLINE_WARN_UNSTABLE"
@@ -123,6 +168,77 @@ def unstable[**P, R](what: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
         return wrapper
 
     return decorate
+
+
+def forward_model(
+    who: str,
+    kind: str,
+    given: Mapping[str, Any],
+    *,
+    stacklevel: int = 3,
+) -> dict[str, Any]:
+    """``given``, a builder's keywords or a model table of type ``kind``,
+    with each key and word renamed in that model read as the new one
+    (:data:`_DEPRECATED_IN`, :data:`_DEPRECATED_WORDS_IN`), and the two keys
+    that became others with a value of their own: ``bocpd``'s ``emission``
+    (``"gaussian"`` is ``covariance_type="full"``, ``"diag"`` is ``"diag"``,
+    ``"robust"`` is ``"diag"`` with ``robust_beta``, 0.1 where none is given)
+    and ``corrchange``'s ``reset_on_flag`` (``True`` is
+    ``change_action="reset"``, ``False`` is ``"flag"``). A
+    :class:`PolarsOnlineDeprecationWarning` for each; an old name beside its
+    new one is refused, naming both. The Rust side forwards a TOML file's
+    the same way (``online_polars::forward_deprecated_in_models``)."""
+    out = forward_deprecated(who, given, _DEPRECATED_IN.get(kind, {}), stacklevel=stacklevel + 1)
+
+    def warn(message: str) -> None:
+        warnings.warn(
+            f"{who}: {message} until the next major version, which refuses it",
+            PolarsOnlineDeprecationWarning,
+            stacklevel=stacklevel + 1,
+        )
+
+    def both(old: str, new: str) -> TypeError:
+        return TypeError(f"{who}: {old} was renamed {new}, and both are given: give {new} alone")
+
+    if kind == "bocpd" and "emission" in out:
+        if "covariance_type" in out:
+            raise both("emission", "covariance_type")
+        word = out.pop("emission")
+        covariance, tempered = (
+            _EMISSION.get(word, (word, False)) if isinstance(word, str) else (word, False)
+        )
+        out["covariance_type"] = covariance
+        robust = ""
+        if tempered:
+            out.setdefault("robust_beta", 0.1)
+            robust = " with robust_beta, 0.1 where none is given"
+        warn(
+            f"emission = {_quoted(word)} is deprecated: it is covariance_type = "
+            f"{_quoted(covariance)}{robust}. It is read so"
+        )
+    if kind == "corrchange" and "reset_on_flag" in out:
+        if "change_action" in out:
+            raise both("reset_on_flag", "change_action")
+        value = out.pop("reset_on_flag")
+        action = "reset" if value is True else "flag"
+        out["change_action"] = action if isinstance(value, bool) else value
+        warn(
+            f"reset_on_flag = {value!r} is deprecated: it is change_action = "
+            f"{_quoted(action)}. It is read so"
+        )
+    for key, words in _DEPRECATED_WORDS_IN.get(kind, {}).items():
+        word = out.get(key)
+        if isinstance(word, str) and word in words:
+            out[key] = words[word]
+            warn(
+                f"{key} = {_quoted(word)} is deprecated: it was renamed "
+                f"{_quoted(words[word])}. It is read as {_quoted(words[word])}"
+            )
+    return out
+
+
+def _quoted(v: Any) -> str:
+    return f'"{v}"' if isinstance(v, str) else repr(v)
 
 
 def forward_deprecated(

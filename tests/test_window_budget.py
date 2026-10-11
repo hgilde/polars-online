@@ -43,7 +43,13 @@ def _frame(n: int = 300) -> pl.DataFrame:
 def _spec(**kw):
     kw.setdefault("half_life", 1e9)
     return po.spec.ewridge(
-        "m", targets=["y"], features=["x0"], window_size=50.0, window_every=1, min_weight=0.0, **kw
+        "m",
+        targets=["y"],
+        features=["x0"],
+        window_size=50.0,
+        snapshot_every=1,
+        min_weight=0.0,
+        **kw,
     )
 
 
@@ -76,7 +82,7 @@ def test_past_the_budget_the_chunk_is_refused_whole_and_the_bank_goes_on():
     before = bank.save_bytes()
     with pytest.raises(ValueError, match="window_budget") as exc:
         bank.fit_predict(df.slice(1))
-    assert "window_every" in str(exc.value)
+    assert "snapshot_every" in str(exc.value)
     assert bank.save_bytes() == before, "nothing of the refused chunk was learned"
     bank.predict(df.head(1))
     bank.fit_predict(df.slice(1, 2))
@@ -207,9 +213,7 @@ def test_the_budget_holds_after_a_load():
 #: One spec of each windowed kind, over ``_frame``'s columns and a label.
 WINDOWED = {
     "ewridge": lambda **kw: po.spec.ewridge("m", targets=["y"], features=["x0"], **kw),
-    "lasso": lambda **kw: po.spec.lasso(
-        "m", targets=["y"], features=["x0"], lasso_path=[0.1], **kw
-    ),
+    "lasso": lambda **kw: po.spec.lasso("m", targets=["y"], features=["x0"], penalties=[0.1], **kw),
     "ew_cov": lambda **kw: po.spec.ew_cov("m", features=["x0", "y"], **kw),
     "ew_class": lambda **kw: po.spec.ew_class(
         "m", features=["x0"], label="c", classes=["a", "b"], precision_prior=1.0, **kw
@@ -226,7 +230,7 @@ def test_every_windowed_model_holds_its_budget(kind):
     label = pl.when(pl.col("x0") > 0).then(pl.lit("a")).otherwise(pl.lit("b"))
     df = _frame().with_columns(c=label)
     spec = WINDOWED[kind](
-        half_life=1e9, window_size=50.0, window_every=1, window_budget={"refuse": TINY}
+        half_life=1e9, window_size=50.0, snapshot_every=1, window_budget={"refuse": TINY}
     )
     with pytest.raises(ValueError, match="window_budget"):
         po.ModelBank([spec]).fit_predict(df)

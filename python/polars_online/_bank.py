@@ -362,7 +362,7 @@ class ModelBank:
 
         A chunk that would take a window past a refusing ``window_budget``
         is refused too (``ValueError``, naming the ring's size and its
-        cadence, ``window_every`` and ``max_rows_between_snapshots``), found
+        cadence, ``snapshot_every`` and ``max_rows_between_snapshots``), found
         by replaying the chunk's clock schedule on the rings before any row
         is learned. A refused chunk leaves the bank exactly as it was, so the
         corrected chunk can be fed. One refusal comes too late for that: a

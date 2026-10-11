@@ -125,7 +125,7 @@ Where a number is not what you expected, find what you see here:
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
 | one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` | §12, §25, §31, §37 |
-| a window's memory | its ring of snapshots, capped per ring | `window_every`, `max_rows_between_snapshots`, `window_budget` | §16 |
+| a window's memory | its ring of snapshots, capped per ring | `snapshot_every`, `max_rows_between_snapshots`, `window_budget` | §16 |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` | §22–§25, §27 |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` | §15 |
 | a window operator | one queue per kernel, the same work a row whatever the window's length; memory about one window of rows | operators with one direction, half-life, window and `closed` share a kernel | §33, §35 |
@@ -162,7 +162,11 @@ record under `docs/`, so look an old name up here.** On 2026-10-02 the
 public parameters and output fields were renamed to Polars' words. A few
 other changes renamed one name each, and four surfaces were removed. A
 spec that passes a parameter renamed on 2026-10-02 is refused, and the
-message names the new one.
+message names the new one. On 2026-10-11 the parameters took the names they
+keep at 1.0: scikit-learn's for the mixture, clustering and changepoint
+models, and one name for one thing across the models. Those old names are
+still read, with a `PolarsOnlineDeprecationWarning` naming the new one,
+until the next major version.
 
 | a dated section or record says | the name now | changed in |
 |---|---|---|
@@ -198,6 +202,14 @@ message names the new one.
 | `kmeans`' field `dist2` | `dist_second` | 2026-10-07 |
 | `ew_cov`'s statistic `lagcorr` and its fields `lagcorr_<a>_<b>_l<ℓ>`; `marginal`'s `lagcorr_xx`, `lagcorr_yy`, `lagcorr_xy` and `lagcorr_yx`, and their `pair_` columns | `lag_corr`, `lag_corr_<a>_<b>_l<ℓ>`, `lag_corr_xx` and the rest | 2026-10-07 |
 | `kmeans`' `update_every` and `split_merge_every`; `corrchange`'s `permute_every` | `update_every_rows`, `split_merge_every_rows`; `permute_every_rows` | 2026-10-07 |
+| `kmeans`' `k`, and `seed_rule` with its word `"kmeanspp"`; `hmm`'s `k` and `seed_rule` | `n_clusters`, and `init` with `"k-means++"`; `n_components` and `init` | 2026-10-11 |
+| `ew_class`'s and `hmm`'s `covariance`, and its words `"shared"` and `"diagonal"` | `covariance_type`, and `"tied"` and `"diag"` | 2026-10-11 |
+| `bocpd`'s `emission`: `"gaussian"`, `"diag"` and `"robust"` | `covariance_type`: `"full"`, `"diag"`, and `"diag"` with `robust_beta` | 2026-10-11 |
+| `bocpd`'s `prior_mean`, `prior_kappa`, `prior_nu` and `prior_scale` | `mean_prior`, `mean_precision_prior`, `degrees_of_freedom_prior` and `covariance_prior` | 2026-10-11 |
+| `window_every` | `snapshot_every`, beside `max_rows_between_snapshots` | 2026-10-11 |
+| `ew_cov`'s `max_rows_between_pca` | `max_rows_between_pcas`, as `max_rows_between_solves` | 2026-10-11 |
+| `lasso`'s `lasso_path` | `penalties`, as `po.gram.lasso_path` names them | 2026-10-11 |
+| `corrchange`'s `span_rows`, and `reset_on_flag` | `window_rows`, and `change_action`, `"flag"` or `"reset"` as `drift_action` | 2026-10-11 |
 | `holt`'s `level_half_life` | the spec's `half_life` | 2026-10-07 |
 | a model window that keeps a row exactly `window_size` old | `closed="both"`; the default, `closed="right"`, drops it | 2026-10-07 |
 | a relative target: `po.target`'s `relative_to=` and `relative=`, and a target table's `relative_to` and `relative` keys | removed: the target made as a column, `with_columns(ret=(pl.col("p") / pl.col("mid")).log())` or a difference, made upstream for the command line; a window looking ahead less a column of the row stays a formula target | 2026-10-07 |

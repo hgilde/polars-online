@@ -167,7 +167,7 @@ impl LassoCfg {
             );
         }
         if self.lasso_path.is_empty() {
-            return Err("lasso_path must have at least one value".into());
+            return Err("penalties must have at least one value".into());
         }
         // What the spec layer refuses, refused here too, so the Rust API and
         // a state file are held to it (review 2026-10-06, CA6): a path point
@@ -181,11 +181,11 @@ impl LassoCfg {
             .find(|l| !(l.is_finite() && **l >= 0.0))
         {
             return Err(format!(
-                "lasso: lasso_path values must be finite and >= 0, got {l}"
+                "lasso: penalties must each be finite and >= 0, got {l}"
             ));
         }
         if !self.lasso_path.windows(2).all(|w| w[0] >= w[1]) {
-            return Err("lasso_path must be decreasing".into());
+            return Err("penalties must be decreasing".into());
         }
         if !(0.0..=1.0).contains(&self.l1_ratio) {
             return Err(format!("l1_ratio must be in [0, 1], got {}", self.l1_ratio));

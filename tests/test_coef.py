@@ -127,7 +127,7 @@ COEF_SPECS = [
         feature_sets={"one": ["x1"], "all": ["x1", "x2"]},
         ridge=[0.0, 1.0],
     ),
-    po.spec.lasso("m", targets=["y"], features=["x1", "x2"], half_life=30, lasso_path=[0.1, 0.0]),
+    po.spec.lasso("m", targets=["y"], features=["x1", "x2"], half_life=30, penalties=[0.1, 0.0]),
     po.spec.rls("m", targets=["y"], features=["x1", "x2"], half_life=30),
     po.spec.kalman("m", targets=["y"], features=["x1", "x2"], half_life=30, coef_half_life=100),
     po.spec.huber("m", targets=["y"], features=["x1", "x2"], half_life=30),
@@ -139,7 +139,7 @@ COEF_SPECS = [
     # to every kind `coef_index` lays out.
     po.spec.quantile("m", targets=["y"], features=["x1", "x2"], half_life=30, quantile=0.5),
     # Seeded well inside the 200 rows, so there are centres to lay out.
-    po.spec.kmeans("m", features=["x1", "x2"], half_life=30, k=2, warm_rows=50),
+    po.spec.kmeans("m", features=["x1", "x2"], half_life=30, n_clusters=2, warm_rows=50),
     po.spec.ew_class(
         "m",
         label="c",
@@ -148,7 +148,7 @@ COEF_SPECS = [
         half_life=30,
         precision_prior=1.0,
     ),
-    po.spec.hmm("m", features=["x1", "x2"], half_life=30, k=2, precision_prior=0.1),
+    po.spec.hmm("m", features=["x1", "x2"], half_life=30, n_components=2, precision_prior=0.1),
     po.spec.deco("m", features=["x1", "x2"], half_life=30),
 ]
 

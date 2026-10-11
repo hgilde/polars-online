@@ -653,7 +653,14 @@ pub use window::{
 ///   RESET's, and `Breaks` the lag products of its studentized residuals
 ///   and their ring. Without a horizon none is written. Pre-1.0 no loader
 ///   is written.
-pub const SCHEMA_VERSION: u32 = 60;
+/// - 61 (2026-10-11, task 244, task244-spec): a spec's keys and words take
+///   the names they keep at 1.0 (`n_clusters`, `n_components`, `init` and
+///   `"k-means++"`, `covariance_type` and `"tied"`/`"diag"`,
+///   `snapshot_every`, `max_rows_between_pcas`, `penalties`, `bocpd`'s four
+///   priors, `window_rows`, `change_action`), and `ew_class`'s and `hmm`'s
+///   configuration writes its covariance as `"tied"` and `"diag"`. Pre-1.0
+///   no loader is written.
+pub const SCHEMA_VERSION: u32 = 61;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -779,7 +786,7 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 60;
+pub const MIN_SCHEMA_VERSION: u32 = 61;
 
 #[cfg(test)]
 mod tests {

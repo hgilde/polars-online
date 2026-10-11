@@ -55,7 +55,7 @@ const CASES: [(&str, &str, &str, &str, &str, Event); 6] = [
     ),
     (
         "lasso",
-        r#"{"type": "lasso", "lasso_path": [0.0], "solve_every": {every}}"#,
+        r#"{"type": "lasso", "penalties": [0.0], "solve_every": {every}}"#,
         r#""targets": ["y"],"#,
         r#"["x"]"#,
         r#""coef_every": 0,"#,

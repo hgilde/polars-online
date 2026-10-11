@@ -297,7 +297,7 @@ class TestOutputSchemaStability:
             "m",
             targets=["y0"],
             features=["x0"],
-            lasso_path=[1.0, 0.01, 0.0],
+            penalties=[1.0, 0.01, 0.0],
             half_life=100.0,
         )
         assert po.spec.output_fields(spec) == [
@@ -361,7 +361,7 @@ class TestOutputSchemaStability:
         ("ewridge", {"features": ["x0", "x1"]}),
         ("rls", {"features": ["x0", "x1"], "delta": 1.0}),
         ("kalman", {"features": ["x0", "x1"], "coef_half_life": 100.0}),
-        ("lasso", {"features": ["x0", "x1"], "lasso_path": [0.1, 0.0]}),
+        ("lasso", {"features": ["x0", "x1"], "penalties": [0.1, 0.0]}),
         ("huber", {"features": ["x0", "x1"]}),
         ("quantile", {"features": ["x0", "x1"], "quantile": 0.5}),
         ("ftrl", {"features": ["x0", "x1"]}),
@@ -428,7 +428,7 @@ class TestOutputSchemaStability:
         spec = po.spec.kmeans(
             "m",
             features=["x0", "x1"],
-            k=2,
+            n_clusters=2,
             warm_rows=5,
             half_life=half_life,
             min_weight=2.0,

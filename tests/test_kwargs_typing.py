@@ -93,7 +93,7 @@ def test_the_typed_dicts_change_nothing_at_runtime():
     out = po.ModelBank([spec]).fit_predict(df)
     assert isinstance(out.schema["f"], pl.Struct)
     assert out["f"].struct.field("pred_y").null_count() < 4
-    with pytest.raises(TypeError, match="missing 1 required keyword-only argument: 'lasso_path'"):
+    with pytest.raises(TypeError, match="missing 1 required keyword-only argument: 'penalties'"):
         po.spec.lasso("m", targets=["y"], features=["x0"], half_life=2.0)
 
 

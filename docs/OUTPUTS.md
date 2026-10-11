@@ -67,7 +67,7 @@ same field.
 | `__r<ridge>` | one value of a `ridge` grid | |
 | `__<set>` | one of the `feature_sets`, with one ridge value | |
 | `__<set>_r<ridge>` | one of the `feature_sets`, with one value of a `ridge` grid | |
-| `__l<lambda>` | one value of `lasso_path` | `__l0.1`, `__l0` |
+| `__l<lambda>` | one value of `penalties` | `__l0.1`, `__l0` |
 | `@h<half_life>` | one half-life of a grid, at the end of every field's name: `weight_sum@h500`, or `weight_sum@h10m` for a duration | |
 
 EW, in a meaning below, is short for exponentially weighted.
@@ -170,7 +170,7 @@ The fields of `po.spec.rls("m", targets=["y"], features=["x0"], half_life=50.0)`
 
 ## `lasso`
 
-The fields of `po.spec.lasso("m", targets=["y"], features=["x0"], half_life=50.0, lasso_path=[0.1, 0.0])`:
+The fields of `po.spec.lasso("m", targets=["y"], features=["x0"], half_life=50.0, penalties=[0.1, 0.0])`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -338,7 +338,7 @@ The fields of `po.spec.audit("m", columns=["x0", "x1"])`:
 
 ## `kmeans`
 
-The fields of `po.spec.kmeans("m", features=["x0", "x1"], half_life=50.0, k=2)`:
+The fields of `po.spec.kmeans("m", features=["x0", "x1"], half_life=50.0, n_clusters=2)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -397,7 +397,7 @@ The fields of `po.spec.seqtest("m", targets=["y"])`:
 
 ## `corrchange`
 
-The fields of `po.spec.corrchange("m", features=["x0", "x1"], span_rows=20)`:
+The fields of `po.spec.corrchange("m", features=["x0", "x1"], window_rows=20)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
@@ -416,19 +416,19 @@ The fields of `po.spec.bocpd("m", features=["x0", "x1"])`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|
-| `p_change` | `f64` | `P(run length <= 1)`: the mass sitting on a change at or just before this row | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
-| `run_mode` | `i64` | most likely run length *before* this row, so `t - run_mode` dates the regime | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
-| `run_mean` | `f64` | posterior mean run length | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
-| `pred_x0` | `f64` | the predictive mean for feature `<f>` under the fitted model | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
-| `pred_x1` | `f64` | the predictive mean for feature `<f>` under the fitted model | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
-| `loglik` | `f64` | log predictive density of the row, under the model as it stood before the row | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `prior_mean` or `prior_scale` is left out, which set it |
+| `p_change` | `f64` | `P(run length <= 1)`: the mass sitting on a change at or just before this row | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `mean_prior` or `covariance_prior` is left out, which set it |
+| `run_mode` | `i64` | most likely run length *before* this row, so `t - run_mode` dates the regime | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `mean_prior` or `covariance_prior` is left out, which set it |
+| `run_mean` | `f64` | posterior mean run length | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `mean_prior` or `covariance_prior` is left out, which set it |
+| `pred_x0` | `f64` | the predictive mean for feature `<f>` under the fitted model | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `mean_prior` or `covariance_prior` is left out, which set it |
+| `pred_x1` | `f64` | the predictive mean for feature `<f>` under the fitted model | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `mean_prior` or `covariance_prior` is left out, which set it |
+| `loglik` | `f64` | log predictive density of the row, under the model as it stood before the row | while withheld, and on the first `warm_rows` learned rows (by default the feature count plus 2) where `mean_prior` or `covariance_prior` is left out, which set it |
 | `weight_sum` | `f64` | accumulated weight before this row's update and before its own decay ([shared field](#fields-most-models-write)) | never |
 | `settled_frac` | `f64` | how far the decay window had filled before this row ([shared field](#fields-most-models-write)) | where nothing decays |
 | `withheld_reason` | `enum` | why the row's predictions are null ([shared field](#fields-most-models-write)) | where nothing was withheld |
 
 ## `hmm`
 
-The fields of `po.spec.hmm("m", features=["x0", "x1"], half_life=50.0, k=2, precision_prior=0.1)`:
+The fields of `po.spec.hmm("m", features=["x0", "x1"], half_life=50.0, n_components=2, precision_prior=0.1)`:
 
 | field | dtype | what it holds | also null |
 |---|---|---|---|

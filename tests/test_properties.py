@@ -39,13 +39,13 @@ MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"delta": 1.0}),
     ("kalman", {"coef_half_life": 50.0}),
-    ("lasso", {"lasso_path": [0.1, 0.0], "max_rows_between_solves": 1}),
+    ("lasso", {"penalties": [0.1, 0.0], "max_rows_between_solves": 1}),
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("ftrl", {}),
     ("sgd", {"learning_rate": 0.01, "clip_gradient": 1e3}),
     ("pa", {}),
-    ("holt", {"features": []}),
+    ("holt", {"features": None}),  # no features keyword
 ]
 IDS = [m[0] for m in MODELS]
 
@@ -263,6 +263,8 @@ def build(model, extra, **kw):
     )
     opts.update(extra)
     opts.update(kw)
+    if opts.get("features", ()) is None:
+        del opts["features"]  # a model with no features keyword (holt)
     return getattr(po.spec, model)("m", **opts)
 
 
@@ -583,7 +585,7 @@ OTHER_KINDS = sorted(set(MINIMAL) - set(REGRESSIONS))
 KIND_ARGS: dict[str, dict] = {
     "kmeans": {"warm_rows": 4},
     "hmm": {"warm_rows": 4},
-    "corrchange": {"span_rows": 8},
+    "corrchange": {"window_rows": 8},
 }
 
 

@@ -1,5 +1,5 @@
 """A model window's snapshots are spaced on the clock (docs/PLAN.md task
-162): every ``window_every`` clock units or every
+162): every ``snapshot_every`` clock units or every
 ``max_rows_between_snapshots`` rows, whichever comes first, as the
 regressions' ``solve_every`` and ``max_rows_between_solves`` schedule a
 solve; every row with neither.
@@ -10,7 +10,7 @@ the stream's own clock:
 - the clock is the one the model is stepped on, the first row's step 0 and
   each later one capped at ``gap_cap``;
 - a snapshot is taken at the first row, then at each row whose clock is
-  ``window_every`` past the newest snapshot's or which is
+  ``snapshot_every`` past the newest snapshot's or which is
   ``max_rows_between_snapshots`` rows past it, and at any row whose newest
   snapshot has left the window;
 - a row reads the window as the row before it left it: the boundary is the
@@ -141,7 +141,7 @@ def inside(clock: np.ndarray, w: np.ndarray, t: int, b: int) -> np.ndarray:
 def cadence(every: str | float | None, cap: int | None) -> dict[str, Any]:
     kw: dict[str, Any] = {}
     if every is not None:
-        kw["window_every"] = every
+        kw["snapshot_every"] = every
     if cap is not None:
         kw["max_rows_between_snapshots"] = cap
     return kw
@@ -254,7 +254,7 @@ class TestTheWindowIsTheDefinitions:
         numbers, so the cadence is what the test reads."""
         steps = stream_steps()
         df = frame(steps)
-        out = run(ridge(window_every="1m", max_rows_between_snapshots=25, emit_sigma=True), df)
+        out = run(ridge(snapshot_every="1m", max_rows_between_snapshots=25, emit_sigma=True), df)
         clock = model_clock(steps)
         w, r = df["w"].to_numpy(), out["resid_y"].to_numpy()
 
@@ -277,7 +277,7 @@ class TestTheWindowIsTheDefinitions:
     @pytest.mark.parametrize(("every", "cap"), [CADENCES[0], CADENCES[2]], ids=["clock", "both"])
     @pytest.mark.parametrize("make", [ew_cov, ridge], ids=["ew_cov", "ewridge"])
     def test_the_effective_window_is_inside_the_window_less_one_spacing(self, every, cap, make):
-        """Every row at most ``window_size - window_every`` old is inside the
+        """Every row at most ``window_size - snapshot_every`` old is inside the
         window and none older than ``window_size`` is, read from the model's
         own ``weight_sum`` against the weights of those two sets of rows."""
         steps = stream_steps()
@@ -319,10 +319,10 @@ class TestTheCadence:
     @pytest.mark.parametrize(
         "kw",
         [
-            {"window_every": 0},
+            {"snapshot_every": 0},
             {"max_rows_between_snapshots": 1},
-            {"window_every": "1m", "max_rows_between_snapshots": 1},
-            {"window_every": 0, "max_rows_between_snapshots": 25},
+            {"snapshot_every": "1m", "max_rows_between_snapshots": 1},
+            {"snapshot_every": 0, "max_rows_between_snapshots": 25},
         ],
         ids=["every=0", "cap=1", "1m,cap=1", "0,cap=25"],
     )
@@ -335,12 +335,12 @@ class TestTheCadence:
 
     def test_without_a_clock_column_window_every_counts_rows_as_before(self):
         """A spec without a clock reads the row's number as its clock, so a
-        number ``window_every`` is that many rows, as it was before task
+        number ``snapshot_every`` is that many rows, as it was before task
         162: the same as a row cap of as many, to the bit."""
         steps = stream_steps()
         df = frame(steps)
         base: dict[str, Any] = dict(clock=None, gap_cap=None, half_life=40.0, window_size=120.0)
-        by_clock = run(ew_cov(**base, window_every=5), df)
+        by_clock = run(ew_cov(**base, snapshot_every=5), df)
         by_rows = run(ew_cov(**base, max_rows_between_snapshots=5), df)
         for f in floats(by_clock):
             a, b = by_clock[f].to_numpy(), by_rows[f].to_numpy()
@@ -363,9 +363,9 @@ class TestTheCadence:
             half_life=HALF_LIFE,
             gap_cap=GAP_CAP,
             window_size=WINDOW,
-            window_every=SPACING,
+            snapshot_every=SPACING,
         )
-        temporal = run(ew_cov(window_every="1m"), df)
+        temporal = run(ew_cov(snapshot_every="1m"), df)
         number = run(s, df)
         for f in floats(temporal):
             a, b = temporal[f].to_numpy(), number[f].to_numpy()
@@ -376,7 +376,7 @@ class TestChunkingAndResume:
     @pytest.mark.parametrize("make", [ew_cov, ridge], ids=["ew_cov", "ewridge"])
     def test_the_window_does_not_depend_on_the_chunking(self, make):
         df = frame(stream_steps())
-        s = make(window_every="1m", max_rows_between_snapshots=25)
+        s = make(snapshot_every="1m", max_rows_between_snapshots=25)
         whole = run(s, df)
         for rows in (1, 7, 37):
             parts = pl.concat(po.ModelBank([s]).fit_predict_batches(df, chunk_size=rows))
@@ -392,7 +392,7 @@ class TestChunkingAndResume:
         is measured from."""
         steps = stream_steps()
         df = frame(steps)
-        s = make(window_every="1m", max_rows_between_snapshots=25)
+        s = make(snapshot_every="1m", max_rows_between_snapshots=25)
         whole = run(s, df)
         clock = model_clock(steps)
         snaps = snapshot_rows(clock, every=SPACING, cap=25)
@@ -414,35 +414,35 @@ class TestChunkingAndResume:
 
 class TestRefusals:
     def test_a_temporal_spec_refuses_a_plain_number(self):
-        with pytest.raises(ValueError, match="window_every is a plain number"):
-            run(ew_cov(window_every=60.0), frame(stream_steps()))
+        with pytest.raises(ValueError, match="snapshot_every is a plain number"):
+            run(ew_cov(snapshot_every=60.0), frame(stream_steps()))
 
     def test_a_number_spec_refuses_a_duration(self):
         """The mirror: a spec in plain numbers, read on a number clock, with
-        ``window_every`` a duration, is one spec mixing the two."""
-        with pytest.raises(ValueError, match="window_every is a duration"):
+        ``snapshot_every`` a duration, is one spec mixing the two."""
+        with pytest.raises(ValueError, match="snapshot_every is a duration"):
             ew_cov(
                 clock="t",
                 half_life=HALF_LIFE,
                 gap_cap=GAP_CAP,
                 window_size=WINDOW,
-                window_every="1m",
+                snapshot_every="1m",
             )
 
     @pytest.mark.parametrize("bad", [-5.0, -1])
     def test_a_negative_spacing_is_refused(self, bad):
-        with pytest.raises(ValueError, match="window_every must be finite and >= 0 clock units"):
-            ew_cov(clock=None, gap_cap=None, half_life=40.0, window_size=120.0, window_every=bad)
+        with pytest.raises(ValueError, match="snapshot_every must be finite and >= 0 clock units"):
+            ew_cov(clock=None, gap_cap=None, half_life=40.0, window_size=120.0, snapshot_every=bad)
 
     @pytest.mark.parametrize("bad", [-1, 0])
     def test_a_row_cap_of_no_rows_is_refused(self, bad):
-        """A cap of no rows is no schedule; `window_every = 0` is every row
+        """A cap of no rows is no schedule; `snapshot_every = 0` is every row
         (docs/PLAN.md task 196, U7)."""
         with pytest.raises(ValueError, match=f"max_rows_between_snapshots must be >= 1, got {bad}"):
             ew_cov(max_rows_between_snapshots=bad)
 
     @pytest.mark.parametrize(
-        "key,value", [("window_every", "1m"), ("max_rows_between_snapshots", 5)]
+        "key,value", [("snapshot_every", "1m"), ("max_rows_between_snapshots", 5)]
     )
     @pytest.mark.parametrize("make", [ew_cov, ridge], ids=["ew_cov", "ewridge"])
     def test_each_needs_a_window(self, make, key, value):
@@ -452,13 +452,13 @@ class TestRefusals:
     @pytest.mark.parametrize(
         "kw,named",
         [
-            ({"window_every": "1m"}, ["raise window_every (1m now)"]),
+            ({"snapshot_every": "1m"}, ["raise snapshot_every (1m now)"]),
             ({"max_rows_between_snapshots": 25}, ["raise max_rows_between_snapshots (25 now)"]),
             (
-                {"window_every": "1m", "max_rows_between_snapshots": 25},
-                ["window_every (1m now) and max_rows_between_snapshots (25 now)"],
+                {"snapshot_every": "1m", "max_rows_between_snapshots": 25},
+                ["snapshot_every (1m now) and max_rows_between_snapshots (25 now)"],
             ),
-            ({}, ["window_every", "max_rows_between_snapshots", "every row now"]),
+            ({}, ["snapshot_every", "max_rows_between_snapshots", "every row now"]),
         ],
         ids=["clock", "rows", "both", "neither"],
     )
@@ -477,8 +477,8 @@ class TestTheJsonExport:
         [
             ({}, "inf"),
             ({"max_rows_between_snapshots": 25}, "inf"),
-            ({"window_every": "1m"}, SPACING),
-            ({"window_every": "1m", "max_rows_between_snapshots": 25}, SPACING),
+            ({"snapshot_every": "1m"}, SPACING),
+            ({"snapshot_every": "1m", "max_rows_between_snapshots": 25}, SPACING),
         ],
         ids=["neither", "rows", "clock", "both"],
     )

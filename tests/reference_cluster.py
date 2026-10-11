@@ -401,7 +401,7 @@ def seed_centres(
     if rule == "farthest":
         return _farthest(buf, k, mw)
     rng = SplitMix64(seed)
-    if rule == "kmeanspp":
+    if rule == "k-means++":
         return _kmeanspp(buf, w, k, mw, rng)
     if rule == "lloyd":
         best: tuple[float, list[list[float]]] | None = None
@@ -411,7 +411,7 @@ def seed_centres(
             if best is None or cost < best[0]:
                 best = (cost, centres)
         return None if best is None else best[1]
-    msg = f"unknown seed_rule {rule!r}"
+    msg = f"unknown init {rule!r}"
     raise ValueError(msg)
 
 
@@ -425,7 +425,7 @@ class KMeansRef:
     lam: float | None = None
     min_weight: float = 0.0
     warm_rows: int = 500
-    seed_rule: str = "lloyd"
+    init: str = "lloyd"
     seed: int = 0
     update_every_rows: int = 1
     split_merge: float = 0.5
@@ -650,7 +650,7 @@ class KMeansRef:
                 [self.buf[i] for i in kept],
                 [self.buf_w[i] for i in kept],
                 self.k,
-                self.seed_rule,
+                self.init,
                 self.seed,
                 allow_dup,
                 self.mw,
@@ -659,7 +659,7 @@ class KMeansRef:
                 seeds = None
         if seeds is None:
             seeds = seed_centres(
-                self.buf, self.buf_w, self.k, self.seed_rule, self.seed, allow_dup, self.mw
+                self.buf, self.buf_w, self.k, self.init, self.seed, allow_dup, self.mw
             )
         if seeds is None:
             return

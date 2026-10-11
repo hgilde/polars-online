@@ -55,7 +55,7 @@ RENAMED = {
     "add_intercept": "fit_intercept",
     "max_cd_iters": "max_iter",
     "cd_tol": "tol",
-    "reset": "reset_on_flag",
+    "reset": "change_action",
     # Task 196 (docs/PLAN.md §18, N14 and N16): the row counts say so, and
     # holt's level takes the spec's `half_life`, which `level_halflife`
     # now names directly.
@@ -105,7 +105,7 @@ def test_an_old_parameter_is_refused_naming_the_new_one(old):
         ),
         (
             {"name": "m", "model": {"type": "corrchange", "reset": True}, "features": ["x0", "x1"]},
-            "reset was renamed reset_on_flag",
+            "reset was renamed change_action",
         ),
     ],
 )
@@ -329,8 +329,8 @@ def test_the_task_196_renames_are_in_the_builders_table():
 @pytest.mark.parametrize(
     ("builder", "kw", "old"),
     [
-        (po.spec.kmeans, dict(features=["x0", "x1"], k=2), "update_every"),
-        (po.spec.kmeans, dict(features=["x0", "x1"], k=2), "split_merge_every"),
+        (po.spec.kmeans, dict(features=["x0", "x1"], n_clusters=2), "update_every"),
+        (po.spec.kmeans, dict(features=["x0", "x1"], n_clusters=2), "split_merge_every"),
         (po.spec.corrchange, dict(features=["x0", "x1"], kind="window"), "permute_every"),
         (po.spec.holt, dict(targets=["y"], half_life=None), "level_half_life"),
     ],
@@ -344,15 +344,15 @@ def test_a_task_196_parameter_is_refused_by_its_own_builder_naming_the_new_one(b
     ("model", "old"),
     [
         (
-            {"type": "kmeans", "k": 2, "update_every": 1},
+            {"type": "kmeans", "n_clusters": 2, "update_every": 1},
             "update_every was renamed update_every_rows",
         ),
         (
-            {"type": "kmeans", "k": 2, "split_merge_every": 10},
+            {"type": "kmeans", "n_clusters": 2, "split_merge_every": 10},
             "split_merge_every was renamed split_merge_every_rows",
         ),
         (
-            {"type": "corrchange", "kind": "window", "span_rows": 20, "permute_every": 10},
+            {"type": "corrchange", "kind": "window", "window_rows": 20, "permute_every": 10},
             "permute_every was renamed permute_every_rows",
         ),
         ({"type": "holt", "level_half_life": 10.0}, "level_half_life was renamed half_life"),
@@ -425,7 +425,7 @@ def test_lagcorr_is_refused_naming_lag_corr_and_lag_corr_is_written_everywhere()
 def test_kmeans_writes_dist_second():
     """N7: the distance to the second-nearest centre, which `dist2` read as
     the square of `dist`."""
-    s = po.spec.kmeans("k", features=["x0", "x1"], k=2, half_life=50.0)
+    s = po.spec.kmeans("k", features=["x0", "x1"], n_clusters=2, half_life=50.0)
     fields = po.spec.output_fields(s)
     assert "dist_second" in fields and "dist2" not in fields
 
@@ -633,7 +633,7 @@ def test_corr_shift_is_absorption_shift():
 
 
 def test_lasso_path_takes_penalties():
-    """N6 (YB20): the spec takes the path as ``lasso_path=`` and ``coef()``
+    """N6 (YB20): the spec takes the path as ``penalties=`` and ``coef()``
     reports each as ``penalty``; the offline path took them as ``lambdas``."""
     bank = po.ModelBank(
         [po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0)]

@@ -199,6 +199,14 @@ fn forward_deprecated_toml(
     let mut doc = toml::Value::Table(doc);
     let mut notices = Vec::new();
     walk(&mut doc, table, &mut notices)?;
+    // A key or a word renamed in one model's table, which `table` cannot
+    // say: `kmeans`' `k` is `n_clusters` and `hmm`'s `n_components`.
+    let mut json = serde_json::to_value(&doc).map_err(|e| format!("reading the config: {e}"))?;
+    let models = online_polars::forward_deprecated_in_models(&mut json)?;
+    if !models.is_empty() {
+        doc = serde_json::from_value(json).map_err(|e| format!("rewriting the config: {e}"))?;
+        notices.extend(models);
+    }
     if notices.is_empty() {
         return Ok((text.to_string(), notices));
     }

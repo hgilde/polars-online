@@ -19,6 +19,7 @@ this build loads them and goes on:
 
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 import warnings
@@ -109,8 +110,8 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     ),
     ("ridge_delay", "ewridge", dict(FIT, embargo=3.0), []),
     ("rls", "rls", dict(FIT), []),
-    ("lasso", "lasso", dict(FIT, lasso_path=[0.2, 0.05, 0.0]), []),
-    ("enet", "lasso", dict(FIT, lasso_path=[0.1, 0.0], l1_ratio=0.5), []),
+    ("lasso", "lasso", dict(FIT, penalties=[0.2, 0.05, 0.0]), []),
+    ("enet", "lasso", dict(FIT, penalties=[0.1, 0.0], l1_ratio=0.5), []),
     ("kalman", "kalman", dict(FIT, coef_half_life=50.0), []),
     ("huber", "huber", dict(FIT), []),
     ("quantile", "quantile", dict(FIT, quantile=0.8), []),
@@ -152,7 +153,7 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         ),
         [],
     ),
-    ("kmeans", "kmeans", dict(features=["x1", "x2"], k=2, half_life=25.0, **CLOCK), []),
+    ("kmeans", "kmeans", dict(features=["x1", "x2"], n_clusters=2, half_life=25.0, **CLOCK), []),
     ("micro", "micro", dict(features=["x1", "x2"], eps=0.5, half_life=25.0, **CLOCK), []),
     (
         "ew_class",
@@ -175,12 +176,12 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         [],
     ),
     ("deco", "deco", dict(features=["x0", "x1", "x2"], half_life=25.0, **CLOCK), []),
-    ("corrchange", "corrchange", dict(features=["x1", "x2"], span_rows=40, **CLOCK), []),
-    ("bocpd", "bocpd", dict(features=["x1", "x2"], prior_scale=[1.0], **CLOCK), []),
+    ("corrchange", "corrchange", dict(features=["x1", "x2"], window_rows=40, **CLOCK), []),
+    ("bocpd", "bocpd", dict(features=["x1", "x2"], covariance_prior=[1.0], **CLOCK), []),
     (
         "hmm",
         "hmm",
-        dict(features=["x1", "x2"], k=2, precision_prior=0.1, half_life=25.0, **CLOCK),
+        dict(features=["x1", "x2"], n_components=2, precision_prior=0.1, half_life=25.0, **CLOCK),
         [],
     ),
     (
@@ -232,8 +233,33 @@ def _current_names() -> bool:
     return True
 
 
+#: The names of 2026-10-11, new name -> the 0.13 name, per builder, so the
+#: probe runs under a released wheel that predates them (task 244). The
+#: current package reads the old ones too, with a warning, but the workload
+#: is written in the new.
+_OLD_NAMES_IN = {
+    "kmeans": {"n_clusters": "k", "init": "seed_rule"},
+    "hmm": {"n_components": "k", "init": "seed_rule", "covariance_type": "covariance"},
+    "lasso": {"penalties": "lasso_path", "snapshot_every": "window_every"},
+    "corrchange": {"window_rows": "span_rows"},
+    "bocpd": {
+        "mean_prior": "prior_mean",
+        "mean_precision_prior": "prior_kappa",
+        "degrees_of_freedom_prior": "prior_nu",
+        "covariance_prior": "prior_scale",
+    },
+}
+
+
+def _names_of_1_0() -> bool:
+    """Whether the installed package takes the names of 2026-10-11."""
+    return "n_clusters" in inspect.signature(po.spec.kmeans).parameters
+
+
 def _speak(builder: str, kw: dict) -> dict:
     """``kw`` in the installed package's own names."""
+    if not _names_of_1_0():
+        kw = {_OLD_NAMES_IN.get(builder, {}).get(k, k): v for k, v in kw.items()}
     if _current_names():
         return kw
     out: dict = {}

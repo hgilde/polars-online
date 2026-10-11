@@ -211,6 +211,10 @@ testpaths = ["tests"]
 # essentials gate leaves it out, with `-m "not extended and not soak"`
 # (docs/TESTING.md, "Two tiers").
 addopts = "-ra -m 'not soak'"
+# A name renamed for 1.0 still works with a warning, so a test or a recipe
+# could read one unnoticed: under the suite it is an error, and a test that
+# means to read one says so with `pytest.warns` (tests/test_deprecation.py).
+filterwarnings = ["error::polars_online.PolarsOnlineDeprecationWarning"]
 markers = [
     "soak: long-running stability tests (millions of rows)",
     "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",

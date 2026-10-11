@@ -32,11 +32,11 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
     let ModelKind::Bocpd {
         hazard,
         hazard_col,
-        emission,
-        prior_mean,
-        prior_kappa,
-        prior_nu,
-        prior_scale,
+        covariance_type,
+        mean_prior,
+        mean_precision_prior,
+        degrees_of_freedom_prior,
+        covariance_prior,
         robust_beta,
         prune_below,
         max_run,
@@ -45,6 +45,39 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
     else {
         return Err("not a bocpd spec".into());
     };
+    let emission = match (covariance_type.as_deref(), robust_beta) {
+        (None | Some("diag"), None) => BocpdEmission::Diag,
+        (None | Some("diag"), Some(b)) => {
+            // Measured (`bocpd.rs`, `a_sustained_shift_survives_a_small_beta_
+            // _and_not_a_large_one`): 0.1 ignores a 20-sigma row outright and
+            // still finds a real shift within five rows; above ~0.2 nothing
+            // is ever detected. Left out, the predictive is not tempered.
+            if !(b.is_finite() && *b > 0.0) {
+                return Err(format!(
+                    "bocpd: robust_beta must be finite and > 0 (0.1 ignores a 20-sigma row and \
+                     still dates a four-sigma shift; leave it out for the untempered \
+                     predictive), got {b}"
+                ));
+            }
+            BocpdEmission::Robust
+        }
+        (Some("full"), None) => BocpdEmission::Gaussian,
+        (Some("full"), Some(_)) => {
+            return Err(
+                "bocpd: robust_beta tempers the per-feature predictive, and covariance_type = \
+                 \"full\" is a normal-inverse-Wishart over all the features: give \
+                 covariance_type = \"diag\" with it, or leave robust_beta out"
+                    .into(),
+            );
+        }
+        (Some(other), _) => {
+            return Err(crate::words_refusal(
+                "covariance_type",
+                &["full", "diag"],
+                other,
+            ));
+        }
+    };
     Ok(BocpdCfg {
         n_features: spec.k(),
         // A number is the expected rows between changepoints; a duration,
@@ -52,30 +85,15 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         // expected time between them, in the clock's seconds (task 179).
         hazard: hazard.as_ref().map_or(250.0, Span::value),
         hazard_from_row: hazard_col.is_some(),
-        emission: match emission.as_deref() {
-            None | Some("diag") => BocpdEmission::Diag,
-            Some("gaussian") => BocpdEmission::Gaussian,
-            Some("robust") => BocpdEmission::Robust,
-            Some(other) => {
-                return Err(crate::words_refusal(
-                    "emission",
-                    &["gaussian", "diag", "robust"],
-                    other,
-                ));
-            }
-        },
-        prior_mean: prior_mean.clone(),
-        prior_kappa: prior_kappa.unwrap_or(1.0),
-        prior_nu: *prior_nu,
-        prior_scale: prior_scale.clone(),
-        // Measured (`bocpd.rs`, `a_sustained_shift_survives_a_small_beta_
-        // _and_not_a_large_one`): 0.1 ignores a 20-sigma row outright and
-        // still finds a real shift within five rows; above ~0.2 nothing is
-        // ever detected.
-        robust_beta: robust_beta.unwrap_or(match emission.as_deref() {
-            Some("robust") => 0.1,
-            _ => 0.0,
-        }),
+        // The covariance's words and the tempering, which `emission` once
+        // said in one word: `"gaussian"` was `"full"`, `"robust"` the
+        // per-feature pair tempered (task 244, P-2).
+        emission,
+        prior_mean: mean_prior.clone(),
+        prior_kappa: mean_precision_prior.unwrap_or(1.0),
+        prior_nu: *degrees_of_freedom_prior,
+        prior_scale: covariance_prior.clone(),
+        robust_beta: robust_beta.unwrap_or(0.0),
         prune_below: prune_below.unwrap_or(1e-6),
         max_run: max_run.unwrap_or(10_000),
         min_weight: spec.min_periods_or_default(),
@@ -89,7 +107,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
 pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     let ModelKind::CorrChange {
         kind,
-        span_rows,
+        window_rows: span_rows,
         alpha,
         alpha_adjust,
         bandwidth,
@@ -100,7 +118,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         perm_block,
         norm,
         seed,
-        reset_on_flag: reset,
+        change_action,
         monitor_rows,
         boundary_gamma,
     } = &spec.model
@@ -121,7 +139,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     };
     let Some(span_rows) = *span_rows else {
         return Err(format!(
-            "corrchange: kind = {name:?} needs `span_rows`, {}",
+            "corrchange: kind = {name:?} needs `window_rows`, {}",
             match kind {
                 CorrChangeKind::Sequential =>
                     "the rows of history each monitoring period is \
@@ -132,8 +150,9 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     };
     // A parameter that belongs to another kind is refused, not ignored: a
     // `crit` given to `"monitor"` changed nothing, in silence. A value equal
-    // to the builders' default (`norm = "l1"`, `reset = false`) is taken as
-    // unset, since the Python builder writes those whether or not asked.
+    // to the builders' default (`norm = "l1"`, `change_action = "flag"`) is
+    // taken as unset, since the Python builder writes those whether or not
+    // asked.
     let refuse = |set: bool, param: &str, kinds: &str| -> Result<(), String> {
         if set {
             return Err(format!(
@@ -141,6 +160,17 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
             ));
         }
         Ok(())
+    };
+    let reset = match change_action.as_deref() {
+        None | Some("flag") => false,
+        Some("reset") => true,
+        Some(other) => {
+            return Err(crate::words_refusal(
+                "change_action",
+                &["flag", "reset"],
+                other,
+            ));
+        }
     };
     let (monitor, window, sequential) = (
         kind == CorrChangeKind::Monitor,
@@ -162,8 +192,8 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
             "\"window\"",
         )?;
         refuse(
-            *reset == Some(true),
-            "reset_on_flag",
+            reset,
+            "change_action",
             "\"window\" (a \"monitor\" span and a \"sequential\" cycle end at their flag \
              already)",
         )?;
@@ -211,7 +241,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
             }
         },
         seed: seed.unwrap_or(0),
-        reset: reset.unwrap_or(false),
+        reset,
         // W&G's `T = 1`: as many rows monitored as the history has.
         monitor_rows: if sequential {
             monitor_rows.unwrap_or(span_rows)
@@ -227,7 +257,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
 pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
     let ModelKind::Hmm {
         k,
-        covariance,
+        covariance_type,
         precision_prior,
         learn,
         transition_prior,
@@ -235,7 +265,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         means,
         covs,
         warm_rows,
-        seed_rule,
+        init,
         seed,
         exog_tvtp,
         tvtp_coef,
@@ -273,7 +303,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
     }
     for (param, given) in [
         ("warm_rows", warm_rows.is_some()),
-        ("seed_rule", seed_rule.is_some()),
+        ("init", init.is_some()),
         ("seed", seed.is_some()),
     ] {
         if given && means.is_some() && covs.is_some() {
@@ -287,7 +317,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         n_features: spec.k(),
         k: *k,
         decay: online_core::Decay::Lam(1.0),
-        covariance: match covariance {
+        covariance: match covariance_type {
             Some(c) => Covariance::parse(c)?,
             None => Covariance::Full,
         },
@@ -299,19 +329,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         means: means.clone(),
         covs: covs.clone(),
         warm_rows: warm_rows.unwrap_or(50),
-        seed_rule: match seed_rule.as_deref() {
-            None | Some("lloyd") => SeedRule::Lloyd,
-            Some("first") => SeedRule::First,
-            Some("farthest") => SeedRule::Farthest,
-            Some("kmeanspp") => SeedRule::Kmeanspp,
-            Some(other) => {
-                return Err(crate::words_refusal(
-                    "seed_rule",
-                    &["first", "farthest", "kmeanspp", "lloyd"],
-                    other,
-                ));
-            }
-        },
+        seed_rule: crate::stream::init_rule(init.as_deref())?,
         seed: seed.unwrap_or(0),
         tvtp,
     })

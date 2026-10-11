@@ -191,7 +191,7 @@ ROUNDTRIP_SPECS = [
     po.spec.kalman("kq", q=[0.0, 1.0], **BASE),
     po.spec.holt("h", targets=["y"], half_life=10.0, trend_half_life=INF),
     po.spec.sgd("s", clip_gradient=INF, **BASE),
-    po.spec.lasso("l", lasso_path=[0.1, 0.01], **BASE),
+    po.spec.lasso("l", penalties=[0.1, 0.01], **BASE),
 ]
 
 
@@ -229,7 +229,7 @@ def test_the_specs_are_the_banks_before_a_round_trip_as_after_it():
     and no ``drift_action`` -- was the caller's own before a save and the
     bank's filled form after it, and ``coef_index``, ``gram`` and ``coef``
     read the unfilled one (review 2026-09-12, S21)."""
-    hand = {"name": "b", "model": {"type": "bocpd", "prior_scale": [1.0]}, "features": ["x0"]}
+    hand = {"name": "b", "model": {"type": "bocpd", "covariance_prior": [1.0]}, "features": ["x0"]}
     bank = po.ModelBank([hand])
     assert bank.specs == po.ModelBank.load_bytes(bank.save_bytes()).specs
     assert bank.specs[0]["targets"] == ["x0"]
