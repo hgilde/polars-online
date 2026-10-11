@@ -2,6 +2,9 @@
 
 > **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
 
+> **Version 1.0 changes the API relative to 0.x.** The API is more standard
+> and consistent now, and should remain stable from here on.
+
 Online model fitting for [Polars](https://pola.rs): linear models,
 streaming moments, clustering and regime detection, for data too large to
 hold in memory at once. When the rows have a time order, a fit can also be
