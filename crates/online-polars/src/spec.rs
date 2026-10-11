@@ -644,7 +644,10 @@ impl<'de> Deserialize<'de> for ShardSpec {
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ShardSpec, E> {
                 match v {
                     "auto" => Ok(ShardSpec::Auto),
-                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(v), &self)),
+                    // The one shape of a word's refusal (task 244, P-4).
+                    _ => Err(E::custom(format!(
+                        "must be an int or one of \"auto\"; got {v:?}"
+                    ))),
                 }
             }
         }
@@ -703,7 +706,7 @@ impl<'de> Deserialize<'de> for ModelClosed {
                          at; a model reads its fit after it has learned that row, so its window \
                          always holds it: give \"right\" (the default) or \"both\""
                     ))),
-                    _ => Err(E::unknown_variant(v, &["right", "both"])),
+                    _ => Err(E::custom(words_body(&["right", "both"], v))),
                 }
             }
         }
@@ -2597,6 +2600,56 @@ pub const RENAMED_VALUES: &[(&str, &str)] = &[("ew_ridge", "ewridge"), ("lagcorr
 /// its twin in `python/polars_online/_warnings.py`'s `_DEPRECATED`.
 pub const DEPRECATED: &[(&str, &str)] = &[];
 
+/// The one refusal of a word outside the words a parameter takes (task 244,
+/// P-4): `<param> must be one of "a", "b"; got "x"`, after the spec's name
+/// where the caller has one ([`spec_words_refusal`]). Every word parameter
+/// says it the same way -- a builder in Python, a spec dict, a TOML file --
+/// so the words read the same wherever a caller meets them, and the API
+/// snapshot reads them from this one shape.
+pub fn words_refusal(param: &str, words: &[&str], got: &str) -> String {
+    format!("{param} {}", words_body(words, got))
+}
+
+/// [`words_refusal`] without the parameter: `must be one of "a", "b"; got
+/// "x"`.
+pub fn words_body(words: &[&str], got: &str) -> String {
+    let list = words
+        .iter()
+        .map(|w| format!("{w:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("must be one of {list}; got {got:?}")
+}
+
+/// [`words_refusal`] after `spec "<name>": `.
+pub fn spec_words_refusal(spec: &str, param: &str, words: &[&str], got: &str) -> String {
+    format!("spec {spec:?}: {}", words_refusal(param, words, got))
+}
+
+/// A deserializer's refusal of a word, `msg`, as [`words_body`] words it:
+/// `must be one of "a", "b"; got "x"`. serde words an enum's unknown
+/// variant as ``unknown variant `x`, expected `a` or `b` `` (or ``expected
+/// one of `a`, `b`, `c` ``), and a spec's own deserializers say ``must be
+/// ...`` already. `None` for any other message, which is not about a word.
+pub fn word_refusal_body(msg: &str) -> Option<String> {
+    if msg.starts_with("must be ") {
+        return Some(msg.to_string());
+    }
+    let rest = msg.strip_prefix("unknown variant `")?;
+    let (got, rest) = rest.split_once('`')?;
+    let list = rest.strip_prefix(", expected ")?;
+    let list = list.strip_prefix("one of ").unwrap_or(list);
+    let words: Vec<&str> = list
+        .split(['`', ','])
+        .map(str::trim)
+        .filter(|w| !w.is_empty() && *w != "or")
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    Some(words_body(&words, got))
+}
+
 /// What a deprecated name is told: that it was renamed, that it still
 /// works, and until when.
 pub fn deprecation_notice(old: &str, new: &str) -> String {
@@ -3508,10 +3561,13 @@ impl Spec {
             ));
         }
         if let Some(gc) = &self.group_close {
-            if !["monotone", "session"].contains(&gc.as_str()) {
-                return Err(format!(
-                    "spec {:?}: group_close must be \"monotone\" or \"session\" (got {gc:?})",
-                    self.name
+            const GROUP_CLOSE: [&str; 2] = ["monotone", "session"];
+            if !GROUP_CLOSE.contains(&gc.as_str()) {
+                return Err(spec_words_refusal(
+                    &self.name,
+                    "group_close",
+                    &GROUP_CLOSE,
+                    gc,
                 ));
             }
             if self.group.is_none() {
@@ -3927,12 +3983,15 @@ impl Spec {
                 self.model.kind_name()
             ));
         }
+        const DRIFT_ACTION: [&str; 2] = ["flag", "reset"];
         if let Some(a) = &self.drift_action
-            && !["flag", "reset"].contains(&a.as_str())
+            && !DRIFT_ACTION.contains(&a.as_str())
         {
-            return Err(format!(
-                "spec {:?}: drift_action must be \"flag\" or \"reset\", got {a:?}",
-                self.name
+            return Err(spec_words_refusal(
+                &self.name,
+                "drift_action",
+                &DRIFT_ACTION,
+                a,
             ));
         }
         // A tolerance or a threshold of `inf` is a detector that never
@@ -4302,13 +4361,11 @@ impl Spec {
                 }
             }
             ModelKind::Pa { mode, c, eps, .. } => {
+                const MODE: [&str; 3] = ["pa", "pa1", "pa2"];
                 if let Some(md) = mode
-                    && !["pa", "pa1", "pa2"].contains(&md.as_str())
+                    && !MODE.contains(&md.as_str())
                 {
-                    return Err(format!(
-                        "spec {:?}: unknown pa mode {md:?}; expected pa, pa1 or pa2",
-                        self.name
-                    ));
+                    return Err(spec_words_refusal(&self.name, "mode", &MODE, md));
                 }
                 if let Some(v) = c.filter(|v| v.0 <= 0.0 || v.0.is_nan()) {
                     return Err(format!(
@@ -4354,11 +4411,7 @@ impl Spec {
                         "logistic",
                     ];
                     if !OK.contains(&l.as_str()) {
-                        return Err(format!(
-                            "spec {:?}: unknown sgd loss {l:?}; expected one of {}",
-                            self.name,
-                            OK.join(", ")
-                        ));
+                        return Err(spec_words_refusal(&self.name, "loss", &OK, l));
                     }
                     if l == "quantile" && quantile.is_none() {
                         return Err(format!(
@@ -4367,14 +4420,11 @@ impl Spec {
                         ));
                     }
                 }
+                const SCHEDULE: [&str; 3] = ["constant", "inv_scaling", "adagrad"];
                 if let Some(sc) = schedule
-                    && !["constant", "inv_scaling", "adagrad"].contains(&sc.as_str())
+                    && !SCHEDULE.contains(&sc.as_str())
                 {
-                    return Err(format!(
-                        "spec {:?}: unknown sgd schedule {sc:?}; expected constant, \
-                             inv_scaling or adagrad",
-                        self.name
-                    ));
+                    return Err(spec_words_refusal(&self.name, "schedule", &SCHEDULE, sc));
                 }
                 if let Some(v) = learning_rate.filter(|v| *v <= 0.0 || !v.is_finite()) {
                     return Err(format!(
@@ -4468,10 +4518,8 @@ impl Spec {
                                     format!("; {old} was renamed {new}")
                                 });
                             return Err(format!(
-                                "spec {:?}: unknown ew_cov statistic {st:?}; expected one of \
-                                 {}{renamed}",
-                                self.name,
-                                OK.join(", ")
+                                "{}{renamed}",
+                                spec_words_refusal(&self.name, "stats", &OK, st)
                             ));
                         }
                     }
@@ -4605,11 +4653,7 @@ impl Spec {
                 if let Some(rule) = seed_rule {
                     const OK: [&str; 4] = ["first", "farthest", "kmeanspp", "lloyd"];
                     if !OK.contains(&rule.as_str()) {
-                        return Err(format!(
-                            "spec {:?}: unknown kmeans seed_rule {rule:?}; expected one of {}",
-                            self.name,
-                            OK.join(", ")
-                        ));
+                        return Err(spec_words_refusal(&self.name, "seed_rule", &OK, rule));
                     }
                 }
                 if update_every_rows.is_some_and(|v| v == 0) {
@@ -4742,7 +4786,7 @@ impl Spec {
                     ));
                 }
                 if let Some(c) = covariance {
-                    online_core::Covariance::parse("ew_class", c)
+                    online_core::Covariance::parse(c)
                         .map_err(|e| format!("spec {:?}: {e}", self.name))?;
                 }
                 if !(precision_prior.is_finite() && *precision_prior > 0.0) {
@@ -4793,10 +4837,11 @@ impl Spec {
                     }
                     Some("shared") => {}
                     Some(other) => {
-                        return Err(format!(
-                            "spec {:?}: marginal feature_moments must be \"per_target\" or \
-                             \"shared\", got {other:?}",
-                            self.name
+                        return Err(spec_words_refusal(
+                            &self.name,
+                            "feature_moments",
+                            &["per_target", "shared"],
+                            other,
                         ));
                     }
                 }

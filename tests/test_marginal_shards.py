@@ -348,8 +348,8 @@ def test_a_lazy_frame_is_split_the_same_way():
     ("shards", "error", "message"),
     [
         (0, ValueError, "shards must be >= 1"),
-        ("many", ValueError, 'shards must be a number of shards of at least 1 or "auto"'),
-        (2.5, TypeError, "shards must be an int or a str"),
+        ("many", ValueError, 'shards must be an int or one of "auto"; got "many"'),
+        (2.5, TypeError, 'shards must be an int or one of "auto", got float 2.5'),
     ],
 )
 def test_a_count_that_means_nothing_is_refused(shards, error, message):

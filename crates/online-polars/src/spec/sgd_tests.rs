@@ -59,5 +59,6 @@ fn a_parameter_its_loss_or_schedule_does_not_read_is_refused() {
     }
     // An unknown loss is named as unknown, not as the wrong owner.
     let err = sgd(r#", "loss": "nope", "eps": 0.2"#).check().unwrap_err();
-    assert!(err.contains("unknown sgd loss \"nope\""), "{err}");
+    assert!(err.contains("loss must be one of \"squared\""), "{err}");
+    assert!(err.ends_with("; got \"nope\""), "{err}");
 }

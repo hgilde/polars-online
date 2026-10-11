@@ -365,7 +365,7 @@ def test_the_block_survives_a_refresh_time_grid():
         ({"half_life": 50.0}, "do not apply to rcov"),
         ({"lam": 0.99}, "do not apply to rcov"),
         ({"kernel": "bartlett"}, "not consistent"),
-        ({"kind": "nope"}, "unknown rcov kind"),
+        ({"kind": "nope"}, 'kind must be one of "kernel", "preavg", "plain"; got "nope"'),
         ({"jitter": 0}, "jitter must be >= 1"),
         ({"block_rows": None}, "needs `block_rows`"),
         ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),

@@ -20,7 +20,7 @@ import types
 import typing
 from collections.abc import Callable, Sequence
 from datetime import timedelta
-from typing import Any, NotRequired, TypedDict, Unpack
+from typing import Any, Literal, NotRequired, TypedDict, Unpack
 
 import polars as pl
 
@@ -135,6 +135,9 @@ def _matches(v: Any, hint: Any) -> bool:
     origin = typing.get_origin(hint)
     if origin in (types.UnionType, typing.Union):
         return any(_matches(v, a) for a in typing.get_args(hint))
+    if origin is Literal:
+        # The words a parameter takes (task 244, P-1): a str among them.
+        return isinstance(v, str) and v in typing.get_args(hint)
     if hint is type(None):
         return v is None
     if origin in (list, Sequence):
@@ -200,6 +203,9 @@ def _describe(hint: Any, plural: bool = False) -> str:
         else:
             parts = [_describe(a, plural) for a in args]
         return " or ".join(parts)
+    if origin is Literal:
+        words = _one_of(typing.get_args(hint))
+        return f"strs, each {words}" if plural else words
     if origin is list:
         (inner,) = typing.get_args(hint)
         return ("lists of " if plural else "a list of ") + _describe(inner, plural=True)
@@ -210,6 +216,65 @@ def _describe(hint: Any, plural: bool = False) -> str:
     nouns |= {bool: ("a bool", "bools"), str: ("a str", "strs")}
     one, many = nouns.get(hint, (str(hint), str(hint)))
     return many if plural else one
+
+
+def _one_of(words: Sequence[str]) -> str:
+    """``one of "a", "b"``: how every refusal names the words a parameter
+    takes, here and on the Rust side (``online_polars::words_refusal``)."""
+    return "one of " + ", ".join(json.dumps(w) for w in words)
+
+
+def _bad_word(v: Any, hint: Any) -> tuple[str, tuple[str, ...]] | None:
+    """The word ``v`` gives outside the words ``hint`` takes, and those
+    words, where ``v`` has the shape the hint asks for but a word it does
+    not take: a str for a ``Literal``, an entry of a list of them, or a key
+    of a dict keyed by them. ``None`` where the shape itself is wrong, which
+    is a ``TypeError``, not a word outside a list."""
+    origin = typing.get_origin(hint)
+    if origin in (types.UnionType, typing.Union):
+        for a in typing.get_args(hint):
+            if (found := _bad_word(v, a)) is not None:
+                return found
+        return None
+    if origin is Literal:
+        words = typing.get_args(hint)
+        if isinstance(v, str) and v not in words:
+            return v, words
+        return None
+    if origin in (list, Sequence) and isinstance(v, (list, tuple)):
+        (inner,) = typing.get_args(hint)
+        if typing.get_origin(inner) is Literal and all(isinstance(x, str) for x in v):
+            words = typing.get_args(inner)
+            return next(((x, words) for x in v if x not in words), None)
+        return None
+    if origin is dict and isinstance(v, dict):
+        key, _ = typing.get_args(hint)
+        if typing.get_origin(key) is Literal and all(isinstance(k, str) for k in v):
+            words = typing.get_args(key)
+            return next(((k, words) for k in v if k not in words), None)
+    return None
+
+
+#: Why a parameter takes the words it does, where a caller would ask: said
+#: after the refusal, as the Rust side says it.
+_WORD_REASONS = {
+    ("rcov", "kernel"): (
+        "the Bartlett kernel is not consistent for this estimator, and Parzen beats "
+        "the quadratic spectral on efficiency (BNHLS 2011)"
+    ),
+}
+
+
+def words_refusal(who: str, key: str, got: str, words: Sequence[str], hint: Any = None) -> str:
+    """The one refusal of a word outside the words a parameter takes
+    (task 244, P-4): ``spec "m": <key> must be one of "a", "b"; got "x"``,
+    the shape the Rust side gives a spec dict and a TOML file too. A
+    parameter that also takes something other than a word (``hint``, its
+    annotation) names that first: ``an int or one of "auto"``."""
+    others = [a for a in typing.get_args(hint) if a in (int, float)]
+    kinds = " or ".join(_describe(a) for a in others)
+    taken = f"{kinds} or {_one_of(words)}" if kinds else _one_of(words)
+    return f"{who}: {key} must be {taken}; got {json.dumps(got)}"
 
 
 def _got(v: Any) -> str:
@@ -496,6 +561,13 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                     f"{who}: {fn.__name__}() got an unexpected keyword argument {key!r}"
                 )
             if not _matches(value, hint):
+                # A word outside the ones the parameter takes is a value
+                # error, in the shape every surface gives it (task 244, P-4);
+                # anything else of the wrong shape is a type error.
+                if (bad := _bad_word(value, hint)) is not None:
+                    why = _WORD_REASONS.get((fn.__name__, key))
+                    said = words_refusal(who, key, *bad, hint=hint)
+                    raise ValueError(f"{said}: {why}" if why else said)
                 raise TypeError(f"{who}: {key} must be {_describe(hint)}, got {_got(value)}")
             # Every int parameter is a count (u32 on the Rust side), and some
             # are counts of something there must be one of: the Rust side's
@@ -756,7 +828,7 @@ def _common(
     emit_drift: bool = False,
     drift_delta: float | None = None,
     drift_threshold: float | Duration | None = None,
-    drift_action: str = "flag",
+    drift_action: Literal["flag", "reset"] = "flag",
     emit_calibration: bool = False,
     calibration_half_life: float | Duration | None = None,
     emit_breaks: bool = False,
@@ -776,7 +848,7 @@ def _common(
     feature_health_half_life: float | Duration | None = None,
     embargo: float | Duration | None = None,
     group: str | None = None,
-    group_close: str | None = None,
+    group_close: Literal["monotone", "session"] | None = None,
 ) -> dict[str, Any]:
     written: list[str | Target | FormulaTarget] = [
         formula_target(f"spec {json.dumps(name)}", t) if isinstance(t, pl.Expr) else t
@@ -875,7 +947,7 @@ def ewridge(
     ridge: float | list[float] | None = None,
     feature_sets: dict[str, list[str]] | None = None,
     standardize: bool = False,
-    ridge_scale: str = "mean",
+    ridge_scale: Literal["mean", "sum"] = "mean",
     coef_prior: list[list[float]] | None = None,
     session_shrink: float | None = None,
     long_half_life: float | Duration | None = None,
@@ -883,12 +955,12 @@ def ewridge(
     max_rows_between_solves: int | None = None,
     gram_block_rows: int | None = None,
     gram_threads: int | None = None,
-    target_gaps: str = "own_rows",
+    target_gaps: Literal["own_rows", "pairwise"] = "own_rows",
     window_size: float | Duration | None = None,
-    closed: str = "right",
+    closed: Literal["right", "both"] = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
-    window_budget: dict[str, float] | None = None,
+    window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted ridge regression on running sums -- the workhorse.
@@ -1735,13 +1807,13 @@ def lasso(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     window_size: float | Duration | None = None,
-    closed: str = "right",
+    closed: Literal["right", "both"] = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
-    window_budget: dict[str, float] | None = None,
+    window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     max_iter: int | None = None,
     tol: float | None = None,
-    target_gaps: str = "own_rows",
+    target_gaps: Literal["own_rows", "pairwise"] = "own_rows",
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """A lasso or elastic-net path on running sums, with the penalty chosen as the
@@ -2492,7 +2564,7 @@ def ftrl(
     l1: float | None = None,
     l2: float | None = None,
     strict_binary: bool = False,
-    loss: str = "logistic",
+    loss: Literal["logistic", "squared"] = "logistic",
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """FTRL-proximal: online logistic regression for a 0/1 target, or a sparse linear
@@ -2664,7 +2736,8 @@ def ew_cov(
     name: str,
     *,
     features: list[str],
-    stats: list[str] | None = None,
+    stats: list[Literal["mean", "var", "std", "cov", "corr", "partial_corr", "mahal", "lag_corr"]]
+    | None = None,
     precision_prior: float | None = None,
     mahal_quantiles: list[float] | None = None,
     pca: int | None = None,
@@ -2673,10 +2746,10 @@ def ew_cov(
     lags: list[int] | None = None,
     gram_threads: int | None = None,
     window_size: float | Duration | None = None,
-    closed: str = "right",
+    closed: Literal["right", "both"] = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
-    window_budget: dict[str, float] | None = None,
+    window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns: means, variances,
@@ -2968,12 +3041,14 @@ def sgd(
     *,
     targets: TargetList,
     features: list[str],
-    loss: str = "squared",
+    loss: Literal[
+        "squared", "huber", "quantile", "epsilon_insensitive", "poisson", "logistic"
+    ] = "squared",
     huber_delta: float | None = None,
     quantile: float | None = None,
     eps: float | None = None,
     learning_rate: float | None = None,
-    schedule: str = "constant",
+    schedule: Literal["constant", "inv_scaling", "adagrad"] = "constant",
     power: float | None = None,
     l2: float | None = None,
     clip_gradient: float | None = None,
@@ -3323,7 +3398,7 @@ def pa(
     *,
     targets: TargetList,
     features: list[str],
-    mode: str = "pa1",
+    mode: Literal["pa", "pa1", "pa2"] = "pa1",
     c: float | None = None,
     eps: float | None = None,
     coef_min: float | list[float] | None = None,
@@ -3745,7 +3820,7 @@ def kmeans(
     features: list[str],
     k: int,
     warm_rows: int | None = None,
-    seed_rule: str | None = None,
+    seed_rule: Literal["first", "farthest", "kmeanspp", "lloyd"] | None = None,
     seed: int | None = None,
     update_every_rows: int | None = None,
     split_merge: float | None = None,
@@ -4142,13 +4217,13 @@ def ew_class(
     features: list[str],
     label: str,
     classes: list[str],
-    covariance: str | None = None,
+    covariance: Literal["full", "shared", "diagonal"] | None = None,
     precision_prior: float,
     window_size: float | Duration | None = None,
-    closed: str = "right",
+    closed: Literal["right", "both"] = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
-    window_budget: dict[str, float] | None = None,
+    window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """A Gaussian classifier on :func:`ew_cov`'s moments, one set per class:
@@ -4464,20 +4539,20 @@ def marginal(
     features: list[str],
     lags: list[int] | None = None,
     cross_lags: list[int] | None = None,
-    serial_rule: str | None = None,
+    serial_rule: Literal["truncated", "bartlett", "geometric"] | None = None,
     bins: int | None = None,
-    bin_rule: str | None = None,
+    bin_rule: Literal["quantile", "fixed"] | None = None,
     bin_warm_rows: int | None = None,
     bin_edges: dict[str, list[float]] | list[list[float]] | None = None,
     bin_budget: float | None = None,
-    shards: int | str | None = None,
+    shards: int | Literal["auto"] | None = None,
     window_size: float | Duration | None = None,
-    closed: str = "right",
+    closed: Literal["right", "both"] = "right",
     window_every: float | Duration | None = None,
     max_rows_between_snapshots: int | None = None,
-    window_budget: dict[str, float] | None = None,
+    window_budget: dict[Literal["thin", "refuse"], float] | None = None,
     window_lags: bool = False,
-    feature_moments: str = "per_target",
+    feature_moments: Literal["per_target", "shared"] = "per_target",
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Every (feature, target) pair's exponentially weighted moments, kept in the
@@ -4817,10 +4892,6 @@ def marginal(
             )
     else:
         edges = None
-    if isinstance(shards, str) and shards != "auto":
-        raise ValueError(
-            f'{who}: shards must be a number of shards of at least 1 or "auto", got {shards!r}'
-        )
     model: dict[str, Any] = {
         "type": "marginal",
         "lags": lags,
@@ -4852,7 +4923,7 @@ def deco(
     name: str,
     *,
     features: list[str],
-    dynamics: str = "ew",
+    dynamics: Literal["ew", "linear"] = "ew",
     alpha: float | None = None,
     beta: float | None = None,
     blocks: dict[str, list[str]] | None = None,

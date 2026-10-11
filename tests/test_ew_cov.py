@@ -159,7 +159,7 @@ class TestPlumbing:
         assert out["c"].struct.field("corr_x0_x1@h50").null_count() < df.height
 
     def test_bad_stat_is_rejected(self):
-        with pytest.raises(ValueError, match="unknown ew_cov statistic"):
+        with pytest.raises(ValueError, match='stats must be one of "mean", .*; got "nonsense"'):
             _spec(stats=["nonsense"])
 
     def test_pairwise_stats_need_two_columns(self):

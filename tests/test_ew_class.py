@@ -754,7 +754,10 @@ class TestRefusals:
             ({"classes": ["a"]}, "classes must list at least 2 classes"),
             ({"classes": ["a", "b", "a"]}, 'classes lists "a" more than once'),
             ({"classes": ["a", ""]}, "classes must not contain an empty name"),
-            ({"covariance": "spherical"}, "unknown ew_class covariance"),
+            (
+                {"covariance": "spherical"},
+                'covariance must be one of "full", "shared", "diagonal"; got "spherical"',
+            ),
             ({"precision_prior": 0.0}, "precision_prior must be finite and > 0"),
             ({"precision_prior": -1.0}, "precision_prior must be finite and > 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
@@ -778,7 +781,9 @@ class TestRefusals:
             build(classes=[0, 1])
         with pytest.raises(TypeError, match="label must be a str, got list"):
             build(label=["y"])
-        with pytest.raises(TypeError, match="covariance must be a str, got int"):
+        with pytest.raises(
+            TypeError, match='covariance must be one of "full", "shared", "diagonal", got int'
+        ):
             build(covariance=1)
         with pytest.raises(TypeError, match="precision_prior must be a number, got str"):
             build(precision_prior="1")

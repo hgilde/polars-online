@@ -44,5 +44,8 @@ fn a_c_under_the_mode_that_reads_none_is_refused() {
     let err = pa(r#", "mode": "pa", "c": 0.0"#).check().unwrap_err();
     assert!(err.contains("pa c must be > 0"), "{err}");
     let err = pa(r#", "mode": "pa3", "c": 0.5"#).check().unwrap_err();
-    assert!(err.contains("unknown pa mode \"pa3\""), "{err}");
+    assert!(
+        err.contains("mode must be one of \"pa\", \"pa1\", \"pa2\"; got \"pa3\""),
+        "{err}"
+    );
 }

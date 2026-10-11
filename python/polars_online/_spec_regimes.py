@@ -6,7 +6,7 @@ file. :mod:`polars_online.spec` documents them with the rest.
 
 from __future__ import annotations
 
-from typing import Any, Unpack
+from typing import Any, Literal, Unpack
 
 from polars_online._kwargs import CommonKwargs
 from polars_online._spec import _checked, _common, _mirror_target
@@ -19,14 +19,14 @@ def hmm(
     features: list[str],
     k: int,
     precision_prior: float,
-    covariance: str = "full",
+    covariance: Literal["full", "shared", "diagonal"] = "full",
     learn: bool = True,
     transition_prior: float | None = None,
     transition: list[float] | None = None,
     means: list[float] | None = None,
     covs: list[float] | None = None,
     warm_rows: int | None = None,
-    seed_rule: str | None = None,
+    seed_rule: Literal["first", "farthest", "kmeanspp", "lloyd"] | None = None,
     seed: int | None = None,
     exog_tvtp: str | None = None,
     tvtp_coef: list[list[float]] | None = None,
@@ -238,8 +238,8 @@ def rcov(
     name: str,
     *,
     features: list[str],
-    kind: str = "kernel",
-    kernel: str = "parzen",
+    kind: Literal["kernel", "preavg", "plain"] = "kernel",
+    kernel: Literal["parzen"] = "parzen",
     bandwidth: int | None = None,
     jitter: int | None = None,
     theta: float | None = None,

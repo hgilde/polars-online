@@ -428,7 +428,7 @@ def test_the_clock_is_a_number(c):
     ("kw", "message"),
     [
         ({"features": ["x0"]}, "at least two columns"),
-        ({"dynamics": "nope"}, "unknown deco dynamics"),
+        ({"dynamics": "nope"}, 'dynamics must be one of "ew", "linear"; got "nope"'),
         ({"dynamics": "linear"}, "needs both alpha and beta"),
         ({"dynamics": "linear", "alpha": 0.5, "beta": 0.6}, "alpha \\+ beta must be < 1"),
         ({"alpha": 0.5}, "alpha/beta belong to"),

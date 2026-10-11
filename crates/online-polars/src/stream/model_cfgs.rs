@@ -57,9 +57,10 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
             Some("gaussian") => BocpdEmission::Gaussian,
             Some("robust") => BocpdEmission::Robust,
             Some(other) => {
-                return Err(format!(
-                    "unknown bocpd emission {other:?}; expected \"gaussian\", \"diag\" or \
-                     \"robust\""
+                return Err(crate::words_refusal(
+                    "emission",
+                    &["gaussian", "diag", "robust"],
+                    other,
                 ));
             }
         },
@@ -111,9 +112,10 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
         Some("window") => (CorrChangeKind::Window, "window"),
         Some("sequential") => (CorrChangeKind::Sequential, "sequential"),
         Some(other) => {
-            return Err(format!(
-                "unknown corrchange kind {other:?}; expected \"monitor\", \"sequential\" or \
-                 \"window\""
+            return Err(crate::words_refusal(
+                "kind",
+                &["monitor", "sequential", "window"],
+                other,
             ));
         }
     };
@@ -205,9 +207,7 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
             None | Some("l1") => ChangeNorm::L1,
             Some("linf") => ChangeNorm::LInf,
             Some(other) => {
-                return Err(format!(
-                    "unknown corrchange norm {other:?}; expected \"l1\" or \"linf\""
-                ));
+                return Err(crate::words_refusal("norm", &["l1", "linf"], other));
             }
         },
         seed: seed.unwrap_or(0),
@@ -288,7 +288,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
         k: *k,
         decay: online_core::Decay::Lam(1.0),
         covariance: match covariance {
-            Some(c) => Covariance::parse("hmm", c)?,
+            Some(c) => Covariance::parse(c)?,
             None => Covariance::Full,
         },
         precision_prior: *precision_prior,
@@ -305,8 +305,10 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
             Some("farthest") => SeedRule::Farthest,
             Some("kmeanspp") => SeedRule::Kmeanspp,
             Some(other) => {
-                return Err(format!(
-                    "unknown hmm seed_rule {other:?}; expected first, farthest, kmeanspp or lloyd"
+                return Err(crate::words_refusal(
+                    "seed_rule",
+                    &["first", "farthest", "kmeanspp", "lloyd"],
+                    other,
                 ));
             }
         },
@@ -339,8 +341,10 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         Some("preavg") => RcovKind::Preavg,
         Some("plain") => RcovKind::Plain,
         Some(other) => {
-            return Err(format!(
-                "unknown rcov kind {other:?}; expected \"kernel\", \"preavg\" or \"plain\""
+            return Err(crate::words_refusal(
+                "kind",
+                &["kernel", "preavg", "plain"],
+                other,
             ));
         }
     };
@@ -403,9 +407,7 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
         None | Some("ew") => DecoDynamics::Ew,
         Some("linear") => DecoDynamics::Linear,
         Some(other) => {
-            return Err(format!(
-                "unknown deco dynamics {other:?}; expected \"ew\" or \"linear\""
-            ));
+            return Err(crate::words_refusal("dynamics", &["ew", "linear"], other));
         }
     };
     let blocks = match blocks {

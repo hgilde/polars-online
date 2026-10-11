@@ -168,7 +168,7 @@ def test_save_load(tmp_path):
 
 
 def test_bad_config_rejected():
-    with pytest.raises(ValueError, match="unknown pa mode"):
+    with pytest.raises(ValueError, match='mode must be one of "pa", "pa1", "pa2"; got "pa3"'):
         _spec(mode="pa3")
     with pytest.raises(ValueError, match="pa c must be > 0"):
         _spec(c=0.0)

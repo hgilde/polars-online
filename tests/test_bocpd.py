@@ -600,7 +600,10 @@ def test_chunks_and_a_reload_do_not_move_it():
     ("kwargs", "message"),
     [
         (dict(half_life=10.0), "do not apply to bocpd"),
-        (dict(emission="student"), "unknown bocpd emission"),
+        (
+            dict(emission="student"),
+            'emission must be one of "gaussian", "diag", "robust"; got "student"',
+        ),
         (dict(prior_scale=[1.0, 2.0]), "prior_scale is a scalar"),
         (dict(prior_mean=[0.0, 0.0]), "prior_mean must be 1 values"),
         (dict(hazard=0.5), "hazard"),

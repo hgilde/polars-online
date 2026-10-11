@@ -30,7 +30,7 @@ would show nothing and leave a typo to be found when the call runs. A
 # a string the TypedDict machinery does not look inside, so every key would
 # be optional at runtime and the test could not see the required ones.
 
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from polars_online._duration import Duration
 
@@ -74,7 +74,7 @@ class CommonKwargs(TypedDict, total=False):
     emit_drift: bool
     drift_delta: float | None
     drift_threshold: float | Duration | None
-    drift_action: str
+    drift_action: Literal["flag", "reset"]
     emit_calibration: bool
     calibration_half_life: float | Duration | None
     emit_breaks: bool
@@ -94,4 +94,4 @@ class CommonKwargs(TypedDict, total=False):
     feature_health_half_life: float | Duration | None
     embargo: float | Duration | None
     group: str | None
-    group_close: str | None
+    group_close: Literal["monotone", "session"] | None

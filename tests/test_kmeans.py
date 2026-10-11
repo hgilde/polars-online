@@ -1150,7 +1150,10 @@ class TestRefusals:
         ("kw", "msg"),
         [
             ({"k": 0}, "k must be >= 1"),
-            ({"seed_rule": "random"}, "unknown kmeans seed_rule"),
+            (
+                {"seed_rule": "random"},
+                'seed_rule must be one of "first", "farthest", "kmeanspp", "lloyd"; got "random"',
+            ),
             ({"update_every_rows": 0}, "update_every_rows must be >= 1"),
             ({"split_merge_every_rows": 0}, "split_merge_every_rows must be >= 1"),
             ({"split_merge": -1.0}, "split_merge must be finite and >= 0"),

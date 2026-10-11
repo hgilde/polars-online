@@ -6,7 +6,7 @@ file. :mod:`polars_online.spec` documents them with the rest.
 
 from __future__ import annotations
 
-from typing import Any, Unpack
+from typing import Any, Literal, Unpack
 
 from polars_online._duration import Duration
 from polars_online._kwargs import CommonKwargs
@@ -20,7 +20,7 @@ def bocpd(
     features: list[str],
     hazard: float | Duration = 250.0,
     hazard_col: str | None = None,
-    emission: str = "diag",
+    emission: Literal["gaussian", "diag", "robust"] = "diag",
     prior_mean: list[float] | None = None,
     prior_kappa: float | None = None,
     prior_nu: float | None = None,
@@ -374,17 +374,17 @@ def corrchange(
     name: str,
     *,
     features: list[str],
-    kind: str = "monitor",
+    kind: Literal["monitor", "sequential", "window"] = "monitor",
     span_rows: int | None = None,
     alpha: float = 0.05,
-    alpha_adjust: str = "bonferroni",
+    alpha_adjust: Literal["bonferroni", "none"] = "bonferroni",
     bandwidth: int | None = None,
     scalar: bool = False,
     crit: float | None = None,
     n_perm: int | None = None,
     permute_every_rows: int | None = None,
     perm_block: int | None = None,
-    norm: str = "l1",
+    norm: Literal["l1", "linf"] = "l1",
     seed: int | None = None,
     reset_on_flag: bool = False,
     monitor_rows: int | None = None,

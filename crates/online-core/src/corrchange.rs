@@ -214,7 +214,7 @@ impl CorrChangeCfg {
         }
         if !["bonferroni", "none"].contains(&self.alpha_adjust.as_str()) {
             return Err(format!(
-                "corrchange: unknown alpha_adjust {:?}; expected \"bonferroni\" or \"none\"",
+                "alpha_adjust must be one of \"bonferroni\", \"none\"; got {:?}",
                 self.alpha_adjust
             ));
         }
@@ -2296,7 +2296,7 @@ mod tests {
                 alpha_adjust: "nope".into(),
                 ..cfg(2, CorrChangeKind::Monitor)
             },
-            "unknown alpha_adjust",
+            "alpha_adjust must be one of \"bonferroni\", \"none\"; got \"nope\"",
         );
         bad(
             CorrChangeCfg {

@@ -482,8 +482,8 @@ impl RcovCfg {
         }
         if self.kernel != "parzen" {
             return Err(format!(
-                "rcov: unknown kernel {:?}; only \"parzen\" is offered -- the Bartlett kernel is \
-                 not consistent for this estimator, and Parzen beats the quadratic spectral on \
+                "kernel must be one of \"parzen\"; got {:?}: the Bartlett kernel is not \
+                 consistent for this estimator, and Parzen beats the quadratic spectral on \
                  efficiency (BNHLS 2011)",
                 self.kernel
             ));

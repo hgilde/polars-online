@@ -242,13 +242,14 @@ VALUES = [
     (
         po.spec.ew_class,
         dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0, covariance="lda"),
-        'unknown ew_class covariance "lda" (expected full, shared or diagonal)',
+        'covariance must be one of "full", "shared", "diagonal"; got "lda"',
     ),
-    # `hmm`'s named `ew_class` (task 190's find, folded into task 193).
+    # `hmm`'s named `ew_class` (task 190's find, folded into task 193); now
+    # neither names a model, but the parameter and its words (task 244, P-4).
     (
         po.spec.hmm,
         dict(features=["x0", "y"], targets=None, k=2, precision_prior=0.1, covariance="lda"),
-        'unknown hmm covariance "lda" (expected full, shared or diagonal)',
+        'covariance must be one of "full", "shared", "diagonal"; got "lda"',
     ),
     (
         po.spec.ew_class,
@@ -279,7 +280,7 @@ VALUES = [
     (
         po.spec.ewridge,
         dict(emit_drift=True, drift_action="nope"),
-        'drift_action must be "flag" or "reset", got "nope"',
+        'drift_action must be one of "flag", "reset"; got "nope"',
     ),
     (
         po.spec.ewridge,
@@ -1427,7 +1428,9 @@ def test_a_marginal_and_a_nameless_refusal_name_the_spec_as_every_other():
     YA6)."""
     with pytest.raises(ValueError, match=r'^spec "m": bin_edges is missing'):
         po.spec.marginal("m", bin_edges={"zz": [0.0]}, **BASE)
-    with pytest.raises(ValueError, match=r'^spec "m": shards must be a number of shards'):
+    with pytest.raises(
+        ValueError, match=r'^spec "m": shards must be an int or one of "auto"; got "many"$'
+    ):
         po.spec.marginal("m", shards="many", **BASE)
     nameless = {"model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0"]}
     with pytest.raises(ValueError, match="^a spec with no name: half_life must not be NaN$"):

@@ -260,13 +260,13 @@ fn a_covariance_refusal_names_its_own_model() {
             r#"{"type": "hmm", "k": 2, "precision_prior": 0.1, "covariance": "lda"}"#,
             r#", "half_life": 10.0"#,
         ),
-        &["unknown hmm covariance \"lda\" (expected full, shared or diagonal)"],
+        &["covariance must be one of \"full\", \"shared\", \"diagonal\"; got \"lda\""],
     );
     refused(
         r#"{"name": "m", "model": {"type": "ew_class", "classes": ["a", "b"],
             "precision_prior": 1.0, "covariance": "lda"}, "targets": ["y"],
             "features": ["x0"], "half_life": 10.0}"#,
-        &["unknown ew_class covariance \"lda\" (expected full, shared or diagonal)"],
+        &["covariance must be one of \"full\", \"shared\", \"diagonal\"; got \"lda\""],
     );
 }
 

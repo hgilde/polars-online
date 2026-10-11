@@ -97,6 +97,7 @@ pub use spec::{
     CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, DEPRECATED, DURATION_OR_UNIT_FREE_FIELDS,
     FloatOrList, ModelKind, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec,
     Spec, deprecation_notice, forward_deprecated, forward_deprecated_with, name_renamed,
+    spec_words_refusal, word_refusal_body, words_body, words_refusal,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

@@ -308,7 +308,10 @@ def test_a_missing_exogenous_value_is_the_base_transition():
         ({"means": [0.0] * 4}, "means and covs go together"),
         ({"transition": [0.5, 0.4, 0.5, 0.5]}, "not a distribution"),
         ({"warm_rows": 1}, "warm_rows must be at least k"),
-        ({"seed_rule": "nope"}, "unknown hmm seed_rule"),
+        (
+            {"seed_rule": "nope"},
+            'seed_rule must be one of "first", "farthest", "kmeanspp", "lloyd"; got "nope"',
+        ),
         ({"tvtp_coef": [[0.0] * 4, [0.0] * 4]}, "tvtp_coef needs exog_tvtp"),
         ({"exog_tvtp": "z"}, "needs tvtp_coef"),
         ({"emit_sigma": True}, "does not apply to hmm"),

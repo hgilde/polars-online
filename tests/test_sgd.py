@@ -200,9 +200,12 @@ class TestPlumbing:
         assert abs(np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]) < 0.06
 
     def test_bad_config_rejected(self):
-        with pytest.raises(ValueError, match="unknown sgd loss"):
+        with pytest.raises(ValueError, match='loss must be one of "squared", .*; got "hinge"'):
             _spec(loss="hinge")
-        with pytest.raises(ValueError, match="unknown sgd schedule"):
+        with pytest.raises(
+            ValueError,
+            match='schedule must be one of "constant", "inv_scaling", "adagrad"; got "cosine"',
+        ):
             _spec(schedule="cosine")
         with pytest.raises(ValueError, match="learning_rate"):
             _spec(learning_rate=0.0)

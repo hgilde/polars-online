@@ -821,8 +821,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 None | Some("logistic") => FtrlLoss::Logistic,
                 Some("squared") => FtrlLoss::Squared,
                 Some(other) => {
-                    return Err(format!(
-                        "unknown ftrl loss {other:?}; expected \"logistic\" or \"squared\""
+                    return Err(crate::words_refusal(
+                        "loss",
+                        &["logistic", "squared"],
+                        other,
                     ));
                 }
             };
@@ -1108,7 +1110,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 min_weight: spec.min_periods_per_target()[0],
                 covariance: match covariance {
-                    Some(c) => Covariance::parse("ew_class", c)?,
+                    Some(c) => Covariance::parse(c)?,
                     None => Covariance::Full,
                 },
                 precision_prior: *precision_prior,
@@ -1162,9 +1164,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     Some("geometric") => Some(online_core::SerialRule::Geometric),
                     Some("bartlett") => Some(online_core::SerialRule::Bartlett),
                     Some(other) => {
-                        return Err(format!(
-                            "marginal: unknown serial_rule {other:?}; expected \"truncated\", \
-                             \"bartlett\" or \"geometric\""
+                        return Err(crate::words_refusal(
+                            "serial_rule",
+                            &["truncated", "bartlett", "geometric"],
+                            other,
                         ));
                     }
                 },
@@ -1177,9 +1180,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                             None | Some("quantile") => online_core::BinRule::Quantile,
                             Some("fixed") => online_core::BinRule::Fixed,
                             Some(other) => {
-                                return Err(format!(
-                                    "marginal: unknown bin_rule {other:?}; expected \"quantile\" \
-                                     or \"fixed\""
+                                return Err(crate::words_refusal(
+                                    "bin_rule",
+                                    &["quantile", "fixed"],
+                                    other,
                                 ));
                             }
                         },

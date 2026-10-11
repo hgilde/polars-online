@@ -71,16 +71,17 @@ impl Covariance {
         }
     }
 
-    /// `s` as a shape, or a refusal naming `owner`, the model the shape is
-    /// given to: `hmm`'s refusal named `ew_class` (review 2026-10-06, task
+    /// `s` as a shape, or a refusal naming the parameter and its words, as
+    /// every word parameter's refusal does (task 244, P-4): it once named
+    /// the model, and `hmm`'s named `ew_class` (review 2026-10-06, task
     /// 190's find, folded into task 193).
-    pub fn parse(owner: &str, s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, String> {
         match s {
             "full" => Ok(Covariance::Full),
             "shared" => Ok(Covariance::Shared),
             "diagonal" => Ok(Covariance::Diagonal),
             other => Err(format!(
-                "unknown {owner} covariance {other:?} (expected full, shared or diagonal)"
+                "covariance must be one of \"full\", \"shared\", \"diagonal\"; got {other:?}"
             )),
         }
     }
@@ -1548,19 +1549,12 @@ mod tests {
             let err = EwClass::new(bad).unwrap_err();
             assert!(err.contains(msg), "{err}");
         }
+        assert_eq!(Covariance::parse("shared").unwrap(), Covariance::Shared);
+        // The refusal names the parameter, its words and the value.
         assert_eq!(
-            Covariance::parse("ew_class", "shared").unwrap(),
-            Covariance::Shared
+            Covariance::parse("spherical").unwrap_err(),
+            "covariance must be one of \"full\", \"shared\", \"diagonal\"; got \"spherical\""
         );
-        // The refusal names the model it was given to, and the value.
-        for owner in ["ew_class", "hmm"] {
-            assert_eq!(
-                Covariance::parse(owner, "spherical").unwrap_err(),
-                format!(
-                    "unknown {owner} covariance \"spherical\" (expected full, shared or diagonal)"
-                )
-            );
-        }
         assert_eq!(Covariance::Diagonal.name(), "diagonal");
         assert_eq!(
             EwClass::labels(&["a".into(), "b".into()]),

@@ -52,8 +52,21 @@ fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<
         let model = model_key(json, e.path(), &message_of(&e.inner().to_string()));
         let inner = e.into_inner().to_string();
         let msg = message_of(&inner);
-        if let Some(key) = model {
+        if let Some(key) = &model {
             path = format!("{path}.{key}");
+        }
+        // A word outside the ones a parameter takes is refused in the one
+        // shape every surface gives it, naming the spec (task 244, P-4):
+        // serde's own words for it named neither the spec nor, beyond the
+        // path, the parameter.
+        if let Some(body) = online_polars::word_refusal_body(&msg)
+            && let Some(param) = path
+                .rsplit('.')
+                .next()
+                .filter(|p| !p.is_empty() && *p != "type")
+            && let Some(spec) = spec_name(json, &path)
+        {
+            return format!("spec {spec:?}: {param} {body}");
         }
         let at = if path == "." {
             String::new()
@@ -62,6 +75,17 @@ fn parse_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<
         };
         format!("invalid {what}: {at}{}", online_polars::name_renamed(&msg))
     })
+}
+
+/// The name of the spec an error's `path` is inside: the spec's own when
+/// the JSON is one spec, the indexed one's when it is a list.
+fn spec_name(json: &str, path: &str) -> Option<String> {
+    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    let spec = match path.strip_prefix('[') {
+        Some(rest) => root.get(rest.split_once(']')?.0.parse::<usize>().ok()?)?,
+        None => &root,
+    };
+    spec.get("name")?.as_str().map(str::to_string)
 }
 
 /// A serde_json message without the " at line L column C" it ends with.
