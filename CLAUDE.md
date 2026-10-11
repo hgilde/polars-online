@@ -218,3 +218,15 @@ dependencies; `crate-type` is the publisher's choice).
   `tests/test_second_opinion.py`. Where the library is Python's alone, write
   both. `docs/TESTING.md` has the rule beside the one above.
 - Docstrings state the math (update equations) for every model.
+- **No reader-facing doc references the plan** (the user, 2026-10-10: "No doc
+  should reference the plan, everything should be explained from first
+  principals"). The README, every guide in `docs/README.md`'s Guides table,
+  CONTRIBUTING, `llms.txt`, every public docstring and every error message
+  cite no `docs/PLAN.md` section, task number, review or record (REVIEW-*,
+  ENHANCEMENTS, the records under `docs/records/`, and the rest that
+  `docs/README.md` files as records). State the reason itself: the mechanism,
+  the measurement and how it was made, the trade-off. A link to another guide
+  that explains the point is fine; a link to a record is not. Code comments,
+  tests, the CHANGELOG and the records themselves may keep task numbers.
+  `tests/test_no_plan_references.py` holds it, and its file list grows as
+  each doc is rewritten.
