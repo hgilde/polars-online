@@ -305,6 +305,29 @@ def test_truncation_changes_little_and_max_run_caps_the_state():
     assert max(v for v in capped["run_mode"].to_list() if v is not None) <= 25
 
 
+@pytest.mark.parametrize("prune_below", [0.0, 1e-6, 1e-3, 1e-2])
+def test_max_run_caps_the_run_length_under_pruning(prune_below):
+    """``max_run`` caps a run's length: no run kept is longer than
+    ``max_run - 1`` rows, so ``run_mode`` and ``run_mean`` stay below it.
+    Once pruning drops runs from the middle of the vector, a slot's position
+    is no longer its run's length, and a cap on the position let the oldest
+    run grow with the stream: ``run_mode`` read 599 after 600 stationary rows
+    at ``max_run = 20``, and 157 with a level shift every 150 rows even at
+    the default ``prune_below``."""
+    for x in (normals(600, 0), normals(600, 1) + 3.0 * (np.arange(600) // 150)):
+        out = run(
+            x,
+            max_run=20,
+            prune_below=prune_below,
+            prior_mean=[0.0],
+            prior_scale=[1.0],
+            min_weight=0.0,
+            hazard=200.0,
+        )
+        assert out["run_mode"].max() == 19, out["run_mode"].max()
+        assert out["run_mean"].max() <= 19.0
+
+
 def test_the_prior_scale_sets_what_counts_as_surprising():
     """The one parameter a caller must set from their data. `prior_scale` is
     the prior guess at the variance, and the failure when it is too large is

@@ -70,13 +70,12 @@ def bocpd(
     something the data can vote on. A row takes ``O(runs * d)`` under
     ``"diag"`` and ``"robust"``, and ``O(runs * d³)`` under ``"gaussian"``,
     which factors each run's scale. The run vector would grow by one every row.
-    So runs below ``prune_below`` of the mass are dropped, and past ``max_run``
-    runs the oldest are folded into the ``max_run``-th youngest, which takes
-    their mass and keeps its own statistics. ``max_run`` bounds the runs kept,
-    and the work a row takes, not their length. Without pruning
-    (``prune_below = 0``) the runs kept are the lengths 0 to ``max_run - 1``,
-    and ``run_mode`` saturates one below it; with pruning a run kept can be
-    longer.
+    So runs below ``prune_below`` of the mass are dropped, and a run that
+    reaches ``max_run`` rows is folded into the oldest run shorter than that,
+    which takes its mass and keeps its own statistics. ``max_run`` caps a
+    run's length: no run kept is longer than ``max_run - 1`` rows, so
+    ``run_mode`` saturates one below it, and the runs kept, at most
+    ``max_run`` lengths, bound the work a row takes.
 
     A row of weight ``w`` teaches at ``w / w_bar``, ``w_bar`` the mean weight
     of the rows learned from, this one included. That is in its run's
@@ -231,11 +230,11 @@ def bocpd(
         least 2, and refused beside both priors, which leave nothing to set.
     ``prune_below``, ``max_run``
         The share of the mass below which a run is dropped (default
-        ``1e-6``), and the run length every longer run is folded into
-        (default 10,000). A changepoint collapses the runs to a few dozen,
-        but a stream that does not break spreads them over thousands of run
-        lengths. There ``max_run`` is the bound on the runs kept and on a
-        row's work.
+        ``1e-6``), and the run length at which a run is folded into a younger
+        one (default 10,000). A changepoint collapses the runs to a few
+        dozen, but a stream that does not break spreads them over thousands
+        of run lengths. There ``max_run`` is the bound on the runs kept and
+        on a row's work.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
