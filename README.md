@@ -192,8 +192,8 @@ Here are a few points to remember about fitting models with polars-online.
 
 **Every prediction and diagnostic is out-of-sample.** The bank predicts each
 row and computes its diagnostics from what the models learned before it, and
-only then learns from the row ([Diagnostics, selection and
-evaluation](#checking-that-a-model-works)).
+only then learns from the row ([Checking that a model
+works](#checking-that-a-model-works)).
 
 **The stream can be far larger than memory.** A bank keeps only what its
 models have learned, and the rows an `embargo` or a window still holds. To fit
@@ -210,12 +210,11 @@ decay](#convergence-without-a-decay) names them).
 
 **Features and targets can be windows over the stream, written as Polars
 expressions.** A feature can look back, such as the last minute's
-time-weighted mean of the mid. Write it with `po.ewm_mean`, and add it as a
-column in the query before the bank with `.online.with_windows`, which takes
-the same `clock` and `gap_cap` as a spec. A target can look ahead, such as the
-next minute's VWAP less the mid. Write it with `po.rewm_sum`, and pass it in
-the spec's `targets`. Windows always need the rows in time order ([Preparing
-a stream](#preparing-a-stream)).
+time-weighted mean of the mid, added as a column in the query before the
+bank. A target can look ahead, such as the next minute's VWAP less the mid,
+named in the spec's `targets` and learned once its minute has passed.
+Windows always need the rows in time order ([Making features and targets
+from windows](#making-features-and-targets-from-windows)).
 
 **A model bank runs three ways, with the same numbers from each.** It runs
 inside a Polars query with `.online.fit_predict`, in your own Python loop
