@@ -151,8 +151,8 @@ and the rows still waiting for their windows to close, and a run given
 `load_state=` returns those rows first. Under a slice (`head(n)`) the run
 reads past the last row it returns, so the state also records how many rows
 of the input it consumed, and the input's first row and last rows read.
-The README's [Saving and resuming a window
-run](../README.md#saving-and-resuming-a-window-run) shows the use; here is
+WINDOWS.md's [Saving and resuming a window
+run](WINDOWS.md#saving-and-resuming-a-window-run) shows the use; here is
 what each rule guarantees, and the test that holds it:
 
 | the input a resumed run is given | the run | held by |

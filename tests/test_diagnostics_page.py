@@ -73,7 +73,7 @@ def test_every_switch_runs_in_the_every_switch_recipe():
 
 def test_the_readme_the_map_and_llms_txt_link_the_page():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("\n## Diagnostics, selection and evaluation")
+    start = readme.index("\n### Checking that a model works\n")
     section = readme[start : readme.index("\n## ", start + 1)]
     assert "docs/DIAGNOSTICS.md" in section
     assert "](DIAGNOSTICS.md)" in (REPO / "docs" / "README.md").read_text(encoding="utf-8")

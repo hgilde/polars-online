@@ -249,7 +249,7 @@ collected as fast as the bank can:
 | `half_life` | `float("inf")` | every row weighs the same, so a block's Gram is least squares' and blocks pool as they are |
 | `solve_every` | `1e18` rows, past the end of any stream (a duration, such as `"1000w"`, on a spec with a time clock) | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves nothing |
 | `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
-| `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([`ewridge`](../README.md#ewridge--ew-ridge-on-sufficient-statistics)) |
+| `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([`ewridge`](MODELS.md#ewridge--ew-ridge-on-sufficient-statistics)) |
 | `gram_threads` | left out, so 1 | runs that product on several threads ([One wide Gram on several threads](#one-wide-gram-on-several-threads)) |
 | `group_close` | left out | frees each week's Gram once the week has finished, and with `closed_groups=` on `fit` writes it to a file ([Reading Grams from saved files](#reading-grams-from-saved-files)) |
 
@@ -277,8 +277,8 @@ present on the same rows, or the rows a target misses do not depend on
 the features' values, give `target_gaps="pairwise"`, which keeps one Gram
 per block. Otherwise keep
 the default, and pool each set of targets' Grams across the weeks, those
-with the same `targets`. The README's
-[`ewridge`](../README.md#ewridge--ew-ridge-on-sufficient-statistics)
+with the same `targets`. MODELS.md's
+[`ewridge`](MODELS.md#ewridge--ew-ridge-on-sufficient-statistics)
 section says what each mode fits.
 
 The recipe makes the stream, runs the pass, and checks the pooled Gram's

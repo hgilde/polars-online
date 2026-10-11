@@ -2060,8 +2060,8 @@ def kalman(
 
         For a coefficient per current standard deviation, which moves with the
         scale, z-score the column in the stream and give it with
-        ``standardize = False``: the README's *Features in units of their
-        spread* builds the column with :func:`polars_online.ewm_mean
+        ``standardize = False``: ``docs/WINDOWS.md``'s *Features in units of
+        their spread* builds the column with :func:`polars_online.ewm_mean
         <polars_online.ops.ewm_mean>` and :func:`polars_online.ewm_std
         <polars_online.ops.ewm_std>`.
     ``revert_half_life``
@@ -2583,8 +2583,8 @@ def ftrl(
     ``crates/online-core/tests/held_values.rs``, with one of three features at
     ``L``, the squared loss's error is about ``0.018 * L``: 18.3 at 1,000 and
     at -1,000, 1.8e6 at 1e8, where it is 0.75 at 0.5. Standardize or z-score
-    such a feature before the bank, as the README's *Features in units of
-    their spread* shows. There is no ``standardize`` here because ``l1``
+    such a feature before the bank, as ``docs/WINDOWS.md``'s *Features in
+    units of their spread* shows. There is no ``standardize`` here because ``l1``
     zeroes a coefficient in the feature's own units: a scale inside the model
     would move which coefficients it zeroes as the feature's spread moved.
 

@@ -244,7 +244,7 @@ resumes under the other.
 A target that is a window expression looking ahead is a table with its
 name and its formula. The formula takes the form a spec and a saved state
 carry ([Windows as a model's inputs and
-target](../README.md#windows-as-a-models-inputs-and-target)):
+target](WINDOWS.md#windows-as-a-models-inputs-and-target)):
 
 ```toml
 [[specs]]

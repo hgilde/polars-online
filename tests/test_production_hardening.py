@@ -22,6 +22,7 @@ import ast
 import builtins
 import contextlib
 import copy
+import functools
 import itertools
 import os
 import pickle
@@ -588,9 +589,42 @@ def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
     return out
 
 
-# The README, and the runner guide its file-to-file examples live in (docs/PLAN.md
-# task 68): the fixture below already writes the files those examples read.
-README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
+#: The pages the README's longest sections moved to (README-ITERATIONS, I8),
+#: each with the README heading that now points to it. A reader reaches a
+#: page from there, so its blocks run as the README's did when they stood at
+#: that point: on what the README built before it, and on what the page's
+#: own earlier blocks built.
+MOVED_PAGES = {
+    "docs/WINDOWS.md": "### Making features and targets from windows",
+    "docs/MODELS.md": "### Choosing a model",
+    "docs/GBDT.md": "### Training XGBoost and LightGBM on files larger than memory",
+}
+
+# The README, the pages its sections moved to, and the runner guide its
+# file-to-file examples live in (docs/PLAN.md task 68): the fixture below
+# already writes the files those examples read.
+README_BLOCKS = (
+    _doc_blocks("README.md")
+    + [b for page in MOVED_PAGES for b in _doc_blocks(page)]
+    + _doc_blocks("docs/RUNNER.md")
+)
+
+
+def _reading_position(path: str, line: int) -> tuple[int, int]:
+    """Where a reader of the README meets a block: its README line, or for a
+    moved page the line of the README heading that points to it, then the
+    block's line on the page."""
+    if path == "README.md":
+        return (line, 0)
+    return (_pointer_line(MOVED_PAGES[path]), line)
+
+
+@functools.cache
+def _pointer_line(heading: str) -> int:
+    """The README line of ``heading``, which points to a moved page."""
+    text = (REPO / "README.md").read_text(encoding="utf-8").split("\n")
+    assert text.count(heading) == 1, f"the README should hold {heading!r} once"
+    return text.index(heading) + 1
 
 
 def _block_param(path: str, line: int, code: str):
@@ -622,8 +656,12 @@ def _names(code: str) -> tuple[set[str], list[str]]:
     return stored, loaded
 
 
-#: The README's own python blocks, in order: the README's definitions.
-README_ONLY = [b for b in README_BLOCKS if b[0] == "README.md"]
+#: The README's own python blocks and its moved pages', in the order a reader
+#: meets them (`_reading_position`): the README's definitions.
+README_ONLY = sorted(
+    (b for b in README_BLOCKS if b[0] == "README.md" or b[0] in MOVED_PAGES),
+    key=lambda b: _reading_position(b[0], b[1]),
+)
 
 #: The README's recipes: each python block whose output a ```text block shows
 #: under it, held to what it prints in the namespace *Example data* builds
@@ -635,31 +673,38 @@ README_RECIPES = shown_outputs(REPO / "README.md")
 RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
 
 
-def _built_by_the_readme(code: str, line: int, ns: dict, memo: dict) -> dict:
+def _built_by_the_readme(
+    code: str, line: int, ns: dict, memo: dict, path: str = "README.md"
+) -> dict:
     """``ns``, with each name ``code`` reads and does not build itself
     replaced by the README's own: the value the README's latest block before
-    ``line`` that assigns it builds, that block run the same way, in a copy
-    of ``ns``. So a block runs on what the README built, not on the
-    fixture's copy, which can differ: the fixture's ``grid`` had a
-    ``min_weight`` the README's has not, and the README defines ``spec``
-    twice (review 2026-10-05, TC5). ``memo`` keeps each (name, block) built
-    once per test."""
+    this one (``path`` and ``line``, in reading order) that assigns it
+    builds, that block run the same way, in a copy of ``ns``. So a block
+    runs on what the README built, not on the fixture's copy, which can
+    differ: the fixture's ``grid`` had a ``min_weight`` the README's has
+    not, and the README defines ``spec`` twice (review 2026-10-05, TC5).
+    ``memo`` keeps each (name, block) built once per test."""
     stored, loaded = _names(code)
+    here = _reading_position(path, line)
     out = dict(ns)
     for name in dict.fromkeys(loaded):
         if name in stored:
             continue
-        defining = [(ln, c) for _, ln, c in README_ONLY if ln < line and name in _names(c)[0]]
+        defining = [
+            (p, ln, c)
+            for p, ln, c in README_ONLY
+            if _reading_position(p, ln) < here and name in _names(c)[0]
+        ]
         if not defining:
             continue
-        ln, c = defining[-1]
-        if (name, ln) not in memo:
-            local = _built_by_the_readme(c, ln, ns, memo)
-            exec(compile(c, f"README.md:{ln}", "exec"), local)
+        p, ln, c = defining[-1]
+        if (name, p, ln) not in memo:
+            local = _built_by_the_readme(c, ln, ns, memo, p)
+            exec(compile(c, f"{p}:{ln}", "exec"), local)
             # A comprehension's or a lambda's variable is not the block's.
-            memo[name, ln] = local.get(name, ns.get(name))
-        if memo[name, ln] is not None:
-            out[name] = memo[name, ln]
+            memo[name, p, ln] = local.get(name, ns.get(name))
+        if memo[name, p, ln] is not None:
+            out[name] = memo[name, p, ln]
     return out
 
 
@@ -920,8 +965,8 @@ class TestReadmeExamples:
         env = dict(os.environ)
         ns = _readme_namespace(tmp_path)
         try:
-            if path == "README.md":
-                ns = _built_by_the_readme(code, line, ns, {})
+            if path == "README.md" or path in MOVED_PAGES:
+                ns = _built_by_the_readme(code, line, ns, {}, path)
             exec(compile(code, f"{path}:{line}", "exec"), ns)
         finally:
             os.environ.clear()
@@ -1074,10 +1119,10 @@ class TestReadmeExamples:
         ns = _readme_namespace(tmp_path)
 
         def built(name: str, which: str, text: str = "") -> dict:
-            blocks = [(ln, c) for _, ln, c in README_ONLY if name in _names(c)[0] and text in c]
-            ln, c = blocks[0] if which == "first" else blocks[-1]
-            local = _built_by_the_readme(c, ln, ns, {})
-            exec(compile(c, f"README.md:{ln}", "exec"), local)
+            blocks = [(p, ln, c) for p, ln, c in README_ONLY if name in _names(c)[0] and text in c]
+            p, ln, c = blocks[0] if which == "first" else blocks[-1]
+            local = _built_by_the_readme(c, ln, ns, {}, p)
+            exec(compile(c, f"{p}:{ln}", "exec"), local)
             return local
 
         def same(a: object, b: object) -> bool:
@@ -1103,14 +1148,15 @@ class TestReadmeExamples:
         way for four rewrites before a reader found it out of context
         (README-ITERATIONS, C11). So each block is parsed, not run, and every
         name it reads must be one that a block before it, or the block itself,
-        assigns, imports or defines."""
+        assigns, imports or defines. A page a README section moved to is read
+        where the README points to it (`MOVED_PAGES`)."""
         known = set(dir(builtins))
-        unbuilt: dict[str, int] = {}
-        for _, line, code in (b for b in README_BLOCKS if b[0] == "README.md"):
+        unbuilt: dict[str, str] = {}
+        for path, line, code in README_ONLY:
             stored, loaded = _names(code)
             for name in loaded:
                 if name not in known and name not in stored:
-                    unbuilt.setdefault(name, line)
+                    unbuilt.setdefault(name, f"{path}:{line}")
             known |= stored
         assert not unbuilt, (
             "README examples read names that no example before them builds, "
@@ -1122,14 +1168,14 @@ class TestReadmeExamples:
         line of prose just above it says so, with a link to *Example data*
         (README-ITERATIONS, C15). A block reads it when it reads a name
         *Example data* builds without assigning that name itself, or a file
-        *Example data* writes."""
-        text = (REPO / "README.md").read_text(encoding="utf-8").split("\n")
+        *Example data* writes. The pages README sections moved to are held
+        to it too, their link reaching back into the README."""
         built = {"df", "lf", "trades", "today", "later"}
         written = re.compile(r"[\"'](ticks/|(ticks|today|trades)\.parquet[\"'])")
         missing = []
-        for path, line, code in README_BLOCKS:
-            if path != "README.md":
-                continue
+        for path, line, code in README_ONLY:
+            text = (REPO / path).read_text(encoding="utf-8").split("\n")
+            link = "](#example-data)" if path == "README.md" else "](../README.md#example-data)"
             names = [n for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Name)]
             stored = {n.id for n in names if not isinstance(n.ctx, ast.Load)}
             loaded = {n.id for n in names if isinstance(n.ctx, ast.Load)}
@@ -1140,8 +1186,8 @@ class TestReadmeExamples:
             above = line - 2  # the fence is at line - 1, counted from 0
             while above >= 0 and not text[above].strip():
                 above -= 1
-            if "](#example-data)" not in text[above]:
-                missing.append(line)
+            if link not in text[above]:
+                missing.append(f"{path}:{line}")
         assert not missing, (
             "README blocks that read the example data with no line just above linking "
             f"*Example data*, at the lines of their fences: {missing}"
@@ -1265,7 +1311,7 @@ class TestReadmeExamples:
         that *Example data* builds, an earlier block of the same docstring
         or page builds, or the block itself builds."""
         known = set(dir(builtins)) | _names(_example_data_block())[0]
-        runner = [b for b in README_BLOCKS if b[0] != "README.md"]
+        runner = [b for b in README_BLOCKS if b[0] == "docs/RUNNER.md"]
         unbuilt: dict[str, list[str]] = {}
         for where, group in itertools.groupby(DOCSTRING_BLOCKS + runner, key=lambda b: b[0]):
             built: set[str] = set()

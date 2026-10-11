@@ -100,7 +100,7 @@ Windows alike.
 ## Start here
 
 - [README](https://github.com/hgilde/polars-online#readme): the guide — how a bank sees
-  a stream, the three surfaces, every model with its update equations, performance
+  a stream, the three surfaces, the table of models, performance
 - [Introduction](https://github.com/hgilde/polars-online#introduction): a first fit
   with its input and output tables (a fit over every row, a local fit, a target that
   looks ahead), the points to remember, the terms the README uses, and the code that
@@ -108,8 +108,8 @@ Windows alike.
 - [How a bank sees a stream](https://github.com/hgilde/polars-online#how-a-bank-sees-a-stream):
   clock, decay, groups, weights, warm-up, nulls, row order — the semantics every model
   shares
-- [Models](https://github.com/hgilde/polars-online#models): all 22, each with its
-  recursion, its builder and its Rust source
+- [Models](https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md): all 22,
+  each with its recursion, its builder and its Rust source
 - [Against scikit-learn](https://github.com/hgilde/polars-online#against-scikit-learn):
   `SGDRegressor` measured beside `sgd` and `ewridge`. It covers accuracy (the same, to
   the noise ceiling), throughput, what a prediction saw, the short-history case where
@@ -143,6 +143,11 @@ Windows alike.
 
 ## Guides
 
+- [Windows](https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md): the
+  window operators as columns and as a model's inputs and target, features in units of
+  their spread, saving and resuming a window run
+- [Training XGBoost and LightGBM](https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md):
+  `po.gbdt` on files larger than memory
 - [State workflow](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md):
   fit, save, serve, learn on — what each step guarantees
 - [Diagnostics](https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md):

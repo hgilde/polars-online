@@ -101,7 +101,8 @@ def test_the_link_is_the_page_on_main():
 
 def test_the_readme_links_the_page_beside_check_and_audit():
     readme = (REPO / "README.md").read_text(encoding="utf-8")
-    for anchor in ("**`check()` reads these tables", "#### `audit` — what a stream's columns hold"):
-        start = readme.index(anchor)
-        section = readme[start : readme.index("\n#", start + len(anchor))]
-        assert "docs/DATA-QUALITY.md" in section, anchor
+    start = readme.index("\n### Checking your data's quality\n")
+    section = readme[start : readme.index("\n### ", start + 1)]
+    for anchor in ("**`check()` reads these tables", "**Run it beside the models"):
+        assert anchor in section, anchor
+    assert "docs/DATA-QUALITY.md" in section

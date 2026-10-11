@@ -66,6 +66,19 @@ def test_every_document_under_docs_has_a_row_in_the_index():
         assert re.search(rf"^\| \[{log}\]\(([\w/]*){log}\)", records, re.M), log
 
 
+def test_the_pages_the_readme_moved_out_are_guides_to_using_it():
+    """The README's model entries, its windows and `po.gbdt`'s section moved
+    to pages of their own (README-ITERATIONS, I8: C1 to C3). Each is a guide
+    a user reads, so `docs/README.md` lists it under *Using the library*,
+    where a record's row would mislead, and the README links it."""
+    index = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
+    using = index.split("| **Using the library** | |", 1)[1].split("| **Changing", 1)[0]
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for page in ("MODELS.md", "WINDOWS.md", "GBDT.md"):
+        assert f"| [{page}]({page}) |" in using, page
+        assert f"](docs/{page}" in readme, page
+
+
 def test_anchors_are_githubs():
     doc = doc_structure.read(
         "# A\n\n# A\n\n# A-1\n\n## A-1\n\n"

@@ -2443,13 +2443,14 @@ def test_bias_is_a_variances_own_and_a_boolean() -> None:
 def test_the_readmes_zscore_recipe_runs_and_is_polars_own_on_a_row_clock(
     tmp_path: Any, monkeypatch: Any
 ) -> None:
-    """The README's *Features in units of their spread* block, run as
-    written on a ``ticks.parquet`` of its own: the z-scores it makes are
+    """``docs/WINDOWS.md``'s *Features in units of their spread* block, run
+    as written on a ``ticks.parquet`` of its own: the z-scores it makes are
     Polars' ``ewm_mean`` and ``ewm_std`` under ``adjust=False`` on its clock
     that steps by 1, as the paragraph after it says, and the model fits on
     them."""
-    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
-    section = readme.split("#### Features in units of their spread\n", 1)[1].split("\n#### ")[0]
+    page = Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md"
+    text = page.read_text(encoding="utf-8")
+    section = text.split("## Features in units of their spread\n", 1)[1].split("\n## ")[0]
     code = section.split("```python\n", 1)[1].split("```", 1)[0]
     rng = np.random.default_rng(0)
     df = pl.DataFrame(
@@ -2458,7 +2459,7 @@ def test_the_readmes_zscore_recipe_runs_and_is_polars_own_on_a_row_clock(
     monkeypatch.chdir(tmp_path)
     df.write_parquet("ticks.parquet")
     ns: dict[str, Any] = {"pl": pl, "po": po}
-    exec(compile(code, "README.md: Features in units of their spread", "exec"), ns)
+    exec(compile(code, "docs/WINDOWS.md: Features in units of their spread", "exec"), ns)
     fitted = ns["fitted"]
     for c in ("x0", "x1"):
         x = pl.col(c)

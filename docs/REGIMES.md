@@ -57,7 +57,7 @@ failure in two models.** At 1.0, on returns whose variance is about 1.0,
 `hmm`'s `precision_prior` halves every correlation. The share of rows in
 the true state then falls from 98 % to 58 %. Set too large, `bocpd`'s
 `prior_scale` makes every row unsurprising, so a real break is never found
-([its README section](../README.md#bocpd--how-long-has-this-regime-lasted)).
+([its entry in MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 Set both from the data's scale
 ([§1](#1-does-hmm-recover-the-stream-that-made-it)).
 
@@ -158,8 +158,8 @@ the last row the filter does not learn, so `precision_prior` adds a ridge
 of 1.0 to each given covariance for the whole stream. The returns' variance
 is about 1.0, so each state's correlation is halved, and the correlation is
 the whole of the signal here. The share in the true state falls from 0.979
-to 0.580. That is `bocpd`'s `prior_scale` lesson ([its README
-section](../README.md#bocpd--how-long-has-this-regime-lasted)), in a
+to 0.580. That is `bocpd`'s `prior_scale` lesson ([its entry in
+MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)), in a
 second model.
 
 The learned transition matrix is not read back through the public API, so
@@ -396,8 +396,8 @@ number of rows from row 1000 to the first alarm at or after it.
 
 **`bocpd` is measured with `emission="gaussian"`, not its default
 `"diag"`.** The default models each feature on its own, and only the
-Gaussian emission can see a break in the correlation alone ([its README
-section](../README.md#bocpd--how-long-has-this-regime-lasted)).
+Gaussian emission can see a break in the correlation alone ([its entry in
+MODELS.md](MODELS.md#bocpd--how-long-has-this-regime-lasted)).
 
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|

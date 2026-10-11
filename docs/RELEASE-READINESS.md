@@ -428,6 +428,53 @@ that are left, a break is a loud failure rather than a negotiated one. A
 missing `PySeries._export` is a clean `AttributeError` before any data
 moves.
 
+### How the pin moves
+
+**When a new Polars breaks this library, a patch release caps the range at
+the last Polars that passed, so that no resolver hands anyone the broken
+pair.** A fix then widens the range again. Two checks look for such a
+break, in Polars and in NumPy, the one optional dependency
+(`polars-online[numpy]`, `numpy>=1.26`): a weekly canary, and the legs
+every release runs before it publishes.
+
+**Every Monday the canary
+([`polars-canary.yml`](../.github/workflows/polars-canary.yml)) drops the
+range from `pyproject.toml` and installs the newest py-polars, prereleases
+included.** It builds the wheel as CI does, then runs the suite, all but
+the opt-in soak tests and the checks of this repository's own pins. Only
+Polars moves in that run, so a red canary means Polars broke this library.
+A second job runs the suite on NumPy's next release candidate each week.
+On the 1st of each month, a third runs it on the floor of the range,
+1.34.0, as every release does.
+
+**Every release runs the same check before it publishes**, in legs
+(`release.yml`):
+
+| leg | resolves to | blocks the publish |
+|---|---|---|
+| the newest in-range | the newest stable inside `<3` | **yes** |
+| the floor | exactly the floor `pyproject.toml` declares, 1.34.0, with its runtime package | **yes** |
+| the next major | unpinned, prereleases allowed | no |
+| the newest NumPy | the newest NumPy | yes |
+| NumPy's next release candidate | its next release candidate | no |
+
+**The newest in-range leg blocks the publish, because `<3` admits every
+1.x and 2.x.** A resolver can hand someone a Polars newer than the one the
+wheel was built against, the day after that Polars ships. A pass on the
+pinned version alone would not show that the range holds. The next-major
+leg is early warning: [Raising the ceiling to a new
+major](#raising-the-ceiling-to-a-new-major) has the steps for moving the
+ceiling up to a new major. Only NumPy moves in
+the NumPy runs, the release's and the canary's, so a red one names NumPy.
+
+**The floor leg blocks the publish too, because a run on the newest Polars
+says nothing about the oldest one the range admits.** A resolver keeps a
+user's Polars while it is inside the range, so a change that needs a newer
+Polars than the floor would break that user's install. The newest-Polars
+runs prove the ceiling, and the floor runs prove the floor. A test that
+needs a newer Polars than the floor skips there, naming the version it
+needs and why (`tests/polars_version.py`).
+
 ### Which interfaces carry a promise
 
 **The range is measured, and the interfaces it rides on carry different

@@ -926,7 +926,7 @@ comparing coefficients. `marginal`'s `t_serial` corrects each pair's count
 for rows that resemble their neighbours, after Bartlett (1935): over
 1,000 pairs of independent AR(1) series, `|t|` passed 1.96 on 45% of them
 and `|t_serial|` on 5.4%
-([`marginal`](../README.md#marginal--every-pairs-moments-kept-in-the-state)).
+([`marginal`](MODELS.md#marginal--every-pairs-moments-kept-in-the-state)).
 
 **What to do.** For a target that looks ahead, read `se_coef_hac`, with
 `robust_se_lags` at least the horizon in rows. For a spread that moves with
@@ -1524,7 +1524,7 @@ weighted. `po.eval.seqtest` and the `seqtest` model give evidence that one
 model predicts closer, by betting on the sign of `|resid_b| − |resid_a|`.
 It can be read at any row, as often as you like: reject the first time
 `log_e_a ≥ ln 20` for the 5% level
-([`seqtest`](../README.md#seqtest--a-sequential-test-of-a-sign-by-betting)).
+([`seqtest`](MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting)).
 
 The recipe compares two nested models on 200 streams, one group each: on
 half of them the larger model's extra coefficient is 0.05, on the other

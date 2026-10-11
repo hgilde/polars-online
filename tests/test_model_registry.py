@@ -411,14 +411,14 @@ def test_the_cross_os_hand_off_holds_every_kind():
     assert not missing, f"the hand-off bank has no spec for {sorted(missing)}"
 
 
-def test_the_readme_documents_every_model():
-    """Every builder gets a `#### \\`name\\`` heading under its family in
-    "## Models"; the heading text is what the model table links to."""
-    text = README.read_text(encoding="utf-8")
-    models = text.split("\n## Models\n", 1)[1].split("\n## ", 1)[0]
-    documented = set(re.findall(r"^#### `([a-z_]+)`", models, flags=re.MULTILINE))
-    # `huber` and `quantile` share a heading: "#### `huber` / `quantile` -- ...".
-    documented |= set(re.findall(r"^#### `[a-z_]+` / `([a-z_]+)`", models, flags=re.MULTILINE))
+def test_the_models_page_documents_every_model():
+    """Every builder gets a `### \\`name\\`` heading under its family's `##`
+    heading in `docs/MODELS.md`; the heading text is what the README's model
+    table links to."""
+    models = (ROOT / "docs" / "MODELS.md").read_text(encoding="utf-8")
+    documented = set(re.findall(r"^### `([a-z_]+)`", models, flags=re.MULTILINE))
+    # `huber` and `quantile` share a heading: "### `huber` / `quantile` -- ...".
+    documented |= set(re.findall(r"^### `[a-z_]+` / `([a-z_]+)`", models, flags=re.MULTILINE))
     assert documented == set(MINIMAL)
 
 

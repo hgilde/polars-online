@@ -485,7 +485,7 @@ moment the feature moves again. A forgetting rule that keeps a floor under
 `A` (Kulhavý and Zarrop 1993) was measured for `rls` in task 216. In its
 uncentred coordinates, the floor acted as a ridge whose pull grows with
 the square of the level, and it was not built. The
-[`rls` section](../README.md#rls--recursive-least-squares) of the README
+[`rls` section](MODELS.md#rls--recursive-least-squares) of MODELS.md
 gives the measurements at other levels.
 
 The recipe stops `x1`'s feed at row 300 and brings it back at row 3,300.
@@ -765,8 +765,8 @@ bank, such as `pl.col("price") - pl.col("price").first()` or a known
 reference price. When the change is what matters, difference it with
 `diff()` instead ([Random walks](#random-walks)). Put features in units of their
 spread, by hand as the recipe does or with the windowed standardization in
-the README's
-[Features in units of their spread](../README.md#features-in-units-of-their-spread).
+WINDOWS.md's
+[Features in units of their spread](WINDOWS.md#features-in-units-of-their-spread).
 Or use `standardize=True`, the default for `kalman`, `sgd` and `pa`, and an
 option on `ewridge`, `huber` and `quantile`.
 
@@ -1184,7 +1184,7 @@ returns from the rows it has yet to predict. Its coefficients then carry
 part of the very outcomes they are scored on, and a feature built from
 recent returns will seem to predict them. An `embargo` of `k` learns each
 row only once its label would have arrived (López de Prado 2018, ch. 7).
-A target written as a [window expression](../README.md#windows-as-a-models-inputs-and-target)
+A target written as a [window expression](WINDOWS.md#windows-as-a-models-inputs-and-target)
 that looks ahead carries its own delay, and `fit_predict` refuses an
 embargo shorter than its window. A target made as a column, as here, does
 not, so the embargo is the caller's to set

@@ -7,10 +7,10 @@ the same question at runtime, for the exact spec you built.
 
 | family | models |
 |---|---|
-| [Linear models](../README.md#linear-models) | [`ewridge`](#ewridge) · [`rls`](#rls) · [`lasso`](#lasso) · [`kalman`](#kalman) · [`huber`](#huber) · [`quantile`](#quantile) · [`sgd`](#sgd) · [`pa`](#pa) · [`ftrl`](#ftrl) · [`holt`](#holt) |
-| [Moments and correlation](../README.md#moments-and-correlation) | [`ew_cov`](#ew_cov) · [`marginal`](#marginal) · [`deco`](#deco) · [`rcov`](#rcov) · [`audit`](#audit) |
-| [Clustering and classification](../README.md#clustering-and-classification) | [`kmeans`](#kmeans) · [`micro`](#micro) · [`ew_class`](#ew_class) |
-| [Sequential tests and regimes](../README.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`bocpd`](#bocpd) · [`hmm`](#hmm) |
+| [Linear models](MODELS.md#linear-models) | [`ewridge`](#ewridge) · [`rls`](#rls) · [`lasso`](#lasso) · [`kalman`](#kalman) · [`huber`](#huber) · [`quantile`](#quantile) · [`sgd`](#sgd) · [`pa`](#pa) · [`ftrl`](#ftrl) · [`holt`](#holt) |
+| [Moments and correlation](MODELS.md#moments-and-correlation) | [`ew_cov`](#ew_cov) · [`marginal`](#marginal) · [`deco`](#deco) · [`rcov`](#rcov) · [`audit`](#audit) |
+| [Clustering and classification](MODELS.md#clustering-and-classification) | [`kmeans`](#kmeans) · [`micro`](#micro) · [`ew_class`](#ew_class) |
+| [Sequential tests and regimes](MODELS.md#sequential-tests-and-regimes) | [`seqtest`](#seqtest) · [`corrchange`](#corrchange) · [`bocpd`](#bocpd) · [`hmm`](#hmm) |
 
 Each field below comes with its dtype, what it holds, and the rows on which
 it is null.
@@ -85,7 +85,7 @@ Four fields appear in nearly every table below, and are defined here once:
 ### What is not listed
 
 The optional outputs are left out: the `emit_*` switches, `conformal`,
-`resid_quantiles` and extra `stats`. Each is shown where the README sets it:
+`resid_quantiles` and extra `stats`. Each is shown where the docs set it:
 
 | the switch | where the docs show it |
 |---|---|
@@ -93,7 +93,7 @@ The optional outputs are left out: the `emit_*` switches, `conformal`,
 | `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up](../README.md#warm-up) |
 | `emit_robust_se`, `ewridge`'s and `rls`'s | [Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted) |
 | `emit_clocks`, every model's | [Labels that arrive late](../README.md#labels-that-arrive-late), and the table below |
-| `ew_cov`'s extra `stats` | its own [section](../README.md#ew_cov--exponentially-weighted-moments) |
+| `ew_cov`'s extra `stats` | its own [section](MODELS.md#ew_cov--exponentially-weighted-moments) |
 
 `emit_clocks` is the one switch every model takes, and it adds two fields:
 

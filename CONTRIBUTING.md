@@ -15,6 +15,36 @@ source scripts/env.sh                      # PATH for cargo/uv; `. .\scripts\env
 Prerequisites are [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
 ([rustup](https://rustup.rs)). Nothing else.
 
+To build and test from a checkout, install [uv](https://docs.astral.sh/uv/)
+and a stable Rust toolchain with [rustup](https://rustup.rs). In each new
+shell, run `source scripts/env.sh`, or `. .\scripts\env.ps1` in PowerShell,
+to put both on the `PATH`. VS Code's terminal gets them from
+`.vscode/settings.json`.
+
+Run `cargo` through `uv run`, as the commands below do, because
+`online-py` builds against pyo3's `abi3-py312` and needs a 3.12+
+interpreter at build time. The tests download or generate their own data
+and cache downloads under `.cache/`. Offline, the tests that need a
+download are skipped.
+
+```sh
+uv sync                                                # Python env (CPython 3.12 or newer)
+./scripts/gate.sh                                      # every check, the tests' essentials
+./scripts/gate.sh --extended                           # every check and every test, before a push
+uv run cargo test --workspace --exclude online-py      # Rust tests; `-- --include-ignored` for all
+uv run maturin develop --release -m crates/online-py/Cargo.toml
+uv run pytest                                          # Python tests
+uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference
+uv run python scripts/validate.py > docs/VALIDATION.md # re-run the experiments that chose the defaults
+uv run python scripts/regime_experiments.py all        # the docs/REGIMES.md experiments
+uv run python scripts/benchmark.py                     # throughput
+uv run python scripts/windows_bench.py                 # the window operators against Polars' rolling recipe
+uv run python scripts/sklearn_comparison.py            # the comparison with scikit-learn
+uv run python scripts/compare_release.py               # every output against the newest release's, bit for bit
+uv run pytest -m soak                                  # the opt-in 10M-row soak
+./scripts/mutants.sh --in-diff <(git diff main...)     # mutation testing of the code a branch touches
+```
+
 ## The gate
 
 **Run `./scripts/gate.sh` before every commit, and let it pass. Run

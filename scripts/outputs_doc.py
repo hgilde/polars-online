@@ -6,7 +6,7 @@ cannot drift from the code. The *meanings* and the rules for where a field is
 null are written here, once per field stem, and reviewed like any other
 prose: `ALSO_NULL` was measured on each model's plainest spec (review
 2026-10-06, DA14). `FAMILIES` groups the models as the README's model table
-does: the document's contents table and its section order follow it, and the
+and `docs/MODELS.md` do: the document's contents table and its section order follow it, and the
 generator refuses to run while it leaves out a model of `MINIMAL` or names one
 that is not there. `tests/test_outputs_doc.py` regenerates the document and
 fails when it differs, so a new field cannot ship undocumented and a removed
@@ -27,7 +27,7 @@ import polars_online as po  # noqa: E402
 from test_model_registry import MINIMAL, _build  # noqa: E402
 
 #: The README's model table, family by family and in its order. The family's
-#: name is also its heading there, so the anchor is derived from it.
+#: name is also its heading in `docs/MODELS.md`, so the anchor is derived from it.
 FAMILIES: dict[str, tuple[str, ...]] = {
     "Linear models": (
         "ewridge",
@@ -304,7 +304,7 @@ OPTIONAL: list[tuple[str, str]] = [
     ),
     (
         "`ew_cov`'s extra `stats`",
-        "its own [section](../README.md#ew_cov--exponentially-weighted-moments)",
+        "its own [section](MODELS.md#ew_cov--exponentially-weighted-moments)",
     ),
 ]
 CLOCK_FIELDS: list[tuple[str, str, str]] = [
@@ -406,7 +406,7 @@ Four fields appear in nearly every table below, and are defined here once:
 ### What is not listed
 
 The optional outputs are left out: the `emit_*` switches, `conformal`,
-`resid_quantiles` and extra `stats`. Each is shown where the README sets it:
+`resid_quantiles` and extra `stats`. Each is shown where the docs set it:
 
 {table(("the switch", "where the docs show it"), OPTIONAL)}
 
@@ -482,7 +482,7 @@ def main() -> None:
     for family, names in FAMILIES.items():
         anchor = family.lower().replace(" ", "-")
         links = " · ".join(f"[`{name}`](#{name})" for name in names)
-        print(f"| [{family}](../README.md#{anchor}) | {links} |")
+        print(f"| [{family}](MODELS.md#{anchor}) | {links} |")
     print()
     print(READING)
     for names in FAMILIES.values():

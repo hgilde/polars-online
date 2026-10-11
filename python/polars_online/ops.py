@@ -122,8 +122,8 @@ operator.** ``(x - ewm_mean(x)) / ewm_std(x)`` is the feature's z-score: a
 model fitted on it has a coefficient per standard deviation of the feature
 as its spread stands on each row, where a model on ``x`` has one per unit.
 Where a target responds to a feature relative to its volatility, fit on the
-z-score. Every model reads it as a column (README, *Features in units of
-their spread*, with the measured gain):
+z-score. Every model reads it as a column (``docs/WINDOWS.md``, *Features
+in units of their spread*, with the measured gain):
 
 .. code-block:: python
 

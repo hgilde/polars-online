@@ -48,7 +48,7 @@ The steps at a glance:
 | [12](#step-12--per-model-sweeps) | four sweep lists | one entry each | `test_the_sweeps_cover_every_regression_model` |
 | [13](#step-13--teststest_model_registrypy) | `tests/test_model_registry.py` | the `MINIMAL` entry | `test_minimal_names_every_builder` |
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
-| [15](#step-15--readmemd) | `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_readme_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
+| [15](#step-15--docsmodelsmd-and-readmemd) | `docs/MODELS.md`, `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
 | [16](#step-16--changelogmd-and-the-design-note) | `CHANGELOG.md`, and the design note | an entry | **no check** |
 
 ## The recursion — `crates/online-core`
@@ -584,15 +584,15 @@ that is a finding, not a regeneration.
 
 ## Docs
 
-### Step 15 — `README.md`
+### Step 15 — `docs/MODELS.md` and `README.md`
 
-A heading `` #### `<name>` — ... `` under its family's `###` heading in
-`## Models`, with the equations, the parameters and when to reach for it. The
-families are linear models; moments and correlation; clustering and
+A heading `` ### `<name>` — ... `` under its family's `##` heading in
+`docs/MODELS.md`, with the equations, the parameters and when to reach for
+it. The families are linear models; moments and correlation; clustering and
 classification; and sequential tests and regimes. Add a row under the same
-family in the model table.
+family in the README's model table, its `math` link to the new heading.
 
-**Check:** `test_model_registry::test_the_readme_documents_every_model`.
+**Check:** `test_model_registry::test_the_models_page_documents_every_model`.
 `huber` and `quantile` share a heading; the regex knows. And
 `test_api_links`: `test_the_model_table_links_every_builder_to_its_page` wants
 the table row to link `` [`<name>`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.<name>) ``,

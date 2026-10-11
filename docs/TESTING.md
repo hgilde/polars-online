@@ -637,6 +637,96 @@ Downloads are cached under `.cache/`, and a test that needs one skips
 offline: the public intraday data (`tests/data.py::public_intraday`), the
 released wheels, and the day of quotes and trades.
 
+### What the README's guarantees are held to
+
+**Against references.** Each model is held to a reference written from its
+documented recursion, and to another library wherever one computes the
+same quantity:
+
+| model | held against | agreement |
+|---|---|---|
+| `ewridge`, `rls` | references written from the recursions | 1e-9 |
+| `ewridge` | scikit-learn's `Ridge` | 1e-8, relative |
+| `rls` | `ewridge(ridge_scale="sum")` solved on every row | below 1e-9 |
+| `kalman` | a reference; filterpy's Kalman filter; [river](https://riverml.xyz)'s `BayesianLinearRegression`, the case with no drift | about 1e-15; 1e-9; 3.6e-15 |
+| `lasso` | the KKT conditions of its objective; a reference descent, for every prediction | the conditions hold; about 1e-14 |
+| `huber`, `quantile` | references; scikit-learn's `HuberRegressor` and statsmodels' `QuantReg`, batch fits of the same objectives | about 1e-13; statistically |
+| `sgd` | scikit-learn's `SGDRegressor`, one per group | R² within 0.03 |
+| `ftrl` | a reference; river's FTRL, row for row; Vowpal Wabbit's `--ftrl`, on every row | about 1e-16; 1e-12; its single precision |
+| `pa` | river's `PARegressor` | 1e-12 |
+| `holt` | statsmodels' `Holt`, once the weight saturates; pandas' `ewm(times=)`, without a trend | 1e-12; 1e-8 |
+| `ew_cov` and the EW moments | pandas' `ewm`; river | 1e-12; 1e-9 |
+| `ew_class`, `mahal` | scipy's multivariate normal and Mahalanobis distance | 1e-9 |
+| `marginal` | scipy's `binned_statistic` and a scikit-learn decision stump, for the bins; statsmodels' autocorrelations, for the serial count | 1e-9; 0.02 |
+| `bocpd` | the `bayesian_changepoint_detection` package | 1e-9, and `run_mode` exactly |
+| targets with gaps | statsmodels' weighted least squares, ridge and elastic net | 1e-7 |
+| the window operators | a loop written from each definition, and the same window over the reversed stream; Polars' `ewm_mean_by` and `ewm_sum_by`; Polars' `rolling_sum_by`, for which rows a window holds | to rounding; 1e-9; exactly |
+| a window target | the same window written as a column by `with_windows(like=spec)` and fed back as a plain target under the same embargo | prediction for prediction |
+| the core's hand-written solves, in the Rust tests | `faer`'s | |
+
+**Invariants, for every model**, checked at the bank and, where they apply,
+at the command line:
+
+| invariant | checked as |
+|---|---|
+| chunk invariance | one chunk, seven, a hundred, one row at a time, and with a save and load in the middle |
+| thread invariance | 1 thread against 8 |
+| group independence | a group's numbers do not depend on what else is in the bank |
+| the paths agree | runner ≡ bank for every input source and format; the Arrow output ≡ the Polars one, field for field and null for null |
+| `predict` ≡ `fit_predict` | of the next row, field for field, with every diagnostic on |
+| stream semantics | the null policy, warm-up, and the clock |
+| `weight_sum` | the same recursion in every model (`crates/online-core/tests/model_contract.rs`) |
+| a window run resumed | a chain of runs saved under a slice and resumed gives one run's output, at chunks of 1, 7 and 100,000 rows, and another input is refused |
+
+**Generated streams.** In the Rust tests, `proptest` drives generated
+streams through every model against the same contract. Hypothesis
+generates adversarial streams, with mixed nulls, duplicate and long-gap
+clocks, values at ±1e8, zero weights and tiny groups. It asserts the
+strongest invariant: **changing a row's own target never changes that
+row's own prediction.** An information coefficient (IC) of about 0 on
+pure-noise targets checks the same thing from the other side.
+
+**Fixed numbers.** Each model has one golden stream in the Rust core. The
+whole pipeline, from reading the columns through the models and the
+diagnostics to assembling each spec's output, is pinned to fixed output
+and compared on every operating system. So a divergence in Polars'
+vectorized paths on another CPU would show.
+
+**Hardening.** What the suite does to a bank on purpose:
+
+| attack | what must hold |
+|---|---|
+| everything at once | a 30k-row stream with every output switched on, compared by digest across chunkings, a mid-stream save and load, and thread counts |
+| weight scale | all weights ×1e±6, with `min_weight` scaled alike, change nothing but `weight_sum` |
+| parameter edges | `half_life` from `1e-3` to `inf` |
+| a corrupt state file | any byte flipped fails cleanly, and never panics |
+| concurrent misuse | two threads calling `fit_predict` at once get a clean error |
+| copying a bank | `pickle` and `copy.deepcopy` resume bit-exactly |
+| across the FFI | memory safety where two copies of Polars share one process |
+| sustained load | a 10M-row soak, opt-in with `pytest -m soak` |
+
+**Contracts that are files.** What is held to a file, and how:
+
+| contract | how it is held |
+|---|---|
+| the public API: every name, default and signature, and every output field name | a checked-in snapshot (`tests/api_surface.txt`), so a change is a reviewable diff |
+| every python block in this README, and every example in the API reference | each one runs |
+| some docstring text | pinned where a test reads it |
+| everything under `examples/` | runs unmodified: the TOML through the real command line, the Pathway example's operator over plain batches, and the cursor examples against real DuckDB and SQLite databases |
+| the state files every release from 0.10.0 on wrote | read and refused by their schema, as the CHANGELOG says they are |
+| `docs/VALIDATION.md`, where the defaults were chosen | regenerated and compared, so the numbers behind them cannot silently stop being true |
+| no data files in the repository | tests generate or download their own data, and a data file, a large file or generated output that gets tracked fails a test |
+
+**Where it runs:**
+
+| when | what runs |
+|---|---|
+| every commit | `./scripts/gate.sh`: `cargo fmt`, `clippy -D warnings`, `uv lock --check`, `ruff`, `mypy`, the build, `sphinx -W`, and the essentials of `cargo test` and `pytest` |
+| before every push | `./scripts/gate.sh --extended`: the same checks with every test |
+| every push and pull request | the tests on Ubuntu, Windows and macOS, on Python 3.12 and 3.14, and on 3.13 on Linux; the format, lint, type and documentation checks, on Linux; mutation testing of the lines the change touched, which fails on a mutant no test catches; and every output compared with the newest release's, bit for bit, as a report |
+| every release | a state file written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, and on the newest NumPy |
+| weekly | the suite on the newest py-polars, and on NumPy's next release candidate; a leak check across the boundary with Polars; mutation testing of all of `online-core`, as a report |
+
 ## What it has found
 
 ### Defects, and where each is told
