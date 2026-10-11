@@ -1725,8 +1725,8 @@ Your code reads the output by field name, and
 find a name without building it, filter one of two tables:
 `po.spec.output_index` for every field, or `po.spec.coef_fields` for every
 coefficient. The code that renders the names builds both from the spec, so
-they always agree with the output. A test holds every name, default and
-signature to a checked-in snapshot, so no release renames your columns
+they always agree with the output. Since a test holds every name, default
+and signature to a checked-in snapshot, no release renames your columns
 silently ([Versioning and the Polars pin](#versioning-and-the-polars-pin)).
 
 Give a spec several values of `ridge` or `half_life`, several
