@@ -164,7 +164,7 @@ def regimes(
     its truth.
 
     The latent returns are ``eps_t ~ N(0, R_t)``, filtered to ``y_it = phi_i
-    y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``; the observed
+    y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``. The observed
     series are their levels, the cumulative sums, plus noise. The documented truth
     is the innovation correlation: an AR filter moves the return correlation of a
     pair with unequal ``phi``, which is exactly what
