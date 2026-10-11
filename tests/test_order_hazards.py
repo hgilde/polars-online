@@ -543,13 +543,53 @@ def test_a_disqualified_fit_still_warns():
 # --------------------------------------------- the suppression cannot outlive it
 
 
+#: The order-free figures the docstrings quote -- ``ModelBank.fit``,
+#: ``OrderNotGuaranteedWarning`` and ``_order_free`` -- each measured over
+#: ``_rows()`` against the same rows shuffled with seed 7 (2026-10-10): how
+#: far the coefficients moved, and how far a prediction moved.
+QUOTED = {"ewridge": (6.7e-16, 0.087), "rls": (1.4e-15, 0.65)}
+#: The ranges the measurements are held to, so that a figure moved past one
+#: fails here and the quoted numbers are measured and stated again.
+COEF_BELOW = 1e-14
+PRED_BETWEEN = (0.01, 1.0)
+
+
+def test_the_docstrings_quote_the_figures_held_here():
+    """Each docstring that quotes an order-free figure quotes ``QUOTED``'s,
+    so a figure measured again is restated in one place and checked in the
+    others, and each quoted figure sits in the range its measurement is held
+    to."""
+    import inspect
+
+    from polars_online._frame import _order_free
+
+    (ew_coef, ew_pred), (rls_coef, rls_pred) = QUOTED["ewridge"], QUOTED["rls"]
+    quoting = {
+        "ModelBank.fit": (po.ModelBank.fit, (ew_coef, rls_coef, ew_pred)),
+        "OrderNotGuaranteedWarning": (
+            po.OrderNotGuaranteedWarning,
+            (ew_coef, rls_coef, ew_pred, rls_pred),
+        ),
+        "_order_free": (_order_free, (ew_coef, ew_pred)),
+    }
+    for where, (obj, figures) in quoting.items():
+        doc = " ".join((inspect.getdoc(obj) or "").split())
+        missing = [f"{v:g}" for v in figures if f"{v:g}" not in doc]
+        assert not missing, f"{where} does not quote {missing}"
+    for model, (coef, pred) in QUOTED.items():
+        assert 0.0 < coef < COEF_BELOW, model
+        assert PRED_BETWEEN[0] < pred < PRED_BETWEEN[1], model
+
+
 @pytest.mark.parametrize("free", FREE_SPECS)
 def test_an_accumulators_coefficients_commute(free):
     """To rounding, never to the bit: the Gram sums commute mathematically but
-    not in floating point. If this ever fails, the exception above is wrong.
-    `rls` measured 1.4e-15, `ewridge` 6.7e-16 (2026-10-10; 3.3e-16 when this
-    was written)."""
-    assert _spread(free, _rows()) < 1e-12
+    not in floating point. If this ever fails, the exception above is wrong,
+    and if the spread leaves ``(0, COEF_BELOW)`` the docstrings' figures
+    (``QUOTED``) are stale. Measured ``rls`` 1.4e-15, ``ewridge`` 6.7e-16
+    (2026-10-10; 3.3e-16 when this was written)."""
+    spread = _spread(free, _rows())
+    assert 0.0 < spread < COEF_BELOW, spread
 
 
 def test_a_gradient_models_coefficients_do_not_commute_even_with_no_decay():
@@ -610,21 +650,26 @@ def test_a_lasso_selects_by_the_order_where_its_path_commutes():
     assert moved, "the selection never moved: this stream no longer shows the premise"
 
 
-def test_predictions_move_even_where_the_coefficients_do_not():
+@pytest.mark.parametrize("model", sorted(QUOTED))
+def test_predictions_move_even_where_the_coefficients_do_not(model):
     """The reason the exception stops at `fit`. Same spec, same rows: the
-    coefficients agree to rounding and the predictions do not."""
+    coefficients agree to rounding and the predictions do not. Measured up to
+    0.087 for ``ewridge`` and 0.65 for ``rls`` (``QUOTED``), held between
+    ``PRED_BETWEEN``."""
+    spec = _free(model, "lam=1")
     frame = _rows()
     shuffled = frame.sample(fraction=1.0, shuffle=True, seed=7)
 
     def preds(f: pl.DataFrame) -> list[float]:
-        out = po.ModelBank([FREE]).fit_predict(f)
+        out = po.ModelBank([spec]).fit_predict(f)
         field = next(x for x in out["m"].struct.fields if x.startswith("pred"))
         return f.with_columns(p=out["m"].struct.field(field)).sort("t")["p"].to_list()
 
     a, b = preds(frame), preds(shuffled)
     both = [(x, y) for x, y in zip(a, b, strict=True) if x is not None and y is not None]
-    assert both, "no row was predicted in both runs"
-    assert max(abs(x - y) for x, y in both) > 1e-6
+    assert len(both) > 150, f"only {len(both)} rows were predicted in both runs"
+    moved = max(abs(x - y) for x, y in both)
+    assert PRED_BETWEEN[0] < moved < PRED_BETWEEN[1], moved
 
 
 def test_only_a_plan_level_sort_ends_the_walk():
