@@ -9894,6 +9894,26 @@ tick, and that the series holding it up has a count near 1.
       to undo); (10) the approval of the PyPI upload is the user's click,
       not the coordinator's; (11) install from PyPI into a clean venv and
       check the three versions and a fit.
+- [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
+      the user, 2026-10-11: "For after 1.0 what can we do so that a task
+      worktree only has to rebuild the artifacts it is working on?" Task
+      245 measured why it cannot today: each task gets a fresh worktree and
+      so an empty `target/` (66 s for the Rust tests, 241 s for the release
+      wheel, 130 s for `dev-wheel`), while a warm one rebuilds after an edit
+      in 13 s and 4.5-37 s; sccache missed a third of the crates from a new
+      path because their build scripts' absolute `OUT_DIR` enters its hash.
+      Options, the coordinator's recommendation first: (1) a pool of
+      long-lived worktree slots (about four, the concurrency cap), each with
+      its own warm `target/`, reused by `git checkout -B <task> <base>`, so
+      cargo's incremental build recompiles the workspace crates the task
+      changed and not Polars and its dependencies; no shared `target/`, so
+      the main checkout is never clobbered; `clear_caches.sh` learns to keep
+      the slots and clear the rest; check how workers are pointed at a slot
+      when the agent tool's isolation makes fresh worktrees; (2) a fixed
+      target path per slot, which also makes sccache's hashes repeat; (3)
+      Cargo's build-directory options for sharing dependencies across
+      checkouts -- read Cargo's current reference before relying on them
+      (CLAUDE.md rule 10). Measure each against task 245's numbers.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
