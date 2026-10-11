@@ -677,9 +677,13 @@ README_RECIPES = shown_outputs(REPO / "README.md")
 #: ``test_gbdt_page.py``), so none runs twice.
 RECIPE_BLOCKS = {
     (page, line)
-    for page in ("README.md", *MOVED_PAGES)
+    for page in ("README.md", *MOVED_PAGES, "docs/RUNNER.md")
     for line, _, _ in shown_outputs(REPO / page)
 }
+
+#: The runner guide's python recipes, which read what the guide's first run
+#: of the command line wrote, so they run after one (task 244, C-12).
+RUNNER_PYTHON_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md")
 
 #: The runner guide's shell blocks whose output a ```text block shows, held
 #: to what `polars-online` prints, stdout and stderr as a terminal interleaves them.
@@ -1072,6 +1076,31 @@ class TestReadmeExamples:
                 assert res.returncode == 0, f"RUNNER.md:{line}: {command}\n{out}"
                 printed += out
             printed = _as_a_terminal_shows(printed)
+            problems += [f"docs/RUNNER.md:{line}:\n{p}" for p in differences(shown, printed)]
+        assert not problems, "\n\n".join(problems)
+
+    def test_a_runner_python_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, online_cli):
+        """The runner guide shows that its TOML file builds the same bank in
+        Python. Its python recipes read `job.toml` and the output the
+        guide's first run wrote beside it, so each runs in a directory where
+        `polars-online --config job.toml` has just run, and what it prints
+        is held to the ```text block under it."""
+        assert RUNNER_PYTHON_RECIPES, "the runner guide shows no python recipe"
+        problems = []
+        for line, code, shown in RUNNER_PYTHON_RECIPES:
+            here = tmp_path / f"L{line}"
+            here.mkdir()
+            monkeypatch.chdir(here)
+            _readme_namespace(here)  # writes job.toml and ticks.parquet
+            first = subprocess.run(
+                [str(online_cli), "--config", "job.toml", "--quiet"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            assert first.returncode == 0, first.stderr
+            printed = run_recipe(code, Path(f"docs/RUNNER.md:{line}"))
             problems += [f"docs/RUNNER.md:{line}:\n{p}" for p in differences(shown, printed)]
         assert not problems, "\n\n".join(problems)
 

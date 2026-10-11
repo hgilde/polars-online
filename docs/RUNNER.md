@@ -342,6 +342,36 @@ Python builders fill it: with `features[0]`, or, for a `bocpd` spec with a
 two surfaces then write byte-identical specs, so a state saved from one
 resumes under the other.
 
+**The same file builds the same bank in Python.** `tomllib` reads each
+`[[specs]]` table as the dict a builder returns, and `po.ModelBank` takes
+the list as it comes. Here the bank is built from `job.toml`, in the
+directory where [A first run](#a-first-run) wrote `fitted.parquet`:
+
+```python
+import tomllib
+
+import polars as pl
+import polars_online as po
+
+with open("job.toml", "rb") as f:
+    bank = po.ModelBank(tomllib.load(f)["specs"])
+# The spec a Python builder makes from the same keywords
+spec = po.spec.ewridge(
+    "ridge", targets=["y"], features=["x0"], clock="t",
+    half_life=500.0, gap_cap=300.0, min_weight=5.0,
+)
+print(f"the same spec: {bank.specs[0] == spec}")
+# The predictions the command line wrote, against the bank's in Python
+ours = bank.fit_predict(pl.read_parquet("ticks.parquet"))["ridge"].struct.field("pred_y")
+theirs = pl.read_parquet("fitted.parquet")["ridge"].struct.field("pred_y")
+print(f"the same predictions, bit for bit: {ours.equals(theirs)}")
+```
+
+```text
+the same spec: True
+the same predictions, bit for bit: True
+```
+
 A target that is a window expression looking ahead is a table with its
 name and its formula. The formula takes the form a spec and a saved state
 carry ([Windows as a model's inputs and

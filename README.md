@@ -1994,6 +1994,12 @@ for each spec that ended with groups not ready, and nothing for the
 others. Such a line reads
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
 
+**The same file builds the same bank in Python**, as
+`po.ModelBank(tomllib.load(f)["specs"])` with the file opened in binary
+mode. `tomllib` reads each `[[specs]]` table as the dict a builder
+returns, and [Specs in TOML](docs/RUNNER.md#specs-in-toml) in the runner
+guide checks both the spec and the predictions against the command line's.
+
 ### Output as Arrow
 
 To hand a bank's output to a consumer that is not Polars, call
