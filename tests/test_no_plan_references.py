@@ -241,19 +241,22 @@ def test_no_reader_facing_file_cites_the_plan_a_task_a_review_or_a_record(path):
 # modules, which are never shipped) and the package's (docstrings apart, which
 # the check above reads). A comment may keep its citation.
 
-_TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n\s*mod \w+", re.M)
+_TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{")
 _CHAR = re.compile(r"'(\\.|[^\\'])'")
 _RAW = re.compile(r'b?r(#*)"')
 
 
 def rust_strings(src: str) -> Iterator[tuple[int, str]]:
     """Each string literal in Rust source, as (line, text), with a ``\\``
-    line continuation folded away as the compiler folds it. Comments, char
-    literals and everything from a trailing ``#[cfg(test)] mod`` on are
-    skipped."""
-    if m := _TEST_MODULE.search(src):
-        src = src[: m.start()]
+    line continuation folded away as the compiler folds it. Comments and
+    char literals are skipped, and so is the body of every ``#[cfg(test)]
+    mod x { .. }``, wherever it sits: its braces are matched through the
+    same walk, so a brace inside one of its strings does not end it early.
+    A file once cut at the *first* such module lost every shipped string
+    after it (``spec.rs``: 621 of them, review 7 D-1). A ``mod x;`` names a
+    file, which is read as shipped: the safe side."""
     i, n = 0, len(src)
+    depth, skip_to = 0, -1  # the depth a skipped module's `{` opened at
     while i < n:
         if src.startswith("//", i):
             end = src.find("\n", i)
@@ -263,10 +266,22 @@ def rust_strings(src: str) -> Iterator[tuple[int, str]]:
         elif src[i] == "'":
             m = _CHAR.match(src, i)
             i += len(m.group(0)) if m else 1
+        elif skip_to < 0 and (m := _TEST_MODULE.match(src, i)):
+            skip_to, depth = depth, depth + 1
+            i = m.end()
+        elif src[i] == "{":
+            depth += 1
+            i += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == skip_to:
+                skip_to = -1
+            i += 1
         elif (m := _RAW.match(src, i)) and not (i and (src[i - 1].isalnum() or src[i - 1] == "_")):
             close = '"' + m.group(1)
             end = src.find(close, m.end())
-            yield src.count("\n", 0, i) + 1, src[m.end() : end]
+            if skip_to < 0:
+                yield src.count("\n", 0, i) + 1, src[m.end() : end]
             i = end + len(close)
         elif src[i] == '"':
             j, text = i + 1, []
@@ -281,7 +296,8 @@ def rust_strings(src: str) -> Iterator[tuple[int, str]]:
                 else:
                     text.append(src[j])
                     j += 1
-            yield src.count("\n", 0, i) + 1, "".join(text)
+            if skip_to < 0:
+                yield src.count("\n", 0, i) + 1, "".join(text)
             i = j + 1
         else:
             i += 1
@@ -324,11 +340,14 @@ def test_the_string_scanner_reads_what_the_compiler_reads():
         'let a = \'"\'; // "task 1" in a comment\n'
         'format!("first \\\n          (docs/PLAN.md task 71)");\n'
         'let r = r#"raw "quoted" text"#;\n'
-        '#[cfg(test)]\nmod tests { "task 2" }\n'
+        '#[cfg(test)]\nmod early { fn f() { let s = "task 2 {"; } }\n'  # a brace in its string
+        'fn g() { Err(format!("shipped (docs/PLAN.md task 9)")) }\n'  # spec.rs\'s shape
+        '#[cfg(test)]\nmod tests { "task 3" }\n'
     )
     assert list(rust_strings(src)) == [
         (2, "first (docs/PLAN.md task 71)"),
         (4, 'raw "quoted" text'),
+        (7, "shipped (docs/PLAN.md task 9)"),
     ]
     assert list(python_strings('"""doc, task 1"""\nx = f"a {y} task 3"\n')) == [
         (2, "a "),

@@ -78,7 +78,7 @@ jobs:
   # Lists the changed lines' mutants, which builds nothing, and sizes their
   # pass from the count: a shard for every thirty (scripts/mutants_shards.py).
   # At least one, so a change with nothing to mutate still reports; at most
-  # 256, GitHub's limit on a matrix, so past 10,240 mutants a shard is dealt
+  # 256, GitHub's limit on a matrix, so past 7,680 mutants a shard is dealt
   # more (all of online-core, 11,138, would be 44 a shard). It needs neither
   # the disk prep nor a build of the workspace: cargo-mutants lists from
   # `cargo metadata --no-deps` and the source, and the cache keeps

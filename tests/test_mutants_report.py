@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -294,46 +295,64 @@ def test_a_line_has_over_two_lines_holds_only_where_both_are(tmp_path):
     assert "src/m.rs:4:9" in survivors and "src/m.rs:2:9" in kept
 
 
+#: The shard size the changed-lines pass runs at, read from the workflow so
+#: the tests below hold the value CI uses (review 7 D-3: the workflow moved
+#: to 30 while every test still said 40).
+PER_SHARD = int(
+    re.search(r"--per-shard (\d+)", (REPO / ".github/workflows/mutants.yml").read_text()).group(1)
+)
+
+
+def test_the_workflow_sizes_its_shards_at_thirty():
+    """The comment beside the listing job counts from this: 256 shards of 30
+    is 7,680, past which a shard is dealt more."""
+    assert PER_SHARD == 30
+    text = (REPO / ".github/workflows/mutants.yml").read_text()
+    assert f"past {256 * PER_SHARD:,} mutants a shard is dealt" in text
+
+
 @pytest.mark.parametrize(
     ("mutants", "shards"),
     [
         (0, 1),
         (1, 1),
-        (40, 1),
-        (41, 2),
-        (80, 2),
-        (81, 3),
-        (1_346, 34),
-        (10_240, 256),
-        (10_241, 256),
+        (PER_SHARD, 1),
+        (PER_SHARD + 1, 2),
+        (2 * PER_SHARD, 2),
+        (2 * PER_SHARD + 1, 3),
+        (1_346, math.ceil(1_346 / PER_SHARD)),
+        (256 * PER_SHARD, 256),
+        (256 * PER_SHARD + 1, 256),
         (11_138, 256),
     ],
 )
-def test_a_shard_for_every_forty_mutants_at_least_one_and_at_most_256(mutants, shards):
+def test_a_shard_for_every_per_shard_mutants_at_least_one_and_at_most_256(mutants, shards):
     """The changed lines' pass takes as many shards as its mutants need at
-    40 a shard (task 219): 1,346, the push of 103d721, is 34. A change with
-    nothing to mutate still runs one, which reports; GitHub's matrix takes
-    at most 256 jobs, so past 10,240 a shard is dealt more."""
-    assert shards_mod.shards(mutants, per_shard=40) == shards
+    ``PER_SHARD`` a shard (task 219; 1,346, the push of 103d721, was 34 at
+    40). A change with nothing to mutate still runs one, which reports;
+    GitHub's matrix takes at most 256 jobs, so past ``256 * PER_SHARD`` a
+    shard is dealt more."""
+    assert shards_mod.shards(mutants, per_shard=PER_SHARD) == shards
     assert shards_mod.MOST_SHARDS == 256
 
 
 def test_round_robin_deals_no_shard_past_its_share_and_none_nothing():
     """cargo-mutants deals mutant `i` to shard `i % k`. Below the cap no
-    shard is dealt more than 40, and none is dealt nothing but the one
-    shard of a change with nothing to mutate, so no runner sets up a build
-    to test nothing."""
-    for n in [*range(0, 2_000, 7), 40, 41, 1_345, 1_346, 1_347, 10_239, 10_240]:
-        k = shards_mod.shards(n, per_shard=40)
+    shard is dealt more than ``PER_SHARD``, and none is dealt nothing but
+    the one shard of a change with nothing to mutate, so no runner sets up
+    a build to test nothing."""
+    p = PER_SHARD
+    for n in [*range(0, 2_000, 7), p, p + 1, 1_345, 1_346, 1_347, 256 * p - 1, 256 * p]:
+        k = shards_mod.shards(n, per_shard=p)
         dealt = Counter(i % k for i in range(n))
         assert sum(dealt.values()) == n, n
-        assert max(dealt.values(), default=0) <= 40, (n, k)
+        assert max(dealt.values(), default=0) <= p, (n, k)
         assert len(dealt) == k or n == 0, (n, k)
 
 
 def _shards_cli(listing: Path) -> subprocess.CompletedProcess[str]:
     script = str(REPO / "scripts/mutants_shards.py")
-    cmd = [sys.executable, script, str(listing), "--per-shard", "40"]
+    cmd = [sys.executable, script, str(listing), "--per-shard", str(PER_SHARD)]
     return subprocess.run(cmd, capture_output=True, text=True, check=True)
 
 
@@ -349,3 +368,22 @@ def test_the_listing_job_reads_its_outputs_from_the_script(tmp_path):
     assert done.stderr == "mutants: 41, shards: 2, the most a shard is dealt: 21\n"
     listing.write_text("", encoding="utf-8")
     assert _shards_cli(listing).stdout == "mutants=0\nshards=1\nmatrix=[0]\n"
+
+
+def test_testing_md_counts_the_lists_it_describes():
+    """``docs/TESTING.md`` states how many entries the equivalent list holds
+    and how many mutants the tolerated list names, in how many entries;
+    each is read from the list it describes, so a removed entry (task 243
+    took ``Bocpd::prune``'s with its line and left 226 standing, review 7
+    D-2) fails here, not in a reader's arithmetic."""
+    import tomllib
+
+    text = (REPO / "docs/TESTING.md").read_text()
+    equivalent = tomllib.loads((REPO / "scripts/mutants_equivalent.toml").read_text())
+    n_eq = len(equivalent["equivalent"])
+    assert f"That file holds {n_eq}\nentries" in text, n_eq
+    tolerated = tomllib.loads((REPO / "scripts/mutants_tolerated.toml").read_text())
+    entries = tolerated["tolerated"]
+    # An entry names one mutant per column it gives, else the one on its line.
+    named = sum(len(e["columns"]) if isinstance(e.get("columns"), list) else 1 for e in entries)
+    assert f"names {named}, in {len(entries)} entries" in text, (named, len(entries))

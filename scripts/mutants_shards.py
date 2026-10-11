@@ -1,6 +1,6 @@
 """How many shards the changed lines' mutation pass deals its mutants into.
 
-    python3 scripts/mutants_shards.py listed.txt --per-shard 40 >> "$GITHUB_OUTPUT"
+    python3 scripts/mutants_shards.py listed.txt --per-shard 30 >> "$GITHUB_OUTPUT"
 
 Reads the pass's listing, `cargo mutants --list` with the arguments every
 shard runs, one mutant a line, and prints the three lines `mutants.yml`'s
