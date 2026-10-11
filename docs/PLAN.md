@@ -14216,7 +14216,7 @@ window beside a decay reads is measured and stated); E-1 (a) keep both
 clocks, state them, test holt's two rows (`review7-fix3`); C-4 (b) weights
 carried into the sample and weighted quantiles, so the cuts are XGBoost's,
 plus the docstring sentence for LightGBM's unweighted binning
-(`review7-fix5`, after fix2); B-D1 the behaviour stays (the pairwise
+(`review7-fix5`, after fix2); done and merged 2026-10-11: probe (a) 2 -> 14 of 15 cuts above 1.0 (XGBoost 14), heaviest bin 35.5% -> 6.26% (XGBoost 6.47%), unweighted cuts bit-identical, scoped mutants 122 caught and the last survivor closed by hand); B-D1 the behaviour stays (the pairwise
 convention), one sentence in GRAM.md; the README's *Versions* rewritten for
 1.x beside the user's 1.0 note (`review7-fix4`). Not changed: the Int64
 choice (Polars' data integer; its index type UInt32 is for positions), the

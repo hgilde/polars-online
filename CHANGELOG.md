@@ -718,6 +718,15 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **`po.gbdt.xgboost_matrix` (unstable): with `weight=`, the cuts follow
+  the weights, as XGBoost's own sketch does** (review 7, C-4). The sample
+  is drawn in proportion to the weights (priority sampling, Duffield, Lund
+  and Thorup 2007) and the cuts are its weighted quantiles; a row of
+  weight 0 places no cut. On 50,000 normal rows with weight 50 above 1.0
+  at `max_bin=16`, 14 of 15 cuts fall above 1.0, as 14 of XGBoost's own do
+  (2 before), and the heaviest bin holds 6.3% of the weight (35% before).
+  Unweighted cuts, and cuts under equal weights, are unchanged to the bit.
+  `lightgbm_dataset`'s bins still ignore weights, as LightGBM's own do.
 - **`bocpd`'s capped runs fold into the oldest, scaled back to the cap**
   (task 243): the runs that reach `max_run - 1` rows fold into the oldest
   of them, whose weight and scatter shrink to `max_run - 1` rows' worth
