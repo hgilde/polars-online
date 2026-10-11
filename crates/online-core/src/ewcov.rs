@@ -365,8 +365,7 @@ impl EwCov {
     pub fn precision(&self) -> Option<Vec<f64>> {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         if !self.has_precision_prior() {
             return None;
@@ -429,8 +428,7 @@ impl EwCov {
     pub fn mean(&self, i: usize) -> f64 {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         self.m[i]
     }
@@ -443,8 +441,7 @@ impl EwCov {
     pub fn raw(&self, i: usize, j: usize) -> f64 {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         self.c[i * self.k + j] + self.m[i] * self.m[j]
     }
@@ -454,8 +451,7 @@ impl EwCov {
     pub fn cov(&self, i: usize, j: usize) -> f64 {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         self.c[i * self.k + j]
     }
@@ -472,8 +468,7 @@ impl EwCov {
     pub fn comoments(&self) -> &[f64] {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         &self.c
     }
@@ -483,8 +478,7 @@ impl EwCov {
     pub fn means(&self) -> &[f64] {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         &self.m
     }
@@ -495,8 +489,7 @@ impl EwCov {
     pub fn var(&self, i: usize) -> f64 {
         debug_assert!(
             !self.has_pending(),
-            "EwCov: read the moments with a block still pending; call `flush()` first \
-             (docs/PLAN.md task 71)"
+            "EwCov: read the moments with a block still pending; call `flush()` first"
         );
         crate::solve::clamp_rounding(self.cov(i, i))
     }

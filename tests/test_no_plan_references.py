@@ -18,6 +18,7 @@ read by whoever changes the code, beside the plan.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
 import re
@@ -212,4 +213,126 @@ def test_no_public_docstring_cites_the_plan_a_task_a_review_or_a_record():
 @pytest.mark.parametrize("path", FILES)
 def test_no_reader_facing_file_cites_the_plan_a_task_a_review_or_a_record(path):
     found = citations((REPO / path).read_text(encoding="utf-8"))
+    assert not found, "\n".join(found)
+
+
+# --------------------------------------------------------------- the messages
+#
+# An error or warning message is read by whoever hit it, often from an
+# installed wheel, so it is held like a docstring. Every string literal in the
+# shipped source is a candidate message: the Rust crates' (outside their test
+# modules, which are never shipped) and the package's (docstrings apart, which
+# the check above reads). A comment may keep its citation.
+
+_TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n\s*mod \w+", re.M)
+_CHAR = re.compile(r"'(\\.|[^\\'])'")
+_RAW = re.compile(r'b?r(#*)"')
+
+
+def rust_strings(src: str) -> Iterator[tuple[int, str]]:
+    """Each string literal in Rust source, as (line, text), with a ``\\``
+    line continuation folded away as the compiler folds it. Comments, char
+    literals and everything from a trailing ``#[cfg(test)] mod`` on are
+    skipped."""
+    if m := _TEST_MODULE.search(src):
+        src = src[: m.start()]
+    i, n = 0, len(src)
+    while i < n:
+        if src.startswith("//", i):
+            end = src.find("\n", i)
+            i = n if end < 0 else end
+        elif src.startswith("/*", i):
+            i = src.find("*/", i) + 2
+        elif src[i] == "'":
+            m = _CHAR.match(src, i)
+            i += len(m.group(0)) if m else 1
+        elif (m := _RAW.match(src, i)) and not (i and (src[i - 1].isalnum() or src[i - 1] == "_")):
+            close = '"' + m.group(1)
+            end = src.find(close, m.end())
+            yield src.count("\n", 0, i) + 1, src[m.end() : end]
+            i = end + len(close)
+        elif src[i] == '"':
+            j, text = i + 1, []
+            while src[j] != '"':
+                if src[j] == "\\" and src[j + 1] == "\n":
+                    j += 2
+                    while src[j] in " \t\n":
+                        j += 1
+                elif src[j] == "\\":
+                    text.append(src[j : j + 2])
+                    j += 2
+                else:
+                    text.append(src[j])
+                    j += 1
+            yield src.count("\n", 0, i) + 1, "".join(text)
+            i = j + 1
+        else:
+            i += 1
+
+
+def python_strings(src: str) -> Iterator[tuple[int, str]]:
+    """Each string constant in Python source but the docstrings, f-strings'
+    literal parts included."""
+    tree = ast.parse(src)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ):
+            yield node.lineno, node.value
+
+
+def shipped_strings() -> Iterator[tuple[str, int, str]]:
+    for path in sorted((REPO / "crates").glob("online-*/src/**/*.rs")):
+        if path.name == "oracle.rs":  # compiled for tests only
+            continue
+        for line, text in rust_strings(path.read_text(encoding="utf-8")):
+            yield str(path.relative_to(REPO)), line, text
+    for path in sorted((REPO / "python" / "polars_online").rglob("*.py")):
+        for line, text in python_strings(path.read_text(encoding="utf-8")):
+            yield str(path.relative_to(REPO)), line, text
+
+
+def test_the_string_scanner_reads_what_the_compiler_reads():
+    src = (
+        'let a = \'"\'; // "task 1" in a comment\n'
+        'format!("first \\\n          (docs/PLAN.md task 71)");\n'
+        'let r = r#"raw "quoted" text"#;\n'
+        '#[cfg(test)]\nmod tests { "task 2" }\n'
+    )
+    assert list(rust_strings(src)) == [
+        (2, "first (docs/PLAN.md task 71)"),
+        (4, 'raw "quoted" text'),
+    ]
+    assert list(python_strings('"""doc, task 1"""\nx = f"a {y} task 3"\n')) == [
+        (2, "a "),
+        (2, " task 3"),
+    ]
+
+
+def test_the_messages_were_found():
+    """A check that reads nothing passes: well over a thousand literals,
+    the CLI's and the bindings' among them, when this was written."""
+    found = list(shipped_strings())
+    assert len(found) > 1000, len(found)
+    assert {"online-cli", "online-py", "online-core", "online-polars", "polars_online"} <= {
+        part for where, _, _ in found for part in Path(where).parts
+    }
+
+
+def test_no_message_cites_the_plan_a_task_a_review_or_a_record():
+    found = [
+        f"{where}:{line}: {hit}"
+        for where, line, text in shipped_strings()
+        for hit in citations(text)
+    ]
     assert not found, "\n".join(found)

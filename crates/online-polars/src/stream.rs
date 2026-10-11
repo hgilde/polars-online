@@ -4977,7 +4977,7 @@ fn run_instance(
                     "min_weight = {floor} has not been met{target} on any row for a half-life \
                      since the stream settled: {lacks}, so it has no weight to meet the floor \
                      with, and predictions stay withheld until a row brings some \
-                     (docs/WARMUP-AND-CONVERGENCE.md)."
+                     (the README, *Warm-up*)."
                 )
             } else if let Some(figure) = figure {
                 format!(
@@ -4987,7 +4987,7 @@ fn run_instance(
                      1/(1 - lam^d) at its rows' spacing d and weight, so predictions stay \
                      withheld unless the rows come faster or carry more weight. Lower \
                      min_weight below {figure}, or raise the half_life \
-                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                     (the README, *Warm-up*).",
                     100.0 * learned
                 )
             } else {
@@ -4997,7 +4997,7 @@ fn run_instance(
                      too uneven -- a target present on few of them, or weights far apart -- \
                      to project the weight they settle at, so predictions stay withheld until \
                      the target's rows bring weight past the floor \
-                     (docs/WARMUP-AND-CONVERGENCE.md).",
+                     (the README, *Warm-up*).",
                     100.0 * learned
                 )
             });
@@ -5071,7 +5071,7 @@ fn run_instance(
                      faster. Kish's effective sample size tops out near 2.9 half_lives of rows; \
                      {figure} so it can carry the {k} coefficients, or raise \
                      max_error_inflation to at least {worst:.3} to accept this much estimation \
-                     noise (docs/WARMUP-AND-CONVERGENCE.md).",
+                     noise (the README, *Warm-up*).",
                     100.0 * learned
                 )
             } else {
@@ -5087,7 +5087,7 @@ fn run_instance(
                      the {} the model needs before it solves (a row per coefficient, or \
                      min_weight), so error_inflation stays infinite and predictions stay \
                      withheld unless the rows come faster. {}{} so it can carry the {k} \
-                     coefficients (docs/WARMUP-AND-CONVERGENCE.md).",
+                     coefficients (the README, *Warm-up*).",
                     100.0 * learned,
                     solve_floor(inst.spec),
                     figure[..1].to_uppercase(),
@@ -5462,7 +5462,7 @@ fn run_instance(
                              -- a duplicated or constant column, or a ridge as large as the \
                              feature's variance. Predictions are unaffected in sample; the \
                              split among such columns is arbitrary and moves the moment the \
-                             collinearity breaks (docs/WARMUP-AND-CONVERGENCE.md §2.2).",
+                             collinearity breaks (the README, *Warm-up*).",
                         1.0 - share
                     ));
                 }
