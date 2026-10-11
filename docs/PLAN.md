@@ -9645,7 +9645,7 @@ tick, and that the series holding it up has a count near 1.
       first batch), which is why IPC is read natively. Dev group:
       `xgboost` (macOS) or `xgboost-cpu`, and `lightgbm`; macOS CI installs
       libomp. Windows and Linux are first exercised by CI.
-- [ ] 243. **`bocpd`'s fold under heavy pruning -- the user's call** (task
+- [ ] 243. **`bocpd`'s fold under heavy pruning** (task
       239). With `max_run` capping the run length, a run that reaches it
       folds into the oldest run shorter than the cap; when pruning has left
       a gap below the cap, that run can be much younger, the dominant run's
@@ -9656,6 +9656,9 @@ tick, and that the series holding it up has a count near 1.
       the defaults nothing moved. Options: keep the rule; or scale the
       over-long run's statistics down to `max_run - 1` rows' weight instead
       of taking a younger run's.
+      **Decided 2026-10-10** (the user: "Your reco"): build the scaling,
+      and keep it only if it gives fewer false alarms without slower
+      detection; otherwise keep the rule.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
