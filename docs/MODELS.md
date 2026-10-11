@@ -1962,7 +1962,7 @@ Each statistic, its definition and its cost are in the builder's docstring.
 
 | measured per column | read as |
 |---|---|
-| `null_count`, `nan_count`, `pos_inf`, `neg_inf`, `beyond_bound` | what a model reads as missing, each kind counted apart, of the `rows_fed` |
+| `null_count`, `nan_count`, `pos_inf_count`, `neg_inf_count`, `beyond_bound_count` | what a model reads as missing, each kind counted apart, of the `rows_fed` |
 | `mean`, `std`, `skew`, `kurtosis`, `min`, `max` | the moments of the usable values, in one pass |
 | `n_unique`, `top_value`, `top_count` | the distinct values, exact up to `distinct_cap` (default 256), and the most repeated one |
 | `longest_run`, `equal_prev`, `equal_by_chance` | the longest run of one value, and the rows equal to the row before beside what independent rows would give |

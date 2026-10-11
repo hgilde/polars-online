@@ -55,8 +55,14 @@ def test_audit_names_its_counts_as_polars_does_and_leads_with_spec():
     bank.fit_predict(_rows().with_columns(x0=pl.when(pl.col("t") < 3).then(None).otherwise("x0")))
     columns = bank.audit()
     assert columns.columns[:6] == ["spec", "group", "column", "rows_fed", "null_count", "nan_count"]
+    assert columns.columns[6:10] == [
+        "pos_inf_count",
+        "neg_inf_count",
+        "beyond_bound_count",
+        "count",
+    ]
     assert "n_unique" in columns.columns
-    for gone in ("rows", "null", "nan", "distinct"):
+    for gone in ("rows", "null", "nan", "distinct", "pos_inf", "neg_inf", "beyond_bound"):
         assert gone not in columns.columns
     assert columns.filter(pl.col("column") == "x0")["null_count"].sum() == 3
     assert set(columns["spec"].to_list()) == {"a"}

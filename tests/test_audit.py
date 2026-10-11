@@ -141,7 +141,7 @@ class TestEveryRowIsRead:
             N - nulls - nans,
         )
         assert frame["a"].null_count() == nulls, "Polars counts the nulls alone"
-        assert (c["pos_inf"], c["null_count"], c["nan_count"]) == (
+        assert (c["pos_inf_count"], c["null_count"], c["nan_count"]) == (
             int((idx % 100 == 50).sum()),
             0,
             0,
@@ -295,7 +295,7 @@ class TestGroupsMerge:
             "rows_fed",
             "null_count",
             "nan_count",
-            "pos_inf",
+            "pos_inf_count",
             "count",
             "min",
             "max",

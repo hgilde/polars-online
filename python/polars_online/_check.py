@@ -963,7 +963,7 @@ def _audit_column(r: dict[str, Any], add: Any) -> None:
             f"the rows of {who}: a model reading it as a feature skips each such "
             "row, and as a target predicts it without learning",
         )
-    odd = r["pos_inf"] + r["neg_inf"] + r["beyond_bound"]
+    odd = r["pos_inf_count"] + r["neg_inf_count"] + r["beyond_bound_count"]
     if odd:
         add(
             "warning",
@@ -972,8 +972,8 @@ def _audit_column(r: dict[str, Any], add: Any) -> None:
             col,
             float(odd),
             0.0,
-            f"column {col!r} holds +inf on {r['pos_inf']}, -inf on {r['neg_inf']} "
-            f"and a value past 1e100 on {r['beyond_bound']} rows of {who}, which a "
+            f"column {col!r} holds +inf on {r['pos_inf_count']}, -inf on {r['neg_inf_count']} "
+            f"and a value past 1e100 on {r['beyond_bound_count']} rows of {who}, which a "
             "model skips as it skips a null: a division by zero, or a sentinel "
             "such as 1e308, upstream; make them null, or fix the arithmetic",
         )

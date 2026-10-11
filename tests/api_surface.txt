@@ -1103,9 +1103,9 @@
     rows_fed: Int64
     null_count: Int64
     nan_count: Int64
-    pos_inf: Int64
-    neg_inf: Int64
-    beyond_bound: Int64
+    pos_inf_count: Int64
+    neg_inf_count: Int64
+    beyond_bound_count: Int64
     count: Int64
     mean: Float64
     std: Float64
@@ -1154,9 +1154,9 @@
     rows_fed: Int64
     null_count: Int64
     nan_count: Int64
-    pos_inf: Int64
-    neg_inf: Int64
-    beyond_bound: Int64
+    pos_inf_count: Int64
+    neg_inf_count: Int64
+    beyond_bound_count: Int64
     count: Int64
     mean: Float64
     std: Float64

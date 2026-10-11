@@ -95,7 +95,10 @@ fn a_null_and_a_nan_are_counted_apart_and_every_row_is_read() {
     );
     assert_eq!(count(&cols, "count", 0), n - nulls - nans);
     assert_eq!(
-        (count(&cols, "pos_inf", 1), count(&cols, "null_count", 1)),
+        (
+            count(&cols, "pos_inf_count", 1),
+            count(&cols, "null_count", 1)
+        ),
         (infs, 0)
     );
     // Every row was read: the summary processed rows a feature's null

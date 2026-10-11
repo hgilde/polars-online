@@ -46,7 +46,8 @@ impl Bank {
     /// is an `Int64`, as in every frame (task 244).
     ///
     /// `Columns`: `spec`, `group`, `column`, `rows_fed`, `null_count`,
-    /// `nan_count`, `pos_inf`, `neg_inf`, `beyond_bound`, `count` (usable
+    /// `nan_count`, `pos_inf_count`, `neg_inf_count`, `beyond_bound_count`,
+    /// `count` (usable
     /// values), `mean`, `std`, `skew`, `kurtosis`, `min`, `max`, `median`,
     /// `mad`, `robust_z`, `n_unique` (null past the cap), `top_value`,
     /// `top_count`, `second_count`, `count_error`, `longest_run`,
@@ -147,9 +148,9 @@ fn columns_frame(audits: &[(Option<&str>, Audit)], names: &[String]) -> Vec<Colu
         int("rows_fed", |r| r.rows),
         int("null_count", |r| r.null),
         int("nan_count", |r| r.nan),
-        int("pos_inf", |r| r.pos_inf),
-        int("neg_inf", |r| r.neg_inf),
-        int("beyond_bound", |r| r.beyond),
+        int("pos_inf_count", |r| r.pos_inf),
+        int("neg_inf_count", |r| r.neg_inf),
+        int("beyond_bound_count", |r| r.beyond),
         int("count", |r| r.count),
         Column::new("mean".into(), num(|r| r.mean)),
         Column::new("std".into(), num(|r| r.std)),

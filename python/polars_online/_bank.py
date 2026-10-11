@@ -1568,8 +1568,8 @@ class ModelBank:
         ``rows_fed``, ``null_count``, ``nan_count``
             The rows read, then two kinds of value a model cannot learn from:
             the nulls, as Polars' ``null_count`` counts them, and the NaNs.
-        ``pos_inf``, ``neg_inf``, ``beyond_bound``, ``count``
-            The other kinds, each counted apart (``beyond_bound`` is finite but
+        ``pos_inf_count``, ``neg_inf_count``, ``beyond_bound_count``, ``count``
+            The other kinds, each counted apart (``beyond_bound_count`` is finite but
             past ``1e100`` in magnitude), and ``count``, the usable values. The
             six counts add up to ``rows_fed``.
         ``mean``, ``std``, ``skew``, ``kurtosis``, ``min``, ``max``
