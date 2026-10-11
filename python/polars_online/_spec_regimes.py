@@ -101,9 +101,10 @@ def hmm(
     ``n_components``
         The number of hidden states, from 2 to 1,024; required.
     ``precision_prior``
-        A ridge on every state's covariance, above 0, required here as it is
-        for :func:`ew_class`, because a state's centred co-moments start at
-        zero and a zero matrix has no density.
+        A ridge on every state's covariance, in the features' squared units,
+        above 0, required here as it is for :func:`ew_class`, because a
+        state's centred co-moments start at zero and a zero matrix has no
+        density, and every row is scored through each state's inverse.
     ``covariance_type``
         ``"full"`` (the default), ``"tied"`` or ``"diag"``, as for
         :func:`ew_class`.
@@ -131,7 +132,8 @@ def hmm(
         Without given states, the first ``warm_rows`` learned rows (default 50,
         at least ``n_components``) are buffered. :func:`kmeans`' ``init``
         (``"lloyd"`` by default; ``"first"``, ``"farthest"``, ``"k-means++"``)
-        chooses centres among them with ``seed`` (default 0), and the buffer is
+        chooses centres among them with ``seed`` (default 0; ``None`` is 0, so
+        a run seeds the same states every time), and the buffer is
         replayed through those centres as hard assignments. Every field but
         ``weight_sum`` and ``settled_frac`` is null until then. The buffered
         rows age as ``weight_sum`` does, so the states start at the weight

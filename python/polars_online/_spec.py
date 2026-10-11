@@ -1844,7 +1844,14 @@ def lasso(
         sweep (default ``1e-10``, finite and above 0). A descent that runs out
         of sweeps first is counted in
         :meth:`polars_online.ModelBank.solve_failures`, one per target and path
-        point.
+        point. :func:`polars_online.gram.lasso_path` runs the same descent with
+        ten times the sweeps by default, 1,000, because it starts its path
+        from zero. A solve here starts from the last solve's fit, which the
+        rows since then have moved only a little once the moments settle: on
+        15 features correlated at ``0.8 ** |i - j|``, solved on every row of
+        20,000 at seven penalties, 696 of the 140,000 descents ran out of their
+        100 sweeps, every one of them within the first 500 rows, where each row
+        still moves the fit far. 1,000 sweeps left 26 there.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
@@ -2032,12 +2039,23 @@ def kalman(
         The process noise given outright, ``q_i`` per slot, in place of the
         derivation from ``coef_half_life``; added as ``q_i * D ** 2`` on each
         row that observes the target. One value per slot, each finite and at
-        least 0. Exactly one of the two is given.
+        least 0. Exactly one of the two is given. Its units are a
+        coefficient's squared per clock unit squared: under ``standardize`` a
+        slope is in the target's units per standard deviation of its feature,
+        so ``q_i`` is in the target's squared units per clock unit squared;
+        without it, in the target's units over the feature's, squared, per
+        clock unit squared. The intercept's is the target's squared units per
+        clock unit squared either way.
     ``obs_var``
-        A fixed observation noise, in place of the EW residual variance; finite
-        and above 0.
+        A fixed observation noise, in place of the EW residual variance: the
+        variance of the target about its prediction, in the target's squared
+        units, finite and above 0.
     ``p0``
-        The prior variance of each coefficient, as a multiple of the noise.
+        The prior variance of each coefficient, as a multiple of the noise: a
+        ratio, with no units under ``standardize``, where a coefficient and
+        the noise are both in the target's units. Without ``standardize`` a
+        slope's prior ``p0 * R`` carries its feature's units, so ``p0`` is in
+        one over the feature's squared units there.
         Unstandardized, ``P_0 = p0 * R * I``, set on the target's first row
         with a noise, from that row's noise, before its correction; until then
         ``P`` is unsized, and no process noise is added to it. With ``obs_var``
@@ -2779,10 +2797,14 @@ def ew_cov(
         :meth:`polars_online.ModelBank.describe`. That is the form for a wide
         set of columns, where even the means are k values per row nobody reads.
     ``precision_prior``
-        A ridge on the co-moments, needed by ``partial_corr`` and ``mahal``,
-        above 0: the precision matrix ``P`` above, solved on each row it is
-        read (O(k³), only when asked for). Like an RLS prior it fades as data
-        accumulates, with ``s``.
+        A ridge on the co-moments, in the features' squared units, above 0:
+        the precision matrix ``P`` above, solved on each row it is read
+        (O(k³), only when asked for). Like an RLS prior it fades as data
+        accumulates, with ``s``. Optional here, and needed by
+        ``partial_corr`` and ``mahal`` alone: the other statistics read the
+        co-moments themselves, which need no inverse, so ``None`` adds no
+        ridge to them. :func:`ew_class` and :func:`hmm` require it, since
+        every row they score reads an inverse.
     ``mahal_quantiles``
         Levels in ``(0, 1)`` at which to keep the exponentially weighted
         quantile of the past ``mahal`` scores (``mahal_q<p>``), at the model's
@@ -3845,7 +3867,9 @@ def kmeans(
              - the first ``n_clusters`` distinct rows
 
         ``seed`` (default 0) drives the two random rules; the same seed gives
-        the same centres. Under ``"first"``, seeding waits past ``warm_rows``
+        the same centres. ``None`` is 0: a run draws the same centres every
+        time unless it is given another seed, and nothing draws from the
+        system's entropy. Under ``"first"``, seeding waits past ``warm_rows``
         if it must for ``n_clusters`` distinct rows, holding up to
         ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
         and freed, so the model is O(state) again from that row on. Outputs are
@@ -4275,7 +4299,9 @@ def ew_class(
     ``precision_prior``
         A ridge on every class covariance, in the features' squared units and
         above 0, so the first rows of a class, whose sample covariance is
-        singular, are scored with a finite, isotropic one; required. It is
+        singular, are scored with a finite, isotropic one; required, because
+        every row is scored through each class's inverse covariance, where
+        :func:`ew_cov` inverts only for ``partial_corr`` and ``mahal``. It is
         scaled by ``s_c``, the class's own prior scale, which starts at 1 and
         decays by ``lam * n_c / (lam * n_c + w)`` on every row the class
         learns. So the ridge washes out as the class fills in, exactly as

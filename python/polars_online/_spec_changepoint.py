@@ -174,7 +174,8 @@ def bocpd(
         run, so the runs' odds move with the units. At a level of ``1e4`` with
         a spread of ``1e-2``, ``p_change`` moved by up to 0.86 against the same
         stream at level 0 and spread 1. Centre and scale the features before a
-        tempered run.
+        tempered run. ``robust_beta`` is a power on a ratio of two
+        densities, and has no units.
     ``mean_prior``, ``mean_precision_prior``, ``degrees_of_freedom_prior``, ``covariance_prior``
         The conjugate prior, under scikit-learn's ``BayesianGaussianMixture``
         names:
@@ -570,7 +571,8 @@ def corrchange(
         least 20 and at most 2^20), redrawn every ``permute_every_rows`` rows
         (default 50, at least 1), in blocks of ``perm_block`` rows (default 1,
         at most ``window_rows``). ``seed`` (default 0) seeds the draws, so two
-        runs with the same seed report the same critical values.
+        runs with the same seed report the same critical values; ``None`` is
+        0, and nothing draws from the system's entropy.
     ``norm``
         ``"window"``: ``"l1"`` (the default) or ``"linf"``.
     ``change_action``
