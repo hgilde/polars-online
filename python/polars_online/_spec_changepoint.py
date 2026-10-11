@@ -65,15 +65,18 @@ def bocpd(
         before the row:  P(r = 0) += h * sum_{r >= 1} P(r),   P(r) *= 1 - h for r >= 1
 
     Slot ``r`` keeps the conjugate statistics of exactly the ``r`` rows that
-    hypothesis says preceded this one in the run. So slot 0 holds none and
-    its predictive is the prior's, which is what makes "a new run starts
-    here" something the data can vote on. A row takes ``O(runs * d²)``, and
-    the run vector would grow by one every row. So runs below
-    ``prune_below`` of the mass are dropped, and ``max_run`` folds every
-    longer run into the last kept one. That run takes their mass and keeps
-    its own statistics, so ``max_run`` bounds how much history any run
-    holds, not only the length of the vector. ``run_mode`` saturates one
-    below it.
+    hypothesis says preceded this one in the run. So slot 0 holds none and its
+    predictive is the prior's, which is what makes "a new run starts here"
+    something the data can vote on. A row takes ``O(runs * d)`` under
+    ``"diag"`` and ``"robust"``, and ``O(runs * d³)`` under ``"gaussian"``,
+    which factors each run's scale. The run vector would grow by one every row.
+    So runs below ``prune_below`` of the mass are dropped, and past ``max_run``
+    runs the oldest are folded into the ``max_run``-th youngest, which takes
+    their mass and keeps its own statistics. ``max_run`` bounds the runs kept,
+    and the work a row takes, not their length. Without pruning
+    (``prune_below = 0``) the runs kept are the lengths 0 to ``max_run - 1``,
+    and ``run_mode`` saturates one below it; with pruning a run kept can be
+    longer.
 
     A row of weight ``w`` teaches at ``w / w_bar``, ``w_bar`` the mean weight
     of the rows learned from, this one included. That is in its run's
@@ -194,11 +197,11 @@ def bocpd(
              - the first ``warm_rows`` rows' covariance, its diagonal under
                ``"diag"`` and ``"robust"``
 
-        A prior in the data's units decides what counts as surprising: too
-        wide and the model goes quiet, because no row is surprising under a
-        predictive that wide, and too narrow or off-centre and every run
-        that begins on a row has no density for it. So the defaults are the
-        data's own. With ``prior_mean`` or ``prior_scale`` left out, the first
+        A prior in the data's units decides what counts as surprising. Too
+        wide, and the model goes quiet, because no row is surprising under a
+        predictive that wide. Too narrow or off-centre, and every run that
+        begins on a row has no density for it. So the defaults are the data's
+        own. With ``prior_mean`` or ``prior_scale`` left out, the first
         ``warm_rows`` learned rows report null and are held. Their weighted
         mean and covariance (``numpy.cov``'s with ``aweights``, the sample
         covariance at equal weights) set what was left out, and then they are
@@ -211,21 +214,21 @@ def bocpd(
         positive definite, two features that are one, gives its diagonal. With
         both given there is no warm-up. ``prior_nu`` and ``prior_scale`` are
         ``2a`` and ``2b`` in the gamma parametrisation, which is how Adams and
-        MacKay give their own finance example (``a = 1``, ``b = 1e-4``, ``hazard
-        = 250``).
+        MacKay give their own finance example (``a = 1``, ``b = 1e-4``,
+        ``hazard = 250``).
     ``warm_rows``
         The learned rows held to set the prior from, where ``prior_mean`` or
-        ``prior_scale`` is left out. Default ``d + 2``, the smallest count whose
-        covariance is positive definite in general, as :func:`hmm` and
-        :func:`kmeans` name theirs. The prior is set once from those rows and
-        kept for the stream's life, so at ``d + 2`` rows its scale rests on
-        ``d + 1`` degrees of freedom. For one feature, a 3-row variance lies
-        between 0.05 and 3 times the truth nine times in ten, and a warm-up
-        that straddles a regime change sets a wide prior: a variance of 37
-        across a 10-sigma step, against 0.53 from rows inside one regime.
-        Where the first rows are not representative and rows are to spare,
-        pass a ``warm_rows`` of tens, all from one regime. At least 2, and
-        refused beside both priors, which leave nothing to set.
+        ``prior_scale`` is left out. Default ``d + 2``, one more than
+        ``d + 1``, the smallest count whose covariance is positive definite in
+        general; :func:`hmm` and :func:`kmeans` name theirs the same way. The
+        prior is set once from those rows and kept for the stream's life, so at
+        ``d + 2`` rows its scale rests on ``d + 1`` degrees of freedom. For one
+        feature, a 3-row variance lies between 0.05 and 3 times the truth nine
+        times in ten. A warm-up that straddles a regime change sets a wide
+        prior: a variance of 37 across a 10-sigma step, against 0.53 from rows
+        inside one regime. Where the first rows are not representative and rows
+        are to spare, pass a ``warm_rows`` of tens, all from one regime. At
+        least 2, and refused beside both priors, which leave nothing to set.
     ``prune_below``, ``max_run``
         The share of the mass below which a run is dropped (default
         ``1e-6``), and the run length every longer run is folded into
@@ -238,10 +241,11 @@ def bocpd(
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
     rest.
 
-    ``min_weight`` gates what is reported, never what is learned. A row
-    whose predictive cannot be evaluated reports nulls, leaves the posterior
-    where it stands, and is counted in
-    :meth:`polars_online.ModelBank.solve_failures`.
+    ``min_weight`` gates what is reported, never what is learned. A row whose
+    predictive cannot be evaluated reports nulls and is counted in
+    :meth:`polars_online.ModelBank.solve_failures`. It leaves the posterior
+    where it stands, but for a duration ``hazard``'s chance of a break over its
+    step, which time passing applies.
 
     .. rubric:: Output
 
@@ -250,20 +254,21 @@ def bocpd(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#bocpd>`_):
 
     ``p_change``
-        ``P(r_t <= 1)`` given this row: the alarm. Under a number ``hazard``
-        it is ``P(r <= 1)`` and not ``P(r = 0)``: the changepoint branch and
-        the growth branch share the same predictive, which makes the
-        normalised mass at ``r = 0`` exactly ``H`` on every row whatever the
-        data. Under a duration it is not "exactly ``H``" plus anything: the
-        chance of a break is applied before the row, so nothing sits at ``r
-        = 0`` after it, and ``p_change`` is the chance that this row began a
-        run. A row whose step is 0 reports 0. On row one of a group ``P(r <=
-        1)`` is 1 however the row looks: the default ``min_weight`` withholds
-        the row, and at ``min_weight=0`` it reports that 1. A break the
-        posterior accepts a row or two late shows as a fall in ``run_mode``,
-        not in ``p_change``: a 5-sigma step at row 500 put ``run_mode`` at
-        450 and 451 on rows 500 and 501, then 2, 3, 4 from row 502, and
-        ``p_change`` never rose above 0.023.
+        ``P(r_t <= 1)`` given this row: the alarm. Under a number ``hazard`` it
+        is ``P(r <= 1)`` and not ``P(r = 0)``: the changepoint branch and the
+        growth branch share the same predictive, which makes the normalised
+        mass at ``r = 0`` exactly ``H`` on every row whatever the data. Under a
+        duration it is not "exactly ``H``" plus anything: the chance of a break
+        is applied before the row, so nothing sits at ``r = 0`` after it, and
+        ``p_change`` is the chance that this row began a run. A later row whose
+        step is 0 reports 0. On a group's first row ``P(r <= 1)`` is 1 however
+        the row looks. With both priors given, the default ``min_weight``
+        withholds that row and ``min_weight=0`` reports the 1; without them the
+        first ``warm_rows`` rows report null. A break the posterior accepts a
+        row or two late shows as a fall in ``run_mode``, not in ``p_change``. A
+        5-sigma step at row 500 put ``run_mode`` at 450 and 451 on rows 500 and
+        501, then 2, 3, 4 from row 502, and ``p_change`` never rose above
+        0.023.
     ``run_mode``
         The most likely run length before the row, so ``t - run_mode`` is
         the row the current run began on. This is the answer, and
@@ -298,9 +303,9 @@ def bocpd(
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
 
     .. rubric:: Example
 
@@ -320,10 +325,21 @@ def bocpd(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets``, ``ValueError`` for ``half_life`` or ``lam``, for a
-    ``prior_scale`` that is neither ``[s]`` nor ``d * d`` entries, and for a
-    duration ``hazard`` with no clock, beside a plain-number clock
-    parameter, at 0 or below, or beside ``hazard_col``.
+    ``targets``; ``ValueError`` for:
+
+    - ``half_life`` or ``lam``;
+    - a number ``hazard`` of 1 or less, and a duration ``hazard`` with no
+      clock, beside a plain-number clock parameter, at 0 or below, or beside
+      ``hazard_col``;
+    - a ``prior_mean`` of the wrong length, a ``prior_kappa`` not above 0, a
+      ``prior_nu`` below its floor, and a ``prior_scale`` that is neither
+      ``[s]`` nor ``d * d`` entries, or is not positive, symmetric and positive
+      definite (checked whole, even under ``"diag"``, which reads its
+      diagonal);
+    - ``robust_beta`` beside another ``emission``, and at 0, below it or not
+      finite under ``"robust"``;
+    - a ``prune_below`` outside ``[0, 1)``, a ``max_run`` below 2, and a
+      warm-up buffer past 256 MiB.
     """
     model: dict[str, Any] = {
         "type": "bocpd",
@@ -370,12 +386,14 @@ def corrchange(
     three questions.
 
     ``kind = "monitor"`` asks whether the correlations were constant over a
-    span of rows, with a published null. ``kind = "sequential"`` asks, as
-    each row arrives, whether the correlations have left the level a stable
-    history set. ``kind = "window"`` asks how big the change between two
-    adjacent windows is, against a permutation quantile. Not a regression: no
-    targets, no decay of anything but the optional standardiser, and nothing
-    residual-based applies.
+    span of rows, with a published null. ``kind = "sequential"`` asks, as each
+    row arrives, whether the correlations have left the level a stable history
+    set. ``kind = "window"`` asks how big the change between two adjacent
+    windows is, against a permutation quantile. Not a regression: no targets,
+    no decay of anything but the optional standardiser and ``weight_sum``
+    beside it, and nothing residual-based applies. A row's positive weight
+    reaches only ``weight_sum`` and that standardiser: the span, the windows
+    and the history take each row unweighted.
 
     .. rubric:: The tests
 
@@ -391,20 +409,20 @@ def corrchange(
     is the delta-method long-run standard deviation of ``rho``. It takes the
     five raw moments ``(x², y², x, y, xy)`` centred at their span means and
     their Bartlett long-run covariance at bandwidth ``γ = floor(ln T)`` with
-    the paper's kernel, lag ``l`` at weight ``1 - l/γ`` (their Appendix A.1),
-    and maps them to ``(var_x, var_y, cov)`` and then to ``rho``. It is
-    computed on the span centred at its means and scaled by its standard
-    deviations, as the paper's ``xi`` series, so the columns' level does not
-    enter. A pair within rounding of ``|rho| = 1`` has no ``D`` and no
-    verdict, as a constant column has none. Under the null ``Q`` converges to
-    ``sup|B|``, a Brownian bridge, so the critical value is the Kolmogorov
-    quantile -- computed from the series, not pinned, and it reproduces the
-    published 1.3581 at 5%. Over the pairs the statistic is the maximum and
-    the level is ``alpha / npairs``. A span reports on its last row only, so
-    a change is found at most ``span_rows`` rows late, against a null with
-    published tables. ``docs/REGIMES.md`` §2 and §3 measure its size and
-    power against those tables, and ``tests/test_corrchange.py`` holds its
-    size near the nominal level.
+    the paper's kernel, lag ``l`` at weight ``1 - l/γ`` (their Appendix A.1).
+    It maps them to ``(var_x, var_y, cov)`` and then to ``rho``. It is computed
+    on the span centred at its means and scaled by its standard deviations, as
+    the paper's ``xi`` series, so the columns' level does not enter. A pair
+    within rounding of ``|rho| = 1`` has no ``D`` and no verdict, as a constant
+    column has none. Under the null ``Q`` converges to ``sup|B|``, a Brownian
+    bridge, so the critical value is the Kolmogorov quantile -- computed from
+    the series, not pinned, and it reproduces the published 1.3581 at 5%. Over
+    the pairs the statistic is the maximum and the level is ``alpha / npairs``.
+    A span reports on its last row only, so a change is found at most
+    ``span_rows`` rows late, against a null with published tables.
+    ``docs/REGIMES.md`` §2 and §3 measure its size and power against those
+    tables, and ``tests/test_corrchange.py`` holds its size near the nominal
+    level.
 
     ``"sequential"`` is the monitoring procedure of Wied & Galeano (2013): a
     history taken as stable, then every row of a monitoring period tested
@@ -501,26 +519,27 @@ def corrchange(
         the history ``"sequential"`` monitors against (at least 8), or each
         of ``"window"``'s two windows (at least 3).
     ``alpha``, ``alpha_adjust``
-        The level (default 0.05) and, under ``"monitor"`` and
-        ``"sequential"``, how it is spread over the pairs (``"bonferroni"``,
-        the default: ``alpha / npairs``). Under ``"window"`` one permutation
-        statistic covers every pair at once, so there is nothing to spread,
-        and an ``alpha_adjust`` other than the default is refused. Under
-        ``"sequential"`` without ``crit`` each pair's share is refused below
-        ``5e-11``: the critical value is solved from the boundary's law, and
-        in a smaller tail the solve's quantile is off by more than the 0.03
-        Wied and Galeano's own table is good to.
+        The level, in ``(0, 1)`` (default 0.05), and, under ``"monitor"`` and
+        ``"sequential"``, how it is spread over the pairs: ``"bonferroni"``,
+        the default, ``alpha / npairs``, or ``"none"``, ``alpha`` on each pair.
+        Under ``"window"`` one permutation statistic covers every pair at once,
+        so there is nothing to spread, and an ``alpha_adjust`` other than the
+        default is refused. Under ``"sequential"`` without ``crit`` each pair's
+        share is refused below ``5e-11``: the critical value is solved from the
+        boundary's law, and in a smaller tail the solve's quantile is off by
+        more than the 0.03 Wied and Galeano's own table is good to.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
-        ``floor(ln T)`` or ``floor(ln span_rows)``. At 1 only lag 0 is left.
+        ``floor(ln T)`` or ``floor(ln span_rows)``. At 1 only lag 0 is left,
+        and 0 is refused.
     ``scalar``
         ``"monitor"`` and ``"sequential"``: test the equicorrelation of the
         standardised row (:func:`deco`'s ``u``) instead of every pair -- its
         mean, with the Bartlett long-run standard deviation of ``u`` in place
         of ``D``: one statistic however many columns there are.
-        ``half_life``/``lam`` parametrise that standardiser and are accepted
-        only here; neither kind decays anything else, so they are refused
-        otherwise.
+        ``half_life``/``lam`` parametrise that standardiser, and ``weight_sum``
+        with it, and are accepted only here; left out, nothing decays. Neither
+        kind decays anything else, so they are refused otherwise.
     ``monitor_rows``
         ``"sequential"``: the rows monitored after each history, the paper's
         ``floor(m T)``; default ``span_rows`` (``T = 1``). At least 2.
@@ -531,14 +550,14 @@ def corrchange(
         critical value costs time in proportion to ``1 / (1/2 -
         boundary_gamma)`` on the way there, so a value above 0.49 is refused.
     ``crit``
-        ``"window"``: a fixed threshold, in place of the permutation
-        quantile. ``"sequential"``: replaces Wied & Galeano's critical value.
+        ``"window"``: a fixed threshold, in place of the permutation quantile.
+        ``"sequential"``: replaces Wied & Galeano's critical value. Above 0.
     ``n_perm``, ``permute_every_rows``, ``perm_block``, ``seed``
-        ``"window"``'s permutation quantile: ``n_perm`` (default 200, at most
-        2^20) draws, redrawn every ``permute_every_rows`` rows (default 50), in blocks of
-        ``perm_block`` rows (default 1). ``seed`` (default 0) seeds the
-        draws, so two runs with the same seed report the same critical
-        values.
+        ``"window"``'s permutation quantile: ``n_perm`` draws (default 200, at
+        least 20 and at most 2^20), redrawn every ``permute_every_rows`` rows
+        (default 50, at least 1), in blocks of ``perm_block`` rows (default 1,
+        at most ``span_rows``). ``seed`` (default 0) seeds the draws, so two
+        runs with the same seed report the same critical values.
     ``norm``
         ``"window"``: ``"l1"`` (the default) or ``"linf"``.
     ``reset_on_flag``
@@ -581,9 +600,9 @@ def corrchange(
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
 
     .. rubric:: Example
 
@@ -609,8 +628,11 @@ def corrchange(
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets``; ``ValueError`` for:
 
+    - fewer than two features, and an ``alpha`` outside ``(0, 1)``;
     - ``span_rows`` below the kind's minimum;
     - a parameter of another kind;
+    - a ``bandwidth`` of 0, a ``crit`` not above 0, and an ``n_perm``,
+      ``permute_every_rows`` or ``perm_block`` outside the range above;
     - ``boundary_gamma`` outside ``[0, 0.49]``;
     - ``monitor_rows`` below 2;
     - ``half_life``/``lam`` without ``scalar``.
