@@ -9915,6 +9915,28 @@ tick, and that the series holding it up has a count near 1.
       lines, so a multi-line call is one step); 99 of 107 such blocks broke
       it before, none after; it fails on the old docs. WRITING §3 and §6
       name it.
+- [ ] 250. **Performance before 1.0** -- the user, 2026-10-11: "There is no
+      hurry to release let's look at performance", after release step 2
+      measured 1.0 against 0.13.0's wheel (200,000 rows, seven interleaved
+      rounds, load 2.6-4.4): most rows 0.72-0.93x (ewridge k=5 0.76, sgd raw
+      0.63, pa raw 0.64, seqtest 0.72, kmeans 0.72, micro 0.75, bocpd 0.25),
+      a few within 2% or faster. Bisected causes, each a decided
+      correction: exact clock stamps on every row (task 175: seqtest
+      0.97->0.84; `ClockState::step` 18% of a seqtest row against 10.6%),
+      sgd's per-gradient finite check (186: 0.83->0.76), bocpd's
+      data-relative prior (195: 0.25; 879k rows/s under 0.13.0's prior),
+      compensated kmeans/micro centres (215), `coef` as `Array(Float64, k)`
+      (244: 10 targets 0.90->0.72, and dense: 1.6 GiB against 7.8 MiB for
+      the `coef` column of a 10-target ewridge over 1M rows, +3.9 GiB peak
+      RSS against +0.7). Phase 1: one worker profiles and prototypes alone
+      on a quiet machine and ranks the fixes (gain, risk, bit-identical or
+      not, state change or not); the coordinator brings the list and the
+      `coef` question to the user. Rules: bit-identical outputs and states
+      wherever possible; a state change bumps the schema and regenerates
+      the fixtures (free before 1.0); the clock stays exact at every age
+      (the temporal-clock rule). Target: every row back near 0.95x of 0.13.0,
+      or a measured reason a decided semantic costs more. The 1.0 release
+      (task 247) waits on this.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
