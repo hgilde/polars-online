@@ -543,7 +543,9 @@ def test_output_index_names_every_dtype_it_declares():
         emit_clocks=True,
     )
     seen |= set(po.spec.output_index(clocks)["dtype"].to_list())
-    documented = {"f64", "bool", "list[f64]", "enum", "i64", "clock"}
+    # An array's width is the spec's: `coef_index`'s height.
+    seen = {re.sub(r"^array\[f64, \d+\]$", "array[f64, <k>]", d) for d in seen}
+    documented = {"f64", "bool", "list[f64]", "array[f64, <k>]", "enum", "i64", "clock"}
     assert seen == documented, seen ^ documented
     doc = po.spec.output_index.__doc__ or ""
     assert all(f"``{d}``" in doc for d in documented)
@@ -643,12 +645,17 @@ def test_a_field_name_has_one_dtype_across_the_registry():
     Each field of every model's plainest spec, its instance suffix
     (``@h50``) dropped, has one dtype over the whole registry. Every integer
     output is ``i64`` since: ``test_output_index_names_every_dtype_it_declares``
-    refuses an ``i32``."""
+    refuses an ``i32``. An array's width is its spec's (``coef_index``'s
+    height), so ``array[f64, 3]`` and ``array[f64, 4]`` are one dtype here;
+    ``micro``'s ``coef``, as long as its summaries, is the one ``list[f64]``
+    (task 244), and is held to be the only one."""
     dtypes: dict[str, dict[str, set[str]]] = {}
     for name in MINIMAL:
         index = po.spec.output_index(_build(name))
         for field, dtype in zip(index["field"], index["dtype"], strict=True):
+            dtype = re.sub(r"^array\[f64, \d+\]$", "array[f64, <k>]", dtype)
             dtypes.setdefault(field.split("@")[0], {}).setdefault(dtype, set()).add(name)
+    assert dtypes["coef"].pop("list[f64]") == {"micro"}
     split = {field: by for field, by in dtypes.items() if len(by) > 1}
     assert not split, split
 
@@ -692,7 +699,12 @@ def test_every_models_realized_dtypes_are_the_ones_output_index_declares():
             zip(*(po.spec.output_index(spec)[c].to_list() for c in ("field", "dtype")), strict=True)
         )
         for field in out.dtype.fields:
-            realized = "enum" if isinstance(field.dtype, pl.Enum) else names.get(field.dtype)
+            if isinstance(field.dtype, pl.Enum):
+                realized = "enum"
+            elif isinstance(field.dtype, pl.Array):
+                realized = f"array[f64, {field.dtype.size}]"
+            else:
+                realized = names.get(field.dtype)
             if realized != declared[field.name]:
                 mismatched[f"{name}.{field.name}"] = (declared[field.name], str(field.dtype))
     assert not mismatched, mismatched

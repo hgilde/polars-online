@@ -2459,7 +2459,7 @@ print(name, out["m"].struct.field(name).dtype)
 row = po.spec.coef_fields(grid).filter(                        # one row per coefficient: its list, position, and unnest column
     (pl.col("term") == "x1") & (pl.col("ridge") == 1e-6) & (pl.col("half_life") == 500.0)
 ).row(0, named=True)
-x1 = out["m"].struct.field(row["field"]).drop_nulls().list.get(row["position"])
+x1 = out["m"].struct.field(row["field"]).drop_nulls().arr.get(row["position"])
 print(row["field"], row["position"], f"{x1[-1]:.2f}")          # x1's coefficient on the last row
 ```
 
@@ -2555,8 +2555,9 @@ Stock `b0`'s rows are every fourth, from `t` 0. Its path starts at 0,
 since one row fixes no slope, is near 2 by its eleventh row, and ends on
 the 2.02 `bank.coef()` reports.
 
-**`coef_every=0` writes `coef` on every row but a skipped one**, as a list
-of one float per term. Without a cadence the bank writes it on each
+**`coef_every=0` writes `coef` on every row but a skipped one**, as an
+array of one float per term: `to_numpy()` reads the field as a matrix, one
+of its rows per row of the output. Without a cadence the bank writes it on each
 group's last accepted row in a chunk, and on none for a group whose rows
 there were all skipped. A cadence can be a number of clock units, or a
 duration such as `"5m"` on a temporal clock. It writes `coef` once the
@@ -2566,13 +2567,13 @@ clock has moved that far since the group's last `coef` row, as
 is written by whichever comes first. A cadence reads only the clock and the rows, so the
 rows that carry `coef` do not depend on the chunking.
 
-**To spread that list into columns, chain `.online.unnest(specs)` after
+**To spread that array into columns, chain `.online.unnest(specs)` after
 `fit_predict`.** It takes the specs, a bank, or the path of a saved state,
 and works on a saved output. With `separator="."` it names each column after
 its spec too, `ols.coef_y_x0`, as Polars' own `unnest(separator=)` does, so
 two specs that fit one target unnest side by side.
 
-**Several targets, or a grid, put several blocks in one `coef` list:** one
+**Several targets, or a grid, put several blocks in one `coef` array:** one
 per target and point of a grid of `ridge` values, `feature_sets` or a
 `lasso_path`. Each half-life of a `half_life` grid has a `coef` field of its
 own. Here `grid`, as [Output field names](#output-field-names) builds it,

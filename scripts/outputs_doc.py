@@ -61,7 +61,7 @@ MEANING: dict[str, str] = {
     "pred_<f>": "the predictive mean for feature `<f>` under the fitted model",
     "resid_<t>": "`y - pred` for `<t>`",
     "weight_sum": f"accumulated weight before this row's update and before its own decay {SHARED}",
-    "coef": f"the numbers behind the fit as one list {SHARED}",
+    "coef": f"the numbers behind the fit as one array {SHARED}",
     "settled_frac": f"how far the decay window had filled before this row {SHARED}",
     "withheld_reason": f"why the row's predictions are null {SHARED}",
     "support_coef": (
@@ -261,9 +261,10 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
     ),
     (
         "coef",
-        "the numbers behind the fit, as one flat list written after the row's update: a "
+        "the numbers behind the fit, as one array written after the row's update, as wide as "
+        "`po.spec.coef_index(spec)` is long: a "
         "regression's coefficients, or what a model that is not a regression keeps in their "
-        "place, such as its centres or state means. Its builder's docstring lays the list "
+        "place, such as its centres or state means. Its builder's docstring lays the array "
         "out. A model that solves on a schedule (`solve_every`) shows its latest solve, and "
         "the entries of a target no solve has fit yet are null. "
         "Under an `embargo` the row's own update waits for the delay, so `coef` is written "
@@ -357,7 +358,12 @@ DTYPES: list[tuple[str, str]] = [
     ("`f64`", "`Float64`"),
     ("`i64`", "`Int64`"),
     ("`bool`", "`Boolean`"),
-    ("`list[f64]`", "`List(Float64)`"),
+    (
+        "`array[f64, k]`",
+        "`Array(Float64, k)`: `coef` and the fields laid out like it, `k` the height of "
+        "`po.spec.coef_index(spec)`, which `to_numpy()` reads as an `(n, k)` matrix",
+    ),
+    ("`list[f64]`", "`List(Float64)`: `micro`'s `coef`, one row per summary, as many as there are"),
     (
         "`enum`",
         "an `Enum` of its values, in their order: `withheld_reason`'s four, an `ew_class` "

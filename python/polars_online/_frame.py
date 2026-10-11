@@ -1033,6 +1033,7 @@ def _unnest_exprs(
             msg = f"online.unnest: column {column!r} is {dtype}, not spec {column!r}'s struct"
             raise ValueError(msg)
         fields = [f.name for f in dtype.fields]
+        dtypes = {f.name: f.dtype for f in dtype.fields}
         idx = output_index(spec)
         missing = [f for f in idx["field"] if f not in fields]
         if missing:
@@ -1062,11 +1063,14 @@ def _unnest_exprs(
             if base not in lists:
                 exprs.append(col.alias(named(field)))
                 continue
+            # An `Array` as the bank writes it, or a `List` as a file written
+            # before `coef` was one holds it.
+            get = col.arr.get if isinstance(dtypes[field], pl.Array) else col.list.get
             for position, name in (
                 coefs.filter(pl.col("field") == base).select("position", "name").iter_rows()
             ):
                 out = beside + "_" + name.removeprefix("coef_") if beside else name
-                exprs.append(col.list.get(position, null_on_oob=False).alias(named(out)))
+                exprs.append(get(position, null_on_oob=False).alias(named(out)))
     if by_name:
         msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
         raise ValueError(msg)

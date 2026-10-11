@@ -541,13 +541,14 @@ def _edges(draw, n: int) -> list[int]:
 
 def _assert_same_numbers(one: pl.Series, many: pl.Series) -> None:
     """Every field of the one-chunk output equals the chunked one's. The
-    lists (``coef``, ``support_coef``) are emitted on each group's last accepted
-    row of each chunk, by design, so they are compared on the rows the one-chunk
-    run emits them, which are such a row in every chunking."""
+    arrays (``coef``, ``support_coef``; ``micro``'s list) are emitted on each
+    group's last accepted row of each chunk, by design, so they are compared
+    on the rows the one-chunk run emits them, which are such a row in every
+    chunking."""
     assert one.len() == many.len()
     for f in one.dtype.fields:
         a, b = one.struct.field(f.name), many.struct.field(f.name)
-        if isinstance(f.dtype, pl.List):
+        if isinstance(f.dtype, (pl.List, pl.Array)):
             emitted = a.is_not_null()
             a, b = a.filter(emitted), b.filter(emitted)
         assert a.equals(b, null_equal=True), f.name

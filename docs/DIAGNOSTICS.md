@@ -937,10 +937,10 @@ model = po.spec.ewridge(
 out = lf.online.fit_predict([model]).collect()
 last = out.group_by("stream", maintain_order=True).last().select(pl.col("m").struct.unnest())
 slope = last.select(
-    coef=pl.col("coef").list.get(1),  # [intercept, x]
-    se=pl.col("se_coef").list.get(1),
-    hc0=pl.col("se_coef_hc0").list.get(1),
-    hac=pl.col("se_coef_hac").list.get(1),
+    coef=pl.col("coef").arr.get(1),  # [intercept, x]
+    se=pl.col("se_coef").arr.get(1),
+    hc0=pl.col("se_coef_hc0").arr.get(1),
+    hac=pl.col("se_coef_hac").arr.get(1),
 )
 print(f"the slope's spread over the {streams} streams: {slope['coef'].std():.4f}")
 for se in ["se", "hc0", "hac"]:

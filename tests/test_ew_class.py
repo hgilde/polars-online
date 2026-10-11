@@ -710,7 +710,7 @@ class TestEdgeCases:
             "f64",
             "f64",
             "enum",
-            "list[f64]",
+            f"array[f64, {po.spec.coef_index(spec()).height}]",
         ]
         assert idx["target"].to_list()[:4] == ["y"] * 4
         assert idx["columns"][0].to_list() == ["x0", "x1"]

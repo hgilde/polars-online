@@ -102,7 +102,7 @@ def assert_same_fit(plain: pl.DataFrame, blocked: pl.DataFrame, rel: float = 1e-
             both_nan = np.isnan(x) & np.isnan(y)
             ok = both_nan | (np.abs(x - y) <= rel * (1.0 + np.abs(x)))
             assert ok.all(), f"{col}: {np.sum(~ok)} rows differ, worst {np.nanmax(np.abs(x - y))}"
-        elif a.dtype == pl.List(pl.Float64):
+        elif isinstance(a.dtype, pl.Array) or a.dtype == pl.List(pl.Float64):
             for i, (p, q) in enumerate(zip(a.to_list(), b.to_list(), strict=True)):
                 assert (p is None) == (q is None), f"{col} at row {i}: one side unsolved"
                 if p is not None:

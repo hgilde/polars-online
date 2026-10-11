@@ -1712,7 +1712,10 @@ class ModelBank:
                ``po.gram.solve(po.gram.from_row(row))``
            * - every kind that reports coefficients
              - ``coef``
-             - on a Gram's row, the coefficients of that Gram's ``targets``
+             - on a Gram's row, the coefficients of that Gram's ``targets``.
+               A ``List``, where the output's ``coef`` is an ``Array``: one
+               column holds the rows of every closing spec and every Gram,
+               whose lengths differ
            * - an ``ew_cov`` with ``pca``
              - ``eig_vals`` and ``eig_vecs``
              - the vectors signed for continuity with the previous closed

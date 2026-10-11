@@ -442,6 +442,7 @@ class TestOutputSchemaStability:
             pl.Float64: "f64",
             pl.Int64: "i64",
             pl.List(pl.Float64): "list[f64]",
+            pl.Array(pl.Float64, 4): "array[f64, 4]",
         }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
@@ -537,17 +538,18 @@ class TestOutputSchemaStability:
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
         classes = pl.Enum(["neg", "pos"])
+        means = pl.Array(pl.Float64, 4)  # two classes' means of two features
         names = {
             REASON_DTYPE: "enum",
             classes: "enum",
             pl.Float64: "f64",
-            pl.List(pl.Float64): "list[f64]",
+            means: "array[f64, 4]",
         }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
         per_instance = [classes, pl.Float64, pl.Float64, pl.Float64]
-        per_instance += [pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
+        per_instance += [pl.Float64, REASON_DTYPE, means]
         n_instances = len(half_life) if isinstance(half_life, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 

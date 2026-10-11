@@ -112,7 +112,7 @@ def test_the_nested_coef_list_survives() -> None:
     want = po.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
     outs = po.ModelBank([SPEC]).fit_predict_arrow(df)
     got = pl.Series(outs[0]).rename("m").struct.unnest()
-    assert got["coef"].dtype == pl.List(pl.Float64)
+    assert got["coef"].dtype == pl.Array(pl.Float64, 3)
     assert got["coef"].null_count() == want["coef"].null_count()
     assert got["coef"].equals(want["coef"], null_equal=True)
 

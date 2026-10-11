@@ -218,3 +218,58 @@ def test_a_word_from_a_fixed_set_is_an_enum():
     # The declared struct is the realized one, the IO plugin's schema too.
     plan = po.fit_predict(df.lazy(), [cls, sel])
     assert plan.collect_schema()["c"] == out.schema["c"]
+
+
+#: The fields laid out like ``coef``, one value per coefficient.
+_COEF_LIKE = ("coef", "support_coef", "se_coef", "se_coef_hc0", "se_coef_hac")
+
+
+def test_coef_is_an_array_as_wide_as_its_layout():
+    """``coef`` and the fields laid out like it were a ``List`` of any length
+    on every row; each row is ``coef_index``'s height long, so they are an
+    ``Array(Float64, k)``, which ``to_numpy`` reads as an ``(n, k)`` matrix
+    and ``.arr`` indexes. ``micro``'s, one row per summary and as many as
+    there are, stays a ``List``."""
+    spec = po.spec.ewridge(
+        "r",
+        targets=["y"],
+        features=["x0", "x1"],
+        half_life=50.0,
+        coef_every=0,
+        emit_se_coef=True,
+        emit_robust_se=True,
+        robust_se_lags=2,
+    )
+    k = po.spec.coef_index(spec).height
+    assert k == 3
+    df = _rows()
+    out = po.ModelBank([spec]).fit_predict(df)
+    idx = po.spec.output_index(spec)
+    for field in _COEF_LIKE:
+        assert out["r"].struct.field(field).dtype == pl.Array(pl.Float64, k), field
+        assert idx.filter(field=field)["dtype"].item() == f"array[f64, {k}]", field
+    matrix = out["r"].struct.field("coef").drop_nulls().to_numpy()
+    assert matrix.dtype == np.float64 and matrix.shape[1] == k and matrix.shape[0] > 100
+    # One chunk or seven: the same arrays, to the bit.
+    seven = po.ModelBank([spec])
+    chunked = pl.concat(seven.fit_predict(c) for c in df.iter_slices(-(-df.height // 7)))
+    for field in _COEF_LIKE:
+        assert chunked["r"].struct.field(field).equals(out["r"].struct.field(field)), field
+    # The query's declared schema is the realized one.
+    assert po.fit_predict(df.lazy(), [spec]).collect_schema()["r"] == out.schema["r"]
+    # `last_row()` is the struct's last row, Array and all.
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    assert bank.last_row().schema["coef"] == pl.Array(pl.Float64, k)
+    # `unnest` reads an Array, and a List of a file written before.
+    flat = out.online.unnest([spec])
+    assert flat["coef_y_x1"].equals(out["r"].struct.field("coef").arr.get(2).alias("coef_y_x1"))
+    as_list = out.with_columns(
+        pl.col("r").struct.with_fields(pl.field("coef").cast(pl.List(pl.Float64)))
+    )
+    assert as_list.online.unnest([spec])["coef_y_x1"].equals(flat["coef_y_x1"])
+    micro = po.spec.micro("u", features=["x0", "x1"], eps=0.3, half_life=50.0)
+    assert po.spec.output_index(micro).filter(field="coef")["dtype"].item() == "list[f64]"
+    assert po.ModelBank([micro]).fit_predict(df)["u"].struct.field("coef").dtype == pl.List(
+        pl.Float64
+    )
