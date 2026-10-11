@@ -1702,16 +1702,16 @@ impl EwCovModel {
     }
 
     /// The rows of positive weight the statistics are read from: every one
-    /// the accumulator has learned, or under a window those since its
-    /// boundary, counted as [`Self::view`] draws it.
+    /// the accumulator has learned, or under a window those learned since
+    /// its boundary. A row before the boundary carries none of the weight
+    /// read, the boundary's own weight being what the window subtracts, or
+    /// nothing when [`Self::view`] reads the live accumulator because that
+    /// weight is 0.
     fn rows_read(&self) -> u64 {
         let live = self.cov.rows_learned();
-        let Some(win) = self.win.as_ref() else {
-            return live;
-        };
-        match win.snaps.boundary() {
-            Some((_, old)) if old.w != 0.0 => old.rows.map_or(live, |r| live.saturating_sub(r)),
-            _ => live,
+        match self.win.as_ref().and_then(|win| win.snaps.boundary()) {
+            Some((_, old)) => old.rows.map_or(live, |r| live.saturating_sub(r)),
+            None => live,
         }
     }
 

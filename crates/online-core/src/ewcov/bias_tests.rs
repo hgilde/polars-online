@@ -274,6 +274,53 @@ fn the_factor_is_bessels_for_unit_rows_and_undefined_for_one() {
     }
     c.set_moments(&[0.0], &[1.0], 3.0, None);
     assert!(c.unbiased_factor().is_nan());
+    // A sum of squares of 0 beside a weight is one no digit was kept of
+    // (`crate::truncated`'s floor), not a sum of none: no factor, where
+    // `W² / (W² − 0)` would read the weighted mean as unbiased.
+    c.set_moments(&[0.0], &[1.0], 3.0, Some(0.0));
+    assert!(c.unbiased_factor().is_nan());
+}
+
+/// A window of light rows after heavy ones: where the subtraction keeps
+/// digits of the window's squared weights, the eleven equal rows inside it
+/// read `c = 11 / 10`, the biased twin's variance times Bessel's factor;
+/// where it keeps none (rows of `1e-7` after rows of 1), the factor is
+/// undefined and the variance null, as Kish's size is `None` there
+/// ([`EwCov::n_kish`]), where the twin still reads the window's weighted
+/// mean.
+#[test]
+fn a_window_whose_squared_weights_kept_no_digit_reads_undefined() {
+    for (light, digits) in [(1e-3, true), (1e-7, false)] {
+        let model = |bias: bool| {
+            let mut c = cfg(f64::INFINITY, Some(10.0), bias);
+            c.stats = vec![EwCovStat::Var];
+            c.precision_prior = None;
+            c.pca = 0;
+            let mut m = EwCovModel::new(c).unwrap();
+            m.set_window_closed(crate::WindowClosed::Both);
+            m
+        };
+        let (mut unbiased, mut biased) = (model(false), model(true));
+        let mut s = 5u64;
+        let (mut got, mut twin) = (Vec::new(), Vec::new());
+        for i in 0..1013 {
+            let x = [uniform(&mut s), uniform(&mut s), uniform(&mut s)];
+            let w = if i < 1000 { 1.0 } else { light };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            got = unbiased.step(&x, &[], d, w).pred;
+            twin = biased.step(&x, &[], d, w).pred;
+        }
+        assert!(twin[0].is_finite() && twin[0] > 0.0, "{light}: {twin:?}");
+        if digits {
+            let want = 11.0 / 10.0 * twin[0];
+            assert!(
+                (got[0] - want).abs() <= 1e-3 * want,
+                "{light}: {got:?} {want}"
+            );
+        } else {
+            assert!(got[0].is_nan(), "{light}: {got:?}");
+        }
+    }
 }
 
 /// One row of weight has no spread to correct (hard rule 9): read before
