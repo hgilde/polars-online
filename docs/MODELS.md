@@ -6,11 +6,19 @@ parameters. Most also say what the model is checked against. The README's
 [Models](../README.md#models) has the table of all twenty-two, how each
 learns from a row, and which to choose for which question.
 
-**The update rules share one notation.** `z` is `[1, x]` when there is an
-intercept, and `x` when there is not. `w` is the row's weight, and `W` the
-weight accumulated before the row. `λ` is the row's decay (`lam=` on a
-spec gives it directly), `0.5 ** (Δclock / half_life)`, with `Δclock` the clock's step from the row
-before, capped at `gap_cap` ([Time and decay](../README.md#time-and-decay)).
+**The update rules share one notation.** A symbol in this table means the
+same thing in every entry that uses it, and each entry defines its other
+symbols beside its rule:
+
+| symbol | what it is | used by |
+|---|---|---|
+| `z` | `[1, x]` when there is an intercept, and `x` when there is not | the linear models |
+| `w`, `W` | the row's weight, and the weight accumulated before the row | every model |
+| `λ` | the row's decay, `0.5 ** (Δclock / half_life)` (`lam=` on a spec gives it directly), with `Δclock` the clock's step from the row before, capped at `gap_cap` ([Time and decay](../README.md#time-and-decay)) | every model |
+| `S_j`, `η_j` | target `j`'s running means of `z zᵀ` and of `z·y_j`, which the least-squares fits solve from | `ewridge`, `huber`, `quantile` |
+| `e` | the row's residual: `y` less the prediction made before the row | `huber`, `quantile` |
+| `ω` | a ridge added to a covariance: `precision_prior`, fading as `ew_cov`'s prior does, so that a class or a state can be scored from its first row | `ew_class`, `hmm` |
+
 Without a clock column, each row is one unit of clock. A model keeps its
 running sums in *accumulators* of three kinds:
 
@@ -100,16 +108,16 @@ weighs the rows from the middle of the stream, where the slope was near 2.
 A ridge of 0.1 divides a slope by about `1 + 0.1/var(x)`, here 1.1, because
 the ridge is added to the feature's variance in the solve.
 
-`S_j` and `r_j` are target `j`'s running means of `z zᵀ` and `z·y_j`, kept
+`S_j` and `η_j` are target `j`'s running means of `z zᵀ` and `z·y_j`, kept
 over the rows where `y_j` is present, and `W_j` is the weight behind them.
 The coefficients are solved from them on a schedule:
 
 ```
 W'   = λW + w                       weight_sum, over every row
 W_j' = λW_j + w                     on the rows where y_j is present, λW_j on the others
-S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   r_j' = (λW_j·r_j + w·z·y_j) / W_j'
-solve, ridge_scale="mean":  (S_j + ridge·D) β_j = r_j + ridge·D·β₀      D = I with a 0 at the intercept
-solve, ridge_scale="sum":   (W_j·S_j + p·ridge·I) β_j = W_j·r_j + p·ridge·β₀
+S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   η_j' = (λW_j·η_j + w·z·y_j) / W_j'
+solve, ridge_scale="mean":  (S_j + ridge·D) β_j = η_j + ridge·D·β₀      D = I with a 0 at the intercept
+solve, ridge_scale="sum":   (W_j·S_j + p·ridge·I) β_j = W_j·η_j + p·ridge·β₀
                             p the product of every decay so far, β₀ = coef_prior (0 by default)
 ```
 
@@ -178,7 +186,7 @@ default `standardize=False`, `ridge` is in the features' squared units.
 | `target_gaps` | `S_j` covers | the targets of one spec keep |
 |---|---|---|
 | `"own_rows"`, the default | the rows the target is present on, so its fit is the fit of the frame with those nulls dropped | one `k × k` matrix per pattern of missing rows |
-| `"pairwise"` | every row, the way pandas' `DataFrame.cov` takes a pairwise-complete covariance, with `r_j` centred at the target's own rows' means | one matrix |
+| `"pairwise"` | every row, the way pandas' `DataFrame.cov` takes a pairwise-complete covariance, with `η_j` centred at the target's own rows' means | one matrix |
 
 The two modes agree when the gaps are independent of the features. When
 they depend on the features, as with a target present only on trade rows
@@ -476,13 +484,13 @@ row 2200: truth 3, kalman 3.04, ewridge 2.05
 ```
 
 Per target `j`, `β_j` are the coefficients and `P_j` their covariance.
-`r_i` is coefficient `i`'s `revert_half_life`, and `φ_i = 2^(−Δclock/r_i)`
+`κ_i` is coefficient `i`'s `revert_half_life`, and `φ_i = 2^(−Δclock/κ_i)`
 its entry of `Φ`. `Q` is the process noise, which `coef_half_life` sets, and
 `R_j` the observation noise, the target's exponentially weighted residual
 variance unless `obs_var` is given:
 
 ```
-β_j ← Φβ_j    P_j ← ΦP_jΦ              Φ = diag(2^(−Δclock/r_i)), every row
+β_j ← Φβ_j    P_j ← ΦP_jΦ              Φ = diag(2^(−Δclock/κ_i)), every row
 P_j ← P_j + Q·D_j²,  D_j ← 0           on a row that observes y_j; D_j the clock since the last
                                        (bounded on a reverting coefficient, below)
 s   = zᵀP_j z + R_j/w                   K   = P_j z / s
@@ -561,7 +569,7 @@ run of null targets. For a regressor that is always active, keep the default
 `inf`: the pull would settle a persistent effect below its true size, the
 more so the shorter the reversion half-life. A reverting coefficient's
 process noise over a gap `D` is `q_i·g_i(D)²`, with `g_i(D) =
-(1 − 2^(−D/r_i))/θ_i` and `θ_i = ln 2/r_i`. That is `q_i·D²` for a short
+(1 − 2^(−D/κ_i))/θ_i` and `θ_i = ln 2/κ_i`. That is `q_i·D²` for a short
 gap, and never more than `q_i/θ_i²`, so the coefficient's uncertainty stays
 bounded across a run of null targets, where a random walk's grows without
 bound.
@@ -590,7 +598,7 @@ column in the stream and give it with `standardize=False`, as in
 
 **`predict` applies the reversion,** by the same `Φ` over the distance
 from the last learned row, capped by `gap_cap`. A slope therefore keeps at
-least `2^(−gap_cap/r_i)` of its value. To let a far prediction approach the
+least `2^(−gap_cap/κ_i)` of its value. To let a far prediction approach the
 intercept, give a `gap_cap` that spans several reversion half-lives. Under
 `standardize` the intercept is the target's level at the features' means.
 
@@ -671,16 +679,16 @@ miss, so it lands nearer the truth than least squares and not on it. The
 median takes only the sign of a row's miss beyond the band, so a wild row
 counts no more than an ordinary one.
 
-`r` is the row's residual, and `σ` the exponentially weighted root mean
+`e` is the row's residual, and `σ` the exponentially weighted root mean
 square of the target's residuals, about 0. `δ` is `huber_delta` and `τ`
 the `quantile` level. The *Gram* is `ewridge`'s `S`, and the cross-moment
-its `r_j`:
+its `η_j`:
 
 ```
-huber:     the ridge update at weight  w · min(1, δσ / |r|)
+huber:     the ridge update at weight  w · min(1, δσ / |e|)
 quantile:  one Newton step on the check loss, smoothed by a uniform kernel of half-width h = quantile_eps · σ
-           |r| < h:  a least-squares row with target  y + 2h(τ − ½)
-           |r| ≥ h:  adds  w · 2h · ψ_τ(r) · z  to the cross-moment and nothing to the Gram,  ψ_τ(r) = τ − 1{r < 0},
+           |e| < h:  a least-squares row with target  y + 2h(τ − ½)
+           |e| ≥ h:  adds  w · 2h · ψ_τ(e) · z  to the cross-moment and nothing to the Gram,  ψ_τ(e) = τ − 1{e < 0},
                      bounded so the fit at the row moves by at most the row's residual
            h is never narrower than (k/n)^{2/5} · σ, for the target's effective sample n
 ```
@@ -708,7 +716,7 @@ med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", g
 statsmodels' `HuberT` takes 1.345 and scikit-learn's `HuberRegressor`
 1.35. `huber_delta=inf` cuts nothing, which is least squares.
 
-**The band's rows, those with `|r| < h`, give the Newton step its
+**The band's rows, those with `|e| < h`, give the Newton step its
 curvature.** So a much smaller `quantile_eps` narrows the band and slows
 the convergence, and a much larger one smooths the quantile toward the
 mean. The floor on `h` keeps a short half-life from leaving too few rows
@@ -1701,13 +1709,13 @@ settles near two-thirds of the truth: each row's estimate is a ratio of
 two averages, which reads low.
 
 The row is standardised against the means and variances as they stood before
-it, `r_i = (x_i − m_i)/√v_i`. With `S₁ = Σ r_i` and `S₂ = Σ r_i²` over the
+it, `ζ_i = (x_i − m_i)/√v_i`. With `S₁ = Σ ζ_i` and `S₂ = Σ ζ_i²` over the
 `n` features that have a standardised value, the row's estimate `u` is Engle
 and Kelly's Lemma 2.3. The reported level, `rho`, then follows `u` under one
 of two dynamics, with `α` and `β` the `"linear"` dynamic's two weights:
 
 ```
-u = (S₁² − S₂) / ((n − 1)·S₂)        = (mean of r_i·r_j over i ≠ j) / (mean of r_i²)
+u = (S₁² − S₂) / ((n − 1)·S₂)        = (mean of ζ_i·ζ_j over i ≠ j) / (mean of ζ_i²)
 
 "ew":      W' = λW + w,  b = w/W'      ρ' = ρ + b·(u − ρ)                       ρ = u at W = 0
 "linear":  ρ' = (1 − α − β)·ρ̄' + α·u + β·ρ      (ρ̄ the "ew" level)          ρ' = ρ at w = 0
@@ -2150,7 +2158,7 @@ A scattered row that lands on a ring, or close enough to join one of its
 summaries, takes the ring's label, so not every scattered row is flagged.
 
 Each micro-cluster is a *summary*: a decayed weight `n`, a centre `c`, and a
-radius `r`, the exponentially weighted root-mean-square distance of its rows
+radius `ν`, the exponentially weighted root-mean-square distance of its rows
 from the centre. A summary is *established* once its weight reaches `beta_mu`
 rows of the stream's mean row weight `w̄`. With `p` the number of features,
 and distances in units of each feature's exponentially weighted standard
@@ -2160,10 +2168,10 @@ deviation, a row joins a summary only if the summary's radius stays within
 ```
 a = n_j/(n_j + w̄)      b = w̄/(n_j + w̄)
 n_j  ← λ n_j                                               every summary
-j*   = the nearest established summary, if it keeps  a r²_j + a b ‖x − c_j‖² ≤ eps² p,
+j*   = the nearest established summary, if it keeps  a ν²_j + a b ‖x − c_j‖² ≤ eps² p,
        else the nearest other summary, if it does,
        else a new one at x
-n_j* ← n_j* + w     c_j* ← c_j* + (w/n_j*)(x − c_j*)     r²_j* ← min(·, eps² p)
+n_j* ← n_j* + w     c_j* ← c_j* + (w/n_j*)(x − c_j*)     ν²_j* ← min(·, eps² p)
 ```
 
 The metric's variance is floored as
@@ -2272,12 +2280,12 @@ classes in six dimensions, each with its own covariance. There its accuracy
 is within 0.01 of the Bayes rate, and each band of its probabilities is
 within 0.03 of the share of rows it classes right.
 
-`π_c` is a class's share of the weight, and `r_c` the ridge `precision_prior`,
+`π_c` is a class's share of the weight, and `ω_c` the ridge `precision_prior`,
 which makes a class scoreable from its first row and fades as `ew_cov`'s does:
 
 ```
-π_c = n_c / Σ n         r_c = precision_prior · s_c        (s_c: the prior's fade, as in ew_cov)
-M_c = C_c + r_c I  (full)      M = Σ π_c M_c  (shared)      diag(C_c) + r_c  (diagonal)
+π_c = n_c / Σ n         ω_c = precision_prior · s_c        (s_c: the prior's fade, as in ew_cov)
+M_c = C_c + ω_c I  (full)      M = Σ π_c M_c  (shared)      diag(C_c) + ω_c  (diagonal)
 ℓ_c = ln π_c − ½ ln det M_c − ½ (x − μ_c)ᵀ M_c⁻¹ (x − μ_c)
 p_c = exp(ℓ_c − max ℓ) / Σ exp(ℓ − max ℓ)                  class = argmax ℓ
 n_c ← λ n_c + w·[y = c]        μ_c, C_c ← weighted Welford on the row's own class
@@ -2507,17 +2515,17 @@ which runs it on the equicorrelation of the standardised row (`deco`'s `u`).
 
 **`kind="monitor"` tests each span of `span_rows` rows for a constant
 correlation,** with the closed-sample constancy test of Wied, Krämer and
-Dehling (2012). With `ρ̂_j` the correlation of the span's first `j` rows, and
-`D̂` the delta-method long-run standard deviation of `ρ̂`, the last row of a
-span reports, per pair:
+Dehling (2012). With `m = span_rows`, `ρ̂_j` the correlation of the
+span's first `j` rows, and `D̂` the delta-method long-run standard deviation
+of `ρ̂`, the last row of a span reports, per pair:
 
 ```
-Q = max_{2≤j≤T} (j/√T)·|ρ̂_j − ρ̂_T| / D̂
+Q = max_{2≤j≤m} (j/√m)·|ρ̂_j − ρ̂_m| / D̂
 ```
 
 Under the null, `Q` converges to `sup|B|` for a Brownian bridge `B`, so the
 critical value is the Kolmogorov quantile, the published 1.3581 at 5%. `D̂`
-uses the paper's Bartlett kernel, lag `l` at `1 − l/γ` with `γ = ⌊ln T⌋`.
+uses the paper's Bartlett kernel, lag `l` at `1 − l/L` with `L = ⌊ln m⌋`.
 This code uses `df` from [Example data](../README.md#example-data):
 
 ```python
@@ -2844,7 +2852,7 @@ previous row left, and every output is read before the row is learned from:
 
 ```
 p1_l   = Σ_k p_k·Π_kl                      the predicted state
-f_l    = N(x | μ_l, Σ_l + r_l·I)           the state's density, r_l its fading prior ridge
+f_l    = N(x | μ_l, Σ_l + ω_l·I)           the state's density, ω_l its fading prior ridge
 loglik = ln Σ_l p1_l·f_l                   the row's surprise
 p_l   ← p1_l·f_l / Σ                       the filtered state
 ```

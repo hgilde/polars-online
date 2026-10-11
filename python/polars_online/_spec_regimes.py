@@ -49,7 +49,7 @@ def hmm(
     .. code-block:: text
 
         p1_l   = sum_k p_k * Pi_kl                     the predicted state
-        f_l    = N(x | mu_l, Sigma_l + r_l I)          the state's density
+        f_l    = N(x | mu_l, Sigma_l + omega_l I)      the state's density
         loglik = log sum_l p1_l f_l                    the row's surprise
         p_l   <- p1_l f_l / sum                        the filtered state
 

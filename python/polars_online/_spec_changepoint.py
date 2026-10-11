@@ -405,13 +405,14 @@ def corrchange(
 
     .. code-block:: text
 
-        Q = max_{2 <= j <= T} (j / sqrt(T)) * |rho_j - rho_T| / D
+        Q = max_{2 <= j <= m} (j / sqrt(m)) * |rho_j - rho_m| / D
 
-    ``rho_j`` is the sample correlation of the span's first ``j`` rows. ``D``
+    ``m`` is ``span_rows``, and ``rho_j`` the sample correlation of the span's
+    first ``j`` rows. ``D``
     is the delta-method long-run standard deviation of ``rho``. It takes the
     five raw moments ``(x², y², x, y, xy)`` centred at their span means and
-    their Bartlett long-run covariance at bandwidth ``γ = floor(ln T)`` with
-    the paper's kernel, lag ``l`` at weight ``1 - l/γ`` (their Appendix A.1).
+    their Bartlett long-run covariance at bandwidth ``L = floor(ln m)`` with
+    the paper's kernel, lag ``l`` at weight ``1 - l/L`` (their Appendix A.1).
     It maps them to ``(var_x, var_y, cov)`` and then to ``rho``. It is computed
     on the span centred at its means and scaled by its standard deviations, as
     the paper's ``xi`` series, so the columns' level does not enter. A pair
@@ -532,7 +533,8 @@ def corrchange(
         more than the 0.03 Wied and Galeano's own table is good to.
     ``bandwidth``
         ``"monitor"`` and ``"sequential"``: overrides the Bartlett bandwidth,
-        ``floor(ln T)`` or ``floor(ln span_rows)``. At 1 only lag 0 is left,
+        ``floor(ln span_rows)``, for the span and for the history alike. At 1
+        only lag 0 is left,
         and 0 is refused.
     ``scalar``
         ``"monitor"`` and ``"sequential"``: test the equicorrelation of the
