@@ -791,8 +791,9 @@ takes::
 It raises ``ValueError``, naming the spec, the parameter and the value, for a
 value the model refuses:
 
-- a count below 0, or below 1 for a count there must be one of (the lags,
-  ``k``, ``shards``, ``gram_threads``, ``max_iter``, ``max_clusters``, the
+- a count below 0, or below 1 for a count there must be one of (``lags``,
+  ``cross_lags``, ``resid_autocorr_lag``, ``ljung_box_lags``, ``k``,
+  ``shards``, ``gram_threads``, ``max_iter``, ``max_clusters``, the
   ``*_every_rows`` counts and the ``max_rows_between_*`` caps), or past what
   the Rust side holds it in (``2^32 - 1`` for the ``max_rows_between_*`` caps,
   ``max_iter``, ``update_every_rows`` and ``split_merge_every_rows``;
