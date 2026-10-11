@@ -1,11 +1,13 @@
 # Performance: where the time and memory go
 
-This document says where a bank's time and memory go, which setting moves
-each number, and the measurement behind each. [The headline](#the-headline)
-is the short answer. The numbered sections hold the measurements, grouped
-by topic. Each keeps the number it was given when it was written, which is
-the order the measurements were made, because the code and the README cite
-it by that number. Most are dated, and each reads as of its date.
+**A bank spends its time on the models' own arithmetic, and its memory on
+their state, the chunks in flight and what Polars has read ahead.** When a
+run is slower or larger than you expected, [the headline](#the-headline)
+names the setting that moves each number. The numbered sections hold the
+measurements behind it, grouped by topic. Each keeps the number it was
+given when it was written, which is the order the measurements were made,
+because the code and the README cite it by that number. Most are dated, and
+each reads as of its date, with the names of its day.
 
 | section | read it when | subsections |
 |---|---|---|
@@ -29,6 +31,8 @@ it by that number. Most are dated, and each reads as of its date.
 | [13. The new families](#13-the-new-families-and-where-a-wide-row-goes-2026-09-05) | you run one of the new families (`kmeans`, `micro`, `ew_class`, `sgd`, `pa`, `seqtest`, `kalman`'s transition, conformal intervals), or a wide row | [the contract](#the-contract-bit-for-bit) · [the survey](#the-survey) · [`ew_cov`'s row](#where-ew_covs-row-went) · [the wall clock](#reading-the-wall-clock-not-the-profile) · [`ew_class`](#ew_class-one-factorization-per-learned-row) · [`kalman`, `sgd`, `pa`](#kalman-sgd-pa-allocations-and-a-closure) · [thread scaling](#thread-scaling) · [what is left](#what-is-left-and-why) |
 | [14. The Gram update](#14-the-gram-update-measured-2026-09-05) | you want why the Gram update is not computed as one triangle | [the variants](#the-variants) · [not bit-identical](#the-mirror-is-not-bit-identical) · [slower](#and-it-is-slower-by-a-lot) · [what shipped](#what-is-worth-having) |
 | [18. The blocked Gram update](#18-the-blocked-gram-update-2026-09-08) | you have a wide `ewridge`: what `gram_block_rows` gains, and what a solve takes back | [the measurement](#the-measurement) · [three readings](#three-things-to-read-off-it) · [what it does not change](#what-blocking-does-not-change) |
+| [37. One wide Gram on several threads](#37-one-wide-gram-on-several-threads-2026-10-08) | one accumulator is the whole job, and you want what `gram_threads` gains on `ewridge` or `ew_cov` | |
+| [38. A solve's bits, whatever the pool](#38-a-solves-bits-whatever-the-pool-2026-10-09) | you want why a wide fit gives the same bits in a pool of any size | |
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [the scaler's fix](#where-sgd-lost-and-the-scalers-fix) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
 | [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
@@ -55,24 +59,69 @@ it by that number. Most are dated, and each reads as of its date.
 
 ## Reading this document
 
-Every later section assumes four things: the short answer below, the
-words this document uses, today's name for each old one a dated section
-uses, and how the numbers were made.
+**A dated section reads as of its date, so read it with today's picture
+of where the time goes, today's names, and how its numbers were made.**
+The headline gives the picture and the setting behind each symptom. A
+dated section uses the words of a profiler and of Polars' streaming
+engine, and the parameter names of its day, each defined here.
 
 ### The headline
 
-**A bank's row is the model's own arithmetic, and its memory is the state,
-the chunks in flight and what Polars has read ahead.** Everything around
-the models was brought down in the first pass, §1–§8, and every golden
-number stayed as it was. What a row costs per model is in the README's
-[Throughput](../README.md#throughput) table, from §28 and §31. Where a
-number is not what you expected, find what you see here:
+**A bank's row is the model's own arithmetic: reading the file, and
+assembling the output, take a small share of a run.** The first pass,
+§1–§8, brought everything around the models down, and every golden number
+stayed as it was. This recipe times each part of one run of `ewridge` with
+20 features over a million generated rows: the read alone, learning with
+no output, learning and scoring, and scoring from a saved state without
+learning. The times are your machine's:
+
+```python
+import time
+
+import numpy as np
+import polars as pl
+import polars_online as po
+
+rng = np.random.default_rng(9)
+n = 1_000_000
+features = [f"x{j}" for j in range(20)]
+pl.DataFrame(
+    {"y": rng.standard_normal(n)} | {f: rng.standard_normal(n) for f in features}
+).write_parquet("rows.parquet")
+spec = po.spec.ewridge("ridge", targets=["y"], features=features, half_life=1000.0)
+
+
+def rows_a_second(run):
+    start = time.perf_counter()
+    run()
+    return n / (time.perf_counter() - start) / 1e6
+
+
+query = pl.scan_parquet("rows.parquet")
+bank = po.ModelBank([spec])
+print(f"time to read the file:      {rows_a_second(lambda: query.collect()):.1f} million rows a second")
+print(f"time to learn, no output:   {rows_a_second(lambda: bank.fit(query)):.1f} million rows a second")
+print(f"time to learn and score:    {rows_a_second(lambda: query.online.fit_predict([spec]).collect()):.1f} million rows a second")
+print(f"time to score from a state: {rows_a_second(lambda: query.online.predict(bank).collect()):.1f} million rows a second")
+```
+
+```text
+time to read the file:      26.7 million rows a second
+time to learn, no output:   2.3 million rows a second
+time to learn and score:    2.4 million rows a second
+time to score from a state: 6.0 million rows a second
+```
+
+Learning sets the pace, and scoring from a state skips the update, so it
+runs more than twice as fast. What a row costs per model is in the
+README's [Throughput](../README.md#throughput) table, from §28 and §31.
+Where a number is not what you expected, find what you see here:
 
 | what you see | where the time or memory goes | what moves it | § |
 |---|---|---|---|
 | a row slower than the README's throughput | the model's own update, `O(k²)` a row for a model that solves, and its solves on their schedule | `solve_every` and `max_rows_between_solves`; `gram_block_rows` and `gram_threads` for a wide `ewridge` | §18, §28, §30, §37, §38 |
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28 |
-| small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_rows`, 100,000 by default | §12, §20 |
+| small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default (`chunk_rows` in the sections written before it was renamed) | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
 | one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` | §12, §25, §31, §37 |
@@ -89,7 +138,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 
 | word | meaning here |
 |---|---|
-| golden number | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A task in §3 that moved one was wrong by definition. Later sections accept a reordering of the arithmetic that moves a value within that tolerance (§8, §20) |
+| golden number | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A change in §3 that moved one was wrong by definition. Later sections accept a reordering of the arithmetic that moves a value within that tolerance (§8, §20) |
 | bit-identical, bit-exact | the same floating-point bits: §13 compares every float column as its `u64` bits, with its validity |
 | stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); the README's *Parallelism* calls it a task. A single stream is one spec over one group, or with no `group` at all |
 | instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
@@ -109,10 +158,11 @@ Besides the README's own words (bank, spec, chunk, state), these:
 ### Names that changed
 
 **The dated sections use the names of their day, and so does every dated
-record under `docs/`.** On 2026-10-02 the public parameters and output
-fields were renamed to Polars' words. A few other changes renamed one name
-each, and four surfaces were removed. A spec that passes a parameter
-renamed on 2026-10-02 is refused, and the message names the new one. A record that uses an old name points to this table:
+record under `docs/`, so look an old name up here.** On 2026-10-02 the
+public parameters and output fields were renamed to Polars' words. A few
+other changes renamed one name each, and four surfaces were removed. A
+spec that passes a parameter renamed on 2026-10-02 is refused, and the
+message names the new one.
 
 | a dated section or record says | the name now | changed in |
 |---|---|---|
@@ -154,11 +204,11 @@ renamed on 2026-10-02 is refused, and the message names the new one. A record th
 
 ### How the numbers are made
 
-**Every number here was measured on one machine:** an Apple M-series with
+**Every number here was measured on one machine:** an Apple M4 Pro with
 10 performance and 4 efficiency cores, a release build (thin LTO,
-`codegen-units = 1`) and a single process. The chip, named in §19 and §20,
-is an M4 Pro. `ONLINE_TIMING=1` gives the section rows. §11 says how
-memory was measured, and why not by RSS.
+`codegen-units = 1`) and a single process. Other jobs often shared the
+machine, so the later sections log the load average beside each run. §11
+says how memory was measured, and why not by RSS.
 
 The raw numbers regenerate with these commands, each run from the
 repository root:
@@ -179,12 +229,13 @@ The sections name the rest where they use them: `scripts/scaling_bench.py`
 (§8), `marg_bench` (§17, §22–§24), `scripts/sklearn_comparison.py` (§19), and
 `sgd_bench` and `sgd_signature` (§20).
 
-`ONLINE_TIMING=1` prints two kinds of line to stderr:
+**For the time inside a run, set `ONLINE_TIMING=1`, which prints two kinds
+of line to stderr:**
 
 | printed by | once per | fields |
 |---|---|---|
-| the bank | chunk | `extract`, `group`, `process` and `assemble`, the sections, in wall milliseconds; and `total`, the whole call, of which the four sections are consecutive parts (`crates/online-polars/src/bank.rs:2704`, `:2945`) |
-| the command line's runner | run | `read_wait` and `write_wait`, the bank thread's waits on the reader and the writer; `bank`, its time in the bank; `writer_busy`, the writer's own time; and `total`, the whole run (`crates/online-polars/src/runner.rs:585`–`593`, `:748`) |
+| the bank | chunk | `extract`, `group`, `process` and `assemble`, the sections, in wall milliseconds; and `total`, the whole call, of which the four sections are consecutive parts (`crates/online-polars/src/bank.rs`) |
+| the command line's runner | run | `read_wait` and `write_wait`, the bank thread's waits on the reader and the writer; `bank`, its time in the bank; `writer_busy`, the writer's own time; and `total`, the whole run (`crates/online-polars/src/runner.rs`) |
 
 A profile says where inside `process` the time goes, and the wall clock
 says how much: §13 has the recipe. [CONTRIBUTING.md](../CONTRIBUTING.md)
@@ -1330,8 +1381,8 @@ only the data grows. The spec is `ewridge` k=20 with clock, weights and
 O(data) here means what it says: the whole input is resident at once.
 Polars calls a plugin function once with the entire column, and has to have
 the column first (§10). From 2026-09-03 every expression call warned with
-`InMemoryExpressionWarning` and named the plan; the warning went with the
-plugin on 2026-09-17.
+`InMemoryExpressionWarning` and named the streaming query to write
+instead; the warning went with the plugin on 2026-09-17.
 
 The sharpest form of the measurement is the same query with one expression
 swapped:
