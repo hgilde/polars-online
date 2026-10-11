@@ -72,8 +72,8 @@ data in memory only when it fits.
 **The first round begins sooner than XGBoost's own route from Polars, and
 as soon as LightGBM's at a third of the memory.** On those 10 million rows, it began after 4.0 seconds for XGBoost,
 against 8.7 for XGBoost's own iterator over Polars batches. For LightGBM it
-began after 1.7 seconds streamed and 1.5 in memory, against 1.5 for its own
-route from a collected frame at three times the memory. Each time is the
+began after 1.68 seconds streamed and 1.45 in memory, against 1.54 for its
+own route from a collected frame at three times the memory. Each time is the
 median of three interleaved runs on 8 threads, from Arrow IPC files, on an
 Apple M4 Pro at a load average of 4.5 to 10. The docstrings of
 `xgboost_matrix` and `lightgbm_dataset` have every parameter.
