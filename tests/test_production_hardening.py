@@ -650,9 +650,9 @@ def _names(code: str) -> tuple[set[str], list[str]]:
             (loaded.append if isinstance(node.ctx, ast.Load) else stored.add)(node.id)
         elif isinstance(node, ast.Import | ast.ImportFrom):
             stored.update((a.asname or a.name).split(".")[0] for a in node.names)
-        elif isinstance(node, ast.FunctionDef | ast.ClassDef):
-            stored.add(node.name)
-        elif isinstance(node, ast.ExceptHandler) and node.name:
+        elif isinstance(node, ast.FunctionDef | ast.ClassDef) or (
+            isinstance(node, ast.ExceptHandler) and node.name  # `except X as e`
+        ):
             stored.add(node.name)
         elif isinstance(node, ast.arg):
             stored.add(node.arg)

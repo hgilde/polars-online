@@ -836,8 +836,9 @@ class TestSettledWeight:
 
     def test_the_readmes_kernel_example_does_not_warn(self, tmp_path, monkeypatch):
         """README, *A local fit along any feature*, as it stood, on the README's
-        own ``df``, and the section's block as it stands: a sorted feature as the clock is sparse in its tails and
-        dense at its mode, so the rows come faster after the stream settles
+        own ``df``, and the section's block as it stands: a sorted feature as
+        the clock is sparse in its tails and dense at its mode, so the rows
+        come faster after the stream settles
         and the weight climbs from about 7.7 to 103. The notice read the
         regular-stream projection at the first withheld row past 95% settled
         and said ``min_weight = 10`` "cannot be met ... withheld for good",
