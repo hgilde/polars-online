@@ -23,6 +23,7 @@ import ast
 import importlib
 import inspect
 import re
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -371,6 +372,31 @@ def test_no_message_cites_the_plan_a_task_a_review_or_a_record():
         for where, line, text in shipped_strings()
         for hit in citations(text)
     ]
+    assert not found, "\n".join(found)
+
+
+def test_the_command_lines_help_cites_nothing(online_cli):
+    """`--help` is read as a guide is, by someone at a terminal with no copy
+    of the plan, and clap builds it from doc comments, which the string
+    scan above never reads: `--no-output` and `--closed-groups` cited two
+    records (task 244, C-3). So the help is read as the binary prints it,
+    and the hidden flags' doc comments beside it, since `--help` leaves
+    those out."""
+    text = subprocess.run(
+        [str(online_cli), "--help"], capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout
+    assert "--no-output" in text and "--closed-groups" in text, text
+    found = citations(text)
+    assert not found, "\n".join(found)
+    source = (REPO / "crates" / "online-cli" / "src" / "main.rs").read_text(encoding="utf-8")
+    start = source.index("struct Cli {")
+    docs = [
+        line.strip().removeprefix("///")
+        for line in source[start : source.index("\n}\n", start)].splitlines()
+        if line.strip().startswith("///")
+    ]
+    assert len(docs) > 20, docs
+    found = citations("\n".join(docs))
     assert not found, "\n".join(found)
 
 

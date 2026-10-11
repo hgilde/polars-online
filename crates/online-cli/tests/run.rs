@@ -1040,9 +1040,17 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
         assert!(out.status.success(), "{err}");
         err
     };
+    // The whole notice, word for word: its continuation lines once kept
+    // their indentation, six spaces inside a sentence (task 244, C-4).
     let warned = run(formula, Some("1"));
-    assert!(
-        warned.contains("formula target's written form") && warned.contains("unstable"),
+    assert_eq!(
+        warned.lines().collect::<Vec<_>>(),
+        [
+            "online: warning: a formula target's written form -- its tree in the TOML \
+             file and in a saved state -- is considered unstable. It may be changed at \
+             any point without it being considered a breaking change (set \
+             POLARS_ONLINE_WARN_UNSTABLE=0 or unset it to silence this)."
+        ],
         "{warned}"
     );
     for (targets, var) in [

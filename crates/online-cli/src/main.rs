@@ -43,10 +43,9 @@ struct Cli {
     output: Option<PathBuf>,
 
     /// Write no per-row output: the run's product is the state it saves, or
-    /// the closed groups it writes (docs/ENHANCEMENTS.md E50). Needs
-    /// `save_state` or `closed_groups`, in the config or as a flag. An
-    /// accumulator-only spec emits `weight_sum` a row and nothing else, which over
-    /// a billion rows is 8 GB of file written so it can be deleted.
+    /// the closed groups it writes. Needs `save_state` or `closed_groups`,
+    /// in the config or as a flag. A run that only accumulates has no use
+    /// for a row of output per row of input.
     #[arg(long)]
     no_output: bool,
 
@@ -65,8 +64,7 @@ struct Cli {
     #[arg(long)]
     chunk_size: Option<usize>,
 
-    /// The old name of `--chunk-size`, refused naming it (docs/PLAN.md task
-    /// 196, N2).
+    /// The old name of `--chunk-size`, refused naming it.
     #[arg(long = "chunk-rows", hide = true, value_name = "N")]
     chunk_rows: Option<String>,
 
@@ -74,8 +72,7 @@ struct Cli {
     #[arg(long)]
     load_state: Option<PathBuf>,
 
-    /// The old name of `--load-state`, refused naming it (docs/PLAN.md task
-    /// 196, N15).
+    /// The old name of `--load-state`, refused naming it.
     #[arg(long, hide = true, value_name = "PATH")]
     resume: Option<String>,
 
@@ -91,8 +88,7 @@ struct Cli {
     save_state: Option<PathBuf>,
 
     /// Write the groups that closed during the run to this file, beside the
-    /// output (docs/ENHANCEMENTS.md E54). Its format comes from the
-    /// extension. Needs a spec with `group_close`; overrides the config's
+    /// output. Its format comes from the extension. Needs a spec with `group_close`; overrides the config's
     /// `closed_groups`.
     #[arg(long)]
     closed_groups: Option<PathBuf>,
@@ -152,7 +148,13 @@ const UNSTABLE_VAR: &str = "POLARS_ONLINE_WARN_UNSTABLE";
 /// What the command line says of a formula target under [`UNSTABLE_VAR`]:
 /// its tree is read from the TOML file and written into the state, and that
 /// written form is not promised.
-const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the      TOML file and in a saved state -- is considered unstable. It may be changed at any point      without it being considered a breaking change (unset POLARS_ONLINE_WARN_UNSTABLE to      silence this)";
+/// Worded as Python's `UnstableWarning` is. Each line ends in a `\`, which
+/// drops the next line's indentation: without them the notice kept six
+/// spaces inside each sentence (task 244, C-4).
+const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its tree in the TOML \
+     file and in a saved state -- is considered unstable. It may be changed at any point \
+     without it being considered a breaking change (set POLARS_ONLINE_WARN_UNSTABLE=0 or \
+     unset it to silence this).";
 
 /// `text`, a TOML config, with each key `table` deprecates read as its new
 /// name at any depth, and a notice for each (`online_polars::DEPRECATED`,
