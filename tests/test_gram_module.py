@@ -796,8 +796,10 @@ class TestCoefStats:
         s2 = resid @ resid / (n - k - 1)
         want = np.sqrt(np.diag(s2 * np.linalg.inv(design.T @ design)))
         assert st["se"][1:] == pytest.approx(want[1:], rel=1e-4)
-        assert np.isnan(st["se"][0]), "the intercept's error needs the design, not the Gram"
-        assert st["t"][1:] == pytest.approx(b[1:] / want[1:], rel=1e-4)
+        # The intercept's too: the Gram holds the design's moments, means
+        # and all, so (X'X)^-1 at the intercept is 1 + m' C^-1 m over n.
+        assert st["se"][0] == pytest.approx(want[0], rel=1e-4)
+        assert st["t"] == pytest.approx(b / want, rel=1e-4)
 
     def test_a_real_coefficient_and_a_noise_one(self):
         n = 4000
@@ -1090,14 +1092,14 @@ class TestTheDocstringsMeasuredClaims:
             assert figure in doc, (label, figure, got)
         assert merged[2] < merged[1000] < 1e-12 < 1e-9 < raw[2] < raw[1000], got
 
-    def test_coef_stats_reads_the_centred_moments_without_an_intercept(self):
+    def test_coef_stats_reads_the_raw_moments_without_an_intercept(self):
         """``coef_stats``' docstring: on a Gram without an intercept column
-        the statistics read the centred moments, so ``resid_var`` is the
-        residual's variance about its mean and ``se`` a centred fit's, which
-        differ from least squares through the origin on a column far from
-        0."""
-        import statsmodels.api as sm
-
+        the statistics are least squares' through the origin, read from the
+        raw moments: ``resid_var`` the residuals' mean square, not their
+        variance, ``r2`` uncentred, and ``se`` from ``(Z'Z)^-1`` -- on a
+        column far from 0 and a target with a level no column carries, where
+        a centred reading differs. statsmodels' OLS without a constant is
+        the second opinion (``tests/test_second_opinion.py``)."""
         n = 4000
         rng = np.random.default_rng(3)
         x0 = 5.0 + rng.standard_normal(n)
@@ -1109,13 +1111,14 @@ class TestTheDocstringsMeasuredClaims:
         b = pg.solve(g)
         st = pg.coef_stats(g, b)
         X = np.column_stack([x0, x1])
-        ols = sm.OLS(y, X).fit()
-        assert b == pytest.approx(ols.params, rel=1e-9), "the slopes go through the origin"
         resid = y - X @ b
-        assert st["resid_var"] == pytest.approx(resid.var(), rel=1e-9)
-        assert st["resid_var"] < np.mean(resid**2) * (1 - 1e-4), "not the mean square"
-        doc = " ".join((pg.coef_stats.__doc__ or "").split())
-        assert f"OLS gave {ols.bse[0]:.2g} where this gives {st['se'][0]:.2g}" in doc
+        assert st["resid_var"] == pytest.approx(np.mean(resid**2), rel=1e-9)
+        assert st["resid_var"] > resid.var() * (1 + 1e-4), "not the variance"
+        assert st["sigma2"] == pytest.approx(resid @ resid / (n - 2), rel=1e-9)
+        assert st["r2"] == pytest.approx(1.0 - resid @ resid / (y @ y), rel=1e-9)
+        want = np.sqrt(np.diag(np.linalg.inv(X.T @ X)) * st["sigma2"])
+        assert st["se"] == pytest.approx(want, rel=1e-9)
+        assert st["t"] == pytest.approx(b / want, rel=1e-9)
 
     def test_the_correlation_diagonal_is_one_to_rounding(self):
         """``correlation``'s docstring: the diagonal is 1 to rounding, within

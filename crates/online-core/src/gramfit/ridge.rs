@@ -5,18 +5,32 @@
 //! The slopes solve `(A + ρ I) b = r_t` ([`super::Design`]), or under
 //! `standardize` the same in correlation form, `(S⁻¹ A S⁻¹ + ρ I) b̃ =
 //! S⁻¹ r_t` with `b = S⁻¹ b̃` and a column of zero variance dropped at 0.
-//! The intercept is `ȳ_t − m_t · b`. Then, with `C` the slots' centred
-//! co-moments and `n` the target's Kish size,
+//! The intercept is `ȳ_t − m_t · b`. Then, with `A` the system's moments
+//! and `n` the target's Kish size,
 //!
 //! ```text
-//! resid_var = Var[y] − 2 b' cov_xy + b' C b          (at least 0)
+//! resid_var = S_yy − 2 b' r_t + b' A b               (at least 0)
 //! sigma2    = resid_var · n / (n − p)                 p: the slots, and the intercept,
 //!                                                     or the parts pooled within
-//! se        = √(diag(C⁻¹) · sigma2 / n)               t = b / se
-//! r2        = 1 − resid_var / Var[y]
+//! se        = √(diag(A⁻¹) · sigma2 / n)               t = b / se
+//! se_0      = √((1 + m_t' A⁻¹ m_t) · sigma2 / n)      the intercept's, with one
+//! r2        = 1 − resid_var / S_yy
 //! ```
 //!
-//! `cov_xy` is the target's centred cross-moments. Both systems are
+//! With an intercept the moments are centred: `A` the slots' co-moments
+//! `C`, `r_t` the target's centred cross-moments and `S_yy = Var[y]`, so
+//! `resid_var` is the residuals' variance. Through the origin they are raw,
+//! as least squares without a constant reads them: `A = C + μ μᵀ`, `r_t =
+//! E[z y]` and `S_yy = Var[y] + ȳ²`, so `resid_var` is the residuals' mean
+//! square and `r2` is uncentred, as statsmodels reports a fit with no
+//! constant. A Gram pooled within parts has means of 0 and its target's
+//! too, so its raw moments are its centred ones and nothing moves.
+//!
+//! `se_0` is least squares' `(X'X)⁻¹` at the intercept, from the block
+//! inverse of the raw moments `[[1, m'], [m, C + m m']]`: `ȳ` and the
+//! slopes are uncorrelated, so `Var[b_0] = Var[ȳ] + m' Var[b] m`. A Gram
+//! pooled within parts recovers no intercept, and gives it no error. Both
+//! systems are
 //! factorized by Cholesky (`faer`, sequential, so the numbers do not
 //! depend on a thread count) where numpy runs an eigendecomposition and an
 //! LU: the two agree to rounding on a positive definite system. Where the
@@ -36,8 +50,8 @@ use super::{Design, GramArrays, Response};
 pub struct RidgeFit {
     /// The coefficients, the intercept recovered, 0 off the slots.
     pub coef: Vec<f64>,
-    /// Standard errors and t-statistics, NaN off the slots and at the
-    /// intercept.
+    /// Standard errors and t-statistics, NaN off the slots, and at the
+    /// intercept of a Gram pooled within parts.
     pub se: Vec<f64>,
     pub t: Vec<f64>,
     pub resid_var: f64,
@@ -125,15 +139,11 @@ pub fn ridge_fits(
         Some(l) => solve_in_place(l, x.as_mut()),
         None => x.fill(f64::NAN),
     }
-    // diag(C⁻¹) for the standard errors, C the slots' centred co-moments,
-    // formed once and only if a target asks.
-    let mut inv_diag: Option<Vec<f64>> = None;
-    let mut c = vec![0.0; n * n];
-    for (p, &i) in slots.iter().enumerate() {
-        for (q, &j) in slots.iter().enumerate() {
-            c[p * n + q] = g.comoments.get(k, i, j);
-        }
-    }
+    // `A⁻¹`'s factor for the standard errors, `A` the system's moments
+    // unpenalized -- centred with an intercept, raw without one -- formed
+    // once and only if a target asks.
+    let mut inv: Option<(Option<Mat<f64>>, Vec<f64>)> = None;
+    let c = &design.a;
     // A Gram pooled within parts spent an intercept on each part it holds
     // the target's rows of, and has none of its own (docs/PLAN.md task 240).
     let dof_used = |t: usize| match g.within {
@@ -158,10 +168,14 @@ pub fn ridge_fits(
             if let Some(ci) = icept {
                 coef[ci] = resp.ybar - fit;
             }
-            let var_y = g.target_vars[t];
+            // `S_yy`, the target's second moment the residuals' is read
+            // against: centred with an intercept, raw through the origin.
+            let var_y = match icept {
+                Some(_) => g.target_vars[t],
+                None => g.target_vars[t] + g.target_means[t] * g.target_means[t],
+            };
             let nkish = g.target_n_kish[t];
-            let cov_xy: Vec<f64> = slots.iter().map(|&i| g.cross_centred[t * k + i]).collect();
-            let bc: f64 = b.iter().zip(&cov_xy).map(|(u, v)| u * v).sum();
+            let bc: f64 = b.iter().zip(&resp.rhs).map(|(u, v)| u * v).sum();
             let cb: f64 = (0..n)
                 .map(|p| b[p] * (0..n).map(|q| c[p * n + q] * b[q]).sum::<f64>())
                 .sum();
@@ -179,7 +193,11 @@ pub fn ridge_fits(
             let mut se = vec![f64::NAN; k];
             let mut tstat = vec![f64::NAN; k];
             if sigma2.is_finite() && nkish > 0.0 {
-                let diag = inv_diag.get_or_insert_with(|| inverse_diagonal(&c, n));
+                let (l_inv, diag) = inv.get_or_insert_with(|| {
+                    let l_inv = inverse_factor(c, n);
+                    let diag = inverse_diagonal(l_inv.as_ref(), n);
+                    (l_inv, diag)
+                });
                 for (p, &i) in slots.iter().enumerate() {
                     // A rounding below 0 is 0, but the NaN of a system that
                     // is not positive definite stays NaN: `f64::max(NaN, 0)`
@@ -189,6 +207,12 @@ pub fn ridge_fits(
                     let v = (d * sigma2 / nkish).sqrt();
                     se[i] = v;
                     tstat[i] = if v > 0.0 { coef[i] / v } else { f64::NAN };
+                }
+                if let (Some(ci), None) = (icept, g.within) {
+                    let q = quadratic(l_inv.as_ref(), &resp.means);
+                    let v = ((1.0 + q) * sigma2 / nkish).sqrt();
+                    se[ci] = v;
+                    tstat[ci] = if v > 0.0 { coef[ci] / v } else { f64::NAN };
                 }
             }
             RidgeFit {
@@ -208,26 +232,39 @@ pub fn ridge_fits(
         .collect()
 }
 
-/// `diag(C⁻¹)` for a row-major `n × n` `C`, NaN throughout if `C` is not
+/// `L⁻¹` for a row-major `n × n` `C = L Lᵀ`, or `None` if `C` is not
 /// positive definite.
 ///
-/// With `C = L Lᵀ`, `C⁻¹ = L⁻ᵀ L⁻¹`, so `(C⁻¹)_ii` is the squared length of
-/// column `i` of `L⁻¹`: one triangular inverse, `n³/3`, where solving `C X
-/// = I` costs `2n³` (measured: `solve_subsets` took 3.0 s for 100 subsets
-/// at 2,000 columns this way, 5.8 s the other).
-fn inverse_diagonal(c: &[f64], n: usize) -> Vec<f64> {
-    match cholesky(c, n) {
-        Some(l) => {
-            let mut inv = Mat::<f64>::zeros(n, n);
-            faer::linalg::triangular_inverse::invert_lower_triangular(
-                inv.as_mut(),
-                l.as_ref(),
-                Par::Seq,
-            );
-            (0..n)
-                .map(|i| (i..n).map(|j| inv[(j, i)] * inv[(j, i)]).sum())
-                .collect()
-        }
+/// `C⁻¹ = L⁻ᵀ L⁻¹`, so what the standard errors read of `C⁻¹` is read from
+/// `L⁻¹`: one triangular inverse, `n³/3`, where solving `C X = I` costs
+/// `2n³` (measured: `solve_subsets` took 3.0 s for 100 subsets at 2,000
+/// columns this way, 5.8 s the other).
+fn inverse_factor(c: &[f64], n: usize) -> Option<Mat<f64>> {
+    let l = cholesky(c, n)?;
+    let mut inv = Mat::<f64>::zeros(n, n);
+    faer::linalg::triangular_inverse::invert_lower_triangular(inv.as_mut(), l.as_ref(), Par::Seq);
+    Some(inv)
+}
+
+/// `diag(C⁻¹)` from `L⁻¹` ([`inverse_factor`]): `(C⁻¹)_ii` is the squared
+/// length of column `i` of `L⁻¹`. NaN throughout for a `C` that is not
+/// positive definite.
+fn inverse_diagonal(l_inv: Option<&Mat<f64>>, n: usize) -> Vec<f64> {
+    match l_inv {
+        Some(inv) => (0..n)
+            .map(|i| (i..n).map(|j| inv[(j, i)] * inv[(j, i)]).sum())
+            .collect(),
         None => vec![f64::NAN; n],
+    }
+}
+
+/// `m' C⁻¹ m` from `L⁻¹` ([`inverse_factor`]): the squared length of `L⁻¹
+/// m`. NaN for a `C` that is not positive definite.
+fn quadratic(l_inv: Option<&Mat<f64>>, m: &[f64]) -> f64 {
+    match l_inv {
+        Some(inv) => (0..m.len())
+            .map(|j| (0..=j).map(|i| inv[(j, i)] * m[i]).sum::<f64>().powi(2))
+            .sum(),
+        None => f64::NAN,
     }
 }

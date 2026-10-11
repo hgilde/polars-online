@@ -4542,11 +4542,105 @@ class TestSolveSubsetsIsStatsmodelsOnThePooledRows:
             rows = np.isin(block, subset)
             ols = sm.OLS(y[rows], sm.add_constant(x[rows])).fit()
             np.testing.assert_allclose(fit["coef"], ols.params, rtol=1e-8)
-            np.testing.assert_allclose(fit["se"][1:], ols.bse[1:], rtol=1e-8)
-            np.testing.assert_allclose(fit["t"][1:], ols.tvalues[1:], rtol=1e-8)
+            np.testing.assert_allclose(fit["se"], ols.bse, rtol=1e-8)
+            np.testing.assert_allclose(fit["t"], ols.tvalues, rtol=1e-8)
             assert fit["sigma2"] == pytest.approx(ols.scale, rel=1e-8)
             assert fit["r2"] == pytest.approx(ols.rsquared, rel=1e-8)
             assert fit["n"] == rows.sum()
+
+
+class TestCoefStatsIsStatsmodelsOls:
+    """``po.gram.coef_stats`` and ``solve_subsets``' ridge statistics against
+    statsmodels' OLS on the rows, with every row at weight 1, so the Kish
+    size is the row count. With a constant the intercept has its error, least
+    squares' ``(X'X)^-1`` at it, which the Gram's moments hold. Without one
+    the statistics are statsmodels' through the origin -- its ``rsquared``
+    uncentred, its ``ssr / n`` the residuals' mean square -- on a column far
+    from 0 and a target with a level no column carries, where a centred
+    reading of the same fit put the far column's ``se`` at 0.016, 3.7 times
+    statsmodels' 0.0044."""
+
+    @staticmethod
+    def _rows(n=4000, seed=3):
+        rng = np.random.default_rng(seed)
+        x = np.column_stack([5.0 + rng.standard_normal(n), -2.0 + 2.0 * rng.standard_normal(n)])
+        y = 1.5 + x @ np.array([0.7, -0.3]) + rng.standard_normal(n)
+        return x, y
+
+    def _gram(self, x, y):
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        spec = po.spec.ewridge(
+            "m", targets=["y"], features=["x0", "x1"], half_life=float("inf"), min_weight=5.0
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        return bank.gram("m")[0]
+
+    def _same(self, st, ols):
+        np.testing.assert_allclose(st["se"], ols.bse, rtol=1e-8)
+        np.testing.assert_allclose(st["t"], ols.tvalues, rtol=1e-8)
+        assert st["sigma2"] == pytest.approx(ols.scale, rel=1e-8)
+        assert st["resid_var"] == pytest.approx(ols.ssr / ols.nobs, rel=1e-8)
+        assert st["r2"] == pytest.approx(ols.rsquared, rel=1e-8)
+        assert st["n"] == ols.nobs
+
+    def test_with_a_constant_the_intercept_has_its_error(self):
+        import statsmodels.api as sm
+
+        x, y = self._rows()
+        g = self._gram(x, y)
+        ols = sm.OLS(y, sm.add_constant(x)).fit()
+        b = po.gram.solve(g)
+        np.testing.assert_allclose(b, ols.params, rtol=1e-9)
+        self._same(po.gram.coef_stats(g, b), ols)
+        ((fit,),) = po.gram.solve_subsets([g], [[0]])
+        self._same(fit, ols)
+
+    def test_through_the_origin_it_is_ols_without_a_constant(self):
+        import statsmodels.api as sm
+
+        x, y = self._rows()
+        g = po.gram.subset(self._gram(x, y), ["x0", "x1"])
+        assert po.gram.INTERCEPT not in g["columns"]
+        ols = sm.OLS(y, x).fit()
+        assert not ols.k_constant, "statsmodels fits no constant, and reads R^2 uncentred"
+        b = po.gram.solve(g)
+        np.testing.assert_allclose(b, ols.params, rtol=1e-9)
+        st = po.gram.coef_stats(g, b)
+        self._same(st, ols)
+        ((fit,),) = po.gram.solve_subsets([g], [[0]])
+        self._same(fit, ols)
+        # The centred reading of the same fit, which this replaced.
+        resid = y - x @ b
+        centred = np.sqrt(
+            np.diag(np.linalg.inv(np.cov(x.T, bias=True))) * resid.var() / (len(y) - 2)
+        )
+        assert centred[0] > 3.0 * ols.bse[0], (centred, ols.bse)
+
+    def test_a_gram_pooled_within_is_unmoved(self):
+        """A Gram pooled within parts has means of 0, the target's too, so
+        its raw moments are its centred ones: through the origin, the fit
+        and its statistics are the ones with the intercept's column, to the
+        bit, and statsmodels' OLS with a dummy per part on the slopes."""
+        import statsmodels.api as sm
+
+        x, y = self._rows()
+        part = np.arange(len(y)) // 1000
+        y = y + 2.0 * part
+        grams = [self._gram(x[part == p], y[part == p]) for p in range(4)]
+        g = po.gram.merge(grams, within=True)
+        origin = po.gram.subset(g, ["x0", "x1"])
+        with_icept = po.gram.coef_stats(g, po.gram.solve(g))
+        through = po.gram.coef_stats(origin, po.gram.solve(origin))
+        for key in ("resid_var", "sigma2", "r2", "n"):
+            assert through[key] == with_icept[key], key
+        assert np.array_equal(through["se"], with_icept["se"][1:])
+        assert np.array_equal(through["t"], with_icept["t"][1:])
+        assert np.isnan(with_icept["se"][0]), "each part had an intercept of its own"
+        dummies = (part[:, None] == np.arange(4)).astype(float)
+        ols = sm.OLS(y, np.column_stack([x, dummies])).fit()
+        np.testing.assert_allclose(through["se"], ols.bse[:2], rtol=1e-8)
+        assert through["sigma2"] == pytest.approx(ols.scale, rel=1e-8)
 
 
 class TestAuditIsScipyAndStatsmodels:

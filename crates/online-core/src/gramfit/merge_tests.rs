@@ -291,10 +291,22 @@ fn a_ridge_fit_solves_its_system_and_its_statistics_are_the_residuals() {
                 close(&[fit.se[p + 1]], &[se], 1e-10, "se");
                 close(&[fit.t[p + 1]], &[fit.coef[p + 1] / se], 1e-10, "t");
             }
-            assert!(
-                fit.se[0].is_nan() && fit.t[0].is_nan(),
-                "none for the intercept"
-            );
+            // The intercept's, least squares' `(X'X)⁻¹` at it. On every row
+            // of the Gram, by faer's LU of the raw moments of `[1, z]`
+            // themselves; with gaps, `1 + m_t' C⁻¹ m_t` by faer's LU,
+            // `m_t` the target's own column means.
+            let q = if t == 0 {
+                let raw: Vec<f64> = (0..4)
+                    .flat_map(|i| (0..4).map(move |j| (i, j)))
+                    .map(|(i, j)| own.iter().map(|&o| r.z[o][i] * r.z[o][j]).sum::<f64>() / n)
+                    .collect();
+                oracle::inverse(&raw)[0]
+            } else {
+                1.0 + oracle::quad_form(&a, &m[1..])
+            };
+            let se0 = (q * fit.sigma2 / n).sqrt();
+            close(&[fit.se[0]], &[se0], 1e-10, "the intercept's se");
+            close(&[fit.t[0]], &[fit.coef[0] / se0], 1e-10, "the intercept's t");
         }
     }
 }
@@ -336,7 +348,12 @@ fn a_system_that_does_not_factorize_gives_nan() {
 
 #[test]
 fn without_an_intercept_the_system_is_the_raw_moments() {
-    let r = rows(33, 300, 2, 2.0);
+    // A level in the target that no column carries, so the fit through
+    // the origin leaves a residual mean.
+    let mut r = rows(33, 300, 2, 2.0);
+    for y in &mut r.y {
+        y[0] = y[0].map(|v| v + 3.0);
+    }
     let g = gram_of(&r);
     let fits = ridge_fits(&g.arrays(), &[0], &[1, 2], None, 0.0, false);
     // E[z zᵀ] b = E[z y] over the features alone, by faer's LU.
@@ -347,6 +364,28 @@ fn without_an_intercept_the_system_is_the_raw_moments() {
     let b = oracle::solve(&raw, &[g.cross_moments[1], g.cross_moments[2]]);
     close(&fits[0].coef[1..], &b, 1e-12, "slopes");
     assert_eq!(fits[0].coef[0], 0.0);
+    // And its statistics are least squares' through the origin, read from
+    // the residuals themselves: their mean square, not their variance, an
+    // uncentred R², and `(Z'Z)⁻¹` of the raw moments, by faer's LU.
+    let fit = &fits[0];
+    let res: Vec<f64> = (0..r.z.len())
+        .map(|i| r.y[i][0].unwrap() - b[0] * r.z[i][1] - b[1] * r.z[i][2])
+        .collect();
+    let n = res.len() as f64;
+    let ms = res.iter().map(|e| e * e).sum::<f64>() / n;
+    let rm = res.iter().sum::<f64>() / n;
+    assert!(rm.abs() > 0.1, "a residual mean to tell the two apart: {rm}");
+    close(&[fit.resid_var], &[ms], 1e-10, "resid_var");
+    close(&[fit.sigma2], &[ms * n / (n - 2.0)], 1e-10, "sigma2");
+    let yy = (0..r.z.len()).map(|i| r.y[i][0].unwrap().powi(2)).sum::<f64>() / n;
+    close(&[fit.r2], &[1.0 - ms / yy], 1e-10, "r2, uncentred");
+    let inv = oracle::inverse(&raw);
+    for p in 0..2 {
+        let se = (inv[p * 2 + p] * fit.sigma2 / n).sqrt();
+        close(&[fit.se[p + 1]], &[se], 1e-10, "se");
+        close(&[fit.t[p + 1]], &[fit.coef[p + 1] / se], 1e-10, "t");
+    }
+    assert!(fit.se[0].is_nan(), "column 0 is no slot");
 }
 
 /// `m` packed: the upper triangle with the diagonal, row by row.
@@ -604,11 +643,13 @@ fn the_statistics_at_their_edges() {
     );
 }
 
-/// A constant target has no `r2`, whatever its residual variance. Through
-/// the origin the slope is the raw moments' and the residual variance is
-/// read about the means, so a target constant at 5 on a column with mean 2
-/// keeps a residual variance of 4: `E[x²] = 5`, `E[x y] = 10`, `b = 2`,
-/// `0 − 2·2·0 + 2·1·2 = 4`.
+/// A constant target has no `r2` about its mean, whatever its residual
+/// variance. Through the origin the statistics are raw, as least squares
+/// without a constant reads them: a target constant at 5 on a column of
+/// mean 2 and variance 1 has `E[x²] = 5`, `E[x y] = 10`, `b = 2`, and
+/// residuals `5 − 2x` of mean square `25 − 2·2·10 + 2·5·2 = 5`, an
+/// uncentred `r2` of `1 − 5/25` -- statsmodels' 0.8 for that fit. With an
+/// intercept the residuals are 0 and there is no variance to explain.
 #[test]
 fn a_constant_target_has_no_r2() {
     let g = OwnedGram {
@@ -626,6 +667,19 @@ fn a_constant_target_has_no_r2() {
         within: None,
     };
     let fit = ridge_fits(&g.arrays(), &[0], &[0], None, 0.0, false).remove(0);
-    assert_eq!((fit.coef[0], fit.resid_var), (2.0, 4.0));
+    assert_eq!((fit.coef[0], fit.resid_var), (2.0, 5.0));
+    assert!((fit.r2 - 0.8).abs() < 1e-15, "{}", fit.r2);
+    // The same rows with the intercept's column: `b = 0`, no residual.
+    let g = OwnedGram {
+        k: 2,
+        means: vec![1.0, 2.0],
+        comoments: vec![0.0, 0.0, 0.0, 1.0],
+        cross_moments: vec![5.0, 10.0],
+        means_by_target: vec![1.0, 2.0],
+        cross_centred: vec![0.0, 0.0],
+        ..g
+    };
+    let fit = ridge_fits(&g.arrays(), &[0], &[1], Some(0), 0.0, false).remove(0);
+    assert_eq!((fit.coef[0], fit.coef[1], fit.resid_var), (5.0, 0.0, 0.0));
     assert!(fit.r2.is_nan(), "{}", fit.r2);
 }

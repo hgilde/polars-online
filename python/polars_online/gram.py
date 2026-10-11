@@ -1447,13 +1447,17 @@ def solve_subsets(
 
         (A + ridge * I) b = r_t            A, r_t as solve() forms them
         b_0       = ybar_t - m_t . b       the intercept, with one
-        resid_var = Var[y] - 2 b' cov_xy + b' C b
+        resid_var = S_yy - 2 b' r_t + b' A b
         sigma2    = resid_var * n / (n - p)      n = target_n_kish
-        se        = sqrt(diag(inv(C)) * sigma2 / n),   t = b / se
+        se        = sqrt(diag(inv(A)) * sigma2 / n),   t = b / se
+        se_0      = sqrt((1 + m_t' inv(A) m_t) * sigma2 / n)
 
-    with ``C`` the slots' centred co-moments, and ``p`` the slots and the
-    intercept, or under ``within`` the slots and the parts the target has
-    rows in. Under ``standardize`` the
+    with ``p`` the slots and the intercept, or under ``within`` the slots
+    and the parts the target has rows in. With an intercept ``A`` is the
+    slots' centred co-moments, ``r_t`` the centred cross-moments and
+    ``S_yy`` the target's variance; without one they are the raw moments
+    and ``E[y**2]``, as :func:`coef_stats` reads them, and there is no
+    ``se_0``. Under ``within`` the intercept has none either. Under ``standardize`` the
     system is solved in correlation form, as :func:`solve` solves it. Both
     systems are factorized by Cholesky, where :func:`solve` runs numpy's
     symmetric eigendecomposition and :func:`coef_stats` its inverse, so the
@@ -1709,14 +1713,20 @@ def coef_stats(
         resid_var = Var[y] - 2 b' Cov[X, y] + b' C b
         sigma2    = resid_var * n / (n - k)          # n = target_n_kish
         se        = sqrt(diag(inv(C)) * sigma2 / n)
+        se_0      = sqrt((1 + m' inv(C) m) * sigma2 / n)   # the intercept's
         t         = b / se
+        r2        = 1 - resid_var / Var[y]
 
-    ``C`` is the features' centred co-moments and ``Cov[X, y]`` the target's
-    centred cross-moments (``cross_centred``). ``k`` counts the features and
-    the intercept. On a Gram pooled within parts (``merge(within=True)``) it
-    counts the features and one intercept per part the target has rows in
-    (``target_within_parts``), and ``r2`` is the share of the variance inside
-    the parts that the fit explains.
+    ``C`` is the features' centred co-moments, ``Cov[X, y]`` the target's
+    centred cross-moments (``cross_centred``) and ``m`` the column means over
+    the target's rows. ``k`` counts the features and the intercept. ``se_0``
+    is least squares' error of the intercept, ``ybar - m . b``: the mean and
+    the slopes are uncorrelated, so its variance is ``Var[ybar] + m' Var[b]
+    m``. On a Gram pooled within parts (``merge(within=True)``) ``k`` counts
+    the features and one intercept per part the target has rows in
+    (``target_within_parts``), the intercept has no error (each part had its
+    own), and ``r2`` is the share of the variance inside the parts that the
+    fit explains.
 
     **For a ridge fit, the standard errors are least squares' at the
     ridge's residual variance.** ``inv(C)`` is the unpenalized matrix's, so
@@ -1724,14 +1734,17 @@ def coef_stats(
     coefficients less variable than least squares', nor of the bias it adds.
     At a ridge near 0 they are least squares' own.
 
-    **The statistics read the centred moments, with an intercept or
-    without one.** On a Gram without an intercept column, as a
-    :func:`subset` without ``"intercept"`` gives, ``resid_var`` is the
-    residual's variance about its own mean, not its mean square, and ``se``
-    and ``r2`` are a centred fit's. Least squares through the origin reads
-    the raw moments instead, so its standard errors differ where a column's
-    mean is far from 0. On 4,000 rows with a column 5 standard deviations
-    from 0, statsmodels' OLS gave 0.0044 where this gives 0.016.
+    **Without an intercept the statistics read the raw moments, as least
+    squares through the origin does.** On a Gram without an intercept
+    column, as a :func:`subset` without ``"intercept"`` gives, ``C`` is
+    ``E[z z']``, the co-moments plus the outer product of the means,
+    ``Cov[X, y]`` is ``E[z y]`` (``cross_moments``), and ``Var[y]`` is
+    ``E[y**2]``. So ``resid_var`` is the residuals' mean square, ``se`` and
+    ``t`` are least squares' through the origin, and ``r2`` is uncentred,
+    ``1 - E[e**2] / E[y**2]``, as statsmodels reports a fit with no constant.
+    ``k`` counts the features alone. On a Gram pooled within parts the means
+    are 0, the target's too, so the raw moments are the centred ones and
+    nothing moves.
 
     .. rubric:: Parameters
 
@@ -1751,8 +1764,9 @@ def coef_stats(
     ``n``
         The Kish size the correction and the errors use.
     ``se``, ``t``
-        Arrays over the same slots as ``coef``, with the intercept's entry
-        ``nan``: only the slopes get a standard error.
+        Arrays over the same slots as ``coef``, the intercept's included
+        (``nan`` on a Gram pooled within parts), and ``nan`` for a column
+        not fitted.
 
     ``n`` is Kish's effective sample size, not ``weight_sum``: a weighted stream's
     weight sum is not a count, and dividing by it would report standard errors too
@@ -1805,12 +1819,29 @@ def coef_stats(
     c = como[np.ix_(slots, slots)]
     var_y = float(np.asarray(g["target_vars"], dtype=float)[t])
     n = float(np.asarray(g["target_n_kish"], dtype=float)[t])
-    ybar = cross[icept] if icept >= 0 else float(np.asarray(g["target_means"], dtype=float)[t])
-    # Centred cross-covariance over the target's rows, the pair `comoments`
-    # is in, as the model holds it (N4).
-    cov_xy = _cross_centred(np, g, t, _means_of(np, g, t), ybar)[slots]
+    m = _means_of(np, g, t)
+    if icept >= 0:
+        # Centred cross-covariance over the target's rows, the pair
+        # `comoments` is in, as the model holds it (N4).
+        a = c
+        rhs = _cross_centred(np, g, t, m, cross[icept])[slots]
+        s_yy = var_y
+    else:
+        # Through the origin, the raw moments solve() reads: the residuals'
+        # mean square, not their variance, and an uncentred R^2.
+        if g.get("target_means") is None:
+            msg = (
+                "a fit through the origin reads the target's mean square, "
+                "Var[y] + mean**2, and this Gram has no target_means"
+            )
+            raise ValueError(msg)
+        means = np.asarray(g["means"], dtype=float)[slots]
+        a = c + np.outer(means, means)
+        rhs = cross[slots]
+        ybar = float(np.asarray(g["target_means"], dtype=float)[t])
+        s_yy = var_y + ybar * ybar
 
-    resid_var = var_y - 2.0 * b @ cov_xy + b @ c @ b
+    resid_var = s_yy - 2.0 * b @ rhs + b @ a @ b
     resid_var = max(resid_var, 0.0)
     # A Gram pooled within parts spent an intercept on each part, and has
     # none of its own (docs/PLAN.md task 240).
@@ -1824,16 +1855,21 @@ def coef_stats(
     tstat = np.full(k, np.nan)
     if np.isfinite(sigma2) and n > 0.0:
         try:
-            inv = np.linalg.inv(c)
+            inv = np.linalg.inv(a)
         except np.linalg.LinAlgError:
-            inv = np.full_like(c, np.nan)
+            inv = np.full_like(a, np.nan)
         se[slots] = np.sqrt(np.clip(np.diag(inv), 0.0, None) * sigma2 / n)
+        if icept >= 0 and not _is_within(g):
+            # Least squares' inverse moment matrix at the intercept: ybar and
+            # the slopes are uncorrelated, so Var[b_0] = Var[ybar] + m' Var[b] m.
+            mt = m[slots]
+            se[icept] = np.sqrt((1.0 + mt @ inv @ mt) * sigma2 / n)
         with np.errstate(divide="ignore", invalid="ignore"):
-            tstat[slots] = np.where(se[slots] > 0.0, beta[slots] / se[slots], np.nan)
+            tstat = np.where(se > 0.0, beta / se, np.nan)
     return {
         "resid_var": resid_var,
         "sigma2": sigma2,
-        "r2": 1.0 - resid_var / var_y if var_y > 0.0 else float("nan"),
+        "r2": 1.0 - resid_var / s_yy if s_yy > 0.0 else float("nan"),
         "n": n,
         "se": se,
         "t": tstat,

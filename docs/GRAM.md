@@ -670,12 +670,19 @@ decaying scale and a prior other than zero, as the README's
 resid_var = V − 2 b'c + b'C b
 sigma2    = resid_var · n / (n − p)      n = target_n_kish; p, the columns with the intercept
 se_j      = sqrt((C⁻¹)_jj · sigma2 / n)
+se_0      = sqrt((1 + m'C⁻¹m) · sigma2 / n)      the intercept's, m the column means
 t_j       = b_j / se_j
 ```
 
 With `half_life=float("inf")` and every row's weight 1, `n` is the row
 count, and these are the classical standard errors: the recipe gets the
-ones numpy computes from the rows, to within 1e-9.
+ones numpy computes from the rows, to within 1e-9. The intercept's is
+least squares' too: `ȳ` and the slopes are uncorrelated, so the variance
+of `b_0 = ȳ − m'b` is `Var[ȳ] + m' Var[b] m`. **Without an intercept the
+statistics are a fit through the origin's**, read from the raw moments:
+`C` is `E[z z']`, `c` is `E[z y]` and `V` is `E[y²]`, so `resid_var` is
+the residuals' mean square and `r2` is uncentred, as statsmodels reports
+an OLS fit with no constant.
 
 **The t carries least squares' assumptions, whatever fit it is given:**
 
@@ -685,7 +692,7 @@ ones numpy computes from the rows, to within 1e-9.
 | one coefficient for all the pooled rows | a coefficient that changes from week to week reads as firm a t as a constant one: the 20.3 of `x25` beside the 20.3 of `x15` in the opening example |
 | least squares' covariance, `sigma2 · C⁻¹ / n` | a ridge's standard errors are that covariance at the ridge's residual variance. They leave out the shrinkage and its bias, so a ridge's t compares its coefficients with one another, and is no test |
 | `n` independent rows | under a decay the rows weigh unequally and are not independent, and `n_kish` stands in for `n`. Read the t as a comparison there too |
-| an intercept that centring has absorbed | the intercept's standard error and t are `nan` |
+| one intercept for all the pooled rows | on a Gram pooled within parts each part had its own, so the intercept's standard error and t are `nan` |
 
 With two weeks of rows for 201 columns, a ridge helps. The recipe fits a
 grid of ridges on weeks 1 and 2, and scores each on the other 38 weeks

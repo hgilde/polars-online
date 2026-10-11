@@ -294,13 +294,19 @@ fn a_fit_within_has_no_intercept_and_a_degree_less_per_part() {
         }
         assert!(fits[0].sigma2 > 0.0, "a residual to count degrees by");
         // Without the intercept the demeaned rows' raw moments are their
-        // centred ones: the same fit, and nothing to recover.
+        // centred ones -- the means are 0, the target's too -- so the fit
+        // through the origin, which reads the raw ones, is the same fit to
+        // the bit, its statistics too, and nothing to recover.
         let origin = ridge_fits(&g.arrays(), &[0, 1], &slots, None, 0.0, false);
         for (o, f) in origin.iter().zip(&fits) {
             assert_eq!(o.coef[1..], f.coef[1..]);
             assert_eq!(o.coef[0], 0.0, "column 0 is no slot");
             assert_eq!((o.resid_var, o.sigma2, o.n), (f.resid_var, f.sigma2, f.n));
             assert_eq!(o.se[1..], f.se[1..]);
+            // A `t` of a standard error of 0 is NaN, the same NaN.
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&o.t[1..]), bits(&f.t[1..]));
+            assert_eq!(o.r2.to_bits(), f.r2.to_bits());
         }
     }
 }
