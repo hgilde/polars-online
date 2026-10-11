@@ -976,6 +976,31 @@ mod tests {
             .collect()
     }
 
+    /// `seeded` is what the bank names a row's `below_warm_rows` by: false
+    /// through the `warm_rows`-th learned row, which reports nothing and
+    /// seeds the states, true from then; true from the first row with the
+    /// states given. A row of weight 0 is not learned, and does not count.
+    #[test]
+    fn seeded_turns_at_the_warm_rows_th_learned_row() {
+        let mut m = Hmm::new(cfg(2, 2)).unwrap();
+        let rows = stream(25, 3, 5);
+        for (i, (x, _)) in rows.iter().enumerate() {
+            assert!(!m.seeded(), "row {i}: not before the 21st step");
+            let w = if i == 4 { 0.0 } else { 1.0 };
+            let out = m.step(x, &[], 1.0, w);
+            assert!(out.pred.iter().all(|v| v.is_nan()), "row {i} reports nothing");
+            if i == 20 {
+                break;
+            }
+        }
+        assert!(m.seeded(), "the 20th learned row seeds the states");
+        assert!(m.step(&rows[21].0, &[], 1.0, 1.0).pred[0].is_finite());
+        let mut given = cfg(2, 2);
+        given.means = Some(vec![-3.0, -3.0, 3.0, 3.0]);
+        given.covs = Some(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]);
+        assert!(Hmm::new(given).unwrap().seeded(), "given states need no rows");
+    }
+
     /// The warm-up replay gives each state its rows' weights as the clock has
     /// aged them, as `n_eff` has: at seeding, the states' weights sum to
     /// `n_eff`. They took the raw weights, replayed at `lam = 1`, so a state
