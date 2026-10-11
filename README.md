@@ -1975,9 +1975,9 @@ ridge = [1e-6, 0.1]
 standardize = true
 ```
 
-Run it from the directory that holds `bank.toml` and the example data's
-`ticks.parquet`. The predictions, residuals and weights it writes are the
-bank's in Python, bit for bit:
+Save it beside the example data's `ticks.parquet`: a relative path in the
+file is read from the file's own directory. The predictions, residuals and
+weights the run writes are the bank's in Python, bit for bit:
 
 ```sh
 polars-online --config bank.toml

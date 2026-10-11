@@ -10,7 +10,7 @@
 //! polars-online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
@@ -31,6 +31,8 @@ fn parse_format(s: &str) -> Result<Format, String> {
 #[command(name = "polars-online", version, about, long_about = None)]
 struct Cli {
     /// TOML file describing the model bank specs and the input/output paths.
+    /// A relative path inside it is read from the file's own directory, and
+    /// one given as a flag from the working directory.
     #[arg(long)]
     config: PathBuf,
 
@@ -208,6 +210,28 @@ fn forward_deprecated_toml(
     Ok((text, notices))
 }
 
+/// `cfg`'s relative paths, read from `dir`, the config file's directory, so
+/// that a config runs the same from any working directory, as a path in a
+/// ruff or Cargo config does (task 244, C-2). An empty path, a run with no
+/// output, stays empty; an absolute one stays as it is.
+fn relative_to(cfg: &mut RunConfig, dir: &Path) {
+    let from_dir = |p: &mut PathBuf| {
+        if !p.as_os_str().is_empty() && p.is_relative() {
+            *p = dir.join(&*p);
+        }
+    };
+    from_dir(&mut cfg.input);
+    from_dir(&mut cfg.output);
+    [
+        &mut cfg.load_state,
+        &mut cfg.save_state,
+        &mut cfg.closed_groups,
+    ]
+    .into_iter()
+    .flatten()
+    .for_each(from_dir);
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -269,6 +293,8 @@ fn run() -> Result<(), String> {
         )
     })?;
 
+    // Before the flags: a path given as a flag is the working directory's.
+    relative_to(&mut cfg, cli.config.parent().unwrap_or(Path::new("")));
     if let Some(p) = cli.input {
         cfg.input = p;
     }

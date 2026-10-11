@@ -122,3 +122,53 @@ fn the_timings_are_on_at_polars_online_timing_1_alone() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+/// C-2: a relative path in the TOML file is read against the file's own
+/// directory, so a config runs the same from anywhere; a path given as a
+/// flag is read against the working directory, as a shell user expects.
+#[test]
+fn a_relative_path_is_the_config_files_in_the_toml_and_the_working_directorys_in_a_flag() {
+    let dir = fresh_dir("relative");
+    let (conf, work) = (dir.join("conf"), dir.join("work"));
+    std::fs::create_dir_all(&conf).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    write_input(&conf.join("in.parquet"), 40);
+    let cfg = job(
+        &conf,
+        "in.parquet",
+        "out.parquet",
+        "save_state = 'run.state'",
+    );
+
+    let (code, _, err) = run(cli()
+        .current_dir(&work)
+        .args(["--config", text(&cfg), "-q"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(conf.join("out.parquet").is_file() && conf.join("run.state").is_file());
+    assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+
+    std::fs::copy(conf.join("in.parquet"), work.join("flag-in.parquet")).unwrap();
+    let (code, _, err) = run(cli().current_dir(&work).args([
+        "--config",
+        text(&cfg),
+        "-q",
+        "--input",
+        "flag-in.parquet",
+        "--output",
+        "flag-out.parquet",
+        "--save-state",
+        "flag.state",
+    ]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(work.join("flag-out.parquet").is_file() && work.join("flag.state").is_file());
+    assert!(!conf.join("flag-out.parquet").exists());
+
+    // A config named by a relative path is found from the working
+    // directory, and its own paths still from where it sits.
+    let (code, _, err) =
+        run(cli()
+            .current_dir(&dir)
+            .args(["--config", "conf/job.toml", "-q", "--no-output"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!dir.join("run.state").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

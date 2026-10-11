@@ -1,8 +1,11 @@
 # Example model bank for the `polars-online` command line:
 #   cargo run -p online-cli -- --config examples/bank.toml
 #
-# Generate a matching input with:
+# Generate a matching input, beside this file, with:
 #   uv run python scripts/make_example_parquet.py
+#
+# A relative path here is read from this file's directory, and one given as
+# a flag (--input, --output, ...) from the working directory.
 
 # Paths in parquet, ipc, csv or ndjson, told from the extension; a path
 # that does not say (a `.dat`, a stream) needs `input_format = "ipc"` /

@@ -268,7 +268,7 @@ A flag given on the command line wins over its key in the TOML file:
 
 | flag | TOML key | what it does |
 |---|---|---|
-| `--config` | | the TOML file to read; required |
+| `--config` | | the TOML file to read; required. A relative path inside it is read from its directory |
 | `--input` | `input` | the file to read |
 | `--output` | `output` | the file to write; refused together with `--no-output` |
 | `--no-output` | `output` left out | write no per-row output |
@@ -286,6 +286,14 @@ A flag given on the command line wins over its key in the TOML file:
 | | `[[specs]]` | the specs, one table each |
 
 ### Input and output files
+
+**A relative path in the TOML file is read from the file's own directory,
+and a relative path given as a flag from the working directory.** So a
+configuration runs the same from wherever a scheduler starts it, and
+`polars-online --config jobs/job.toml` reads `jobs/ticks.parquet`. A flag
+such as `--input today.parquet` names the file the shell sees, in the
+directory the command runs in. The input, the output, `load_state`,
+`save_state` and `closed_groups` all follow the rule.
 
 Read and write any of the four formats. The extension decides, unless
 `--input-format` or `--output-format` names the format, and a file whose
