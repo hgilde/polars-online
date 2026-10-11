@@ -1907,45 +1907,22 @@ class ModelBank:
              - info
              - the regular steps' coefficient of variation is 0.5 or more
 
-        **Every threshold was measured before it shipped.** On five clean
-        shapes, over ten seeds and fifteen specs, no check raised an error or
-        a warning in 750 runs. The shapes are independent features; ten
-        features correlated at 0.8 with an R² of 0.99; five groups; forty
-        groups of 50 rows at a half-life of 5; and a target present on 40% of
-        the rows. Each problem planted in the same streams was found on every
-        seed, for every spec it harms, and for no other
-        (``tests/test_check.py``). Where a line sits:
+        **Every threshold was measured before it shipped**, for how often it
+        finds a planted problem and for how often it fires on clean data.
+        `Data quality <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#how-the-checks-work>`__
+        gives the clean streams, the planted problems and the numbers each
+        line was set from.
 
-        - ``collinear``: clean designs reached a VIF of 5.6 and a condition
-          index of 7.6 (ten features correlated at 0.8). Two independent
-          features at levels of 5,000 and 3,000 read 1.0 in a model that
-          centres, where the uncentred index reads 5,061. A near-duplicate
-          ``x0 + 0.1 * N(0, 1)`` (a correlation of 0.995) reads 92 to 113;
-          at ``0.3`` (0.957 to 0.963) it reads 10.9 to 13.7 and is not
-          flagged.
-        - ``leakage``: clean fits reached 0.991 at an R² of 0.99. A feature
-          that is the target plus a thousandth of its spread reads 0.999999.
-          The line is a correlation, so it is a warning. A fit whose R² is
-          0.9998 or more passes it, as ``y = 2x + 0.01 N(0, 1)`` does at
-          0.99999. So does a random walk against its own previous row once
-          the stream is long: on one seed of ten at 10,000 rows, five at
-          30,000 and nine at 100,000 (with no decay).
-        - ``ridge_shrinks``: at a quarter of the variance the out-of-sample
-          R² fell by 0.02 to 0.03; at the whole variance by 0.14.
-        - ``solve_failures`` for ``lasso``: its first rows run out of sweeps
-          up to 7 times on clean data.
-        - ``level_over_spread`` and ``scales_apart``: each limit is the
-          largest value at which the model's out-of-sample R² fell by no more
-          than 0.05, at half-lives of 20, 200 and infinite. ``rls``'s level
-          limit is ``0.9 sqrt(W / delta_left)``, read from the summary. A
-          level lowers its accuracy only through the prior ``delta I`` it
-          still holds, ``delta_left = delta (1 - settled_frac)`` (all of
-          ``delta`` without decay), set against the weight its fit holds,
-          ``W`` (``settled_frac * weight_sum_settled``, or ``weight_sum``
-          without decay). The R² it lost over a stream's last tenth was one curve in
-          ``(|mean| / std) sqrt(delta_left / W)`` at half-lives of 200, 2,000
-          and infinite, at most 0.05 up to 0.9. So a decaying ``rls`` that
-          has forgotten its prior is told nothing, at any level:
+        ``level_over_spread`` and ``scales_apart`` read a limit per model:
+        the largest value at which its out-of-sample R² fell by no more than
+        0.05, at half-lives of 20, 200 and infinite. ``rls``'s level limit is
+        ``0.9 sqrt(W / delta_left)``, read from the summary. A level lowers
+        its accuracy only through the part of its prior ``delta I`` it still
+        holds, ``delta_left = delta (1 - settled_frac)`` (all of ``delta``
+        without decay), set against the weight its fit holds, ``W``
+        (``settled_frac * weight_sum_settled``, or ``weight_sum`` without
+        decay). So a decaying ``rls`` that has forgotten its prior is told
+        nothing, at any level:
 
         .. list-table::
            :header-rows: 1
@@ -1979,55 +1956,6 @@ class ModelBank:
         from what a centred column, or two of equal spread, would show by
         chance in that many rows. The Gram's checks wait for ten Kish rows a
         coefficient. Both guards keep a small group quiet.
-
-        **An audit's thresholds were measured the same way.** Over ten
-        seeds, an audit of every column raised no error or warning on the
-        five clean shapes above and on seven more:
-
-        - columns persisting at 0.9 a row;
-        - columns persisting at 0.95 a row;
-        - uniform values;
-        - Poisson counts about 50;
-        - values rounded to two decimals at 100;
-        - a clock whose steps vary between 0.5 and 1.5;
-        - six columns that hold still on a coarse grid over 10,000 rows: the
-          hour of the day on minute data, a regime that stays with
-          probability 0.99, a price in ticks, a spread in whole ticks, an
-          AR(0.9) rounded to integers and a temperature in whole degrees.
-
-        The one clean shape with information is the target that is NaN on
-        60% of its rows. Each problem planted was found on every seed
-        (``tests/check_streams.py``'s ``AUDIT_PLANTED``):
-
-        - ``sentinel``: ``-999`` on 5% of a continuous column's rows reads 3.9%
-          to 5.8% at 9.8 to 12 times the next count's bound; on 3% it was
-          found on ten seeds of ten, on 2% on one (on ten at
-          ``distinct_cap=1024``). Poisson counts about 50, whose commonest
-          value is 6% of the rows, read 1.23 times the next at most.
-        - ``frozen``: a feed stopped for the last 10% of the rows (12.6 or
-          more), a forward fill every 2, 3, 5 or 10 rows (31.6 or more), and
-          30 rows stuck in the middle (5.1) are found; 25 rows stuck are not.
-          Clean columns read 0.6 at most (values rounded to two decimals).
-          The six coarse-grid columns of the clean shapes are silent. A price
-          still for 200 rows at a time and moving by three ticks a row in
-          between reads as frozen: the check
-          cannot tell long still stretches from a stale feed.
-        - ``random_walk``: random walks of 300 and 2,000 rows read -3.2 at
-          most, and the clean shapes -6.5 at least (columns persisting at
-          0.95); 50-row groups, which the 100-row guard leaves out, read
-          -4.7. A column persisting at 0.99 a row over 2,000 rows reads as a
-          random walk on seven seeds of ten, and at 0.98 on none. A row
-          counter and a clock in epoch seconds fed as columns are fits with
-          no residual, and read ``+inf``.
-        - ``heavy_tails``: clean columns reached a kurtosis of 3.8 (in
-          50-row groups) and a robust z of 5.6; Student's t with 3 degrees
-          of freedom reads 10 to 25, and one value at 30 standard deviations
-          29.
-        - ``duplicate``: a copy, a copy times 100 plus 3, and a copy plus noise
-          of 0.03 of its spread (a correlation of 0.9995) are found; plus 0.05
-          is not. Clean columns correlated at 0.94 at most.
-        - ``irregular_clock``: steps drawn from an exponential, arrivals at
-          random, read 0.96 to 1.04; the jittered clock 0.29.
 
         **What it cannot see.** :meth:`describe` keeps every row's moments
         undecayed, so a feature that drifted slowly can sit far above its

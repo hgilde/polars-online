@@ -135,15 +135,34 @@ unreliable. An `info` is worth knowing and often fine, such as a target
 present on a third of the rows by design.
 
 **Every threshold was measured, both for how often it finds a planted
-problem and for how often it fires on clean data.** On five clean shapes
-over ten seeds and fifteen specs, no model-side check gave an error or a
-warning in 750 runs. On twelve clean shapes over ten seeds, an audit of
-every column gave none either. Each planted problem was found on every
-seed, for every spec it harms, and for no other. The docstring of
+problem and for how often it fires on clean data.** The streams are
+seeded, of 2,000 rows unless the table says otherwise, and each ran on ten
+seeds. Fifteen specs, every model `check()` reads, ran on the first five
+clean shapes, and no check gave an error or a warning in the 750 runs. An
+audit of every column ran on all twelve, and gave none either. The one
+clean shape an audit has information on is the target missing on 60% of
+its rows. Each problem planted in the same streams was found on every
+seed, for every spec it harms, and for no other. Each problem's section
+below gives the numbers for its own codes, and `tests/test_check.py` runs
+the sweep. The clean shapes:
+
+| clean shape | read by |
+|---|---|
+| three independent features, with an R² of 0.9 | the fifteen specs and an audit |
+| ten features correlated at 0.8, with an R² of 0.99: correlated, not collinear | the fifteen specs and an audit |
+| five groups of 400 rows, an R² of 0.5, at a half-life of 50 | the fifteen specs and an audit |
+| forty groups of 50 rows at a half-life of 5, where the guards against chance keep a small group quiet | the fifteen specs and an audit |
+| a target present on 40% of the rows, as a sparse label is | the fifteen specs and an audit |
+| columns persisting at 0.9 a row, and at 0.95 | an audit |
+| uniform values | an audit |
+| Poisson counts about 50 | an audit |
+| values rounded to two decimals, at a level of 100 | an audit |
+| a clock whose steps vary between 0.5 and 1.5 | an audit |
+| six columns that hold still on a coarse grid, over 10,000 rows: the hour of the day on minute data, a regime that stays with probability 0.99, a price in ticks, a spread in whole ticks, an AR(0.9) rounded to integers, and a temperature in whole degrees | an audit |
+
+The docstring of
 [`ModelBank.check`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.check)
-lists the clean shapes and each threshold with the numbers it was set
-from, and each problem's section gives the numbers for its own codes.
-`tests/test_check.py` runs the sweep.
+lists every check with its threshold.
 
 <a id="not_checked"></a>
 
@@ -196,7 +215,8 @@ a row has a gap does not depend on the target, given the features. That holds ev
 own value (Little 1992; Allison 2001). Its slopes are only noisier, since the
 fit sees fewer rows. When the gap does depend on the target, the slopes are biased,
 and no fill made from the features repairs it. An imputation that
-conditions on the target does, and the library has none (below). Measured in task 228, at 30% missing and features
+conditions on the target does, and the library has none (below). On
+simulated regressions with 30% of the rows missing and features
 correlated at 0.5, listwise deletion was biased by 4.5 standard errors of
 the full data's slope when the gap depended on `y`. It stayed within 0.2
 when the gap depended on another feature or on the feature itself.
@@ -205,8 +225,8 @@ when the gap depended on another feature or on the feature itself.
 variation, so on the filled rows the column is flat. Its slope shrinks
 toward zero, and a feature correlated with it absorbs the rest of its
 effect, which is the omitted-variable bias of the column the fill erased.
-Measured in task 228, a running-mean fill biased the slopes by 0.4 to 6
-standard errors, where listwise deletion was unbiased on the same streams.
+On the same simulated regressions, a running-mean fill biased the slopes
+by 0.4 to 6 standard errors, where listwise deletion was unbiased.
 A forward fill does the same, and adds the error of a stale value. Fill a
 value forward only when it truly holds until it changes, such as the last
 quote of an instrument. In that case the forward-filled value is the
@@ -216,8 +236,9 @@ observation itself.
 measured and not built, because it is biased where listwise deletion is
 not.** It would
 keep, for each pair of columns, the sums over the rows where both are
-present, so a gap in one column would cost only that column's pairs. Task
-228 measured it against listwise deletion. It was biased by 0.6 to 19
+present, so a gap in one column would cost only that column's pairs.
+Measured against listwise deletion on the same simulated regressions, it
+was biased by 0.6 to 19
 standard errors whenever the gap depended on another feature, on the
 target or on the feature itself. At 30% missing and features correlated
 at 0.9, that was −4.6 when the gap depended on another feature, −5.8 when
@@ -232,8 +253,7 @@ against 13.5 realized. It took 3.6 to 6.1 times as long a row, and 1.5 to
 3.5 times the state. Its gain was real only when gaps were completely at
 random in a model so wide that listwise deletion kept no rows at all. An
 imputation by online expectation-maximization, the one method that
-measured unbiased when gaps depended on observed values, is not built
-(PLAN task 230).
+measured unbiased when gaps depended on observed values, is not built.
 
 The recipe plants gaps in `x1` on more than half the rows, in two ways:
 at random, and more often when `y` is high. It fits plain least squares
@@ -444,32 +464,40 @@ constant over a stretch, which is the same problem in time.
 
 **How `frozen` tells a stale feed from a column that holds still.** A
 column that moves smoothly, seen at its own resolution, repeats the row
-before about half as often as it moves by its smallest step, either way: a
-change of 0 is one more step of the grid its values sit on. A stale feed
+before about half as often as it moves by its smallest step, either way.
+A change of 0 is one more step of the grid its values sit on. A stale feed
 adds changes of 0 that the column has no step for, an atom at zero. So the
 audit keeps, per column, its smallest nonzero change and how many changes
-sit at it, beside the rows equal to the row before. `frozen` fires when
-the repeats, less the ones its values' frequencies give by chance (a
-sentinel on a fifth of the rows repeats on 4% of them), outnumber the
-changes at the smallest step by five standard errors:
-`(repeats − chance − at_step) / sqrt(repeats + at_step) ≥ 5`.
+sit at it, beside the rows equal to the row before. Some repeats come by
+chance from the column's own value frequencies: a sentinel on a fifth of
+the rows repeats on 4% of them. `frozen` fires when the repeats, less
+those, outnumber the changes at the smallest step by five standard
+errors: `(repeats − chance − at_step) / sqrt(repeats + at_step) ≥ 5`.
 
-A column whose smallest step is half its moves or more moves on a coarse
-grid. The hour of the day on minute data, a regime that stays put, a price
-in ticks, a spread in whole ticks, a count, a temperature in whole degrees:
-each holds still for long stretches as a matter of course, its repeats are
-its own steps, and no atom can be told there. So `frozen` says nothing of
-such a column, a stale one included. Nor can it tell a stale feed from a
-column that is still for long stretches and moves finely in between. A
-price that moved by a tenth of a tick a row for 200 rows and by three ticks
-a row for the next 200 read as frozen on ten seeds of ten.
+**`frozen` says nothing of a column on a coarse grid, a stale one
+included.** A column whose smallest step is half its moves or more moves
+on a coarse grid. The hour of the day on minute data, a regime that stays
+put, a price in ticks, a spread in whole ticks, a count and a temperature
+in whole degrees are such columns. Each holds still for long stretches as
+a matter of course, so its repeats are its own steps, and no atom can be
+told there. Nor can `frozen` tell a stale feed from a column that is
+still for long stretches and moves finely in between. A price that moved
+by a tenth of a tick a row for 200 rows, and by three ticks a row for the
+next 200, read as frozen on ten seeds of ten.
 
-The thresholds were set by measurement, over ten seeds. A feed stopped for
-the last 10% of the rows was found, at 12.6 or more, as were a forward fill
-every 2, 3, 5 or 10 rows, at 31.6 or more, and 50 rows stuck in the middle,
-at 6.7. Thirty rows stuck were found, at 5.1, and 25 were not. Clean
-columns read 0.6 at most (values rounded to two decimals), and the six
-coarse-grid columns above were left untested, as they should be.
+The thresholds were set by measurement, over ten seeds. These stale feeds
+were found:
+
+| planted | `frozen`'s value |
+|---|---:|
+| a feed stopped for the last 10% of the rows | 12.6 or more |
+| a forward fill every 2, 3, 5 or 10 rows | 31.6 or more |
+| 50 rows stuck in the middle | 6.7 |
+| 30 rows stuck in the middle | 5.1 |
+
+Twenty-five rows stuck were not found. Clean columns read 0.6 at most
+(values rounded to two decimals), and the six coarse-grid columns above
+were silent, as they should be.
 
 **Why `rls` winds up on a frozen feature.** `rls` keeps `A`, the decayed
 sum of each row's `z zᵀ` (`z` is the intercept's 1 and the features), and
@@ -482,9 +510,9 @@ wanders. Control engineers call this *estimator windup* under exponential
 forgetting (Åström and Wittenmark 1995). Predictions stay right while the
 feature is held, because only `intercept + c·slope` is used. They fail the
 moment the feature moves again. A forgetting rule that keeps a floor under
-`A` (Kulhavý and Zarrop 1993) was measured for `rls` in task 216. In its
-uncentred coordinates, the floor acted as a ridge whose pull grows with
-the square of the level, and it was not built. The
+`A` (Kulhavý and Zarrop 1993) was measured for `rls`, and is not built. In
+`rls`'s uncentred coordinates the floor acted as a ridge whose pull grows
+with the square of the level. The
 [`rls` section](MODELS.md#rls--recursive-least-squares) of MODELS.md
 gives the measurements at other levels.
 
@@ -654,9 +682,10 @@ Measured at 20,000 rows and no decay, a level of 100 spreads kept an R² of
 0.42 against 0.51, and 1,000 spreads kept 0.015. With `delta=1e-6`, both
 read 0.51. Under a decay the prior fades with the sums, so the same levels
 left `rls`'s R² where `ewridge`'s was at half-lives of 20 and 200. A short
-stream at a long half-life is still in the prior's shadow: over 2,000 rows
+stream at a long half-life is still in the prior's shadow. Over 2,000 rows
 at a half-life of 200, a thousandth of `delta` is left beside a weight of
-289, and a level of 10,000 spreads cost 0.16 of R² over the last tenth.
+289, and a level of 10,000 spreads took 0.16 off the R² over the last
+tenth.
 
 So the check reads `r = (L/s)·sqrt(delta_left/W)` at the end of the
 stream. `delta_left` is `delta·(1 − settled_frac)`, all of `delta` without
@@ -664,10 +693,15 @@ decay, and `W` the weight the fit holds, `settled_frac` times
 `weight_sum_settled`, or `weight_sum` without decay. It is the weight and
 not the Kish size: weights 100 times larger moved the harm to levels 10
 times higher. The R² lost over the last tenth of a stream was one curve in
-`r`, at half-lives of 200, 2,000 and infinite and over 2,000 and 20,000
-rows: 0.007 to 0.018 at 0.55 to 0.71, 0.013 to 0.037 at 0.8, 0.10 to 0.11
-at 1.8 to 2.2, and all of the feature's share past 5. It stays at or below
-0.05 up to 0.9, the limit.
+`r`, at half-lives of 200, 2,000 and infinite, and over 2,000 and 20,000
+rows. It stays at or below 0.05 up to 0.9, the limit:
+
+| `r` | R² lost over the last tenth |
+|---|---|
+| 0.55 to 0.71 | 0.007 to 0.018 |
+| 0.8 | 0.013 to 0.037 |
+| 1.8 to 2.2 | 0.10 to 0.11 |
+| past 5 | all of the feature's share |
 
 **Why a step size needs a scale.** `sgd`, `pa` and `ftrl` move the
 coefficients a step along the gradient on each row. Least mean squares
@@ -804,10 +838,10 @@ that no single pair shows (Belsley, Kuh and Welsch 1980). Each is the
 square root of the ratio of the scaled design's largest eigenvalue to one
 of the others. `check()` reads the design each model solves. A model with
 an intercept centres its features, so its design is their correlation
-matrix, and two independent features that share a level are not
-collinear: two at 5,000 and 3,000 read 1.0 where the uncentred index read
+matrix. Two independent features that share a level are not collinear
+there: two at 5,000 and 3,000 read 1.0, where the uncentred index read
 5,061. A model fitted through the origin (`fit_intercept=False`) solves
-the raw design, where those two are nearly proportional, so it reads
+the raw design, where those two are nearly proportional. So it reads
 Belsley's uncentred index, which `po.gram.condition` computes, since
 centring would hide a dependency on the constant. `po.gram.vif` computes
 the factors from a saved Gram.
@@ -977,7 +1011,8 @@ shapes of 2,000 rows read no higher than −6.5 (columns that persist at
 0.95 a row).
 Groups of 50 rows, which the 100-row guard leaves out, read −4.7. A column
 that persists at 0.99 a row over 2,000 rows reads as a random walk on
-seven seeds of ten, and one at 0.98 on none.
+seven seeds of ten, and one at 0.98 on none. A row counter and a clock in
+epoch seconds, fed as columns, are fits with no residual, and read `+inf`.
 
 **Why.** The t-statistic assumes residuals that are independent from row
 to row. Regressing one random walk on another leaves residuals that are a
@@ -1068,7 +1103,7 @@ units of `sigma`.
 Clean columns reached an excess kurtosis of 3.8 (in 50-row groups) and a
 robust z of 5.6. Over 2,000 rows on ten seeds, Student's t with 3 degrees
 of freedom, whose kurtosis is infinite, read a largest robust z of 10 to
-28 and an excess kurtosis of 7 to 60. One value at 30 standard deviations
+25 and an excess kurtosis of 6 to 43. One value at 30 standard deviations
 read a robust z of 29.
 
 **Why.** The influence of one row on a least-squares fit grows without
@@ -1561,4 +1596,3 @@ Each claim above that is not measured here rests on one of these.
 | Phillips, P. C. B. (1986). Understanding spurious regressions in econometrics. *Journal of Econometrics* 33(3), 311–340. | why the t-statistic grows with the rows |
 | Rubin, D. B. (1976). Inference and missing data. *Biometrika* 63(3), 581–592. | missing completely at random, at random, and not at random |
 | Vovk, V., Gammerman, A. and Shafer, G. (2005). *Algorithmic Learning in a Random World*. Springer. | conformal prediction |
-| PLAN task 228 (2026-10-08) | listwise deletion against a pairwise Gram, a running-mean fill and online EM, on gaps of every kind |
