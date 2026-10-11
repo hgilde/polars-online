@@ -87,7 +87,8 @@ def audit(
            one of its steps or an atom a stale feed adds
        * - persistence
          - the lag-1 autocorrelation, the correlation of each usable row with
-           the usable row before it, and the Dickey-Fuller statistic of the
+           the row before it where that row is usable too, and the
+           Dickey-Fuller statistic of the
            same regression with a constant, ``(rho - 1) / se(rho)``, as
            statsmodels' ``adfuller`` gives it with no lags. A random walk
            reads near 0; independent rows read about ``-sqrt(n)``; a fit
@@ -106,26 +107,26 @@ def audit(
          - each step between consecutive rows, the time that passed,
            uncapped, is a duplicate stamp (0), a gap (at or past
            ``gap_cap``, which caps the step a model ages by) or a regular
-           step, whose mean, population spread, coefficient of variation and
-           largest value are kept, as ``Duration`` on a temporal clock
+           step, whose mean, population spread and coefficient of variation
+           are kept, with the largest step of all, as ``Duration`` on a
+           temporal clock
 
     **Cost.** A value already held costs a binary search among a column's
     ``distinct_cap`` counters. A value not held costs a pass over them,
-    ``O(distinct_cap)``: below the cap the counters after it move to make
-    room, and past it every counter gives up one. A continuous column, whose
-    values are nearly all new, pays that pass on nearly every row: one such
-    column ran at 5.5 to 6.1 million rows a second at 256 counters, 2.4
-    million at 8,192 and 0.31 million at 65,536 (100,000 rows, under a load
-    average of 6 to 12). The digest compresses every 256 rows, a few
-    comparisons a row amortized, and ``pairs`` costs ``k(k - 1)/2`` pair
-    updates a row. Ten columns ran at 1.3 million rows a second, and 1.2
-    million with their pairs, where an ``ewridge`` on the same columns ran
-    at 4.1 million (500,000 rows on an Apple M4 Pro, under a load average
-    of 10).
-    Memory does not grow with the rows: about 10 KiB a column at the
-    defaults (``distinct_cap`` counters of 16 bytes, a digest of at most
-    about 200 centroids and 256 values waiting), and 64 bytes a pair, in
-    every group; a saved state held 4.8 KB a column.
+    ``O(distinct_cap)``: below the cap the counters after it move to make room,
+    and past it every counter gives up one. A continuous column, whose values
+    are nearly all new, pays that pass on nearly every row. On 100,000 rows,
+    under a load average of 6 to 12, one such column ran at 5.5 to 6.1 million
+    rows a second at 256 counters, 2.4 million at 8,192 and 0.31 million at
+    65,536. The digest compresses every 256 rows, a few comparisons a row
+    amortized, and ``pairs`` costs ``k(k - 1)/2`` pair updates a row. Ten
+    columns ran at 1.3 million rows a second, and 1.2 million with their pairs,
+    where an ``ewridge`` on the same columns ran at 4.1 million (500,000 rows
+    on an Apple M4 Pro, under a load average of 10). Memory does not grow with
+    the rows: about 10 KiB a column at the defaults (``distinct_cap`` counters
+    of 16 bytes, a digest of at most about 200 centroids and 256 values
+    waiting), and 72 bytes a pair, in every group. A saved state held 4.8 KB a
+    column.
 
     **Every row is read.** Another model skips a row whose feature is not
     usable; an audit counts it, which is the point. A restart, at a session
@@ -191,7 +192,8 @@ def audit(
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
     ``targets`` and for ``features``, which an audit calls ``columns``;
-    ``ValueError`` for an empty ``columns``, for ``half_life``/``lam``,
+    ``ValueError`` for an empty ``columns`` or one that names a column twice,
+    for ``half_life``/``lam``,
     ``weight``, ``embargo``, ``min_weight`` or ``group_close``, and for a
     ``distinct_cap`` outside 1 to 65,536.
     """
