@@ -225,7 +225,8 @@ divides by it.
 **A Gram holds the rows its model learned, at the weights its decay gave
 them.** Under `half_life=float("inf")` that is every row since the group
 began, each weighing the same. Under a finite half-life the older rows
-weigh less, and `weight_sum` falls as the stream goes quiet.
+weigh less, and a gap between two rows ages every row before it, by no
+more than `gap_cap`.
 
 **Under a `window_size`, a Gram holds only the window.** Every array is
 the window's, the target moments included, so `po.gram.solve` on it fits
