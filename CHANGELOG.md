@@ -718,6 +718,20 @@ reinterpreted parameter, an output's dtype or a file to refit.
 
 ### Changed
 
+- **The online diagnostics' nulls, after review round 7** (A-1, A-2, A-3,
+  E-1). Beside a `kalman` with a `coef_half_life` list, the windowed
+  `cusum`'s null share reads the intercept's memory, which is what absorbs
+  a level (`[inf, 30, 30]`: spread 1.40 -> about 1.0); on a quantile fit
+  under a horizon, `break_wald` scales by the residuals' long-run variance,
+  not the indicators' (10.8% of quiet streams past 7.815 -> near the
+  least-squares fits' 5.9%; schema 61, a second long-run accumulator);
+  beside a `window_size`, `cusum` divides by the window's own share, a
+  closed form exact at both ends (0.703 with no decay at the default
+  memory, where it read 1/2: spread 1.08-1.20 -> 1.00-1.02 on windows of
+  100 and 400 rows, with no decay and at half-lives 50 and 200; `cusum_sq`
+  unmoved). The diagnostics page states the two readiness clocks: the
+  notices and `settled_frac` read the model's own half-life, a diagnostic
+  waits for the longest memory the model keeps.
 - **`po.gbdt.xgboost_matrix` (unstable): with `weight=`, the cuts follow
   the weights, as XGBoost's own sketch does** (review 7, C-4). The sample
   is drawn in proportion to the weights (priority sampling, Duffield, Lund

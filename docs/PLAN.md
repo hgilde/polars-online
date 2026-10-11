@@ -14203,7 +14203,7 @@ DIAGNOSTICS.md:226 and a `stream.rs` comment), E-2 (two guides list three
 `withheld_reason` values), E-3 (fourteen `po.gbdt` refusals untested).
 
 **Fixed, one right answer:** D-1..D-3 (`9b20cc5`); A-1, A-2, E-2
-(`review7-fix1`); C-1 (a `ref` built here records each feature's Enum
+(`review7-fix1`, schema 61; merged with fix3 2026-10-11); C-1 (a `ref` built here records each feature's Enum
 categories and refuses a mismatch by name), C-2, C-3, E-3 and `in_memory=1`
 (`review7-fix2`; stopped once by a permission prompt, resumed on the user's
 "Resume"); merged 2026-10-11, full tier 6302 passed).
@@ -14213,7 +14213,7 @@ worried about doing more work now and want the best outcomes"; the fixes
 delegated at the user's word to Opus at high effort): A-3 (a) the window's
 own form of the null, derived in closed form and held to spread 1.0 (what a
 window beside a decay reads is measured and stated); E-1 (a) keep both
-clocks, state them, test holt's two rows (`review7-fix3`); C-4 (b) weights
+clocks, state them, test holt's two rows (`review7-fix3`); done and merged 2026-10-11: `cusum_null_window`, a closed form held to quadrature at 9.7e-5, the window form beside a decay too, spread 1.00-1.02; holt's notice at row 268 and first diagnostic at 866); C-4 (b) weights
 carried into the sample and weighted quantiles, so the cuts are XGBoost's,
 plus the docstring sentence for LightGBM's unweighted binning
 (`review7-fix5`, after fix2); done and merged 2026-10-11: probe (a) 2 -> 14 of 15 cuts above 1.0 (XGBoost 14), heaviest bin 35.5% -> 6.26% (XGBoost 6.47%), unweighted cuts bit-identical, scoped mutants 122 caught and the last survivor closed by hand); B-D1 the behaviour stays (the pairwise
