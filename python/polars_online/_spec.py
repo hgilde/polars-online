@@ -689,19 +689,21 @@ def target(column: str, *, name: str | None = None) -> Target:
     ``po.target`` with no ``name``, and so is a ``name`` equal to the column.
     A target's column used as a feature is refused, whatever its name.
 
-    A target computed from its own row's columns, such as a price against
-    the mid, is a column: make it with Polars' ``with_columns`` in the query
-    before the bank, and name it in ``targets``. For a return, a log ratio
-    (``(pl.col("p") / pl.col("mid")).log()``) or a difference sits about
-    zero, where ``hit_rate`` takes its sign; a plain ratio sits about 1,
-    where two positive numbers always agree. Before 1.0 this function took
-    ``relative_to`` and ``relative`` for that; they are refused, and the
-    error says this. A target computed from the rows after its own is a
-    window expression looking ahead (:mod:`polars_online.ops`), named by
-    its alias.
+    A target computed from its own row's columns, such as a price against the
+    mid, is a column: make it with Polars' ``with_columns`` in the query before
+    the bank, and name it in ``targets``. For a return, a log ratio
+    (``(pl.col("p") / pl.col("mid")).log()``) or a difference sits about zero,
+    where ``hit_rate`` takes its sign; a plain ratio sits about 1, where two
+    positive numbers always agree. ``relative_to`` and ``relative`` are
+    refused, with a message that says this. A target computed from the rows
+    after its own is a window expression looking ahead
+    (:mod:`polars_online.ops`), named by its alias.
 
-    In the CLI's TOML the same target is a table:
-    ``targets = ["ret_5m", { column = "p", name = "price" }]``.
+    In the CLI's TOML the same target is a table: ``targets = ["ret_5m", {
+    column = "p", name = "price" }]``.
+
+    Raises ``TypeError`` for a ``column`` or a ``name`` that is not a str, and
+    ``ValueError`` for an empty one.
     """
     if not isinstance(column, str):
         raise TypeError(f"target: column must be a str, got {type(column).__name__}")
@@ -927,14 +929,15 @@ def ewridge(
     ``ridge``
         The penalty on the slopes, in the features' squared units unless
         ``standardize``; on the intercept too under ``ridge_scale = "sum"``,
-        and never otherwise. Default ``1e-6``. A list fits one instance per
-        value from the same sums, reported side by side as
-        ``pred_<t>__r<ridge>``.
+        and never otherwise. Default ``1e-6``, finite and at least 0. A list
+        fits one slot per value from the same sums, reported side by side as
+        ``pred_<t>__r<ridge>``; a value listed twice is refused.
     ``feature_sets``
         Named subsets of ``features``, each a fit of its own from the same
-        sums, reported as ``pred_<t>__<set>``. The full set is fitted only
-        when it is one of them; ``emit_selected`` then reports the set doing
-        best.
+        sums, reported as ``pred_<t>__<set>``. The full set is fitted only when
+        it is one of them; ``emit_selected`` then reports the set doing best. A
+        single set is no grid: it is fitted alone, and its fields take no
+        suffix.
     ``standardize``
         Solve in correlation form and unscale afterwards, so ``ridge`` means
         the same thing whatever the features' units, and a feature whose
@@ -966,10 +969,11 @@ def ewridge(
              - RLS's, ``(W S + prior_scale * ridge * I) b = W r``, penalizing
                every slot, **the intercept's included**
 
-        Under ``"sum"`` a constant target of 5 reads an intercept of 3.5 at
-        row 20 under ``ridge=10``, ``half_life=50``, and 4.95 at row 200,
-        until the prior fades. A ``coef_prior`` intercept is what it shrinks
-        toward.
+        Under ``"sum"`` a constant target of 5 reads an intercept of 3.5 at row
+        20 under ``ridge=10``, ``half_life=50``, and 4.95 at row 200, until the
+        prior fades. A ``coef_prior`` intercept is what it shrinks toward.
+        ``"sum"`` is refused beside ``standardize``, beside a list of ``ridge``
+        values and beside two or more ``feature_sets``.
     ``coef_prior``
         Shrink toward these coefficients instead of toward zero: one vector
         per target, in the features' original units, ``len(features) + 1``
@@ -995,52 +999,57 @@ def ewridge(
         ``session_gap`` this changes what the model believes, not how
         confident it is. With ``ridge_scale = "sum"`` the prior keeps today's
         scale too, so at ``1`` the fit is the twin's moments under today's
-        prior.
+        prior. ``session_shrink`` is a share in ``[0, 1]`` and needs a
+        ``session`` column; it is refused beside ``session_gap = "reset"`` and
+        ``group_close = "session"``, which start the model over instead.
+        ``long_half_life`` is above 0.
     ``solve_every``, ``max_rows_between_solves``
-        The solve schedule: every ``solve_every`` clock units, and at least
-        every ``max_rows_between_solves`` rows. Left out, the schedule is by
-        weight: a solve once the weight learned since the last reaches ``ln 2
-        / 50`` of the weight the fit holds. In steady state that is every
-        ``half_life / 50`` of clock at any row spacing, and more often during
-        warm-up and after a gap, where the fit moves most. A half-life far
-        longer than the stream still solves, at rows further apart as the
+        The solve schedule: every ``solve_every`` clock units (finite and at
+        least 0, ``0`` every row), and at least every
+        ``max_rows_between_solves`` rows (at least 1). Left out, the schedule
+        is by weight: a solve once the weight learned since the last reaches
+        ``ln 2 / 50`` of the weight the fit holds. In steady state that is
+        every ``half_life / 50`` of clock at any row spacing, and more often
+        during warm-up and after a gap, where the fit moves most. A half-life
+        far longer than the stream still solves, at rows further apart as the
         weight grows. ``half_life = inf`` and ``lam`` solve every row.
-        ``max_rows_between_solves`` is off by default. The coefficients are
-        the sums' as of the last solve. A row of weight 0 is clock alone: it
-        never solves and is no row of the cap, so a solve that comes due on
-        one waits for the next row with weight, and the solves fall where
-        they would without it.
+        ``max_rows_between_solves`` is off by default. The coefficients are the
+        sums' as of the last solve. A row of weight 0 is clock alone: it never
+        solves and is no row of the cap, so a solve that comes due on one waits
+        for the next row with weight, and the solves fall where they would
+        without it.
     ``gram_block_rows``
-        Hold that many rows back and bring the ``k x k`` matrix up to date
-        once per block, by one matrix product instead of one rank-one update
-        per row: ``256`` measured 6.6x faster at a thousand features. The
-        matrix is brought up to date before every solve too, so the block
-        never exceeds the solve cadence. The option is refused where there is
-        no cadence (``solve_every <= 0`` or ``max_rows_between_solves <= 1``)
-        and with ``window_size``. ``weight_sum``, the timing of every
-        prediction and chunk invariance are unchanged to the bit. The blocked
-        sum is the same sum in another order, so a blocked fit agrees with an
-        unblocked one to rounding. The held rows travel in the state file, and
-        are refused over 256 MiB.
+        Hold that many rows back and bring the ``k x k`` matrix up to date once
+        per block, by one matrix product instead of one rank-one update per
+        row: ``256`` measured 6.6x faster at a thousand features. Default 0,
+        off. The matrix is brought up to date before every solve too, so the
+        block never exceeds the solve cadence. The option is refused where
+        there is no cadence (``solve_every <= 0``, the default under ``lam``
+        and ``half_life = inf``, or ``max_rows_between_solves <= 1``) and with
+        ``window_size``. ``weight_sum``, the timing of every prediction and
+        chunk invariance are unchanged to the bit. The blocked sum is the same
+        sum in another order, so a blocked fit agrees with an unblocked one to
+        rounding. The held rows travel in the state file, and are refused over
+        256 MiB, ``session_shrink``'s slow twin counted.
     ``gram_threads``
-        Run the update of the ``k x k`` matrix on up to that many threads:
-        the block's matrix product under ``gram_block_rows``, and each row's
+        Run the update of the ``k x k`` matrix on up to that many threads: the
+        block's matrix product under ``gram_block_rows``, and each row's
         rank-one update without it. Default 1. The output is the same to the
         bit at every count. Each entry of the matrix is still summed by one
         thread in one order, because the product is cut into pieces by ``k``
-        alone, never by the count. The threads come from the pool the bank
-        runs its groups on (``POLARS_ONLINE_MAX_THREADS``). So a bank whose
-        groups already keep every core busy gains little, and loses nothing.
-        Measured on 14 cores with ``gram_block_rows=256``: at 2,000 features
-        a bank learned 3.9 times as fast on eight threads, and on eight
-        threads the product alone ran 6 to 7 times as fast from 2,000 to
-        10,000 features. Without a block the update is bound by memory and
-        gains 2 to 3 times. Up to
-        256 features the product is one piece, and below 725 a row's update
-        stays on one thread, so the option changes nothing there. Being the
-        same to the bit at every count, it is a setting and not part of the
-        state: a saved bank resumes under the count of the specs given to
-        ``load``, or under the saved one when given none.
+        alone, never by the count. The threads come from the pool the bank runs
+        its groups on (``POLARS_ONLINE_MAX_THREADS``). So a bank whose groups
+        already keep every core busy gains little, and loses nothing. Measured
+        on 14 cores with ``gram_block_rows=256``: at 2,000 features a bank
+        learned 3.9 times as fast on eight threads, and on eight threads the
+        product alone ran 6 to 7 times as fast from 2,000 to 10,000 features.
+        Without a block the update is bound by memory and gains 2 to 3 times.
+        Up to 256 columns (the features and the intercept) the product is one
+        piece, and below 725 a row's update stays on one thread, so the option
+        changes nothing there. Being the same to the bit at every count, it is
+        a setting and not part of the state: a saved bank resumes under the
+        count of the specs given to ``load``, or under the saved one when given
+        none.
     ``target_gaps``
         Which rows a target's fit is read from where the target is null on
         some. Target ``j`` keeps its mean ``ybar_j``, the column means ``m_j``
@@ -1074,46 +1083,49 @@ def ewridge(
         ``weight_sum`` counts every row either way, and a null target is
         still predicted.
     ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
-        A hard cutoff on the history the fit is solved from, in clock units:
-        a row ``window_size`` old or older is not in the sums at all, where
-        the exponential weight alone would leave ``0.5 ** (age / half_life)``
-        of it. Inside the window the weights are still exponential, so this
-        is a windowed exponentially weighted regression, not a rolling least
-        squares. It is exact. The sums are sums of per-row contributions, so
-        everything at or before a time ``u`` is ``lam ** (t - u)`` times the
-        sums as they stood then, and subtracting that leaves the window. The
-        model keeps a ring of snapshots to do it, which is the one place here
-        where memory grows with a window rather than with the state. A
-        half-life grid is one instance per entry, each with its own ring.
+        A hard cutoff on the history the fit is solved from, in clock units,
+        finite and above 0. A row ``window_size`` old or older is not in the
+        sums at all, where the exponential weight alone would leave
+        ``0.5 ** (age / half_life)`` of it. Inside the window the weights are
+        still exponential, so this is a windowed exponentially weighted
+        regression, not a rolling least squares. It is exact. The sums are sums
+        of per-row contributions, so everything at or before a time ``u`` is
+        ``lam ** (t - u)`` times the sums as they stood then, and subtracting
+        that leaves the window. The model keeps a ring of snapshots to do it,
+        which is the one place here where memory grows with a window rather
+        than with the state. A half-life grid is one instance per entry, each
+        with its own ring.
 
-        ``closed`` is which edge holds the row exactly ``window_size`` old,
-        in Polars' words (``rolling_sum_by(closed=)``). ``"right"``, the
-        default, keeps the rows less than ``window_size`` old, so that row
-        has left, as it has in the window operators (:func:`polars_online.ewm_mean`)
-        and in ``rolling_sum_by``. ``"both"`` keeps it too. ``"left"`` and
-        ``"none"`` would leave out the row the window ends at, which a model
-        cannot do, since it reads its fit after it has learned that row: both
-        are refused, as ``"both"`` is without ``window_size``.
+        ``closed`` is which edge holds the row exactly ``window_size`` old, in
+        Polars' words (``rolling_sum_by(closed=)``). ``"right"``, the default,
+        keeps the rows less than ``window_size`` old, so that row has left, as
+        it has in the window operators (:func:`polars_online.ewm_mean
+        <polars_online.ops.ewm_mean>`) and in ``rolling_sum_by``. ``"both"``
+        keeps it too. ``"left"`` and ``"none"`` would leave out the row the
+        window ends at, which a model cannot do, since it reads its fit after
+        it has learned that row: both are refused, as ``"both"`` is without
+        ``window_size``.
 
         The ring takes a snapshot on every row unless told otherwise.
         ``window_every`` spaces them on the clock, as ``solve_every`` spaces
         solves: a number of the clock's units, a duration on a temporal clock
-        (``"1m"``), or ``0`` for every row. ``max_rows_between_snapshots``
-        caps the rows between them, as ``max_rows_between_solves`` caps the
-        rows between solves, and whichever comes first takes a snapshot. A
-        row of weight zero counts, a gap capped at ``gap_cap`` counts as the
-        cap, and without a clock column the clock is the row's number. A
-        coarser cadence divides the memory and can only shorten the effective
-        window. Under a clock spacing, every row at most
-        ``window_size - window_every`` old is kept and none older than
-        ``window_size``. So the effective window is in
+        (``"1m"``), or ``0`` for every row. ``max_rows_between_snapshots`` caps
+        the rows between them, as ``max_rows_between_solves`` caps the rows
+        between solves, and whichever comes first takes a snapshot. A row of
+        weight zero counts, a gap capped at ``gap_cap`` counts as the cap, and
+        without a clock column the clock is the row's number. A coarser cadence
+        divides the memory and can only shorten the effective window. Under a
+        clock spacing, every row at most ``window_size - window_every`` old is
+        kept and none older than ``window_size``. So the effective window is in
         ``[window_size - window_every, window_size]`` in clock units, exactly,
         with ``window_every`` the spacing in force: a thinning
-        ``window_budget`` doubles it.
-        A burst of rows inside one spacing takes no snapshot of its own.
+        ``window_budget`` doubles it. A burst of rows inside one spacing takes
+        no snapshot of its own. ``window_every``,
+        ``max_rows_between_snapshots`` and ``window_budget`` are refused
+        without ``window_size``.
 
-        ``window_budget`` bounds each ring in MiB, and says what happens when
-        a ring reaches the bound:
+        ``window_budget`` bounds each ring in MiB, above 0, and says what
+        happens when a ring reaches the bound:
 
         .. list-table::
            :header-rows: 1
@@ -1167,8 +1179,8 @@ def ewridge(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per (target, ridge value, feature set) slot in the order the ``pred``
         fields declare them, the intercept then one entry per feature, zero
@@ -1180,11 +1192,13 @@ def ewridge(
         ``coef``: how much of the fit after the row the data determined
         rather than the ridge (:mod:`polars_online.spec`).
 
-    plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
-    describes them. Under a grid each field is suffixed per instance. The sums
+    plus the fields of the diagnostics switched on, as
+    :mod:`polars_online.spec` describes them. Under a half-life grid every
+    field is suffixed per instance, and under a ridge or feature-set grid each
+    slot's fields (:mod:`polars_online.spec`, "What a spec writes"). The sums
     behind the fit are :meth:`polars_online.ModelBank.gram`'s, one entry per
-    Gram (under ``target_gaps = "own_rows"``, one per set of targets present
-    on the same rows). A group that closes writes one row per Gram to
+    Gram (under ``target_gaps = "own_rows"``, one per set of targets present on
+    the same rows). A group that closes writes one row per Gram to
     :meth:`polars_online.ModelBank.closed_groups`.
 
     .. rubric:: Example
@@ -1206,9 +1220,17 @@ def ewridge(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`), and ``ValueError``
-    naming the problem for a ``feature_sets`` entry naming a column not in
-    ``features``, a ``coef_prior`` vector of the wrong length, and
-    ``session_shrink`` without ``long_half_life``.
+    naming the problem for:
+
+    - a ``feature_sets`` entry naming a column not in ``features``, and a
+      ``coef_prior`` vector of the wrong length;
+    - ``ridge_scale = "sum"`` beside ``standardize`` or a grid;
+    - ``session_shrink`` without ``long_half_life`` or ``session``, or beside
+      ``session_gap = "reset"`` or ``group_close = "session"``;
+    - ``gram_block_rows`` beside ``window_size``, without a solve cadence, or
+      past 256 MiB of held rows;
+    - ``window_size`` beside ``ridge_scale = "sum"`` or ``session_shrink``, and
+      the window's other parameters without it.
     """
     model: dict[str, Any] = {
         "type": "ewridge",
@@ -1326,17 +1348,31 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``quantile``
         The level of a ``resid_quantiles`` or ``mahal_quantiles`` field.
     ``columns``
-        The pair an ``ew_cov`` statistic is over.
-    ``dtype``
-        ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum`` (``withheld_reason``),
-        ``i32`` (a cluster or state index), ``i64`` (a count, a row index or an
-        id) or ``clock`` (``scored_clock`` and ``learned_clock``, in the clock
-        column's own type): the type the bank declares to polars before the
-        first row is read.
+        The columns the field is computed from:
 
-    This is how to reach a field without constructing its name; the string grammar
-    (:mod:`polars_online.spec`, "What a spec writes") stays an implementation
-    detail:
+        - one for an ``ew_cov`` mean, variance or standard deviation, and for a
+          feature-health field;
+        - the pair for a correlation or a covariance, ordered for ``lag_corr``;
+        - every feature for ``mahal``, the principal components and the fields
+          of ``kmeans``, ``micro``, ``ew_class``, ``hmm``, ``bocpd`` and
+          ``corrchange``;
+        - a block or a pair of blocks for ``deco``.
+
+        Null where no column set describes the field, as for a prediction.
+    ``dtype``
+        The type the bank declares to polars before the first row is read:
+        ``f64``, ``bool``, ``str``, ``list[f64]``, ``enum``
+        (``withheld_reason``), ``i32`` (``kmeans``' cluster and ``hmm``'s
+        state, ``micro``'s live counts), ``i64`` (a count, a row index or an
+        id, and ``micro``'s cluster label), or ``clock`` (``scored_clock`` and
+        ``learned_clock``, in the clock column's own type).
+
+    This is how to reach a field without constructing its name; the string
+    grammar (:mod:`polars_online.spec`, "What a spec writes") stays an
+    implementation detail. A few fields share every column here but ``field``:
+    ``ew_cov``'s ``lag_corr`` at different lags, ``hmm``'s per-state and
+    ``ew_class``'s per-class probabilities, and ``bocpd``'s per-feature
+    predictions. Those are told apart by ``field`` alone:
 
     .. code-block:: python
 
@@ -1388,20 +1424,24 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     ``position``
         Its index in that list.
     ``name``
-        The column :meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest`
-        gives it: ``coef_{target}_{term}{combo}{instance}``, so
-        ``coef_y_x1__r0.5@h500`` sits beside ``pred_y__r0.5@h500``. The ``coef_``
-        prefix and the target are there because a bare ``x1`` would collide with
-        the feature column of that name in the same frame.
+        The column
+        :meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest` gives it:
+        ``coef_{target}_{term}{combo}{instance}``, so ``coef_y_x1__r0.5@h500``
+        sits beside ``pred_y__r0.5@h500``. The ``coef_`` prefix and the target
+        are there because a bare ``x1`` would collide with the feature column
+        of that name in the same frame. :func:`deco`'s are
+        ``coef_{slot}{instance}``, its slot ``rho`` or a block or pair of
+        blocks (``coef_tech``, ``coef_tech_banks``).
     ``target``, ``half_life``, ``lam``, ``ridge``, ``feature_set``, ``penalty``
         As :func:`output_index` reports them.
     ``term``
-        ``"intercept"``, a feature name, or ``"level"`` / ``"trend"`` for
-        :func:`holt`.
+        ``"intercept"``, a feature name, ``"level"`` / ``"trend"`` for
+        :func:`holt`, or ``"rho"`` for :func:`deco`.
 
     Empty for the kinds that report no coefficients: ``ew_cov``, ``seqtest``,
-    ``marginal``, ``rcov``, ``corrchange`` and ``bocpd``. To reach one coefficient
-    in the nested output without writing either name:
+    ``marginal``, ``rcov``, ``corrchange``, ``bocpd`` and ``audit``, and for
+    ``micro``, whose ``coef`` has no fixed layout. To reach one coefficient in
+    the nested output without writing either name:
 
     .. code-block:: python
 
@@ -1411,7 +1451,10 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
         out = po.ModelBank([grid]).fit_predict(df)    # a half-life grid by a ridge grid
         cf = po.spec.coef_fields(grid)
         row = cf.filter(
-            (pl.col("target") == "y") & (pl.col("term") == "x1") & (pl.col("half_life") == 500.0)
+            (pl.col("target") == "y")
+            & (pl.col("term") == "x1")
+            & (pl.col("ridge") == 0.5)
+            & (pl.col("half_life") == 500.0)
         ).row(0, named=True)
         slope = out["m"].struct.field(row["field"]).list.get(row["position"])
 
@@ -1460,11 +1503,13 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
 
     ``coef`` is flat: (target x grid combination) slots, each contributing its
     terms in order. This maps ``position`` to ``target``, the combination's
-    ``ridge``, ``feature_set`` and ``penalty``, and ``term`` -- ``"intercept"``, a
-    feature name, or ``"level"`` / ``"trend"`` for :func:`holt`. For
-    :func:`kmeans` the slots are the centres, so ``target`` reads ``"cluster0"``,
-    ``"cluster1"``, ... and ``term`` is the feature whose coordinate the position
-    holds; for :func:`ew_class` and :func:`hmm` a class or state likewise.
+    ``ridge``, ``feature_set`` and ``penalty``, and ``term`` --
+    ``"intercept"``, a feature name, or ``"level"`` / ``"trend"`` for
+    :func:`holt`. For :func:`kmeans` the slots are the centres, so ``target``
+    reads ``"cluster0"``, ``"cluster1"``, ... and ``term`` is the feature whose
+    coordinate the position holds; for :func:`ew_class` and :func:`hmm` a class
+    or state likewise. For :func:`deco` a slot is ``rho``, or a block or a pair
+    of blocks, and ``term`` reads ``"rho"``.
 
     .. code-block:: python
 
@@ -1478,14 +1523,18 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         )["position"].item()
         slope = out["m"].struct.field("coef@h100").list.get(pos)
 
-    Every instance's list has this layout; :func:`coef_fields` is the same table
-    per instance, with the field each list sits in and the column name each entry
-    unnests to. ``ValueError`` for a spec that is not valid, as for
-    :func:`output_fields`. ``ValueError`` naming the kind, too, for a spec with no
-    fixed layout to index: an ``ew_cov`` spec, which has no coefficients; a
-    ``seqtest`` spec, which reports evidence; a ``micro`` spec, whose ``coef`` has
-    as many rows as there are established summaries; and ``marginal``, ``rcov``,
-    ``corrchange`` and ``bocpd``, which report none.
+    Every instance's list has this layout; :func:`coef_fields` is the same
+    table per instance, with the field each list sits in and the column name
+    each entry unnests to. ``ValueError`` for a spec that is not valid, as for
+    :func:`output_fields`. ``ValueError`` naming the kind, too, for a spec with
+    no fixed layout to index:
+
+    - ``ew_cov``, which has no coefficients;
+    - ``seqtest``, which reports evidence;
+    - ``micro``, whose ``coef`` has as many rows as there are established
+      summaries;
+    - ``marginal``, ``rcov``, ``corrchange``, ``bocpd`` and ``audit``, which
+      report none.
     """
     kind = spec.get("model", {}).get("type")
     if kind == "ew_cov":
@@ -1598,16 +1647,18 @@ def rls(
     .. rubric:: Parameters
 
     ``delta``
-        The prior's strength: ``A_0 = delta * I``, which is ``P_0 = I / delta``,
-        the classic RLS name. Default 1.0, in the units of ``A``, a decayed sum of
-        ``w * z z'``: the features' squared, summed over rows. It is
-        :func:`ewridge`'s ``ridge`` under ``ridge_scale = "sum"``, not its default
-        ``ridge``, a penalty on the means that never fades: this one penalizes the
-        intercept too and fades as data arrives. It was called ``ridge`` until
-        task 195, and that name is refused naming this one.
+        The prior's strength: ``A_0 = delta * I``, which is
+        ``P_0 = I / delta``, the classic RLS name. Default 1.0, in the units of
+        ``A``, a decayed sum of ``w * z z'``: the features' squared, summed
+        over rows. It is :func:`ewridge`'s ``ridge`` under
+        ``ridge_scale = "sum"``, not its default ``ridge``, a penalty on the
+        means that never fades: this one penalizes the intercept too and fades
+        as data arrives. ``ridge`` is refused here, with a message naming
+        ``delta``.
     ``coef_prior``
-        The coefficients the fit starts from and is shrunk toward, one vector per
-        target in the features' original units; zeros when left out.
+        The coefficients the fit starts from and is shrunk toward, one vector
+        per target in the features' original units, ``len(features) + 1`` long
+        when there is an intercept; zeros when left out.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -1628,8 +1679,8 @@ def rls(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
 
@@ -1650,7 +1701,8 @@ def rls(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`).
+    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` for a
+    ``coef_prior`` of the wrong shape.
     """
     model: dict[str, Any] = {"type": "rls", "delta": delta, "coef_prior": coef_prior}
     return _common(name, model, targets=targets, features=features, **common)
@@ -1709,51 +1761,54 @@ def lasso(
     .. rubric:: Parameters
 
     ``lasso_path``
-        The penalties, decreasing; required. One instance per point, reported as
+        The penalties, strictly decreasing, each finite and at least 0;
+        required, and not empty. One slot per point, reported as
         ``pred_<t>__l<lambda>``.
     ``l1_ratio``
-        The share of the penalty that is L1. Default 1, the lasso; below 1 an
-        elastic net.
+        The share of the penalty that is L1, in ``[0, 1]``. Default 1, the
+        lasso; below 1 an elastic net.
     ``select_half_life``
         The half-life of the EW squared out-of-sample error each path point is
-        ranked by. Default: the model's half-life; ``inf`` ranks on the plain mean
-        over every row so far. ``penalty_selected_<t>`` is reported as it stood before
-        the row -- the point this row was scored with, not the one its own error
-        then elected. A row of weight 0 adds no error and ages the errors so far,
-        so the selection moves only by what the ageing forgets. A target's
-        errors count from the row where its own weight reaches its own
-        ``min_weight``. A row that threshold withholds from the output adds
-        no error, so one target's choice does not depend on another's
-        threshold. Before the first scored row ``penalty_selected_<t>`` is
-        the path's last point, and a tie between points keeps the first in
-        ``lasso_path`` order.
+        ranked by, above 0. Default: the model's half-life; ``inf`` ranks on
+        the plain mean over every row so far. ``penalty_selected_<t>`` is
+        reported as it stood before the row -- the point this row was scored
+        with, not the one its own error then elected. A row of weight 0 adds no
+        error and ages the errors so far, so the selection moves only by what
+        the ageing forgets. A target's errors count from the row where its own
+        weight reaches its own ``min_weight``. A row that threshold withholds
+        from the output adds no error, so one target's choice does not depend
+        on another's threshold. Before the first scored row
+        ``penalty_selected_<t>`` is the path's last point, and a tie between
+        points keeps the first in ``lasso_path`` order.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule, as for :func:`ewridge`.
     ``max_iter``, ``tol``
         Within a solve, the descent stops after ``max_iter`` sweeps (default
-        100, at least 1) or when no coefficient moves by more than ``tol``
-        (default ``1e-10``). A descent that runs out of sweeps first is
-        counted in :meth:`polars_online.ModelBank.solve_failures`, one per
-        target and path point.
+        100, at least 1) or when no coefficient in the standardized
+        coordinates, ``b_i = beta_i * s_i``, moved by ``tol`` or more in a
+        sweep (default ``1e-10``, finite and above 0). A descent that runs out
+        of sweeps first is counted in
+        :meth:`polars_online.ModelBank.solve_failures`, one per target and path
+        point.
     ``target_gaps``
         Which rows a target's feature correlations are taken over where the target
         is null on some: ``"own_rows"``, the default, or ``"pairwise"``, as for
         :func:`ewridge`. The cross-correlations are centred at the target's own
         means either way.
     ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
-        A hard cutoff on the history the path is fitted from, in clock units, as
-        for :func:`ewridge`. A row ``window_size`` old or older is not in the
-        sums, and ``closed="both"`` keeps the one exactly that old, as for
-        :func:`ewridge`.
-        ``window_every`` spaces the snapshots on the clock and
+        A hard cutoff on the history the path is fitted from, in clock units,
+        as for :func:`ewridge`. A row ``window_size`` old or older is not in
+        the sums, and ``closed="both"`` keeps the one exactly that old, as for
+        :func:`ewridge`. ``window_every`` spaces the snapshots on the clock and
         ``max_rows_between_snapshots`` caps the rows between them, whichever
         comes first, as for :func:`ewridge`; ``window_budget`` bounds each ring
-        in MiB and thins or refuses past the bound. The selection error
-        is truncated with the sums, so the ``lambda`` chosen is the one that fits
-        the window rather than rows the fit has dropped. So a window can change
-        the support, not just the coefficients: a feature with no evidence inside
-        it goes to exactly zero. ``weight_sum``, ``sigma`` and ``zscore`` are the
-        window's too.
+        in MiB and thins or refuses past the bound. Each of the three is
+        refused without ``window_size``. The selection error is truncated with
+        the sums, so the ``lambda`` chosen is the one that fits the window
+        rather than rows the fit has dropped. So a window can change the
+        support, not just the coefficients: a feature with no evidence inside
+        it goes to exactly zero. ``weight_sum``, ``sigma`` and ``zscore`` are
+        the window's too.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -1769,17 +1824,19 @@ def lasso(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per (target, path point) slot, the intercept then one entry per feature
         (:func:`coef_index`).
 
-    plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
-    describes them. The ``pred`` and ``resid`` fields are per target and path
-    point, ``pred_<t>__l<lambda>``, and ``penalty_selected_<t>`` is the path point in
-    force for the target, by lowest EW out-of-sample error. The sums behind the
-    path are :meth:`polars_online.ModelBank.gram`'s, as for :func:`ewridge`.
+    plus the fields of the diagnostics switched on, as
+    :mod:`polars_online.spec` describes them. The ``pred`` and ``resid`` fields
+    are per target and path point, ``pred_<t>__l<lambda>``, and
+    ``penalty_selected_<t>`` is the path point in force for the target, by
+    lowest EW out-of-sample error. ``weight_sum``, ``coef`` and
+    ``penalty_selected_<t>`` take no path suffix. The sums behind the path are
+    :meth:`polars_online.ModelBank.gram`'s, as for :func:`ewridge`.
 
     .. rubric:: Example
 
@@ -1796,7 +1853,10 @@ def lasso(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`); ``lasso_path`` is required.
+    As every builder does (:mod:`polars_online.spec`); ``lasso_path`` is
+    required, and ``ValueError`` names a path that is empty or not strictly
+    decreasing, an ``l1_ratio`` outside ``[0, 1]``, and a ``select_half_life``
+    or ``tol`` that is not above 0.
     """
     model: dict[str, Any] = {
         "type": "lasso",
@@ -1857,19 +1917,21 @@ def kalman(
         b_j <- b_j + k (y_j - z' b_j)
         P_j <- P_j - k z' P_j
 
-    ``Q`` is the process noise and ``R_j`` the observation noise, the target's EW
-    residual variance unless ``obs_var`` is given. That variance is per target,
-    and its weight ages on every row, a row with no prediction or with weight 0
-    included. Such a row, and a row whose target is null, ages the target's weight
-    the same way and learns nothing for it.
+    ``Q`` is the process noise and ``R_j`` the observation noise, the target's
+    EW residual variance unless ``obs_var`` is given. That variance is per
+    target, and its weight ages on every row, a row with no prediction or with
+    weight 0 included. A row with no prediction, before ``min_weight``, still
+    moves the coefficients and adds to the target's weight; only the residual
+    variance learns nothing from it. A row of weight 0, or one whose target is
+    null, ages the target's weight and learns nothing for it.
 
     The drift is charged once, on the row that next observes the target, for
     the whole clock since the last one (``D_j``; under ``share_p`` any target's
-    row). ``Q * D ** 2`` is not additive over a split gap, so charged per row it
-    let a row of weight 0 inside a gap shrink the gap's noise and move every
-    later prediction (0.197 at ``coef_half_life = 20``), and a target seen on
-    one row in 10 forgot 3.6 times slower on the clock than one seen on every
-    row (docs/PLAN.md task 211).
+    row), because ``Q * D ** 2`` is not additive over a split gap. Charged per
+    row, a row of weight 0 inside a gap would shrink the gap's noise and move
+    every later prediction (0.197 at ``coef_half_life = 20``). And a target
+    seen on one row in 10 would forget 3.6 times slower on the clock than one
+    seen on every row (docs/PLAN.md task 211).
 
     Until a target has a residual variance, each row takes its noise from its own
     innovation, ``R_j = (y_j - z' b_j) ** 2``, computed before the update, so the
@@ -1887,56 +1949,59 @@ def kalman(
     ``coef_half_life``
         How fast a coefficient may drift, as a half-life on the clock, on
         standardized features. An observation ``D`` clock units after the
-        target's last adds the process noise ``sigma^2 * (ln 2 * D / h_i) ** 2``,
-        which matches EW-RLS's steady-state gain at that spacing: the same
-        half-life whether rows come every unit or every hundredth (docs/PLAN.md
-        task 150), and whether the target is seen on every row or one in ten
-        (task 211). That is each standardized direction's memory with the
-        others held still. Under correlated features a direction of the design's
-        correlation with eigenvalue ``lambda`` is learned with a memory of about
-        ``h / sqrt(lambda)`` (Ljung and Gunnarsson 1990; measured 37.5 and 160.5
-        clock units at a correlation of 0.9 and ``h = 50``, against 36.3 and
-        158.1), where EW-RLS forgets every direction at ``h``; and with the EW
-        residual variance as ``R``, which a step in the truth inflates, a step
-        is learned about 1.45 times slower than with the true noise. A scalar,
-        or one value per slot with the intercept first; ``inf`` pins that
-        coefficient. Required unless ``q`` is given, and refused beside it. Not
-        the spec's ``half_life``, which drives the standardization and the
-        residual variance.
+        target's last adds the process noise
+        ``sigma^2 * (ln 2 * D / h_i) ** 2``, which matches EW-RLS's
+        steady-state gain at that spacing. So the half-life is the same whether
+        rows come every unit or every hundredth (docs/PLAN.md task 150), and
+        whether the target is seen on every row or one in ten (task 211). That
+        is each standardized direction's memory with the others held still.
+        Under correlated features, a direction of the design's correlation with
+        eigenvalue ``lambda`` is learned with a memory of about
+        ``h / sqrt(lambda)`` (Ljung and Gunnarsson 1990), where EW-RLS forgets
+        every direction at ``h``. At a correlation of 0.9 and ``h = 50`` the
+        memories measured 37.5 and 160.5 clock units, against 36.3 and 158.1
+        predicted. With the EW residual variance as ``R``, which a step in the
+        truth inflates, a step is learned about 1.45 times slower than with the
+        true noise. A scalar, or one value per slot with the intercept first;
+        ``inf`` pins that coefficient; every value above 0. Required unless
+        ``q`` is given, and refused beside it. Not the spec's ``half_life``,
+        which drives the standardization and the residual variance.
 
         Under ``standardize`` the drift is per standard deviation of each
-        feature as the moments stand: a slope's random walk in the caller's
-        units has a variance of ``q_i * D ** 2 / s_i ** 2`` per observation,
-        a drift measured in the feature's current spread.
+        feature as the moments stand. A slope's random walk in the caller's
+        units has a variance of ``q_i * D ** 2 / s_i ** 2`` per observation, a
+        drift measured in the feature's current spread.
     ``q``
         The process noise given outright, ``q_i`` per slot, in place of the
         derivation from ``coef_half_life``; added as ``q_i * D ** 2`` on each
-        row that observes the target. Exactly one of the two is given: the
-        half-life was required, and ignored beside ``q``.
+        row that observes the target. One value per slot, each finite and at
+        least 0. Exactly one of the two is given.
     ``obs_var``
-        A fixed observation noise, in place of the EW residual variance.
+        A fixed observation noise, in place of the EW residual variance; finite
+        and above 0.
     ``p0``
         The prior variance of each coefficient, as a multiple of the noise.
-        Unstandardized, ``P_0 = p0 * R * I``, set on the target's first row with
-        a noise, from that row's noise, before its correction; until then ``P``
-        is unsized, and no process noise is added to it. With ``obs_var``
+        Unstandardized, ``P_0 = p0 * R * I``, set on the target's first row
+        with a noise, from that row's noise, before its correction; until then
+        ``P`` is unsized, and no process noise is added to it. With ``obs_var``
         given, ``P_0 = p0 * obs_var * I`` from the start, and with no process
         noise the filter is the ridge regression with penalty ``1 / p0``.
         Standardized, each coefficient's prior is ``p0 * R`` on the first row
         that observes the target on which its feature's scale is usable (the
-        intercept's always is): ``R`` is the weighted median of the first three
-        rows' squared innovations over 0.4549, the median of a chi-squared of
-        one degree, so it reads the noise variance as a mean would; and with
-        ``obs_var`` it is ``obs_var`` (the intercept then sized from the
-        start). Until then the coefficient is 0 and takes no correction. A
-        median, so one wild row among the first three, a target at the input
-        bound, does not size the prior from itself; such a row once left
-        ``P`` with a negative variance and the filter stuck for good. One
-        squared innovation falls below 1% of the noise one time in twelve,
-        and with no process noise a prior that small pins the fit for good;
-        the median of three, about one time in 120. A covariance whose
-        diagonal goes below 0 is sized again from the noise as it stands.
-        Default 1.0, a prior as uncertain as one observation.
+        intercept's always is). ``R`` is then the weighted median of the first
+        three rows' squared innovations over 0.4549, the median of a
+        chi-squared of one degree, so it reads the noise variance as a mean
+        would. With ``obs_var``, ``R`` is ``obs_var``, and the intercept is
+        sized from the start. Until then the coefficient is 0 and takes no
+        correction. A median, so one wild row among the first three, a target
+        at the input bound, does not size the prior from itself: a prior sized
+        from such a row could leave ``P`` with a negative variance and the
+        filter stuck for good. One squared innovation falls below 1% of the
+        noise one time in twelve, and with no process noise a prior that small
+        pins the fit for good; the median of three, about one time in 120. A
+        covariance whose diagonal goes below 0 is sized again from the noise as
+        it stands. Default 1.0, a prior as uncertain as one observation; finite
+        and above 0.
     ``standardize``
         Run the filter on standardized features, so ``coef_half_life`` and ``p0``
         mean the same thing whatever the columns' scale; the reported coefficients
@@ -1960,75 +2025,77 @@ def kalman(
 
         with ``m^a``, ``s^a`` the anchor and ``m``, ``s`` the moments after the
         row. So the moments' moving moves no prediction, no predictive variance
-        and no coefficient in the original units, from the first row: no row's
+        and no coefficient in the original units, from the first row. No row's
         raw reading of a feature reaches the state, and features scaled by a
-        power of two predict the same to the bit. Read through the moments as
-        they stood, a finite half-life's own wander moved every prediction: at
-        a half-life of 50 and R² 0.99998 the out-of-sample error was 223 noise
-        variances above the noise (docs/PLAN.md task 206). Task 206 re-mapped
-        on every row; the anchor is the same filter to rounding, a fifth
-        cheaper a row at ten features (task 211). A re-map past what a stretch
-        of data makes -- a
-        scale by more than 1024 times either way, or a mean by more than 1024
-        of the anchor's scale -- is not followed, and the state is read in the
-        new coordinates.
+        power of two predict the same to the bit. A filter read through the
+        moments as they stand instead has a finite half-life's own wander move
+        every prediction: at a half-life of 50 and R² 0.99998 its out-of-sample
+        error was 223 noise variances above the noise (review round 5, G1). The
+        anchor gives the same filter, to rounding, as a re-map on every row,
+        and is a fifth cheaper a row at ten features (task 211). A re-map past
+        what a stretch of data makes -- a scale by more than 1024 times either
+        way, or a mean by more than 1024 of the anchor's scale -- is not
+        followed, and the state is read in the new coordinates.
 
-        The model before task 206, a coefficient per current standard deviation
-        that moves with the scale, is this one on a column z-scored in the
-        stream, given with ``standardize = False``: the README's *Features in
-        units of their spread* builds the column with
-        :func:`polars_online.ewm_mean` and :func:`polars_online.ewm_std`
-        (docs/PLAN.md task 212).
+        For a coefficient per current standard deviation, which moves with the
+        scale, z-score the column in the stream and give it with
+        ``standardize = False``: the README's *Features in units of their
+        spread* builds the column with :func:`polars_online.ewm_mean
+        <polars_online.ops.ewm_mean>` and :func:`polars_online.ewm_std
+        <polars_online.ops.ewm_std>` (docs/PLAN.md task 212).
     ``revert_half_life``
-        A reversion half-life ``r_i`` per slot: between observations the
-        coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a coefficient
-        no row has supported for a while is forgotten rather than carried. Default
-        ``inf``, the random walk, which adds nothing. A scalar applies to every
-        slot, the intercept included; a list gives one per slot, intercept first,
-        and ``[inf, r, r]`` leaves the intercept a random walk. The pull is toward
-        zero in the standardized coordinates when ``standardize`` is on: a slope
-        toward "no effect", the intercept toward "the target averages zero". A
-        reverting slot's process noise for an observation ``D`` after the last
-        is ``q_i * g_i(D) ** 2`` with ``g_i(D) = (1 - 2 ** (-D / r_i)) /
-        theta_i`` and ``theta_i = ln 2 / r_i``: ``q_i * D ** 2`` for a gap well
-        under ``r_i``, and never more than ``q_i / theta_i ** 2``, so a
-        coefficient's uncertainty stays bounded across a run of rows that
-        observe nothing. At observations one clock unit apart that is short of
-        ``q_i`` by about ``ln 2 / r_i``. A reverting slot settles, at
-        observations ``D`` apart, at the prior variance ``q_i * g_i(D) ** 2 /
-        (1 - phi_i ** 2)``, a stationary AR(1) instead of an unbounded walk.
-        The reversion runs on every row, a row that
-        observes nothing included, being the same over a gap however it is
-        cut. A prediction propagates the state by the same ``Phi`` over the
-        row's clock gap.
+        A reversion half-life ``r_i`` per slot, above 0: between observations
+        the coefficient shrinks toward zero by ``2 ** (-d / r_i)``, so a
+        coefficient no row has supported for a while is forgotten rather than
+        carried. Default ``inf``, the random walk, which adds nothing. A scalar
+        applies to every slot, the intercept included; a list gives one per
+        slot, intercept first, and ``[inf, r, r]`` leaves the intercept a
+        random walk. The pull is toward zero in the standardized coordinates
+        when ``standardize`` is on: a slope toward "no effect", the intercept
+        toward "the target averages zero". A reverting slot's process noise for
+        an observation ``D`` after the last is ``q_i * g_i(D) ** 2``, with
+        ``g_i(D) = (1 - 2 ** (-D / r_i)) / theta_i`` and
+        ``theta_i = ln 2 / r_i``. That is ``q_i * D ** 2`` for a gap well under
+        ``r_i``, and never more than ``q_i / theta_i ** 2``, so a coefficient's
+        uncertainty stays bounded across a run of rows that observe nothing. At
+        observations one clock unit apart that is short of ``q_i`` by about
+        ``ln 2 / r_i``. A reverting slot settles, at observations ``D`` apart,
+        at the prior variance ``q_i * g_i(D) ** 2 / (1 - phi_i ** 2)`` with
+        ``phi_i = 2 ** (-D / r_i)``, a stationary AR(1) instead of an unbounded
+        walk. The reversion runs on every row, a row that observes nothing
+        included, being the same over a gap however it is cut. A prediction
+        propagates the state by the same ``Phi`` over the row's clock gap.
     ``share_p``
-        Keep one ``P`` for every target, driven by the mean ``sigma^2`` over the
-        targets that have one, where by default ``P`` is per target because the
-        recursion depends on ``sigma^2_j``. A target with no residual variance
-        yet is left out of the mean, not counted as a noise of 0. ``P``'s
-        recursion never reads ``y``, so targets that share the noise would each
-        carry the same ``P``: every target observed on a row takes its gain from
-        ``P`` as the row finds it, and ``P`` takes the row once. The order of
-        the targets moves no prediction, and a target beside a copy of itself
-        present on the same rows predicts as it would alone. A copy null on
-        some of those rows moves nothing until it has a residual variance; from
-        then its variance, learned from fewer rows, enters the mean. With a
-        noise ``sigma^2_j`` of its own, a target's own filter would keep ``P``
-        times ``sigma^2_j`` over the mean, and that is the covariance its
-        ``se_coef`` reads (docs/PLAN.md task 211): read off
+        Keep one ``P`` for every target, driven by the mean ``sigma^2`` over
+        the targets that have one, where by default ``P`` is per target because
+        the recursion depends on ``sigma^2_j``. A target with no residual
+        variance yet is left out of the mean, not counted as a noise of 0.
+        ``P``'s recursion never reads ``y``, so targets that share the noise
+        would each carry the same ``P``: every target observed on a row takes
+        its gain from ``P`` as the row finds it, and ``P`` takes the row once.
+        The order of the targets moves no prediction, and a target beside a
+        copy of itself present on the same rows predicts as it would alone. A
+        copy null on some of those rows moves nothing until it has a residual
+        variance; from then its variance, learned from fewer rows, enters the
+        mean. With a noise ``sigma^2_j`` of its own, a target's own filter
+        would keep ``P`` times ``sigma^2_j`` over the mean, and that is the
+        covariance its ``se_coef`` reads (docs/PLAN.md task 211). Read off
         ``P`` as it stands, two targets of noise 0.01 and 1 had standard errors
         7.3 times too large and 1.39 times too small. Default ``False``: one
         ``P`` per target, the exact filter for each target under its own noise.
 
         When sharing helps. With a constant noise, ``P / sigma^2`` and the gain
         never read ``sigma^2``, since the process noise is ``sigma^2`` times
-        ``(ln 2 / coef_half_life) ** 2``; so the shared filter and the
+        ``(ln 2 / coef_half_life) ** 2``. So the shared filter and the
         per-target ones part only through how the ``sigma^2_j`` paths move.
-        Sharing helps where the targets are related, so their noises move
-        together; where each target's own ``sigma^2_j`` is a noisy estimate, a
-        short or sparse history, which the mean over the targets smooths; and
-        for cost, one ``k x k`` update a row for every target. On
-        ``docs/VALIDATION.md`` section 4's two targets, the next minute's
+        Sharing helps in three cases:
+
+        - the targets are related, so their noises move together;
+        - each target's own ``sigma^2_j`` is a noisy estimate from a short or
+          sparse history, which the mean over the targets smooths;
+        - the work matters: one ``k x k`` update a row serves every target.
+
+        On ``docs/VALIDATION.md`` section 4's two targets, the next minute's
         return and the next five minutes', sharing scored R² -0.0110 against
         -0.0168 on the first and -0.0880 against -0.0746 on the second.
 
@@ -2046,8 +2113,8 @@ def kalman(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature, in the original
         units (:func:`coef_index`).
@@ -2063,11 +2130,11 @@ def kalman(
     ``se_coef`` reads the filter's own covariance ``P`` and ``error_inflation``
     its prior ``z' P z / R``: both exact *under the model*, which says the
     coefficients walk at the noise ``coef_half_life`` implies. On a truth that
-    does not move, that walk is variance the coefficients do not have, and the
-    standard errors come out about ``sqrt(2)`` too large (a mean squared error
-    over ``se_coef ** 2`` of 0.47 to 0.50 at ``coef_half_life`` 50 and 200;
-    0.95 to 1.06 on a walk of the implied variance). And with ``R`` the EW
-    variance of the out-of-sample residuals, which already carry the
+    does not move, that walk is variance the coefficients do not have. The
+    standard errors then come out about ``sqrt(2)`` too large: a mean squared
+    error over ``se_coef ** 2`` of 0.47 to 0.50 at ``coef_half_life`` 50 and
+    200, against 0.95 to 1.06 on a walk of the implied variance. And with ``R``
+    the EW variance of the out-of-sample residuals, which already carry the
     estimation error, ``error_inflation`` counts that error twice: the mean
     squared error over ``R * error_inflation ** 2`` is 0.96 at
     ``coef_half_life`` 50.
@@ -2125,8 +2192,8 @@ def huber(
 
     .. rubric:: The fit
 
-    With ``d = huber_delta`` and ``s`` the EW standard deviation of the target's
-    residuals:
+    With ``d = huber_delta`` and ``s`` the EW root mean square of the target's
+    residuals, about 0:
 
     .. code-block:: text
 
@@ -2137,13 +2204,13 @@ def huber(
     The weights are per target, so the sums are per target here (one accumulator
     each), where :func:`ewridge` shares one across targets.
 
-    ``s`` is not itself robust. It is the plain EW standard deviation of the
-    residuals, in which the rows the cut down-weights count at full weight, so a
-    burst of outliers widens the cut for the rows after it until the EW mean
+    ``s`` is not itself robust. It is the plain EW root mean square of the
+    residuals, in which the rows the cut down-weights count at full weight, so
+    a burst of outliers widens the cut for the rows after it until the EW mean
     forgets them. ``huber_delta`` is in units of that std, not of a robust one
     such as a MAD. Its weight ages on every row the model sees, a row with no
-    prediction or with weight 0 included, so it forgets across a gap as the clock
-    says.
+    prediction or with weight 0 included, so it forgets across a gap as the
+    clock says.
 
     The cut stays in the residual's std where the insensitivity bands of
     :func:`pa` and :func:`sgd` are in the target's own. A row beyond the cut
@@ -2152,28 +2219,28 @@ def huber(
     teaches nothing, so a band that early residuals widen does: a fit from
     zero coefficients has the target's whole level for its first residuals.
 
-    Until a target has an ``s`` above 0, no row is down-weighted. That is before
-    its first residual, or while every residual so far is exactly zero, and
-    there is then nothing to judge an outlier against. ``s`` was taken as 1
-    there, a cut in the target's own units, so a target in millions had its
-    first predicted rows down-weighted and one in millionths none.
+    Until a target has an ``s`` above 0, no row is down-weighted. That is
+    before its first residual, or while every residual so far is exactly zero,
+    and there is then nothing to judge an outlier against. An ``s`` taken as 1
+    there would be a cut in the target's own units, which would down-weight the
+    first predicted rows of a target in millions and none of one in millionths.
 
     .. rubric:: Parameters
 
     ``huber_delta``
-        The cut, in units of ``s``: a residual within it counts at full weight.
-        Default 1.345, the cut at which Huber's estimator is 95% as efficient as
-        least squares when the errors are normal (Huber 1981): with ``Z``
-        standard normal and ``ψ`` the residual clipped at ``±k``, the efficiency
-        is ``(2Φ(k) − 1)² / E[ψ(Z)²]``, which is 0.95 at ``k = 1.345``.
-        statsmodels' ``HuberT`` takes 1.345 and scikit-learn's
+        The cut, in units of ``s``, above 0: a residual within it counts at
+        full weight. Default 1.345, the cut at which Huber's estimator is 95%
+        as efficient as least squares when the errors are normal (Huber 1981):
+        with ``Z`` standard normal and ``ψ`` the residual clipped at ``±k``,
+        the efficiency is ``(2Φ(k) − 1)² / E[ψ(Z)²]``, which is 0.95 at
+        ``k = 1.345``. statsmodels' ``HuberT`` takes 1.345 and scikit-learn's
         ``HuberRegressor`` 1.35. ``inf`` cuts nothing, which is least squares.
         :func:`sgd`'s ``huber_delta`` is the same constant in the same unit.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
-        As for :func:`ewridge`: the penalty (default ``1e-6``), correlation-form
-        solving, and the solve schedule. ``ridge`` is on the mean-form Gram, in
-        the features' squared units, and dimensionless under ``standardize``,
-        which solves in correlation form.
+        As for :func:`ewridge`: the penalty (default ``1e-6``, finite and at
+        least 0), correlation-form solving, and the solve schedule. ``ridge``
+        is on the mean-form Gram, in the features' squared units, and
+        dimensionless under ``standardize``, which solves in correlation form.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2194,8 +2261,8 @@ def huber(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
     ``support_coef``
@@ -2257,13 +2324,19 @@ def quantile(
 
     .. rubric:: The fit
 
-    With ``psi(r) = tau - 1{r < 0}``, ``s`` the EW standard deviation of the
-    target's residuals and ``h`` the band's half-width:
+    With ``psi(r) = tau - 1{r < 0}``, ``s`` the EW root mean square of the
+    target's residuals, about 0, ``w`` the row's weight and ``h`` the band's
+    half-width:
 
     .. code-block:: text
 
         |r| <  h:  a least-squares row, with target y + 2h (tau - 1/2)
-        |r| >= h:  no weight in the sums; 2h * psi(r) * z into the cross-moment
+        |r| >= h:  no weight in the sums; w * 2h * psi(r) * z into the cross-moment,
+                   over the band's weight, capped at |r| / (1 + u' A^-1 u)
+
+    The cap reads the row's full leverage against the band's system ``A``, with
+    ``u`` the row's deviation from the means: a nudge brings the row's own
+    prediction at most to its target, and never past it.
 
     The smoothed loss has the same curvature on either side of the fit, so the
     rows' own history cancels and the fit converges to the quantile regression.
@@ -2288,41 +2361,42 @@ def quantile(
     30`` and 0.900 from 200 up (the second review of 2026-09-15, F3).
 
     Warm-up and rebuilding. Under three rows per coefficient of the rows the
-    target was present on, the fit is ordinary least squares: a Newton step needs
-    a Hessian, and a band around a fit built from a handful of rows is not one.
-    The same rule rebuilds the fit after a gap or a reset has aged the weight
-    away. A band holding under one row per coefficient, in rows of the target's
-    mean weight, takes least-squares rows too, until it holds rows again. That is
-    what rebuilds a fit a row at the input bound leaves behind. Such a row sets
-    the sums at its own scale, and every later row is outside the band. Only
-    nudges arrive, each ``2h * psi * z`` over the band's weight; they cannot move
-    the fit until that weight has decayed to nothing, and each is then a step that
-    outgrows the band. From one row up an outside row's step lands inside the
-    band, and the floor keeps a settled band well clear of one row, so the rule
-    does not fire in steady state. Both rules count rows, so a weight's scale
-    reaches neither: they compared the rows' weight with a row count, and rows at
-    weight 100 left the warm-up on their first row, where the fit reached 1e51
-    (docs/PLAN.md task 147).
+    target was present on, the fit is ordinary least squares: a Newton step
+    needs a Hessian, and a band around a fit built from a handful of rows is
+    not one. The same rule rebuilds the fit after a gap or a reset has aged the
+    weight away. A band holding under one row per coefficient, in rows of the
+    target's mean weight, takes least-squares rows too, until it holds rows
+    again. That is what rebuilds a fit a row at the input bound leaves behind.
+    Such a row sets the sums at its own scale, and every later row is outside
+    the band. Only nudges arrive, each ``w * 2h * psi * z`` over the band's
+    weight; they cannot move the fit until that weight has decayed to nothing,
+    and each is then a step that outgrows the band. From one row up an outside
+    row's step lands inside the band, and the floor keeps a settled band well
+    clear of one row, so the rule does not fire in steady state. Both rules
+    count rows, so a weight's scale reaches neither. Rules that compared the
+    rows' weight with a row count would let rows at weight 100 leave the
+    warm-up on their first row, where the fit reached 1e51 (docs/PLAN.md task
+    147).
 
     Until a target has an ``s`` above 0, its rows are least squares too. That
     is before its first residual, or while every residual so far is exactly
     zero, and the band, a width in units of ``s``, has nothing to be drawn in.
-    ``s`` was taken as 1 there, so a band drawn past the warm-up was in the
-    target's own units, and a target in millionths was thrown far off.
+    An ``s`` taken as 1 there would draw the band past the warm-up in the
+    target's own units, and throw a target in millionths far off.
 
     .. rubric:: Parameters
 
     ``quantile``
         The level ``tau``, in ``(0, 1)``; required. 0.5 is a median regression.
     ``quantile_eps``
-        The band's half-width in units of ``s``. Default 0.2, at which the band
-        holds about a fifth of a stream at the median and a fifteenth at the 0.9
-        quantile.
+        The band's half-width in units of ``s``, finite and above 0. Default
+        0.2, at which the band holds about a sixth of the rows of normal noise
+        at the median and a ninth at the 0.9 quantile.
     ``ridge``, ``standardize``, ``solve_every``, ``max_rows_between_solves``
-        As for :func:`ewridge`: the penalty (default ``1e-6``), correlation-form
-        solving, and the solve schedule. ``ridge`` is on the mean-form Gram, in
-        the features' squared units, and dimensionless under ``standardize``,
-        which solves in correlation form.
+        As for :func:`ewridge`: the penalty (default ``1e-6``, finite and at
+        least 0), correlation-form solving, and the solve schedule. ``ridge``
+        is on the mean-form Gram, in the features' squared units, and
+        dimensionless under ``standardize``, which solves in correlation form.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2342,8 +2416,8 @@ def quantile(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
     ``support_coef``
@@ -2352,10 +2426,10 @@ def quantile(
         weighs the rows, determined rather than the ridge
         (:mod:`polars_online.spec`).
 
-    plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
-    describes them. ``pred_<t>`` is the conditional quantile, and a ``resid`` is
-    signed against it, so a share ``tau`` of them are positive once the fit has
-    settled.
+    plus the fields of the diagnostics switched on, as
+    :mod:`polars_online.spec` describes them. ``pred_<t>`` is the conditional
+    quantile, and a ``resid`` is signed against it, so a share ``tau`` of them
+    are negative, and ``1 - tau`` positive, once the fit has settled.
 
     .. rubric:: Example
 
@@ -2428,12 +2502,12 @@ def ftrl(
         zz_i += g_i - s_i * b_i ;  n_i += g_i^2 ;  d_i += s_i
 
     Under a half-life the fit after a row that teaches the target minimizes
-    FTRL's objective: a fixed regularizer, ``l1 |b|_1 + (beta / alpha + l2)
-    |b|^2 / 2``, against the rows' linearized losses and proximal terms,
+    FTRL's objective. That is a fixed regularizer, ``l1 |b|_1 + (beta / alpha +
+    l2) |b|^2 / 2``, against the rows' linearized losses and proximal terms,
     each weighted by its age on the clock. So old evidence counts for less
-    against the prior. In steady state the penalties act as a mean-scale
-    ridge of ``(1 - lam) * (beta / alpha + l2)``: a constant 5 settles at
-    4.65 at ``half_life = 100`` and 4.96 at 1000.
+    against the prior. In steady state the penalties act as a mean-scale ridge
+    of ``(1 - lam) * (beta / alpha + l2)``: a constant 5 settles at 4.65 at
+    ``half_life = 100`` and 4.96 at 1000.
 
     A row that teaches the target nothing -- absent, at weight 0, a label
     ``strict_binary`` refuses, or a row whose squared gradient would
@@ -2466,18 +2540,22 @@ def ftrl(
         no solves and the L1 support :func:`ewridge` has not got. The two
         differ only in the link; the gradient is ``(p - y) * z`` either way.
     ``alpha``, ``beta``
-        The learning-rate scale and its smoothing. Defaults 0.1 and 1.0.
+        The learning-rate scale and its smoothing. Defaults 0.1 and 1.0;
+        ``alpha`` above 0 and ``beta`` at least 0.
     ``l1``, ``l2``
-        The penalties: ``l1`` zeroes a coefficient whose evidence is below
-        it. Defaults 0.0 and 1.0.
+        The penalties: ``l1`` zeroes a coefficient whose evidence is below it.
+        Defaults 0.0 and 1.0; each at least 0.
 
     None of the four is free of units. A coefficient is ``zz_i`` over
-    ``r_i + l2``, and ``g_i`` is the target (a probability, under the
-    logistic loss) times the feature, at the row's weight. So ``beta`` is in
-    the units of ``sqrt(n_i)``, a gradient, ``alpha`` in the coefficient's,
-    the target per unit of the feature, ``l1`` in the summed gradient's, and
-    ``l2`` in ``r_i``'s, the feature squared. A feature scaled by ``c`` fits
-    the same model at ``alpha / c``, ``beta * c``, ``l1 * c`` and ``l2 * c**2``.
+    ``r_i + l2``, and ``g_i`` is the target (a probability, under the logistic
+    loss) times the feature, at the row's weight. So ``beta`` is in the units
+    of ``sqrt(n_i)``, a gradient, ``alpha`` in the coefficient's, the target
+    per unit of the feature, ``l1`` in the summed gradient's, and ``l2`` in
+    ``r_i``'s, the feature squared. With ``fit_intercept=False``, every feature
+    scaled by ``c`` fits the same model at ``alpha / c``, ``beta * c``,
+    ``l1 * c`` and ``l2 * c**2``. The intercept's 1 does not scale, and the
+    four are shared by every coordinate, so with an intercept there is no such
+    equivalence.
 
     ``ftrl`` does not centre a feature. A coefficient's error reaches the
     prediction multiplied by the feature's value, so a feature that sits at a
@@ -2491,9 +2569,10 @@ def ftrl(
     would move which coefficients it zeroes as the feature's spread moved.
 
     ``strict_binary``
-        Refuse a chunk whose target is not 0 or 1, naming the row, before any
-        stream is touched. Default ``False``: such a target is clamped into
-        ``[0, 1]``.
+        Under ``loss = "logistic"``, refuse a chunk whose target is not 0 or 1,
+        naming the row, before any stream is touched. Default ``False``: such a
+        target is clamped into ``[0, 1]``. Refused beside ``"squared"``, which
+        reads the target as it stands.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -2516,8 +2595,8 @@ def ftrl(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature
         (:func:`coef_index`).
@@ -2543,7 +2622,9 @@ def ftrl(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``alpha``, ``beta``,
-    ``l1`` and ``l2`` refuse ``inf`` and ``NaN``.
+    ``l1`` and ``l2`` refuse ``inf``, ``NaN`` and the values above, and
+    ``strict_binary`` is refused beside ``"squared"``. Under ``"logistic"`` a
+    window target is refused: the model fits a probability to a 0/1 target.
     """
     model: dict[str, Any] = {
         "type": "ftrl",
@@ -2598,35 +2679,49 @@ def ew_cov(
         m'     = m + b * delta
         C'_ij  = a * C_ij + a * b * delta_i * delta_j
 
-    so ``var_i = C_ii``, ``cov_ij = C_ij`` and ``corr_ij = C_ij / sqrt(C_ii
-    C_jj)`` are read off directly. A variance stays accurate when the columns
-    sit on a large offset, where the raw ``E[x^2] - m^2`` form loses it. One
-    O(k²) update per row, which replaces the O(k²) passes a pure-Polars
-    pairwise EW correlation needs.
+    so ``var_i = C_ii``, ``cov_ij = C_ij`` and
+    ``corr_ij = C_ij / sqrt(C_ii C_jj)`` are read off directly. A variance
+    stays accurate when the columns sit on a large offset, where the raw
+    ``E[x^2] - m^2`` form loses it. With ``P = (C + s * precision_prior *
+    I)^-1``, read before the row, ``s`` the prior's scale (1 on the first row,
+    times ``a`` on each row after):
+
+    .. code-block:: text
+
+        partial_corr_ij = -P_ij / sqrt(P_ii P_jj)
+        mahal           = sqrt((x - m)' P (x - m))
+
+    One O(k²) update per row, which replaces the O(k²) passes a pure-Polars
+    pairwise EW correlation needs. For moments on data that fits in memory,
+    polars already does this: ``df.rolling(clock, period=...).agg(...)`` with
+    an exponential weight agrees to 1e-14. The reason to reach for the spec is
+    a stream, a saved state, or the work: polars recomputes each window,
+    ``O(n * W)``, where this is ``O(n)``.
 
     .. rubric:: Parameters
 
     ``stats``
         Which statistics to write, from ``mean``, ``var``, ``std``, ``cov``,
         ``corr``, ``partial_corr``, ``mahal`` and ``lag_corr``. Default
-        ``["mean", "std", "corr"]``. ``[]`` writes no statistic, only
-        ``weight_sum``, ``settled_frac`` and ``withheld_reason``, and
-        accumulates all the same. The spec's value is then its state,
-        read back with :meth:`polars_online.ModelBank.gram` and
+        ``["mean", "std", "corr"]``, so a single feature needs ``stats``
+        without ``cov``, ``corr`` and ``partial_corr``, which need two columns.
+        ``lag_corr`` needs ``lags``, and ``mahal_quantiles`` needs ``mahal``.
+        ``[]`` writes no statistic, only ``weight_sum``, ``settled_frac`` and
+        ``withheld_reason``, and accumulates all the same. The spec's value is
+        then its state, read back with :meth:`polars_online.ModelBank.gram` and
         :meth:`polars_online.ModelBank.describe`. That is the form for a wide
-        set of columns, where even the means are k values per row nobody
-        reads.
+        set of columns, where even the means are k values per row nobody reads.
     ``precision_prior``
-        A ridge on the co-moments, needed by ``partial_corr`` and ``mahal``:
-        the precision matrix is ``(C + s * prior * I)^-1``, solved on each
-        row it is read (O(k³), only when asked for). Like an RLS prior it
-        fades as data accumulates.
+        A ridge on the co-moments, needed by ``partial_corr`` and ``mahal``,
+        above 0: the precision matrix ``P`` above, solved on each row it is
+        read (O(k³), only when asked for). Like an RLS prior it fades as data
+        accumulates, with ``s``.
     ``mahal_quantiles``
-        Levels at which to keep the exponentially weighted quantile of the
-        past ``mahal`` scores (``mahal_q<p>``), at the model's half-life and
-        each row's weight, within ``tanh(1/128)`` (0.78%) of the exact one.
-        That is a threshold from the stream's own history instead of a
-        table, so ``mahal > mahal_q0.99`` is one row in a hundred without
+        Levels in ``(0, 1)`` at which to keep the exponentially weighted
+        quantile of the past ``mahal`` scores (``mahal_q<p>``), at the model's
+        half-life and each row's weight, within ``tanh(1/128)`` (0.78%) of the
+        exact one. That is a threshold from the stream's own history instead of
+        a table, so ``mahal > mahal_q0.99`` is one row in a hundred without
         assuming a distribution. The row's own score joins after it is read.
     ``pca``
         Track the top ``pca`` principal components of the covariance, per
@@ -2643,23 +2738,25 @@ def ew_cov(
            * - ``pc<j>_share``
              - its share of the total variance
            * - ``pc<j>_loading_<feature>``
-             - its unit loading on each column, largest entry positive
+             - its unit loading on each column
            * - ``pc<j>_score``
              - the row's coordinate ``v_j . (x - m)``
 
-        Each refresh keeps the previous sign, so a loading never flips. The
+        The first refresh makes each component's largest loading positive, and
+        each later refresh keeps the previous sign, so a loading never flips.
+        ``pca`` is at least 1 and at most the number of features. The
         components are the same to the bit whatever the bank's thread count
         (``POLARS_ONLINE_MAX_THREADS``): the eigensolver runs at a fixed
         parallel degree of eight.
     ``pca_every``, ``max_rows_between_pca``
-        The eigendecomposition, O(k³), is refreshed after the row is folded
-        in, every ``pca_every`` clock units or every ``max_rows_between_pca``
-        rows, whichever comes first, as ``solve_every`` and
-        ``max_rows_between_solves`` schedule a regression's solve.
-        ``pca_every`` is a number of the clock's units, a duration on a
+        The eigendecomposition, O(k³), is refreshed after the row is folded in,
+        every ``pca_every`` clock units or every ``max_rows_between_pca`` rows,
+        whichever comes first (both refused without ``pca``), as
+        ``solve_every`` and ``max_rows_between_solves`` schedule a regression's
+        solve. ``pca_every`` is a number of the clock's units, a duration on a
         temporal clock (``"5m"``), or ``0`` for every row; without a clock
-        column the clock is the row's number. With neither given, every row.
-        A row of weight zero advances both, as the window's snapshot cadence
+        column the clock is the row's number. With neither given, every row. A
+        row of weight zero advances both, as the window's snapshot cadence
         counts it, and a gap capped at ``gap_cap`` counts as the cap. Between
         refreshes the loadings are frozen, so a row's scores never depend on
         chunking.
@@ -2690,35 +2787,35 @@ def ew_cov(
         matrix is not symmetric. Or read ``lags`` and ``lag_comoments`` (an
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``
-        Run the per-row update of the ``k x k`` co-moments on up to that
-        many threads, as :func:`ewridge`'s ``gram_threads`` does. Default 1.
-        The output is the same to the bit at every count. The update is bound
-        by memory: at 2,000 features a bank learned 2.5 times as fast on eight
-        threads and 3.1 times on fourteen. Below 725 features a row's update
-        stays on one thread, and the lagged cross-moments of ``lags`` always
-        do.
+        Run the per-row update of the ``k x k`` co-moments on up to that many
+        threads, as :func:`ewridge`'s ``gram_threads`` does. Default 1. The
+        output is the same to the bit at every count. The update is bound by
+        memory: at 2,000 features a spec that wrote no statistic learned 2.5
+        times as fast on eight threads and 3.1 times on fourteen
+        (``docs/PERFORMANCE.md`` §37). Below 725 features a row's update stays
+        on one thread, and the lagged cross-moments of ``lags`` always do.
     ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
-        A hard cutoff on the history, in clock units: a row ``window_size``
-        old or older contributes nothing at all (``closed="both"`` keeps the
-        one exactly that old, as for :func:`ewridge`), where the exponential
-        weight alone would still leave ``0.5 ** (age / half_life)`` of it --
-        12.5% at three half-lives. Inside the window the weights are still
-        exponential, so this is not a rolling flat mean: the newest row
-        dominates exactly as it does without a window. It is exact, because
-        an exponentially weighted sum contains its own past. Everything at or
-        before a time ``u`` is ``lam ** (t - u)`` times the accumulator as it
-        stood at ``u``, so subtracting that leaves precisely the rest. What
-        the model keeps is a ring of snapshots, one per row by default: the
-        one place in this library where memory grows with a window rather
-        than with the state. A snapshot is ``k² + k + 3`` eight-byte numbers,
-        so a 1,000-row window over 20 columns is about 3 MB per group.
-        ``window_every`` spaces the snapshots on the clock (``"1m"``, or a
-        number of the clock's units) and ``max_rows_between_snapshots`` caps
-        the rows between them, whichever comes first, as for :func:`ewridge`.
-        Either divides the memory, and a clock spacing alone holds a ring to
-        at most ``window_size / window_every + 2`` snapshots whatever the row
-        rate. ``window_budget`` bounds each ring in MiB and thins or refuses
-        past the bound, as for :func:`ewridge`.
+        A hard cutoff on the history, in clock units: a row ``window_size`` old
+        or older contributes nothing at all, where the exponential weight alone
+        would still leave ``0.5 ** (age / half_life)`` of it, 12.5% at three
+        half-lives. ``closed="both"`` keeps the row exactly that old, as for
+        :func:`ewridge`. Inside the window the weights are still exponential,
+        so this is not a rolling flat mean: the newest row dominates exactly as
+        it does without a window. It is exact, because an exponentially
+        weighted sum contains its own past. Everything at or before a time
+        ``u`` is ``lam ** (t - u)`` times the accumulator as it stood at ``u``,
+        so subtracting that leaves precisely the rest. What the model keeps is
+        a ring of snapshots, one per row by default: the one place in this
+        library where memory grows with a window rather than with the state. A
+        snapshot is ``k² + k + 3`` eight-byte numbers, so a 1,000-row window
+        over 20 columns is about 3 MB per group. ``window_every`` spaces the
+        snapshots on the clock (``"1m"``, or a number of the clock's units) and
+        ``max_rows_between_snapshots`` caps the rows between them, whichever
+        comes first, as for :func:`ewridge`. Either divides the memory, and a
+        clock spacing alone holds a ring to at most
+        ``window_size / window_every + 2`` snapshots whatever the row rate.
+        ``window_budget`` bounds each ring in MiB and thins or refuses past the
+        bound, as for :func:`ewridge`.
 
         Four things to know before reading windowed numbers:
 
@@ -2750,15 +2847,15 @@ def ew_cov(
 
         ``weight_sum`` becomes the weight inside the window, which stops
         growing once the window fills, so ``min_weight`` gates on a quantity
-        with a ceiling. A clock gap longer than ``window_size`` empties it.
-        The row after the gap reads the window as the row before the gap
-        left it, since a row's fields are read before its own decay, as
-        ``weight_sum`` is; the rows after it report nulls rather than stale
-        numbers, until the window holds ``min_weight`` again. ``mahal``,
-        ``partial_corr`` and the PCA read the window's moments too, and the
-        PCA refresh is gated on the window's weight. ``window_size`` does not
-        combine with ``lags`` or ``mahal_quantiles``, which accumulate over a
-        history it does not truncate; both are refused by name.
+        with a ceiling. A clock gap longer than ``window_size`` empties it. The
+        row after the gap reads the window as the row before the gap left it,
+        since a row's fields are read before its own decay, as ``weight_sum``
+        is. The rows after it report nulls rather than stale numbers, until the
+        window holds ``min_weight`` again. ``mahal``, ``partial_corr`` and the
+        PCA read the window's moments too, and the PCA refresh is gated on the
+        window's weight. ``window_size`` does not combine with ``lags`` or
+        ``mahal_quantiles``, which accumulate over a history it does not
+        truncate; both are refused by name.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -2773,12 +2870,13 @@ def ew_cov(
     ``partial_corr_<column>_<column>`` per pair, unordered, ``i < j``
     (``mean_x0``, ``corr_x0_x1``); ``lag_corr_<a>_<b>_l<l>`` per lag and
     ordered pair; ``mahal`` and ``mahal_q<p>``, the ``pc<j>_*`` fields,
-    ``weight_sum``, and ``settled_frac`` and ``withheld_reason`` as
-    everywhere. The statistics are
-    null until ``min_weight``, which the bank floors at 2: a variance needs two
-    rows, so a lower ``min_weight``, ``0`` included, is raised to 2 rather than
-    refused. The plain spec's fields are listed in
-    `docs/OUTPUTS.md#ew_cov
+    ``weight_sum``, and ``settled_frac`` and ``withheld_reason`` as everywhere.
+    The statistics are null until ``min_weight``, which the bank floors at 2: a
+    variance needs two rows, so a lower ``min_weight``, ``0`` included, is
+    raised to 2 rather than refused. The rows the floor holds back carry no
+    ``withheld_reason``. ``coef_every`` and ``max_rows_between_coefs`` are
+    refused, as there are no coefficients. The plain spec's fields are listed
+    in `docs/OUTPUTS.md#ew_cov
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_.
     The moments themselves are :meth:`polars_online.ModelBank.gram`'s
     ``means``, ``comoments``, ``lags`` and ``lag_comoments``. A group that
@@ -2799,16 +2897,21 @@ def ew_cov(
         scores = po.ModelBank([mv]).fit_predict(df).unnest("mv")
         odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outliers
 
-    For moments on data that fits in memory, polars already does this --
-    ``df.rolling(clock, period=...).agg(...)`` with an exponential weight
-    agrees to 1e-14. The reason to reach for the spec is a stream, a saved
-    state, or the work: polars recomputes each window, ``O(n * W)``, where
-    this is ``O(n)``.
-
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets``, which this model has not got.
+    ``targets``, which this model has not got; ``ValueError`` for:
+
+    - a statistic not in the list, ``cov``, ``corr`` or ``partial_corr`` over
+      one column, and ``lag_corr`` without ``lags``;
+    - a ``precision_prior`` not above 0;
+    - an empty ``lags``, or one that does not increase;
+    - an empty ``mahal_quantiles``, one without ``mahal``, or a level outside
+      ``(0, 1)``;
+    - a ``pca`` of 0 or past the features, and ``pca_every`` or
+      ``max_rows_between_pca`` without ``pca``;
+    - a ``window_size`` not above 0, and ``window_size`` beside ``lags`` or
+      ``mahal_quantiles``.
     """
     model: dict[str, Any] = {
         "type": "ew_cov",
@@ -2908,52 +3011,52 @@ def sgd(
     The Poisson link clamps ``eta`` to ``+/- 30`` before the ``exp``, so a
     Poisson prediction never exceeds ``e ** 30``, about ``1.07e13``.
 
-    ``s`` is the EW standard deviation of the target's out-of-sample
-    residuals, as the row arrives, as for :func:`huber`. Its square is the EW
-    mean of ``(y - p) ** 2`` over the rows with the target, a weight above 0
-    and a prediction, each joining after its own step; its weight ages on
-    every row. ``s_y`` is the target's own EW standard deviation as the row
-    arrives: the spread of ``y`` around its EW mean, over the rows with the
-    target and a weight above 0, whatever the fit. Until the target has an
-    ``s`` above 0 the Huber row is a squared-loss row, and until it has an
-    ``s_y`` above 0, two weighted rows of different values, the tube has no
-    width. In the target's own units, a cut and a tube fitted one scale and
-    failed the others: a target in thousandths never left a tube of 0.1, so
-    it was never learned, and the cut never bound on it. With ``s`` and
-    ``s_y``, the squared and Huber losses fit a target scaled by ``c`` as the
-    unscaled one, scaled by ``c``.
+    ``s`` is the EW standard deviation of the target's out-of-sample residuals,
+    as the row arrives, as for :func:`huber`. Its square is the EW mean of ``(y
+    - p) ** 2`` over the rows with the target, a weight above 0 and a
+    prediction, each joining after its own step; its weight ages on every row.
+    ``s_y`` is the target's own EW standard deviation as the row arrives: the
+    spread of ``y`` around its EW mean, over the rows with the target and a
+    weight above 0, whatever the fit. Until the target has an ``s`` above 0 the
+    Huber row is a squared-loss row, and until it has an ``s_y`` above 0, two
+    weighted rows of different values, the tube has no width. A cut and a tube
+    in the target's own units would fit one scale and fail the others: a target
+    in thousandths would never leave a tube of 0.1, so it would never be
+    learned, and the cut would never bind on it. With ``s`` and ``s_y``, the
+    squared and Huber losses fit a target scaled by ``c`` as the unscaled one,
+    scaled by ``c``.
 
     The cut and the tube are in different units because the fit starts from
     zero coefficients, so its first residuals are the target's whole level.
     Beyond the cut the Huber gradient is clipped, not zero, so a cut those
-    residuals widen still lets every row teach. Inside the tube the gradient
-    is zero. A tube drawn in the residual's std on a target at 1,000 with a
-    spread of 2 was about 100 wide and held every row. Without decay it never
-    narrowed, and the fit stopped where it stood.
+    residuals widen still lets every row teach. Inside the tube the gradient is
+    zero. A tube drawn in the residual's std on a target at 1,000 with a spread
+    of 2 would be about 100 wide and hold every row. Without decay it would
+    never narrow, and the fit would stop where it stood.
 
     .. rubric:: Parameters
 
     ``loss``
-        One of the table's. Default ``"squared"``. ``epsilon_insensitive`` has a
-        sign-valued subgradient, so a constant rate oscillates in a band around
-        the optimum; use ``schedule = "inv_scaling"`` with it. ``poisson`` takes
-        counts: a chunk with a negative target is refused, naming the row,
-        before any stream is touched, as scikit-learn's ``PoissonRegressor``
-        refuses one. Taken as it stood, ``p - y`` drove the prediction down to
-        the link's floor, ``e ** -30``, and held it there. ``-0.0`` is the
-        count 0.
+        One of the table's. Default ``"squared"``. ``epsilon_insensitive`` has
+        a sign-valued subgradient, so a constant rate oscillates in a band
+        around the optimum; use ``schedule = "inv_scaling"`` with it.
+        ``poisson`` takes counts: a chunk with a negative target is refused,
+        naming the row, before any stream is touched, as scikit-learn's
+        ``PoissonRegressor`` refuses one. Taken as it stands, a negative
+        target's ``p - y`` would drive the prediction down to the link's floor,
+        ``e ** -30``, and hold it there. ``-0.0`` is the count 0.
     ``huber_delta``
-        The Huber cut, in units of ``s``, the residual's std, as for
-        :func:`huber`, with its default, 1.345. ``inf`` clips nothing, which is the
-        squared loss.
+        The Huber cut, in units of ``s``, the residuals' root mean square, as
+        for :func:`huber`, with its default, 1.345; above 0. ``inf`` clips
+        nothing, which is the squared loss.
     ``quantile``
-        The level for ``loss = "quantile"``; required for it.
+        The level for ``loss = "quantile"``, in ``(0, 1)``; required for it.
     ``eps``
         The half-width of the insensitive tube, in units of ``s_y``, the
-        target's own std. Default 0.01: errors under 1% of the target's own
-        spread do not move the fit. In units of the noise, on a target a fit
-        predicts to R², the tube is ``eps / sqrt(1 - R²)`` noise standard
-        deviations wide: at 0.01, 0.067 of them at R² 0.978 and 2.2 at
+        target's own std; at least 0. Default 0.01: errors under 1% of the
+        target's own spread do not move the fit. In units of the noise, on a
+        target a fit predicts to R², the tube is ``eps / sqrt(1 - R²)`` noise
+        standard deviations wide: at 0.01, 0.067 of them at R² 0.978 and 2.2 at
         0.99998. Inside it the gradient is zero, so a tube many noise standard
         deviations wide holds the fit wherever it first lands inside it.
         Measured (one feature, no decay; the out-of-sample error above the
@@ -2963,9 +3066,9 @@ def sgd(
            :header-rows: 1
 
            * - R²
-             - ``inv_scaling`` at 0.5, ``eps`` 0.01
+             - ``inv_scaling`` at a rate of 0.5, ``eps`` 0.01
              - at 0.1
-             - ``constant`` at 0.01, ``eps`` 0.01
+             - ``constant`` at a rate of 0.01, ``eps`` 0.01
              - at 0.1
            * - 0.978
              - 0.015
@@ -2983,56 +3086,59 @@ def sgd(
         in intercept and slope together.
     ``learning_rate``, ``schedule``, ``power``
         The rate (default 0.01) and its schedule: ``"constant"``,
-        ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power`` default 0.5)
-        or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). The rate is per gradient
-        coordinate: a step is ``lr * g_i``, so ``lr`` is in the coefficient's
-        units over the gradient's -- one over the feature squared for the squared
+        ``"inv_scaling"`` (``lr / (1 + weight_sum) ** power``, ``power``
+        default 0.5) or ``"adagrad"`` (``lr / (sqrt(G_i) + 1e-8)``). The rate
+        is per gradient coordinate: a step is ``lr * g_i``, so ``lr`` is in the
+        coefficient's units over the gradient's, in standardized units under
+        ``standardize``. That is one over the feature squared for the squared
         and Huber losses, and the target over the feature squared for the
-        sign-valued quantile and epsilon-insensitive ones -- in standardized
-        units under ``standardize``. A sign-valued step moves the fit's level by
-        the rate times the row's weight, so at the default 0.01 a target at a
-        level of 1,000 is 100,000 unit-weight rows away; under ``"inv_scaling"``
-        at 0.5, without decay, about 1,000,000. AdaGrad's sum of squared
-        gradients and ``weight_sum`` both decay on the model's clock, so an
-        annealed or adapted rate opens up again after a long gap instead of
-        staying frozen. The coefficients themselves do not decay: every row's
-        step moves them, so under ``"constant"`` their memory is in rows, about
-        ``1 / (lr * E[z**2])`` of them, whatever the clock between rows.
-        ``half-life`` reaches ``weight_sum`` and ``min_weight``, the scaler and
-        AdaGrad's sum, not the coefficients.
+        sign-valued quantile and epsilon-insensitive ones. A sign-valued step
+        moves the fit's level by the rate times the row's weight, so at the
+        default 0.01 a target at a level of 1,000 is 100,000 unit-weight rows
+        away; under ``"inv_scaling"`` at a rate of 0.5, without decay, about
+        1,000,000. AdaGrad's sum of squared gradients and ``weight_sum`` both
+        decay on the model's clock, so an annealed or adapted rate opens up
+        again after a long gap instead of staying frozen. The coefficients
+        themselves do not decay: every row's step moves them, so under
+        ``"constant"`` their memory is in rows, about ``1 / (lr * E[z**2])`` of
+        them, whatever the clock between rows. ``half_life`` reaches
+        ``weight_sum`` and ``min_weight``, the scaler and AdaGrad's sum, not
+        the coefficients. ``learning_rate`` is above 0, and ``power`` at least
+        0.
     ``l2``
         A ridge on every step, on the slopes only: the intercept is not
         penalised. Under ``standardize`` it is on the slope in the row's
-        standardized coordinates, ``s_i * b_i``. Default 0.0.
+        standardized coordinates, ``s_i * b_i``. Default 0.0, and at least 0.
     ``clip_gradient``
         A cap on each coordinate of the gradient, which clamps each ``g_i`` to
         ``+/- clip_gradient``: a box, not a cap on the gradient's norm, in the
-        gradient's units, the target times the feature at the row's weight
-        (the standardized feature under ``standardize``). Default ``1e3``, not
-        off, because ``poisson`` needs it: ``p = exp(eta)``, so a row that
-        pushes ``eta`` up makes the next gradient exponentially larger and a
-        constant rate diverges within a few thousand rows. It does not bind at
-        ordinary scales for an identity-link fit.
+        gradient's units, the target times the feature at the row's weight (the
+        standardized feature under ``standardize``). Default ``1e3``, not off,
+        because ``poisson`` needs it: ``p = exp(eta)``, so a row that pushes
+        ``eta`` up makes the next gradient exponentially larger and a constant
+        rate diverges within a few thousand rows. It does not bind at ordinary
+        scales for an identity-link fit. Above 0; ``inf`` clips nothing.
     ``standardize``
-        Take the step in standardized coordinates, which is the difference between
-        one learning rate for every column and one per scale. Default ``True``,
-        as for :func:`kalman`: raw, features times 100 took the defaults' fit from
-        an R² of 0.96 to -71847.
-        Each row is standardized against the running moments with the row
-        admitted, sklearn's ``StandardScaler.partial_fit`` then ``transform``:
-        ``z_i = (x_i - m_i) / s_i``, ``m_i`` and ``s_i`` the EW mean and standard
-        deviation, ``s_i = 1`` for a feature with no spread yet. Without an
-        intercept the row is scaled by each column's root mean square and not
-        centred, ``z_i = x_i / s_i``, as for :func:`ewridge`. That bounds a
-        standardized value by ``sqrt(weight_sum)``, and it is not a leak: the
-        rule is about the target, and the features of the row being predicted
-        are known. Against the moments from before the row, a variance a few rows
-        old can be tiny by chance, and one step throws a coefficient the rest of a
-        short group never brings back.
+        Take the step in standardized coordinates, which is the difference
+        between one learning rate for every column and one per scale. Default
+        ``True``, as for :func:`kalman`: raw, features times 100 take the
+        defaults' fit from an R² of 0.96 to -71847. Each row is standardized
+        against the running moments with the row admitted, sklearn's
+        ``StandardScaler.partial_fit`` then ``transform``:
+        ``z_i = (x_i - m_i) / s_i``, ``m_i`` and ``s_i`` the EW mean and
+        standard deviation, ``s_i = 1`` for a feature with no spread yet.
+        Admitting the row is not a leak: the rule is about the target, and the
+        features of the row being predicted are known. Against the moments from
+        before the row, a variance a few rows old can be tiny by chance, and
+        one step throws a coefficient the rest of a short group never brings
+        back. Admitted, the row's standardized value is at most
+        ``sqrt(weight_sum)``. Without an intercept the row is scaled by each
+        column's root mean square and not centred, ``z_i = x_i / s_i``, as for
+        :func:`ewridge`, and the bound is ``sqrt(weight_sum + 1)``.
 
         The moments warm up first. Until Kish's count of the rows they have
         learned, ``(sum w) ** 2 / sum w ** 2`` undecayed, reaches 22, the
-        coefficients are held in the standardized coordinates, the same
+        coefficients are held in the standardized coordinates. The same
         standardized row serves the prediction and the step, and the
         coefficients are read out in the caller's units through the moments as
         they stand. On the row the count reaches 22 they are read out so once,
@@ -3048,44 +3154,44 @@ def sgd(
 
         So a step moves the row's own prediction as the step in ``z`` does, and
         one learning rate suits every column. The prediction reads no moment,
-        so the moments' moving moves none of it. Read through the moments as
-        they stood, a finite half-life's own wander moved every prediction: at
-        a half-life of 10 and R² 0.978 the slope came out 3.03 for a truth of
-        2, and at a half-life of 50 and R² 0.99998 the out-of-sample error was
-        248 noise variances above the noise, where the raw fit's was 0.010
-        (docs/PLAN.md task 206). The warm-up is why the first rows keep their
-        old behaviour: held in the caller's units from the first row, a step
-        taken against a scale a few rows old was kept, and short groups lost
+        so the moments' moving moves none of it. A fit read through the moments
+        as they stand instead has a finite half-life's own wander move every
+        prediction. At a half-life of 10 and R² 0.978 its slope came out 3.03
+        for a truth of 2. At a half-life of 50 and R² 0.99998 its out-of-sample
+        error was 248 noise variances above the noise, where the raw fit's was
+        0.010 (docs/PLAN.md task 206). The warm-up is there because a step
+        taken in the caller's units against a scale a few rows old is kept for
+        good: held in the caller's units from the first row, short groups lost
         everything (R² -207 at rows 25-50 of 200-row groups).
     ``coef_min``, ``coef_max``, ``coef_sum``
-        Constraints on the slopes; the intercept is always free. ``coef_min`` and
-        ``coef_max`` bound each slope (one number for every feature, or a list
-        with one entry per feature; ``-inf`` / ``inf`` for no bound), and
+        Constraints on the slopes; the intercept is always free. ``coef_min``
+        and ``coef_max`` bound each slope (one number for every feature, or a
+        list with one entry per feature; ``-inf`` / ``inf`` for no bound), and
         ``coef_sum`` fixes the slopes' total. After each update the slopes are
         replaced by the nearest point of the feasible set, the Euclidean
-        projection: ``b_i = clamp(b_i - mu, lo_i, hi_i)``. ``mu`` is 0 for a box
-        alone and, with a sum, the one value at which the sum holds, found exactly
-        by sorting the ``2k`` breakpoints where a coordinate meets a bound.
-        ``coef_min = 0, coef_sum = 1`` puts the slopes on the simplex: portfolio
-        weights, mixing weights, an ensemble over forecasts. The starting point
-        (all zero) is projected too, so a simplex starts uniform. With
-        ``standardize`` the step and the projection are taken in standardized
-        coordinates with the bounds and the sum carried over exactly, and the
-        reported coefficients satisfy the constraint in the caller's units after
-        every learned row. Past the scaler's warm-up the coefficients are held
-        in the caller's units and the projection is the same one written in
-        them, ``b_i = clamp(b_i - mu / s_i ** 2, lo_i, hi_i)``, the bounds met
-        exactly; the intercept keeps its standardized value, taking ``sum_i m_i
-        * (b_i - b_i')`` from the slopes' move. A sum the bounds cannot reach, a
-        floor above a cap, or an infinite bound on the wrong side is refused by
-        name; floors of ``[0.1, 0.2, 0.3]`` accept a sum of ``0.6`` although
-        they add up to ``0.6000000000000001``.
+        projection: ``b_i = clamp(b_i - mu, lo_i, hi_i)``. ``mu`` is 0 for a
+        box alone and, with a sum, the one value at which the sum holds, found
+        exactly by sorting the ``2k`` breakpoints where a coordinate meets a
+        bound. ``coef_min = 0, coef_sum = 1`` puts the slopes on the simplex:
+        portfolio weights, mixing weights, an ensemble over forecasts. The
+        starting point (all zero) is projected too, so a simplex starts
+        uniform. With ``standardize`` the step and the projection are taken in
+        standardized coordinates with the bounds and the sum carried over
+        exactly, and the reported coefficients satisfy the constraint in the
+        caller's units after every learned row. Past the scaler's warm-up the
+        coefficients are held in the caller's units and the projection is the
+        same one written in them, ``b_i = clamp(b_i - mu / s_i ** 2, lo_i,
+        hi_i)``, the bounds met exactly. The intercept keeps its standardized
+        value, taking ``sum_i m_i * (b_i - b_i')`` from the slopes' move. A sum
+        the bounds cannot reach, a floor above a cap, or an infinite bound on
+        the wrong side is refused by name; floors of ``[0.1, 0.2, 0.3]`` accept
+        a sum of ``0.6`` although they add up to ``0.6000000000000001``.
     ``strict_binary``
         Under ``loss = "logistic"``, refuse a chunk whose target is not 0 or 1,
         naming the row, before any stream is touched, as :func:`ftrl` does.
-        Default ``False``: such a target is clamped into ``[0, 1]``. Taken as it
-        stood, a label of 5 pushed the linear predictor up on every row for
-        ever. Refused beside another loss.
+        Default ``False``: such a target is clamped into ``[0, 1]``, since a
+        label of 5 taken as it stands would push the linear predictor up on
+        every row for ever. Refused beside another loss.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -3106,8 +3212,8 @@ def sgd(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature, in the caller's
         units, the constraints satisfied after every learned row
@@ -3138,8 +3244,12 @@ def sgd(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``quantile`` is required
-    for ``loss = "quantile"``, ``learning_rate`` refuses ``inf``, and the
-    constraints are checked as above. ``huber_delta``, ``quantile``, ``eps``
+    for ``loss = "quantile"``, ``learning_rate`` refuses ``inf``,
+    and each parameter is held to the range its entry gives. The constraints
+    are checked as above: a ``coef_min`` or ``coef_max`` list has one entry
+    per feature, none ``NaN``, and ``coef_sum`` is finite. Under
+    ``"logistic"`` and ``"poisson"`` a window target is refused, since the
+    model reads a label or a count. ``huber_delta``, ``quantile``, ``eps``
     and ``strict_binary`` belong to the losses ``"huber"``, ``"quantile"``,
     ``"epsilon_insensitive"`` and ``"logistic"``, and ``power`` to ``schedule =
     "inv_scaling"``: each is refused beside another (``ValueError``), rather than
@@ -3220,20 +3330,20 @@ def pa(
     (``standardize`` below).
 
     ``sigma`` is the target's own EW standard deviation as the row arrives, as
-    for :func:`sgd`'s tube: the spread of ``y`` around its EW mean, over the
-    rows with the target and a weight above 0, whatever the fit, each ``y``
-    joining after its own row is judged. Before the target has a ``sigma`` above
-    0, two weighted rows of different values, the tube has no width and every
-    row teaches. In the target's own units a tube of 0.1 held a target in
-    hundredths on every row: passive for ever, every prediction 0.0 and R² -0.05
-    where the same target unscaled scored 0.96.
+    for :func:`sgd`'s tube. It is the spread of ``y`` around its EW mean, over
+    the rows with the target and a weight above 0, whatever the fit, each ``y``
+    joining after its own row is judged. Before the target has a ``sigma``
+    above 0, two weighted rows of different values, the tube has no width and
+    every row teaches. A tube of 0.1 in the target's own units would hold a
+    target in hundredths on every row: passive for ever, every prediction 0.0
+    and R² -0.05, where the same target unscaled scored 0.96.
 
     **c is in the target's units.** ``pa1``'s ``tau`` is in the target's units
     over ``s``'s, so a cap of 1 caps every step of a target in thousands and
-    none of a target in thousandths, and the figures below are for a target of
+    none of a target in thousandths. The figures below are for a target of
     spread about 2. ``pa2``'s ``c`` is added to ``s`` as ``1 / (2c)``, in
-    ``s``'s units, so it is free of the target's. Under ``"pa"`` and ``"pa2"`` a
-    target scaled by ``k`` fits as the unscaled one, scaled by ``k``; under
+    ``s``'s units, so it is free of the target's. Under ``"pa"`` and ``"pa2"``
+    a target scaled by ``k`` fits as the unscaled one, scaled by ``k``; under
     ``"pa1"`` only while the cap does not bind.
 
     **On a level that moves, raise ``c`` or difference the target.** The fit
@@ -3309,8 +3419,8 @@ def pa(
     ``sigma`` is not the residual's std, as :func:`huber`'s cut is. The fit
     starts from zero coefficients, so its first residuals are the target's
     whole level. On a target at 1,000 with a spread of 2, a tube drawn from
-    them was about 100 wide and held every row. Without decay it never
-    narrowed: R² -52 at a half-life of 1e9.
+    them would be about 100 wide and hold every row. Without decay it would
+    never narrow: R² -52 at a half-life of 1e9.
 
     The coefficients keep no accumulators, so there is nothing in them for the
     clock to decay: each step fully satisfies the current row, and older rows
@@ -3329,14 +3439,16 @@ def pa(
         the features' squared, or standardized ones under ``standardize``, so
         ``c`` is in the target's units alone there, and what it does depends on
         the target's scale. Under ``pa2``, the damping ``1 / (2c)`` beside
-        ``s``, in ``s``'s units and free of the target's. Default 1.0; ``inf``
-        caps nothing, so either bounded mode is then ``"pa"``.
+        ``s``, in ``s``'s units and free of the target's. ``"pa"`` reads no
+        ``c``, and takes one without a word. Default 1.0, above 0; ``inf`` caps
+        nothing, so either bounded mode is then ``"pa"``.
     ``eps``
-        The margin, in units of ``sigma``: the row is close enough inside it and
-        nothing moves. Default 0.01: errors under 1% of the target's own spread
-        do not move the fit. Measured (``pa1``, one feature, a target of spread
-        about 2, no decay; the out-of-sample error above the noise, in noise
-        variances, median over seeds; docs/PLAN.md task 207):
+        The margin, in units of ``sigma``, at least 0: the row is close enough
+        inside it and nothing moves. Default 0.01: errors under 1% of the
+        target's own spread do not move the fit. Measured (``pa1``, one
+        feature, a target of spread about 2, no decay; the out-of-sample error
+        above the noise, in noise variances, median over seeds; docs/PLAN.md
+        task 207):
 
         .. list-table::
            :header-rows: 1
@@ -3362,13 +3474,13 @@ def pa(
         cap of 0.1 or a wider tube damps more. At R² 0.99998 the default tube
         is 2.2 noise standard deviations and no cap binds, and a tube of 0.1
         (22 of them) or 0.5 holds the fit wherever it first lands, from 25 to
-        347 noise variances over 20 seeds at 0.1. The default had the smallest
-        worst regret over 108 streams (R² from 0.5 to 0.99998, a level of 0 or
-        plus or minus 1,000, a half-life of 50, 500 or none, one feature or
-        five) and the three modes, against a tube in the residual's spread
-        capped by the target's: without decay its start-up residuals stayed in
-        it for ever, and under ``pa2`` it left a target at a level of 1,000 at
-        R² 0.76 to 0.80.
+        347 noise variances over 20 seeds at 0.1. Over 108 streams and the
+        three modes, the default had the smallest worst regret (R² from 0.5 to
+        0.99998, a level of 0 or plus or minus 1,000, a half-life of 50, 500 or
+        none, one feature or five). It was measured against a tube in the
+        residual's spread capped by the target's, whose start-up residuals
+        stayed in it for ever without decay: under ``pa2`` that tube left a
+        target at a level of 1,000 at R² 0.76 to 0.80.
     ``coef_min``, ``coef_max``, ``coef_sum``
         Constraints on the slopes, exactly as for :func:`sgd`. The projection
         follows each update, so the step does not meet the row's margin exactly:
@@ -3376,13 +3488,14 @@ def pa(
         outside the feasible set is never realizable, so the model keeps stepping
         against the walls; a small ``c`` keeps those steps small.
     ``standardize``
-        Take the step in standardized coordinates, :func:`sgd`'s scaler, its
-        rule and its warm-up: each row standardized against the running moments
-        with the row admitted, ``z_i = (x_i - m_i) / s_i`` (``z_i = x_i / s_i``,
-        the root mean square, without an intercept), and a box or a sum
-        projected with its bounds carried over. Default ``True``: raw, ``s`` and
-        ``c`` are in the features' units, so one feature in thousands makes
-        every step tiny and one in thousandths every step the cap.
+        Take the step in standardized coordinates, with :func:`sgd`'s scaler,
+        its rule and its warm-up. Each row is standardized against the running
+        moments with the row admitted, ``z_i = (x_i - m_i) / s_i``
+        (``z_i = x_i / s_i``, the root mean square, without an intercept), and
+        a box or a sum is projected with its bounds carried over. Default
+        ``True``: raw, ``s`` and ``c`` are in the features' units, so one
+        feature in thousands makes every step tiny and one in thousandths every
+        step the cap.
 
         Until Kish's count of the rows the moments have learned reaches 22,
         the coefficients are held in the standardized coordinates and read
@@ -3397,16 +3510,16 @@ def pa(
             b_i  += step * z_i / s_i
             b_0  += step - sum_i m_i * step * z_i / s_i
 
-        The step still puts the row where the update says: the row's change of
-        prediction is ``step * ||z||^2``, so an uncapped step at weight 1 leaves
-        it on the tube's edge, and one at weight ``w < 1`` goes that fraction
-        of the way. The prediction reads no moment, so the moments' moving moves
-        none of it. Read through the moments as they stood, a finite
-        half-life's own wander moved every prediction: at a half-life of 50 and
-        R² 0.99998, 31.8 noise variances of out-of-sample error above the noise
-        where the raw fit paid 0.18 (docs/PLAN.md task 206). Past the warm-up a
-        box or a sum bounds the coefficients in the caller's units and is
-        projected as for :func:`sgd`.
+        The step still puts the row where the update says. The row's change of
+        prediction is ``step * ||z||^2``, so an uncapped step at weight 1
+        leaves it on the tube's edge, and one at weight ``w < 1`` goes that
+        fraction of the way. The prediction reads no moment, so the moments'
+        moving moves none of it. A fit read through the moments as they stand
+        instead has a finite half-life's own wander move every prediction. At a
+        half-life of 50 and R² 0.99998 that cost 31.8 noise variances of
+        out-of-sample error above the noise, where the raw fit's was 0.18
+        (docs/PLAN.md task 206). Past the warm-up a box or a sum bounds the
+        coefficients in the caller's units and is projected as for :func:`sgd`.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -3432,8 +3545,8 @@ def pa(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`).
 
@@ -3453,8 +3566,9 @@ def pa(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`); ``eps`` refuses ``inf``,
-    and the constraints are checked as for :func:`sgd`.
+    As every builder does (:mod:`polars_online.spec`); ``eps`` refuses ``inf``
+    and a value below 0, ``c`` a value not above 0, and the constraints are
+    checked as for :func:`sgd`.
     """
     model: dict[str, Any] = {
         "type": "pa",
@@ -3504,30 +3618,30 @@ def holt(
         l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)
         b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)
 
-    Level and trend are weighted means, as every accumulator here is: a row
-    at weight ``w`` counts ``w`` times, and an infinite half-life forgets
-    nothing and fits the whole history. The gains ``w / (lam * W + w)``
-    start at 1 and fall to the textbook's fixed ``1 - lam`` as the weight
-    saturates. So a new series is followed sooner, and the fit is
-    statsmodels' ``Holt`` from there. A row at the last row's clock is a
-    second observation the level takes in; the trend holds, since a move
-    over no clock has no slope. A row with a null target or a zero weight
-    leaves ``l`` and ``b`` where the last observation put them and carries
-    its clock to the next one. So it gives the same numbers as if it were
-    absent. The trend is per clock unit, so an irregular clock extrapolates
-    the right distance.
+    A target's first observation sets ``l = y`` and ``W = w``, and predicts
+    nothing; the trend starts at 0. Level and trend are weighted means, as
+    every accumulator here is: a row at weight ``w`` counts ``w`` times, and an
+    infinite half-life forgets nothing and fits the whole history. The gains
+    ``w / (lam * W + w)`` start at 1 and fall to the textbook's fixed
+    ``1 - lam`` as the weight saturates. So a new series is followed sooner,
+    and the fit is statsmodels' ``Holt`` from there. A row at the last row's
+    clock is a second observation the level takes in; the trend holds, since a
+    move over no clock has no slope. A row with a null target or a zero weight
+    leaves ``l`` and ``b`` where the last observation put them and carries its
+    clock to the next one. So it gives the same numbers as if it were absent.
+    The trend is per clock unit, so an irregular clock extrapolates the right
+    distance.
 
     .. rubric:: Parameters
 
-    The level forgets at the spec's ``half_life`` (or ``lam``), in clock
-    units, ``inf`` included: one knob under one name, as for every model.
-    ``level_half_life``, the second name it once had, is refused naming
-    it.
+    The level forgets at the spec's ``half_life`` (or ``lam``), in clock units,
+    ``inf`` included: one knob under one name, as for every model.
+    ``level_half_life`` is refused, with a message naming ``half_life``.
 
     ``trend_half_life``
-        How fast the trend forgets, in clock units. Default four times the
-        level's half-life; ``inf`` is the whole history's drift, not a trend
-        pinned at zero.
+        How fast the trend forgets, in clock units, above 0. Default four times
+        the level's half-life; ``inf`` is the whole history's drift, not a
+        trend pinned at zero.
     ``trend``
         ``False`` fits the level alone: the trend is held at zero and the
         forecast is flat, which is simple exponential smoothing. The level is
@@ -3535,6 +3649,9 @@ def holt(
         ``0.5 ** (age / half_life)``, which is pandas'
         ``ewm(adjust=True)`` for unit weights. ``trend_half_life`` is refused
         beside it. Default ``True``.
+    ``features``
+        Taken only empty: the model reads no feature, and a list that names one
+        is refused.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -3554,8 +3671,8 @@ def holt(
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, and why the row's
-        predictions are null where they are, as everywhere.
+        How far the decay window had filled before the row, and which gate
+        withheld the row's predictions, null where none did, as everywhere.
     ``coef``
         ``[level, trend]`` per target, the whole state; :func:`coef_index`
         names the two. Null for a target not yet observed, which has no
@@ -3579,7 +3696,9 @@ def holt(
 
     .. rubric:: Raises
 
-    As every builder does (:mod:`polars_online.spec`).
+    As every builder does (:mod:`polars_online.spec`), and ``ValueError`` for a
+    non-empty ``features``, a ``trend_half_life`` not above 0, and
+    ``trend_half_life`` beside ``trend=False``.
     """
     model: dict[str, Any] = {
         "type": "holt",
@@ -3649,7 +3768,8 @@ def kmeans(
            * - ``seed_rule``
              - the centres
            * - ``"lloyd"`` (the default)
-             - k-means++ then ten weighted Lloyd iterations over the buffer
+             - the best, by inertia, of ten k-means++ starts, each followed by
+               ten weighted Lloyd iterations over the buffer
            * - ``"kmeanspp"``
              - k-means++
            * - ``"farthest"``
@@ -3658,26 +3778,30 @@ def kmeans(
              - the first ``k`` distinct rows
 
         ``seed`` (default 0) drives the two random rules; the same seed gives
-        the same centres. The buffer is replayed into the centres and freed,
-        so the model is O(state) again from that row on. Outputs are null
-        until seeding and until ``weight_sum`` reaches ``min_weight``.
+        the same centres. Under ``"first"``, seeding waits past ``warm_rows``
+        if it must for ``k`` distinct rows, holding up to
+        ``max(warm_rows, 1000)`` rows. The buffer is replayed into the centres
+        and freed, so the model is O(state) again from that row on. Outputs are
+        null until seeding and until ``weight_sum`` reaches ``min_weight``.
     ``update_every_rows``
-        Learned rows between applications of the per-centre batches. Default
-        1.
+        Learned rows between applications of the per-centre batches, at least
+        1. Default 1.
     ``split_merge``, ``split_merge_every_rows``
         A row farther from its centre than a blob of the typical radius
-        produces (about four standard deviations of ``|x - c|^2`` above it)
-        is far. It is scored, but summarised instead of learned, so it
-        neither drags the centre nor widens the radius. Every
-        ``split_merge_every_rows`` learned rows (default 100) the two closest
-        centres are compared. If their distance is under ``split_merge``
-        (default 0.5; ``0`` disables) times the sum of their radii, and
-        enough far rows have gathered somewhere (at least three, and five per
-        cent of the window's weight), they are merged. The freed centre is
-        placed at the far rows' mean. So a cluster that appears after seeding
-        gets a centre without anyone restarting. Far rows still count in the
-        radius at each check as if they sat at the cut, so a cut the data has
-        outgrown widens until the rows are learned again.
+        produces (about four standard deviations of ``|x - c|^2`` above it) is
+        far. It is scored, but summarised instead of learned, so it neither
+        drags the centre nor widens the radius. Every
+        ``split_merge_every_rows`` learned rows (default 100, at least 1) the
+        two closest centres are compared, where there are at least three. If
+        their distance is under ``split_merge`` (default 0.5) times the sum of
+        their radii, and enough far rows have gathered somewhere (at least
+        three, and five per cent of the weight learned since the last check),
+        they are merged. ``split_merge = 0`` turns off the merge and the far
+        rows both, so every row is learned. The freed centre is placed at the
+        far rows' mean. So a cluster that appears after seeding gets a centre
+        without anyone restarting. Far rows still count in the radius at each
+        check as if they sat at the cut, so a cut the data has outgrown widens
+        until the rows are learned again.
     ``dead_frac``
         Re-place a centre whose weight has decayed below ``dead_frac *
         weight_sum / k`` the same way, on whatever far rows there are
@@ -3695,17 +3819,15 @@ def kmeans(
     ``scale_floor``
         The metric's variance is floored at this fraction of the feature's
         long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
-        half-lives of a feature going quiet (a flag that stops firing, a
-        sensor at rest): a million at twenty, and the row on which the
-        feature moves again is then infinitely far from every centre.
-        Floored, the weight grows as ``2^(Q/8) / scale_floor``, about 57 at
-        twenty. The long-run variance is tracked at eight times the
-        half-life, a feature at a time. Each row's weight and deviation are
-        clipped against it, and its start is the medians of the feature's
-        first five rows, so a row at the input bound moves it by a factor of
-        26 at most, which a few of its half-lives undo. Default ``0.1``;
-        ``0`` is the EW variance alone, and what a state saved before the
-        floor loads with.
+        half-lives of a feature going quiet (a flag that stops firing, a sensor
+        at rest): a million at twenty, and the row on which the feature moves
+        again is then infinitely far from every centre. Floored, the weight
+        grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The long-run
+        variance is tracked at eight times the half-life, a feature at a time.
+        Each row's weight and deviation are clipped against it, and its start
+        is the medians of the feature's first five rows, so a row at the input
+        bound moves it by a factor of 26 at most, which a few of its half-lives
+        undo. Default ``0.1``; ``0`` is the EW variance alone.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -3726,9 +3848,9 @@ def kmeans(
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
     ``coef``
         The centres: ``k`` rows of ``len(features)``, flattened
         cluster-major. :func:`coef_index` lays it out, with ``target``
@@ -3743,7 +3865,7 @@ def kmeans(
             "km", features=["x0", "x1", "x2"], clock="t", half_life=2000.0, gap_cap=300.0,
             k=3,
             warm_rows=100,           # seeding waits for this many rows, then replays them
-            seed_rule="lloyd",       # k-means++ then ten Lloyd iterations over the buffer
+            seed_rule="lloyd",       # ten k-means++ starts, each refined by Lloyd iterations
             split_merge=0.5,         # two centres in one blob: one moves to the far rows
             dead_frac=0.05,         # a centre whose blob vanished is re-placed 4.3 half-lives later
         )
@@ -3753,9 +3875,13 @@ def kmeans(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets``, which this model has not got; ``ValueError`` for ``k`` past
-    2^16, ``warm_rows`` below ``k`` or a warm-up buffer past 256 MiB, and
-    ``dead_frac`` above 0 beside ``split_merge = 0``.
+    ``targets``, which this model has not got; ``ValueError`` for:
+
+    - ``k`` of 0 or past 2^16, ``warm_rows`` below ``k``, and a warm-up buffer
+      past 256 MiB;
+    - a ``seed_rule`` not in the list;
+    - ``split_merge``, ``dead_frac`` or ``scale_floor`` below 0 or not finite,
+      and ``dead_frac`` above 0 beside ``split_merge = 0``.
     """
     model: dict[str, Any] = {
         "type": "kmeans",
@@ -3811,29 +3937,32 @@ def micro(
     .. code-block:: text
 
         n_j <- lam n_j                                   every summary
-        j   = the nearest potential summary, if absorbing a unit row keeps
-              a r2_j + a b |x - c_j|^2 <= E,   a = n_j/(n_j+1), b = 1/(n_j+1)
+        j   = the nearest potential summary, if absorbing a row of the mean weight keeps
+              a r2_j + a b |x - c_j|^2 <= E,   a = n_j/(n_j+w_bar), b = w_bar/(n_j+w_bar)
               else the nearest outlier summary by the same test
               else a new summary at x with the next id
         n_j <- n_j + w,  c_j <- c_j + w/n_j (x - c_j),  r2_j <- min(., E)
 
     A summary is potential (established) once ``n >= beta_mu * w_bar`` and
-    outlier below, ``w_bar`` the EW mean weight of the rows learned from. A
-    new one is opened at the cap ``max_clusters`` by evicting the lightest
-    outlier summary, else the lightest potential one. A checkpoint prunes
-    and links, on the schedule ``prune_every`` and ``max_rows_between_prunes``
-    set (below). It drops potential summaries
-    lighter than ``beta_mu * w_bar``, and outlier summaries lighter than
-    DenStream's ``xi(age) * w_bar``, with ``xi(age) = sum_{i <= age / Tp} 2 **
-    (-i Tp / h)``. That is the weight of a summary that had taken one row of
-    the mean weight every ``Tp`` clock units since it opened, with ``Tp =
-    ceil(h log2(beta_mu / (beta_mu - 1)))`` for half_life ``h``. Both count
-    rows, as DenStream's do: a stream with more rows to a clock unit fills its
-    summaries faster. With no decay nothing is pruned, only capped. Then it
-    links the potential summaries by single linkage: centres within ``L`` of
-    each other share a label. Ids are monotone and never reused; a label is
-    the smallest id in its chain, so it survives everything but the loss of
-    that summary.
+    outlier below, ``w_bar`` the EW mean weight of the rows learned from. A new
+    one is opened at the cap ``max_clusters`` by evicting the lightest outlier
+    summary, else the lightest potential one. A checkpoint prunes and links, on
+    the schedule ``prune_every`` and ``max_rows_between_prunes`` set (below).
+    It drops potential summaries lighter than ``beta_mu * w_bar``, and outlier
+    summaries lighter than DenStream's ``xi(age) * w_bar``, with ``xi(age) = (2
+    ** (-(age + Tp) / h)
+    - 1) / (2 ** (-Tp / h) - 1)``, ``sum_{i <= age / Tp} 2 ** (-i Tp / h)``
+    where ``age / Tp`` is whole. That is the weight of a summary that had taken
+    one row of the mean weight every ``Tp`` clock units since it opened, with
+    ``Tp = ceil(h log2(beta_mu / (beta_mu - 1)))`` for half_life ``h``. Both
+    count rows, as DenStream's do: a stream with more rows to a clock unit
+    fills its summaries faster. With no decay, or with ``beta_mu`` at most 1,
+    where ``Tp`` has no value, no outlier summary is pruned; a potential
+    summary is still dropped below ``beta_mu * w_bar``, as ``w_bar`` rises.
+    Then it links the potential summaries by single linkage: centres within
+    ``L`` of each other share a label. Ids are monotone and never reused; a
+    label is the smallest id in its chain, so it survives everything but the
+    loss of that summary.
 
     .. rubric:: Parameters
 
@@ -3893,17 +4022,15 @@ def micro(
     ``scale_floor``
         The metric's variance is floored at this fraction of the feature's
         long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
-        half-lives of a feature going quiet (a flag that stops firing, a
-        sensor at rest): a million at twenty, and the row on which the
-        feature moves again is then infinitely far from every centre.
-        Floored, the weight grows as ``2^(Q/8) / scale_floor``, about 57 at
-        twenty. The long-run variance is tracked at eight times the
-        half-life, a feature at a time. Each row's weight and deviation are
-        clipped against it, and its start is the medians of the feature's
-        first five rows, so a row at the input bound moves it by a factor of
-        26 at most, which a few of its half-lives undo. Default ``0.1``;
-        ``0`` is the EW variance alone, and what a state saved before the
-        floor loads with.
+        half-lives of a feature going quiet (a flag that stops firing, a sensor
+        at rest): a million at twenty, and the row on which the feature moves
+        again is then infinitely far from every centre. Floored, the weight
+        grows as ``2^(Q/8) / scale_floor``, about 57 at twenty. The long-run
+        variance is tracked at eight times the half-life, a feature at a time.
+        Each row's weight and deviation are clipped against it, and its start
+        is the medians of the feature's first five rows, so a row at the input
+        bound moves it by a factor of 26 at most, which a few of its half-lives
+        undo. Default ``0.1``; ``0`` is the EW variance alone.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -3937,9 +4064,9 @@ def micro(
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
     ``coef``
         The established summaries, one ``[id, label, n, radius, c_1, ...,
         c_p]`` row each, flattened -- as many rows as there are, so
@@ -3962,7 +4089,9 @@ def micro(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets``, which this model has not got.
+    ``targets``, which this model has not got; ``ValueError`` for an ``eps``
+    or ``beta_mu`` not above 0, a ``max_clusters`` of 0, and a
+    ``prune_every``, ``macro_link`` or ``scale_floor`` below 0 or not finite.
     """
     model: dict[str, Any] = {
         "type": "micro",
@@ -4027,11 +4156,14 @@ def ew_class(
         n_c   <- lam n_c + w
         mu_c  <- mu_c + (w / n_c) (x - mu_c)
         C_c   <- weighted Welford on (x - mu_c_old)(x - mu_c_new)'
+        n_c'  <- lam n_c'                         every other class c'
 
-    and ``weight_sum <- lam weight_sum + w`` counts every accepted row,
-    labelled or not, so ``min_weight`` means the same number of rows as
-    everywhere else. A row with a non-finite feature is null and learns
-    nothing; a zero-weight row advances the clock.
+    The other classes' means, covariances and prior scales stay where they
+    were, but their weights decay, which moves ``pi_c``. And
+    ``weight_sum <- lam weight_sum + w`` counts every accepted row, labelled or
+    not, so ``min_weight`` means the same number of rows as everywhere else. A
+    row with a non-finite feature is null and learns nothing; a zero-weight row
+    advances the clock.
 
     .. rubric:: Parameters
 
@@ -4068,13 +4200,13 @@ def ew_class(
              - the variances alone, which cannot see a correlation
              -
     ``precision_prior``
-        A ridge on every class covariance, in the features' units, so the
-        first rows of a class, whose sample covariance is singular, are
-        scored with a finite, isotropic one; required. It is scaled by
-        ``s_c``, the class's own prior scale, which starts at 1 and decays by
-        ``lam * n_c / (lam * n_c + w)`` on every row the class learns. So the
-        ridge washes out as the class fills in, exactly as :func:`ew_cov`'s
-        ``precision_prior`` does.
+        A ridge on every class covariance, in the features' squared units and
+        above 0, so the first rows of a class, whose sample covariance is
+        singular, are scored with a finite, isotropic one; required. It is
+        scaled by ``s_c``, the class's own prior scale, which starts at 1 and
+        decays by ``lam * n_c / (lam * n_c + w)`` on every row the class
+        learns. So the ridge washes out as the class fills in, exactly as
+        :func:`ew_cov`'s ``precision_prior`` does.
     ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history each class's moments are computed from,
         in clock units, as for :func:`ewridge`: a row ``window_size`` old or
@@ -4110,9 +4242,9 @@ def ew_class(
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
     ``coef``
         The class means, one row per class in ``classes`` order, each one
         entry per feature; :func:`coef_index` lays the list out as ``(class,
@@ -4138,7 +4270,12 @@ def ew_class(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`); ``TypeError`` for
-    ``targets`` -- this model takes ``label``.
+    ``targets`` -- this model takes ``label``; ``ValueError`` for:
+
+    - fewer than two ``classes``, and a class listed twice or named ``""``;
+    - a ``covariance`` not in the list;
+    - a ``precision_prior`` or a ``window_size`` not above 0;
+    - a ``label`` also listed as a feature.
     """
     model: dict[str, Any] = {
         "type": "ew_class",
@@ -4208,21 +4345,22 @@ def seqtest(
     .. rubric:: Parameters
 
     ``a``, ``b``, ``a_suffix``, ``b_suffix``
-        Compare two specs of the same bank. Each target ``t`` names a
-        residual field both carry: ``resid_<t>`` on each side, plus the
-        side's grid suffix when it is a grid (``a_suffix="@h50"`` picks
-        ``resid_<t>@h50`` of ``a``; ``"__r0.1"`` a ridge instance). The sign
-        tested is that of ``|resid_b| - |resid_a|``, positive when ``a`` was
-        closer on the row. Any loss that grows with ``|resid|`` (squared,
-        absolute, Huber) gives the same sign, so this is a test of "``a``
-        beats ``b``" under any of them. The bank runs ``a`` and ``b`` first,
-        so the comparison reads the same out-of-sample residuals their
-        structs report. A row where either side is null (warm-up, a skipped
-        row) is a row the test sits out. A spec named against itself with
-        the same suffix, a side that is not in the bank or is itself a
-        ``seqtest``, and a target neither side has a residual for are
-        refused by name. Two instances of one grid (``a_suffix="@h20"``
-        against ``b_suffix="@h400"``) are a comparison like any other.
+        Compare two specs of the same bank. Each target ``t`` names a residual
+        field both carry: ``resid_<t>`` on each side, plus the side's grid
+        suffix when it is a grid (``a_suffix="@h50"`` picks ``resid_<t>@h50``
+        of ``a``; ``"__r0.1"`` a ridge instance). The sign tested is that of
+        ``|resid_b| - |resid_a|``, positive when ``a`` was closer on the row.
+        Any loss that grows with ``|resid|`` (squared, absolute, Huber) gives
+        the same sign, so this is a test of "``a`` beats ``b``" under any of
+        them. The bank runs ``a`` and ``b`` first, so the comparison reads the
+        same out-of-sample residuals their structs report. A row where either
+        side is null (warm-up, a skipped row) is a row the test sits out. ``a``
+        and ``b`` are given together, and a suffix only beside them. When the
+        bank is built, a spec named against itself with the same suffix, a side
+        that is not in the bank or is itself a ``seqtest``, and a target either
+        side has no residual for are refused by name. Two instances of one grid
+        (``a_suffix="@h20"`` against ``b_suffix="@h400"``) are a comparison
+        like any other.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
@@ -4230,12 +4368,12 @@ def seqtest(
 
     A trial is a row, so ``weight`` is refused and there is no
     ``half_life``/``lam``: a process that forgot its losses would not be an
-    e-process. A session change restarts it under ``session_gap = "reset"``
-    or ``group_close = "session"``, and so does a step back past
-    ``restart_after_step_back``.
-    ``min_weight`` defaults to 0. No ``features`` (the column is the test;
-    the keyword is taken so that a frame namespace can pass ``[]``), no
-    ``coef``, and nothing residual-based applies -- there is no prediction.
+    e-process. A session change restarts it under ``session_gap = "reset"`` or
+    ``group_close = "session"``, and so does a step back past
+    ``restart_after_step_back``. ``min_weight`` defaults to 0. No ``features``
+    (the column is the test; the keyword is taken so that a frame namespace can
+    pass ``[]``, and a non-empty list is refused), no ``coef``, and nothing
+    residual-based applies -- there is no prediction.
     :func:`polars_online.eval.seqtest` is the same computation in polars
     expressions over a frame in memory.
 
@@ -4254,9 +4392,9 @@ def seqtest(
     ``weight_sum``
         As everywhere, decayed by nothing.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
 
     With ``a`` and ``b`` the fields read ``log_e_a_<t>``, ``log_e_b_<t>``,
     ``wins_a_<t>`` and ``wins_b_<t>`` instead.
@@ -4277,8 +4415,9 @@ def seqtest(
     .. rubric:: Raises
 
     As every builder does (:mod:`polars_online.spec`), and ``ValueError`` for
-    ``weight``, ``half_life`` or ``lam``, and for the comparison refusals
-    above.
+    ``weight``, ``half_life`` or ``lam``, a non-empty ``features``, ``a``
+    without ``b`` or the reverse, and a suffix without them. The bank refuses
+    the comparisons above when it is built.
     """
     model: dict[str, Any] = {
         "type": "seqtest",
@@ -4376,7 +4515,7 @@ def marginal(
         correction over fifty rows and the lead and lag at one row, at eight
         lagged moments per pair instead of eighteen.
 
-        ``serial_rule`` turns them into an honest count. ``t`` is built on
+        ``serial_rule`` turns them into an honest count. ``t_stat`` is built on
         ``n_kish``, which is right for unequal weights and silent about serial
         dependence. On a smooth stream consecutive rows are nearly the same
         observation, and the variance of a sample correlation is not ``1/n``
@@ -4413,28 +4552,28 @@ def marginal(
              - fewer than two kept lags are positive on either side
 
         Measured on two independent AR(1) series with ``phi_x = 0.9`` and
-        ``phi_y = 0.8``: ``t = 2.39``, significance that is not there, against
-        ``t_serial = 1.03``, with ``n_kish = 3000`` becoming ``n_serial =
-        557``. The lags add ``(L + 2C) * p * T + L * T`` doubles beside the
-        pair moments, for ``L`` lags of which ``C`` keep the cross terms. They
-        also hold a ring of ``max(lags)`` learned rows: the one place
-        ``marginal`` holds rows rather than state.
+        ``phi_y = 0.8``: ``t_stat = 2.39``, significance that is not there,
+        against ``t_serial = 1.03``, with ``n_kish = 3000`` becoming
+        ``n_serial = 557``. The lags add ``(L + 2C) * p * T + L * T`` doubles
+        beside the pair moments, for ``L`` lags of which ``C`` keep the cross
+        terms. They also hold a ring of ``max(lags)`` learned rows: the one
+        place ``marginal`` holds rows rather than state.
     ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``, ``bin_budget``
-        The nonlinear view. Every statistic above is linear, and a feature
-        can be strongly related to a target with ``corr`` at zero: a
-        threshold, a V, a saturation. With ``bins = 16`` each pair also
-        reports the target's weight, mean and variance inside each of the
-        feature's bins: its response curve, in ``bin_edges``, ``bin_n``,
-        ``bin_mean_y`` and ``bin_var_y``. It reports the best single cut of
-        that curve too. ``split_gain`` is the fraction of the target's
-        variance the cut removes, a regression stump's gain, directly
-        comparable with ``corr²``. ``split_at`` is where it falls.
-        ``split_gain_t`` is the ``t`` a ``corr`` would need to match it. Read
-        ``split_gain_t`` as a ranking, not a p-value: the cut was chosen by
-        maximising over ``bins - 1`` candidates, which the statistic does not
-        know. It uses ``n_serial`` in place of ``n_kish`` when ``serial_rule``
-        gives one. The bins take ``O(bins)`` of state per pair, one search of
-        the edges per feature per row, and a constant per pair.
+        The nonlinear view. Every statistic above is linear, and a feature can
+        be strongly related to a target with ``corr`` at zero: a threshold, a
+        V, a saturation. With ``bins = 16`` each pair also reports the target's
+        weight, mean and variance inside each of the feature's bins: its
+        response curve, in ``bin_edges``, ``bin_n``, ``bin_mean_y`` and
+        ``bin_var_y``. It reports the best single cut of that curve too.
+        ``split_gain`` is the fraction of the target's variance the cut
+        removes, a regression stump's gain, directly comparable with ``corr²``.
+        ``split_at`` is where it falls. ``split_gain_t`` is the ``t_stat`` a
+        ``corr`` would need to match it. Read ``split_gain_t`` as a ranking,
+        not a p-value: the cut was chosen by maximising over ``bins - 1``
+        candidates, which the statistic does not know. It uses ``n_serial`` in
+        place of ``n_kish`` when ``serial_rule`` gives one. The bins take
+        ``O(bins)`` of state per pair, one search of the edges per feature per
+        row, and a constant per pair.
 
         The edges are fixed once and never move, so a bin means the same
         thing for the life of the stream. ``bin_edges`` sets them outright,
@@ -4480,40 +4619,38 @@ def marginal(
     ``shards``
         Split the pair work across the bank's threads: a count of ranges of
         features, or ``"auto"`` for as many as the width keeps busy. The pool
-        runs a bank's groups and specs in parallel already, so one wide spec
-        on one group is one thread's work while the rest wait. With
-        ``shards`` its pairs are cut into ranges of features, and each range
-        runs on a thread of its own, a batch of rows at a time. Every number
-        is the same to the bit whatever the count, so it is a setting and not
-        part of the state. A saved bank resumes under the count of the specs
-        given to ``load``, or under the saved one when given none.
-        ``"auto"`` sizes itself to the machine it runs on: it estimates a
-        batch's pair work from the width, the lags and the bins, and splits
-        the batch into as many ranges as hold a tenth of a millisecond each,
-        up to twice the pool's threads. The moments alone of fewer than about
-        1,300 pairs stay whole. By default the pairs run row by row on the
-        group's thread. Through the bank at 10,000 features on 14
-        threads, ``"auto"`` ran 1.2 times as fast at one target and 4.9 times
-        with nine targets, lags and bins; the bank's own work on each row
-        does not split (``docs/PERFORMANCE.md`` §25).
+        runs a bank's groups and specs in parallel already, so one wide spec on
+        one group is one thread's work while the rest wait. With ``shards`` its
+        pairs are cut into ranges of features, and each range runs on a thread
+        of its own, a batch of rows at a time. Every number is the same to the
+        bit whatever the count, so it is a setting and not part of the state. A
+        saved bank resumes under the count of the specs given to ``load``, or
+        under the saved one when given none. ``"auto"`` sizes itself to the
+        machine it runs on. It estimates a batch's pair work from the width,
+        the lags and the bins, and splits the batch into as many ranges as hold
+        a tenth of a millisecond each, up to twice the pool's threads. The
+        moments alone of fewer than about 1,300 pairs stay whole. By default
+        the pairs run row by row on the group's thread. Through the bank at
+        10,000 features on 14 threads, ``"auto"`` ran 1.2 times as fast at one
+        target and 4.9 times with nine targets, lags and bins; the bank's own
+        work on each row does not split (``docs/PERFORMANCE.md`` §25).
     ``window_size``, ``closed``, ``window_every``, ``max_rows_between_snapshots``, ``window_budget``
         A hard cutoff on the history the pairs are computed from, in
-        clock units, as for :func:`ewridge`: a row ``window_size`` old or
-        older contributes nothing (``closed="both"`` keeps the one exactly
-        that old, as for :func:`ewridge`), and inside the window the weights are still
+        clock units, as for :func:`ewridge`: a row ``window_size`` old or older
+        contributes nothing (``closed="both"`` keeps the one exactly that old,
+        as for :func:`ewridge`), and inside the window the weights are still
         exponential. Every moment a pair is built from is truncated (the
-        weight, both means and the three centred second moments), so
-        ``corr``, ``beta`` and ``t`` describe the window and nothing else.
-        That matters most for a screen: two regimes of opposite sign average
-        to nothing over a long history. ``window_every`` spaces the snapshots
-        on the clock and ``max_rows_between_snapshots`` caps the rows between
-        them, whichever comes first, as for :func:`ewridge`;
-        ``window_budget`` bounds each ring in MiB. The
-        ``weight_sum`` the struct writes and the one the table reports are
-        the weight inside the window. ``lags`` under a window take
-        ``window_lags=True``, below. ``bins`` and ``window_size`` are refused
-        together (a snapshot of the histogram is ``bins`` times the size of
-        one).
+        weight, both means and the three centred second moments), so ``corr``,
+        ``beta`` and ``t_stat`` describe the window and nothing else. That
+        matters most for a screen: two regimes of opposite sign average to
+        nothing over a long history. ``window_every`` spaces the snapshots on
+        the clock and ``max_rows_between_snapshots`` caps the rows between
+        them, whichever comes first, as for :func:`ewridge`; ``window_budget``
+        bounds each ring in MiB. The ``weight_sum`` the struct writes and the
+        one the table reports are the weight inside the window. ``lags`` under
+        a window take ``window_lags=True``, below. ``bins`` and ``window_size``
+        are refused together (a snapshot of the histogram is ``bins`` times the
+        size of one).
     ``window_lags``
         Accept ``lags`` under a ``window_size``, and the memory that takes.
         Each of the window's snapshots then also holds the lag moments, in
@@ -4546,26 +4683,36 @@ def marginal(
         Where the feature's mean and variance are kept. ``"per_target"``, the
         default, keeps them per pair, over the rows the pair's target was
         present. ``"shared"`` keeps one per feature, over every learned row,
-        and each pair only its covariance. Where every target is on every
-        learned row the two report the same numbers, to the bit. Where a
-        target is absent on some rows, ``"shared"`` is a different estimator.
-        ``mean_x`` and ``var_x`` are the feature's over every learned row,
-        and ``cov`` is the target's rows centred on that mean, so ``corr``,
-        ``beta`` and ``t`` move with it. That is sound where the absence says
-        nothing about the feature. With a tenth of a target's rows absent at
-        a half-life of 69 rows, measured, ``corr`` moved by at most 0.0065
-        and ``var_x`` by 2.5% at the median. At 20,000 pairs it runs 2.7
-        times as fast at ten targets and 3.2 times at thirty, the same at
-        one, and a ten-target state is under half the size
-        (docs/PERFORMANCE.md §27). With ``lags`` it keeps the feature's
-        autocovariance per feature too, and at ten targets runs 4.6 times as
-        fast with no cross lags. Refused with a ``window_size``.
+        and each pair only its covariance. With ``a`` and ``b`` the row's mix
+        over the model's weight ``W``, taken on every learned row, and ``a_t``,
+        ``b_t`` the target's:
+
+        .. code-block:: text
+
+            dx_j       = x_j - m_x[j]                    the shared mean before the row
+            S'_xx[j]   = a * S_xx[j] + a * b * dx_j**2   m_x[j] += b * dx_j
+            S'_xy[t,j] = a_t * S_xy[t,j] + a_t * b_t * dx_j * (y_t - m_y)    on t's rows
+
+        Where every target is on every learned row the two report the same
+        numbers, to the bit. Where a target is absent on some rows,
+        ``"shared"`` is a different estimator. ``mean_x`` and ``var_x`` are the
+        feature's over every learned row, and ``cov`` is the target's rows
+        centred on that mean, so ``corr``, ``beta`` and ``t_stat`` move with
+        it. That is sound where the absence says nothing about the feature.
+        With a tenth of a target's rows absent at a half-life of 69 rows,
+        measured, ``corr`` moved by at most 0.0065 and ``var_x`` by 2.5% at the
+        median. At 20,000 pairs it runs 2.7 times as fast at ten targets and
+        3.2 times at thirty, the same at one, and a ten-target state is under
+        half the size (docs/PERFORMANCE.md §27). With ``lags`` it keeps the
+        feature's autocovariance per feature too, and at ten targets runs 4.6
+        times as fast with no cross lags. Refused with a ``window_size``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group`` and the
     rest.
 
-    ``fit_intercept`` and ``coef_every`` have nothing to act on here. Nothing
+    ``coef_every`` and ``max_rows_between_coefs`` are refused, as there are no
+    coefficients, and ``fit_intercept`` has nothing to act on. Nothing
     residual-based applies (there is no prediction), so the residual switches
     are refused by name. A column may not be both a target and a feature.
     ``min_weight`` defaults to 3: two rows give a correlation of ±1 whatever
@@ -4578,9 +4725,9 @@ def marginal(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#marginal>`_).
     The pairs are read from the state with
     :meth:`polars_online.ModelBank.marginal`, one row per (group, instance,
-    feature, target) with the moments, ``corr``, ``beta``, ``t``, ``n_kish``,
-    and the lag and bin columns above. That method documents every column. A
-    group that closes writes the same pairs to
+    feature, target) with the moments, ``corr``, ``beta``, ``t_stat``,
+    ``n_kish``, and the lag and bin columns above. That method documents every
+    column. A group that closes writes the same pairs to
     :meth:`polars_online.ModelBank.closed_groups` as ``pair_*`` columns, one
     entry per pair.
 
@@ -4602,11 +4749,17 @@ def marginal(
     As every builder does (:mod:`polars_online.spec`), and ``ValueError``
     naming the problem for:
 
-    - ``bin_edges`` that miss or add a feature;
-    - ``bins`` beside ``bin_edges``, or beside ``window_size``;
+    - ``bin_edges`` that miss or add a feature, or that are not finite and
+      increasing;
+    - ``bins`` beside ``bin_edges``, and ``bins`` or ``bin_edges`` beside
+      ``window_size``;
+    - ``bins`` below 2, or a ``bin_warm_rows`` below ``bins``;
+    - ``serial_rule`` or ``cross_lags`` without ``lags``, ``lags`` or
+      ``cross_lags`` that do not increase, and a cross lag not in ``lags``;
     - ``lags`` beside ``window_size`` without ``window_lags``;
     - ``bin_budget`` without bins or not above 0, and bins past ``bin_budget``;
-    - ``shards`` below 1, or a string other than ``"auto"``.
+    - ``shards`` below 1, or a string other than ``"auto"``;
+    - a ``serial_rule``, ``bin_rule`` or ``feature_moments`` not in the list.
     """
     edges: list[list[float]] | None
     # `spec "m":` as every other refusal, where these read `marginal 'm':`
@@ -4692,26 +4845,28 @@ def deco(
 
         u = (S1**2 - S2) / ((n - 1) * S2)      = mean_{i != j} r_i r_j / mean_i r_i**2
 
-    which lies in ``(-1 / (n - 1), 1)``. The level then follows one of two
-    dynamics, on the model's own clock with decay factor ``lam`` and row
-    weight ``w``:
+    which lies in ``[-1 / (n - 1), 1]``, both ends reached. Between two blocks
+    ``A`` and ``B`` the estimate is ``u_AB = S1_A S1_B / sqrt(n_A n_B S2_A
+    S2_B)``. The level then follows one of two dynamics, on the model's own
+    clock with decay factor ``lam`` and row weight ``w``:
 
     .. code-block:: text
 
         "ew":      W' = lam * W + w,  a = lam * W / W',  b = w / W'
                    rho' = a * rho + b * u                     (rho = u at W = 0)
         "linear":  rho' = (1 - alpha - beta) * rho_bar' + alpha * u + beta * rho
+                   rho' = u                                    (on the first row)
                    rho' = rho                                  (at w = 0)
 
-    where ``rho_bar`` is the ``"ew"`` recursion run alongside as the target
-    of the linear one. The ``"ew"`` dynamics run on the clock. The linear one
-    steps once per row, as a DCC model's does, so a gap capped at ``gap_cap``
-    moves ``rho`` by one row's ``alpha * u``, as a millisecond does. A row of
-    weight 0 moves neither: it advances the clock and learns nothing, as
-    everywhere. Otherwise the linear recursion has no row weights, as the
-    paper's has none: a positive weight reaches ``rho`` only through
-    ``rho_bar``, so rows of weight 0.5 and 2 move it by the same ``alpha *
-    u``.
+    where ``rho_bar`` is the ``"ew"`` recursion run alongside as the target of
+    the linear one. The ``"ew"`` dynamics run on the clock. The linear one
+    steps once per row, as a DCC model's does: across a gap capped at
+    ``gap_cap`` its own terms take one row's step, as across a millisecond, and
+    only ``rho_bar`` moves on the clock. A row of weight 0 moves neither: it
+    advances the clock and learns nothing, as everywhere. Otherwise the linear
+    recursion has no row weights, as the paper's has none: a positive weight
+    reaches ``rho`` only through ``rho_bar``, so rows of weight 0.5 and 2 move
+    it by the same ``alpha * u``.
 
     Two departures from the paper, on purpose. Its eq. 21 has a free
     intercept and applies correlation targeting to the DCC ``Q`` recursion,
@@ -4727,14 +4882,15 @@ def deco(
     not an ``ew_cov``'s ``corr`` over the columns, since the mean of a ratio
     is not the ratio of means.
 
-    A column whose variance is exactly zero -- constant from its first row,
-    the only way an EW variance is exactly zero -- has no standardised
-    value. It is left out of its block's sums, so ``n`` counts the columns
-    that have one. Its block reads the correlation among its other columns,
-    and so does a pair it is in; a block left with fewer than two has no
-    ``u`` on the row. Each value keeps its own weight ``W``: one with no
-    ``u`` on a row learns nothing and does not decay, while the others
-    learn. ``loglik`` needs every column, and is null on such a row.
+    A column whose variance is exactly zero -- constant from its first row, the
+    only way an EW variance is exactly zero -- has no standardised value. It is
+    left out of its block's sums, so ``n`` counts the columns that have one.
+    Its block reads the correlation among its other columns, and so does a pair
+    it is in; a block left with fewer than two has no ``u`` on the row, nor a
+    pair with an empty side. Nor does a row whose ``S2`` is 0. Each value keeps
+    its own weight ``W``: one with no ``u`` on a row learns nothing and does
+    not decay, while the others learn. ``loglik`` needs every column, and is
+    null on such a row.
 
     .. rubric:: Parameters
 
@@ -4760,8 +4916,8 @@ def deco(
 
     .. rubric:: Output
 
-    One struct column named after the spec, all read from the state before
-    the row, so they are safe as features for that same row
+    One struct column named after the spec, all but ``coef`` read from the
+    state before the row, so they are safe as features for that same row
     (`docs/OUTPUTS.md#deco
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#deco>`_):
 
@@ -4775,17 +4931,18 @@ def deco(
     ``weight_sum``
         As everywhere.
     ``settled_frac``, ``withheld_reason``
-        How far the decay window had filled before the row, null where
-        nothing decays, and why the row's fields are null where they are, as
-        everywhere.
+        How far the decay window had filled before the row, null where nothing
+        decays, and which gate withheld the row's fields, null where none did:
+        a warm-up of the model's own carries no reason.
     ``coef``
-        The correlation values, in the order of the ``u`` fields.
+        The levels after the row, in the order of the ``rho`` fields: ``coef``
+        on a row is ``rho`` on the next.
 
     With ``K`` named blocks the first two become ``u_<A>`` per block then
     ``u_<A>_<B>`` per pair, and ``rho_*`` likewise, with one ``loglik`` over
     all of them. ``u`` is null on a row where fewer than two of its block's
-    columns have a positive pre-row variance, and ``loglik`` on a row where
-    any column has none.
+    columns have a positive pre-row variance, or where ``S2`` is 0, and
+    ``loglik`` on a row where any column has none.
 
     .. rubric:: Example
 

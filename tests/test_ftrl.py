@@ -250,3 +250,28 @@ class TestSquaredLoss:
     def test_unknown_loss_is_rejected(self):
         with pytest.raises(ValueError, match="unknown ftrl loss"):
             self._spec(loss="hinge")
+
+
+@pytest.mark.parametrize("loss", ["logistic", "squared"])
+def test_a_feature_scale_is_the_parameters_scaled_without_an_intercept(loss):
+    """Task 239: the docstring's units paragraph says every feature scaled by
+    ``c`` fits the same model at ``alpha / c``, ``beta * c``, ``l1 * c`` and
+    ``l2 * c**2``. That holds through the origin, where every coordinate
+    scales; with an intercept, whose 1 does not, it does not, and the
+    docstring says so."""
+    df = _binary_df(n=3000)
+    c = 8.0
+    kw = dict(fit_intercept=False, half_life=200.0, loss=loss, min_weight=0.0)
+    base = dict(alpha=0.1, beta=1.0, l1=0.05, l2=0.5)
+    scaled = dict(alpha=0.1 / c, beta=1.0 * c, l1=0.05 * c, l2=0.5 * c**2)
+    wide = df.with_columns(pl.col("x0") * c, pl.col("x1") * c)
+    pa = _pred(po.ModelBank([_spec(**kw, **base)]).fit_predict(df))
+    pb = _pred(po.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
+    ok = np.isfinite(pa)
+    assert ok.sum() > 2900 and np.array_equal(ok, np.isfinite(pb))
+    assert np.max(np.abs(pa[ok] - pb[ok])) < 1e-12
+    kw["fit_intercept"] = True
+    qa = _pred(po.ModelBank([_spec(**kw, **base)]).fit_predict(df))
+    qb = _pred(po.ModelBank([_spec(**kw, **scaled)]).fit_predict(wide))
+    both = np.isfinite(qa) & np.isfinite(qb)
+    assert np.max(np.abs(qa[both] - qb[both])) > 1e-3

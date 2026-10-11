@@ -522,3 +522,25 @@ def test_a_wide_block_matches_ew_covs_mean_of_u_to_the_bit():
     # `loglik` is finite once the level exists (i.e. wherever `rho` is).
     loglik = out["loglik"].to_numpy()
     assert np.isfinite(loglik[np.isfinite(rho)]).all()
+
+
+def test_coef_is_the_level_after_the_row():
+    """Task 239: the docstring said every field is read before the row,
+    ``coef`` included. ``coef`` is the level after the row, as every model's
+    ``coef`` is the fit after it: ``coef`` on a row is ``rho`` on the next,
+    per block and pair."""
+    df = frame(k=4)
+    spec = po.spec.deco(
+        "d",
+        features=cols(4),
+        half_life=HALFLIFE,
+        min_weight=0.0,
+        coef_every=0,
+        blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]},
+    )
+    out = run(spec, df)
+    coef = np.array([c if c is not None else [np.nan] * 3 for c in out["coef"].to_list()])
+    rho = np.column_stack([out["rho_a"], out["rho_b"], out["rho_a_b"]]).astype(float)
+    live = np.isfinite(rho[1:]).all(axis=1)
+    assert live.sum() > 700
+    assert np.array_equal(coef[:-1][live], rho[1:][live])
