@@ -9833,6 +9833,14 @@ tick, and that the series holding it up has a count near 1.
       memory and timing tests (`test_ffi_memory`, the timed recipes) in a
       serial group; (6) `scripts/quick.sh` mapping changed paths to their
       test files for the loop inside a task.
+      (7) every cache the steps add, documented (the user, 2026-10-11: "If
+      the new build introduces additional caches that will need to be
+      cleared, document this so we do it periodically"): sccache with an
+      explicit size cap, `target/dev-wheel/`, and the existing ones beside
+      them, each with where it lives, its measured size, whether it is safe
+      to delete and what the next build costs; `scripts/clear_caches.sh`
+      (a dry-run flag, never the test data in `.cache/`); a "Caches and when
+      to clear them" section with the rule for when to run it.
 - [x] 246. **The mutants run's headroom** -- the user, 2026-10-11: "Ensure
       that the GitHub mutants run has plenty of headroom not to fail its
       next run", then "Can we just run future mutants with a memory limit
