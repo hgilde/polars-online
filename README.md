@@ -1239,33 +1239,61 @@ assert pl.concat([first, rest]).equals(                      # the two grids tog
 with Polars' `diff()`, and give the specs the grid's clock, `time_refresh`.**
 Given a query, `refresh_time` returns one, so
 [`lf.online.fit_predict(specs)`](#as-a-query-lfonlinefit_predict) chained
-after it runs the grid and the models in one pass. On a hundred ticks of
-each series, `ew_cov` tracks the three correlations, and `ewridge`
-regresses one series' change on the other two's:
+after it runs the grid and the models in one pass. The recipe plants a
+correlation: three prices share one move and add one of their own, as
+large, so their changes correlate at 0.5. Each is observed at times of its
+own, about once per clock unit. `ew_cov` reads the correlations on the
+grid, and `ewridge` regresses one series' change on the other two's, whose
+true coefficients are 1/3 each. The recipe then reads the same ticks on a
+grid every 0.1 clock units, each series' last price carried forward:
 
 ```python
 rng = np.random.default_rng(1)
-ticks = pl.concat(                                 # a hundred ticks of each series, at times of its own
-    pl.DataFrame({"symbol": [s] * 100, "t": np.cumsum(rng.exponential(1.0, 100)), "px": rng.standard_normal(100)})
-    for s in ["AAA", "BBB", "CCC"]
-).sort("t")                                        # one stream, in clock order
+steps = 200_000                                          # a hidden price path, 0.01 clock units a step
+shared = np.cumsum(rng.normal(0.0, 0.1, steps))          # the move the three series share
 names = ["AAA", "BBB", "CCC"]
-grid = po.stream.refresh_time(ticks, series="symbol", names=names, clock="t", value="px")
-returns = grid.select(
-    "time_refresh",
-    *(pl.col(f"{s}_value").diff().alias(s) for s in names),  # each series' change since the last point
-)
+frames = []
+for s in names:
+    price = shared + np.cumsum(rng.normal(0.0, 0.1, steps))    # plus a move of its own, as large
+    t = np.cumsum(rng.exponential(1.0, 2_100))
+    t = t[t < 2_000]                                     # about one tick per clock unit, at times of its own
+    frames.append(pl.DataFrame({"symbol": s, "t": t, "px": price[(t * 100).astype(int)]}))
+pl.concat(frames).sort("t").write_parquet("own_times.parquet")   # one stream, in clock order
+
+grid = po.stream.refresh_time(pl.scan_parquet("own_times.parquet"), series="symbol", names=names,
+                              clock="t", value="px")    # a query, since it was given one
+returns = grid.select("time_refresh", *(pl.col(f"{s}_value").diff().alias(s) for s in names))  # each series' change since the last point
 specs = [
     po.spec.ew_cov("comove", features=names, stats=["corr"],
-                   clock="time_refresh", gap_cap=10.0, half_life=20.0),
+                   clock="time_refresh", gap_cap=10.0, half_life=float("inf")),
     po.spec.ewridge("beta", targets=["AAA"], features=["BBB", "CCC"],
-                    clock="time_refresh", gap_cap=10.0, half_life=20.0),
+                    clock="time_refresh", gap_cap=10.0, half_life=float("inf")),
 ]
-out = po.ModelBank(specs).fit_predict(returns)
-# comove: corr_AAA_BBB, corr_AAA_CCC, corr_BBB_CCC, each from the points before the row
-# beta:   pred_AAA, resid_AAA and coef: AAA's change predicted from BBB's and CCC's
-# The first grid point has no change, so both models skip it.
+out = returns.online.fit_predict(specs).collect()         # the first point has no change, so both models skip it
+last = out.row(-1, named=True)
+print(f"{out.height} refresh times from {pl.read_parquet('own_times.parquet').height} ticks")
+print("on the refresh grid: corr " + ", ".join(f"{last['comove'][f'corr_{a}_{b}']:.2f}" for a, b in [("AAA", "BBB"), ("AAA", "CCC"), ("BBB", "CCC")])
+      + f"; AAA on BBB {last['beta']['coef'][1]:.2f}, on CCC {last['beta']['coef'][2]:.2f}")
+
+ticks_by_series = pl.read_parquet("own_times.parquet").partition_by("symbol", as_dict=True)
+fine = pl.DataFrame({"t": np.arange(0.0, 2_000.0, 0.1)})
+for s in names:                                          # each series' last price at each point of the fine grid
+    fine = fine.join_asof(ticks_by_series[(s,)].select("t", pl.col("px").alias(s)), on="t")
+moves = fine.select(pl.col(names).diff()).drop_nulls()
+print(f"on a grid every 0.1: corr {moves.corr()['AAA'][1]:.2f}, {moves.corr()['AAA'][2]:.2f}, {moves.corr()['BBB'][2]:.2f}")
 ```
+
+```text
+1064 refresh times from 5835 ticks
+on the refresh grid: corr 0.34, 0.32, 0.36; AAA on BBB 0.27, on CCC 0.23
+on a grid every 0.1: corr 0.03, 0.02, 0.03
+```
+
+The fine grid finds almost no correlation, since in most of its steps one
+series moved and the others did not: the Epps effect. The refresh grid
+finds about two thirds of the planted 0.5. What it misses comes from each
+value's age at a refresh time, which is up to one of its own series'
+intervals between ticks.
 
 
 ## Running a bank
