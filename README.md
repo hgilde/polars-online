@@ -222,7 +222,7 @@ from windows](#making-features-and-targets-from-windows)).
 **A model bank runs three ways, with the same numbers from each.** It runs
 inside a Polars query with `.online.fit_predict`, in your own Python loop
 calling `ModelBank.fit_predict` on each chunk, or from the standalone
-`online` command line, without Python ([Running a bank](#running-a-bank)).
+`polars-online` command line, without Python ([Running a bank](#running-a-bank)).
 
 ### Terminology
 
@@ -1746,7 +1746,7 @@ Arrow, for a consumer that is not Polars:
 |---|---|---|---|
 | inside a Polars query | `lf.online.fit_predict(specs)` | ordinary Polars steps chained after the bank | [As a query](#as-a-query-lfonlinefit_predict) |
 | in your own Python loop | `bank.fit_predict(chunk)` | reading the bank between chunks | [In a loop](#in-a-loop-modelbank) |
-| from a standalone command line, with no live Python at all | `online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
+| from a standalone command line, with no live Python at all | `polars-online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
 | output as Arrow, from a bank object | `fit_predict_arrow`, `predict_arrow` | a consumer that is not Polars | [Output as Arrow](#output-as-arrow) |
 
 ### As a query: `lf.online.fit_predict`
@@ -1945,13 +1945,13 @@ dropped 1; left: ['b1', 'b2', 'b3']
 ### Running a bank as a job, without Python
 
 For a scheduled job, or a deployment with no Python, run the same bank from
-a file to a file with the standalone `online` command line, a binary on
+a file to a file with the standalone `polars-online` command line, a binary on
 each GitHub release. [docs/RUNNER.md](docs/RUNNER.md) has every key and
 flag, with a recipe for each kind of run: a check before the run,
 resuming, scoring, a run that writes only its state, and the groups that
 close.
 
-`online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
+`polars-online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
 its `[specs.model]` table names the model and takes the model's own. This
 `bank.toml` is the first example's spec of [As a
 query](#as-a-query-lfonlinefit_predict):
@@ -1975,24 +1975,30 @@ ridge = [1e-6, 0.1]
 standardize = true
 ```
 
-Run it from the directory that holds `bank.toml` and the example data's
-`ticks.parquet`. The predictions, residuals and weights it writes are the
-bank's in Python, bit for bit:
+Save it beside the example data's `ticks.parquet`: a relative path in the
+file is read from the file's own directory. The predictions, residuals and
+weights the run writes are the bank's in Python, bit for bit:
 
 ```sh
-online --config bank.toml
+polars-online --config bank.toml
 ```
 
 ```text
-400 rows in 1 chunks
-wrote 400 rows (1 chunks) to fitted.parquet
+wrote 400 rows (1 chunk) to fitted.parquet
 saved state to bank.state
 ```
 
-The first line is the progress, which `--quiet` turns off. After `wrote`,
-a run prints a line for each spec that ended with groups not ready, and
-nothing for the others. Such a line reads
+On a terminal, a progress line above the summary counts the rows as the
+run goes, and `--quiet` turns it off. After `wrote`, a run prints a line
+for each spec that ended with groups not ready, and nothing for the
+others. Such a line reads
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
+
+**The same file builds the same bank in Python**, as
+`po.ModelBank(tomllib.load(f)["specs"])` with the file opened in binary
+mode. `tomllib` reads each `[[specs]]` table as the dict a builder
+returns, and [Specs in TOML](docs/RUNNER.md#specs-in-toml) in the runner
+guide checks both the spec and the predictions against the command line's.
 
 ### Output as Arrow
 
@@ -4011,9 +4017,9 @@ in any minor release:
 
 | | what it covers |
 |---|---|
-| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags and exit status; and the environment variables the package reads |
+| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](#output-field-names); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags, its exit status and the files it writes; and the environment variables the package reads |
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
-| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version |
+| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; and a model's numbers within the 1e-12 tolerance the golden tests pin, which depend on the platform and the Polars version; and the text the command line prints (its summary, notices and errors) and the timing lines `POLARS_ONLINE_TIMING=1` asks for, which are written for a person and may be reworded in a minor release |
 
 **A changed default or meaning needs a major release, and a fix to numbers
 that were wrong a minor one.** A number is wrong when it disagrees with

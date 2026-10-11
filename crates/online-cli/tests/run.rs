@@ -357,7 +357,7 @@ fn a_model_value_of_the_wrong_type_is_named_by_its_key() {
          beta_mu = 3.0\neps = \"inf\"\n",
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_online"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_polars-online"))
         .arg("--config")
         .arg(&cfg)
         .arg("--dry-run")
@@ -447,7 +447,7 @@ fn resume_rejects_mismatched_specs() {
     }
 }
 
-/// The `online` binary over a config written to `dir`, with `args` after
+/// The `polars-online` binary over a config written to `dir`, with `args` after
 /// `--config`: its exit status, stdout and stderr.
 fn online(dir: &Path, input: &Path, output: &Path, args: &[&str]) -> (bool, String, String) {
     let (code, stdout, stderr) = online_with(dir, input, output, "", 50.0, args);
@@ -493,7 +493,7 @@ type = "ewridge"
 
 /// The binary with `head` then `args`: its exit code, stdout and stderr.
 fn online_args(head: &[&std::ffi::OsStr], args: &[&str]) -> (Option<i32>, String, String) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_online"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_polars-online"))
         .args(head)
         .args(args)
         .output()
@@ -658,7 +658,7 @@ fn a_dry_run_refuses_what_the_run_refuses_at_its_first_step() {
 /// Review round 4, SF6: a deployment scripts on the exit status, so it is
 /// pinned. 0 for a run that finished; 1 for every refusal and every error
 /// of a run -- a config that does not parse or is not there, an input that
-/// is not there, a chunk the bank refuses -- with `online: <message>` on
+/// is not there, a chunk the bank refuses -- with `polars-online: <message>` on
 /// stderr; and 2 for a command line clap refuses, a usage error.
 #[test]
 fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
@@ -699,7 +699,7 @@ fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
         let head: Vec<&std::ffi::OsStr> = head.iter().map(|s| s.as_os_str()).collect();
         let (code, _, err) = online_args(&head, &args);
         assert_eq!(code, Some(1), "{label}: {err}");
-        assert!(err.starts_with("online: "), "{label}: {err}");
+        assert!(err.starts_with("polars-online: "), "{label}: {err}");
     }
     let usage: [(&str, &[&str]); 4] = [
         ("no --config", &[]),
@@ -719,7 +719,7 @@ fn the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage() {
         };
         let (code, _, err) = online_args(&head, args);
         assert_eq!(code, Some(2), "{label}: {err}");
-        // clap's own voice, not the binary's `online: `.
+        // clap's own voice, not the binary's `polars-online: `.
         assert!(err.starts_with("error: "), "{label}: {err}");
     }
     std::fs::remove_dir_all(&dir).unwrap();
@@ -1029,7 +1029,7 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
         );
         let cfg = dir.join("edge.toml");
         std::fs::write(&cfg, toml).unwrap();
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_online"));
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_polars-online"));
         cmd.args(["--config", cfg.to_str().unwrap(), "--dry-run"]);
         cmd.env_remove("POLARS_ONLINE_WARN_UNSTABLE");
         if let Some(v) = var {
@@ -1040,9 +1040,17 @@ fn a_formula_target_is_labelled_unstable_under_the_variable() {
         assert!(out.status.success(), "{err}");
         err
     };
+    // The whole notice, word for word: its continuation lines once kept
+    // their indentation, six spaces inside a sentence (task 244, C-4).
     let warned = run(formula, Some("1"));
-    assert!(
-        warned.contains("formula target's written form") && warned.contains("unstable"),
+    assert_eq!(
+        warned.lines().collect::<Vec<_>>(),
+        [
+            "polars-online: warning: a formula target's written form -- its tree in the TOML \
+             file and in a saved state -- is considered unstable. It may be changed at \
+             any point without it being considered a breaking change (set \
+             POLARS_ONLINE_WARN_UNSTABLE=0 or unset it to silence this)."
+        ],
         "{warned}"
     );
     for (targets, var) in [

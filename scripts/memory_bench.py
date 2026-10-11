@@ -4,7 +4,7 @@ the bank, and ``docs/RUNNER.md``'s *Memory* cite.
 
     uv run python scripts/memory_bench.py generate .cache/memory
     uv run python scripts/memory_bench.py all .cache/memory
-    uv run python scripts/memory_bench.py all .cache/memory --online target/release/online
+    uv run python scripts/memory_bench.py all .cache/memory --online target/release/polars-online
 
 ``generate`` writes a seeded file of 3M rows, 20 features, a clock, a weight
 and 32 groups (0.5 GB of parquet), and the same rows four times over, the

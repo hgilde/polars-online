@@ -68,7 +68,7 @@ def online_cli() -> Path:
         and (msg := json.loads(line)).get("reason") == "compiler-artifact"
         and msg.get("executable")
         and "bin" in msg["target"]["kind"]
-        and msg["target"]["name"] == "online"
+        and msg["target"]["name"] == "polars-online"
     ]
     assert len(exes) == 1, f"expected one CLI artifact, got {exes}:\n{res.stdout}"
     return Path(exes[0])
@@ -125,7 +125,7 @@ def spec_toml(spec: dict) -> str:
 
 
 def run_online(exe, tmp_path, specs, *, args=(), check=True, **top):
-    """Run the `online` binary over `specs`, from a TOML config written here.
+    """Run the `polars-online` binary over `specs`, from a TOML config written here.
 
     `top` are the config's top-level keys (`input`, `output`, `save_state`,
     `load_state`, `closed_groups`, `chunk_size`, `predict`); paths are taken

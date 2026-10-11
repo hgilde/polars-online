@@ -17,7 +17,10 @@ from data import synthetic  # noqa: E402
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", type=int, default=20_000)
-    ap.add_argument("--out", type=Path, default=Path("example-input.parquet"))
+    # Beside examples/bank.toml, whose relative `input` is read from its own
+    # directory.
+    default = Path(__file__).resolve().parent.parent / "examples" / "example-input.parquet"
+    ap.add_argument("--out", type=Path, default=default)
     args = ap.parse_args()
 
     df, _ = synthetic(seed=0, n_groups=3, n_rows=args.rows, k=3, session_every=5_000)

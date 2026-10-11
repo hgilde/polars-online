@@ -3542,9 +3542,9 @@ impl Bank {
         clock_dtypes: &[Option<crate::stream::ClockDtype>],
         key_dtypes: &[[Option<KeyDtype>; 2]],
     ) -> PolarsResult<Vec<StructArray>> {
-        // Section timings to stderr when ONLINE_TIMING is set; costs one env
-        // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
-        let timing = std::env::var_os("ONLINE_TIMING").is_some();
+        // Section timings to stderr under POLARS_ONLINE_TIMING=1; costs two
+        // env reads per chunk. This is how docs/PERFORMANCE.md's numbers are made.
+        let timing = crate::timing::timing_on();
         let t0 = std::time::Instant::now();
         let n = chunk.height();
         self.refuse_if_broken()?;
@@ -3925,7 +3925,7 @@ impl Bank {
         if timing {
             let total = t0.elapsed();
             eprintln!(
-                "ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
+                "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
                  assemble={:.1}ms total={:.1}ms ({:.0} rows/s)",
                 t_extract.as_secs_f64() * 1e3,
                 t_group.as_secs_f64() * 1e3,

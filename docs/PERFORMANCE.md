@@ -24,7 +24,7 @@ each reads as of its date, with the names of its day.
 | [12. The chunk plan, revisited](#12-the-chunk-plan-revisited-2026-09-04) | you are choosing a chunk size and a thread count | [the plan](#the-plan-as-it-stood) · [the sections](#what-the-sections-said) · [the artifact](#the-benchmark-artifact) · [where it ended up](#where-it-ended-up) · [`chunk_rows`, swept](#chunk_rows-swept) · [the README's numbers](#the-readmes-numbers-regenerated) · [the row floor](#the-row-floor) · [what is left](#what-is-left-and-why-it-stays) |
 | **[Each way of running a bank](#each-way-of-running-a-bank)** | | |
 | [9. `predict`](#9-predict-2026-09-02) | you score without learning, and want the speed against `fit_predict` | |
-| [10. The runner](#10-the-runner-every-format-every-source-2026-09-02) | you run the `online` command line on files: its formats, its timing line, and what its custom parts are worth | [the pipeline](#the-pipeline) · [every format](#every-format) · [why py-polars reads](#why-py-polars-reads-for-the-python-path) · [the custom parts](#what-the-custom-parts-are-worth) · [not a polars node](#why-the-bank-is-not-a-polars-node) · [before and after](#before-and-after-the-one-thread-runner-against-the-pipeline) · [writers](#writers) |
+| [10. The runner](#10-the-runner-every-format-every-source-2026-09-02) | you run the `polars-online` command line on files: its formats, its timing line, and what its custom parts are worth | [the pipeline](#the-pipeline) · [every format](#every-format) · [why py-polars reads](#why-py-polars-reads-for-the-python-path) · [the custom parts](#what-the-custom-parts-are-worth) · [not a polars node](#why-the-bank-is-not-a-polars-node) · [before and after](#before-and-after-the-one-thread-runner-against-the-pipeline) · [writers](#writers) |
 | [11. Memory](#11-memory-which-surface-is-odata-2026-09-02) | memory is the question: which surface is O(data) and which O(state), with the numbers, and what Polars holds before the bank | [the plugin](#the-plugin-was-odata-nothing-else-is) · [the constant](#what-the-constant-is) · [the fix](#the-query-shaped-trap-and-the-fix) · [before the bank](#what-comes-before-the-bank) · [the window](#where-the-window-comes-from) · [what shrinks it](#what-shrinks-the-window) · [filter after the bank](#filter-after-the-bank) · [levers not taken](#two-levers-not-taken) · [Polars' own windows](#polars-own-windowed-operations-do-the-same-thing) · [how it was measured](#how-it-was-measured-and-why-not-rss) |
 | [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
 | **[Model by model](#model-by-model)** | | |
@@ -143,7 +143,7 @@ Besides the README's own words (bank, spec, chunk, state), these:
 | stream | one spec over one group's rows, in order, which is the bank's unit of parallel work (§15); the README's *Parallelism* calls it a task. A single stream is one spec over one group, or with no `group` at all |
 | instance | one model inside a spec's grid, such as one half-life of a five-half-life grid. A stream steps its instances over the same rows (§2, P2) |
 | slot | one value an instance writes for every row: a target's prediction, or one of `ew_cov`'s 230 statistics (§13) |
-| section | one part of a chunk's work, as `ONLINE_TIMING=1` times it: `extract` (the columns), `group` (row indices per key), `process` (the models) and `assemble` (the output columns), in the order it prints them (§12) |
+| section | one part of a chunk's work, as `POLARS_ONLINE_TIMING=1` times it: `extract` (the columns), `group` (row indices per key), `process` (the models) and `assemble` (the output columns), in the order it prints them (§12) |
 | run | the rows a stream feeds through one set of output buffers, `ChunkOut::run_rows` of them (§13) |
 | stride, gather | a stride reads one group's values from every n-th row of an interleaved column. A gather copies them into one contiguous run first (§12, P9) |
 | the Gram | the `k × k` co-moment matrix a regression keeps (§14, §18) |
@@ -189,7 +189,7 @@ message names the new one.
 | `po.corr.shift` | `po.corr.absorption_shift` | 2026-10-07 |
 | `po.gram.lasso_path`'s `lambdas` | `penalties` | 2026-10-07 |
 | `corrchange`'s `horizon` and `window`; `rcov`'s `window` | `span_rows`; `preavg_rows` | 0.3.0 |
-| `po.run`, the Python runner | removed: the `online` command line, or `ModelBank.fit(lf)` | 0.7.0 |
+| `po.run`, the Python runner | removed: the `polars-online` command line, or `ModelBank.fit(lf)` | 0.7.0 |
 | the expression plugin: `pl.col(...).online.<model>`, `po.online` and `InMemoryExpressionWarning` | removed, because a stateful expression is handed its whole column: `lf.online.fit_predict` | 0.7.0 |
 | `po.window.ewm` and `po.window.lookahead_rewm` (`lookahead_rewm` in §32), with `split=` | removed: the operators of §33, such as `po.ewm_mean` and `po.rewm_sum`, run by `with_windows` or as a spec's target | 2026-10-03 |
 | a spec's `type = "ew_ridge"` | `type = "ewridge"`, the builder's spelling | 2026-10-07 |
@@ -222,20 +222,24 @@ cargo run --release -p online-core --example rls_bench
 cargo run --release -p online-core --example gram_block_bench
 
 # The bank through Python, with the per-chunk section timings on stderr
-ONLINE_TIMING=1 uv run python scripts/benchmark.py
+POLARS_ONLINE_TIMING=1 uv run python scripts/benchmark.py
 ```
 
 The sections name the rest where they use them: `scripts/scaling_bench.py`
 (§8), `marg_bench` (§17, §22–§24), `scripts/sklearn_comparison.py` (§19), and
 `sgd_bench` and `sgd_signature` (§20).
 
-**For the time inside a run, set `ONLINE_TIMING=1`, which prints two kinds
+**For the time inside a run, set `POLARS_ONLINE_TIMING=1`, which prints two kinds
 of line to stderr:**
 
 | printed by | once per | fields |
 |---|---|---|
 | the bank | chunk | `extract`, `group`, `process` and `assemble`, the sections, in wall milliseconds; and `total`, the whole call, of which the four sections are consecutive parts (`crates/online-polars/src/bank.rs`) |
 | the command line's runner | run | `read_wait` and `write_wait`, the bank thread's waits on the reader and the writer; `bank`, its time in the bank; `writer_busy`, the writer's own time; and `total`, the whole run (`crates/online-polars/src/runner.rs`) |
+
+**The lines are written for a person, so their words and fields are not
+promised: a minor release may change them.** The variable turns them on at
+`1` and at no other value, as `POLARS_ONLINE_WARN_UNSTABLE` does.
 
 A profile says where inside `process` the time goes, and the wall clock
 says how much: §13 has the recipe. [CONTRIBUTING.md](../CONTRIBUTING.md)
@@ -297,7 +301,7 @@ The numbers before any of §3's changes, measured on 2026-08-30.
 | k=20, solve every 25 rows | 3,941,742 |
 
 **The bank on the same arithmetic:** 200k rows, ewridge, a clock column,
-and the `ONLINE_TIMING` sections in ms.
+and the `POLARS_ONLINE_TIMING` sections in ms.
 
 | case | extract | group | process | assemble | total | rows/s |
 |---|---|---|---|---|---|---|
@@ -1184,7 +1188,7 @@ inlined copy of the same loop.
 
 *Read since 2026-09-17:* `po.run`, the Python entry to this
 runner, was removed; the numbers below stand as the record of what they
-measured. The pipeline they measured runs today as the `online` CLI (the
+measured. The pipeline they measured runs today as the `polars-online` CLI (the
 Rust reader, `Input::Lazy`) and, in Python, as `ModelBank.fit(lf)` /
 `fit_predict_batches(lf)`. Those have the same `collect_batches` read and
 the same bank, without the writer thread. `Input::Batches` remains for a
@@ -1214,7 +1218,7 @@ through `po.run`:
 | csv | 0.90 s | 2.15 s |
 | ndjson | 1.14 s | 2.33 s |
 
-`ONLINE_TIMING=1` prints one line per run beside the per-chunk ones. In
+`POLARS_ONLINE_TIMING=1` prints one line per run beside the per-chunk ones. In
 it, `read_wait` and `write_wait` are the bank thread's slack, and
 `writer_busy` is the writer's own time; *How the numbers are made* lists
 every field. The line says where each case sits.
@@ -1258,7 +1262,7 @@ a filter or a UDF, a `DataFrame`, an iterable of frames. The GIL is
 released for the run, and reacquired only to take each batch.
 
 The CLI still scans in Rust, so on a stable toolchain **a large CSV is
-faster through `po.run` than through `online`**. On parquet the CLI is ~15%
+faster through `po.run` than through `polars-online`**. On parquet the CLI is ~15%
 behind too: 0.83 s / 2.55 s, against `po.run`'s 0.72 s / 2.12 s. Its timing
 line says why it is not the reader: `read_wait=0.06s bank=2.42s`, against
 `bank=2.07s` in Python, for the same code on the same chunks. Rechunking
@@ -1311,7 +1315,7 @@ calling thread, re-planning the scan thirty times and overlapping nothing.
 Same machine, same file, same spec, best of 3, the earlier wheel and binary
 built from `62d74a1` in a worktree:
 
-| parquet → parquet | one-thread `po.run` | pipeline `po.run` | one-thread `online` | pipeline `online` |
+| parquet → parquet | one-thread `po.run` | pipeline `po.run` | one-thread `polars-online` | pipeline `polars-online` |
 |---|---:|---:|---:|---:|
 | groups interleaved | 1.93 s | **0.72 s** | 2.14 s | **0.83 s** |
 | group-sorted | 3.30 s | **2.12 s** | 3.84 s | **2.55 s** |
@@ -1366,12 +1370,12 @@ only the data grows. The spec is `ewridge` k=20 with clock, weights and
 |---|---:|---:|---:|
 | plugin, `sink_parquet(engine="streaming")` (`collect` is the same) | 1.98 GB | 3.73 GB | 7.35 GB |
 | the same query without the plugin (`pl.col("y0") * 2`) | 0.81 GB | — | 2.08 GB |
-| `online` CLI | 0.73 GB | 0.72 GB | 0.75 GB |
+| `polars-online` CLI | 0.73 GB | 0.72 GB | 0.75 GB |
 | `po.run` | 0.95 GB | 1.29 GB | 1.41 GB |
 | `ModelBank` loop over `collect_batches` | 0.80 GB | 1.09 GB | 1.24 GB |
 | `po.run`, jemalloc told to release freed pages at once | — | 0.87 GB | 0.86 GB |
 | `ModelBank` loop, the same | — | 0.73 GB | 0.74 GB |
-| `online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
+| `polars-online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
 | `po.run` / bank loop, prefetch 1 and pages released | — | — | 0.46 GB / 0.31 GB |
 | **`lf.online.fit_predict`, `sink_parquet(engine="streaming")`** | 0.90 GB | 1.13 GB | 1.35 GB |
 | the same, pages released / plus prefetch 1 | — | — | 0.78 GB / 0.37 GB |
@@ -2000,7 +2004,7 @@ in the order they were found.
 in `assemble`, and the list above nearly started at the wrong end. `sample`
 counts threads: `assemble` runs on all fourteen, and `process` on one for a
 single group, so a 14× weighting made a 20 ms phase look like 280.
-`ONLINE_TIMING=1` prints `extract / group / process / assemble / total` per
+`POLARS_ONLINE_TIMING=1` prints `extract / group / process / assemble / total` per
 chunk in wall milliseconds, and is the number to trust. The profile is for
 *where in `process`*, at function granularity. Per-line attribution inside
 an inlined recursion is not reliable: the `sqrt` above showed up on the
@@ -2460,7 +2464,7 @@ workload's settings (`half_life=inf`, `solve_every` past the end,
 
 The single thread's 28.9 ps is within the 28 to 38 ps that one
 accumulator measured on 0.13.0, at a load of 8 to 25, when the option was
-asked for. `ONLINE_TIMING=1`
+asked for. `POLARS_ONLINE_TIMING=1`
 puts most of the difference in the models' section: about 5 to 8 µs a row
 beyond the product, the model's own `O(k)` work on each row, which no
 thread count shortens. Reading the columns is another 1.7 µs a row.
@@ -2951,7 +2955,7 @@ row was summed.
 
 #### Where the 14 ns went
 
-Four places, measured one at a time on an M4 Pro, with `ONLINE_TIMING=1`
+Four places, measured one at a time on an M4 Pro, with `POLARS_ONLINE_TIMING=1`
 (per-phase milliseconds on stderr) and
 `crates/online-core/examples/sgd_bench.rs` (the core step alone):
 
@@ -3433,7 +3437,7 @@ A caller running `marginal` at width measured a cost of 14–17 ns per feature p
 did not grow with the number of targets. The model alone has almost none
 of it (§23's intercept), so it had to be in the bank's path. One thread,
 10,000 features, 5,000 rows, `lam = 1` and a unit weight, best of three
-through `ModelBank.fit_predict`, with `ONLINE_TIMING=1` for the sections:
+through `ModelBank.fit_predict`, with `POLARS_ONLINE_TIMING=1` for the sections:
 
 | stage, 1 target, moments only | before |
 |---|---:|
@@ -3703,7 +3707,7 @@ now steps that way.
 #### The model's slope and the stream's intercept
 
 `marg_bench` steps the model alone. `ModelBank.fit_predict`, with
-`POLARS_ONLINE_MAX_THREADS=1` and `ONLINE_TIMING=1`, runs the whole call.
+`POLARS_ONLINE_MAX_THREADS=1` and `POLARS_ONLINE_TIMING=1`, runs the whole call.
 Its `process` section is the transpose into rows, the data summary and the
 model. At `p = 10,000`, in nanoseconds per feature per row, fitted over
 `T` = 3, 10 and 30 at 1,000 rows a call:

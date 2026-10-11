@@ -5,7 +5,7 @@ Online model fitting for `Polars <https://pola.rs>`_: linear models,
 streaming moments, clustering and regime detection, for data too large to
 hold in memory at once. The Rust core runs three ways: inside a Polars
 query (``lf.online.fit_predict(specs)``), fed chunks by a ``ModelBank``,
-and from the ``online`` command line. Every row is predicted before it is
+and from the ``polars-online`` command line. Every row is predicted before it is
 learned from, and the numbers are the same whichever way the bank runs.
 
 This is the API reference, built from the docstrings. The `README

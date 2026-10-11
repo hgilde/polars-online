@@ -329,7 +329,7 @@ measurement:
 | the ceiling, `<3` | the Python suite on `2.0.0rc1`, and the blocking leg of `release.yml` on the newest version in range, run in every dispatched release before any tag exists | [Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) |
 | what Polars itself promises | nothing for `ModelBank`, the IO plugin or the serialized form of an expression; the Arrow PyCapsule output is Arrow's contract | [Which interfaces carry a promise](#which-interfaces-carry-a-promise) |
 | the Rust `polars` | 0.55.2, pinned by `Cargo.toml` and linked into the wheel, so it never meets the user's | [the matrix](#statically-linking-polars-will-break-users-on-other-versions) |
-| the `online` CLI | the Rust `polars` 0.55.2 alone: it never touches py-polars | [The other failure](#the-other-failure-is-the-canarys-own-hygiene) |
+| the `polars-online` CLI | the Rust `polars` 0.55.2 alone: it never touches py-polars | [The other failure](#the-other-failure-is-the-canarys-own-hygiene) |
 | NumPy, the optional extra | `numpy>=1.26`: the newest NumPy blocks a release | [NumPy, the one optional dependency](#numpy-the-one-optional-dependency) |
 
 ### The floor and the ceiling
@@ -786,7 +786,7 @@ assertion to hold on both.
 
 **That is a narrowing of a documented hazard, not a regression.** The
 dangerous case is the state being written when the output was not, and 2.0
-does that less often. The `online` CLI remains the transactional call
+does that less often. The `polars-online` CLI remains the transactional call
 either way.
 
 #### The other failure is the canary's own hygiene
@@ -821,7 +821,7 @@ The 5 deselected are the 3 `pins` and 2 `soak`. `pins` asserts properties
 recorded in a generated document. So it cannot pass on an unpinned run, by
 construction, and that is the canary's design rather than a gap.
 
-The `online` CLI is unaffected either way: it links the Rust `polars`
+The `polars-online` CLI is unaffected either way: it links the Rust `polars`
 0.55.2 and never touches py-polars, so a py-polars major cannot reach it.
 
 #### What 2.0 adds that this library could use
@@ -971,9 +971,9 @@ of its lines carry no promise:
 | output field names | `[output field grammar]` |
 | the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |
 | the TOML config keys: the run config's, a spec's, and each model type's | `[toml keys]`, read from serde's refusal of a key a table has not got |
-| the CLI's flags, and whether each takes a value | `[cli flags]`, from `online --help` |
+| the CLI's flags, and whether each takes a value | `[cli flags]`, from `polars-online --help` |
 | the CLI's exit status: 0, 1 for a refusal or a run error, 2 for a usage error | `docs/RUNNER.md`'s *Exit status* and a CLI test, not the snapshot |
-| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
+| the environment variables, `POLARS_ONLINE_MAX_THREADS` and `POLARS_ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
 
 **From 1.0, a changed default or meaning needs a major release, and a fix
 to numbers that were wrong a minor one**, as decided on 2026-10-06. A number is wrong when it disagrees with the model's stated

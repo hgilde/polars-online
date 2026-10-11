@@ -8,7 +8,7 @@ One Rust core, run three ways, with the same numbers from each:
 2. :class:`ModelBank`, a bank fed one chunk at a time, with memory O(state)
    rather than O(data); hand it a ``LazyFrame`` and it does the chunking
    (:meth:`ModelBank.fit_predict_batches`, :meth:`ModelBank.fit`);
-3. the ``online`` command line: parquet, ipc, csv or ndjson in and out, with
+3. the ``polars-online`` command line: parquet, ipc, csv or ndjson in and out, with
    the state saved and resumed between runs (`docs/RUNNER.md
    <https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md>`_).
 

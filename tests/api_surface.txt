@@ -2139,8 +2139,8 @@
     seqtest: a, a_suffix, b, b_suffix
     sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, l2, learning_rate, loss, power, quantile, schedule, standardize, strict_binary
 
-[cli flags]  # `online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
-  Usage: online [OPTIONS] --config <CONFIG>
+[cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
+  Usage: polars-online [OPTIONS] --config <CONFIG>
   --config <CONFIG>
   --input <INPUT>
   --output <OUTPUT>
@@ -2159,6 +2159,7 @@
   -V, --version
 
 [env vars]  # read at run time by the shipped code (crates/*/src, the package): a variable added or renamed is a diff here
-  ONLINE_TIMING
+  ONLINE_TIMING  (renamed POLARS_ONLINE_TIMING; read only to say so)
   POLARS_ONLINE_MAX_THREADS
+  POLARS_ONLINE_TIMING
   POLARS_ONLINE_WARN_UNSTABLE

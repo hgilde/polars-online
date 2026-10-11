@@ -121,7 +121,7 @@ each model's `predict` to its `step`, row by row.
 `crates/online-polars/tests/runner.rs` holds every input format (parquet,
 ipc, csv, ndjson), every output format, `Input::Batches` ≡ a plan, and the
 failure paths to the numbers `ModelBank` gives on the same rows. CSV's
-flattened columns and JSON-text `coef` decode bit-exact. The `online` command
+flattened columns and JSON-text `coef` decode bit-exact. The `polars-online` command
 line is held to the same numbers through `run_online` in `tests/conftest.py`
 (`test_closed_groups`, `test_hardening`, `test_predict`, `test_no_output`,
 `test_label_delay`), and every `sh` block of `docs/RUNNER.md` runs. The
@@ -1423,7 +1423,7 @@ has it.
 | T-W3b | ~~P1~~ **found a real bug, fixed** | TOML path escaping in the CLI tests | executed on Windows CI |
 | T-W3b (original) | superseded by T-W3 (done 2026-09-24); UNC share paths stay untested | **Path handling through the CLI**, as first written: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | |
 | T-W4 | ~~P2~~ **mitigated + tested locally** | **CRLF line endings in the TOML config** | |
-| T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `online.exe` vs `online` | executed on Windows CI |
+| T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `polars-online.exe` vs `polars-online` | executed on Windows CI |
 | T-W6 | ~~P2~~ **pinned locally** | **Float formatting in output field names** | |
 | T-W7 | ~~P2~~ **done** | **Numeric reproducibility across OS/CPU** | compared at 1e-12 on Windows |
 | T-W8 | P3, **partly done**: file locking (the atomic rewrite in `atomic.rs`) and long paths (`\\?\`) are tested; case-insensitivity is not | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | executed on Windows CI |
@@ -1500,14 +1500,14 @@ parse as checked out.
 
 **T-W5.** `tests/test_release_packaging.py` stages what `download-artifact`
 leaves behind: one directory per matrix job, two of them holding a file
-called plain `online`. It then runs the workflow's own bash against it. The
+called plain `polars-online`. It then runs the workflow's own bash against it. The
 shell is *extracted from `release.yml`* rather than copied, so editing the
 workflow changes what the test runs. That was verified by breaking the
 workflow and watching three tests fail. Pinned: exactly the Windows artifact
 keeps `.exe`, the two unix binaries do not collapse onto one name, and
 contents are copied as well as renamed. The PyPI job's `dist/` takes the
 packages, the wheels and the sdist, and no CLI binary. What still needed a
-runner, as first written, is whether the Windows job produces `online.exe`
+runner, as first written, is whether the Windows job produces `polars-online.exe`
 in the first place.
 
 **T-W6.** The exact field-name list for a grid spec is asserted, so a
