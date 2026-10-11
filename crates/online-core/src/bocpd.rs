@@ -3091,6 +3091,46 @@ mod tests {
         assert_eq!(m.runs[..cut - 1], before.runs[..cut - 1]);
     }
 
+    /// Among tail runs of equal mass the fold keeps the oldest, the last of
+    /// the tail, so a flat tail folds as it did when the oldest was taken by
+    /// rule: the scan from the end moves only on a strictly heavier run. A
+    /// strictly heavier younger run is kept wherever it sits.
+    #[test]
+    fn the_fold_keeps_the_oldest_of_equally_heavy_runs() {
+        let mut m = Bocpd::new(cfg(1)).unwrap();
+        let mut n = Normals::new(37);
+        for _ in 0..30 {
+            m.step(&[n.normal()], &[], 1.0, 1.0);
+        }
+        let cut = 10;
+        let top = m.logjoint[cut - 1..]
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        for l in &mut m.logjoint[cut - 1..] {
+            *l = top;
+        }
+        let before = m.clone();
+        m.cfg.max_run = cut;
+        m.prune();
+        let mut want = before.runs[30].clone();
+        want.shrink_to((cut - 1) as f64);
+        assert_eq!(m.runs[cut - 1], want, "the oldest of the equals");
+        // The tail is runs `cut - 1 ..= 30`, each at `top`.
+        let tail = (32 - cut) as f64;
+        assert!((m.logjoint[cut - 1] - (top + tail.ln())).abs() < 1e-12);
+        // One run in the middle of the tail strictly heavier than the rest:
+        // it is the one kept, scaled from its own length.
+        let mut m = before.clone();
+        m.logjoint[20] = top + 1.0;
+        m.cfg.max_run = cut;
+        m.prune();
+        let mut want = before.runs[20].clone();
+        want.shrink_to((cut - 1) as f64);
+        assert_eq!(m.runs[cut - 1], want, "the strictly heavier run");
+        assert_eq!(m.runs.len(), cut);
+    }
+
     /// A state's shape is its emission's: a `gaussian` state of three
     /// columns, whose runs hold `d²` scatter entries each, restores to
     /// itself; one with a run whose scatter is short is refused, its means
