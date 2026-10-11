@@ -9861,22 +9861,24 @@ tick, and that the series holding it up has a count near 1.
       and `..._stops_with_room_before_its_job_is_killed` (both fail on the
       old workflow). The next push lists 418 mutants at `6f87839` (about 14
       shards), before task 244 and review 7's fixes add theirs.
-- [ ] 247. **A rehearsal for 1.0** -- the user, 2026-10-11: "After the
-      push run a rehearsal for 1.0", then "Bump main" (to the coordinator's
-      branch-or-main question). `release.yml` builds the version the commit
-      says and checks it agrees in six places, has a CHANGELOG section and a
-      README pin on its minor. So `main` itself is bumped to 1.0.0, after
-      task 245 merges and before the full gate, so one gate covers the bump
-      and the pushed `main` is 1.0.0: the six places, `docs/VALIDATION.md`
-      and both locks regenerated, the bank fixture regenerated for its
-      package version, the README pin `~=1.0.0`, and `[Unreleased]`'s
-      entries moved under `## [1.0.0] — unreleased` (the date on release
-      day). After the push and a green CI, `release.yml` is dispatched on
-      `main` with `publish` off -- the first build of the renamed
-      `polars-online` binary there -- and RELEASE-READINESS steps 1-3 run
-      locally (the bit-for-bit comparison with 0.13.0, the benchmark
-      against 0.13.0's wheel, the released states), since the workflow does
-      not run them. Findings fixed on `main`.
+- [ ] 247. **Release 1.0** -- the user, 2026-10-11: "After the push run a
+      rehearsal for 1.0", then "Bump main", then "No need to run the
+      rehearsal just release 1.0". After task 245 merges, RELEASE-READINESS's
+      eleven steps: (1) `compare_release.py` against 0.13.0, every
+      difference declared in the CHANGELOG; (2) `benchmark.py` against
+      0.13.0's PyPI wheel on a quiet machine, the load logged, a slowdown
+      fixed or declared; (3) `RELEASES` in `test_released_state.py` (and §18
+      D8's release-day filter); (4) 1.0.0 in the six places, VALIDATION.md,
+      both locks and the bank fixture regenerated; (5) `[Unreleased]`
+      promoted to `## [1.0.0] — <date>`; (6) the README pin `~=1.0.0`;
+      `release_version.py --publish` clean; (7) the full gate on that sha;
+      (8) push `main`, CI green on all three OSes; (9) dispatch
+      `release.yml` on `main` with `publish` on -- no rehearsal first, as
+      the steps say (it is the first build of the renamed `polars-online`
+      binary in `release.yml`; a failure before the approval leaves nothing
+      to undo); (10) the approval of the PyPI upload is the user's click,
+      not the coordinator's; (11) install from PyPI into a clean venv and
+      check the three versions and a fit.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
