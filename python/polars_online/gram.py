@@ -1262,8 +1262,9 @@ def lars_path(
     direction: its pivot in the factor of ``R_AA`` is below ``1e-12`` of
     its variance. It takes no step and makes no knot, so each knot but the
     last at ``l = 0`` is one column or more entering or leaving. Measured
-    on an M4 Pro, a path takes 9 microseconds whole at 15 columns, and
-    0.2 ms for 40 knots at 200 columns or 3 ms at 2,000.
+    on an M4 Pro, the path's own arithmetic takes 9 microseconds whole at 15
+    columns, and the call from Python 0.04 ms. At 200 columns 40 knots take
+    0.2 ms, and at 2,000 columns 3 ms.
 
     .. rubric:: Parameters
 
