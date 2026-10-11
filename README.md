@@ -1553,14 +1553,20 @@ run:
 
 ### Making features and targets from windows
 
-A window operator of [`po.ops`](https://hgilde.github.io/polars-online/ops.html)
-returns a Polars expression whose value on each row is computed over the
-rows near it on the clock. A window that looks back from the row makes a
-feature, and one that looks ahead makes a target. `po.ewm_mean` and its
-mirror `po.rewm_mean` are time-weighted means, as Polars' `ewm_mean_by`
-computes one, and the sums and rates divide into weighted means such as a
-VWAP (volume-weighted average price). Each operator keeps running sums, so
-it does the same work on a row however long its window.
+A window operator of `po.ops` returns a Polars expression whose value on
+each row is computed over the rows near it on the clock. A window that
+looks back from the row makes a feature, and one that looks ahead makes a
+target. `po.ewm_mean` and its mirror `po.rewm_mean` are time-weighted
+means, as Polars' `ewm_mean_by` computes one, and the sums and rates divide
+into weighted means such as a VWAP (volume-weighted average price). Each
+operator keeps running sums, so it does the same work on a row however long
+its window.
+
+[docs/WINDOWS.md](docs/WINDOWS.md) shows each part of this with a recipe.
+Its recipes hold the nine operators to Polars' own, and show which ends of
+a window are in and what a gap does to a window. Others fit a window
+target beside its column form, make features in units of their spread,
+and resume a window run.
 
 **To add windows as columns, call `po.stream.with_windows` before the
 bank.** It takes formulas as `with_columns` does, computes them over the
@@ -1598,12 +1604,6 @@ then computes the window itself, scores each row where it sits, and learns
 from the row once its window has closed. A target's value is a minute in
 the future when its row arrives, so a model that learned it at once would
 score that minute's rows in sample.
-
-[docs/WINDOWS.md](docs/WINDOWS.md) shows each part of this with a recipe.
-Its recipes hold the nine operators to Polars' own, and show which ends of
-a window are in and what a gap does to a window. Others fit a window
-target beside its column form, make features in units of their spread,
-and resume a window run.
 
 ### Series that tick at their own times
 
@@ -1943,8 +1943,12 @@ dropped 1; left: ['b1', 'b2', 'b3']
 
 For a scheduled job, or a deployment with no Python, run the same bank from
 a file to a file with the standalone `online` command line, a binary on
-each GitHub release. It reads the input, the output and the specs from a
-TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
+each GitHub release. [docs/RUNNER.md](docs/RUNNER.md) has every key and
+flag, with a recipe for each kind of run: a check before the run,
+resuming, scoring, a run that writes only its state, and the groups that
+close.
+
+`online` reads the input, the output and the specs from a TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
 its `[specs.model]` table names the model and takes the model's own. This
 `bank.toml` is the first recipe's spec of [As a
 query](#as-a-query-lfonlinefit_predict):
@@ -1986,9 +1990,6 @@ The first line is the progress, which `--quiet` turns off. After `wrote`,
 a run prints a line for each spec that ended with groups not ready, and
 nothing for the others. Such a line reads
 `spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
-[docs/RUNNER.md](docs/RUNNER.md) has every key and flag, with a recipe for
-each kind of run: a check before the run, resuming, scoring, a run that
-writes only its state, and the groups that close.
 
 ### Output as Arrow
 
@@ -2038,7 +2039,10 @@ Here is how two consumers take a struct, as measured:
 
 Save a bank's state (everything it has learned, for every spec and group)
 to one file, and load it back to keep learning or to score new rows
-without learning. Or export it as JSON. The three uses:
+without learning. Or export it as JSON.
+[docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) says what each step of
+the workflow guarantees and what a saved bank carries, each with a
+recipe. The three uses:
 
 | use | the call | what holds |
 |---|---|---|
@@ -2082,9 +2086,6 @@ build saved loads in every later 1.x ([This package's own
 versioning](#this-packages-own-versioning)). `with_windows` keeps a state
 of its own ([Saving and resuming a window
 run](docs/WINDOWS.md#saving-and-resuming-a-window-run)).
-[docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) says what each step of
-the workflow guarantees and what a saved bank carries, each with a
-recipe.
 
 ### Save and load
 
@@ -4131,6 +4132,8 @@ a checkout, and how to make a change.
 | the API reference, built from the docstrings and published from every green push to `main` | <https://hgilde.github.io/polars-online/> |
 | what each release changed | [CHANGELOG.md](CHANGELOG.md) |
 | how to cut a release, and which Polars versions are promised | [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) |
+| how to add a model: every layer it touches, and the test that catches each one skipped | [docs/EXTENDING.md](docs/EXTENDING.md) |
+| the rules this documentation is written to | [docs/WRITING.md](docs/WRITING.md) |
 
 ### License
 

@@ -10,8 +10,11 @@ made a table, a paragraph or code.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
+
+from doc_recipes import shown_outputs
 
 TIER = "essential"
 
@@ -169,3 +172,86 @@ def test_links_land_on_headings_in_this_file_and_others(tmp_path):
     ]
     assert counts["in-page links"] == 5
     assert counts["anchors in other files"] == 4
+
+
+def _readme_sections() -> list[dict]:
+    """The README's headings in order, each with its level, its anchor, the
+    links of its own text (before its first subheading, code apart), and the
+    fenced blocks of its whole section, subsections included, as (info,
+    line) pairs. Read as GitHub reads the file, so a link inside a code
+    block or a code span is no link."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    tokens = doc_structure.PARSER.parse(text)
+    sections: list[dict] = []
+    taken: set[str] = set()
+    for i, tok in enumerate(tokens):
+        if tok.type == "heading_open":
+            title = doc_structure.plain(tokens[i + 1])
+            anchor = doc_structure.slug(title)
+            assert anchor not in taken, f"the README repeats the heading {title!r}"
+            taken.add(anchor)
+            sections.append({"level": int(tok.tag[1]), "anchor": anchor, "links": [], "own": []})
+        elif sections and tok.type == "inline" and tokens[i - 1].type != "heading_open":
+            for child in tok.children or []:
+                if child.type == "link_open":
+                    sections[-1]["links"].append(child.attrs["href"])
+        elif sections and tok.type == "fence" and tok.map:
+            sections[-1]["own"].append(tok.map[0] + 1)
+    # A section's blocks are its own and every subsection's.
+    for k, sec in enumerate(sections):
+        sec["blocks"] = list(sec["own"])
+        for sub in sections[k + 1 :]:
+            if sub["level"] <= sec["level"]:
+                break
+            sec["blocks"] += sub["own"]
+    return sections
+
+
+def _guides(group: str) -> list[str]:
+    """The guides `docs/README.md` lists under one bold group of its table."""
+    index = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
+    rows = index.split("\n## Guides\n", 1)[1].split("\n## ", 1)[0]
+    part = rows.split(f"| **{group}** | |", 1)[1].split("| **", 1)[0]
+    return re.findall(r"^\| \[[^\]]+\]\(([^)#]+)\)", part, re.M)
+
+
+def test_every_guide_has_a_readme_section():
+    """A casual reader finds a feature by scanning the README, so every
+    guide to using the library has a README section of its own (the user,
+    2026-10-10: "features with their own doc pages have a section in the
+    main readme so a casual user can find"). For each guide under *Using the
+    library* in `docs/README.md`, but VALIDATION, which is generated and
+    only says where a default came from, some README heading at level 2 or
+    3 links the guide as the first link of its own text, that heading is in
+    the contents table, and its section shows the capability with a recipe:
+    a python block, or for the command line a shell block, followed by a
+    ```text block of what it prints, which the README's recipe tests hold.
+    Each guide for changing the library or writing its docs is linked from
+    the README at least once."""
+    readme = REPO / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    contents = text.split("\n## ", 1)[0]
+    recipes = {line for kind in ("python", "sh") for line, _, _ in shown_outputs(readme, kind)}
+    sections = _readme_sections()
+    using = [g for g in _guides("Using the library") if g != "VALIDATION.md"]
+    assert len(using) >= 11, using
+    problems = []
+    for guide in using:
+        owners = [
+            s
+            for s in sections
+            if s["level"] in (2, 3) and s["links"] and s["links"][0] == f"docs/{guide}"
+        ]
+        listed = [s for s in owners if f"](#{s['anchor']})" in contents]
+        shown = [s for s in listed if recipes & set(s["blocks"])]
+        if not owners:
+            problems.append(f"{guide}: no README section links it first")
+        elif not listed:
+            problems.append(f"{guide}: {[s['anchor'] for s in owners]} not in the contents table")
+        elif not shown:
+            problems.append(f"{guide}: {[s['anchor'] for s in listed]} hold no recipe")
+    for group in ("Changing the library", "Writing the documentation"):
+        for guide in _guides(group):
+            if f"](docs/{guide}" not in text:
+                problems.append(f"{guide}: the README never links it")
+    assert not problems, "\n".join(problems)
