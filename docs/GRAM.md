@@ -567,7 +567,13 @@ their weekly means gives the slopes that the raw rows give with a constant
 column for each week (Frisch and Waugh 1933, Lovell 1963). That is the
 within, or fixed-effects, estimator (Wooldridge 2010, chapter 10). It asks
 only how the columns and the target move together inside each week, as
-each week's own fit does, and the weekly levels drop out of it.
+each week's own fit does, and the weekly levels drop out of it. Under
+`target_gaps="pairwise"`, a target missing on some rows pools its
+cross-moments over the rows it is present on, and the co-moments over
+every row of the week
+([Weekly blocks from one pass](#weekly-blocks-from-one-pass)). So its
+slopes differ slightly from the fixed-effects regression on its rows
+alone, and a target present on every row gets that regression exactly.
 
 **So the fit has no intercept of its own, and loses a degree of freedom
 for each week.** The pooled Gram's `means` are 0, beside the intercept's
