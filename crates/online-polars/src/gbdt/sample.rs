@@ -89,7 +89,8 @@ fn split(x: f64) -> (u128, i32) {
     if exp == 0 {
         (frac, -1074)
     } else {
-        (frac | (1u128 << 52), exp - 1075)
+        // `+`, not `|`: the bit is clear, and `+` has no equivalent mutant.
+        (frac + (1u128 << 52), exp - 1075)
     }
 }
 
@@ -167,7 +168,7 @@ pub struct Sampler {
 }
 
 /// SplitMix64 (Steele, Lea & Flood 2014) of row `i` under `seed`.
-fn hash(i: u64, seed: u64) -> u64 {
+pub(crate) fn hash(i: u64, seed: u64) -> u64 {
     let mut z = (i ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03)).wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -196,6 +197,12 @@ impl Sampler {
     /// Rows offered so far.
     pub fn rows_seen(&self) -> u64 {
         self.seen
+    }
+
+    /// The weights of the kept rows, by slot (empty without weights).
+    #[cfg(test)]
+    pub(crate) fn kept_weights(&self) -> &[f64] {
+        &self.weights[..self.filled.min(self.weights.len())]
     }
 
     /// Rows kept so far.
@@ -279,7 +286,7 @@ impl Sampler {
     /// weight kept (module docs); `None` when every kept row stands for the
     /// same positive weight, as without weights, whose quantiles are then
     /// the unweighted ones.
-    fn stands_for(&self) -> Option<Vec<f64>> {
+    pub(crate) fn stands_for(&self) -> Option<Vec<f64>> {
         if !self.weighted {
             return None;
         }
@@ -414,10 +421,14 @@ fn weighted_values(vals: &[f32], est: &[f64], max_bin: usize) -> Vec<f32> {
     }
     let total: f64 = s.iter().map(|p| p.1).sum();
     let mut out = vec![s[0].0];
+    // The running sum ends at `total`, summed in the same order, and every
+    // target is below it: `j / max_bin <= 1 - 1 / max_bin` is far more than
+    // a rounding from 1, and `total` is at least 1, the largest weight over
+    // itself. So the loop stops at a row.
     let (mut i, mut acc) = (0, s[0].1);
     for j in 1..max_bin {
         let target = total * j as f64 / max_bin as f64;
-        while acc <= target && i + 1 < s.len() {
+        while acc <= target {
             i += 1;
             acc += s[i].1;
         }
@@ -474,9 +485,20 @@ mod tests {
         assert_eq!(prio(0.0, 0).cmp(&prio(f64::MIN_POSITIVE, u64::MAX)), Less);
         assert_eq!(prio(5e-324, u64::MAX).cmp(&prio(0.0, 0)), Greater);
         assert_eq!(prio(0.0, 1).cmp(&prio(-0.0, 7)), Equal);
+        assert!(prio(3.0, 1) == prio(1.0, 0) && prio(3.0, 1) != prio(1.0, 1));
+        // As a float: w / u over the scale, u = (2h + 1) / 2^65.
+        let two65 = 36_893_488_147_419_103_232.0;
+        assert_eq!(prio(1.0, 0).value(1.0), two65);
+        assert_eq!(prio(3.0, 1).value(1.0), two65);
+        assert_eq!(prio(6.0, 1).value(2.0), two65);
+        assert_eq!(prio(5.0, 2).value(1.0), two65);
         // Across the whole range, against the exact rational order.
+        // Subnormal and the smallest normal too: 2^-1074 at a large hash
+        // ratio outranks 2^-1022 at a small one.
         let ws = [
             5e-324,
+            1e-310,
+            f64::MIN_POSITIVE,
             1e-300,
             0.1,
             0.5,
@@ -501,9 +523,19 @@ mod tests {
     }
 
     /// `w (2 h + 1)` as an exact big integer scaled by `2^1074`: a vector
-    /// of base-2^32 limbs, least significant first.
+    /// of base-2^32 limbs, most significant first. `w` is taken apart by
+    /// doubling, which is exact, rather than by its bits as `split` does.
     fn exact(w: f64, h: u64) -> Vec<u64> {
-        let (m, e) = split(w);
+        let (mut v, mut e) = (w, 0i32);
+        while v.fract() != 0.0 {
+            v *= 2.0;
+            e -= 1;
+        }
+        while v >= 9_007_199_254_740_992.0 {
+            v /= 2.0;
+            e += 1;
+        }
+        let m = v as u128;
         let mut limbs = vec![0u64; 72];
         let prod = m * (2 * u128::from(h) + 1);
         let shift = (e + 1074) as usize;
