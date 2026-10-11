@@ -145,8 +145,8 @@ def _target_index(g: dict[str, Any], target: str | int) -> int:
 def _means_of(np: Any, g: dict[str, Any], t: int) -> Any:
     """The column means target ``t``'s cross-moments are centred at and its
     intercept is recovered from: its own, over the rows it was present on
-    (``means_by_target``, docs/PLAN.md task 81), or the Gram's ``means`` in a
-    mapping without them."""
+    (``means_by_target``), or the Gram's ``means`` in a mapping without
+    them."""
     by_target = g.get("means_by_target")
     if by_target is None or len(by_target) == 0:
         return np.asarray(g["means"], dtype=float)
@@ -155,10 +155,10 @@ def _means_of(np: Any, g: dict[str, Any], t: int) -> Any:
 
 def _cross_centred(np: Any, g: dict[str, Any], t: int, m: Any, ybar: float) -> Any:
     """Target ``t``'s cross-moments centred at its column means ``m`` and its
-    mean ``ybar``, as the model holds them: ``cross_centred`` (review
-    2026-09-12, N4), or -- in a mapping without it -- ``cross_moments[t] - m *
-    ybar``, a difference of two numbers the size of ``L**2`` at a level ``L``,
-    which keeps ``L**2 * eps`` of the answer."""
+    mean ``ybar``, as the model holds them: ``cross_centred``, or -- in a
+    mapping without it -- ``cross_moments[t] - m * ybar``, a difference of
+    two numbers the size of ``L**2`` at a level ``L``, which keeps ``L**2 *
+    eps`` of the answer."""
     cc = g.get("cross_centred")
     if cc is not None and len(cc):
         return np.asarray(cc, dtype=float)[t]
@@ -505,7 +505,8 @@ def _is_within(g: dict[str, Any]) -> bool:
 def _refuse_within_union(what: str, parts: Sequence[dict[str, Any]]) -> None:
     """Refuse to pool a Gram pooled within parts as a union beside others:
     its means are 0, the demeaned rows', so the union would add the gap
-    from 0 to the other parts' means (docs/PLAN.md task 240)."""
+    from 0 to the other parts' means as if their rows had not been
+    demeaned."""
     for i, p in enumerate(parts):
         if _is_within(p):
             msg = (
@@ -549,7 +550,7 @@ def _merge_within(
 ) -> dict[str, Any]:
     """:func:`merge` with ``within=True``: the parts' moments about their
     own means, folded in order, and the Gram of the rows demeaned part by
-    part around them (docs/PLAN.md task 240). The fold is
+    part around them. The fold is
     ``online_core::gramfit::merge_within``'s, entry for entry, so
     :func:`solve_subsets` agrees with it to the bit."""
     packed = all(_is_packed(np, p) for p in parts)
@@ -758,7 +759,7 @@ def _add_opt(a: Any, b: Any) -> Any:
 def _q_of(g: dict[str, Any]) -> float | None:
     """`sum(w**2)` behind the feature moments, back out of `n_kish`: 0 for a
     part that learned nothing, whose `n_kish` is None for want of a weight
-    to divide by, not for want of the sums (review round 4, YB6)."""
+    to divide by, not for want of the sums."""
     w = float(g["weight_sum"])
     if w == 0.0:
         return 0.0
@@ -1661,7 +1662,7 @@ def solve_subsets(
 
 def _target_signs(np: Any, target_signs: Any, n_grams: int, within: bool) -> list[list[float]]:
     """``solve_subsets``' ``target_signs`` checked and turned to one list of
-    signs per draw, or ``[]`` for none (docs/PLAN.md task 241)."""
+    signs per draw, or ``[]`` for none."""
     if target_signs is None:
         return []
     if not within:
@@ -1855,7 +1856,7 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     tolerance, ``d_max * k * eps``, is a dependency: a column with a weight
     past ``sqrt(eps)`` in its direction reports ``inf``. A pseudo-inverse
     would drop that direction instead, and it read an exact duplicate at
-    0.25, below the floor of 1 a VIF cannot go under (docs/PLAN.md task 223).
+    0.25, below the floor of 1 a VIF cannot go under.
 
     So a column that is an exact linear combination of the others, where
     ``R2_j`` is 1, reads ``inf`` or a number past 1e10, not always ``inf``.
