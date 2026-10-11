@@ -5,7 +5,6 @@
 
 use super::*;
 
-/// `ew_cov` output: one f64 column per statistic slot, plus `n_eff`.
 /// One output field with the machine values its name encodes.
 ///
 /// This is the antidote to string formatting as API: a caller filters this
@@ -53,7 +52,8 @@ pub struct FieldMeta {
     /// Columns an `ew_cov` statistic is over.
     pub columns: Option<Vec<String>>,
     /// The polars dtype the field is materialized with, as its string form
-    /// (`f64`, `bool`, `str`, `list[f64]`). Set from `src`, so it is the same
+    /// (`f64`, `i64`, `bool`, `enum`, `array[f64, 3]`, `list[f64]`, `clock`).
+    /// Set from `src`, so it is the same
     /// table `assemble` fills the buffers from, so a declared output struct and
     /// the values that land in it cannot disagree (docs/IMPROVEMENTS.md C1 — a
     /// name-prefix guess once declared `drift_*` as `f64` while the bank
