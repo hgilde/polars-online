@@ -2568,7 +2568,9 @@ rows that carry `coef` do not depend on the chunking.
 
 **To spread that list into columns, chain `.online.unnest(specs)` after
 `fit_predict`.** It takes the specs, a bank, or the path of a saved state,
-and works on a saved output.
+and works on a saved output. With `separator="."` it names each column after
+its spec too, `ols.coef_y_x0`, as Polars' own `unnest(separator=)` does, so
+two specs that fit one target unnest side by side.
 
 **Several targets, or a grid, put several blocks in one `coef` list:** one
 per target and point of a grid of `ridge` values, `feature_sets` or a

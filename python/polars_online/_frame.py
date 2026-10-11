@@ -1002,14 +1002,21 @@ def _specs_of(specs: Specs | ModelBank | State, what: str) -> list[dict[str, Any
 _BESIDE_COEF = ("support_coef", "se_coef_hc0", "se_coef_hac", "se_coef")
 
 
-def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Expr]:
+def _unnest_exprs(
+    schema: pl.Schema, specs: list[dict[str, Any]], separator: str | None = None
+) -> list[pl.Expr]:
     """The columns of ``schema`` with each spec's struct replaced, in place, by
     its fields -- the ``coef`` lists as one column per coefficient, named by
-    :func:`polars_online.spec.coef_fields`.
+    :func:`polars_online.spec.coef_fields`. With a ``separator``, each column
+    is named ``{spec}{separator}{name}``, as Polars 2.0's
+    ``DataFrame.unnest(separator=)`` names a struct's fields.
 
     A spec whose column the frame has not got, or whose struct lacks a field
     the spec produces, is reported here, while the plan is built.
     """
+    if separator is not None and not isinstance(separator, str):
+        msg = f"online.unnest: separator must be a string or None, got {separator!r}"
+        raise TypeError(msg)
     by_name: dict[str, dict[str, Any]] = {}
     for spec in specs:
         if spec["name"] in by_name:
@@ -1038,6 +1045,10 @@ def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Exp
         # A `coef` with no named positions (`micro`: one row per established
         # summary, as many as there are) stays the list it is.
         lists = set(idx.filter(pl.col("kind") == "coef")["field"]) & set(coefs["field"])
+
+        def named(name: str, col: str = column) -> str:
+            return name if separator is None else f"{col}{separator}{name}"
+
         for field in fields:
             col = pl.col(column).struct.field(field)
             # `support_coef`, `se_coef` and the robust `se_coef_hc0` and
@@ -1049,21 +1060,23 @@ def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Exp
             beside = next((b for b in _BESIDE_COEF if field.startswith(b)), "")
             base = "coef" + field.removeprefix(beside) if beside else field
             if base not in lists:
-                exprs.append(col)
+                exprs.append(col.alias(named(field)))
                 continue
             for position, name in (
                 coefs.filter(pl.col("field") == base).select("position", "name").iter_rows()
             ):
                 out = beside + "_" + name.removeprefix("coef_") if beside else name
-                exprs.append(col.list.get(position, null_on_oob=False).alias(out))
+                exprs.append(col.list.get(position, null_on_oob=False).alias(named(out)))
     if by_name:
         msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
         raise ValueError(msg)
     return exprs
 
 
-def _unnest_lazy(lf: pl.LazyFrame, specs: Specs | ModelBank | State) -> pl.LazyFrame:
-    return lf.select(_unnest_exprs(lf.collect_schema(), _specs_of(specs, "unnest")))
+def _unnest_lazy(
+    lf: pl.LazyFrame, specs: Specs | ModelBank | State, separator: str | None = None
+) -> pl.LazyFrame:
+    return lf.select(_unnest_exprs(lf.collect_schema(), _specs_of(specs, "unnest"), separator))
 
 
 @pl.api.register_lazyframe_namespace("online")
@@ -1206,12 +1219,14 @@ class LazyFrameOnlineNamespace:
         """
         return _predict_lazy(self._lf, bank, chunk_size)
 
-    def unnest(self, specs: Specs | ModelBank | State) -> pl.LazyFrame:
+    def unnest(
+        self, specs: Specs | ModelBank | State, *, separator: str | None = None
+    ) -> pl.LazyFrame:
         """The plan with each spec's struct column taken apart into columns.
 
-        ``lf.unnest(names)`` with the ``coef`` lists taken apart too. Every
-        scalar field becomes a column of its own name (``pred_y``,
-        ``weight_sum@h500``). Each ``coef`` list becomes one column per
+        ``lf.unnest(names, separator=separator)`` with the ``coef`` lists taken
+        apart too. Every scalar field becomes a column of its own name
+        (``pred_y``, ``weight_sum@h500``). Each ``coef`` list becomes one column per
         coefficient, named ``coef_{target}_{term}{combo}{instance}``
         (``coef_y_intercept``, ``coef_y_x1__r0.5@h500``) as
         :func:`polars_online.spec.coef_fields` lists them. ``support_coef``
@@ -1244,12 +1259,15 @@ class LazyFrameOnlineNamespace:
         - ``FileNotFoundError`` and :meth:`~polars_online.ModelBank.load`'s ``ValueError``
           for a path.
 
-        Two specs that produce a field of the same name unnest to the same
-        column name, which polars reports as its ``DuplicateError``: unnest
-        them one at a time, or rename the struct's fields first
-        (``pl.col("m").name.prefix_fields("m_")``).
+        ``separator`` names each column after its spec too, as Polars 2.0's
+        ``LazyFrame.unnest(separator=)`` does: ``{spec}{separator}{name}``, so
+        ``separator="."`` gives ``ridge.pred_y`` and ``ridge.coef_y_x1``. Two
+        specs that produce a field of the same name -- two fits of one target
+        -- then unnest side by side. Without it (``None``, the default) they
+        unnest to the same column name, which polars reports as its
+        ``DuplicateError``.
         """
-        return _unnest_lazy(self._lf, specs)
+        return _unnest_lazy(self._lf, specs, separator)
 
     def with_windows(
         self,
@@ -1367,14 +1385,20 @@ class DataFrameOnlineNamespace:
             bank = ModelBank.load(os.fspath(bank))
         return bank.predict(self._df)
 
-    def unnest(self, specs: Specs | ModelBank | State) -> pl.DataFrame:
+    def unnest(
+        self, specs: Specs | ModelBank | State, *, separator: str | None = None
+    ) -> pl.DataFrame:
         """The frame with each spec's struct column taken apart into columns, as
         :meth:`LazyFrameOnlineNamespace.unnest` does for a plan.
 
         Scalar fields under their own names, each ``coef`` list as one named column
-        per coefficient. Raises what the plan form does, on the call.
+        per coefficient, and with a ``separator`` each named
+        ``{spec}{separator}{name}``, as Polars 2.0's ``DataFrame.unnest(separator=)``
+        names a struct's fields. Raises what the plan form does, on the call.
         """
-        return self._df.select(_unnest_exprs(self._df.schema, _specs_of(specs, "unnest")))
+        return self._df.select(
+            _unnest_exprs(self._df.schema, _specs_of(specs, "unnest"), separator)
+        )
 
     def with_windows(
         self,
@@ -1502,15 +1526,22 @@ def predict(
 
 
 @overload
-def unnest(frame: pl.LazyFrame, specs: Specs | ModelBank | State) -> pl.LazyFrame: ...
+def unnest(
+    frame: pl.LazyFrame, specs: Specs | ModelBank | State, *, separator: str | None = None
+) -> pl.LazyFrame: ...
 
 
 @overload
-def unnest(frame: pl.DataFrame, specs: Specs | ModelBank | State) -> pl.DataFrame: ...
+def unnest(
+    frame: pl.DataFrame, specs: Specs | ModelBank | State, *, separator: str | None = None
+) -> pl.DataFrame: ...
 
 
 def unnest(
-    frame: pl.LazyFrame | pl.DataFrame, specs: Specs | ModelBank | State
+    frame: pl.LazyFrame | pl.DataFrame,
+    specs: Specs | ModelBank | State,
+    *,
+    separator: str | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.unnest(specs)`` as a plain function, so that a type checker can
     see it.
@@ -1519,13 +1550,14 @@ def unnest(
     named column per coefficient: a plan from a ``LazyFrame``
     (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest`), a frame from a
     ``DataFrame`` (:meth:`~polars_online._frame.DataFrameOnlineNamespace.unnest`).
+    ``separator`` is as for the namespace method: ``{spec}{separator}{name}``.
     ``TypeError`` for a ``frame`` that is neither; otherwise raises what the
     namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _unnest_lazy(frame, specs)
+        return _unnest_lazy(frame, specs, separator)
     _check_frame(frame, "unnest")
-    return DataFrameOnlineNamespace(frame).unnest(specs)
+    return DataFrameOnlineNamespace(frame).unnest(specs, separator=separator)
 
 
 def _check_frame(frame: object, what: str) -> None:
