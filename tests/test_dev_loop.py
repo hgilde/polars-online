@@ -210,6 +210,15 @@ def test_the_gate_runs_in_parallel_and_keeps_a_serial_switch():
     assert "cargo test --workspace --exclude online-py --doc" in GATE
 
 
+def test_nextest_starts_the_slowest_tests_first():
+    """.config/nextest.toml parses and puts the slowest Rust tests first:
+    the run lasts at least as long as its slowest test."""
+    config = tomllib.loads((REPO / ".config" / "nextest.toml").read_text(encoding="utf-8"))
+    overrides = config["profile"]["default"]["overrides"]
+    assert [o["priority"] for o in overrides] == [100, 50]
+    assert "pool_tests" in overrides[0]["filter"]
+
+
 def test_the_memory_tests_run_alone():
     """The tests that read their process's memory carry `serial`, so the
     gate runs them after the parallel run, in one process."""
@@ -298,6 +307,14 @@ def test_quick_runs_everything_for_a_helper_every_test_runs_under():
     every = set(quick._test_files())
     assert quick.plan(["tests/conftest.py"]).tests == every
     assert len(every) > 100
+
+
+def test_quick_maps_each_path_on_its_own():
+    """A path whose tests another path already brought in is mapped, not
+    reported as unmapped (the first version compared the plan's size)."""
+    plan = _load("quick").plan(["tests/conftest.py", "tests/test_holt.py", "scripts/env.sh"])
+    assert plan.unmapped == []
+    assert "tests/test_dev_loop.py" in plan.tests  # it names scripts/env.sh
 
 
 def test_quick_names_what_it_cannot_map():

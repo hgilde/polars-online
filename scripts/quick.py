@@ -152,39 +152,49 @@ def _module(parts: tuple[str, ...]) -> str | None:
     return None if first in {"lib", "main", "mod"} else first
 
 
+def _one(path: str) -> Plan:
+    """What covers one changed path."""
+    out = Plan()
+    parts = Path(path).parts
+    if path in EVERYWHERE or path.startswith("tests/_site/"):
+        out.tests.update(_test_files())
+    elif re.fullmatch(r"tests/test_\w+\.py", path):
+        if (REPO / path).exists():
+            out.tests.add(path)
+    elif re.fullmatch(r"tests/\w+\.py", path):
+        out.tests.update(importers(Path(path).stem))
+    elif parts[:1] == ("crates",) and len(parts) > 2:
+        crate = parts[1]
+        if crate in RUST_TESTED:
+            out.crates.add(crate)
+        in_source = "src" in parts or parts[-1] in {"Cargo.toml", "build.rs"}
+        if in_source and crate in IN_THE_EXTENSION:
+            out.rebuild = True
+        if in_source and (module := _module(parts)):
+            out.tests.update(named_after(module))
+        if crate == "online-cli":
+            out.tests.update(t for t in _test_files() if "online_cli" in _text(t))
+    elif parts[:2] == ("python", "polars_online"):
+        stem = Path(path).stem
+        module = "polars_online" if stem in {"__init__", "_polars_online"} else stem
+        out.tests.update(named_after(module))
+    if path in {"Cargo.toml", "Cargo.lock"}:
+        out.crates.update(RUST_TESTED)
+        out.rebuild = True
+    out.tests.update(naming(path))
+    return out
+
+
 def plan(paths: list[str]) -> Plan:
-    """Map changed repo-relative paths to what covers them."""
+    """Map changed repo-relative paths to what covers them. A path that
+    maps to nothing is listed in `unmapped`, whatever the others map to."""
     out = Plan()
     for path in paths:
-        parts = Path(path).parts
-        before = (len(out.crates), out.rebuild, len(out.tests))
-        if path in EVERYWHERE or path.startswith("tests/_site/"):
-            out.tests.update(_test_files())
-        elif re.fullmatch(r"tests/test_\w+\.py", path):
-            if (REPO / path).exists():
-                out.tests.add(path)
-        elif re.fullmatch(r"tests/\w+\.py", path):
-            out.tests.update(importers(Path(path).stem))
-        elif parts[:1] == ("crates",) and len(parts) > 2:
-            crate = parts[1]
-            if crate in RUST_TESTED:
-                out.crates.add(crate)
-            in_source = "src" in parts or parts[-1] in {"Cargo.toml", "build.rs"}
-            if in_source and crate in IN_THE_EXTENSION:
-                out.rebuild = True
-            if in_source and (module := _module(parts)):
-                out.tests.update(named_after(module))
-            if crate == "online-cli":
-                out.tests.update(t for t in _test_files() if "online_cli" in _text(t))
-        elif parts[:2] == ("python", "polars_online"):
-            stem = Path(path).stem
-            module = "polars_online" if stem in {"__init__", "_polars_online"} else stem
-            out.tests.update(named_after(module))
-        if path in {"Cargo.toml", "Cargo.lock"}:
-            out.crates.update(RUST_TESTED)
-            out.rebuild = True
-        out.tests.update(naming(path))
-        if (len(out.crates), out.rebuild, len(out.tests)) == before:
+        one = _one(path)
+        out.crates |= one.crates
+        out.rebuild |= one.rebuild
+        out.tests |= one.tests
+        if not (one.crates or one.rebuild or one.tests):
             out.unmapped.append(path)
     return out
 
