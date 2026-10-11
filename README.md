@@ -1893,7 +1893,7 @@ bank = po.ModelBank([spec])                                # nothing learned yet
 for out in bank.fit_predict_batches(pl.scan_parquet("ticks.parquet"), chunk_size=100):
     # out: the chunk's columns, plus one column per spec. Between chunks, the bank answers questions:
     x0 = bank.coef().filter(pl.col("group") == "b0", pl.col("term") == "x0")["coef"][0]
-    print(f"after {bank.rows_fed()} rows: b0's coefficient on x0 is {x0:.3f}")
+    print(f"after {bank.rows_fed} rows: b0's coefficient on x0 is {x0:.3f}")
 bank.save("bank.state")                                    # written whole or not at all: a temporary file, then a rename
 
 # With chunks of your own: for chunk in pl.scan_parquet("ticks.parquet").collect_batches(): bank.fit_predict(chunk)
@@ -2051,7 +2051,7 @@ recipe. The three uses:
 |---|---|---|
 | resume | `po.ModelBank.load(path)`, or `load_state=` on a query | the next row is learned as one run would learn it |
 | serve | `bank.predict(frame)`, or `lf.online.predict(path)` | each row is scored as `fit_predict` would score it as the next row, and the state never moves |
-| read elsewhere | `bank.to_json()` | everything `save` writes, as JSON |
+| read elsewhere | `bank.write_json()` | everything `save` writes, as JSON |
 
 This code fits `df`, saves the bank, and loads it back. Served, the first
 row of `today` gets the prediction one run over `df` and `today` gives it.
@@ -2142,7 +2142,7 @@ every group's clock back, which the bank refuses unless
 rows after each group's last clock (a row at that clock counts as learned)
 and every row of a group the bank has not seen. It keeps a `LazyFrame`
 lazy. For a bank whose specs all count rows, it raises `ValueError`; drop
-the learned rows with `frame.slice(bank.rows_fed())` instead, when the
+the learned rows with `frame.slice(bank.rows_fed)` instead, when the
 input starts where the saved one did.
 
 **A query abandoned before its last row, or ended by an error inside the
@@ -2244,7 +2244,8 @@ the same coefficients score every row. How `predict` reads a row:
 ### Reading a state without this library
 
 To read a state from a program without this library, export it with
-`bank.to_json()`, or write it to a file with `bank.save_json(path)`. Keep
+`bank.write_json()`, which returns the text, or write it to a file with
+`bank.write_json(path)`. Keep
 the binary file for resuming, since `load` reads only that form. Every
 export is read back and checked against the state before you get it, and
 one that does not match raises `ValueError`.
@@ -2260,8 +2261,8 @@ import json
 
 bank = po.ModelBank([po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
 bank.fit_predict(df)
-text = bank.to_json()                     # everything save() writes, as JSON
-bank.save_json("bank.json")               # the same, to a file
+text = bank.write_json()                  # everything save() writes, as JSON
+bank.write_json("bank.json")              # the same, to a file
 state = json.loads(text)                  # any JSON reader
 half_life = state["specs"][0]["half_life"]
 print(f"{state['magic']}: half_life {half_life!r}, as a number {float(half_life)}")
@@ -2303,8 +2304,8 @@ fitted.save("bank.state")
 
 bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
 print(repr(bank))                        # its specs, its groups, the rows it was fed
-print(bank.rows_fed(), bank.solve_failures())   # rows fed over every group; solves that needed help
-print(bank.output_fields()["ridge"])     # the fields of the spec's column
+print(bank.rows_fed, bank.solve_failures())     # rows fed over every group; solves that needed help
+print(bank.output_fields["ridge"])       # the fields of the spec's column
 for spec_name, group, rows, last in bank.groups().iter_rows():   # one row per (spec, group)
     print(spec_name, group, rows, last)
 ```

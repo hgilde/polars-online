@@ -287,4 +287,4 @@ def test_the_state_exports_to_json_under_a_row_cap_alone():
     for kw in ({"max_rows_between_pca": 12}, {"pca_every": "15m"}, {}):
         bank = po.ModelBank([spec(**kw)])
         bank.fit_predict(df.head(60))
-        assert '"pca_every"' in bank.to_json(), kw
+        assert '"pca_every"' in bank.write_json(), kw

@@ -345,11 +345,11 @@ class TestInputs:
                 assert a.equals(b, null_equal=True), f
 
     def test_the_bank_does_not_move(self):
-        before = self.bank.rows_fed()
+        before = self.bank.rows_fed
         snap = self.bank.save_bytes()
         for _ in range(3):
             self.bank.predict(self.later)
-        assert self.bank.rows_fed() == before
+        assert self.bank.rows_fed == before
         assert self.bank.save_bytes() == snap
         # ...and the stream picks up exactly where it was.
         want = po.ModelBank.load_bytes(snap, self.specs).fit_predict(self.later)

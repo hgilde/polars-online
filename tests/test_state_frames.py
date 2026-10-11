@@ -449,7 +449,7 @@ def test_rows_fed_is_the_frames_count_and_rows_seen_names_it():
     bank = po.ModelBank([ridge(group="g")])
     bank.fit_predict(df.head(30))
     bank.drop_groups(["0"])
-    assert bank.rows_fed() == 30
+    assert bank.rows_fed == 30
     assert bank.summary()["rows_fed"].sum() < 30
     assert "rows_fed=30" in repr(bank)
     with pytest.raises(AttributeError, match=r"rows_seen was renamed rows_fed"):

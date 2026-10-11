@@ -429,7 +429,7 @@ class TestScaleFloor:
 
 def _state(bank: po.ModelBank) -> dict:
     """The model's exported state: one group, one instance."""
-    model = json.loads(bank.to_json())["states"][0][0][1]["models"][0]["model"]
+    model = json.loads(bank.write_json())["states"][0][0][1]["models"][0]["model"]
     return model["KMeans"]
 
 

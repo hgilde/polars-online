@@ -145,7 +145,7 @@ first = Path("run.state").read_bytes()
 query.collect()
 print(f"two runs, the same bytes: {Path('run.state').read_bytes() == first}")
 query.head(100).collect()
-print(f"under head(100), the state has been fed {po.ModelBank.load('run.state').rows_fed()} rows")
+print(f"under head(100), the state has been fed {po.ModelBank.load('run.state').rows_fed} rows")
 ```
 
 ```text

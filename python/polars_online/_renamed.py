@@ -22,6 +22,8 @@ import functools
 from collections.abc import Callable, Iterable, Mapping
 from typing import NoReturn
 
+from polars_online._warnings import RENAMED_MARK
+
 
 def renamed_keywords[**P, R](
     who: str, table: Mapping[str, str]
@@ -75,4 +77,30 @@ def renamed_function(old: str, new: str, more: str = "") -> Callable[..., NoRetu
 
     stub.__name__ = stub.__qualname__ = old.rsplit(".", 1)[-1]
     stub.__doc__ = f"Renamed {new}: calling it raises TypeError, naming the new name."
+    setattr(stub, RENAMED_MARK, new)
+    return stub
+
+
+def is_renamed(obj: object) -> bool:
+    """Whether ``obj`` is kept only under an old name: a refusal stub from
+    :func:`renamed_function` or :func:`renamed_method`, or a forwarding from
+    :func:`polars_online._warnings.deprecated_alias`. The API snapshot and the
+    reference leave such a name out, so both show the new name only."""
+    target = obj.fget if isinstance(obj, property) else obj
+    return getattr(target, RENAMED_MARK, None) is not None
+
+
+def renamed_method(cls: str, old: str, new: str) -> Callable[..., NoReturn]:
+    """A method stub for a method renamed ``new``, raising ``AttributeError``
+    naming it, as a missing attribute does. Marked, as
+    :func:`renamed_function`'s stubs are, so the reference and the API
+    snapshot show the new name only."""
+
+    def stub(self: object, *args: object, **kwargs: object) -> NoReturn:
+        raise AttributeError(f"{cls}.{old} was renamed {new}")
+
+    stub.__name__ = old
+    stub.__qualname__ = f"{cls}.{old}"
+    stub.__doc__ = f"Renamed :meth:`{new}`: calling it raises AttributeError, naming the new name."
+    setattr(stub, RENAMED_MARK, new)
     return stub
