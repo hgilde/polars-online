@@ -14,7 +14,7 @@ ahead. Rust core, Python API, and a standalone command line.
 | [Introduction](#introduction) | [a first fit](#a-first-fit) · [the idea](#the-idea) · [terminology](#terminology) · [what you can rely on](#what-you-can-rely-on) · [install](#install) · [example data](#example-data) |
 | [How a bank sees a stream](#how-a-bank-sees-a-stream) | [what a spec names](#what-a-spec-names) · [time and decay](#time-and-decay) · [convergence without a decay](#convergence-without-a-decay) · [a hard window](#a-hard-window) · [a local fit along any feature](#a-local-fit-along-any-feature) · [row order](#row-order-and-the-two-guarantees) · [groups](#groups) · [weights](#weights) · [warm-up](#warm-up) · [labels that arrive late](#labels-that-arrive-late) · [nulls](#nulls-and-three-ways-to-hold-a-row-back) |
 | [Preparing a stream](#preparing-a-stream) | [windowed means](#making-features-and-targets-from-windows) · [windows as columns](docs/WINDOWS.md#windows-as-columns) · [windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target) · [features in units of their spread](docs/WINDOWS.md#features-in-units-of-their-spread) · [saving and resuming a window run](docs/WINDOWS.md#saving-and-resuming-a-window-run) · [series that tick at their own times](#series-that-tick-at-their-own-times) |
-| [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [outside Python](#outside-a-live-python-process) · [output as Arrow](#output-as-arrow) |
+| [Running a bank](#running-a-bank) | [as a query](#as-a-query-lfonlinefit_predict) · [in a loop](#in-a-loop-modelbank) · [as a job, without Python](#running-a-bank-as-a-job-without-python) · [output as Arrow](#output-as-arrow) |
 | [Saving, loading and serving](#saving-loading-and-serving) | [save and load](#save-and-load) · [serving without learning](#serving-without-learning) · [a state without this library](#reading-a-state-without-this-library) |
 | [Reading the fit](#reading-the-fit) | [what a bank holds](#what-a-bank-holds) · [output field names](#output-field-names) · [coefficients](#coefficients) · [the running sums](#the-running-sums-behind-a-fit) · [one row per finished group](#one-row-per-finished-group) · [correlation matrices](#reading-a-correlation-matrix) |
 | [Checking the data and the model](#checking-the-data-and-the-model) | [your data's quality](#checking-your-datas-quality) · [that a model works](#checking-that-a-model-works), one question at a time: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) |
@@ -1110,13 +1110,62 @@ run:
 
 | tool | what it makes | where it runs | subsection |
 |---|---|---|---|
-| the window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html) | exponentially weighted means, sums and rates over a window of the clock, looking back or ahead | in [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows), before the bank, as columns; or in a spec's `targets`, as a target the bank computes | [Windowed means, looking back or ahead](#making-features-and-targets-from-windows) |
+| the window operators of [`po.ops`](https://hgilde.github.io/polars-online/ops.html) | exponentially weighted means, sums and rates over a window of the clock, looking back or ahead | in [`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows), before the bank, as columns; or in a spec's `targets`, as a target the bank computes | [Making features and targets from windows](#making-features-and-targets-from-windows) |
 | [`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time) | one grid for series that tick at their own times | before the bank | [Series that tick at their own times](#series-that-tick-at-their-own-times) |
 
 ### Making features and targets from windows
 
-The window operators, what each computes and how a window run is saved and
-resumed are in [Windowed means, looking back or ahead](docs/WINDOWS.md).
+A window operator of [`po.ops`](https://hgilde.github.io/polars-online/ops.html)
+returns a Polars expression whose value on each row is computed over the
+rows near it on the clock. A window that looks back from the row makes a
+feature, and one that looks ahead makes a target. `po.ewm_mean` and its
+mirror `po.rewm_mean` are time-weighted means, as Polars' `ewm_mean_by`
+computes one, and the sums and rates divide into weighted means such as a
+VWAP (volume-weighted average price). Each operator keeps running sums, so
+it does the same work on a row however long its window.
+
+**To add windows as columns, call `po.stream.with_windows` before the
+bank.** It takes formulas as `with_columns` does, computes them over the
+stream in one pass, and returns each row once every window over it has
+closed. Here the feature `mid_trend` is the mid against its time-weighted
+mean over the last two minutes. The target `fwd_edge` is the next minute's
+VWAP of the trades, less the mid now.
+This code uses `trades.parquet` from [Example data](#example-data):
+
+```python
+notional = pl.col("price") * pl.col("quantity")
+next_minute = dict(half_life="10s", window_size="1m")     # weights halve every 10 s from the row; the window ends a minute on
+windowed = pl.scan_parquet("trades.parquet").online.with_windows(
+    mid_trend=pl.col("mid") - po.ewm_mean("mid", half_life="30s", window_size="2m"),     # a feature: looks back
+    fwd_edge=po.rewm_sum(notional, **next_minute) / po.rewm_sum("quantity", **next_minute) - pl.col("mid"),   # a target: looks ahead
+    clock="ts", gap_cap="5m", group="symbol",              # the clock, the longest step it ages by, and one set of windows per symbol
+).collect()
+print("time      symbol  mid      mid_trend  fwd_edge")
+for r in windowed.slice(200, 5).iter_rows(named=True):
+    print(f"{r['ts']:%H:%M:%S}  {r['symbol']}     {r['mid']:.3f}  {r['mid_trend']:+.4f}    {r['fwd_edge']:+.4f}")
+```
+
+```text
+time      symbol  mid      mid_trend  fwd_edge
+09:31:48  AAA     100.107  +0.0536    -0.1181
+09:31:49  BBB     100.105  +0.0504    -0.0299
+09:31:50  BBB     100.094  +0.0395    -0.0196
+09:31:50  BBB     100.096  +0.0403    -0.0253
+09:31:50  BBB     100.083  +0.0275    -0.0127
+```
+
+**To have a model learn a target that looks ahead, put its expression in
+the spec's `targets`, with an `embargo` of at least its window.** The bank
+then computes the window itself, scores each row where it sits, and learns
+from the row once its window has closed. A target's value is a minute in
+the future when its row arrives, so a model that learned it at once would
+score that minute's rows in sample.
+
+[docs/WINDOWS.md](docs/WINDOWS.md) shows each part of this with a recipe.
+Its recipes hold the nine operators to Polars' own, and show which ends of
+a window are in and what a gap does to a window. Others fit a window
+target beside its column form, make features in units of their spread,
+and resume a window run.
 
 ### Series that tick at their own times
 
@@ -1218,16 +1267,18 @@ out = po.ModelBank(specs).fit_predict(returns)
 # The first grid point has no change, so both models skip it.
 ```
 
+
 ## Running a bank
 
-Run a bank in one of three ways, each giving the same numbers. From a bank
-object, the output can leave as Arrow, for a consumer that is not Polars:
+Run a bank in one of three ways. Each gives the same numbers, whatever
+the chunking of the rows. From a bank object, the output can leave as
+Arrow, for a consumer that is not Polars:
 
 | way | the call | use it for | where |
 |---|---|---|---|
 | inside a Polars query | `lf.online.fit_predict(specs)` | ordinary Polars steps chained after the bank | [As a query](#as-a-query-lfonlinefit_predict) |
 | in your own Python loop | `bank.fit_predict(chunk)` | reading the bank between chunks | [In a loop](#in-a-loop-modelbank) |
-| from a standalone command line, with no live Python at all | `online` | a scheduled job, or a deployment with no Python | [Outside a live Python process](#outside-a-live-python-process) |
+| from a standalone command line, with no live Python at all | `online` | a scheduled job, or a deployment with no Python | [Running a bank as a job, without Python](#running-a-bank-as-a-job-without-python) |
 | output as Arrow, from a bank object | `fit_predict_arrow`, `predict_arrow` | a consumer that is not Polars | [Output as Arrow](#output-as-arrow) |
 
 ### As a query: `lf.online.fit_predict`
@@ -1240,7 +1291,14 @@ that starts with nothing learned, `chunk_size` rows at a time (100,000 by
 default). Run it with `collect()` for one frame, `sink_parquet()` to write
 a file without holding the result in memory, or `collect_batches()` for one
 chunk at a time.
-This code uses `lf` and the files `ticks/*.parquet` from [Example data](#example-data):
+
+**The chunk size never changes the numbers.** It trades memory for
+overhead: memory is the bank's state plus one chunk, however long the
+files. The recipe runs the same spec over `ticks/*.parquet` in one chunk,
+and over `ticks.parquet` one row at a time, and the two agree to the bit.
+`df`'s `y` is `1 + 2·x0 − x1` plus noise, so the fit of each stock finds
+those coefficients, and 0 for `x2`.
+This code uses the files `ticks.parquet` and `ticks/*.parquet` from [Example data](#example-data):
 
 ```python
 spec = po.spec.ewridge(                                   # a ridge regression of y for each stock, at two ridge values
@@ -1249,20 +1307,36 @@ spec = po.spec.ewridge(                                   # a ridge regression o
     clock="t", half_life=600.0, gap_cap=300.0,
     group="stock_id", ridge=[1e-6, 0.1], standardize=True,
 )
-files = pl.scan_parquet("ticks/*.parquet")                # a query over the files; nothing is read yet
 (
-    files
+    pl.scan_parquet("ticks/*.parquet")                    # a query over the files; nothing is read yet
     .online.fit_predict([spec], chunk_size=100_000)       # a bank with nothing learned yet; every run starts from the same place
-    .filter(pl.col("ridge").struct.field("weight_sum") > 100)  # after the bank: filters what comes out, never what the bank learns from
-    .select("ts", "stock_id", "ridge")                     # Polars reads only these columns, and those the specs read, from the files
+    .filter(pl.col("ridge").struct.field("weight_sum") > 50)   # after the bank: filters what comes out, never what the bank learns from
+    .select("t", "stock_id", "ridge")                     # Polars reads only these columns, and those the specs read, from the files
     .sink_parquet("fitted.parquet")                       # runs the query; memory is state + one chunk, however long the files
 )
-# "ridge" is one column whose value per row is a record of named fields:
-#   {pred_y__r0.000001, resid_y__r0.000001, pred_y__r0.1, resid_y__r0.1,
-#    weight_sum, settled_frac, withheld_reason, coef, support_coef}
+fitted = pl.read_parquet("fitted.parquet")
+print(f"{fitted.height} rows past the filter; the record's fields: {fitted['ridge'].struct.fields}")
 
-lf.online.fit_predict([spec]).head(5).collect()           # learns from the first 5 rows and no more
+one_row_chunks = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], chunk_size=1).collect()
+same = one_row_chunks.filter(pl.col("ridge").struct.field("weight_sum") > 50)["ridge"].struct.field("pred_y__r0.1")
+print(f"largest difference, chunks of 100,000 against chunks of 1: {(fitted['ridge'].struct.field('pred_y__r0.1') - same).abs().max()}")
+
+last = fitted.filter(pl.col("stock_id") == "b3").row(-1, named=True)
+intercept, b0, b1, b2 = last["ridge"]["coef"][:4]        # the fit at the first ridge value; the second's follow
+print(f"b3's coefficients on its last row: intercept {intercept:.2f}, x0 {b0:.2f}, x1 {b1:.2f}, x2 {b2:.2f}")
 ```
+
+```text
+172 rows past the filter; the record's fields: ['pred_y__r0.000001', 'resid_y__r0.000001', 'pred_y__r0.1', 'resid_y__r0.1', 'weight_sum', 'settled_frac', 'withheld_reason', 'coef', 'support_coef']
+largest difference, chunks of 100,000 against chunks of 1: 0.0
+b3's coefficients on its last row: intercept 1.04, x0 1.99, x1 -0.97, x2 -0.13
+```
+
+`"ridge"` is one column whose value in each row is a record with named
+fields ([Output field names](#output-field-names) lists them). `weight_sum`
+is the weight a fit rests on, so the filter keeps each stock's rows once
+its fit has seen about 50 rows' worth. `lf.online.fit_predict([spec]).head(5)`
+feeds the bank the first 5 rows and no more.
 
 **Filter after the bank, not before it.** A `filter` after the bank keeps
 the query running a chunk at a time. One before the bank makes Polars hold
@@ -1273,26 +1347,48 @@ against 0.78 GB for the same filter after
 **To keep rows from teaching the model, give them weight `0` before the
 bank, in place of a filter:** make the column with `with_columns`, and name
 it in the spec's `weight`. The rows still come out scored, and the clock
-advances through them, so no gap opens where they were.
-This code uses `lf` from [Example data](#example-data):
+advances through them, so no gap opens where they were. Here only venue
+X's 200 rows teach the model. Under `half_life=float("inf")` no row's
+weight decays, so `weight_sum` counts the rows learned before each row.
+This code uses `ticks.parquet` from [Example data](#example-data):
 
 ```python
-(
-    lf.with_columns(pl.when(pl.col("venue") == "X").then(1.0).otherwise(0.0).alias("w"))  # learn from venue X only
-    .online.fit_predict([po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                                         clock="t", half_life=600.0, gap_cap=300.0,
-                                         weight="w")])
-    .sink_parquet("fitted.parquet")
+learn_from_x = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                               clock="t", half_life=float("inf"), gap_cap=300.0, weight="w")
+fitted = (
+    pl.scan_parquet("ticks.parquet")
+    .with_columns(pl.when(pl.col("venue") == "X").then(1.0).otherwise(0.0).alias("w"))  # learn from venue X only
+    .online.fit_predict([learn_from_x])
+    .collect()
 )
+scored = fitted["ridge"].struct.field("pred_y").is_not_null().sum()
+print(f"rows scored: {scored} of {fitted.height}; weight_sum on the last row: {fitted['ridge'].struct.field('weight_sum')[-1]:.0f}")
+```
+
+```text
+rows scored: 397 of 400; weight_sum on the last row: 200
 ```
 
 **`lf.online.fit_predict` checks each spec against the query's columns when
 it is called, so a missing or non-numeric column raises `ValueError` before
 any row is read.** The bank refuses what only the values reveal, such as a
-null clock or a step back, while the query runs. The error arrives as
+null clock or a step back, while the query runs. That error arrives as
 `polars.exceptions.ComputeError` under py-polars 1.x, and as the bank's own
 `ValueError` under 2.0, since how a query wraps an error is Polars' to
 change. Either way its message names the row and the way out.
+This code uses `ticks.parquet` from [Example data](#example-data):
+
+```python
+misspelt = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x9"], half_life=100.0)
+try:
+    pl.scan_parquet("ticks.parquet").online.fit_predict([misspelt])   # refused here: the query never runs
+except ValueError as e:
+    print(e)
+```
+
+```text
+not found: spec "ridge": feature column "x9" not found; the input has columns ["t", "ts", "x0", "x1", "x2", "signal_a", "signal_b", "y", "ret", "stock_id", "group", "session", "venue"]
+```
 
 **With a type checker, call `po.fit_predict`,
 [`po.predict`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.predict)
@@ -1303,6 +1399,7 @@ function takes the frame first.
 This code uses `lf` and `later` from [Example data](#example-data):
 
 ```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 fitted = po.fit_predict(lf, [spec], save_state="ridge.state")   # lf.online.fit_predict([spec], save_state="ridge.state")
 columns = po.unnest(fitted, [spec]).collect()                   # fitted.online.unnest([spec]); running it saves the state
 scored = po.predict(later, "ridge.state").collect()             # later.online.predict("ridge.state")
@@ -1314,24 +1411,31 @@ To feed a bank from your own Python loop, build a
 [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank)
 from the specs, pass it each chunk with `bank.fit_predict(chunk)`, and ask
 it what it holds between chunks ([What a bank holds](#what-a-bank-holds)).
-This code uses `lf` from [Example data](#example-data):
+`bank.fit_predict_batches(query, chunk_size=...)` runs that loop for you,
+reading a query or a `DataFrame` in chunks of the size given, and yields
+each chunk's output. Here the bank reads 100 rows at a time, and stock
+`b0`'s coefficient on `x0` settles near the 2 that `df` plants.
+This code uses `ticks.parquet` from [Example data](#example-data):
 
 ```python
-bank = po.ModelBank([spec])                # the spec above, with nothing learned yet
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                       clock="t", half_life=600.0, gap_cap=300.0, group="stock_id")
+bank = po.ModelBank([spec])                                # nothing learned yet
+for out in bank.fit_predict_batches(pl.scan_parquet("ticks.parquet"), chunk_size=100):
+    # out: the chunk's columns, plus one column per spec. Between chunks, the bank answers questions:
+    x0 = bank.coef().filter(pl.col("group") == "b0", pl.col("term") == "x0")["coef"][0]
+    print(f"after {bank.rows_fed()} rows: b0's coefficient on x0 is {x0:.3f}")
+bank.save("bank.state")                                    # written whole or not at all: a temporary file, then a rename
 
-for chunk in lf.collect_batches():        # the query, one chunk at a time: the whole stream is never in memory
-    out = bank.fit_predict(chunk)         # the chunk's columns, plus one column per spec
-    ...
+# With chunks of your own: for chunk in pl.scan_parquet("ticks.parquet").collect_batches(): bank.fit_predict(chunk)
+# A run whose product is the state: po.ModelBank([spec]).fit(query) learns from every row and keeps no output.
+```
 
-bank.save("bank.state")                    # written whole or not at all: a temporary file, then a rename
-
-# Or let the bank chunk: a query or a DataFrame in chunk_size rows, an iterator of frames as it comes.
-for out in po.ModelBank([spec]).fit_predict_batches(lf, chunk_size=100_000):
-    ...
-
-# A run whose product is the state: learn from every row, keep no output.
-state_only = po.ModelBank([spec])
-state_only.fit(lf)
+```text
+after 100 rows: b0's coefficient on x0 is 2.105
+after 200 rows: b0's coefficient on x0 is 2.055
+after 300 rows: b0's coefficient on x0 is 2.087
+after 400 rows: b0's coefficient on x0 is 2.023
 ```
 
 **Feed a bank from one thread at a time, though `predict`, which learns
@@ -1344,25 +1448,40 @@ bank.
 drop the quiet ones with `bank.drop_groups`.** `bank.groups()` gives each
 group's `last_clock` in the clock column's own dtype: a `Datetime` in its
 unit and zone, an integer clock in its own width, a float clock as a
-`Float64`. Compare it with the current
-time of the same kind. This code uses `df` and `lf` from
-[Example data](#example-data):
+`Float64`. Compare it with the current time of the same kind. A dropped
+group starts over, with nothing learned, if it appears again. In `df` the
+four stocks take turns, so each last ticked at a different `t`.
+This code uses `df` and `ticks.parquet` from [Example data](#example-data):
 
 ```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                       clock="t", half_life=600.0, gap_cap=300.0, group="stock_id")
 bank = po.ModelBank([spec])
-bank.fit(lf)
-now = df["t"].max()                        # the current time on the clock t; on a temporal clock, a datetime
-stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
-bank.drop_groups(stale["group"])           # they start over if they reappear
+bank.fit(pl.scan_parquet("ticks.parquet"))
+for group, rows, last_clock in bank.groups().select("group", "rows_processed", "last_clock").iter_rows():
+    print(f"{group}: {rows} rows, the last at t = {last_clock:.0f}")
+now = df["t"].max()                                        # the current time on the clock t; on a temporal clock, a datetime
+stale = bank.groups().filter(pl.col("last_clock") < now - 2)   # quiet for more than 2 units of t
+print(f"dropped {bank.drop_groups(stale['group'])}; left: {bank.groups()['group'].to_list()}")
 ```
 
-### Outside a live Python process
+```text
+b0: 100 rows, the last at t = 396
+b1: 100 rows, the last at t = 397
+b2: 100 rows, the last at t = 398
+b3: 100 rows, the last at t = 399
+dropped 1; left: ['b1', 'b2', 'b3']
+```
+
+### Running a bank as a job, without Python
 
 For a scheduled job, or a deployment with no Python, run the same bank from
 a file to a file with the standalone `online` command line, a binary on
 each GitHub release. It reads the input, the output and the specs from a
 TOML file. Each `[[specs]]` table takes the keywords every spec shares, and
-its `[specs.model]` table names the model and takes the model's own:
+its `[specs.model]` table names the model and takes the model's own. This
+`bank.toml` is the first recipe's spec of [As a
+query](#as-a-query-lfonlinefit_predict):
 
 ```toml
 input = "ticks.parquet"          # read a chunk at a time; the extension names the format
@@ -1383,41 +1502,64 @@ ridge = [1e-6, 0.1]
 standardize = true
 ```
 
+Run it from the directory that holds `bank.toml` and the example data's
+`ticks.parquet`. The predictions, residuals and weights it writes are the
+bank's in Python, bit for bit:
+
 ```sh
-online --config bank.toml        # parquet in, parquet out: the numbers the bank gives in Python
+online --config bank.toml
 ```
 
-After `wrote N rows`, a run says which specs ended with groups not ready,
-one line each, and nothing for the others:
-`spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
+```text
+400 rows in 1 chunks
+wrote 400 rows (1 chunks) to fitted.parquet
+saved state to bank.state
+```
 
-[docs/RUNNER.md](docs/RUNNER.md) has every key and flag.
+The first line is the progress, which `--quiet` turns off. After `wrote`,
+a run prints a line for each spec that ended with groups not ready, and
+nothing for the others. Such a line reads
+`spec "ridge": 2 groups whose last row was withheld (below_min_weight 2)`.
+[docs/RUNNER.md](docs/RUNNER.md) has every key and flag, with a recipe for
+each kind of run: a check before the run, resuming, scoring, a run that
+writes only its state, and the groups that close.
 
 ### Output as Arrow
 
 To hand a bank's output to a consumer that is not Polars, call
 `bank.fit_predict_arrow(df)` or `bank.predict_arrow(df)` in place of
-`fit_predict` or `predict`. Each returns the output through the Arrow
-PyCapsule interface, an Arrow specification, so any reader of
-`__arrow_c_array__` takes it directly. `fit_predict` itself hands its
+`fit_predict` or `predict`. Each returns one `ArrowStruct` per spec, which
+holds that spec's output through the Arrow PyCapsule interface, an Arrow
+specification, so any reader of `__arrow_c_array__` takes it directly. Its
+values are `fit_predict`'s, field for field and null for null. The input
+still goes in as a Polars `DataFrame`. `fit_predict` itself hands its
 output over as a Polars `Series`, on py-polars' private methods, so this
 package measures a Polars range and promises none ([Which interfaces carry
 a promise](#which-interfaces-carry-a-promise)).
-This code uses `df` and `today` from [Example data](#example-data):
-
-```python
-bank = po.ModelBank([spec])
-structs = bank.fit_predict_arrow(df)                    # one per spec, as Arrow
-out = df.with_columns([pl.Series(s) for s in structs])  # or any reader of __arrow_c_array__
-scored_structs = bank.predict_arrow(today)              # the same for predict, on today: the rows after df's
-```
-
-**Each `ArrowStruct` holds one spec's output, with `fit_predict`'s values,
-field for field and null for null.** The input still goes in as a Polars
-`DataFrame`.
 
 **Read each struct once.** Exporting hands its buffers to the consumer, so
 a second read raises `ValueError`.
+This code uses `df` and `today` from [Example data](#example-data):
+
+```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+bank = po.ModelBank([spec])
+structs = bank.fit_predict_arrow(df)                    # one per spec, as Arrow
+ridge = pl.Series(structs[0])                           # Polars as the reader here: any reader of __arrow_c_array__ takes it
+print(f"{len(structs)} {type(structs[0]).__name__}; read as a Series: {ridge.name}, {ridge.len()} rows")
+print(f"the same as fit_predict's column: {ridge.equals(po.ModelBank([spec]).fit_predict(df)['ridge'])}")
+try:
+    pl.Series(structs[0])                               # the second read
+except ValueError as e:
+    print(e)
+scored_structs = bank.predict_arrow(today)              # the same for predict, on today: the rows after df's
+```
+
+```text
+1 ArrowStruct; read as a Series: ridge, 400 rows
+the same as fit_predict's column: True
+this ArrowStruct has already been exported: the Arrow PyCapsule interface hands its buffers to the consumer, so it can be read once
+```
 
 Here is how two consumers take a struct, as measured:
 
@@ -1430,12 +1572,53 @@ Here is how two consumers take a struct, as measured:
 
 Save a bank's state (everything it has learned, for every spec and group)
 to one file, and load it back to keep learning or to score new rows
-without learning. Or export it as JSON. A state saved by 0.13.0 or an
-earlier release does not load in the releases after it: refit the bank from
-its input. From 1.0, a state a 1.x build saved loads in every later 1.x
-([This package's own versioning](#this-packages-own-versioning)).
-`with_windows` keeps a state of its own ([Saving and resuming a window
+without learning. Or export it as JSON. The three uses:
+
+| use | the call | what holds |
+|---|---|---|
+| resume | `po.ModelBank.load(path)`, or `load_state=` on a query | the next row is learned as one run would learn it |
+| serve | `bank.predict(frame)`, or `lf.online.predict(path)` | each row is scored as `fit_predict` would score it as the next row, and the state never moves |
+| read elsewhere | `bank.to_json()` | everything `save` writes, as JSON |
+
+The recipe fits `df`, saves the bank, and loads it back. Served, the first
+row of `today` gets the prediction one run over `df` and `today` gives it.
+Resumed on input that overlaps the state, through `skip_learned`, the bank
+learns each row once and gives one run's predictions on every row.
+This code uses `df` and `today` from [Example data](#example-data):
+
+```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+one_run = po.ModelBank([spec]).fit_predict(pl.concat([df, today]))   # df and today as one stream, for comparison
+
+bank = po.ModelBank([spec])
+bank.fit_predict(df)                                     # the stream so far
+bank.save("bank.state")
+loaded = po.ModelBank.load("bank.state", specs=[spec])   # specs= checks the file holds this model, not another
+
+served = loaded.predict(today)                           # score today's rows, learning nothing
+pred = lambda out: out["ridge"].struct.field("pred_y")
+print(f"served, today's first row: {pred(served)[0]:.6f}; one run: {pred(one_run)[400]:.6f}")
+
+rerun = pl.concat([df.tail(50), today])                  # input that overlaps the state by 50 rows
+kept = loaded.skip_learned(rerun)                        # the rows the state has not learned
+resumed = loaded.fit_predict(kept)
+print(f"kept {kept.height} of {rerun.height} rows; largest difference from one run: {(pred(resumed) - pred(one_run.tail(400))).abs().max()}")
+```
+
+```text
+served, today's first row: 1.603543; one run: 1.603543
+kept 400 of 450 rows; largest difference from one run: 0.0
+```
+
+A state saved by 0.13.0 or an earlier release does not load in the
+releases after it: refit the bank from its input. From 1.0, a state a 1.x
+build saved loads in every later 1.x ([This package's own
+versioning](#this-packages-own-versioning)). `with_windows` keeps a state
+of its own ([Saving and resuming a window
 run](docs/WINDOWS.md#saving-and-resuming-a-window-run)).
+[docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) says what each step of
+the workflow guarantees and what a saved bank carries, each with a
+recipe.
 
 ### Save and load
 
@@ -1449,28 +1632,37 @@ the file at its own moment:
 | a query | `save_state=` | `load_state=` | when the run reaches its last row, with the same bytes a `ModelBank` would write |
 | the command line | `--save-state` | `--load-state` | only after its output is committed |
 
-This code uses `df`, `lf`, `today` and `later` from [Example data](#example-data):
+This code uses `df` and `ticks.parquet` from [Example data](#example-data):
 
 ```python
-# df is the stream so far, and today (later, as a query) holds the rows that follow it.
-# From a bank object
-bank.fit_predict(df)
-bank.save("bank.state")                               # written whole or not at all: a temporary file, then a rename
-bank = po.ModelBank.load("bank.state", specs=[spec])  # specs= checks the file holds this model, not another
-scored = bank.predict(today)                          # serve: score the rows, learn nothing
-bank.fit_predict(today)                               # keep learning, once the targets have arrived: the state moves
+from pathlib import Path
 
-# From a query
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+bank = po.ModelBank([spec])
+bank.fit_predict(df)
+bank.save("from_bank.state")                             # from a bank object
+(pl.scan_parquet("ticks.parquet")                        # the same rows, from a query
+   .online.fit_predict([spec], save_state="from_query.state")
+   .sink_parquet("fitted.parquet"))
+print(f"the same bytes: {Path('from_bank.state').read_bytes() == Path('from_query.state').read_bytes()}")
+blob = bank.save_bytes()                                 # the same file as bytes, for a checkpoint that is not a file
+print(f"as bytes too: {blob == Path('from_bank.state').read_bytes()}")
+```
+
+```text
+the same bytes: True
+as bytes too: True
+```
+
+A query loads and saves with `load_state=` and `save_state=`, and the
+two may name one file. This code uses `lf` and `later` from [Example data](#example-data):
+
+```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 lf.online.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")             # fit, then save at the last row
 served = later.online.predict("bank.state").collect()                                             # serve from the file
 later.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")  # the next rows: continue, save again
-
-# today again, which the bank has learned: skip_learned keeps only the rows it has not (below)
-bank.fit_predict(bank.skip_learned(today))
-
-# The same file as bytes, for a checkpoint that lives somewhere other than a file:
-blob = bank.save_bytes()
-bank = po.ModelBank.load_bytes(blob, specs=[spec])
+bank = po.ModelBank.load_bytes(po.ModelBank.load("bank.state").save_bytes(), specs=[spec])         # bytes load as a file does
 ```
 
 **To resume on input that overlaps the state, pass it through
@@ -1487,13 +1679,15 @@ input starts where the saved one did.
 bank, leaves the `save_state` file as it was.** An error in a step after
 the bank, such as a full disk under `sink_parquet`, does not stop the bank
 on Polars 1.x. The state is then written although the output is missing
-([docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) has the measurements).
-To write the state only with the output, use the command line, which saves
-it after committing the output. In a query, give each batch of data its own
-dated `save_state` file, so a rerun loads the previous batch's state.
+([docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md#the-one-gap-a-failure-after-the-bank)
+has the measurements). To write the state only with the output, use the
+command line, which saves it after committing the output. In a query, give
+each batch of data its own dated `save_state` file, so a rerun loads the
+previous batch's state.
 This code uses `lf` and `later` from [Example data](#example-data):
 
 ```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
 (lf.online.fit_predict([spec], save_state="bank-2024-01-02.state")   # the first batch, and a state file of its own
    .sink_parquet("fitted-2024-01-02.parquet"))
 (later.online.fit_predict(load_state="bank-2024-01-02.state",        # the next batch loads the one before ...
@@ -1512,6 +1706,27 @@ file:**
 | was written under a newer state schema or file format than this build reads | `ValueError` | load it with the version of polars-online that wrote it |
 | was saved by 0.13.0 or an earlier release | `ValueError`, naming the range | refit the bank from its input. `po.schema_version()` gives the installed version's schema |
 
+This code uses `df` and `ticks.parquet` from [Example data](#example-data):
+
+```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+bank = po.ModelBank([spec])
+bank.fit_predict(df)
+bank.save("bank.state")
+other = po.spec.ewridge("ridge", targets=["y"], features=["x0"], clock="t", half_life=600.0, gap_cap=300.0)
+for path, specs in [("nowhere.state", [spec]), ("bank.state", [other]), ("ticks.parquet", None)]:
+    try:
+        po.ModelBank.load(path, specs=specs)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"{type(e).__name__}: {e}")
+```
+
+```text
+FileNotFoundError: [Errno 2] No such file or directory: 'nowhere.state'
+ValueError: saved specs do not match the bank's specs: spec "ridge" (1 of 1) differs at features: ["x0","x1"] in the file, ["x0"] in the bank; refusing to load
+ValueError: not a polars-online bank state file (invalid type: integer `80`, expected struct BankHeader)
+```
+
 ### Serving without learning
 
 To score rows without learning from them, call `bank.predict(frame)` on a
@@ -1519,13 +1734,25 @@ bank object, or `lf.online.predict(...)` in a query. Every row is scored
 from the same state, which `predict` never moves. Since it skips each
 row's update, `ewridge` scores 1.8 times as fast as it learns at 5
 features, and 2.9 times at 20 ([docs/PERFORMANCE.md](docs/PERFORMANCE.md)
-§9).
-This code uses `today` and `later` from [Example data](#example-data):
+§9). A query takes the bank object, read as it stands when the query runs,
+or a path, read when the query is built.
+This code uses `df`, `today` and `later` from [Example data](#example-data):
 
 ```python
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t", half_life=600.0, gap_cap=300.0)
+bank = po.ModelBank([spec])
+bank.fit_predict(df)
+bank.save("bank.state")
 scored = bank.predict(today)                             # every row scored from the same state: nothing moves
 served = later.online.predict(bank).collect()            # a bank, as it stands when the query runs
 from_file = later.online.predict("bank.state").collect() # a path, read when the query is built
+weights = scored["ridge"].struct.field("weight_sum")
+print(f"weight_sum on every row: {weights.min():.4f} to {weights.max():.4f}; the three agree: "
+      f"{scored['ridge'].equals(served['ridge']) and served['ridge'].equals(from_file['ridge'])}")
+```
+
+```text
+weight_sum on every row: 320.4975 to 320.4975; the three agree: True
 ```
 
 **Row *i* of `scored` carries what `fit_predict` would have reported had it
@@ -1552,15 +1779,27 @@ the binary file for resuming, since `load` reads only that form. Every
 export is read back and checked against the state before you get it, and
 one that does not match raises `ValueError`.
 
-```python
-text = bank.to_json()          # everything save() writes, as JSON
-bank.save_json("bank.json")    # the same, to a file
-```
-
 **A program reading the JSON must turn the strings `"nan"`, `"inf"` and
 `"-inf"` back into numbers.** JSON has no literal for `NaN` or `±inf`, and
 an ordinary state can hold them, as a spec with `half_life=inf` (no
 forgetting) does. The strings are the spelling a spec's `half_life` takes.
+This code uses `df` from [Example data](#example-data):
+
+```python
+import json
+
+bank = po.ModelBank([po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], half_life=float("inf"))])
+bank.fit_predict(df)
+text = bank.to_json()                     # everything save() writes, as JSON
+bank.save_json("bank.json")               # the same, to a file
+state = json.loads(text)                  # any JSON reader
+half_life = state["specs"][0]["half_life"]
+print(f"{state['magic']}: half_life {half_life!r}, as a number {float(half_life)}")
+```
+
+```text
+polars-online-bank: half_life 'inf', as a number inf
+```
 
 ## Reading the fit
 

@@ -674,6 +674,17 @@ README_RECIPES = shown_outputs(REPO / "README.md")
 #: to what `online` prints, stdout and stderr as a terminal interleaves them.
 RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
 
+#: The README's one shell block whose output it shows: `online` run on the
+#: README's TOML block, held by the test of that block.
+README_CLI_RECIPES = shown_outputs(REPO / "README.md", "sh")
+
+
+def _as_a_terminal_shows(text: str) -> str:
+    """``text`` as a terminal leaves it: a carriage return moves back to the
+    start of the line, so a progress line rewritten in place shows only its
+    last version."""
+    return "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))
+
 
 def _built_by_the_readme(
     code: str, line: int, ns: dict, memo: dict, path: str = "README.md"
@@ -1012,17 +1023,13 @@ class TestReadmeExamples:
             _readme_namespace(here)  # writes bank.toml, bank.state and the inputs
             printed = ""
             for command in (c for c in code.splitlines() if c.strip()):
-                res = subprocess.run(
-                    command,
-                    shell=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    check=False,
+                res = subprocess.run(  # bytes: text mode would turn a carriage return into a newline
+                    command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
                 )
-                assert res.returncode == 0, f"RUNNER.md:{line}: {command}\n{res.stdout}"
-                printed += res.stdout
+                out = res.stdout.decode("utf-8")
+                assert res.returncode == 0, f"RUNNER.md:{line}: {command}\n{out}"
+                printed += out
+            printed = _as_a_terminal_shows(printed)
             problems += [f"docs/RUNNER.md:{line}:\n{p}" for p in differences(shown, printed)]
         assert not problems, "\n\n".join(problems)
 
@@ -1268,17 +1275,28 @@ class TestReadmeExamples:
         `ticks.parquet`, and every prediction, residual and weight it writes
         must be that spec's in Python, bit for bit. The coefficients are left
         out: they come on each group's last accepted row of each chunk, and the two
-        runs chunk differently (PLAN §3)."""
-        monkeypatch.chdir(tmp_path)
+        runs chunk differently (PLAN §3). The README runs it with the shell
+        line under it, whose output it shows: that line runs here as written,
+        with the built `online` on PATH, the block saved as the `bank.toml` it
+        names, and what it prints is held to the text block under it."""
+        here = tmp_path / "readme"
+        here.mkdir()
+        monkeypatch.chdir(here)
         shown = [code for _, _, code in _doc_blocks("README.md", "toml")]
         assert len(shown) == 1, shown
-        ns = _readme_namespace(tmp_path)  # writes ticks.parquet
-        (tmp_path / "readme.toml").write_text(shown[0], encoding="utf-8")
-        subprocess.run(
-            [str(online_cli), "--config", "readme.toml", "--quiet"],
-            check=True,
-            capture_output=True,
+        ns = _readme_namespace(here)  # writes ticks.parquet
+        (here / "bank.toml").write_text(shown[0], encoding="utf-8")
+        assert len(README_CLI_RECIPES) == 1, README_CLI_RECIPES
+        (_, command, output), *_ = README_CLI_RECIPES
+        assert command.strip() == "online --config bank.toml", command
+        monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
+        res = subprocess.run(  # bytes: text mode would turn a carriage return into a newline
+            command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False
         )
+        printed = _as_a_terminal_shows(res.stdout.decode("utf-8"))
+        assert res.returncode == 0, printed
+        assert not differences(output, printed), printed
+        tmp_path = here
         got = pl.read_parquet(tmp_path / "fitted.parquet")["ridge"].struct.unnest()
         want = po.ModelBank([ns["spec"]]).fit_predict(ns["df"])["ridge"].struct.unnest()
         assert got.columns == want.columns
