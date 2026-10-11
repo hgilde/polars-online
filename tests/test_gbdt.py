@@ -19,6 +19,7 @@ import hashlib
 import json
 import warnings
 from collections import Counter
+from fractions import Fraction
 
 import lightgbm as lgb
 import numpy as np
@@ -191,64 +192,219 @@ def splitmix(i: np.ndarray, seed: int) -> np.ndarray:
         return z ^ (z >> np.uint64(31))
 
 
-def planted(values: np.ndarray, max_bin: int) -> np.ndarray:
-    """The edges the docstring defines from a feature's sample values."""
-    s = np.sort(values[np.isfinite(values)])
-    distinct = np.unique(s)
+def planted(values: np.ndarray, max_bin: int, weights: np.ndarray | None = None) -> np.ndarray:
+    """The edges the docstring defines from a feature's sample values and,
+    with ``weights``, the sample's estimated weights: the lowest value of
+    positive weight, then for ``j = 1 .. max_bin - 1`` the first sorted
+    value whose cumulative weight exceeds ``j / max_bin`` of the total, each
+    distinct; or every distinct value when there are at most ``max_bin``.
+    Exact arithmetic (``Fraction``), so that nothing here shares the
+    implementation's rounding."""
+    w = np.ones(len(values)) if weights is None else weights
+    keep = np.isfinite(values) & (w > 0)
+    v, w = values[keep], w[keep]
+    if len(v) == 0:
+        return np.array([0.0], dtype=np.float32)
+    order = np.argsort(v, kind="stable")
+    v, w = v[order], w[order]
+    distinct = np.unique(v)
     if len(distinct) <= max_bin:
         return distinct
-    m = len(s)
-    out = [s[0]]
+    total = sum(Fraction(float(x)) for x in w)
+    out = [v[0]]
+    acc, i = Fraction(float(w[0])), 0
     for j in range(1, max_bin):
-        v = s[j * m // max_bin]
-        if v > out[-1]:
-            out.append(v)
+        target = total * j / max_bin
+        while acc <= target:
+            i += 1
+            acc += Fraction(float(w[i]))
+        if v[i] > out[-1]:
+            out.append(v[i])
     return np.array(out, dtype=np.float32)
 
 
-@pytest.mark.parametrize("engine", ["native", "python"])
-def test_the_cuts_are_the_defined_sample_s_quantiles(data, engine):
-    """XGBoost's cuts are the sample's planted edges, the sample being the
-    ``sample_rows`` rows of smallest hash: written from the docstring, not
-    from the code."""
-    k, max_bin = 3_000, 64
-    m = gbdt.xgboost_matrix(
-        data, label="y", weight="w", sample_rows=k, max_bin=max_bin, seed=5, engine=engine
-    )
-    h = splitmix(np.arange(data.height, dtype=np.uint64), 5)
-    kept = np.sort(np.argsort(h, kind="stable")[:k])
-    x = numpy_x(data, np.float32)[kept]
+def priority_sample(w: np.ndarray, k: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """The docstring's sample under row weights, from its definition: row
+    ``i`` has priority ``w_i / u_i`` with ``u_i = (2 h(i) + 1) / 2**65``,
+    the ``k`` rows of largest priority are kept (an earlier row before a
+    later one of equal priority), and a kept row stands for ``max(w_i,
+    tau)``, ``tau`` the largest priority not kept (0 when every row is
+    kept). Returns the kept rows, in order, and their weights, exact."""
+    h = splitmix(np.arange(len(w), dtype=np.uint64), seed)
+    prio = [Fraction(float(wi)) * 2**65 / (2 * int(hi) + 1) for wi, hi in zip(w, h, strict=True)]
+    order = sorted(range(len(w)), key=lambda i: (-prio[i], i))
+    kept = np.sort(np.array(order[:k]))
+    tau = prio[order[k]] if len(w) > k else Fraction(0)
+    est = np.array([max(Fraction(float(w[i])), tau) for i in kept], dtype=object)
+    return kept, est
+
+
+def planted_exact(values: np.ndarray, est: np.ndarray, max_bin: int) -> np.ndarray:
+    """``planted`` over exact weights (``Fraction``s)."""
+    keep = np.isfinite(values) & np.array([e > 0 for e in est], dtype=bool)
+    v, w = values[keep], est[keep]
+    if len(v) == 0:
+        return np.array([0.0], dtype=np.float32)
+    order = np.argsort(v, kind="stable")
+    v, w = v[order], w[order]
+    distinct = np.unique(v)
+    if len(distinct) <= max_bin:
+        return distinct
+    total = sum(w)
+    out = [v[0]]
+    acc, i = w[0], 0
+    for j in range(1, max_bin):
+        target = total * j / max_bin
+        while acc <= target:
+            i += 1
+            acc += w[i]
+        if v[i] > out[-1]:
+            out.append(v[i])
+    return np.array(out, dtype=np.float32)
+
+
+def assert_cuts(m: xgb.DMatrix, x: np.ndarray, want_of) -> None:
     indptr, cuts = m.get_quantile_cut()
     for j, name in enumerate(FEATURES):
         got = cuts[indptr[j] : indptr[j + 1]]
         if name == "cat":
             np.testing.assert_array_equal(got, np.arange(len(LEVELS), dtype=np.float32))
             continue
-        want = planted(x[:, j], max_bin)
+        want = want_of(x[:, j])
         assert got[0] == -np.inf, name
         np.testing.assert_array_equal(got[1:-1], want[1:], err_msg=name)
+
+
+@pytest.mark.parametrize("engine", ["native", "python"])
+def test_the_cuts_are_the_defined_sample_s_quantiles(data, engine):
+    """Without weights, XGBoost's cuts are the sample's planted edges, the
+    sample being the ``sample_rows`` rows of smallest hash: written from
+    the docstring, not from the code."""
+    k, max_bin = 3_000, 64
+    m = gbdt.xgboost_matrix(data, label="y", sample_rows=k, max_bin=max_bin, seed=5, engine=engine)
+    h = splitmix(np.arange(data.height, dtype=np.uint64), 5)
+    kept = np.sort(np.argsort(h, kind="stable")[:k])
+    x = numpy_x(data, np.float32)[kept]
+    assert_cuts(m, x, lambda col: planted(col, max_bin))
     # A feature of few values gets a bin per value it was seen with.
     j = FEATURES.index("i0")
+    indptr = m.get_quantile_cut()[0]
     assert indptr[j + 1] - indptr[j] == len(np.unique(x[:, j])) + 1 == 21
 
 
 @pytest.mark.parametrize("engine", ["native", "python"])
-def test_xgboost_grows_its_own_trees_on_the_same_cuts(data, valid, engine):
-    """With the sample's cuts, the trees and the scores of XGBoost's numpy
-    route binned on the same cuts; nulls by Arrow validity, the Enum as a
-    categorical feature."""
-    m = gbdt.xgboost_matrix(data, label="y", weight="w", engine=engine)
-    assert m.feature_names == FEATURES and m.feature_types == TYPES
-    assert m.num_row() == data.height
-    own = xgb_own(data, ref=m)
-    a, b = xgb.train(XGB, m, 20), xgb.train(XGB, own, 20)
-    assert xgb_trees(a) == xgb_trees(b)
-    xv = xgb.DMatrix(
-        numpy_x(valid), feature_types=TYPES, feature_names=FEATURES, enable_categorical=True
+@pytest.mark.parametrize("weights", ["uniform", "skewed"])
+def test_weighted_cuts_are_the_defined_priority_sample_s_quantiles(data, engine, weights):
+    """With ``weight=``, the cuts are the weighted quantiles of a priority
+    sample (review 7, C-4: the sample once ignored the weights, where
+    XGBoost's own sketch is weighted). Written from the docstring in exact
+    arithmetic. ``uniform`` is the fixture's weights, 0.5 to 2, every one
+    below ``tau``, so each kept row stands for ``tau``; ``skewed`` gives the
+    rows of ``x2 > 3`` a weight of 400, which puts them all in the sample at
+    their own weight."""
+    k, max_bin = 3_000, 64
+    df = data
+    if weights == "skewed":
+        df = data.with_columns(w=pl.when(pl.col("x2") > 3).then(400.0).otherwise(pl.col("w")))
+    m = gbdt.xgboost_matrix(
+        df, label="y", weight="w", sample_rows=k, max_bin=max_bin, seed=5, engine=engine
     )
-    assert rmse(a.predict(xv), valid["y"].to_numpy()) == rmse(b.predict(xv), valid["y"].to_numpy())
-    split = '"split": "cat", "split_condition": ['
-    assert any(split in t for t in a.get_dump(dump_format="json")), "a categorical split"
+    w = df["w"].to_numpy()
+    kept, est = priority_sample(w, k, 5)
+    if weights == "skewed":
+        heavy = np.flatnonzero(w == 400.0)
+        assert len(heavy) > 100 and np.isin(heavy, kept).all(), "a row above tau is always kept"
+        assert len({e for e in est}) > 1, "the kept rows stand for different weights"
+    x = numpy_x(df, np.float32)[kept]
+    assert_cuts(m, x, lambda col: planted_exact(col, est, max_bin))
+
+
+def test_weighted_cuts_are_numpy_s_weighted_quantiles():
+    """A third-party oracle: with every row in the sample, each cut is
+    numpy's weighted quantile (``method="inverted_cdf"``, the first value
+    whose cumulative weight reaches the level) at ``j / max_bin``. On
+    weights tied to the value (review 7, C-4: 50 above 1.0 put 14 of
+    XGBoost's 15 cuts above 1.0 and 2 of the sample's), on rows of weight 0
+    far from the rest (hard rule 9: they place no cut), and on one row
+    carrying nearly all the weight."""
+    rng = np.random.default_rng(11)
+    n, max_bin = 20_000, 16
+    x = rng.normal(size=n)
+    cases = {
+        "weight 50 above 1.0": (x, np.where(x > 1.0, 50.0, 1.0)),
+        "weight exp(2x)": (x, np.exp(2 * x)),
+    }
+    far = np.where(rng.random(n) < 0.9, rng.normal(10, 1, n), x)
+    cases["weight 0 on 90% of rows, far away"] = (
+        far,
+        np.where(far > 5, 0.0, rng.uniform(0.5, 2, n)),
+    )
+    heavy = rng.uniform(0.5, 2, n)
+    heavy[123] = 1e9
+    cases["one row of weight 1e9"] = (x, heavy)
+    levels = np.arange(1, max_bin) / max_bin
+    for name, (v, w) in cases.items():
+        df = pl.DataFrame({"x": v, "y": v, "w": w})
+        m = gbdt.xgboost_matrix(df, label="y", weight="w", max_bin=max_bin)
+        indptr, cuts = m.get_quantile_cut()
+        got = cuts[indptr[0] + 1 : indptr[1] - 1]
+        x32 = v.astype(np.float32)
+        q = np.quantile(x32, levels, weights=w, method="inverted_cdf")
+        want = np.unique(q[q > x32[w > 0].min()])
+        np.testing.assert_array_equal(got, want, err_msg=name)
+        if name == "weight 50 above 1.0":
+            assert (got > 1.0).sum() == 14, got
+        if name == "one row of weight 1e9":
+            np.testing.assert_array_equal(got, [x32[123]])
+
+
+@pytest.mark.parametrize("engine", ["native", "python"])
+def test_xgboost_grows_its_own_trees_on_the_same_cuts(data, valid, engine):
+    """The cuts against XGBoost's own weighted sketch of the same rows and
+    weights, and the trees and scores against XGBoost's numpy route binned
+    on the sample's cuts; nulls by Arrow validity, the Enum as a categorical
+    feature. The sketch is approximate and the sample's quantiles exact
+    here (every row is in the sample), so the continuous features' cuts are
+    held to within 1/512 of the weight of XGBoost's own, where a bin holds
+    1/256 of it, and the trees, which see any moved cut, to the numpy route
+    on the same cuts. The cuts once ignored the weights (review 7, C-4):
+    with the rows of ``x2 > 3`` at weight 400, ``x2``'s cuts sat up to 0.84
+    of the weight from XGBoost's own, and at the fixture's own weights 0.0027
+    (0.0006 now)."""
+    skewed = data.with_columns(w=pl.when(pl.col("x2") > 3).then(400.0).otherwise(pl.col("w")))
+    for df in (data, skewed):
+        m = gbdt.xgboost_matrix(df, label="y", weight="w", engine=engine)
+        assert m.feature_names == FEATURES and m.feature_types == TYPES
+        assert m.num_row() == df.height
+        i1, c1 = m.get_quantile_cut()
+        i2, c2 = xgb_own(df).get_quantile_cut()
+        np.testing.assert_array_equal(i1, i2)
+        x, w = numpy_x(df, np.float32), df["w"].to_numpy()
+        for j, name in enumerate(FEATURES):
+            a, b = c1[i1[j] : i1[j + 1]], c2[i2[j] : i2[j + 1]]
+            if name in ("x3", "i0", "b0", "cat"):
+                np.testing.assert_array_equal(
+                    a, b, err_msg=f"{name}: a bin per value, as XGBoost's"
+                )
+                continue
+            ok = np.isfinite(x[:, j])
+            xs, ws = x[ok, j], w[ok]
+
+            def below(cuts, xs=xs, ws=ws):
+                return np.array([ws[xs < c].sum() for c in cuts[1:-1]]) / ws.sum()
+
+            gap = np.abs(below(a) - below(b)).max()
+            assert gap < 1 / 512, f"{name}: a cut {gap:.5f} of the weight from XGBoost's own"
+        own = xgb_own(df, ref=m)
+        a_, b_ = xgb.train(XGB, m, 20), xgb.train(XGB, own, 20)
+        assert xgb_trees(a_) == xgb_trees(b_)
+        xv = xgb.DMatrix(
+            numpy_x(valid), feature_types=TYPES, feature_names=FEATURES, enable_categorical=True
+        )
+        y = valid["y"].to_numpy()
+        assert rmse(a_.predict(xv), y) == rmse(b_.predict(xv), y)
+        split = '"split": "cat", "split_condition": ['
+        assert any(split in t for t in a_.get_dump(dump_format="json")), "a categorical split"
 
 
 @pytest.mark.parametrize("engine", ["native", "python"])
@@ -329,9 +485,11 @@ def test_ipc_parquet_a_lazyframe_and_a_frame_grow_the_same_trees(data, files):
 
 def test_the_python_engine_grows_the_native_engine_s_trees(data):
     for sample in (200_000, 2_000, None):
-        a = gbdt.xgboost_matrix(data, label="y", sample_rows=sample, engine="native")
-        b = gbdt.xgboost_matrix(data, label="y", sample_rows=sample, engine="python")
-        assert xgb_trees(xgb.train(XGB, a, 10)) == xgb_trees(xgb.train(XGB, b, 10)), sample
+        for weight in (None, "w"):
+            kw = dict(label="y", weight=weight, sample_rows=sample)
+            a = gbdt.xgboost_matrix(data, **kw, engine="native")
+            b = gbdt.xgboost_matrix(data, **kw, engine="python")
+            assert xgb_trees(xgb.train(XGB, a, 10)) == xgb_trees(xgb.train(XGB, b, 10)), kw
 
 
 # ---------------------------------------------------------------- LightGBM

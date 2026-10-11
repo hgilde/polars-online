@@ -7,7 +7,7 @@ use std::num::NonZeroUsize;
 use polars::prelude::*;
 
 use super::frames::{Frame, Num, Reader, segments};
-use super::sample::{Planted, Sampler};
+use super::sample::{Planted, Sampler, hash};
 use super::*;
 
 fn layout(p: usize, weight: bool) -> Layout {
@@ -171,7 +171,7 @@ fn the_sample_is_the_same_rows_however_the_stream_is_cut() {
     let lay = layout(2, false);
     let pool = pool();
     let draw = |cut: i64| {
-        let mut s = Sampler::new(lay.kinds.clone(), 500, 7);
+        let mut s = Sampler::new(lay.kinds.clone(), 500, 7, false);
         let mut at = 0;
         while at < 20_000 {
             let end = (at + cut).min(20_000);
@@ -186,13 +186,227 @@ fn the_sample_is_the_same_rows_however_the_stream_is_cut() {
     assert_eq!(one, draw(1));
     assert_eq!(one, draw(333));
     // A short stream is kept whole.
-    let mut s = Sampler::new(lay.kinds.clone(), 500, 7);
+    let mut s = Sampler::new(lay.kinds.clone(), 500, 7, false);
     s.push_frame(&frame(0..40), &lay, &pool).unwrap();
     assert_eq!(s.rows_kept(), 40);
     match &s.planted(256, &pool)[1] {
         Planted::Values(v) => assert_eq!(v, &(0..11).map(|c| c as f32).collect::<Vec<_>>()),
         other => panic!("{other:?}"),
     }
+}
+
+/// `frame(rows)` with a weight column `w`, `w(i)` for row `i`.
+fn weighted(rows: std::ops::Range<i64>, w: impl Fn(i64) -> f64) -> DataFrame {
+    let mut df = frame(rows.clone());
+    let w: Vec<f64> = rows.map(w).collect();
+    df.with_column(Column::new("w".into(), w)).unwrap();
+    df
+}
+
+fn draw(lay: &Layout, k: usize, cut: i64, n: i64, w: &dyn Fn(i64) -> f64) -> Sampler {
+    let pool = pool();
+    let mut s = Sampler::new(lay.kinds.clone(), k, 7, lay.weight.is_some());
+    let mut at = 0;
+    while at < n {
+        let end = (at + cut).min(n);
+        let df = if lay.weight.is_some() {
+            weighted(at..end, w)
+        } else {
+            frame(at..end)
+        };
+        s.push_frame(&df, lay, &pool).unwrap();
+        at = end;
+    }
+    s
+}
+
+#[test]
+fn a_weighted_sample_is_the_same_rows_however_the_stream_is_cut() {
+    let lay = layout(2, true);
+    let pool = pool();
+    let w = |i: i64| 0.25 + (i % 13) as f64 + if i % 97 == 0 { 300.0 } else { 0.0 };
+    let one = draw(&lay, 500, 20_000, 20_000, &w).ref_matrix(64, &pool);
+    assert_eq!(one, draw(&lay, 500, 1, 20_000, &w).ref_matrix(64, &pool));
+    assert_eq!(one, draw(&lay, 500, 333, 20_000, &w).ref_matrix(64, &pool));
+}
+
+#[test]
+fn equal_weights_draw_and_plant_the_unweighted_sample_to_the_bit() {
+    let pool = pool();
+    let plain = draw(&layout(2, false), 500, 333, 20_000, &|_| 1.0).ref_matrix(64, &pool);
+    for x in [1.0, 3.7, 1e-3, 1e300] {
+        let s = draw(&layout(2, true), 500, 333, 20_000, &|_| x);
+        assert_eq!(plain, s.ref_matrix(64, &pool), "{x}");
+        // By the unweighted rule itself: a running sum of equal floats can
+        // cross `j / max_bin` of the total a row early where that point
+        // falls on a row (100 weights of 0.1 at a quarter: 25 sum to more
+        // than a quarter of all 100), so equal weights do not take the
+        // weighted rule.
+        assert!(s.stands_for().is_none(), "{x}");
+    }
+    // A stream shorter than the sample too.
+    let plain = draw(&layout(2, false), 500, 7, 300, &|_| 1.0).ref_matrix(64, &pool);
+    assert_eq!(
+        plain,
+        draw(&layout(2, true), 500, 7, 300, &|_| 0.5).ref_matrix(64, &pool)
+    );
+}
+
+#[test]
+fn a_row_heavier_than_tau_is_always_kept_and_weight_zero_never_counts() {
+    let lay = layout(2, true);
+    let pool = pool();
+    // Rows 1000, 2000, .., 19000 carry a weight far above tau: all 19 kept.
+    // x0 is i / 2 (a null at i % 7 == 3), so those rows hold every edge.
+    let s = draw(&lay, 200, 999, 20_000, &|i| {
+        if i % 1000 == 0 && i > 0 { 1e9 } else { 1.0 }
+    });
+    assert_eq!(s.rows_kept(), 200);
+    match &s.planted(5, &pool)[0] {
+        // 16 of them hold a value (x0 is null at rows 4000, 11000 and
+        // 18000), 500, 1000, 1500, 2500, .., each nearly 1/16 of the weight:
+        // the edges at 1/5 .. 4/5 of it fall on the 4th, 7th, 10th and 13th
+        // of them, and the 183 light rows' weight, under 1e-4 of the total,
+        // cannot move an edge.
+        Planted::Values(v) => assert_eq!(&v[1..], &[2500.0, 4000.0, 6000.0, 7500.0]),
+        other => panic!("{other:?}"),
+    }
+    // Weight 0 on every row of x0 >= 100 (i >= 200): those rows place no
+    // edge, though the stream is shorter than the sample.
+    let s = draw(&lay, 5_000, 333, 2_000, &|i| {
+        if i >= 200 { 0.0 } else { 2.0 }
+    });
+    assert_eq!(s.rows_kept(), 2_000);
+    match &s.planted(16, &pool)[0] {
+        Planted::Values(v) => assert!(v.iter().all(|&e| e < 100.0), "{v:?}"),
+        other => panic!("{other:?}"),
+    }
+    // No weight at all: one value, as for a feature never seen.
+    let s = draw(&lay, 50, 333, 2_000, &|_| 0.0);
+    assert_eq!(s.planted(16, &pool)[0], Planted::Values(vec![0.0]));
+}
+
+#[test]
+fn what_the_kept_rows_stand_for_sums_to_the_stream_s_weight_on_average() {
+    // Priority sampling's estimate of the total weight, the sum of
+    // max(w_i, tau) over the kept rows, is unbiased: over 300 seeds its
+    // mean is the total within 1% (one seed's spread is about 10%), and
+    // the rows of weight 400, heavier than tau, always count as themselves.
+    let lay = layout(2, true);
+    let pool = pool();
+    let w = |i: i64| {
+        if i % 500 == 7 {
+            400.0
+        } else {
+            0.5 + (i % 10) as f64
+        }
+    };
+    let n = 5_000;
+    let total: f64 = (0..n).map(w).sum();
+    let seeds = 300;
+    let mut mean = 0.0;
+    for seed in 0..seeds {
+        let mut s = Sampler::new(lay.kinds.clone(), 100, seed, true);
+        s.push_frame(&weighted(0..n, w), &lay, &pool).unwrap();
+        let kept = s.kept_weights();
+        let scale = kept.iter().copied().fold(0.0, f64::max);
+        assert_eq!(scale, 400.0, "every row of weight 400 kept");
+        let est = s.stands_for().expect("unequal weights");
+        assert_eq!(kept.iter().filter(|&&x| x == 400.0).count(), 10);
+        for (x, e) in kept.iter().zip(&est) {
+            if *x == 400.0 {
+                assert_eq!(*e, 1.0, "a row above tau counts its own weight");
+            }
+        }
+        mean += est.iter().sum::<f64>() * scale / seeds as f64;
+    }
+    assert!((mean / total - 1.0).abs() < 0.01, "{mean} against {total}");
+}
+
+#[test]
+fn of_two_rows_of_equal_priority_the_earlier_is_kept() {
+    // Rows whose hash is below 2^52 have 2h + 1 exact as a float; given
+    // that weight, each has the priority (2h + 1) / u = 2^65 exactly.
+    let rows: Vec<i64> = (0..200_000)
+        .filter(|&i| hash(i as u64, 7) < 1 << 52)
+        .take(2)
+        .collect();
+    let (a, b) = (rows[0], rows[1]);
+    let weight = |i: i64| (2 * hash(i as u64, 7) + 1) as f64;
+    let lay = layout(2, true);
+    let mut s = Sampler::new(lay.kinds.clone(), 1, 7, true);
+    let w = move |i: i64| if i == a || i == b { weight(i) } else { 0.0 };
+    s.push_frame(&weighted(0..b + 1, w), &lay, &pool()).unwrap();
+    assert_eq!(s.kept_weights(), &[weight(a)]);
+}
+
+#[test]
+fn tau_is_the_first_of_equal_priorities_to_leave_the_sample() {
+    // Row 0 weighs 1e30 and stays. Row `l`, the first of hash below 2^52,
+    // has priority 2^66 and stays. Rows `a` and `b` after it have priority
+    // 2^65 each and leave in that order: tau is `a`'s, and `l` stands for
+    // it. As floats the two can differ in the last bit; a pair where they
+    // do tells the rule apart.
+    let low: Vec<i64> = (1..2_000_000)
+        .filter(|&i| hash(i as u64, 7) < 1 << 52)
+        .take(40)
+        .collect();
+    let odd = |i: i64| (2 * hash(i as u64, 7) + 1) as f64;
+    let two_m65 = 1.0 / 36_893_488_147_419_103_232.0;
+    let tau = |i: i64| (odd(i) / 1e30) / (odd(i) * two_m65);
+    let l = low[0];
+    let (a, b) = low[1..]
+        .windows(2)
+        .map(|p| (p[0], p[1]))
+        .find(|&(a, b)| tau(a) != tau(b))
+        .expect("a pair whose float tau differs");
+    let w = move |i: i64| match i {
+        0 => 1e30,
+        _ if i == l => 2.0 * odd(l),
+        _ if i == a || i == b => odd(i),
+        _ => 0.0,
+    };
+    let lay = layout(2, true);
+    let mut s = Sampler::new(lay.kinds.clone(), 2, 7, true);
+    s.push_frame(&weighted(0..b + 1, w), &lay, &pool()).unwrap();
+    let kept = s.kept_weights().to_vec();
+    let est = s.stands_for().unwrap();
+    let at = kept
+        .iter()
+        .position(|&x| x == 2.0 * odd(l))
+        .expect("l kept");
+    assert_eq!(est[at], tau(a));
+}
+
+#[test]
+fn a_record_batch_is_sampled_as_a_frame_is() {
+    let lay = layout(2, true);
+    let pool = pool();
+    let w = |i: i64| 1.0 + (i % 5) as f64;
+    let mut a = Sampler::new(lay.kinds.clone(), 50, 7, true);
+    a.push_frame(&weighted(0..1_000, w), &lay, &pool).unwrap();
+    let mut b = Sampler::new(lay.kinds.clone(), 50, 7, true);
+    b.push_any(Frame::Df(weighted(0..1_000, w)), &lay, &pool)
+        .unwrap();
+    assert_eq!(b.rows_seen(), 1_000);
+    assert_eq!(a.ref_matrix(16, &pool), b.ref_matrix(16, &pool));
+}
+
+#[test]
+fn the_sample_refuses_a_negative_weight_by_row() {
+    let lay = layout(2, true);
+    let pool = pool();
+    let mut s = Sampler::new(lay.kinds.clone(), 50, 7, true);
+    s.push_frame(&weighted(0..100, |_| 1.0), &lay, &pool)
+        .unwrap();
+    let e = s
+        .push_frame(
+            &weighted(100..200, |i| if i == 150 { -1.0 } else { 1.0 }),
+            &lay,
+            &pool,
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("holds -1.0 at row 150"), "{e}");
 }
 
 #[test]
@@ -202,7 +416,7 @@ fn a_category_plants_its_levels() {
         ..layout(2, false)
     };
     let pool = pool();
-    let mut s = Sampler::new(lay.kinds.clone(), 100, 0);
+    let mut s = Sampler::new(lay.kinds.clone(), 100, 0, false);
     s.push_frame(&frame(0..1000), &lay, &pool).unwrap();
     let (m, rows) = s.ref_matrix(256, &pool);
     let cat: Vec<f32> = (0..rows).map(|r| m[r * 2 + 1]).collect();
