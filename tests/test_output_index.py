@@ -208,9 +208,7 @@ def _every_kind():
     for name, extra in MINIMAL.items():
         kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "half_life": 50.0}
         kw.update(extra)
-        specs[name] = getattr(po.spec, name)(
-            "m", **{k: v for k, v in kw.items() if v is not None}
-        )
+        specs[name] = getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
     specs["ew_cov lag_corr"] = po.spec.ew_cov(
         "m", features=["a", "b"], stats=["lag_corr", "corr"], lags=[1, 3], half_life=10.0
     )
