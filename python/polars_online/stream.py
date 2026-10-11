@@ -3,7 +3,7 @@ or ahead, and series that tick at their own times.
 
 Everything here takes a ``LazyFrame`` or a ``DataFrame`` and gives back the same
 kind, in O(state) memory, before or beside a bank. Every function follows the
-same rules (docs/PLAN.md task 105):
+same rules:
 
 - **Frame first, the same kind back.** Chain with Polars' own
   ``lf.pipe(po.stream.embargo, clock="t", delay=5.0)``.
@@ -718,12 +718,12 @@ def with_windows(
 
     Reads like ``with_columns``: each expression adds a column named by its
     keyword or its ``.alias()``, and the input's columns come through
-    unchanged, in order. The operators -- :func:`polars_online.ewm_mean`,
-    :func:`polars_online.rewm_mean`, :func:`polars_online.ewm_sum`,
-    :func:`polars_online.rewm_sum`, :func:`polars_online.ewm_rate`,
-    :func:`polars_online.rewm_rate`, :func:`polars_online.ewm_var`,
-    :func:`polars_online.ewm_std` and :func:`polars_online.increment` --
-    are stateful kernels computed by the core, each distinct one once. The
+    unchanged, in order. The operators -- :func:`~polars_online.ops.ewm_mean`,
+    :func:`~polars_online.ops.rewm_mean`, :func:`~polars_online.ops.ewm_sum`,
+    :func:`~polars_online.ops.rewm_sum`, :func:`~polars_online.ops.ewm_rate`,
+    :func:`~polars_online.ops.rewm_rate`, :func:`~polars_online.ops.ewm_var`,
+    :func:`~polars_online.ops.ewm_std` and :func:`~polars_online.ops.increment`
+    -- are stateful kernels computed by the core, each distinct one once. The
     formula around them is element-wise Polars, evaluated on each chunk
     emitted. Over ``trades``, quotes with a ``mid`` and trades between them
     with a ``side``, a ``quantity`` and a ``price``, a trailing mean of the
@@ -794,9 +794,10 @@ def with_windows(
     rolling function, ``over`` or an aggregation would depend on the
     chunking, and is refused by name while the plan is built. An operator's
     input is the same kind of formula, ``increment`` included, not another
-    operator. The
-    formula is kept as a compact tree of its own, in the plan and in a saved
-    state (docs/PLAN.md task 143).
+    operator. The formula is kept as a compact tree of the library's own, in
+    the plan and in a saved state, so a state saved under one Polars version
+    loads under another: Polars' own serialized form of an expression
+    changes between versions.
 
     **Rows leave in input order**, each once every window over it has
     resolved. A backward window under ``closed="right"`` or ``"both"`` waits

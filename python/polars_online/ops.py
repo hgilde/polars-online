@@ -1,10 +1,12 @@
-"""The window operators (docs/PLAN.md task 143): exponentially weighted
-means, sums and rates over a stream's clock, looking back or ahead, a
-variance and a standard deviation looking back, and the increment of a
-running sum. Each returns a ``pl.Expr`` that composes with Polars' own --
-``pl.col`` is the current row. It is computed by
-:func:`polars_online.stream.with_windows` in one pass, in O(window) memory,
-or learned as a spec's target under an embargo (docs/PLAN.md task 104).
+"""The window operators: exponentially weighted means, sums and rates over
+a stream's clock, looking back or ahead, a variance and a standard
+deviation looking back, and the increment of a running sum. Each returns a
+``pl.Expr`` that composes with Polars' own -- ``pl.col`` is the current
+row. It is computed by :func:`polars_online.stream.with_windows` in one
+pass, in O(window) memory, or given to a spec as a target. A target that
+looks ahead is known only once its window has closed, so the bank learns
+it then, under an ``embargo`` (:mod:`polars_online.spec`) of at least the
+window.
 
 Every operator is defined once, by the library that has it, and held to it
 in the tests. For row *t* at policy time ``tau_t`` with ``lam = 2 ** (-1 /
@@ -55,10 +57,10 @@ half_life)``:
        first row; seconds on a temporal column
      - the row before it
 
-**Which rows a window holds follows Polars' ``rolling_*_by``**: a window is a
-set of timestamps, and ``closed`` says which ends are in. Every row at one
-stamp gets the same backward window, later rows at that stamp included, and
-looking ahead the mirror holds:
+**Which rows a window holds follows Polars' rolling windows**
+(``rolling_*_by``): a window is a set of timestamps, and ``closed`` says
+which ends are in. Every row at one stamp gets the same backward window,
+later rows at that stamp included, and looking ahead the mirror holds:
 
 .. list-table::
    :header-rows: 1
@@ -88,8 +90,9 @@ An edge between two rows is decided from the difference of their clocks,
 exact in nanoseconds on a temporal clock, as Polars decides it, at any age
 of the stream. ``min_samples`` (Polars' name) nulls a window holding fewer
 rows with a value. A value that is NaN, infinite or beyond 1e100 in
-magnitude is read as missing, as a null is (the library's input bound,
-docs/PLAN.md §3). At a row whose value is missing the operator gives the
+magnitude is read as missing, as a null is: every model reads its inputs
+within that bound, where a weight of 1e100 times a square of 1e100 is
+1e300, still inside a double's range. At a row whose value is missing the operator gives the
 window as it stands, where Polars' ``ewm_mean_by`` gives null. A row is in
 a window by its stamp, but a mean weighs it
 by its held interval inside the window. So a row exactly one window old
@@ -257,8 +260,8 @@ def rewm_mean(
     """The time-weighted mean of ``input`` over the rows after each row, at
     most ``window_size`` later: the mirror of :func:`ewm_mean`, each value
     held until the next row and weighed by the decayed time from the row.
-    A target of the row's future, under an embargo of at least
-    ``window_size`` (docs/PLAN.md task 104)."""
+    As a spec's target it is known only once the window has closed, so the
+    bank learns it under an ``embargo`` of at least ``window_size``."""
     return operator(
         "rewm_mean",
         input,
@@ -442,7 +445,8 @@ def increment(input: str | pl.Expr) -> pl.Expr:
     midnight is negative, as Polars' ``diff`` on a ``Time`` gives. On an
     integer column, ``Int8`` to ``Int128`` or ``UInt8`` to ``UInt64``, the
     step is taken in integers, then made a float, rounded once, so a running
-    count past ``2**53`` keeps its steps of 1. The input of a sum or
-    a rate over a running total, so a day's notional of 1e10 is read as its
-    trades (docs/PLAN.md task 143, *Numerics*)."""
+    count past ``2**53`` keeps its steps of 1. Give it a running total
+    before a sum or a rate: its increments are the trades themselves, where
+    a window's notional of 1e6 read as the difference of two running totals
+    near 1e10 loses about four of a double's sixteen digits."""
     return operator("increment", input)

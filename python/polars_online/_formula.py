@@ -1,7 +1,7 @@
 """Formulas: a Polars expression over the window operators, kept as this
-library's own compact tree (docs/PLAN.md task 143).
+library's own compact tree.
 
-An operator such as :func:`polars_online.ewm_mean` returns a genuine
+An operator such as :func:`~polars_online.ops.ewm_mean` returns a genuine
 ``pl.Expr``: a column reference whose name carries the operator's compact
 JSON after ``@po:``. So it composes with ``pl.col``, ``pl.lit``, numbers,
 ``when/then`` and the element-wise functions on either side of a Polars
@@ -20,7 +20,8 @@ The serialized tree as a whole is unstable across Polars versions, which is
 why only these nodes are read, here, and the Rust side rebuilds the formula
 through Polars' public builders. A node outside the seven -- ``shift``,
 ``cum_sum``, a rolling window, ``over``, an aggregation -- would depend on
-the chunking (hard rule 3), and is refused by name. :func:`from_tree`
+the chunking, where one chunk or a thousand must give the same numbers, and
+is refused by name. :func:`from_tree`
 rebuilds the expression in Python, for a round trip.
 """
 
