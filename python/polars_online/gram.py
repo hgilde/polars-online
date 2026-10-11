@@ -26,7 +26,7 @@ works on them afterwards, in five kinds of call:
    * - diagnose the design
      - :func:`correlation`, :func:`vif` and :func:`condition`
 
-Every function takes the mapping ``gram()`` produces and reads its
+Every function takes the mapping ``gram()`` produces. It reads its
 ``columns``, ``targets``, ``means``, ``comoments``, ``cross_moments``,
 ``means_by_target``, ``cross_centred``, ``target_weights``, ``target_means``,
 ``target_vars``, ``weight_sum``, ``n_kish`` and ``target_n_kish``.
@@ -244,12 +244,13 @@ def merge(grams: Sequence[dict[str, Any]], *, within: bool = False) -> dict[str,
     **Each part enters centred at its own means**, never as a raw sum that a
     mean is subtracted from afterwards, so data far from zero keep their
     digits. The parts are folded in one at a time, so the rounding grows with
-    their number. Measured on 100,000 rows of three columns at a level of 1e4
-    standard deviations, against the exact union in rational arithmetic: 2
-    parts, each exact to float64, merged within 2.4e-15 of the union's
-    co-moments, relative to the spread, and 1,000 parts within 3.8e-14. Raw
-    sums pooled and centred afterwards came within 4.0e-08 and 2.5e-07. A
-    bank's own accumulator over all the rows came within 3.8e-14 too.
+    their number. The rounding was measured on 100,000 rows of three columns
+    at a level of 1e4 standard deviations, against the exact union in
+    rational arithmetic. Merging 2 parts, each exact to float64, came within
+    2.4e-15 of the union's co-moments, relative to the spread, and merging
+    1,000 parts within 3.8e-14. Raw sums pooled and centred afterwards came
+    within 4.0e-08 and 2.5e-07. A bank's own accumulator over all the rows
+    came within 3.8e-14 too.
 
     To merge two halves of a decayed stream in time order, decay the earlier
     half to the later half's last row before merging. Each half's weights are
@@ -1054,12 +1055,17 @@ def lasso_path(
         g = bank.gram("ridge")[0]
         path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per penalty
 
-    ``ValueError`` for ``penalty_weights`` of the wrong length. ``ValueError``
-    too for a number outside its range, by the rule a spec applies to the
-    same parameter: a penalty or a weight that is not finite and at least 0,
-    ``l1_ratio`` outside ``[0, 1]``, ``max_iter`` below 1, ``tol`` not finite
-    and above 0. ``KeyError``, ``IndexError`` and the intercept among
-    ``features`` as for :func:`solve`.
+    ``ValueError`` for ``penalty_weights`` of the wrong length, and for a
+    number outside its range, by the rule a spec applies to the same
+    parameter:
+
+    - a penalty or a weight that is not finite and at least 0;
+    - an ``l1_ratio`` outside ``[0, 1]``;
+    - a ``max_iter`` below 1;
+    - a ``tol`` that is not finite and above 0.
+
+    ``KeyError``, ``IndexError`` and the intercept among ``features`` as for
+    :func:`solve`.
 
     See *Choosing columns on the lasso path* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
@@ -1204,7 +1210,7 @@ def lars_path(
 
     Efron, Hastie, Johnstone and Tibshirani's LARS (2004) with their lasso
     modification, on the correlation form :func:`lasso_path` standardizes
-    the Gram to: ``R`` the features' correlation matrix and ``d`` their
+    the Gram to. ``R`` is the features' correlation matrix and ``d`` their
     standardized cross-moments with the target, centred at the target's own
     means where there is an intercept. The lasso minimizes
 
@@ -1247,9 +1253,10 @@ def lars_path(
     with ``d = [1, 1]``, at ``[2, 1]``, where least squares is ``[1, 1]``.
 
     A selection reads only the start of a path, and a step takes
-    ``O(k |A|)`` operations, so stop it early: after ``max_steps`` knots past
-    the first, or at the first knot where ``max_active`` columns or more are
-    active, more than ``max_active`` where columns tie there. A column
+    ``O(k |A|)`` operations, so stop it early. ``max_steps`` stops it after
+    that many knots past the path's first. ``max_active`` stops it at the
+    first knot with that many columns active or more, more than
+    ``max_active`` where columns tie there. A column
     that is constant on the Gram's rows never enters. A column that would
     enter collinear with the active set is set aside, since it adds no
     direction: its pivot in the factor of ``R_AA`` is below ``1e-12`` of
@@ -1425,15 +1432,14 @@ def solve_subsets(
 
     The Grams are read once, into memory of the call's own, and every
     subset is merged and fitted there, on the bank's thread pool, without a
-    Python copy of a matrix per subset. Measured on an M4 Pro under a load
-    of 12, for 38 Grams and 100 subsets of 19: 0.02 s at 200 columns and
-    3.0 s at 2,000, where the loop of :func:`merge`, :func:`solve` and
+    Python copy of a matrix per subset. For 38 Grams and 100 subsets of 19,
+    measured on an M4 Pro under a load of 12, it took 0.02 s at 200 columns
+    and 3.0 s at 2,000. The loop of :func:`merge`, :func:`solve` and
     :func:`coef_stats` took 0.43 s and 76 s. The copy is the Grams' size
-    again for the call's length. A subset's merge is formed on the
-    slots and the intercept alone, and dropped when its fits are done; its
-    targets share one factorization. The merge is :func:`merge`'s
-    arithmetic entry for entry, so it agrees with it to the bit. The fit
-    then is
+    again for the call's length. A subset's merge is formed on the slots and
+    the intercept alone, and dropped when its fits are done. Its targets
+    share one factorization. The merge is :func:`merge`'s arithmetic entry
+    for entry, so it agrees with it to the bit. The fit then is
 
     .. code-block:: text
 
@@ -1721,9 +1727,9 @@ def coef_stats(
     :func:`subset` without ``"intercept"`` gives, ``resid_var`` is the
     residual's variance about its own mean, not its mean square, and ``se``
     and ``r2`` are a centred fit's. Least squares through the origin reads
-    the raw moments instead, and where a column's mean is far from 0 its
-    standard errors differ: on 4,000 rows with a column 5 standard
-    deviations from 0, statsmodels' OLS gave 0.0044 where this gives 0.016.
+    the raw moments instead, so its standard errors differ where a column's
+    mean is far from 0. On 4,000 rows with a column 5 standard deviations
+    from 0, statsmodels' OLS gave 0.0044 where this gives 0.016.
 
     .. rubric:: Parameters
 
@@ -1839,9 +1845,9 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     An array over ``features`` (the Gram's columns without the intercept by
     default: a constant is perfectly explained by any other constant, so its VIF
     is undefined). A column the stream found constant reports ``inf``. Above
-    about 10 the coefficient of a column is mostly noise; the fix is a
-    ridge, a subset, or a feature set the spec already knows how to fit
-    beside the full one.
+    about 10 the coefficient of a column is mostly noise. Fit it with a
+    ridge, on a subset, or as a feature set the spec fits beside the full
+    one (``ewridge``'s ``feature_sets``).
 
     The diagonal is read from the eigendecomposition ``R = V diag(d) V'`` as
     ``VIF_j = sum_i V_ji^2 / d_i``. An eigenvalue at or below numpy's rank
@@ -1854,10 +1860,10 @@ def vif(g: dict[str, Any], *, features: Sequence[str | int] | None = None) -> An
     ``R2_j`` is 1, reads ``inf`` or a number past 1e10, not always ``inf``.
     Rounding in the accumulated moments can leave the dependency's
     eigenvalue just above the tolerance, and the column then reads about
-    1e14. A copy times 100 plus 3 read 2.2e14 at ``lam = 0.999`` and
-    ``inf`` at ``lam = 1``; three columns where the third is the sum of the
-    first two read 1.2e14 to 2.4e14 at ``lam = 1`` and ``inf`` at 0.999
-    (5,000 rows). Read anything past 1e10 as a dependency.
+    1e14. On 5,000 rows, a copy times 100 plus 3 read 2.2e14 at ``lam =
+    0.999`` and ``inf`` at ``lam = 1``. Three columns where the third is the
+    sum of the first two read 1.2e14 to 2.4e14 at ``lam = 1`` and ``inf`` at
+    0.999. Read anything past 1e10 as a dependency.
 
     **A VIF near 1 does not say a column is in no dependency.** A column
     whose part in a dependency is tiny reads near 1, as if it stood apart.
