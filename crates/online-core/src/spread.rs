@@ -27,9 +27,9 @@
 //! in the EW standard deviation of the residuals, as `huber`'s cut is
 //! drawn. A gradient or passive-aggressive fit starts from zero
 //! coefficients, so its first residuals are the target's whole level. On a
-//! target at 1,000 in a spread of 2 the band they set was about 100 wide,
-//! every later row fell inside it, and without decay nothing narrowed it
-//! again: `pa` stopped learning for good, R² −52 at a half-life of 1e9
+//! target at 1,000 in a spread of 2 the band they set at `eps = 0.1` was
+//! about 100 wide, every later row fell inside it, and without decay
+//! nothing narrowed it again: `pa` stopped learning for good, R² −52 at a half-life of 1e9
 //! against +0.954 at 500. The target's own spread does not read the fit.
 //! `huber_delta` stays on the residual's spread (`sgd`, `huber`): outside
 //! its cut a Huber gradient is clipped, not zero, so the fit keeps

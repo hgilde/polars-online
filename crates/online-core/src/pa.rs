@@ -33,9 +33,9 @@
 //! the target's units over `s`'s. The tube was drawn in the residual's
 //! spread at first, as `huber`'s cut is, and a fit from zero coefficients
 //! has the target's whole level for its first residuals: a target at 1,000
-//! in a spread of 2 drew a tube about 100 wide, held every later row in it,
-//! and without decay never narrowed it, R² −52 at a half-life of 1e9
-//! (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
+//! in a spread of 2 drew a tube of `eps = 0.1` about 100 wide, held every
+//! later row in it, and without decay never narrowed it, R² −52 at a
+//! half-life of 1e9 (docs/PLAN.md task 202). `y`'s own spread does not read the fit.
 //!
 //! **`C` is in the target's units** (review round 5, G5). Under PA-I it caps
 //! `tau`, in the target's units over `s`'s, so the same `C` binds on every
@@ -1399,10 +1399,10 @@ mod tests {
     /// spread of about 2 fits rows 10,000 to 20,000 as it fits the same
     /// target at 0, with or without decay, and so does the old default
     /// `eps = 0.1` (docs/PLAN.md task 203). The fit starts from zero
-    /// coefficients, so its first residuals are the whole level: a band in
-    /// units of the residual's spread learned from them was about 100 wide,
-    /// every later row inside it, and without decay nothing ever narrowed
-    /// it: R² -52 at a half-life of 1e9 against +0.954 at 500 (task 195's
+    /// coefficients, so its first residuals are the whole level: a band of
+    /// `eps = 0.1` in units of the residual's spread learned from them was
+    /// about 100 wide, every later row inside it, and without decay nothing
+    /// ever narrowed it: R² -52 at a half-life of 1e9 against +0.954 at 500 (task 195's
     /// report; docs/PLAN.md task 202). The target's own spread is about 2
     /// from its second row on, whatever the fit.
     #[test]

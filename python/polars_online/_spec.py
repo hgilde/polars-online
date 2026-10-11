@@ -3056,9 +3056,10 @@ def sgd(
     zero coefficients, so its first residuals are the target's whole level.
     Beyond the cut the Huber gradient is clipped, not zero, so a cut those
     residuals widen still lets every row teach. Inside the tube the gradient is
-    zero. A tube drawn in the residual's std on a target at 1,000 with a spread
-    of 2 would be about 100 wide and hold every row. Without decay it would
-    never narrow, and the fit would stop where it stood.
+    zero. On a target at 1,000 with a spread of 2, the first residuals put the
+    residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
+    about 100 wide and hold every row. Without decay it would never narrow,
+    and the fit would stop where it stood.
 
     .. rubric:: Parameters
 
@@ -3443,9 +3444,10 @@ def pa(
 
     ``sigma`` is not the residual's std, as :func:`huber`'s cut is. The fit
     starts from zero coefficients, so its first residuals are the target's
-    whole level. On a target at 1,000 with a spread of 2, a tube drawn from
-    them would be about 100 wide and hold every row. Without decay it would
-    never narrow: R² -52 at a half-life of 1e9.
+    whole level. On a target at 1,000 with a spread of 2 they put the
+    residual's std near 1,000, so a tube of ``eps = 0.1`` drawn in it would be
+    about 100 wide and hold every row. Without decay it would never narrow:
+    R² -52 at a half-life of 1e9.
 
     The coefficients keep no accumulators, so there is nothing in them for the
     clock to decay: each step fully satisfies the current row, and older rows

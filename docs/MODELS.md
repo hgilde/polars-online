@@ -956,8 +956,9 @@ and past the scaler's warm-up the step is mapped into the caller's units as
 
 In the target's units, a tube of 0.1 held a target in hundredths on every
 row, and the model never learned it. In the residuals' spread, a fit from
-zero on a target at 1,000 drew a tube about 100 wide from its first
-residuals, and without decay stopped learning: R² −52. `s_y` reads `y` alone,
+zero on a target at 1,000 read a spread near 1,000 from its first
+residuals, so `eps = 0.1` drew a tube about 100 wide, and without decay the
+fit stopped learning: R² −52. `s_y` reads `y` alone,
 so until the target has two weighted rows of different values the tube has
 no width. `eps` is 0.01 and `c` is 1 by default.
 
