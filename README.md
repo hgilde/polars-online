@@ -2832,20 +2832,20 @@ averages zero" for the intercept. So unless the target averages zero, keep
 the intercept's entry at `inf`, as in `[float("inf"), 50.0, 50.0]`.
 
 **The filter follows the standardization from its first row.** The
-coefficients and their covariance are held in the coordinates of an
-anchor: the means and scales at the last re-map. The process noise and the
-priors, defined in the means and scales as they stand, are carried into the
+coefficients and their covariance are held in the coordinates of an anchor:
+the means and scales at the last re-map. The process noise and the priors,
+defined in the means and scales as they stand, are carried into the
 anchor's coordinates exactly. When a scale moves past twice or half the
-anchor's, or a mean by more than the anchor's scale, the state is mapped
-to the new coordinates, `b ← A b` and `P ← A P Aᵀ`. So no prediction moves
+anchor's, or a mean by more than the anchor's scale, the state is mapped to
+the new coordinates, `b ← A b` and `P ← A P Aᵀ`. So no prediction moves
 because the scaler did. Read through the scaler as it stood, as release
 0.13.0 read it, its own wander under a half-life of 50 cost 223 noise
 variances of out-of-sample error at R² 0.99998: one feature, 30,000 rows,
-the median of five seeds. This filter costs 0.014 there, as an
-unstandardized one does. A map of more than 1024 times a scale is not
-followed. The old
-reading, a coefficient per current standard deviation, is this filter on a
-column z-scored in the stream with `standardize=False`, as in
+the median of five seeds. This filter's error stands 0.014 above the noise
+there, as an unstandardized one's does. A map of more than 1024 times a
+scale is not followed. The old reading, a coefficient per current standard
+deviation, is this filter on a column z-scored in the stream with
+`standardize=False`, as in
 [Features in units of their spread](#features-in-units-of-their-spread).
 
 **`predict` applies the reversion,** by the same `Φ` over the distance
