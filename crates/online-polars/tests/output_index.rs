@@ -81,6 +81,61 @@ fn ew_class_posteriors_carry_their_class() {
     assert_eq!(by_name(&idx, "class").class, None);
 }
 
+/// The index names each `p_<class>` and the bank fills it from that
+/// class's posterior: on three well-separated classes the posteriors sum
+/// to 1 on every row, and the class the row is assigned is the largest.
+#[test]
+fn ew_class_fills_each_posterior_from_its_own_class() {
+    use polars::prelude::*;
+    let s = spec(
+        r#"{"name": "c", "model": {"type": "ew_class", "classes": ["u", "v", "w"],
+            "precision_prior": 1.0}, "targets": ["y"], "features": ["a"],
+            "half_life": 1000, "min_weight": 3}"#,
+    );
+    let n = 300;
+    let label = |i: usize| ["u", "v", "w"][i % 3];
+    let a: Vec<f64> = (0..n)
+        .map(|i| 10.0 * (i % 3) as f64 + 0.1 * ((i * 7919) % 11) as f64)
+        .collect();
+    let y: Vec<&str> = (0..n).map(label).collect();
+    let df = df!("a" => a, "y" => y).unwrap();
+    let mut bank = online_polars::Bank::new(vec![s]).unwrap();
+    let out = DataFrame::new(n, bank.fit_predict(&df).unwrap()).unwrap();
+    let fields = out
+        .column("c")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .fields_as_series();
+    let get = |name: &str| fields.iter().find(|f| f.name().as_str() == name).unwrap();
+    let cls: Vec<Option<String>> = get("class")
+        .cast(&DataType::String)
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|v| v.map(String::from))
+        .collect();
+    let p: Vec<Vec<Option<f64>>> = ["p_u", "p_v", "p_w"]
+        .iter()
+        .map(|f| get(f).f64().unwrap().iter().collect())
+        .collect();
+    let mut read = 0;
+    for i in 0..n {
+        let Some(c) = &cls[i] else { continue };
+        let row: Vec<f64> = p.iter().map(|col| col[i].unwrap()).collect();
+        assert!(
+            (row.iter().sum::<f64>() - 1.0).abs() < 1e-9,
+            "row {i}: {row:?}"
+        );
+        let best = (0..3).max_by(|&x, &y| row[x].total_cmp(&row[y])).unwrap();
+        assert_eq!(c, ["u", "v", "w"][best], "row {i}: {row:?}");
+        assert_eq!(c, label(i), "row {i}: the classes are apart");
+        read += 1;
+    }
+    assert!(read > 250, "{read} rows read");
+}
+
 #[test]
 fn bocpd_predictions_carry_their_column() {
     let s = spec(
