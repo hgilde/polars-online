@@ -4800,6 +4800,13 @@ impl Spec {
                         ));
                     }
                 }
+                // An empty list asks for nothing, as `ew_cov`'s does.
+                if lags.as_ref().is_some_and(Vec::is_empty) {
+                    return Err(format!(
+                        "spec {:?}: marginal lags must be non-empty; leave it out for none",
+                        self.name
+                    ));
+                }
                 // Lags under a window cost the snapshot its lag moments, and
                 // the spec says so by name before it pays (the user,
                 // 2026-09-28: "implement but with an api parameter that

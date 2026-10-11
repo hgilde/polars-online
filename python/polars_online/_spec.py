@@ -4782,8 +4782,9 @@ def marginal(
     - ``bins`` beside ``bin_edges``, and ``bins`` or ``bin_edges`` beside
       ``window_size``;
     - ``bins`` below 2, or a ``bin_warm_rows`` below ``bins``;
-    - ``serial_rule`` or ``cross_lags`` without ``lags``, ``lags`` or
-      ``cross_lags`` that do not increase, and a cross lag not in ``lags``;
+    - an empty ``lags`` (left out, there are none), ``serial_rule`` or
+      ``cross_lags`` without ``lags``, ``lags`` or ``cross_lags`` that do not
+      increase, and a cross lag not in ``lags``;
     - ``lags`` beside ``window_size`` without ``window_lags``;
     - ``bin_budget`` without bins or not above 0, and bins past ``bin_budget``;
     - ``shards`` below 1, or a string other than ``"auto"``;

@@ -306,6 +306,23 @@ fn the_empties_are_refused() {
             "half_life": 10.0}"#,
         &["targets must not contain an empty name"],
     );
+    // An empty `lags` asked for nothing, and `marginal` took it as no lags
+    // where `ew_cov` refuses it; `cross_lags = []` is a choice, the least
+    // memory, and stays.
+    refused(
+        &unsup(r#"{"type": "ew_cov", "lags": []}"#, r#", "half_life": 10.0"#),
+        &["ew_cov lags must be non-empty"],
+    );
+    refused(
+        &sup(r#"{"type": "marginal", "lags": []}"#, ""),
+        &["marginal lags must be non-empty; leave it out for none"],
+    );
+    refused(
+        &sup(r#"{"type": "marginal", "lags": [], "cross_lags": []}"#, ""),
+        &["marginal lags must be non-empty"],
+    );
+    accepted(&sup(r#"{"type": "marginal", "lags": [1, 2], "cross_lags": []}"#, ""));
+    accepted(&sup(r#"{"type": "marginal", "lags": null}"#, ""));
 }
 
 /// PC10: `-0.0` is `0.0`: a ridge grid of the two is one value listed

@@ -426,6 +426,8 @@ def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
     [
         ({"lags": [0, 1]}, "lags must be >= 1"),
         ({"lags": [2, 1]}, "strictly increasing"),
+        # Taken as no lags, where `ew_cov(lags=[])` is refused.
+        ({"lags": []}, 'spec "m": marginal lags must be non-empty; leave it out for none'),
         ({"serial_rule": "geometric"}, "serial_rule needs `lags`"),
         ({"lags": [1], "serial_rule": "nope"}, "unknown serial_rule"),
     ],
