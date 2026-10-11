@@ -92,7 +92,7 @@ to 0.18 against a nominal 0.05, as the paper warns
 **The two changepoint detectors are at opposite ends of one trade-off.** On
 the same streams, `corrchange(kind="window")` finds a correlation break in a
 median of 25 rows and flags 54 rows per 1000 quiet ones. `bocpd` takes 121
-rows and raises 0.53 alarms per 1000. Neither is better: they answer
+rows and raises 1.00 alarms per 1000. Neither is better: they answer
 different questions ([§5](#5-two-changepoint-detectors-on-the-same-break)).
 
 **Asynchrony leaves almost nothing of a correlation at the finest interval,
@@ -402,7 +402,7 @@ section](../README.md#bocpd--how-long-has-this-regime-lasted)).
 | detector           | false alarms / 1000 quiet rows | found the break | median delay | worst delay |
 |--------------------|--------------------------------|-----------------|--------------|-------------|
 | corrchange, `kind="window"` | 53.67                          | 20/20           | 25           | 56          |
-| bocpd              | 0.53                           | 20/20           | 121          | 351         |
+| bocpd              | 1.00                           | 20/20           | 121          | 207         |
 
 **The two detectors answer different questions, which is why both are
 here.** `corrchange(kind="window")` is a test of one thing: whether the
@@ -416,9 +416,12 @@ events.
 `bocpd` is a full joint model of the rows, and a correlation change is the
 one break its `p_change` cannot see: no single row is surprising, only the
 sequence is. Its run-length posterior has to accumulate that evidence,
-which takes a median of 121 rows and 351 at worst. In return it dates the
-regime, saying which row the current one began on. And it almost never
-says so when nothing has happened: 0.53 alarms per 1000 quiet rows.
+which takes a median of 121 rows and 207 at worst. In return it dates the
+regime, saying which row the current one began on. And it rarely says so
+when nothing has happened: 1.00 alarms per 1000 quiet rows. Half of those,
+20 of 40, come where the run has reached `max_run = 1200` rows and is
+folded into a younger run, whose start is later: a cap on a run's length
+moves the start it reports.
 
 ## 6. The Epps effect, and the two ways out
 

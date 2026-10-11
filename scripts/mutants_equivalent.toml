@@ -472,9 +472,9 @@ them all"""
 [[equivalent]]
 file = "crates/online-core/src/bocpd.rs"
 function = "Bocpd::prune"
-mutation = "replace > with >="
-line_has = "if self.runs.len() > self.cfg.max_run {"
-why = """at a length of exactly `max_run` the fold sums one entry: \
+mutation = "replace < with <="
+line_has = "if let (Some(last), true) = (kept.checked_sub(1), kept < self.runs.len()) {"
+why = """with every run inside the cap the fold sums one entry, the last: \
 `log_sum_exp([l]) = l + ln 1 = l`, to the bit, and the truncation drops \
 nothing"""
 
