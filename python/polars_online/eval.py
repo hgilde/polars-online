@@ -22,7 +22,7 @@ call read it:
    * - one spec against another
      - :func:`diebold_mariano`, :func:`clark_west`, :func:`seqtest`
      - the whole frame, collected
-   * - the long form they read
+   * - the long form the scores read
      - :func:`unpack`
      - the whole frame, collected
 
@@ -814,9 +814,9 @@ def sums(
         at a 0.5 threshold and ``signed`` every row, since every row scores.
         With ``spec`` naming a Poisson ``sgd`` fit, which has no sign to hit,
         both are 0, and :func:`from_sums` gives the null the bank gives.
-        **Do not merge chunks reduced with different ``binary`` settings**:
-        :func:`merge_sums` sums whatever is in ``hits`` and ``signed``
-        without knowing which reading produced it.
+        **Keep chunks of the two readings apart**: :func:`merge_sums` sums
+        whatever is in ``hits`` and ``signed`` without knowing which
+        ``binary`` produced it.
 
     Centred, not raw. The obvious form (keep ``sum(y)`` and ``sum(y**2)`` and
     subtract) is one addition simpler and loses the variance entirely when the
