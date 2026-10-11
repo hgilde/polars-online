@@ -34,7 +34,7 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     under the ``embargo``. ``fit_predict`` asks the embargo to cover the
     longest forward ``window_size``. Under ``group`` it needs a ``clock``.
     :func:`polars_online.stream.with_windows` with ``like=`` the spec writes
-    the same target as a column (docs/PLAN.md task 104).
+    the same target as a column.
 ``fit_intercept``
     Whether the fit has a level of its own: a constant 1 is put in front of
     the features. Default ``True``. Without it nothing is centred, and a fit
@@ -376,9 +376,7 @@ releases none. A regression writes, with ``<t>`` a target:
     How far the decay window had filled toward steady state before this row:
     ``1 - 2 ** (-T / half_life)`` with ``T`` the decay time the models have
     seen, so ``0.5`` at one half-life, ``0.75`` at two, whatever the row rate.
-    Null where nothing decays. What ``min_settled_frac`` gates on
-    (`docs/WARMUP-AND-CONVERGENCE.md
-    <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_).
+    Null where nothing decays. What ``min_settled_frac`` gates on.
 ``withheld_reason``
     Which gate withheld the row's predictions, as an ``Enum`` --
     ``below_min_settled_frac``, ``below_min_weight`` or
