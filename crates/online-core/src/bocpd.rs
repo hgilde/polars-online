@@ -814,8 +814,10 @@ impl Branches {
 }
 
 /// What [`Bocpd::read`] hands the update: the new log joint over run
-/// lengths, and the weight each existing run takes the row at.
-type Update = (Vec<f64>, Vec<f64>);
+/// lengths, the weight each existing run takes the row at, and the new
+/// joint's `log_sum_exp` where `read` took it, which [`Bocpd::prune`] would
+/// take again (task 250).
+type Update = (Vec<f64>, Vec<f64>, Option<f64>);
 
 /// Bayesian online changepoint detection; see the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -855,6 +857,60 @@ pub struct Bocpd {
     /// which records the same rule for task 38's sums).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub solve_failures: u64,
+    /// The predictive's gamma-function terms already taken, by the degrees
+    /// of freedom they were taken at (task 250). Not state.
+    #[serde(skip)]
+    gammas: GammaCache,
+}
+
+/// The Student-t predictive's `ln Γ((ν+a)/2) − ln Γ(ν/2)` by the bits of
+/// `ν` (task 250): a run's `ν` is the prior's plus its weight, so under
+/// rows of one weight the run of length `r` asks this row for the value
+/// the run of length `r` asked the last row for, and two `ln_gamma` a run
+/// a row -- four logarithms and a Lanczos sum -- become a lookup. A slot
+/// keeps the value `ln_gamma` gave for those bits, so a hit is the value a
+/// miss computes. Direct-mapped, a fixed size, filled as it is asked. Not
+/// state: a state file carries none of it, a restored model starts empty,
+/// and two models are the same model whatever each has cached, so
+/// [`PartialEq`] ignores it.
+#[derive(Debug, Clone, Default)]
+struct GammaCache {
+    keys: Vec<u64>,
+    vals: Vec<f64>,
+}
+
+impl PartialEq for GammaCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl GammaCache {
+    const SLOTS: usize = 256;
+
+    /// `f(nu)`, from the slot for `nu`'s bits when it holds them. `f` is a
+    /// function of `nu` alone, as each emission's gamma terms are.
+    #[inline]
+    fn get(&mut self, nu: f64, f: impl FnOnce(f64) -> f64) -> f64 {
+        if nu.is_nan() {
+            return f(nu);
+        }
+        if self.keys.is_empty() {
+            // No `nu` asked for here has a NaN's bits, so they mark a slot
+            // never filled.
+            self.keys = vec![f64::NAN.to_bits(); Self::SLOTS];
+            self.vals = vec![0.0; Self::SLOTS];
+        }
+        let bits = nu.to_bits();
+        let at = ((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1);
+        if self.keys[at] == bits {
+            return self.vals[at];
+        }
+        let v = f(nu);
+        self.keys[at] = bits;
+        self.vals[at] = v;
+        v
+    }
 }
 
 impl Bocpd {
@@ -867,6 +923,7 @@ impl Bocpd {
             logjoint: vec![0.0],
             n_eff: 0.0,
             solve_failures: 0,
+            gammas: GammaCache::default(),
             w_mean: 0.0,
             w_rows: 0.0,
             data_prior: None,
@@ -1020,6 +1077,7 @@ impl Bocpd {
         x: &[f64],
         mu0: &[f64],
         psi0: &[f64],
+        mut cache: Option<&mut GammaCache>,
     ) -> Option<(f64, f64)> {
         let d = self.cfg.n_features;
         let (k0, nu0) = (self.cfg.prior_kappa, self.cfg.nu0());
@@ -1056,10 +1114,14 @@ impl Bocpd {
             }
             let q = f.quad_forms(&delta, d, 1)[0];
             let df = d as f64;
-            let base = ln_gamma((dof + df) / 2.0)
-                - ln_gamma(dof / 2.0)
-                - 0.5 * df * (dof * std::f64::consts::PI).ln()
-                - 0.5 * f.log_det();
+            // `(Γ − Γ) − ..` as the expression groups, so the cached
+            // difference is the same value (task 250).
+            let lg = |v: f64| ln_gamma((v + df) / 2.0) - ln_gamma(v / 2.0);
+            let gammas = match cache.as_deref_mut() {
+                Some(c) => c.get(dof, lg),
+                None => lg(dof),
+            };
+            let base = gammas - 0.5 * df * (dof * std::f64::consts::PI).ln() - 0.5 * f.log_det();
             Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
         } else {
             // Per feature, a normal-inverse-gamma: `t_{νₙ}` with scale²
@@ -1067,7 +1129,11 @@ impl Bocpd {
             // functions' difference is taken once a run, not once a feature:
             // the same value, `(Γ − Γ) − ½ ln(..)` as the expression groups
             // (task 250).
-            let gammas = ln_gamma((nun + 1.0) / 2.0) - ln_gamma(nun / 2.0);
+            let lg = |v: f64| ln_gamma((v + 1.0) / 2.0) - ln_gamma(v / 2.0);
+            let gammas = match cache {
+                Some(c) => c.get(nun, lg),
+                None => lg(nun),
+            };
             let mut lp = 0.0;
             let mut mode = 0.0;
             for i in 0..d {
@@ -1141,6 +1207,7 @@ impl Bocpd {
         joint: &[f64],
         next: Option<Branches>,
         rel: f64,
+        mut cache: Option<&mut GammaCache>,
     ) -> (Vec<f64>, Option<Update>) {
         let d = self.cfg.n_features;
         let nan = vec![f64::NAN; Self::n_outputs_for(d)];
@@ -1152,7 +1219,8 @@ impl Bocpd {
         let mut weights = Vec::with_capacity(r);
         let (mu0, psi0) = (self.mu0(), self.psi0());
         for run in &self.runs {
-            let Some((lp, mode)) = self.log_predictive(run, x, &mu0, &psi0) else {
+            let Some((lp, mode)) = self.log_predictive(run, x, &mu0, &psi0, cache.as_deref_mut())
+            else {
                 return (nan, None);
             };
             logpi.push(lp);
@@ -1245,10 +1313,10 @@ impl Bocpd {
         // gated row still moves the posterior, as it does in every other
         // model here.
         let update = if rel == 1.0 {
-            (new, weights)
+            (new, weights, Some(z))
         } else {
             let scaled: Vec<f64> = weights.iter().map(|w| rel * w).collect();
-            (grow(&scaled), scaled)
+            (grow(&scaled), scaled, None)
         };
         if self.n_eff < self.cfg.min_weight {
             return (nan, Some(update));
@@ -1267,8 +1335,10 @@ impl Bocpd {
     /// Linux, having been written on macOS. The drift it would have fixed is
     /// about 1.4 nats a row, so it costs nothing until well past 1e9 rows
     /// (docs/REVIEW-E54-E64.md B4, reverted 2026-09-06).
-    fn prune(&mut self) {
-        let z = log_sum_exp(&self.logjoint);
+    fn prune(&mut self, z: Option<f64>) {
+        // `read`'s, where it took it of this joint: the same function of
+        // the same values.
+        let z = z.unwrap_or_else(|| log_sum_exp(&self.logjoint));
         if !z.is_finite() {
             return;
         }
@@ -1385,7 +1455,7 @@ impl crate::OnlineModel for Bocpd {
         let (moved, next) = self.before_row(y, d_clock);
         let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
         crate::Step {
-            pred: self.read(x, joint, next, 1.0).0,
+            pred: self.read(x, joint, next, 1.0, None).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -1464,7 +1534,10 @@ impl Bocpd {
         };
         let (moved, next) = self.before_row(y, d_clock);
         let joint = moved.as_deref().unwrap_or(self.logjoint.as_slice());
-        let (pred, extra) = self.read(x, joint, next, rel);
+        // The gamma cache, out of `self` while `read` borrows it.
+        let mut gammas = std::mem::take(&mut self.gammas);
+        let (pred, extra) = self.read(x, joint, next, rel, Some(&mut gammas));
+        self.gammas = gammas;
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
@@ -1481,7 +1554,7 @@ impl Bocpd {
             }
             return out;
         }
-        let Some((new, weights)) = extra else {
+        let Some((new, weights, z)) = extra else {
             // The predictive could not be evaluated: the row reports nulls
             // and no run sees it. A usable row that fails -- a run's
             // covariance no factorization takes, a usable hazard at or below
@@ -1519,7 +1592,7 @@ impl Bocpd {
             run.add(x, w, full);
         }
         self.logjoint = new;
-        self.prune();
+        self.prune(z);
         out
     }
 }
@@ -3076,7 +3149,7 @@ mod tests {
         let cut = 10;
         let before = m.clone();
         m.cfg.max_run = cut;
-        m.prune();
+        m.prune(None);
         let q = m.run_posterior();
         assert_eq!(q.len(), cut);
         for i in 0..cut - 1 {
@@ -3127,7 +3200,7 @@ mod tests {
         }
         let before = m.clone();
         m.cfg.max_run = cut;
-        m.prune();
+        m.prune(None);
         let mut want = before.runs[30].clone();
         want.shrink_to((cut - 1) as f64);
         assert_eq!(m.runs[cut - 1], want, "the oldest of the equals");
@@ -3139,7 +3212,7 @@ mod tests {
         let mut m = before.clone();
         m.logjoint[20] = top + 1.0;
         m.cfg.max_run = cut;
-        m.prune();
+        m.prune(None);
         let mut want = before.runs[20].clone();
         want.shrink_to((cut - 1) as f64);
         assert_eq!(m.runs[cut - 1], want, "the strictly heavier run");
