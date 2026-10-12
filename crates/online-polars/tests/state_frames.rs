@@ -168,7 +168,7 @@ fn coef_rows(out: &[Column]) -> Vec<usize> {
 /// accepted row of the chunk, where a chunk whose last row of the group was
 /// skipped carried none. The last accepted row may sit in an earlier run
 /// than the chunk's last ([`ChunkOut::run_rows`]): a narrow `ew_ridge` runs
-/// 10,896 rows at a time, and here the last run is every row skipped.
+/// 13,104 rows at a time, and here the last run is every row skipped.
 #[test]
 #[ignore = "extended: a second or more (1.9 s)"]
 fn coef_rides_on_the_last_accepted_row_across_runs() {
