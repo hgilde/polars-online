@@ -757,6 +757,7 @@ impl ClockValue {
 
     /// Whether `self` is before `prev`: exact between two temporal values,
     /// two integer ones, and an integer and a float.
+    #[inline]
     pub fn is_before(self, prev: Self) -> bool {
         match (self, prev) {
             (Self::Ns(c), Self::Ns(p)) | (Self::I64(c), Self::I64(p)) => c < p,
@@ -950,6 +951,42 @@ impl ClockState {
         self.step(cfg, None, clock, session, true, true)
     }
 
+    /// The refusal [`Self::advance`] would report for this row -- its
+    /// [`ClockAdvance::backwards`] and [`ClockAdvance::disorder`] -- moving
+    /// only what that decision reads, the previous row's clock and session:
+    /// what a caller checking a chunk's clock on a copy of the state, before
+    /// any row is learned, needs of each row, without the step's caps, folds
+    /// and stamps (task 250). A row-count clock (`clock = None`) never steps
+    /// back. The decision is [`step_back`]'s, as the step's is, so a stream
+    /// of these refuses exactly the rows a stream of [`Self::advance`]
+    /// refuses; the rest of the state is not the advanced one.
+    pub fn refusal(
+        &mut self,
+        cfg: &ClockCfg,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+    ) -> Option<(f64, Option<Disorder>)> {
+        let prev = std::mem::replace(&mut self.prev_clock, clock);
+        let prev_session = std::mem::replace(&mut self.prev_session, session);
+        self.started = true;
+        let (Some(c), Some(p)) = (clock, prev) else {
+            return None;
+        };
+        if matches!((session, prev_session), (Some(s), Some(q)) if s != q) {
+            return None;
+        }
+        let raw = c.delta(p);
+        // As the step reads it: a NaN step is no step back.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(raw < 0.0) {
+            return None;
+        }
+        match step_back(cfg, raw, c.int_step(p)) {
+            StepBack::Refused(disorder) => Some((raw, disorder)),
+            StepBack::Reset => None,
+        }
+    }
+
     fn step(
         &mut self,
         cfg: &ClockCfg,
@@ -1037,36 +1074,16 @@ impl ClockState {
                     // -- inclusive, so a `Date` clock's one-day step back is
                     // caught at a one-day minimum -- and a larger one starts
                     // the model over.
-                    let back = -raw;
-                    let late = match int_raw {
-                        Some(i) => matches!(
-                            cmp_int_f64(-i, cfg.min_backwards_jump),
-                            Some(Ordering::Less | Ordering::Equal)
-                        ),
-                        None => back <= cfg.min_backwards_jump,
-                    };
-                    if scoring {
-                        0.0
-                    } else {
-                        match cfg.on_clock_reset {
-                            OnClockReset::Error => {
+                    if !scoring {
+                        match step_back(cfg, raw, int_raw) {
+                            StepBack::Refused(d) => {
+                                disorder = d;
                                 backwards = Some(raw);
-                                0.0
                             }
-                            OnClockReset::ResetState if late => {
-                                disorder = Some(Disorder {
-                                    back,
-                                    min_backwards_jump: cfg.min_backwards_jump,
-                                });
-                                backwards = Some(raw);
-                                0.0
-                            }
-                            OnClockReset::ResetState => {
-                                reset = true;
-                                0.0
-                            }
+                            StepBack::Reset => reset = true,
                         }
                     }
+                    0.0
                 } else {
                     capped = past(raw, cfg.gap_cap);
                     whole = !capped;
@@ -1151,7 +1168,7 @@ impl ClockState {
                     // Integer steps a direct caller's stream of mixed forms
                     // left waiting; never in a bank's stream.
                     if !self.pending_int.is_zero() {
-                        total += self.pending_int.to_f64();
+                        total = plus_pending_int(total, self.pending_int);
                     }
                     (total.min(cfg.gap_cap), total > cfg.gap_cap)
                 }
@@ -1192,6 +1209,47 @@ impl ClockState {
             }
         }
     }
+}
+
+/// What a learned step back within a session does under the policy: a
+/// refusal -- any step back under `"error"`; under `"reset_state"` one by no
+/// more than `min_backwards_jump`, a late row, inclusive, so a `Date` clock's
+/// one-day step back is caught at a one-day minimum, carrying the numbers --
+/// or a restart, a larger one. Taken on the integers where the clock is one
+/// (task 200).
+enum StepBack {
+    Refused(Option<Disorder>),
+    Reset,
+}
+
+#[inline]
+fn step_back(cfg: &ClockCfg, raw: f64, int_raw: Option<i128>) -> StepBack {
+    let back = -raw;
+    let late = match int_raw {
+        Some(i) => matches!(
+            cmp_int_f64(-i, cfg.min_backwards_jump),
+            Some(Ordering::Less | Ordering::Equal)
+        ),
+        None => back <= cfg.min_backwards_jump,
+    };
+    match cfg.on_clock_reset {
+        OnClockReset::Error => StepBack::Refused(None),
+        OnClockReset::ResetState if late => StepBack::Refused(Some(Disorder {
+            back,
+            min_backwards_jump: cfg.min_backwards_jump,
+        })),
+        OnClockReset::ResetState => StepBack::Reset,
+    }
+}
+
+/// `total` with the integer steps a direct caller's stream of mixed forms
+/// left waiting, never a bank's: out of line, so the 128-bit conversion is
+/// not hoisted into every row's step, taken and discarded (task 250: 3% of
+/// a `seqtest` row).
+#[cold]
+#[inline(never)]
+fn plus_pending_int(total: f64, pending: Ticks) -> f64 {
+    total + pending.to_f64()
 }
 
 #[cfg(test)]
@@ -3004,6 +3062,45 @@ mod finite_steps {
                 if let Some(Stamp::Int(_, frac)) = a.stamp {
                     prop_assert!(frac.abs() < 1.0, "{frac}");
                 }
+            }
+        }
+
+        /// [`ClockState::refusal`], which moves only the previous clock and
+        /// session, refuses exactly the rows [`ClockState::advance`] does,
+        /// with the same step and the same numbers, over float, integer and
+        /// temporal clocks, sessions and both policies (task 250).
+        #[test]
+        fn refusal_refuses_what_advance_refuses(
+            (cfg, _) in cfg(),
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![any::<i64>(), -1000i64..1000, Just(i64::MAX), Just(i64::MIN)],
+                    clock(),
+                    0u64..3,
+                    any::<bool>(),
+                ),
+                1..40,
+            ),
+            form in 0u8..3,
+            sessions in any::<bool>(),
+        ) {
+            let mut stepped = ClockState::new();
+            let mut checked = ClockState::new();
+            for (i, t, session, accept) in rows {
+                let c = Some(match form {
+                    0 => ClockValue::F64(t),
+                    1 => ClockValue::I64(i),
+                    _ => ClockValue::Ns(i),
+                });
+                let s = sessions.then_some(session);
+                let a = stepped.advance(&cfg, c, s, accept);
+                let r = checked.refusal(&cfg, c, s);
+                let want = a.backwards.map(|raw| (raw, a.disorder));
+                prop_assert_eq!(
+                    r.map(|(raw, d)| (raw.to_bits(), d)),
+                    want.map(|(raw, d)| (raw.to_bits(), d)),
+                    "{:?} under {:?}", c, cfg
+                );
             }
         }
     }
