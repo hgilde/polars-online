@@ -57,7 +57,7 @@ def test_a_wide_fit_is_the_same_whatever_the_pool_size(tmp_path):
     data = tmp_path / "wide.parquet"
     df.write_parquet(data)
     script = tmp_path / "run.py"
-    script.write_text(SCRIPT)
+    script.write_text(SCRIPT, encoding="utf-8")
     digests = {}
     for threads in (1, 3, 8, 14):
         res = subprocess.run(

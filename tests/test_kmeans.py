@@ -1206,7 +1206,8 @@ class TestRefusals:
                     "k = 3",
                     "warm_rows = 30",
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))

@@ -622,7 +622,8 @@ class TestConfigParsing:
             "min_weight = 5.0\n"
             "\n[specs.model]\n"
             'type = "ewridge"\n'
-            "ridge = 1e-6\n"
+            "ridge = 1e-6\n",
+            encoding="utf-8",
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode != 0, "invalid TOML must not be accepted"
@@ -662,7 +663,8 @@ class TestConfigParsing:
             "min_weight = 1.0\n"
             "\n[specs.model]\n"
             'type = "ewridge"\n'
-            "ridge = 1e-6\n"
+            "ridge = 1e-6\n",
+            encoding="utf-8",
         )
         res = self._cli(["--config", str(cfg)])
         assert res.returncode == 0, f"{escape} form rejected:\n{res.stdout}{res.stderr}"
@@ -691,11 +693,14 @@ class TestConfigParsing:
             # TOML literal strings: every backslash as written.
             cfg.write_text(
                 f"input = '{spell(src)}'\noutput = '{spell(out)}'\n"
-                f"save_state = '{spell(state)}'\n" + spec
+                f"save_state = '{spell(state)}'\n" + spec,
+                encoding="utf-8",
             )
             args = ["--config", str(cfg)]
         else:
-            cfg.write_text("input = 'unused.parquet'\noutput = 'unused.parquet'\n" + spec)
+            cfg.write_text(
+                "input = 'unused.parquet'\noutput = 'unused.parquet'\n" + spec, encoding="utf-8"
+            )
             args = ["--config", str(cfg), "--input", spell(src), "--output", spell(out)]
             args += ["--save-state", spell(state)]
         res = self._cli(args)
@@ -775,7 +780,8 @@ class TestConfigParsing:
             'features = ["x0"]\n'
             "half_life = 100.0\n"
             "\n[specs.model]\n"
-            'type = "ewridge"\n'
+            'type = "ewridge"\n',
+            encoding="utf-8",
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode != 0, res.stdout
@@ -798,7 +804,8 @@ class TestConfigParsing:
             'features = ["x0"]\n'
             "half_life = 100.0\n"
             "\n[specs.model]\n"
-            'type = "ewridge"\n'
+            'type = "ewridge"\n',
+            encoding="utf-8",
         )
         res = self._cli(["--config", str(cfg), "--dry-run"])
         assert res.returncode == 0, res.stderr[-1500:]

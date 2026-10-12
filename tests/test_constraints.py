@@ -943,7 +943,8 @@ class TestEdgeCases:
                     'coef_max = "inf"',
                     "coef_sum = 1.0",
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         spec = po.spec.sgd(  # the default step, as the TOML file takes it

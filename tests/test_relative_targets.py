@@ -130,7 +130,8 @@ def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
                 "[specs.model]",
                 'type = "ewridge"',
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     res = subprocess.run(
         [str(online_cli), "--config", str(cfg)], capture_output=True, text=True, check=False
@@ -212,7 +213,8 @@ def test_the_cli_reads_a_target_made_upstream(tmp_path, online_cli):
                 "[specs.model]",
                 'type = "ewridge"',
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
     spec = po.spec.ewridge("m", targets=["x1", "ret"], **common(emit_sigma=False, features=["x0"]))

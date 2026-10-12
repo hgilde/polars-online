@@ -132,7 +132,9 @@ def test_an_equivalent_is_not_counted_and_follows_its_line(tmp_path):
     (tmp_path / "src").mkdir()
     # The line the entry names has moved from 2 to 4, and a second missed
     # mutant sits on a line no entry names.
-    (tmp_path / "src/m.rs").write_text("a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n")
+    (tmp_path / "src/m.rs").write_text(
+        "a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n", encoding="utf-8"
+    )
     run = _run(tmp_path, [("", 4, "replace > with >="), ("", 5, "replace < with <=")])
     text, missed = report_mod.report([run], root=tmp_path, equivalents=[EQUIVALENT])
     assert missed == 1
@@ -147,7 +149,9 @@ def test_a_survivor_outside_any_function_is_reported_beside_list_entries(tmp_pat
     lists name, the report read `function_name` from it and crashed (task
     234); it is a survivor no entry can name."""
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/m.rs").write_text("a\n    if w > 0.0 {\nconst N: u32 = 1 << 3;\n")
+    (tmp_path / "src/m.rs").write_text(
+        "a\n    if w > 0.0 {\nconst N: u32 = 1 << 3;\n", encoding="utf-8"
+    )
     run = _run(tmp_path, [("", 3, "replace << with >>")])
     data = json.loads((run / "outcomes.json").read_text(encoding="utf-8"))
     data["outcomes"][-1]["scenario"]["Mutant"]["function"] = None
@@ -159,7 +163,7 @@ def test_a_survivor_outside_any_function_is_reported_beside_list_entries(tmp_pat
 
 def test_an_equivalent_lapses_when_its_line_changes(tmp_path):
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/m.rs").write_text("a\n    if w >= 1.0 {\n")
+    (tmp_path / "src/m.rs").write_text("a\n    if w >= 1.0 {\n", encoding="utf-8")
     run = _run(tmp_path, [("", 2, "replace > with >=")])
     _, missed = report_mod.report([run], root=tmp_path, equivalents=[EQUIVALENT])
     assert missed == 1
@@ -234,7 +238,9 @@ def test_a_tolerated_survivor_is_shown_apart_and_fails_nothing(tmp_path):
     apart from the survivors, and leaves `missed` -- what `--fail-on-missed`
     reads -- at the survivors alone (task 158)."""
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/m.rs").write_text("a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n")
+    (tmp_path / "src/m.rs").write_text(
+        "a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n", encoding="utf-8"
+    )
     run = _run(tmp_path, [("", 5, "replace < with <="), ("", 4, "replace > with >=")])
     text, missed = report_mod.report([run], root=tmp_path, equivalents=[], tolerated=[TOLERATED])
     assert missed == 1
@@ -255,7 +261,9 @@ def test_a_loop_entry_sets_its_timeout_apart_and_excuses_no_survivor(tmp_path):
     with its reason, and a timeout no entry names under the timeouts. The
     same entry does not excuse a survivor on its line (task 250)."""
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/m.rs").write_text("a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n")
+    (tmp_path / "src/m.rs").write_text(
+        "a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n", encoding="utf-8"
+    )
     run = _run(tmp_path, [("", 5, "replace < with <=")])
     data = json.loads((run / "outcomes.json").read_text(encoding="utf-8"))
     hung = json.loads(json.dumps(data["outcomes"][-1]))
@@ -280,7 +288,7 @@ def test_a_tolerated_entry_with_columns_holds_only_there(tmp_path):
     """`columns` limits an entry to the operators it names: the same mutation
     one column along, on the same line, is a survivor."""
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/m.rs").write_text("let x = y < z && u < v;\n")
+    (tmp_path / "src/m.rs").write_text("let x = y < z && u < v;\n", encoding="utf-8")
     run = tmp_path / "mutants.out"
     run.mkdir()
 
@@ -308,7 +316,8 @@ def test_a_line_has_over_two_lines_holds_only_where_both_are(tmp_path):
     `line_has` that takes in the line before tells them apart."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src/m.rs").write_text(
-        "let c = a();\nlet f = s > c;\nlet c = b();\nlet f = s > c;\n"
+        "let c = a();\nlet f = s > c;\nlet c = b();\nlet f = s > c;\n",
+        encoding="utf-8",
     )
     run = _run(tmp_path, [("", 2, "replace > with >="), ("", 4, "replace > with >=")])
     entry = {
@@ -326,7 +335,9 @@ def test_a_line_has_over_two_lines_holds_only_where_both_are(tmp_path):
 #: the tests below hold the value CI uses (review 7 D-3: the workflow moved
 #: to 30 while every test still said 40).
 PER_SHARD = int(
-    re.search(r"--per-shard (\d+)", (REPO / ".github/workflows/mutants.yml").read_text()).group(1)
+    re.search(
+        r"--per-shard (\d+)", (REPO / ".github/workflows/mutants.yml").read_text(encoding="utf-8")
+    ).group(1)
 )
 
 
@@ -334,7 +345,7 @@ def test_the_workflow_sizes_its_shards_at_thirty():
     """The comment beside the listing job counts from this: 256 shards of 30
     is 7,680, past which a shard is dealt more."""
     assert PER_SHARD == 30
-    text = (REPO / ".github/workflows/mutants.yml").read_text()
+    text = (REPO / ".github/workflows/mutants.yml").read_text(encoding="utf-8")
     assert f"past {256 * PER_SHARD:,} mutants a shard is dealt" in text
 
 
@@ -405,11 +416,13 @@ def test_testing_md_counts_the_lists_it_describes():
     D-2) fails here, not in a reader's arithmetic."""
     import tomllib
 
-    text = (REPO / "docs/TESTING.md").read_text()
-    equivalent = tomllib.loads((REPO / "scripts/mutants_equivalent.toml").read_text())
+    text = (REPO / "docs/TESTING.md").read_text(encoding="utf-8")
+    equivalent = tomllib.loads(
+        (REPO / "scripts/mutants_equivalent.toml").read_text(encoding="utf-8")
+    )
     n_eq = len(equivalent["equivalent"])
     assert f"That file holds {n_eq}\nentries" in text, n_eq
-    tolerated = tomllib.loads((REPO / "scripts/mutants_tolerated.toml").read_text())
+    tolerated = tomllib.loads((REPO / "scripts/mutants_tolerated.toml").read_text(encoding="utf-8"))
     entries = tolerated["tolerated"]
     # An entry names one mutant per column it gives, else the one on its line.
     named = sum(len(e["columns"]) if isinstance(e.get("columns"), list) else 1 for e in entries)
@@ -423,10 +436,10 @@ def test_a_single_downloaded_shard_is_one_run_whose_files_sit_in_the_shards_dire
     of "reported nothing" (the push of 3a29ecf failed its report on this)."""
     flat = tmp_path / "shards"
     flat.mkdir()
-    (flat / "listed.txt").write_text("")
+    (flat / "listed.txt").write_text("", encoding="utf-8")
     assert report_mod.run_dirs([flat / "listed.txt"]) == [flat]
     # Both files of a shard that did run name the one directory once.
-    (flat / "outcomes.json").write_text('{"outcomes": []}')
+    (flat / "outcomes.json").write_text('{"outcomes": []}', encoding="utf-8")
     assert report_mod.run_dirs([flat / "listed.txt", flat / "outcomes.json"]) == [flat]
     # The ordinary layout is unchanged: one directory a shard.
     a, b = tmp_path / "a", tmp_path / "b"

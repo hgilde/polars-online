@@ -22,7 +22,7 @@ BASE = "https://github.com/o/r"
 
 def test_a_relative_link_is_absolute_and_nothing_else_moves(tmp_path):
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs/A.md").write_text("a")
+    (tmp_path / "docs/A.md").write_text("a", encoding="utf-8")
     text = (
         "See [A](docs/A.md) and [B](docs/A.md#part), the [folder](docs),\n"
         "[away](https://x.org/y), [here](#local) and [mail](mailto:a@b.c).\n"

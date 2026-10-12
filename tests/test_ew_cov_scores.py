@@ -595,7 +595,8 @@ class TestStreamContract:
             "precision_prior = 1e-4\n"
             "mahal_quantiles = [0.9]\n"
             "pca = 2\n"
-            "pca_every = 7\n"
+            "pca_every = 7\n",
+            encoding="utf-8",
         )
         res = subprocess.run(
             [str(online_cli), "--config", str(cfg), "--quiet"],

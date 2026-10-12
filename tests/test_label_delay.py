@@ -703,7 +703,8 @@ embargo = 6.0
 type = "ewridge"
 standardize = false
 max_rows_between_solves = 1
-"""
+""",
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert fields(pl.read_parquet(cli_out)).equals(want, null_equal=True)

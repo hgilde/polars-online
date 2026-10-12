@@ -953,7 +953,10 @@ def route_rust(
     valid = pl.read_parquet(data / "valid.parquet")
     codes = feed == "codes"
     cuts = (
-        [np.array(ln.split(), dtype=float) for ln in cuts_file.read_text().splitlines()]
+        [
+            np.array(ln.split(), dtype=float)
+            for ln in cuts_file.read_text(encoding="utf-8").splitlines()
+        ]
         if codes
         else []
     )

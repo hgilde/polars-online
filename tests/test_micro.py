@@ -967,7 +967,8 @@ class TestRefusals:
                     "eps = 0.1",
                     "prune_every = 50",
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))

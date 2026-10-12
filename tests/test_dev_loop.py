@@ -172,7 +172,7 @@ def test_what_ships_and_what_gates_a_push_build_release():
     for path in [*WORKFLOWS, *ACTIONS]:
         assert "dev-wheel" not in path.read_text(encoding="utf-8"), path.name
     named = sorted(
-        str(p.relative_to(REPO))
+        p.relative_to(REPO).as_posix()
         for p in (REPO / "scripts").glob("*")
         if p.is_file() and BUILDS_DEV.search(p.read_text(encoding="utf-8", errors="replace"))
     )

@@ -153,7 +153,8 @@ half_life = 200.0
 [specs.model]
 type = "ew_cov"
 stats = []
-"""
+""",
+            encoding="utf-8",
         )
         subprocess.run(
             [str(online_cli), "--config", str(cfg), "--no-output"],
@@ -178,7 +179,8 @@ features = ["x0", "x1"]
 half_life = 200.0
 [specs.model]
 type = "ew_cov"
-"""
+""",
+            encoding="utf-8",
         )
         r = subprocess.run(
             [str(online_cli), "--config", str(cfg), "--dry-run"],
@@ -209,7 +211,9 @@ type = "ew_cov"
 
     def test_output_and_no_output_together_are_refused(self, tmp_path, online_cli):
         cfg = tmp_path / "c.toml"
-        cfg.write_text('input = "x.parquet"\n[[specs]]\nname = "c"\nfeatures = ["x0"]\n')
+        cfg.write_text(
+            'input = "x.parquet"\n[[specs]]\nname = "c"\nfeatures = ["x0"]\n', encoding="utf-8"
+        )
         r = subprocess.run(
             [
                 str(online_cli),
@@ -246,7 +250,8 @@ half_life = 200.0
 [specs.model]
 type = "{model}"
 {extra}
-"""
+""",
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         bank = po.ModelBank.load(state)
@@ -273,7 +278,8 @@ half_life = 200.0
 [specs.model]
 type = "ew_cov"
 stats = []
-"""
+""",
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         from_python = tmp_path / "py.state"

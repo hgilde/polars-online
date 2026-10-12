@@ -871,7 +871,8 @@ class TestEdgeCases:
                     "[specs.model]",
                     'type = "seqtest"',
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = pl.read_parquet(dst)
@@ -911,7 +912,8 @@ class TestEdgeCases:
                     'b = "ridge"',
                     'b_suffix = "__r0.5"',
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         res = subprocess.run(
             [str(online_cli), "--config", str(cfg), "--dry-run"],
@@ -924,8 +926,10 @@ class TestEdgeCases:
         assert 'it has no field "resid_y__r0.5"' in res.stderr
         assert '["resid_y__r0.000001", "resid_y__r0.1"]' in res.stderr
         # And the two instances it has compare, both ways, in a dry run and a bank.
-        ok = cfg.read_text().replace('b_suffix = "__r0.5"', 'b_suffix = "__r0.000001"')
-        cfg.write_text(ok)
+        ok = cfg.read_text(encoding="utf-8").replace(
+            'b_suffix = "__r0.5"', 'b_suffix = "__r0.000001"'
+        )
+        cfg.write_text(ok, encoding="utf-8")
         res = subprocess.run(
             [str(online_cli), "--config", str(cfg), "--dry-run"],
             capture_output=True,

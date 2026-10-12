@@ -129,7 +129,7 @@ def test_every_documented_target_form_type_checks(tmp_path, monkeypatch):
     from mypy import api
 
     snippet = tmp_path / "forms.py"
-    snippet.write_text(_TARGET_FORMS)
+    snippet.write_text(_TARGET_FORMS, encoding="utf-8")
     # The package's own source and stub, as `uv run mypy` reads them, so
     # nothing built is needed. An installed wheel is found where it is
     # (it ships `py.typed`), and mypy refuses a site-packages in MYPYPATH.
@@ -151,7 +151,7 @@ def test_the_native_stub_names_the_built_module():
 
     from polars_online import _polars_online as native
 
-    stub = Path(native.__file__).with_name("_polars_online.pyi").read_text()
+    stub = Path(native.__file__).with_name("_polars_online.pyi").read_text(encoding="utf-8")
     tree = ast.parse(stub)
     functions = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
     classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}

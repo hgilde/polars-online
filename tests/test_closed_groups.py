@@ -621,7 +621,7 @@ def toml_config(tmp_path, **kw):
         'type = "ew_cov"',
     ]
     p = tmp_path / "bank.toml"
-    p.write_text("\n".join(lines))
+    p.write_text("\n".join(lines), encoding="utf-8")
     return p
 
 

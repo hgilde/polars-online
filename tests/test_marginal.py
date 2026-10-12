@@ -299,7 +299,8 @@ class TestPlumbing:
                     "[specs.model]",
                     'type = "marginal"',
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert pl.read_parquet(cli_dst).select("m").unnest("m").equals(one, null_equal=True)

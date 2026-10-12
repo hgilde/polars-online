@@ -403,18 +403,26 @@ def test_check_end_to_end(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv(budgets.MEASURE_VARIABLE, raising=False)
     first, second = tmp_path / "first.json", tmp_path / "second.json"
     for f in (first, second):
-        f.write_text("\n".join(json.dumps(_summary(c, n)) for c, n in (("a", 900_000), ("b", 7))))
+        f.write_text(
+            "\n".join(json.dumps(_summary(c, n)) for c, n in (("a", 900_000), ("b", 7))),
+            encoding="utf-8",
+        )
     measured = tmp_path / "measured.json"
     assert budgets.main(["check", str(first), str(second), "--measured", str(measured)]) == 1
     out = capsys.readouterr().out
     assert "::error::instructions.a: 900,000 is -10.00% under its budget" in out
     assert "tighten the budget to 900000" in out
     assert "::warning::instructions.b: no budget yet" in out
-    assert json.loads(measured.read_text()) == {"instructions.a": 900_000, "instructions.b": 7}
-    assert "| instructions.a | 1,000,000 | 900,000 | -10.00% | -10.00% |" in summary.read_text()
+    assert json.loads(measured.read_text(encoding="utf-8")) == {
+        "instructions.a": 900_000,
+        "instructions.b": 7,
+    }
+    assert "| instructions.a | 1,000,000 | 900,000 | -10.00% | -10.00% |" in summary.read_text(
+        encoding="utf-8"
+    )
     assert budgets.main(["check", str(first), "--measure"]) == 0
     assert budgets.main(["apply", str(measured)]) == 0
-    assert tomllib.loads(path.read_text())["instructions"]["a"]["budget"] == 900_000
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["instructions"]["a"]["budget"] == 900_000
     assert budgets.main(["check", str(first), str(second)]) == 0
 
 

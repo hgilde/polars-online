@@ -493,11 +493,15 @@ def read_measured(path: Path) -> dict[str, float]:
 
 def _cmd_check(args: argparse.Namespace) -> int:
     doc = load()
-    first = {f"instructions.{k}": v for k, v in parse_gungraun(args.summary.read_text()).items()}
+    first = {
+        f"instructions.{k}": v
+        for k, v in parse_gungraun(args.summary.read_text(encoding="utf-8")).items()
+    }
     second = None
     if args.second is not None:
         second = {
-            f"instructions.{k}": v for k, v in parse_gungraun(args.second.read_text()).items()
+            f"instructions.{k}": v
+            for k, v in parse_gungraun(args.second.read_text(encoding="utf-8")).items()
         }
     measure = args.measure or measuring()
     verdicts = judge_all(doc, first, measure)
@@ -524,7 +528,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print(text)
     write_summary(text)
     if args.measured is not None:
-        args.measured.write_text(json.dumps(first, indent=1, sort_keys=True) + "\n")
+        args.measured.write_text(
+            json.dumps(first, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+        )
     for m in notes:
         print(f"::warning::{m}")
     failed = list(repeat)

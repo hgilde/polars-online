@@ -327,7 +327,9 @@ def _held(kind: str, measured: dict[str, float]) -> None:
     if out:
         Path(out).mkdir(parents=True, exist_ok=True)
         name = kind if kind == "memory" else f"{kind}-{PLATFORM}"
-        (Path(out) / f"{name}.json").write_text(json.dumps(measured, indent=1, sort_keys=True))
+        (Path(out) / f"{name}.json").write_text(
+            json.dumps(measured, indent=1, sort_keys=True), encoding="utf-8"
+        )
     failed = [v.message for v in verdicts if v.failed]
     assert not failed, "\n".join(failed)
 

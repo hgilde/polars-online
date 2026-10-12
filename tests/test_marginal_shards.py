@@ -282,7 +282,8 @@ def test_more_groups_than_threads_under_auto(tmp_path):
         "    for f in frames + [bank.marginal('m')]:\n"
         "        h.update(str(f.to_dict(as_series=False)).encode())\n"
         "    out.append(h.hexdigest())\n"
-        "print(' '.join(out))\n"
+        "print(' '.join(out))\n",
+        encoding="utf-8",
     )
     res = subprocess.run(
         [sys.executable, str(script), str(data)],
@@ -387,7 +388,8 @@ def test_the_cli_reads_shards(tmp_path, online_cli, shards):
                 f"shards = {shards}",
                 "lags = [1, 2]",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
     want_bank = po.ModelBank(

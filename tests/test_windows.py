@@ -693,14 +693,16 @@ def test_the_refusal_lists_exactly_what_a_formula_reads() -> None:
         po.stream.with_windows(ticks(50, 1), y=w.shift(1), **CLOCK)
     assert f"element-wise: {accepted_text()} over the operators;" in str(refused.value)
 
-    guide = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text()
+    guide = (Path(__file__).resolve().parent.parent / "docs" / "WINDOWS.md").read_text(
+        encoding="utf-8"
+    )
     cell = re.search(r"^\| allowed, around at least one operator \| (.*) \|$", guide, re.M)
     assert cell, "no allowed row in the windows guide"
     assert cell.group(1).replace("`", "").replace("\\|", "|") == accepted_text()
 
     rust = (
         Path(__file__).resolve().parent.parent / "crates" / "online-polars" / "src" / "formula.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     block = re.search(r"^const ACCEPTED: .*?^\];", rust, re.S | re.M)
     assert block, "no ACCEPTED in formula.rs"
     pairs = re.findall(r'\("([^"]+)", &\[([^\]]*)\]\)', block.group(0))

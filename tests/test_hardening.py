@@ -184,7 +184,8 @@ class TestKitchenSinkAtScale:
             "h = hashlib.sha256()\n"
             "for s in out.get_columns():\n"
             "    h.update(str(s.to_list()).encode())\n"
-            "print(h.hexdigest())\n"
+            "print(h.hexdigest())\n",
+            encoding="utf-8",
         )
         digests = set()
         for threads in ("1", "8"):

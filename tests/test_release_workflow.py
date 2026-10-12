@@ -301,7 +301,9 @@ def test_the_numpy_floor_installs_on_the_oldest_python():
     floor = (int(m.group(1)), int(m.group(2)))
     assert floor >= FIRST_NUMPY_WHEEL[python], (numpy, python)
     named = {
-        str(path.relative_to(REPO)): set(re.findall(r"numpy>=[\d.]+", path.read_text("utf-8")))
+        str(path.relative_to(REPO)): set(
+            re.findall(r"numpy>=[\d.]+", path.read_text(encoding="utf-8"))
+        )
         for path in [
             REPO / "README.md",
             REPO / "docs" / "RELEASE-READINESS.md",

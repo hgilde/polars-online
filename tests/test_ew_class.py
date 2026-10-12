@@ -834,7 +834,8 @@ class TestRefusals:
                     'covariance_type = "tied"',
                     "precision_prior = 1.0",
                 ]
-            )
+            ),
+            encoding="utf-8",
         )
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))

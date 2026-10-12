@@ -188,3 +188,39 @@ def test_a_clean_checkout_has_what_the_build_needs(tracked):
         ".gitattributes",
     ]:
         assert needed in names, f"{needed} is not tracked; a fresh clone would not have it"
+
+
+def test_every_text_read_and_write_names_its_encoding():
+    """`Path.read_text()`, `.write_text()` and a text-mode `open()` without
+    `encoding=` use the platform's default: UTF-8 on Linux and macOS, cp1252
+    on Windows, where a UTF-8 file with one non-ASCII character fails to
+    decode. Both Windows legs of CI failed on such a read of TESTING.md
+    (2026-10-12), which no Linux or macOS run can see; this holds it on every
+    platform."""
+    import ast
+
+    missing = []
+    for root in ("tests", "scripts", "python"):
+        for path in sorted((REPO / root).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                keywords = {k.arg for k in node.keywords}
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr in ("read_text", "write_text"):
+                    # read_text(encoding, errors) and write_text(data, encoding)
+                    # take it by position too.
+                    positional = len(node.args) > (0 if func.attr == "read_text" else 1)
+                    if "encoding" not in keywords and not positional:
+                        missing.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}")
+                elif isinstance(func, ast.Name) and func.id == "open":
+                    mode = "r"
+                    if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                        mode = str(node.args[1].value)
+                    for k in node.keywords:
+                        if k.arg == "mode" and isinstance(k.value, ast.Constant):
+                            mode = str(k.value.value)
+                    if "b" not in mode and "encoding" not in keywords:
+                        missing.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}")
+    assert not missing, "\n".join(missing)
