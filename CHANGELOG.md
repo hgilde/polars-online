@@ -2,10 +2,12 @@
 
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
-[semantic versioning](https://semver.org/) — while pre-1.0, the minor version
-carries breaking changes, and any change to the numbers a model returns.
+[semantic versioning](https://semver.org/). From 1.0, a breaking change to the
+stable API takes a major version, and a minor version may also correct numbers
+that were wrong. Before 1.0, the minor version carried breaking changes, and
+any change to the numbers a model returns.
 
-## [Unreleased]
+## [1.0.0] — 2026-10-12
 
 **Upgrading from 0.13.0.** Refit every saved bank: a bank file from 0.13.0
 or any earlier release is refused by its schema version, naming the way
@@ -1295,14 +1297,34 @@ project's versioning that is carried by the minor version before 1.0.
 
 - **1.0 against 0.13.0, measured before the release**:
   `scripts/benchmark.py` at 200,000 rows, seven rounds of each build in
-  turn, on an Apple M4 Pro at load 2.6 to 4.4, with 1-11% scatter within a
-  build. Most configurations run at 0.72 to 0.98 of 0.13.0's rows a second.
-  `sgd` and `pa` without standardizing run at 0.63 and 0.64, and `bocpd` at
-  0.25. `ew_cov` with `mahal` is 5% faster, and `hmm` at twenty features,
-  `corrchange`, `ew_class` with a tied covariance and `ew_cov` with lags
-  are within the scatter. Each step was bisected to the commit that made
-  it, and each is the cost of a correction listed in this release's
-  entries:
+  turn, run twice on an Apple M4 Pro, at load 4.0 to 9.0 and then 3.0 to
+  4.7. The two runs agree within 2% on every configuration, with 1-13%
+  scatter within a build. Most configurations run at 0.94 to 1.20 of
+  0.13.0's rows a second. Thirteen are as fast or faster: `bocpd` with a
+  full covariance at 1.20, `ftrl` at 1.10, `ew_cov` with
+  lags or `mahal` at 1.08, `kmeans` at twenty features at 1.07, `hmm` at
+  twenty features at 1.05, and `ewridge` at fifty features, `ew_class`
+  with a full or shared covariance, `corrchange`, `deco` in blocks and
+  `hmm` at four features at 0.99 to 1.04. These run slower, most of them
+  light configurations where a row costs a few hundred nanoseconds and
+  the bank's per-row work weighs most:
+
+  | configuration | of 0.13.0 |
+  |---|---:|
+  | `bocpd`, four features, `diag` | 0.74-0.76 |
+  | `micro`, four features | 0.80 |
+  | `ewridge`, five features | 0.81 |
+  | `seqtest` | 0.83-0.84 |
+  | `sgd`, without standardizing | 0.85 |
+  | `kalman`, twenty features, with or without `revert_half_life` | 0.87-0.89 |
+  | `pa`, without standardizing | 0.88-0.89 |
+  | `ewridge`, ten targets or five half-lives | 0.90-0.91 |
+  | `deco` (within its 10-13% scatter) | 0.91-0.92 |
+
+  The first measurement, before the fixes below, read 0.72 to 0.98 for
+  most configurations, `sgd` and `pa` 0.63 and 0.64, and `bocpd` 0.25.
+  Each step down was bisected to the commit that made it, and each is the
+  cost of a correction listed in this release's entries:
   - Every row's place on the clock held exactly (task 175, beside tasks
     153, 176 and 200): `seqtest` went from 0.97 to 0.84 of 0.13.0 at that
     commit, `sgd` from 0.98 to 0.87, and `ewridge` at five features from
@@ -1314,14 +1336,37 @@ project's versioning that is carried by the minor version before 1.0.
   - `kmeans`' and `micro`'s centres are compensated pairs (task 215): 0.89
     to 0.81 and 0.81 to 0.76.
   - `bocpd` sets its prior from its first rows, with
-    `degrees_of_freedom_prior` 3 under `diag` (task 195): 921,000 rows a
-    second became 234,000 at four features, at `max_run` 20 or 200. Given
-    0.13.0's prior (`mean_prior` of zeros, `covariance_prior=[1.0]`,
-    `degrees_of_freedom_prior=6`), 1.0 runs at 879,000; with the prior
-    from the rows and `degrees_of_freedom_prior=6`, at 439,000. The cost
-    follows the prior, not the code.
+    `degrees_of_freedom_prior` 3 under `diag` (task 195). Before the fixes
+    below, 921,000 rows a second became 234,000 at four features, at
+    `max_run` 20 or 200; given 0.13.0's prior (`mean_prior` of zeros,
+    `covariance_prior=[1.0]`, `degrees_of_freedom_prior=6`), 1.0 ran at
+    879,000. The cost follows the prior, not the code.
   - The rest comes a few percent at a time from the corrections between
     0.13.0 and 1.0, the value checks of task 183 among them.
+- **Eleven fixes took back most of that, every output and state
+  byte-identical** (task 250), each found by sampling a symbol build and
+  each held to `scripts/release_probe.py`'s 297 columns and 31 states:
+  - The clock: the check of a row's step shares one refusal path, and a
+    float clock's forward step takes a short cut. `seqtest` runs about
+    1.18x faster.
+  - `bocpd` allocates nothing per run, and caches its gamma terms keyed on
+    the degrees of freedom and the density's dimension: 2.8 to 2.9x
+    faster: 0.75 of 0.13.0 under the default prior, and 1.8 times
+    0.13.0's speed when given 0.13.0's prior.
+  - `kmeans` and `micro`: inlining, a clean flag per batch, `micro` reuses
+    the squared distances its search found, and a step factor is cached on
+    the step's bits. `kmeans` at four features runs 16% faster.
+  - `sgd`, `pa`, `ew_cov` and `kalman`: the gradient check folded into the
+    step, `pa` reads its features in place, the rank-one loop moved out of
+    line, and the noise median kept on the stack. Each runs about 15%
+    faster a row.
+  - The bank: the run budget counts the plans, the embargo's stamp sits
+    beside the plans (128 bytes a plan, from 160), and the summary's
+    Welford step runs across columns at eight features or more.
+  Two release builds of the same source differ by up to 19% in wall time
+  from inlining alone, so a whole-build ratio within about 15% can be the
+  layout rather than the change. The instruction-count budgets in
+  `budgets.toml` measure the change itself.
 - **A sharded `marginal` (`shards=`) steps each target through a held
   batch in turn, and cuts its feature ranges on even features** (task
   127): on one thread up to 24% faster at thirty targets, and 9-16% where

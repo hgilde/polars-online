@@ -202,8 +202,8 @@ released-state test holds it against what PyPI shipped.** A state of every
 `ModelState` variant, a bank file, a `with_windows` state and a
 `refresh_time` state are frozen at each schema this build loads, from
 `MIN_SCHEMA_VERSION` and `MIN_BANK_SCHEMA_VERSION` to `SCHEMA_VERSION`.
-Both minimums were raised to 44 on 2026-10-07, and on 2026-10-11 all three
-constants stood at 60. Each fixture is held to loading, going on to the bit
+Both minimums were raised to 44 on 2026-10-07, and for 1.0.0 all three
+constants stand at 61. Each fixture is held to loading, going on to the bit
 and saving its bytes again (`crates/online-core/tests/state_fixtures.rs`,
 `crates/online-polars/tests/state_fixtures.rs`). Before 1.0, a layout
 change regenerates them (`PRINT_STATE_FIXTURES=1`) and moves both minimums

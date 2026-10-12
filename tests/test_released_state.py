@@ -65,7 +65,7 @@ REFUSED = [v for v in RELEASES if _major(v) < 1]
 #: The workload's kinds newer than a release, by the first version that has
 #: each: a release before it has no builder for one, and its probe records
 #: the refusal (`audit`, task 223 (b), after 0.13.0).
-INTRODUCED = {"audit": "0.14.0"}
+INTRODUCED = {"audit": "1.0.0"}
 
 
 def _version(v: str) -> tuple[int, ...]:
