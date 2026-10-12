@@ -1173,12 +1173,20 @@ impl OnlineModel for Sgd {
                     (g * g).is_finite()
                 }
             };
-            if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip)))
-                || beta[off..]
-                    .iter()
-                    .zip(z)
-                    .any(|(b, &zi)| !usable((d * zi * weight + l2 * *b).clamp(-clip, clip)))
-            {
+            // Every slot's verdict folded without an early exit, so the
+            // check vectorizes as the update does: the same verdict, which a
+            // short-circuiting `any` reached a slot at a time, at three times
+            // the update's cost (task 250).
+            let slopes_usable = match lr_row {
+                Some(_) => beta[off..].iter().zip(z).fold(true, |ok, (b, &zi)| {
+                    ok & (d * zi * weight + l2 * *b).clamp(-clip, clip).is_finite()
+                }),
+                None => beta[off..].iter().zip(z).fold(true, |ok, (b, &zi)| {
+                    let g = (d * zi * weight + l2 * *b).clamp(-clip, clip);
+                    ok & (g * g).is_finite()
+                }),
+            };
+            if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip))) || !slopes_usable {
                 continue;
             }
             match lr_row {
