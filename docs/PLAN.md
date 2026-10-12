@@ -10075,6 +10075,27 @@ tick, and that the series holding it up has a count near 1.
       golden pipeline, the fixtures, `compare_release.py` and
       `release_probe.py`'s columns and states, plus an activation test for
       each path a fix touches.
+- [ ] 253. **Thread count through the API (before 1.0, awaiting the user's
+      go on the design)** -- the user, 2026-10-12: "We should control the
+      number of threads through the api not env variables, can we fit that
+      into 1.0?" Today the bank's pool is one process-wide `OnceLock`,
+      sized once from `POLARS_ONLINE_MAX_THREADS` at the first call and
+      ignored afterwards; `po.thread_pool_size()` only reads it; the CLI has
+      no flag; the in-API knobs are per spec (`gram_threads`, `shards`) and
+      `po.gbdt`'s `threads`. Polars 2.0 has no per-call thread parameter
+      either (`pl.thread_pool_size()` and `POLARS_MAX_THREADS` only), so the
+      name is ours. Design recommended: `threads=` on `ModelBank(...)`,
+      `ModelBank.load(...)`, `po.fit_predict`/`predict`, the frame
+      namespaces, the pool-using `po.gram` functions, `--threads` on the CLI
+      and a `threads` key in the TOML; `None` is the process pool (the
+      variable stays as its default); an int is a pool of that size from a
+      size-keyed registry of weak references, so a hundred banks asking for
+      8 share one pool; not state (a loaded bank takes its own); outputs
+      are independent of it (task 231: solve bits do not depend on the
+      pool), held by a test at 1, 2 and 8. Only five call sites enter the
+      pool (`bank.rs` fit and predict, `gramfit.rs` x2, `runner.rs`).
+      Adding a keyword is non-breaking, but the names in the snapshot are
+      not: `gram_threads`/`shards`/`po.gbdt`'s `threads` are decided with it.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
