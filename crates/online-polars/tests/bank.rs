@@ -1384,7 +1384,7 @@ fn a_sharded_marginal_reads_the_unsplit_pairs() {
         let resolved = count(&split);
         // A pool of one thread never splits (review 2026-09-26, D9/E4: the
         // assertion failed on a one-core runner with nothing wrong).
-        let threads = online_polars::thread_pool_size().unwrap();
+        let threads = online_polars::thread_pool_size(None).unwrap();
         match expect {
             Some(c) => assert_eq!(resolved, c),
             None if threads > 1 => assert!(

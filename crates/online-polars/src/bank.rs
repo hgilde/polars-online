@@ -2537,6 +2537,9 @@ pub struct Bank {
     /// ([`Stream::window_prepass`]): on, except in a test that holds the
     /// replay's verdict to the ring's own. Not state.
     window_prepass: bool,
+    /// The pool the bank's parallel work runs on ([`Self::set_threads`]):
+    /// the process default unless a count was given. Not state.
+    threads: crate::pool::Threads,
     /// Readiness notices raised and not yet taken
     /// ([`Self::take_notices`]); not state.
     notices: Vec<String>,
@@ -2765,12 +2768,32 @@ impl Bank {
             clock_dtypes,
             broken: None,
             window_prepass: true,
+            threads: crate::pool::Threads::default(),
             notices,
         })
     }
 
     pub fn specs(&self) -> &[Spec] {
         &self.specs
+    }
+
+    /// Run on a pool of `threads` threads, shared with every other holder
+    /// of that count, or on the process default for `None` (pool.rs). The
+    /// numbers the bank returns and the state it saves are the same at any
+    /// count; the count is not saved, so a loaded bank takes its own.
+    ///
+    /// # Errors
+    ///
+    /// `ComputeError` naming the argument for `Some(0)` or for a count the
+    /// system will not start threads for; the bank keeps its pool.
+    pub fn set_threads(&mut self, threads: Option<usize>) -> PolarsResult<()> {
+        self.threads = crate::pool::Threads::new(threads)?;
+        Ok(())
+    }
+
+    /// The pool the bank runs on ([`Self::set_threads`]).
+    pub fn threads(&self) -> &crate::pool::Threads {
+        &self.threads
     }
 
     /// The groups each spec holds state for, in key order ([`Self::sorted_keys`]):
@@ -3517,9 +3540,10 @@ impl Bank {
         let keys = self.key_forms(chunk)?;
         // Everything parallel below -- the `par_iter`s here and the
         // per-instance ones in `Stream` -- runs on the bank's own pool
-        // (pool.rs), never on rayon's global one, whichever thread calls.
+        // (pool.rs, `threads`), never on rayon's global one, whichever
+        // thread calls.
         let out =
-            crate::pool::pool()?.install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?;
+            self.threads.clone().install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?;
         self.clock_dtypes = merged;
         self.key_dtypes = keys;
         Ok(out)
@@ -4052,7 +4076,7 @@ impl Bank {
     /// [`Self::predict`] over Arrow, as [`Self::fit_predict_arrow`] is to
     /// [`Self::fit_predict`].
     pub fn predict_arrow(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
-        crate::pool::pool()?.install(|| self.predict_on_pool(chunk))
+        self.threads.install(|| self.predict_on_pool(chunk))
     }
 
     fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {

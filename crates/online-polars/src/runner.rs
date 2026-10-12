@@ -170,6 +170,12 @@ pub struct RunConfig {
     /// for overhead.
     #[serde(default = "default_chunk_size")]
     pub chunk_size: usize,
+    /// Threads the bank runs on: a pool of that many, or, unset, the
+    /// process default (`POLARS_ONLINE_MAX_THREADS`, else one thread per
+    /// core). The numbers are the same at any count. Not saved with the
+    /// state: a resumed run takes the config's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<usize>,
     /// Load the bank state from here before running (resume).
     #[serde(default)]
     pub load_state: Option<PathBuf>,
@@ -257,6 +263,9 @@ impl RunConfig {
         }
         if self.chunk_size == 0 {
             return Err("chunk_size must be at least 1, got 0".into());
+        }
+        if let Some(n) = self.threads {
+            crate::pool::check_threads(n).map_err(|e| e.to_string())?;
         }
         // Named first: a scoring run learns nothing, so it can save no state
         // and close no group, and the refusal below asked for one of the two
@@ -426,6 +435,13 @@ impl RunConfig {
     /// this build loads, or whose specs are not the config's, is a
     /// `ComputeError` saying why (`Bank::load_bytes`).
     pub fn open_bank(&self) -> PolarsResult<Bank> {
+        let mut bank = self.open_bank_state()?;
+        bank.set_threads(self.threads)?;
+        Ok(bank)
+    }
+
+    /// [`Self::open_bank`] before its pool is set.
+    fn open_bank_state(&self) -> PolarsResult<Bank> {
         match &self.load_state {
             Some(p) => {
                 let bytes = std::fs::read(p).map_err(|e| io_err("loading state", p, e))?;

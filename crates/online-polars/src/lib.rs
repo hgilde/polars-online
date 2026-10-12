@@ -89,7 +89,7 @@ pub use online_core;
 /// The Rust Polars this crate is built against, which the command line's
 /// `--version` names.
 pub use polars::VERSION as POLARS_VERSION;
-pub use pool::{THREADS_VAR, pool, thread_pool_size};
+pub use pool::{THREADS_VAR, Threads, check_threads, pool, thread_pool_size, threads_refusal};
 pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::FeatureRows;
 pub use runner::{

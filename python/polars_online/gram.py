@@ -47,7 +47,8 @@ Here numpy runs LAPACK's symmetric eigendecomposition
 (``numpy.linalg.inv``) in :func:`coef_stats`, which round differently in the
 last place or two. The tests hold the two to a relative tolerance, not to
 equality. :func:`lasso_path` and :func:`lars_path` run in Rust, and
-:func:`lars_paths` and :func:`solve_subsets` on the bank's thread pool.
+:func:`lars_paths` and :func:`solve_subsets` on the bank's thread pool, or on a
+pool of their ``threads``.
 
 Requires numpy, which is an optional extra of this package (``pip install
 polars-online[numpy]``), not a dependency, as it is not one of polars' either.
@@ -64,6 +65,7 @@ from collections.abc import Sequence
 from typing import Any, NotRequired, TypedDict
 
 from polars_online import _polars_online as _native
+from polars_online._bank import _check_threads
 from polars_online._renamed import renamed_keywords
 from polars_online._warnings import deprecated_keywords, forward_deprecated
 
@@ -1251,6 +1253,7 @@ def lars_path(
     max_iter: int | None = None,
     max_active: int | None = None,
     penalty_weights: Sequence[float] | None = None,
+    threads: int | None = None,
 ) -> dict[str, Any]:
     """The lasso path from its start, knot by knot, by least angle regression.
 
@@ -1328,6 +1331,11 @@ def lars_path(
         no point a path from ``l_max`` can start at. Use :func:`lasso_path`
         for that, and for an elastic net, whose path is not piecewise
         linear.
+    ``threads``
+        The pool the path runs on, as :class:`~polars_online.ModelBank`
+        takes it: ``None`` is the process's pool, an integer a pool of that
+        many threads. One path is one thread's work, so it matters only to
+        :func:`lars_paths`; the numbers are the same at any count.
 
     Returns a dict:
 
@@ -1374,6 +1382,7 @@ def lars_path(
         max_iter=max_iter,
         max_active=max_active,
         penalty_weights=penalty_weights,
+        threads=threads,
     )[0][0]
 
 
@@ -1386,6 +1395,7 @@ def lars_paths(
     max_iter: int | None = None,
     max_active: int | None = None,
     penalty_weights: Sequence[float] | None = None,
+    threads: int | None = None,
 ) -> list[list[dict[str, Any]]]:
     """:func:`lars_path` for many Grams and targets at once, on the bank's
     thread pool.
@@ -1394,9 +1404,11 @@ def lars_paths(
     every target of each Gram when ``targets`` is ``None``, else those
     named, by name or position, in each. Each Gram's correlation matrix is
     formed once, and its targets' paths run beside each other on it. The
-    Grams run beside each other too, on the pool ``POLARS_ONLINE_MAX_THREADS``
-    sizes. A path is the same arithmetic on one thread whatever the pool's
-    size, so its numbers are those of :func:`lars_path` to the bit. The
+    Grams run beside each other too, on a pool of ``threads`` threads, or
+    on the process's pool, which ``POLARS_ONLINE_MAX_THREADS`` sizes, when
+    ``threads`` is ``None`` (as :class:`~polars_online.ModelBank` takes it).
+    A path is the same arithmetic on one thread whatever the pool's size,
+    so its numbers are those of :func:`lars_path` to the bit. The
     other parameters are those of :func:`lars_path`, applied to every path.
     It merges nothing: each Gram is fitted as it is, a Gram pooled within
     parts with its intercept ``nan``. To pool subsets and walk their paths
@@ -1427,6 +1439,7 @@ def lars_paths(
     slots, icept = _feature_slots(parts[0], features)
     steps, active = _limit("max_iter", max_iter), _limit("max_active", max_active)
     weights = _lars_weights(np, len(slots), penalty_weights)
+    threads = _check_threads(threads)
     tidx = [
         list(range(len(p["cross_moments"])))
         if targets is None
@@ -1435,7 +1448,7 @@ def lars_paths(
     ]
     native = [_native_gram(np, p, icept) for p in parts]
     out = _native.gram_lars_paths(
-        native, tidx, slots, None if icept < 0 else icept, weights, steps, active
+        native, tidx, slots, None if icept < 0 else icept, weights, steps, active, threads
     )
     k = len(cols)
     return [
@@ -1466,6 +1479,7 @@ def solve_subsets(
     path: dict[str, Any] | None = None,
     within: bool = False,
     target_signs: Any = None,
+    threads: int | None = None,
 ) -> list[Any]:
     """Merge each subset of the Grams and fit it, for many subsets at once.
 
@@ -1553,6 +1567,11 @@ def solve_subsets(
         union merge a negated Gram's target mean moves the gaps between the
         parts' means too, and the shortcut does not hold, so it is refused
         there.
+    ``threads``
+        The pool the subsets are fitted on, beside each other: ``None`` is
+        the process's pool, an integer a pool of that many threads, as
+        :class:`~polars_online.ModelBank` takes it. Each fit is one thread's
+        arithmetic, so the numbers are the same at any count.
 
     Returns one list per subset, with one dict per target. A ridge fit's
     dict has ``coef``, the coefficients over the Gram's columns, and
@@ -1599,6 +1618,7 @@ def solve_subsets(
     for the theory and a recipe of each use.
     """
     np = _np()
+    threads = _check_threads(threads)
     parts = list(grams)
     if not parts:
         msg = "solve_subsets() needs at least one Gram"
@@ -1660,7 +1680,7 @@ def solve_subsets(
         active = _limit("max_active", path.get("max_active"))
         weights = _lars_weights(np, len(slots), path.get("penalty_weights"))
         out = _native.gram_path_subsets(
-            native, picked, tidx, slots, ic, weights, steps, active, bool(within), signs
+            native, picked, tidx, slots, ic, weights, steps, active, bool(within), signs, threads
         )
         return per_draw(
             [
@@ -1695,7 +1715,7 @@ def solve_subsets(
 
     def fit(r: float) -> list[Any]:
         fits = _native.gram_ridge_subsets(
-            native, picked, tidx, slots, ic, r, bool(standardize), bool(within), signs
+            native, picked, tidx, slots, ic, r, bool(standardize), bool(within), signs, threads
         )
         return [
             [

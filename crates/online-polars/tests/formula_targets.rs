@@ -208,6 +208,7 @@ fn validate_refuses_a_short_embargo_where_the_run_would() {
         input_format: None,
         output_format: None,
         chunk_size: 64,
+        threads: None,
         load_state: None,
         skip_learned: false,
         save_state: Some("bank.state".into()),
