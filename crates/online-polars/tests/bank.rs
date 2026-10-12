@@ -1124,6 +1124,59 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
     assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 13_776);
 }
 
+/// A narrow model's runs at one chunk, 7 chunks and 600 chunks (hard rule
+/// 3; task 250). A run's row budget counts the row plan pass 1 writes and
+/// pass 2 reads, so a narrow `ewridge` -- five values a row with `n_eff`,
+/// `settled_frac` and the plan's sixteen -- now runs about thirteen
+/// thousand rows at a time, and one chunk of two and a half runs has two
+/// boundaries inside it. Every float field of every row is the same to the
+/// bit at every chunking: a run boundary is invisible, as a chunk boundary
+/// is.
+#[test]
+fn a_narrow_model_s_runs_are_invisible_to_the_bit() {
+    let spec: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ewridge", "ridge": 1e-6},
+            "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "half_life": 500.0,
+            "min_weight": 5.0}"#,
+    )
+    .unwrap();
+    let stream = Stream::new(&spec).unwrap();
+    let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
+    let n = 2 * run_rows + run_rows / 2;
+    let df = make_wide_df(n, 2);
+    let fields = |d: &DataFrame| drop_coef(&d.clone().unnest(["m"], None).unwrap());
+    let one = fields(&run_spec_chunked(&spec, &df, 1));
+    // One chunk spans three runs, the last one partial.
+    assert!(
+        n > 2 * run_rows && n < 3 * run_rows,
+        "{n} rows, runs of {run_rows}"
+    );
+    let floats: Vec<&Column> = one
+        .columns()
+        .iter()
+        .filter(|c| c.dtype() == &DataType::Float64)
+        .collect();
+    assert!(floats.len() >= 4, "pred, resid, n_eff, settled_frac");
+    for c in &floats {
+        assert!(c.null_count() < n / 10, "{} was reported", c.name());
+    }
+    for chunks in [7, 600] {
+        let other = fields(&run_spec_chunked(&spec, &df, chunks));
+        for c in &floats {
+            let bits = |d: &DataFrame| -> Vec<Option<u64>> {
+                let col = d.column(c.name()).unwrap().f64().unwrap().clone();
+                col.iter().map(|v| v.map(f64::to_bits)).collect()
+            };
+            assert_eq!(
+                bits(&one),
+                bits(&other),
+                "{}: 1 vs {chunks} chunks",
+                c.name()
+            );
+        }
+    }
+}
+
 /// A blocked `ewridge` spec (docs/PLAN.md task 71): a block of 16 under a
 /// solve every 30 rows, so that rows are held at most points of the
 /// stream, closing each group when a larger key arrives.

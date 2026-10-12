@@ -3930,7 +3930,9 @@ impl Stream {
         held_break: &mut HeldBreak,
         plans: &mut Vec<RowPlan>,
         // Each plan's place on the elapsed clock, by its `ri`: every plan
-        // handed here is one [`Stream::schedule`] made.
+        // handed here is one [`Stream::schedule`] made, one per row, so it
+        // is indexed rather than looked up -- a plan without its stamp
+        // fails loudly instead of reading as no place at all.
         elapsed: &[Option<Stamp>],
         features: &FeatureRows,
         targets: &[Vec<f64>],
@@ -4022,7 +4024,7 @@ impl Stream {
             }
             if !plan.reset {
                 // With no embargo a formula row waits for its window alone.
-                let now = elapsed.get(plan.ri).copied().flatten();
+                let now = elapsed[plan.ri];
                 let ready = pending
                     .iter()
                     .take_while(|r| r.resolved && embargo.is_none_or(|e| e.passed(now, r.arrived)))
@@ -4041,7 +4043,7 @@ impl Stream {
             // elapsed clock and the break before it.
             let i = plan.i;
             pending.push(PendingRow {
-                arrived: elapsed.get(plan.ri).copied().flatten(),
+                arrived: elapsed[plan.ri],
                 d_clock: plan.d_clock,
                 stamp: plan.stamp,
                 w: plan.w,
