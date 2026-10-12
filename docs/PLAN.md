@@ -9969,11 +9969,14 @@ tick, and that the series holding it up has a count near 1.
       centres; Opus at medium for sgd/pa's finite check and the bank's
       per-row overhead.
       Mutants (the user: "Every task seems to spend a lot of time waiting
-      for mutants"): the workers stop running them; the coordinator runs one
-      scoped pass over the merged wave's diff, in the background, with
-      `--copy-target=true` and `--test-tool nextest` -- the speedup measured
-      on that first pass against task 245's figures -- and its survivors are
-      a follow-up batch before the push (CLAUDE.md's "Iterating").
+      for mutants", then "we need a thorough mutants check to run the
+      smallest number of times"): no local passes. Once phase 2 is merged
+      and gated, `main` is pushed (authorized: "After 245 push") so CI's
+      changed-lines pass runs the one thorough check over everything since
+      `5cb8f7e`, while task 251 is built; its survivors are a follow-up
+      batch, each fix checked locally only with an `--in-diff` of the fix;
+      the release push then carries only that small diff and task 251, and
+      waits for its short CI pass.
       Then (the user, 2026-10-11: "Once memory and performance are fixed if
       there is nothing for me continue with the release"): with nothing
       left for the user, task 247 resumes without asking -- the version
