@@ -208,9 +208,8 @@ class TestDurationText:
             assert g[0] != "0" and 1 <= int(g) <= most, text
         assert sum(int(g) * per for g, per, _ in written) == ns, text
 
-    # Measured on the releases from the floor, 2026-10-07: 1.34.0 refuses
-    # `+0ns`, and 1.35.1 reads it (1.35.0 cannot be installed).
-    @needs_polars("1.35.1", "Polars' dt.offset_by, the reference, refuses a leading +")
+    # 1.34.0 refused `+0ns` and 1.35.1 reads it (measured 2026-10-07); the
+    # floor is 1.37.0 since 2026-10-12, so it runs everywhere.
     @TEXT
     @given(case=fixed_texts())
     def test_the_text_means_what_polars_reads_it_as(self, case):

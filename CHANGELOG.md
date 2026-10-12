@@ -394,6 +394,17 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 Code that ran on 0.13.0 must change for these: a name, a refusal, a
 reinterpreted parameter, an output's dtype or a file to refit.
 
+- **py-polars 1.37.0 or newer is required, up from 1.34.0**
+  (`polars>=1.37.0,<3`; task 247). Every surface that reads a query in
+  chunks reads with `LazyFrame.collect_batches`, which before 1.37.0 runs
+  the query ahead of a slower reader without limit. Draining a 1 GB parquet
+  scan held 1,586 MB on 1.34.0 and 1,591 MB on 1.36.1, against 329 MB on
+  1.37.0; `lf.online.fit_predict` over it peaked at 1,768 MB on 1.34.0 and
+  920 MB on 1.37.1, and `po.gbdt`'s parquet build at 2.3 GB. On those
+  versions a source larger than memory was held whole. The release's floor
+  leg found it, and the whole suite passes on 1.37.0. `ModelBank` on frames
+  still works from 1.28.1, outside the declared range.
+
 - **The API standardized before 1.0** (task 244). A renamed *parameter*
   is read under its old name with a `PolarsOnlineDeprecationWarning` until
   2.0; a renamed *output field or frame column* cannot be, so these are

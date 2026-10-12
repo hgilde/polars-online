@@ -29,6 +29,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import tomllib
 import warnings
 from pathlib import Path
 
@@ -315,10 +316,11 @@ def measure_fields() -> dict[str, float]:
     return out
 
 
-def _held(kind: str, measured: dict[str, float]) -> None:
-    """Hold ``measured`` to the budgets, report it, and write it out."""
+def _held(kind: str, measured: dict[str, float], measure: bool = False) -> None:
+    """Hold ``measured`` to the budgets, report it, and write it out; with
+    ``measure``, or in a measuring run, report without failing."""
     doc = budgets.load()
-    measure = budgets.measuring()
+    measure = measure or budgets.measuring()
     verdicts = budgets.judge_all(doc, measured, measure)
     title = f"{kind} budgets ({sys.platform}, Python {sys.version_info.major}."
     title += f"{sys.version_info.minor})" + (" -- measuring run" if measure else "")
@@ -447,6 +449,13 @@ def _spec(case: str) -> tuple[dict, pl.DataFrame]:
 RSS_CASES = ("ewridge_10_targets", "ew_cov_wide", "streaming")
 
 
+def _floor_python() -> tuple[int, int]:
+    """The oldest Python the package supports, from `requires-python`."""
+    spec = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    major, minor = spec["project"]["requires-python"].removeprefix(">=").split(".")[:2]
+    return int(major), int(minor)
+
+
 @pytest.mark.extended(reason="memory: three child interpreters, up to a million rows each")
 @pytest.mark.serial
 @pytest.mark.pins
@@ -466,4 +475,10 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
         assert got["rows"] == df.height, (case, got)
         assert got["mib"] > 1.0, (case, got)
         measured[f"rss.{case}.{PLATFORM}"] = got["mib"]
-    _held("rss", measured)
+    # Held where the budget is measured, CI's leg at each OS's floor Python,
+    # and reported everywhere else. The interpreter and the machine each move
+    # the peak past the 15% tolerance by themselves (2026-10-12): on CI's
+    # macOS runner 3.14 read 18-20% under 3.12, and the streaming run read
+    # 291 MiB on a 14-core M4 Pro against 237 on that runner, one build.
+    held_here = os.environ.get("CI") == "true" and sys.version_info[:2] == _floor_python()
+    _held("rss", measured, measure=not held_here)

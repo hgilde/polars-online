@@ -1,7 +1,7 @@
 """Tests that need a py-polars newer than the floor of the declared range.
 
 Every release, and the canary each month, run the suite on the floor that
-``pyproject.toml`` declares (``polars>=1.34.0``; review 2026-10-06, AP7
+``pyproject.toml`` declares (``polars>=1.37.0``; review 2026-10-06, AP7
 and CI2). A test that exercises a Polars feature added after the floor is
 marked with :func:`needs_polars`, which skips it there, naming the version
 it needs and why, and runs it everywhere else. A skip on the floor is a

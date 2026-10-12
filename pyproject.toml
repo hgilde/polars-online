@@ -40,10 +40,13 @@ dependencies = [
     # The floor is measured, not guessed. `ModelBank` alone works from 1.28.1
     # (1.28.0 and below fail on `PySeries._export` with a clean AttributeError);
     # `ModelBank.fit(lf)`, `fit_predict_batches(lf)` and `lf.online.fit_predict`
-    # read with `LazyFrame.collect_batches`, which py-polars added in 1.34.0,
-    # and that is the floor. The whole suite passes on 1.34.0, 1.38.1 and 1.44.1 with
-    # identical numbers. `docs/RELEASE-READINESS.md` has the matrix and the
-    # command to reproduce it.
+    # read with `LazyFrame.collect_batches`, which py-polars added in 1.34.0
+    # and first bounded in 1.37.0, and that is the floor. Before 1.37.0 it
+    # reads ahead of a slower consumer without limit: measured 2026-10-12,
+    # draining a 1 GB parquet scan held 1,586 MB on 1.34.0 and 1,591 MB on
+    # 1.36.1, against 329 MB on 1.37.0, so a source larger than memory was
+    # held whole. `docs/RELEASE-READINESS.md` has the matrix and the command
+    # to reproduce it.
     #
     # The ceiling was `<2` and was raised to `<3` for 0.5.1, deliberately and
     # on measurement rather than on 2.x keeping the interface: the whole
@@ -56,7 +59,7 @@ dependencies = [
     # hedged three ways until task 85: the expression plugin's ABI was
     # version-negotiated and refused to load rather than misbehave, and that
     # hedge went with it.
-    "polars>=1.34.0,<3",
+    "polars>=1.37.0,<3",
 ]
 
 # Only `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` toolkits

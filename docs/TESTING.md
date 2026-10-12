@@ -1922,7 +1922,7 @@ runs all three OSes, and Windows has been green on every release since 0.1.0.
 
 **PyPI.** `polars-online` is published there, 0.1.0 on 2026-09-03 and 0.1.1
 on 2026-09-04, through the trusted-publisher `release.yml`. The Polars pin
-question is settled as `polars>=1.34.0,<3`: see "The Polars pin" in
+question is settled as `polars>=1.37.0,<3`: see "The Polars pin" in
 `docs/RELEASE-READINESS.md`. On 2026-10-03 the newest release is 0.13.0,
 published on 2026-09-30. A release is dispatched on `main`, and the workflow
 tags only what it published, after everything ran

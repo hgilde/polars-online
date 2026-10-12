@@ -638,12 +638,9 @@ def test_what_is_not_element_wise_is_refused_by_name() -> None:
         (po.ewm_mean("x", half_life=2.0).cum_sum(), "CumSum"),
         (po.ewm_mean("x", half_life=2.0).mean(), "Agg"),
         (po.ewm_mean("x", half_life=2.0).rolling_mean(3), "Rolling"),
-        # Refused by the node's own name, which Polars spells `Window` before
-        # 1.36.1 (measured on 1.34.0 and 1.35.1; 1.36.0 cannot be installed).
-        (
-            po.ewm_mean("x", half_life=2.0).over("g"),
-            "Over" if INSTALLED >= (1, 36, 1) else "Window",
-        ),
+        # Refused by the node's own name, which Polars spelled `Window` before
+        # 1.36.1, below the floor of 1.37.0.
+        (po.ewm_mean("x", half_life=2.0).over("g"), "Over"),
         # `Date` is read since review 2026-10-05 (YB1), a date literal's dtype.
         (po.ewm_mean("x", half_life=2.0).cast(pl.Datetime("us")), "a cast to Datetime"),
         (~(po.ewm_mean("x", half_life=2.0) > 0), "Not"),
@@ -1228,7 +1225,6 @@ def test_a_cut_window_ends_at_the_last_row_it_saw() -> None:
     assert rates[1] == 2.0 / 60.0
 
 
-@needs_polars("1.37.0", "Polars' rolling_mean_by, the reference, refuses a column with a null")
 def test_a_row_on_the_far_edge_counts_but_weighs_nothing() -> None:
     """R1-C6, decided: under ``"left"`` or ``"both"`` a row exactly one window
     old is in the window by its stamp, so it counts for ``min_samples``, but

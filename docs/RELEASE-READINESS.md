@@ -321,13 +321,13 @@ on aarch64, and 0.12.0 shipped them.
 
 ## Which Polars versions are promised
 
-**The declared range, `polars>=1.34.0,<3`, is this project's measured
+**The declared range, `polars>=1.37.0,<3`, is this project's measured
 claim, and Polars does not promise it.** Each part of it rests on a
 measurement:
 
 | part | what it rests on | where |
 |---|---|---|
-| the floor, 1.34.0 | `LazyFrame.collect_batches`, which py-polars added in 1.34.0; the suite on 1.34.0 in the blocking `floor-polars` leg of every release and in the canary each month; `tests/test_scaffold.py` pins the declared floor | [The floor and the ceiling](#the-floor-and-the-ceiling) |
+| the floor, 1.37.0 | `LazyFrame.collect_batches`, which py-polars added in 1.34.0 and first bounded in 1.37.0; the suite on 1.37.0 in the blocking `floor-polars` leg of every release and in the canary each month; `tests/test_scaffold.py` pins the declared floor | [The floor and the ceiling](#the-floor-and-the-ceiling) |
 | `ModelBank` alone, from 1.28.1 | `PySeries._export`, measured on 17 py-polars releases | [the matrix](#statically-linking-polars-will-break-users-on-other-versions) |
 | the ceiling, `<3` | the Python suite on `2.0.0rc1`, and the blocking leg of `release.yml` on the newest version in range, run in every dispatched release before any tag exists | [Polars 2.0.0rc1, measured](#polars-200rc1-measured-2026-09-10) |
 | what Polars itself promises | nothing for `ModelBank`, the IO plugin or the serialized form of an expression; the Arrow PyCapsule output is Arrow's contract | [Which interfaces carry a promise](#which-interfaces-carry-a-promise) |
@@ -337,8 +337,9 @@ measurement:
 
 ### The floor and the ceiling
 
-**The floor is 1.34.0, the release that added `LazyFrame.collect_batches`.**
-Every surface that reads a query in chunks reads with it: `ModelBank.fit(lf)`
+**The floor is 1.37.0, the first release whose `LazyFrame.collect_batches`
+waits for its reader.** Every surface that reads a query in chunks reads with
+it: `ModelBank.fit(lf)`
 and `fit_predict_batches(lf)`, `lf.online.fit_predict` and
 `lf.online.predict`, `with_windows` in each of its forms, and
 `po.stream.refresh_time`. `ModelBank` alone works from 1.28.1, measured on
@@ -346,6 +347,33 @@ and `fit_predict_batches(lf)`, `lf.online.fit_predict` and
 ([the matrix](#statically-linking-polars-will-break-users-on-other-versions)).
 `tests/test_scaffold.py` pins the declared floor, so a change to either has
 to change both.
+
+**The floor rose from 1.34.0 to 1.37.0 on 2026-10-12, for 1.0.0.** py-polars
+added `collect_batches` in 1.34.0, but until 1.37.0 it runs the query ahead
+of a reader that is slower than the scan, holding every batch it has not
+handed over. Measured by draining `pl.scan_parquet` over a 1 GB source
+(6,000,000 rows of 21 doubles, row groups of 100,000) in batches of 65,536
+with a 0.5 ms pause each, `POLARS_MAX_THREADS=4`, peak resident memory over
+the process's baseline sampled every 2 ms:
+
+| py-polars | peak |
+|---|---:|
+| 1.34.0 | 1,586 MB |
+| 1.36.1 | 1,591 MB |
+| 1.37.0 | 329 MB |
+| 1.37.1 | 328 MB |
+| 2.0.0 | 169 MB |
+
+Every model is slower than a parquet scan, so on 1.34.0 to 1.36.1 the bank
+held its whole input: `lf.online.fit_predict` sunk to parquet over the same
+source peaked at 1,768 MB on 1.34.0, 920 MB on 1.37.1 and 632 MB on 2.0.0,
+and `po.gbdt`'s parquet build at 2.3 GB on 1.34.0 and 1.36.1. The release's
+floor leg found it: a test that holds `po.gbdt` under 1 GB on that source
+had never run below 2.0. Below 1.37.0 the library could not keep the
+promise it is built on, running on data that does not fit in memory, so
+the floor moved rather than the promise. The whole suite passed on 1.37.0
+the same day: 6,762 tests passed and 27 skipped, 25 by version and two
+for a Windows-only path spelling.
 
 **Every release runs the whole suite on the floor, and the canary runs it
 on the 1st of each month** ([How the pin moves](#how-the-pin-moves) has
@@ -458,13 +486,13 @@ legs every release runs before it publishes withhold the release:
 | run | when | what it resolves to | a red run |
 |---|---|---|---|
 | `release.yml`'s `next-polars`, the newest in-range leg | every dispatched release, rehearsals included, before any tag exists | the newest stable inside `<3` | withholds the release until the range is capped or the code fixed |
-| `release.yml`'s `floor-polars` | every dispatched release, as above | exactly the floor `pyproject.toml` declares, 1.34.0, with its runtime package | withholds the release until the code is fixed or the floor raised |
+| `release.yml`'s `floor-polars` | every dispatched release, as above | exactly the floor `pyproject.toml` declares, 1.37.0, with its runtime package | withholds the release until the code is fixed or the floor raised |
 | `release.yml`'s `next-polars`, the next-major leg | every dispatched release, as above | unpinned, prereleases allowed | is advisory, and withholds nothing |
 | `release.yml`'s `next-numpy`, the newest NumPy | every dispatched release, as above | the newest NumPy | withholds the release |
 | `release.yml`'s `next-numpy`, NumPy's next release candidate | every dispatched release, as above | its next release candidate | is advisory, and withholds nothing |
 | `polars-canary.yml`, the canary | weekly, on Mondays, and on demand | the newest py-polars, prereleases included, with the range dropped, for the Rust tests and the Python suite | is the notification, and withholds nothing |
 | the canary's `next-numpy` | weekly, on Mondays, and on demand | NumPy's next release candidate | is the notification, and withholds nothing |
-| the canary's `floor-polars` | the 1st of each month, and on demand | the floor, 1.34.0, as every release runs it | is the notification, and withholds nothing |
+| the canary's `floor-polars` | the 1st of each month, and on demand | the floor, 1.37.0, as every release runs it | is the notification, and withholds nothing |
 
 **The canary ([`polars-canary.yml`](../.github/workflows/polars-canary.yml))
 drops the range from `pyproject.toml` and installs the newest py-polars,
@@ -577,7 +605,7 @@ are done again.
    0.55.2. A Python major on its own needs no Rust change. The wheel
    carries its own statically linked copy, and the two never meet: data
    crosses on the Arrow C Data Interface.
-3. **Widen the range in `pyproject.toml`**, today `polars>=1.34.0,<3`, and
+3. **Widen the range in `pyproject.toml`**, today `polars>=1.37.0,<3`, and
    let the lock resolve. That is the only required source change if steps
    1–2 are clean.
 4. **Re-run `docs/VALIDATION.md`** with
@@ -893,8 +921,8 @@ the one `Cargo.toml` pins, with `pyo3-polars` 0.28. py-polars 2.0 is a
 Python-side major, and the wheel's statically linked copy never meets the
 user's ([the pin, and the two copies of
 Polars](#the-polars-pin-and-the-two-copies-of-polars-2026-08-31)). So the
-Rust tests cannot see a py-polars release, and `polars>=1.34.0,<3` admits
-2.0.0 as it stood; the floor leg still runs on 1.34.0.
+Rust tests cannot see a py-polars release, and `polars>=1.34.0,<3`, the
+range then, admitted 2.0.0 as it stood; the floor leg ran on 1.34.0.
 
 ### The expression plugin, as recorded
 

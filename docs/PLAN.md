@@ -9894,6 +9894,42 @@ tick, and that the series holding it up has a count near 1.
       to undo); (10) the approval of the PyPI upload is the user's click,
       not the coordinator's; (11) install from PyPI into a clean venv and
       check the three versions and a fit.
+      *Steps 1-8, 2026-10-12*: (1) `compare_release.py` against 0.13.0 is
+      identical, field for field, to the comparison the CHANGELOG was
+      accounted against on 2026-10-11. (2) Two runs of seven interleaved
+      rounds at 200,000 rows, at load 4.0-9.0 and 3.0-4.7, agreeing within
+      2% on every configuration: most 0.94-1.20 of 0.13.0; slower, each
+      bisected to a declared correction, bocpd diag 0.74-0.76, micro 0.80,
+      ewridge k=5 0.81, seqtest 0.83-0.84, sgd 0.85, kalman 0.87-0.89, pa
+      0.88-0.89; the CHANGELOG entry rewritten with them and task 250's
+      fixes. The Budgets run on `f8da1ca`: every instruction count within
+      0.25% of its budget, no release recorded, so no drift to sign off.
+      (4-6) `4b43d39`: the version, locks, VALIDATION.md, bank fixtures,
+      `[1.0.0] — 2026-10-12`, the pin `~=1.0.0`; `release_version.py
+      --publish` clean. (7) Full gate R41 PASS on `4b43d39`. (8) Pushed
+      after CI on `f8da1ca` went green on all three OSes. Found on the
+      way: RSS budgets were to be held on every leg, but the interpreter
+      alone moved macOS's peak 18-20% between 3.12 and 3.14 (CI,
+      `f8da1ca`), past the 15% tolerance, so step 12's floor-Python budget
+      would have failed the 3.14 legs as "under", and this M4 Pro read the
+      streaming run at 291 MiB against the runner's 237, so the local gate
+      would have failed it as "over". The test now holds RSS on CI at each
+      OS's floor Python, where the budget is measured, and reports it
+      everywhere else.
+      *Step 9, first dispatch (run 38309151392, cancelled)*: the floor leg
+      failed on py-polars 1.34.0. Four `po.gbdt` fixtures called
+      `write_ipc(record_batch_size=)`, a 2.0 keyword (now chunked frames,
+      the same batches on both versions); behind them, `po.gbdt`'s parquet
+      build peaked at 2.3 GB for a 1 GB source. Cause: `collect_batches`
+      before 1.37.0 runs ahead of a slower reader without limit (1,586 MB
+      draining that scan on 1.34.0, 1,591 on 1.36.1, 329 on 1.37.0, 169 on
+      2.0.0), and the bank's `lf.online.fit_predict` held 1,768 MB on 1.34.0
+      against 920 on 1.37.1. The coordinator's call, the user to confirm at
+      the PyPI approval: the floor moves to 1.37.0 rather than the promise
+      of data larger than memory; the whole suite passed on 1.37.0 (6,762,
+      27 skipped); the two `needs_polars` marks at or below it removed; the
+      gbdt parquet limit 1.1 GB (1.37-1.40 read 0.95-1.02 GB, holding is
+      1.12+).
 - [x] 249. **Step comments in the examples (before 1.0)** -- the user,
       2026-10-11: "Some of the example code is missing the few one-line
       comments to explain large code blocks in sections." WRITING §3's rule

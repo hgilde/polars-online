@@ -194,7 +194,7 @@ def test_the_suite_runs_on_the_declared_polars_floor_before_a_release():
             "3.12"
         ), where
     floor = _floor_script()
-    assert floor.version() == _polars_floor() == "1.34.0"
+    assert floor.version() == _polars_floor() == "1.37.0"
 
 
 def test_a_mark_for_a_newer_polars_lies_between_the_floor_and_the_pin():

@@ -272,7 +272,7 @@ against the last. There are three kinds:
 |---|---|---|---|
 | `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge` | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
-| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another | the same file, in the extended tier | 15% |
+| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another | the same file, in the extended tier: held on CI at each OS's floor Python and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23% | 15% |
 
 **An instruction count can gate where a timing cannot.** Two release builds
 of one source measured up to 19% apart in wall time, from where the linker

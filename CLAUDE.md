@@ -224,13 +224,15 @@ dependencies; `crate-type` is the publisher's choice).
       versions expose `from_arrow_c_array` has not been measured here, so the
       floor below is not known to hold for it.
 
-    `polars>=1.34.0,<3` in `pyproject.toml` is therefore *measured* for all
+    `polars>=1.37.0,<3` in `pyproject.toml` is therefore *measured* for all
     four but *guaranteed* for none below the latest — and the two that stream
     are among those — see `docs/RELEASE-READINESS.md`.
     Treat a `ModelBank`, IO-plugin or formula break on a new Polars as expected
     maintenance, not a surprise, and check those paths first. The floor is
-    `LazyFrame.collect_batches` (py-polars 1.34.0), which the IO plugin reads
-    with; `ModelBank` alone works from 1.28.1.
+    py-polars 1.37.0, the first whose `LazyFrame.collect_batches` (added in
+    1.34.0), which the IO plugin reads with, stops reading ahead of a slower
+    consumer: 1.34.0-1.36.1 held a whole 1 GB source (2026-10-12).
+    `ModelBank` alone works from 1.28.1.
 
 ## Style
 

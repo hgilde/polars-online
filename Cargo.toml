@@ -22,7 +22,7 @@ online-polars = { path = "crates/online-polars", version = "1.0.0" }
 
 # Rust polars is hard-pinned and linked statically into the wheel, so it is
 # fixed at build time; py-polars is a runtime range in pyproject.toml
-# (>=1.34.0,<3), measured but not locked. The build/dev py-polars is 1.44.2
+# (>=1.37.0,<3), measured but not locked. The build/dev py-polars is 1.44.2
 # (tests/test_scaffold.py BUILT_AGAINST), which rust polars 0.55.2 is the
 # engine of; the aligned triple is rust 0.55.2 <-> py-polars 1.44.x <->
 # pyo3-polars 0.28.

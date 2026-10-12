@@ -1124,7 +1124,12 @@ def big(tmp_path_factory):
             {f"x{j}": rng.normal(size=per) for j in range(BIG_FEATURES)}
             | {"y": rng.normal(size=per)}
         )
-        df.write_ipc(d / f"part-{k}.arrow", record_batch_size=100_000)
+        # One record batch per chunk, 100,000 rows each: `write_ipc` has no
+        # `record_batch_size` before py-polars 2.0, and the floor is 1.37.0.
+        # Measured 2026-10-12 on 1.34.0 and 2.0.0: 450,000 rows in chunks of
+        # 100,000 wrote batches of 100,000 x 4 and 50,000 on both.
+        batches = [df.slice(i, 100_000) for i in range(0, df.height, 100_000)]
+        pl.concat(batches, rechunk=False).write_ipc(d / f"part-{k}.arrow")
         df.write_parquet(d / f"part-{k}.parquet", row_group_size=100_000)
     return d
 
@@ -1136,15 +1141,18 @@ def big(tmp_path_factory):
 # and alone, since each case holds most of a gigabyte at its peak.
 @pytest.mark.serial
 @pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
-@pytest.mark.parametrize(("source", "limit"), [("ipc", 0.75e9), ("parquet", 1.0e9)])
+@pytest.mark.parametrize(("source", "limit"), [("ipc", 0.75e9), ("parquet", 1.1e9)])
 def test_a_source_larger_than_memory_streams(big, lib, source, limit):
     """The build never holds the 1.0 GB source. Arrow IPC files are read a
     record batch at a time, and two batches wait at most: measured, the peak
     grew by 0.46 to 0.48 GB, the binned data (a byte a value, 0.12 GB) with its
     copies and the allocator's retained pages. A Parquet scan reads through
     Polars' streaming engine, whose read-ahead is Polars' own: cut as the
-    README's memory section cuts it, measured 0.74 GB. Holding the source
-    would be 1.0 GB and the binned data beside it."""
+    README's memory section cuts it, measured 0.78 GB on py-polars 2.0.0,
+    0.84-0.92 GB on 1.41-1.44 and 0.95-1.02 GB on 1.37-1.40 (2026-10-12).
+    Holding the source would be 1.0 GB and the binned data, 0.12 GB, beside
+    it: py-polars 1.34.0 and 1.36.1, whose `collect_batches` ran ahead of
+    the build without limit, peaked at 2.3 GB."""
     import subprocess
     import sys
 

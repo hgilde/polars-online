@@ -266,7 +266,7 @@ pip install polars-online      # or: uv add polars-online
 | need | detail |
 |---|---|
 | Python | 3.12 or newer: one wheel per platform covers every CPython from 3.12 on ([Testing](#testing) lists the versions CI runs) |
-| Polars | `polars>=1.34.0,<3`: the range the test suite has measured, which is not a guarantee. A weekly job and every release run the test suite on the newest Polars ([Versioning and the Polars pin](#versioning-and-the-polars-pin)) |
+| Polars | `polars>=1.37.0,<3`: the range the test suite has measured, which is not a guarantee. A weekly job and every release run the test suite on the newest Polars ([Versioning and the Polars pin](#versioning-and-the-polars-pin)) |
 | depends on | nothing beyond `polars` at run time, since the wheel carries its own copy of Polars' Rust code |
 | numpy | needed only by `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` helpers: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError` |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
@@ -4139,7 +4139,7 @@ checkout builds with uv and a stable Rust toolchain.
 
 Two versions matter when you install this package. Its own version says
 when to expect a breaking change. The range of Polars it accepts,
-`polars>=1.34.0,<3`, is measured by this project, and Polars does not
+`polars>=1.37.0,<3`, is measured by this project, and Polars does not
 promise it.
 
 #### This package's own versioning
@@ -4232,18 +4232,18 @@ what you use:
 
 | py-polars | rust polars | pyo3-polars | pyo3 | Python |
 |---|---|---|---|---|
-| **>= 1.34.0, < 3** (built and tested against 2.0.0) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+| **>= 1.37.0, < 3** (built and tested against 2.0.0) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
 
 | what you use | the lowest py-polars | why |
 |---|---|---|
 | `ModelBank` alone | 1.28.1 | |
-| `lf.online.fit_predict`, `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and `refresh_time` | 1.34.0 | they read with `LazyFrame.collect_batches`, which py-polars added in 1.34.0 |
+| `lf.online.fit_predict`, `ModelBank.fit_predict_batches`, `ModelBank.fit`, `with_windows` and `refresh_time` | 1.37.0 | they read with `LazyFrame.collect_batches`. Before 1.37.0 it reads ahead of a slower reader without limit: draining a 1 GB parquet scan held 1.6 GB on 1.34.0 and 1.36.1, and 0.33 GB on 1.37.0 |
 | the examples that stream a DuckDB, ADBC or pyarrow source into a bank | 1.43.0 | for `pl.scan_arrow_c_stream` |
 
 **The suite passes on 2.0.0, the pin, at every change, and on the floor,
-1.34.0, before every release and once a month**
+1.37.0, before every release and once a month**
 ([How the pin moves](docs/RELEASE-READINESS.md#how-the-pin-moves)). It
-passed on the floor on 2026-10-07. There, 23 tests skip, each naming the
+passed on the floor on 2026-10-12. There, 25 tests skip, each naming the
 newer Polars it needs: most check against a Polars function that has
 changed since, and the rest stream a database or a pyarrow reader through
 `pl.scan_arrow_c_stream`. The suite has also passed on 1.38.1, 1.44.1,

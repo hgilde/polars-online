@@ -267,9 +267,9 @@ jobs:
       # (the user, 2026-10-08: "Do the work before the push just to save ci
       # time").
       #
-      # The memory budgets (budgets.toml) are held here, on every leg: the
-      # bytes of every output field, and each platform's peak resident
-      # memory. Their measurements go to the job summary and, as JSON, to
+      # The memory budgets (budgets.toml) are held here: the bytes of every
+      # output field on every leg, and each platform's peak resident memory
+      # on its floor Python (reported on the others). Their measurements go to the job summary and, as JSON, to
       # the artifact below, for `scripts/budgets.py apply`.
       - name: pytest
         env:
