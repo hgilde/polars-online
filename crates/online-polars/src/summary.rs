@@ -58,6 +58,34 @@ impl Default for ColumnStats {
     }
 }
 
+/// `a.min(b)` with the sign of a zero defined: of `+0.0` and `-0.0` the
+/// minimum is `-0.0`, in either order. `f64::min` leaves that to the
+/// platform: aarch64's `fminnm` puts `-0.0` below `+0.0`, x86's lowering of
+/// LLVM's `minnum` returns whichever operand the instruction takes second,
+/// and the compiler may swap the operands of a vectorized loop, so the row
+/// path and the loop across the columns could read a different zero (found
+/// by CI on x86-64 Linux, 2026-10-12). Neither argument is NaN: a value is
+/// counted only when it is usable.
+#[inline(always)]
+fn min_signed_zero(a: f64, b: f64) -> f64 {
+    if b < a || (b == a && b.is_sign_negative()) {
+        b
+    } else {
+        a
+    }
+}
+
+/// `a.max(b)` with the sign of a zero defined: of `+0.0` and `-0.0` the
+/// maximum is `+0.0`, in either order. See [`min_signed_zero`].
+#[inline(always)]
+fn max_signed_zero(a: f64, b: f64) -> f64 {
+    if b > a || (b == a && b.is_sign_positive()) {
+        b
+    } else {
+        a
+    }
+}
+
 impl ColumnStats {
     /// One value. `n_row` is the ordinal of the row being fed and `inv_row`
     /// its reciprocal, shared by every column that has never had a null (the
@@ -90,8 +118,8 @@ impl ColumnStats {
         let d = x - self.mean;
         self.mean += d * inv;
         self.m2 += d * (x - self.mean);
-        self.min = self.min.min(x);
-        self.max = self.max.max(x);
+        self.min = min_signed_zero(self.min, x);
+        self.max = max_signed_zero(self.max, x);
     }
 
     /// A value its row was fed without, known now: counted a null when the
@@ -204,8 +232,8 @@ impl Columns {
             let d = xj - mean[j];
             mean[j] += d * inv;
             m2[j] += d * (xj - mean[j]);
-            min[j] = min[j].min(xj);
-            max[j] = max[j].max(xj);
+            min[j] = min_signed_zero(min[j], xj);
+            max[j] = max_signed_zero(max[j], xj);
         }
     }
 }
@@ -1097,6 +1125,64 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// The sign of a zero is the same on every platform and in either
+    /// operand order: `-0.0` is the minimum of the two zeros and `+0.0` the
+    /// maximum (aarch64's `fminnm`/`fmaxnm`, which the library read before,
+    /// written out so x86's lowering of `f64::min` cannot differ).
+    #[test]
+    fn the_sign_of_a_zero_in_min_and_max_is_defined() {
+        let z = [0.0f64, -0.0];
+        for a in z {
+            for b in z {
+                let (lo, hi) = (min_signed_zero(a, b), max_signed_zero(a, b));
+                let any_neg = a.is_sign_negative() || b.is_sign_negative();
+                assert_eq!(lo.to_bits(), if any_neg { (-0.0f64).to_bits() } else { 0 });
+                assert_eq!(
+                    hi.to_bits(),
+                    if a.is_sign_positive() || b.is_sign_positive() {
+                        0
+                    } else {
+                        (-0.0f64).to_bits()
+                    }
+                );
+            }
+        }
+        // Away from zero it is `f64::min` and `f64::max` exactly.
+        let v = [
+            -2.5f64,
+            -1.0,
+            0.0,
+            -0.0,
+            1.0,
+            3.5,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::MIN,
+        ];
+        for a in v {
+            for b in v {
+                if a == 0.0 && b == 0.0 {
+                    continue;
+                }
+                assert_eq!(
+                    min_signed_zero(a, b).to_bits(),
+                    a.min(b).to_bits(),
+                    "{a} {b}"
+                );
+                assert_eq!(
+                    max_signed_zero(a, b).to_bits(),
+                    a.max(b).to_bits(),
+                    "{a} {b}"
+                );
+            }
+        }
+        // The starting values (infinities) lose to any value, a zero included.
+        for x in z {
+            assert_eq!(min_signed_zero(f64::INFINITY, x).to_bits(), x.to_bits());
+            assert_eq!(max_signed_zero(f64::NEG_INFINITY, x).to_bits(), x.to_bits());
+        }
     }
 
     /// Every number of two summaries, to the bit.
