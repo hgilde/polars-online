@@ -147,11 +147,9 @@ impl ClusterSummary {
     }
 
     /// Whether the summary is exactly what [`Self::clear`] leaves, to the
-    /// bit (a `-0.0` is not): clearing it again changes nothing. A batch no
-    /// row reached since the last checkpoint is one, and `kmeans` merges
-    /// every batch at every checkpoint -- every row, by default -- where
-    /// the two `memset` calls per batch cost more than this read
-    /// (task 250).
+    /// bit (a `-0.0` is not): clearing it again changes nothing. What
+    /// `kmeans` holds of every batch it knows to be clean (task 250).
+    #[cfg(test)]
     pub fn is_clear(&self) -> bool {
         self.n.to_bits() == 0
             && self.r2.to_bits() == 0

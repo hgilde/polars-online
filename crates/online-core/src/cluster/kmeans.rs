@@ -243,6 +243,22 @@ pub const RADIUS_ROWS: u64 = 10;
 /// for a merge to place its freed centre on them; see the [module docs](self).
 pub const FAR_ROWS: u64 = 3;
 
+/// Which of the batches are known to be clear to the bit -- cleared at a
+/// checkpoint and reached by no row since -- so the next checkpoint need not
+/// clear them again: every row by default, two `memset` calls per batch
+/// (task 250). Not state: empty after a restore, which knows of none, so
+/// that checkpoint clears every batch as before; and two models with the
+/// same summaries are the same model whatever it knows, so [`PartialEq`]
+/// ignores it. A decay leaves a clear batch clear (`0 · λ = 0`).
+#[derive(Debug, Clone, Default)]
+struct Clean(Vec<bool>);
+
+impl PartialEq for Clean {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// Exponentially weighted k-means; see the [module docs](self).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KMeans {
@@ -258,6 +274,9 @@ pub struct KMeans {
     rows: Vec<u64>,
     /// Rows learned since the last checkpoint, per cluster.
     batch: Vec<ClusterSummary>,
+    /// Which batches are known to hold exactly what `clear` leaves.
+    #[serde(skip)]
+    clean: Clean,
     /// Warm-up rows and their decayed weights; cleared at seeding.
     buf: Vec<Vec<f64>>,
     buf_w: Vec<f64>,
@@ -319,6 +338,7 @@ impl KMeans {
             clusters: Vec::new(),
             rows: Vec::new(),
             batch: Vec::new(),
+            clean: Clean::default(),
             buf: Vec::new(),
             buf_w: Vec::new(),
             far: Vec::new(),
@@ -469,6 +489,9 @@ impl KMeans {
             self.far_rows[j] = self.far_rows[j].saturating_add(1);
         } else {
             self.batch[j].absorb_plain(x, w, d2);
+            if let Some(clean) = self.clean.0.get_mut(j) {
+                *clean = false;
+            }
             self.rows[j] = self.rows[j].saturating_add(1);
         }
     }
@@ -476,11 +499,20 @@ impl KMeans {
     /// Merge every batch into its cluster and refresh the far cut; then,
     /// when due, the split–merge check, which always consumes the far rows.
     fn checkpoint(&mut self) {
-        for (c, b) in self.clusters.iter_mut().zip(&mut self.batch) {
+        if self.clean.0.len() != self.batch.len() {
+            self.clean.0 = vec![false; self.batch.len()];
+        }
+        for ((c, b), clean) in self
+            .clusters
+            .iter_mut()
+            .zip(&mut self.batch)
+            .zip(self.clean.0.iter_mut())
+        {
             c.merge_plain(b);
             // A batch no row reached is clear already (task 250).
-            if !b.is_clear() {
+            if !*clean {
                 b.clear();
+                *clean = true;
             }
         }
         self.since = 0;
@@ -715,6 +747,7 @@ impl KMeans {
             .collect();
         self.rows = vec![0; k];
         self.batch = vec![ClusterSummary::empty(p); k];
+        self.clean.0.clear();
         self.far = vec![ClusterSummary::empty(p); k];
         self.far_rows = vec![0; k];
         let buf = std::mem::take(&mut self.buf);
@@ -1635,6 +1668,42 @@ mod tests {
         };
         assert_eq!(run(0), run(0));
         assert_ne!(run(0), run(1));
+    }
+
+    /// Every batch the model knows to be clean is clear to the bit, so the
+    /// checkpoint that skips clearing it again writes nothing `clear` would
+    /// have changed (task 250): over checkpoint spacings of 1 and 3, the
+    /// split-merge rule on and off, weights of 0 and gaps that decay a
+    /// batch's weight, and a restore in the middle, which knows of none.
+    #[test]
+    fn a_batch_known_clean_is_clear_to_the_bit() {
+        let mut held = 0;
+        for every in [1, 3] {
+            for split_merge in [0.0, 1.0] {
+                let mut m = KMeans::new(KMeansCfg {
+                    warm_rows: 6,
+                    update_every_rows: every,
+                    split_merge,
+                    ..cfg(3)
+                })
+                .unwrap();
+                for (i, r) in blobs(400, 9).iter().enumerate() {
+                    let w = if i % 7 == 0 { 0.0 } else { 1.0 };
+                    let d = if i % 50 == 0 { 40.0 } else { 1.0 };
+                    m.step(r, &[], d, w);
+                    if i == 200 {
+                        m = KMeans::restore(&m.state()).unwrap();
+                    }
+                    for (b, &clean) in m.batch.iter().zip(&m.clean.0) {
+                        if clean {
+                            held += 1;
+                            assert!(b.is_clear(), "row {i}: {b:?}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(held > 1000, "the clean batches were held {held} times");
     }
 
     #[test]
