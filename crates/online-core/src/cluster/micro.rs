@@ -100,7 +100,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, merged_radius2};
+use super::summary::{ClusterSummary, FeatureMoments, StepFactors, merged_radius2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
@@ -265,12 +265,16 @@ pub struct MicroCluster {
     pub label: u64,
 }
 
-/// Where a row would go: the index of the summary that takes it, or `None`
-/// for a new one; whether the nearest potential summary exists and its
-/// squared distance; whether the row is an outlier to the potential ones.
+/// Where a row would go: the index of the summary that takes it and the
+/// row's squared distance to it, or `None` for a new one; whether the
+/// nearest potential summary exists and its distance; whether the row is
+/// an outlier to the potential ones.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Decision {
-    target: Option<usize>,
+    /// The square is the one the search took, which the summary's Welford
+    /// step reads again: nothing moves the centre, its weight's decay aside,
+    /// or the metric between the two, so it is the same number (task 250).
+    target: Option<(usize, f64)>,
     /// The nearest potential summary and the row's distance to it.
     nearest_potential: Option<(usize, f64)>,
     outlier: bool,
@@ -308,6 +312,9 @@ pub struct Micro {
     w_mean: f64,
     #[serde(default)]
     w_rows: f64,
+    /// The last step's decay factors.
+    #[serde(skip)]
+    factors: StepFactors,
 }
 
 impl Micro {
@@ -333,6 +340,7 @@ impl Micro {
             n_pruned: 0,
             w_mean: 0.0,
             w_rows: 0.0,
+            factors: StepFactors::default(),
             cfg,
         })
     }
@@ -459,7 +467,7 @@ impl Micro {
             && self.admits(jp, d2, lam)
         {
             return Decision {
-                target: Some(jp),
+                target: Some((jp, d2)),
                 nearest_potential,
                 outlier: false,
             };
@@ -468,7 +476,7 @@ impl Micro {
             && self.admits(jo, d2, lam)
         {
             return Decision {
-                target: Some(jo),
+                target: Some((jo, d2)),
                 nearest_potential,
                 outlier: true,
             };
@@ -490,7 +498,7 @@ impl Micro {
                 pred[1] = d;
             }
             pred[2] = match dec.target {
-                Some(j) => self.mc[j].id as f64,
+                Some((j, _)) => self.mc[j].id as f64,
                 None => self.next_id as f64,
             };
             pred[3] = if dec.outlier { 1.0 } else { 0.0 };
@@ -503,9 +511,11 @@ impl Micro {
     fn learn_row(&mut self, z: &[f64], w: f64, dec: &Decision) {
         let promote_at = self.cfg.beta_mu * self.unit();
         match dec.target {
-            Some(j) => {
+            Some((j, d2)) => {
                 let m = &mut self.mc[j];
-                m.s.absorb(z, w, &self.mw);
+                // The square the search took is the one `absorb` takes.
+                debug_assert_eq!(d2.to_bits(), m.s.dist2(z, &self.mw).to_bits());
+                m.s.absorb_at(z, w, d2);
                 // A unit row was admitted; a heavier one may overshoot.
                 m.s.r2 = m.s.r2.min(self.eps2);
                 if !m.potential && m.s.n >= promote_at {
@@ -737,14 +747,13 @@ impl OnlineModel for Micro {
         if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
             return refused;
         }
-        let lam = self.cfg.decay.factor(d_clock);
+        let (lam, lam_long) = self.factors.of(self.cfg.decay, d_clock);
         let n_before = self.moments.w;
         let valid = x.iter().all(|v| v.is_finite());
         let learn = weight > 0.0 && weight.is_finite() && valid;
 
         // The clock passes for everything the model holds.
-        self.moments
-            .decay(lam, self.cfg.decay.factor(d_clock / LONG_HALFLIVES));
+        self.moments.decay(lam, lam_long);
         for m in &mut self.mc {
             m.s.decay(lam);
             m.age += d_clock;
@@ -849,7 +858,7 @@ impl OnlineModel for Micro {
 
 #[cfg(test)]
 mod tests {
-    use super::super::summary::{dist, dist2};
+    use super::super::summary::{LONG_HALFLIVES, dist, dist2};
     use super::*;
 
     /// A state whose vectors are not the cfg's is refused, where it loaded
@@ -1150,6 +1159,51 @@ mod tests {
         rows.iter()
             .map(|(x, _)| m.step(x, &[], 1.0, 1.0).pred)
             .collect()
+    }
+
+    /// Two short cuts in `step` (task 250) leave every number as the slow
+    /// path does. The decay factors kept from the last row's step: beside
+    /// the model runs a copy that forgets them before every row, and every
+    /// output and the saved state's bytes are the same, over unit steps,
+    /// steps of 0, gaps, irregular steps, weights of 0 and a restore, which
+    /// keeps none. And the square the search took, handed to the Welford
+    /// step instead of taken again: `learn_row` asserts, in every test
+    /// built with debug assertions, this one among them, that it is the
+    /// square `absorb` would take, to the bit; here the rows that took that
+    /// step are counted, so the assertion is proven to have run.
+    #[test]
+    fn the_step_short_cuts_leave_every_number_as_the_slow_path_does() {
+        let bytes = |m: &Micro| rmp_serde::to_vec(&m.state()).unwrap();
+        let mut m = Micro::new(cfg()).unwrap();
+        let mut slow = m.clone();
+        let (mut hits, mut absorbed) = (0, 0);
+        for (i, (r, _)) in blobs(600, 8).iter().enumerate() {
+            let d = match i % 13 {
+                0 => 0.0,
+                5 => 40.0,
+                9 => (0.37 * i as f64) % 3.0,
+                _ => 1.0,
+            };
+            let w = if i % 7 == 0 { 0.0 } else { 1.0 };
+            let dec = m.decide(r, m.cfg.decay.factor(d));
+            if w > 0.0 && dec.target.is_some() {
+                absorbed += 1;
+            }
+            slow.factors.forget();
+            let (a, b) = (m.step(r, &[], d, w), slow.step(r, &[], d, w));
+            assert!(same(&a.pred, &b.pred), "row {i}");
+            assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "row {i}");
+            if i == 300 {
+                hits += m.factors.hits;
+                m = Micro::restore(&m.state()).unwrap();
+                slow = Micro::restore(&slow.state()).unwrap();
+            }
+        }
+        hits += m.factors.hits;
+        assert_eq!(bytes(&m), bytes(&slow));
+        assert_eq!(slow.factors.hits, 0);
+        assert!(hits > 400, "the kept factors were taken {hits} times");
+        assert!(absorbed > 400, "a summary absorbed a row {absorbed} times");
     }
 
     #[test]

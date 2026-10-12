@@ -285,12 +285,20 @@ impl ClusterSummary {
     /// when `n' <= 0`; an infinite `‖δ‖²` leaves `r2` alone, as
     /// [`absorb_plain`](Self::absorb_plain) does.
     pub fn absorb(&mut self, z: &[f64], w: f64, mw: &[f64]) {
+        self.absorb_at(z, w, self.dist2(z, mw));
+    }
+
+    /// [`absorb`](Self::absorb) given `q`, the row's [`dist2`](Self::dist2)
+    /// to the centre under the metric, by a caller that has just taken it:
+    /// `micro`'s nearest-summary search, which saves a second sum a learned
+    /// row (task 250).
+    #[inline]
+    pub(crate) fn absorb_at(&mut self, z: &[f64], w: f64, q: f64) {
         let n_new = self.n + w;
         if n_new <= 0.0 {
             return;
         }
         let (a, b) = (self.n / n_new, w / n_new);
-        let q = self.dist2(z, mw);
         self.step_to(z, b);
         if q.is_finite() {
             self.r2 = a * self.r2 + a * b * q;
@@ -328,6 +336,58 @@ impl ClusterSummary {
 /// The metric's floor references each feature's long-run scale, tracked at
 /// this many model half-lives (docs/PLAN.md task 102).
 pub const LONG_HALFLIVES: f64 = 8.0;
+
+/// A step's two decay factors -- the model's, `decay.factor(d)`, and the
+/// reference's, `decay.factor(d / LONG_HALFLIVES)` -- kept for the next row
+/// whose step has the same bits, which on a regular clock is every row: two
+/// `exp2` calls a row saved (task 250). A factor is a function of the step's
+/// bits and the decay alone, and a model's decay never changes, so a kept
+/// pair is the pair the calls would return, to the bit. Not state: empty
+/// after a restore, and ignored by [`PartialEq`], as `kmeans`'s clean
+/// batches are.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StepFactors {
+    /// The step's bits and its two factors, once a row has taken them.
+    kept: Option<(u64, f64, f64)>,
+    /// Rows that took the kept pair: what the tests read to prove it ran.
+    #[cfg(test)]
+    pub(crate) hits: u64,
+}
+
+impl PartialEq for StepFactors {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl StepFactors {
+    /// `(decay.factor(d_clock), decay.factor(d_clock / LONG_HALFLIVES))`.
+    #[inline]
+    pub(crate) fn of(&mut self, decay: crate::clock::Decay, d_clock: f64) -> (f64, f64) {
+        let bits = d_clock.to_bits();
+        match self.kept {
+            Some((b, lam, lam_long)) if b == bits => {
+                #[cfg(test)]
+                {
+                    self.hits += 1;
+                }
+                (lam, lam_long)
+            }
+            _ => {
+                let lam = decay.factor(d_clock);
+                let lam_long = decay.factor(d_clock / LONG_HALFLIVES);
+                self.kept = Some((bits, lam, lam_long));
+                (lam, lam_long)
+            }
+        }
+    }
+
+    /// Forget the kept pair: the tests' slow path.
+    #[cfg(test)]
+    pub(crate) fn forget(&mut self) {
+        self.kept = None;
+    }
+}
 /// The reference clips a squared deviation at this multiple of its own
 /// variance (ten standard deviations), and the mean's step at the root.
 pub const CLIP: f64 = 100.0;
@@ -601,6 +661,34 @@ impl SplitMix64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Decay;
+
+    /// The kept pair is the pair the two calls return, to the bit, whether
+    /// kept or taken afresh (task 250): under a half-life, none, `lam < 1`
+    /// and `lam = 1`; over steps of 0 and `-0.0` (other bits, so another
+    /// entry, with the same factors), a subnormal, a gap and repeats. The
+    /// repeats are the five rows that take the kept pair.
+    #[test]
+    fn kept_step_factors_are_the_calls_to_the_bit() {
+        let steps = [
+            1.0, 1.0, 0.0, 0.0, -0.0, 1.0, 2.5, 2.5, 1e-300, 5e-324, 1e6, 1.0, 1.0, 3.0, 3.0,
+        ];
+        for decay in [
+            Decay::Halflife(7.0),
+            Decay::Halflife(f64::INFINITY),
+            Decay::Lam(0.97),
+            Decay::Lam(1.0),
+        ] {
+            let mut f = StepFactors::default();
+            for &d in &steps {
+                let (lam, lam_long) = f.of(decay, d);
+                assert_eq!(lam.to_bits(), decay.factor(d).to_bits(), "{decay:?} {d}");
+                let long = decay.factor(d / LONG_HALFLIVES);
+                assert_eq!(lam_long.to_bits(), long.to_bits(), "{decay:?} {d}");
+            }
+            assert_eq!(f.hits, 5, "{decay:?}");
+        }
+    }
 
     #[test]
     fn dist2_is_a_weighted_sum_of_squares_and_never_nan() {
