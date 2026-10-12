@@ -247,7 +247,7 @@ These hold for every spec, however a bank is run:
 | **honest predictions** | every row is predicted before its own outcome is learned ([Row order and the two guarantees](#row-order-and-the-two-guarantees)), and a target that looks ahead is learned only once its window has closed ([Windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)) |
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
 | **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients, `coef` and `support_coef`, can change ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
-| **any thread count** | the thread count, set with `POLARS_ONLINE_MAX_THREADS`, changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
+| **any thread count** | the thread count, set with a bank's `threads=` (or `POLARS_ONLINE_MAX_THREADS` for the default pool), changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
 | **unusable values** | NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
 | **zero weights** | a row of weight 0 is scored and moves the clock, but teaches the model nothing ([Weights](#weights)) |
 | **one `weight_sum`** | `weight_sum` means the same in every model, so one `min_weight` means the same for every spec in a bank ([Warm-up](#warm-up)) |
@@ -3482,7 +3482,8 @@ process, by design ([What this is not](#what-this-is-not)).
 | groups, with a spec's `group=` | one task per group | k=20 over 64 groups: 7.3× from 1 to 14 threads on a 14-core machine (below) |
 | specs, in the list the bank takes | one task per spec | eight single-group specs, k=20 over 300k rows, run in 155 ms in one bank, against 641 ms one at a time |
 | half-lives, as a list given to `half_life=` | each half-life in a grid is its own set of running sums, and a task's half-lives run in parallel on the bank's pool. Ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread | |
-| `shards`, on a wide `marginal` | the one task that runs on several threads: `shards` splits its pairs across the pool within a group ([`marginal`](docs/MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
+| `shards`, on a wide `marginal` | a task that runs on several threads: `shards` splits its pairs across the pool within a group ([`marginal`](docs/MODELS.md#marginal--every-pairs-moments-kept-in-the-state)) | |
+| `gram_threads`, on a wide `ewridge` or `ew_cov` | a task that runs on several threads: each row's `k × k` update, or a block's merge, is split across the pool within a group, from 725 columns. A count caps the share of the pool, and `"auto"` takes all of it. It pays when the pool has idle threads | one group at 2,000 features: 3.0× under `"auto"` on 14 threads; 28 groups at 800 features: 9-11% slower, so the default is 1 ([`gram_threads`](docs/GRAM.md#one-wide-gram-on-several-threads)) |
 | a Python thread that reads ahead | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` | |
 
 **Specs run side by side, and each gives the numbers it gives alone.**
@@ -3535,22 +3536,53 @@ Rows a second for k=20 over 64 groups, at each thread count
 |---|---:|---:|---:|---:|---:|
 | rows/s | 0.98M | 1.89M | 3.44M | 5.98M | 7.08M |
 
-**Set the two thread counts with two environment variables, one for each
-pool:**
+**Set the bank's thread count with `threads=`, on the bank or the call
+that makes one.** `ModelBank(specs, threads=8)`, `ModelBank.load(path,
+threads=8)`, `po.fit_predict(..., threads=8)`, `po.predict`, the frame
+namespaces' `fit_predict` and `predict`, and `po.gram`'s `lars_path`,
+`lars_paths` and `solve_subsets` all take it, and so does the command line,
+as `--threads 8` or a `threads` key in the TOML. An integer is a pool of
+that many threads. Every bank given the same count shares one pool, which
+goes away with the last of them, and asking for the size the process pool
+already has uses that pool. `None`, the default, is the process pool. The
+count is not saved with a state, and the output and the saved state are the
+same at any count. A count below 1, a float or a bool is refused, naming
+`threads`: 0 is not "one per core" here, `None` is.
+
+This code fits one spec on one thread and on four, and checks the two agree.
+It uses the file `ticks.parquet` from [Example data](#example-data):
+
+```python
+import polars as pl
+import polars_online as po
+
+spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
+                       half_life=600.0, gap_cap=300.0, group="stock_id")
+one = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], threads=1).collect()
+four = pl.scan_parquet("ticks.parquet").online.fit_predict([spec], threads=4).collect()
+print("the same output on 1 and 4 threads:", one.equals(four))
+print("threads=4 is a pool of", po.thread_pool_size(threads=4))   # reports, builds nothing
+```
+
+```text
+the same output on 1 and 4 threads: True
+threads=4 is a pool of 4
+```
+
+**Two environment variables size the default pools, one for each:**
 
 | variable | sizes | unset or `0` | read at | what took effect |
 |---|---|---|---|---|
-| `POLARS_ONLINE_MAX_THREADS` | the bank's pool | one thread per core | the first chunk any bank fits or scores, through any call, or the first `po.thread_pool_size()` | [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) |
+| `POLARS_ONLINE_MAX_THREADS` | the bank's default pool, for a bank or call given no `threads` | one thread per core | the first chunk a bank without `threads` fits or scores, or the first `po.thread_pool_size()` | [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) |
 | `POLARS_MAX_THREADS` | Polars' readers and writers, and their read-ahead ([Tuning memory with Polars' own settings](#tuning-memory-with-polars-own-settings)) | one thread per core | `import polars`, which `import polars_online` runs | `pl.thread_pool_size()` |
 
-**Set both before the point the table names, because a variable set after
-it is ignored.** In the shell, as
-`POLARS_ONLINE_MAX_THREADS=8 POLARS_MAX_THREADS=8 python fit.py`, the
-setting holds whatever the script imports. In Python, set
-`os.environ["POLARS_ONLINE_MAX_THREADS"] = "8"` before that point, and
-check the sizes in effect with `po.thread_pool_size()` and
-`pl.thread_pool_size()`. A `POLARS_ONLINE_MAX_THREADS` that is not a whole
-number makes that first call raise `ValueError`, naming the variable.
+Polars has no per-call thread count, so its pool is set by its variable
+alone, before `import polars`: in the shell, as
+`POLARS_MAX_THREADS=8 python fit.py`, or with `os.environ` at the top of the
+script. `POLARS_ONLINE_MAX_THREADS` is read once, when the default pool is
+first used, and ignored after; `threads=` never reads it. A
+`POLARS_ONLINE_MAX_THREADS` that is not a whole number makes the first call
+that uses the default pool raise `ValueError`, naming the variable.
 Giving both pools every core slows neither, because a bank task never calls
 back into Polars' pool.
 
@@ -3565,7 +3597,6 @@ This code uses the file `ticks.parquet` from [Example data](#example-data):
 
 ```python
 import os
-os.environ["POLARS_ONLINE_MAX_THREADS"] = "8"   # the bank's pool: read at the first fit_predict
 os.environ["POLARS_MAX_THREADS"] = "8"          # Polars' readers and writers: read at import polars
 
 import polars as pl
@@ -3586,7 +3617,7 @@ specs = [factor_spec(n, f, s) for (n, f), s in product(factors.items(), [False, 
 
 # One pass over the file fits all six.
 (pl.scan_parquet("ticks.parquet")
-   .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state")
+   .online.fit_predict(specs, chunk_size=200_000, save_state="grid.state", threads=8)
    .sink_parquet("grid.parquet"))
 
 # one row per spec and grid point; keep each spec's best
@@ -3779,13 +3810,12 @@ memory-mapped local file.
 
 **To fit a run in less memory, give Polars fewer threads and the bank every
 core.** Polars sizes its read-ahead from `POLARS_MAX_THREADS`, while the
-bank's `POLARS_ONLINE_MAX_THREADS` changes only the bank's speed.
+bank's `threads` changes only the bank's speed.
 This code uses the file `ticks.parquet` from [Example data](#example-data):
 
 ```python
 import os
 os.environ["POLARS_MAX_THREADS"] = "4"           # before import polars: sizes the reader's read-ahead
-os.environ["POLARS_ONLINE_MAX_THREADS"] = "14"   # before the first fit_predict: the bank keeps every core
 
 import polars as pl
 import polars_online as po
@@ -3794,7 +3824,7 @@ import polars_online as po
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")
 (pl.scan_parquet("ticks.parquet")                     # written in Example data
-   .online.fit_predict([spec], chunk_size=200_000)
+   .online.fit_predict([spec], chunk_size=200_000, threads=14)   # the bank keeps every core
    .sink_parquet("fit.parquet"))
 ```
 

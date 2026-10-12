@@ -965,6 +965,8 @@ fn process(
     let per_task: Vec<TaskOut> = work
         .into_par_iter()
         .map(|(si, key, idx, base, stream)| {
+            #[cfg(test)]
+            threads_tests::probe(&specs[si].name);
             let spec = &specs[si];
             let sc = &cols[si];
             let formula_targets = formulas[si].as_ref().map(|b| b.targets(key));
@@ -1057,6 +1059,8 @@ fn score(
 ) -> Vec<(usize, StreamRows)> {
     work.into_par_iter()
         .map(|(si, idx, base, stream)| {
+            #[cfg(test)]
+            threads_tests::probe(&specs[si].name);
             let spec = &specs[si];
             let sc = &cols[si];
             // Scoring refuses no clock (`Stream::predict_chunk`).
@@ -3542,8 +3546,10 @@ impl Bank {
         // per-instance ones in `Stream` -- runs on the bank's own pool
         // (pool.rs, `threads`), never on rayon's global one, whichever
         // thread calls.
-        let out =
-            self.threads.clone().install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?;
+        let out = self
+            .threads
+            .clone()
+            .install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?;
         self.clock_dtypes = merged;
         self.key_dtypes = keys;
         Ok(out)
@@ -5118,3 +5124,6 @@ mod readiness_settle_tests;
 
 #[cfg(test)]
 mod damaged_file_tests;
+
+#[cfg(test)]
+mod threads_tests;

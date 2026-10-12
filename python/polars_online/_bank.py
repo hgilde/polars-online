@@ -177,6 +177,30 @@ def _check_threads(threads: object) -> int | None:
     return threads
 
 
+def thread_pool_size(*, threads: int | None = None) -> int:
+    """How many threads the pool a ``threads`` argument names has.
+
+    ``threads=None`` is the process's pool, the one a bank given no
+    ``threads`` runs on. ``POLARS_ONLINE_MAX_THREADS`` sizes it when it is
+    first used (unset or ``0``: one thread per core), and it is never
+    resized; this builds it if nothing has yet. An integer ``n`` is a pool of
+    ``n`` threads, which this checks and does not build, so asking costs no
+    thread. Polars' own pool, ``POLARS_MAX_THREADS``, is separate, and
+    ``pl.thread_pool_size()`` reports that one.
+
+    .. code-block:: python
+
+        po.thread_pool_size()            # the process's pool, one thread per core by default
+        po.thread_pool_size(threads=2)   # 2
+
+    ``ValueError`` when the variable is set to anything but a whole number
+    and ``threads`` is ``None``. A ``threads`` that is not an integer (a
+    bool included) is a ``TypeError``, and one below 1 a ``ValueError``,
+    as :class:`ModelBank` refuses them.
+    """
+    return int(_native.thread_pool_size(_check_threads(threads)))
+
+
 class ModelBank:
     """A set of models fitted together over the same rows, fed one chunk at a time.
 
@@ -263,7 +287,7 @@ class ModelBank:
     def threads(self) -> int | None:
         """The ``threads`` count the bank was made or loaded with: ``None`` for
         the process's pool. A pickled or deep-copied bank keeps it."""
-        return self._native.threads  # type: ignore[no-any-return]
+        return self._native.threads
 
     def __repr__(self) -> str:
         names = ", ".join(repr(s["name"]) for s in self._specs)

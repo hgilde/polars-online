@@ -372,7 +372,9 @@ pub(crate) fn gram_cd_path(
     }))
 }
 
-/// The subsets' merged Grams, checked and fitted on the pool.
+/// The subsets' merged Grams, checked and fitted on the pool `threads`
+/// names.
+#[allow(clippy::too_many_arguments)]
 fn subsets_fit(
     py: Python<'_>,
     grams: &[GramIn<'_>],

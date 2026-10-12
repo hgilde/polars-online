@@ -1519,9 +1519,14 @@ fn the_gram_threads_are_the_specs_on_build_and_on_restore() {
             })
             .collect()
     };
+    // `"auto"` is every thread of the pool, which the model caps at the
+    // pool it runs on (task 253); absent is one.
+    let all = usize::MAX;
     for kind in ["ewridge", "ew_cov"] {
         let with = spec(&format!(r#"{{"type": "{kind}", "gram_threads": 6}}"#));
+        let auto = spec(&format!(r#"{{"type": "{kind}", "gram_threads": "auto"}}"#));
         let without = spec(&format!(r#"{{"type": "{kind}"}}"#));
+        assert_eq!(threads(&Stream::new(&auto).unwrap()), [all, all], "{kind}");
         let built = Stream::new(&with).unwrap();
         assert_eq!(threads(&built), [6, 6], "{kind} built");
         let saved = built.save();
@@ -1536,6 +1541,11 @@ fn the_gram_threads_are_the_specs_on_build_and_on_restore() {
             "{kind}"
         );
         assert_eq!(threads(&Stream::new(&without).unwrap()), [1, 1], "{kind}");
+        assert_eq!(
+            threads(&Stream::restore(&auto, &saved).unwrap()),
+            [all, all],
+            "{kind}"
+        );
     }
 }
 

@@ -229,10 +229,7 @@ impl Threads {
     /// # Errors
     ///
     /// As [`Self::pool`], or `f`'s own.
-    pub fn install<R: Send>(
-        &self,
-        f: impl FnOnce() -> PolarsResult<R> + Send,
-    ) -> PolarsResult<R> {
+    pub fn install<R: Send>(&self, f: impl FnOnce() -> PolarsResult<R> + Send) -> PolarsResult<R> {
         self.pool()?.install(f)
     }
 
@@ -361,7 +358,10 @@ mod tests {
     #[test]
     fn zero_threads_is_refused_by_name_and_says_none_is_one_per_core() {
         let err = Threads::new(Some(0)).unwrap_err().to_string();
-        assert!(err.contains("threads=0 is not a number of threads"), "{err}");
+        assert!(
+            err.contains("threads=0 is not a number of threads"),
+            "{err}"
+        );
         assert!(err.contains("or None for the default pool"), "{err}");
         assert!(err.contains("0 is not one thread per core here"), "{err}");
         let err = thread_pool_size(Some(0)).unwrap_err().to_string();

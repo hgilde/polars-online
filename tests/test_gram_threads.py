@@ -1,12 +1,14 @@
-"""`gram_threads` on `ewridge` and `ew_cov` (docs/PLAN.md task 225).
+"""`gram_threads` on `ewridge` and `ew_cov` (docs/PLAN.md tasks 225 and 253).
 
 The option runs the same model on more threads: a block's merge under
 `gram_block_rows` is cut into pieces fixed by the width alone, each summed by
 one thread in one order, and the per-row rank-one update is split by rows. So
 the claims are bits, not tolerances: every output field and every array of
-`gram()` is the same at one thread and at several, chunk invariance holds at
-each count, a save carries the setting and resumes to the bit, a spec that
-leaves it out writes nothing new into a state, and a count of zero is refused.
+`gram()` is the same at one thread and at several, and at ``"auto"``, the
+whole pool, on banks of one, two and eight threads (`ModelBank(threads=)`),
+chunk invariance holds at each count, a save carries the setting and resumes
+to the bit, a spec that leaves it out writes nothing new into a state, and a
+count of zero, or a word other than ``"auto"``, is refused.
 
 Two widths, each past the point where its path leaves the calling thread
 (`crates/online-core/src/ewcov/par.rs`): 300 columns for a block's merge,
@@ -62,7 +64,7 @@ def stream(k: int, n: int, seed: int = 3) -> pl.DataFrame:
     )
 
 
-def ridge(threads: int | None, block: int | None, k: int = K, **kw) -> dict:
+def ridge(threads: int | str | None, block: int | None, k: int = K, **kw) -> dict:
     opts = dict(
         targets=["y", "z"],
         features=[f"x{j}" for j in range(k)],
@@ -82,7 +84,7 @@ def ridge(threads: int | None, block: int | None, k: int = K, **kw) -> dict:
     return po.spec.ewridge("m", **opts)
 
 
-def cov(threads: int | None, k: int = K, **kw) -> dict:
+def cov(threads: int | str | None, k: int = K, **kw) -> dict:
     opts = dict(
         features=[f"x{j}" for j in range(k)],
         clock="t",
@@ -96,8 +98,10 @@ def cov(threads: int | None, k: int = K, **kw) -> dict:
     return po.spec.ew_cov("m", **opts)
 
 
-def run(spec: dict, df: pl.DataFrame, chunks: int = 1) -> tuple[pl.DataFrame, po.ModelBank]:
-    bank = po.ModelBank([spec])
+def run(
+    spec: dict, df: pl.DataFrame, chunks: int = 1, threads: int | None = None
+) -> tuple[pl.DataFrame, po.ModelBank]:
+    bank = po.ModelBank([spec], threads=threads)
     size = -(-df.height // chunks)
     out = pl.concat([bank.fit_predict(c) for c in df.iter_slices(size)])
     return out.select("m").unnest("m"), bank
@@ -132,27 +136,33 @@ SPECS = {
         True,
     ),
     "ewridge-per-row": (lambda t: ridge(t, None, k=K_ROW), K_ROW, 240, True),
+    # Narrow: the update never leaves the calling thread, at any setting.
+    "ewridge-narrow": (lambda t: ridge(t, None, k=20), 20, 300, True),
     "ew_cov": (lambda t: cov(t, k=K_ROW), K_ROW, 240, False),
 }
 
 
 @pytest.mark.parametrize("kind", SPECS)
 def test_every_thread_count_gives_the_same_bits(kind):
+    """Each ``gram_threads`` -- a count, ``"auto"`` and none -- on a bank of
+    one thread, two and eight, against one thread on the default pool."""
     make, k, n, splits = SPECS[kind]
     df = stream(k, n)
-    one, bank_one = run(make(None), df)
+    one, bank_one = run(make(1), df)
     assert len(bank_one.gram("m")) >= (2 if splits else 1)
-    for threads in (1, 3, 8):
-        many, bank_many = run(make(threads), df)
-        assert one.equals(many, null_equal=True), f"{threads} threads"
-        assert gram_bits(bank_one) == gram_bits(bank_many), f"{threads} threads"
+    for pool in (None, 1, 2, 8):
+        for threads in (None, 1, 3, "auto", 8):
+            many, bank_many = run(make(threads), df, threads=pool)
+            case = f"gram_threads={threads!r}, threads={pool!r}"
+            assert one.equals(many, null_equal=True), case
+            assert gram_bits(bank_one) == gram_bits(bank_many), case
     if kind.startswith("ewridge"):
         # The fit ran: rows past the warm-up are predicted.
         assert one["pred_y"].drop_nulls().len() > n // 5
 
 
 @pytest.mark.parametrize("kind", ["ewridge-blocked", "ewridge-per-row", "ew_cov"])
-@pytest.mark.parametrize("threads", [1, 8])
+@pytest.mark.parametrize("threads", [1, 8, "auto"])
 def test_chunk_invariance_at_each_thread_count(kind, threads):
     """One chunk, seven, and one row a chunk."""
     make, k, n, _ = SPECS[kind]
@@ -192,7 +202,7 @@ def test_a_save_resumes_under_another_count_to_the_bit(tmp_path, kind):
     a.fit_predict(head)
     a.save(tmp_path / "threads.state")
     tail.write_parquet(tmp_path / "tail.parquet")
-    for threads in (2, None):
+    for threads in (2, "auto", None):
         b = po.ModelBank.load(tmp_path / "threads.state", specs=[make(threads)])
         assert b.specs[0]["model"].get("gram_threads") == threads
         rest = b.fit_predict(tail).select("m").unnest("m")
@@ -231,3 +241,24 @@ def test_a_spec_without_it_writes_nothing_new():
 def test_zero_threads_is_refused(make):
     with pytest.raises(ValueError, match="gram_threads must be >= 1"):
         po.ModelBank([make()])
+
+
+@pytest.mark.parametrize("build", [ridge, cov], ids=["ewridge", "ew_cov"])
+def test_auto_is_the_one_word_and_is_written_as_given(build):
+    """``"auto"`` is taken and written as given; another word, or a bool, is
+    refused by name, in the shape ``shards`` refuses one, by the builder and
+    by the bank reading a hand-written spec."""
+    make = (lambda t: build(t, 64)) if build is ridge else build
+    spec = make("auto")
+    assert spec["model"]["gram_threads"] == "auto"
+    assert po.ModelBank([spec]).specs[0]["model"]["gram_threads"] == "auto"
+    with pytest.raises(
+        ValueError, match='gram_threads must be an int or one of "auto"; got "AUTO"'
+    ):
+        make("AUTO")
+    with pytest.raises(TypeError, match='gram_threads must be an int or one of "auto", got bool'):
+        make(True)
+    for bad in ("x", True, -1):
+        hand = {**spec, "model": {**spec["model"], "gram_threads": bad}}
+        with pytest.raises(ValueError, match="gram_threads"):
+            po.ModelBank([hand])

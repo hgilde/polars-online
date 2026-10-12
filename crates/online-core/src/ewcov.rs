@@ -96,6 +96,14 @@ impl Default for Threads {
     }
 }
 
+impl Threads {
+    /// The threads the `k²` work runs on here: the count set, capped at
+    /// the current pool's size.
+    fn workers(self) -> usize {
+        self.0.min(rayon::current_num_threads()).max(1)
+    }
+}
+
 impl PartialEq for Threads {
     fn eq(&self, _: &Self) -> bool {
         true
@@ -588,11 +596,13 @@ impl EwCov {
 
     /// Run the `k²` work -- the per-row rank-1 update, a block's merge in
     /// [`Self::flush`] -- on up to `threads` threads of the current rayon
-    /// pool (`0` is taken as `1`). The moments are the same bits at every
-    /// count: the rank-1 update is one expression per entry, and a merge's
-    /// product is cut into pieces fixed by `k` alone, each summed by one
-    /// sequential call (the `par` module's doc). Configuration, not state:
-    /// a restored accumulator runs on one thread until it is set again.
+    /// pool (`0` is taken as `1`), and never on more than the pool has:
+    /// [`usize::MAX`] is every thread of whichever pool runs it. The moments
+    /// are the same bits at every count: the rank-1 update is one
+    /// expression per entry, and a merge's product is cut into pieces fixed
+    /// by `k` alone, each summed by one sequential call (the `par` module's
+    /// doc). Configuration, not state: a restored accumulator runs on one
+    /// thread until it is set again.
     pub fn set_threads(&mut self, threads: usize) {
         self.threads = Threads(threads.max(1));
     }
@@ -814,7 +824,14 @@ impl EwCov {
             big: &big,
             delta: &delta,
         };
-        par::merge_lower(&mut self.c, k, x.as_slice(), n, &merge, self.threads.0);
+        par::merge_lower(
+            &mut self.c,
+            k,
+            x.as_slice(),
+            n,
+            &merge,
+            self.threads.workers(),
+        );
         let share = u_sum / w_new;
         for ((i, mi), lo) in self.m.iter_mut().enumerate().zip(self.m_lo.iter_mut()) {
             crate::comp::add(mi, lo, share * d_hi[i]);
@@ -891,11 +908,16 @@ impl EwCov {
                 .zip(&self.m_lo)
                 .map(|((&xi, &mi), &li)| crate::comp::dev(xi, mi, li)),
         );
-        if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {
+        let workers = if self.threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {
+            self.threads.workers()
+        } else {
+            1
+        };
+        if workers > 1 {
             // The same expression per entry, rows split across threads
             // ([`Self::set_threads`]).
             let d = &*d;
-            par::rows(&mut self.c, k, self.threads.0, |i, row| {
+            par::rows(&mut self.c, k, workers, |i, row| {
                 let ab_di = a * b * d[i];
                 for (cj, &dj) in row.iter_mut().zip(d.iter()) {
                     *cj = a * *cj + ab_di * dj;

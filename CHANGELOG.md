@@ -18,6 +18,29 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
 
 ### Added
 
+- **`threads=`: the bank's thread count through the API** (task 253). On
+  `ModelBank(...)`, `ModelBank.load(...)`/`load_bytes`, `po.fit_predict`
+  and `po.predict`, the frame namespaces' `fit_predict` and `predict`, and
+  `po.gram.lars_path`, `lars_paths` and `solve_subsets`; on the command
+  line as `--threads N` or a `threads` key in the TOML, the flag overriding
+  the key. An integer is a pool of that many threads, shared by every bank
+  given the same count and released with the last of them; `None` is the
+  process pool, which `POLARS_ONLINE_MAX_THREADS` still sizes and which a
+  count never reads. Not state: a save carries no count, `load` takes its
+  own, and pickle and `deepcopy` keep it beside the state. The output and
+  the saved state are the same to the bit at every count. A count below 1,
+  a float or a bool is refused naming `threads` (`TypeError` or
+  `ValueError`); 0 is not "one per core" here. `po.thread_pool_size(threads=)`
+  reports the size a count names without building anything, and
+  `ModelBank.threads` the count a bank was given. `with_windows` runs no
+  bank and takes none.
+- **`gram_threads="auto"`** on `ewridge` and `ew_cov` (task 253), as
+  `shards` takes it: the whole of the bank's pool. A count is now capped at
+  the pool's size. The default stays 1: measured on 14 cores, `"auto"` was
+  3.0x as fast on one group at 2,000 features (3.7x with
+  `gram_block_rows=256`) and 1.6x on four groups at 800, even on fourteen
+  groups, and 9-11% slower on 28 groups at 800, where every thread already
+  had a group. The output is the same to the bit at every setting.
 - **Added with the API's standardization** (task 244):
   `po.ColumnNotFoundError` (both Polars' `ColumnNotFoundError` and
   `ValueError`) for a missing spec column; `po.PolarsOnlineWarning`, the

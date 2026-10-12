@@ -277,6 +277,7 @@ A flag given on the command line wins over its key in the TOML file:
 | `--input-format` | `input_format` | how to read the input: `parquet`, `ipc`, `csv` or `ndjson`. The extension decides when it is not given |
 | `--output-format` | `output_format` | how to write the output, from the same four |
 | `--chunk-size` | `chunk_size` | rows per chunk; 100,000 by default |
+| `--threads` | `threads` | the threads the bank runs on, a whole number of at least 1; left out, the default pool, sized by `POLARS_ONLINE_MAX_THREADS`. The output is the same at any count |
 | `--load-state` | `load_state` | start from a saved state |
 | `--skip-learned` | `skip_learned` | drop the input's rows the loaded state has learned; needs `--load-state` or `load_state`, and a spec that reads a clock |
 | `--save-state` | `save_state` | save the state when the run ends, after the output is committed |
@@ -463,8 +464,12 @@ stage. A `closed_groups` sidecar has a writer thread of its own.
 pages are encoded on Polars' pool, a column per task, in parallel, and
 NDJSON on the writer's own thread.
 
-The bank's own work runs on the bank's one thread pool, sized by
-`POLARS_ONLINE_MAX_THREADS`. The README's
+The bank's own work runs on the bank's thread pool: `--threads N`, or a
+`threads` key in the TOML, which the flag overrides, gives it a pool of N
+threads, and without either it runs on the default pool, sized by
+`POLARS_ONLINE_MAX_THREADS` (one thread per core when that is unset). The
+count is not saved with the state, so a resumed run takes the one it is
+given, and the output is the same at any count. The README's
 [Parallelism](../README.md#parallelism) has the full account, including
 Polars' own pool and how the two interact.
 

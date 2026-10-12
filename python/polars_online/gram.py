@@ -1428,6 +1428,7 @@ def lars_paths(
     :func:`lars_path` does.
     """
     np = _np()
+    threads = _check_threads(threads)
     parts = list(grams)
     if not parts:
         return []
@@ -1439,7 +1440,6 @@ def lars_paths(
     slots, icept = _feature_slots(parts[0], features)
     steps, active = _limit("max_iter", max_iter), _limit("max_active", max_active)
     weights = _lars_weights(np, len(slots), penalty_weights)
-    threads = _check_threads(threads)
     tidx = [
         list(range(len(p["cross_moments"])))
         if targets is None

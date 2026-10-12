@@ -375,7 +375,9 @@ impl PyModelBank {
         let threads = threads_arg(threads)?;
         let specs = parse_specs(specs_json)?;
         let mut inner = Bank::new(specs).map_err(PyValueError::new_err)?;
-        inner.set_threads(threads).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        inner
+            .set_threads(threads)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -525,7 +527,9 @@ impl PyModelBank {
         let threads = threads_arg(threads)?;
         let specs = specs_json.map(parse_specs).transpose()?;
         let mut inner = Bank::load_bytes(bytes, specs.as_deref()).map_err(PyValueError::new_err)?;
-        inner.set_threads(threads).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        inner
+            .set_threads(threads)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -1216,7 +1220,10 @@ pub(crate) fn threads_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usi
     let Some(obj) = obj.filter(|o| !o.is_none()) else {
         return Ok(None);
     };
-    let shown = || obj.repr().map_or_else(|_| "?".to_string(), |r| r.to_string());
+    let shown = || {
+        obj.repr()
+            .map_or_else(|_| "?".to_string(), |r| r.to_string())
+    };
     if obj.is_instance_of::<pyo3::types::PyBool>() || !obj.is_instance_of::<pyo3::types::PyInt>() {
         return Err(pyo3::exceptions::PyTypeError::new_err(
             online_polars::threads_refusal(&shown()),

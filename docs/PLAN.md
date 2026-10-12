@@ -10098,7 +10098,7 @@ tick, and that the series holding it up has a count near 1.
       golden pipeline, the fixtures, `compare_release.py` and
       `release_probe.py`'s columns and states, plus an activation test for
       each path a fix touches.
-- [ ] 253. **Thread count through the API (before 1.0; the user: "Go" on
+- [x] 253. **Thread count through the API (before 1.0; the user: "Go" on
       the design below, 2026-10-12)** -- the user, 2026-10-12: "We should control the
       number of threads through the api not env variables, can we fit that
       into 1.0?" Today the bank's pool is one process-wide `OnceLock`,
@@ -10129,6 +10129,29 @@ tick, and that the series holding it up has a count near 1.
       the worker verifies "loses nothing" first (a many-group bank at 800+
       features, a many-group narrow bank, a single wide group) and leaves
       the default at 1, reporting, if any realistic configuration is slower.
+      *Built 2026-10-12, the default held at 1 for the user's call.*
+      `pool::Threads`: `None` is `pool()` as before; `Some(n)` comes from
+      a `Mutex<HashMap<usize, Weak<ThreadPool>>>`, the lock held across a
+      build so two asks build one pool, dead entries swept on each build,
+      and the process pool itself when it is already built with `n`
+      threads. A pool lives while a bank (or a gram call) holds its `Arc`;
+      `Some(0)` and a pool the system will not start are `ComputeError`s
+      naming `threads`. The runner's pool site (`runner.rs`) is Polars'
+      pool, not ours, so the runner reaches the bank's through
+      `RunConfig::threads` and `open_bank`. `with_windows` runs no bank
+      and takes no `threads`. Pickle keeps the count beside the state.
+      `gram_threads` takes `"auto"` (`CountOrAuto`, shared with `shards`;
+      the layout is unchanged, a count serializes as before, schema stays
+      61), and a count is now capped at the pool's size
+      (`Threads::workers` in `ewcov.rs`, `usize::MAX` being `"auto"`). The
+      default stayed 1: on 14 cores, load 2-6, 7 and 11 interleaved rounds,
+      `"auto"` against 1 was 1.00x on 64 groups at k=20, 1.01x on 64 at
+      k=500, 1.02x on 14 groups at k=800, 1.6x on 4 groups at k=800, 3.0x
+      on one group at k=2,000 and 3.7x with `gram_block_rows=256`, and
+      0.89-0.91x on 28 groups at k=800 (10 of 11 rounds below 1): with
+      every thread holding a group, a row's split adds only its hand-out.
+      Flipping it, or making `"auto"` split only when the pool has idle
+      threads, is the user's decision.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
