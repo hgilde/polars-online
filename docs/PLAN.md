@@ -9969,6 +9969,28 @@ tick, and that the series holding it up has a count near 1.
       left for the user, task 247 resumes without asking -- the version
       bump, the full gate, the push, CI, the dispatch -- up to the PyPI
       approval, which stays the user's click.
+- [ ] 251. **Performance and memory budgets that only tighten** -- the user,
+      2026-10-11: "How can we find these problems sooner next time", then
+      "The instruction count and memory budget are good but we want to
+      avoid slipping by 5% repeatedly". Built right after task 250's fixes,
+      so the first budgets are set on the faster build. (1) A committed
+      budget file: an instruction count per hot-path case (one row of
+      `ewridge`, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, the
+      clock step, the bank's per-row path), measured under Valgrind with a
+      test-only harness (`iai-callgrind` or equivalent) on CI's Linux
+      runners, and a bytes-per-row budget per output field plus peak RSS for
+      a few standard workloads. (2) Each push is measured against the
+      budget, not against the previous run, so small regressions add up
+      against one fixed number; the tolerance is set from the measured
+      repeatability (instruction counts repeat to well under 1%: about 1-2%,
+      where timings needed 5-10%). (3) A ratchet: a case clearly faster or
+      smaller moves its budget down in the same change. (4) Raising a budget
+      needs a stated reason in the file and a CHANGELOG *Performance* entry,
+      and a test holds both. (5) A backstop: each case's total drift since
+      the last release is reported on every push, and past about 10% needs
+      an explicit sign-off before a release. Measure the harness's own
+      repeatability on CI before trusting a tolerance; Valgrind on CI is a
+      test tool, nothing in the wheel.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
