@@ -154,7 +154,6 @@ impl ColumnStats {
 /// are copied from and back to, laid out so one row's step across the
 /// columns is a vector loop.
 struct Columns {
-    count: Vec<u64>,
     mean: Vec<f64>,
     m2: Vec<f64>,
     min: Vec<f64>,
@@ -164,7 +163,6 @@ struct Columns {
 impl Columns {
     fn of(cols: &[ColumnStats]) -> Self {
         Self {
-            count: cols.iter().map(|c| c.count).collect(),
             mean: cols.iter().map(|c| c.mean).collect(),
             m2: cols.iter().map(|c| c.m2).collect(),
             min: cols.iter().map(|c| c.min).collect(),
@@ -172,10 +170,14 @@ impl Columns {
         }
     }
 
-    /// Back into `cols`, which [`Self::of`] read; `nulls` never moved.
-    fn write(&self, cols: &mut [ColumnStats]) {
+    /// Back into `cols`, which [`Self::of`] read, each count now `count`:
+    /// every row on the path stepped each column's count to the row's
+    /// ordinal, so the last row's is every column's, and with no row it is
+    /// the count each column had, the path being taken only when every
+    /// column's equals the rows fed. `nulls` never moved.
+    fn write(&self, cols: &mut [ColumnStats], count: u64) {
         for (j, c) in cols.iter_mut().enumerate() {
-            c.count = self.count[j];
+            c.count = count;
             c.mean = self.mean[j];
             c.m2 = self.m2[j];
             c.min = self.min[j];
@@ -185,14 +187,13 @@ impl Columns {
 
     /// One row of usable values into columns that have counted every row
     /// before it: [`ColumnStats::push`]'s usable branch, where each count
-    /// steps to `n_row` and so takes the shared reciprocal `inv`.
-    /// `ColumnStats::add` written across the columns, operation for
-    /// operation.
+    /// steps to the row's ordinal (written once, by [`Self::write`]) and so
+    /// takes the shared reciprocal `inv`. `ColumnStats::add` written across
+    /// the columns, operation for operation.
     #[inline]
-    fn add_all(&mut self, x: &[f64], n_row: u64, inv: f64) {
+    fn add_all(&mut self, x: &[f64], inv: f64) {
         let n = x.len();
-        let (count, mean, m2, min, max) = (
-            &mut self.count[..n],
+        let (mean, m2, min, max) = (
             &mut self.mean[..n],
             &mut self.m2[..n],
             &mut self.min[..n],
@@ -200,13 +201,90 @@ impl Columns {
         );
         for j in 0..n {
             let xj = x[j];
-            count[j] = n_row;
             let d = xj - mean[j];
             mean[j] += d * inv;
             m2[j] += d * (xj - mean[j]);
             min[j] = min[j].min(xj);
             max[j] = max[j].max(xj);
         }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Rows [`DataSummary::feed_rows`] checked for usable features itself.
+    static CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One input row of a run, as the clock schedule decided it: what
+/// [`DataSummary::feed_rows`] needs beyond the columns.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Fed {
+    /// The row's index in the input columns.
+    pub i: usize,
+    /// Every feature of the row is known to be usable: the schedule
+    /// accepted it, which for every model but an `audit` it does only then.
+    /// The path across the columns skips its own check for such a row.
+    pub usable: bool,
+    /// What [`DataSummary::events`] counts.
+    pub session_changed: bool,
+    pub backwards: bool,
+    pub reset: bool,
+    /// The row was accepted, at weight `w` ([`DataSummary::accepted`]).
+    pub accept: bool,
+    pub w: f64,
+}
+
+/// [`DataSummary::events`] and [`DataSummary::accepted`] over a run, kept
+/// in locals and added to the summary once at its end. Each count only
+/// grows by one a row, so adding the run's total with one saturating add
+/// leaves what a saturating add a row would; the weight is summed in row
+/// order from the summary's own, so its bits are the per-row sum's.
+struct RunCounts {
+    session_changes: u64,
+    clock_backwards: u64,
+    resets: u64,
+    zero_weight: u64,
+    learned: u64,
+    weight_sum: f64,
+}
+
+impl RunCounts {
+    fn new(weight_sum: f64) -> Self {
+        Self {
+            session_changes: 0,
+            clock_backwards: 0,
+            resets: 0,
+            zero_weight: 0,
+            learned: 0,
+            weight_sum,
+        }
+    }
+
+    /// Row `r`: a plain target counts at its row (a formula target counts
+    /// when the row is released, [`DataSummary::learned_late`]).
+    #[inline]
+    fn add(&mut self, r: &Fed, targets: &[Vec<f64>]) {
+        self.session_changes += u64::from(r.session_changed);
+        self.clock_backwards += u64::from(r.backwards);
+        self.resets += u64::from(r.reset);
+        if r.accept {
+            self.weight_sum += r.w;
+            if r.w == 0.0 {
+                self.zero_weight += 1;
+            } else if targets.is_empty() || targets.iter().any(|t| usable(t[r.i])) {
+                self.learned += 1;
+            }
+        }
+    }
+
+    fn write(self, s: &mut DataSummary) {
+        s.session_changes = s.session_changes.saturating_add(self.session_changes);
+        s.clock_backwards = s.clock_backwards.saturating_add(self.clock_backwards);
+        s.resets = s.resets.saturating_add(self.resets);
+        s.rows_zero_weight = s.rows_zero_weight.saturating_add(self.zero_weight);
+        s.rows_learned = s.rows_learned.saturating_add(self.learned);
+        s.weight_sum = self.weight_sum;
     }
 }
 
@@ -347,18 +425,27 @@ impl DataSummary {
     /// The clock range with one more row's clock.
     #[inline]
     fn clock_range(&mut self, c: ClockValue) {
-        self.clock_min = Some(
-            self.clock_min
-                .map_or(c, |m| if c.is_before(m) { c } else { m }),
-        );
-        self.clock_max = Some(
-            self.clock_max
-                .map_or(c, |m| if m.is_before(c) { c } else { m }),
-        );
+        (self.clock_min, self.clock_max) = Self::range_with(self.clock_min, self.clock_max, c);
     }
 
-    /// The input rows `rows` of a run, in order: what [`Self::feed_row`]
-    /// does for each, to the bit, and faster where it can be.
+    /// The range `(lo, hi)` with one more clock `c`: the earliest kept on a
+    /// tie, as the latest is.
+    #[inline]
+    fn range_with(
+        lo: Option<ClockValue>,
+        hi: Option<ClockValue>,
+        c: ClockValue,
+    ) -> (Option<ClockValue>, Option<ClockValue>) {
+        (
+            Some(lo.map_or(c, |m| if c.is_before(m) { c } else { m })),
+            Some(hi.map_or(c, |m| if m.is_before(c) { c } else { m })),
+        )
+    }
+
+    /// The input rows `rows` of a run, in order: for each, what
+    /// [`Self::feed_row`], [`Self::events`] and, for an accepted row,
+    /// [`Self::accepted`] do, to the bit, in one pass over the rows and
+    /// faster where it can be.
     ///
     /// While every feature column has counted every row fed -- no feature
     /// has been null in this stream -- and the run's rows have every feature
@@ -376,11 +463,17 @@ impl DataSummary {
     /// so fewer than [`Self::ACROSS_COLUMNS_FROM`] features take the
     /// row-by-row path.
     ///
+    /// A row the schedule accepted ([`Fed::usable`]) is not checked again;
+    /// the clock range is kept in locals; the counts are summed over the run
+    /// ([`RunCounts`]). One pass where there were two, over the rows the
+    /// models read next: switching the summary off had been worth about 20
+    /// ns of a 130 ns `sgd` row.
+    ///
     /// Returns how many rows took the path across the columns, which only
     /// a test reads.
     pub(crate) fn feed_rows(
         &mut self,
-        rows: impl IntoIterator<Item = usize>,
+        rows: impl IntoIterator<Item = Fed>,
         features: &FeatureRows,
         targets: &[Vec<f64>],
         weight: Option<&[f64]>,
@@ -390,6 +483,7 @@ impl DataSummary {
         let nf = features.k();
         let n_cols = self.columns.len();
         let has_w = usize::from(weight.is_some());
+        let mut counts = RunCounts::new(self.weight_sum);
         let mut across = 0;
         let mut first_slow = None;
         if nf >= Self::ACROSS_COLUMNS_FROM
@@ -398,16 +492,19 @@ impl DataSummary {
         {
             let nt = n_cols - nf - has_w;
             let mut soa = Columns::of(&self.columns[..nf]);
-            for i in rows.by_ref() {
+            let (mut lo, mut hi) = (self.clock_min, self.clock_max);
+            for r in rows.by_ref() {
+                let i = r.i;
                 let x = features.row(i);
-                if !all_usable(x) {
-                    first_slow = Some(i);
+                if !(r.usable || Self::check_row(x)) {
+                    first_slow = Some(r);
                     break;
                 }
                 self.rows_fed = self.rows_fed.saturating_add(1);
                 let n_row = self.rows_fed;
                 let inv_row = 1.0 / n_row as f64;
-                soa.add_all(x, n_row, inv_row);
+                debug_assert!(all_usable(x), "row {i} was passed as usable");
+                soa.add_all(x, inv_row);
                 for (k, c) in self.columns[nf..].iter_mut().take(nt).enumerate() {
                     match targets.get(k) {
                         Some(t) => c.push(t[i], n_row, inv_row),
@@ -418,13 +515,16 @@ impl DataSummary {
                     self.columns[nf + nt].push(w[i], n_row, inv_row);
                 }
                 if let Some(c) = clock {
-                    self.clock_range(c.at(i));
+                    (lo, hi) = Self::range_with(lo, hi, c.at(i));
                 }
+                counts.add(&r, targets);
                 across += 1;
             }
-            soa.write(&mut self.columns[..nf]);
+            (self.clock_min, self.clock_max) = (lo, hi);
+            soa.write(&mut self.columns[..nf], self.rows_fed);
         }
-        for i in first_slow.into_iter().chain(rows) {
+        for r in first_slow.into_iter().chain(rows) {
+            let i = r.i;
             self.feed_row(
                 features.row(i),
                 targets,
@@ -432,8 +532,19 @@ impl DataSummary {
                 clock.map(|c| c.at(i)),
                 i,
             );
+            counts.add(&r, targets);
         }
+        counts.write(self);
         across
+    }
+
+    /// The path's own check of a row not known to be usable; the tests
+    /// count the rows it was asked about.
+    #[inline]
+    fn check_row(x: &[f64]) -> bool {
+        #[cfg(test)]
+        CHECKED.with(|c| c.set(c.get() + 1));
+        all_usable(x)
     }
 
     /// The fewest features [`Self::feed_rows`] steps across the columns.
@@ -975,7 +1086,10 @@ mod tests {
         idx.chunks(run)
             .map(|c| {
                 s.feed_rows(
-                    c.iter().copied(),
+                    c.iter().map(|&i| Fed {
+                        i,
+                        ..Fed::default()
+                    }),
                     &r.features,
                     &r.targets,
                     Some(&r.weight),
@@ -1110,5 +1224,135 @@ mod tests {
         let mut got = start;
         assert_eq!(by_runs(&mut got, &r, 0..n, n), vec![n]);
         assert_bits(&want, &got, "saturated");
+    }
+
+    /// The facts the schedule hands each row of `r`: a session change, a
+    /// step back and a reset now and then, every fifth row not accepted,
+    /// the weight column's weight, and the features known usable on an
+    /// accepted row whose features are.
+    fn facts(r: &Rows, i: usize) -> Fed {
+        let accept = i % 5 != 4;
+        Fed {
+            i,
+            usable: accept && all_usable(r.features.row(i)),
+            session_changed: i.is_multiple_of(11),
+            backwards: i % 13 == 5,
+            reset: i % 17 == 3,
+            accept,
+            w: r.weight[i],
+        }
+    }
+
+    /// `rows` as the stream fed them before the one pass: the columns a
+    /// row at a time, then `events` and `accepted` a row at a time.
+    fn by_row_counted(s: &mut DataSummary, r: &Rows, rows: std::ops::Range<usize>) {
+        by_row(s, r, rows.clone());
+        for i in rows {
+            let f = facts(r, i);
+            s.events(f.session_changed, f.backwards, f.reset);
+            if f.accept {
+                let has_target = r.targets.iter().any(|t| usable(t[i]));
+                s.accepted(f.w, has_target);
+            }
+        }
+    }
+
+    fn counts(s: &DataSummary) -> [u64; 6] {
+        [
+            s.session_changes,
+            s.clock_backwards,
+            s.resets,
+            s.rows_zero_weight,
+            s.rows_learned,
+            s.weight_sum.to_bits(),
+        ]
+    }
+
+    /// The one pass counts what `events` and `accepted` counted a row at a
+    /// time, the weight's sum to the bit, whatever the runs, on the path
+    /// across the columns, below its width, from a row with a feature that
+    /// is not usable on, and at counts at the top of their range; and the
+    /// columns are the same bits as ever.
+    #[test]
+    fn feed_rows_counts_what_events_and_accepted_counted() {
+        let n = 400;
+        let cases: [(usize, Option<usize>, bool); 4] = [
+            (20, None, false),
+            (DataSummary::ACROSS_COLUMNS_FROM - 1, None, false),
+            (12, Some(150), false),
+            (12, None, true),
+        ];
+        for (k, bad_row, saturated) in cases {
+            let r = rows(n, k, &|i, j| {
+                (Some(i) == bad_row && j == 5).then_some(f64::NAN)
+            });
+            let mut start = fresh(k);
+            if saturated {
+                start.session_changes = u64::MAX - 2;
+                start.clock_backwards = u64::MAX;
+                start.resets = u64::MAX - 1;
+                start.rows_zero_weight = u64::MAX - 3;
+                start.rows_learned = u64::MAX - 5;
+                start.weight_sum = 1e300;
+            }
+            let mut want = start.clone();
+            by_row_counted(&mut want, &r, 0..n);
+            assert!(want.rows_learned > 0 && want.rows_zero_weight > 0 && want.resets > 0);
+            for run in [1, 7, 64, n] {
+                let mut got = start.clone();
+                let idx: Vec<usize> = (0..n).collect();
+                let across: usize = idx
+                    .chunks(run)
+                    .map(|c| {
+                        got.feed_rows(
+                            c.iter().map(|&i| facts(&r, i)),
+                            &r.features,
+                            &r.targets,
+                            Some(&r.weight),
+                            Some(&r.clock),
+                        )
+                    })
+                    .sum();
+                let what = format!("k={k} bad={bad_row:?} saturated={saturated} runs of {run}");
+                assert_eq!(counts(&got), counts(&want), "{what}");
+                assert_bits(&want, &got, &what);
+                let want_across = match (k >= DataSummary::ACROSS_COLUMNS_FROM, bad_row) {
+                    (false, _) => 0,
+                    (true, None) => n,
+                    (true, Some(b)) => b,
+                };
+                assert_eq!(across, want_across, "{what}");
+            }
+        }
+    }
+
+    /// A row the schedule passed as usable is not checked again on the
+    /// path across the columns, and one it did not pass is; the bits are
+    /// the same either way.
+    #[test]
+    fn a_row_passed_as_usable_is_not_checked_again() {
+        let (n, k) = (300, 16);
+        let r = rows(n, k, &|_, _| None);
+        let mut want = fresh(k);
+        by_row(&mut want, &r, 0..n);
+        for passed in [true, false] {
+            let mut got = fresh(k);
+            CHECKED.with(|c| c.set(0));
+            let across = got.feed_rows(
+                (0..n).map(|i| Fed {
+                    i,
+                    usable: passed,
+                    ..Fed::default()
+                }),
+                &r.features,
+                &r.targets,
+                Some(&r.weight),
+                Some(&r.clock),
+            );
+            assert_eq!(across, n);
+            let checked = CHECKED.with(|c| c.get());
+            assert_eq!(checked, if passed { 0 } else { n }, "passed={passed}");
+            assert_bits(&want, &got, &format!("passed={passed}"));
+        }
     }
 }

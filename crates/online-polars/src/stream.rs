@@ -20,7 +20,7 @@ use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
 use crate::span::{Span, SpanList};
 use crate::spec::{FloatOrList, ModelKind, ShardSpec, Spec};
-use crate::summary::DataSummary;
+use crate::summary::{DataSummary, Fed};
 
 /// A refused backwards clock, for the bank to turn into the error naming it.
 #[derive(Debug, Clone, Copy)]
@@ -3709,28 +3709,30 @@ impl Stream {
         // nothing; per row in row order, so chunking cannot move a bit; and
         // before `embargo` moves a break's events onto the row that
         // learns them, so a break counts where it arrived.
-        // The column statistics and the clock range first, over the run's
-        // rows at once (`DataSummary::feed_rows`), then the counts: the two
-        // touch different numbers, each in row order.
+        // The column statistics, the clock range and the counts in one pass
+        // over the run's rows (`DataSummary::feed_rows`, task 250): a plain
+        // target counts at its row, a formula target when the row is
+        // released with a value (review R1, D3: a window cut null taught
+        // nothing), below.
         if let Some(summary) = self.persisted.summary.as_mut() {
+            // A row the schedule accepted has every feature usable, for any
+            // model but an `audit`, which accepts every row.
+            let checked = !spec.model.reads_every_row();
             summary.feed_rows(
-                plans.iter().filter(|p| p.direct()).map(|p| p.i),
+                plans.iter().filter(|p| p.direct()).map(|p| Fed {
+                    i: p.i,
+                    usable: checked && p.accept,
+                    session_changed: p.session_changed,
+                    backwards: p.backwards,
+                    reset: p.reset,
+                    accept: p.accept,
+                    w: p.w,
+                }),
                 features,
                 targets,
                 weight,
                 clock,
             );
-            for plan in plans.iter().filter(|p| p.direct()) {
-                let i = plan.i;
-                summary.events(plan.session_changed, plan.backwards, plan.reset);
-                if plan.accept {
-                    // A plain target counts at its row; a formula target
-                    // counts when the row is released with a value (review
-                    // R1, D3: a window cut null taught nothing).
-                    let has_target = targets.is_empty() || targets.iter().any(|t| usable(t[i]));
-                    summary.accepted(plan.w, has_target);
-                }
-            }
         }
 
         // ---- embargo: hold each row back until its label matures ----

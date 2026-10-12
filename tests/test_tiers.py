@@ -325,17 +325,21 @@ def test_every_workflow_runs_the_full_tier_and_none_the_essentials():
 
 
 def test_mutation_testing_runs_the_extended_rust_tests_too():
-    """cargo-mutants runs ``cargo test``, which skips an ignored test: a
-    mutant only an extended test catches would count as a survivor. A
-    listing (``--list``) runs no test: the job that sizes the changed lines'
-    pass only lists (task 219), and every job that tests mutants passes it."""
+    """A test runner skips an ignored test, so a mutant only an extended
+    test catches would count as a survivor. The workflow's runs test under
+    nextest, and ask it with ``--run-ignored=all``, which cargo-mutants
+    hands to ``cargo nextest run``; ``scripts/mutants.sh`` runs ``cargo
+    test``, and asks it with ``-- -- --include-ignored``. A listing
+    (``--list``) runs no test: the job that sizes the changed lines' pass
+    only lists (task 219), and every job that tests mutants asks."""
     testing: set[str] = set()
     listing: set[str] = set()
     for job, step in _steps("mutants.yml"):
         run = str(step.get("run", ""))
         lines = [ln for ln in run.replace("\\\n", " ").splitlines() if "cargo mutants" in ln]
         calls = [line for line in lines if "--list" not in line]
-        assert all(line.rstrip().endswith("-- -- --include-ignored") for line in calls), calls
+        asks = ("--test-tool nextest", "--cargo-test-arg=--run-ignored=all")
+        assert all(all(a in line for a in asks) for line in calls), calls
         if calls:
             testing.add(job)
         elif lines:

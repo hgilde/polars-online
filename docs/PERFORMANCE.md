@@ -11,7 +11,7 @@ each reads as of its date, with the names of its day.
 
 | section | read it when | subsections |
 |---|---|---|
-| [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, today's name for each old one, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [names that changed](#names-that-changed) · [how the numbers are made](#how-the-numbers-are-made) |
+| [Reading this document](#reading-this-document) | you are new here: where the time and memory go now, the words this document uses, today's name for each old one, and how every number was measured | [the headline](#the-headline) · [words](#words-this-document-uses) · [names that changed](#names-that-changed) · [how the numbers are made](#how-the-numbers-are-made) · [budgets](#budgets-that-only-tighten) |
 | **[The first pass, and the bank's plumbing](#the-first-pass-and-the-banks-plumbing)** | | |
 | [1. The measured baseline](#1-the-measured-baseline) | you want the numbers from before any change, 2026-08-30 | |
 | [2. What the numbers say](#2-what-the-numbers-say) | you want why the plumbing around the models, not the models, was the cost | |
@@ -259,6 +259,61 @@ promised: a minor release may change them.** The variable turns them on at
 A profile says where inside `process` the time goes, and the wall clock
 says how much: §13 has the recipe. [CONTRIBUTING.md](../CONTRIBUTING.md)
 says how to measure a change against these numbers.
+
+### Budgets that only tighten
+
+**Every push and pull request is held to a fixed number per hot path and
+per output field, kept in `budgets.toml` at the repository's root.** Each
+measurement is compared with its budget, never with the previous run, so a
+run of small slowdowns adds up against one number instead of each passing
+against the last. There are three kinds:
+
+| kind | what is measured | where it runs | tolerance |
+|---|---|---|---|
+| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge` | `.github/workflows/budgets.yml`, on Linux | 2% |
+| `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
+| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another | the same file, in the extended tier | 15% |
+
+**An instruction count can gate where a timing cannot.** Two release builds
+of one source measured up to 19% apart in wall time, from where the linker
+placed the code alone, and a shared runner adds its load on top. Two runs
+of one binary under Callgrind count the same instructions, so the workflow
+runs every case twice and fails if the two differ by more than a quarter of
+the tolerance. What the 2% absorbs is the inlining an unrelated change
+moves. A count does not see a cache miss, so `scripts/benchmark.py` still
+measures throughput. A count also belongs to the compiler that built it,
+the image it ran on and the harness that counted it, so `budgets.toml`
+names all three in `[meta]`. Changing one re-measures every case.
+
+**The rules, as `scripts/budgets.py` applies them:**
+
+- A measurement over its budget by more than the tolerance fails. Find what
+  made it slower or larger. If that is the price of a change worth having,
+  raise the budget in the same change, with a `[[raised]]` entry that gives
+  the key, the old and new number, the date and the reason, and quotes a
+  CHANGELOG *Performance* entry. `scripts/budgets.py raises` holds every
+  increase in the file's git history to such an entry, and a wider
+  tolerance counts as a raise.
+- A measurement under its budget by more than the tolerance fails too, and
+  names the number to tighten the budget to. The change that made a gain
+  then keeps it. `scripts/budgets.py apply measured.json` writes the
+  tightened budgets from a run's measurements.
+- A case with no budget is reported with its measurement and fails nothing,
+  which is how a new case gets its first budget. A measuring run, a dispatch
+  of the workflow with `measure` or `POLARS_ONLINE_BUDGETS=measure` for the
+  tests, reports everything and fails nothing.
+- Beside each budget, `release` keeps the measurement at the last release.
+  Every run reports each case's drift since then. A release fails on a case
+  that moved more than 10% either way unless `budgets.toml` holds a
+  `[[signoff]]` for it at that version.
+
+**Valgrind does not run on macOS on Apple silicon, so the counts come from
+CI.** `cargo test -p online-bench` runs every case natively on any platform
+and checks that each reaches the path it is named for. On Linux, `cargo
+install gungraun-runner --version 0.20.0` (the version `Cargo.lock` holds)
+and then `cargo bench -p online-bench --bench instructions` prints the
+counts. Elsewhere, a Linux container with Valgrind installed runs the same
+two commands. The workflow keeps each run's counts as an artifact.
 
 ## The first pass, and the bank's plumbing
 

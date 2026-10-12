@@ -2,7 +2,7 @@ name: Mutants
 
 # Mutation testing (docs/TESTING.md T-D4). cargo-mutants makes one small change
 # at a time -- an operator flipped, a body replaced by a constant -- rebuilds,
-# and reruns `cargo test`. A mutant no test catches is a place where a bug
+# and reruns the Rust tests. A mutant no test catches is a place where a bug
 # would pass the whole suite.
 #
 # Two passes, each in shards with one job that reports them all. `changed`
@@ -23,33 +23,44 @@ name: Mutants
 # three times, the first full pass counted 1,588 timeouts, and 19 of the 25
 # sampled were survivors.
 #
-# Every run passes `-- -- --include-ignored`, which cargo-mutants hands to
-# `cargo test` and `cargo test` to the test binaries: the extended tier's
-# Rust tests are `#[ignore = "extended: ..."]`, and without it a mutant they
-# alone catch would be counted a survivor (docs/TESTING.md, "Two tiers").
+# Every mutant's tests run under cargo-nextest (`--test-tool nextest`), a
+# process per test, so one test binary's slowest test no longer holds up the
+# next binary: the full Rust suite took 84 s under nextest against `cargo
+# test`'s 182 s on a developer machine (docs/TESTING.md, "Iterating"). The
+# version is pinned, one in both jobs. cargo-mutants hands each
+# `--cargo-test-arg` to `cargo nextest run` for the test phase alone:
+#
+# - `--run-ignored=all`: the extended tier's Rust tests are
+#   `#[ignore = "extended: ..."]`, and without it a mutant they alone catch
+#   would be counted a survivor (docs/TESTING.md, "Two tiers");
+# - `--tests`: the test targets, as before. nextest runs no doctests
+#   whatever it is given, so they stay skipped.
 #
 # Every run is also stopped inside its job's own limit, with SIGINT, which
 # keeps the outcomes it finished, and writes the list of the mutants it was
 # given. So the report says when a run tested fewer, and fails on it: a job
 # killed at its limit would report nothing at all.
 #
-# Every test process a mutant runs is capped in memory, with `prlimit
-# --data` as cargo's test runner (the job's
-# CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER), so a mutant whose loop keeps
-# allocating fails its own allocation and is counted caught. Without the cap
-# it took the runner with it: the push of 5cb8f7e lost 8 of its 111 shards
-# to "The runner has received a shutdown signal", 12 to 81 minutes in, every
-# one of them dealt `audit.rs`'s `Moments::rescale`/`add`/`merge` mutants,
-# and their outcomes never uploaded. The cap applies to the test binaries
-# only, not to rustc. Measured 2026-10-11 on online-core's test binaries with
-# the extended tier at four test threads: the largest peaked at 497 MiB, the
-# rest under 82 MiB. Each job's cap times the mutants it runs at once stays
-# at 12 GiB of the runner's 16, six times and more the measured peak; the
-# baseline runs under the same cap, so a cap too small fails the shard
-# loudly rather than counting a survivor.
+# Every run is capped in memory as the kernel counts it: `cargo mutants`
+# runs inside one transient systemd scope whose cgroup has a `MemoryMax` of
+# MUTANTS_MEMORY_MAX and no swap (scripts/memory_scope.sh). A mutant whose
+# loop keeps allocating makes its test the scope's largest process, which
+# the kernel's OOM killer kills; nextest counts the test failed, so the
+# mutant is caught, and the scope's `OOMPolicy=continue` keeps cargo-mutants
+# going. The runner's own agent, outside the scope, keeps the 4 GiB left.
+# Without a cap a runaway took the runner with it: the push of 5cb8f7e lost
+# 8 of its 111 shards to "The runner has received a shutdown signal", every
+# one of them dealt `audit.rs`'s `Moments::rescale`/`add`/`merge` mutants.
+# The cap before this one, `prlimit --data` on each test binary, capped the
+# wrong quantity: RLIMIT_DATA counts private writable *virtual* memory,
+# which glibc keeps after a free, so a 6 GiB cap sized from a resident peak
+# of 497 MiB (measured on macOS) still killed the baseline of 4 of the 32
+# shards of run 38205650365 (`memory allocation of 545259520 bytes failed`).
+# The `memory-cap` job below proves the scope on every run: a runaway is
+# killed near the cap, and the command that started it goes on.
 #
 # Scope: online-core, and online-polars' span.rs, whose duration parser its own
-# Rust tests pin. cargo-mutants runs `cargo test` only, so the rest of
+# Rust tests pin. cargo-mutants runs the Rust tests only, so the rest of
 # online-polars and online-py, which the pytest suite covers through the
 # extension, would report most mutants as survivors when they are not.
 #
@@ -81,6 +92,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # The memory every run's scope may hold, of a 16 GiB runner: what the
+  # runner's agent and the system need is outside it (scripts/memory_scope.sh).
+  MUTANTS_MEMORY_MAX: 12G
   # The changed lines' mutants, in one place: the listing that sizes their
   # pass and every shard it deals read these, so the count and the deal
   # cannot drift apart. Each job reads them with `read -ra`, which splits on
@@ -90,6 +104,24 @@ env:
     --file crates/online-core/src/** --file crates/online-polars/src/span.rs
 
 jobs:
+  # The memory scope every run uses, proven on the runner it runs on: inside
+  # a scope with MUTANTS_MEMORY_MAX, a process that allocates without end is
+  # killed near the cap, the command that started it goes on, and so does
+  # this job, whose next step reads the runner's memory after it. A minute,
+  # and no build; on every run of this workflow, beside the shards.
+  memory-cap:
+    name: mutants, the memory scope kills a runaway alone
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: a runaway inside the scope is killed near the cap, and its parent goes on
+        run: python3 scripts/memory_scope_check.py "$MUTANTS_MEMORY_MAX"
+      - name: the runner goes on
+        run: free -m
+
   # Lists the changed lines' mutants, which builds nothing, and sizes their
   # pass from the count: a shard for every thirty (scripts/mutants_shards.py).
   # At least one, so a change with nothing to mutate still reports; at most
@@ -147,9 +179,6 @@ jobs:
     # so a shard may run three times slower, or the suite grow threefold,
     # before one stops short. A public repository pays nothing for the room.
     timeout-minutes: 330
-    env:
-      # Two mutants at a time (`-j 2`), each test process capped at 6 GiB.
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=6442450944 --
     permissions:
       contents: read
     strategy:
@@ -199,6 +228,8 @@ jobs:
           cache-on-failure: true
       - name: install cargo-mutants
         run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: install cargo-nextest
+        run: cargo install --locked cargo-nextest --version 0.9.148
       - name: cargo mutants on the diff, this shard
         run: |
           set +e
@@ -210,10 +241,12 @@ jobs:
           if [ "$code" -ne 0 ]; then exit "$code"; fi
           if [ -s listed.txt ]; then
             # Stopped inside the job's 330 minutes, setup included, so the
-            # report still runs and counts what a large diff left untested.
-            timeout --signal=INT --kill-after=2m 300m cargo mutants "${args[@]}" \
-              --cargo-test-arg=--tests --timeout-multiplier 10 \
-              -j 2 --minimum-test-timeout 30 --output mutants-out -- -- --include-ignored
+            # report still runs and counts what a large diff left untested;
+            # in the memory scope, so a runaway mutant is killed alone.
+            bash scripts/memory_scope.sh "$MUTANTS_MEMORY_MAX" -- \
+              timeout --signal=INT --kill-after=2m 300m cargo mutants "${args[@]}" \
+              --test-tool nextest --cargo-test-arg=--tests --cargo-test-arg=--run-ignored=all \
+              --timeout-multiplier 10 -j 2 --minimum-test-timeout 30 --output mutants-out
             code=$?
           else
             echo "this shard was dealt no mutants"
@@ -260,9 +293,6 @@ jobs:
     runs-on: ubuntu-latest
     # The stop below is 325 minutes inside this 350 (GitHub's limit is 360).
     timeout-minutes: 350
-    env:
-      # Four mutants at a time (`-j 4`), each test process capped at 3 GiB.
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=3221225472 --
     permissions:
       contents: read
     strategy:
@@ -294,16 +324,20 @@ jobs:
           cache-on-failure: true
       - name: install cargo-mutants
         run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: install cargo-nextest
+        run: cargo install --locked cargo-nextest --version 0.9.148
       - name: cargo mutants, this shard
         run: |
           set +e
           args=(--package online-core --shard ${{ matrix.shard }}/96 --sharding round-robin)
           cargo mutants --list "${args[@]}" > listed.txt
           # Stopped inside the job's 350 minutes, setup included, so the shard
-          # still uploads what it finished and the report counts the rest.
-          timeout --signal=INT --kill-after=2m 325m cargo mutants "${args[@]}" \
-            --cargo-test-arg=--tests --timeout-multiplier 10 \
-            -j 4 --minimum-test-timeout 10 --output shard -- -- --include-ignored
+          # still uploads what it finished and the report counts the rest;
+          # in the memory scope, so a runaway mutant is killed alone.
+          bash scripts/memory_scope.sh "$MUTANTS_MEMORY_MAX" -- \
+            timeout --signal=INT --kill-after=2m 325m cargo mutants "${args[@]}" \
+            --test-tool nextest --cargo-test-arg=--tests --cargo-test-arg=--run-ignored=all \
+            --timeout-multiplier 10 -j 4 --minimum-test-timeout 10 --output shard
           code=$?
           mkdir -p shard/mutants.out && cp listed.txt shard/mutants.out/
           case "$code" in 0|2|3|124|137) exit 0 ;; *) exit "$code" ;; esac

@@ -549,9 +549,14 @@ its statistic where the span closes. Otherwise the predict-parity helper will
 ask it for 300 rows with every slot filled, and fail.
 
 `tests/test_every_kind.py` sweeps every registered model without a list of
-its own. Two more lists are kept by hand, and `tests/test_model_registry.py`
-holds both. One is `scripts/release_probe.py`'s `WORKLOAD`, which the
-weight-scale, released-state and rename checks run. The other is
+its own. Three more lists are kept by hand, and `tests/test_model_registry.py`
+holds all three. One is `scripts/release_probe.py`'s `WORKLOAD`, which the
+weight-scale, released-state and rename checks run. Another is
+`tests/test_budgets_memory.py`'s `WORKLOAD`, every model with every output
+it has switched on, whose fields' bytes per row are held to `budgets.toml`:
+add the model there at its fullest, run the test with
+`POLARS_ONLINE_BUDGETS_OUT=<dir>`, and write its budgets with `python
+scripts/budgets.py apply <dir>/memory.json`. The third is
 `_spec.UNSUPERVISED`: exactly the models whose empty `targets` the bank fills
 from `features[0]`, which `ModelKind::is_unsupervised` names in `spec.rs`.
 Add the model to each, and to the names in that function's doc comment,
@@ -565,6 +570,7 @@ them to `_UNCENTRED_LIMITS`.
 
 **Check:** `test_model_registry::test_the_sweeps_cover_every_regression_model`,
 `test_the_release_workload_builds_every_model`,
+`test_the_memory_budgets_hold_every_model`,
 `test_unsupervised_is_the_models_the_bank_fills_a_target_for` and
 `test_check::test_check_places_every_regression`.
 

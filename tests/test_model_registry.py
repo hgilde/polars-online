@@ -21,6 +21,7 @@ import polars as pl
 
 import polars_online as po
 import test_api_surface
+import test_budgets_memory
 import test_edge_cases
 import test_golden_pipeline
 import test_kwargs_typing
@@ -507,6 +508,14 @@ def test_the_release_workload_builds_every_model():
     probe = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(probe)
     assert {builder for _, builder, _, _ in probe.WORKLOAD} == _builders()
+
+
+def test_the_memory_budgets_hold_every_model():
+    """`tests/test_budgets_memory.py`'s `WORKLOAD` is every model at its
+    fullest, whose output fields' bytes per row `budgets.toml` holds. A
+    builder missing from it has no memory budget, so a field of it could
+    turn dense unseen."""
+    assert {builder for _, builder, _, _ in test_budgets_memory.WORKLOAD} == _builders()
 
 
 def test_unsupervised_is_the_models_the_bank_fills_a_target_for():

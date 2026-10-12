@@ -1,0 +1,130 @@
+# Instruction-count budgets (budgets.toml, scripts/budgets.py,
+# docs/PERFORMANCE.md "Budgets"). Gating, unlike benchmark.yml: an
+# instruction count does not move with the runner's load, so every push and
+# pull request is held to a fixed number per hot path, and fails past the
+# tolerance in either direction -- slower needs a stated raise, faster
+# tightens the budget in the same change. Each case's drift since the last
+# release is in the job summary; a release calls this workflow with
+# `release-check`, which fails on a case past the sign-off.
+#
+# Valgrind runs on Linux alone, so this is where the counts come from; a
+# developer on macOS runs the cases natively (`cargo test -p online-bench`)
+# and reads the counts here, or runs the bench in a Linux container.
+#
+# A measuring run (dispatch with `measure`) reports and never fails: how
+# the first budgets were set, and how a toolchain bump is re-measured. A
+# case with no budget is reported, never failed, in any run.
+name: Budgets
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      measure:
+        description: "A measuring run: report every count, fail on nothing"
+        type: boolean
+        default: false
+      release-check:
+        description: "The version about to be released: fail on a case past the sign-off since the last release"
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      release-check:
+        type: string
+        default: ""
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+# Per calling workflow and per event, as ci.yml: a release's call and a
+# push's run on main do not cancel each other.
+concurrency:
+  group: budgets-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  instructions:
+    name: instruction counts against budgets.toml
+    # The image budgets.toml names (`meta.runner`): its glibc and its
+    # Valgrind are part of every count. tests/test_budgets.py holds the two
+    # to each other.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      # The whole history: the raise rule reads every version of
+      # budgets.toml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: free disk and use a leaner linker (Linux)
+        uses: ./.github/actions/linux-build-prep
+        with:
+          packages: valgrind
+          update-lists: "true"
+
+      # The compiler and the harness budgets.toml and Cargo.lock name, read
+      # from them, so a bump of either is a change to those files. The
+      # repository's rust-toolchain.toml names `stable`, which a bare
+      # `cargo` in the checkout would take: RUSTUP_TOOLCHAIN overrides it.
+      - name: the pins
+        id: pins
+        run: |
+          toolchain="$(python3 scripts/budgets.py toolchain)"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          echo "runner=$(python3 scripts/budgets.py runner-version)" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          valgrind --version
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: ${{ steps.pins.outputs.toolchain }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+
+      - name: every raise in budgets.toml's history has its reason
+        run: python3 scripts/budgets.py raises
+
+      - name: the harness's runner, the version the lock resolves
+        run: cargo install gungraun-runner --version "${{ steps.pins.outputs.runner }}" --locked
+
+      # Twice, the same binary: `check` fails where the two runs differ by
+      # more than a quarter of the tolerance, which would make the
+      # tolerance noise.
+      - name: count every case, twice
+        run: |
+          set -o pipefail
+          for run in first second; do
+            cargo bench -p online-bench --bench instructions --locked -- \
+              --output-format=json --nosummary > "$run.json"
+          done
+
+      - name: hold the counts to their budgets
+        env:
+          MEASURE: ${{ inputs.measure && '--measure' || '' }}
+          RELEASE: ${{ inputs.release-check }}
+        run: |
+          # Unquoted on purpose: empty, or one flag.
+          # shellcheck disable=SC2086
+          python3 scripts/budgets.py check first.json second.json \
+            --measured measured.json $MEASURE ${RELEASE:+--release-check "$RELEASE"}
+
+      # The counts as a file, for `scripts/budgets.py apply measured.json`.
+      - name: keep the counts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: budgets-instructions-${{ github.sha }}
+          path: |
+            first.json
+            second.json
+            measured.json
+          if-no-files-found: warn

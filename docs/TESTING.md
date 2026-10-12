@@ -583,8 +583,10 @@ soak alone, and the Hypothesis profile is `extended` unless
 ignored test, so `cargo test` alone runs the Rust essentials, and
 `cargo test -- --include-ignored` is the full Rust run. `gate.sh
 --extended`, CI, the release, the canary and `scripts/coverage.sh` all pass
-it. cargo-mutants takes it as `-- -- --include-ignored`, so a mutant only
-an extended test catches is not counted a survivor. The essentials gate
+it. The mutation runs in CI test each mutant under cargo-nextest and pass
+`--cargo-test-arg=--run-ignored=all`, nextest's form, and
+`scripts/mutants.sh` passes `-- -- --include-ignored` to `cargo test`, so a
+mutant only an extended test catches is not counted a survivor. The essentials gate
 runs pytest with `-m "not extended and not soak"`, the `essential` profile
 and `PROPTEST_CASES=32`.
 
@@ -1797,18 +1799,36 @@ became 300 minutes inside a limit of 330, three times the push of
 `5cb8f7e`'s slowest shard (98 minutes), and the weekly shard's 325 inside
 350.
 
-**A mutant cannot take its runner down.** Every test process a mutant runs
-is capped in memory: cargo runs each test binary through `prlimit --data`
-(the job's `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER`), at 6 GiB for the
-changed lines' two mutants at a time and 3 GiB for the weekly pass's four,
-12 GiB of a runner's 16 either way. A mutant whose loop keeps allocating
-then fails its own allocation, and is counted caught. Before the cap, the
+**A mutant cannot take its runner down.** Each shard's whole `cargo
+mutants` run is inside one transient systemd scope whose cgroup holds at
+most 12 GiB of a runner's 16, with no swap (`scripts/memory_scope.sh`, the
+workflow's `MUTANTS_MEMORY_MAX`). A mutant whose loop keeps allocating makes
+its test the scope's largest process, the kernel's OOM killer kills it,
+nextest counts the test failed, and the mutant is caught. The scope's
+`OOMPolicy=continue` keeps cargo-mutants running, and the runner's own
+agent, outside the scope, keeps the rest of the memory. Before any cap, the
 push of `5cb8f7e` lost 8 of its 111 shards to "The runner has received a
 shutdown signal", every one of them dealt `audit.rs`'s `Moments` mutants,
-and their outcomes never reached the report. online-core's largest test
-binary peaks at 497 MiB with the extended tier at four test threads, the
-others under 82 MiB, and the baseline runs under the same cap, so a cap too
-small fails the shard loudly.
+and their outcomes never reached the report.
+
+**The first cap capped the wrong number.** It ran each test binary under
+`prlimit --data`, 6 GiB for the changed lines' two mutants at a time and 3
+GiB for the weekly pass's four, sized from a resident peak of 497 MiB for
+online-core's largest test binary, measured on macOS. `RLIMIT_DATA` counts
+a process's private writable virtual memory, which glibc keeps after a free
+in its arenas and retained heap, not what is resident. On Linux the suite
+crossed 6 GiB of it with far less resident: the baseline failed in 4 of the
+32 shards of run 38205650365 (`memory allocation of 545259520 bytes
+failed`), depending on which tests shared a process. The scope's `MemoryMax`
+counts resident memory, page cache included, which the kernel reclaims
+before it kills anything. Every run of the workflow proves it on its own
+runner in the `memory-cap` job (`scripts/memory_scope_check.py`): a process
+allocating without end inside a scope of the shards' cap is killed within
+the cap's last quarter, and the process that started it goes on.
+
+**Each mutant's tests run under cargo-nextest**, a process per test, as the
+gate's do: the full Rust suite took 84 s under nextest against `cargo
+test`'s 182 s on the development machine.
 A pull request's runs share one group, and a newer commit cancels the
 older, since it lists the whole pull request's diff again.
 
