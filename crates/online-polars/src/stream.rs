@@ -2703,7 +2703,13 @@ impl ChunkOut {
         const BUDGET: usize = 2 << 20;
         /// `f64`s in a 128-byte line, the longest of the two OSes' lines.
         const LINE: usize = 16;
-        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1);
+        /// The row's schedule, written in pass 1 and read in pass 2, in
+        /// `f64`s: 160 bytes since the exact stamps joined it, against 56
+        /// before. Left out of the budget, a narrow model's run of a hundred
+        /// thousand rows held 16 MB of it, past the cache, and a `seqtest`
+        /// row spent its largest share storing and reloading it (task 250).
+        const PLAN: usize = std::mem::size_of::<RowPlan>().div_ceil(8);
+        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1) + PLAN;
         let lines = BUDGET / (8 * width * LINE);
         let lines = if lines.is_multiple_of(2) {
             lines.saturating_sub(1)
