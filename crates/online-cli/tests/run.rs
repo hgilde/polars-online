@@ -373,12 +373,13 @@ fn a_model_value_of_the_wrong_type_is_named_by_its_key() {
 }
 
 /// `gram_threads` is configuration, not state: a run saved under 8 threads
-/// resumes under 2, or with the key left out, to the bit of the unbroken
-/// run (review 6, D-1: the load compared it, as review 2026-09-26 F3 found
+/// resumes under 2, `"auto"`, or with the key left out, to the bit of the
+/// unbroken run (review 6, D-1: the load compared it, as review 2026-09-26 F3 found
 /// for marginal's `shards`, and refused the config).
 #[test]
 fn resume_under_another_gram_threads_continues_the_stream() {
-    fn threads(cfg: &mut RunConfig, t: Option<usize>) {
+    use online_polars::CountOrAuto;
+    fn threads(cfg: &mut RunConfig, t: Option<CountOrAuto>) {
         match &mut cfg.specs[0].model {
             online_polars::ModelKind::EwRidge { gram_threads, .. } => *gram_threads = t,
             other => panic!("the config is an ewridge: {other:?}"),
@@ -405,11 +406,11 @@ fn resume_under_another_gram_threads_continues_the_stream() {
     let state = tmp("threads.state");
     let out_a = tmp("threads-out-a.parquet");
     let mut cfg_a = config(&half_a, &out_a, 100_000);
-    threads(&mut cfg_a, Some(8));
+    threads(&mut cfg_a, Some(CountOrAuto::Count(8)));
     cfg_a.save_state = Some(state.clone());
     run_config(&cfg_a, |_| Ok(())).unwrap();
     let out_b = tmp("threads-out-b.parquet");
-    for t in [Some(2), None] {
+    for t in [Some(CountOrAuto::Count(2)), Some(CountOrAuto::Auto), None] {
         let mut cfg_b = config(&half_b, &out_b, 100_000);
         threads(&mut cfg_b, t);
         cfg_b.load_state = Some(state.clone());

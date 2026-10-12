@@ -89,7 +89,7 @@ pub use online_core;
 /// The Rust Polars this crate is built against, which the command line's
 /// `--version` names.
 pub use polars::VERSION as POLARS_VERSION;
-pub use pool::{THREADS_VAR, pool, thread_pool_size};
+pub use pool::{THREADS_VAR, Threads, check_threads, pool, thread_pool_size, threads_refusal};
 pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::FeatureRows;
 pub use runner::{
@@ -99,11 +99,12 @@ pub use runner::{
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
-    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, DEPRECATED, DEPRECATED_IN, DEPRECATED_WORDS_IN,
-    DURATION_OR_UNIT_FREE_FIELDS, FloatOrList, INIT_WORDS, ModelKind, Num, RENAMED, RENAMED_VALUES,
-    RidgeScale, SessionGapSpec, ShardSpec, Spec, deprecation_notice, forward_deprecated,
-    forward_deprecated_in_models, forward_deprecated_with, name_renamed, spec_words_refusal,
-    word_deprecation_notice, word_refusal_body, words_body, words_refusal,
+    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, CountOrAuto, DEPRECATED, DEPRECATED_IN,
+    DEPRECATED_WORDS_IN, DURATION_OR_UNIT_FREE_FIELDS, FloatOrList, GramThreads, INIT_WORDS,
+    ModelKind, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec, Spec,
+    deprecation_notice, forward_deprecated, forward_deprecated_in_models, forward_deprecated_with,
+    name_renamed, spec_words_refusal, word_deprecation_notice, word_refusal_body, words_body,
+    words_refusal,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

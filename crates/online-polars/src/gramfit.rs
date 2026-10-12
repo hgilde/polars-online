@@ -1,5 +1,6 @@
 //! The offline Gram fits of [`online_core::gramfit`], many at once on the
-//! bank's pool (docs/PLAN.md tasks 226 and 227): what `polars_online.gram`'s
+//! bank's pool or the one `threads` names (docs/PLAN.md tasks 226, 227
+//! and 253): what `polars_online.gram`'s
 //! `lars_path`, `lars_paths`, `lasso_path` and `solve_subsets` run.
 //!
 //! A path reads only its active columns' rows of the correlation matrix,
@@ -44,14 +45,15 @@ pub struct GramPath {
 ///
 /// # Errors
 ///
-/// The pool's, when `POLARS_ONLINE_MAX_THREADS` is set wrong, and a
-/// weight that is not finite and above 0 on a column that varies.
+/// The pool's, when `POLARS_ONLINE_MAX_THREADS` is set wrong and
+/// `threads` is the process default, and a weight that is not finite and above 0 on a column that varies.
 pub fn lars_paths(
     grams: &[GramArrays<'_>],
     targets: &[Vec<usize>],
     cols: &FitColumns,
     weights: &[f64],
     limits: LarsLimits,
+    threads: &crate::Threads,
 ) -> PolarsResult<Vec<Vec<GramPath>>> {
     let n = cols.slots.len();
     let weights: Vec<f64> = if weights.is_empty() {
@@ -62,7 +64,7 @@ pub fn lars_paths(
     if weights.len() != n {
         polars_bail!(ComputeError: "{} penalty weights for {} features", weights.len(), n);
     }
-    crate::pool()?.install(|| {
+    threads.install(|| {
         grams
             .par_iter()
             .zip(targets)
@@ -191,7 +193,8 @@ pub enum SubsetOut {
 ///
 /// # Errors
 ///
-/// The pool's, when `POLARS_ONLINE_MAX_THREADS` is set wrong, and a path's
+/// The pool's, when `POLARS_ONLINE_MAX_THREADS` is set wrong and
+/// `threads` is the process default, and a path's
 /// weight that is not finite and above 0 on a column that varies.
 pub fn fit_subsets(
     grams: &[GramArrays<'_>],
@@ -200,6 +203,7 @@ pub fn fit_subsets(
     cols: &FitColumns,
     fit: &SubsetFit,
     pooling: &Pooling,
+    threads: &crate::Threads,
 ) -> PolarsResult<Vec<Vec<Vec<SubsetOut>>>> {
     let k = grams.first().map_or(0, |g| g.k);
     // The merged Gram's columns: the intercept first, then the slots.
@@ -271,7 +275,7 @@ pub fn fit_subsets(
             }
         }
     };
-    let by_subset: Vec<Vec<Vec<SubsetOut>>> = crate::pool()?.install(|| {
+    let by_subset: Vec<Vec<Vec<SubsetOut>>> = threads.install(|| {
         subsets
             .par_iter()
             .map(|subset| {

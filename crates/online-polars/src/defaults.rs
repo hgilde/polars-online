@@ -26,7 +26,7 @@ use crate::stream::{AnyModel, Stream, marginal_shards};
 ///   and pre-averaging window, `marginal`'s bin budget -- where it has one;
 /// - `stream`: what the stream applies around the model -- the warm-up and
 ///   readiness gates, the diagnostics' settings, the window budget, and
-///   `marginal`'s shards;
+///   `marginal`'s shards, and `ewridge`'s and `ew_cov`'s `gram_threads`;
 /// - `clock`: the clock policy.
 ///
 /// A non-finite number is written as `"inf"`, `"-inf"` or `"nan"`, the
@@ -190,6 +190,20 @@ fn stream_settings(spec: &Spec, stream: &Stream, model: &AnyModel) -> Value {
     );
     if matches!(spec.model, ModelKind::Marginal { .. }) {
         s.insert("shards".into(), json!(marginal_shards(spec, model)));
+    }
+    // The share of the pool a spec's Gram update may take (task 253): one
+    // unless a count or `"auto"`, the whole pool, is given. The pool's own
+    // size is the bank's `threads`, not the spec's, so it is not shown.
+    if matches!(
+        spec.model,
+        ModelKind::EwRidge { .. } | ModelKind::EwCov { .. }
+    ) {
+        let shown = match spec.model.gram_threads_given() {
+            Some(crate::spec::CountOrAuto::Count(n)) => json!(n),
+            Some(crate::spec::CountOrAuto::Auto) => json!("auto"),
+            None => json!(1),
+        };
+        s.insert("gram_threads".into(), shown);
     }
     Value::Object(s)
 }

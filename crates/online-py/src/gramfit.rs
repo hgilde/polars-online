@@ -1,6 +1,7 @@
 //! `polars_online.gram`'s fits in Rust (docs/PLAN.md tasks 226 and 227):
 //! the arrays come in through the buffer protocol, are read once into Rust
-//! memory, and the fits run on the bank's pool with the GIL released.
+//! memory, and the fits run on the bank's pool, or the one `threads` names,
+//! with the GIL released.
 
 use online_polars::gramfit::{
     FitColumns, GramPath, Pooling, SubsetFit, SubsetOut, cd_path_of, fit_subsets, lars_paths,
@@ -283,7 +284,7 @@ fn value_err(e: impl std::fmt::Display) -> PyErr {
 /// (`online_core::gramfit::lars_lasso`), on the bank's pool: one list per
 /// Gram, one path per target in `targets[g]`.
 #[pyfunction]
-#[pyo3(signature = (grams, targets, slots, icept, weights, max_steps, max_active))]
+#[pyo3(signature = (grams, targets, slots, icept, weights, max_steps, max_active, threads=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_lars_paths<'py>(
     py: Python<'py>,
@@ -294,7 +295,9 @@ pub(crate) fn gram_lars_paths<'py>(
     weights: Vec<f64>,
     max_steps: Option<usize>,
     max_active: Option<usize>,
+    threads: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Vec<Vec<PathOut<'py>>>> {
+    let threads = crate::threads_pool(threads)?;
     let owned = read_all(py, &grams)?;
     if targets.len() != owned.len() {
         return Err(PyValueError::new_err(format!(
@@ -312,7 +315,7 @@ pub(crate) fn gram_lars_paths<'py>(
     let paths = py
         .detach(|| {
             let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
-            lars_paths(&views, &targets, &cols, &weights, limits)
+            lars_paths(&views, &targets, &cols, &weights, limits, &threads)
         })
         .map_err(value_err)?;
     Ok(paths
@@ -369,7 +372,9 @@ pub(crate) fn gram_cd_path(
     }))
 }
 
-/// The subsets' merged Grams, checked and fitted on the pool.
+/// The subsets' merged Grams, checked and fitted on the pool `threads`
+/// names.
+#[allow(clippy::too_many_arguments)]
 fn subsets_fit(
     py: Python<'_>,
     grams: &[GramIn<'_>],
@@ -378,6 +383,7 @@ fn subsets_fit(
     cols: FitColumns,
     fit: SubsetFit,
     pooling: Pooling,
+    threads: &online_polars::Threads,
 ) -> PyResult<Vec<Vec<Vec<SubsetOut>>>> {
     let owned = read_all(py, grams)?;
     let all: Vec<Vec<usize>> = vec![targets.clone(); owned.len()];
@@ -402,7 +408,7 @@ fn subsets_fit(
     }
     py.detach(|| {
         let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
-        fit_subsets(&views, subsets, &targets, &cols, &fit, &pooling)
+        fit_subsets(&views, subsets, &targets, &cols, &fit, &pooling, threads)
     })
     .map_err(value_err)
 }
@@ -413,7 +419,7 @@ fn subsets_fit(
 /// list per draw (one without signs), one list per subset in it, one fit
 /// per target.
 #[pyfunction]
-#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize, within, signs))]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, ridge, standardize, within, signs, threads=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_ridge_subsets<'py>(
     py: Python<'py>,
@@ -426,7 +432,9 @@ pub(crate) fn gram_ridge_subsets<'py>(
     standardize: bool,
     within: bool,
     signs: Vec<Vec<f64>>,
+    threads: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Vec<Vec<Vec<RidgeOut<'py>>>>> {
+    let threads = crate::threads_pool(threads)?;
     let fit = SubsetFit::Ridge { ridge, standardize };
     let out = subsets_fit(
         py,
@@ -436,6 +444,7 @@ pub(crate) fn gram_ridge_subsets<'py>(
         FitColumns { slots, icept },
         fit,
         pooling(within, signs),
+        &threads,
     )?;
     Ok(out
         .into_iter()
@@ -467,7 +476,7 @@ pub(crate) fn gram_ridge_subsets<'py>(
 /// on it, by least angle regression: one list per draw (one without
 /// signs), one list per subset in it, one path per target.
 #[pyfunction]
-#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active, within, signs))]
+#[pyo3(signature = (grams, subsets, targets, slots, icept, weights, max_steps, max_active, within, signs, threads=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gram_path_subsets<'py>(
     py: Python<'py>,
@@ -481,7 +490,9 @@ pub(crate) fn gram_path_subsets<'py>(
     max_active: Option<usize>,
     within: bool,
     signs: Vec<Vec<f64>>,
+    threads: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Vec<Vec<Vec<PathOut<'py>>>>> {
+    let threads = crate::threads_pool(threads)?;
     if !weights.is_empty() && weights.len() != slots.len() {
         return Err(PyValueError::new_err(format!(
             "{} penalty weights for {} features",
@@ -504,6 +515,7 @@ pub(crate) fn gram_path_subsets<'py>(
         FitColumns { slots, icept },
         fit,
         pooling(within, signs),
+        &threads,
     )?;
     Ok(out
         .into_iter()

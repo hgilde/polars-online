@@ -48,7 +48,7 @@ import polars as pl
 from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
-from polars_online._bank import ModelBank, _refuse_uint128
+from polars_online._bank import ModelBank, _check_threads, _refuse_uint128
 from polars_online._spec import _renamed_keywords, coef_fields, output_index, target_columns
 from polars_online._warnings import PolarsOnlineWarning
 
@@ -75,7 +75,10 @@ _SCALAR_COLUMN_KEYS = ("clock", "session", "weight", "group")
 
 
 def _bank(
-    specs: Specs | None, load_state: State | ModelBank | None, what: str
+    specs: Specs | None,
+    load_state: State | ModelBank | None,
+    what: str,
+    threads: int | None = None,
 ) -> Callable[[], ModelBank]:
     """How to make the bank a plan starts from, from the specs, a state file
     or a bank.
@@ -88,17 +91,22 @@ def _bank(
     second run's load against the first run's write. A bank is snapshotted
     the same way, so the plan learns on a copy and the caller's bank does not
     move (task 244, M-25: ``predict(bank=)`` already took a bank).
+
+    ``threads`` is the bank's pool (task 253); a copied bank keeps its own
+    count unless one is given.
     """
+    threads = _check_threads(threads)
     if isinstance(load_state, ModelBank):
         state = load_state.save_bytes()
-        return lambda: ModelBank.load_bytes(state, specs)
+        count = load_state.threads if threads is None else threads
+        return lambda: ModelBank.load_bytes(state, specs, threads=count)
     if load_state is not None:
         state = _read_state(load_state)
-        return lambda: ModelBank.load_bytes(state, specs)
+        return lambda: ModelBank.load_bytes(state, specs, threads=threads)
     if specs is None:
         msg = f"online.{what} needs specs, or load_state= to take them from a saved bank"
         raise ValueError(msg)
-    return lambda: ModelBank(specs)
+    return lambda: ModelBank(specs, threads=threads)
 
 
 def _check_chunk_size(chunk_size: int | None) -> None:
@@ -990,11 +998,12 @@ def _fit_predict_lazy(
     save_state: State | None,
     chunk_size: int | None,
     closed_groups: State | None = None,
+    threads: int | None = None,
 ) -> pl.LazyFrame:
     specs = list(specs) if specs is not None else None
     return _source(
         lf,
-        _bank(specs, load_state, "fit_predict"),
+        _bank(specs, load_state, "fit_predict", threads),
         "fit_predict",
         chunk_size,
         save_state,
@@ -1003,10 +1012,12 @@ def _fit_predict_lazy(
 
 
 def _predict_lazy(
-    lf: pl.LazyFrame, bank: ModelBank | State, chunk_size: int | None
+    lf: pl.LazyFrame, bank: ModelBank | State, chunk_size: int | None, threads: int | None = None
 ) -> pl.LazyFrame:
-    if not isinstance(bank, ModelBank):
-        return _source(lf, _bank(None, bank, "predict"), "predict", chunk_size)
+    if not isinstance(bank, ModelBank) or _check_threads(threads) is not None:
+        # A bank given with a count of its own is scored as a copy on that
+        # pool: the caller's bank keeps its pool.
+        return _source(lf, _bank(None, bank, "predict", threads), "predict", chunk_size)
 
     def own() -> ModelBank:
         # `predict` leaves a bank as it was, so the caller's own is safe to
@@ -1132,6 +1143,7 @@ class LazyFrameOnlineNamespace:
         save_state: State | None = None,
         closed_groups: State | None = None,
         chunk_size: int | None = None,
+        threads: int | None = None,
     ) -> pl.LazyFrame:
         """The plan's rows plus one struct column per spec, learning as it goes.
 
@@ -1177,6 +1189,12 @@ class LazyFrameOnlineNamespace:
         tied together, the ``polars-online`` CLI saves only after its output is committed.
         A dated ``save_state`` per batch of data keeps a rerun from learning it twice.
 
+        ``threads`` is the bank's pool, as :class:`~polars_online.ModelBank`
+        takes it: ``None`` is the process's pool, an integer a pool of that
+        many threads. A bank given as ``load_state`` keeps its own count
+        unless one is given. The output is the same at any count. Polars'
+        own pool, which reads the input, is ``POLARS_MAX_THREADS``'s.
+
         The plan runs through polars' streaming engine, and an online model learns
         in row order, so the order the engine delivers is part of the result. A
         ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
@@ -1200,6 +1218,8 @@ class LazyFrameOnlineNamespace:
 
         - ``ValueError`` for neither ``specs`` nor ``load_state``, for
           ``chunk_size`` below 1, and for a spec the bank refuses;
+        - ``TypeError`` for a ``threads`` that is not an integer, and
+          ``ValueError`` for one below 1;
         - ``ValueError`` for a spec whose column the plan has not got, is not
           numeric, or shares the spec's name (the checks of :class:`~polars_online.ModelBank`
           and :meth:`~polars_online.ModelBank.fit_predict`, with the same messages), and for a
@@ -1220,10 +1240,18 @@ class LazyFrameOnlineNamespace:
         the run ends is reported the same way, as the ``OSError`` with the path,
         wrapped under 1.x.
         """
-        return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_size, closed_groups)
+        return _fit_predict_lazy(
+            self._lf, specs, load_state, save_state, chunk_size, closed_groups, threads
+        )
 
     @_renamed_keywords
-    def predict(self, bank: ModelBank | State, *, chunk_size: int | None = None) -> pl.LazyFrame:
+    def predict(
+        self,
+        bank: ModelBank | State,
+        *,
+        chunk_size: int | None = None,
+        threads: int | None = None,
+    ) -> pl.LazyFrame:
         """The plan's rows scored against ``bank`` as it stands, learning nothing.
 
         Each row gets :meth:`~polars_online.ModelBank.predict`'s struct: what the bank would
@@ -1234,7 +1262,10 @@ class LazyFrameOnlineNamespace:
         saved state, read when the plan is built. Build the plan again to
         pick up a newer file. Target columns are optional, as for
         :meth:`~polars_online.ModelBank.predict`. ``chunk_size`` is the read chunk, 100,000
-        rows by default.
+        rows by default. ``threads`` scores on a pool of that many threads, as
+        :class:`~polars_online.ModelBank` takes it; a bank given with one is
+        scored as a copy, so its own pool stays its own. Without it a bank
+        scores on its own pool and a path on the process's.
 
         .. code-block:: python
 
@@ -1245,7 +1276,9 @@ class LazyFrameOnlineNamespace:
         - ``FileNotFoundError`` for a path that is not there;
         - ``ValueError`` for a file that is not a bank this build loads
           (:meth:`~polars_online.ModelBank.load`);
-        - ``TypeError`` for a ``bank`` that is neither a bank nor a path;
+        - ``TypeError`` for a ``bank`` that is neither a bank nor a path, and
+          ``TypeError`` or ``ValueError`` for a ``threads``
+          :class:`~polars_online.ModelBank` refuses;
         - ``ValueError`` for ``chunk_size`` below 1, for a column the
           bank reads that the plan has not got or that is not numeric (a
           missing target is fine), and for a ``UInt128`` column, which no
@@ -1257,7 +1290,7 @@ class LazyFrameOnlineNamespace:
         ``ValueError`` itself under 2.0, the wrapping being Polars' to
         change.
         """
-        return _predict_lazy(self._lf, bank, chunk_size)
+        return _predict_lazy(self._lf, bank, chunk_size, threads)
 
     def unnest(
         self, specs: Specs | ModelBank | State, *, separator: str | None = None
@@ -1376,6 +1409,7 @@ class DataFrameOnlineNamespace:
         save_state: State | None = None,
         closed_groups: State | None = None,
         chunk_size: int | None = None,
+        threads: int | None = None,
     ) -> pl.DataFrame:
         """``ModelBank(specs).fit_predict(df)`` in one call: the frame plus one struct
         column per spec, from a bank that is then dropped.
@@ -1391,7 +1425,8 @@ class DataFrameOnlineNamespace:
         ``chunk_size`` feeds the frame that many rows at a time, as the plan form
         reads its input. The numbers are the same either way. Only ``coef``'s
         reporting moves: it is written on each chunk's last row of each group.
-        Without it the frame is one chunk.
+        Without it the frame is one chunk. ``threads`` is the bank's pool, as
+        :meth:`LazyFrameOnlineNamespace.fit_predict` takes it.
 
         .. code-block:: python
 
@@ -1410,7 +1445,7 @@ class DataFrameOnlineNamespace:
         """
         _check_chunk_size(chunk_size)
         save_path = _save_path(save_state)
-        bank = _bank(specs, load_state, "fit_predict")()
+        bank = _bank(specs, load_state, "fit_predict", threads)()
         closed_path = _closed_path(closed_groups, bank.specs)
         out = _in_chunks(self._df, chunk_size, bank._fit_predict_from)
         if closed_path is not None:
@@ -1422,7 +1457,13 @@ class DataFrameOnlineNamespace:
             bank.save(save_path)
         return out
 
-    def predict(self, bank: ModelBank | State, *, chunk_size: int | None = None) -> pl.DataFrame:
+    def predict(
+        self,
+        bank: ModelBank | State,
+        *,
+        chunk_size: int | None = None,
+        threads: int | None = None,
+    ) -> pl.DataFrame:
         """:meth:`~polars_online.ModelBank.predict` over the frame: scored against
         ``bank``, a :class:`~polars_online.ModelBank` or the path of a saved one, as it
         stands, which does not move.
@@ -1430,15 +1471,19 @@ class DataFrameOnlineNamespace:
         ``chunk_size`` scores the frame that many rows at a time, as the plan form
         reads its input. The numbers are the same either way, and ``coef`` is
         filled on each chunk's last accepted row. Without it the frame is one
-        chunk.
+        chunk. ``threads`` is as for :meth:`LazyFrameOnlineNamespace.predict`.
 
         Raises what :meth:`~polars_online.ModelBank.load` (for a path) and
         :meth:`~polars_online.ModelBank.predict` raise, ``TypeError`` for a ``bank``
         that is neither, and ``ValueError`` for ``chunk_size`` below 1.
         """
         _check_chunk_size(chunk_size)
+        threads = _check_threads(threads)
         if not isinstance(bank, ModelBank):
-            bank = ModelBank.load(os.fspath(bank))
+            bank = ModelBank.load(os.fspath(bank), threads=threads)
+        elif threads is not None:
+            # Scored as a copy on that pool: the caller's bank keeps its own.
+            bank = ModelBank.load_bytes(bank.save_bytes(), threads=threads)
         return _in_chunks(self._df, chunk_size, bank._predict_from)
 
     def unnest(
@@ -1503,6 +1548,7 @@ def fit_predict(
     save_state: State | None = None,
     closed_groups: State | None = None,
     chunk_size: int | None = None,
+    threads: int | None = None,
 ) -> pl.LazyFrame: ...
 
 
@@ -1515,6 +1561,7 @@ def fit_predict(
     save_state: State | None = None,
     closed_groups: State | None = None,
     chunk_size: int | None = None,
+    threads: int | None = None,
 ) -> pl.DataFrame: ...
 
 
@@ -1527,6 +1574,7 @@ def fit_predict(
     save_state: State | None = None,
     closed_groups: State | None = None,
     chunk_size: int | None = None,
+    threads: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.fit_predict(...)`` as a plain function, so that a type checker
     can see it.
@@ -1537,11 +1585,14 @@ def fit_predict(
     (:meth:`~polars_online._frame.DataFrameOnlineNamespace.fit_predict`).
     ``load_state`` starts the bank from a saved one or a copy of a bank, and ``save_state`` writes
     where it ends up. ``chunk_size`` is how many rows the bank is fed at a time,
-    from a plan or a frame alike. ``TypeError`` for a ``frame`` that is
-    neither; otherwise raises what the namespace method does.
+    from a plan or a frame alike, and ``threads`` how many threads it runs
+    on (:class:`~polars_online.ModelBank`). ``TypeError`` for a ``frame``
+    that is neither; otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_size, closed_groups)
+        return _fit_predict_lazy(
+            frame, specs, load_state, save_state, chunk_size, closed_groups, threads
+        )
     _check_frame(frame, "fit_predict")
     return DataFrameOnlineNamespace(frame).fit_predict(
         specs,
@@ -1549,24 +1600,37 @@ def fit_predict(
         save_state=save_state,
         closed_groups=closed_groups,
         chunk_size=chunk_size,
+        threads=threads,
     )
 
 
 @overload
 def predict(
-    frame: pl.LazyFrame, bank: ModelBank | State, *, chunk_size: int | None = None
+    frame: pl.LazyFrame,
+    bank: ModelBank | State,
+    *,
+    chunk_size: int | None = None,
+    threads: int | None = None,
 ) -> pl.LazyFrame: ...
 
 
 @overload
 def predict(
-    frame: pl.DataFrame, bank: ModelBank | State, *, chunk_size: int | None = None
+    frame: pl.DataFrame,
+    bank: ModelBank | State,
+    *,
+    chunk_size: int | None = None,
+    threads: int | None = None,
 ) -> pl.DataFrame: ...
 
 
 @_renamed_keywords
 def predict(
-    frame: pl.LazyFrame | pl.DataFrame, bank: ModelBank | State, *, chunk_size: int | None = None
+    frame: pl.LazyFrame | pl.DataFrame,
+    bank: ModelBank | State,
+    *,
+    chunk_size: int | None = None,
+    threads: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.predict(bank)`` as a plain function, so that a type checker can
     see it.
@@ -1575,14 +1639,15 @@ def predict(
     a ``LazyFrame`` (:meth:`~polars_online._frame.LazyFrameOnlineNamespace.predict`), a
     frame from a ``DataFrame``
     (:meth:`~polars_online._frame.DataFrameOnlineNamespace.predict`). ``chunk_size`` is how
-    many rows are scored at a time, from a plan or a frame alike.
-    ``TypeError`` for a ``frame`` that is neither; otherwise raises what the
-    namespace method does.
+    many rows are scored at a time, from a plan or a frame alike, and
+    ``threads`` the pool, as the namespace method takes it. ``TypeError``
+    for a ``frame`` that is neither; otherwise raises what the namespace
+    method does.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _predict_lazy(frame, bank, chunk_size)
+        return _predict_lazy(frame, bank, chunk_size, threads)
     _check_frame(frame, "predict")
-    return DataFrameOnlineNamespace(frame).predict(bank, chunk_size=chunk_size)
+    return DataFrameOnlineNamespace(frame).predict(bank, chunk_size=chunk_size, threads=threads)
 
 
 @overload

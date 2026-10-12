@@ -90,7 +90,7 @@ from polars_online import (
     spec,
     stream,
 )
-from polars_online._bank import ModelBank
+from polars_online._bank import ModelBank, thread_pool_size
 from polars_online._errors import ColumnNotFoundError
 from polars_online._frame import (
     ConsumedSourceWarning,
@@ -104,7 +104,6 @@ from polars_online._polars_online import (
     ArrowStruct,
     native_version,
     schema_version,
-    thread_pool_size,
 )
 from polars_online._spec import FormulaTarget, Target, target
 from polars_online._warnings import (

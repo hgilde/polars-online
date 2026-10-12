@@ -112,6 +112,7 @@ fn config(input: &Path, output: &Path) -> RunConfig {
         input_format: None,
         output_format: None,
         chunk_size: 64,
+        threads: None,
         load_state: None,
         skip_learned: false,
         save_state: None,

@@ -887,7 +887,7 @@ def ewridge(
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     gram_block_rows: int | None = None,
-    gram_threads: int | None = None,
+    gram_threads: int | Literal["auto"] | None = None,
     target_gaps: Literal["own_rows", "pairwise"] = "own_rows",
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
@@ -1045,16 +1045,25 @@ def ewridge(
     ``gram_threads``
         Run the update of the ``k x k`` matrix on up to that many threads: the
         block's matrix product under ``gram_block_rows``, and each row's
-        rank-one update without it. Default 1. The output is the same to the
-        bit at every count. Each entry of the matrix is still summed by one
-        thread in one order, because the product is cut into pieces by ``k``
-        alone, never by the count. The threads come from the pool the bank runs
-        its groups on (``POLARS_ONLINE_MAX_THREADS``). So a bank whose groups
-        already keep every core busy gains little, and loses nothing. Measured
-        on 14 cores with ``gram_block_rows=256``: at 2,000 features a bank
-        learned 3.9 times as fast on eight threads, and on eight threads the
-        product alone ran 6 to 7 times as fast from 2,000 to 10,000 features.
-        Without a block the update is bound by memory and gains 2 to 3 times.
+        rank-one update without it. A whole number of at least 1, or
+        ``"auto"`` for every thread of the bank's pool. Default 1. The
+        threads come from the bank's pool, which the bank's ``threads`` sizes
+        (``POLARS_ONLINE_MAX_THREADS`` when it is ``None``). This option caps
+        how much of that pool one spec's matrix work may take, so a count
+        above the pool's size runs on the pool's size, and it never adds a
+        thread. The output is the same to the bit at every count. Each entry
+        of the matrix is still summed by one thread in one order, because the
+        product is cut into pieces by ``k`` alone, never by the count.
+
+        It pays where the pool has idle threads, as on a bank of fewer groups
+        than threads. Measured on 14 cores against a count of 1, one group at
+        2,000 features learned 3.0 times as fast under ``"auto"``, and 3.7
+        times with ``gram_block_rows=256``. Four groups at 800 features
+        learned 1.6 times as fast. Fourteen groups at 800 were even. With 28
+        groups at 800, twice the pool, ``"auto"`` was 9 to 11% slower: every
+        thread already had a group to run, and splitting each row's update
+        only added the cost of handing it out. That is why the default stays
+        at 1.
         Up to 256 columns (the features and the intercept) the product is one
         piece, and below 725 a row's update stays on one thread, so the option
         changes nothing there. Being the same to the bit at every count, it is
@@ -2686,7 +2695,7 @@ def ew_cov(
     pca_every: float | Duration | None = None,
     max_rows_between_pcas: int | None = None,
     lags: list[int] | None = None,
-    gram_threads: int | None = None,
+    gram_threads: int | Literal["auto"] | None = None,
     window_size: float | Duration | None = None,
     closed: Literal["right", "both"] = "right",
     snapshot_every: float | Duration | None = None,
@@ -2856,7 +2865,9 @@ def ew_cov(
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``
         Run the per-row update of the ``k x k`` co-moments on up to that many
-        threads, as :func:`ewridge`'s ``gram_threads`` does. Default 1. The
+        threads of the bank's pool, or on all of them with ``"auto"``, as
+        :func:`ewridge`'s ``gram_threads`` does: a cap on the pool the
+        bank's ``threads`` sizes, never more threads. Default 1. The
         output is the same to the bit at every count. The update is bound by
         memory: at 2,000 features a spec that wrote no statistic learned 2.5
         times as fast on eight threads and 3.1 times on fourteen
@@ -4705,7 +4716,10 @@ def marginal(
         so that row's peak is their sum.
     ``shards``
         Split the pair work across the bank's threads: a count of ranges of
-        features, or ``"auto"`` for as many as the width keeps busy. The pool
+        features, or ``"auto"`` for as many as the width keeps busy. The
+        threads are the bank's pool, which the bank's ``threads`` sizes;
+        ``shards`` cuts one spec's work so that more of the pool can take
+        it, and never adds a thread. The pool
         runs a bank's groups and specs in parallel already, so one wide spec on
         one group is one thread's work while the rest wait. With ``shards`` its
         pairs are cut into ranges of features, and each range runs on a thread

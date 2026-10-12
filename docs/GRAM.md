@@ -121,7 +121,7 @@ These are the words of the library that the page uses:
 | `half_life` | each row's weight halves every `half_life` of the clock. `float("inf")` weighs every row alike, so a Gram holds plain least squares' sums |
 | `weight_sum`, `n_kish` | the weight behind a Gram, and `weight_sum² / Σw²`, the number of equally weighted rows that weight is worth. Both are the row count when every row weighs 1 |
 | chunk | the rows a bank reads from a query at one time |
-| thread pool | the threads a bank runs its work on: `POLARS_ONLINE_MAX_THREADS` of them, one per core by default |
+| thread pool | the threads a bank runs its work on: the bank's `threads`, or, without it, `POLARS_ONLINE_MAX_THREADS` of them, one per core by default |
 | load average | the number of processes running or waiting to run, averaged over a minute. The recipes ran on 14 cores shared with other users' work |
 | active set, knot | on a lasso path, the columns whose coefficient is not 0, and a penalty at which that set changes |
 | half | 20 of the 40 weeks, drawn at random, and their pooled Gram |
@@ -1627,10 +1627,14 @@ coefficient's bits do not follow the size of the pool either
 ([§38](PERFORMANCE.md#38-a-solves-bits-whatever-the-pool-2026-10-09)).
 
 **`gram_threads` takes its threads from the pool the bank runs its
-groups on.** `POLARS_ONLINE_MAX_THREADS` sizes that pool, one thread per
-core by default. A bank whose groups already keep every core busy gains
-nothing from the option, and loses nothing. Fourteen groups of 1,000
-columns ran as fast with eight threads each as with one. Run instead on
+groups on.** The bank's `threads` sizes that pool, or, without it,
+`POLARS_ONLINE_MAX_THREADS`, one thread per core by default; `gram_threads`
+caps how much of it one spec's update may use, and `"auto"` lets it use all
+of it. A bank whose groups already keep every core busy gains nothing from
+the option. Fourteen groups of 1,000 columns ran as fast with eight threads
+each as with one, and 28 groups of 800 columns, twice the pool, ran 9 to
+11% slower under `"auto"`, since each row's split only added the cost of
+handing it out; that is why the default is 1. Run instead on
 a separate pool of eight threads for the option, they took 28% longer
 (§37). A bank of weekly blocks fed a stream in time order often reads a
 chunk that holds one week's rows, and so has one group to run. There

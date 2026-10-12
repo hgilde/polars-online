@@ -261,3 +261,68 @@ fn a_chunk_size_of_0_is_refused_as_python_refuses_it() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `--threads` and the TOML's `threads` (task 253): the flag overrides the
+/// key, as every flag does; 0 is refused in the words Python uses, from
+/// either; a run on a pool of its own writes the frame the default pool
+/// writes; and given a count, the run never reads
+/// `POLARS_ONLINE_MAX_THREADS`, which still sizes, and so refuses, the
+/// default pool.
+#[test]
+fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
+    let dir = fresh_dir("threads");
+    let input = dir.join("in.parquet");
+    write_input(&input, 300);
+    for (extra, flag) in [("threads = 0", &[][..]), ("", &["--threads", "0"][..])] {
+        let cfg = job(&dir, text(&input), text(&dir.join("o.parquet")), extra);
+        let (code, _, err) = run(cli().args(["--config", text(&cfg)]).args(flag));
+        assert_eq!(code, Some(1), "{err}");
+        assert!(
+            err.contains("threads=0 is not a number of threads"),
+            "{extra} {flag:?}: {err}"
+        );
+    }
+    let cfg = job(
+        &dir,
+        text(&input),
+        text(&dir.join("o.parquet")),
+        "threads = 3",
+    );
+    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.contains("threads: 3"), "{out}");
+    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run", "--threads", "2"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        out.contains("threads: 2") && !out.contains("threads: 3"),
+        "{out}"
+    );
+
+    let read = |p: &Path| {
+        ParquetReader::new(std::fs::File::open(p).unwrap())
+            .finish()
+            .unwrap()
+    };
+    let default_out = dir.join("default.parquet");
+    let cfg = job(&dir, text(&input), text(&default_out), "");
+    let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
+    assert_eq!(code, Some(0), "{err}");
+    for n in ["1", "2", "8"] {
+        let out = dir.join(format!("t{n}.parquet"));
+        let cfg = job(&dir, text(&input), text(&out), "");
+        let (code, _, err) = run(cli()
+            .args(["--config", text(&cfg), "--threads", n])
+            .env("POLARS_ONLINE_MAX_THREADS", "eight"));
+        assert_eq!(code, Some(0), "--threads {n}: {err}");
+        assert!(
+            read(&out).equals_missing(&read(&default_out)),
+            "--threads {n}"
+        );
+    }
+    let (code, _, err) = run(cli()
+        .args(["--config", text(&cfg)])
+        .env("POLARS_ONLINE_MAX_THREADS", "eight"));
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("POLARS_ONLINE_MAX_THREADS=\"eight\""), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

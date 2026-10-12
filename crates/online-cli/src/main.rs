@@ -133,6 +133,13 @@ struct Cli {
     #[arg(long)]
     chunk_size: Option<usize>,
 
+    /// Threads the bank runs on: a pool of N. Overrides the config's
+    /// `threads`; with neither, the process default
+    /// (`POLARS_ONLINE_MAX_THREADS`, else one thread per core). The output is
+    /// the same at any count.
+    #[arg(long, value_name = "N")]
+    threads: Option<usize>,
+
     /// The old name of `--chunk-size`, refused naming it.
     #[arg(long = "chunk-rows", hide = true, value_name = "N")]
     chunk_rows: Option<String>,
@@ -389,6 +396,9 @@ fn run() -> Result<(), String> {
     if let Some(n) = cli.chunk_size {
         cfg.chunk_size = n;
     }
+    if let Some(n) = cli.threads {
+        cfg.threads = Some(n);
+    }
     if let Some(p) = cli.load_state {
         cfg.load_state = Some(p);
     }
@@ -471,6 +481,9 @@ fn run() -> Result<(), String> {
             println!("closed groups: {} ({})", p.display(), f.name());
         }
         println!("chunk_size: {}", cfg.chunk_size);
+        if let Some(n) = cfg.threads {
+            println!("threads: {n}");
+        }
         if cfg.predict {
             println!("mode: predict (score against the loaded state, learn nothing)");
         }

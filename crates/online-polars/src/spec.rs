@@ -532,16 +532,27 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
     }
 }
 
-/// How many ranges of features a `marginal` splits its pair work into
-/// (docs/PLAN.md task 126): a count of at least one, or `"auto"`, which the
-/// bank sizes from the model's width and its own pool. A setting, not state.
+/// A count of at least one, or `"auto"`, which the bank sizes from its own
+/// pool: what `marginal`'s `shards` and `ewridge`'s and `ew_cov`'s
+/// `gram_threads` take. A setting, not state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShardSpec {
+pub enum CountOrAuto {
     Count(usize),
     Auto,
 }
 
-impl Serialize for ShardSpec {
+/// How many ranges of features a `marginal` splits its pair work into
+/// (docs/PLAN.md task 126): a count, or `"auto"`, sized from the model's
+/// width and the bank's pool.
+pub type ShardSpec = CountOrAuto;
+
+/// How many threads of the bank's pool a spec's `k x k` Gram update may run
+/// on (docs/PLAN.md tasks 225 and 253): a count, capped at the pool's size,
+/// or `"auto"`, the whole pool. Absent is one: a bank whose groups already
+/// fill the pool ran 9-11% slower under `"auto"` (task 253's measurement).
+pub type GramThreads = CountOrAuto;
+
+impl Serialize for CountOrAuto {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
             ShardSpec::Count(n) => s.serialize_u64(*n as u64),
@@ -552,14 +563,14 @@ impl Serialize for ShardSpec {
 
 /// A count or `"auto"`, each read by its own rule, so a wrong value is
 /// named as what it is.
-impl<'de> Deserialize<'de> for ShardSpec {
+impl<'de> Deserialize<'de> for CountOrAuto {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct V;
         impl serde::de::Visitor<'_> for V {
-            type Value = ShardSpec;
+            type Value = CountOrAuto;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a number of shards of at least 1, or \"auto\"")
+                f.write_str("a whole number of at least 1, or \"auto\"")
             }
 
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<ShardSpec, E> {
@@ -718,13 +729,14 @@ pub enum ModelKind {
         /// one. Chunk invariance holds either way.
         #[serde(default)]
         gram_block_rows: Option<usize>,
-        /// Threads the Gram's `k²` work runs on (docs/PLAN.md task 225):
-        /// a block's merge under `gram_block_rows`, the per-row update
-        /// otherwise. The same bits at every count; absent is one, and `0`
-        /// is refused. Skipped when absent, so only a spec that sets it
-        /// writes it.
+        /// Threads of the bank's pool the Gram's `k²` work may run on
+        /// (docs/PLAN.md tasks 225 and 253): a block's merge under
+        /// `gram_block_rows`, the per-row update otherwise. A count is
+        /// capped at the pool's size, `"auto"` is the whole pool, and absent
+        /// is one. The same bits at every count. Skipped when absent, so
+        /// only a spec that sets it writes it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        gram_threads: Option<usize>,
+        gram_threads: Option<GramThreads>,
         /// Which rows a target's fit is read from where the target is null
         /// on some (docs/PLAN.md task 81): `"own_rows"`, the default, fits it
         /// on exactly its rows; `"pairwise"` reads the Gram over every row
@@ -944,11 +956,12 @@ pub enum ModelKind {
         /// by adding `"lag_corr"` to `stats`.
         #[serde(default)]
         lags: Option<Vec<usize>>,
-        /// Threads the per-row update of the `k × k` co-moments runs on
-        /// (docs/PLAN.md task 225), as `EwRidge`'s: the same bits at every
-        /// count, absent is one, `0` is refused, skipped when absent.
+        /// Threads of the bank's pool the per-row update of the `k × k`
+        /// co-moments may run on (docs/PLAN.md tasks 225 and 253), as
+        /// `EwRidge`'s: the same bits at every count, absent is one,
+        /// skipped when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        gram_threads: Option<usize>,
+        gram_threads: Option<GramThreads>,
         /// Clock units of history the statistics see, with a **hard** cutoff:
         /// a row older than this contributes nothing, where the exponential
         /// weight alone would leave `0.5^(age/half_life)` of it. Inside the
@@ -1819,7 +1832,7 @@ impl ModelKind {
 
     /// `gram_threads` as the spec gives it, for the two kinds that take it
     /// (docs/PLAN.md task 225); `None` for every other kind.
-    pub fn gram_threads_given(&self) -> Option<usize> {
+    pub fn gram_threads_given(&self) -> Option<GramThreads> {
         match self {
             ModelKind::EwRidge { gram_threads, .. } | ModelKind::EwCov { gram_threads, .. } => {
                 *gram_threads
@@ -1828,11 +1841,18 @@ impl ModelKind {
         }
     }
 
-    /// The threads a model's Gram update runs on: the spec's
-    /// `gram_threads`, or one. Configuration, not state: the stream sets it
-    /// on every model it builds or restores.
+    /// The threads a model's Gram update may run on, as the model takes
+    /// it ([`online_core::OnlineModel::set_gram_threads`]): the spec's
+    /// count, [`usize::MAX`], every thread of the pool, for `"auto"`, and
+    /// one for none given. The model caps it at the pool it runs on.
+    /// Configuration, not state: the stream sets it on every model it
+    /// builds or restores.
     pub fn gram_threads(&self) -> usize {
-        self.gram_threads_given().unwrap_or(1)
+        match self.gram_threads_given() {
+            Some(CountOrAuto::Count(n)) => n,
+            Some(CountOrAuto::Auto) => usize::MAX,
+            None => 1,
+        }
     }
 
     /// A windowed kind's `window_size` and `window_budget`; `None` for a kind with
@@ -4046,11 +4066,13 @@ impl Spec {
                 ));
             }
         }
-        // A count of no threads (docs/PLAN.md task 225).
-        if self.model.gram_threads_given() == Some(0) {
+        // A count of no threads (docs/PLAN.md task 225): the reader refuses
+        // it, and a spec built in Rust is held to the same.
+        if self.model.gram_threads_given() == Some(CountOrAuto::Count(0)) {
             return Err(format!(
-                "spec {:?}: gram_threads must be >= 1 (the threads the Gram's update runs \
-                 on; leave it out for one), got 0",
+                "spec {:?}: gram_threads must be >= 1 (the threads of the bank's pool the \
+                 Gram's update may run on; leave it out for one, or give \"auto\" for the whole \
+                 pool), got 0",
                 self.name
             ));
         }

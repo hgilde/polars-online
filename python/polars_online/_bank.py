@@ -153,6 +153,54 @@ def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] 
         raise ValueError(msg)
 
 
+def _threads_refusal(shown: str) -> str:
+    """The text that refuses a ``threads`` argument: the Rust side's, word for
+    word (``online_polars::threads_refusal``), so either side says the same."""
+    return (
+        f"threads={shown} is not a number of threads: give an integer of 1 or more, or None "
+        "for the default pool (POLARS_ONLINE_MAX_THREADS, else one thread per core); 0 is not "
+        "one thread per core here, as it is in the variable"
+    )
+
+
+def _check_threads(threads: object) -> int | None:
+    """``threads`` checked where it is given, before anything is built: ``None``
+    or an integer of 1 or more. A bool, a float or another type is a
+    ``TypeError``, and 0 or a negative integer a ``ValueError``, each with
+    the message the native side raises for the same value."""
+    if threads is None:
+        return None
+    if isinstance(threads, bool) or not isinstance(threads, int):
+        raise TypeError(_threads_refusal(repr(threads)))
+    if threads < 1:
+        raise ValueError(_threads_refusal(repr(threads)))
+    return threads
+
+
+def thread_pool_size(*, threads: int | None = None) -> int:
+    """How many threads the pool a ``threads`` argument names has.
+
+    ``threads=None`` is the process's pool, the one a bank given no
+    ``threads`` runs on. ``POLARS_ONLINE_MAX_THREADS`` sizes it when it is
+    first used (unset or ``0``: one thread per core), and it is never
+    resized; this builds it if nothing has yet. An integer ``n`` is a pool of
+    ``n`` threads, which this checks and does not build, so asking costs no
+    thread. Polars' own pool, ``POLARS_MAX_THREADS``, is separate, and
+    ``pl.thread_pool_size()`` reports that one.
+
+    .. code-block:: python
+
+        po.thread_pool_size()            # the process's pool, one thread per core by default
+        po.thread_pool_size(threads=2)   # 2
+
+    ``ValueError`` when the variable is set to anything but a whole number
+    and ``threads`` is ``None``. A ``threads`` that is not an integer (a
+    bool included) is a ``TypeError``, and one below 1 a ``ValueError``,
+    as :class:`ModelBank` refuses them.
+    """
+    return int(_native.thread_pool_size(_check_threads(threads)))
+
+
 class ModelBank:
     """A set of models fitted together over the same rows, fed one chunk at a time.
 
@@ -183,6 +231,20 @@ class ModelBank:
     ``ValueError`` when there are none, when two share a name, or when a dict is
     not a spec (the message names the field).
 
+    ``threads`` is how many threads the bank's work runs on. ``None``, the
+    default, is the process's pool, sized by ``POLARS_ONLINE_MAX_THREADS``
+    when the first bank runs (unset or ``0``: one thread per core). An
+    integer ``n`` is a pool of ``n`` threads, which every bank given the same
+    ``n`` shares, and which goes away with the last of them. The output and
+    the saved state are the same to the bit at any count: each piece of
+    work is the same arithmetic whichever thread runs it, and the pieces are
+    cut by the data, not by the pool. The count is not saved with the state
+    (:meth:`load` takes its own). A spec's ``gram_threads`` and ``shards``
+    cap how much of the pool that spec's Gram work may use; they never add
+    threads to it. ``TypeError`` for a ``threads`` that is not an integer (a
+    bool included), and ``ValueError`` for one below 1: 0 is not "one per
+    core" here, ``None`` is.
+
     A bank is one ordered stream, so it is not for two threads at once: a method
     that finds the bank in use on another thread raises ``RuntimeError`` rather
     than interleave with it (:meth:`fit_predict` releases the GIL while it works).
@@ -190,11 +252,12 @@ class ModelBank:
     overlap. Only a ``fit_predict`` in flight refuses them, and they refuse it.
     """
 
-    def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
+    def __init__(self, specs: Iterable[dict[str, Any]], *, threads: int | None = None) -> None:
+        threads = _check_threads(threads)
         # A hand-written dict may put a window expression in `targets`, as
         # the builders take one; `_json` writes it as the builders would
         # (review R1 D8, R2 P5).
-        self._native = _native.ModelBank(_json(list(specs)))
+        self._native = _native.ModelBank(_json(list(specs)), threads)
         # The specs as the bank runs them -- filled, as a state file carries
         # them -- so they read the same before a round trip as after it. The
         # caller's own dicts were kept, and a dict the builders did not write
@@ -219,6 +282,12 @@ class ModelBank:
         raises ``AttributeError``, and mutating what it returns changes nothing.
         """
         return copy.deepcopy(self._specs)
+
+    @property
+    def threads(self) -> int | None:
+        """The ``threads`` count the bank was made or loaded with: ``None`` for
+        the process's pool. A pickled or deep-copied bank keeps it."""
+        return self._native.threads
 
     def __repr__(self) -> str:
         names = ", ".join(repr(s["name"]) for s in self._specs)
@@ -2332,6 +2401,8 @@ class ModelBank:
         cls,
         source: str | os.PathLike[str] | bytes | IO[bytes],
         specs: Iterable[dict[str, Any]] | None = None,
+        *,
+        threads: int | None = None,
     ) -> ModelBank:
         """A bank from a state :meth:`save` wrote, on this or any other OS.
 
@@ -2348,6 +2419,11 @@ class ModelBank:
             # refused if the file's specs differ from these
             bank = po.ModelBank.load("bank.state", specs=[spec])
             bank.fit_predict(today)                    # and the stream goes on
+
+        ``threads`` is the loaded bank's, as :class:`ModelBank` takes it. The
+        file does not carry a count, so a bank saved on eight threads and
+        loaded with none runs on the process's pool, and gives the same
+        numbers.
 
         Raises ``FileNotFoundError`` (or the ``OSError`` for what went wrong) when the
         file cannot be read, ``TypeError`` for a ``source`` that is none of the
@@ -2377,6 +2453,7 @@ class ModelBank:
         :class:`~polars_online.UnstableWarning` under
         ``POLARS_ONLINE_WARN_UNSTABLE=1``.
         """
+        threads = _check_threads(threads)
         if isinstance(source, (bytes, bytearray, memoryview)):
             data = bytes(source)
         elif isinstance(source, (str, os.PathLike)):
@@ -2397,25 +2474,35 @@ class ModelBank:
             )
             raise TypeError(msg)
         # One frame more than `load_bytes`: the keyword forwarding's.
-        return cls._load_bytes(data, specs, stacklevel=5)
+        return cls._load_bytes(data, specs, stacklevel=5, threads=threads)
 
     @classmethod
-    def load_bytes(cls, data: bytes, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
+    def load_bytes(
+        cls,
+        data: bytes,
+        specs: Iterable[dict[str, Any]] | None = None,
+        *,
+        threads: int | None = None,
+    ) -> ModelBank:
         """:meth:`load` from the bytes :meth:`save_bytes` gave, with the same ``specs``
-        check and the same ``ValueError`` for bytes that are not a bank this build
-        loads. :meth:`load` takes the bytes too.
+        check, ``threads`` and ``ValueError`` for bytes that are not a bank
+        this build loads. :meth:`load` takes the bytes too.
         """
-        return cls._load_bytes(data, specs, stacklevel=4)
+        return cls._load_bytes(data, specs, stacklevel=4, threads=_check_threads(threads))
 
     @classmethod
     def _load_bytes(
-        cls, data: bytes, specs: Iterable[dict[str, Any]] | None, stacklevel: int
+        cls,
+        data: bytes,
+        specs: Iterable[dict[str, Any]] | None,
+        stacklevel: int,
+        threads: int | None = None,
     ) -> ModelBank:
         """:meth:`load_bytes`, with the formula form's warning pointed
         ``stacklevel`` frames up from :meth:`_warn_formula_form`, so a public
         method's caller is named however many frames it adds."""
         specs_json = _json(list(specs)) if specs is not None else None
-        native = _native.ModelBank.load_bytes(data, specs_json)
+        native = _native.ModelBank.load_bytes(data, specs_json, threads)
         bank = cls._wrap(native)
         bank._warn_formula_form(stacklevel=stacklevel + 1)
         return bank

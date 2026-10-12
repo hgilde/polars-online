@@ -367,10 +367,17 @@ fn wrap_arrow(specs: &[Spec], arrays: Vec<StructArray>) -> Vec<PyArrowStruct> {
 
 #[pymethods]
 impl PyModelBank {
+    /// A bank of `specs_json`'s specs, on the pool `threads` names
+    /// (`threads_arg`).
     #[new]
-    fn new(specs_json: &str) -> PyResult<Self> {
+    #[pyo3(signature = (specs_json, threads=None))]
+    fn new(specs_json: &str, threads: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let threads = threads_arg(threads)?;
         let specs = parse_specs(specs_json)?;
-        let inner = Bank::new(specs).map_err(PyValueError::new_err)?;
+        let mut inner = Bank::new(specs).map_err(PyValueError::new_err)?;
+        inner
+            .set_threads(threads)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -508,11 +515,29 @@ impl PyModelBank {
     /// file itself is read on the Python side (`ModelBank.load`), so that a
     /// missing one is the `FileNotFoundError` `open` raises.
     #[staticmethod]
-    #[pyo3(signature = (bytes, specs_json=None))]
-    fn load_bytes(bytes: &[u8], specs_json: Option<&str>) -> PyResult<Self> {
+    ///
+    /// `threads` is the loaded bank's pool, as for a new bank: the count is
+    /// not in the state, so the file says nothing about it.
+    #[pyo3(signature = (bytes, specs_json=None, threads=None))]
+    fn load_bytes(
+        bytes: &[u8],
+        specs_json: Option<&str>,
+        threads: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let threads = threads_arg(threads)?;
         let specs = specs_json.map(parse_specs).transpose()?;
-        let inner = Bank::load_bytes(bytes, specs.as_deref()).map_err(PyValueError::new_err)?;
+        let mut inner = Bank::load_bytes(bytes, specs.as_deref()).map_err(PyValueError::new_err)?;
+        inner
+            .set_threads(threads)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
+    }
+
+    /// The `threads` count the bank was given, `None` for the process
+    /// default.
+    #[getter]
+    fn threads(&self) -> Option<usize> {
+        self.inner.threads().asked()
     }
 
     /// Pickle and `copy.deepcopy` support, routed through the same versioned
@@ -520,12 +545,16 @@ impl PyModelBank {
     /// the specs, so one blob reconstructs the whole bank. Production users
     /// reach for pickle without asking (multiprocessing, joblib, caching), and
     /// "cannot pickle" is a worse answer than reusing the serialization that
-    /// is already tested for exact resume.
-    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, (Vec<u8>,))> {
+    /// is already tested for exact resume. The `threads` count rides beside
+    /// the state, not in it, so a copy runs on the pool the original did.
+    #[allow(clippy::type_complexity)]
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Vec<u8>, Option<String>, Option<usize>))> {
         let this = slf.try_borrow().map_err(|_| busy("pickle"))?;
         let bytes = this.inner.save_bytes().map_err(PyValueError::new_err)?;
         let loader = slf.py().get_type::<PyModelBank>().getattr("load_bytes")?;
-        Ok((loader, (bytes,)))
+        Ok((loader, (bytes, None, this.inner.threads().asked())))
     }
 
     /// The readiness notices raised since the last call
@@ -1164,18 +1193,55 @@ fn schema_version() -> u32 {
     online_core::SCHEMA_VERSION
 }
 
-/// Size of the bank's thread pool.
+/// Size of the thread pool a ``threads`` argument names.
 ///
-/// The pool is built at the first bank call from ``POLARS_ONLINE_MAX_THREADS``
-/// (unset or ``0``: one thread per core) and never resized; this builds it if
-/// nothing has yet. Polars' own pool, ``POLARS_MAX_THREADS``, is separate --
+/// ``threads=None`` is the process default, built at the first call that
+/// uses it from ``POLARS_ONLINE_MAX_THREADS`` (unset or ``0``: one thread
+/// per core) and never resized; this builds it if nothing has yet. An
+/// integer ``n`` is a pool of ``n`` threads, which this checks and does not
+/// build. Polars' own pool, ``POLARS_MAX_THREADS``, is separate --
 /// ``pl.thread_pool_size()`` reports that one.
 ///
 /// Raises ``ValueError`` when the variable is set to anything but a
-/// non-negative integer.
+/// non-negative integer, and as ``ModelBank`` does for a ``threads`` it
+/// refuses.
 #[pyfunction]
-fn thread_pool_size() -> PyResult<usize> {
-    online_polars::thread_pool_size().map_err(|e| PyValueError::new_err(e.to_string()))
+#[pyo3(signature = (threads=None))]
+fn thread_pool_size(threads: Option<&Bound<'_, PyAny>>) -> PyResult<usize> {
+    online_polars::thread_pool_size(threads_arg(threads)?)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// A `threads` argument as a count: `None`, or an integer of 1 or more.
+/// A bool, a float or any other type is a `TypeError`, and 0 or a negative
+/// integer a `ValueError`, each with `online_polars::threads_refusal`'s
+/// text, which `polars_online._bank._check_threads` raises too.
+pub(crate) fn threads_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usize>> {
+    let Some(obj) = obj.filter(|o| !o.is_none()) else {
+        return Ok(None);
+    };
+    let shown = || {
+        obj.repr()
+            .map_or_else(|_| "?".to_string(), |r| r.to_string())
+    };
+    if obj.is_instance_of::<pyo3::types::PyBool>() || !obj.is_instance_of::<pyo3::types::PyInt>() {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            online_polars::threads_refusal(&shown()),
+        ));
+    }
+    match obj.extract::<i64>() {
+        Ok(n) if n >= 1 => usize::try_from(n)
+            .map(Some)
+            .map_err(|_| PyValueError::new_err(online_polars::threads_refusal(&shown()))),
+        _ => Err(PyValueError::new_err(online_polars::threads_refusal(
+            &shown(),
+        ))),
+    }
+}
+
+/// The pool a `threads` argument names ([`threads_arg`]).
+pub(crate) fn threads_pool(obj: Option<&Bound<'_, PyAny>>) -> PyResult<online_polars::Threads> {
+    online_polars::Threads::new(threads_arg(obj)?).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Every model this build can construct, as spec `type` names. What the

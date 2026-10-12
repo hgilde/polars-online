@@ -334,7 +334,7 @@ fn an_accumulator_has_the_same_bits_at_every_thread_count() {
     // `flushed`, as the bank's `gram()` reads it.
     let k = LEAF + 44;
     let one = moment_bits(&stream(k, 7, 1).flushed());
-    for threads in [2, 8] {
+    for threads in [2, 8, usize::MAX] {
         let many = pool.install(|| stream(k, 7, threads));
         assert_eq!(many.threads(), threads);
         assert_eq!(
@@ -347,7 +347,7 @@ fn an_accumulator_has_the_same_bits_at_every_thread_count() {
     let k = PAR_MIN_ENTRIES.isqrt() + 3;
     assert!(k * k >= PAR_MIN_ENTRIES);
     let one = moment_bits(&stream(k, 0, 1));
-    for threads in [2, 8] {
+    for threads in [2, 8, usize::MAX] {
         let many = pool.install(|| stream(k, 0, threads));
         assert_eq!(moment_bits(&many), one, "per row, {threads} threads");
     }
@@ -371,4 +371,22 @@ fn a_restored_accumulator_runs_on_one_thread() {
     // `0` is taken as one.
     c.set_threads(0);
     assert_eq!(c.threads(), 1);
+}
+
+/// A count is capped at the pool that runs the work, and `usize::MAX`,
+/// what a spec's `gram_threads = "auto"` sets, is that pool's size (task
+/// 253): the work never asks for more threads than are there.
+#[test]
+fn the_count_is_capped_at_the_pool_it_runs_on() {
+    use super::super::Threads;
+    for (asked, size, want) in [
+        (usize::MAX, 3, 3),
+        (8, 2, 2),
+        (2, 8, 2),
+        (1, 8, 1),
+        (usize::MAX, 1, 1),
+    ] {
+        let got = pool(size).install(|| Threads(asked).workers());
+        assert_eq!(got, want, "{asked} asked on a pool of {size}");
+    }
 }

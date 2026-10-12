@@ -20,19 +20,19 @@
   ewm_std(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
   ewm_sum(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
   ewm_var(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
-  fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+  fit_predict(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   gbdt  # unstable
   gram
   increment(input: 'str | pl.Expr') -> 'pl.Expr'
   native_version()
   ops
-  predict(frame: 'pl.LazyFrame | pl.DataFrame', bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
+  predict(frame: 'pl.LazyFrame | pl.DataFrame', bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   schema_version()
   sim  # unstable
   spec
   stream
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
-  thread_pool_size()
+  thread_pool_size(*, threads: 'int | None' = None) -> 'int'
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
   schema_version = 61
 
@@ -534,6 +534,7 @@
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
     stream.feature_health_half_life = 50.0
+    stream.gram_threads = 1
     stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
@@ -563,6 +564,7 @@
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
     stream.feature_health_half_life = 50.0
+    stream.gram_threads = 1
     stream.influence_half_life = 50.0
     stream.max_error_inflation = 1.4142135623730951
     stream.min_weight = [0.0]
@@ -936,7 +938,7 @@
     model.robust_beta = 0.1
 
 [ModelBank]  # name and signature: a parameter added or a default moved is a diff here
-  __init__(self, specs: 'Iterable[dict[str, Any]]') -> 'None'
+  __init__(self, specs: 'Iterable[dict[str, Any]]', *, threads: 'int | None' = None) -> 'None'
   __reduce__(self, /)
   audit(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None, *, table: "Literal['columns', 'pairs', 'clock']" = 'columns', pooled: 'bool' = False) -> 'pl.DataFrame'
   check(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
@@ -951,8 +953,8 @@
   gram(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None, *, dtype: 'Any' = 'float64', layout: "Literal['full', 'packed']" = 'full') -> 'list[Gram]'
   groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
   last_row(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
-  load(source: 'str | os.PathLike[str] | bytes | IO[bytes]', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
-  load_bytes(data: 'bytes', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
+  load(source: 'str | os.PathLike[str] | bytes | IO[bytes]', specs: 'Iterable[dict[str, Any]] | None' = None, *, threads: 'int | None' = None) -> 'ModelBank'
+  load_bytes(data: 'bytes', specs: 'Iterable[dict[str, Any]] | None' = None, *, threads: 'int | None' = None) -> 'ModelBank'
   marginal(self, spec: 'str | int', group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   output_fields
   predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
@@ -964,15 +966,16 @@
   solve_failures(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
   specs
   summary(self, spec: 'str | int | None' = None, group: 'str | Iterable[str | None] | None' = None) -> 'pl.DataFrame'
+  threads
   write_json(self, file: 'str | os.PathLike[str] | IO[str] | IO[bytes] | None' = None, *, pretty: 'bool' = True) -> 'str | None'
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
-  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
-  LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.LazyFrame'
-  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None) -> 'pl.DataFrame'
-  DataFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | ModelBank | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.predict(bank: 'ModelBank | State', *, chunk_size: 'int | None' = None, threads: 'int | None' = None) -> 'pl.DataFrame'
   DataFrame.online.unnest(specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.DataFrame'
   DataFrame.online.with_windows(*exprs: 'pl.Expr', clock: 'str | None' = None, gap_cap: 'float | Duration | None' = None, restart_after_step_back: 'float | Duration | None' = None, session: 'str | None' = None, session_gap: 'float | Duration | None' = None, group: 'str | None' = None, like: 'dict[str, Any] | None' = None, chunk_size: 'int | None' = None, load_state: 'State | None' = None, save_state: 'State | None' = None, **named: 'pl.Expr') -> 'pl.DataFrame'
 
@@ -1296,12 +1299,12 @@
     condition(g: 'Gram', *, features: 'Sequence[str | int] | None' = None) -> 'dict[str, Any]'
     correlation(g: 'Gram') -> 'Any'
     from_row(row: 'Any') -> 'Gram'
-    lars_path(g: 'Gram', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'dict[str, Any]'
-    lars_paths(grams: 'Sequence[Gram]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, max_iter: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None) -> 'list[list[dict[str, Any]]]'
+    lars_path(g: 'Gram', *, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None, threads: 'int | None' = None) -> 'dict[str, Any]'
+    lars_paths(grams: 'Sequence[Gram]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, max_iter: 'int | None' = None, max_active: 'int | None' = None, penalty_weights: 'Sequence[float] | None' = None, threads: 'int | None' = None) -> 'list[list[dict[str, Any]]]'
     lasso_path(g: 'Gram', penalties: 'Sequence[float]', *, l1_ratio: 'float' = 1.0, penalty_weights: 'Sequence[float] | None' = None, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, max_iter: 'int' = 1000, tol: 'float' = 1e-10) -> 'Any'
     merge(grams: 'Sequence[Gram]', *, within: 'bool' = False) -> 'Gram'
     solve(g: 'Gram', *, ridge: 'float | Sequence[float]' = 0.0, target: 'str | int' = 0, features: 'Sequence[str | int] | None' = None, standardize: 'bool' = False) -> 'Any'
-    solve_subsets(grams: 'Sequence[Gram]', subsets: 'Sequence[Sequence[int]]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, ridge: 'float | Sequence[float]' = 0.0, standardize: 'bool' = False, path: 'dict[str, Any] | None' = None, within: 'bool' = False, target_signs: 'Any' = None) -> 'list[Any]'
+    solve_subsets(grams: 'Sequence[Gram]', subsets: 'Sequence[Sequence[int]]', *, targets: 'Sequence[str | int] | None' = None, features: 'Sequence[str | int] | None' = None, ridge: 'float | Sequence[float]' = 0.0, standardize: 'bool' = False, path: 'dict[str, Any] | None' = None, within: 'bool' = False, target_signs: 'Any' = None, threads: 'int | None' = None) -> 'list[Any]'
     subset(g: 'Gram', columns: 'Sequence[str | int]') -> 'Gram'
     vif(g: 'Gram', *, features: 'Sequence[str | int] | None' = None) -> 'Any'
   ops:
@@ -2339,8 +2342,10 @@
   marginal.closed: both, right
   ew_class.covariance_type: diag, full, tied
   ew_class.window_budget: refuse, thin
+  ew_cov.gram_threads: auto
   ew_cov.stats: corr, cov, lag_corr, mahal, mean, partial_corr, std, var
   ew_cov.window_budget: refuse, thin
+  ewridge.gram_threads: auto
   ewridge.ridge_scale: mean, sum
   ewridge.target_gaps: own_rows, pairwise
   ewridge.window_budget: refuse, thin
@@ -2396,6 +2401,7 @@
     save_state
     skip_learned
     specs
+    threads
   [[specs]]:
     average_eta
     breaks_half_life
@@ -2486,6 +2492,7 @@
   --input-format <INPUT_FORMAT>
   --output-format <OUTPUT_FORMAT>
   --chunk-size <CHUNK_SIZE>
+  --threads <N>
   --load-state <LOAD_STATE>
   --skip-learned
   --save-state <SAVE_STATE>

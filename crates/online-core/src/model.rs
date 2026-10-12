@@ -616,8 +616,9 @@ pub trait OnlineModel: Sized {
     fn set_window_budget(&mut self, _budget: Option<crate::WindowBudget>) {}
 
     /// Run the model's `k²` co-moment work on up to `threads` threads of
-    /// the current rayon pool ([`crate::EwCov::set_threads`]; docs/PLAN.md
-    /// task 225), to the same bits as on one. Configuration, not state: a
+    /// the current rayon pool, never more than it has, [`usize::MAX`] being
+    /// all of them ([`crate::EwCov::set_threads`]; docs/PLAN.md tasks 225
+    /// and 253), to the same bits as on one. Configuration, not state: a
     /// caller sets it after building or restoring the model, and a model
     /// with no such work ignores it -- hence the default.
     fn set_gram_threads(&mut self, _threads: usize) {}
