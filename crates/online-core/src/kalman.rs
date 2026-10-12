@@ -2343,6 +2343,74 @@ mod tests {
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     }
 
+    /// The noise basis's median, sorted on the stack (task 250), is the
+    /// one the vector it replaced gave, to the bit: every order of three
+    /// rows, with ties in the squares and weights that put the half on a
+    /// row's edge, and none before the third row.
+    #[test]
+    fn the_noise_median_on_the_stack_is_the_vectors() {
+        let vector_form = |b: &NoiseBasis| -> Option<f64> {
+            if b.e2.len() < PRIOR_ROWS {
+                return None;
+            }
+            let mut rows: Vec<(f64, f64)> = b.e2.iter().copied().zip(b.w.iter().copied()).collect();
+            rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let half = 0.5 * b.w.iter().sum::<f64>();
+            let mut seen = 0.0;
+            let median = rows
+                .iter()
+                .find(|(_, w)| {
+                    seen += w;
+                    seen >= half
+                })
+                .map_or(rows[rows.len() - 1].0, |(v, _)| *v);
+            let v = median / CHI2_1_MEDIAN;
+            (v > 0.0 && v.is_finite()).then_some(v)
+        };
+        let squares = [
+            [1.0, 1.0, 2.0],
+            [1.0, 2.0, 2.0],
+            [3.0, 3.0, 3.0],
+            [0.5, 2.0, 7.0],
+            [1e-300, 1e300, 1.0],
+        ];
+        let weights = [
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 2.0],
+            [2.0, 1.0, 1.0],
+            [0.25, 0.5, 0.25],
+            [1e-9, 1.0, 1e9],
+        ];
+        let orders = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        let mut read = 0;
+        for e2 in squares {
+            for w in weights {
+                for o in orders {
+                    let mut b = NoiseBasis::default();
+                    for (n, &i) in o.iter().enumerate() {
+                        assert_eq!(b.noise(), None, "{n} rows");
+                        b.add(e2[i] * 2.0, 2.0, w[i]);
+                    }
+                    let got = b.noise().expect("three rows");
+                    assert_eq!(
+                        got.to_bits(),
+                        vector_form(&b).expect("three rows").to_bits(),
+                        "{e2:?} {w:?} {o:?}"
+                    );
+                    read += 1;
+                }
+            }
+        }
+        assert_eq!(read, 5 * 5 * 6);
+    }
+
     fn cfg(k: usize, m: usize, hl: Vec<f64>) -> KalmanCfg {
         KalmanCfg {
             n_features: k,
