@@ -1046,24 +1046,29 @@ def ewridge(
         Run the update of the ``k x k`` matrix on up to that many threads: the
         block's matrix product under ``gram_block_rows``, and each row's
         rank-one update without it. A whole number of at least 1, or
-        ``"auto"`` for every thread of the bank's pool. Default 1. The
-        threads come from the bank's pool, which the bank's ``threads`` sizes
-        (``POLARS_ONLINE_MAX_THREADS`` when it is ``None``). This option caps
-        how much of that pool one spec's matrix work may take, so a count
-        above the pool's size runs on the pool's size, and it never adds a
-        thread. The output is the same to the bit at every count. Each entry
-        of the matrix is still summed by one thread in one order, because the
-        product is cut into pieces by ``k`` alone, never by the count.
+        ``"auto"``. Default ``"auto"``. The threads come from the bank's
+        pool, which the bank's ``threads`` sizes (``POLARS_ONLINE_MAX_THREADS``
+        when it is ``None``). This option caps how much of that pool one
+        spec's matrix work may take, so a count above the pool's size runs on
+        the pool's size, and it never adds a thread. The output is the same to
+        the bit at every count. Each entry of the matrix is still summed by
+        one thread in one order, because the product is cut into pieces by
+        ``k`` alone, never by the count.
 
-        It pays where the pool has idle threads, as on a bank of fewer groups
-        than threads. Measured on 14 cores against a count of 1, one group at
-        2,000 features learned 3.0 times as fast under ``"auto"``, and 3.7
-        times with ``gram_block_rows=256``. Four groups at 800 features
-        learned 1.6 times as fast. Fourteen groups at 800 were even. With 28
-        groups at 800, twice the pool, ``"auto"`` was 9 to 11% slower: every
-        thread already had a group to run, and splitting each row's update
-        only added the cost of handing it out. That is why the default stays
-        at 1.
+        ``"auto"`` splits only where the pool has idle threads. On each
+        chunk the bank counts the tasks it runs side by side, one per spec
+        and group, ``T``, on its pool of ``P`` threads. When ``2 * T <= P``,
+        each task's update may use ``2 * P // T`` threads, at most ``P``;
+        otherwise it uses one. Twice the even share lets a thread whose group
+        is done take pieces of another group's update. The rule reads the two
+        counts and nothing else, so it does not depend on timing. Measured on
+        14 cores against a count of 1: one group at 2,000 features learned
+        3.0 times as fast, and 3.5 times with ``gram_block_rows=256``. Four
+        groups at 800 features learned 1.6 times as fast, and seven were even
+        to 1.1 times. From eight groups up, a split of every count was even
+        or up to 10% slower, so ``"auto"`` does not split there. With every
+        fast core already running a group, splitting each row's update only
+        adds the cost of handing it out.
         Up to 256 columns (the features and the intercept) the product is one
         piece, and below 725 a row's update stays on one thread, so the option
         changes nothing there. Being the same to the bit at every count, it is
@@ -2865,9 +2870,9 @@ def ew_cov(
         ``(L, k, k)`` array) from :meth:`polars_online.ModelBank.gram`.
     ``gram_threads``
         Run the per-row update of the ``k x k`` co-moments on up to that many
-        threads of the bank's pool, or on all of them with ``"auto"``, as
+        threads of the bank's pool, or as ``"auto"`` shares the pool out, as
         :func:`ewridge`'s ``gram_threads`` does: a cap on the pool the
-        bank's ``threads`` sizes, never more threads. Default 1. The
+        bank's ``threads`` sizes, never more threads. Default ``"auto"``. The
         output is the same to the bit at every count. The update is bound by
         memory: at 2,000 features a spec that wrote no statistic learned 2.5
         times as fast on eight threads and 3.1 times on fourteen

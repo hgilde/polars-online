@@ -962,12 +962,19 @@ fn process(
     row_base: usize,
 ) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>) {
     type TaskOut = (Vec<(usize, StreamRows)>, Vec<ClosedRow>);
+    // `"auto"`'s share of the pool: the tasks here run side by side, so a
+    // spec's Gram update splits only into threads no task holds (task 253).
+    // Called inside the bank's pool, so this is its size.
+    let share = crate::pool::gram_share(work.len(), rayon::current_num_threads());
     let per_task: Vec<TaskOut> = work
         .into_par_iter()
         .map(|(si, key, idx, base, stream)| {
             #[cfg(test)]
             threads_tests::probe(&specs[si].name);
             let spec = &specs[si];
+            let gram_threads = spec.model.gram_threads_sharing(share);
+            #[cfg(test)]
+            threads_tests::probe_gram(&spec.name, gram_threads);
             let sc = &cols[si];
             let formula_targets = formulas[si].as_ref().map(|b| b.targets(key));
             let mut outs: Vec<(usize, StreamRows)> = Vec::new();
@@ -998,6 +1005,9 @@ fn process(
                     closed.extend(close_rows(si, spec, key, stream, idx[start]));
                     *stream = Stream::new(spec).expect("the spec built this stream once");
                 }
+                // Configuration, not state: set on every segment, a fresh
+                // stream's too. The same bits at any count.
+                stream.set_gram_threads(gram_threads);
                 let (n_models, n_slots) = (stream.n_models(), stream.n_slots());
                 let run_rows = ChunkOut::run_rows(spec, n_models, n_slots);
                 let mut off = start;

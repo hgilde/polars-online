@@ -5,10 +5,11 @@ The option runs the same model on more threads: a block's merge under
 one thread in one order, and the per-row rank-one update is split by rows. So
 the claims are bits, not tolerances: every output field and every array of
 `gram()` is the same at one thread and at several, and at ``"auto"``, the
-whole pool, on banks of one, two and eight threads (`ModelBank(threads=)`),
-chunk invariance holds at each count, a save carries the setting and resumes
-to the bit, a spec that leaves it out writes nothing new into a state, and a
-count of zero, or a word other than ``"auto"``, is refused.
+default, which shares the pool out among the groups, on banks of one, two
+and eight threads (`ModelBank(threads=)`), chunk invariance holds at each
+count, a save carries the setting and resumes to the bit, a spec that leaves
+it out writes nothing new into a state, and a count of zero, or a word other
+than ``"auto"``, is refused.
 
 Two widths, each past the point where its path leaves the calling thread
 (`crates/online-core/src/ewcov/par.rs`): 300 columns for a block's merge,
@@ -262,3 +263,37 @@ def test_auto_is_the_one_word_and_is_written_as_given(build):
         hand = {**spec, "model": {**spec["model"], "gram_threads": bad}}
         with pytest.raises(ValueError, match="gram_threads"):
             po.ModelBank([hand])
+
+
+#: Groups a bank runs side by side, for ``"auto"``'s share of the pool: one
+#: (the whole pool), four, and 28 and 64 (one thread each on any pool up to
+#: 28 threads).
+GROUPS = (1, 4, 28, 64)
+
+#: Each case: the spec at a ``gram_threads`` and grouped by ``g``, the
+#: width, the rows.
+GROUPED = {
+    "ewridge-blocked": (lambda t: ridge(t, 64, group="g"), K, 600),
+    "ew_cov": (lambda t: cov(t, k=K_ROW, group="g"), K_ROW, 240),
+}
+
+
+@pytest.mark.parametrize("kind", GROUPED)
+@pytest.mark.parametrize("groups", GROUPS)
+def test_auto_shares_the_pool_and_moves_no_bit(kind, groups):
+    """``"auto"`` splits a group's update only into the threads the bank's
+    other tasks leave idle, ``max(1, threads // tasks)``. Whichever share
+    that gives, the output and every Gram are the bits of one thread, on
+    pools of two and eight threads and the default, over 1, 7 and 600
+    chunks. Which share is taken is held in Rust, from the rule
+    (``crates/online-polars/src/bank/threads_tests.rs``)."""
+    make, k, n = GROUPED[kind]
+    df = stream(k, n).with_columns(g=pl.int_range(pl.len()) % groups)
+    one, bank_one = run(make(1), df)
+    assert bank_one.groups("m").height == groups
+    for pool in (2, 8, None):
+        for chunks in (1, 7, 600):
+            many, bank_many = run(make("auto"), df, chunks, threads=pool)
+            case = f"threads={pool!r}, {chunks} chunks"
+            assert one.equals(many, null_equal=True), case
+            assert gram_bits(bank_one) == gram_bits(bank_many), case

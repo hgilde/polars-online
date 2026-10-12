@@ -1842,16 +1842,26 @@ impl ModelKind {
     }
 
     /// The threads a model's Gram update may run on, as the model takes
-    /// it ([`online_core::OnlineModel::set_gram_threads`]): the spec's
-    /// count, [`usize::MAX`], every thread of the pool, for `"auto"`, and
-    /// one for none given. The model caps it at the pool it runs on.
+    /// it ([`online_core::OnlineModel::set_gram_threads`]), before the bank
+    /// shares its pool out: the spec's count, or [`usize::MAX`], every
+    /// thread of the pool, for `"auto"` and for none given (task 253: the
+    /// default is `"auto"`). The model caps it at the pool it runs on, and
+    /// the bank sets [`Self::gram_threads_sharing`] on each chunk.
     /// Configuration, not state: the stream sets it on every model it
     /// builds or restores.
     pub fn gram_threads(&self) -> usize {
+        self.gram_threads_sharing(usize::MAX)
+    }
+
+    /// [`Self::gram_threads`] when the bank's pool is shared: `share` is
+    /// [`crate::pool::gram_share`]`(T, P)` for the chunk's `T` parallel
+    /// tasks on a pool of `P`. `"auto"`, and none given, take the share, so
+    /// a model splits its rows only where the pool has idle threads; a count
+    /// is the caller's, capped at the pool by the model as before.
+    pub fn gram_threads_sharing(&self, share: usize) -> usize {
         match self.gram_threads_given() {
             Some(CountOrAuto::Count(n)) => n,
-            Some(CountOrAuto::Auto) => usize::MAX,
-            None => 1,
+            Some(CountOrAuto::Auto) | None => share,
         }
     }
 

@@ -272,7 +272,7 @@ collected as fast as the bank can:
 | `solve_every` | `1e18` rows, past the end of any stream (a duration, such as `"1000w"`, on a spec with a time clock) | under an infinite half-life the model solves on every row unless told otherwise. The fits are made from the Grams, so the pass solves nothing |
 | `target_gaps` | `"pairwise"` | one Gram per block whatever rows each target is missing on, so every block has the same targets and they pool |
 | `gram_block_rows` | `256` | adds 256 rows to the matrix in one product, 5.1 to 6.6 times as fast as one row at a time from 256 to 2,000 features ([`ewridge`](MODELS.md#ewridge--ew-ridge-on-sufficient-statistics)) |
-| `gram_threads` | left out, so 1 | runs that product on several threads ([One wide Gram on several threads](#one-wide-gram-on-several-threads)) |
+| `gram_threads` | left out, so `"auto"` | runs that product on the threads the bank's other groups leave idle ([One wide Gram on several threads](#one-wide-gram-on-several-threads)) |
 | `group_close` | left out | frees each week's Gram once the week has finished, and with `closed_groups=` on `fit` writes it to a file ([Reading Grams from saved files](#reading-grams-from-saved-files)) |
 
 **A block's Gram has `k²` entries, whatever its rows.** A week of 504
@@ -1614,7 +1614,8 @@ bytes, 81,204 a week. The column spread 1e20 wide has a variance of
 Updating a Gram takes `O(k²)` time a row, and at a few thousand columns
 that update is the whole pass. `gram_threads=n`, on `ewridge` and
 `ew_cov`, runs it on up to `n` threads, and the Gram comes out the same
-to the bit at every `n`.
+to the bit at every `n`. The default, `"auto"`, picks `n` from the bank's
+pool and the groups it runs at once.
 
 **The bits do not move, because each entry is summed by one thread in
 one order.** The update is cut into pieces fixed by `k` alone: diagonal
@@ -1628,17 +1629,46 @@ coefficient's bits do not follow the size of the pool either
 
 **`gram_threads` takes its threads from the pool the bank runs its
 groups on.** The bank's `threads` sizes that pool, or, without it,
-`POLARS_ONLINE_MAX_THREADS`, one thread per core by default; `gram_threads`
-caps how much of it one spec's update may use, and `"auto"` lets it use all
-of it. A bank whose groups already keep every core busy gains nothing from
-the option. Fourteen groups of 1,000 columns ran as fast with eight threads
-each as with one, and 28 groups of 800 columns, twice the pool, ran 9 to
-11% slower under `"auto"`, since each row's split only added the cost of
-handing it out; that is why the default is 1. Run instead on
-a separate pool of eight threads for the option, they took 28% longer
-(§37). A bank of weekly blocks fed a stream in time order often reads a
-chunk that holds one week's rows, and so has one group to run. There
-`gram_threads` gives that group the rest of the pool.
+`POLARS_ONLINE_MAX_THREADS`, one thread per core by default. A count caps
+how much of the pool one spec's update may use. A bank whose groups
+already keep every core busy gains nothing from a split, and loses the
+cost of handing each row's pieces out. So `"auto"` splits only where the
+pool has idle threads. On each chunk the bank counts the tasks it runs side
+by side, one per spec and group, `T`, on a pool of `P` threads. When
+`2T ≤ P`, each task's update may use `2P / T` threads, rounded down and at
+most `P`. Otherwise it uses one. Twice the even share lets a thread whose
+group is done take pieces of another's. The rule reads the two counts and
+nothing else, so a run splits the same way whatever the timing. Run on a
+separate pool of eight threads instead of the bank's, the threads took 28%
+longer (§37). A bank of weekly blocks fed a stream in time order often
+reads a chunk that holds one week's rows, and so has one group to run.
+There `"auto"` gives that group the whole pool.
+
+Measured on 14 cores (ten fast, four slow), `"auto"` against
+`gram_threads=1` on `ewridge` unless named: the time of one thread over the
+time of `"auto"`, the median of 11 interleaved rounds of a fresh bank's
+`fit_predict`, in each of two runs, at a load average of 7 to 12:
+
+| bank | `T` | `"auto"` splits into | `1` / `"auto"`, two runs |
+|---|---|---|---|
+| one group, 2,000 features, 400 rows | 1 | 14 | 2.93, 3.00 |
+| the same with `gram_block_rows=256`, 1,024 rows | 1 | 14 | 3.56, 3.51 |
+| 4 groups, 800 features, 8,000 rows | 4 | 7 | 1.66, 1.58 |
+| 7 groups, 800 features, 7,000 rows | 7 | 4 | 1.09, 1.00 |
+| 14 groups, 800 features, 14,000 rows | 14 | 1 | 0.98, 1.00 |
+| 28 groups, 800 features, 28,000 rows | 28 | 1 | 1.01, 1.00 |
+| the same on `ew_cov` | 28 | 1 | 0.99, 1.00 |
+| 56 groups, 800 features, 28,000 rows | 56 | 1 | 1.00, 0.99 |
+| 64 groups, 500 features, 64,000 rows | 64 | 1 | 1.01, 0.99 |
+| 64 groups, 20 features, 1.6 million rows | 64 | 1 | 1.05, 0.99 |
+
+Where `"auto"` splits into one thread it runs what `gram_threads=1` runs,
+so those rows measure the noise, a few percent either way. Before the
+rule, `"auto"` took the whole pool at any `T`, and 28 groups at 800
+features ran 0.89 times as fast as one thread on `ewridge` and 0.91 on
+`ew_cov`. At eight to 13 groups every count from 2 to 14 was even or up to
+10% slower, which is why the rule stops splitting at `2T > P` rather than
+at `T ≥ P`.
 
 **It helps past 256 columns with `gram_block_rows`, and past 725
 without.** Up to 256 columns, a block's product is one piece. Without a

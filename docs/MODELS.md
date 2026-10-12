@@ -242,12 +242,15 @@ solve takes the same time either way. Blocking leaves `weight_sum`, the
 timing of every prediction and chunk invariance unchanged, and the
 coefficients agree with the row-by-row fit to rounding.
 
-**To run that product on several cores, give `gram_threads=8` as well.**
+**That product runs on several cores wherever the bank has idle threads.**
+`gram_threads` defaults to `"auto"`, which splits a group's update only
+when the groups the bank runs at once leave at least half its pool idle.
 The threads come from the pool the bank runs its groups on, and the output
 is the same to the bit at every thread count. At 2,000 features a bank
 learned 3.9 times as fast on eight threads
 ([docs/PERFORMANCE.md](PERFORMANCE.md) §37). A bank whose groups
-already keep every core busy gains nothing from it.
+already keep every core busy gains nothing from a split, so `"auto"` does
+not split there; `gram_threads=8` asks for eight whatever the groups.
 
 **With decay off and `ridge=0`, `ewridge` fits ordinary least squares over
 every row seen, in any row order.** Its coefficients match

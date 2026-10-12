@@ -35,12 +35,8 @@ window drops a row exactly `window_size` old. Each is under *Changed*.
   `ModelBank.threads` the count a bank was given. `with_windows` runs no
   bank and takes none.
 - **`gram_threads="auto"`** on `ewridge` and `ew_cov` (task 253), as
-  `shards` takes it: the whole of the bank's pool. A count is now capped at
-  the pool's size. The default stays 1: measured on 14 cores, `"auto"` was
-  3.0x as fast on one group at 2,000 features (3.7x with
-  `gram_block_rows=256`) and 1.6x on four groups at 800, even on fourteen
-  groups, and 9-11% slower on 28 groups at 800, where every thread already
-  had a group. The output is the same to the bit at every setting.
+  `shards` takes it, and now the default (*Changed*). A count is now capped
+  at the pool's size. The output is the same to the bit at every setting.
 - **Added with the API's standardization** (task 244):
   `po.ColumnNotFoundError` (both Polars' `ColumnNotFoundError` and
   `ValueError`) for a missing spec column; `po.PolarsOnlineWarning`, the
@@ -869,6 +865,21 @@ The output names task 144 renamed:
 
 Numbers move in most of these, each saying by how much; under this
 project's versioning that is carried by the minor version before 1.0.
+
+- **`gram_threads` defaults to `"auto"`, which splits only into idle
+  threads** (task 253; it was 1). On each chunk the bank counts the
+  (spec, group) tasks it runs side by side, `T`, on its pool of `P`; when
+  `2T <= P` each task's `k x k` update may use `2P // T` threads, at most
+  `P`, and otherwise one. A function of the two counts, not of timing.
+  Outputs and saved states are unchanged to the bit, at every count and
+  chunking, and a state saved under the old default loads and continues
+  bit-identically (the setting is not state; a spec that left the key out
+  still writes none, and now runs `"auto"`). Measured on 14 cores against
+  1, two runs of 11 interleaved rounds: one group at 2,000 features
+  2.93x/3.00x (3.56x/3.51x with `gram_block_rows=256`), four groups at 800
+  1.66x/1.58x, seven 1.09x/1.00x, and 14, 28 (`ewridge` and `ew_cov`), 56
+  and 64 groups 0.98x to 1.05x, where they run the one-thread path. Taking
+  the whole pool, as `"auto"` did before, was 0.89x/0.91x at 28 groups.
 
 - **The online diagnostics' nulls, after review round 7** (A-1, A-2, A-3,
   E-1). Beside a `kalman` with a `coef_half_life` list, the windowed
