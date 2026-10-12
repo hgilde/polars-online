@@ -609,12 +609,14 @@ impl NoiseBasis {
         if self.e2.len() < PRIOR_ROWS {
             return None;
         }
-        let mut rows: Vec<(f64, f64)> = self
-            .e2
-            .iter()
-            .copied()
-            .zip(self.w.iter().copied())
-            .collect();
+        // On the stack: read on every row, a vector a row was a tenth of
+        // `kalman`'s bank overhead (task 250). The same stable sort over the
+        // same pairs, so the same median.
+        let mut held = [(0.0, 0.0); PRIOR_ROWS];
+        let rows = &mut held[..self.e2.len().min(self.w.len()).min(PRIOR_ROWS)];
+        for (r, (&e, &w)) in rows.iter_mut().zip(self.e2.iter().zip(&self.w)) {
+            *r = (e, w);
+        }
         rows.sort_by(|a, b| a.0.total_cmp(&b.0));
         let half = 0.5 * self.w.iter().sum::<f64>();
         let mut seen = 0.0;
