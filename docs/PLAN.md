@@ -10075,8 +10075,8 @@ tick, and that the series holding it up has a count near 1.
       golden pipeline, the fixtures, `compare_release.py` and
       `release_probe.py`'s columns and states, plus an activation test for
       each path a fix touches.
-- [ ] 253. **Thread count through the API (before 1.0, awaiting the user's
-      go on the design)** -- the user, 2026-10-12: "We should control the
+- [ ] 253. **Thread count through the API (before 1.0; the user: "Go" on
+      the design below, 2026-10-12)** -- the user, 2026-10-12: "We should control the
       number of threads through the api not env variables, can we fit that
       into 1.0?" Today the bank's pool is one process-wide `OnceLock`,
       sized once from `POLARS_ONLINE_MAX_THREADS` at the first call and
