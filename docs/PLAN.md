@@ -10119,6 +10119,16 @@ tick, and that the series holding it up has a count near 1.
       pool (`bank.rs` fit and predict, `gramfit.rs` x2, `runner.rs`).
       Adding a keyword is non-breaking, but the names in the snapshot are
       not: `gram_threads`/`shards`/`po.gbdt`'s `threads` are decided with it.
+      *Decided 2026-10-12* (the user: "Gram threads auto should be the
+      default", after asking why `gram_threads` differs from `threads`:
+      `threads` sizes the pool, `gram_threads` caps how much of it one
+      spec's `k x k` update may use): `gram_threads` accepts `"auto"`, as
+      `shards` does, and `None` resolves to `"auto"` (it was 1), decided
+      before 1.0 because a changed default after it is a major (D3). The
+      output is the same to the bit at every count, so only speed moves;
+      the worker verifies "loses nothing" first (a many-group bank at 800+
+      features, a many-group narrow bank, a single wide group) and leaves
+      the default at 1, reporting, if any realistic configuration is slower.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
