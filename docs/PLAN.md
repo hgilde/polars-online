@@ -9964,6 +9964,10 @@ tick, and that the series holding it up has a count near 1.
       means -- rather than speed comes back to the user first. The final
       benchmark against 0.13.0's wheel runs once, alone, after the fixes
       merge.
+      Phase 2's workers (the user, 2026-10-11: "Split as above"): Opus at
+      high effort for the clock path, bocpd and kmeans/micro's compensated
+      centres; Opus at medium for sgd/pa's finite check and the bank's
+      per-row overhead.
       Then (the user, 2026-10-11: "Once memory and performance are fixed if
       there is nothing for me continue with the release"): with nothing
       left for the user, task 247 resumes without asking -- the version
