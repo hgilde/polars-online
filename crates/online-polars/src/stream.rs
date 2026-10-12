@@ -3707,16 +3707,19 @@ impl Stream {
         // nothing; per row in row order, so chunking cannot move a bit; and
         // before `embargo` moves a break's events onto the row that
         // learns them, so a break counts where it arrived.
+        // The column statistics and the clock range first, over the run's
+        // rows at once (`DataSummary::feed_rows`), then the counts: the two
+        // touch different numbers, each in row order.
         if let Some(summary) = self.persisted.summary.as_mut() {
+            summary.feed_rows(
+                plans.iter().filter(|p| p.direct()).map(|p| p.i),
+                features,
+                targets,
+                weight,
+                clock,
+            );
             for plan in plans.iter().filter(|p| p.direct()) {
                 let i = plan.i;
-                summary.feed_row(
-                    features.row(i),
-                    targets,
-                    weight.map(|w| w[i]),
-                    clock.map(|c| c.at(i)),
-                    i,
-                );
                 summary.events(plan.session_changed, plan.backwards, plan.reset);
                 if plan.accept {
                     // A plain target counts at its row; a formula target
