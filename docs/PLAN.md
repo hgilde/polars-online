@@ -9999,34 +9999,43 @@ tick, and that the series holding it up has a count near 1.
       the order is task 250's fixes, then 251, then the release (task 247).
 - [ ] 252. **No number changes without a test noticing** -- the user,
       2026-10-11: "If we know of areas where numbers can change without a
-      test noticing we should add to the plan to improve that." Known gaps:
-      most tests compare within a tolerance, so a change that moves the last
-      bits passes them; the golden pipeline pins a few fields at three rows;
-      the only complete bit-level check (`compare_release.py`) runs on
-      release day over 30 specs and 400 rows; cargo-mutants sees only
-      online-core and `span.rs`, not online-polars or the Python layer
-      (the mutation blind spot). Areas named in task 250 as able to change
-      numbers silently: the exact clock path, `bocpd`'s run structure
-      (pruning and the fold below its caps), and the compensated sums of
-      kmeans/micro (a reordering changes bits a tolerance never sees).
-      (1) A committed bit digest of every output field of every spec on a
-      workload that reaches the hard paths: every model with every `emit_*`
-      switch, irregular and temporal clocks at ages from seconds to decades,
-      zero-weight and null rows, groups, sessions, windows, an embargo, and
-      streams long enough to reach `bocpd`'s `max_run` and pruning, a
-      kmeans/micro centre far from the origin, and a state saved and loaded
-      mid-stream; the test fails on any bit that moves, and the digest file
-      changes with the CHANGELOG entry that declares it. (2) Each case
-      proves its path ran (the fold happened, the compensation carried a
-      non-zero low part, the clock crossed a session) -- a pin on an
-      unexercised path is no pin. (3) The tolerance-based tests in the three
-      areas above become bit pins where the arithmetic is deterministic.
-      (4) The mutation blind spot: measure what extending cargo-mutants to
-      online-polars would take, and whether a Python mutation tool earns its
-      run time, and report.
-      *Order (the coordinator's recommendation):* the digest (1)-(2) before
-      task 250's phase 2 fixes, since those fixes must be bit-identical and
-      the digest is the strongest check of that; (3)-(4) after.
+      test noticing we should add to the plan to improve that", then "Add
+      these as tentative items to the plan as there may be a reason that we
+      need a tolerance now. Untested paths are always a concern and should
+      get a test." Known gaps: most tests compare within a tolerance, so a
+      change that moves the last bits passes them; the golden pipeline pins
+      a few fields at three rows; the one complete bit-level check
+      (`compare_release.py`) runs on release day over 30 specs and 400
+      rows; cargo-mutants sees only online-core and `span.rs`. Areas task
+      250 named as able to change numbers silently: the exact clock path,
+      `bocpd`'s run structure (pruning and the fold), kmeans/micro's
+      compensated sums.
+      **Firm: every untested path gets a test.** An inventory of the paths
+      no test reaches (coverage of the Rust crates and the package on the
+      full tier, and the branches the hard-path cases above need: the fold,
+      a compensation carrying a non-zero low part, a clock crossing a
+      session, a temporal clock at a decade's age, a state saved and loaded
+      mid-stream, zero-weight and null first rows), each closed by a test
+      that proves the path ran -- a pin on an unexercised path is no pin.
+      **Tentative (each starts from why the tolerance is there):**
+      (a) a committed bit digest of every output field of every spec on a
+      workload that reaches those paths, the digest changing with the
+      CHANGELOG entry that declares it -- but a field whose arithmetic
+      passes through libm (`exp`/`ln`: decay over irregular steps, a
+      half-life read) differs in its last bits between macOS, Linux and
+      Windows (a `to_bits` pin failed every Linux leg in task 202), so such
+      a field is either left out, held per platform, or held to a tolerance,
+      decided field by field; (b) the tolerance-based tests in the three
+      areas above converted to bit pins only where no reason for the
+      tolerance holds (libm, reassociation across thread counts, an oracle
+      deliberately computed another way), each tolerance's reason recorded
+      beside it; (c) the mutation blind spot: what extending cargo-mutants
+      to online-polars would take, and whether a Python mutation tool earns
+      its run time, reported.
+      Task 250's phase 2 does not wait on (a): its fixes are held by the
+      golden pipeline, the fixtures, `compare_release.py` and
+      `release_probe.py`'s columns and states, plus an activation test for
+      each path a fix touches.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
