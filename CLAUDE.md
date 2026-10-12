@@ -57,7 +57,13 @@ Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to
 clear them"): workers run `scripts/quick.sh` while iterating and
 `scripts/gate.sh` (essentials) before each commit; the full tier runs once
 per merge wave on `main` and, always, before every push on the exact sha.
-Run at most about four agents at once on this machine. After each push
+Run at most about four agents at once on this machine. Workers do not run
+`cargo mutants` (the user, 2026-10-11: "Every task seems to spend a lot of
+time waiting for mutants"): the coordinator runs one scoped pass over each
+merge wave's diff, in the background, with `--copy-target=true` (the warm
+`target/`, not a cold build per pass) and `--test-tool nextest`, and its
+survivors are a follow-up batch before the push; CI's changed-lines pass on
+the push is the backstop. Workers lean on activation tests instead. After each push
 wave and its branch and worktree cleanup, run `scripts/clear_caches.sh
 --worktrees` (or whenever free disk is under 100 GB). sccache stays off:
 from a new worktree path a third of the crates miss its cache, so it is

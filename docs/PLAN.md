@@ -9968,6 +9968,12 @@ tick, and that the series holding it up has a count near 1.
       high effort for the clock path, bocpd and kmeans/micro's compensated
       centres; Opus at medium for sgd/pa's finite check and the bank's
       per-row overhead.
+      Mutants (the user: "Every task seems to spend a lot of time waiting
+      for mutants"): the workers stop running them; the coordinator runs one
+      scoped pass over the merged wave's diff, in the background, with
+      `--copy-target=true` and `--test-tool nextest` -- the speedup measured
+      on that first pass against task 245's figures -- and its survivors are
+      a follow-up batch before the push (CLAUDE.md's "Iterating").
       Then (the user, 2026-10-11: "Once memory and performance are fixed if
       there is nothing for me continue with the release"): with nothing
       left for the user, task 247 resumes without asking -- the version
