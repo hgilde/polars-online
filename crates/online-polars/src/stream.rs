@@ -2407,6 +2407,15 @@ impl Stream {
         }
     }
 
+    /// Run every model instance's Gram work on `threads` threads
+    /// ([`OnlineModel::set_gram_threads`]); the bank sets it per chunk from
+    /// its pool's share (`crate::spec::gram_share`). Not state.
+    pub fn set_gram_threads(&mut self, threads: usize) {
+        for (_, m) in &mut self.models {
+            m.set_gram_threads(threads);
+        }
+    }
+
     /// Model instances in this stream (one per half-life).
     pub fn n_models(&self) -> usize {
         self.models.len()

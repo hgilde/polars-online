@@ -85,6 +85,29 @@ fn spawned<E: std::fmt::Display>(
     })
 }
 
+/// The threads `"auto"` gives one spec's Gram update when `tasks` (spec x
+/// group) tasks share a pool of `pool` threads: one unless at least half the
+/// pool would be idle (`2 * tasks <= pool`), and then `2 * pool / tasks`,
+/// rounded down and at most `pool` (docs/GRAM.md, "One wide Gram on several
+/// threads"). A function of the two counts alone, never of timing, and the
+/// output does not depend on it: a Gram's bits are the same at every count.
+///
+/// Measured interleaved on 14 cores (ten fast, four slow) at 800 features,
+/// against one thread: a split paid at up to seven groups (1.2x to 1.7x)
+/// and cost 2-10% from eight groups to 13 at every count, and the whole pool
+/// was 0.89x at 28. Once the fast cores each hold a group, splitting a row's
+/// update only adds the cost of handing out its pieces. Below that, twice
+/// the even share lets a thread whose group is done take pieces of
+/// another's: at four groups the even share, 3, ran 1.24x and 7 ran 1.62x.
+#[must_use]
+pub fn gram_share(tasks: usize, pool: usize) -> usize {
+    if tasks == 0 || 2 * tasks > pool {
+        1
+    } else {
+        (2 * pool / tasks).min(pool)
+    }
+}
+
 /// How many threads the pool `threads` names has: for `None`, the process
 /// default's size, building it if nothing has yet; for `Some(n)`, `n`,
 /// checked and building nothing.

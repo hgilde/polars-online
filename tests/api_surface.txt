@@ -534,7 +534,7 @@
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
     stream.feature_health_half_life = 50.0
-    stream.gram_threads = 1
+    stream.gram_threads = "auto"
     stream.influence_half_life = 50.0
     stream.max_error_inflation = "inf"
     stream.min_weight = [3.0]
@@ -564,7 +564,7 @@
     stream.breaks_half_life = 50.0
     stream.calibration_half_life = 200.0
     stream.feature_health_half_life = 50.0
-    stream.gram_threads = 1
+    stream.gram_threads = "auto"
     stream.influence_half_life = 50.0
     stream.max_error_inflation = 1.4142135623730951
     stream.min_weight = [0.0]

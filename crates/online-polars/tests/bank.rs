@@ -1497,7 +1497,9 @@ fn the_solve_cadence_is_the_specs_on_restore() {
 /// Docs/PLAN.md task 225: `gram_threads` is the spec's, as the budget and
 /// the cadence are -- configuration a model's state does not carry -- so
 /// the stream sets it on every model it builds and again on every model it
-/// restores, and a spec that leaves it out runs on one.
+/// restores, and a spec that leaves it out runs `"auto"`, the default (task
+/// 253). The bank then gives each task its share of the pool on every chunk
+/// (`bank/threads_tests.rs`).
 #[test]
 fn the_gram_threads_are_the_specs_on_build_and_on_restore() {
     use online_polars::AnyModel;
@@ -1519,8 +1521,8 @@ fn the_gram_threads_are_the_specs_on_build_and_on_restore() {
             })
             .collect()
     };
-    // `"auto"` is every thread of the pool, which the model caps at the
-    // pool it runs on (task 253); absent is one.
+    // `"auto"`, and absent, are every thread of the pool, which the model
+    // caps at the pool it runs on, until the bank shares it out (task 253).
     let all = usize::MAX;
     for kind in ["ewridge", "ew_cov"] {
         let with = spec(&format!(r#"{{"type": "{kind}", "gram_threads": 6}}"#));
@@ -1537,10 +1539,14 @@ fn the_gram_threads_are_the_specs_on_build_and_on_restore() {
         );
         assert_eq!(
             threads(&Stream::restore(&without, &saved).unwrap()),
-            [1, 1],
+            [all, all],
             "{kind}"
         );
-        assert_eq!(threads(&Stream::new(&without).unwrap()), [1, 1], "{kind}");
+        assert_eq!(
+            threads(&Stream::new(&without).unwrap()),
+            [all, all],
+            "{kind}"
+        );
         assert_eq!(
             threads(&Stream::restore(&auto, &saved).unwrap()),
             [all, all],

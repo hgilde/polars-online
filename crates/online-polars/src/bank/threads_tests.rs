@@ -141,3 +141,110 @@ fn zero_threads_is_refused_and_the_bank_keeps_its_pool() {
     bank.set_threads(None).unwrap();
     assert_eq!(bank.threads().asked(), None);
 }
+
+// ---- `"auto"`'s share of the pool (task 253, part 2) ----
+
+/// Per probed spec name, the `gram_threads` each task's streams were set to.
+static GRAM: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
+/// The spec names whose Gram threads are recorded.
+const GRAM_PROBED: [&str; 3] = ["gram-share-auto", "gram-share-count", "gram-share-none"];
+
+/// Record the Gram threads `process` set for `spec`'s task, when probed.
+pub(super) fn probe_gram(spec: &str, threads: usize) {
+    if GRAM_PROBED.contains(&spec) {
+        GRAM.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((spec.to_string(), threads));
+    }
+}
+
+/// Take what was recorded for `spec`, emptying it.
+fn gram_seen(spec: &str) -> Vec<usize> {
+    let mut all = GRAM
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let got = all
+        .iter()
+        .filter(|(s, _)| s == spec)
+        .map(|(_, t)| *t)
+        .collect();
+    all.retain(|(s, _)| s != spec);
+    got
+}
+
+fn spec_gram(name: &str, gram: &str) -> Spec {
+    serde_json::from_str(&format!(
+        r#"{{"name": "{name}", "model": {{"type": "ewridge"{gram}}},
+            "targets": ["y"], "features": ["x0", "x1"], "group": "g", "half_life": 10.0}}"#
+    ))
+    .unwrap()
+}
+
+fn frame_of(groups: usize) -> DataFrame {
+    let n = 4 * 64usize;
+    let g: Vec<i64> = (0..n).map(|i| (i % groups) as i64).collect();
+    let x0: Vec<f64> = (0..n).map(|i| (i % 7) as f64).collect();
+    let x1: Vec<f64> = (0..n).map(|i| ((i * 3) % 11) as f64).collect();
+    let y: Vec<f64> = (0..n).map(|i| (i % 5) as f64).collect();
+    df!("g" => g, "x0" => x0, "x1" => x1, "y" => y).unwrap()
+}
+
+#[test]
+fn the_share_is_one_until_half_the_pool_is_idle_then_twice_the_even_share() {
+    use crate::pool::gram_share;
+    assert_eq!(gram_share(1, 14), 14);
+    assert_eq!(gram_share(2, 14), 14);
+    assert_eq!(gram_share(3, 14), 9);
+    assert_eq!(gram_share(4, 14), 7);
+    assert_eq!(gram_share(7, 14), 4);
+    assert_eq!(gram_share(8, 14), 1);
+    assert_eq!(gram_share(13, 14), 1);
+    assert_eq!(gram_share(14, 14), 1);
+    assert_eq!(gram_share(28, 14), 1);
+    assert_eq!(gram_share(64, 14), 1);
+    assert_eq!(gram_share(4, 8), 4);
+    assert_eq!(gram_share(5, 8), 1);
+    assert_eq!(gram_share(1, 2), 2);
+    assert_eq!(gram_share(2, 2), 1);
+    assert_eq!(gram_share(0, 8), 1);
+    assert_eq!(gram_share(1, 1), 1);
+    assert_eq!(gram_share(5, 1), 1);
+}
+
+/// `"auto"` splits a group's update only when half the pool would be idle:
+/// one group on 14 threads takes all 14, four take seven each, and 14, 28
+/// or 64 groups take one each, from the rule and not from timing. A count
+/// is the caller's whatever the share, and none is `"auto"`, the default.
+#[test]
+fn auto_takes_the_pool_share_of_each_task() {
+    for (groups, want) in [(1usize, 14usize), (4, 7), (14, 1), (28, 1), (64, 1)] {
+        let mut bank = Bank::new(vec![
+            spec_gram("gram-share-auto", r#", "gram_threads": "auto""#),
+            spec_gram("gram-share-count", r#", "gram_threads": 5"#),
+            spec_gram("gram-share-none", ""),
+        ])
+        .unwrap();
+        bank.set_threads(Some(14)).unwrap();
+        bank.fit_predict(&frame_of(groups)).unwrap();
+        // Three specs of `groups` tasks each share the pool.
+        let share = crate::pool::gram_share(3 * groups, 14);
+        let auto = gram_seen("gram-share-auto");
+        assert_eq!(auto, vec![share; groups], "{groups} groups");
+        assert_eq!(gram_seen("gram-share-count"), vec![5; groups]);
+        assert_eq!(gram_seen("gram-share-none"), vec![share; groups]);
+        // Alone in the bank, the spec has the share `want` names.
+        let mut alone = Bank::new(vec![spec_gram(
+            "gram-share-auto",
+            r#", "gram_threads": "auto""#,
+        )])
+        .unwrap();
+        alone.set_threads(Some(14)).unwrap();
+        alone.fit_predict(&frame_of(groups)).unwrap();
+        assert_eq!(
+            gram_seen("gram-share-auto"),
+            vec![want; groups],
+            "{groups} groups alone"
+        );
+    }
+}

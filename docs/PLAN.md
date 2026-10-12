@@ -10152,6 +10152,29 @@ tick, and that the series holding it up has a count near 1.
       every thread holding a group, a row's split adds only its hand-out.
       Flipping it, or making `"auto"` split only when the pool has idle
       threads, is the user's decision.
+      *Part 2, 2026-10-12: `"auto"` adaptive, and the default.* The
+      coordinator's brief asked for `max(1, P / T)` per task, `T` the
+      (spec x group) tasks of a phase (`process`), `P` the bank's pool.
+      Measured, that floor lost the four-group win (1.29x, against 1.57x
+      for the whole pool): with an even share a thread whose group is done
+      has nothing to steal. A curve of every count at 2-13 groups of 800
+      (14 cores, ten fast) showed a split paying up to seven groups and
+      costing 2-10% at every count from eight to 13. Built instead:
+      `gram_share(T, P)` = 1 when `2T > P`, else `min(P, 2P / T)` (twice
+      the even share), in `pool.rs`; `process` sets it on each task's
+      stream per segment (`Stream::set_gram_threads`, not state); a count
+      is unchanged. Two runs of 11 interleaved rounds, load 7-12, `"auto"`
+      / 1: one group k=2,000 2.93/3.00x, block 256 3.56/3.51x, 4 groups
+      1.66/1.58x, 7 groups 1.09/1.00x, 14, 28 (ewridge and ew_cov), 56 and
+      64 groups 0.98-1.05x (the one-thread path, so noise). Accepted, so
+      `None` resolves to `"auto"` (`gram_threads_sharing`, `defaults.rs`,
+      the snapshot's two `stream.gram_threads` lines). A load given no
+      specs runs the saved spec's setting, which for a spec that left the
+      key out is now `"auto"`; the bits are the same either way. Held by
+      `bank/threads_tests.rs` (the rule's values, and the share each task
+      is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
+      `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
+      pools 2, 8, default x 1/7/600 chunks, to the bit).
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
