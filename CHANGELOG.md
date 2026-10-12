@@ -1860,6 +1860,16 @@ project's versioning that is carried by the minor version before 1.0.
   quoted *Performance* entry here, held over the file's git history. Each
   run reports every case's drift since the last release, and a release
   fails on one past 10% without a `[[signoff]]`.
+- **The mutation runs test each mutant under cargo-nextest, inside a
+  memory scope.** A process per test, as the gate's tests run: the full
+  Rust suite took 84 s under nextest against `cargo test`'s 182 s. The
+  extended tier stays in every mutant's run (`--run-ignored=all`). Each
+  shard's run is in one systemd scope whose cgroup the kernel holds to 12
+  GiB, so a runaway mutant's test is killed alone and counted caught. The
+  per-binary `prlimit --data` cap it replaces counted virtual memory, which
+  glibc keeps after a free, and failed the baseline of 4 of 32 shards with
+  far less resident. A job proves the scope on every run: a runaway is
+  killed near the cap, and its parent goes on.
 - **Every long example names its steps** (task 249): 326 one-line step
   comments across the README and the guides, as WRITING's rule asks ("a
   long example names its steps in brief comments"); the code and its
