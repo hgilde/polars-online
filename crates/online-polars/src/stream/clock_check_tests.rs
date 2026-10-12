@@ -7,8 +7,7 @@
 //! minimum, the step back in nanoseconds or in the column's units -- or to
 //! none, over float, temporal and integer clocks at the ages and sizes
 //! where only an exact read gets them right, sessions, both policies, and a
-//! clock saved and loaded mid-stream. Beside it, the settled fraction a row
-//! reads once where it read it twice.
+//! clock saved and loaded mid-stream.
 
 use online_core::{ClockCfg, ClockState, ClockValue, OnClockReset, SessionGap};
 
@@ -240,43 +239,4 @@ fn the_exact_cases_are_refused_as_the_whole_step_refused_them() {
         &[7],
         0
     ));
-}
-
-/// A row's settled fraction and its learned rows' ([`super::settled_and_learned`]):
-/// with nothing held, one `exp2` read twice; with an embargo's clock held,
-/// two. Each is [`super::settled_frac`] at its own clock, to the bit, over
-/// both kinds of decay and none, and over the covered clock's edges: `0.0`
-/// and `-0.0`, a subnormal, a decade of seconds, infinity and NaN.
-#[test]
-fn the_settled_fraction_is_read_once_when_nothing_is_held() {
-    use super::{settled_and_learned, settled_frac};
-    use online_core::Decay;
-    let decays = [
-        Decay::Halflife(10.0),
-        Decay::Halflife(f64::INFINITY),
-        Decay::Lam(0.97),
-        Decay::Lam(1.0),
-    ];
-    let ts = [
-        0.0,
-        -0.0,
-        5e-324,
-        0.25,
-        315_576_000.0,
-        f64::INFINITY,
-        f64::NAN,
-    ];
-    let bits = |(a, b): (f64, f64)| (a.to_bits(), b.to_bits());
-    for d in decays {
-        for t in ts {
-            for held in [0.0, -0.0, 3.0, 5e-324] {
-                let want = (settled_frac(d, t + held), settled_frac(d, t));
-                assert_eq!(
-                    bits(settled_and_learned(d, t, held)),
-                    bits(want),
-                    "{d:?} {t} {held}"
-                );
-            }
-        }
-    }
 }

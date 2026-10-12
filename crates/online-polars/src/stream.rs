@@ -2073,21 +2073,6 @@ pub fn settled_frac(decay: Decay, t: f64) -> f64 {
     }
 }
 
-/// [`settled_frac`] at the clock the decay has covered and the clock `held`
-/// rows add (an embargo's), and at the covered clock alone: a row's settled
-/// fraction and its learned rows'. With nothing held -- no embargo, the
-/// usual row -- the two are one number: `t + 0.0` is `t` to the bit but
-/// for `-0.0`, which reads the same fraction, so the second `exp2` is not
-/// taken (task 250).
-pub(crate) fn settled_and_learned(decay: Decay, t: f64, held: f64) -> (f64, f64) {
-    let learned = settled_frac(decay, t);
-    if held == 0.0 {
-        (learned, learned)
-    } else {
-        (settled_frac(decay, t + held), learned)
-    }
-}
-
 /// The weight a stream settles at, read from where it stands: `weight`, the
 /// accumulated weight before the next row (`weight_sum`'s meaning), less what
 /// is left of the first row's, over the settled fraction:
@@ -4863,6 +4848,7 @@ fn run_instance(
         // model's but `ewridge`'s unless set (task 116) -- reads nothing:
         // `kalman`'s is `O(k²)` a row, paid only where it is used.
         let held = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
+        let settled = settled_frac(inst.decay, *inst.decay_time + held);
         // The two "not met" notices below read the learned rows'
         // clock alone, as `Stream::readiness` does: the weight they
         // project a ceiling from has neither decayed by nor accumulated
@@ -4870,8 +4856,8 @@ fn run_instance(
         // settled before anything was learned, and the ceiling came out
         // negative -- a floor the stream then met, after a notice that it
         // never would (review round 5, C1). The gate and the row's field
-        // keep the fraction below, the held rows' clock counted (§8).
-        let (settled, learned) = settled_and_learned(inst.decay, *inst.decay_time, held);
+        // keep the fraction above, the held rows' clock counted (§8).
+        let learned = settled_frac(inst.decay, *inst.decay_time);
         let max_infl = inst.spec.max_error_inflation_or_default();
         let has_infl = max_infl.is_finite()
             && inst
