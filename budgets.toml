@@ -59,45 +59,59 @@ rss = 0.15
 
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step"
+budget = 2962547
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step"
+budget = 8114926
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step"
+budget = 3150039
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step"
+budget = 2869539
 
 [instructions.seqtest]
 what = "seqtest on one column's sign: AnyModel::step"
+budget = 620971
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step"
+budget = 15465737
 
 [instructions.kmeans]
 what = "kmeans, 4 features, 8 clusters, standardized: AnyModel::step"
+budget = 4299477
 
 [instructions.micro]
 what = "micro, 4 features, eps 1: AnyModel::step"
+budget = 1954237
 
 [instructions.kalman]
 what = "kalman, 20 features, coef half-life 2000: AnyModel::step"
+budget = 18698007
 
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step"
+budget = 13889690
 
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
+budget = 112029
 
 [instructions.clock_temporal]
 what = "ClockState::advance_stamped, a nanosecond clock, gap_cap 100 s, exact stamps"
+budget = 394029
 
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
+budget = 2019524
 
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
+budget = 5753653
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
