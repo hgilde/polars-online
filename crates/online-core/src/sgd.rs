@@ -887,6 +887,33 @@ pub(crate) fn unscaled(beta: &[Vec<f64>], sc: &EwDiag, fit_intercept: bool) -> V
         .collect()
 }
 
+/// Whether every slope's gradient `g_i = clip(d·z_i·w + l2·β_i)` is a
+/// finite number -- under AdaGrad (`squared`), whether `g_i²` is, which
+/// `g2` would keep for good. Every slot's verdict is folded without an
+/// early exit, so the check vectorizes as the update does; the verdict is a
+/// short-circuiting `any`'s, which reached it a slot at a time at three
+/// times the update's cost (task 250).
+fn slopes_usable(
+    beta: &[f64],
+    z: &[f64],
+    d: f64,
+    weight: f64,
+    l2: f64,
+    clip: f64,
+    squared: bool,
+) -> bool {
+    if squared {
+        beta.iter().zip(z).fold(true, |ok, (b, &zi)| {
+            let g = (d * zi * weight + l2 * *b).clamp(-clip, clip);
+            ok & (g * g).is_finite()
+        })
+    } else {
+        beta.iter().zip(z).fold(true, |ok, (b, &zi)| {
+            ok & (d * zi * weight + l2 * *b).clamp(-clip, clip).is_finite()
+        })
+    }
+}
+
 /// `x` standardized against the moments of `sc` with the row itself
 /// admitted at unit weight after a decay of `lam` ([`EwDiag::including`];
 /// `SgdCfg::standardize` says why the row is in): feature `i` sits in
@@ -1173,12 +1200,8 @@ impl OnlineModel for Sgd {
                     (g * g).is_finite()
                 }
             };
-            if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip)))
-                || beta[off..]
-                    .iter()
-                    .zip(z)
-                    .any(|(b, &zi)| !usable((d * zi * weight + l2 * *b).clamp(-clip, clip)))
-            {
+            let slopes_ok = slopes_usable(&beta[off..], z, d, weight, l2, clip, lr_row.is_none());
+            if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip))) || !slopes_ok {
                 continue;
             }
             match lr_row {
@@ -1962,6 +1985,105 @@ mod tests {
                 (beta[0] - 1.0).abs() < 0.01 && (beta[1] - 0.5).abs() < 0.01,
                 "{schedule:?}: {beta:?}, last error {last}"
             );
+        }
+    }
+
+    /// The folded check (task 250) gives a short-circuiting `any`'s
+    /// verdict on every input: a NaN, an infinity or (under AdaGrad) a
+    /// square that overflows in any one slot is refused, and a finite
+    /// gradient never is, with and without a clip.
+    #[test]
+    fn the_folded_gradient_check_is_the_short_circuit_verdict() {
+        let any_form = |beta: &[f64], z: &[f64], d: f64, w: f64, l2: f64, clip: f64, sq: bool| {
+            !beta.iter().zip(z).any(|(b, &zi)| {
+                let g = (d * zi * w + l2 * *b).clamp(-clip, clip);
+                !if sq {
+                    (g * g).is_finite()
+                } else {
+                    g.is_finite()
+                }
+            })
+        };
+        let k = 5;
+        let beta = vec![0.25; k];
+        let mut refusals = 0;
+        for squared in [false, true] {
+            for clip in [f64::INFINITY, 1e300] {
+                let z = vec![1.0; k];
+                assert!(slopes_usable(&beta, &z, 2.0, 1.0, 0.1, clip, squared));
+                assert!(any_form(&beta, &z, 2.0, 1.0, 0.1, clip, squared));
+                for pos in 0..k {
+                    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e200] {
+                        let mut z = vec![1.0; k];
+                        z[pos] = bad;
+                        let want = if bad.is_nan() || (bad.is_infinite() && clip.is_infinite()) {
+                            false
+                        } else {
+                            // A clipped infinity or 2e200: finite, its square not.
+                            !squared
+                        };
+                        let got = slopes_usable(&beta, &z, 2.0, 1.0, 0.1, clip, squared);
+                        assert_eq!(
+                            got, want,
+                            "squared {squared}, clip {clip}, slot {pos}: {bad}"
+                        );
+                        assert_eq!(got, any_form(&beta, &z, 2.0, 1.0, 0.1, clip, squared));
+                        refusals += usize::from(!got);
+                    }
+                }
+            }
+        }
+        // Per slot: NaN under all four settings; each infinity unclipped
+        // under both rates and clipped under AdaGrad; 2e200 under AdaGrad.
+        assert_eq!(refusals, 5 * (4 + 3 + 3 + 2));
+    }
+
+    /// The check inside `step`, slot by slot. A row whose gradient is
+    /// infinite in one slot only -- there through `l2·β`, the slot's
+    /// coefficient at 5e298 after a first row -- leaves every coefficient
+    /// where it was. A row whose gradient is 1e200 in one slot moves the fit
+    /// under a constant rate and, its square infinite, not under AdaGrad.
+    #[test]
+    fn a_step_refuses_a_row_by_any_one_slot() {
+        let k = 4;
+        let fresh = |schedule: LearningRate, l2: f64| {
+            let mut c = cfg(k, SgdLoss::Squared);
+            c.clip_gradient = f64::INFINITY;
+            c.min_weight = 0.0;
+            c.schedule = schedule;
+            c.l2 = l2;
+            Sgd::new(c).unwrap()
+        };
+        for pos in 0..k {
+            let mut x = vec![1.0; k];
+            x[pos] = 1e100;
+
+            let mut m = fresh(LearningRate::Constant, 1e10);
+            m.step(&x, &[Some(1e100)], 0.0, 1e100);
+            let before = m.coefficients()[0].clone();
+            assert!(before[1 + pos] > 1e298, "slot {pos}: {before:?}");
+            m.step(&[1.0; 4], &[Some(0.0)], 1.0, 1.0);
+            assert_eq!(
+                m.coefficients()[0],
+                before,
+                "slot {pos}: an infinite gradient moved the fit"
+            );
+
+            for (schedule, refused) in [
+                (LearningRate::Constant, false),
+                (LearningRate::AdaGrad, true),
+            ] {
+                let mut m = fresh(schedule, 0.0);
+                let before = m.coefficients()[0].clone();
+                m.step(&x, &[Some(1e100)], 0.0, 1.0);
+                let after = m.coefficients()[0].clone();
+                assert_eq!(
+                    after == before,
+                    refused,
+                    "slot {pos}, {schedule:?}: {after:?}"
+                );
+                assert!(after.iter().all(|b| b.is_finite()), "{after:?}");
+            }
         }
     }
 

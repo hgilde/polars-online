@@ -55,6 +55,22 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
     var > 0.0 && var.is_finite()
 }
 
+/// The co-moments' rank-one step on one thread, `c_ij = a·c_ij + (a·b·d_i)·d_j`
+/// row by row: [`EwCov::update`]'s serial path, the same expression per entry
+/// as its threaded one. Out of line, so the loop is compiled on its own
+/// rather than inside `update` beside the threaded branch, where it ran 21%
+/// slower than 0.13.0's identical loop at `k = 20` (task 250).
+#[inline(never)]
+fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
+    for i in 0..k {
+        let ab_di = a * b * d[i];
+        let row = &mut c[i * k..(i + 1) * k];
+        for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+            *cj = a * *cj + ab_di * dj;
+        }
+    }
+}
+
 /// A reusable row buffer that is not state: two accumulators with the same
 /// moments are the same accumulator whatever is left in their scratch, and a
 /// state file carries none of it.
@@ -886,13 +902,7 @@ impl EwCov {
                 }
             });
         } else {
-            for i in 0..k {
-                let ab_di = a * b * d[i];
-                let row = &mut self.c[i * k..(i + 1) * k];
-                for (cj, &dj) in row.iter_mut().zip(d.iter()) {
-                    *cj = a * *cj + ab_di * dj;
-                }
-            }
+            rank_one_rows(&mut self.c, k, d, a, b);
         }
         // The precision prior decays with the co-moments. `a == 0` only on
         // the very first observation, when the whole history is discarded and
