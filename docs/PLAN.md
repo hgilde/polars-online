@@ -9991,6 +9991,8 @@ tick, and that the series holding it up has a count near 1.
       an explicit sign-off before a release. Measure the harness's own
       repeatability on CI before trusting a tolerance; Valgrind on CI is a
       test tool, nothing in the wheel.
+      **Before 1.0** (the user, 2026-10-11: "Build the budgets before 1.0"):
+      the order is task 250's fixes, then 251, then the release (task 247).
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
