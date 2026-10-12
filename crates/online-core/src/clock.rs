@@ -3404,6 +3404,49 @@ mod task_250_paths {
         }
     }
 
+    /// The folded total at the cap's own value, through the short cut and
+    /// the general step, to the bit. A skipped row's step and the accepted
+    /// row's, each finite, fold to exactly the cap: 2 + 3 = 5 under a cap
+    /// of 5, where nothing is removed; and 1e308 + 1e308 = `+inf` under an
+    /// infinite cap, which is not past it, so the removed time stays 0
+    /// (`inf − inf` would be NaN).
+    #[test]
+    fn a_folded_total_at_the_cap_takes_the_short_cut_as_the_general_step() {
+        let caps = ExactCaps::default();
+        for (gap_cap, rows) in [
+            (5.0, [0.0, 2.0, 5.0]),
+            (f64::INFINITY, [-1e308, 0.0, 1e308]),
+        ] {
+            let cfg = ClockCfg {
+                gap_cap,
+                ..ClockCfg::default()
+            };
+            let mut fast = ClockState::new();
+            let mut general = ClockState::new();
+            for (i, t) in rows.into_iter().enumerate() {
+                let c = Some(ClockValue::F64(t));
+                let accept = i != 1;
+                let took = fast
+                    .clone()
+                    .step_forward(&cfg, Some(&caps), c, None, accept, false)
+                    .is_some();
+                assert_eq!(took, i == 2, "row {i}");
+                let a = fast.advance_stamped(&cfg, &caps, c, None, accept);
+                let b = general.step_any(&cfg, Some(&caps), c, None, accept, false);
+                assert!(same(&a, &b), "{a:?}\n{b:?}");
+                assert!(same(&fast, &general), "{fast:?}\n{general:?}");
+                if i == 2 {
+                    assert_eq!(a.d_clock, gap_cap);
+                    assert!(!a.capped, "{a:?}");
+                    let Some(Stamp::Raw(raw, removed)) = a.stamp else {
+                        panic!("{a:?}")
+                    };
+                    assert_eq!((raw, removed.to_bits()), (t, 0.0f64.to_bits()));
+                }
+            }
+        }
+    }
+
     /// The rows the short cut leaves to the general step: the stream's
     /// first, a NaN clock (no step forward), a scored row, a skipped row,
     /// a step back, a session change, a row-count clock, a row advanced

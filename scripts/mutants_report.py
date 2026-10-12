@@ -7,7 +7,9 @@ Reads each run's `outcomes.json` (several, for a sharded pass), drops the
 missed mutants `scripts/mutants_equivalent.toml` names, sets apart those
 `scripts/mutants_tolerated.toml` names, and prints a Markdown report: the
 counts, then every remaining survivor by file with the line it mutates, then
-the tolerated ones by kind. The report is also appended to
+every timeout, then the tolerated ones by kind. A timeout a `loop` entry of the
+tolerated list names, a mutant that makes a loop endless, is listed with the
+tolerated ones rather than with the timeouts. The report is also appended to
 `$GITHUB_STEP_SUMMARY` when that is set. `--fail-on-missed` exits 1 if a
 survivor remains, never for a tolerated one; that is for the job on a
 change's own lines. The weekly pass reports its survivors and exits 0.
@@ -145,14 +147,28 @@ def report(
     survivors: dict[str, list[str]] = defaultdict(list)
     excused: list[str] = []
     kept: dict[str, list[str]] = defaultdict(list)
+    # A `loop` entry names a mutant that hangs, so it matches a timeout and
+    # nothing else; every other kind matches a survivor.
+    loops = [t for t in tolerated if t["kind"] == "loop"]
+    kept_kinds = [t for t in tolerated if t["kind"] != "loop"]
+    hung: list[str] = []
     for o in results:
+        if o["summary"] == "Timeout":
+            m = o["scenario"]["Mutant"]
+            where = f"`{m['name'].split(': ', 1)[0]}`"
+            what = m["name"].split(": ", 1)[-1]
+            t = matching_entry(m, loops, root)
+            if t is not None:
+                kept["loop"].append(f"- {where} {what}: {' '.join(t['why'].split())}")
+            else:
+                hung.append(f"- {where} {what}")
         if o["summary"] != "MissedMutant":
             continue
         m = o["scenario"]["Mutant"]
         where = f"`{m['name'].split(': ', 1)[0]}`"
         what = m["name"].split(": ", 1)[-1]
         e = matching_entry(m, equivalents, root)
-        t = None if e is not None else matching_entry(m, tolerated, root)
+        t = None if e is not None else matching_entry(m, kept_kinds, root)
         if e is not None:
             excused.append(f"- {where} {what}: {' '.join(e['why'].split())}")
         elif t is not None:
@@ -160,7 +176,7 @@ def report(
         else:
             survivors[m["file"]].append(f"- {where} {what}")
     missed = sum(len(v) for v in survivors.values())
-    n_kept = sum(len(v) for v in kept.values())
+    n_kept = sum(len(v) for k, v in kept.items() if k != "loop")
     lines = [
         "## Mutation testing",
         "",
@@ -181,6 +197,8 @@ def report(
         lines += ["", "### Survivors: a change here would pass every test", ""]
         for file in sorted(survivors):
             lines += [f"**{file}** ({len(survivors[file])})", *sorted(survivors[file]), ""]
+    if hung:
+        lines += ["", "### Timed out: a test hung at the time limit", "", *sorted(hung)]
     if kept:
         lines += ["", "### Tolerated, not counted (scripts/mutants_tolerated.toml)", ""]
         for kind in sorted(kept):

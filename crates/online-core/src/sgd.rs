@@ -2087,6 +2087,85 @@ mod tests {
         }
     }
 
+    /// The folded check at the edges where the exact expression decides:
+    /// each case's verdict hangs on one product or sum overflowing, so an
+    /// arithmetic change to any term of `d·z_i·w + l2·β_i` flips it. Each
+    /// is held to the short-circuit form the check replaced (`c65ef07`).
+    #[test]
+    fn the_folded_check_decides_at_the_overflow_edge_of_each_term() {
+        let any_form = |b: f64, z: f64, d: f64, w: f64, l2: f64, clip: f64, sq: bool| {
+            let g = (d * z * w + l2 * b).clamp(-clip, clip);
+            if sq {
+                (g * g).is_finite()
+            } else {
+                g.is_finite()
+            }
+        };
+        let inf = f64::INFINITY;
+        // (β, z, d, w, l2, clip, squared, verdict)
+        let cases = [
+            // `d·z·w` overflows; `d·z + w` and `d·z / w` do not.
+            (0.0, 1.0, 1e300, 1e10, 0.0, inf, false, false),
+            // `d·z·w + l2·β` overflows; their difference is 0.
+            (1e308, 1.0, 1e308, 1.0, 1.0, inf, false, false),
+            // The same sum, inside the clip: finite.
+            (1e308, 1.0, 1e308, 1.0, 1.0, 1e300, false, true),
+            // Under AdaGrad: `(d·z·w)²` overflows at 1e160; `(d·z + w)²`
+            // and `(d·z / w)²` do not.
+            (0.0, 1.0, 1e150, 1e10, 0.0, inf, true, false),
+            // `(d·z·w + l2·β)²` overflows at 2e154; the difference's
+            // square is 0.
+            (1e154, 1.0, 1e154, 1.0, 1.0, inf, true, false),
+            // `l2·β` at 1e154 tips the square over; `l2 + β`, 2e77, does
+            // not.
+            (1e77, 1.0, 1e154, 1.0, 1e77, inf, true, false),
+            // Each alone squares to a finite number.
+            (0.0, 1.0, 1e154, 1.0, 0.0, inf, true, true),
+            (1e77, 1.0, 0.0, 1.0, 1e77, inf, true, true),
+            // A clip at 1e150 keeps the square finite.
+            (1e154, 1.0, 1e154, 1.0, 1.0, 1e150, true, true),
+        ];
+        for (i, &(b, z, d, w, l2, clip, sq, want)) in cases.iter().enumerate() {
+            let got = slopes_usable(&[0.5, b], &[1.0, z], d, w, l2, clip, sq);
+            assert_eq!(got, want, "case {i}");
+            assert_eq!(got, any_form(b, z, d, w, l2, clip, sq), "case {i}");
+        }
+    }
+
+    /// The intercept's check inside `step`, at its own overflow edge,
+    /// with every input inside the bound. A first row at 1e100 sets the
+    /// slope to 5e298; a second, its feature at 1e-50, predicts 5e248, so
+    /// the intercept's gradient `d·w` at a weight of 1e100 is infinite
+    /// where the slope's, `d·z·w`, is 5e298 (and `d + w`, `d / w` are
+    /// finite). The row is refused, as the short-circuit form refused it,
+    /// and the fit does not move. Without an intercept no slot's gradient
+    /// is `d·w`, and the same row moves the slope, to the bit.
+    #[test]
+    fn a_step_refuses_a_row_by_the_intercept_alone() {
+        for fit_intercept in [true, false] {
+            let mut c = cfg(1, SgdLoss::Squared);
+            c.clip_gradient = f64::INFINITY;
+            c.min_weight = 0.0;
+            c.fit_intercept = fit_intercept;
+            let mut m = Sgd::new(c).unwrap();
+            m.step(&[1e100], &[Some(1e100)], 0.0, 1e100);
+            let before = m.coefficients()[0].clone();
+            let b1 = *before.last().unwrap();
+            assert!(b1 > 1e298, "{before:?}");
+            m.step(&[1e-50], &[Some(0.0)], 0.0, 1e100);
+            let after = m.coefficients()[0].clone();
+            if fit_intercept {
+                assert_eq!(after, before);
+            } else {
+                let d = b1 * 1e-50;
+                assert!((d * 1e100).is_infinite());
+                let g = d * 1e-50 * 1e100 + 0.0 * b1;
+                assert_eq!(after, vec![b1 - 0.05 * g]);
+                assert!(after[0] < b1);
+            }
+        }
+    }
+
     #[test]
     fn clip_gradient_bounds_the_step() {
         let mut c = cfg(1, SgdLoss::Squared);

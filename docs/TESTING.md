@@ -973,16 +973,16 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file holds 225
-entries (2026-10-11), each an equivalent mutant -- a few
+`scripts/mutants_equivalent.toml` does not list. That file holds 230
+entries (2026-10-12), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
 **A survivor a test could tell apart only by a difference no caller can act
 on is tolerated, and listed apart** (2026-10-05).
-`scripts/mutants_tolerated.toml` names 39, in 35 entries, each with its kind
-and the measured size of the difference. The report shows them by kind and
+`scripts/mutants_tolerated.toml` names 56, in 52 entries, each with its kind
+and the measured size of the difference, or the loop it makes endless. The report shows them by kind and
 fails on none of them, in either job. The kinds:
 
 | kind | what it is |
@@ -993,6 +993,7 @@ fails on none of them, in either job. The kinds:
 | a release-only guard | a guard only a release build reaches, past a `debug_assert!` |
 | past the input bound | a weight past the bound on what an input may be |
 | too slow to test | a path one call of which costs 30 s in a debug build |
+| an endless loop | a timeout, not a survivor: an iteration that changes nothing repeats for ever, so the test hangs at the time limit, and only a bound on the iterations in the code itself would make it fail |
 
 An entry matches as an equivalent does. It may name the `columns` it covers
 or take in the line before, so it cannot cover a twin that a test catches,

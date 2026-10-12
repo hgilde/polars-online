@@ -20,6 +20,11 @@
 #   input-bound  the two part only past the documented input bound
 #   slow         the line runs only where one call costs about 30 s in a
 #                debug build, too slow for the suite
+#   loop         the mutant makes a loop endless: an iteration that changes
+#                nothing repeats for ever, so the test hangs at the time
+#                limit rather than fails, and only a bound on the iterations
+#                in the code itself would make it fail. The report sets such
+#                a timeout apart as it sets a tolerated survivor apart
 #
 # tests/test_mutants_report.py checks every entry still finds its line. Add
 # one only with the measured size of the difference.
@@ -389,3 +394,185 @@ kind = "tie"
 why = """the two part only at a pivot exactly `1e-12` of its diagonal, \
 which no input built from data lands on to the bit; on the same 6,194 \
 designs, the wide ones setting columns aside, no path differed"""
+
+# Task 250 (docs/PLAN.md): from run 38205650365 over the lines of the push
+# to 8144574. The `loop` entries are its timeouts. `lars_lasso_rows`' loop
+# reads only its own state -- `b`, `λ`, the active set and its factor,
+# `knot`, `usable` -- and leaves it by `max_steps` (which counts a step
+# taken), by an empty active set or by `γ ≥ λ − tie`. An iteration that
+# changes none of that state is followed by the same iteration for ever:
+# the `continue` after an admission where nothing entered, or a step at the
+# knot just made (`γ ≤ tie`) where nothing entered or left.
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace && with ||"
+line_has = "let mut usable: Vec<bool> = (0..k).map(|j| live[j] && d[j].is_finite()).collect();"
+kind = "loop"
+why = """a dead column, or one whose correlation is not finite, counts as \
+usable: one with no spread (a zero diagonal) is collinear with every set, \
+so whenever its step is the smallest it is admitted, fails, and nothing \
+entered; an infinite correlation makes `λ_max` and `tie` infinite and \
+`γ ≥ λ − tie` NaN, never true. Either way an iteration that changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace || with &&"
+line_has = "if !usable[j] || state.is_in[j] {"
+kind = "loop"
+why = """a column set aside as collinear (or dead) gets a step again; when it \
+is the smallest the column is admitted, fails again, and nothing entered: \
+an iteration that changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace >= with <"
+line_has = "if gamma >= lambda - tie {"
+kind = "loop"
+why = """at the path's end, where no column has a step left (`γ = +∞`, every \
+column active or set aside), the loop goes on: nothing is within `tie` of \
+`γ` to enter or leave, so the admission is empty and the iteration \
+changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace <= with >"
+line_has = "&& g <= gamma + tie"
+kind = "loop"
+why = """the column whose entry is the smallest step `γ` is left out of \
+`entering`; where it is the only one with a step (the last to enter) and \
+nothing leaves, the admission is empty and the iteration changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace + with -"
+line_has = "&& g <= gamma + tie"
+kind = "loop"
+why = """`g ≤ γ − tie` holds for no column at the smallest step, so when the \
+smallest step is an entry and nothing leaves, the admission is empty and \
+the iteration changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace + with *"
+line_has = "&& g <= gamma + tie"
+kind = "loop"
+why = """as `replace + with -` here: `tie` is `64 ε λ_max`, below 1 wherever \
+`λ_max` is below 7e13, so `g ≤ γ·tie` fails at the smallest step `γ > 0`"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace <= with >"
+line_has = ".filter(|&pos| leave(pos).is_some_and(|g| g <= gamma + tie))"
+kind = "loop"
+why = """the coefficient whose step to 0 is the smallest `γ` is left out of \
+`leaving`; where it is the only one heading to 0 and no entry is within \
+`tie`, the step's admission is empty and the iteration changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace + with -"
+line_has = ".filter(|&pos| leave(pos).is_some_and(|g| g <= gamma + tie))"
+kind = "loop"
+why = """as `replace <= with >` here: `g ≤ γ − tie` holds for no coefficient \
+at the smallest step"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "replace + with *"
+line_has = ".filter(|&pos| leave(pos).is_some_and(|g| g <= gamma + tie))"
+kind = "loop"
+why = """as `replace <= with >` here: with `tie` below 1, `g ≤ γ·tie` holds \
+for no coefficient at the smallest step `γ > 0`"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "lars_lasso_rows"
+mutation = "delete !"
+line_has = "if !leaving.is_empty() {"
+kind = "loop"
+why = """a coefficient that reaches 0 is never taken out: the step leaves it \
+at 0, or past it by rounding, where its next step to 0 is 0, so `γ ≤ tie` \
+and the knot is made again with the coefficient still in, no step taken \
+and nothing out: an iteration that changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """the body replaced, no column leaves: the coefficient that reached 0 \
+stays active with its sign (the caller zeroes only the returned columns' \
+`b`, none here), so its next step to 0 is 0, `γ ≤ tie`, and the knot is \
+made again with it still in, no step taken and nothing out: an iteration \
+that changes nothing"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![(0, 0.0)]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
+column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
+already, or another set to 0 at a knot made again and again"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![(0, 1.0)]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
+column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
+already, or another set to 0 at a knot made again and again"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![(0, -1.0)]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
+column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
+already, or another set to 0 at a knot made again and again"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![(1, 0.0)]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
+column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
+already, or another set to 0 at a knot made again and again"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![(1, 1.0)]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
+column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
+already, or another set to 0 at a knot made again and again"""
+
+[[tolerated]]
+file = "crates/online-core/src/gramfit/lars.rs"
+function = "Active::leave_all"
+mutation = "replace Active::leave_all -> Vec<(usize, f64)> with vec![(1, -1.0)]"
+line_has = "let mut gone = Vec::with_capacity(positions.len());"
+kind = "loop"
+why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
+column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
+already, or another set to 0 at a knot made again and again"""

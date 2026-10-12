@@ -2080,3 +2080,59 @@ mutation = "replace * with /"
 line_has = ".map(|p| d[self.cols[p]] - lambda * self.signs[p])"
 why = """a sign is 1.0 or -1.0, and `λ / ±1` is `λ · ±1` to the bit \
 (task 236)"""
+
+# Task 250 (docs/PLAN.md): the survivors of run 38205650365 over the lines
+# of the push to 8144574 that no input tells from the original. Every other
+# survivor there got a test; its timeouts are in scripts/mutants_tolerated.toml.
+
+[[equivalent]]
+file = "crates/online-core/src/sgd.rs"
+function = "<impl OnlineModel for Sgd>::step"
+mutation = "replace * with /"
+line_has = "if (off == 1 && !usable((d * 1.0 * weight).clamp(-clip, clip))) || !slopes_ok {"
+why = """at the intercept's `d * 1.0`: `d / 1.0` is `d` to the bit, as \
+`d * 1.0` is, for every double, a NaN, an infinity and a signed zero \
+included. The line's other `/`, at `* weight`, is caught \
+(`a_step_refuses_a_row_by_the_intercept_alone`)"""
+
+[[equivalent]]
+file = "crates/online-core/src/pa.rs"
+function = "<impl OnlineModel for Pa>::step"
+mutation = "replace * with /"
+line_has = """for (b, z) in b0.iter_mut().zip(head) {
+                *b += step * z;"""
+why = """`head` is the intercept's slot, always `1.0`: `INTERCEPT` without a \
+scaler, else `zbuf[0]`, which the step sets to `1.0` before it reads the \
+row. `step / 1.0` is `step * 1.0`, both `step` to the bit. The slopes' \
+twin on the next loop is caught"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "GammaCache::slot"
+mutation = "replace ^ with |"
+line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
+why = """the mask keeps the slot inside the 256 whatever is mixed, and the slot \
+only places a key: a lookup answers from it only where the stored key's 64 \
+bits are the asked `ν`'s, and computes `gamma_diff(ν, a)` otherwise, so every \
+lookup returns the same value. A worse mix changes only how often a key is \
+found, a count the tests read to show the cache is used, not a result. \
+Both `^` on the line"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "GammaCache::slot"
+mutation = "replace ^ with &"
+line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
+why = """as `replace ^ with |` here: the slot stays inside the mask and only \
+places a key that every hit compares whole. The first `^`; the second's \
+`&`, which empties the slot's mix more, is caught by the hit count of \
+`the_gamma_cache_hits_on_a_long_stream_and_holds_what_it_computes`"""
+
+[[equivalent]]
+file = "crates/online-core/src/bocpd.rs"
+function = "GammaCache::slot"
+mutation = "replace >> with <<"
+line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
+why = """as `replace ^ with |` here: a shift left by 29 cannot overflow into a \
+panic, and the mask keeps the slot inside the 256, where a hit compares \
+the key whole"""

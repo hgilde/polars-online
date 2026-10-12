@@ -50,7 +50,7 @@ def test_every_equivalent_still_finds_its_line():
 
 #: The reasons `scripts/mutants_tolerated.toml`'s header gives for keeping a
 #: survivor; an entry names one of them.
-KINDS = {"rounding", "below-error", "tie", "test-build", "input-bound", "slow"}
+KINDS = {"rounding", "below-error", "tie", "test-build", "input-bound", "slow", "loop"}
 
 
 def test_every_tolerated_entry_still_finds_its_line_and_column():
@@ -247,6 +247,33 @@ def test_a_tolerated_survivor_is_shown_apart_and_fails_nothing(tmp_path):
     run = _run(only, [("", 5, "replace < with <=")])
     _, missed = report_mod.report([run], root=tmp_path, equivalents=[], tolerated=[TOLERATED])
     assert missed == 0
+
+
+def test_a_loop_entry_sets_its_timeout_apart_and_excuses_no_survivor(tmp_path):
+    """A `loop` entry names a mutant that makes a loop endless, which times
+    out rather than survives: the report lists that timeout under the kind
+    with its reason, and a timeout no entry names under the timeouts. The
+    same entry does not excuse a survivor on its line (task 250)."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/m.rs").write_text("a\nb\nc\n    if w > 0.0 {\nlet x = y < z;\n")
+    run = _run(tmp_path, [("", 5, "replace < with <=")])
+    data = json.loads((run / "outcomes.json").read_text(encoding="utf-8"))
+    hung = json.loads(json.dumps(data["outcomes"][-1]))
+    hung["summary"] = "Timeout"
+    other = json.loads(json.dumps(hung))
+    other["scenario"]["Mutant"]["name"] = "src/m.rs:4:9: replace > with >= in f"
+    other["scenario"]["Mutant"]["span"]["start"]["line"] = 4
+    data["outcomes"] += [hung, other]
+    (run / "outcomes.json").write_text(json.dumps(data), encoding="utf-8")
+    loop = {**TOLERATED, "kind": "loop", "why": "the loop never ends"}
+    text, missed = report_mod.report([run], root=tmp_path, equivalents=[], tolerated=[loop])
+    assert missed == 1, text
+    assert "4 mutants: 1 caught, 1 survived, 0 equivalent, 0 tolerated, 2 timed out" in text
+    survivors, rest = text.split("### Timed out")
+    timeouts, kept = rest.split("### Tolerated")
+    assert "src/m.rs:5:9" in survivors
+    assert "src/m.rs:4:9" in timeouts and "src/m.rs:5:9" not in timeouts
+    assert "**loop** (1)" in kept and "src/m.rs:5:9" in kept and "the loop never ends" in kept
 
 
 def test_a_tolerated_entry_with_columns_holds_only_there(tmp_path):
