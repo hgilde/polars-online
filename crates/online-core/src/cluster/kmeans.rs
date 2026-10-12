@@ -251,7 +251,14 @@ pub const FAR_ROWS: u64 = 3;
 /// same summaries are the same model whatever it knows, so [`PartialEq`]
 /// ignores it. A decay leaves a clear batch clear (`0 · λ = 0`).
 #[derive(Debug, Clone, Default)]
-struct Clean(Vec<bool>);
+struct Clean {
+    /// One flag per batch; empty, or another length, when nothing is known.
+    known: Vec<bool>,
+    /// Batches a checkpoint left as they were: what the tests read to prove
+    /// the shortcut ran.
+    #[cfg(test)]
+    skipped: u64,
+}
 
 impl PartialEq for Clean {
     fn eq(&self, _: &Self) -> bool {
@@ -489,7 +496,7 @@ impl KMeans {
             self.far_rows[j] = self.far_rows[j].saturating_add(1);
         } else {
             self.batch[j].absorb_plain(x, w, d2);
-            if let Some(clean) = self.clean.0.get_mut(j) {
+            if let Some(clean) = self.clean.known.get_mut(j) {
                 *clean = false;
             }
             self.rows[j] = self.rows[j].saturating_add(1);
@@ -499,20 +506,25 @@ impl KMeans {
     /// Merge every batch into its cluster and refresh the far cut; then,
     /// when due, the split–merge check, which always consumes the far rows.
     fn checkpoint(&mut self) {
-        if self.clean.0.len() != self.batch.len() {
-            self.clean.0 = vec![false; self.batch.len()];
+        if self.clean.known.len() != self.batch.len() {
+            self.clean.known = vec![false; self.batch.len()];
         }
         for ((c, b), clean) in self
             .clusters
             .iter_mut()
             .zip(&mut self.batch)
-            .zip(self.clean.0.iter_mut())
+            .zip(self.clean.known.iter_mut())
         {
             c.merge_plain(b);
             // A batch no row reached is clear already (task 250).
             if !*clean {
                 b.clear();
                 *clean = true;
+            } else {
+                #[cfg(test)]
+                {
+                    self.clean.skipped += 1;
+                }
             }
         }
         self.since = 0;
@@ -747,7 +759,7 @@ impl KMeans {
             .collect();
         self.rows = vec![0; k];
         self.batch = vec![ClusterSummary::empty(p); k];
-        self.clean.0.clear();
+        self.clean.known.clear();
         self.far = vec![ClusterSummary::empty(p); k];
         self.far_rows = vec![0; k];
         let buf = std::mem::take(&mut self.buf);
@@ -1672,38 +1684,69 @@ mod tests {
 
     /// Every batch the model knows to be clean is clear to the bit, so the
     /// checkpoint that skips clearing it again writes nothing `clear` would
-    /// have changed (task 250): over checkpoint spacings of 1 and 3, the
+    /// have changed (task 250): over checkpoint spacings of 1, 3 and 8 (the
+    /// last long enough for a batch to take rows of its blob), the
     /// split-merge rule on and off, weights of 0 and gaps that decay a
-    /// batch's weight, and a restore in the middle, which knows of none.
+    /// batch's weight, a restore in the middle, which knows of none, and
+    /// blobs at the origin and at 1e12, where a batch's centre carries a
+    /// non-zero low part that the clear must have zeroed. Beside it runs the
+    /// slow path, a copy told before every row that it knows of no clean
+    /// batch, so its every checkpoint clears every batch, as before the
+    /// shortcut: every output and the saved state are the same to the bit,
+    /// and the shortcut is proven to have run (task 252).
     #[test]
     fn a_batch_known_clean_is_clear_to_the_bit() {
-        let mut held = 0;
-        for every in [1, 3] {
-            for split_merge in [0.0, 1.0] {
-                let mut m = KMeans::new(KMeansCfg {
-                    warm_rows: 6,
-                    update_every_rows: every,
-                    split_merge,
-                    ..cfg(3)
-                })
-                .unwrap();
-                for (i, r) in blobs(400, 9).iter().enumerate() {
-                    let w = if i % 7 == 0 { 0.0 } else { 1.0 };
-                    let d = if i % 50 == 0 { 40.0 } else { 1.0 };
-                    m.step(r, &[], d, w);
-                    if i == 200 {
-                        m = KMeans::restore(&m.state()).unwrap();
-                    }
-                    for (b, &clean) in m.batch.iter().zip(&m.clean.0) {
-                        if clean {
-                            held += 1;
-                            assert!(b.is_clear(), "row {i}: {b:?}");
+        let (mut held, mut low_parts, mut skipped) = (0, 0, 0);
+        let bytes = |m: &KMeans| rmp_serde::to_vec(&m.state()).unwrap();
+        for offset in [0.0, 1e12] {
+            for every in [1, 3, 8] {
+                for split_merge in [0.0, 1.0] {
+                    let mut m = KMeans::new(KMeansCfg {
+                        warm_rows: 6,
+                        update_every_rows: every,
+                        split_merge,
+                        ..cfg(3)
+                    })
+                    .unwrap();
+                    let mut slow = m.clone();
+                    for (i, r) in blobs(400, 9).iter().enumerate() {
+                        let r = [r[0] + offset, r[1] + offset];
+                        let w = if i % 7 == 0 { 0.0 } else { 1.0 };
+                        let d = if i % 50 == 0 { 40.0 } else { 1.0 };
+                        slow.clean.known.clear();
+                        let (a, b) = (m.step(&r, &[], d, w), slow.step(&r, &[], d, w));
+                        let bits =
+                            |s: &Step| s.pred.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                        assert_eq!(bits(&a), bits(&b), "row {i}");
+                        assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "row {i}");
+                        if i == 200 {
+                            m = KMeans::restore(&m.state()).unwrap();
+                            slow = KMeans::restore(&slow.state()).unwrap();
+                        }
+                        for (b, &clean) in m.batch.iter().zip(&m.clean.known) {
+                            if clean {
+                                held += 1;
+                                assert!(b.is_clear(), "row {i}: {b:?}");
+                            } else if offset != 0.0 && b.c_lo.iter().any(|&l| l != 0.0) {
+                                low_parts += 1;
+                            }
                         }
                     }
+                    assert_eq!(bytes(&m), bytes(&slow), "offset {offset}, every {every}");
+                    skipped += m.clean.skipped;
+                    assert_eq!(slow.clean.skipped, 0);
                 }
             }
         }
         assert!(held > 1000, "the clean batches were held {held} times");
+        assert!(
+            low_parts > 100,
+            "a batch held a non-zero low part {low_parts} times"
+        );
+        assert!(
+            skipped > 1000,
+            "the checkpoint skipped a clean batch {skipped} times"
+        );
     }
 
     #[test]
