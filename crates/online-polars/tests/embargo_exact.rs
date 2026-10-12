@@ -19,7 +19,7 @@
 //! clock (task 153). With no decay and unit weights `weight_sum` counts the
 //! rows learned, and `learned_clock` names the newest of them (task 152).
 
-use online_polars::{Bank, Like, Spec, WindowsConfig, WindowsRun};
+use online_polars::{Bank, ChunkOut, Like, Spec, Stream, WindowsConfig, WindowsRun};
 use polars::prelude::*;
 
 /// Nanoseconds since the Unix epoch of 2024-01-01T00:00:00.
@@ -548,6 +548,13 @@ fn across_every_clock_event_a_row_waits_the_time_that_passed_exactly() {
 /// Every float field of the spec's struct and `learned_clock`, row by row,
 /// bit for bit.
 fn assert_same(a: &DataFrame, b: &DataFrame, what: &str) {
+    assert_floats_same(a, b, what);
+    assert_eq!(learned_ns(a), learned_ns(b), "{what}: learned_clock");
+}
+
+/// Every float field of the spec's struct, row by row, bit for bit (on a
+/// number clock `learned_clock` is one of them).
+fn assert_floats_same(a: &DataFrame, b: &DataFrame, what: &str) {
     let (sa, sb) = (
         a.column("m").unwrap().struct_().unwrap().fields_as_series(),
         b.column("m").unwrap().struct_().unwrap().fields_as_series(),
@@ -564,7 +571,6 @@ fn assert_same(a: &DataFrame, b: &DataFrame, what: &str) {
             }
         }
     }
-    assert_eq!(learned_ns(a), learned_ns(b), "{what}: learned_clock");
 }
 
 /// Chunk invariance across every clock event (hard rule 3): chunks of 1, 7
@@ -774,5 +780,74 @@ fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
                 }
             }
         }
+    }
+}
+
+/// The embargo across the bank's runs inside one chunk (task 250). A chunk
+/// is fed through its stream in runs of [`ChunkOut::run_rows`] rows, each
+/// scheduled on its own, and the embargo reads each row's place on the
+/// elapsed clock from the schedule of the run it arrived in -- kept beside
+/// the row plans, by the row's position, rather than in them. Here one
+/// chunk is several runs and rows are held across every boundary between
+/// them: a row arrives near a run's end and is released in the next run,
+/// after its place has gone with the run that recorded it. The releases
+/// hold the definition on an irregular number clock with skipped rows --
+/// row `u` is learned before row `s` is scored when `t[s] - t[u]` is at
+/// least the embargo, by one subtraction -- and the run as one chunk, 7
+/// chunks and 600 chunks gives every float field to the bit (hard rule 3).
+#[test]
+fn an_embargo_holds_rows_across_the_runs_inside_a_chunk() {
+    let embargo = 5.0;
+    let s = spec(&format!(r#""gap_cap": 1.0, "embargo": {embargo}"#));
+    let stream = Stream::new(&s).unwrap();
+    let run_rows = ChunkOut::run_rows(&s, stream.n_models(), stream.n_slots());
+    let n = 3 * run_rows + 101;
+    let mut r = lcg(41);
+    let mut at = 0.0;
+    let t: Vec<f64> = (0..n)
+        .map(|i| {
+            if i > 0 {
+                at += 0.05 + 0.1 * r().abs();
+            }
+            at
+        })
+        .collect();
+    let skip: Vec<bool> = (0..n).map(|i| i % 13 == 5).collect();
+    let accepted: Vec<bool> = skip.iter().map(|s| !s).collect();
+    let df = frame(Series::new("t".into(), t.clone()), &skip, &vec!["s"; n], 43);
+    // The definition, by one pointer: the clock never steps back, so the
+    // rows whose wait has run out at `s` are a prefix of the stream.
+    let mut want = vec![None; n];
+    let (mut end, mut count, mut newest) = (0usize, 0usize, None);
+    for s in 0..n {
+        while end < s && t[s] - t[end] >= embargo {
+            if accepted[end] {
+                count += 1;
+                newest = Some(end);
+            }
+            end += 1;
+        }
+        if accepted[s] {
+            want[s] = Some((count, newest));
+        }
+    }
+    // Rows are held across each boundary between runs: the rows just
+    // before the boundary are released after it.
+    for b in 1..=3 {
+        let edge = b * run_rows;
+        let released_at = (edge..n).find(|&s| want[s].is_some_and(|(_, u)| u >= Some(edge - 2)));
+        assert!(
+            released_at.is_some_and(|s| s > edge),
+            "a row held across the boundary at {edge}: {released_at:?}"
+        );
+    }
+    let whole = run(&s, &df, 0);
+    assert_none(
+        "across the runs",
+        &mismatches(&want, &weight_sum(&whole), &learned_f64(&whole), |u| t[u]),
+    );
+    for chunks in [7, 600] {
+        let out = run(&s, &df, n.div_ceil(chunks));
+        assert_floats_same(&whole, &out, &format!("{chunks} chunks"));
     }
 }

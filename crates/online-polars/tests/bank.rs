@@ -998,7 +998,7 @@ fn coef_rows(out: &DataFrame, name: &str) -> Vec<usize> {
 fn runs_through_a_wide_model_are_invisible() {
     // The bank feeds a task's rows through its stream in runs of
     // `ChunkOut::run_rows` rows, one set of buffers each (docs/PERFORMANCE.md
-    // §13). A 230-statistic `ew_cov` gets runs of 1 104 rows, so 5 000 rows
+    // §13). A 230-statistic `ew_cov` gets runs of 1 040 rows, so 5 000 rows
     // in one chunk are five runs, the last of them partial; the same rows in
     // five chunks are one run each, and one row at a time is 5 000 runs of
     // one. Chunk invariance says all three are the same computation, and
@@ -1009,7 +1009,7 @@ fn runs_through_a_wide_model_are_invisible() {
     assert_eq!(stream.n_slots(), k + k + k * (k - 1) / 2);
     assert_eq!(
         ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots()),
-        1104
+        1040
     );
     let df = make_wide_df(5000, k);
     let one = run_spec_chunked(&spec, &df, 1);
@@ -1034,14 +1034,14 @@ fn runs_through_a_wide_model_are_invisible() {
 fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     // The last row of a *chunk* reports the coefficients, not the last row
     // of every run inside it: `process_chunk`'s `last` flag is what tells the
-    // two apart. A narrow `ewridge` gets runs of 65 520 rows (four values
+    // two apart. A narrow `ewridge` gets runs of 13 104 rows (four values
     // a row -- pred, resid, n_eff, settled_frac -- against a 2 MiB budget),
     // so a chunk of twice that plus a hundred is three runs with two
     // boundaries inside it, and exactly one `coef`.
     let spec = ridge_spec("");
     let stream = Stream::new(&spec).unwrap();
     let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
-    assert_eq!(run_rows, 65_520);
+    assert_eq!(run_rows, 13_104);
     let n = 2 * run_rows + 100;
     let df = make_wide_df(n, 2);
 
@@ -1090,11 +1090,12 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
     // Every row carries `settled_frac` beside `n_eff` now
     // (docs/WARMUP-AND-CONVERGENCE.md §3); `withheld_reason` is a byte and
     // does not count against the f64 budget.
+    // Each row's schedule counts too: 16 f64s of it (task 250).
     let cases: Vec<(Spec, usize)> = vec![
-        (ew_cov_spec(20), 232),     // 230 statistics + n_eff + settled_frac
-        (ew_cov_spec(2), 7),        // 5 statistics + n_eff + settled_frac
-        (ridge_spec(""), 4),        // pred + resid + n_eff + settled_frac
-        (ew_cov_spec(200), 20_302), // wider than the budget's floor allows
+        (ew_cov_spec(20), 232 + 16),     // 230 statistics + n_eff + settled_frac
+        (ew_cov_spec(2), 7 + 16),        // 5 statistics + n_eff + settled_frac
+        (ridge_spec(""), 4 + 16),        // pred + resid + n_eff + settled_frac
+        (ew_cov_spec(200), 20_302 + 16), // wider than the budget's floor allows
     ];
     for (spec, width) in cases {
         let stream = Stream::new(&spec).unwrap();
@@ -1115,12 +1116,65 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
             assert!(bytes > budget, "{}: at the floor for a reason", spec.name);
         }
     }
-    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 1104);
-    assert_eq!(ChunkOut::run_rows(&ridge_spec(""), 1, 1), 65_520);
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 1040);
+    assert_eq!(ChunkOut::run_rows(&ridge_spec(""), 1, 1), 13_104);
     // A no-target model with one statistic and one instance writes three
     // values a row -- the statistic, `n_eff`, `settled_frac` -- and gets
     // the widest run there is.
-    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 87_376);
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 13_776);
+}
+
+/// A narrow model's runs at one chunk, 7 chunks and 600 chunks (hard rule
+/// 3; task 250). A run's row budget counts the row plan pass 1 writes and
+/// pass 2 reads, so a narrow `ewridge` -- five values a row with `n_eff`,
+/// `settled_frac` and the plan's sixteen -- now runs about thirteen
+/// thousand rows at a time, and one chunk of two and a half runs has two
+/// boundaries inside it. Every float field of every row is the same to the
+/// bit at every chunking: a run boundary is invisible, as a chunk boundary
+/// is.
+#[test]
+fn a_narrow_model_s_runs_are_invisible_to_the_bit() {
+    let spec: Spec = serde_json::from_str(
+        r#"{"name": "m", "model": {"type": "ewridge", "ridge": 1e-6},
+            "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "half_life": 500.0,
+            "min_weight": 5.0}"#,
+    )
+    .unwrap();
+    let stream = Stream::new(&spec).unwrap();
+    let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
+    let n = 2 * run_rows + run_rows / 2;
+    let df = make_wide_df(n, 2);
+    let fields = |d: &DataFrame| drop_coef(&d.clone().unnest(["m"], None).unwrap());
+    let one = fields(&run_spec_chunked(&spec, &df, 1));
+    // One chunk spans three runs, the last one partial.
+    assert!(
+        n > 2 * run_rows && n < 3 * run_rows,
+        "{n} rows, runs of {run_rows}"
+    );
+    let floats: Vec<&Column> = one
+        .columns()
+        .iter()
+        .filter(|c| c.dtype() == &DataType::Float64)
+        .collect();
+    assert!(floats.len() >= 4, "pred, resid, n_eff, settled_frac");
+    for c in &floats {
+        assert!(c.null_count() < n / 10, "{} was reported", c.name());
+    }
+    for chunks in [7, 600] {
+        let other = fields(&run_spec_chunked(&spec, &df, chunks));
+        for c in &floats {
+            let bits = |d: &DataFrame| -> Vec<Option<u64>> {
+                let col = d.column(c.name()).unwrap().f64().unwrap().clone();
+                col.iter().map(|v| v.map(f64::to_bits)).collect()
+            };
+            assert_eq!(
+                bits(&one),
+                bits(&other),
+                "{}: 1 vs {chunks} chunks",
+                c.name()
+            );
+        }
+    }
 }
 
 /// A blocked `ewridge` spec (docs/PLAN.md task 71): a block of 16 under a

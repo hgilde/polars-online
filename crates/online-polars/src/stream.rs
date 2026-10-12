@@ -2703,7 +2703,13 @@ impl ChunkOut {
         const BUDGET: usize = 2 << 20;
         /// `f64`s in a 128-byte line, the longest of the two OSes' lines.
         const LINE: usize = 16;
-        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1);
+        /// The row's schedule, written in pass 1 and read in pass 2, in
+        /// `f64`s: 128 bytes since the exact stamps joined it, against 56
+        /// before. Left out of the budget, a narrow model's run of a hundred
+        /// thousand rows held 13 to 16 MB of it, past the cache, and a `seqtest`
+        /// row spent a large share storing and reloading it (task 250).
+        const PLAN: usize = std::mem::size_of::<RowPlan>().div_ceil(8);
+        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1) + PLAN;
         let lines = BUDGET / (8 * width * LINE);
         let lines = if lines.is_multiple_of(2) {
             lines.saturating_sub(1)
@@ -3403,6 +3409,7 @@ impl Stream {
         rows: &[usize],
         base: usize,
         coef_at: Option<usize>,
+        keep_elapsed: bool,
     ) -> Result<Scheduled, ClockRefusal> {
         let n_rows = rows.len();
         let mut clock_state = self.persisted.clock.clone();
@@ -3411,6 +3418,11 @@ impl Stream {
         let coef_plan = CoefPlan::of(spec);
         let mut coef_cadence = self.persisted.coef_cadence;
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
+        // Each row's place on the elapsed clock, kept only where the
+        // `embargo` buffer reads it (task 250: beside the plan rather than
+        // in it, which every pass over the plans paid for).
+        let mut elapsed: Vec<Option<Stamp>> =
+            Vec::with_capacity(if keep_elapsed { n_rows } else { 0 });
         for (ri, &row) in rows.iter().enumerate() {
             let i = base + ri;
             // Null arrives as NaN from extraction, so one `usable` covers
@@ -3466,7 +3478,6 @@ impl Stream {
                 d_clock: adv.d_clock,
                 elapsed_step: adv.elapsed,
                 stamp: adv.stamp,
-                elapsed: adv.elapsed_stamp,
                 clock: shown,
                 reset: adv.reset,
                 blend: !adv.reset && adv.session_changed,
@@ -3481,6 +3492,9 @@ impl Stream {
                 buffered: false,
                 w: w.unwrap_or(1.0),
             });
+            if keep_elapsed {
+                elapsed.push(adv.elapsed_stamp);
+            }
         }
         Ok(Scheduled {
             clock: clock_state,
@@ -3488,6 +3502,7 @@ impl Stream {
             fed,
             coef_cadence,
             plans,
+            elapsed,
         })
     }
 
@@ -3526,12 +3541,22 @@ impl Stream {
         if !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
             return None;
         }
-        let mut plans = self
+        let Scheduled {
+            mut plans, elapsed, ..
+        } = self
             .schedule(
-                spec, cfg, features, clock, session, weight, rows, base, None,
+                spec,
+                cfg,
+                features,
+                clock,
+                session,
+                weight,
+                rows,
+                base,
+                None,
+                self.embargo.is_some() || formulas.is_some(),
             )
-            .ok()?
-            .plans;
+            .ok()?;
         let mut pending = self.persisted.pending.clone();
         let mut held_break = self.persisted.held_break;
         Self::apply_label_delay(
@@ -3539,6 +3564,7 @@ impl Stream {
             &mut pending,
             &mut held_break,
             &mut plans,
+            &elapsed,
             features,
             targets,
             formulas,
@@ -3656,8 +3682,18 @@ impl Stream {
             fed,
             coef_cadence,
             mut plans,
+            elapsed,
         } = self.schedule(
-            spec, cfg, features, clock, session, weight, rows, base, coef_at,
+            spec,
+            cfg,
+            features,
+            clock,
+            session,
+            weight,
+            rows,
+            base,
+            coef_at,
+            self.embargo.is_some() || formulas.is_some(),
         )?;
         for plan in plans.iter().filter(|p| p.accept) {
             out.processed[plan.ri] = true;
@@ -3673,16 +3709,19 @@ impl Stream {
         // nothing; per row in row order, so chunking cannot move a bit; and
         // before `embargo` moves a break's events onto the row that
         // learns them, so a break counts where it arrived.
+        // The column statistics and the clock range first, over the run's
+        // rows at once (`DataSummary::feed_rows`), then the counts: the two
+        // touch different numbers, each in row order.
         if let Some(summary) = self.persisted.summary.as_mut() {
+            summary.feed_rows(
+                plans.iter().filter(|p| p.direct()).map(|p| p.i),
+                features,
+                targets,
+                weight,
+                clock,
+            );
             for plan in plans.iter().filter(|p| p.direct()) {
                 let i = plan.i;
-                summary.feed_row(
-                    features.row(i),
-                    targets,
-                    weight.map(|w| w[i]),
-                    clock.map(|c| c.at(i)),
-                    i,
-                );
                 summary.events(plan.session_changed, plan.backwards, plan.reset);
                 if plan.accept {
                     // A plain target counts at its row; a formula target
@@ -3703,6 +3742,7 @@ impl Stream {
             &mut self.persisted.pending,
             &mut self.persisted.held_break,
             &mut plans,
+            &elapsed,
             features,
             targets,
             formulas,
@@ -3894,6 +3934,11 @@ impl Stream {
         pending: &mut Vec<PendingRow>,
         held_break: &mut HeldBreak,
         plans: &mut Vec<RowPlan>,
+        // Each plan's place on the elapsed clock, by its `ri`: every plan
+        // handed here is one [`Stream::schedule`] made, one per row, so it
+        // is indexed rather than looked up -- a plan without its stamp
+        // fails loudly instead of reading as no place at all.
+        elapsed: &[Option<Stamp>],
         features: &FeatureRows,
         targets: &[Vec<f64>],
         formulas: Option<FormulaTargets<'_>>,
@@ -3914,7 +3959,6 @@ impl Stream {
             d_clock: row.d_clock,
             elapsed_step: row.d_clock,
             stamp: row.stamp,
-            elapsed: None,
             clock: row.clock,
             reset: false,
             blend: row.blend,
@@ -3985,7 +4029,7 @@ impl Stream {
             }
             if !plan.reset {
                 // With no embargo a formula row waits for its window alone.
-                let now = plan.elapsed;
+                let now = elapsed[plan.ri];
                 let ready = pending
                     .iter()
                     .take_while(|r| r.resolved && embargo.is_none_or(|e| e.passed(now, r.arrived)))
@@ -4004,7 +4048,7 @@ impl Stream {
             // elapsed clock and the break before it.
             let i = plan.i;
             pending.push(PendingRow {
-                arrived: plan.elapsed,
+                arrived: elapsed[plan.ri],
                 d_clock: plan.d_clock,
                 stamp: plan.stamp,
                 w: plan.w,
@@ -4107,7 +4151,6 @@ impl Stream {
                 elapsed_step: adv.d_clock,
                 // Scored, never learned: no window moves, no row is held.
                 stamp: None,
-                elapsed: None,
                 // Without a clock column, the row's index in its group: the
                 // rows learned, then this call's rows in order, as
                 // `fit_predict` counts them (task 159, B2: every scored row
@@ -4497,6 +4540,9 @@ struct Scheduled {
     fed: u64,
     coef_cadence: CoefCadence,
     plans: Vec<RowPlan>,
+    /// Each row's place on the elapsed clock, by its position, where the
+    /// `embargo` buffer reads it; empty elsewhere.
+    elapsed: Vec<Option<Stamp>>,
 }
 
 /// What pass 1 decided about one row, so pass 2 can replay it per instance
@@ -4523,12 +4569,9 @@ struct RowPlan {
     /// decides its edge from ([`online_core::Stamp`], docs/PLAN.md task
     /// 175): `None` for a skipped row and a row only scored.
     stamp: Option<Stamp>,
-    /// The row's place on the elapsed clock, held exactly: every step of the
-    /// clock column since the stream began, uncapped (docs/PLAN.md task
-    /// 153), from which the `embargo` buffer measures each held row's wait
-    /// (task 176). `None` for a skipped row, a row only scored and a row
-    /// replayed out of the buffer.
-    elapsed: Option<Stamp>,
+    // The row's place on the elapsed clock, from which the `embargo` buffer
+    // measures each held row's wait (tasks 153, 176), is kept beside the
+    // plans, in `Scheduled::elapsed`, where that buffer reads it (task 250).
     /// The row's clock as the clock fields show it (task 152): the column's
     /// value, or the group's row index with no column.
     clock: Option<ClockValue>,

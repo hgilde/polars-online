@@ -15,8 +15,10 @@ use online_core::ClockValue;
 use polars::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::arrow::ClockCol;
+use crate::rows::FeatureRows;
 use crate::spec::Spec;
-use crate::stream::{ClockDtype, usable};
+use crate::stream::{ClockDtype, all_usable, usable};
 
 /// Count, nulls and moments of one input column over the rows fed.
 ///
@@ -144,6 +146,67 @@ impl ColumnStats {
             && self.min <= self.mean
             && self.mean <= self.max
             && (self.count > 1 || (self.m2 == 0.0 && self.min == self.max))
+    }
+}
+
+/// Feature columns' statistics, one array per statistic, for
+/// [`DataSummary::feed_rows`]: the same numbers as the [`ColumnStats`] they
+/// are copied from and back to, laid out so one row's step across the
+/// columns is a vector loop.
+struct Columns {
+    count: Vec<u64>,
+    mean: Vec<f64>,
+    m2: Vec<f64>,
+    min: Vec<f64>,
+    max: Vec<f64>,
+}
+
+impl Columns {
+    fn of(cols: &[ColumnStats]) -> Self {
+        Self {
+            count: cols.iter().map(|c| c.count).collect(),
+            mean: cols.iter().map(|c| c.mean).collect(),
+            m2: cols.iter().map(|c| c.m2).collect(),
+            min: cols.iter().map(|c| c.min).collect(),
+            max: cols.iter().map(|c| c.max).collect(),
+        }
+    }
+
+    /// Back into `cols`, which [`Self::of`] read; `nulls` never moved.
+    fn write(&self, cols: &mut [ColumnStats]) {
+        for (j, c) in cols.iter_mut().enumerate() {
+            c.count = self.count[j];
+            c.mean = self.mean[j];
+            c.m2 = self.m2[j];
+            c.min = self.min[j];
+            c.max = self.max[j];
+        }
+    }
+
+    /// One row of usable values into columns that have counted every row
+    /// before it: [`ColumnStats::push`]'s usable branch, where each count
+    /// steps to `n_row` and so takes the shared reciprocal `inv`.
+    /// `ColumnStats::add` written across the columns, operation for
+    /// operation.
+    #[inline]
+    fn add_all(&mut self, x: &[f64], n_row: u64, inv: f64) {
+        let n = x.len();
+        let (count, mean, m2, min, max) = (
+            &mut self.count[..n],
+            &mut self.mean[..n],
+            &mut self.m2[..n],
+            &mut self.min[..n],
+            &mut self.max[..n],
+        );
+        for j in 0..n {
+            let xj = x[j];
+            count[j] = n_row;
+            let d = xj - mean[j];
+            mean[j] += d * inv;
+            m2[j] += d * (xj - mean[j]);
+            min[j] = min[j].min(xj);
+            max[j] = max[j].max(xj);
+        }
     }
 }
 
@@ -277,16 +340,104 @@ impl DataSummary {
             c.push(w, n_row, inv_row);
         }
         if let Some(c) = clock {
-            self.clock_min = Some(
-                self.clock_min
-                    .map_or(c, |m| if c.is_before(m) { c } else { m }),
-            );
-            self.clock_max = Some(
-                self.clock_max
-                    .map_or(c, |m| if m.is_before(c) { c } else { m }),
-            );
+            self.clock_range(c);
         }
     }
+
+    /// The clock range with one more row's clock.
+    #[inline]
+    fn clock_range(&mut self, c: ClockValue) {
+        self.clock_min = Some(
+            self.clock_min
+                .map_or(c, |m| if c.is_before(m) { c } else { m }),
+        );
+        self.clock_max = Some(
+            self.clock_max
+                .map_or(c, |m| if m.is_before(c) { c } else { m }),
+        );
+    }
+
+    /// The input rows `rows` of a run, in order: what [`Self::feed_row`]
+    /// does for each, to the bit, and faster where it can be.
+    ///
+    /// While every feature column has counted every row fed -- no feature
+    /// has been null in this stream -- and the run's rows have every feature
+    /// usable, each feature column's step is the same: one more value, the
+    /// row's shared reciprocal, Welford's update. Those columns are copied
+    /// out into one array per statistic for the run, where the step runs
+    /// across the columns as a loop the compiler vectorises, and copied
+    /// back at the end. From the first row with a feature that is not
+    /// usable, and in a stream where one has been, the rows go through
+    /// [`Self::feed_row`] one by one. Each column sees the same values in
+    /// the same order with the same reciprocal either way, so the bits do
+    /// not depend on the path. Measured in a microbenchmark of this code:
+    /// 18.4 to 13.4 ns a row at 20 features, 10.1 to 8.4 at 8, 42.5 to 28.7
+    /// at 50; at 4 the copy cost more than the loop saved, 7.4 against 8.3,
+    /// so fewer than [`Self::ACROSS_COLUMNS_FROM`] features take the
+    /// row-by-row path.
+    ///
+    /// Returns how many rows took the path across the columns, which only
+    /// a test reads.
+    pub(crate) fn feed_rows(
+        &mut self,
+        rows: impl IntoIterator<Item = usize>,
+        features: &FeatureRows,
+        targets: &[Vec<f64>],
+        weight: Option<&[f64]>,
+        clock: Option<&ClockCol>,
+    ) -> usize {
+        let mut rows = rows.into_iter();
+        let nf = features.k();
+        let n_cols = self.columns.len();
+        let has_w = usize::from(weight.is_some());
+        let mut across = 0;
+        let mut first_slow = None;
+        if nf >= Self::ACROSS_COLUMNS_FROM
+            && nf + has_w <= n_cols
+            && self.columns[..nf].iter().all(|c| c.count == self.rows_fed)
+        {
+            let nt = n_cols - nf - has_w;
+            let mut soa = Columns::of(&self.columns[..nf]);
+            for i in rows.by_ref() {
+                let x = features.row(i);
+                if !all_usable(x) {
+                    first_slow = Some(i);
+                    break;
+                }
+                self.rows_fed = self.rows_fed.saturating_add(1);
+                let n_row = self.rows_fed;
+                let inv_row = 1.0 / n_row as f64;
+                soa.add_all(x, n_row, inv_row);
+                for (k, c) in self.columns[nf..].iter_mut().take(nt).enumerate() {
+                    match targets.get(k) {
+                        Some(t) => c.push(t[i], n_row, inv_row),
+                        None => c.nulls = c.nulls.saturating_add(1),
+                    }
+                }
+                if let Some(w) = weight {
+                    self.columns[nf + nt].push(w[i], n_row, inv_row);
+                }
+                if let Some(c) = clock {
+                    self.clock_range(c.at(i));
+                }
+                across += 1;
+            }
+            soa.write(&mut self.columns[..nf]);
+        }
+        for i in first_slow.into_iter().chain(rows) {
+            self.feed_row(
+                features.row(i),
+                targets,
+                weight.map(|w| w[i]),
+                clock.map(|c| c.at(i)),
+                i,
+            );
+        }
+        across
+    }
+
+    /// The fewest features [`Self::feed_rows`] steps across the columns.
+    pub(crate) const ACROSS_COLUMNS_FROM: usize = 8;
 
     /// What the clock schedule found at the row just fed.
     #[inline]
@@ -733,5 +884,231 @@ mod tests {
         bad.nulls = 1;
         assert!(!bad.is_consistent(5));
         assert!(bad.is_consistent(6));
+    }
+
+    /// `n` rows of `k` features, one target and a weight, with the values
+    /// `odd` puts in place of the generated ones: a large offset against a
+    /// small spread, signed zeros at rows 3 and 4 of every column (`min` and
+    /// `max` decide between two equal values there), and a clock.
+    fn rows(n: usize, k: usize, odd: &dyn Fn(usize, usize) -> Option<f64>) -> Rows {
+        let mut s = 11u64;
+        let mut r = move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let cols: Vec<Vec<f64>> = (0..k)
+            .map(|j| {
+                (0..n)
+                    .map(|i| match (odd(i, j), i) {
+                        (Some(v), _) => v,
+                        (None, 3) => -0.0,
+                        (None, 4) => 0.0,
+                        _ => 1e6 + 3.0 * r(),
+                    })
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&[f64]> = cols.iter().map(Vec::as_slice).collect();
+        Rows {
+            features: FeatureRows::from_columns(&refs, n, None, false),
+            targets: vec![
+                (0..n)
+                    .map(|i| if i % 9 == 2 { f64::NAN } else { r() })
+                    .collect(),
+            ],
+            weight: (0..n)
+                .map(|i| if i % 7 == 1 { 0.0 } else { 0.5 + r().abs() })
+                .collect(),
+            clock: ClockCol::F64((0..n).map(|i| (i as f64 * 0.3).sin() + i as f64).collect()),
+        }
+    }
+
+    struct Rows {
+        features: FeatureRows,
+        targets: Vec<Vec<f64>>,
+        weight: Vec<f64>,
+        clock: ClockCol,
+    }
+
+    /// A summary laid out for `k` features, one target and a weight.
+    fn fresh(k: usize) -> DataSummary {
+        let mut s = DataSummary {
+            rows_fed: 0,
+            rows_learned: 0,
+            rows_zero_weight: 0,
+            weight_sum: 0.0,
+            clock_min: None,
+            clock_max: None,
+            session_changes: 0,
+            clock_backwards: 0,
+            resets: 0,
+            columns: Vec::new(),
+        };
+        s.columns = vec![ColumnStats::default(); k + 2];
+        s
+    }
+
+    /// `rows` through [`DataSummary::feed_row`], one at a time.
+    fn by_row(s: &mut DataSummary, r: &Rows, rows: std::ops::Range<usize>) {
+        for i in rows {
+            s.feed_row(
+                r.features.row(i),
+                &r.targets,
+                Some(r.weight[i]),
+                Some(r.clock.at(i)),
+                i,
+            );
+        }
+    }
+
+    /// `rows` through [`DataSummary::feed_rows`] in runs of `run` rows: the
+    /// rows each run took across the columns.
+    fn by_runs(
+        s: &mut DataSummary,
+        r: &Rows,
+        rows: std::ops::Range<usize>,
+        run: usize,
+    ) -> Vec<usize> {
+        let idx: Vec<usize> = rows.collect();
+        idx.chunks(run)
+            .map(|c| {
+                s.feed_rows(
+                    c.iter().copied(),
+                    &r.features,
+                    &r.targets,
+                    Some(&r.weight),
+                    Some(&r.clock),
+                )
+            })
+            .collect()
+    }
+
+    /// Every number of two summaries, to the bit.
+    fn assert_bits(a: &DataSummary, b: &DataSummary, what: &str) {
+        assert_eq!(a.rows_fed, b.rows_fed, "{what}: rows_fed");
+        assert_eq!(a.clock_min, b.clock_min, "{what}: clock_min");
+        assert_eq!(a.clock_max, b.clock_max, "{what}: clock_max");
+        assert_eq!(a.columns.len(), b.columns.len());
+        for (j, (p, q)) in a.columns.iter().zip(&b.columns).enumerate() {
+            let bits = |c: &ColumnStats| {
+                (
+                    c.count,
+                    c.nulls,
+                    c.mean.to_bits(),
+                    c.m2.to_bits(),
+                    c.min.to_bits(),
+                    c.max.to_bits(),
+                )
+            };
+            assert_eq!(bits(p), bits(q), "{what}: column {j}");
+        }
+    }
+
+    /// The path across the columns (task 250): taken for every row of a
+    /// stream whose features are all usable, at the width it starts at and
+    /// above, and the same bits as the rows fed one at a time -- the
+    /// signed zeros' `min` and `max` included -- whatever the runs.
+    #[test]
+    fn feed_rows_across_the_columns_is_feed_row_to_the_bit() {
+        let n = 500;
+        for k in [DataSummary::ACROSS_COLUMNS_FROM, 20, 33] {
+            let r = rows(n, k, &|_, _| None);
+            let mut want = fresh(k);
+            by_row(&mut want, &r, 0..n);
+            assert_eq!(want.columns[0].min.to_bits(), (-0.0f64).to_bits());
+            assert_eq!(want.columns[0].max.to_bits() >> 63, 0);
+            for run in [1, 7, 64, n] {
+                let mut got = fresh(k);
+                let across = by_runs(&mut got, &r, 0..n, run);
+                assert_eq!(across.iter().sum::<usize>(), n, "k={k}, runs of {run}");
+                assert_bits(&want, &got, &format!("k={k}, runs of {run}"));
+            }
+        }
+    }
+
+    /// Below that width every row goes one at a time, and the bits are the
+    /// same.
+    #[test]
+    fn feed_rows_below_the_width_goes_row_by_row() {
+        let (n, k) = (300, DataSummary::ACROSS_COLUMNS_FROM - 1);
+        let r = rows(n, k, &|_, _| None);
+        let mut want = fresh(k);
+        by_row(&mut want, &r, 0..n);
+        let mut got = fresh(k);
+        assert_eq!(by_runs(&mut got, &r, 0..n, 64), vec![0; 5]);
+        assert_bits(&want, &got, "narrow");
+    }
+
+    /// A feature that is not usable ends the path at its row, mid-run: the
+    /// rows before it went across the columns, it and the rest of the run
+    /// one at a time, and every later run too, since that column has a null
+    /// behind it now and takes its own reciprocal (`1.0 / count`) where the
+    /// others share the row's. A null, NaN, an infinity and a value past
+    /// the bound each end it. The bits are the rows fed one at a time.
+    #[test]
+    fn feed_rows_leaves_the_path_at_the_first_unusable_feature() {
+        let (n, k, bad_row) = (400, 12, 150);
+        for bad in [f64::NAN, f64::INFINITY, -1e300] {
+            let r = rows(n, k, &|i, j| (i == bad_row && j == 5).then_some(bad));
+            let mut want = fresh(k);
+            by_row(&mut want, &r, 0..n);
+            let mut got = fresh(k);
+            let across = by_runs(&mut got, &r, 0..n, 100);
+            assert_eq!(across, vec![100, 50, 0, 0], "{bad}");
+            assert_eq!(got.columns[5].nulls, 1);
+            assert_bits(&want, &got, &format!("{bad} at row {bad_row}"));
+        }
+    }
+
+    /// A stream whose summary was saved with a null feature behind it, and
+    /// loaded, takes no row across the columns: the counts say so, not
+    /// anything kept beside them.
+    #[test]
+    fn feed_rows_reads_the_path_off_the_counts_after_a_load() {
+        let (n, k) = (300, 10);
+        let r = rows(n, k, &|i, j| (i == 20 && j == 0).then_some(f64::NAN));
+        let mut head = fresh(k);
+        by_row(&mut head, &r, 0..100);
+        let bytes = rmp_serde::to_vec_named(&head).unwrap();
+        let mut loaded: DataSummary = rmp_serde::from_slice(&bytes).unwrap();
+        let mut want = head.clone();
+        by_row(&mut want, &r, 100..n);
+        assert_eq!(by_runs(&mut loaded, &r, 100..n, 50), vec![0; 4]);
+        assert_bits(&want, &loaded, "with a null behind it");
+        // And a stream with none behind it takes every row across, loaded.
+        let r = rows(n, k, &|_, _| None);
+        let mut head = fresh(k);
+        by_row(&mut head, &r, 0..100);
+        let bytes = rmp_serde::to_vec_named(&head).unwrap();
+        let mut loaded: DataSummary = rmp_serde::from_slice(&bytes).unwrap();
+        let mut want = head.clone();
+        by_row(&mut want, &r, 100..n);
+        assert_eq!(by_runs(&mut loaded, &r, 100..n, 50), vec![50; 4]);
+        assert_bits(&want, &loaded, "with no null behind it");
+    }
+
+    /// Counts at the top of their range, as a state file can carry them:
+    /// `rows_fed` saturates, every column's count with it, and the path
+    /// across the columns steps them as `ColumnStats::push` does -- to the
+    /// same `u64::MAX`, with the same shared reciprocal.
+    #[test]
+    fn feed_rows_at_saturated_counts_is_feed_row_to_the_bit() {
+        let (n, k) = (50, 9);
+        let r = rows(n, k, &|_, _| None);
+        let mut start = fresh(k);
+        start.rows_fed = u64::MAX;
+        for c in &mut start.columns {
+            c.count = u64::MAX;
+            c.mean = 1e6;
+            c.min = 1e6;
+            c.max = 1e6;
+        }
+        let mut want = start.clone();
+        by_row(&mut want, &r, 0..n);
+        let mut got = start;
+        assert_eq!(by_runs(&mut got, &r, 0..n, n), vec![n]);
+        assert_bits(&want, &got, "saturated");
     }
 }
