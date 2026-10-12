@@ -994,28 +994,41 @@ impl Bocpd {
     /// side, `μ₀ + (n/κₙ)(x̄ − μ₀)`, so a run with no rows is the prior's mean
     /// to the bit.
     fn run_mean_of(&self, run: &Run) -> Vec<f64> {
-        let k0 = self.cfg.prior_kappa;
         let mu0 = self.mu0();
-        let kn = k0 + run.n;
-        mu0.iter()
-            .zip(&run.mean)
-            .map(|(m0, m)| m0 + run.n / kn * (m - m0))
+        (0..mu0.len())
+            .map(|i| self.run_mean_at(run, &mu0, i))
             .collect()
+    }
+
+    /// Coordinate `i` of [`Self::run_mean_of`], against the prior's mean
+    /// `mu0` the caller read once: the same expression, without a vector per
+    /// run per row (task 250).
+    #[inline]
+    fn run_mean_at(&self, run: &Run, mu0: &[f64], i: usize) -> f64 {
+        let kn = self.cfg.prior_kappa + run.n;
+        mu0[i] + run.n / kn * (run.mean[i] - mu0[i])
     }
 
     /// `(ln π(x), ln π(mode))` for one run: the log posterior predictive of
     /// the row, and of the predictive's own mode, which is what the
-    /// `robust` weight is relative to.
-    fn log_predictive(&self, run: &Run, x: &[f64]) -> Option<(f64, f64)> {
+    /// `robust` weight is relative to. `mu0` and `psi0` are the prior's
+    /// ([`Self::mu0`], [`Self::psi0`]), read once a row by the caller rather
+    /// than copied for every run (task 250).
+    fn log_predictive(
+        &self,
+        run: &Run,
+        x: &[f64],
+        mu0: &[f64],
+        psi0: &[f64],
+    ) -> Option<(f64, f64)> {
         let d = self.cfg.n_features;
         let (k0, nu0) = (self.cfg.prior_kappa, self.cfg.nu0());
-        let mu0 = self.mu0();
         let kn = k0 + run.n;
         let nun = nu0 + run.n;
-        let mun = self.run_mean_of(run);
         if self.full() {
+            let mun: Vec<f64> = (0..d).map(|i| self.run_mean_at(run, mu0, i)).collect();
             // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
-            let mut psi = self.psi0();
+            let mut psi = psi0.to_vec();
             for i in 0..d {
                 for j in 0..d {
                     let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
@@ -1050,8 +1063,11 @@ impl Bocpd {
             Some((base - 0.5 * (dof + df) * (1.0 + q / dof).ln(), base))
         } else {
             // Per feature, a normal-inverse-gamma: `t_{νₙ}` with scale²
-            // `ψₙ(κₙ+1)/(νₙκₙ)`.
-            let psi0 = self.psi0();
+            // `ψₙ(κₙ+1)/(νₙκₙ)`. The features share `νₙ`, so the gamma
+            // functions' difference is taken once a run, not once a feature:
+            // the same value, `(Γ − Γ) − ½ ln(..)` as the expression groups
+            // (task 250).
+            let gammas = ln_gamma((nun + 1.0) / 2.0) - ln_gamma(nun / 2.0);
             let mut lp = 0.0;
             let mut mode = 0.0;
             for i in 0..d {
@@ -1061,10 +1077,8 @@ impl Bocpd {
                 if var.is_nan() || var <= 0.0 || nun <= 0.0 {
                     return None;
                 }
-                let z = (x[i] - mun[i]) / var.sqrt();
-                let base = ln_gamma((nun + 1.0) / 2.0)
-                    - ln_gamma(nun / 2.0)
-                    - 0.5 * (nun * std::f64::consts::PI * var).ln();
+                let z = (x[i] - self.run_mean_at(run, mu0, i)) / var.sqrt();
+                let base = gammas - 0.5 * (nun * std::f64::consts::PI * var).ln();
                 lp += base - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln();
                 mode += base;
             }
@@ -1136,8 +1150,9 @@ impl Bocpd {
         let r = self.runs.len();
         let mut logpi = Vec::with_capacity(r);
         let mut weights = Vec::with_capacity(r);
+        let (mu0, psi0) = (self.mu0(), self.psi0());
         for run in &self.runs {
-            let Some((lp, mode)) = self.log_predictive(run, x) else {
+            let Some((lp, mode)) = self.log_predictive(run, x, &mu0, &psi0) else {
                 return (nan, None);
             };
             logpi.push(lp);
@@ -1169,9 +1184,8 @@ impl Bocpd {
         let anchor = self.run_mean_of(&self.runs[mode_at]);
         let mut mixed = vec![0.0; d];
         for (i, run) in self.runs.iter().enumerate() {
-            let m = self.run_mean_of(run);
-            for ((o, v), a) in mixed.iter_mut().zip(&m).zip(&anchor) {
-                *o += pre[i] * (v - a);
+            for (f, (o, a)) in mixed.iter_mut().zip(&anchor).enumerate() {
+                *o += pre[i] * (self.run_mean_at(run, &mu0, f) - a);
             }
         }
         let pred: Vec<f64> = anchor.iter().zip(&mixed).map(|(a, o)| a + o).collect();
@@ -1497,14 +1511,13 @@ impl Bocpd {
         // take this row too, which is the easy mistake, puts one row of the
         // old regime inside every "brand new run" and moves the estimated
         // start of every run back by one.)
-        let mut runs = Vec::with_capacity(self.runs.len() + 1);
-        runs.push(Run::new(self.cfg.n_features, full));
-        for (i, run) in self.runs.iter().enumerate() {
-            let mut grown = run.clone();
-            grown.add(x, weights[i], full);
-            runs.push(grown);
+        // Each run takes the row where it stands, and the empty run goes in
+        // front: the same steps on the same statistics as on a copy of each
+        // run, without the copies (task 250).
+        self.runs.insert(0, Run::new(self.cfg.n_features, full));
+        for (run, &w) in self.runs[1..].iter_mut().zip(&weights) {
+            run.add(x, w, full);
         }
-        self.runs = runs;
         self.logjoint = new;
         self.prune();
         out
