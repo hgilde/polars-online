@@ -133,6 +133,26 @@ use crate::solve::dot_aug;
 use crate::spread::TargetSpread;
 use crate::{Constraint, Decay, EwDiag, Warmup};
 
+/// The intercept's slot of the row `[1, x]`, read in place of a copy.
+const INTERCEPT: [f64; 1] = [1.0];
+
+/// The row a step reads, as its intercept part and its slopes' part: `[1]`
+/// and `x` where they stand when `direct` (no scaler), else `zbuf` split at
+/// `off`. The same values in the same order as one `[1, x]` slice, so a sum
+/// that folds the first part and then the second forms the same bits.
+fn row_parts<'a>(
+    direct: bool,
+    off: usize,
+    x: &'a [f64],
+    zbuf: &'a [f64],
+) -> (&'a [f64], &'a [f64]) {
+    if direct {
+        (&INTERCEPT[..off], x)
+    } else {
+        zbuf.split_at(off)
+    }
+}
+
 /// Which passive-aggressive variant (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -452,12 +472,20 @@ impl OnlineModel for Pa {
         // in the caller's units: the prediction reads `x`, and the row's map
         // -- each feature's mean and scale beside `z` -- maps the step into
         // the caller's units (the module docs, docs/PLAN.md task 206).
+        //
+        // Without a scaler the row is `[1, x]` itself, read from `x` where
+        // it stands rather than copied into `zbuf` (task 250): the same
+        // values in the same order, so every sum below is formed to the
+        // same bits.
         let held = self.warmup.switched();
-        if off == 1 {
-            self.zbuf[0] = 1.0;
-            self.rawbuf[0] = 1.0;
+        let direct = self.scaler.is_none();
+        if !direct {
+            if off == 1 {
+                self.zbuf[0] = 1.0;
+                self.rawbuf[0] = 1.0;
+            }
+            self.rawbuf[off..].copy_from_slice(x);
         }
-        self.rawbuf[off..].copy_from_slice(x);
         match &self.scaler {
             Some(sc) if held => standardize_row(
                 sc,
@@ -476,13 +504,14 @@ impl OnlineModel for Pa {
                     *z = v;
                 }
             }
-            None => self.zbuf[off..].copy_from_slice(x),
+            None => {}
         }
 
         // Before this row's update and before its decay -- the convention
         // every model reports and gates on, each target on its own weight.
         let n_eff = self.w_sum;
-        let sq_norm: f64 = self.zbuf.iter().map(|z| z * z).sum();
+        let (head, tail) = row_parts(direct, off, x, &self.zbuf);
+        let sq_norm: f64 = head.iter().chain(tail).map(|z| z * z).sum();
 
         let mut pred = vec![f64::NAN; m];
         if self.cfg.constraint.is_some() {
@@ -494,10 +523,14 @@ impl OnlineModel for Pa {
                 // `x̃ᵀb`, in the caller's units: no moment is read.
                 dot_aug(&self.beta[j], x, self.cfg.fit_intercept)
             } else {
-                self.zbuf
-                    .iter()
-                    .zip(&self.beta[j])
+                // The intercept's product, then the slopes', folded in
+                // that order: a `Chain`'s sum folds its halves in turn.
+                let (b0, slopes) = self.beta[j].split_at(off);
+                let (head, tail) = row_parts(direct, off, x, &self.zbuf);
+                head.iter()
+                    .zip(b0)
                     .map(|(z, b)| z * b)
+                    .chain(tail.iter().zip(slopes).map(|(z, b)| z * b))
                     .sum()
             };
             if self.w_target[j] >= self.cfg.min_weight {
@@ -545,7 +578,12 @@ impl OnlineModel for Pa {
                 }
                 continue;
             }
-            for (b, z) in self.beta[j].iter_mut().zip(&self.zbuf) {
+            let (head, tail) = row_parts(direct, off, x, &self.zbuf);
+            let (b0, slopes) = self.beta[j].split_at_mut(off);
+            for (b, z) in b0.iter_mut().zip(head) {
+                *b += step * z;
+            }
+            for (b, z) in slopes.iter_mut().zip(tail) {
                 *b += step * z;
             }
             if let Some(l) = self.learned.get_mut(j) {
@@ -792,6 +830,88 @@ mod tests {
             constraint: None,
             standardize: false,
         }
+    }
+
+    /// Without a scaler the step reads `[1, x]` from `x` where it stands
+    /// (task 250) rather than from a copy in `zbuf`: the predictions and
+    /// coefficients are the copied row's to the bit, under every mode, with
+    /// and without an intercept -- a zero-weight first row, rows of weight
+    /// 0 and above 1, an all-zero row (no step without an intercept), and
+    /// without an intercept a prediction that is `-0.0` (each product
+    /// `0·(-x)`), whose sign a sum begun anywhere but the copied row's way
+    /// would lose. `eps = 0`, so no tube enters.
+    #[test]
+    fn a_row_read_in_place_steps_as_the_copied_row_did() {
+        let mut checked = [0usize; 2];
+        for fit_intercept in [true, false] {
+            for mode in [PaMode::Pa, PaMode::Pa1, PaMode::Pa2] {
+                let mut c = cfg(3, mode);
+                c.fit_intercept = fit_intercept;
+                c.eps = 0.0;
+                c.c = 0.3;
+                c.min_weight = 0.0;
+                let mut m = Pa::new(c.clone()).unwrap();
+                assert!(m.scaler.is_none());
+                let off = usize::from(fit_intercept);
+                let mut beta = vec![0.0; c.k_total()];
+                let mut s = 11u64;
+                for r in 0..200 {
+                    let mut x: Vec<f64> = (0..3).map(|_| lcg(&mut s)).collect();
+                    let w = match r {
+                        0 | 7 => 0.0,
+                        1 => 1.0,
+                        13 => 2.5,
+                        _ => 0.5 + 0.5 * lcg(&mut s).abs(),
+                    };
+                    if r == 1 {
+                        // Negative features against all-zero coefficients.
+                        x = vec![-1.0, -2.0, -0.5];
+                    }
+                    if r == 20 {
+                        x = vec![0.0; 3];
+                    }
+                    let y = 1.0 + 2.0 * x[0] - x[2] + 0.1 * lcg(&mut s);
+                    let z: Vec<f64> = [1.0][..off].iter().chain(&x).copied().collect();
+                    let sq_norm: f64 = z.iter().map(|z| z * z).sum();
+                    let p: f64 = z.iter().zip(&beta).map(|(z, b)| z * b).sum();
+                    let got = m
+                        .step(&x, &[Some(y)], if r == 0 { 0.0 } else { 1.0 }, w)
+                        .pred[0];
+                    assert_eq!(
+                        got.to_bits(),
+                        p.to_bits(),
+                        "{fit_intercept} {mode:?} row {r}"
+                    );
+                    if r == 1 && !fit_intercept {
+                        assert_eq!(got.to_bits(), (-0.0f64).to_bits(), "{mode:?}");
+                        checked[0] += 1;
+                    }
+                    let loss = (y - p).abs();
+                    if w > 0.0 && sq_norm > 0.0 && loss > 0.0 {
+                        let tau = w.min(1.0)
+                            * match mode {
+                                PaMode::Pa => loss / sq_norm,
+                                PaMode::Pa1 => (loss / sq_norm).min(0.3),
+                                PaMode::Pa2 => loss / (sq_norm + 0.5 / 0.3),
+                            };
+                        let step = tau * (y - p).signum();
+                        for (b, z) in beta.iter_mut().zip(&z) {
+                            *b += step * z;
+                        }
+                        checked[1] += 1;
+                    }
+                    let held = m.coefficients()[0].clone();
+                    assert_eq!(
+                        held.iter().map(|b| b.to_bits()).collect::<Vec<_>>(),
+                        beta.iter().map(|b| b.to_bits()).collect::<Vec<_>>(),
+                        "{fit_intercept} {mode:?} row {r}"
+                    );
+                }
+            }
+        }
+        // The signed zero was read under each mode, and most rows stepped.
+        assert_eq!(checked[0], 3);
+        assert!(checked[1] > 6 * 190, "{checked:?}");
     }
 
     #[test]
