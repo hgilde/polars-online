@@ -987,7 +987,95 @@ impl ClockState {
         }
     }
 
+    #[inline]
     fn step(
+        &mut self,
+        cfg: &ClockCfg,
+        caps: Option<&ExactCaps>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+        scoring: bool,
+    ) -> ClockAdvance {
+        if let Some(adv) = self.step_forward(cfg, caps, clock, session, accept, scoring) {
+            return adv;
+        }
+        self.step_any(cfg, caps, clock, session, accept, scoring)
+    }
+
+    /// The row almost every stamped row is -- a float clock's step forward
+    /// within its session, learned, past the stream's first -- taken as
+    /// [`Self::step_any`] takes it, with the same expressions in the same
+    /// order, and none of the integer, temporal, session or refusal
+    /// branches the general step weighs first (task 250: the clock was the
+    /// largest share of the bank's per-row cost that grew since 0.13.0).
+    /// `None` for any other row, which `step_any` takes. A proptest holds
+    /// the two to the same advance and the same state, to the bit.
+    #[inline]
+    fn step_forward(
+        &mut self,
+        cfg: &ClockCfg,
+        caps: Option<&ExactCaps>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        accept: bool,
+        scoring: bool,
+    ) -> Option<ClockAdvance> {
+        let (Some(_), Some(ClockValue::F64(c)), Some(ClockValue::F64(p)), true, false) =
+            (caps, clock, self.prev_clock, accept, scoring)
+        else {
+            return None;
+        };
+        if matches!((session, self.prev_session), (Some(s), Some(q)) if s != q)
+            || !self.pending_int.is_zero()
+        {
+            return None;
+        }
+        let raw = c - p;
+        // A step forward (and not a NaN), as `step_any`'s within-session arm.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(raw >= 0.0) {
+            return None;
+        }
+        let ex = self.exact.as_mut()?;
+        let capped = raw > cfg.gap_cap;
+        let d = raw.min(cfg.gap_cap);
+        // `Exact::step`'s number-clock arm: a forward step is its own
+        // elapsed time, so the elapsed clock removes nothing.
+        ex.rows = ex.rows.saturating_add(1);
+        ex.removed += raw - d;
+        let total = self.pending + d;
+        if total > cfg.gap_cap {
+            ex.removed += total - cfg.gap_cap;
+        }
+        let stamp = Stamp::Raw(c, ex.removed);
+        let elapsed_stamp = Stamp::Raw(c, ex.elapsed_removed);
+        self.prev_clock = clock;
+        self.prev_session = session;
+        self.started = true;
+        // The accepted row's arm, its fold of the skipped rows' time
+        // included.
+        let (d_clock, over) = (total.min(cfg.gap_cap), total > cfg.gap_cap);
+        self.pending = 0.0;
+        self.pending_int = Ticks::ZERO;
+        let elapsed = self.skipped_elapsed + raw;
+        self.skipped_elapsed = 0.0;
+        Some(ClockAdvance {
+            d_clock,
+            reset: false,
+            accepted: true,
+            backwards: None,
+            disorder: None,
+            session_changed: false,
+            capped: capped || over,
+            elapsed,
+            stamp: Some(stamp),
+            elapsed_stamp: Some(elapsed_stamp),
+        })
+    }
+
+    /// Any row: the general step [`Self::step_forward`] is a short cut of.
+    fn step_any(
         &mut self,
         cfg: &ClockCfg,
         caps: Option<&ExactCaps>,
@@ -3008,6 +3096,31 @@ mod finite_steps {
         ]
     }
 
+    /// The short cut is the path a float clock's rows take: every row of a
+    /// stream stepping forward within one session, past its first, goes
+    /// through it (task 250), so the proptest beside it compares something.
+    #[test]
+    fn forward_short_cut_is_taken() {
+        let cfg = ClockCfg {
+            gap_cap: 5.0,
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let mut taken = 0;
+        for i in 0..100 {
+            let at = Some(ClockValue::F64(f64::from(i) * 0.7));
+            if c.clone()
+                .step_forward(&cfg, Some(&caps), at, Some(1), true, false)
+                .is_some()
+            {
+                taken += 1;
+            }
+            c.advance_stamped(&cfg, &caps, at, Some(1), true);
+        }
+        assert_eq!(taken, 99);
+    }
+
     // Eight times proptest's own count: 2,048 cases, or 256 under the
     // essentials gate's `PROPTEST_CASES=32` (docs/TESTING.md, "Two tiers").
     proptest! {
@@ -3063,6 +3176,46 @@ mod finite_steps {
                     prop_assert!(frac.abs() < 1.0, "{frac}");
                 }
             }
+        }
+
+        /// The short cut for a float clock's step forward
+        /// ([`ClockState::step_forward`]) gives the advance and the state
+        /// the general step does, to the bit, over steps forward and back,
+        /// sessions, skipped rows, caps and both policies; and it is taken
+        /// (task 250).
+        #[test]
+        fn the_forward_short_cut_is_the_general_step(
+            (cfg, _) in cfg(),
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![-1e6f64..1e6, 0.0f64..10.0, Just(0.0), Just(-0.0), Just(1e300)],
+                    0u64..3,
+                    any::<bool>(),
+                    prop_oneof![3 => Just(true), 1 => Just(false)],
+                ),
+                1..60,
+            ),
+            sessions in any::<bool>(),
+        ) {
+            let caps = ExactCaps::default();
+            let mut fast = ClockState::new();
+            let mut general = ClockState::new();
+            let mut t = 0.0f64;
+            let mut taken = 0;
+            for (step, session, back, accept) in rows {
+                t = if back { t - step.abs() } else { t + step.abs() };
+                let c = Some(ClockValue::F64(t));
+                let s = sessions.then_some(session);
+                taken += usize::from(
+                    fast.clone().step_forward(&cfg, Some(&caps), c, s, accept, false).is_some(),
+                );
+                let a = fast.advance_stamped(&cfg, &caps, c, s, accept);
+                let b = general.step_any(&cfg, Some(&caps), c, s, accept, false);
+                prop_assert_eq!(format!("{a:?}"), format!("{b:?}"));
+                prop_assert_eq!(format!("{fast:?}"), format!("{general:?}"));
+            }
+            // How often it was taken, over every case: `forward_short_cut_is_taken`.
+            let _ = taken;
         }
 
         /// [`ClockState::refusal`], which moves only the previous clock and
