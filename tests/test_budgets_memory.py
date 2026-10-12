@@ -364,32 +364,48 @@ def test_every_field_of_every_model_at_its_fullest_within_its_budget():
 
 PLATFORM = {"linux": "linux", "darwin": "darwin", "win32": "windows"}[sys.platform]
 
-#: The child: read the input, take the baseline, run, report the peak over
-#: it in MiB. `ru_maxrss` is KiB on Linux and bytes on macOS; Windows keeps
-#: the peak working set.
+#: The child: read the input, return the allocator's freed memory, take the
+#: baseline as the process's *current* resident size, run while a thread
+#: samples the current resident size, and report the peak over the baseline in
+#: MiB. It is not `ru_maxrss` or Windows' `peak_wset`: those are high-water
+#: marks that never fall, so reading the input at a transient peak above the
+#: run's own (multi-threaded decompression does that on Linux) left the run
+#: no way to raise it, and the delta read 0.0 (CI, 2026-10-12). The sampler
+#: sees a sustained peak, which is what a run's output and state are; a spike
+#: shorter than its 2 ms period is not what this budget holds.
 CHILD = textwrap.dedent(
     """
-    import gc, json, sys
+    import gc, json, sys, threading, time
     import polars as pl, polars_online as po, psutil
 
-    def peak() -> float:
-        if sys.platform == "win32":
-            return psutil.Process().memory_info().peak_wset
-        import resource
-        scale = 1 if sys.platform == "darwin" else 1024
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * scale
-
+    proc = psutil.Process()
     case, src, dst, spec = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
     df = None if case == "streaming" else pl.read_parquet(src)
     gc.collect()
-    base = max(peak(), psutil.Process().memory_info().rss)
+    if sys.platform.startswith("linux"):
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)  # freed arenas back to the system
+    base = proc.memory_info().rss
+    peak = [base]
+    stop = threading.Event()
+
+    def sample():
+        while not stop.is_set():
+            peak[0] = max(peak[0], proc.memory_info().rss)
+            time.sleep(0.002)
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
     if case == "streaming":
         pl.scan_parquet(src).online.fit_predict([spec]).sink_parquet(dst)
         rows = pl.scan_parquet(dst).select(pl.len()).collect().item()
     else:
         out = po.ModelBank([spec]).fit_predict(df)
         rows = out.height
-    print(json.dumps({"rows": rows, "mib": (peak() - base) / 2**20}))
+    peak[0] = max(peak[0], proc.memory_info().rss)
+    stop.set()
+    sampler.join()
+    print(json.dumps({"rows": rows, "mib": (peak[0] - base) / 2**20}))
     """
 )
 
