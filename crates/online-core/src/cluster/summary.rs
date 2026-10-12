@@ -23,7 +23,7 @@ pub fn dist2(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
 
 /// `Σ mw_i t_i²` over the deviations `t(i)`: [`dist2`]'s sum, for a
 /// deviation from a plain centre or from a pair.
-#[inline]
+#[inline(always)]
 fn sq_norm(p: usize, t: impl Fn(usize) -> f64, mw: &[f64]) -> f64 {
     let mut acc = 0.0;
     for (i, &m) in mw[..p].iter().enumerate() {
