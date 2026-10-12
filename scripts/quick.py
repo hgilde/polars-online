@@ -53,7 +53,7 @@ EVERYWHERE = {"tests/conftest.py", "tests/tiers.py"}
 
 #: The crates with Rust tests; `online-py` has none (its test binaries
 #: would link libpython), so a change there rebuilds the extension only.
-RUST_TESTED = {"online-core", "online-polars", "online-cli"}
+RUST_TESTED = {"online-core", "online-polars", "online-cli", "online-bench"}
 
 #: The crates the extension links, so a source change there rebuilds it.
 IN_THE_EXTENSION = {"online-core", "online-polars", "online-py"}

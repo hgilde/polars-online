@@ -1844,6 +1844,22 @@ project's versioning that is carried by the minor version before 1.0.
 
 ### Tests and documents
 
+- **Performance and memory budgets that only tighten** (task 251).
+  `budgets.toml` holds a fixed number for each hot path and output field,
+  and every push is measured against it, never against the previous run.
+  The 14 instruction-count cases are `crates/online-bench`, counted by
+  Callgrind through Gungraun (iai-callgrind's new name), a test-only
+  dependency of a crate that ships in nothing. They run twice a push in
+  the new `Budgets` workflow on Linux, with the compiler, the image and
+  the harness pinned. The memory budgets are the bytes per row of 890
+  output fields, every model with every output on, and the peak resident
+  memory of three standard runs per platform, held by pytest on every CI
+  leg. Over a budget by more than its tolerance fails (2% for counts and
+  bytes, 15% for resident memory). So does under it, naming the number to
+  tighten to. A raise needs a `[[raised]]` entry with its reason and a
+  quoted *Performance* entry here, held over the file's git history. Each
+  run reports every case's drift since the last release, and a release
+  fails on one past 10% without a `[[signoff]]`.
 - **Every long example names its steps** (task 249): 326 one-line step
   comments across the README and the guides, as WRITING's rule asks ("a
   long example names its steps in brief comments"); the code and its

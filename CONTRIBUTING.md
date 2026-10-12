@@ -159,6 +159,23 @@ measured baseline and the methodology. Before a release, compare the head
 against the last release's wheel: `scripts/compare_release.py` for the
 numbers, bit for bit, and the benchmark for the speed.
 
+**Every push and pull request is held to `budgets.toml`**, the instruction
+counts of the hot paths and the memory of every output field
+(`docs/PERFORMANCE.md`, "Budgets that only tighten"). A budget failure
+says which of two things happened:
+
+- *over its budget*: the change made a case slower or larger. Find out why.
+  If the cost buys something worth having, raise the budget in the same
+  change, with a `[[raised]]` entry that gives the reason and quotes a
+  CHANGELOG *Performance* entry.
+- *tighten the budget to N*: the change made a case faster or smaller. Run
+  `python scripts/budgets.py apply` on the run's measurements, or write N
+  in yourself, so the gain is kept.
+
+The instruction counts come from the `Budgets` workflow on Linux, whose
+artifact holds them as `measured.json`. The memory measurements come from
+pytest on every CI leg, written where `POLARS_ONLINE_BUDGETS_OUT` points.
+
 **A proposal the measurement rejects is a good outcome.** Several in
 `docs/PERFORMANCE.md` were rejected *because* the measurement said so, and
 its §5 collects them.

@@ -1,0 +1,34 @@
+[package]
+name = "online-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The instruction-count cases behind budgets.toml: hot paths of online-core and the bank, counted under Valgrind."
+
+# Nothing ships from here: not the wheel, not the command line. The cases'
+# workloads are the library, run natively by `cargo test` on every
+# platform, so a case that no longer builds or no longer reaches its path
+# fails the gate; `benches/instructions.rs` counts them under Callgrind
+# (docs/PERFORMANCE.md, "Budgets").
+publish = false
+
+[dependencies]
+online-polars.workspace = true
+polars.workspace = true
+serde_json.workspace = true
+
+# Tests only, in the sense of CLAUDE.md rule 12: the harness links into the
+# bench binary alone, never into the wheel or the command line. Gungraun is
+# iai-callgrind under its new name (renamed at 0.17). Unix only: Valgrind
+# runs on Linux, and the harness is not built for Windows, where the Rust
+# tests also run. The runner binary must be the same version
+# (`cargo install gungraun-runner --version 0.20.0`), which
+# `scripts/budgets.py runner-version` reads from Cargo.lock.
+[target.'cfg(unix)'.dev-dependencies]
+gungraun = "=0.20.0"
+
+[[bench]]
+name = "instructions"
+harness = false

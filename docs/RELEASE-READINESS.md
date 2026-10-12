@@ -42,9 +42,10 @@ So a version tagged by hand can never be released.
 
 ### The steps of a release
 
-**Eleven steps, in order, take a release from a checked build to a
+**Twelve steps, in order, take a release from a checked build to a
 verified install from PyPI.** The first seven are checks and edits made
-before the commit, and the last four push, dispatch, approve and verify.
+before the commit, the next four push, dispatch, approve and verify, and
+the last records the release's measurements for the next one.
 Step 4's version number follows [The policy](#the-policy): widening the
 Polars range, for one, is a minor release
 ([Raising the ceiling to a new major](#raising-the-ceiling-to-a-new-major),
@@ -53,7 +54,7 @@ step 5).
 | step | how |
 |---|---|
 | 1. compare | `uv run python scripts/compare_release.py`; every difference declared in the CHANGELOG, or its cause pinned by a test ([Compare with the last release](#compare-with-the-last-release-bit-for-bit)) |
-| 2. benchmark | `uv run python scripts/benchmark.py` under the last release's wheel from PyPI and under this build, in turn, with the machine's load logged. A slowdown past the runs' scatter is fixed, or declared in the CHANGELOG. `docs/PERFORMANCE.md` §26 found two slowdowns 0.11.0 had shipped, and §31 ran this step before 0.13.0 |
+| 2. benchmark | `uv run python scripts/benchmark.py` under the last release's wheel from PyPI and under this build, in turn, with the machine's load logged. A slowdown past the runs' scatter is fixed, or declared in the CHANGELOG. `docs/PERFORMANCE.md` §26 found two slowdowns 0.11.0 had shipped, and §31 ran this step before 0.13.0. The `Budgets` run of the last push reports each instruction count's drift since the last release, and a case that moved more than 10% either way needs a `[[signoff]]` for this version in `budgets.toml`, or the release's `budgets` job fails (`docs/PERFORMANCE.md`, "Budgets that only tighten") |
 | 3. released states | every release that added a schema is in `RELEASES` in `tests/test_released_state.py` ([A released build's state files](#a-released-builds-state-files)) |
 | 4. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed. `uv run --no-project --python 3.12 python scripts/release_version.py --publish` says whether they agree and the tag is new |
 | 5. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section. `release_version.py --publish` refuses to publish while anything is left under `[Unreleased]` |
@@ -63,6 +64,7 @@ step 5).
 | 9. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)) |
 | 10. approve | the `publish to PyPI` job, in the `Pypi` environment, once every job is green ([The release gate](#the-release-gate)); the tag and the GitHub release follow the upload |
 | 11. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions the package reports (`po.__version__`, `po.native_version()` and `po.schema_version()`) and a fit |
+| 12. record | the release's own measurements become the numbers the next release's drift is read from: download the release run's `budgets-instructions-<sha>` artifact and each OS's floor-Python `budgets-memory-…` artifact, run `python scripts/budgets.py apply measured.json memory.json rss-*.json --release X.Y.Z`, and commit `budgets.toml` to `main` |
 
 ### The release gate
 
@@ -84,6 +86,7 @@ moved (`pyproject.toml`).
 |---|---|---|
 | `version` | the version agrees in its six places, the CHANGELOG has its section, and, publishing, the tag is new and the run is on `main` | yes, and it runs before anything is built |
 | `ci` | the whole of `ci.yml`, called: lint, and the Rust and Python suites on Linux, macOS and Windows | yes |
+| `budgets` | the whole of `budgets.yml`, called: every instruction count against its budget, and each case's drift since the last release against the sign-off | yes |
 | `sdist` | the source distribution | yes |
 | `build` | all six wheels, and the command-line binaries on the five targets that build one, all but musl. The Linux binary is built in the wheels' manylinux2014 image, and refused above glibc 2.17 | yes |
 | `write-state`, then `read-state` | the cross-OS state hand-off: a state written on macOS is loaded, and its stream continued, on Windows and Linux | yes |
