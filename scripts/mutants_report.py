@@ -208,6 +208,23 @@ def report(
     return "\n".join(lines).rstrip() + "\n", missed
 
 
+def run_dirs(args: list[Path]) -> list[Path]:
+    """The run directories the arguments name. ``shards/*`` expands to one
+    directory a shard, except when exactly one artifact was downloaded:
+    ``actions/download-artifact`` then extracts its files straight into
+    ``shards/``, and the glob names ``shards/listed.txt``, a file. A file is
+    its own directory's run (a change that touched no mutable code is one
+    shard dealt nothing, so this is the usual small push; the 2026-10-12
+    push of 3a29ecf failed its report on it: "1 of the 1 runs reported
+    nothing"). Each run once, in the order given."""
+    out: list[Path] = []
+    for arg in args:
+        run = arg.parent if arg.is_file() else arg
+        if run not in out:
+            out.append(run)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("runs", nargs="+", type=Path, help="mutants.out directories")
@@ -217,6 +234,7 @@ def main() -> int:
         "--fail-on-incomplete", action="store_true", help="exit 1 if a run tested fewer than given"
     )
     args = ap.parse_args()
+    args.runs = run_dirs(args.runs)
     text, missed = report(args.runs, expect_runs=args.expect_runs)
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")

@@ -414,3 +414,24 @@ def test_testing_md_counts_the_lists_it_describes():
     # An entry names one mutant per column it gives, else the one on its line.
     named = sum(len(e["columns"]) if isinstance(e.get("columns"), list) else 1 for e in entries)
     assert f"names {named}, in {len(entries)} entries" in text, (named, len(entries))
+
+
+def test_a_single_downloaded_shard_is_one_run_whose_files_sit_in_the_shards_directory(tmp_path):
+    """``download-artifact`` extracts a lone artifact's files straight into the
+    directory, so ``shards/*`` names ``shards/listed.txt`` (a file): the run is
+    its directory, once, and a shard dealt nothing reports "no mutants" instead
+    of "reported nothing" (the push of 3a29ecf failed its report on this)."""
+    flat = tmp_path / "shards"
+    flat.mkdir()
+    (flat / "listed.txt").write_text("")
+    assert report_mod.run_dirs([flat / "listed.txt"]) == [flat]
+    # Both files of a shard that did run name the one directory once.
+    (flat / "outcomes.json").write_text('{"outcomes": []}')
+    assert report_mod.run_dirs([flat / "listed.txt", flat / "outcomes.json"]) == [flat]
+    # The ordinary layout is unchanged: one directory a shard.
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    assert report_mod.run_dirs([a, b]) == [a, b]
+    # And a run that was given nothing is complete, not "reported nothing".
+    assert report_mod.incomplete(report_mod.run_dirs([flat / "listed.txt"]), expect_runs=1) == []
