@@ -93,6 +93,14 @@ impl EwDiag {
         self.k
     }
 
+    /// The means as their pairs and the centred second moments, as slices
+    /// `(m, m_lo, c)`: what [`Self::mean_pair`] and [`Self::var`] read one
+    /// slot at a time, for a caller that runs a loop across the slots.
+    #[inline]
+    pub(crate) fn parts(&self) -> (&[f64], &[f64], &[f64]) {
+        (&self.m, &self.m_lo, &self.c)
+    }
+
     #[inline]
     pub fn n_eff(&self) -> f64 {
         self.w_sum

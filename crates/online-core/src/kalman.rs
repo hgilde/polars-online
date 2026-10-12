@@ -561,6 +561,55 @@ impl KalmanCfg {
     }
 }
 
+/// [`KalmanCfg::gap_noise`] of every slot for one gap, kept beside the
+/// model with the gap's exact 64 bits: on a regular clock every row that
+/// observes its target charges the same gap, and takes the kept factors
+/// rather than an `exp_m1` per reverting slot. A value of the bits, so a
+/// hit returns what the call would, to the bit; never saved, so a restored
+/// model starts empty. One `exp_m1` serves every slot under a single
+/// `revert_half_life`, the slots' factor being one number.
+#[derive(Debug, Clone, Default)]
+struct GapFactors {
+    /// The gap's bits, once a row has computed its factors.
+    bits: Option<u64>,
+    vals: Vec<f64>,
+    /// Rows that took the kept factors: what the tests read.
+    #[cfg(test)]
+    hits: u64,
+}
+
+/// A cache, not state: two models are equal whatever either has kept.
+impl PartialEq for GapFactors {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl GapFactors {
+    /// `cfg.gap_noise(i, d)` for each slot `i`.
+    fn of(&mut self, cfg: &KalmanCfg, d: f64) -> &[f64] {
+        let k = cfg.k_total();
+        let bits = d.to_bits();
+        if self.bits == Some(bits) && self.vals.len() == k {
+            #[cfg(test)]
+            {
+                self.hits += 1;
+            }
+            return &self.vals;
+        }
+        self.vals.clear();
+        if cfg.revert_half_life.len() == 1 {
+            // `revert_of` is the one value for every slot.
+            let g = cfg.gap_noise(0, d);
+            self.vals.resize(k, g);
+        } else {
+            self.vals.extend((0..k).map(|i| cfg.gap_noise(i, d)));
+        }
+        self.bits = Some(bits);
+        &self.vals
+    }
+}
+
 /// How far the moments may drift from the anchor before `b` and `P` are
 /// re-mapped to them (the module doc): a scale by a factor of `1 + τ`
 /// either way, a mean by `τ` of the anchor's scale.
@@ -718,6 +767,9 @@ pub struct Kalman {
     ubuf: Vec<Vec<f64>>,
     #[serde(skip)]
     vbuf: Vec<f64>,
+    /// The gap noise's factors for the last gap charged ([`GapFactors`]).
+    #[serde(skip)]
+    gap_factors: GapFactors,
 }
 
 /// The layout `Kalman` loads, checked on the way in: every vector at the
@@ -824,6 +876,7 @@ impl TryFrom<KalmanV4> for Kalman {
             map_fresh: false,
             ubuf: vec![],
             vbuf: vec![],
+            gap_factors: GapFactors::default(),
         })
     }
 }
@@ -875,6 +928,7 @@ impl Kalman {
             map_fresh: false,
             ubuf: vec![],
             vbuf: vec![],
+            gap_factors: GapFactors::default(),
             cfg,
         };
         model.ensure_buffers();
@@ -1138,23 +1192,56 @@ impl Kalman {
     /// into `a` and `c`, and the drift over the slots `live` marks, `max(a_i
     /// − 1, 1/a_i − 1, |c_i|)` (the module doc). The intercept's slot is 1
     /// and 0.
+    ///
+    /// Written across the slots: each slot's scale, `a_i` and `c_i` in one
+    /// loop with no branch the compiler cannot turn into a select, so it
+    /// runs as a vector loop, then the drift over the live slots in slot
+    /// order. Every row forms it, and a slot at a time it was about 70 ns of
+    /// a 600 ns row at `k = 20`, a square root and two divisions a slot;
+    /// across them, about 20 ns less (task 250). The same operations on the
+    /// same numbers as [`Self::current_scale`] and the divisions by the
+    /// anchor's scale, so the same bits: a usable variance there is
+    /// `clamp_rounding(v) > 0` and finite, which is `v > 0` and finite.
     fn map_into(&self, live: &[bool], a: &mut [f64], c: &mut [f64]) -> f64 {
+        let k = a.len();
+        if !self.cfg.standardize {
+            a.fill(1.0);
+            c.fill(0.0);
+            return 0.0;
+        }
         let off = usize::from(self.cfg.fit_intercept);
-        let mut drift = 0.0f64;
-        for i in 0..a.len() {
-            if i < off || !self.cfg.standardize {
-                a[i] = 1.0;
-                c[i] = 0.0;
-                continue;
+        a[..off].fill(1.0);
+        c[..off].fill(0.0);
+        let (m, m_lo, var) = self.stats.parts();
+        let (m, m_lo, var) = (&m[off..k], &m_lo[off..k], &var[off..k]);
+        let sa = &self.anchor_scale[off..k];
+        let (a_s, c_s) = (&mut a[off..k], &mut c[off..k]);
+        if off == 1 {
+            let (hi, lo) = (&self.anchor_hi[1..k], &self.anchor_lo[1..k]);
+            for j in 0..k - 1 {
+                let vj = var[j];
+                let s = if vj > 0.0 && vj.is_finite() {
+                    vj.sqrt()
+                } else {
+                    1.0
+                };
+                a_s[j] = s / sa[j];
+                c_s[j] = ((m[j] - hi[j]) + (m_lo[j] - lo[j])) / sa[j];
             }
-            let sa = self.anchor_scale[i];
-            a[i] = self.current_scale(i).0 / sa;
-            c[i] = if off == 1 {
-                let (hi, lo) = self.stats.mean_pair(i);
-                ((hi - self.anchor_hi[i]) + (lo - self.anchor_lo[i])) / sa
-            } else {
-                0.0
-            };
+        } else {
+            for j in 0..k {
+                let raw = var[j] + m[j] * m[j];
+                let s = if raw > 0.0 && raw.is_finite() {
+                    raw.sqrt()
+                } else {
+                    1.0
+                };
+                a_s[j] = s / sa[j];
+                c_s[j] = 0.0;
+            }
+        }
+        let mut drift = 0.0f64;
+        for i in off..k {
             if live[i] {
                 drift = drift.max(a[i] - 1.0).max(1.0 / a[i] - 1.0).max(c[i].abs());
             }
@@ -1447,10 +1534,11 @@ impl Kalman {
         let off = usize::from(self.cfg.fit_intercept);
         let mut q = std::mem::take(&mut self.qbuf);
         self.q_into(sigma2, &mut q);
+        let gaps = self.gap_factors.of(&self.cfg, d);
         let p = &mut self.p[pi];
         let mut corner = 0.0;
         for i in 0..k {
-            let qd = q[i] * self.cfg.gap_noise(i, d);
+            let qd = q[i] * gaps[i];
             if !self.cfg.standardize {
                 // The whole `P` is sized at once (the caller saw to it).
                 p[i * k + i] += qd;
@@ -5124,4 +5212,7 @@ mod tests {
     // their own: `kalman.rs` stands near the source-size cap
     // (`tests/test_repo_hygiene.py`).
     mod readouts;
+    // Task 250's: the per-row paths that run faster, each against the form
+    // it replaced, to the bit, and shown to run.
+    mod per_row;
 }
