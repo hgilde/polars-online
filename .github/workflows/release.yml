@@ -81,6 +81,18 @@ jobs:
       pages: write
       id-token: write
 
+  # The instruction-count budgets, with the sign-off: a case that moved
+  # past `drift_signoff` since the last release, either way, fails without
+  # a `[[signoff]]` for this version in budgets.toml (budgets.yml).
+  budgets:
+    name: budgets
+    needs: version
+    uses: ./.github/workflows/budgets.yml
+    with:
+      release-check: ${{ needs.version.outputs.version }}
+    permissions:
+      contents: read
+
   # A source distribution, so a platform with no wheel above can still build
   # from source (it needs a Rust toolchain, which is exactly why the wheel
   # matrix is wide). The job then builds it as such a user would, from the
@@ -581,7 +593,7 @@ jobs:
   # release.yml, environment pypi); the first publish claimed the name.
   publish:
     name: publish to PyPI
-    needs: [version, ci, sdist, build, read-state, next-polars, floor-polars, next-numpy]
+    needs: [version, ci, budgets, sdist, build, read-state, next-polars, floor-polars, next-numpy]
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15

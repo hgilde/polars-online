@@ -266,8 +266,23 @@ jobs:
       # essentials of its own: the gate times them locally, where they run
       # (the user, 2026-10-08: "Do the work before the push just to save ci
       # time").
+      #
+      # The memory budgets (budgets.toml) are held here, on every leg: the
+      # bytes of every output field, and each platform's peak resident
+      # memory. Their measurements go to the job summary and, as JSON, to
+      # the artifact below, for `scripts/budgets.py apply`.
       - name: pytest
+        env:
+          POLARS_ONLINE_BUDGETS_OUT: ${{ runner.temp }}/budgets
         run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
+
+      - name: keep the memory measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: budgets-memory-${{ matrix.os }}-python-${{ matrix.python }}
+          path: ${{ runner.temp }}/budgets
+          if-no-files-found: warn
 
       # The API reference (docs/reference): Sphinx over the docstrings, -W so
       # a docstring that is not valid reStructuredText fails the job. It

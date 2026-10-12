@@ -18,6 +18,7 @@ every commit, and they fail loudly when someone widens the matrix or removes a
 timeout without meaning to.
 """
 
+import json
 import pathlib
 import re
 import subprocess
@@ -331,34 +332,107 @@ class TestMutationTesting:
         "weekly": ("weekly-report", "mutants-shard-"),
     }
 
-    #: The memory every mutant's test processes may use together on a
-    #: GitHub runner (16 GiB): the rest is the runner's, so a mutant that
-    #: allocates without end fails alone instead of shutting the runner
-    #: down. The push of 5cb8f7e lost 8 of 111 shards that way.
-    MUTANTS_MEMORY = 12 * 2**30
-    #: online-core's largest test binary peaked at 497 MiB (2026-10-11, the
-    #: extended tier, four test threads); a cap under twice that would fail
-    #: the baseline.
-    TEST_PEAK = 497 * 2**20
+    #: A GitHub runner's memory (16 GiB) and what its own agent and system
+    #: keep outside the mutants' scope: a mutant that allocates without end
+    #: is killed alone instead of shutting the runner down. The push of
+    #: 5cb8f7e lost 8 of 111 shards that way.
+    RUNNER_MEMORY = 16 * 2**30
+    RUNNER_KEEPS = 3 * 2**30
+    #: The step that runs the mutants, and the scope around it.
+    SCOPE = 'bash scripts/memory_scope.sh "$MUTANTS_MEMORY_MAX" -- \\'
 
-    @pytest.mark.parametrize("job", ["changed", "weekly"])
-    def test_every_mutants_test_process_is_capped_in_memory(self, job):
-        """Each shard runs its test binaries under ``prlimit --data`` through
-        cargo's test runner, and its cap times the mutants it runs at once
-        (``-j``) stays inside the runner, with room above the measured peak."""
-        spec = self.MUT["jobs"][job]
-        runner = spec.get("env", {}).get("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", "")
-        m = re.fullmatch(r"prlimit --data=(\d+) --", runner)
-        assert m, f"{job}: the test runner is {runner!r}, not a prlimit --data cap"
-        cap = int(m.group(1))
-        script = next(
+    @staticmethod
+    def _bytes(text: str) -> int:
+        units = {"K": 2**10, "M": 2**20, "G": 2**30}
+        return int(float(text[:-1]) * units[text[-1]]) if text[-1] in units else int(text)
+
+    def _mutants_step(self, job: str) -> str:
+        return next(
             s["run"]
-            for s in spec["steps"]
+            for s in self.MUT["jobs"][job]["steps"]
             if "cargo mutants" in s.get("run", "") and "timeout" in s["run"]
         )
-        jobs = int(re.search(r"-j (\d+)", script).group(1))
-        assert cap * jobs <= self.MUTANTS_MEMORY, (job, cap, jobs)
-        assert cap >= 4 * self.TEST_PEAK, (job, cap)
+
+    @pytest.mark.parametrize("job", ["changed", "weekly"])
+    def test_every_mutants_run_is_capped_in_one_memory_scope(self, job):
+        """The whole `cargo mutants` run is inside one cgroup scope whose
+        `MemoryMax` leaves the runner its share (scripts/memory_scope.sh).
+        The cap it replaced, `prlimit --data` on each test binary, counted
+        virtual writable memory, which glibc keeps after a free: a 6 GiB cap
+        sized from a resident peak of 497 MiB failed the baseline of 4 of
+        the 32 shards of run 38205650365. No job keeps that runner."""
+        script = self._mutants_step(job)
+        lines = [line.strip() for line in script.splitlines()]
+        at = lines.index(self.SCOPE)
+        assert lines[at + 1].startswith("timeout --signal=INT"), lines[at + 1]
+        assert "prlimit" not in json.dumps(self.MUT["jobs"][job])
+        cap = self._bytes(self.MUT["env"]["MUTANTS_MEMORY_MAX"])
+        assert 8 * 2**30 <= cap <= self.RUNNER_MEMORY - self.RUNNER_KEEPS, cap
+
+    def test_the_scope_caps_resident_memory_and_outlives_a_kill(self):
+        """`MemoryMax` is resident memory, page cache included, which the
+        kernel reclaims before it kills; no swap, so a runaway is killed
+        rather than paged; `OOMPolicy=continue`, so the kernel's kill of a
+        test leaves cargo-mutants running (systemd's default stops the whole
+        unit); and the command runs as the calling user again."""
+        root = pathlib.Path(__file__).resolve().parents[1]
+        text = (root / "scripts" / "memory_scope.sh").read_text(encoding="utf-8")
+        for needed in (
+            "systemd-run --scope",
+            '-p MemoryMax="$max"',
+            "-p MemorySwapMax=0",
+            "-p OOMPolicy=continue",
+            'setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups',
+            'env PATH="$PATH" HOME="$HOME"',
+        ):
+            assert needed in text, needed
+
+    def test_the_memory_scope_is_proven_on_every_run(self):
+        """A job with no condition plants a runaway in a scope of the
+        shards' own cap and holds it killed near the cap with its parent
+        going on; a step after it shows the job goes on too."""
+        job = self.MUT["jobs"]["memory-cap"]
+        assert "if" not in job and "needs" not in job
+        runs = [str(s.get("run", "")) for s in job["steps"]]
+        at = runs.index('python3 scripts/memory_scope_check.py "$MUTANTS_MEMORY_MAX"')
+        assert runs[at + 1 :], "a step after the check, which runs only if the runner lived"
+
+    @pytest.mark.parametrize("job", ["changed", "weekly"])
+    def test_every_mutants_run_tests_under_nextest_with_the_extended_tier(self, job):
+        """Each mutant's tests run under nextest, a process per test (84 s
+        for the full Rust suite against `cargo test`'s 182 s). cargo-mutants
+        hands each `--cargo-test-arg` to `cargo nextest run` in the test
+        phase: `--run-ignored=all` keeps the extended tier's
+        `#[ignore = "extended: ..."]` tests in every mutant's run, as
+        `-- --include-ignored` did under `cargo test`, and `--tests` the test
+        targets; nextest runs no doctests in any case."""
+        script = self._mutants_step(job)
+        for flag in (
+            "--test-tool nextest",
+            "--cargo-test-arg=--tests",
+            "--cargo-test-arg=--run-ignored=all",
+        ):
+            assert flag in script, (job, flag)
+        assert "--include-ignored" not in script, job
+
+    def test_nextest_is_one_pinned_version_where_mutants_are_tested(self):
+        """The two jobs that test mutants install the same cargo-nextest, by
+        exact version; the listing tests nothing and installs none."""
+        installs = {
+            job: [
+                line.strip()
+                for step in spec["steps"]
+                for line in str(step.get("run", "")).splitlines()
+                if "cargo-nextest" in line
+            ]
+            for job, spec in self.MUT["jobs"].items()
+        }
+        assert installs["changed"] == installs["weekly"], installs
+        assert {j for j, found in installs.items() if found} == {"changed", "weekly"}
+        (install,) = installs["changed"]
+        assert re.fullmatch(
+            r"cargo install --locked cargo-nextest --version \d+\.\d+\.\d+", install
+        )
 
     @pytest.mark.parametrize("job", ["changed", "weekly"])
     def test_every_shard_stops_with_room_before_its_job_is_killed(self, job):
@@ -700,8 +774,10 @@ class TestTheLinuxPrepIsOneAction:
                     f"{name}:{job} copies the prep again"
                 )
         # Every caller by name, so a new one is a decision: the two NumPy
-        # jobs were added on 2026-09-30, the two floor legs on 2026-10-07.
+        # jobs were added on 2026-09-30, the two floor legs on 2026-10-07,
+        # the instruction counts (Valgrind) on 2026-10-12.
         assert sorted(callers) == [
+            "budgets.yml:instructions",
             "ci.yml:test",
             "leakcheck.yml:native",
             "mutants.yml:changed",
