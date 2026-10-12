@@ -3365,15 +3365,17 @@ impl Stream {
         let mut state = self.persisted.clock.clone();
         for (ri, &row) in rows.iter().enumerate() {
             let at = base + ri;
-            // `accept` only routes the delta into `pending`; whether the row
-            // is refused depends on the clock and session alone.
+            // Whether the row is refused depends on the clock and session
+            // alone: `refusal` moves only those, and decides as `advance`
+            // does (task 250: the whole step here was a tenth of a row).
             let prev = state.last_clock();
-            let adv = state.advance(cfg, Some(clock.at(at)), session.map(|s| s[at]), true);
-            if let Some(raw) = adv.backwards {
+            if let Some((raw, disorder)) =
+                state.refusal(cfg, Some(clock.at(at)), session.map(|s| s[at]))
+            {
                 return Err(ClockRefusal::new(
                     raw,
                     row,
-                    adv.disorder,
+                    disorder,
                     Some(clock.at(at)),
                     prev,
                 ));
@@ -5550,6 +5552,9 @@ fn run_instance(
     }
     drift_seen
 }
+
+#[cfg(test)]
+mod clock_check_tests;
 
 #[cfg(test)]
 mod projected_figure_tests {
