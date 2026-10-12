@@ -146,6 +146,18 @@ impl ClusterSummary {
         self.c_lo.iter_mut().for_each(|v| *v = 0.0);
     }
 
+    /// Whether the summary is exactly what [`Self::clear`] leaves, to the
+    /// bit (a `-0.0` is not): clearing it again changes nothing. A batch no
+    /// row reached since the last checkpoint is one, and `kmeans` merges
+    /// every batch at every checkpoint -- every row, by default -- where
+    /// the two `memset` calls per batch cost more than this read
+    /// (task 250).
+    pub fn is_clear(&self) -> bool {
+        self.n.to_bits() == 0
+            && self.r2.to_bits() == 0
+            && self.c.iter().chain(&self.c_lo).all(|v| v.to_bits() == 0)
+    }
+
     /// The centre as doubles, each pair rounded: what is reported.
     pub fn centre(&self) -> Vec<f64> {
         self.c.iter().zip(&self.c_lo).map(|(h, l)| h + l).collect()
@@ -171,6 +183,9 @@ impl ClusterSummary {
     }
 
     /// [`dist2`] from the row `z` to the centre, read from the pair.
+    /// Inlined: it is the inner loop of every nearest-centre search, where
+    /// a call per centre cost `kmeans` a fifth of its row (task 250).
+    #[inline]
     pub fn dist2(&self, z: &[f64], mw: &[f64]) -> f64 {
         sq_norm(self.c.len(), |i| self.dev(z, i), mw)
     }

@@ -478,7 +478,10 @@ impl KMeans {
     fn checkpoint(&mut self) {
         for (c, b) in self.clusters.iter_mut().zip(&mut self.batch) {
             c.merge_plain(b);
-            b.clear();
+            // A batch no row reached is clear already (task 250).
+            if !b.is_clear() {
+                b.clear();
+            }
         }
         self.since = 0;
         if self.cfg.split_merge > 0.0 {
