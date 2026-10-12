@@ -9977,6 +9977,30 @@ tick, and that the series holding it up has a count near 1.
       batch, each fix checked locally only with an `--in-diff` of the fix;
       the release push then carries only that small diff and task 251, and
       waits for its short CI pass.
+      *Phase 1 and 2 done 2026-10-11/12*: phase 1 (`/usr/bin/sample` on a
+      symbol build) found the causes and prototyped 11 bit-identical fixes;
+      phase 2 hardened them in five workers, every one byte-identical over
+      `release_probe.py`'s 297 columns and 31 states, `compare_release.py`
+      unchanged, golden and fixtures passing, each with activation tests:
+      the clock (`check_clock` shares `refusal`; a float clock's forward
+      step short cut, taken on 8,768 rows of its test; seqtest about 1.18x),
+      bocpd (no per-run allocations; a gamma cache keyed on nu *and* the
+      density's dimension -- the review's fix to the prototype, keyed on nu
+      alone; 2.8-2.9x, 0.75x of 0.13.0 under the default prior, 1.8x under
+      0.13.0's), kmeans/micro (inlining; a per-batch clean flag; micro
+      reuses the search's d2; a step-factor cache keyed on the step's bits;
+      kmeans4 +16%), sgd/pa/ew_cov/kalman (the gradient check folded; pa
+      reads `x` in place; the rank-one loop out of line; the noise median on
+      the stack; about 15% a row each), the bank (the run budget counts the
+      plans; the embargo's stamp beside the plans, 160 -> 128 bytes a plan;
+      the summary's Welford across columns at 8+ features). Found on the
+      way: two release builds of the same source differ by up to 19% in
+      wall time from inlining alone, so whole-build ratios within about 15%
+      are layout, not change -- task 251's instruction counts are the
+      answer, and the final benchmark reports ranges. The summary costs
+      about 25 ns a row beyond its Welford step (20% of sgd and pa) and is
+      the largest bank cost left. Left for the user: sgd (tasks 186/183),
+      kalman (214) and bocpd's default nu (195) hold those rows below 0.95.
       Then (the user, 2026-10-11: "Once memory and performance are fixed if
       there is nothing for me continue with the release"): with nothing
       left for the user, task 247 resumes without asking -- the version
