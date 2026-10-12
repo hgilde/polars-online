@@ -9977,6 +9977,12 @@ tick, and that the series holding it up has a count near 1.
       batch, each fix checked locally only with an `--in-diff` of the fix;
       the release push then carries only that small diff and task 251, and
       waits for its short CI pass.
+      Then (the user, 2026-10-12: "How will we prevent mutant runs from
+      slowing down dev iterations?", then "Yes"): CI's mutants runs use
+      `--test-tool nextest` (built in task 251's workflow edits, the gain
+      measured on the next push against run 38205650365's per-mutant times),
+      and each merged, gated wave is pushed as it lands, so a pass stays
+      short (CLAUDE.md's "Iterating").
       *Phase 1 and 2 done 2026-10-11/12*: phase 1 (`/usr/bin/sample` on a
       symbol build) found the causes and prototyped 11 bit-identical fixes;
       phase 2 hardened them in five workers, every one byte-identical over

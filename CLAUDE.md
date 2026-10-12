@@ -64,8 +64,11 @@ check to run the smallest number of times"): the one thorough check is CI's
 changed-lines pass on the push, sharded across runners and free; its
 survivors are a follow-up batch, and a fix is checked locally only with an
 `--in-diff` of the fix itself (`--copy-target=true --test-tool nextest`).
-So push a merged, gated wave early, and let CI's pass run while the next
-work is built. Workers lean on activation tests instead. After each push
+So push each merged, gated wave as it lands (the user, 2026-10-12: "Yes"
+to it): a push needs the full gate on the exact sha and no open bug, and
+then no further word; small pushes keep each CI mutants pass short and its
+survivors fresh. Dispatching a release still needs the user's explicit
+word, and its PyPI approval is always the user's click. Workers lean on activation tests instead. After each push
 wave and its branch and worktree cleanup, run `scripts/clear_caches.sh
 --worktrees` (or whenever free disk is under 100 GB). sccache stays off:
 from a new worktree path a third of the crates miss its cache, so it is
