@@ -51,6 +51,7 @@ cargo run -p online-cli -- --config examples/bank.toml
 scripts/quick.sh                         # inside a task: tests for what the branch changed (dev-wheel build)
 scripts/gate.sh --serial                 # either tier in one process (the gate runs tests in parallel)
 scripts/clear_caches.sh --worktrees      # build caches: after each push wave, or under 100 GB free
+scripts/budgets.py check|raises|apply    # performance and memory budgets (budgets.toml)
 ```
 
 Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to
@@ -130,6 +131,19 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    as the *first* row of a stream, where `lam*w_sum + w` is 0 and the mean-form update's
    `a` and `b` are both 0/0. Guard every such division; an unguarded one poisons the state
    with a NaN that never washes out.
+
+- **Budgets only tighten** (`budgets.toml`; task 251, the user, 2026-10-11:
+  "we want to avoid slipping by 5% repeatedly"). A failure says *over its
+  budget*: find the cause; if it buys something worth having, raise the
+  budget in the same change, with a `[[raised]]` entry giving the reason and
+  quoting a CHANGELOG *Performance* entry (`scripts/budgets.py raises` holds
+  this over the file's history). Or it says *tighten the budget to N*: run
+  `python scripts/budgets.py apply` on the run's `measured.json` (the
+  Budgets artifact) or `memory.json` (`POLARS_ONLINE_BUDGETS_OUT`), so the
+  gain is kept. Instruction counts come from CI's Linux Valgrind;
+  `cargo test -p online-bench` runs the cases natively. A proposal that
+  changes a data layout, a per-row path or a default that adds work carries
+  its measured memory and speed cost (the coef-as-Array lesson, 2026-10-11).
 
 ## Linking
 

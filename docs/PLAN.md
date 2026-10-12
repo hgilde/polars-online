@@ -10012,7 +10012,7 @@ tick, and that the series holding it up has a count near 1.
       left for the user, task 247 resumes without asking -- the version
       bump, the full gate, the push, CI, the dispatch -- up to the PyPI
       approval, which stays the user's click.
-- [ ] 251. **Performance and memory budgets that only tighten** -- the user,
+- [x] 251. **Performance and memory budgets that only tighten** -- the user,
       2026-10-11: "How can we find these problems sooner next time", then
       "The instruction count and memory budget are good but we want to
       avoid slipping by 5% repeatedly". Built right after task 250's fixes,
@@ -10036,6 +10036,29 @@ tick, and that the series holding it up has a count near 1.
       test tool, nothing in the wheel.
       **Before 1.0** (the user, 2026-10-11: "Build the budgets before 1.0"):
       the order is task 250's fixes, then 251, then the release (task 247).
+      *Built 2026-10-12* (`0790424`, `b1e587f`, merged): `crates/online-bench`
+      (14 Callgrind cases through Gungraun 0.20.0, iai-callgrind's renamed
+      successor; unix-only dev-dependency; 1,000 rows after 2,000 of
+      warm-up; the bank case on its own one-thread pool); `budgets.toml`
+      (toolchain, runner and harness pinned; tolerances 2% instructions, 2%
+      memory, 15% RSS; sign-off past 10% drift); `scripts/budgets.py`
+      (check, raises, apply, release-check); `budgets.yml` (gating, the
+      bench run twice, the runs must agree within a quarter of the
+      tolerance), `release.yml`'s `publish` needs it; memory: 890 field
+      budgets set locally from `estimated_size`, three RSS runs per
+      platform. **Waiting on CI's first push:** the instruction and RSS
+      budgets (read the Budgets run's second-run column and that no case is
+      zero, `apply measured.json`, `apply rss-*.json`, commit, and the next
+      push must pass with no new rows); at release, `apply ... --release
+      1.0.0` (RELEASE-READINESS step 12). Also in that commit: CI's mutants
+      under nextest (`--run-ignored=all`, 1,840 tests per mutant, checked
+      against cargo-mutants' source) and task 246's cap replaced by a 12G
+      systemd scope -- RLIMIT_DATA counted virtual memory and failed 4 of
+      32 baselines -- proven on every run by a `memory-cap` job.
+      *Measured on the way, not changed:* wide `ew_cov` (20 features, 200k
+      rows) peaks +830 MiB for a 368 MB output (2.25x); a 5-feature ewridge
+      streaming 1M rows from a parquet scan to a sink peaks +290 MiB.
+
 - [ ] 252. **No number changes without a test noticing** -- the user,
       2026-10-11: "If we know of areas where numbers can change without a
       test noticing we should add to the plan to improve that", then "Add
