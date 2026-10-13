@@ -2872,7 +2872,7 @@ mod tests {
         assert_ne!(head, tail, "two groups listed");
         let fit = "does not fit";
         type Damage<'a> = (&'a str, &'a dyn Fn(&mut Windows));
-        let damage: [Damage; 21] = [
+        let damage: [Damage; 23] = [
             ("names kernel", &|c| c.ops[0].kernel = 99),
             ("operators are not", &|c| c.members.swap(0, 1)),
             ("outputs for", &|c| c.n_outputs += 1),
@@ -2902,10 +2902,15 @@ mod tests {
             ("open windows", &|c| c.held_meta[c.ready].open += 1),
             ("silent list", &|c| c.head = Some(c.groups.len())),
             ("silent list", &|c| c.groups[tail].next_link = Some(head)),
+            // A list that walks whole but ends short of its tail (task 252).
+            ("silent list", &|c| c.tail = c.head),
             ("one to one", &|c| {
                 c.index.insert("stray".into(), 0);
             }),
             ("one to one", &|c| c.null_group = Some(c.groups.len())),
+            // A group no key names (task 252): each key is distinct, but one
+            // group is left without one.
+            ("one to one", &|c| c.index.retain(|_, gi| *gi != 0)),
         ];
         for (says, f) in damage {
             let mut broken = core.clone();
@@ -4382,25 +4387,38 @@ mod tests {
     #[test]
     fn a_saved_state_resumes_at_any_row() {
         let (kernels, ops) = all_kernels();
-        let rows = stream(9, 120, 2, true, true);
-        let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
-        let one = run(&kernels, &ops, c, &rows, 1).unwrap();
-        for at in [1, 2, 17, 60, 119] {
-            let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
-            core.set_grouped(true);
-            let (mut t, mut next) = (Table::default(), 0);
-            for r in &rows[..at] {
-                push(&mut core, r).unwrap();
+        // Under `session_gap = "reset"` too, whose saved form no other
+        // state carries (task 252): it must load as itself, not as no
+        // session gap.
+        for (rows, c) in [
+            (
+                stream(9, 120, 2, true, true),
+                cfg(8.0, Some(SessionGap::Gap(2.0)), None),
+            ),
+            (
+                session_reset_stream(10, 120, 2, true),
+                cfg(8.0, Some(SessionGap::Reset), None),
+            ),
+        ] {
+            let one = run(&kernels, &ops, c, &rows, 1).unwrap();
+            for at in [1, 2, 17, 60, 119] {
+                let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+                core.set_grouped(true);
+                let (mut t, mut next) = (Table::default(), 0);
+                for r in &rows[..at] {
+                    push(&mut core, r).unwrap();
+                }
+                t.append(core.drain(), &mut next);
+                let bytes = rmp_serde::to_vec_named(&core).unwrap();
+                let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+                core.check().unwrap();
+                assert_eq!(core.clock_cfg(), &c, "resumed at {at}");
+                for r in &rows[at..] {
+                    push(&mut core, r).unwrap();
+                }
+                t.append(core.finish(), &mut next);
+                assert!(t.same_bits(&one), "{c:?}: resumed at {at}");
             }
-            t.append(core.drain(), &mut next);
-            let bytes = rmp_serde::to_vec_named(&core).unwrap();
-            let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
-            core.check().unwrap();
-            for r in &rows[at..] {
-                push(&mut core, r).unwrap();
-            }
-            t.append(core.finish(), &mut next);
-            assert!(t.same_bits(&one), "resumed at {at}");
         }
     }
 
@@ -4766,5 +4784,157 @@ mod tests {
             err.contains("window_ns 300000001 is not window_size 0.3"),
             "{err}"
         );
+    }
+
+    /// Task 252: the Rust API's own refusals, which the formula layer's
+    /// checks keep every `with_windows` call from reaching -- a kernel's
+    /// half-life, a forward kernel without a window, a window that is not
+    /// finite and above 0, no operator, an operator naming a kernel there
+    /// is not or counting no row, and a kernel no operator uses.
+    #[test]
+    fn the_core_refuses_what_it_cannot_run_by_name() {
+        let kernel = |direction, half_life, window_size| KernelDef {
+            direction,
+            half_life,
+            window_size,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        for h in [0.0, -1.0, f64::NAN] {
+            let err = kernel(Direction::Backward, h, Some(2.0))
+                .check()
+                .unwrap_err();
+            assert!(
+                err.starts_with("half_life must be above 0, got"),
+                "{h}: {err}"
+            );
+        }
+        let err = kernel(Direction::Forward, 1.0, None).check().unwrap_err();
+        assert_eq!(err, "a forward operator needs a window_size");
+        for w in [0.0, -2.0, f64::INFINITY, f64::NAN] {
+            for direction in [Direction::Backward, Direction::Forward] {
+                let err = kernel(direction, 1.0, Some(w)).check().unwrap_err();
+                assert!(
+                    err.starts_with("window_size must be finite and above 0, got"),
+                    "{w}: {err}"
+                );
+            }
+        }
+        kernel(Direction::Backward, 1.0, None).check().unwrap();
+        kernel(Direction::Forward, f64::INFINITY, Some(3.0))
+            .check()
+            .unwrap();
+        let op = |kernel: usize, min_samples: u32| OpDef {
+            kernel,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples,
+            partial: Partial::Keep,
+            bias: false,
+        };
+        let back = || kernel(Direction::Backward, 1.0, Some(2.0));
+        let refused = |kernels: Vec<KernelDef>, ops: Vec<OpDef>| {
+            Windows::new(kernels, ops, cfg(10.0, None, None)).expect_err("refused")
+        };
+        assert_eq!(
+            refused(vec![back()], vec![]),
+            "at least one operator is needed"
+        );
+        assert_eq!(
+            refused(vec![back()], vec![op(3, 1)]),
+            "operator 0 names kernel 3, which there is not"
+        );
+        assert_eq!(
+            refused(vec![back()], vec![op(0, 1), op(0, 0)]),
+            "min_samples must be at least 1"
+        );
+        assert_eq!(
+            refused(vec![back(), back()], vec![op(1, 1)]),
+            "kernel 0 has no operator"
+        );
+        let err = refused(
+            vec![kernel(Direction::Backward, -1.0, None)],
+            vec![op(0, 1)],
+        );
+        assert!(err.starts_with("half_life must be above 0"), "{err}");
+        // An increment is no statistic of a window, and reads back one row.
+        assert_eq!(OpKind::Increment.stat(), None);
+        assert_eq!(OpKind::Increment.direction(), Direction::Backward);
+        assert_eq!(OpKind::EwmStd.stat(), Some(Stat::Std));
+    }
+
+    /// Task 252: what the core reports of itself -- its outputs, one per
+    /// operator, and the rows its queues hold -- which a run reads to say
+    /// what its windows cost. A window of 5 over rows a unit apart is read,
+    /// and evicted to, at the next stamp under `"right"` (equal stamps share
+    /// a window): after row `t` the queue holds the 5 rows of row `t - 1`'s
+    /// window `(t - 6, t - 1]` and row `t` itself, 6 however long the
+    /// stream. The end of input reads the last row's window, evicting to its
+    /// 5 rows, and keeps them: a state saved there goes on with the next
+    /// file, whose rows look back into them.
+    #[test]
+    fn the_core_counts_its_outputs_and_the_rows_its_windows_hold() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 3.0,
+            window_size: Some(5.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let ops: Vec<OpDef> = [Stat::Sum, Stat::Mean, Stat::Var]
+            .into_iter()
+            .map(|stat| OpDef {
+                kernel: 0,
+                stat,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias: false,
+            })
+            .collect();
+        let mut core = Windows::new(vec![k], ops, cfg(10.0, None, None)).unwrap();
+        assert_eq!(core.n_outputs(), 3);
+        assert_eq!(core.queued(), 0);
+        let mut most = 0;
+        for i in 0..200 {
+            let r = Row {
+                group: None,
+                clock: Some(ClockValue::F64(f64::from(i))),
+                session: None,
+                values: vec![f64::from(i % 7)],
+                accept: true,
+            };
+            push(&mut core, &r).unwrap();
+            most = most.max(core.queued());
+            if i >= 5 {
+                assert_eq!(core.queued(), 6, "after row {i}");
+            }
+            core.drain();
+        }
+        assert_eq!(most, 6);
+        core.finish();
+        assert_eq!(core.queued(), 5);
+    }
+
+    /// Task 252: with no cap on a step (`gap_cap` infinite, which only the
+    /// Rust API can give: a call with a clock column requires a finite
+    /// one), no silent group is ever cut, and every operator still matches
+    /// its definition on streams with long gaps, groups and sessions.
+    #[test]
+    fn every_operator_matches_its_definition_without_a_cap() {
+        let (kernels, ops) = all_kernels();
+        for (seed, groups, temporal, sessions) in [
+            (31, 3, true, false),
+            (32, 2, false, true),
+            (33, 1, false, false),
+        ] {
+            let rows = stream(seed, 300, groups, temporal, sessions);
+            let c = cfg(
+                f64::INFINITY,
+                sessions.then_some(SessionGap::Gap(2.0)),
+                None,
+            );
+            assert_matches_brute(&kernels, &ops, c, &rows, seed);
+        }
     }
 }
