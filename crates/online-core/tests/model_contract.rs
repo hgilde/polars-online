@@ -723,6 +723,142 @@ fn every_state_kind_is_distinct_and_named() {
     );
 }
 
+/// One state of every kind a bank runs, and the bare accumulator.
+fn one_state_of_each_kind() -> Vec<State> {
+    vec![
+        EwRidge::new(ewridge_cfg()).unwrap().state(),
+        Rls::new(rls_cfg()).unwrap().state(),
+        Lasso::new(lasso_cfg()).unwrap().state(),
+        Kalman::new(kalman_cfg()).unwrap().state(),
+        Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap().state(),
+        Ftrl::new(ftrl_cfg()).unwrap().state(),
+        Sgd::new(sgd_cfg()).unwrap().state(),
+        Pa::new(pa_cfg()).unwrap().state(),
+        Holt::new(holt_cfg()).unwrap().state(),
+        EwCovModel::new(ew_cov_model_cfg()).unwrap().state(),
+        KMeans::new(kmeans_cfg()).unwrap().state(),
+        Micro::new(micro_cfg()).unwrap().state(),
+        EwClass::new(ew_class_cfg()).unwrap().state(),
+        SeqTest::new(seqtest_cfg()).unwrap().state(),
+        Marginal::new(marginal_cfg()).unwrap().state(),
+        Deco::new(deco_cfg()).unwrap().state(),
+        Rcov::new(rcov_cfg()).unwrap().state(),
+        Hmm::new(hmm_cfg()).unwrap().state(),
+        CorrChange::new(corrchange_cfg()).unwrap().state(),
+        Bocpd::new(bocpd_cfg()).unwrap().state(),
+        Audit::new(audit_cfg()).unwrap().state(),
+        State::new(ModelState::EwCov(Box::new(EwCov::new(1)))),
+    ]
+}
+
+/// `M::restore` takes its own kind's state and refuses every other with a
+/// `WrongModel` naming the kind it wanted and the kind it was handed.
+fn refuses_every_other_kind<M: OnlineModel>(own: &str, states: &[State]) {
+    let mut took_own = false;
+    for s in states {
+        let found = s.model.kind();
+        match M::restore(s) {
+            Ok(_) => {
+                assert_eq!(found, own, "{own} accepted a {found} state");
+                took_own = true;
+            }
+            Err(StateError::WrongModel {
+                expected,
+                found: named,
+            }) => {
+                assert_ne!(found, own, "{own} refused its own state");
+                assert_eq!((expected, named), (own, found), "{own} on a {found} state");
+            }
+            Err(e) => panic!("{own} on a {found} state: {e}"),
+        }
+    }
+    assert!(took_own, "{own}: no state of its own kind in the list");
+}
+
+/// Task 252: each model's `restore` refuses every other model's state by
+/// name -- the arm no test reached in most of them, so a mutation that
+/// accepted a foreign state, or named the wrong kind, went unseen.
+#[test]
+fn every_model_refuses_every_other_models_state_by_name() {
+    let states = one_state_of_each_kind();
+    refuses_every_other_kind::<EwRidge>("ewridge", &states);
+    refuses_every_other_kind::<Rls>("rls", &states);
+    refuses_every_other_kind::<Lasso>("lasso", &states);
+    refuses_every_other_kind::<Kalman>("kalman", &states);
+    refuses_every_other_kind::<Robust>("robust", &states);
+    refuses_every_other_kind::<Ftrl>("ftrl", &states);
+    refuses_every_other_kind::<Sgd>("sgd", &states);
+    refuses_every_other_kind::<Pa>("pa", &states);
+    refuses_every_other_kind::<Holt>("holt", &states);
+    refuses_every_other_kind::<EwCovModel>("ew_cov", &states);
+    refuses_every_other_kind::<KMeans>("kmeans", &states);
+    refuses_every_other_kind::<Micro>("micro", &states);
+    refuses_every_other_kind::<EwClass>("ew_class", &states);
+    refuses_every_other_kind::<SeqTest>("seqtest", &states);
+    refuses_every_other_kind::<Marginal>("marginal", &states);
+    refuses_every_other_kind::<Deco>("deco", &states);
+    refuses_every_other_kind::<Rcov>("rcov", &states);
+    refuses_every_other_kind::<Hmm>("hmm", &states);
+    refuses_every_other_kind::<CorrChange>("corrchange", &states);
+    refuses_every_other_kind::<Bocpd>("bocpd", &states);
+    refuses_every_other_kind::<Audit>("audit", &states);
+}
+
+/// Task 252: each model hands back the configuration it was built from,
+/// and a restored model the one its state carried.
+#[test]
+fn every_model_hands_back_its_configuration() {
+    fn same<M: OnlineModel, C: PartialEq + std::fmt::Debug>(m: M, cfg: &C, of: impl Fn(&M) -> &C) {
+        assert_eq!(of(&m), cfg);
+        let back = M::restore(&m.state()).unwrap();
+        assert_eq!(of(&back), cfg);
+    }
+    let c = ewridge_cfg();
+    same(EwRidge::new(c.clone()).unwrap(), &c, EwRidge::cfg);
+    let c = rls_cfg();
+    same(Rls::new(c.clone()).unwrap(), &c, Rls::cfg);
+    let c = lasso_cfg();
+    same(Lasso::new(c.clone()).unwrap(), &c, Lasso::cfg);
+    let c = kalman_cfg();
+    same(Kalman::new(c.clone()).unwrap(), &c, Kalman::cfg);
+    for loss in ROBUST_LOSSES {
+        let c = robust_cfg(loss);
+        same(Robust::new(c.clone()).unwrap(), &c, Robust::cfg);
+    }
+    let c = ftrl_cfg();
+    same(Ftrl::new(c.clone()).unwrap(), &c, Ftrl::cfg);
+    let c = sgd_cfg();
+    same(Sgd::new(c.clone()).unwrap(), &c, Sgd::cfg);
+    let c = pa_cfg();
+    same(Pa::new(c.clone()).unwrap(), &c, Pa::cfg);
+    let c = holt_cfg();
+    same(Holt::new(c.clone()).unwrap(), &c, Holt::cfg);
+    let c = ew_cov_model_cfg();
+    same(EwCovModel::new(c.clone()).unwrap(), &c, EwCovModel::cfg);
+    let c = kmeans_cfg();
+    same(KMeans::new(c.clone()).unwrap(), &c, KMeans::cfg);
+    let c = micro_cfg();
+    same(Micro::new(c.clone()).unwrap(), &c, Micro::cfg);
+    let c = ew_class_cfg();
+    same(EwClass::new(c.clone()).unwrap(), &c, EwClass::cfg);
+    let c = seqtest_cfg();
+    same(SeqTest::new(c.clone()).unwrap(), &c, SeqTest::cfg);
+    let c = marginal_cfg();
+    same(Marginal::new(c.clone()).unwrap(), &c, Marginal::cfg);
+    let c = deco_cfg();
+    same(Deco::new(c.clone()).unwrap(), &c, Deco::cfg);
+    let c = rcov_cfg();
+    same(Rcov::new(c.clone()).unwrap(), &c, Rcov::cfg);
+    let c = hmm_cfg();
+    same(Hmm::new(c.clone()).unwrap(), &c, Hmm::cfg);
+    let c = corrchange_cfg();
+    same(CorrChange::new(c.clone()).unwrap(), &c, CorrChange::cfg);
+    let c = bocpd_cfg();
+    same(Bocpd::new(c.clone()).unwrap(), &c, Bocpd::cfg);
+    let c = audit_cfg();
+    same(Audit::new(c.clone()).unwrap(), &c, Audit::cfg);
+}
+
 fn ew_class_cfg() -> EwClassCfg {
     EwClassCfg {
         n_features: K,
