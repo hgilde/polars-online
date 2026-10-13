@@ -184,18 +184,20 @@ refuse each file by its version, naming "refit it from its input". It runs
 in the suite, and is skipped offline, since it downloads the releases (hard
 rule 1 in `CLAUDE.md`).
 
-**Add each release that adds a schema to `RELEASES` there.** It lists
-every release from 0.10.0 to 0.13.0. On 2026-10-03 each release saved all
-30 specs, and this build refused every file by its version.
+**Add each release to `RELEASES` there.** It lists every release from
+0.10.0 to 1.0.0. On 2026-10-03 each release before 1.0 saved all 30 specs,
+and this build refused every file by its version.
 
 **From 1.0, a file a 1.x release wrote loads in every later 1.x and goes on
 as this build's own**, as decided on 2026-10-06. The same test holds a 1.x
 release's files to that. This build loads each with its own spec, and fits
 the second half beside a bank of its own that fitted both halves. Every
 float, the closed groups, the coefficients and `marginal`'s table agree.
-Until 1.0.0 is released it runs on the states this build writes itself, so
-the check has run before the first release that must honour it. **On
-release day, add 1.0.0 to `RELEASES`**, and every later release with it.
+It ran on the states this build writes itself until 1.0.0 was released, so
+the check had run before the first release that must honour it. 1.0.0 joined
+`RELEASES` on its release day, 2026-10-12: its files, installed from PyPI,
+loaded and went on as this build's own. Every later release joins the same
+way, on its release day.
 
 **Frozen fixtures hold the state format inside the repository, and the
 released-state test holds it against what PyPI shipped.** A state of every

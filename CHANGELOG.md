@@ -7,6 +7,24 @@ stable API takes a major version, and a minor version may also correct numbers
 that were wrong. Before 1.0, the minor version carried breaking changes, and
 any change to the numbers a model returns.
 
+## [Unreleased]
+
+### Performance
+
+- **The peak-memory (RSS) budgets are recorded, at a 30% tolerance.** Two
+  runs of one build on one CI runner read 14-18% apart, so 15% failed one
+  of them either way. They are held on CI at each OS's oldest supported
+  Python, where they are measured.
+
+### Tests and documents
+
+- **The FFI leak checks each run in a fresh interpreter.** One failed on
+  both Ubuntu legs of a CI run and passed on their re-run. A Linux
+  measurement found no leak: the same loop in a plain script held within
+  0.5 MB over 3,120 iterations, from a baseline near 73 MB, where the check
+  inside the suite read a process near 615 MB. Each check now runs as its
+  own pytest process, and fails if that process runs anything but the one
+  test.
 ## [1.0.0] — 2026-10-12
 
 **Upgrading from 0.13.0.** Refit every saved bank: a bank file from 0.13.0

@@ -36,7 +36,7 @@ gungraun = "0.20.0"
 rows = 1000
 # The release whose measurements are the `release` numbers; "" before the
 # first one is recorded.
-release = ""
+release = "1.0.0"
 drift_signoff = 0.10
 
 [meta.tolerance]
@@ -49,9 +49,13 @@ instructions = 0.02
 # number of bytes on every platform; 2% is a few bytes a row of rounding in
 # Arrow's buffers.
 memory = 0.02
-# Peak resident memory moves with the allocator's arenas and the page cache;
-# two runs on one runner differ by a few percent.
-rss = 0.15
+# Peak resident memory moves with the allocator's arenas and the page cache.
+# Two runs of one build on CI's macOS runner at the floor Python, hours
+# apart, read 236.7 and 193.4 MiB for the streaming case and 192.5 and 165.5
+# for ten-target ewridge (2026-10-12/13): 14-18% apart, so 15% failed one
+# of them either way. 30% still catches what this budget is for, the dense
+# `coef` that added 3.9 GiB at 1M rows.
+rss = 0.30
 
 # --- instruction counts --------------------------------------------------------
 # One block of `meta.rows` rows of each hot path, after 2,000 rows of warm-up,
@@ -60,58 +64,72 @@ rss = 0.15
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step"
 budget = 2962547
+release = 2960547
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step"
 budget = 8114926
+release = 8112926
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step"
 budget = 3150039
+release = 3150039
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step"
 budget = 2869539
+release = 2869539
 
 [instructions.seqtest]
 what = "seqtest on one column's sign: AnyModel::step"
 budget = 620971
+release = 620971
 
 [instructions.bocpd]
 what = "bocpd, 4 features, diagonal, max_run 200, prune below 1e-6: AnyModel::step"
 budget = 15465737
+release = 15465740
 
 [instructions.kmeans]
 what = "kmeans, 4 features, 8 clusters, standardized: AnyModel::step"
 budget = 4299477
+release = 4299477
 
 [instructions.micro]
 what = "micro, 4 features, eps 1: AnyModel::step"
 budget = 1954237
+release = 1954237
 
 [instructions.kalman]
 what = "kalman, 20 features, coef half-life 2000: AnyModel::step"
 budget = 18698007
+release = 18698007
 
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step"
 budget = 13889690
+release = 13887690
 
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
 budget = 112029
+release = 112029
 
 [instructions.clock_temporal]
 what = "ClockState::advance_stamped, a nanosecond clock, gap_cap 100 s, exact stamps"
 budget = 394029
+release = 394029
 
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
 budget = 2019524
+release = 2019603
 
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
 budget = 5753653
+release = 5766841
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
@@ -120,942 +138,965 @@ budget = 5753653
 # apply` from the measurements the test writes.
 
 [memory.audit]
-weight_sum = { budget = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
 
 [memory.bocpd]
-learned_clock = { budget = 8.125 }
-loglik = { budget = 8.125 }
-p_change = { budget = 8.125 }
-pred_x1 = { budget = 8.125 }
-pred_x2 = { budget = 8.125 }
-run_mean = { budget = 8.125 }
-run_mode = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.125 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+loglik = { budget = 8.125, release = 8.125 }
+p_change = { budget = 8.125, release = 8.125 }
+pred_x1 = { budget = 8.125, release = 8.125 }
+pred_x2 = { budget = 8.125, release = 8.125 }
+run_mean = { budget = 8.125, release = 8.125 }
+run_mode = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.corrchange]
-crit = { budget = 8.125 }
-flag = { budget = 0.25 }
-learned_clock = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.125 }
-since_change = { budget = 8.125 }
-since_flag = { budget = 8.125 }
-stat = { budget = 8.125 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+crit = { budget = 8.125, release = 8.125 }
+flag = { budget = 0.25, release = 0.25 }
+learned_clock = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.125, release = 8.125 }
+since_change = { budget = 8.125, release = 8.125 }
+since_flag = { budget = 8.125, release = 8.125 }
+stat = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.deco]
-coef = { budget = 16.1688 }
-learned_clock = { budget = 8.125 }
-loglik = { budget = 8.125 }
-rho = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-u = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
+coef = { budget = 16.1688, release = 16.1688 }
+learned_clock = { budget = 8.125, release = 8.125 }
+loglik = { budget = 8.125, release = 8.125 }
+rho = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+u = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.ew_class]
-class = { budget = 1.125 }
-coef = { budget = 40.5 }
-learned_clock = { budget = 8.125 }
-p_down = { budget = 8.125 }
-p_up = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.0 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+class = { budget = 1.125, release = 1.125 }
+coef = { budget = 40.5, release = 40.5 }
+learned_clock = { budget = 8.125, release = 8.125 }
+p_down = { budget = 8.125, release = 8.125 }
+p_up = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.0, release = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.ew_cov]
-corr_x0_x1 = { budget = 8.125 }
-corr_x0_x2 = { budget = 8.125 }
-corr_x1_x2 = { budget = 8.125 }
-cov_x0_x1 = { budget = 8.125 }
-cov_x0_x2 = { budget = 8.125 }
-cov_x1_x2 = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-mahal = { budget = 8.125 }
-"mahal_q0.5" = { budget = 8.125 }
-"mahal_q0.99" = { budget = 8.125 }
-mean_x0 = { budget = 8.125 }
-mean_x1 = { budget = 8.125 }
-mean_x2 = { budget = 8.125 }
-partial_corr_x0_x1 = { budget = 8.125 }
-partial_corr_x0_x2 = { budget = 8.125 }
-partial_corr_x1_x2 = { budget = 8.125 }
-pc0_loading_x0 = { budget = 8.125 }
-pc0_loading_x1 = { budget = 8.125 }
-pc0_loading_x2 = { budget = 8.125 }
-pc0_score = { budget = 8.125 }
-pc0_share = { budget = 8.125 }
-pc0_var = { budget = 8.125 }
-pc1_loading_x0 = { budget = 8.125 }
-pc1_loading_x1 = { budget = 8.125 }
-pc1_loading_x2 = { budget = 8.125 }
-pc1_score = { budget = 8.125 }
-pc1_share = { budget = 8.125 }
-pc1_var = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-std_x0 = { budget = 8.125 }
-std_x1 = { budget = 8.125 }
-std_x2 = { budget = 8.125 }
-var_x0 = { budget = 8.125 }
-var_x1 = { budget = 8.125 }
-var_x2 = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
+corr_x0_x1 = { budget = 8.125, release = 8.125 }
+corr_x0_x2 = { budget = 8.125, release = 8.125 }
+corr_x1_x2 = { budget = 8.125, release = 8.125 }
+cov_x0_x1 = { budget = 8.125, release = 8.125 }
+cov_x0_x2 = { budget = 8.125, release = 8.125 }
+cov_x1_x2 = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+mahal = { budget = 8.125, release = 8.125 }
+"mahal_q0.5" = { budget = 8.125, release = 8.125 }
+"mahal_q0.99" = { budget = 8.125, release = 8.125 }
+mean_x0 = { budget = 8.125, release = 8.125 }
+mean_x1 = { budget = 8.125, release = 8.125 }
+mean_x2 = { budget = 8.125, release = 8.125 }
+partial_corr_x0_x1 = { budget = 8.125, release = 8.125 }
+partial_corr_x0_x2 = { budget = 8.125, release = 8.125 }
+partial_corr_x1_x2 = { budget = 8.125, release = 8.125 }
+pc0_loading_x0 = { budget = 8.125, release = 8.125 }
+pc0_loading_x1 = { budget = 8.125, release = 8.125 }
+pc0_loading_x2 = { budget = 8.125, release = 8.125 }
+pc0_score = { budget = 8.125, release = 8.125 }
+pc0_share = { budget = 8.125, release = 8.125 }
+pc0_var = { budget = 8.125, release = 8.125 }
+pc1_loading_x0 = { budget = 8.125, release = 8.125 }
+pc1_loading_x1 = { budget = 8.125, release = 8.125 }
+pc1_loading_x2 = { budget = 8.125, release = 8.125 }
+pc1_score = { budget = 8.125, release = 8.125 }
+pc1_share = { budget = 8.125, release = 8.125 }
+pc1_var = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+std_x0 = { budget = 8.125, release = 8.125 }
+std_x1 = { budget = 8.125, release = 8.125 }
+std_x2 = { budget = 8.125, release = 8.125 }
+var_x0 = { budget = 8.125, release = 8.125 }
+var_x1 = { budget = 8.125, release = 8.125 }
+var_x2 = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.ew_cov_lags]
-corr_x1_x2 = { budget = 8.125 }
-lag_corr_l1_x1_x1 = { budget = 8.125 }
-lag_corr_l1_x1_x2 = { budget = 8.125 }
-lag_corr_l1_x2_x1 = { budget = 8.125 }
-lag_corr_l1_x2_x2 = { budget = 8.125 }
-lag_corr_l3_x1_x1 = { budget = 8.125 }
-lag_corr_l3_x1_x2 = { budget = 8.125 }
-lag_corr_l3_x2_x1 = { budget = 8.125 }
-lag_corr_l3_x2_x2 = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.0 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+corr_x1_x2 = { budget = 8.125, release = 8.125 }
+lag_corr_l1_x1_x1 = { budget = 8.125, release = 8.125 }
+lag_corr_l1_x1_x2 = { budget = 8.125, release = 8.125 }
+lag_corr_l1_x2_x1 = { budget = 8.125, release = 8.125 }
+lag_corr_l1_x2_x2 = { budget = 8.125, release = 8.125 }
+lag_corr_l3_x1_x1 = { budget = 8.125, release = 8.125 }
+lag_corr_l3_x1_x2 = { budget = 8.125, release = 8.125 }
+lag_corr_l3_x2_x1 = { budget = 8.125, release = 8.125 }
+lag_corr_l3_x2_x2 = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.0, release = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.ewridge]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_intercept_z = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_slope_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-error_inflation_y = { budget = 8.125 }
-error_inflation_z = { budget = 8.125 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-influence_y = { budget = 8.125 }
-influence_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-se_coef = { budget = 72.475 }
-se_coef_hc0 = { budget = 71.181 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-support_coef = { budget = 72.475 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_z = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_slope_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+error_inflation_y = { budget = 8.125, release = 8.125 }
+error_inflation_z = { budget = 8.125, release = 8.125 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+influence_y = { budget = 8.125, release = 8.125 }
+influence_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+se_coef = { budget = 72.475, release = 72.475 }
+se_coef_hc0 = { budget = 71.181, release = 71.181 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+support_coef = { budget = 72.475, release = 72.475 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
 
 [memory.ftrl]
-"abs_resid_q0.1_hit" = { budget = 8.125 }
-"abs_resid_q0.9_hit" = { budget = 8.125 }
-autocorr_hit = { budget = 8.125 }
-break_wald_hit = { budget = 8.125 }
-breusch_pagan_hit = { budget = 8.125 }
-calibration_intercept_hit = { budget = 8.125 }
-calibration_slope_hit = { budget = 8.125 }
-calibration_wald_hit = { budget = 8.125 }
-coef = { budget = 39.805 }
-coverage_hit = { budget = 8.125 }
-cusum_hit = { budget = 8.125 }
-cusum_sq_hit = { budget = 8.125 }
-drift_hit = { budget = 0.25 }
-hi_hit = { budget = 8.125 }
-hit_rate_hit = { budget = 8.125 }
-ic_hit = { budget = 8.125 }
-jarque_bera_hit = { budget = 8.125 }
-kurtosis_hit = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_hit = { budget = 8.125 }
-lo_hit = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_hit = { budget = 8.125 }
-pred_hit__averaged = { budget = 8.125 }
-r2_hit = { budget = 8.125 }
-ramsey_reset_hit = { budget = 8.125 }
-resid_hit = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-sigma_hit = { budget = 8.125 }
-skew_hit = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_hit = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_hit = { budget = 8.125 }
+"abs_resid_q0.1_hit" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_hit" = { budget = 8.125, release = 8.125 }
+autocorr_hit = { budget = 8.125, release = 8.125 }
+break_wald_hit = { budget = 8.125, release = 8.125 }
+breusch_pagan_hit = { budget = 8.125, release = 8.125 }
+calibration_intercept_hit = { budget = 8.125, release = 8.125 }
+calibration_slope_hit = { budget = 8.125, release = 8.125 }
+calibration_wald_hit = { budget = 8.125, release = 8.125 }
+coef = { budget = 39.805, release = 39.805 }
+coverage_hit = { budget = 8.125, release = 8.125 }
+cusum_hit = { budget = 8.125, release = 8.125 }
+cusum_sq_hit = { budget = 8.125, release = 8.125 }
+drift_hit = { budget = 0.25, release = 0.25 }
+hi_hit = { budget = 8.125, release = 8.125 }
+hit_rate_hit = { budget = 8.125, release = 8.125 }
+ic_hit = { budget = 8.125, release = 8.125 }
+jarque_bera_hit = { budget = 8.125, release = 8.125 }
+kurtosis_hit = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_hit = { budget = 8.125, release = 8.125 }
+lo_hit = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_hit = { budget = 8.125, release = 8.125 }
+pred_hit__averaged = { budget = 8.125, release = 8.125 }
+r2_hit = { budget = 8.125, release = 8.125 }
+ramsey_reset_hit = { budget = 8.125, release = 8.125 }
+resid_hit = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_hit = { budget = 8.125, release = 8.125 }
+skew_hit = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_hit = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_hit = { budget = 8.125, release = 8.125 }
 
 [memory.hmm]
-coef = { budget = 40.0 }
-filtered_state0 = { budget = 8.125 }
-filtered_state1 = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-loglik = { budget = 8.125 }
-predicted_state0 = { budget = 8.125 }
-predicted_state1 = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.0 }
-state = { budget = 8.125 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+coef = { budget = 40.0, release = 40.0 }
+filtered_state0 = { budget = 8.125, release = 8.125 }
+filtered_state1 = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+loglik = { budget = 8.125, release = 8.125 }
+predicted_state0 = { budget = 8.125, release = 8.125 }
+predicted_state1 = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.0, release = 8.0 }
+state = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.holt]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-coef = { budget = 24.0 }
-coverage_y = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-drift_y = { budget = 0.125 }
-hi_y = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.0 }
-sigma_y = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+coef = { budget = 24.0, release = 24.0 }
+coverage_y = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.125, release = 0.125 }
+hi_y = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.0, release = 8.0 }
+sigma_y = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
 
 [memory.huber]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_intercept_z = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_slope_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-support_coef = { budget = 72.475 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_z = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_slope_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+support_coef = { budget = 72.475, release = 72.475 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
 
 [memory.kalman]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_intercept_z = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_slope_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-error_inflation_y = { budget = 8.125 }
-error_inflation_z = { budget = 8.125 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-influence_y = { budget = 8.125 }
-influence_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-se_coef = { budget = 72.475 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_z = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_slope_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+error_inflation_y = { budget = 8.125, release = 8.125 }
+error_inflation_z = { budget = 8.125, release = 8.125 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+influence_y = { budget = 8.125, release = 8.125 }
+influence_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+se_coef = { budget = 72.475, release = 72.475 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
 
 [memory.kmeans]
-cluster = { budget = 8.125 }
-coef = { budget = 70.4515 }
-dist = { budget = 8.125 }
-dist_second = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.0 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+cluster = { budget = 8.125, release = 8.125 }
+coef = { budget = 70.4515, release = 70.4514 }
+dist = { budget = 8.125, release = 8.125 }
+dist_second = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.0, release = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.lasso]
-"abs_resid_q0.1_y__p0" = { budget = 8.125 }
-"abs_resid_q0.1_y__p0.05" = { budget = 8.125 }
-"abs_resid_q0.1_y__p0.2" = { budget = 8.125 }
-"abs_resid_q0.1_z__p0" = { budget = 8.125 }
-"abs_resid_q0.1_z__p0.05" = { budget = 8.125 }
-"abs_resid_q0.1_z__p0.2" = { budget = 8.125 }
-"abs_resid_q0.9_y__p0" = { budget = 8.125 }
-"abs_resid_q0.9_y__p0.05" = { budget = 8.125 }
-"abs_resid_q0.9_y__p0.2" = { budget = 8.125 }
-"abs_resid_q0.9_z__p0" = { budget = 8.125 }
-"abs_resid_q0.9_z__p0.05" = { budget = 8.125 }
-"abs_resid_q0.9_z__p0.2" = { budget = 8.125 }
-autocorr_y__p0 = { budget = 8.125 }
-"autocorr_y__p0.05" = { budget = 8.125 }
-"autocorr_y__p0.2" = { budget = 8.125 }
-autocorr_z__p0 = { budget = 8.125 }
-"autocorr_z__p0.05" = { budget = 8.125 }
-"autocorr_z__p0.2" = { budget = 8.125 }
-break_wald_y__p0 = { budget = 8.125 }
-"break_wald_y__p0.05" = { budget = 8.125 }
-"break_wald_y__p0.2" = { budget = 8.125 }
-break_wald_z__p0 = { budget = 8.125 }
-"break_wald_z__p0.05" = { budget = 8.125 }
-"break_wald_z__p0.2" = { budget = 8.125 }
-breusch_pagan_y__p0 = { budget = 8.125 }
-"breusch_pagan_y__p0.05" = { budget = 8.125 }
-"breusch_pagan_y__p0.2" = { budget = 8.125 }
-breusch_pagan_z__p0 = { budget = 8.125 }
-"breusch_pagan_z__p0.05" = { budget = 8.125 }
-"breusch_pagan_z__p0.2" = { budget = 8.125 }
-calibration_intercept_y__p0 = { budget = 8.125 }
-"calibration_intercept_y__p0.05" = { budget = 8.125 }
-"calibration_intercept_y__p0.2" = { budget = 8.125 }
-calibration_intercept_z__p0 = { budget = 8.125 }
-"calibration_intercept_z__p0.05" = { budget = 8.125 }
-"calibration_intercept_z__p0.2" = { budget = 8.125 }
-calibration_slope_y__p0 = { budget = 8.125 }
-"calibration_slope_y__p0.05" = { budget = 8.125 }
-"calibration_slope_y__p0.2" = { budget = 8.125 }
-calibration_slope_z__p0 = { budget = 8.125 }
-"calibration_slope_z__p0.05" = { budget = 8.125 }
-"calibration_slope_z__p0.2" = { budget = 8.125 }
-calibration_wald_y__p0 = { budget = 8.125 }
-"calibration_wald_y__p0.05" = { budget = 8.125 }
-"calibration_wald_y__p0.2" = { budget = 8.125 }
-calibration_wald_z__p0 = { budget = 8.125 }
-"calibration_wald_z__p0.05" = { budget = 8.125 }
-"calibration_wald_z__p0.2" = { budget = 8.125 }
-coef = { budget = 198.2051 }
-coverage_y__p0 = { budget = 8.125 }
-"coverage_y__p0.05" = { budget = 8.125 }
-"coverage_y__p0.2" = { budget = 8.125 }
-coverage_z__p0 = { budget = 8.125 }
-"coverage_z__p0.05" = { budget = 8.125 }
-"coverage_z__p0.2" = { budget = 8.125 }
-cusum_sq_y__p0 = { budget = 8.125 }
-"cusum_sq_y__p0.05" = { budget = 8.125 }
-"cusum_sq_y__p0.2" = { budget = 8.125 }
-cusum_sq_z__p0 = { budget = 8.125 }
-"cusum_sq_z__p0.05" = { budget = 8.125 }
-"cusum_sq_z__p0.2" = { budget = 8.125 }
-cusum_y__p0 = { budget = 8.125 }
-"cusum_y__p0.05" = { budget = 8.125 }
-"cusum_y__p0.2" = { budget = 8.125 }
-cusum_z__p0 = { budget = 8.125 }
-"cusum_z__p0.05" = { budget = 8.125 }
-"cusum_z__p0.2" = { budget = 8.125 }
-drift_y__p0 = { budget = 0.25 }
-"drift_y__p0.05" = { budget = 0.25 }
-"drift_y__p0.2" = { budget = 0.25 }
-drift_z__p0 = { budget = 0.25 }
-"drift_z__p0.05" = { budget = 0.25 }
-"drift_z__p0.2" = { budget = 0.25 }
-hi_y__p0 = { budget = 8.125 }
-"hi_y__p0.05" = { budget = 8.125 }
-"hi_y__p0.2" = { budget = 8.125 }
-hi_z__p0 = { budget = 8.125 }
-"hi_z__p0.05" = { budget = 8.125 }
-"hi_z__p0.2" = { budget = 8.125 }
-hit_rate_y__p0 = { budget = 8.125 }
-"hit_rate_y__p0.05" = { budget = 8.125 }
-"hit_rate_y__p0.2" = { budget = 8.125 }
-hit_rate_z__p0 = { budget = 8.125 }
-"hit_rate_z__p0.05" = { budget = 8.125 }
-"hit_rate_z__p0.2" = { budget = 8.125 }
-ic_y__p0 = { budget = 8.125 }
-"ic_y__p0.05" = { budget = 8.125 }
-"ic_y__p0.2" = { budget = 8.125 }
-ic_z__p0 = { budget = 8.125 }
-"ic_z__p0.05" = { budget = 8.125 }
-"ic_z__p0.2" = { budget = 8.125 }
-jarque_bera_y__p0 = { budget = 8.125 }
-"jarque_bera_y__p0.05" = { budget = 8.125 }
-"jarque_bera_y__p0.2" = { budget = 8.125 }
-jarque_bera_z__p0 = { budget = 8.125 }
-"jarque_bera_z__p0.05" = { budget = 8.125 }
-"jarque_bera_z__p0.2" = { budget = 8.125 }
-kurtosis_y__p0 = { budget = 8.125 }
-"kurtosis_y__p0.05" = { budget = 8.125 }
-"kurtosis_y__p0.2" = { budget = 8.125 }
-kurtosis_z__p0 = { budget = 8.125 }
-"kurtosis_z__p0.05" = { budget = 8.125 }
-"kurtosis_z__p0.2" = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y__p0 = { budget = 8.125 }
-"ljung_box_y__p0.05" = { budget = 8.125 }
-"ljung_box_y__p0.2" = { budget = 8.125 }
-ljung_box_z__p0 = { budget = 8.125 }
-"ljung_box_z__p0.05" = { budget = 8.125 }
-"ljung_box_z__p0.2" = { budget = 8.125 }
-lo_y__p0 = { budget = 8.125 }
-"lo_y__p0.05" = { budget = 8.125 }
-"lo_y__p0.2" = { budget = 8.125 }
-lo_z__p0 = { budget = 8.125 }
-"lo_z__p0.05" = { budget = 8.125 }
-"lo_z__p0.2" = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-penalty_selected_y = { budget = 8.125 }
-penalty_selected_z = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_y__p0 = { budget = 8.125 }
-"pred_y__p0.05" = { budget = 8.125 }
-"pred_y__p0.2" = { budget = 8.125 }
-pred_y__selected = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-pred_z__p0 = { budget = 8.125 }
-"pred_z__p0.05" = { budget = 8.125 }
-"pred_z__p0.2" = { budget = 8.125 }
-pred_z__selected = { budget = 8.125 }
-r2_y__p0 = { budget = 8.125 }
-"r2_y__p0.05" = { budget = 8.125 }
-"r2_y__p0.2" = { budget = 8.125 }
-r2_z__p0 = { budget = 8.125 }
-"r2_z__p0.05" = { budget = 8.125 }
-"r2_z__p0.2" = { budget = 8.125 }
-ramsey_reset_y__p0 = { budget = 8.125 }
-"ramsey_reset_y__p0.05" = { budget = 8.125 }
-"ramsey_reset_y__p0.2" = { budget = 8.125 }
-ramsey_reset_z__p0 = { budget = 8.125 }
-"ramsey_reset_z__p0.05" = { budget = 8.125 }
-"ramsey_reset_z__p0.2" = { budget = 8.125 }
-resid_y__p0 = { budget = 8.125 }
-"resid_y__p0.05" = { budget = 8.125 }
-"resid_y__p0.2" = { budget = 8.125 }
-resid_z__p0 = { budget = 8.125 }
-"resid_z__p0.05" = { budget = 8.125 }
-"resid_z__p0.2" = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-selected_y = { budget = 1.125 }
-selected_z = { budget = 1.125 }
-settled_frac = { budget = 8.125 }
-sigma_y__p0 = { budget = 8.125 }
-"sigma_y__p0.05" = { budget = 8.125 }
-"sigma_y__p0.2" = { budget = 8.125 }
-sigma_z__p0 = { budget = 8.125 }
-"sigma_z__p0.05" = { budget = 8.125 }
-"sigma_z__p0.2" = { budget = 8.125 }
-skew_y__p0 = { budget = 8.125 }
-"skew_y__p0.05" = { budget = 8.125 }
-"skew_y__p0.2" = { budget = 8.125 }
-skew_z__p0 = { budget = 8.125 }
-"skew_z__p0.05" = { budget = 8.125 }
-"skew_z__p0.2" = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y__p0 = { budget = 8.125 }
-"studentized_y__p0.05" = { budget = 8.125 }
-"studentized_y__p0.2" = { budget = 8.125 }
-studentized_z__p0 = { budget = 8.125 }
-"studentized_z__p0.05" = { budget = 8.125 }
-"studentized_z__p0.2" = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y__p0 = { budget = 8.125 }
-"zscore_y__p0.05" = { budget = 8.125 }
-"zscore_y__p0.2" = { budget = 8.125 }
-zscore_z__p0 = { budget = 8.125 }
-"zscore_z__p0.05" = { budget = 8.125 }
-"zscore_z__p0.2" = { budget = 8.125 }
+"abs_resid_q0.1_y__p0" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_y__p0.05" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_y__p0.2" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z__p0" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z__p0.05" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z__p0.2" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y__p0" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y__p0.05" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y__p0.2" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z__p0" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z__p0.05" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z__p0.2" = { budget = 8.125, release = 8.125 }
+autocorr_y__p0 = { budget = 8.125, release = 8.125 }
+"autocorr_y__p0.05" = { budget = 8.125, release = 8.125 }
+"autocorr_y__p0.2" = { budget = 8.125, release = 8.125 }
+autocorr_z__p0 = { budget = 8.125, release = 8.125 }
+"autocorr_z__p0.05" = { budget = 8.125, release = 8.125 }
+"autocorr_z__p0.2" = { budget = 8.125, release = 8.125 }
+break_wald_y__p0 = { budget = 8.125, release = 8.125 }
+"break_wald_y__p0.05" = { budget = 8.125, release = 8.125 }
+"break_wald_y__p0.2" = { budget = 8.125, release = 8.125 }
+break_wald_z__p0 = { budget = 8.125, release = 8.125 }
+"break_wald_z__p0.05" = { budget = 8.125, release = 8.125 }
+"break_wald_z__p0.2" = { budget = 8.125, release = 8.125 }
+breusch_pagan_y__p0 = { budget = 8.125, release = 8.125 }
+"breusch_pagan_y__p0.05" = { budget = 8.125, release = 8.125 }
+"breusch_pagan_y__p0.2" = { budget = 8.125, release = 8.125 }
+breusch_pagan_z__p0 = { budget = 8.125, release = 8.125 }
+"breusch_pagan_z__p0.05" = { budget = 8.125, release = 8.125 }
+"breusch_pagan_z__p0.2" = { budget = 8.125, release = 8.125 }
+calibration_intercept_y__p0 = { budget = 8.125, release = 8.125 }
+"calibration_intercept_y__p0.05" = { budget = 8.125, release = 8.125 }
+"calibration_intercept_y__p0.2" = { budget = 8.125, release = 8.125 }
+calibration_intercept_z__p0 = { budget = 8.125, release = 8.125 }
+"calibration_intercept_z__p0.05" = { budget = 8.125, release = 8.125 }
+"calibration_intercept_z__p0.2" = { budget = 8.125, release = 8.125 }
+calibration_slope_y__p0 = { budget = 8.125, release = 8.125 }
+"calibration_slope_y__p0.05" = { budget = 8.125, release = 8.125 }
+"calibration_slope_y__p0.2" = { budget = 8.125, release = 8.125 }
+calibration_slope_z__p0 = { budget = 8.125, release = 8.125 }
+"calibration_slope_z__p0.05" = { budget = 8.125, release = 8.125 }
+"calibration_slope_z__p0.2" = { budget = 8.125, release = 8.125 }
+calibration_wald_y__p0 = { budget = 8.125, release = 8.125 }
+"calibration_wald_y__p0.05" = { budget = 8.125, release = 8.125 }
+"calibration_wald_y__p0.2" = { budget = 8.125, release = 8.125 }
+calibration_wald_z__p0 = { budget = 8.125, release = 8.125 }
+"calibration_wald_z__p0.05" = { budget = 8.125, release = 8.125 }
+"calibration_wald_z__p0.2" = { budget = 8.125, release = 8.125 }
+coef = { budget = 198.2051, release = 198.205 }
+coverage_y__p0 = { budget = 8.125, release = 8.125 }
+"coverage_y__p0.05" = { budget = 8.125, release = 8.125 }
+"coverage_y__p0.2" = { budget = 8.125, release = 8.125 }
+coverage_z__p0 = { budget = 8.125, release = 8.125 }
+"coverage_z__p0.05" = { budget = 8.125, release = 8.125 }
+"coverage_z__p0.2" = { budget = 8.125, release = 8.125 }
+cusum_sq_y__p0 = { budget = 8.125, release = 8.125 }
+"cusum_sq_y__p0.05" = { budget = 8.125, release = 8.125 }
+"cusum_sq_y__p0.2" = { budget = 8.125, release = 8.125 }
+cusum_sq_z__p0 = { budget = 8.125, release = 8.125 }
+"cusum_sq_z__p0.05" = { budget = 8.125, release = 8.125 }
+"cusum_sq_z__p0.2" = { budget = 8.125, release = 8.125 }
+cusum_y__p0 = { budget = 8.125, release = 8.125 }
+"cusum_y__p0.05" = { budget = 8.125, release = 8.125 }
+"cusum_y__p0.2" = { budget = 8.125, release = 8.125 }
+cusum_z__p0 = { budget = 8.125, release = 8.125 }
+"cusum_z__p0.05" = { budget = 8.125, release = 8.125 }
+"cusum_z__p0.2" = { budget = 8.125, release = 8.125 }
+drift_y__p0 = { budget = 0.25, release = 0.25 }
+"drift_y__p0.05" = { budget = 0.25, release = 0.25 }
+"drift_y__p0.2" = { budget = 0.25, release = 0.25 }
+drift_z__p0 = { budget = 0.25, release = 0.25 }
+"drift_z__p0.05" = { budget = 0.25, release = 0.25 }
+"drift_z__p0.2" = { budget = 0.25, release = 0.25 }
+hi_y__p0 = { budget = 8.125, release = 8.125 }
+"hi_y__p0.05" = { budget = 8.125, release = 8.125 }
+"hi_y__p0.2" = { budget = 8.125, release = 8.125 }
+hi_z__p0 = { budget = 8.125, release = 8.125 }
+"hi_z__p0.05" = { budget = 8.125, release = 8.125 }
+"hi_z__p0.2" = { budget = 8.125, release = 8.125 }
+hit_rate_y__p0 = { budget = 8.125, release = 8.125 }
+"hit_rate_y__p0.05" = { budget = 8.125, release = 8.125 }
+"hit_rate_y__p0.2" = { budget = 8.125, release = 8.125 }
+hit_rate_z__p0 = { budget = 8.125, release = 8.125 }
+"hit_rate_z__p0.05" = { budget = 8.125, release = 8.125 }
+"hit_rate_z__p0.2" = { budget = 8.125, release = 8.125 }
+ic_y__p0 = { budget = 8.125, release = 8.125 }
+"ic_y__p0.05" = { budget = 8.125, release = 8.125 }
+"ic_y__p0.2" = { budget = 8.125, release = 8.125 }
+ic_z__p0 = { budget = 8.125, release = 8.125 }
+"ic_z__p0.05" = { budget = 8.125, release = 8.125 }
+"ic_z__p0.2" = { budget = 8.125, release = 8.125 }
+jarque_bera_y__p0 = { budget = 8.125, release = 8.125 }
+"jarque_bera_y__p0.05" = { budget = 8.125, release = 8.125 }
+"jarque_bera_y__p0.2" = { budget = 8.125, release = 8.125 }
+jarque_bera_z__p0 = { budget = 8.125, release = 8.125 }
+"jarque_bera_z__p0.05" = { budget = 8.125, release = 8.125 }
+"jarque_bera_z__p0.2" = { budget = 8.125, release = 8.125 }
+kurtosis_y__p0 = { budget = 8.125, release = 8.125 }
+"kurtosis_y__p0.05" = { budget = 8.125, release = 8.125 }
+"kurtosis_y__p0.2" = { budget = 8.125, release = 8.125 }
+kurtosis_z__p0 = { budget = 8.125, release = 8.125 }
+"kurtosis_z__p0.05" = { budget = 8.125, release = 8.125 }
+"kurtosis_z__p0.2" = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y__p0 = { budget = 8.125, release = 8.125 }
+"ljung_box_y__p0.05" = { budget = 8.125, release = 8.125 }
+"ljung_box_y__p0.2" = { budget = 8.125, release = 8.125 }
+ljung_box_z__p0 = { budget = 8.125, release = 8.125 }
+"ljung_box_z__p0.05" = { budget = 8.125, release = 8.125 }
+"ljung_box_z__p0.2" = { budget = 8.125, release = 8.125 }
+lo_y__p0 = { budget = 8.125, release = 8.125 }
+"lo_y__p0.05" = { budget = 8.125, release = 8.125 }
+"lo_y__p0.2" = { budget = 8.125, release = 8.125 }
+lo_z__p0 = { budget = 8.125, release = 8.125 }
+"lo_z__p0.05" = { budget = 8.125, release = 8.125 }
+"lo_z__p0.2" = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+penalty_selected_y = { budget = 8.125, release = 8.125 }
+penalty_selected_z = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_y__p0 = { budget = 8.125, release = 8.125 }
+"pred_y__p0.05" = { budget = 8.125, release = 8.125 }
+"pred_y__p0.2" = { budget = 8.125, release = 8.125 }
+pred_y__selected = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+pred_z__p0 = { budget = 8.125, release = 8.125 }
+"pred_z__p0.05" = { budget = 8.125, release = 8.125 }
+"pred_z__p0.2" = { budget = 8.125, release = 8.125 }
+pred_z__selected = { budget = 8.125, release = 8.125 }
+r2_y__p0 = { budget = 8.125, release = 8.125 }
+"r2_y__p0.05" = { budget = 8.125, release = 8.125 }
+"r2_y__p0.2" = { budget = 8.125, release = 8.125 }
+r2_z__p0 = { budget = 8.125, release = 8.125 }
+"r2_z__p0.05" = { budget = 8.125, release = 8.125 }
+"r2_z__p0.2" = { budget = 8.125, release = 8.125 }
+ramsey_reset_y__p0 = { budget = 8.125, release = 8.125 }
+"ramsey_reset_y__p0.05" = { budget = 8.125, release = 8.125 }
+"ramsey_reset_y__p0.2" = { budget = 8.125, release = 8.125 }
+ramsey_reset_z__p0 = { budget = 8.125, release = 8.125 }
+"ramsey_reset_z__p0.05" = { budget = 8.125, release = 8.125 }
+"ramsey_reset_z__p0.2" = { budget = 8.125, release = 8.125 }
+resid_y__p0 = { budget = 8.125, release = 8.125 }
+"resid_y__p0.05" = { budget = 8.125, release = 8.125 }
+"resid_y__p0.2" = { budget = 8.125, release = 8.125 }
+resid_z__p0 = { budget = 8.125, release = 8.125 }
+"resid_z__p0.05" = { budget = 8.125, release = 8.125 }
+"resid_z__p0.2" = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+selected_y = { budget = 1.125, release = 1.125 }
+selected_z = { budget = 1.125, release = 1.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y__p0 = { budget = 8.125, release = 8.125 }
+"sigma_y__p0.05" = { budget = 8.125, release = 8.125 }
+"sigma_y__p0.2" = { budget = 8.125, release = 8.125 }
+sigma_z__p0 = { budget = 8.125, release = 8.125 }
+"sigma_z__p0.05" = { budget = 8.125, release = 8.125 }
+"sigma_z__p0.2" = { budget = 8.125, release = 8.125 }
+skew_y__p0 = { budget = 8.125, release = 8.125 }
+"skew_y__p0.05" = { budget = 8.125, release = 8.125 }
+"skew_y__p0.2" = { budget = 8.125, release = 8.125 }
+skew_z__p0 = { budget = 8.125, release = 8.125 }
+"skew_z__p0.05" = { budget = 8.125, release = 8.125 }
+"skew_z__p0.2" = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y__p0 = { budget = 8.125, release = 8.125 }
+"studentized_y__p0.05" = { budget = 8.125, release = 8.125 }
+"studentized_y__p0.2" = { budget = 8.125, release = 8.125 }
+studentized_z__p0 = { budget = 8.125, release = 8.125 }
+"studentized_z__p0.05" = { budget = 8.125, release = 8.125 }
+"studentized_z__p0.2" = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y__p0 = { budget = 8.125, release = 8.125 }
+"zscore_y__p0.05" = { budget = 8.125, release = 8.125 }
+"zscore_y__p0.2" = { budget = 8.125, release = 8.125 }
+zscore_z__p0 = { budget = 8.125, release = 8.125 }
+"zscore_z__p0.05" = { budget = 8.125, release = 8.125 }
+"zscore_z__p0.2" = { budget = 8.125, release = 8.125 }
 
 [memory.marginal]
-learned_clock = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-weight_sum = { budget = 8.0 }
+learned_clock = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
 
 [memory.micro]
-cluster = { budget = 8.125 }
-coef = { budget = 210.5146 }
-dist = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-micro_id = { budget = 8.125 }
-n_clusters = { budget = 8.125 }
-n_micro = { budget = 8.125 }
-outlier = { budget = 0.25 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.0 }
-weight_sum = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+cluster = { budget = 8.125, release = 8.125 }
+coef = { budget = 210.5146, release = 210.5146 }
+dist = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+micro_id = { budget = 8.125, release = 8.125 }
+n_clusters = { budget = 8.125, release = 8.125 }
+n_micro = { budget = 8.125, release = 8.125 }
+outlier = { budget = 0.25, release = 0.25 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.0, release = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.pa]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_intercept_z = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_slope_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_z = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_slope_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
 
 [memory.quantile]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_coverage_y = { budget = 8.125 }
-calibration_coverage_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-support_coef = { budget = 72.475 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_coverage_y = { budget = 8.125, release = 8.125 }
+calibration_coverage_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+support_coef = { budget = 72.475, release = 72.475 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
 
 [memory.rcov]
-learned_clock = { budget = 8.125 }
-scored_clock = { budget = 8.0 }
-weight_sum = { budget = 8.0 }
+learned_clock = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.0, release = 8.0 }
+weight_sum = { budget = 8.0, release = 8.0 }
 
 [memory.rls]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_intercept_z = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_slope_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-error_inflation_y = { budget = 8.125 }
-error_inflation_z = { budget = 8.125 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-influence_y = { budget = 8.125 }
-influence_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-se_coef = { budget = 72.475 }
-se_coef_hc0 = { budget = 71.181 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_z = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_slope_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+error_inflation_y = { budget = 8.125, release = 8.125 }
+error_inflation_z = { budget = 8.125, release = 8.125 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+influence_y = { budget = 8.125, release = 8.125 }
+influence_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+se_coef = { budget = 72.475, release = 72.475 }
+se_coef_hc0 = { budget = 71.181, release = 71.181 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
 
 [memory.seqtest]
-learned_clock = { budget = 8.125 }
-log_e_a_y = { budget = 8.0 }
-log_e_b_y = { budget = 8.0 }
-scored_clock = { budget = 8.0 }
-settled_frac = { budget = 8.125 }
-weight_sum = { budget = 8.0 }
-wins_a_y = { budget = 8.0 }
-wins_b_y = { budget = 8.0 }
-withheld_reason = { budget = 1.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+log_e_a_y = { budget = 8.0, release = 8.0 }
+log_e_b_y = { budget = 8.0, release = 8.0 }
+scored_clock = { budget = 8.0, release = 8.0 }
+settled_frac = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.0, release = 8.0 }
+wins_a_y = { budget = 8.0, release = 8.0 }
+wins_b_y = { budget = 8.0, release = 8.0 }
+withheld_reason = { budget = 1.125, release = 1.125 }
 
 [memory.sgd]
-"abs_resid_q0.1_y" = { budget = 8.125 }
-"abs_resid_q0.1_z" = { budget = 8.125 }
-"abs_resid_q0.9_y" = { budget = 8.125 }
-"abs_resid_q0.9_z" = { budget = 8.125 }
-autocorr_y = { budget = 8.125 }
-autocorr_z = { budget = 8.125 }
-break_wald_y = { budget = 8.125 }
-break_wald_z = { budget = 8.125 }
-breusch_pagan_y = { budget = 8.125 }
-breusch_pagan_z = { budget = 8.125 }
-calibration_intercept_y = { budget = 8.125 }
-calibration_intercept_z = { budget = 8.125 }
-calibration_slope_y = { budget = 8.125 }
-calibration_slope_z = { budget = 8.125 }
-calibration_wald_y = { budget = 8.125 }
-calibration_wald_z = { budget = 8.125 }
-coef = { budget = 71.485 }
-coverage_y = { budget = 8.125 }
-coverage_z = { budget = 8.125 }
-cusum_sq_y = { budget = 8.125 }
-cusum_sq_z = { budget = 8.125 }
-cusum_y = { budget = 8.125 }
-cusum_z = { budget = 8.125 }
-drift_y = { budget = 0.25 }
-drift_z = { budget = 0.25 }
-hi_y = { budget = 8.125 }
-hi_z = { budget = 8.125 }
-hit_rate_y = { budget = 8.125 }
-hit_rate_z = { budget = 8.125 }
-ic_y = { budget = 8.125 }
-ic_z = { budget = 8.125 }
-jarque_bera_y = { budget = 8.125 }
-jarque_bera_z = { budget = 8.125 }
-kurtosis_y = { budget = 8.125 }
-kurtosis_z = { budget = 8.125 }
-learned_clock = { budget = 8.125 }
-ljung_box_y = { budget = 8.125 }
-ljung_box_z = { budget = 8.125 }
-lo_y = { budget = 8.125 }
-lo_z = { budget = 8.125 }
-mean_shift_x0 = { budget = 8.125 }
-mean_shift_x1 = { budget = 8.125 }
-mean_shift_x2 = { budget = 8.125 }
-pred_y = { budget = 8.125 }
-pred_y__averaged = { budget = 8.125 }
-pred_z = { budget = 8.125 }
-pred_z__averaged = { budget = 8.125 }
-r2_y = { budget = 8.125 }
-r2_z = { budget = 8.125 }
-ramsey_reset_y = { budget = 8.125 }
-ramsey_reset_z = { budget = 8.125 }
-resid_y = { budget = 8.125 }
-resid_z = { budget = 8.125 }
-scored_clock = { budget = 8.125 }
-settled_frac = { budget = 8.125 }
-sigma_y = { budget = 8.125 }
-sigma_z = { budget = 8.125 }
-skew_y = { budget = 8.125 }
-skew_z = { budget = 8.125 }
-spread_ratio_x0 = { budget = 8.125 }
-spread_ratio_x1 = { budget = 8.125 }
-spread_ratio_x2 = { budget = 8.125 }
-studentized_y = { budget = 8.125 }
-studentized_z = { budget = 8.125 }
-weight_sum = { budget = 8.125 }
-withheld_reason = { budget = 1.125 }
-zscore_y = { budget = 8.125 }
-zscore_z = { budget = 8.125 }
+"abs_resid_q0.1_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.1_z" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_y" = { budget = 8.125, release = 8.125 }
+"abs_resid_q0.9_z" = { budget = 8.125, release = 8.125 }
+autocorr_y = { budget = 8.125, release = 8.125 }
+autocorr_z = { budget = 8.125, release = 8.125 }
+break_wald_y = { budget = 8.125, release = 8.125 }
+break_wald_z = { budget = 8.125, release = 8.125 }
+breusch_pagan_y = { budget = 8.125, release = 8.125 }
+breusch_pagan_z = { budget = 8.125, release = 8.125 }
+calibration_intercept_y = { budget = 8.125, release = 8.125 }
+calibration_intercept_z = { budget = 8.125, release = 8.125 }
+calibration_slope_y = { budget = 8.125, release = 8.125 }
+calibration_slope_z = { budget = 8.125, release = 8.125 }
+calibration_wald_y = { budget = 8.125, release = 8.125 }
+calibration_wald_z = { budget = 8.125, release = 8.125 }
+coef = { budget = 71.485, release = 71.485 }
+coverage_y = { budget = 8.125, release = 8.125 }
+coverage_z = { budget = 8.125, release = 8.125 }
+cusum_sq_y = { budget = 8.125, release = 8.125 }
+cusum_sq_z = { budget = 8.125, release = 8.125 }
+cusum_y = { budget = 8.125, release = 8.125 }
+cusum_z = { budget = 8.125, release = 8.125 }
+drift_y = { budget = 0.25, release = 0.25 }
+drift_z = { budget = 0.25, release = 0.25 }
+hi_y = { budget = 8.125, release = 8.125 }
+hi_z = { budget = 8.125, release = 8.125 }
+hit_rate_y = { budget = 8.125, release = 8.125 }
+hit_rate_z = { budget = 8.125, release = 8.125 }
+ic_y = { budget = 8.125, release = 8.125 }
+ic_z = { budget = 8.125, release = 8.125 }
+jarque_bera_y = { budget = 8.125, release = 8.125 }
+jarque_bera_z = { budget = 8.125, release = 8.125 }
+kurtosis_y = { budget = 8.125, release = 8.125 }
+kurtosis_z = { budget = 8.125, release = 8.125 }
+learned_clock = { budget = 8.125, release = 8.125 }
+ljung_box_y = { budget = 8.125, release = 8.125 }
+ljung_box_z = { budget = 8.125, release = 8.125 }
+lo_y = { budget = 8.125, release = 8.125 }
+lo_z = { budget = 8.125, release = 8.125 }
+mean_shift_x0 = { budget = 8.125, release = 8.125 }
+mean_shift_x1 = { budget = 8.125, release = 8.125 }
+mean_shift_x2 = { budget = 8.125, release = 8.125 }
+pred_y = { budget = 8.125, release = 8.125 }
+pred_y__averaged = { budget = 8.125, release = 8.125 }
+pred_z = { budget = 8.125, release = 8.125 }
+pred_z__averaged = { budget = 8.125, release = 8.125 }
+r2_y = { budget = 8.125, release = 8.125 }
+r2_z = { budget = 8.125, release = 8.125 }
+ramsey_reset_y = { budget = 8.125, release = 8.125 }
+ramsey_reset_z = { budget = 8.125, release = 8.125 }
+resid_y = { budget = 8.125, release = 8.125 }
+resid_z = { budget = 8.125, release = 8.125 }
+scored_clock = { budget = 8.125, release = 8.125 }
+settled_frac = { budget = 8.125, release = 8.125 }
+sigma_y = { budget = 8.125, release = 8.125 }
+sigma_z = { budget = 8.125, release = 8.125 }
+skew_y = { budget = 8.125, release = 8.125 }
+skew_z = { budget = 8.125, release = 8.125 }
+spread_ratio_x0 = { budget = 8.125, release = 8.125 }
+spread_ratio_x1 = { budget = 8.125, release = 8.125 }
+spread_ratio_x2 = { budget = 8.125, release = 8.125 }
+studentized_y = { budget = 8.125, release = 8.125 }
+studentized_z = { budget = 8.125, release = 8.125 }
+weight_sum = { budget = 8.125, release = 8.125 }
+withheld_reason = { budget = 1.125, release = 1.125 }
+zscore_y = { budget = 8.125, release = 8.125 }
+zscore_z = { budget = 8.125, release = 8.125 }
+
+[rss.ew_cov_wide]
+darwin = { budget = 823.8594, release = 823.8594 }
+linux = { budget = 836.5508, release = 836.5508 }
+windows = { budget = 812.1719, release = 812.1719 }
+
+[rss.ewridge_10_targets]
+darwin = { budget = 165.4688, release = 165.4688 }
+linux = { budget = 230.1836, release = 230.1836 }
+windows = { budget = 172.8243, release = 172.8243 }
+
+[rss.streaming]
+darwin = { budget = 193.4063, release = 193.4063 }
+linux = { budget = 225.0977, release = 225.0977 }
+windows = { budget = 196.0665, release = 196.0665 }
 
 # --- raises and sign-offs -------------------------------------------------------
+[[raised]]
+key = "tolerance.rss"
+from = 0.15
+to = 0.3
+date = 2026-10-13
+reason = "two runs of one build on CI's macOS runner at Python 3.12 read the streaming case at 236.7 then 193.4 MiB and ten-target ewridge at 192.5 then 165.5 (2026-10-12 and 13), 14-18% apart, so a 15% tolerance either way failed one of them; 30% still catches the dense coef's +3.9 GiB"
+changelog = "The peak-memory (RSS) budgets are recorded, at a 30% tolerance"
+
 # [[raised]]
 # key = "instructions.bocpd"
 # from = 1

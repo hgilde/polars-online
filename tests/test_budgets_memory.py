@@ -477,7 +477,7 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
         measured[f"rss.{case}.{PLATFORM}"] = got["mib"]
     # Held where the budget is measured, CI's leg at each OS's floor Python,
     # and reported everywhere else. The interpreter and the machine each move
-    # the peak past the 15% tolerance by themselves (2026-10-12): on CI's
+    # the peak by about a fifth by themselves (2026-10-12): on CI's
     # macOS runner 3.14 read 18-20% under 3.12, and the streaming run read
     # 291 MiB on a 14-core M4 Pro against 237 on that runner, one build.
     held_here = os.environ.get("CI") == "true" and sys.version_info[:2] == _floor_python()

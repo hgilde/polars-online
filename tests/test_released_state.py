@@ -50,9 +50,10 @@ TIER = "extended"
 REPO = Path(__file__).resolve().parents[1]
 
 #: Every release from 0.10.0, the oldest whose files a loader once promised,
-#: to the latest. Each wrote a schema of its own, so a release joins the list
-#: when it ships (docs/RELEASE-READINESS.md, "The steps of a release").
-RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0"]
+#: to the latest. A release joins the list on its release day
+#: (docs/RELEASE-READINESS.md, "The steps of a release"): before 1.0 each
+#: wrote a schema of its own and is refused; from 1.0 each loads and goes on.
+RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0", "1.0.0"]
 
 
 def _major(version: str) -> int:

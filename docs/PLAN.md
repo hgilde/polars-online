@@ -9876,7 +9876,7 @@ tick, and that the series holding it up has a count near 1.
       and `..._stops_with_room_before_its_job_is_killed` (both fail on the
       old workflow). The next push lists 418 mutants at `6f87839` (about 14
       shards), before task 244 and review 7's fixes add theirs.
-- [ ] 247. **Release 1.0** -- the user, 2026-10-11: "After the push run a
+- [x] 247. **Release 1.0** -- the user, 2026-10-11: "After the push run a
       rehearsal for 1.0", then "Bump main", then "No need to run the
       rehearsal just release 1.0". After task 245 merges, RELEASE-READINESS's
       eleven steps: (1) `compare_release.py` against 0.13.0, every
@@ -9937,6 +9937,18 @@ tick, and that the series holding it up has a count near 1.
       parquet case now reads the growth from half the source to all of it:
       0.43 GB per GB on 2.0.0, 0.56 on 1.37.0, 1.30-1.71 on 1.36.1 (shown
       failing there); limit 1.0. The Arrow case keeps its 0.75 GB.
+      *Done 2026-10-12 (02:29 UTC on the 13th)*: the third dispatch (run
+      38329368107, `94e6c55`) passed every job; the user approved the
+      upload; PyPI has 1.0.0, tagged `v1.0.0` on `94e6c55` with its GitHub
+      release. Verified from PyPI in a clean venv: 1.0.0 / 1.0.0 / schema
+      61 with py-polars 2.0.0, a fit predicting 399.0 for y = 2x + 1 at
+      x = 199. Step 12: the run's instruction counts, field memory (all 890
+      fields equal on every leg) and the floor-Python RSS of each OS applied
+      with `--release 1.0.0`, the first RSS budgets; the RSS tolerance to
+      30%, since CI's macOS 3.12 read 236.7 then 193.4 MiB (streaming) and
+      192.5 then 165.5 (ewridge, ten targets) in two runs of one build.
+      `RELEASES` gained 1.0.0: its PyPI states load and go on. D8 needs no
+      filter: 1.0.0 builds every kind in the workload.
 - [x] 249. **Step comments in the examples (before 1.0)** -- the user,
       2026-10-11: "Some of the example code is missing the few one-line
       comments to explain large code blocks in sections." WRITING §3's rule
