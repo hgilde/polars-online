@@ -65,6 +65,12 @@ class TestEveryJobIsBounded:
     #: shard stopped short leaves mutants untested and fails its report.
     LONGER_ON_PUSH = {("mutants.yml", "changed"): 330}
 
+    #: Jobs allowed past two hours on any OS while the repository is public,
+    #: and held to two hours if it is private again: CI's test matrix, whose
+    #: Windows legs' Rust build took 33 to 78 minutes from a warm cache on
+    #: 2026-10-13, and one was cancelled at 120 after its tests had passed.
+    LONGER_WHILE_PUBLIC = {("ci.yml", "test"): 180}
+
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_job_has_a_timeout(self, name):
         for job, spec in ALL[name].get("jobs", {}).items():
@@ -73,8 +79,21 @@ class TestEveryJobIsBounded:
             if "uses" in spec:
                 continue
             assert "timeout-minutes" in spec, f"{name}:{job} has no timeout-minutes"
+            timeout = spec["timeout-minutes"]
+            if (name, job) in self.LONGER_WHILE_PUBLIC:
+                # Longer only while public: the expression gives 120 or less
+                # to a private repository.
+                m = re.fullmatch(
+                    r"\$\{\{ github\.event\.repository\.private && (\d+) \|\| (\d+) \}\}",
+                    str(timeout),
+                )
+                assert m, f"{name}:{job} timeout {timeout!r} is not the public/private form"
+                private, public = int(m.group(1)), int(m.group(2))
+                assert 0 < private <= 120, (name, job, private)
+                assert 0 < public <= self.LONGER_WHILE_PUBLIC[(name, job)], (name, job, public)
+                continue
             cap = {**self.LONGER, **self.LONGER_ON_PUSH}.get((name, job), 120)
-            assert 0 < spec["timeout-minutes"] <= cap, f"{name}:{job} timeout is not sane"
+            assert 0 < timeout <= cap, f"{name}:{job} timeout is not sane"
 
     def test_a_longer_job_on_every_push_runs_on_linux(self):
         for name, job in self.LONGER_ON_PUSH:

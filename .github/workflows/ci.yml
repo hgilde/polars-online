@@ -155,7 +155,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    timeout-minutes: 120
+    # 180 minutes while the repository is public, where minutes are free; 120
+    # if it is ever private again, where Windows bills twice and macOS ten
+    # times. The Windows legs' Rust build alone took 33 to 78 minutes on
+    # 2026-10-13 from a warm cache (one cancelled at 120 after its tests had
+    # passed), uv sync about 18 and pytest 10 to 18.
+    timeout-minutes: ${{ github.event.repository.private && 120 || 180 }}
     strategy:
       fail-fast: false
       matrix:
