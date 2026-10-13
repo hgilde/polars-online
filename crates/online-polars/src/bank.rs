@@ -947,28 +947,50 @@ fn session_bounds(stream: &Stream, sess: &[u64], n: usize, base: usize) -> Vec<u
     bounds
 }
 
+/// The sinks `process` filled, each with its spec's index.
+type Filled<'s> = Vec<(usize, Sink<'s>)>;
+
 /// Run one phase of a chunk through its streams, learning: every `(spec,
 /// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
 /// through its stream in order, one set of buffers per run. The runs are a
 /// cache-sizing device (docs/PERFORMANCE.md §13); chunk invariance makes them
 /// the same computation as one, and `last` keeps the coefficient report on
 /// the chunk's final row.
-fn process(
+///
+/// A spec with a sink in `sinks` -- one that a single stream serves in the
+/// chunk ([`sinks`]) -- hands each run to it as the run ends: the run is
+/// copied into the sink on another thread while the next is learned, and
+/// its buffers are then freed for the run after, so the task holds two
+/// runs' buffers, not the chunk's. The sinks come back filled. Every other
+/// spec's runs come back as they are, for [`assemble_phase`].
+fn process<'s>(
     work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)>,
     specs: &[Spec],
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
     formulas: &[Option<FormulaBundle>],
     row_base: usize,
-) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>) {
-    type TaskOut = (Vec<(usize, StreamRows)>, Vec<ClosedRow>);
+    mut sinks: Vec<Option<Sink<'s>>>,
+) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>, Filled<'s>) {
+    type TaskOut<'s> = (
+        Vec<(usize, StreamRows)>,
+        Vec<ClosedRow>,
+        Option<(usize, Sink<'s>)>,
+    );
+    let work: Vec<_> = work
+        .into_iter()
+        .map(|w| {
+            let sink = sinks.get_mut(w.0).and_then(Option::take);
+            (w, sink)
+        })
+        .collect();
     // `"auto"`'s share of the pool: the tasks here run side by side, so a
     // spec's Gram update splits only into threads no task holds (task 253).
     // Called inside the bank's pool, so this is its size.
     let share = crate::pool::gram_share(work.len(), rayon::current_num_threads());
-    let per_task: Vec<TaskOut> = work
+    let per_task: Vec<TaskOut<'s>> = work
         .into_par_iter()
-        .map(|(si, key, idx, base, stream)| {
+        .map(|((si, key, idx, base, stream), mut sink)| {
             #[cfg(test)]
             threads_tests::probe(&specs[si].name);
             let spec = &specs[si];
@@ -994,6 +1016,8 @@ fn process(
             let mut starts: Vec<usize> = Vec::with_capacity(bounds.len() + 1);
             starts.push(0);
             starts.extend_from_slice(&bounds);
+            // A run learned and waiting for its sink.
+            let mut pending: Option<ChunkOut> = None;
             let session_of = |row: usize| -> Option<String> {
                 let s = sc.session_str.as_ref()?;
                 s.get(row).map(str::to_string)
@@ -1013,25 +1037,43 @@ fn process(
                 let mut off = start;
                 for run in idx[start..end].chunks(run_rows) {
                     let mut out = ChunkOut::new(spec, n_models, n_slots, run.len());
-                    let r = stream.process_chunk(
-                        spec,
-                        &cfgs[si],
-                        &sc.features,
-                        &sc.targets,
-                        sc.clock.as_ref(),
-                        sc.session.as_deref(),
-                        sc.weight.as_deref(),
-                        run,
-                        base + off,
-                        &mut out,
-                        coef_at,
-                        formula_targets,
-                    );
+                    let learn = |stream: &mut Stream, out: &mut ChunkOut| {
+                        stream.process_chunk(
+                            spec,
+                            &cfgs[si],
+                            &sc.features,
+                            &sc.targets,
+                            sc.clock.as_ref(),
+                            sc.session.as_deref(),
+                            sc.weight.as_deref(),
+                            run,
+                            base + off,
+                            out,
+                            coef_at,
+                            formula_targets,
+                        )
+                    };
+                    // The run before this one is copied into its sink on
+                    // another thread while this one is learned.
+                    let r = match (sink.as_mut(), pending.as_mut()) {
+                        (Some(sink), Some(prev)) => {
+                            let (r, ()) = rayon::join(
+                                || learn(stream, &mut out),
+                                || sink.absorb(std::slice::from_mut(prev)),
+                            );
+                            pending = None;
+                            r
+                        }
+                        _ => learn(stream, &mut out),
+                    };
                     off += run.len();
                     match r {
                         Ok(()) => {
                             stream.remember_last(&out);
-                            outs.push((si, Ok(out)));
+                            match sink {
+                                Some(_) => pending = Some(out),
+                                None => outs.push((si, Ok(out))),
+                            }
                             if let Some((bytes, cadence)) = stream.window_over_budget() {
                                 outs.push((si, Err(over_budget(spec, key, bytes, cadence))));
                                 break 'segments;
@@ -1048,16 +1090,63 @@ fn process(
                     stream.persisted.last_session = session_of(idx[end - 1]);
                 }
             }
-            (outs, closed)
+            if let (Some(sink), Some(prev)) = (sink.as_mut(), pending.as_mut()) {
+                sink.absorb(std::slice::from_mut(prev));
+            }
+            (outs, closed, sink.map(|s| (si, s)))
         })
         .collect();
     let mut outs = Vec::new();
     let mut closed = Vec::new();
-    for (o, c) in per_task {
+    let mut filled = Vec::new();
+    for (o, c, s) in per_task {
         outs.extend(o);
         closed.extend(c);
+        filled.extend(s);
     }
-    (outs, closed)
+    (outs, closed, filled)
+}
+
+/// A sink for each spec that one stream serves in this work -- no group, or
+/// a single group in the chunk -- and `None` for the rest: their streams'
+/// runs interleave in the output, and are assembled when all are done.
+fn sinks<'s>(
+    work: impl Iterator<Item = usize>,
+    specs: &'s [Spec],
+    derived: &'s [SpecDerived],
+    n: usize,
+    clock_dtypes: &'s [Option<crate::stream::ClockDtype>],
+) -> Vec<Option<Sink<'s>>> {
+    let mut streams = vec![0usize; specs.len()];
+    for si in work {
+        streams[si] += 1;
+    }
+    streams
+        .par_iter()
+        .enumerate()
+        .map(|(si, &k)| {
+            #[cfg(test)]
+            if assembly::tests::sink_off(&specs[si].name) {
+                return None;
+            }
+            (k == 1).then(|| {
+                let dt = clock_dtypes.get(si).and_then(Option::as_ref);
+                Sink::new(&specs[si], &derived[si], n, dt, true)
+            })
+        })
+        .collect()
+}
+
+/// The structs of the sinks `process` filled, into `out`.
+fn finish_sinks(filled: Filled<'_>, out: &mut [Option<StructArray>]) -> PolarsResult<()> {
+    let built: Vec<(usize, StructArray)> = filled
+        .into_par_iter()
+        .map(|(si, sink)| Ok((si, sink.finish()?)))
+        .collect::<PolarsResult<_>>()?;
+    for (si, st) in built {
+        out[si] = Some(st);
+    }
+    Ok(())
 }
 
 /// [`process`] without the learning: [`Stream::predict_chunk`] per task.
@@ -1093,21 +1182,29 @@ fn score(
 
 /// Assemble the structs of the specs `pick` selects, in parallel, into
 /// `out` (docs/PERFORMANCE.md P4).
+///
+/// A spec its sink already assembled as its stream ran (`process`) is left
+/// as it is.
 fn assemble_phase(
     specs: &[Spec],
     derived: &[SpecDerived],
     n: usize,
-    rows: &[Vec<ChunkOut>],
+    rows: &mut [Vec<ChunkOut>],
     out: &mut [Option<StructArray>],
     clock_dtypes: &[Option<crate::stream::ClockDtype>],
     pick: impl Fn(usize) -> bool + Sync,
 ) -> PolarsResult<()> {
-    let built: Vec<(usize, StructArray)> = (0..specs.len())
-        .into_par_iter()
-        .filter(|si| pick(*si))
-        .map(|si| {
+    let done: Vec<bool> = out.iter().map(Option::is_some).collect();
+    let built: Vec<(usize, StructArray)> = rows
+        .par_iter_mut()
+        .enumerate()
+        .filter(|(si, _)| pick(*si) && !done[*si])
+        .map(|(si, chunks)| {
             let dt = clock_dtypes.get(si).and_then(Option::as_ref);
-            Ok((si, assemble(&specs[si], &derived[si], n, &rows[si], dt)?))
+            // The runs are done with once assembled: their buffers go here
+            // rather than at the end of the call.
+            let mut chunks = std::mem::take(chunks);
+            Ok((si, assemble(&specs[si], &derived[si], n, &mut chunks, dt)?))
         })
         .collect::<PolarsResult<_>>()?;
     for (si, c) in built {
@@ -3233,8 +3330,15 @@ impl Bank {
                 }
             })
             .collect::<Result<_, String>>()?;
-        let st = assemble(s, d, keys.len(), &chunks, self.clock_dtypes[spec].as_ref())
-            .map_err(|e| e.to_string())?;
+        let mut chunks = chunks;
+        let st = assemble(
+            s,
+            d,
+            keys.len(),
+            &mut chunks,
+            self.clock_dtypes[spec].as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
         let col = named_column(s, st).map_err(|e| e.to_string())?;
         Ok((keys.into_iter().cloned().collect(), col))
     }
@@ -3916,7 +4020,16 @@ impl Bank {
         let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
         let mut closed: Vec<ClosedRow> = Vec::new();
-        let (rows1, closed1) = process(work1, specs, cfgs, &cols, &formulas, chunk.row_base());
+        let sinks1 = sinks(work1.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
+        let (rows1, closed1, filled1) = process(
+            work1,
+            specs,
+            cfgs,
+            &cols,
+            &formulas,
+            chunk.row_base(),
+            sinks1,
+        );
         closed.extend(closed1);
         for (si, r) in rows1 {
             match r {
@@ -3931,12 +4044,13 @@ impl Bank {
         }
         let mut t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
+        finish_sinks(filled1, &mut out)?;
         // Specs assemble independently (docs/PERFORMANCE.md P4).
         assemble_phase(
             specs,
             derived,
             n,
-            &per_spec_rows,
+            &mut per_spec_rows,
             &mut out,
             clock_dtypes,
             |si| derived[si].compare.is_none(),
@@ -3950,7 +4064,16 @@ impl Bank {
                         compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
                 }
             }
-            let (rows2, closed2) = process(work2, specs, cfgs, &cols, &formulas, chunk.row_base());
+            let sinks2 = sinks(work2.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
+            let (rows2, closed2, filled2) = process(
+                work2,
+                specs,
+                cfgs,
+                &cols,
+                &formulas,
+                chunk.row_base(),
+                sinks2,
+            );
             closed.extend(closed2);
             for (si, r) in rows2 {
                 match r {
@@ -3963,6 +4086,9 @@ impl Bank {
                 }
             }
             t_process += t4.elapsed();
+            let t6 = std::time::Instant::now();
+            finish_sinks(filled2, &mut out)?;
+            t_assemble += t6.elapsed();
         }
         // Assembled whether or not a row reached them, as the first phase's
         // are: a chunk of no rows has no work for a grouped spec, and a
@@ -3974,7 +4100,7 @@ impl Bank {
             specs,
             derived,
             n,
-            &per_spec_rows,
+            &mut per_spec_rows,
             &mut out,
             clock_dtypes,
             |si| derived[si].compare.is_some(),
@@ -4147,7 +4273,7 @@ impl Bank {
             specs,
             derived,
             n,
-            &per_spec_rows,
+            &mut per_spec_rows,
             &mut out,
             &clock_dtypes,
             |si| derived[si].compare.is_none(),
@@ -4170,7 +4296,7 @@ impl Bank {
             specs,
             derived,
             n,
-            &per_spec_rows,
+            &mut per_spec_rows,
             &mut out,
             &clock_dtypes,
             |si| derived[si].compare.is_some(),
@@ -4627,48 +4753,6 @@ pub use learned::Learned;
 mod audit;
 pub use audit::AuditTable;
 
-/// Scatter one value per processed row of every chunk into a column:
-/// `run(chunk, n_rows)` is the field's `n_rows` values for that chunk in row
-/// order -- every `ChunkOut` buffer is slot-major, so that is one slice.
-/// Non-finite values stay null unless `all` (for `n_eff`, which is always
-/// finite and is reported as-is).
-///
-/// A chunk whose rows are one unbroken run -- a single group, or a group that
-/// arrives in blocks -- is copied as a select over three slices with no index
-/// indirection, its validity packed on the way (`F64Column::run`); the
-/// general path scatters through `rows`. Same values either way: a processed,
-/// finite value lands, anything else leaves the NaN prefill
-/// (docs/PERFORMANCE.md §13).
-fn scatter(
-    n: usize,
-    chunks: &[ChunkOut],
-    all: bool,
-    run: impl for<'a> Fn(&'a ChunkOut, usize) -> &'a [f64],
-) -> F64Column {
-    let mut col = F64Column::new(n);
-    for ch in chunks {
-        let nr = ch.rows.len();
-        let vals = run(ch, nr);
-        debug_assert_eq!(vals.len(), nr);
-        match ch.contiguous() {
-            Some(base) if !all => col.run(base, vals, &ch.processed),
-            _ => {
-                for (ri, &i) in ch.rows.iter().enumerate() {
-                    if !ch.processed[ri] {
-                        continue;
-                    }
-                    if all {
-                        col.set(i, vals[ri]);
-                    } else {
-                        col.set_if_finite(i, vals[ri]);
-                    }
-                }
-            }
-        }
-    }
-    col
-}
-
 /// The three output fields that do not come from an [`F64Column`], as Arrow
 /// arrays: the drift flag, the selected slot's name, and the selected and
 /// averaged predictions (docs/PLAN.md task 86).
@@ -4746,382 +4830,8 @@ fn named_columns(specs: &[Spec], arrays: Vec<StructArray>) -> PolarsResult<Vec<C
         .collect()
 }
 
-/// One clock field over the chunks, in the clock column's own type; a
-/// type the bank has not seen yet is a float's (task 152).
-fn clock_array(
-    n: usize,
-    chunks: &[ChunkOut],
-    dtype: Option<&crate::stream::ClockDtype>,
-    pick: impl Fn(&ChunkOut) -> &[Option<online_core::ClockValue>],
-) -> Box<dyn polars_arrow::array::Array> {
-    let mut values = vec![None; n];
-    for ch in chunks {
-        let v = pick(ch);
-        for (ri, &row) in ch.rows.iter().enumerate() {
-            if ch.processed[ri] {
-                values[row] = v[ri];
-            }
-        }
-    }
-    let numeric = crate::stream::ClockDtype::Numeric;
-    dtype.unwrap_or(&numeric).array(&values)
-}
-
-fn assemble(
-    spec: &Spec,
-    d: &SpecDerived,
-    n: usize,
-    chunks: &[ChunkOut],
-    clock_dtype: Option<&crate::stream::ClockDtype>,
-) -> PolarsResult<StructArray> {
-    let SpecDerived {
-        schema,
-        slot_labels: labels,
-        n_models,
-        nc,
-        m,
-        per_model,
-        compare: _,
-    } = d;
-    let (n_models, nc, m, per_model) = (*n_models, *nc, *m, *per_model);
-    // `ew_cov` emits named statistics rather than pred/resid pairs, and has no
-    // targets or coefficients — but its values ride in the same `pred` buffer
-    // and the schema says so (`Source::Stat`), so one assembler covers both
-    // (docs/SIMPLIFICATION.md S2). Only `pred` and `n_eff` are populated for
-    // it; every other buffer is length zero and never indexed. `kmeans` is
-    // the same shape with an `i64` slot (`Source::Id`) and `coef`.
-    let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
-
-    // Online selection across every slot of a target: pick the slot with the
-    // lowest EW out-of-sample error so far (`sigma`, already tracked for E12),
-    // and emit that slot's prediction plus its label. Same idea as the lasso's
-    // `lam_selected`, generalized to ridge / feature-set / half-life grids.
-    let mut sel_pred = vec![vec![None::<f64>; n]; if spec.emit_selected { m } else { 0 }];
-    let mut sel_name = vec![vec![None::<&str>; n]; if spec.emit_selected { m } else { 0 }];
-    let mut avg_pred = vec![vec![None::<f64>; n]; if spec.emit_averaged { m } else { 0 }];
-    if spec.emit_averaged {
-        // Exponentially weighted forecaster: weight each slot by
-        // exp(-eta * (sigma² / sigma²_best - 1)), normalized -- each slot's EW
-        // squared error as a ratio to the best slot's, so `eta` means the same
-        // in any target's units. The difference it replaced made `eta = 1` an
-        // equal-weight mean for a return and the argmin for a price (review
-        // 2026-09-12, S23). `sigma` is that error's square root, already
-        // tracked for E12, so this costs one pass.
-        let eta = spec.average_eta_or_default();
-        for ch in chunks {
-            let nr = ch.rows.len();
-            for (ri, &i) in ch.rows.iter().enumerate() {
-                if !ch.processed[ri] {
-                    continue;
-                }
-                let sig =
-                    |mi: usize, slot: usize| ch.sigma[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
-                let prd =
-                    |mi: usize, slot: usize| ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
-                for (t_i, avg_t) in avg_pred.iter_mut().enumerate() {
-                    // The best loss is the denominator: the best slot weighs
-                    // exp(0) = 1, and no weight overflows. At a best of 0 the
-                    // ratio's limit is the argmin -- every slot at 0, no other.
-                    let mut best = f64::INFINITY;
-                    for mi in 0..n_models {
-                        for c_i in 0..nc {
-                            let s = sig(mi, t_i * nc + c_i);
-                            if s.is_finite() && prd(mi, t_i * nc + c_i).is_finite() {
-                                best = best.min(s * s);
-                            }
-                        }
-                    }
-                    if !best.is_finite() {
-                        continue;
-                    }
-                    let (mut num, mut den) = (0.0, 0.0);
-                    for mi in 0..n_models {
-                        for c_i in 0..nc {
-                            let slot = t_i * nc + c_i;
-                            let (s, p) = (sig(mi, slot), prd(mi, slot));
-                            if s.is_finite() && p.is_finite() {
-                                // A slot past the best weighs `exp(-eta *
-                                // excess)`, and the best weighs 1 at any
-                                // `eta`: at `inf`, `-inf * 0` made it NaN
-                                // (review 2026-09-12, S27).
-                                let excess = if best > 0.0 {
-                                    s * s / best - 1.0
-                                } else if s * s == 0.0 {
-                                    0.0
-                                } else {
-                                    f64::INFINITY
-                                };
-                                let wgt = if excess > 0.0 {
-                                    (-eta * excess).exp()
-                                } else {
-                                    1.0
-                                };
-                                num += wgt * p;
-                                den += wgt;
-                            }
-                        }
-                    }
-                    if den > 0.0 {
-                        avg_t[i] = Some(num / den);
-                    }
-                }
-            }
-        }
-    }
-    if spec.emit_selected {
-        for ch in chunks {
-            let nr = ch.rows.len();
-            for (ri, &i) in ch.rows.iter().enumerate() {
-                if !ch.processed[ri] {
-                    continue;
-                }
-                let sig =
-                    |mi: usize, slot: usize| ch.sigma[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
-                let prd =
-                    |mi: usize, slot: usize| ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
-                for t_i in 0..m {
-                    let mut best: Option<(f64, usize, usize)> = None;
-                    for mi in 0..n_models {
-                        for c_i in 0..nc {
-                            let s = sig(mi, t_i * nc + c_i);
-                            if s.is_finite() && best.is_none_or(|(b, _, _)| s < b) {
-                                best = Some((s, mi, c_i));
-                            }
-                        }
-                    }
-                    if let Some((_, mi, c_i)) = best {
-                        let p = prd(mi, t_i * nc + c_i);
-                        if p.is_finite() {
-                            sel_pred[t_i][i] = Some(p);
-                            sel_name[t_i][i] = Some(labels[mi * nc + c_i].as_str());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // The schema is written once, in `output_index`, which also records where
-    // each field's values live. Emission is a walk over it: no second copy of
-    // the ordering, no `format!` here at all, and no way for the declared
-    // schema and the realized struct to disagree (docs/SIMPLIFICATION.md S1 —
-    // that divergence is exactly what defect E23 was).
-    //
-    // One job per field, each its own scatter over every stream's run, so
-    // the fields of a spec are built in parallel from `PAR_MIN_ROWS` up
-    // (docs/PERFORMANCE.md P10): one spec with a grid of instances used to
-    // assemble on a single thread. A field's index `i` is
-    // `mi * per_model + slot`, the order `output_index` numbers the
-    // per-instance fields in.
-    let block = |ch: &ChunkOut, nr: usize| ch.n_slots * nr;
-    let arrays: Vec<Box<dyn ArrowArray>> =
-        map_maybe_par::<_, _, PolarsResult<_>>(schema, n >= PAR_MIN_ROWS, |f| {
-            // Where field `i`'s run of `nr` values starts in a per-instance buffer.
-            let at = |ch: &ChunkOut, nr: usize, i: usize| {
-                ChunkOut::at(ch.n_slots, nr, i / per_model, i % per_model, 0)
-            };
-            Ok(match f.src {
-                Source::Pred(i) | Source::Stat(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_array_boxed()
-                }
-                Source::Id(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_i64_array_boxed()
-                }
-                Source::Flag(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_bool_array_boxed()
-                }
-                Source::Label(i) => {
-                    let classes: &[String] = match &spec.model {
-                        ModelKind::EwClass { classes, .. } => classes,
-                        _ => unreachable!("only ew_class emits a label"),
-                    };
-                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_label_array_boxed(classes)
-                }
-                Source::Resid(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.resid[at(ch, nr, i)..][..nr])
-                        .finish_array_boxed()
-                }
-                Source::Sigma(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.sigma[at(ch, nr, i)..][..nr])
-                        .finish_array_boxed()
-                }
-                Source::ResidZ(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.zscore[at(ch, nr, i)..][..nr])
-                        .finish_array_boxed()
-                }
-                Source::Autocorr(i) => scatter(n, chunks, false, |ch, nr| {
-                    &ch.autocorr[at(ch, nr, i)..][..nr]
-                })
-                .finish_array_boxed(),
-                Source::Metric(k, i) => scatter(n, chunks, false, |ch, nr| {
-                    // Model-major: instance mi owns 3 contiguous blocks.
-                    let (mi, slot) = (i / per_model, i % per_model);
-                    &ch.metrics[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
-                })
-                .finish_array_boxed(),
-                Source::Conformal(k, i) => scatter(n, chunks, false, |ch, nr| {
-                    let (mi, slot) = (i / per_model, i % per_model);
-                    &ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
-                })
-                .finish_array_boxed(),
-                Source::Health(which, mi, fi) => scatter(n, chunks, false, |ch, nr| {
-                    let k = spec.k();
-                    &ch.health[(mi * 2 * k + which * k + fi) * nr..][..nr]
-                })
-                .finish_array_boxed(),
-                Source::Check(k, i) => scatter(n, chunks, false, |ch, nr| {
-                    let (mi, slot) = (i / per_model, i % per_model);
-                    let b = block(ch, nr);
-                    &ch.checks[mi * ch.n_checks * b + k * b + slot * nr..][..nr]
-                })
-                .finish_array_boxed(),
-                Source::Quantile(i) => scatter(n, chunks, false, |ch, nr| {
-                    // `(li * n_models + mi) * m * nc + slot`, as `output_index`
-                    // numbers the quantile fields.
-                    let slot = i % (m * nc);
-                    let (li, mi) = ((i / (m * nc)) / n_models, (i / (m * nc)) % n_models);
-                    &ch.resid_q[mi * n_levels * block(ch, nr) + li * block(ch, nr) + slot * nr..]
-                        [..nr]
-                })
-                .finish_array_boxed(),
-                Source::NEff(mi) => scatter(n, chunks, true, |ch, nr| &ch.n_eff[mi * nr..][..nr])
-                    .finish_array_boxed(),
-                Source::Settled(mi) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.settled[mi * nr..][..nr])
-                        .finish_array_boxed()
-                }
-                Source::Inflation(i) => scatter(n, chunks, false, |ch, nr| {
-                    &ch.inflation[at(ch, nr, i)..][..nr]
-                })
-                .finish_array_boxed(),
-                Source::Reason(mi) => {
-                    let mut codes = vec![0u8; n];
-                    for ch in chunks {
-                        let nr = ch.rows.len();
-                        for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri] {
-                                codes[row] = ch.reason[mi * nr + ri];
-                            }
-                        }
-                    }
-                    Box::new(crate::column::code_array(
-                        &codes,
-                        &crate::stream::WITHHELD_REASONS,
-                    ))
-                }
-                Source::SupportCoef(mi) => {
-                    let mut support: Vec<Option<&Vec<f64>>> = vec![None; n];
-                    for ch in chunks {
-                        for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri]
-                                && let Some(c) = &ch.support_coef[mi][ri]
-                            {
-                                support[row] = Some(c);
-                            }
-                        }
-                    }
-                    coef_list_array(&support)
-                }
-                Source::SeCoef(mi) | Source::SeCoefHc0(mi) | Source::SeCoefHac(mi) => {
-                    fn pick<'a>(src: &Source, ch: &'a ChunkOut) -> &'a [Vec<Option<Vec<f64>>>] {
-                        match src {
-                            Source::SeCoefHc0(_) => &ch.se_coef_hc0,
-                            Source::SeCoefHac(_) => &ch.se_coef_hac,
-                            _ => &ch.se_coef,
-                        }
-                    }
-                    let mut se: Vec<Option<&Vec<f64>>> = vec![None; n];
-                    for ch in chunks {
-                        let buf = pick(&f.src, ch);
-                        for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri]
-                                && let Some(c) = &buf[mi][ri]
-                            {
-                                se[row] = Some(c);
-                            }
-                        }
-                    }
-                    coef_list_array(&se)
-                }
-                Source::LamSelected(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
-                        .finish_array_boxed()
-                }
-                Source::Drift(i) => {
-                    let mut drift = vec![None::<bool>; n];
-                    for ch in chunks {
-                        let nr = ch.rows.len();
-                        for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri] {
-                                drift[row] = Some(ch.drift[at(ch, nr, i) + ri]);
-                            }
-                        }
-                    }
-                    opt_bool_array(&drift)
-                }
-                Source::SelPred(i) => opt_f64_array(&sel_pred[i]),
-                Source::SelName(i) => Box::new(crate::column::dict_array(
-                    sel_name[i]
-                        .iter()
-                        .map(|v| v.and_then(|l| labels.iter().position(|x| x == l)))
-                        .map(|k| k.map(|k| k as u32)),
-                    &labels.iter().map(String::as_str).collect::<Vec<_>>(),
-                )),
-                Source::AvgPred(i) => opt_f64_array(&avg_pred[i]),
-                Source::Coef(mi) => {
-                    let mut coef: Vec<Option<&Vec<f64>>> = vec![None; n];
-                    for ch in chunks {
-                        for (ri, &row) in ch.rows.iter().enumerate() {
-                            if ch.processed[ri]
-                                && let Some(c) = &ch.coef[mi][ri]
-                            {
-                                coef[row] = Some(c);
-                            }
-                        }
-                    }
-                    // Finite-or-null inside the list too: an `ew_class` class
-                    // no row has carried yet has NaN means, and a null says so.
-                    coef_list_array(&coef)
-                }
-                Source::ScoredClock => clock_array(n, chunks, clock_dtype, |ch| &ch.scored_clock),
-                Source::LearnedClock => clock_array(n, chunks, clock_dtype, |ch| &ch.learned_clock),
-                Source::Unset => unreachable!("every field is given a source in output_index"),
-            })
-        })?;
-    // The output path is Arrow end to end: the struct array is what the bank
-    // returns, and giving it the spec's name is the adapter's job, not this
-    // function's (docs/PLAN.md task 86).
-    let arrow_fields: Vec<ArrowField> = schema
-        .iter()
-        .zip(&arrays)
-        .map(|(f, a)| {
-            let field = ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true);
-            // The reason, a class and a selected slot are each an `Enum`
-            // over their names: the metadata is what tells polars so
-            // (`column::enum_metadata`).
-            if matches!(f.src, Source::Reason(_)) {
-                field.with_metadata(crate::column::enum_metadata(
-                    &crate::stream::WITHHELD_REASONS,
-                ))
-            } else if let Some(names) = &f.categories {
-                let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                field.with_metadata(crate::column::enum_metadata(&names))
-            } else {
-                field
-            }
-        })
-        .collect();
-    Ok(StructArray::new(
-        ArrowDataType::Struct(arrow_fields),
-        n,
-        arrays,
-        None,
-    ))
-}
+mod assembly;
+use assembly::{Sink, assemble};
 
 #[cfg(test)]
 mod over_budget_tests;

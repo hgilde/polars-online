@@ -2731,7 +2731,7 @@ impl ChunkOut {
     /// Offset of `(model, slot)` at row `ri`, in any `n_models * n_slots *
     /// n_rows` buffer. The single place the layout is spelled out: each
     /// instance's block is written by `run_instance` at `slot * n_rows + ri`,
-    /// and `assemble` in `bank.rs` reads the whole buffer through this.
+    /// and the sink in `bank/assembly.rs` reads the whole buffer through this.
     #[inline]
     pub fn at(n_slots: usize, n_rows: usize, mi: usize, slot: usize, ri: usize) -> usize {
         (mi * n_slots + slot) * n_rows + ri

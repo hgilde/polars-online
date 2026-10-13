@@ -27,6 +27,7 @@ each reads as of its date, with the names of its day.
 | [10. The runner](#10-the-runner-every-format-every-source-2026-09-02) | you run the `polars-online` command line on files: its formats, its timing line, and what its custom parts are worth | [the pipeline](#the-pipeline) · [every format](#every-format) · [why py-polars reads](#why-py-polars-reads-for-the-python-path) · [the custom parts](#what-the-custom-parts-are-worth) · [not a polars node](#why-the-bank-is-not-a-polars-node) · [before and after](#before-and-after-the-one-thread-runner-against-the-pipeline) · [writers](#writers) |
 | [11. Memory](#11-memory-which-surface-is-odata-2026-09-02) | memory is the question: which surface is O(data) and which O(state), with the numbers, and what Polars holds before the bank | [the plugin](#the-plugin-was-odata-nothing-else-is) · [the constant](#what-the-constant-is) · [the fix](#the-query-shaped-trap-and-the-fix) · [before the bank](#what-comes-before-the-bank) · [the window](#where-the-window-comes-from) · [what shrinks it](#what-shrinks-the-window) · [filter after the bank](#filter-after-the-bank) · [levers not taken](#two-levers-not-taken) · [Polars' own windows](#polars-own-windowed-operations-do-the-same-thing) · [how it was measured](#how-it-was-measured-and-why-not-rss) |
 | [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
+| [40. An eager call's peak](#40-an-eager-calls-peak-each-run-into-the-output-as-it-ends-2026-10-13) | a wide eager `fit_predict` takes more memory than its output | |
 | **[Model by model](#model-by-model)** | | |
 | [13. The new families](#13-the-new-families-and-where-a-wide-row-goes-2026-09-05) | you run one of the new families (`kmeans`, `micro`, `ew_class`, `sgd`, `pa`, `seqtest`, `kalman`'s transition, conformal intervals), or a wide row | [the contract](#the-contract-bit-for-bit) · [the survey](#the-survey) · [`ew_cov`'s row](#where-ew_covs-row-went) · [the wall clock](#reading-the-wall-clock-not-the-profile) · [`ew_class`](#ew_class-one-factorization-per-learned-row) · [`kalman`, `sgd`, `pa`](#kalman-sgd-pa-allocations-and-a-closure) · [thread scaling](#thread-scaling) · [what is left](#what-is-left-and-why) |
 | [14. The Gram update](#14-the-gram-update-measured-2026-09-05) | you want why the Gram update is not computed as one triangle | [the variants](#the-variants) · [not bit-identical](#the-mirror-is-not-bit-identical) · [slower](#and-it-is-slower-by-a-lot) · [what shipped](#what-is-worth-having) |
@@ -126,6 +127,7 @@ Where a number is not what you expected, find what you see here:
 | a grid slower than one model | a ridge or feature-set grid shares one set of sums; each half-life of a grid keeps its own, run alongside the others | the number of half-lives | §28 |
 | small chunks slower than large ones | a fixed overhead per call: handing the frame across, gathering the columns and assembling the output, about 8 ms at 10,000 columns | `chunk_size`, 100,000 by default (`chunk_rows` in the sections written before it was renamed) | §12, §20 |
 | memory that grows with the file | Polars reading ahead in the parquet file, sized from its thread count, and the allocator keeping pages it has freed | `POLARS_ROW_GROUP_PREFETCH_SIZE`, `POLARS_MAX_THREADS` | §11 |
+| an eager `fit_predict` above its output | a spec of many groups keeps every run's buffers until its streams are done, about its output again; a spec of one group or none holds its output and two runs | a smaller frame, or the streaming path, whose peak is a chunk's | §40 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
 | one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` | §12, §25, §31, §37 |
 | a window's memory | its ring of snapshots, capped per ring | `snapshot_every`, `max_rows_between_snapshots`, `window_budget` | §16 |
@@ -1918,6 +1920,66 @@ order-free, so since 0.7.2 it already skipped the order check, and the
 benchmark was measuring a fast path built two releases earlier rather than
 the common one. A `halflife` spec never qualifies, and that is where the
 2.3× is.
+
+### 40. An eager call's peak: each run into the output as it ends (2026-10-13)
+
+*Provenance: an Apple M4 Pro, py-polars 2.0.0. The extension modules
+before and after the change swapped into the package between runs, in
+alternating order. Load 2.1 to 4.7.*
+
+**A spec that one stream serves now holds its output and two runs of
+buffers, not its output twice.** A stream writes its outputs into a run's
+buffers, a run being the rows that fit the cache (§13): about a thousand for
+a 230-statistic `ew_cov`, a hundred thousand for a narrow model. Every run
+used to wait for the end of the call, and the assembly then copied them into
+one column per field, so at the peak both existed. Now a spec with no group,
+or a single group in the chunk, hands each run to its output as the run
+ends. The copy runs on another thread while the stream learns the next run
+(`rayon::join`), and the run after that gets its buffers in the memory the
+copied run freed (`crates/online-polars/src/bank/assembly.rs`). A spec of
+many groups is unchanged: its streams' rows interleave in the output, so its
+runs still wait for the end and are copied one field per job.
+
+Peak resident memory above the baseline after the input is read, sampled
+every 2 ms, each run a child interpreter, as
+`tests/test_budgets_memory.py` measures it. Three or four rounds of each
+build, alternating:
+
+| run (200,000 rows) | output | before, MiB | after, MiB |
+|---|---:|---:|---:|
+| `ew_cov`, 20 features, 233 fields | 393 | 803 to 831 | 443 to 446 |
+| `ewridge`, 20 features, 10 targets | 85 | 168 to 210 | 144 to 153 |
+| `ew_cov`, 20 features, 8 groups | 395 | 813 to 838 | 830 to 838 |
+
+The output column is the whole frame's `estimated_size()`, the 21 or 31
+input columns included. Throughput moved with it: the copy no longer
+re-reads every run from memory after the streams finish. Rows a second,
+best of five, eight rounds of each build alternating at load 3.6 to 4.7:
+
+| case | before | after | median |
+|---|---:|---:|---:|
+| `ew_cov`, 230 statistics | 1.85-1.89M | 2.01-2.03M | +8% |
+| `ew_cov`, lags 1-5 | 1.29-1.33M | 1.36-1.41M | +6% |
+| `ewridge`, k=20, 10 targets | 1.52-1.53M | 1.53-1.54M | +1% |
+| `ewridge`, k=5 | 4.92-5.00M | 4.91-4.96M | 0% |
+| `sgd`, k=20 | 7.63-7.77M | 7.57-7.68M | -1% |
+| `seqtest` | 13.33-13.49M | 13.20-13.43M | -1% |
+| `ewridge`, k=20, 8 groups | 6.03-6.32M | 5.96-6.23M | -1% |
+| `ew_cov`, 230 statistics, 8 groups | 5.46-5.64M | 5.28-5.59M | -2% |
+
+`scripts/benchmark.py`, three runs of each build alternating, agrees: a
+geometric mean of +0.2% over its 37 rows, the wide rows up 3-7% and none
+down more than 2%, inside the spread two builds of one source show from
+code layout alone.
+
+- **The output is the same to the bit.** Each field takes each run by the
+  same rule whichever way the runs arrive, and a test feeds one bank both
+  ways, field by field and bit by bit, null slots included.
+- **A spec of many groups still peaks at about twice its output**, the
+  last row of the table. Copying its runs as they end would mean writing
+  one output column from several threads, at rows that interleave.
+- `predict` keeps one buffer a stream for the whole chunk and copies it
+  at the end, so a wide eager `predict` also holds its output twice.
 
 ## Model by model
 
