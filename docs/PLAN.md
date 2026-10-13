@@ -10234,6 +10234,17 @@ tick, and that the series holding it up has a count near 1.
       `POLARS_MAX_THREADS=1`, to tell arena growth from a leak. Report the
       RSS series, not a verdict; then decide: a fix if it leaks, else a
       measurement that tells arena growth from a slope.
+      *Measured 2026-10-13 by the user's Linux session* (Ubuntu 24.04.5,
+      glibc 2.39, x86_64, 4 cores, Python 3.13.16, py-polars 2.0.0,
+      `7613560`): the test passed 41 of 41 times (20 alone, once inside
+      the whole serial suite, 20 after it). The loop body as a plain script
+      for 3,120 iterations steps about 25.5 MB in its first 240 and then
+      holds within 0.5 MB: -0.02 to 0.14 KB an iteration, plain, with
+      `MALLOC_ARENA_MAX=2` and with `POLARS_MAX_THREADS=1` alike, against
+      the test's limit of 4. No leak. The CI failures measured a pytest
+      process near 615 MB on a loaded shared runner. **Next**: run each
+      plateau check in a fresh child interpreter (a baseline near 73 MB,
+      nothing else in the process), as the plain script did.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
