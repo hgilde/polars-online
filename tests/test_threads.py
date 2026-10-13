@@ -6,7 +6,9 @@ sizes when it is first used; an integer is a pool of that many threads,
 shared by every holder of the count. The claims are bits: the output and the
 saved state are the same at every count and every chunking, on a bank of
 several specs and groups whose wide specs split their own work across the
-pool (``gram_threads="auto"``, ``shards="auto"``). The count is not state: a
+pool (``gram_threads="auto"``, ``shards="auto"``), and on specs that one
+stream serves, whose runs are copied into the output as they end, beside
+the learning of the next run. The count is not state: a
 save carries none of it and a load takes its own. Every surface refuses a
 count that is not an integer of 1 or more with the one message, and given a
 count the bank never reads the variable. The Rust tests hold the pool
@@ -148,6 +150,101 @@ def test_the_wide_specs_ran():
     out, _ = run(2, 1)
     assert out["wide"].struct.field("pred_y").drop_nulls().len() > N // 6
     assert out["cov"].struct.field("mean_x0").drop_nulls().len() > N // 2
+
+
+#: Rows of the single-stream frame: about six runs of a 230-statistic
+#: `ew_cov` (a thousand rows a run) in one chunk, three in each of two, and in
+#: one chunk past the 4,096 rows from which a spec's output columns are
+#: allocated and finished in parallel.
+N_SINGLE = 6_000
+
+
+def single_stream() -> tuple[pl.DataFrame, list[dict]]:
+    """Specs that one stream serves -- no group -- so each run is copied into
+    the output as it ends, overlapped with the learning of the next run: a
+    wide `ew_cov` and a four-target `ewridge` grid, beside a spec of four
+    groups, whose runs wait for the end of the chunk."""
+    rng = np.random.default_rng(11)
+    X = rng.standard_normal((N_SINGLE, 20))
+    X[rng.random((N_SINGLE, 20)) < 0.01] = np.nan
+    Y = X[:, :4] @ rng.standard_normal((4, 4)) + rng.standard_normal((N_SINGLE, 4))
+    w = 0.5 + rng.random(N_SINGLE)
+    w[::31] = 0.0
+    df = (
+        pl.DataFrame({f"x{j}": X[:, j] for j in range(20)})
+        .with_columns(
+            [pl.Series(f"y{j}", Y[:, j]) for j in range(4)]
+            + [pl.Series("w", w), pl.Series("t", np.cumsum(rng.exponential(1.0, N_SINGLE)))]
+            + [pl.Series("g", np.arange(N_SINGLE) % 4)]
+        )
+        .with_columns(pl.col(f"x{j}").fill_nan(None) for j in range(20))
+    )
+    wide = [f"x{j}" for j in range(20)]
+    common = dict(clock="t", gap_cap=6.0, weight="w")
+    specs = [
+        po.spec.ew_cov("cov", features=wide, half_life=50.0, **common),
+        po.spec.ewridge(
+            "grid",
+            targets=[f"y{j}" for j in range(4)],
+            features=wide[:5],
+            half_life=[25.0, 100.0],
+            ridge=[1e-6, 1e-2],
+            emit_sigma=True,
+            emit_metrics=True,
+            conformal=0.9,
+            resid_quantiles=[0.1, 0.9],
+            **common,
+        ),
+        po.spec.ewridge(
+            "grouped", targets=["y0"], features=wide[:3], group="g", half_life=30.0, **common
+        ),
+    ]
+    return df, specs
+
+
+def _bits(out: pl.DataFrame) -> dict[str, object]:
+    """Every field of every spec: a float field as its null mask and the bits
+    of its values, anything else as the series itself."""
+    got: dict[str, object] = {}
+    for spec in out.columns:
+        for s in out[spec].struct.unnest().iter_columns():
+            if s.dtype == pl.Float64:
+                got[f"{spec}.{s.name}"] = (
+                    s.is_null().to_list(),
+                    s.to_numpy().view(np.uint64).tolist(),
+                )
+            else:
+                got[f"{spec}.{s.name}"] = s
+    return got
+
+
+@pytest.mark.parametrize("chunks", [1, 2])
+def test_a_spec_one_stream_serves_is_the_same_at_every_count(chunks):
+    """Its copy of a run and the learning of the next run overlap on a pool
+    of more than one thread and run in turn on one: every field is the same
+    to the bit, null slots included, and so is the saved state."""
+    df, specs = single_stream()
+    size = -(-df.height // chunks)
+    want = None
+    for threads in (1, 2, 4, 8, None):
+        bank = po.ModelBank(specs, threads=threads)
+        out = pl.concat([bank.fit_predict(c) for c in df.iter_slices(size)]).drop(df.columns)
+        got = (_bits(out), bank.save_bytes())
+        if want is None:
+            want = got
+            # Compared over fields that hold numbers, not only nulls.
+            for spec, prefix in (("cov", "corr_"), ("grid", "pred_y3")):
+                field = next(f for f in out[spec].struct.fields if f.startswith(prefix))
+                assert out[spec].struct.field(field).drop_nulls().len() > N_SINGLE // 2, field
+            continue
+        fields, state = got
+        assert fields.keys() == want[0].keys(), threads
+        for key, value in fields.items():
+            if isinstance(value, pl.Series):
+                assert value.equals(want[0][key], null_equal=True), (threads, chunks, key)
+            else:
+                assert value == want[0][key], (threads, chunks, key)
+        assert state == want[1], (threads, chunks)
 
 
 def test_the_count_is_not_state():

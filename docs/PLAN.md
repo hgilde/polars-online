@@ -10412,6 +10412,26 @@ tick, and that the series holding it up has a count near 1.
       1,000 rows, now through the sink) were not measurable here (no
       Valgrind on macOS); the work per row is the same copy, so a move
       should be small.
+      *Across thread counts, 2026-10-13* (the user, before 1.0.1: "tests of
+      performance across thread counts"): measured `8950c46` against
+      `b796502` at `threads=1, 2, 4, 8` (PERFORMANCE §40, "Across pool
+      sizes"; four rounds alternating, load 3.3-5.3): no count is slower,
+      one thread included -- `ew_cov` 20 x 200k +16% at 1 thread and +20-29%
+      at 2-8, ten-target `ewridge` +3-4%, `ewridge` k=5, `sgd` and
+      `seqtest` over 1M rows +2-13%, their peaks down 29-63%; so no
+      one-thread fallback was built. Held by
+      `a_run_at_a_time_is_the_same_at_every_thread_count` (extended; its
+      fastest form in the essentials) and
+      `test_a_spec_one_stream_serves_is_the_same_at_every_count`, every
+      field bit for bit and the state byte for byte at 1, 2, 4, 8 and the
+      default, with the sink's runs counted; and by two instruction cases,
+      `bank_ew_cov_wide_t1` and `bank_ew_cov_wide_t4` (8,192 rows; the
+      four-thread one counted on every thread from a Callgrind client
+      request), in `budgets.toml` with no budget yet. **Next**: apply their
+      first CI counts; if the four-thread case's two runs disagree by more
+      than a quarter of the tolerance (its threads' scheduling under
+      Valgrind), `check` fails the job even with no budget: take the case
+      out, or count it another way, rather than widen the tolerance.
 - [x] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
       2026-10-12, offered a Linux session. `test_ffi_memory.py`'s
       `test_output_outliving_its_input` failed on both Ubuntu legs of CI

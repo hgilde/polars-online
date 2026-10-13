@@ -3,7 +3,10 @@
 //! run at once after the streams are done. A test-only switch sends the
 //! specs named `sink-off-*` the second way, and a counter records the runs
 //! the first way takes for the specs named `sink-on-*`, so the other tests
-//! of this binary, running beside these, are untouched.
+//! of this binary, running beside these, are untouched. The first way's
+//! copy of a run overlaps the learning of the next through `rayon::join`,
+//! which on a pool of one thread runs the two in turn, so its output is
+//! held to the bit at every pool size as well.
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -155,4 +158,189 @@ fn a_run_at_a_time_is_every_run_at_once() {
         assert!(runs("lasso") >= parts, "{} runs", runs("lasso"));
         assert_eq!(runs_absorbed(&format!("sink-off-{k}-ewridge")), 0);
     }
+}
+
+/// The specs of the thread-count tests, named from `name`: a wide `ew_cov`
+/// and a four-target `ewridge` over two half-lives that one stream each
+/// serves (their runs go to a sink as they end), and a spec of five groups,
+/// whose runs wait for the end of the chunk.
+fn thread_specs(name: &str) -> Vec<Spec> {
+    let wide: Vec<String> = (0..20).map(|j| format!("x{j}")).collect();
+    let wide = serde_json::to_string(&wide).unwrap();
+    let ewcov = format!(
+        r#"{{"name": "{name}-ewcov", "model": {{"type": "ew_cov"}}, "features": {wide},
+            "clock": "t", "gap_cap": 6.0, "weight": "w", "half_life": 50.0}}"#
+    );
+    let ewridge = format!(
+        r#"{{"name": "{name}-ewridge", "model": {{"type": "ewridge", "ridge": 1e-3}},
+            "half_life": [25.0, 100.0], "targets": ["y0", "y1", "y2", "y3"],
+            "features": ["x0", "x1", "x2", "x3", "x4"], "clock": "t", "gap_cap": 6.0,
+            "weight": "w", "emit_sigma": true, "emit_clocks": true}}"#
+    );
+    let grouped = format!(
+        r#"{{"name": "{name}-grouped", "model": {{"type": "ewridge"}},
+            "targets": ["y0", "y1"], "features": ["x0", "x1", "x2"], "group": "g",
+            "clock": "t", "gap_cap": 6.0, "weight": "w", "half_life": 30.0,
+            "emit_sigma": true, "coef_every": 0}}"#
+    );
+    [ewcov, ewridge, grouped]
+        .iter()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect()
+}
+
+/// Twenty features with nulls in them, four targets with nulls, an
+/// irregular clock with a gap past the cap, zero weights, and five groups.
+fn thread_frame(n: usize) -> DataFrame {
+    let mut t = 0.0;
+    let clock: Vec<f64> = (0..n)
+        .map(|i| {
+            t += [0.5, 1.0, 1.5][i % 3] + if i == n / 3 { 40.0 } else { 0.0 };
+            t
+        })
+        .collect();
+    let mut cols: Vec<Column> = (0..20)
+        .map(|j| {
+            let v: Vec<Option<f64>> = (0..n)
+                .map(|i| (i % (89 + j) != 3).then(|| ((i * (j + 5)) % 23) as f64 / 7.0 - 1.5))
+                .collect();
+            Column::new(format!("x{j}").into(), v)
+        })
+        .collect();
+    cols.extend((0..4).map(|j| {
+        let v: Vec<Option<f64>> = (0..n)
+            .map(|i| (i % 83 != j).then(|| ((i * (7 + j)) % 19) as f64 / 5.0))
+            .collect();
+        Column::new(format!("y{j}").into(), v)
+    }));
+    let w: Vec<f64> = (0..n)
+        .map(|i| if i % 31 == 0 { 0.0 } else { 1.0 })
+        .collect();
+    let g: Vec<i64> = (0..n).map(|i| ((i * 7) % 5) as i64).collect();
+    cols.push(Column::new("t".into(), clock));
+    cols.push(Column::new("w".into(), w));
+    cols.push(Column::new("g".into(), g));
+    DataFrame::new_infer_height(cols).unwrap()
+}
+
+/// The structs a bank of `specs` returns for `df` in `parts` chunks at
+/// `threads`, chunk by chunk, its saved state, and the runs each spec's
+/// sink took as its stream ran.
+fn at_threads(
+    specs: &[Spec],
+    df: &DataFrame,
+    parts: usize,
+    threads: Option<usize>,
+) -> (Vec<Vec<StructArray>>, Vec<u8>, Vec<usize>) {
+    let mut bank = Bank::new(specs.to_vec()).unwrap();
+    bank.set_threads(threads).unwrap();
+    let before: Vec<usize> = specs.iter().map(|s| runs_absorbed(&s.name)).collect();
+    let step = df.height().div_ceil(parts);
+    let outs = (0..parts)
+        .map(|p| {
+            structs(
+                &bank
+                    .fit_predict(&df.slice((p * step) as i64, step))
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let runs = specs
+        .iter()
+        .zip(before)
+        .map(|(s, b)| runs_absorbed(&s.name) - b)
+        .collect();
+    (outs, bank.save_bytes().unwrap(), runs)
+}
+
+/// Each of `banks` fed `df` in each of `parts` chunks gives the same
+/// structs, chunk by chunk and bit by bit, and the same saved state, at
+/// every one of `threads` as on one thread; and each spec that one stream
+/// serves took the overlapped way, the wide `ew_cov` at least `min_runs`
+/// runs to a chunk, while a grouped spec never did.
+fn same_at_every_count(
+    banks: &[Vec<Spec>],
+    df: &DataFrame,
+    parts: &[usize],
+    threads: &[Option<usize>],
+    min_runs: usize,
+) {
+    for specs in banks {
+        for &parts in parts {
+            let what = |t: Option<usize>| {
+                let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+                format!("{names:?}, {parts} chunks, threads {t:?}")
+            };
+            let (want, state, runs) = at_threads(specs, df, parts, Some(1));
+            for (s, &r) in specs.iter().zip(&runs) {
+                if s.group.is_some() {
+                    assert_eq!(r, 0, "{}: {r} runs", what(Some(1)));
+                } else {
+                    let least = if s.name.ends_with("ewcov") {
+                        min_runs
+                    } else {
+                        1
+                    };
+                    assert!(
+                        r >= least * parts,
+                        "{}: {} took {r} runs",
+                        what(Some(1)),
+                        s.name
+                    );
+                }
+            }
+            for &t in threads {
+                let (got, saved, got_runs) = at_threads(specs, df, parts, t);
+                assert_eq!(got_runs, runs, "{}", what(t));
+                for (p, (g, w)) in got.iter().zip(&want).enumerate() {
+                    for (x, y) in g.iter().zip(w) {
+                        assert_same(x, y, &format!("{}, chunk {p}", what(t)));
+                    }
+                }
+                assert!(saved == state, "{}: the states differ", what(t));
+            }
+        }
+    }
+}
+
+/// The rows of one run of the wide `ew_cov`, as the stream splits a chunk.
+fn ewcov_run_rows() -> usize {
+    let mut spec = thread_specs("sink-on-run-rows").remove(0);
+    spec.check().unwrap();
+    let stream = crate::Stream::new(&spec).unwrap();
+    crate::ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots())
+}
+
+/// The wide `ew_cov` and the grouped spec in one bank, over one chunk of
+/// three runs of the `ew_cov`, on one thread and on four: what the test
+/// below holds at every pool size, chunking and bank, in its fastest form.
+#[test]
+fn a_run_at_a_time_is_the_same_on_one_thread_and_four() {
+    let df = thread_frame(3 * ewcov_run_rows());
+    let mut specs = thread_specs("sink-on-thr-one-four");
+    specs.remove(1);
+    same_at_every_count(&[specs], &df, &[1], &[Some(4)], 3);
+}
+
+/// Every output field and the saved state are the same to the bit at every
+/// pool size, the process default's included: on one thread, where
+/// `rayon::join` runs the copy of a run and the learning of the next one
+/// after the other, and on two to eight, where they overlap. Each spec
+/// alone and the three in one bank, over one chunk (past `PAR_MIN_ROWS`, so
+/// the sinks allocate and finish their columns in parallel) and over two
+/// (below it). The single-stream specs took the overlapped way, the wide
+/// `ew_cov` three runs to a chunk; the grouped one never did.
+#[test]
+#[ignore = "extended: threads, a grid of pool sizes, chunkings and banks"]
+fn a_run_at_a_time_is_the_same_at_every_thread_count() {
+    let df = thread_frame(6 * ewcov_run_rows());
+    assert!(df.height() >= crate::PAR_MIN_ROWS);
+    assert!(df.height() / 2 < crate::PAR_MIN_ROWS);
+    let all = thread_specs("sink-on-thr-every");
+    let banks: Vec<Vec<Spec>> = all
+        .iter()
+        .map(|s| vec![s.clone()])
+        .chain(std::iter::once(all.clone()))
+        .collect();
+    same_at_every_count(&banks, &df, &[1, 2], &[Some(2), Some(4), Some(8), None], 3);
 }
