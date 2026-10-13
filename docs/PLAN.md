@@ -10298,6 +10298,28 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
+- [ ] 258. **On x86, faer's matrix product commits about twice the L3
+      cache per thread** -- found 2026-10-13: CI 38410183746 (`b796502`, a
+      plan-only push) failed its Windows Python 3.14 leg in the Rust tests
+      of online-core: "memory allocation of 1006632960 bytes failed" on a
+      rayon worker in `pieces::syrk_lower_cut` -> `faer::linalg::matmul` ->
+      `private_gemm_x86::gemm`. The same code passed every leg one push
+      before. `private-gemm-x86` 0.1.20 (a dependency of faer 0.24 through
+      its `std` feature, so not switchable off) keeps a thread-local packing
+      buffer of `2 x L3` bytes, the L3 size read from CPUID, made at a
+      thread's first product (lib.rs ~1286: `Vec::with_capacity(lhs_size +
+      rhs_size)`); on that runner 960 MiB a thread. Linux only backs the
+      pages touched and Apple Silicon takes another path, so it never shows
+      there; Windows commits the reservation against the page file, so
+      many threads multiplying at once -- the parallel Rust tests, or a
+      wide Gram on many `gram_threads` -- can exhaust the commit limit.
+      Present since faer 0.24 was adopted, 1.0.0 included; not from
+      1.0.1's changes. **Next:** measure on Windows (a CI job: commit
+      charge per thread for a wide `gram_threads` fit); options, cheapest
+      first -- run the Gram's products on fewer threads on Windows, call
+      the product so that a reused thread is the one that multiplies, or
+      ask faer upstream for a bounded buffer (an upstream report needs the
+      user's word, and is filed by the user).
 - [ ] 256. **Per-job feature lists in `po.gram.solve_subsets` and
       `lars_paths`** -- requested 2026-10-13. Today one call takes a single
       `features` list for every subset, target and draw, so a workload
