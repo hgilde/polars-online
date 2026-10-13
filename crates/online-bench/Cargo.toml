@@ -19,6 +19,12 @@ online-polars.workspace = true
 polars.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+# `tests/product_memory.rs` calls faer's products directly, as the Gram's
+# pieces do; faer is already linked, through online-core.
+faer.workspace = true
+rayon.workspace = true
+
 # Tests only, in the sense of CLAUDE.md rule 12: the harness links into the
 # bench binary alone, never into the wheel or the command line. Gungraun is
 # iai-callgrind under its new name (renamed at 0.17). Unix only: Valgrind

@@ -170,9 +170,9 @@ fn every_entry_is_in_one_piece_and_mirrored_once() {
 /// cut into tiles no narrower than 65, which its kernel sums as it sums
 /// the whole rectangle -- so the merge is the four passes' to the bit, at
 /// the shipped cut and a finer one, with a block longer than the kernel's
-/// 512-row panel among them. Not on x86-64, where faer hands the whole
-/// triangle to one kernel (`private_gemm_x86`) whose blocking the pieces do
-/// not reproduce; the thread-count test below holds there too.
+/// 512-row panel among them. Not on x86-64, where the `gemm` crate's x86
+/// kernels have not been measured to sum a tile as the whole (`crate::pieces`);
+/// the thread-count test and the oracle's bound below hold there too.
 ///
 /// A cut into slivers parted from it (a one-row tile is a matrix-vector
 /// product; a draft that cut them parted at `k = 17`), which is why `tiles` never cuts
@@ -219,6 +219,72 @@ fn the_pieces_are_the_single_product_on_every_architecture() {
             .zip(&want)
             .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
         assert!(off <= 1e-13 * size, "k = {k}, n = {n}: {off:e} of {size:e}");
+    }
+}
+
+/// Each entry of the merge, `C·scale + α·DᵀD + (bᵢ·Bⱼ − wᵢ·Δⱼ)`, within
+/// its bound of [`crate::oracle::dot3`]'s exactly rounded value (task 258),
+/// and the upper triangle the lower's mirror, bit for bit. The bound is
+/// `crate::pieces`' oracle tests' for the product, `2n + 2` roundings on
+/// any term's path, and four more around it -- the scale, and the two
+/// products, the difference and the sum of the corrections -- so
+/// `γ₂ₙ₊₆` of the magnitudes summed, plus half the oracle's ulp. The
+/// depths are the ones a bank's blocks have (`gram_block_rows` 1, 2 and
+/// either side of 256, and none), on one to eight threads (`gram_threads`)
+/// at both cuts.
+#[test]
+fn the_merge_is_the_oracles_within_its_bound() {
+    const U: f64 = f64::EPSILON / 2.0;
+    let pool = pool(8);
+    for (k, ns) in [
+        (1usize, &[0usize, 1, 2, 257][..]),
+        (2, &[1, 256]),
+        (17, &[0, 1, 2, 255, 256, 257]),
+        (100, &[1, 257]),
+    ] {
+        for &n in ns {
+            let case = Case::new(k, n, 23 + (k * 31 + n) as u64);
+            let m = case.merge();
+            let mu = (2 * n + 6) as f64 * U;
+            let gamma = mu / (1.0 - mu);
+            let mut want = vec![(0.0, 0.0); k * k];
+            for i in 0..k {
+                for j in 0..=i {
+                    let c = case.c[i * k + j];
+                    let d = |r: usize, col: usize| case.d[r * k + col];
+                    let terms = [
+                        (m.scale, c, 1.0),
+                        (m.bi[i], m.big[j], 1.0),
+                        (-m.wi[i], m.delta[j], 1.0),
+                    ];
+                    let rows = (0..n).map(|r| (m.alpha, d(r, i), d(r, j)));
+                    let w = crate::oracle::dot3(terms.into_iter().chain(rows));
+                    let size = (m.scale * c).abs()
+                        + m.alpha.abs() * (0..n).map(|r| (d(r, i) * d(r, j)).abs()).sum::<f64>()
+                        + (m.bi[i] * m.big[j]).abs()
+                        + (m.wi[i] * m.delta[j]).abs();
+                    want[i * k + j] = (w, (gamma * size + U * w.abs()) * (1.0 + 1e-9));
+                }
+            }
+            for threads in [1usize, 2, 4, 8] {
+                for cut in [FINE, (LEAF, TILE)] {
+                    let got = pool.install(|| case.cut(threads, cut));
+                    for i in 0..k {
+                        for j in 0..=i {
+                            let (w, bound) = want[i * k + j];
+                            let g = got[i * k + j];
+                            assert!(
+                                (g - w).abs() <= bound,
+                                "k = {k}, n = {n}, {threads} threads, cut {cut:?}: ({i}, {j}) = \
+                                 {g:e}, the oracle {w:e}, off by {:e} past {bound:e}",
+                                (g - w).abs()
+                            );
+                            assert_eq!(got[j * k + i].to_bits(), g.to_bits(), "mirror ({j}, {i})");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

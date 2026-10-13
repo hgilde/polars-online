@@ -32,7 +32,23 @@ polars = { version = "=0.55.2", default-features = false, features = ["object", 
 pyo3 = "0.29"
 pyo3-polars = "0.28"
 
-faer = "0.24"
+# faer without its `std` feature, which on x86-64 also links
+# `private-gemm-x86`: that crate keeps a packing buffer of twice the L3
+# cache on every thread that has ever multiplied (960 MiB a thread on a
+# GitHub Windows runner, which Windows commits whole), and faer sends every
+# product past 16 x 16 x 16 to it on x86-64 -- the Gram's tiles, and the
+# products inside its Cholesky, triangular solves and eigensolver. Without
+# it every platform takes the path aarch64 always took, the `gemm` crate,
+# whose packing is sized to the product and freed after it, beside a
+# thread's one L2-sized slab (docs/PLAN.md task 258). `rayon` keeps
+# `gemm/std`; the four entries after this one turn back on, by Cargo's
+# feature unification, the rest of what faer's `std` turns on -- the same
+# crates already linked, with the same features as before.
+faer = { version = "0.24", default-features = false, features = ["rayon", "linalg"] }
+faer-traits = { version = "0.24", default-features = false, features = ["std"] }
+pulp = { version = "0.22", default-features = false, features = ["std"] }
+nano-gemm = { version = "0.2", default-features = false, features = ["std"] }
+libm = { version = "0.2", default-features = false, features = ["arch"] }
 rayon = "1.12"
 rmp-serde = "1.3"
 serde = { version = "1.0", features = ["derive"] }

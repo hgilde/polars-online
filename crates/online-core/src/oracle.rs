@@ -14,6 +14,11 @@
 //!   run it too, so `sym_eigen` is an oracle for neither: `ewcov`'s sign
 //!   test reads it for that reason, as the raw output `Pca::of` starts from.
 //!
+//! - `sum` and `dot` are exactly rounded, by error-free transformations
+//!   alone (`+`, `−`, `×`, no fused multiply-add), the oracle for a matrix
+//!   product (task 258): every product the library runs is faer's, and its
+//!   kernels sum in their own blocked order, which these share nothing with.
+//!
 //! A matrix is row-major `n x n`, the layout of `solve.rs` and of every
 //! model's moments; `n` is the length of the vector beside it, or the
 //! square root of the matrix's length. Compiled for tests only (`lib.rs`).
@@ -119,9 +124,135 @@ pub(crate) fn gaussian_log_density(cov: &[f64], delta: &[f64]) -> f64 {
     -0.5 * (n as f64 * std::f64::consts::TAU.ln() + log_det + quad)
 }
 
+/// `(p, e)` with `p = fl(a·b)` and `p + e = a·b` exactly: Dekker's product
+/// (Dekker 1971, "A floating-point technique for extending the available
+/// precision", Numer. Math. 18), each factor split by Veltkamp's
+/// `2^27 + 1` into halves whose products are exact. Exact while no product
+/// or split overflows (`|a|, |b| < 2^995`) and `e` is not subnormal
+/// (`|a·b| > 2^-969`); the tests stay inside both.
+fn two_product(a: f64, b: f64) -> (f64, f64) {
+    const SPLIT: f64 = 134_217_729.0; // 2^27 + 1
+    let split = |x: f64| {
+        let c = SPLIT * x;
+        let hi = c - (c - x);
+        (hi, x - hi)
+    };
+    let p = a * b;
+    let ((ah, al), (bh, bl)) = (split(a), split(b));
+    let e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    (p, e)
+}
+
+/// `Σ xs` rounded once, to nearest: Shewchuk's exact partials (Shewchuk
+/// 1997, "Adaptive precision floating-point arithmetic and fast robust
+/// geometric predicates", Discrete Comput. Geom. 18), every partial
+/// nonoverlapping and their sum exact, then rounded as CPython's
+/// `math.fsum` rounds them: the top partials added down to the first
+/// inexact step, and a half-way case decided by the sign of the partial
+/// below it. Finite inputs whose partial sums do not overflow.
+pub(crate) fn sum(xs: impl IntoIterator<Item = f64>) -> f64 {
+    let mut partials: Vec<f64> = Vec::new();
+    for mut x in xs {
+        let mut kept = 0;
+        for j in 0..partials.len() {
+            let mut y = partials[j];
+            if x.abs() < y.abs() {
+                std::mem::swap(&mut x, &mut y);
+            }
+            let hi = x + y;
+            let lo = y - (hi - x);
+            if lo != 0.0 {
+                partials[kept] = lo;
+                kept += 1;
+            }
+            x = hi;
+        }
+        partials.truncate(kept);
+        partials.push(x);
+    }
+    let Some(mut hi) = partials.pop() else {
+        return 0.0;
+    };
+    let mut lo = 0.0;
+    while let Some(y) = partials.pop() {
+        let x = hi;
+        hi = x + y;
+        lo = y - (hi - x);
+        if lo != 0.0 {
+            break;
+        }
+    }
+    if let Some(&below) = partials.last()
+        && ((lo < 0.0 && below < 0.0) || (lo > 0.0 && below > 0.0))
+    {
+        let y = lo * 2.0;
+        let x = hi + y;
+        if y == x - hi {
+            hi = x;
+        }
+    }
+    hi
+}
+
+/// `Σ xᵢ·yᵢ` rounded once, to nearest: each product split exactly
+/// ([`two_product`]) and the `2n` parts summed exactly ([`sum`]).
+pub(crate) fn dot(pairs: impl IntoIterator<Item = (f64, f64)>) -> f64 {
+    sum(pairs.into_iter().flat_map(|(x, y)| {
+        let (p, e) = two_product(x, y);
+        [p, e]
+    }))
+}
+
+/// `Σ aᵢ·bᵢ·cᵢ` rounded once, to nearest: `aᵢ·bᵢ` split exactly into
+/// `p + e` ([`two_product`]), then `p·cᵢ` and `e·cᵢ` split in turn, and the
+/// `4n` parts summed exactly ([`sum`]). A product's scale `α` and two of
+/// its factors, `α·xᵢ·yᵢ`, with no rounding of `α·xᵢ` between.
+pub(crate) fn dot3(triples: impl IntoIterator<Item = (f64, f64, f64)>) -> f64 {
+    sum(triples.into_iter().flat_map(|(a, b, c)| {
+        let (p, e) = two_product(a, b);
+        let ((pp, pe), (ep, ee)) = (two_product(p, c), two_product(e, c));
+        [pp, pe, ep, ee]
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact sum and dot product on cases whose rounding is known: a
+    /// sum that cancels to a term a naive sum loses, the two half-way cases
+    /// of `1 + 2^-53` (ties to even goes down, any weight below breaks the
+    /// tie upward or downward by its sign), and a product whose error term
+    /// carries the answer: `(1 + 2^-30)² − 1 − 2^-29 = 2^-60`, which a
+    /// plain `a·b − c` rounds to 0.
+    #[test]
+    fn the_exact_sum_and_dot_round_once() {
+        let (u, v) = (2f64.powi(-53), 2f64.powi(-80));
+        assert_eq!(sum([1e100, 1.0, -1e100]), 1.0);
+        assert_eq!(sum([1e100, 1.0, -1e100, 1e-100]), 1.0);
+        assert_eq!(sum([1.0, u]), 1.0);
+        assert_eq!(sum([1.0, u, v]), 1.0 + 2.0 * u);
+        assert_eq!(sum([1.0, u, -v]), 1.0);
+        assert_eq!(sum([1.0 + 2.0 * u, u]), 1.0 + 4.0 * u);
+        assert_eq!(sum([]), 0.0);
+        assert_eq!(sum([0.1; 10]), 1.0);
+        let a = 1.0 + 2f64.powi(-30);
+        assert_eq!(
+            dot([(a, a), (-1.0, 1.0), (-(2f64.powi(-29)), 1.0)]),
+            2f64.powi(-60)
+        );
+        assert_eq!(a * a - 1.0 - 2f64.powi(-29), 0.0);
+        assert_eq!(two_product(a, a), (1.0 + 2f64.powi(-29), 2f64.powi(-60)));
+        assert_eq!(dot([(3.0, 7.0), (-2.0, 10.5)]), 0.0);
+        // `(1/3)·3·1 − 1` is 0 only when `(1/3)·3` is not rounded first:
+        // `fl(1/3)·3 = 1 − 2^-54`.
+        let third = 1.0 / 3.0;
+        assert_eq!(
+            dot3([(third, 3.0, 1.0), (-1.0, 1.0, 1.0)]),
+            -(2f64.powi(-54))
+        );
+        assert_eq!(third * 3.0 - 1.0, 0.0);
+    }
 
     fn close(got: f64, want: f64) -> bool {
         (got - want).abs() <= 1e-14 * (1.0 + want.abs())

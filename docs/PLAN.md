@@ -10345,6 +10345,33 @@ tick, and that the series holding it up has a count near 1.
       a Gram product whose memory is bounded, validated against an
       independent oracle (`crate::oracle`, faer's LU / a plain sum), and
       measured on Windows CI. It may move last bits on x86, hence a minor.
+      *Built 2026-10-13* (branch `task-258-bounded-product`): faer without
+      its `std` feature, the only one that links `private-gemm-x86`, with
+      the rest of what `std` turns on (`faer-traits`, `pulp`, `nano-gemm`
+      `std`, `libm` `arch`; `gemm`'s through `rayon`) named in the
+      workspace so Cargo's unification keeps it. Chosen over calling the
+      `gemm` crate from `pieces.rs` and `ewcov/par.rs` (or a kernel of our
+      own) because faer's Cholesky, triangular solves and eigensolver also
+      call `private_gemm_x86` on x86 (`internal/mod.rs`, `triangular.rs`,
+      `has_spicy_matmul`), on the same pool threads, which no change to our
+      own calls reaches; and because aarch64 already ran exactly this path,
+      so nothing there moves (release_probe's 297 fields and 31 states,
+      `examples/product_digest.rs`, golden and fixtures, all to the bit; speed
+      the same within scatter, PERFORMANCE §41). Nothing new linked; faer's
+      `npy`, `rand` and `sparse` defaults dropped with it (unused). Oracle:
+      `oracle::dot`/`dot3` (Dekker products, Shewchuk partials, rounded
+      once), `pieces/oracle_tests.rs` and `ewcov/par/tests.rs`'s merge test,
+      held to `γ₂ₙ₊₂ (|C| + |α|Σ|dd|)` (`γ₂ₙ₊₆` for the merge); a 1e-12
+      scale or a dropped row fails them. Memory: `online-bench`'s
+      `product_memory` test, a per-thread counting allocator, every thread
+      under 24 MiB (aarch64: 6.1-9.6 MiB). CI's Windows `--test-threads=2`
+      removed; `benchmark.yml` times `gram_threads_bench` and
+      `solve_threads_bench` at `k` = 1,000 on its x86 runner. **Left:** on
+      CI, the memory test passing on the Linux and Windows legs, and a
+      Benchmark dispatch on the branch against one with `ref` = `main`, for
+      x86's speed (not measurable on this machine, which has no x86 nor
+      Rosetta); the to-the-bit pieces tests stay guarded off x86 until a
+      CI run shows the `gemm` crate's x86 kernels sum a tile as the whole.
 **1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257.
 - [ ] 256. **Per-job feature lists in `po.gram.solve_subsets` and
       `lars_paths`** -- requested 2026-10-13. Today one call takes a single

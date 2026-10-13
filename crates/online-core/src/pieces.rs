@@ -16,10 +16,13 @@
 //! `2·TILE − 1` on a side ([`pieces`]). The pieces are the calls faer's
 //! sequential product makes, and its kernel sums a tile of a rectangle as it
 //! sums the whole rectangle, so on aarch64 the result is that product's to
-//! the bit. On x86-64 faer hands the whole triangle to one kernel whose
-//! blocking the pieces do not reproduce, so there the bits are the pieces'
-//! at every thread count, and may differ in the last place from the single
-//! call's.
+//! the bit. On x86-64 the same calls reach the same crate (`gemm`; the
+//! workspace Cargo.toml says why faer's own x86 kernel is left out, task
+//! 258), with that architecture's kernels, which have not been measured
+//! here to sum a tile as the whole: so there the bits are the pieces' at
+//! every thread count, and may differ in the last place from the single
+//! call's. On both, every entry is held to an exactly rounded oracle within
+//! its rounding bound (`oracle_tests`).
 
 use faer::linalg::matmul::matmul as gemm;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as tri};
@@ -189,6 +192,9 @@ pub(crate) fn spread<T: Send>(items: Vec<T>, threads: usize, f: impl Fn(T) + Syn
         work();
     });
 }
+
+#[cfg(test)]
+mod oracle_tests;
 
 #[cfg(test)]
 mod tests {
