@@ -10294,6 +10294,56 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
+- [ ] 256. **Per-job feature lists in `po.gram.solve_subsets` and
+      `lars_paths`** -- requested 2026-10-13. Today one call takes a single
+      `features` list for every subset, target and draw, so a workload
+      whose jobs each use their own columns (a screen per subset, per
+      target and per draw, as complementary-pairs stability selection
+      runs) cannot use it: it falls back to one `po.gram.lars_path` call
+      per job from Python, after a `merge(parts, within=True)` and a
+      `subset` per subset, also from Python. **Requirement:** one call
+      carries the per-job feature lists, as either `features` nested
+      `[subset][draw][target] -> columns` (`None` at any level meaning
+      every feature, as today) or a flat `jobs=[{"subset", "target",
+      "draw", "features"}, ...]` returning one result per job in order.
+      Everything else as today: the Grams read once, each subset merged
+      once (within, the draws' signs on the cross-moments), every job's
+      path on the pool. **Check:** per job, the same `penalties`, `coef`,
+      `active` and `stop`, to the bit, as `lars_path` on
+      `subset(merge(parts, within=True), ["intercept", *features])` with the
+      draw's signed cross-moments. **Potential gain** (measured by the
+      requester on 0.13.0; re-measure at HEAD first): a workload of 11,000
+      such paths per run spends most of its remaining time in the per-call
+      crossing from Python into Rust and the Gram's conversion on each
+      call -- per subset 4 ms at 500 columns (150 screened) and 49 ms at
+      1,500 (400) -- which one call removes. An API addition (a minor
+      release); the field and argument names follow the existing
+      `solve_subsets`.
+- [ ] 257. **The targets inside the blocked Gram product** -- requested
+      2026-10-13. Measured by the requester on 0.13.0 (M4 Pro, load 4-9;
+      re-measure at HEAD first, since `gram_threads="auto"` and task 250
+      changed the bank's costs): a bank of `ewridge` Gram accumulators
+      (groups of 200 features, 10 targets, `target_gaps="pairwise"`,
+      `gram_block_rows=256`, never solved) costs 19-20 ns of CPU per
+      feature-row, of which the blocked Gram product is about 5.7 ns. With
+      one target it is 11.5 ns: each target adds about 0.7 ns per
+      feature-row, as if its cross-moments were updated row by row beside
+      the blocked product (`pairwise` and `own_rows` cost the same). About
+      6 ns per feature-row more has no identified source (perhaps the
+      per-column summary statistics). **Requirement:** fold the targets'
+      cross-moments into the blocked product -- the block of rows as
+      `[X | Y]`, one product giving `X'X`, `X'Y` (and `Y'Y` where wanted);
+      under `target_gaps="pairwise"` a target missing on a row must not
+      enter as 0, so a mask per target (`X' diag(m_t) y_t`) or the block
+      split at the target's gaps keeps each target's own rows. And find
+      where the other ~6 ns goes. **Check:** `cross_moments`,
+      `cross_centered`, `means_by_target` and `target_weights` the same bits
+      as today's at every `gram_block_rows` and `gram_threads`; the cost
+      per feature-row against the target count falling toward the
+      product's; the instruction-count budgets for the Gram path.
+      **Potential gain:** at 10,000 features over 9.5 million rows, the
+      targets alone are about 660 CPU-seconds of a pass, and the unexplained
+      6 ns about 570 more.
 - [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`
