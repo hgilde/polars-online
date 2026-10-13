@@ -10167,6 +10167,27 @@ tick, and that the series holding it up has a count near 1.
       merging many test binaries reports "functions have mismatched data"
       and loses counts; per-binary profiles unioned are exact. The
       tentative parts (a)-(c) remain open.
+      *(c) reported 2026-10-13*: cargo-mutants 27.1.0 lists 17,556 mutants
+      in online-core (today's scope), 6,145 in online-polars (stream.rs
+      927, bank.rs 856, windows.rs 764, spec.rs 714, windows_frame.rs 373,
+      the rest under 230 a file), 2,015 in online-py and 34 in online-cli.
+      Two local pilots (nextest, `--cargo-test-arg=--tests`, -j 2): a tenth
+      of `summary.rs`, 23 mutants in 380 s, 22 caught and 1 unviable; a
+      36th of `bank.rs`, 24 in 335 s, 14 caught, 7 unviable and 3 missed
+      (`pair_f64` -> `Default::default()`, `&&` -> `||` in `closed_frame`,
+      `+` -> `*` in `assemble`) -- 18% of the viable ones, against the Rust
+      tests alone. About 19 s to build and 9 s to test a mutant, so all of
+      online-polars is about 48 CPU-hours: some 30 minutes a shard over 96
+      shards, inside CI's limits and free. **Recommendation, for the
+      user**: add `crates/online-polars/src/**` to the changed-lines pass
+      on push (today it takes only `span.rs`) and to the weekly pass, and
+      treat each survivor as task 250's were -- a Rust test, or a recorded
+      reason (some may be killed by pytest, which cargo-mutants cannot run:
+      each such survivor gets a Rust test or a note). online-py (bindings
+      checked from Python) stays out. A Python mutation tool over
+      `python/polars_online` (4,635 statements) is not piloted; the pilot
+      would be mutmut on one module (`_check.py`) to measure its run time
+      and survivors before deciding.
       Task 250's phase 2 does not wait on (a): its fixes are held by the
       golden pipeline, the fixtures, `compare_release.py` and
       `release_probe.py`'s columns and states, plus an activation test for
