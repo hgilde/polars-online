@@ -1083,6 +1083,17 @@ def _lgb_rows(
                 self._buf = np.concatenate([self._buf, block]) if self._buf.size else block
             out, self._buf = self._buf[: stop - start], self._buf[stop - start :]
             self._at = stop
+            if stop == rows:
+                # The last rows LightGBM asks for: a pass that goes on past
+                # them gave more rows than were counted, which LightGBM,
+                # reading only as many as counted, would never see.
+                more = self._buf.shape[0] + sum(f.height for f in self._it)
+                if more:
+                    raise ValueError(
+                        f"the source was counted at {rows} rows and a pass over it gave "
+                        f"{rows + more}: LightGBM reads it more than once, and every pass "
+                        "must give the same rows"
+                    )
             return out
 
     return Rows()

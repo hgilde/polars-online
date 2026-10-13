@@ -16,6 +16,18 @@ any change to the numbers a model returns.
   of them either way. They are held on CI at each OS's oldest supported
   Python, where they are measured.
 
+### Fixed
+
+- **`po.gbdt.lightgbm_dataset(engine="python", in_memory=False)` refuses
+  a source that gives more rows on its second pass than it was counted
+  at.** LightGBM reads only the counted rows of the dataset's row
+  sequence, so the extra rows went unseen. The native engine already
+  refused them, and so did every other pass.
+- **`ModelBank(spec)` and `ModelBank("name")` say to pass a list.** A dict
+  or a string was read as a list of its keys or its characters, and refused
+  as `invalid type: string "name", expected struct Spec`. It is still a
+  `ValueError`.
+
 ### Tests and documents
 
 - **The FFI leak checks each run in a fresh interpreter.** One failed on

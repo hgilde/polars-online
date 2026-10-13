@@ -6,7 +6,9 @@ use std::num::NonZeroUsize;
 
 use polars::prelude::*;
 
-use super::frames::{Frame, Num, Reader, segments};
+use polars_arrow::array::PrimitiveArray;
+
+use super::frames::{Frame, Num, Reader, segments, segments_of};
 use super::sample::{Planted, Sampler, hash};
 use super::*;
 
@@ -427,12 +429,185 @@ fn a_category_plants_its_levels() {
     );
 }
 
+// ---- task 252: the paths the suite did not reach ----
+
+#[test]
+fn a_plan_abandoned_part_way_is_stopped_and_read_whole_again() {
+    // The reader restarts after one frame: the engine running the first
+    // pass finds the channel closed at its next frame and stops, and the
+    // second pass reads every row.
+    let plan = frame(0..10_000).lazy();
+    let mut r = Reader::new(
+        Box::new(PlanFrames::new(plan, NonZeroUsize::new(500).unwrap())),
+        1,
+    );
+    let first = df_of(r.next().unwrap().unwrap());
+    assert_eq!(first.column("y").unwrap().f64().unwrap().get(0), Some(0.0));
+    r.restart();
+    let mut rows = 0;
+    while let Some(f) = r.next().unwrap() {
+        rows += df_of(f).height();
+    }
+    assert_eq!(rows, 10_000);
+    assert_eq!(r.passes, 2);
+}
+
+#[test]
+fn a_plan_that_fails_reaches_the_build_as_polars_error() {
+    let df = df!("x0" => ["1.5", "oops"], "x1" => [1i32, 2], "y" => [1.0, 2.0]).unwrap();
+    let plan = df
+        .lazy()
+        .with_column(col("x0").strict_cast(DataType::Float64));
+    let mut r = Reader::new(
+        Box::new(PlanFrames::new(plan, NonZeroUsize::new(1000).unwrap())),
+        2,
+    );
+    let e = loop {
+        match r.next() {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("the plan's cast should fail"),
+            Err(e) => break e,
+        }
+    };
+    assert!(matches!(e, GbdtError::Source(_)), "{e:?}");
+    let shown = e.to_string();
+    assert!(
+        shown.contains("oops"),
+        "polars' own message, as it is: {shown}"
+    );
+}
+
+struct Panicking(fn());
+impl Frames for Panicking {
+    fn pass(&mut self, _out: &mut dyn FnMut(Frame) -> bool) -> Result<(), GbdtError> {
+        (self.0)();
+        Ok(())
+    }
+}
+
+#[test]
+fn a_source_that_panics_is_an_error_naming_the_panic() {
+    fn literal() {
+        panic!("a literal message");
+    }
+    fn formatted() {
+        let n = 3;
+        panic!("formatted {n}");
+    }
+    fn payload() {
+        std::panic::panic_any(7u8);
+    }
+    for (f, want) in [
+        (
+            literal as fn(),
+            "reading the source panicked: a literal message",
+        ),
+        (formatted, "reading the source panicked: formatted 3"),
+        (
+            payload,
+            "reading the source panicked: a panic without a message",
+        ),
+    ] {
+        let mut r = Reader::new(Box::new(Panicking(f)), 1);
+        let e = r.next().err().unwrap().to_string();
+        assert_eq!(e, want);
+        assert!(r.next().unwrap().is_none(), "a failed pass has ended");
+    }
+}
+
+#[test]
+fn a_frame_of_the_wrong_width_is_refused_naming_the_columns_expected() {
+    let df = df!("x0" => [1.0, 2.0], "y" => [1.0, 2.0]).unwrap();
+    let e = segments(&df, &layout(2, false)).err().unwrap().to_string();
+    assert_eq!(
+        e,
+        "a frame of 2 columns where 3 were expected (the features, the label)"
+    );
+    let e = segments(&df, &layout(2, true)).err().unwrap().to_string();
+    assert_eq!(
+        e,
+        "a frame of 2 columns where 4 were expected (the features, the label, the weight)"
+    );
+}
+
+#[test]
+fn a_layout_without_features_or_with_a_kind_short_is_refused() {
+    let none = Layout {
+        names: Vec::new(),
+        kinds: Vec::new(),
+        ..layout(0, false)
+    };
+    assert_eq!(none.check().unwrap_err().to_string(), "no feature columns");
+    let short = Layout {
+        kinds: vec![Kind::Float],
+        ..layout(2, false)
+    };
+    assert_eq!(
+        short.check().unwrap_err().to_string(),
+        "2 feature names for 1 kinds"
+    );
+    assert!(layout(2, true).check().is_ok());
+}
+
+#[test]
+fn only_a_float64_column_hands_over_its_values_as_f64() {
+    let x = PrimitiveArray::<f64>::from_vec(vec![1.0, 2.0]);
+    assert_eq!(Num::of(&x).unwrap().f64_values(), Some(&[1.0, 2.0][..]));
+    let i = PrimitiveArray::<i32>::from_vec(vec![1, 2]);
+    assert!(Num::of(&i).unwrap().f64_values().is_none());
+}
+
+#[test]
+fn a_record_batch_of_the_wrong_kind_or_width_or_no_rows() {
+    use polars_arrow::array::Utf8ViewArray;
+    let lay = layout(2, false);
+    let f64s = |v: Vec<f64>| PrimitiveArray::<f64>::from_vec(v).boxed();
+    let strings = Utf8ViewArray::from_slice_values(["a", "b"]).boxed();
+    let e = segments_of(
+        Frame::Cols {
+            n: 2,
+            cols: vec![strings, f64s(vec![1.0, 2.0]), f64s(vec![1.0, 2.0])],
+        },
+        &lay,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(
+        e.starts_with("column `x0` arrived as Utf8View, which is not a numeric column"),
+        "{e}"
+    );
+    let e = segments_of(
+        Frame::Cols {
+            n: 2,
+            cols: vec![f64s(vec![1.0, 2.0]), f64s(vec![1.0, 2.0])],
+        },
+        &lay,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert_eq!(e, "a frame of 2 columns where 3 were expected");
+    let empty = segments_of(
+        Frame::Cols {
+            n: 0,
+            cols: vec![f64s(vec![]), f64s(vec![]), f64s(vec![])],
+        },
+        &lay,
+    )
+    .unwrap();
+    assert!(empty.is_empty(), "a batch of no rows is no segment");
+}
+
 mod ipc {
     use std::fs::File;
     use std::path::Path;
     use std::sync::Arc;
 
-    use polars_arrow::array::{BooleanArray, DictionaryArray, PrimitiveArray, Utf8ViewArray};
+    use polars_arrow::array::{
+        Array, BooleanArray, DictionaryArray, DictionaryKey, PrimitiveArray, Utf8Array,
+        Utf8ViewArray,
+    };
     use polars_arrow::datatypes::{ArrowDataType, ArrowSchema, Field};
     use polars_arrow::io::ipc::write::{FileWriter, WriteOptions};
     use polars_arrow::record_batch::RecordBatchT;
@@ -533,5 +708,221 @@ mod ipc {
             .to_string();
         assert!(e.contains("absent.arrow"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file of one record batch of `cat` and a label `y`, after one of no
+    /// rows when `empty` (an IPC file holds one dictionary per field, which
+    /// a batch sliced to nothing would replace, so only a plain column can).
+    fn write_batches(path: &Path, cat: Box<dyn Array>, y: Box<dyn Array>, empty: bool) {
+        let n = cat.len();
+        let schema: ArrowSchema = [
+            Field::new("cat".into(), cat.dtype().clone(), true),
+            Field::new("y".into(), y.dtype().clone(), true),
+        ]
+        .into_iter()
+        .map(|f| (f.name.clone(), f))
+        .collect();
+        let schema = Arc::new(schema);
+        let none = RecordBatchT::new(0, schema.clone(), vec![cat.sliced(0, 0), y.sliced(0, 0)]);
+        let batch = RecordBatchT::new(n, schema.clone(), vec![cat, y]);
+        let mut w = FileWriter::try_new(
+            File::create(path).unwrap(),
+            schema,
+            None,
+            WriteOptions { compression: None },
+        )
+        .unwrap();
+        if empty {
+            w.write(&none, None).unwrap();
+        }
+        w.write(&batch, None).unwrap();
+        w.finish().unwrap();
+    }
+
+    fn cat_layout(kind: Kind) -> Layout {
+        Layout {
+            names: vec!["cat".into()],
+            kinds: vec![kind],
+            label: "y".into(),
+            weight: None,
+        }
+    }
+
+    fn read_cat(path: &Path, kind: Kind) -> Result<Vec<Frame>, GbdtError> {
+        let cats = match kind {
+            Kind::Category { .. } => Some(vec!["a".into(), "b".into(), "c".into()]),
+            _ => None,
+        };
+        let mut src = IpcFrames::new(vec![path.to_path_buf()], cat_layout(kind), vec![cats])?;
+        let mut out = Vec::new();
+        src.pass(&mut |f| {
+            out.push(f);
+            true
+        })?;
+        Ok(out)
+    }
+
+    fn dict<K: DictionaryKey>(keys: Vec<Option<K>>, values: Box<dyn Array>) -> Box<dyn Array> {
+        DictionaryArray::try_from_keys(PrimitiveArray::<K>::from(keys), values, false)
+            .unwrap()
+            .boxed()
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gbdt-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_dictionary_of_any_key_and_string_type_reads_as_the_enum_s_codes() {
+        // Polars writes an Enum's keys as the narrowest unsigned integer and
+        // its values as string views; another writer may key it by any
+        // integer and hold its values as strings or large strings.
+        let dir = temp_dir("keys");
+        let y = || PrimitiveArray::<f64>::from_vec(vec![1.0, 2.0, 3.0, 4.0]).boxed();
+        let small = || Utf8Array::<i32>::from_slice(["a", "b", "c"]).boxed();
+        let large = || Utf8Array::<i64>::from_slice(["a", "b", "c"]).boxed();
+        let k = [Some(2), None, Some(0), Some(1)];
+        let cases: Vec<(&str, Box<dyn Array>)> = vec![
+            ("i8", dict::<i8>(k.to_vec(), small())),
+            (
+                "i16",
+                dict::<i16>(k.iter().map(|v| v.map(i16::from)).collect(), large()),
+            ),
+            (
+                "i32",
+                dict::<i32>(k.iter().map(|v| v.map(i32::from)).collect(), small()),
+            ),
+            (
+                "i64",
+                dict::<i64>(k.iter().map(|v| v.map(i64::from)).collect(), large()),
+            ),
+            (
+                "u16",
+                dict::<u16>(k.iter().map(|v| v.map(|x| x as u16)).collect(), small()),
+            ),
+            (
+                "u32",
+                dict::<u32>(k.iter().map(|v| v.map(|x| x as u32)).collect(), large()),
+            ),
+            (
+                "u64",
+                dict::<u64>(k.iter().map(|v| v.map(|x| x as u64)).collect(), small()),
+            ),
+        ];
+        let lay = cat_layout(Kind::Category { levels: 3 });
+        for (name, cat) in cases {
+            let path = dir.join(format!("{name}.arrow"));
+            write_batches(&path, cat, y(), false);
+            let frames = read_cat(&path, Kind::Category { levels: 3 }).unwrap();
+            assert_eq!(frames.len(), 1, "{name}: one frame per record batch");
+            let segs = segments_of(frames.into_iter().next().unwrap(), &lay).unwrap();
+            let codes: Vec<f32> = (0..4).map(|i| segs[0].num(0).f32_at(i)).collect();
+            assert_eq!(codes[0], 2.0, "{name}");
+            assert!(codes[1].is_nan(), "{name}: a null key is a null code");
+            assert_eq!(&codes[2..], &[0.0, 1.0], "{name}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_column_the_layout_does_not_read_as_written_is_refused_by_name() {
+        let dir = temp_dir("refused");
+        let y = || PrimitiveArray::<f64>::from_vec(vec![1.0, 2.0]).boxed();
+        let small = || Utf8Array::<i32>::from_slice(["a", "b", "c"]).boxed();
+        // A dictionary where the layout reads a float, as a file that keeps a
+        // category the source's first file does not.
+        let path = dir.join("float.arrow");
+        write_batches(
+            &path,
+            dict::<u8>(vec![Some(0), Some(1)], small()),
+            y(),
+            false,
+        );
+        let e = read_cat(&path, Kind::Float).err().unwrap().to_string();
+        assert!(e.starts_with("column `cat` is Dictionary("), "{e}");
+        assert!(e.ends_with("in the Arrow IPC file, which is not a column the libraries read"));
+        // A dictionary of numbers, which no Enum is.
+        let path = dir.join("numbers.arrow");
+        let ints = PrimitiveArray::<i32>::from_vec(vec![5, 6, 7]).boxed();
+        write_batches(&path, dict::<u8>(vec![Some(0), Some(1)], ints), y(), false);
+        let e = read_cat(&path, Kind::Category { levels: 3 })
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(e.starts_with("column `cat` is Dictionary("), "{e}");
+        // A label of strings, and one of Booleans, which reads as 0 and 1.
+        let path = dir.join("label.arrow");
+        let label = Utf8Array::<i32>::from_slice(["1", "2"]).boxed();
+        write_batches(
+            &path,
+            dict::<u8>(vec![Some(0), Some(1)], small()),
+            label,
+            false,
+        );
+        let e = read_cat(&path, Kind::Category { levels: 3 })
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(e.starts_with("column `y` is Utf8"), "{e}");
+        let path = dir.join("bool.arrow");
+        let label = BooleanArray::from([Some(true), None]).boxed();
+        write_batches(
+            &path,
+            dict::<u8>(vec![Some(0), Some(1)], small()),
+            label,
+            false,
+        );
+        let frames = read_cat(&path, Kind::Category { levels: 3 }).unwrap();
+        let lay = cat_layout(Kind::Category { levels: 3 });
+        let seg = frames
+            .into_iter()
+            .flat_map(|f| segments_of(f, &lay).unwrap())
+            .next()
+            .unwrap();
+        match seg.num(1) {
+            Num::F64(y) => {
+                assert_eq!(y.values().as_slice()[0], 1.0);
+                assert!(
+                    !y.is_valid(1),
+                    "a null label stays null, for the check to name"
+                );
+            }
+            _ => panic!("the label as Float64"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_record_batch_of_no_rows_hands_over_nothing() {
+        let dir = temp_dir("empty");
+        let path = dir.join("empty.arrow");
+        let x = PrimitiveArray::<i16>::from_vec(vec![3, 4]).boxed();
+        let y = PrimitiveArray::<f64>::from_vec(vec![1.0, 2.0]).boxed();
+        write_batches(&path, x, y, true);
+        let frames = read_cat(&path, Kind::Int).unwrap();
+        assert_eq!(frames.len(), 2, "one frame per record batch");
+        let lay = cat_layout(Kind::Int);
+        let segs: Vec<_> = frames
+            .into_iter()
+            .flat_map(|f| segments_of(f, &lay).unwrap())
+            .collect();
+        assert_eq!(segs.len(), 1, "the empty batch is no segment");
+        assert_eq!(segs[0].n, 2);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ipc_frames_need_files_and_a_category_list_per_feature() {
+        let lay = cat_layout(Kind::Float);
+        let e = IpcFrames::new(Vec::new(), lay.clone(), vec![None])
+            .err()
+            .unwrap();
+        assert_eq!(e.to_string(), "no Arrow IPC files");
+        let e = IpcFrames::new(vec!["a.arrow".into()], lay, Vec::new())
+            .err()
+            .unwrap();
+        assert_eq!(e.to_string(), "a category list per feature");
     }
 }
