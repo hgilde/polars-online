@@ -10218,6 +10218,22 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
+- [ ] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
+      2026-10-12, offered a Linux session. `test_ffi_memory.py`'s
+      `test_output_outliving_its_input` failed on both Ubuntu legs of CI
+      38315781585 (`7613560`; marks rising 20-50 KB an iteration over seven
+      blocks, e.g. [615212 .. 634756] KB) and passed on their re-run and on
+      the commits before; its third flake under load (after 2026-10-08/09).
+      macOS cannot reproduce glibc's arenas. **Brief for a Linux session**:
+      `uv sync`, `uv run maturin develop --release -m
+      crates/online-py/Cargo.toml`; (1) run that test 20 times in a row in a
+      bash loop, alone and after the whole suite, recording the marks each
+      failure prints; (2) run its loop body (`fit_predict` of 400 rows,
+      3,000+ iterations) in a plain script printing RSS every 240
+      iterations, plain, with `MALLOC_ARENA_MAX=2` and with
+      `POLARS_MAX_THREADS=1`, to tell arena growth from a leak. Report the
+      RSS series, not a verdict; then decide: a fix if it leaks, else a
+      measurement that tells arena growth from a slope.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
