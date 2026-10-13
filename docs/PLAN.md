@@ -10218,7 +10218,7 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
-- [ ] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
+- [x] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
       2026-10-12, offered a Linux session. `test_ffi_memory.py`'s
       `test_output_outliving_its_input` failed on both Ubuntu legs of CI
       38315781585 (`7613560`; marks rising 20-50 KB an iteration over seven
@@ -10245,6 +10245,11 @@ tick, and that the series holding it up has a count near 1.
       process near 615 MB on a loaded shared runner. **Next**: run each
       plateau check in a fresh child interpreter (a baseline near 73 MB,
       nothing else in the process), as the plain script did.
+      *Done 2026-10-13*: `in_a_fresh_interpreter` re-runs each of the seven
+      `TestNothingLeaksAcrossTheBoundary` tests as its own pytest process
+      and requires the child to report exactly one pass (a child that runs
+      nothing exits 4 and fails); the three plateau-statistic tests, fed
+      scripted readings, stay in-process.
 - [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task

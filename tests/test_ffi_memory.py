@@ -18,6 +18,7 @@ slope is not.
 
 import gc
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -193,6 +194,43 @@ def frame(n=1500, seed=0):
 SPEC = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], half_life=50.0, min_weight=2.0)
 
 
+FRESH = "POLARS_ONLINE_FRESH_INTERPRETER"
+
+
+def in_a_fresh_interpreter(test):
+    """Run a plateau check as its own pytest process, alone.
+
+    The check reads the process's resident size, so whatever else the
+    process holds moves it. Inside the suite that was some 615 MB of other
+    tests' heap on a loaded CI runner, and the check failed on both Ubuntu
+    legs of one run (marks rising 20-50 KB an iteration) and passed on their
+    re-run. The same loop in a plain script on Linux, from a baseline near
+    73 MB, held within 0.5 MB over 3,120 iterations: -0.02 to 0.14 KB an
+    iteration against the limit of 4, with one allocator arena or two and
+    one Polars thread or many (2026-10-13). So each check runs where only
+    it allocates. The child must report exactly one test passed: a node it
+    deselects or cannot find is a failure, not a silent pass."""
+    import functools
+
+    @functools.wraps(test)
+    def wrapper(*args, **kwargs):
+        if os.environ.get(FRESH) == "1":
+            return test(*args, **kwargs)
+        node = os.environ["PYTEST_CURRENT_TEST"].rsplit(" ", 1)[0]
+        r = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=child.env(**{FRESH: "1"}),
+            timeout=900,
+        )
+        ran = re.search(r"^1 passed in ", r.stdout, re.M)
+        assert r.returncode == 0 and ran, r.stdout[-6000:] + r.stderr[-2000:]
+
+    return wrapper
+
+
 class TestNothingLeaksAcrossTheBoundary:
     def test_repeated_fit_predict(self):
         bank, df = po.ModelBank([SPEC]), frame()
@@ -277,6 +315,14 @@ class TestNothingLeaksAcrossTheBoundary:
         bank = po.ModelBank([SPEC])
         bank.fit_predict(frame(200))
         assert_plateaus(lambda: po.ModelBank.load_bytes(bank.save_bytes()))
+
+
+for _name in [n for n in vars(TestNothingLeaksAcrossTheBoundary) if n.startswith("test_")]:
+    setattr(
+        TestNothingLeaksAcrossTheBoundary,
+        _name,
+        in_a_fresh_interpreter(getattr(TestNothingLeaksAcrossTheBoundary, _name)),
+    )
 
 
 def run_isolated(body: str, timeout=180):
