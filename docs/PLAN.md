@@ -10337,6 +10337,15 @@ tick, and that the series holding it up has a count near 1.
       the product so that a reused thread is the one that multiplies, or
       ask faer upstream for a bounded buffer (an upstream report needs the
       user's word, and is filed by the user).
+      *Decided 2026-10-13* (it failed a second Windows leg, in the 1.0.1
+      release run 38443180802; the user: "Your reco on 1.0.1 and the
+      subsequent fix as long as we can validate the code against an
+      oracle"): 1.0.1 ships with CI's Windows Rust tests at
+      `--test-threads=2` and a CHANGELOG known issue; the fix is 1.1.0's,
+      a Gram product whose memory is bounded, validated against an
+      independent oracle (`crate::oracle`, faer's LU / a plain sum), and
+      measured on Windows CI. It may move last bits on x86, hence a minor.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257.
 - [ ] 256. **Per-job feature lists in `po.gram.solve_subsets` and
       `lars_paths`** -- requested 2026-10-13. Today one call takes a single
       `features` list for every subset, target and draw, so a workload

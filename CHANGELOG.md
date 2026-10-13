@@ -9,6 +9,18 @@ any change to the numbers a model returns.
 
 ## [1.0.1] — 2026-10-13
 
+### Known issues
+
+- **On Windows on x86, each thread that runs one of faer's larger matrix
+  products commits memory of about twice the CPU's L3 cache.** faer's x86
+  product keeps a packing buffer of that size per thread, made the first
+  time a thread multiplies; on GitHub's Windows runners it is 960 MiB a
+  thread. Linux backs only the pages touched, and Apple Silicon takes
+  another path, so it shows only on Windows: a wide Gram (`ewridge`,
+  `ew_cov` and the `po.gram` functions) fitted on many threads can exhaust
+  the commit limit. Present since 1.0.0. Until a release fixes it, fewer
+  threads (`threads=` or `gram_threads=`) bound it.
+
 ### Performance
 
 - **1.0.1 against 1.0.0, measured before the release**: every one of
