@@ -155,6 +155,7 @@ What you can do with a set of Grams, and the calls that do it:
 | choose columns | `po.gram.lars_path`, `po.gram.lasso_path` | [Choosing columns on the lasso path](#choosing-columns-on-the-lasso-path) |
 | choose columns that hold across the weeks | `po.gram.lars_paths`, `po.gram.solve_subsets(..., path=...)` | [Stability selection over halves of the weeks](#stability-selection-over-halves-of-the-weeks) |
 | know how often a selection chooses a column with no effect of one sign | `po.gram.solve_subsets(..., within=True, target_signs=...)` | [A null for the selection, by sign flips](#a-null-for-the-selection-by-sign-flips) |
+| screen the columns again for each half, target and null run | `po.gram.solve_subsets(..., jobs=...)` | [A screen of its own for each path](#a-screen-of-its-own-for-each-path) |
 | see whether a coefficient holds from week to week | `po.gram.solve_subsets` | [Per-block coefficients](#per-block-coefficients) |
 | read Grams back from files | `po.gram.from_row`, `po.ModelBank.load`, or numpy alone | [Reading Grams from saved files](#reading-grams-from-saved-files) |
 | halve or quarter a Gram's bytes | `bank.gram(dtype="float32", layout="packed")` | [A compact Gram](#a-compact-gram) |
@@ -1303,6 +1304,121 @@ used passes such a column in 73 of the 100 null runs. The null runs'
 95th percentile, 0.95, is the threshold this selection earns on these
 weeks. The six planted columns pass it, and the most chosen of the rest,
 `x4`, is at 0.49.
+
+### A screen of its own for each path
+
+**A selection that screens its columns first must screen again in every
+half and every null run.** A screen keeps the columns most correlated with
+the target, and a path then chooses among them. The screen is part of the
+selection, so a half's screen reads that half's rows. A null run screens
+under its own signs too, since a screen read from the real target would
+carry the target's signs into the run that is meant to have none.
+
+**`jobs=` gives each path columns of its own in one call.** A job is a
+mapping of `"subset"`, `"target"`, `"draw"` and `"features"`, and the call
+returns a path per job, in order. Each half is still merged once, on every
+column its jobs read, and each draw re-pools that half's cross-moments
+once. A job's path is the one `po.gram.lars_path` gives on
+`po.gram.subset(merge, ["intercept", *features])` of its half under its
+draw's signs, to the bit. Measured on an M4 Pro at a load near 7, 100
+halves of 19 of 38 Grams under 11 draws and 10 targets, each of the 11,000
+paths on its own 400 of 1,500 columns, took 11 ms a half. The loop of `merge`,
+`subset` and `lars_path` it replaces took 115 ms a half.
+
+The screen below is each column's correlation with the target, pooled
+within the half's weeks from their own moments. It reads a vector per week
+and merges no matrix.
+
+```python
+from datetime import datetime, timedelta
+
+import numpy as np
+import polars as pl
+
+import polars_online as po
+
+# 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
+# two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
+# drawn again each week, 0.15 on average.
+rng = np.random.default_rng(7)
+n_weeks, per_week, k = 40, 504, 200
+n = n_weeks * per_week
+x = 0.7 * (rng.standard_normal((n, k)) + np.repeat(rng.standard_normal((n, k // 5)), 5, axis=1))
+b25 = 0.15 + 0.3 * rng.standard_normal(n_weeks)
+y = x[:, [0, 5, 10, 15, 20]] @ [0.5, 0.4, 0.3, 0.2, 0.1] + b25.repeat(per_week) * x[:, 25]
+y += rng.standard_normal(n)
+features = [f"x{j}" for j in range(k)]
+# Stamp each row, from a Monday, and save the table for the scan to read.
+start = datetime(2025, 1, 6)  # a Monday
+ts = pl.datetime_range(start, start + timedelta(minutes=20 * (n - 1)), "20m", eager=True)
+pl.DataFrame({"ts": ts, **dict(zip(features, x.T)), "y": y}).write_parquet("weeks.parquet")
+
+# One pass over the file leaves a Gram per week. The week is a column made in the query.
+lf = pl.scan_parquet("weeks.parquet").with_columns(week=pl.col("ts").dt.truncate("1w"))
+spec = po.spec.ewridge(
+    "blocks", targets=["y"], features=features, group="week",
+    half_life=float("inf"), solve_every=1e18, target_gaps="pairwise", gram_block_rows=256,
+)
+bank = po.ModelBank([spec])
+bank.fit(lf)  # learns from every row, and keeps only the state
+blocks = bank.gram("blocks")  # one dict per week, oldest first
+
+# The same hundred halves of the weeks, and 20 draws of a sign per week after the real target's.
+halves = []  # 50 random splits of the 40 weeks: 100 halves of 20, each beside its complement
+splitter = np.random.default_rng(1)
+for _ in range(50):
+    order = splitter.permutation(n_weeks)
+    halves += [sorted(order[:20]), sorted(order[20:])]
+signs = np.random.default_rng(2).choice([-1.0, 1.0], size=(n_weeks, 21))
+signs[:, 0] = 1.0  # draw 0 is the real target: every sign +1
+
+# Each half's screen under each draw: its 40 columns most correlated with the target, read from
+# the weeks' own moments as the merge within the weeks pools them, so no matrix is merged for it.
+w = np.array([b["target_weights"][0] for b in blocks])  # each week's weight
+c = np.stack([b["cross_centered"][0][1:] for b in blocks])  # its cross-moments, past the intercept
+v = np.stack([np.diag(b["comoments"])[1:] for b in blocks])  # and its columns' variances
+# A job per half and draw: the half's correlations under the draw's signs, and the top 40.
+jobs = []
+for s, half in enumerate(halves):
+    for d in range(signs.shape[1]):
+        cov = (w[half] * signs[half, d]) @ c[half] / w[half].sum()
+        var = w[half] @ v[half] / w[half].sum()
+        screen = np.argsort(-np.abs(cov) / np.sqrt(var))[:40]
+        jobs.append({"subset": s, "draw": d, "target": "y", "features": [features[j] for j in screen]})
+
+# Every half's path under every draw on its own screen, in one call: a path per job, in order.
+runs = po.gram.solve_subsets(
+    blocks, halves, path={"max_active": 8}, within=True, target_signs=signs, jobs=jobs
+)
+
+# How often each draw's halves chose each column, and a threshold from the null draws.
+chosen = np.zeros((signs.shape[1], k))
+for job, path in zip(jobs, runs):
+    chosen[job["draw"], [features.index(c) for c in set().union(*path["active"])]] += 1
+freq = chosen / len(halves)
+null_max = freq[1:].max(axis=1)  # each null draw's most chosen column
+threshold = np.quantile(null_max, 0.95)
+real = dict(zip(features, freq[0]))
+# How many screens the jobs ran on, the planted columns, and what clears the threshold.
+planted = ["x0", "x5", "x10", "x15", "x20", "x25"]
+screens = {frozenset(job["features"]) for job in jobs}
+print(f"{len(jobs)} paths, each on 40 of the {k} columns, {len(screens)} screens among them")
+print("planted: " + ", ".join(f"{c} {real[c]:.2f}" for c in planted))
+print(f"the most chosen column of a null run: {np.median(null_max):.2f} of the halves at the median draw, {threshold:.2f} at the 95th percentile")
+print(f"chosen on more halves than {threshold:.2f}: {' '.join(f for f in features if real[f] > threshold)}")
+```
+
+```text
+2100 paths, each on 40 of the 200 columns, 2100 screens among them
+planted: x0 1.00, x5 1.00, x10 1.00, x15 1.00, x20 1.00, x25 1.00
+the most chosen column of a null run: 0.81 of the halves at the median draw, 0.95 at the 95th percentile
+chosen on more halves than 0.95: x0 x5 x10 x15 x20 x25
+```
+
+Each of the 2,100 paths ran on a screen of its own. The planted columns
+survive every half's screen and are chosen on every half. The null runs,
+each screened under its own signs, put the threshold at 0.95, where the
+selection without a screen put it. Only the six planted columns pass it.
 
 ## Per-block coefficients
 

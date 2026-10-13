@@ -7,6 +7,42 @@ stable API takes a major version, and a minor version may also correct numbers
 that were wrong. Before 1.0, the minor version carried breaking changes, and
 any change to the numbers a model returns.
 
+## [Unreleased]
+
+### Added
+
+- **`po.gram.solve_subsets(..., jobs=...)`: each fit on columns of its
+  own, in one call.** A job is a mapping of `"subset"`, `"target"`,
+  `"draw"` (a column of `target_signs`), `"features"` and, for a path,
+  `"penalty_weights"`; `jobs` is a list of them or a polars DataFrame of
+  them, and the call returns one fit per job, in order. A screen per
+  subset, per target and per draw, as complementary-pairs stability
+  selection runs, no longer needs a `merge`, a `subset` and a `lars_path`
+  per job from Python: each subset is still merged once, on every column
+  its jobs read, each draw re-pools its cross-moments once, and every job
+  runs on the pool. A job's path is `lars_path`'s on its columns of its
+  merged subset, to the bit, and a ridge job the call's on its own columns
+  and target. Measured on an M4 Pro at a load near 7: 100 subsets of 19 of
+  38 Grams, 11 draws and 10 targets, 11,000 paths each to 10 active
+  columns on its own 400 of 1,500 columns, took 11 ms a subset, against
+  115 ms for the loop (409 ms on 1.0.1, see *Performance*); at 150 of 500
+  columns, 3.3 ms against 24 ms (65 ms on 1.0.1). `docs/GRAM.md`, *A
+  screen of its own for each path*, has a recipe.
+
+### Changed
+
+- **A ridge fit of `po.gram.solve_subsets` on several targets may move in
+  its last bits.** Each target's system is now solved alone on the shared
+  factorization, where a blocked solve of every target at once let one
+  target's last bits depend on the others beside it, so a fit is the same
+  whichever targets (or jobs) share its call.
+
+### Performance
+
+- **A Gram's columns are looked up by name in a table**, where each name
+  was a scan of the column list: `po.gram.subset` of 400 of 1,500 columns
+  took 3.2 ms and takes 0.56 ms, and every `features=` resolves likewise.
+
 ## [1.0.1] — 2026-10-13
 
 ### Known issues

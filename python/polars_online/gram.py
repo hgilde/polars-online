@@ -61,13 +61,17 @@ each function on weekly blocks from one pass, the theory behind it, and a recipe
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from typing import Any, NotRequired, TypedDict
+import operator
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from polars_online import _polars_online as _native
 from polars_online._bank import _check_threads
 from polars_online._renamed import renamed_keywords
 from polars_online._warnings import deprecated_keywords, forward_deprecated
+
+if TYPE_CHECKING:
+    import polars as pl
 
 __all__ = [
     "Gram",
@@ -150,6 +154,11 @@ def _columns(g: Gram) -> list[str]:
 
 def _col_index(g: Gram, cols: Sequence[str | int]) -> list[int]:
     names = _columns(g)
+    # Each name's first position, looked up once: `list.index` per name made
+    # a subset of 400 of 1,500 columns take 3 ms (task 256).
+    where: dict[str, int] = {}
+    for i, name in enumerate(names):
+        where.setdefault(name, i)
     out = []
     for c in cols:
         if isinstance(c, int):
@@ -157,8 +166,8 @@ def _col_index(g: Gram, cols: Sequence[str | int]) -> list[int]:
                 msg = f"column {c} out of range for a Gram of {len(names)} columns"
                 raise IndexError(msg)
             out.append(c % len(names))
-        elif c in names:
-            out.append(names.index(c))
+        elif c in where:
+            out.append(where[c])
         else:
             msg = f"no column {c!r} in this Gram; it has {names}"
             raise KeyError(msg)
@@ -1412,7 +1421,9 @@ def lars_paths(
     other parameters are those of :func:`lars_path`, applied to every path.
     It merges nothing: each Gram is fitted as it is, a Gram pooled within
     parts with its intercept ``nan``. To pool subsets and walk their paths
-    in one call, see :func:`solve_subsets`.
+    in one call, see :func:`solve_subsets`. Its ``jobs`` give each path
+    columns of its own, and on subsets of one Gram each, ``[[0], [1],
+    ...]``, a job's path is :func:`lars_path`'s on that Gram, to the bit.
 
     .. code-block:: python
 
@@ -1480,6 +1491,7 @@ def solve_subsets(
     within: bool = False,
     target_signs: Any = None,
     threads: int | None = None,
+    jobs: Sequence[Mapping[str, Any]] | pl.DataFrame | None = None,
 ) -> list[Any]:
     """Merge each subset of the Grams and fit it, for many subsets at once.
 
@@ -1572,12 +1584,48 @@ def solve_subsets(
         the process's pool, an integer a pool of that many threads, as
         :class:`~polars_online.ModelBank` takes it. Each fit is one thread's
         arithmetic, so the numbers are the same at any count.
+    ``jobs``
+        ``None`` for every subset, draw and target on ``features``, or the
+        fits to run, each on columns of its own: a list of mappings, as
+        ``pl.DataFrame.to_dicts()`` gives them, or a polars DataFrame of
+        them, one row per job. A job's keys are
+
+        - ``"subset"``, a position in ``subsets``;
+        - ``"target"``, a name or position, as in ``targets``, which is
+          then not given;
+        - ``"draw"``, a column of ``target_signs``, given with it and only
+          with it;
+        - ``"features"``, the job's columns, as ``features`` names them;
+          missing or ``None`` is ``features``, and so every feature when
+          that is ``None`` too;
+        - ``"penalty_weights"``, for a path only: one per column of the
+          job. Missing or ``None`` is ``path``'s, which must then have one
+          per column of the job too, or every weight 1.
+
+        Each subset is merged once, on the intercept and every column its
+        jobs read, and each draw re-pools its cross-moments once per subset.
+        A job's fit is that of its columns merged alone, to the bit: a path
+        is :func:`lars_path` on ``subset(merge(parts, within=within),
+        ["intercept", *features])`` of the subset's Grams, each with its
+        targets' cross-moments times its sign in the draw, and a ridge fit
+        is this call's on ``[subsets[subset]]``, ``target_signs[:, [draw]]``,
+        ``features`` and ``targets=[target]``. Jobs that share a subset,
+        draw and columns share that design's factorization. The jobs run
+        beside each other on the pool, as the subsets do. A screen per
+        subset, per target and per draw, as complementary-pairs stability
+        selection runs, is then one call. Measured on an M4 Pro under a
+        load of 7, 100 subsets of 19 of 38 Grams, 11 draws and 10 targets,
+        each of the 11,000 jobs a path to 10 columns on 400 of 1,500
+        columns, took 11 ms a subset, where the loop of :func:`merge`,
+        :func:`subset` and :func:`lars_path` per job took 115 ms.
 
     Returns one list per subset, with one dict per target. A ridge fit's
     dict has ``coef``, the coefficients over the Gram's columns, and
     :func:`coef_stats`' ``resid_var``, ``sigma2``, ``r2``, ``n``, ``se`` and
     ``t``. A path's dict is :func:`lars_path`'s. With ``target_signs``, one
-    such list per draw.
+    such list per draw. With ``jobs``, one such dict per job, in their
+    order, over every column of the Grams: 0, or ``nan`` for ``se`` and
+    ``t``, at a column the job does not read.
 
     .. code-block:: python
 
@@ -1594,6 +1642,11 @@ def solve_subsets(
         signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(len(blocks), 20))
         null = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
                                      within=True, target_signs=signs)   # a list per draw
+        # A screen of its own for each subset and draw: one path per job.
+        jobs = [{"subset": 0, "draw": 0, "target": "y", "features": ["x0"]},
+                {"subset": 1, "draw": 3, "target": "y", "features": ["x1", "x0"]}]
+        screened = po.gram.solve_subsets(blocks, [[0, 1], [2, 3]], path={"max_active": 1},
+                                         within=True, target_signs=signs, jobs=jobs)
 
     Raises ``ValueError`` for:
 
@@ -1605,15 +1658,24 @@ def solve_subsets(
     - ``target_signs`` without ``within``, of another shape, or with an
       entry other than +1 or -1;
     - an unknown key in ``path``;
+    - with ``jobs``: ``targets`` given; a job that is not a mapping, with a
+      key it does not take, without its ``subset`` or ``target``, with a
+      ``subset`` or ``draw`` out of range, a ``draw`` without
+      ``target_signs`` or none with them, ``features`` that are one name or
+      hold the intercept, or ``penalty_weights`` without ``path``, of
+      another length than its columns, or not finite and above 0;
     - a Gram without ``means_by_target`` or ``cross_centered``, which
       :func:`merge` forms after pooling and this does not;
     - for a ridge fit, a ``ridge`` that is not finite and at least 0, or a
       Gram without target moments (as :func:`coef_stats`).
 
-    Otherwise it raises as :func:`solve` and :func:`lars_path` do.
+    Otherwise it raises as :func:`solve` and :func:`lars_path` do: a job's
+    column or target the Grams have not got is a ``KeyError``, and its
+    position out of range an ``IndexError``, each naming the job.
 
     See *Stability selection over halves of the weeks*, *Per-block coefficients*,
-    *Pooling within blocks* and *A null for the selection, by sign flips* in
+    *Pooling within blocks*, *A null for the selection, by sign flips* and *A
+    screen of its own for each path* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
     for the theory and a recipe of each use.
     """
@@ -1649,6 +1711,9 @@ def solve_subsets(
             _refuse_within_union("solve_subsets()", [parts[i] for i in idx])
     slots, icept = _feature_slots(parts[0], features)
     m = len(parts[0]["target_weights"])
+    if jobs is not None and targets is not None:
+        msg = "solve_subsets(): each job names its own target, so jobs= takes no targets="
+        raise ValueError(msg)
     tidx = list(range(m)) if targets is None else [_target_index(parts[0], t) for t in targets]
     for p in parts:
         for key in ("means_by_target", "cross_centered"):
@@ -1660,14 +1725,6 @@ def solve_subsets(
                 )
                 raise ValueError(msg)
     signs = _target_signs(np, target_signs, len(parts), within)
-    native = [_native_gram(np, p, icept) for p in parts]
-    ic = None if icept < 0 else icept
-    k = len(cols)
-
-    def per_draw(out: list[Any]) -> list[Any]:
-        # One list per draw from the native call; without signs, its one.
-        return out if target_signs is not None else out[0]
-
     if path is not None:
         # `lars_path`'s keyword renamed after 0.13, read under its old name
         # here too (task 244, M-24).
@@ -1676,29 +1733,59 @@ def solve_subsets(
         if unknown:
             msg = f"solve_subsets(): path takes {list(_PATH_KEYS)}, not {unknown}"
             raise ValueError(msg)
+    work = (
+        None
+        if jobs is None
+        else _subset_jobs(
+            np,
+            parts[0],
+            jobs,
+            n_subsets=len(picked),
+            n_draws=len(signs),
+            default=slots,
+            path=path,
+        )
+    )
+    native = [_native_gram(np, p, icept) for p in parts]
+    ic = None if icept < 0 else icept
+    k = len(cols)
+
+    def per_draw(out: list[Any]) -> list[Any]:
+        # One list per draw from the native call; without signs, its one.
+        return out if target_signs is not None else out[0]
+
+    def path_dict(pen: list[float], coef: Any, act: list[list[int]], stop: str) -> dict[str, Any]:
+        return {
+            "penalties": np.asarray(pen, dtype=float),
+            "coef": np.frombuffer(coef, dtype=np.float64).reshape(len(pen), k),
+            "active": [[cols[i] for i in a] for a in act],
+            "stop": stop,
+        }
+
+    if path is not None:
         steps = _limit("max_iter", path.get("max_iter"))
         active = _limit("max_active", path.get("max_active"))
+        if work is not None:
+            set_slots, set_weights, native_jobs = work
+            done = _native.gram_path_jobs(
+                native,
+                picked,
+                set_slots,
+                set_weights,
+                native_jobs,
+                ic,
+                steps,
+                active,
+                bool(within),
+                signs,
+                threads,
+            )
+            return [path_dict(*p) for p in done]
         weights = _lars_weights(np, len(slots), path.get("penalty_weights"))
         out = _native.gram_path_subsets(
             native, picked, tidx, slots, ic, weights, steps, active, bool(within), signs, threads
         )
-        return per_draw(
-            [
-                [
-                    [
-                        {
-                            "penalties": np.asarray(pen, dtype=float),
-                            "coef": np.frombuffer(coef, dtype=np.float64).reshape(len(pen), k),
-                            "active": [[cols[i] for i in a] for a in act],
-                            "stop": stop,
-                        }
-                        for pen, coef, act, stop in per
-                    ]
-                    for per in draw
-                ]
-                for draw in out
-            ]
-        )
+        return per_draw([[[path_dict(*p) for p in per] for per in draw] for draw in out])
     scalar = np.ndim(ridge) == 0
     ridges = [float(r) for r in np.atleast_1d(np.asarray(ridge, dtype=float))]
     if not ridges or not all(math.isfinite(r) and r >= 0.0 for r in ridges):
@@ -1713,28 +1800,60 @@ def solve_subsets(
             )
             raise ValueError(msg)
 
+    def ridge_dict(
+        coef: Any, se: Any, t: Any, resid_var: float, sigma2: float, r2: float, n: float
+    ) -> dict[str, Any]:
+        return {
+            "coef": np.frombuffer(coef, dtype=np.float64),
+            "resid_var": resid_var,
+            "sigma2": sigma2,
+            "r2": r2,
+            "n": n,
+            "se": np.frombuffer(se, dtype=np.float64),
+            "t": np.frombuffer(t, dtype=np.float64),
+        }
+
+    if work is not None:
+        set_slots, _, native_jobs = work
+
+        def fit_jobs(r: float) -> list[dict[str, Any]]:
+            done = _native.gram_ridge_jobs(
+                native,
+                picked,
+                set_slots,
+                native_jobs,
+                ic,
+                r,
+                bool(standardize),
+                bool(within),
+                signs,
+                threads,
+            )
+            return [ridge_dict(*f) for f in done]
+
+        if scalar:
+            return fit_jobs(ridges[0])
+        # A grid, stacked per job as below per fit.
+        job_grids = [fit_jobs(r) for r in ridges]
+        return [
+            {
+                key: (
+                    first[key]
+                    if key == "n"
+                    else np.stack([g[j][key] for g in job_grids])
+                    if key in ("coef", "se", "t")
+                    else np.asarray([g[j][key] for g in job_grids], dtype=float)
+                )
+                for key in first
+            }
+            for j, first in enumerate(job_grids[0])
+        ]
+
     def fit(r: float) -> list[Any]:
         fits = _native.gram_ridge_subsets(
             native, picked, tidx, slots, ic, r, bool(standardize), bool(within), signs, threads
         )
-        return [
-            [
-                [
-                    {
-                        "coef": np.frombuffer(coef, dtype=np.float64),
-                        "resid_var": resid_var,
-                        "sigma2": sigma2,
-                        "r2": r2,
-                        "n": n,
-                        "se": np.frombuffer(se, dtype=np.float64),
-                        "t": np.frombuffer(t, dtype=np.float64),
-                    }
-                    for coef, se, t, resid_var, sigma2, r2, n in per
-                ]
-                for per in draw
-            ]
-            for draw in fits
-        ]
+        return [[[ridge_dict(*f) for f in per] for per in draw] for draw in fits]
 
     if scalar:
         return per_draw(fit(ridges[0]))
@@ -1794,6 +1913,140 @@ def _target_signs(np: Any, target_signs: Any, n_grams: int, within: bool) -> lis
         msg = f"solve_subsets(): each entry of target_signs is +1 or -1, got {bad!r}"
         raise ValueError(msg)
     return [[float(v) for v in col] for col in s.T]
+
+
+_JOB_KEYS = ("subset", "target", "draw", "features", "penalty_weights")
+
+
+def _position(v: Any, n: int) -> int | None:
+    """``v`` as a position in ``0..n-1`` -- a whole number, numpy's
+    included, but not a bool -- or ``None``."""
+    if isinstance(v, bool):
+        return None
+    try:
+        i = operator.index(v)
+    except TypeError:
+        return None
+    return i if 0 <= i < n else None
+
+
+def _subset_jobs(
+    np: Any,
+    g: Gram,
+    jobs: Any,
+    *,
+    n_subsets: int,
+    n_draws: int,
+    default: list[int],
+    path: dict[str, Any] | None,
+) -> tuple[list[list[int]], list[list[float]], list[tuple[int, int, int, int]]]:
+    """``solve_subsets``' ``jobs`` checked and turned to what the native
+    call reads: the distinct column sets (their slots, and a path's penalty
+    weights, ``[]`` for every weight 1), and per job its subset, target,
+    draw and set, each a position. ``default`` is the slots of the call's
+    ``features``, a job's columns when it names none."""
+    if not isinstance(jobs, Sequence):
+        import polars as pl
+
+        if not isinstance(jobs, pl.DataFrame):
+            msg = (
+                "solve_subsets(): jobs is a list of mappings, one per fit, or a "
+                f"polars DataFrame of them; got {type(jobs).__name__}"
+            )
+            raise ValueError(msg)
+        jobs = jobs.to_dicts()
+    names = _columns(g)
+    icept = names.index(INTERCEPT) if INTERCEPT in names else -1
+    where: dict[str, int] = {}
+    for i, name in enumerate(names):
+        where.setdefault(name, i)
+    path_weights = None if path is None else path.get("penalty_weights")
+    sets: dict[tuple[tuple[int, ...], tuple[float, ...]], int] = {}
+    set_slots: list[list[int]] = []
+    set_weights: list[list[float]] = []
+    out: list[tuple[int, int, int, int]] = []
+    for n, job in enumerate(jobs):
+        at = f"solve_subsets(): jobs[{n}]"
+        if not isinstance(job, Mapping):
+            msg = f"{at} is a {type(job).__name__}, not a mapping of {list(_JOB_KEYS)}"
+            raise ValueError(msg)
+        unknown = sorted(str(key) for key in job if key not in _JOB_KEYS)
+        if unknown:
+            msg = f"{at} has {unknown}; a job takes {list(_JOB_KEYS)}"
+            raise ValueError(msg)
+        for needed in ("subset", "target"):
+            if job.get(needed) is None:
+                msg = f"{at} names no {needed!r}; every job names its subset and its target"
+                raise ValueError(msg)
+        subset = _position(job["subset"], n_subsets)
+        if subset is None:
+            msg = (
+                f"{at}: 'subset' is a position in subsets, 0..{n_subsets - 1}; "
+                f"got {job['subset']!r}"
+            )
+            raise ValueError(msg)
+        try:
+            target = _target_index(g, job["target"])
+        except KeyError as e:
+            raise KeyError(f"{at}: {e.args[0]}") from None
+        except IndexError as e:
+            raise IndexError(f"{at}: {e.args[0]}") from None
+        draw = job.get("draw")
+        if n_draws == 0:
+            if draw is not None:
+                msg = f"{at} names draw {draw!r}, which needs target_signs: a draw is its column"
+                raise ValueError(msg)
+            draw = 0
+        elif draw is None:
+            msg = f"{at} names no 'draw': with target_signs every job names its column of signs"
+            raise ValueError(msg)
+        else:
+            column = _position(draw, n_draws)
+            if column is None:
+                msg = f"{at}: 'draw' is a column of target_signs, 0..{n_draws - 1}; got {draw!r}"
+                raise ValueError(msg)
+            draw = column
+        feats = job.get("features")
+        if feats is None:
+            slots = default
+        elif isinstance(feats, str):
+            msg = f"{at}: 'features' is a list of columns, not the one name {feats!r}"
+            raise ValueError(msg)
+        else:
+            try:
+                slots = [where[c] for c in feats]
+            except (KeyError, TypeError):
+                try:
+                    slots = _col_index(g, feats)
+                except KeyError as e:
+                    raise KeyError(f"{at}: {e.args[0]}") from None
+                except IndexError as e:
+                    raise IndexError(f"{at}: {e.args[0]}") from None
+            if icept in slots:
+                msg = (
+                    f"{at}: {INTERCEPT!r} is a constant column, not a feature; it is handled "
+                    "by the fit, so leave it out of 'features'"
+                )
+                raise ValueError(msg)
+        own = job.get("penalty_weights")
+        weights: list[float] = []
+        if path is None:
+            if own is not None:
+                msg = f"{at} has 'penalty_weights', which only a path reads: pass path="
+                raise ValueError(msg)
+        else:
+            try:
+                weights = _lars_weights(np, len(slots), path_weights if own is None else own)
+            except ValueError as e:
+                raise ValueError(f"{at}: {e.args[0]}") from None
+        columns = (tuple(slots), tuple(weights))
+        set_id = sets.get(columns)
+        if set_id is None:
+            set_id = sets[columns] = len(set_slots)
+            set_slots.append(list(slots))
+            set_weights.append(weights)
+        out.append((subset, target, draw, set_id))
+    return set_slots, set_weights, out
 
 
 def coef_stats(

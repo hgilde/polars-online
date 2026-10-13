@@ -10346,7 +10346,7 @@ tick, and that the series holding it up has a count near 1.
       independent oracle (`crate::oracle`, faer's LU / a plain sum), and
       measured on Windows CI. It may move last bits on x86, hence a minor.
 **1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257.
-- [ ] 256. **Per-job feature lists in `po.gram.solve_subsets` and
+- [x] 256. **Per-job feature lists in `po.gram.solve_subsets` and
       `lars_paths`** -- requested 2026-10-13. Today one call takes a single
       `features` list for every subset, target and draw, so a workload
       whose jobs each use their own columns (a screen per subset, per
@@ -10371,6 +10371,54 @@ tick, and that the series holding it up has a count near 1.
       1,500 (400) -- which one call removes. An API addition (a minor
       release); the field and argument names follow the existing
       `solve_subsets`.
+      *Built 2026-10-13* (branch `task-256-per-job-features`). **Design:
+      the flat `jobs=`**, a list of mappings or a polars DataFrame of them
+      (rows as `to_dicts()` gives them, Polars' own form for records),
+      keys `subset`, `target`, `draw`, `features`, `penalty_weights`; one
+      result per job in order. Chosen over the nested `features` because
+      (1) it adds a keyword and changes no existing one's type: a nested
+      `features` would have to be told from today's list of names by its
+      depth, and `None` at three levels; (2) the nested form's order,
+      `[subset][draw][target]`, is not the return's `[draw][subset][target]`,
+      and it needs a draw level even without signs; (3) a flat table runs
+      only the jobs named, any subset of the grid, and is what a screen
+      table joined to the subsets and draws already is. `targets=` is
+      refused beside it; `features=` is the default for a job without its
+      own, and so is `path`'s `penalty_weights`, held to each job's length.
+      `lars_paths` takes no `jobs`: its per-Gram form is
+      `solve_subsets([[0], [1], ...], jobs=...)`, a merge of one Gram being
+      the Gram, and a test holds that to `lars_path` to the bit.
+      **Native:** `online_polars::gramfit::fit_jobs` (column sets deduped,
+      a job = subset, target, draw, set); per subset one merge on the
+      intercept and the union of its jobs' columns in the Grams' order, one
+      `within_cross` per draw used, one design per (draw, set), the targets
+      on the pool; `fit_subsets` is now a wrapper over it. The merge is
+      entry for entry, so the union of columns moves no bit. **A ridge's
+      targets are now solved one column at a time** on the shared factor
+      (`ridge.rs`): faer's blocked multi-column solve moved a target's last
+      bit with its neighbours (found by the Rust job test), so a ridge job
+      depended on which other jobs shared its columns. **Also fixed:**
+      `_col_index` scanned the column list per name (`list.index`), 3.2 ms
+      for a `subset` of 400 of 1,500, 0.56 ms by a table. **Measured**
+      (M4 Pro, load 7-8; 38 synthetic Grams, 100 subsets of 19, 11 draws,
+      10 targets, `max_active=10`, `within=True`; scratchpad `bench.py`):
+      per subset, the loop of `merge` + signed cross-moments + `subset` +
+      `lars_path` per job took 65 ms at 500 columns (150 a job) and 409 ms
+      at 1,500 (400) at HEAD, 24 and 115 ms with the `_col_index` fix, and
+      the one call 3.3 and 11.2 ms (of which the native call 8.8 ms and the
+      jobs' resolution in Python 1.7 ms at 1,500). The requester's premise
+      (4 and 49 ms of crossing per subset on 0.13.0) holds in kind: at HEAD
+      the loop's time was `subset`'s name lookup and the Python merge, the
+      paths themselves 0.1 ms a job. **Tests:** `tests/test_gram_jobs.py`
+      (every job to the bit against `lars_path(subset(merge(signed parts,
+      within=True), ["intercept", *features]))`, union, `None` = the call's
+      features, penalty weights, subsets of one = `lars_path`, the jobs of
+      every fit = the nested call, a DataFrame = its rows, threads 1 = 4,
+      ridge jobs = the call per job, twenty refusals by name);
+      `crates/online-polars/tests/gram_jobs.rs` (the same against
+      `merge`/`merge_within`/`within_cross` + `lars_paths`/`ridge_fits` on
+      the job's columns alone, `fit_subsets` = its jobs, threads, every
+      index refusal of `check_jobs`).
 - [ ] 257. **The targets inside the blocked Gram product** -- requested
       2026-10-13. Measured by the requester on 0.13.0 (M4 Pro, load 4-9;
       re-measure at HEAD first, since `gram_threads="auto"` and task 250
