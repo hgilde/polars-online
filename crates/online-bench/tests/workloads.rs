@@ -4,10 +4,12 @@
 //! path no user runs, so each case proves it ran past the warm-up first.
 
 use online_bench::{
-    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, bank_setup, clock_setup, model_setup,
-    polars_online_budget_bank_rows, polars_online_budget_clock_rows,
-    polars_online_budget_model_rows,
+    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, WIDE_CASES, WIDE_ROWS, bank_setup, clock_setup,
+    model_setup, polars_online_budget_bank_rows, polars_online_budget_clock_rows,
+    polars_online_budget_model_rows, spec,
 };
+use online_polars::{ChunkOut, PAR_MIN_ROWS, Stream};
+use polars::prelude::*;
 
 /// The bench names every case, and names nothing else: a case missing from
 /// it has no count, and so no budget.
@@ -23,6 +25,7 @@ fn the_bench_names_every_case_and_nothing_else() {
         .iter()
         .chain(CLOCK_CASES)
         .chain(BANK_CASES)
+        .chain(WIDE_CASES)
         .copied()
         .collect();
     let mut sorted = named.clone();
@@ -103,4 +106,51 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
         );
     }
     assert_eq!(BANK_CASES.len(), 2);
+}
+
+/// The wide cases learn their block on the pool they are named for, in
+/// several runs and past the parallel threshold, so the count covers a
+/// run's copy into the output overlapped with the next run's learning and
+/// the parallel allocation and finish of the output columns; and the two
+/// pool sizes return the same output to the bit.
+#[test]
+fn every_wide_case_learns_its_block_in_runs_on_its_pool() {
+    let stream = Stream::new(&spec(WIDE_CASES[0])).expect("a stream");
+    let run_rows = ChunkOut::run_rows(&spec(WIDE_CASES[0]), stream.n_models(), stream.n_slots());
+    assert!(WIDE_ROWS >= 4 * run_rows, "{run_rows} rows a run");
+    const { assert!(WIDE_ROWS >= PAR_MIN_ROWS) };
+    let mut outs: Vec<Vec<Column>> = Vec::new();
+    for (&id, threads) in WIDE_CASES.iter().zip([1, 4]) {
+        let mut run = bank_setup(id);
+        assert_eq!(run.bank.threads().asked(), Some(threads), "{id}");
+        let before = run.bank.rows_fed();
+        let out = polars_online_budget_bank_rows(&mut run);
+        assert_eq!(run.bank.rows_fed() - before, WIDE_ROWS as u64, "{id}");
+        let fields = out[0]
+            .as_materialized_series()
+            .struct_()
+            .expect("a struct")
+            .fields_as_series();
+        // Every statistic on every row: 20 means, 20 deviations and 190
+        // correlations, beside the weight, the settled share and the reason.
+        let stats: Vec<&Series> = fields
+            .iter()
+            .filter(|f| {
+                ["mean_", "std_", "corr_"]
+                    .iter()
+                    .any(|p| f.name().starts_with(p))
+            })
+            .collect();
+        assert_eq!((stats.len(), fields.len()), (230, 233), "{id}");
+        for f in stats {
+            assert_eq!(f.len(), WIDE_ROWS, "{id}");
+            assert_eq!(f.null_count(), 0, "{id}: {} has nulls", f.name());
+        }
+        outs.push(out);
+    }
+    let one = outs[0][0].as_materialized_series();
+    assert!(
+        one.equals_missing(outs[1][0].as_materialized_series()),
+        "one thread and four differ"
+    );
 }

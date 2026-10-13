@@ -1,15 +1,18 @@
 //! The workloads behind the instruction-count budgets (`budgets.toml`).
 //!
-//! Each case is a fixed block of [`ROWS`] rows through one hot path, after
-//! [`WARM_ROWS`] rows that bring the state to where a long stream keeps it:
-//! past `min_weight` and the first solves, a full run vector, settled
-//! centres. A case is built by a *setup* function and run by one of three
-//! measured functions, [`polars_online_budget_model_rows`],
-//! [`polars_online_budget_clock_rows`] and [`polars_online_budget_bank_rows`].
-//! `benches/instructions.rs` hands each to Callgrind with the measured
-//! function as its entry point, so the count is those rows and nothing else:
-//! not the setup, not the data, not the drop. The functions carry fixed,
-//! unmangled names because Callgrind finds an entry point by its symbol.
+//! Each case is a fixed block of [`ROWS`] rows through one hot path
+//! ([`WIDE_ROWS`] for the wide bank cases), after [`WARM_ROWS`] rows that
+//! bring the state to where a long stream keeps it: past `min_weight` and
+//! the first solves, a full run vector, settled centres. A case is built by
+//! a *setup* function and run by one of three measured functions,
+//! [`polars_online_budget_model_rows`], [`polars_online_budget_clock_rows`]
+//! and [`polars_online_budget_bank_rows`]. `benches/instructions.rs` hands
+//! each to Callgrind with the measured function as its entry point, so the
+//! count is those rows and nothing else: not the setup, not the data, not
+//! the drop. The functions carry fixed, unmangled names because Callgrind
+//! finds an entry point by its symbol. The one case on several threads is
+//! counted from a client request around the call instead, on every thread
+//! (`benches/instructions.rs`).
 //!
 //! The data are generated here, from a fixed seed, so a count depends on the
 //! code and the toolchain alone. `cargo test` runs every case natively on
@@ -47,6 +50,19 @@ pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
 /// The bank cases: a frame through `Bank::fit_predict`, every per-row step
 /// of the bank around the model, for the cheapest model and a regression.
 pub const BANK_CASES: &[&str] = &["bank_seqtest", "bank_ewridge_k5"];
+
+/// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
+/// 230 statistics through `Bank::fit_predict`, on a pool of one thread and
+/// of four. The frame is several runs long (about a thousand rows a run at
+/// this width), so each run is copied into the output as it ends while the
+/// stream learns the next (`rayon::join`, which on one thread runs the two
+/// in turn), and it is past `PAR_MIN_ROWS`, so the output columns are
+/// allocated and finished in parallel. The count of the four-thread case is
+/// every thread's: the work, and what spreading it over the pool costs.
+pub const WIDE_CASES: &[&str] = &["bank_ew_cov_wide_t1", "bank_ew_cov_wide_t4"];
+
+/// Rows in a wide case's measured block.
+pub const WIDE_ROWS: usize = 8_192;
 
 /// A clock step of a second on average, irregular: 0.5, 1, 1.5 or 2.
 fn step_of(draw: f64) -> f64 {
@@ -211,7 +227,7 @@ fn case_spec(id: &str) -> (Value, Shape) {
             }),
             Shape::Linear,
         ),
-        "ew_cov" => {
+        "ew_cov" | "bank_ew_cov_wide_t1" | "bank_ew_cov_wide_t4" => {
             let mut s = fit(json!({"type": "ew_cov"}), 20);
             let s = s.as_object_mut().expect("an object");
             s.remove("targets");
@@ -248,7 +264,12 @@ pub fn spec(id: &str) -> Spec {
 /// A case's rows: warm-up and measured block, from one seed.
 fn rows(id: &str, spec: &Spec) -> Rows {
     let (_, shape) = case_spec(id);
-    Rows::generate(shape, spec.k(), spec.m(), WARM_ROWS + ROWS, 7)
+    let block = if WIDE_CASES.contains(&id) {
+        WIDE_ROWS
+    } else {
+        ROWS
+    };
+    Rows::generate(shape, spec.k(), spec.m(), WARM_ROWS + block, 7)
 }
 
 /// A model case, warmed up: the model and the rows of its measured block.
@@ -364,11 +385,23 @@ pub struct BankRun {
 }
 
 /// The setup of a bank case: a bank of the case's one spec, fed the
-/// warm-up rows as one frame.
+/// warm-up rows as one frame. A wide case's bank is given its pool size:
+/// one thread is the process default's pool when that has one thread, as
+/// under the bench, so the rows are learned on the thread that calls.
 pub fn bank_setup(id: &str) -> BankRun {
     let spec = spec(id);
     let rows = rows(id, &spec);
     let mut bank = Bank::new(vec![spec]).unwrap_or_else(|e| panic!("{id}: {e}"));
+    let threads = match id {
+        "bank_ew_cov_wide_t1" => Some(1),
+        "bank_ew_cov_wide_t4" => Some(4),
+        _ => None,
+    };
+    if threads.is_some() {
+        online_polars::pool().unwrap_or_else(|e| panic!("{id}: {e}"));
+        bank.set_threads(threads)
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
     bank.fit_predict(&rows.frame(0, WARM_ROWS))
         .unwrap_or_else(|e| panic!("{id}: {e}"));
     let frame = rows.frame(WARM_ROWS, rows.len());
@@ -380,7 +413,9 @@ pub fn bank_setup(id: &str) -> BankRun {
 /// the thread that calls it. The bench calls this on the bank's own pool,
 /// where `fit_predict`'s hand-off to the pool runs inline; Callgrind counts
 /// the thread an entry point runs on, and nothing of the waiting caller.
-/// The output is returned, so its drop falls outside the count.
+/// The output is returned, so its drop falls outside the count. A wide
+/// case's block is [`WIDE_ROWS`] rows, on its bank's pool of one thread or
+/// four.
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub fn polars_online_budget_bank_rows(run: &mut BankRun) -> Vec<Column> {

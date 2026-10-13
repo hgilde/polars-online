@@ -59,7 +59,8 @@ rss = 0.30
 
 # --- instruction counts --------------------------------------------------------
 # One block of `meta.rows` rows of each hot path, after 2,000 rows of warm-up,
-# under Callgrind on CI's Linux runner (crates/online-bench).
+# under Callgrind on CI's Linux runner (crates/online-bench). The two wide bank
+# cases count a block of 8,192 rows (`WIDE_ROWS`), several runs long.
 
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step"
@@ -130,6 +131,12 @@ release = 2019603
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
 budget = 5753653
 release = 5766841
+
+[instructions.bank_ew_cov_wide_t1]
+what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
+
+[instructions.bank_ew_cov_wide_t4]
+what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of four threads, every thread counted: each run copied into the output while the next is learned"
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the

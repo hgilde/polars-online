@@ -272,7 +272,7 @@ against the last. There are three kinds:
 
 | kind | what is measured | where it runs | tolerance |
 |---|---|---|---|
-| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge` | `.github/workflows/budgets.yml`, on Linux | 2% |
+| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread and of four, every thread of the four counted | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
 | `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another with Polars reading one row group ahead on four threads, since its default read-ahead grows with a file this size and would be most of the number | the same file, in the extended tier: held on CI at each OS's floor Python and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23% | 30%: two runs of one build on one CI runner read 14-18% apart |
 
@@ -1980,6 +1980,76 @@ code layout alone.
   one output column from several threads, at rows that interleave.
 - `predict` keeps one buffer a stream for the whole chunk and copies it
   at the end, so a wide eager `predict` also holds its output twice.
+
+#### Across pool sizes
+
+**At every pool size from one thread to eight the new order is as fast as
+the old or faster, and its peak is lower.** On one thread `rayon::join`
+runs its two halves in turn: the next run is learned, then the run before
+it is copied. So nothing overlaps there. What is left is the order of the
+memory traffic. The old order wrote every run into fresh buffers and read
+them all back at the end. The new one copies each run one run later, into
+columns allocated once, and the run after it gets its buffers in the memory
+that copy freed. The gain is largest where the old order held the most: the
+230-statistic `ew_cov`, whose runs add up to its whole output, and the
+million-row runs of the narrow models, ten runs of about a hundred thousand
+rows each.
+
+Measured 2026-10-13 on an Apple M4 Pro, py-polars 2.0.0, `8950c46` (before)
+against `b796502` (after). Each build's extension sat in a package directory
+of its own, put first on `PYTHONPATH`. Four rounds, the order of the builds
+alternating, load 3.3 to 5.3. Each figure comes from a child interpreter of
+its own: rows a second, best of five calls on a fresh `ModelBank(threads=n)`;
+and peak resident memory above the baseline after the input is read, sampled
+every 2 ms, as `tests/test_budgets_memory.py` measures it:
+
+| run | threads | before, rows/s | after, rows/s | median | before, MiB | after, MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| `ew_cov`, 20 features, 230 statistics, 200k rows | 1 | 1.31-1.32M | 1.51-1.53M | +16% | 816-828 | 442 |
+|  | 2 | 1.48-1.59M | 1.90-1.91M | +29% | 807-826 | 442 |
+|  | 4 | 1.59-1.60M | 1.98M | +24% | 801-829 | 442-443 |
+|  | 8 | 1.63-1.64M | 1.95-1.97M | +20% | 802-830 | 443-445 |
+| `ewridge`, k=20, 10 targets, 200k rows | 1 | 1.43-1.44M | 1.47-1.48M | +3% | 194-204 | 142-145 |
+|  | 2 | 1.47-1.48M | 1.52-1.54M | +4% | 179-202 | 144 |
+|  | 4 | 1.49M | 1.54-1.55M | +4% | 171-209 | 145-150 |
+|  | 8 | 1.48-1.49M | 1.52-1.53M | +3% | 177-197 | 145-147 |
+| `ewridge`, k=5, 1M rows | 1 | 4.52-4.67M | 4.64-4.67M | +3% | 344-347 | 179-186 |
+|  | 2 | 4.66-4.68M | 4.90-4.92M | +5% | 346-353 | 173-184 |
+|  | 4 | 4.72-4.78M | 4.92-4.97M | +4% | 354-360 | 159-189 |
+|  | 8 | 4.72-4.75M | 4.90-4.91M | +4% | 356-363 | 160-192 |
+| `sgd`, k=20, 1M rows | 1 | 6.43-6.93M | 6.63-6.85M | +2% | 566 | 401-406 |
+|  | 2 | 6.93-7.03M | 7.31-7.54M | +5% | 569-573 | 390-401 |
+|  | 4 | 7.15-7.42M | 7.55-7.61M | +3% | 568-574 | 390-406 |
+|  | 8 | 6.98-7.03M | 7.27-7.33M | +4% | 570-574 | 388-408 |
+| `seqtest`, 1M rows | 1 | 10.99-11.14M | 12.25-12.38M | +11% | 277-281 | 100-106 |
+|  | 2 | 11.51-11.67M | 13.15-13.20M | +13% | 278-282 | 107-111 |
+|  | 4 | 11.79-11.84M | 13.13-13.23M | +12% | 279-283 | 102-118 |
+|  | 8 | 11.78-11.82M | 13.07-13.24M | +12% | 281-297 | 98-104 |
+
+The specs are `tests/test_budgets_memory.py`'s for the first two rows and
+`scripts/benchmark.py`'s for the other three (`sgd` with a learning rate of
+0.01 and `standardize=False`). Two more rounds on the default pool, 14
+threads, at load 4.0 to 4.3, agree with the table at the top of this
+section: `ew_cov` 1.87-1.89M before and 2.01M after (+7%), ten-target
+`ewridge` +1%, `ewridge` k=5 +3%, `sgd` +2%, `seqtest` +7%. The old order
+gains the most from more threads, since its copy at the end is one job per
+field across the pool. That is why its deficit is smallest there.
+
+**Two tests hold the bits across pool sizes, and two counts hold the cost.**
+`a_run_at_a_time_is_the_same_at_every_thread_count`
+(`crates/online-polars/src/bank/assembly_tests.rs`, extended tier) feeds
+the wide `ew_cov`, a four-target `ewridge` over two half-lives and a spec of
+five groups, each alone and the three in one bank, over one chunk and two,
+at 1, 2, 4 and 8 threads and on the default pool. It compares every field
+bit for bit, null slots included, and the saved state byte for byte. It
+also counts the runs each sink took: at least three to a chunk for the
+`ew_cov`, none for the grouped spec. Its fastest form runs in the
+essentials, as does `test_a_spec_one_stream_serves_is_the_same_at_every_count`
+(`tests/test_threads.py`) through `ModelBank(threads=...)`. The instruction
+cases `bank_ew_cov_wide_t1` and `bank_ew_cov_wide_t4` count one
+`fit_predict` of 8,192 rows of the same `ew_cov` on a pool of one thread and
+of four. The four-thread case counts every thread: Callgrind's
+instrumentation is off until a client request turns it on around the call.
 
 ## Model by model
 

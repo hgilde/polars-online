@@ -18,6 +18,10 @@ any change to the numbers a model returns.
   `ew_cov` over 200,000 rows returns 393 MiB and now peaks at 443-446 MiB
   above where it started, against 803-831 before, and runs 8% faster. A
   spec of many groups is unchanged. The output is the same to the bit.
+  At every `threads` count from 1 to 8 it is as fast as before or faster:
+  that `ew_cov` 16-29% faster, narrow models over a million rows 2-13%
+  faster, with their peak down 29-63% (`seqtest` 277-297
+  MiB to 98-118). A test holds every field to the bit at each count.
 - **The peak-memory (RSS) budgets are recorded, at a 30% tolerance.** Two
   runs of one build on one CI runner read 14-18% apart, so 15% failed one
   of them either way. They are held on CI at each OS's oldest supported
