@@ -10328,7 +10328,7 @@ tick, and that the series holding it up has a count near 1.
       push no workflow change until the tag exists. Step 12: budgets
       recorded `--release 1.0.1` (without the four-thread case `main`
       dropped); `RELEASES` += 1.0.1.
-- [ ] 258. **On x86, faer's matrix product commits about twice the L3
+- [x] 258. **On x86, faer's matrix product commits about twice the L3
       cache per thread** -- found 2026-10-13: CI 38410183746 (`b796502`, a
       plan-only push) failed its Windows Python 3.14 leg in the Rust tests
       of online-core: "memory allocation of 1006632960 bytes failed" on a
@@ -10389,6 +10389,13 @@ tick, and that the series holding it up has a count near 1.
       Rosetta); the to-the-bit pieces tests stay guarded off x86 until a
       CI run shows the `gemm` crate's x86 kernels sum a tile as the whole.
 **1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257.
+      *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
+      leg green, the Windows legs' Rust tests at full parallelism again (no
+      `--test-threads=2`), and `product_memory` holding each thread under
+      24 MiB on Linux and Windows x86. x86 throughput, CI's Benchmark on
+      `e157e46` against `92554fe` (one run each, 4 cpus, load 5.2): 35 of
+      38 configurations 1.00-1.31 of the old (the wide ones 1.12-1.15),
+      the rest 0.95-0.99, inside one run's scatter; Budgets green.
 - [x] 256. **Per-job feature lists in `po.gram.solve_subsets` and
       `lars_paths`** -- requested 2026-10-13. Today one call takes a single
       `features` list for every subset, target and draw, so a workload
