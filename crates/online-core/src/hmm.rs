@@ -1581,6 +1581,34 @@ mod tests {
             },
             "means and covs must be finite",
         );
+        // Task 252: no columns, and a transition, means or covs of the
+        // wrong size for `k` states over `d` columns, each named with the
+        // size it should have been and the size it was.
+        bad(
+            HmmCfg {
+                n_features: 0,
+                ..cfg(2, 2)
+            },
+            "hmm: n_features must be >= 1",
+        );
+        bad(
+            HmmCfg {
+                transition: Some(vec![0.5; 6]),
+                ..cfg(2, 2)
+            },
+            "hmm: transition must be 2x2, got 6",
+        );
+        bad(
+            HmmCfg {
+                means: Some(vec![0.0; 3]),
+                ..given(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
+            },
+            "hmm: means must be 2x2, got 3",
+        );
+        bad(
+            given(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
+            "hmm: covs must be 2 matrices of 2x2, got 7",
+        );
     }
 
     /// `k` sizes the transition matrix, `k²` cells, its counts and `k`
@@ -2279,5 +2307,50 @@ mod tests {
         .unwrap();
         full.step(&[0.1, 0.2], &[], 1.0, 1.0);
         assert!(full.factors.peek(0).is_some() && full.factors.peek(1).is_some());
+    }
+
+    /// Task 252: a filter that does not learn, handed a row of no weight and
+    /// a row whose density no state gives a finite value -- a quadratic form
+    /// overflowing against states of spread `1e-300` -- ages `n_eff` by the
+    /// step's decay and leaves its states and its filtered probabilities
+    /// exactly where they were; the second is counted as a failure and reads
+    /// nulls.
+    #[test]
+    fn a_filter_that_does_not_learn_leaves_its_states_on_every_row_it_ages() {
+        let mut m = Hmm::new(HmmCfg {
+            learn: false,
+            decay: Decay::Lam(0.5),
+            precision_prior: 1e-300,
+            means: Some(vec![0.0, 1.0]),
+            covs: Some(vec![1e-300, 1e-300]),
+            ..cfg(1, 2)
+        })
+        .unwrap();
+        // One usable row, near the second state, so the probabilities move
+        // off the prior and `n_eff` is 1.
+        let first = m.step(&[1.0], &[], 0.0, 1.0);
+        assert!(first.pred.iter().all(|v| v.is_finite()), "{first:?}");
+        assert_eq!(m.n_eff(), 1.0);
+        let (states, p, failures) = (m.states.clone(), m.p.clone(), m.solve_failures);
+
+        let idle = m.step(&[0.5], &[], 1.0, 0.0);
+        assert_eq!(idle.n_eff, 1.0, "read before the row's decay");
+        assert_eq!(m.n_eff(), 0.5, "aged by lam");
+        assert_eq!(
+            (&m.states, &m.p),
+            (&states, &p),
+            "nothing learned or filtered"
+        );
+        assert_eq!(m.solve_failures, failures);
+
+        let far = m.step(&[1e90], &[], 1.0, 1.0);
+        assert!(far.pred.iter().all(|v| v.is_nan()), "{far:?}");
+        assert_eq!(m.solve_failures, failures + 1, "the row is a failure");
+        assert_eq!(m.n_eff(), 0.25, "aged by lam, nothing added");
+        assert_eq!(
+            (&m.states, &m.p),
+            (&states, &p),
+            "nothing learned or filtered"
+        );
     }
 }

@@ -41,4 +41,15 @@ mod tests {
         assert_eq!(shown, "256.00001");
         assert!(shown.parse::<f64>().unwrap() > 256.0);
     }
+
+    /// Task 252: a size that no figure up to 20 decimals shows above its
+    /// budget -- one smaller than `1e-20` MiB, or one not over it at all --
+    /// is printed whole, every digit, rather than as a figure that reads as
+    /// 0 or as the budget.
+    #[test]
+    fn a_size_no_rounding_shows_over_its_budget_is_printed_whole() {
+        assert_eq!(mib_over(1e-30, 1e-31), "0.000000000000000000000000000001");
+        assert_eq!(mib_over(256.0, 256.0), "256");
+        assert_eq!(mib_over(1.0, 2.0), "1");
+    }
 }

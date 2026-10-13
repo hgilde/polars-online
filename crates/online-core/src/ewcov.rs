@@ -5376,3 +5376,6 @@ mod block_tests;
 
 #[cfg(test)]
 mod refusal_tests;
+
+#[cfg(test)]
+mod path_tests;

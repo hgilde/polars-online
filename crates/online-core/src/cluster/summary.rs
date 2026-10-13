@@ -1378,4 +1378,19 @@ mod tests {
         short_var.var.pop();
         assert!(!short_var.has_shape(3));
     }
+
+    /// Task 252: a merge across a distance whose square is past the range
+    /// leaves the radius where it was -- an infinite radius would admit
+    /// every row for good -- and still pools the weight and moves the
+    /// centre toward the other by its share.
+    #[test]
+    fn a_merge_across_a_distance_past_the_range_keeps_the_radius() {
+        let mut a = ClusterSummary::at(vec![0.0, 0.0], 2.0, 0.5);
+        let b = ClusterSummary::at(vec![1e200, 0.0], 2.0, 0.25);
+        a.merge_welford(&b, &[1.0, 1.0]);
+        assert_eq!(a.n, 4.0);
+        assert_eq!(a.r2, 0.5);
+        assert_eq!(a.c[1], 0.0);
+        assert!((a.c[0] - 5e199).abs() <= 1e185, "{}", a.c[0]);
+    }
 }

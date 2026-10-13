@@ -5009,3 +5009,84 @@ fn a_wide_fit_is_the_same_in_every_pool() {
     }
     assert!(moved.is_empty(), "moved a bit: {moved:#?}");
 }
+
+/// Task 252: a target never present has no rows behind its own Gram, so no
+/// Kish size: its coefficient variances are NaN in every slot, where the
+/// present target's are finite and positive.
+#[test]
+fn a_target_never_present_reads_no_coefficient_variance() {
+    let mut c = cfg(2, 2);
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    m.set_keep_factor(true);
+    let mut s = 3u64;
+    for i in 0..30 {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        let y = 1.0 + x[0] - 2.0 * x[1] + 0.1 * lcg(&mut s);
+        m.step(&x, &[Some(y), None], f64::from(u8::from(i > 0)), 1.0);
+    }
+    let Some(crate::CoefVariance::PerNoise(v)) = m.coef_variance() else {
+        panic!("ewridge's variances are over the noise");
+    };
+    assert!(v[0].iter().all(|x| x.is_finite() && *x > 0.0), "{:?}", v[0]);
+    assert!(v[1].iter().all(|x| x.is_nan()), "{:?}", v[1]);
+}
+
+/// Task 252: systems kept from a solve are what the variances read, so
+/// factors turned on after solves that kept none read no variance in any
+/// slot -- NaN, where nothing is kept to read it from -- until the next
+/// solve keeps them.
+#[test]
+fn factors_turned_on_after_a_solve_read_no_variance_until_the_next() {
+    let mut c = cfg(2, 1);
+    c.min_weight = 0.0;
+    let mut m = EwRidge::new(c).unwrap();
+    let mut s = 4u64;
+    for i in 0..30 {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        let y = 1.0 + x[0] - 2.0 * x[1] + 0.1 * lcg(&mut s);
+        m.step(&x, &[Some(y)], f64::from(u8::from(i > 0)), 1.0);
+    }
+    m.set_keep_factor(true);
+    let Some(crate::CoefVariance::PerNoise(v)) = m.coef_variance() else {
+        panic!("ewridge's variances are over the noise");
+    };
+    assert!(v[0].iter().all(|x| x.is_nan()), "{:?}", v[0]);
+    m.solve();
+    let Some(crate::CoefVariance::PerNoise(v)) = m.coef_variance() else {
+        panic!("ewridge's variances are over the noise");
+    };
+    assert!(v[0].iter().all(|x| x.is_finite() && *x > 0.0), "{:?}", v[0]);
+}
+
+/// Task 252: a state whose per-target `min_weight` list is not one per
+/// target is refused by name, as `set_target_min_weight` refuses it.
+#[test]
+fn a_state_with_a_target_min_weight_of_another_length_is_refused() {
+    let mut m = EwRidge::new(cfg(2, 2)).unwrap();
+    m.set_target_min_weight(vec![0.0, 3.0]).unwrap();
+    assert!(EwRidge::restore(&m.state()).is_ok(), "the control");
+    let mut st = m.state();
+    let ModelState::EwRidge(inner) = &mut st.model else {
+        unreachable!()
+    };
+    inner.target_min_weight = vec![0.0, 3.0, 1.0];
+    match EwRidge::restore(&st) {
+        Err(StateError::Invalid(e)) => assert!(e.contains("ew_ridge"), "{e}"),
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("loaded"),
+    }
+}
+
+/// Task 252: a stamp handed to a windowed fit keys its next learned row.
+#[test]
+fn a_stamp_handed_to_a_windowed_fit_keys_its_next_row() {
+    let mut c = cfg(1, 1);
+    c.window = Some(5.0);
+    let mut m = EwRidge::new(c).unwrap();
+    m.step(&[0.5], &[Some(1.0)], 0.0, 1.0);
+    let stamp = crate::Stamp::Raw(42.0, 0.5);
+    m.stamp_next(stamp);
+    let win = m.win.as_ref().expect("windowed");
+    assert_eq!(win.snaps.next_at(win.clock, 1.0).stamp, stamp);
+}

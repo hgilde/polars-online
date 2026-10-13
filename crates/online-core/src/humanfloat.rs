@@ -559,4 +559,84 @@ mod tests {
         let flat: Outer = serde_json::from_str(r#"{"c": 1.5}"#).unwrap();
         assert_eq!(flat.inner.c, Some(1.5));
     }
+
+    /// A string that is none of the three tags is refused, naming the
+    /// string and the tags it is not (task 252).
+    #[test]
+    fn a_string_that_is_no_tag_is_refused_by_name() {
+        let e = serde_json::from_str::<One>(r#"{"a": "infinity"}"#)
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            e.contains(r#"expected a number or "inf"/"-inf"/"nan", got "infinity""#),
+            "{e}"
+        );
+    }
+
+    /// The deepest list and the optional list, each refusing a value of the
+    /// wrong kind with what it expected (task 252).
+    #[test]
+    fn the_nested_and_optional_lists_name_what_they_expected() {
+        let mut d = serde_json::Deserializer::from_str("5");
+        let e = vec_vec_vec_f64_or_tag::deserialize(&mut d)
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            e.contains("expected a sequence of sequences of sequences of numbers or tags"),
+            "{e}"
+        );
+        let b: serde::de::value::BoolDeserializer<ValueError> = true.into_deserializer();
+        let e = opt_vec_f64_or_tag::deserialize(b)
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            e.contains("expected null or a sequence of numbers or tags"),
+            "{e}"
+        );
+    }
+
+    /// An optional list -- a closed row's `coef` -- writes `None` as `null`
+    /// in JSON and msgpack alike, and reads a `null` back as `None` whether
+    /// the format hands it as a none (JSON) or as a unit (serde's buffered
+    /// format, under an untagged enum); a list of optional lists reads a
+    /// buffered `null` the same way (task 252).
+    #[test]
+    fn an_absent_optional_list_is_null_both_ways() {
+        #[derive(Debug, Serialize, Deserialize)]
+        struct Coef {
+            #[serde(with = "opt_vec_f64_or_tag")]
+            c: Option<Vec<f64>>,
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            It(Coef),
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(untagged)]
+        enum EitherLists {
+            It(Lists),
+        }
+        assert_eq!(
+            serde_json::to_string(&Coef { c: None }).unwrap(),
+            r#"{"c":null}"#
+        );
+        #[derive(Serialize)]
+        struct Bare {
+            c: Option<Vec<f64>>,
+        }
+        assert_eq!(
+            rmp_serde::to_vec_named(&Coef { c: None }).unwrap(),
+            rmp_serde::to_vec_named(&Bare { c: None }).unwrap()
+        );
+        let json: Coef = serde_json::from_str(r#"{"c": null}"#).unwrap();
+        assert_eq!(json.c, None);
+        let Either::It(un) = serde_json::from_str(r#"{"c": null}"#).unwrap();
+        assert_eq!(un.c, None);
+        let Either::It(un) = serde_json::from_str(r#"{"c": [1.5, "-inf"]}"#).unwrap();
+        assert_eq!(un.c, Some(vec![1.5, f64::NEG_INFINITY]));
+        let EitherLists::It(lists) =
+            serde_json::from_str(r#"{"v": [null, [2.0, "inf"]]}"#).unwrap();
+        assert!(same(&lists.v, &[None, Some(vec![2.0, f64::INFINITY])]));
+    }
 }

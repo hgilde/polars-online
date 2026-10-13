@@ -1498,4 +1498,34 @@ mod tests {
             }
         }
     }
+
+    /// Task 252: a block naming a column past the last is refused by name,
+    /// before the column is read.
+    #[test]
+    fn a_block_naming_a_column_past_the_last_is_refused_by_name() {
+        let e = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 3], vec![1, 2]],
+            ..cfg(3)
+        })
+        .unwrap_err();
+        assert_eq!(e, "deco: block 0 names column 3, and there are 3");
+    }
+
+    /// Task 252: between-block values no correlation matrix can hold --
+    /// blocks 0 and 1, and 0 and 2, at 0.99, and 1 and 2 at −0.99 -- leave
+    /// `S` indefinite past what the jitter repairs, so the row has no
+    /// density: NaN, where the same blocks at consistent values have one.
+    #[test]
+    fn values_no_correlation_matrix_holds_have_no_density() {
+        let m = Deco::new(DecoCfg {
+            blocks: vec![vec![0, 1], vec![2, 3], vec![4, 5]],
+            ..cfg(6)
+        })
+        .unwrap();
+        let (s1, s2) = ([0.5, -0.5, 0.2], [1.0, 1.0, 1.0]);
+        let fine = m.loglik(&[0.0, 0.0, 0.0, 0.3, 0.3, 0.3], &s1, &s2);
+        assert!(fine.is_finite(), "{fine}");
+        let none = m.loglik(&[0.0, 0.0, 0.0, 0.99, 0.99, -0.99], &s1, &s2);
+        assert!(none.is_nan(), "{none}");
+    }
 }

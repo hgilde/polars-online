@@ -3406,4 +3406,57 @@ mod tests {
             }
         }
     }
+
+    /// Task 252: under `scalar`, a row on every column's mean has no
+    /// standardised spread to read an equicorrelation from (`Σ r² = 0`), so
+    /// it has no scalar and reports nothing. With no decay the means of
+    /// `(1, 1)` and `(−1, −1)` are exactly 0.
+    #[test]
+    fn a_row_on_every_mean_has_no_scalar_and_reports_nothing() {
+        let mut m = CorrChange::new(CorrChangeCfg {
+            scalar: true,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        m.step(&[1.0, 1.0], &[], 0.0, 1.0);
+        m.step(&[-1.0, -1.0], &[], 1.0, 1.0);
+        assert!(m.scalarise(&[0.5, -0.25]).is_finite());
+        assert!(m.scalarise(&[0.0, 0.0]).is_nan());
+        assert!(m.ring_row(&[0.0, 0.0]).is_none());
+        let out = m.predict(&[0.0, 0.0], 1.0);
+        assert!(out.pred.iter().all(|v| v.is_nan()), "{out:?}");
+    }
+
+    /// Task 252: a window whose every permuted statistic is undefined -- a
+    /// column that never moves has no correlation in any arrangement --
+    /// draws no critical value, and its rows report the statistic and the
+    /// critical value as NaN and no flag.
+    #[test]
+    fn a_permutation_with_no_defined_statistic_draws_no_critical_value() {
+        let w = 10;
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: w,
+            n_perm: 20,
+            permute_every_rows: 1,
+            ..cfg(2, CorrChangeKind::Window)
+        })
+        .unwrap();
+        let mut n = Normals::new(5);
+        let mut reported = 0;
+        for i in 0..3 * w {
+            let full = m.ring.len() + 1 >= 2 * w;
+            let out = m.step(&[n.normal(), 1.0], &[], f64::from(u8::from(i > 0)), 1.0);
+            if full {
+                assert!(
+                    out.pred[0].is_nan() && out.pred[1].is_nan(),
+                    "row {i}: {out:?}"
+                );
+                assert_eq!(out.pred[2], 0.0, "row {i}: no flag");
+                reported += 1;
+            }
+            assert!(m.perm_crit.is_none(), "row {i}");
+        }
+        assert!(reported > w, "the windows filled: {reported}");
+        assert!(m.ring.len() >= 2 * w);
+    }
 }

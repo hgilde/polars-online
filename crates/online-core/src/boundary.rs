@@ -538,4 +538,31 @@ mod tests {
             );
         }
     }
+
+    /// Task 252: a NaN has no probability, and no boundary at or below 0
+    /// holds the path, whose start is 0 (`P(Z_γ ≤ c) = 0` for `c ≤ 0`).
+    #[test]
+    fn a_nan_or_a_boundary_at_or_below_zero_reads_as_its_law_says() {
+        assert!(sup_abs_bm_cdf(f64::NAN).is_nan());
+        for gamma in [0.0, 0.25, 0.49] {
+            assert_eq!(boundary_cdf(0.0, gamma), 0.0);
+            assert_eq!(boundary_cdf(-1.5, gamma), 0.0);
+            assert_eq!(boundary_cdf(f64::NEG_INFINITY, gamma), 0.0);
+        }
+    }
+
+    /// Task 252: a bracket that starts more than 1 below the quantile -- 5
+    /// below it, through 0 where the law is 0 -- is widened by 2 until its
+    /// top is past the quantile, and the search settles on the same root as
+    /// one started 0.7 below: the series' 95 % point, to the solve's
+    /// tolerance at that tail (1.6e-5 measured).
+    #[test]
+    fn a_bracket_far_below_the_quantile_is_widened_to_it() {
+        let series = sup_abs_bm_quantile(0.95);
+        assert!(series - 5.0 + 1.0 < 0.0, "the bracket's top starts below 0");
+        let far = solved_quantile(0.95, 0.0, series - 5.0);
+        let near = solved_quantile(0.95, 0.0, series - 0.7);
+        assert!((far - series).abs() < 1e-4, "{far} against {series}");
+        assert!((far - near).abs() < 1e-8, "{far} against {near}");
+    }
 }

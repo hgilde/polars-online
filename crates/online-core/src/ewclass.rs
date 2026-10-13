@@ -2102,4 +2102,32 @@ mod tests {
             }
         }
     }
+
+    /// Task 252: each covariance shape's name is the word `parse` reads.
+    #[test]
+    fn each_covariance_shape_is_named_by_the_word_it_parses_from() {
+        for c in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+            assert_eq!(Covariance::parse(c.name()).unwrap(), c);
+        }
+        assert_eq!(Covariance::Full.name(), "full");
+        assert_eq!(Covariance::Shared.name(), "tied");
+    }
+
+    /// Task 252: under the shared shape, a pooled matrix no jitter can
+    /// factorize -- one class's co-moments overflowed, placed ([`place`]) --
+    /// withholds the row and is counted, as a class matrix does under the
+    /// full shape.
+    #[test]
+    fn a_pooled_matrix_that_will_not_factorize_is_counted() {
+        let mut m = EwClass::new(cfg(2, 2, Covariance::Shared)).unwrap();
+        m.step(&[1.0, 1.0], &[Some(0.0)], 0.0, 1.0);
+        m.step(&[-1.0, -1.0], &[Some(1.0)], 1.0, 1.0);
+        let fine = m.predict(&[0.0, 0.0], 1.0);
+        assert!(fine.pred.iter().all(|v| v.is_finite()), "{fine:?}");
+        place(&mut m, 0, &[0.0, 0.0], Some(&[f64::INFINITY; 4]));
+        assert_eq!(m.solve_failures, 0);
+        let out = m.step(&[0.0, 0.0], &[None], 1.0, 1.0);
+        assert!(out.pred.iter().all(|v| v.is_nan()), "{out:?}");
+        assert_eq!(m.solve_failures, 1);
+    }
 }

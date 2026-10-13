@@ -390,3 +390,28 @@ fn the_count_is_capped_at_the_pool_it_runs_on() {
         assert_eq!(got, want, "{asked} asked on a pool of {size}");
     }
 }
+
+/// Task 252: a matrix of no columns has no rows to hand out, whatever the
+/// thread count: `f` is never called; and each row of a matrix of some is
+/// handed to `f` once, with its own index, at every count.
+#[test]
+fn rows_hands_each_row_once_and_none_of_no_columns() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let calls = AtomicUsize::new(0);
+    for threads in [1, 3] {
+        rows(&mut [], 0, threads, |_, _| {
+            calls.fetch_add(1, Ordering::Relaxed);
+        });
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    for threads in [1, 2, 5] {
+        let mut c: Vec<f64> = (0..12).map(f64::from).collect();
+        rows(&mut c, 3, threads, |i, row| {
+            row.iter_mut().for_each(|v| *v += 100.0 * i as f64);
+        });
+        let want: Vec<f64> = (0..12)
+            .map(|v| f64::from(v) + 100.0 * f64::from(v / 3))
+            .collect();
+        assert_eq!(c, want, "{threads} threads");
+    }
+}

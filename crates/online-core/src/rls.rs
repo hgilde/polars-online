@@ -1357,4 +1357,56 @@ mod tests {
         }
         assert!(Rls::restore(&m.state()).is_ok());
     }
+
+    /// Task 252: without an intercept the row field is `sqrt(1 + x' A⁻¹ x ·
+    /// s₂ / s₁)` over the features alone, `A` from its definition with no
+    /// intercept column and its quadratic form from `crate::oracle`'s LU.
+    #[test]
+    fn without_an_intercept_the_row_field_reads_the_features_alone() {
+        let (lam, delta) = (0.97, 0.5);
+        let mut c = rls_cfg(2, 1, 1.0, delta);
+        c.decay = Decay::Lam(lam);
+        c.fit_intercept = false;
+        let mut m = Rls::new(c).unwrap();
+        let rows = readiness_rows(60);
+        let k = 2;
+        let mut a = vec![0.0; k * k];
+        let (mut s1, mut s2, mut prior) = (0.0, 0.0, delta);
+        let mut out = Vec::new();
+        for (i, (x, y, w)) in rows.iter().enumerate() {
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            if s1 > 0.0 {
+                let mut ap = a.clone();
+                for r in 0..k {
+                    ap[r * k + r] += prior;
+                }
+                // Read before the row, against the rows before it (the
+                // row's own decay scales `A` and `s₂ / s₁` alike, and
+                // cancels).
+                let want = (1.0 + crate::oracle::quad_form(&ap, x) * s2 / s1).sqrt();
+                assert!(m.row_error_inflation_into(x, d, &mut out));
+                assert!(
+                    (out[0] - want).abs() <= 1e-10 * want,
+                    "row {i}: {} vs {want}",
+                    out[0]
+                );
+            }
+            m.step(x, &[*y], d, *w);
+            let l = if i == 0 { 1.0 } else { lam };
+            a.iter_mut().for_each(|v| *v *= l);
+            prior *= l;
+            s1 *= l;
+            s2 *= l * l;
+            if y.is_some() && *w > 0.0 {
+                for r in 0..k {
+                    for cc in 0..k {
+                        a[r * k + cc] += w * x[r] * x[cc];
+                    }
+                }
+                s1 += w;
+                s2 += w * w;
+            }
+        }
+        assert!(s1 > 0.0, "the fit learned");
+    }
 }

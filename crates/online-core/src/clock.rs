@@ -3738,3 +3738,111 @@ mod task_250_paths {
         }
     }
 }
+
+/// Task 252: the clock's paths no other test reached, each driven through
+/// the public API and held to what it produces.
+#[cfg(test)]
+mod task_252_paths {
+    use super::*;
+
+    const T0: i64 = 1_704_067_200_000_000_000;
+    const SEC: i64 = 1_000_000_000;
+
+    /// A temporal clock whose session changes with no `session_gap` steps
+    /// by the column across the change, clamped to `[0, gap_cap]`: forward
+    /// by the step, back by nothing (and no refusal), and past the cap by
+    /// the cap -- while the elapsed clock counts every forward step whole
+    /// and a step back across the change as nothing.
+    #[test]
+    fn a_temporal_session_change_without_a_session_gap_steps_by_the_column() {
+        let cfg = ClockCfg {
+            gap_cap: 10.0,
+            session_gap: None,
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        let mut at = |ns: i64, session: u64| {
+            c.advance_stamped(&cfg, &caps, Some(ClockValue::Ns(ns)), Some(session), true)
+        };
+        at(T0, 1);
+        let s = i128::from(SEC);
+        let fwd = at(T0 + 3 * SEC, 2);
+        assert!(fwd.session_changed && !fwd.reset && !fwd.capped);
+        assert_eq!(fwd.d_clock, 3.0);
+        assert_eq!(fwd.stamp, Some(Stamp::Ns(3 * s)));
+        assert_eq!(fwd.elapsed_stamp, Some(Stamp::Ns(3 * s)));
+        let back = at(T0 + SEC, 3);
+        assert!(back.session_changed && back.backwards.is_none() && !back.reset);
+        assert_eq!(back.d_clock, 0.0);
+        assert_eq!(back.stamp, Some(Stamp::Ns(3 * s)));
+        assert_eq!(back.elapsed_stamp, Some(Stamp::Ns(3 * s)));
+        let far = at(T0 + 100 * SEC, 4);
+        assert!(far.session_changed && far.capped);
+        assert_eq!(far.d_clock, 10.0);
+        assert_eq!(far.stamp, Some(Stamp::Ns(13 * s)));
+        assert_eq!(far.elapsed_stamp, Some(Stamp::Ns(102 * s)));
+    }
+
+    /// A temporal value after a float one -- a stream of mixed forms only a
+    /// direct caller hands -- is stamped from the steps decided in seconds:
+    /// the two values read as the numbers they report.
+    #[test]
+    fn a_temporal_value_after_a_float_one_is_stamped_from_its_seconds() {
+        let cfg = ClockCfg {
+            gap_cap: 60.0,
+            ..ClockCfg::default()
+        };
+        let caps = ExactCaps::default();
+        let mut c = ClockState::new();
+        c.advance_stamped(&cfg, &caps, Some(ClockValue::F64(0.0)), None, true);
+        let a = c.advance_stamped(&cfg, &caps, Some(ClockValue::Ns(5 * SEC)), None, true);
+        assert_eq!(a.d_clock, 5.0);
+        assert_eq!(a.stamp, Some(Stamp::Ns(5 * i128::from(SEC))));
+        assert_eq!(a.elapsed_stamp, Some(Stamp::Ns(5 * i128::from(SEC))));
+    }
+
+    /// An integer and a float compare exactly: at `2^53 + 1`, which a double
+    /// reads as `2^53`, the integer is after the float, where the doubles
+    /// would tie.
+    #[test]
+    fn an_integer_and_a_float_compare_exactly() {
+        let two53 = 1i64 << 53;
+        assert!(ClockValue::I64(3).is_before(ClockValue::F64(3.5)));
+        assert!(!ClockValue::I64(4).is_before(ClockValue::F64(3.5)));
+        assert!(ClockValue::F64(3.5).is_before(ClockValue::I64(4)));
+        assert!(!ClockValue::F64(4.0).is_before(ClockValue::I64(4)));
+        assert!(!ClockValue::I64(two53 + 1).is_before(ClockValue::F64(two53 as f64)));
+        assert!(ClockValue::F64(two53 as f64).is_before(ClockValue::I64(two53 + 1)));
+        assert!(!ClockValue::F64(f64::NAN).is_before(ClockValue::I64(0)));
+        assert!(!ClockValue::I64(0).is_before(ClockValue::F64(f64::NAN)));
+    }
+
+    #[test]
+    fn a_float_is_a_float_clock_value() {
+        assert_eq!(ClockValue::from(2.5), ClockValue::F64(2.5));
+        assert_eq!(
+            ClockValue::from(-0.0).seconds().to_bits(),
+            (-0.0f64).to_bits()
+        );
+    }
+
+    /// An integer stamp against a stamp of another form reads both as the
+    /// numbers of clock units they hold: the whole part plus its fraction.
+    #[test]
+    fn an_integer_stamp_against_another_form_compares_as_its_value() {
+        let int = Stamp::Int(5, 0.5);
+        let one = Stamp::Raw(1.0, 0.0);
+        assert_eq!(int.cmp_span_ns(one, 4.0, None), Ordering::Greater);
+        assert_eq!(int.cmp_span_ns(one, 4.5, None), Ordering::Equal);
+        assert_eq!(int.cmp_span_ns(one, 5.0, None), Ordering::Less);
+        assert_eq!(
+            Stamp::Raw(7.0, 1.0).cmp_span_ns(Stamp::Int(2, 0.25), 3.75, None),
+            Ordering::Equal
+        );
+        assert_eq!(
+            Stamp::Ns(3 * i128::from(SEC)).cmp_span_ns(Stamp::Int(1, 0.0), 2.0, None),
+            Ordering::Equal
+        );
+    }
+}
