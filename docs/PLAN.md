@@ -9436,7 +9436,7 @@ tick, and that the series holding it up has a count near 1.
       `coef_stats` does not say its se for a ridge fit is least squares'
       covariance at the ridge's residual variance; `merge`'s claim that
       pooling 1,000 shards loses no more than pooling 2 is unmeasured.
-- [ ] 238. **A rewrite of the docs** -- the user, 2026-10-10: "After the
+- [x] 238. **A rewrite of the docs** -- the user, 2026-10-10: "After the
       merge to main do a rewrite of the docs, make a plan and reorganize
       sections if needed, go through every section of every doc following
       the guidelines and ensuring that we prefer to have recipes as examples
@@ -9970,7 +9970,7 @@ tick, and that the series holding it up has a count near 1.
       lines, so a multi-line call is one step); 99 of 107 such blocks broke
       it before, none after; it fails on the old docs. WRITING §3 and §6
       name it.
-- [ ] 250. **Performance before 1.0** -- the user, 2026-10-11: "There is no
+- [x] 250. **Performance before 1.0** -- the user, 2026-10-11: "There is no
       hurry to release let's look at performance", after release step 2
       measured 1.0 against 0.13.0's wheel (200,000 rows, seven interleaved
       rounds, load 2.6-4.4): most rows 0.72-0.93x (ewridge k=5 0.76, sgd raw
@@ -10067,6 +10067,10 @@ tick, and that the series holding it up has a count near 1.
       left for the user, task 247 resumes without asking -- the version
       bump, the full gate, the push, CI, the dispatch -- up to the PyPI
       approval, which stays the user's click.
+      *Ticked 2026-10-13* (the user: "Tick these"): both phases done and 1.0
+      released; the rows below 0.95 of 0.13.0 that remain (`sgd`, `kalman`,
+      `bocpd` under its default prior) are the cost of decided corrections,
+      accepted.
 - [x] 251. **Performance and memory budgets that only tighten** -- the user,
       2026-10-11: "How can we find these problems sooner next time", then
       "The instruction count and memory budget are good but we want to
