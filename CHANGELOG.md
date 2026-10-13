@@ -37,6 +37,7 @@ any change to the numbers a model returns.
   inside the suite read a process near 615 MB. Each check now runs as its
   own pytest process, and fails if that process runs anything but the one
   test.
+
 ## [1.0.0] — 2026-10-12
 
 **Upgrading from 0.13.0.** Refit every saved bank: a bank file from 0.13.0
