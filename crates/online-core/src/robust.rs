@@ -4440,4 +4440,87 @@ mod tests {
         }
         assert!(Robust::restore(&fresh.state()).is_ok() && Robust::restore(&m.state()).is_ok());
     }
+
+    /// Task 252: through the origin and standardized, features that are
+    /// always 0 have no raw second moment, so the band system keeps no
+    /// column: no factorization, every coefficient 0, nothing counted as a
+    /// failure -- in the solve and in the nudges of the rows outside the
+    /// band alike, whose leverage is then 0.
+    #[test]
+    fn features_with_no_second_moment_keep_no_column_through_the_origin() {
+        for loss in [
+            RobustLoss::Huber { delta: 1.0 },
+            RobustLoss::Quantile { tau: 0.5 },
+        ] {
+            let mut c = cfg(2, 1, loss);
+            c.fit_intercept = false;
+            c.standardize = true;
+            c.min_weight = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 21u64;
+            for i in 0..40 {
+                let y = 1.0 + 3.0 * lcg(&mut s);
+                let out = m.step(&[0.0, 0.0], &[Some(y)], f64::from(u8::from(i > 0)), 1.0);
+                if i > 0 {
+                    assert_eq!(out.pred[0], 0.0, "{loss:?}, row {i}");
+                }
+            }
+            assert_eq!(m.coefficients().unwrap()[0], vec![0.0, 0.0], "{loss:?}");
+            assert_eq!(m.solve_failures, 0, "{loss:?}");
+        }
+    }
+
+    /// Task 252: with an intercept and standardized, a feature that never
+    /// moves has no usable variance and is dropped, so a quantile nudge
+    /// from a row outside the band reads a band system of no column: its
+    /// leverage is the intercept's alone, and it is taken -- the target's
+    /// mean moves.
+    #[test]
+    fn a_nudge_against_a_band_system_of_no_column_reads_the_intercepts_leverage() {
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.standardize = true;
+        c.min_weight = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 22u64;
+        for i in 0..30 {
+            let y = 2.0 + 0.1 * lcg(&mut s);
+            m.step(&[1.0], &[Some(y)], f64::from(u8::from(i > 0)), 1.0);
+        }
+        m.systems.0[0] = None;
+        let ybar = m.ybar[0];
+        m.step(&[1.0], &[Some(50.0)], 1.0, 1.0);
+        assert!(
+            m.ybar[0] > ybar,
+            "the nudge was taken: {} against {ybar}",
+            m.ybar[0]
+        );
+        if let Some(sys) = m.systems.0[0].as_ref() {
+            assert!(sys.keep.is_empty() && sys.factor.is_none());
+        }
+    }
+
+    /// Task 252: a quantile nudge from a row that deviates on a feature
+    /// with no spread among the rows in the band has no curvature to lean
+    /// on: its movement is unbounded and its step 0, so neither the
+    /// target's mean nor its cross-moments move.
+    #[test]
+    fn a_nudge_along_a_feature_with_no_spread_takes_no_step() {
+        let mut c = cfg(2, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.min_weight = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 9u64;
+        for i in 0..40 {
+            let x1 = lcg(&mut s);
+            let y = 2.0 * x1 + 0.01 * lcg(&mut s);
+            m.step(&[1.0, x1], &[Some(y)], f64::from(u8::from(i > 0)), 1.0);
+        }
+        let (ybar, lo, cross) = (m.ybar[0], m.ybar_lo[0], m.cross[0].clone());
+        let out = m.step(&[2.0, 0.5], &[Some(100.0)], 1.0, 1.0);
+        assert!(out.pred[0].is_finite(), "the row was scored");
+        assert_eq!(
+            (m.ybar[0].to_bits(), m.ybar_lo[0].to_bits()),
+            (ybar.to_bits(), lo.to_bits())
+        );
+        assert_eq!(m.cross[0], cross);
+    }
 }

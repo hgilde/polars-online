@@ -2988,4 +2988,77 @@ mod tests {
         assert_eq!(scored, 99, "every row of target 1 but its first");
         assert_eq!(m.lam_selected()[1], 0.0, "the lighter penalty fits");
     }
+
+    /// Task 252: a path with no penalty, and one that rises, are refused by
+    /// name: the warm starts run the path from the heaviest penalty down.
+    #[test]
+    fn an_empty_or_rising_path_is_refused_by_name() {
+        assert_eq!(
+            Lasso::new(cfg(2, 1, vec![])).unwrap_err(),
+            "penalties must have at least one value"
+        );
+        assert_eq!(
+            Lasso::new(cfg(2, 1, vec![0.01, 0.1])).unwrap_err(),
+            "penalties must be decreasing"
+        );
+        // A tie is not a rise.
+        assert!(Lasso::new(cfg(2, 1, vec![0.1, 0.1, 0.01])).is_ok());
+    }
+
+    /// Task 252: a windowed fit exports the window's Grams -- what a fit
+    /// with no window and no decay reads from the rows inside the window
+    /// alone: the same column means, co-moments, target weights and centred
+    /// cross-moments, to rounding. Unit steps under `closed = "right"`: the
+    /// rows less than 10 clock units old are the last 10. Two penalties, so
+    /// the selection reads the window's errors from the first row, before
+    /// any row has left it. A stamp handed to the window keys its next
+    /// learned row.
+    #[test]
+    fn a_windowed_fit_exports_the_windows_moments() {
+        let rows = weighted_rows(2, 40, 47);
+        let mut c = cfg(2, 2, vec![0.05, 0.01]);
+        c.min_weight = 0.0;
+        let mut windowed = run(
+            LassoCfg {
+                window: Some(10.0),
+                ..c.clone()
+            },
+            &rows,
+        );
+        let inside = run(c, &rows[rows.len() - 10..]);
+        let (got, tm) = windowed.gram_parts();
+        let (want, _) = inside.gram_parts();
+        assert!(tm.is_some(), "the window's target moments");
+        assert_eq!(got.len(), want.len());
+        let close = |a: f64, b: f64, what: &str| {
+            assert!(
+                (a - b).abs() <= 1e-9 * (1.0 + b.abs()),
+                "{what}: {a} against {b}"
+            );
+        };
+        for (g, w) in got.iter().zip(&want) {
+            assert_eq!(g.targets, w.targets);
+            for (a, b) in g.target_weights.iter().zip(&w.target_weights) {
+                close(*a, *b, "target weight");
+            }
+            for i in 0..2 {
+                close(g.cov.mean(i), w.cov.mean(i), "mean");
+                for j in 0..2 {
+                    close(g.cov.cov(i, j), w.cov.cov(i, j), "co-moment");
+                }
+            }
+            for (a, b) in g
+                .cross_centred
+                .iter()
+                .flatten()
+                .zip(w.cross_centred.iter().flatten())
+            {
+                close(*a, *b, "centred cross-moment");
+            }
+        }
+        let stamp = crate::Stamp::Raw(42.0, 0.5);
+        crate::OnlineModel::stamp_next(&mut windowed, stamp);
+        let win = windowed.win.as_ref().expect("windowed");
+        assert_eq!(win.snaps.next_at(win.clock, 1.0).stamp, stamp);
+    }
 }

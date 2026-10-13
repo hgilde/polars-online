@@ -3328,5 +3328,63 @@ mod tests {
         assert_eq!((&m.beta[0], &m.g2[0]), (&vec![0.0, 0.0], &vec![4.0, 9.0]));
         assert!(m.step_mapped(0, 2.0, 1.0, None), "a usable one");
         assert_eq!(m.g2[0], vec![8.0, 13.0]);
+        // Task 252: the feature's gradient usable (`1e160 · 1e-200`) and the
+        // intercept's, `d` itself, with a square past the range: the row
+        // is not taken, and neither the coefficients nor the sums move.
+        let (b, g) = (m.beta[0].clone(), m.g2[0].clone());
+        m.zbuf.copy_from_slice(&[1.0, 1e-200]);
+        assert!(
+            !m.step_mapped(0, 1e160, 1.0, None),
+            "the intercept's square"
+        );
+        assert_eq!((&m.beta[0], &m.g2[0]), (&b, &g));
+    }
+
+    /// Task 252: a state without a scaler that carries a scaler's warm-up is
+    /// refused as it is read, naming the mismatch: without a scaler a
+    /// warm-up counts nothing.
+    #[test]
+    fn a_state_without_a_scaler_carrying_a_warm_up_is_refused() {
+        let mut plain = cfg(2, SgdLoss::Squared);
+        plain.decay = Decay::Halflife(50.0); // JSON has no `inf`
+        let mut scaled = plain.clone();
+        scaled.standardize = true;
+        let mut warm = Sgd::new(scaled).unwrap();
+        warm.step(&[0.5, -1.0], &[Some(1.0)], 0.0, 1.0);
+        assert_ne!(warm.warmup, Warmup::default(), "the scaler counted the row");
+        let mut v = serde_json::to_value(Sgd::new(plain).unwrap()).unwrap();
+        assert!(
+            serde_json::from_value::<Sgd>(v.clone()).is_ok(),
+            "the control"
+        );
+        v["warmup"] = serde_json::to_value(&warm.warmup).unwrap();
+        let e = serde_json::from_value::<Sgd>(v).unwrap_err().to_string();
+        assert!(
+            e.contains("sgd: the state's warm-up does not match its cfg's standardize"),
+            "{e}"
+        );
+    }
+
+    /// Task 252: under `huber`, a row whose weighted squared residual is
+    /// past the range (`1e300 · (1e99)²`) leaves the residual scale `s²` and
+    /// its weight where they were: an infinite scale would make every cut
+    /// infinite for good.
+    #[test]
+    fn a_squared_residual_past_the_range_leaves_the_scale() {
+        let mut c = cfg(1, SgdLoss::Huber { delta: 1.345 });
+        c.min_weight = 0.0;
+        let mut m = Sgd::new(c).unwrap();
+        for i in 0..5 {
+            let x = 0.1 * f64::from(i);
+            m.step(&[x], &[Some(0.5 + x)], f64::from(u8::from(i > 0)), 1.0);
+        }
+        let (s, w) = (m.sig2[0], m.wsig[0]);
+        assert!(s.is_finite() && s > 0.0 && w > 0.0, "{s} {w}");
+        let out = m.step(&[0.1], &[Some(1e99)], 1.0, 1e300);
+        assert!(out.pred[0].is_finite(), "the row was scored");
+        assert_eq!(
+            (m.sig2[0].to_bits(), m.wsig[0].to_bits()),
+            (s.to_bits(), w.to_bits())
+        );
     }
 }

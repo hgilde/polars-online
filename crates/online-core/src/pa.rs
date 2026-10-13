@@ -1885,4 +1885,44 @@ mod tests {
             assert_eq!(m.beta[0], after, "{what}");
         }
     }
+
+    /// Task 252: a state whose target spreads are not one per target, and
+    /// one without a scaler that carries a scaler's warm-up, are each
+    /// refused by name with every other part in shape.
+    #[test]
+    fn a_state_with_stray_spreads_or_a_stray_warm_up_is_refused() {
+        let plain = Pa::new(cfg(2, PaMode::Pa1)).unwrap();
+        let mut scaled = Pa::new(PaCfg {
+            standardize: true,
+            ..cfg(2, PaMode::Pa1)
+        })
+        .unwrap();
+        scaled.step(&[0.5, -1.0], &[Some(1.0)], 0.0, 1.0);
+        assert_ne!(
+            scaled.warmup,
+            Warmup::default(),
+            "the scaler counted the row"
+        );
+        let refused = |edit: &dyn Fn(&mut Pa), want: &str| {
+            let mut st = plain.state();
+            let ModelState::Pa(inner) = &mut st.model else {
+                unreachable!()
+            };
+            edit(inner);
+            match Pa::restore(&st) {
+                Err(StateError::Invalid(e)) => assert!(e.contains(want), "{e}"),
+                Err(e) => panic!("{want}: {e}"),
+                Ok(_) => panic!("{want}: loaded"),
+            }
+        };
+        assert!(Pa::restore(&plain.state()).is_ok(), "the control");
+        refused(
+            &|inner| inner.spread = TargetSpread::new(2),
+            "pa: the target spreads have the wrong shape",
+        );
+        refused(
+            &|inner| inner.warmup = scaled.warmup.clone(),
+            "pa: the state's warm-up does not match its cfg's standardize",
+        );
+    }
 }
