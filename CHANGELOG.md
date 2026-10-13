@@ -7,10 +7,20 @@ stable API takes a major version, and a minor version may also correct numbers
 that were wrong. Before 1.0, the minor version carried breaking changes, and
 any change to the numbers a model returns.
 
-## [Unreleased]
+## [1.0.1] — 2026-10-13
 
 ### Performance
 
+- **1.0.1 against 1.0.0, measured before the release**: every one of
+  `scripts/compare_release.py`'s 297 output fields over 31 specs is
+  identical to 1.0.0's, bit for bit. `scripts/benchmark.py` at 200,000
+  rows, seven rounds of each build in turn on an Apple M4 Pro at load 3.4
+  to 5.1, both builds compiled here from their tags: `ew_cov` at twenty
+  features is 6.8% faster and `corrchange`'s monitor 3.3%, and every other
+  configuration is within the runs' scatter. Against 1.0.0's wheel from
+  PyPI, built on another machine, a few configurations read 2-7% slower,
+  which the two builds of one place did not: the difference is the build,
+  not the code.
 - **A wide eager `fit_predict` holds its output once, not twice, for a
   spec with no group or a single group.** Each run of rows is copied into
   the output as it ends, on another thread while the next run is learned,
@@ -70,6 +80,17 @@ any change to the numbers a model returns.
   package statements that nothing ran. Tests now reach every one that can
   be reached, each asserting what the path produces; what is left is
   listed with the reason it cannot run.
+- **Exact where nothing excuses a tolerance.** In the clock, `bocpd`'s run
+  structure and the clustering models' compensated sums, 33 comparisons
+  that tolerated a difference are now exact, each shown to fail on a value
+  one bit off; every tolerance kept says why (libm in the path, an oracle
+  computed another way, or a summation order the code does not promise).
+- **Mutation testing of the new output assembly.** A scoped
+  `cargo mutants` run over it left 43 mutants; tests holding each field to
+  the same spec run as its parts now catch 34, and the other 9 change no
+  output (each with its reason). The output is held to the bit at 1, 2, 4
+  and 8 threads, and instruction-count budgets cover it at one thread and
+  at four.
 
 ## [1.0.0] — 2026-10-12
 

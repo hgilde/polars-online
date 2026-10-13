@@ -10298,6 +10298,23 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
+- [ ] 259. **Release 1.0.1** -- the user, 2026-10-13: "We want not only
+      tests of identity but tests of performance across thread counts. Then
+      the rest." A patch: task 255 (a)'s peak cut and speed-up, the three
+      fixes task 252 found, the unused window bindings removed; no output
+      changes. Before it: identity at 1, 2, 4, 8 threads and the default,
+      and performance measured at each (every count faster than 8950c46;
+      `ew_cov` +16% at one thread); instruction cases `bank_ew_cov_wide_t1`
+      and `_t4` (Callgrind's two runs of t4 agree to 0.02%); a scoped
+      mutation run over `bank/assembly.rs` (233: 178 caught, 12 unviable,
+      43 missed -> 34 caught by fields held to their parts, 9 equivalent);
+      the suite on py-polars 1.37.0 (6,861 + 21 passed); `compare_release`
+      against 1.0.0: 297 fields identical; `benchmark.py` against 1.0.0
+      built here from its tag: `ew_cov` +6.8%, `corrchange` +3.3%, the rest
+      within scatter (against PyPI's wheel a few rows read 2-7% slower, the
+      build's provenance). Steps after the bump: full gate, push, CI green,
+      dispatch, the user's PyPI click, verify, budgets `--release 1.0.1`,
+      `RELEASES` += 1.0.1.
 - [ ] 258. **On x86, faer's matrix product commits about twice the L3
       cache per thread** -- found 2026-10-13: CI 38410183746 (`b796502`, a
       plan-only push) failed its Windows Python 3.14 leg in the Rust tests
