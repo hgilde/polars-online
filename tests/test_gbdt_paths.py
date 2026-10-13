@@ -16,6 +16,7 @@ library's own route by the hash of the trees it grows, as
 
 from __future__ import annotations
 
+import inspect
 from collections import Counter
 
 import lightgbm as lgb
@@ -31,7 +32,8 @@ TIER = "essential"
 
 #: Every primitive numeric type a feature may arrive as, each holding small
 #: integers its narrowest type takes, so that the library's own route from a
-#: float array reads the same values.
+#: float array reads the same values; each float type twice, with and
+#: without nulls, since a column with none hands over no validity.
 TYPES = {
     "i8": pl.Int8,
     "i16": pl.Int16,
@@ -43,13 +45,25 @@ TYPES = {
     "u64": pl.UInt64,
     "f32": pl.Float32,
     "f64": pl.Float64,
+    "f32_full": pl.Float32,
+    "f64_full": pl.Float64,
 }
+
+
+def _write_batches(df: pl.DataFrame, path: object, rows: int) -> None:
+    """``df`` as an Arrow IPC file of record batches of ``rows`` rows:
+    ``record_batch_size`` where Polars takes it (2.0 on), one batch per
+    chunk before."""
+    if "record_batch_size" in inspect.signature(pl.DataFrame.write_ipc).parameters:
+        df.write_ipc(path, record_batch_size=rows)  # type: ignore[arg-type]
+    else:
+        pl.concat(list(df.iter_slices(rows)), rechunk=False).write_ipc(path)  # type: ignore[arg-type]
 
 
 @pytest.fixture(scope="module")
 def typed() -> pl.DataFrame:
-    """Ten features, one of each type, the even ones with 5% nulls, and a
-    label that depends on all of them."""
+    """A feature of each type, the even ones with 5% nulls (none in the
+    ``_full`` ones), and a label that depends on all of them."""
     rng = np.random.default_rng(42)
     n = 12_000
     cols = {}
@@ -58,7 +72,7 @@ def typed() -> pl.DataFrame:
         v = rng.integers(0, 60, size=n)
         y = y + (j % 3 - 1) * 0.05 * v
         s = pl.Series(name, v).cast(dtype)
-        if j % 2 == 0:
+        if j % 2 == 0 and not name.endswith("_full"):
             s = s.set(pl.Series(rng.random(n) < 0.05), None)
         cols[name] = s
     return pl.DataFrame({**cols, "y": y})
@@ -85,7 +99,7 @@ def test_every_numeric_feature_type_grows_xgboost_s_own_trees(typed, tmp_path):
     )
     want = xgb_trees(xgb.train(XGB, own, 10))
     path = tmp_path / "typed.arrow"
-    pl.concat(list(typed.iter_slices(5_000)), rechunk=False).write_ipc(path)
+    _write_batches(typed, path, 5_000)
     for source in (typed, str(path)):
         m = gbdt.xgboost_matrix(source, label="y", sample_rows=None, engine="native")
         np.testing.assert_array_equal(m.get_quantile_cut()[1], own.get_quantile_cut()[1])
@@ -112,7 +126,7 @@ def test_every_numeric_feature_type_grows_lightgbm_s_own_trees(typed, tmp_path, 
     ).construct()
     want = lgb_trees(lgb.train(LGB, own, 10))
     path = tmp_path / "typed.arrow"
-    pl.concat(list(typed.iter_slices(5_000)), rechunk=False).write_ipc(path)
+    _write_batches(typed, path, 5_000)
     for source in (typed, str(path)):
         ds = gbdt.lightgbm_dataset(
             source, label="y", params=params, in_memory=in_memory, engine="native"
@@ -122,8 +136,8 @@ def test_every_numeric_feature_type_grows_lightgbm_s_own_trees(typed, tmp_path, 
         assert lgb_trees(lgb.train(LGB, ds, 10)) == want, source
 
 
-@pytest.mark.parametrize("label", ["Int32", "UInt8", "Boolean"])
-def test_an_ipc_label_stored_as_an_integer_or_a_boolean_is_read_as_float64(tmp_path, label):
+@pytest.mark.parametrize("label", ["Int32", "UInt8", "Float32", "Boolean"])
+def test_an_ipc_label_stored_otherwise_than_float64_is_read_as_float64(tmp_path, label):
     """The native engine reads Arrow IPC files itself, and converts a label
     and a weight that are not Float64 as the plan casts them for any other
     source: the trees are the frame's."""
@@ -192,7 +206,7 @@ def test_a_refusal_part_way_stops_the_reader_and_names_the_row(tmp_path, monkeyp
     src: object = df
     if source == "ipc":
         path = tmp_path / "null.arrow"
-        pl.concat(list(df.iter_slices(500)), rechunk=False).write_ipc(path)
+        _write_batches(df, path, 500)
         src = str(path)
     build = gbdt.xgboost_matrix if lib == "xgboost" else gbdt.lightgbm_dataset
     kw = {"sample_rows": None} if lib == "xgboost" else {"in_memory": False}
@@ -226,7 +240,7 @@ def test_record_batches_that_hold_no_sample_row_are_passed_over(tmp_path):
     fall, and the bins are LightGBM's own."""
     df = frame()
     path = tmp_path / "batches.arrow"
-    pl.concat(list(df.iter_slices(200)), rechunk=False).write_ipc(path)
+    _write_batches(df, path, 200)
     params = {"verbose": -1, "bin_construct_sample_cnt": 50}
     ds = gbdt.lightgbm_dataset(str(path), label="y", weight="w", params=params, in_memory=False)
     own = lgb_own(df, params)
