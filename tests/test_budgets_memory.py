@@ -384,7 +384,7 @@ CHILD = textwrap.dedent(
 
     proc = psutil.Process()
     case, src, dst, spec = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
-    df = None if case == "streaming" else pl.read_parquet(src)
+    df = None if case.startswith("streaming") else pl.read_parquet(src)
     gc.collect()
     if sys.platform.startswith("linux"):
         import ctypes
@@ -400,7 +400,7 @@ CHILD = textwrap.dedent(
 
     sampler = threading.Thread(target=sample, daemon=True)
     sampler.start()
-    if case == "streaming":
+    if case.startswith("streaming"):
         pl.scan_parquet(src).online.fit_predict([spec]).sink_parquet(dst)
         rows = pl.scan_parquet(dst).select(pl.len()).collect().item()
     else:
@@ -445,8 +445,15 @@ def _spec(case: str) -> tuple[dict, pl.DataFrame]:
 
 #: The standard runs: a ten-target regression over 200,000 rows (the shape
 #: whose dense `coef` cost +3.9 GiB), 230 moments a row over 200,000, and a
-#: million rows streamed from a parquet scan to a parquet sink.
-RSS_CASES = ("ewridge_10_targets", "ew_cov_wide", "streaming")
+#: million rows streamed from a parquet scan to a parquet sink, with Polars
+#: reading one row group ahead on four threads. Polars' default read-ahead
+#: grows with a file this size: a scan to a sink with no model peaked at 227
+#: MiB for a million rows and 473 for three million, and at 95 and 110 with
+#: the prefetch at one (2026-10-13), so the bounded run measures this
+#: library, about 50-65 MiB of it.
+RSS_CASES = ("ewridge_10_targets", "ew_cov_wide", "streaming_bounded")
+#: Each case's environment beyond the child's own.
+RSS_ENV = {"streaming_bounded": {"POLARS_ROW_GROUP_PREFETCH_SIZE": "1", "POLARS_MAX_THREADS": "4"}}
 
 
 def _floor_python() -> tuple[int, int]:
@@ -467,7 +474,8 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
         df.write_parquet(src)
         r = subprocess.run(
             [sys.executable, "-c", CHILD, case, str(src), str(dst), json.dumps(spec)],
-            capture_output=True, text=True, encoding="utf-8", env=child.env(), timeout=600,
+            capture_output=True, text=True, encoding="utf-8",
+            env=child.env(**RSS_ENV.get(case, {})), timeout=600,
         )  # fmt: skip
         assert r.returncode == 0, r.stderr[-3000:]
         got = json.loads(r.stdout.strip().splitlines()[-1])
@@ -475,6 +483,9 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
         assert got["rows"] == df.height, (case, got)
         assert got["mib"] > 1.0, (case, got)
         measured[f"rss.{case}.{PLATFORM}"] = got["mib"]
+    budgeted = {k for k in budgets.entries(budgets.load()) if k.startswith("rss.")}
+    stale = sorted(k for k in budgeted if k.split(".")[1] not in RSS_CASES)
+    assert not stale, f"budgets for runs this test no longer makes: {stale}"
     # Held where the budget is measured, CI's leg at each OS's floor Python,
     # and reported everywhere else. The interpreter and the machine each move
     # the peak by about a fifth by themselves (2026-10-12): on CI's

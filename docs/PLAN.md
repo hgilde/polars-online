@@ -10270,10 +10270,16 @@ tick, and that the series holding it up has a count near 1.
       POLARS_ROW_GROUP_PREFETCH_SIZE=1` that drops to 95 -> 110, so the
       growth is Polars' default row-group prefetch reading ahead of the
       writer, bounded by that setting, and this library's own addition is
-      about 50-65 MiB at either size. Proposed: run the budget's streaming
-      case with the prefetch at 1 so it measures this library, re-measured
-      on CI with its budget replaced in the same change (a lower budget
-      reads as "under" otherwise).
+      about 50-65 MiB at either size. *(b) done 2026-10-13*: the budget's
+      case is now `streaming_bounded`, run with the prefetch at 1 on four
+      threads (203 MiB at 1M rows, 287 at 3M here; Polars alone 96 and 126);
+      the old `streaming` budgets removed, a stale-budget check added, and
+      the new case's budgets applied from the first CI run. Checked that
+      nothing leaks: a bank's state is 4,460 bytes after 1M rows and after
+      3M; fifteen repeated runs over 1M rows level off at 299 MiB for
+      Polars' `collect_batches` alone, 355 MiB with the bank (a constant 56
+      above it) and about 700 MiB eagerly -- the allocator's ramp, not a
+      slope. (a) stays open.
 - [x] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
       2026-10-12, offered a Linux session. `test_ffi_memory.py`'s
       `test_output_outliving_its_input` failed on both Ubuntu legs of CI

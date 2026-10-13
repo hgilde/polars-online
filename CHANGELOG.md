@@ -15,6 +15,11 @@ any change to the numbers a model returns.
   runs of one build on one CI runner read 14-18% apart, so 15% failed one
   of them either way. They are held on CI at each OS's oldest supported
   Python, where they are measured.
+- **The streaming memory budget measures this library, not Polars'
+  read-ahead.** It streams a million rows with Polars reading one row group
+  ahead on four threads. With Polars' default read-ahead, a plain scan to a
+  sink with no model peaked at 227 MiB for a million rows and 473 for three
+  million, and at 95 and 110 with the read-ahead at one row group.
 
 ### Fixed
 

@@ -1083,10 +1083,6 @@ darwin = { budget = 165.4688, release = 165.4688 }
 linux = { budget = 230.1836, release = 230.1836 }
 windows = { budget = 172.8243, release = 172.8243 }
 
-[rss.streaming]
-darwin = { budget = 193.4063, release = 193.4063 }
-linux = { budget = 225.0977, release = 225.0977 }
-windows = { budget = 196.0665, release = 196.0665 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]
