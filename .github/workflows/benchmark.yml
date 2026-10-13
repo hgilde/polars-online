@@ -82,6 +82,19 @@ jobs:
             # Throughput alone hides a change that serializes the fan-out: it
             # looks fine on one thread and costs 4x on ten (docs/PERFORMANCE.md P8).
             uv run python scripts/scaling_bench.py --rows 200000 --markdown
+            echo
+            echo "## Wide matrix products (k=1000)"
+            echo
+            # The products the throughput rows above are too narrow to reach:
+            # a wide Gram's blocked and per-row update on 1 to 4 threads, and a
+            # factorization, solve and eigendecomposition. faer's x86 kernel
+            # was left out of the build for its memory (PLAN task 258), so on
+            # this x86 runner these are the numbers that move; a dispatch with
+            # `ref` set to an older commit gives the same table before it.
+            echo '```'
+            POOL=4 cargo run --release --locked -p online-core --example gram_threads_bench -- 1000
+            cargo run --release --locked -p online-core --example solve_threads_bench -- 1000
+            echo '```'
           } | tee benchmark.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: keep the numbers as an artifact

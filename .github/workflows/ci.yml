@@ -250,15 +250,14 @@ jobs:
       # `--include-ignored`: CI runs the extended tier, everything. A Rust
       # test of that tier is `#[ignore = "extended: ..."]`, which a plain
       # `cargo test` skips (docs/TESTING.md, "Two tiers").
-      # `--test-threads=2` on Windows: on x86 each thread that runs one of
-      # faer's larger matrix products keeps a packing buffer of twice the
-      # L3 cache, 960 MiB on the Windows runners, and Windows commits all
-      # of it, so tests multiplying on many threads at once ran out of
-      # commit ("memory allocation of 1006632960 bytes failed", online-core's
-      # unit tests, 2026-10-13, twice). Two at a time fits; the tests are the
-      # same. The library's own fix is PLAN task 258.
+      # On every OS at the default test parallelism: the Windows legs ran two
+      # tests at a time while faer's x86 product kept a packing buffer of
+      # twice the L3 cache on every thread that had multiplied (960 MiB on
+      # these runners, committed whole), until PLAN task 258 left that
+      # kernel out of the build; `online-bench`'s `product_memory` test
+      # holds each thread's allocation to a bound here.
       - name: cargo test
-        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked -- --include-ignored ${{ runner.os == 'Windows' && '--test-threads=2' || '' }}
+        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked -- --include-ignored
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'

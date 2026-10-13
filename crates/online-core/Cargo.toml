@@ -22,6 +22,13 @@ unsafe_code = "forbid"
 
 [dependencies]
 faer.workspace = true
+# Not used by name: faer's `std` feature less `private-gemm-x86` (the
+# workspace Cargo.toml, task 258). All four are faer's own dependencies,
+# already linked; nothing new is linked (CLAUDE.md rule 12).
+faer-traits.workspace = true
+pulp.workspace = true
+nano-gemm.workspace = true
+libm.workspace = true
 # The Gram product's own tiles across threads (`gram_threads`, docs/PLAN.md
 # task 225); already linked, through faer and online-polars.
 rayon.workspace = true

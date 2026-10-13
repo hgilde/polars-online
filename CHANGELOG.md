@@ -29,6 +29,28 @@ any change to the numbers a model returns.
   columns, 3.3 ms against 24 ms (65 ms on 1.0.1). `docs/GRAM.md`, *A
   screen of its own for each path*, has a recipe.
 
+### Fixed
+
+- **A matrix product no longer keeps twice the CPU's L3 cache on each
+  thread that runs one, on x86** (task 258). faer's x86 product kernel
+  kept a packing buffer of that size on every thread that had ever
+  multiplied, made at the thread's first product and held until it
+  exited: 960 MiB a thread on GitHub's Windows runners, which Windows
+  commits whole, so a wide Gram (`ewridge`, `ew_cov`, the `po.gram`
+  functions) fitted on many threads could exhaust the commit limit, as
+  1.0.1's known issue says. The build now leaves that kernel out, and every
+  product the library runs takes the `gemm` crate, as Apple Silicon always
+  did: the Gram's blocked update and its pieces on `gram_threads`, and the
+  products inside the Cholesky factorization, the triangular solves and
+  the eigensolver. A thread keeps one slab the size of its share of the L2
+  cache, and a product's packing is sized to the product and freed when it
+  returns. Measured on an Apple M4 Pro: at most 9.6 MiB a thread for a
+  700-feature Gram on four `gram_threads`, its factorization and solve,
+  or a 300-feature eigendecomposition on eight threads, of which 3.2 MiB
+  is the slab. A test holds every thread under 24 MiB on each platform CI
+  runs, and CI's Windows Rust tests run at the default parallelism again.
+  Nothing new is linked; one crate fewer is.
+
 ### Changed
 
 - **A ridge fit of `po.gram.solve_subsets` on several targets may move in
@@ -37,11 +59,26 @@ any change to the numbers a model returns.
   target's last bits depend on the others beside it, so a fit is the same
   whichever targets (or jobs) share its call.
 
+- **On x86-64 (Linux, Windows and Intel macOS), a wide model's last bits
+  can move** (task 258): every matrix product past 16 × 16 × 16 entries,
+  and every product into a triangle (a blocked Gram's diagonal blocks, at
+  any width), the Gram's own or one inside a factorization, a solve or an
+  eigendecomposition, now runs on another kernel, which sums in another
+  order. Each entry of the Gram's
+  product is held, on every platform, to an exactly rounded oracle within
+  the rounding bound of a sum in any order, and the thread-count tests
+  still hold every `gram_threads` and pool size to the same bits. On Apple
+  Silicon nothing moves: the code that runs there is the same, and every
+  one of `scripts/release_probe.py`'s 297 output fields and 31 saved
+  states is the same as 1.0.1's, bit for bit, as are the wide products'
+  digests (`examples/product_digest.rs`) at up to 700 features.
+
 ### Performance
 
 - **A Gram's columns are looked up by name in a table**, where each name
   was a scan of the column list: `po.gram.subset` of 400 of 1,500 columns
   took 3.2 ms and takes 0.56 ms, and every `features=` resolves likewise.
+
 
 ## [1.0.1] — 2026-10-13
 

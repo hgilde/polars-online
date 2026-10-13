@@ -34,6 +34,7 @@ each reads as of its date, with the names of its day.
 | [18. The blocked Gram update](#18-the-blocked-gram-update-2026-09-08) | you have a wide `ewridge`: what `gram_block_rows` gains, and what a solve takes back | [the measurement](#the-measurement) · [three readings](#three-things-to-read-off-it) · [what it does not change](#what-blocking-does-not-change) |
 | [37. One wide Gram on several threads](#37-one-wide-gram-on-several-threads-2026-10-08) | one accumulator is the whole job, and you want what `gram_threads` gains on `ewridge` or `ew_cov` | |
 | [38. A solve's bits, whatever the pool](#38-a-solves-bits-whatever-the-pool-2026-10-09) | you want why a wide fit gives the same bits in a pool of any size | |
+| [41. A product's memory on each thread](#41-a-products-memory-on-each-thread-2026-10-13) | a wide fit on many threads takes more memory than its state, or you want what a matrix product allocates on a thread and how its rounding is checked | [what a thread allocates](#what-a-thread-allocates) · [what moved](#what-moved) · [speed](#speed) |
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [the scaler's fix](#where-sgd-lost-and-the-scalers-fix) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
 | [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
@@ -2610,10 +2611,12 @@ the moments against the build before the option, equal at `k` = 300, 700,
 1,000 and 2,000 on both the blocked and the per-row path. A first cut into
 128-wide tiles left a one-row sliver at some widths, which faer sends to a
 matrix-vector kernel, and that summed differently. Hence the 128-to-255
-rule. On x86-64 faer hands the whole triangle to one kernel whose blocking
-the pieces do not reproduce, so there the bits are the pieces' at every
-count and may differ in the last place from the single call's. §18 already
-says a blocked Gram's last bits differ between machines.
+rule. On x86-64 the same calls reach the same crate with that
+architecture's kernels, which have not been measured to sum a tile as the
+whole, so there the bits are the pieces' at every count and may differ in
+the last place from the single call's. Before §41 faer handed the whole
+triangle to a kernel of its own on x86-64. §18 already says a blocked
+Gram's last bits differ between machines.
 
 The rest of a merge runs inside the same piece while its tile is in cache:
 the history's scale, the two rank-1 corrections and the mirror into the
@@ -2799,6 +2802,107 @@ default pool moved once to it, at the widths where the pool mattered.
 
 ```sh
 cargo run --release -p online-core --example solve_threads_bench -- 512 1000 2000 4000
+```
+
+### 41. A product's memory on each thread (2026-10-13)
+
+**A matrix product now allocates a few MiB on a thread, not twice the L3
+cache.** faer 0.24 sends every product past 16 × 16 × 16 entries, and every
+product into a triangle, to a kernel of its own on x86-64 when its `std`
+feature is on. That kernel keeps a packing buffer of twice the L3 cache on
+every thread that has ever multiplied. It is made at the thread's first
+product and kept until the thread exits. The L3 size comes from the CPU,
+and on GitHub's Windows runners the buffer was 960 MiB. Linux backs only
+the pages a product touches, but Windows commits the whole allocation
+against the page file. Online-core's tests, which multiply on many threads
+at once, ran out of commit there twice: "memory allocation of 1006632960
+bytes failed", on a rayon worker inside the Gram's pieces (§37). A wide
+Gram fitted on many threads can do the same to a user.
+
+**The fix leaves that kernel out of the build.** faer is built without its
+`std` feature, the only feature that links the kernel. The rest of what
+`std` turns on is turned back on through Cargo's feature unification:
+`faer-traits`, `pulp`, `nano-gemm` and `libm`, each named with the same
+feature, and `gemm`'s through faer's `rayon`. These are the same crates
+already linked, with the same features as before. Every product then takes
+the `gemm` crate, as it always did on aarch64. That includes the Gram's
+tiles, the merge, and the products inside the Cholesky factorization, the
+triangular solves and the eigensolver, which no change to the Gram's own
+calls could reach. `gemm` keeps one slab per thread, the size of the
+thread's share of the L2 cache. A product's packing is sized to the
+product, and freed when it returns.
+
+#### What a thread allocates
+
+`crates/online-bench/tests/product_memory.rs` counts every allocation by
+the thread that made it, through a global allocator that keeps each
+thread's live bytes and their peak. Each case runs on a pool made for it,
+so every thread makes its first product inside the count. On an Apple M4
+Pro the slab is 3.2 MiB, the L2's 16 MiB over the five cores that share it:
+
+| case | threads | most on one thread |
+|---|---|---|
+| `Dᵀ D` into a 255-wide tile and a triangle, 600 rows | 4, each its own | 6.1 MiB |
+| `EwCov`, `k` = 700, `gram_block_rows` 256, `gram_threads` 4 | 4 | 9.6 MiB, the model's own 5 MiB of state included |
+| `SpdFactor`, `k` = 700, and a solve | 4 | 8.3 MiB |
+| `Pca`, `k` = 300, at the eigensolver's fixed degree | 8 | 7.2 MiB |
+
+The test holds every thread under 24 MiB. On x86-64 the old kernel's
+buffer alone was 64 MiB on a 32 MiB L3 and 960 MiB on the Windows runners,
+so the bound fails the old build there. The Windows Rust tests run at the
+default parallelism again.
+
+#### What moved
+
+On aarch64 nothing did, since the code that runs there is the code that
+ran before. Every one of `scripts/release_probe.py`'s 297 output fields
+and 31 saved states is the old build's, bit for bit. So are the digests of
+`examples/product_digest.rs`: a wide `EwCov` blocked and per row at 17 to
+700 features on one and four threads, factorizations and solves at 50 to
+700, eigendecompositions at 100 and 300, and faer's `XᵀX`. On x86-64 every
+such product now runs on another kernel, which sums in another order, so
+the last bits can move. They are held, on every platform, by
+`crates/online-core/src/pieces/oracle_tests.rs` and the merge's test in
+`ewcov/par/tests.rs`. Each entry of `C + α·DᵀD` is checked against an
+exactly rounded value: Dekker's products, Shewchuk's exact partials,
+rounded once. It must lie within the classical bound of a sum in any
+order, `γ₂ₙ₊₂ · (|C| + |α|·Σ|dd|)`, with `γₘ = m·u/(1 − m·u)`. The shapes
+are every width to 20, the edges of each cut, depths none to 1,025 either
+side of the kernels' panels, and magnitudes from 10⁻¹⁴⁰ to 10¹⁴⁰. A
+perturbation of 10⁻¹² in the scale, or one row left out, fails them.
+
+#### Speed
+
+On aarch64, interleaved runs of the two builds at a load of 6 to 9 gave the
+same times within their scatter. `examples/gram_threads_bench.rs` at
+`k` = 1,000 measured, in ps per Gram entry per row over three rounds:
+
+| path | build | 1 thread | 4 | 8 |
+|---|---|---|---|---|
+| blocked, 256 rows | before | 22.9-28.3 | 7.42-8.17 | 5.30-5.92 |
+| blocked, 256 rows | after | 22.8-24.1 | 7.39-8.13 | 5.32-5.43 |
+| per row | before | 153.3-158.0 | 82.6-91.9 | 61.2-72.1 |
+| per row | after | 150.4-154.4 | 69.8-86.0 | 65.2-69.3 |
+
+`examples/solve_threads_bench.rs` at `k` = 1,000, factorization and a
+solve: 8.2-8.4 ms on one thread before and 8.3-8.8 after; the
+eigendecomposition 142-146 ms in both. `scripts/benchmark.py`'s rows,
+none of which reaches a product this wide, are within 2% of the old build's
+at a load of 4.5 to 5.4, but for one cause found on the way. With faer
+built on only the two features it needs, a 20-feature `ew_cov`, which runs
+no faer code at all, read 1.90-1.92M rows/s against the old build's
+2.02-2.04M over four interleaved rounds. With faer's two unused defaults
+`rand` and `sparse-linalg` kept on, as before, it read 2.02-2.04M again,
+outputs the same to the bit. The change in the crate graph had moved the
+code generation of the whole build, so the two are kept, and only `npy`,
+which needs `std`, is dropped. On x86-64 the speed is
+not measured here. CI's Benchmark workflow times the same two examples on
+its Linux runner, and a dispatch with `ref` set to an older commit gives
+the table before the change.
+
+```sh
+cargo test --release -p online-bench --test product_memory -- --nocapture
+cargo run --release -p online-core --example product_digest
 ```
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)
