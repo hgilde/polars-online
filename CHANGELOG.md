@@ -27,6 +27,12 @@ any change to the numbers a model returns.
   or a string was read as a list of its keys or its characters, and refused
   as `invalid type: string "name", expected struct Spec`. It is still a
   `ValueError`.
+- **A closed-groups file written as CSV no longer fails partway through a
+  run.** For a model that keeps a Gram (`ewridge`, `lasso`, `ew_cov`), its
+  `columns` field is a list of names, which CSV refused only after rows
+  had been learned. It is written as JSON text now, as a numeric list such
+  as `coef` already was, and `str.json_decode(pl.List(pl.String))` reads
+  it back.
 
 ### Tests and documents
 
@@ -37,6 +43,12 @@ any change to the numbers a model returns.
   inside the suite read a process near 615 MB. Each check now runs as its
   own pytest process, and fails if that process runs anything but the one
   test.
+- **A test for every path no test reached.** Coverage of the Rust crates
+  under their own tests and the whole Python suite together, and of the
+  package with child interpreters traced, found 1,583 Rust lines and 157
+  package statements that nothing ran. Tests now reach every one that can
+  be reached, each asserting what the path produces; what is left is
+  listed with the reason it cannot run.
 
 ## [1.0.0] — 2026-10-12
 

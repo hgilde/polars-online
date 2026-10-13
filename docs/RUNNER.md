@@ -325,8 +325,10 @@ faster CSV parser py-polars' wheels carry, so a large CSV reads faster
 through py-polars and `ModelBank.fit_predict_batches`. CSV holds no
 records, so each spec's output column is written as `<spec>.<field>`
 columns. A numeric list such as `coef` becomes JSON text, which
-`str.json_decode(pl.List(pl.Float64))` reads back, and any other nested
-field is refused, naming the column and the formats that carry it.
+`str.json_decode(pl.List(pl.Float64))` reads back. So does a list of
+names, such as a closed Gram's `columns`, read back with
+`str.json_decode(pl.List(pl.String))`. Any other nested field is refused,
+naming the column and the formats that carry it.
 
 In TOML, a Windows path needs single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted

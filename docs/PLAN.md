@@ -10149,6 +10149,24 @@ tick, and that the series holding it up has a count near 1.
       beside it; (c) the mutation blind spot: what extending cargo-mutants
       to online-polars would take, and whether a Python mutation tool earns
       its run time, reported.
+      *Firm part done 2026-10-13*: the union of `cargo test --release
+      --include-ignored` and the whole pytest suite on an instrumented
+      release build (cargo-llvm-cov 0.9.0; the release profile for both, so
+      the extension's and the tests' profiles map to the same objects) left
+      1,583 Rust lines in 81 files unrun; pytest-cov with child
+      interpreters traced left 157 package statements. Four workers (core,
+      bank, windows, python) added tests for every reachable one: core
+      350 -> 106 non-test lines, bank 358 -> 131, windows 190 -> 26, Python
+      157 -> 14, the gbdt/gram bindings 182 -> 68; every line left is listed
+      with its reason in the workers' reports (defensive arms behind
+      validation, `unreachable!`, debug assertions, library failures after
+      success, inlined one-liners shown to run by a probe). Found: the
+      LightGBM Python route's unseen extra rows, `ModelBank(spec)`'s
+      message, and a closed-groups CSV that failed mid-run for Gram models
+      (string lists now written as JSON text). Measurement lesson: llvm-cov
+      merging many test binaries reports "functions have mismatched data"
+      and loses counts; per-binary profiles unioned are exact. The
+      tentative parts (a)-(c) remain open.
       Task 250's phase 2 does not wait on (a): its fixes are held by the
       golden pipeline, the fixtures, `compare_release.py` and
       `release_probe.py`'s columns and states, plus an activation test for

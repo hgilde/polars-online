@@ -730,8 +730,8 @@ fn an_output_in_a_directory_that_is_not_there_is_refused_first() {
 
 /// The closed groups sidecar: a run that closes nothing writes it empty with
 /// its schema; a run whose first chunk closes nothing and a later one does
-/// writes what was closed; and as CSV, which carries no list of strings,
-/// a Gram model's is refused and another model's written whole.
+/// writes what was closed; and as CSV, a Gram model's with its column names
+/// as JSON text, and another model's written whole.
 #[test]
 fn the_closed_groups_file_holds_what_closed_in_any_format() {
     let df = closing_stream();
@@ -756,18 +756,31 @@ fn the_closed_groups_file_holds_what_closed_in_any_format() {
     assert_eq!(got.height(), 11, "every group but the last");
     assert!(got.equals_missing(&want), "{got}\nvs\n{want}");
     // As CSV: a closed frame has no struct to unnest. A Gram's column names
-    // are a list of strings, which CSV cannot carry: refused, naming the
-    // column and the formats that can.
+    // are a list of strings, written as JSON text as a numeric list is, and
+    // read back as the list it was.
     let csv = tmp("closed.csv");
     cfg.closed_groups = Some(csv.clone());
-    let e = run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap_err();
-    assert!(
-        e.to_string().contains(
-            "csv cannot carry `columns` (list[str]): write parquet, ipc or ndjson instead"
-        ),
-        "{e}"
-    );
-    assert!(!csv.exists(), "nothing published");
+    run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap();
+    let got = CsvReadOptions::default()
+        .try_into_reader_with_file_path(Some(csv.clone()))
+        .unwrap()
+        .finish()
+        .unwrap();
+    assert_eq!(got.height(), want.height());
+    let lists = want.column("columns").unwrap().list().unwrap();
+    let texts = got.column("columns").unwrap().str().unwrap();
+    for (list, text) in lists.amortized_iter().zip(texts.iter()) {
+        let names: Vec<String> = list
+            .unwrap()
+            .as_ref()
+            .str()
+            .unwrap()
+            .iter()
+            .map(|s| s.unwrap().to_string())
+            .collect();
+        let read: Vec<String> = serde_json::from_str(text.unwrap()).unwrap();
+        assert_eq!(read, names);
+    }
     // A model that keeps no Gram closes rows CSV carries whole.
     cfg.specs = vec![
         serde_json::from_str(

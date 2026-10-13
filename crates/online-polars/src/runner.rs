@@ -1336,9 +1336,11 @@ impl<'a> ParquetSink<'a> {
 }
 
 /// `df` as CSV can carry it: each struct column flattened into
-/// `<name>.<field>` columns, and each numeric list column -- `coef` -- as
-/// JSON text (`[1.5,-0.25]`, empty for null), which
-/// `str.json_decode(pl.List(pl.Float64))` reads back. Anything else nested
+/// `<name>.<field>` columns, each numeric list column -- `coef` -- as JSON
+/// text (`[1.5,-0.25]`, empty for null), which
+/// `str.json_decode(pl.List(pl.Float64))` reads back, and each string list --
+/// a closed Gram's `columns` -- as JSON text too (`["x0","x1"]`), which
+/// `str.json_decode(pl.List(pl.String))` reads back. Anything else nested
 /// has no CSV form, and the error says which column and what to do.
 fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
     let structs: Vec<PlSmallStr> = df
@@ -1359,6 +1361,10 @@ fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
                 let text = list_as_json(c)?;
                 flat.replace_column(i, text)?;
             }
+            DataType::List(inner) if matches!(inner.as_ref(), DataType::String) => {
+                let text = string_list_as_json(c)?;
+                flat.replace_column(i, text)?;
+            }
             dt if dt.is_nested() => polars_bail!(
                 ComputeError:
                 "csv cannot carry `{}` ({}): write parquet, ipc or ndjson instead",
@@ -1369,6 +1375,38 @@ fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
         }
     }
     Ok(flat)
+}
+
+/// A string list column as JSON arrays of JSON strings in a string column,
+/// null for null and for a null element alike within an array (`null`).
+fn string_list_as_json(c: &Column) -> PolarsResult<Column> {
+    let ca = c.list()?;
+    let mut out = StringChunkedBuilder::new(c.name().clone(), ca.len());
+    let mut text = String::new();
+    for row in ca.amortized_iter() {
+        match row {
+            None => out.append_null(),
+            Some(s) => {
+                text.clear();
+                text.push('[');
+                for (j, v) in s.as_ref().str()?.iter().enumerate() {
+                    if j > 0 {
+                        text.push(',');
+                    }
+                    match v {
+                        Some(v) => text.push_str(
+                            &serde_json::to_string(v)
+                                .map_err(|e| polars_err!(ComputeError: "{e}"))?,
+                        ),
+                        None => text.push_str("null"),
+                    }
+                }
+                text.push(']');
+                out.append_value(&text);
+            }
+        }
+    }
+    Ok(out.finish().into_column())
 }
 
 /// A numeric list column as JSON arrays in a string column, null for null.
