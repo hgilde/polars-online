@@ -1518,4 +1518,311 @@ mod tests {
             assert!(RefreshTime::load_bytes(&bytes, names.clone(), pairs, false).is_ok());
         }
     }
+
+    fn ab() -> Vec<String> {
+        ["a", "b"].map(str::to_string).to_vec()
+    }
+
+    /// Task 252: the schema a lazy source declares before a row is read is
+    /// the one `feed` gives -- a joint grid and pairs, with a group and a
+    /// kept column, on a temporal clock that comes back in its own dtype.
+    #[test]
+    fn the_declared_schema_is_the_one_feed_gives() {
+        let t = Series::new("t".into(), [1i64, 2, 3, 4])
+            .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+            .unwrap();
+        let df = df!(
+            "series" => ["a", "b", "a", "b"],
+            "t" => t,
+            "v" => [1.0, 2.0, 3.0, 4.0],
+            "g" => [7i32, 7, 7, 7],
+            "tag" => ["p", "q", "r", "s"],
+        )
+        .unwrap();
+        let keep = vec!["tag".to_string()];
+        let cols = RefreshCols {
+            series: "series",
+            clock: "t",
+            value: "v",
+            group: Some("g"),
+            keep: &keep,
+        };
+        for pairs in [false, true] {
+            let mut rt = RefreshTime::new(ab(), pairs).unwrap();
+            let declared = rt.schema(&cols, df.schema());
+            let out = rt.feed(&df, &cols).unwrap();
+            assert_eq!(out.height(), 2, "pairs {pairs}");
+            assert_eq!(&declared, out.schema().as_ref(), "pairs {pairs}");
+        }
+        // Columns the input lacks take the dtypes the source would have to
+        // guess: a group as text, the clock as a number, a kept column null.
+        let rt = RefreshTime::new(ab(), false).unwrap();
+        let declared = rt.schema(&cols, &Schema::default());
+        assert_eq!(declared.get("g"), Some(&DataType::String));
+        assert_eq!(declared.get("time_refresh"), Some(&DataType::Float64));
+        assert_eq!(declared.get("tag"), Some(&DataType::Null));
+        assert_eq!(
+            declared
+                .iter_names()
+                .map(|n| n.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "g",
+                "time_refresh",
+                "a_value",
+                "b_value",
+                "n_obs_a",
+                "n_obs_b",
+                "retained_fraction",
+                "tag"
+            ]
+        );
+        // Without a group, the one `feed` gives too.
+        let ungrouped = RefreshCols {
+            group: None,
+            keep: &[],
+            ..cols
+        };
+        let mut rt = RefreshTime::new(ab(), false).unwrap();
+        let declared = rt.schema(&ungrouped, df.schema());
+        let out = rt.feed(&df, &ungrouped).unwrap();
+        assert_eq!(&declared, out.schema().as_ref());
+        assert!(declared.get("g").is_none());
+    }
+
+    /// Task 252: the input refusals no other test reached, each naming its
+    /// row: a null series name, a null or non-finite clock, an unsigned
+    /// clock past an `Int64`, an instant nanoseconds cannot hold, and a
+    /// chunk fed without the group column the chunks before it had.
+    #[test]
+    fn each_bad_row_is_refused_by_name() {
+        let refused = |df: DataFrame| {
+            RefreshTime::new(ab(), false)
+                .unwrap()
+                .feed(&df, &cols(&[]))
+                .unwrap_err()
+                .to_string()
+        };
+        let e = refused(
+            df!("series" => [Some("a"), None], "t" => [1.0, 2.0], "v" => [1.0, 2.0]).unwrap(),
+        );
+        assert!(
+            e.contains("refresh_time: row 1 has a null \"series\""),
+            "{e}"
+        );
+        for t in [
+            Column::new("t".into(), [Some(1.0), None]),
+            Column::new("t".into(), [Some(1.0), Some(f64::NAN)]),
+            Column::new("t".into(), [Some(1.0), Some(f64::INFINITY)]),
+            Column::new("t".into(), [Some(1i64), None]),
+        ] {
+            let df = DataFrame::new(
+                2,
+                vec![
+                    Column::new("series".into(), ["a", "b"]),
+                    t.clone(),
+                    Column::new("v".into(), [1.0, 2.0]),
+                ],
+            )
+            .unwrap();
+            let e = refused(df);
+            assert!(
+                e.contains("refresh_time: row 1 has a null or non-finite \"t\""),
+                "{t:?}: {e}"
+            );
+        }
+        let e = refused(
+            df!("series" => ["a", "b"], "t" => [1u64, u64::MAX], "v" => [1.0, 2.0]).unwrap(),
+        );
+        assert!(
+            e.contains(&format!(
+                "refresh_time: row 1 has \"t\" = {}, past 9223372036854775807, the largest \
+                 value an integer clock holds (an Int64's)",
+                u64::MAX
+            )),
+            "{e}"
+        );
+        // An unsigned clock inside an `Int64` runs, as its integers.
+        let mut rt = RefreshTime::new(ab(), false).unwrap();
+        let out = rt
+            .feed(
+                &df!("series" => ["a", "b", "a", "b"], "t" => [1u64, 2, 3, 4], "v" => [1.0, 2.0, 3.0, 4.0])
+                    .unwrap(),
+                &cols(&[]),
+            )
+            .unwrap();
+        assert_eq!(
+            out.column("time_refresh")
+                .unwrap()
+                .u64()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some(2), Some(4)]
+        );
+        // The year 3000 in milliseconds is past what nanoseconds hold.
+        let far = Series::new("t".into(), [0i64, 32_503_680_000_000])
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap();
+        let e = refused(df!("series" => ["a", "b"], "t" => far, "v" => [1.0, 2.0]).unwrap());
+        assert!(
+            e.contains("clock column \"t\" has an instant at row 1 that nanoseconds cannot hold"),
+            "{e}"
+        );
+        // A group column on one chunk and none on the next, and the reverse.
+        let df =
+            df!("series" => ["a", "b"], "t" => [1.0, 2.0], "v" => [1.0, 2.0], "g" => ["x", "x"])
+                .unwrap();
+        let keep: Vec<String> = Vec::new();
+        let grouped = RefreshCols {
+            group: Some("g"),
+            ..cols(&keep)
+        };
+        for (first, then, says) in [
+            (
+                &grouped,
+                &cols(&keep),
+                "fed without a group column after being fed with one",
+            ),
+            (
+                &cols(&keep),
+                &grouped,
+                "fed with a group column after being fed without one",
+            ),
+        ] {
+            let mut rt = RefreshTime::new(ab(), false).unwrap();
+            rt.feed(&df, first).unwrap();
+            let e = rt.feed(&df, then).unwrap_err().to_string();
+            assert!(e.contains(&format!("refresh_time: {says}")), "{e}");
+        }
+    }
+
+    /// Task 252: an integer clock and a float clock are one kind, ordered
+    /// against each other exactly -- across chunks of one run as across a
+    /// save -- so a step back from one to the other is refused, naming
+    /// both values, and a step forward runs. On a `Date` and a `Duration`
+    /// clock the refusal shows each value in the column's own kind.
+    #[test]
+    fn an_integer_and_a_float_clock_are_ordered_exactly() {
+        let chunk = |t: Column| {
+            DataFrame::new(
+                2,
+                vec![
+                    Column::new("series".into(), ["a", "b"]),
+                    t,
+                    Column::new("v".into(), [1.0, 2.0]),
+                ],
+            )
+            .unwrap()
+        };
+        // 2^53 + 2 as an integer, then 2^53 as a float: a double of the
+        // integer would tie it, the integers do not.
+        let big = (1i64 << 53) + 2;
+        for (first, then, ok) in [
+            (
+                Column::new("t".into(), [1i64, big]),
+                Column::new("t".into(), [9_007_199_254_740_992.0, 1e17]),
+                false,
+            ),
+            (
+                Column::new("t".into(), [1.0, 2.5]),
+                Column::new("t".into(), [2i64, 3]),
+                false,
+            ),
+            (
+                Column::new("t".into(), [1.0, 2.5]),
+                Column::new("t".into(), [3i64, 4]),
+                true,
+            ),
+            (
+                Column::new("t".into(), [1i64, 2]),
+                Column::new("t".into(), [2.5, 3.0]),
+                true,
+            ),
+        ] {
+            for saved in [false, true] {
+                let mut rt = RefreshTime::new(ab(), false).unwrap();
+                rt.feed(&chunk(first.clone()), &cols(&[])).unwrap();
+                if saved {
+                    let bytes = rt.save_bytes().unwrap();
+                    rt = RefreshTime::load_bytes(&bytes, ab(), false, false).unwrap();
+                }
+                let got = rt.feed(&chunk(then.clone()), &cols(&[]));
+                match (ok, got) {
+                    (true, Ok(out)) => assert_eq!(out.height(), 1),
+                    (false, Err(e)) => {
+                        let e = e.to_string();
+                        assert!(
+                            e.contains("refresh_time: row ")
+                                && e.contains(" has \"t\" = ")
+                                && e.contains(
+                                    "in the same group; the input must be in clock order"
+                                ),
+                            "{first:?} then {then:?}: {e}"
+                        );
+                    }
+                    (ok, got) => panic!("{first:?} then {then:?}, saved {saved}: {ok} {got:?}"),
+                }
+            }
+        }
+        // A `Date` and a `Duration` clock show their values as such.
+        let date = Series::new("t".into(), [19_725i32, 19_723])
+            .cast(&DataType::Date)
+            .unwrap()
+            .into_column();
+        let e = RefreshTime::new(ab(), false)
+            .unwrap()
+            .feed(&chunk(date), &cols(&[]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("row 1 has \"t\" = 2024-01-01, below the previous row's 2024-01-03"),
+            "{e}"
+        );
+        let span = Series::new("t".into(), [90_000i64, 30_000])
+            .cast(&DataType::Duration(TimeUnit::Milliseconds))
+            .unwrap()
+            .into_column();
+        let e = RefreshTime::new(ab(), false)
+            .unwrap()
+            .feed(&chunk(span), &cols(&[]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("row 1 has \"t\" = 30s, below the previous row's 1m 30s"),
+            "{e}"
+        );
+    }
+
+    /// Task 252: bytes that decode as a state but carry another magic or
+    /// another version are refused by what they are.
+    #[test]
+    fn a_state_of_another_kind_or_version_is_refused() {
+        let file = |magic: &str, version: u32| {
+            rmp_serde::to_vec_named(&RefreshFile {
+                magic: magic.into(),
+                version,
+                names: ab(),
+                pairs: false,
+                grouped: false,
+                kind: None,
+                states: Vec::new(),
+                last_time: Vec::new(),
+            })
+            .unwrap()
+        };
+        let load = |b: &[u8]| RefreshTime::load_bytes(b, ab(), false, false);
+        assert_eq!(
+            load(&file("polars-online windows", REFRESH_VERSION)).err(),
+            Some("not a refresh_time state".to_string())
+        );
+        assert_eq!(
+            load(&file(REFRESH_MAGIC, REFRESH_VERSION + 1)).err(),
+            Some(format!(
+                "refresh_time state version {} not supported (this build reads {REFRESH_VERSION})",
+                REFRESH_VERSION + 1
+            ))
+        );
+        assert!(load(&file(REFRESH_MAGIC, REFRESH_VERSION)).is_ok());
+    }
 }

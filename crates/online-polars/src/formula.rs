@@ -1029,4 +1029,97 @@ mod tests {
         assert_eq!(f.alias(), Some("spread"));
         assert!(!f.has_window_operator());
     }
+
+    /// Task 252: the refusals no other test reached, each by its words --
+    /// a list headed by no name, a name that is not text, a cast's third
+    /// argument that is not `"non_strict"`, parameters that are not an
+    /// object, and a variance's `bias` that is not a boolean.
+    #[test]
+    fn each_malformed_node_is_refused_in_its_own_words() {
+        for (text, says) in [
+            (r#"[]"#, "a list headed by its kind, got []"),
+            (r#"[1,["col","a"]]"#, "a list headed by its kind, got [1,"),
+            (
+                r#"["alias",["col","a"],3]"#,
+                "\"alias\" takes a name as its second argument, got 3",
+            ),
+            (
+                r#"["cast",["col","a"],7]"#,
+                "\"cast\" takes a name as its second argument, got 7",
+            ),
+            (
+                r#"["cast",["col","a"],"Float64","strict"]"#,
+                "\"cast\" takes \"non_strict\" as its third argument, got \"strict\"",
+            ),
+            (
+                r#"["ewm_mean",["col","a"],3]"#,
+                "\"ewm_mean\" takes its parameters as an object, got 3",
+            ),
+            (
+                r#"["ewm_var",["col","a"],{"half_life":1,"bias":"yes"}]"#,
+                "ewm_var: bias must be true or false, got \"yes\"",
+            ),
+            (
+                r#"["ewm_mean",["col","a"],{"half_life":1,"bias":true}]"#,
+                "ewm_mean: unknown parameter \"bias\"",
+            ),
+        ] {
+            let err = Node::parse(text).unwrap_err();
+            assert!(err.contains(says), "{text}: {err}");
+        }
+        // The variance's own `bias` reads, and is kept.
+        let Node::Op(op) = tree(r#"["ewm_std",["col","a"],{"half_life":1,"bias":true}]"#) else {
+            panic!("an operator");
+        };
+        assert!(op.bias);
+    }
+
+    /// Task 252: the expression a `clip` with no bound at all, a `clip` with
+    /// only an upper bound and a boolean literal compute; and the text a
+    /// tree shows (`Display`) is its list form, its root's alias `None`
+    /// unless the root is an `alias`.
+    #[test]
+    fn a_clip_without_a_lower_bound_and_a_boolean_literal_compute_the_formula() {
+        let df = df!("a" => [1.0, 4.0, -3.0], "b" => [2.0, 0.5, 1.0]).unwrap();
+        let cases = [
+            (
+                r#"["clip",["col","a"],["lit"],["lit"]]"#,
+                vec![Some(1.0), Some(4.0), Some(-3.0)],
+            ),
+            (
+                r#"["clip",["col","a"],null,null]"#,
+                vec![Some(1.0), Some(4.0), Some(-3.0)],
+            ),
+            (
+                r#"["clip",["col","a"],["lit"],["lit",2.0]]"#,
+                vec![Some(1.0), Some(2.0), Some(-3.0)],
+            ),
+            (
+                r#"["clip",["col","a"],["lit",0.0],["lit",2.0]]"#,
+                vec![Some(1.0), Some(2.0), Some(0.0)],
+            ),
+            (
+                r#"["when",["lit",false],["col","a"],["col","b"]]"#,
+                vec![Some(2.0), Some(0.5), Some(1.0)],
+            ),
+            (
+                r#"["when",["&",[">",["col","a"],["lit",0]],["lit",true]],["col","a"],["lit"]]"#,
+                vec![Some(1.0), Some(4.0), None],
+            ),
+        ];
+        for (text, want) in cases {
+            let e = tree(text)
+                .to_expr(&|_| unreachable!("no operator here"))
+                .alias("out");
+            let got = df.clone().lazy().select([e]).collect().unwrap();
+            let got: Vec<Option<f64>> = got.column("out").unwrap().f64().unwrap().iter().collect();
+            assert_eq!(got, want, "{text}");
+        }
+        let text = r#"["-",["ewm_mean",["col","a"],{"closed":"right","half_life":2.0,"min_samples":1}],["col","a"]]"#;
+        let f = tree(text);
+        assert_eq!(f.to_string(), text);
+        assert_eq!(format!("{f}"), f.to_json().to_string());
+        assert_eq!(f.alias(), None);
+        assert_eq!(tree(r#"["col","a"]"#).alias(), None);
+    }
 }

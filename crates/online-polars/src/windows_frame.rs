@@ -2996,4 +2996,508 @@ mod tests {
         }
         assert!(WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).is_ok());
     }
+
+    /// A run over the whole of `df` in one chunk, then the end of input.
+    fn run_whole(cfg: &str, df: &DataFrame) -> DataFrame {
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        let mut out = run.feed(df, None).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        out
+    }
+
+    fn values_of(df: &DataFrame, c: &str) -> Vec<Option<f64>> {
+        df.column(c).unwrap().f64().unwrap().iter().collect()
+    }
+
+    /// A formula whose value is its row's increment of `input`: a sum over
+    /// `(t - w, t]` holds only the row itself when stamps are at least `w`
+    /// apart, at weight `2^0 = 1`, and is null where the increment is.
+    fn increment_formula(input: &str, half_life: &str, window: &str) -> String {
+        format!(
+            r#"{{"name": "d", "tree": ["ewm_sum", ["increment", {input}],
+            {{"half_life": {half_life}, "window_size": {window}}}]}}"#
+        )
+    }
+
+    /// Task 252: the refusals of a call's plan no other test reached, each
+    /// by its words: an output named nothing or under a reserved prefix, an
+    /// increment of an increment, an increment or an operator whose input
+    /// Polars cannot type or that is text, a clock or group column the
+    /// frame has not got, and a `like=` spec reading a column it has not.
+    #[test]
+    fn a_call_the_plan_cannot_run_is_refused_by_name() {
+        let df = df!(
+            "t" => [0.0, 1.0],
+            "x" => [1.0, 2.0],
+            "s" => ["a", "b"],
+        )
+        .unwrap();
+        let one = |name: &str, tree: &str, policy: &str| {
+            format!(r#"{{"formulas": [{{"name": "{name}", "tree": {tree}}}]{policy}}}"#)
+        };
+        let clocked = r#", "clock": "t", "gap_cap": 10"#;
+        let sum = r#"["ewm_sum", ["col", "x"], {"half_life": 1}]"#;
+        for (json, says) in [
+            (one("", sum, clocked), "\"\" is no name for an output"),
+            (
+                one("@po:y", sum, clocked),
+                "\"@po:y\" is no name for an output",
+            ),
+            (
+                one("@in:0", sum, clocked),
+                "\"@in:0\" is no name for an output",
+            ),
+            (
+                one(
+                    "d",
+                    r#"["ewm_sum", ["increment", ["increment", ["col", "x"]]], {"half_life": 1}]"#,
+                    clocked,
+                ),
+                "d: an increment's input is a formula of the row's columns, not of another \
+                 increment",
+            ),
+            (
+                one("d", r#"["increment", ["col", "s"]]"#, clocked),
+                "d: an increment's input is a number or a temporal column, got str",
+            ),
+            (
+                one(
+                    "d",
+                    r#"["increment", ["-", ["col", "s"], ["lit", 1]]]"#,
+                    clocked,
+                ),
+                "d: the increment's input cannot be evaluated: ",
+            ),
+            (
+                one(
+                    "m",
+                    r#"["ewm_sum", ["-", ["col", "s"], ["lit", 1]], {"half_life": 1}]"#,
+                    clocked,
+                ),
+                "m: ewm_sum's input cannot be evaluated: ",
+            ),
+            (
+                one("m", sum, r#", "clock": "nope", "gap_cap": 10"#),
+                "with_windows: no clock column \"nope\" in the frame; it has [\"t\", \"x\", \"s\"]",
+            ),
+            (
+                one("m", sum, r#", "group": "g""#),
+                "with_windows: no group column \"g\" in the frame",
+            ),
+            (
+                one(
+                    "m",
+                    sum,
+                    r#", "clock": "t", "gap_cap": 10, "like": {"spec": "fit", "accept": ["x", "w"]}"#,
+                ),
+                "with_windows: like= spec \"fit\" reads column \"w\", which the frame has not got",
+            ),
+        ] {
+            let err = WindowsRun::new(config(&json), df.schema())
+                .err()
+                .unwrap_or_else(|| panic!("{json}: ran"));
+            assert!(err.contains(says), "{json}: {err}");
+        }
+    }
+
+    /// Task 252: on one clock every clock parameter is written the same
+    /// way, as a spec's are: a duration needs a temporal clock column,
+    /// named or not, and a number needs a numeric one; and on a `Date`
+    /// clock, whose smallest step is a day, a cap or a restart below a day
+    /// is refused, saying why.
+    #[test]
+    fn durations_and_numbers_must_match_the_clock() {
+        let day = |d: &[i32]| {
+            Series::new("d".into(), d)
+                .cast(&DataType::Date)
+                .unwrap()
+                .into_column()
+        };
+        let ms = Series::new("t".into(), [0i64, 1_000])
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap()
+            .into_column();
+        let df = DataFrame::new(
+            2,
+            vec![
+                ms,
+                day(&[19_723, 19_724]),
+                Column::new("f".into(), [0.0, 1.0]),
+                Column::new("x".into(), [1.0, 2.0]),
+            ],
+        )
+        .unwrap();
+        let call = |half_life: &str, policy: &str| {
+            format!(
+                r#"{{"formulas": [{{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+                {{"half_life": {half_life}}}]}}]{policy}}}"#
+            )
+        };
+        for (json, says) in [
+            (
+                call(r#""1s""#, r#", "clock": "f", "gap_cap": "10s""#),
+                "with_windows: half_life is a duration, which needs a temporal clock column \
+                 (Datetime, Date or Duration); clock is \"f\" (f64)",
+            ),
+            (
+                call(r#""1s""#, ""),
+                "with_windows: half_life is a duration, which needs a temporal clock column \
+                 (Datetime, Date or Duration); clock is not given",
+            ),
+            (
+                call("1", r#", "clock": "t", "gap_cap": 10"#),
+                "with_windows: half_life is a number, and clock column \"t\" is datetime[ms]; \
+                 write it as a duration",
+            ),
+            (
+                call(r#""3d""#, r#", "clock": "d", "gap_cap": "1h""#),
+                "with_windows: gap_cap is 1h, less than the smallest step clock column \"d\" \
+                 (date) can take: every step would be capped to it",
+            ),
+            (
+                call(
+                    r#""3d""#,
+                    r#", "clock": "d", "gap_cap": "5d", "restart_after_step_back": "1h""#,
+                ),
+                "with_windows: restart_after_step_back is 1h, less than the smallest step clock \
+                 column \"d\" (date) can take: no step back could be as small, so every one \
+                 would start the windows over, which 0 says directly",
+            ),
+        ] {
+            let err = WindowsRun::new(config(&json), df.schema())
+                .err()
+                .unwrap_or_else(|| panic!("{json}: ran"));
+            assert!(err.contains(says), "{json}: {err}");
+        }
+        // A day and more is a step a `Date` clock can take.
+        let ok = call(
+            r#""3d""#,
+            r#", "clock": "d", "gap_cap": "5d", "restart_after_step_back": "1d""#,
+        );
+        let out = run_whole(&ok, &df);
+        assert_eq!(values_of(&out, "m").len(), 2);
+    }
+
+    /// Task 252: an integer clock is read as its integers: a null on it is
+    /// refused by row, an unsigned value past an `Int64` by row with the
+    /// ceiling, and a step back by its size in integers; a refused first
+    /// row of a chunk leaves the run where the chunk before left it.
+    #[test]
+    fn an_integer_clock_is_refused_by_row_in_its_own_integers() {
+        let cfg = r#"{"formulas": [{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 3}]}], "clock": "t", "gap_cap": 100}"#;
+        let refused = |df: DataFrame| {
+            let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+            run.feed(&df, None).unwrap_err().to_string()
+        };
+        let nulls = df!("t" => [Some(1i64), None, Some(3)], "x" => [1.0, 2.0, 3.0]).unwrap();
+        let err = refused(nulls);
+        assert!(
+            err.contains("with_windows: row 1 has a null or non-finite clock \"t\""),
+            "{err}"
+        );
+        let past = df!("t" => [1u64, u64::MAX], "x" => [1.0, 2.0]).unwrap();
+        let err = refused(past);
+        assert!(
+            err.contains(&format!(
+                "with_windows: row 1 has clock \"t\" = {}, past 9223372036854775807, the \
+                 largest value an integer clock holds (an Int64's)",
+                u64::MAX
+            )),
+            "{err}"
+        );
+        // Near 2^62, where a double resolves 1024: the step back is 3, said
+        // as the integers' difference.
+        const T0: i64 = 1 << 62;
+        let df = df!(
+            "t" => [T0, T0 + 5, T0 + 9, T0 + 6, T0 + 10],
+            "x" => [1.0, 2.0, 4.0, 8.0, 16.0],
+        )
+        .unwrap();
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        let mut out = run.feed(&df.slice(0, 3), None).unwrap();
+        let err = run.feed(&df.slice(3, 2), None).unwrap_err().to_string();
+        assert!(
+            err.contains("clock column \"t\" goes backwards by 3 at row 3"),
+            "{err}"
+        );
+        // The refused chunk changed nothing: the chunk that follows the
+        // first in clock order goes on as one run of both would.
+        let next = df!("t" => [T0 + 10], "x" => [16.0]).unwrap();
+        out.vstack_mut(&run.feed(&next, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        let mut whole = df.slice(0, 3);
+        whole.vstack_mut(&next).unwrap();
+        assert!(out.equals_missing(&run_whole(cfg, &whole)));
+        // Sums over `(t - 3, t]`, from the definition: weights 2^(-d/10).
+        let got = values_of(&out, "m");
+        assert_eq!(got[..3], [Some(1.0), Some(2.0), Some(4.0)]);
+        let last = got[3].unwrap();
+        let want = 16.0 + 4.0 * 0.5f64.powf(0.1);
+        assert!((last - want).abs() < 1e-12, "{last} vs {want}");
+    }
+
+    /// Task 252: a step back larger than `restart_after_step_back` starts
+    /// an increment over -- the step taken in integers on an integer clock
+    /// and in integer nanoseconds on a temporal one -- so the row after it
+    /// has no increment, and the next one steps from it.
+    #[test]
+    fn a_restart_starts_the_increments_over_on_integer_and_temporal_clocks() {
+        let x = [1.0, 2.0, 4.0, 8.0, 16.0];
+        let want = [None, Some(1.0), Some(2.0), None, Some(8.0)];
+        // An integer clock near 2^62: steps back of 7 restart under 2.
+        const T0: i64 = 1 << 62;
+        let int = df!("t" => [T0 + 10, T0 + 11, T0 + 12, T0 + 5, T0 + 6], "x" => x).unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100,
+            "restart_after_step_back": 2}}"#,
+            increment_formula(r#"["col", "x"]"#, "1000", "0.5")
+        );
+        assert_eq!(values_of(&run_whole(&cfg, &int), "d"), want);
+        // A temporal clock: a step back of 7 s restarts under 2 s.
+        let ns = Series::new("t".into(), [10i64, 11, 12, 5, 6].map(|s| s * 1_000_000_000))
+            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+            .unwrap();
+        let temporal = df!("t" => ns, "x" => x).unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}], "clock": "t", "gap_cap": "100s",
+            "restart_after_step_back": "2s"}}"#,
+            increment_formula(r#"["col", "x"]"#, r#""1000s""#, r#""500ms""#)
+        );
+        assert_eq!(values_of(&run_whole(&cfg, &temporal), "d"), want);
+    }
+
+    /// Task 252: a null input of an integer or a temporal increment is no
+    /// step: its row's increment is null, and the next row steps from the
+    /// last value -- an integer one in integers, a temporal one in seconds.
+    #[test]
+    fn a_null_integer_or_temporal_input_is_no_step() {
+        let at = Series::new("at".into(), [Some(0i64), None, Some(2_500), Some(4_000)])
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap();
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0],
+            "y" => [Some(1i64), None, Some(4), Some(10)],
+            "at" => at,
+        )
+        .unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}, {}], "clock": "t", "gap_cap": 100}}"#,
+            increment_formula(r#"["col", "y"]"#, "1000", "0.5"),
+            increment_formula(r#"["col", "at"]"#, "1000", "0.5").replace("\"d\"", "\"e\"")
+        );
+        let out = run_whole(&cfg, &df);
+        assert_eq!(values_of(&out, "d"), [None, None, Some(3.0), Some(6.0)]);
+        assert_eq!(values_of(&out, "e"), [None, None, Some(2.5), Some(1.5)]);
+    }
+
+    /// Task 252: a null group key is a group of its own -- for the
+    /// increments as for the windows -- and keeps its increment across a
+    /// save and a load; the next file's first row, of that group, is put
+    /// to the clock policy as that group's (a step forward, which runs).
+    #[test]
+    fn a_null_group_keeps_its_increments_across_a_save() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "g" => [Some("a"), None, None, Some("a"), None, Some("a")],
+            "x" => [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+        )
+        .unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100, "group": "g"}}"#,
+            increment_formula(r#"["col", "x"]"#, "1000", "0.5")
+        );
+        // From the definition: each group's own previous value.
+        let want = [None, None, Some(2.0), Some(7.0), Some(12.0), Some(24.0)];
+        assert_eq!(values_of(&run_whole(&cfg, &df), "d"), want);
+        let mut first = WindowsRun::new(config(&cfg), df.schema()).unwrap();
+        let mut out = first.feed(&df.slice(0, 3), None).unwrap();
+        let state = first.save_bytes().unwrap();
+        let mut second = WindowsRun::load_bytes(&state, config(&cfg), df.schema()).unwrap();
+        // The next file begins with the null group's row.
+        let tail = df!(
+            "t" => [4.0, 5.0],
+            "g" => [None, Some("a")],
+            "x" => [16.0, 32.0],
+        )
+        .unwrap();
+        out.vstack_mut(&second.feed(&tail, None).unwrap()).unwrap();
+        out.vstack_mut(&second.finish().unwrap()).unwrap();
+        // Rows 0..3 and then 4, 5: the null group's 16 steps from its 4.
+        assert_eq!(
+            values_of(&out, "d"),
+            [None, None, Some(2.0), Some(12.0), Some(31.0)]
+        );
+    }
+
+    /// Task 252: what a run reports of its windows' cost, the rows their
+    /// queues hold: a window of 2 over rows a unit apart holds the two rows
+    /// of the window the last stamp resolved and the row that waits for the
+    /// next stamp, three; at the end of input, the last row's window, two,
+    /// kept for a next file.
+    #[test]
+    fn a_run_counts_the_rows_its_windows_hold() {
+        let cfg = r#"{"formulas": [{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 2}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        assert_eq!(run.queued(), 0);
+        run.feed(&df, None).unwrap();
+        assert_eq!(run.queued(), 3);
+        run.finish().unwrap();
+        assert_eq!(run.queued(), 2);
+    }
+
+    /// Task 252: `save` writes what `save_bytes` returns, to a file a run
+    /// loads and goes on from as one run would.
+    #[test]
+    fn a_state_saved_to_a_file_resumes() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut out = first.feed(&df.slice(0, 4), None).unwrap();
+        let dir = std::env::temp_dir().join(format!("po-windows-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.msgpack");
+        first.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(bytes, first.save_bytes().unwrap());
+        let mut second = WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).unwrap();
+        out.vstack_mut(&second.feed(&df.slice(4, 2), None).unwrap())
+            .unwrap();
+        out.vstack_mut(&second.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&run_whole(FORWARD, &df)));
+    }
+
+    /// Task 252: a state is refused, by name, when its body does not decode
+    /// though its header does, when its core is not its own call's, when it
+    /// holds another count of rows than its core, when the rows it holds
+    /// are of another schema than the frame, and when it was fed another
+    /// kind of clock than the frame's.
+    #[test]
+    fn a_state_that_does_not_fit_its_call_or_its_frame_is_refused() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        first.feed(&df.slice(0, 4), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        let file: FileIn = rmp_serde::from_slice(&bytes).unwrap();
+        let load = |b: &[u8]| {
+            WindowsRun::load_bytes(b, config(FORWARD), df.schema())
+                .err()
+                .expect("refused")
+        };
+        // The header alone.
+        #[derive(Serialize)]
+        struct Only<'a> {
+            magic: &'a str,
+            version: u32,
+        }
+        let header = rmp_serde::to_vec_named(&Only {
+            magic: WINDOWS_MAGIC,
+            version: WINDOWS_VERSION,
+        })
+        .unwrap();
+        let err = load(&header);
+        assert!(
+            err.starts_with("with_windows: the state is damaged, or was written by a build"),
+            "{err}"
+        );
+        let encode = |core: &Windows, held: &[u8]| {
+            rmp_serde::to_vec_named(&FileOut {
+                magic: WINDOWS_MAGIC,
+                version: WINDOWS_VERSION,
+                config: &file.config,
+                core,
+                held,
+                increments: &file.increments,
+                stream_clock: file.stream_clock,
+                key_dtypes: &file.key_dtypes,
+                resume_skip: file.resume_skip,
+                resume_first: file.resume_first,
+                resume_first_session: file.resume_first_session,
+                last_row: &file.last_row,
+            })
+            .unwrap()
+        };
+        // The core of another call: a window of 3 under this call's 2.
+        let other = FORWARD.replace("\"window_size\": 2", "\"window_size\": 3");
+        assert_ne!(other, FORWARD);
+        let mut run3 = WindowsRun::new(config(&other), df.schema()).unwrap();
+        run3.feed(&df.slice(0, 4), None).unwrap();
+        let file3: FileIn = rmp_serde::from_slice(&run3.save_bytes().unwrap()).unwrap();
+        let err = load(&encode(&file3.core, &file.held));
+        assert_eq!(
+            err,
+            "with_windows: the state's operators do not match its own call"
+        );
+        // Held rows of another count than the core's.
+        let mut fewer = IpcReader::new(Cursor::new(file.held.clone()))
+            .finish()
+            .unwrap();
+        assert!(fewer.height() > 1);
+        fewer = fewer.slice(0, 1);
+        let mut ipc = Vec::new();
+        IpcWriter::new(&mut ipc).finish(&mut fewer).unwrap();
+        let err = load(&encode(&file.core, &ipc));
+        assert_eq!(
+            err,
+            format!(
+                "with_windows: the state holds 1 rows and its core {}; it is damaged",
+                file.core.held()
+            )
+        );
+        // Held rows of another schema than the frame: `t` an integer.
+        let int = df!(
+            "t" => [0i64, 1, 2, 3, 4, 5],
+            "x" => [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+            "wide" => df.column("wide").unwrap().as_materialized_series().clone(),
+        )
+        .unwrap();
+        let err = WindowsRun::load_bytes(&bytes, config(FORWARD), int.schema())
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains(&format!(
+                "with_windows: the state holds {} rows with columns [\"t: f64\", \"x: f64\", \
+                 \"wide: str\"], and the frame has [\"t: i64\", \"x: f64\", \"wide: str\"]",
+                file.core.held()
+            )),
+            "{err}"
+        );
+        // A state that holds no row loads on that frame, and its first chunk
+        // is refused there: it was fed a float clock.
+        let mut done = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        done.feed(&df.slice(0, 4), None).unwrap();
+        done.finish().unwrap();
+        assert_eq!(done.held(), 0);
+        let mut resumed =
+            WindowsRun::load_bytes(&done.save_bytes().unwrap(), config(FORWARD), int.schema())
+                .unwrap();
+        let err = resumed
+            .feed(&int.slice(4, 2), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "with_windows: clock column \"t\" is i64, and the state it resumes was fed a \
+                 float one; resume a state on the kind of clock that wrote it"
+            ),
+            "{err}"
+        );
+        // And the other way: a state fed an integer clock refuses a float one.
+        let mut done = WindowsRun::new(config(FORWARD), int.schema()).unwrap();
+        done.feed(&int.slice(0, 4), None).unwrap();
+        done.finish().unwrap();
+        let mut resumed =
+            WindowsRun::load_bytes(&done.save_bytes().unwrap(), config(FORWARD), df.schema())
+                .unwrap();
+        let err = resumed.feed(&df.slice(4, 2), None).unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "with_windows: clock column \"t\" is f64, and the state it resumes was fed an \
+                 integer one"
+            ),
+            "{err}"
+        );
+    }
 }
