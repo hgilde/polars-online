@@ -105,6 +105,7 @@ class TestTheSteps:
         off = offsets(df.height)
         # Before the row: the clock covered up to the row before it.
         want = [0.0] + [1.0 - 2.0 ** (-(o - off[0]) / HALF_LIFE) for o in off[:-1]]
+        # Tolerance (task 252 (b)): libm, the bank's `exp2` against `pow`.
         assert got["settled_frac"].to_list() == pytest.approx(want, abs=1e-15)
         assert got["pred_y"].drop_nulls().len() > 60, "the fit predicts"
         assert any(b - a == 1 for a, b in zip(off, off[1:], strict=False)), "steps of 1 ns"
@@ -339,6 +340,8 @@ def test_a_window_holds_what_polars_rolling_holds_on_the_integers(closed):
     # 2026-10-08 met it here): both sides read an empty window as 0.
     want = [0.0 if v is None else v for v in ref.to_list()]
     got = [0.0 if v is None else v for v in out["s"].to_list()]
+    # Tolerance (task 252 (b)): an oracle computed another way. Polars sums
+    # a rolling window in its own order, adding and removing as it slides.
     assert got == pytest.approx(want, abs=1e-12), closed
     off = offsets(150, steps=(0, 1, 7, 100))
     assert sum(1 for i in range(len(off)) for j in range(i) if off[i] - off[j] == 100) > 3

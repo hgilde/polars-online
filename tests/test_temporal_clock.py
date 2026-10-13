@@ -227,6 +227,10 @@ class TestTheUnitNeverReachesTheFit:
         exact = np.array(exact)
         live = np.isfinite(got) & np.isfinite(exact)
         assert live.sum() > n - 10
+        # Tolerances (task 252 (b)): libm and oracles computed another way.
+        # Both sides decay by `2 ** (-gap / h)` over irregular gaps -- `exp2`
+        # in the bank, `pow` here -- and the bank keeps a compensated mean
+        # where the recursion divides two sums; pandas is its own arithmetic.
         assert np.max(np.abs(got[live] - exact[live])) <= 1e-12
         times = pd.to_datetime(ns, unit="ns")
         ref = pd.Series(x).ewm(halflife=pd.Timedelta(seconds=25), times=times).mean()
@@ -256,7 +260,9 @@ class TestHowADurationIsWritten:
         df = _temporal(_frame(), unit)
         free = _fit(df, _ridge("t", half_life=float("inf"), gap_cap="365d"))
         # weight_sum is the weight before the row's own update (hard rule 8).
-        assert free.struct.field("weight_sum")[-1] == pytest.approx(df.height - 1)
+        # Exact (task 252 (b)): no decay is a factor of 1, so the weight is
+        # a sum of unit weights, an integer every double holds.
+        assert free.struct.field("weight_sum")[-1] == df.height - 1
         assert free.equals(_fit(df, _ridge("t", half_life="inf", gap_cap="365d")), null_equal=True)
         timed = dict(half_life="10m", gap_cap="30m")
         for key in ("coef_every", "solve_every", "restart_after_step_back"):
@@ -751,6 +757,9 @@ class TestNanosecondsAreKept:
             max_error_inflation=float("inf"),
         )
         got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
+        # Tolerance (task 252 (b)): libm. The bank decays by `exp2` over
+        # irregular gaps and this recursion by Python's `pow`, which differ
+        # in the last bits, and by platform.
         assert np.max(np.abs(got - want)) < 1e-12 * np.max(want)
         # The same instants as a float clock in epoch nanoseconds cannot
         # say this: a double at 1.7e18 resolves 256 ns, so the gaps are
@@ -796,7 +805,17 @@ class TestNanosecondsAreKept:
         )
         got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
         want = self._n_eff(np.concatenate([[0], np.diff(ns)]), 1_000.0)
+        # Tolerance (task 252 (b)): libm, `exp2` in the bank against `pow`
+        # here, over irregular gaps.
         assert np.max(np.abs(got - want)) < 1e-12 * np.max(want)
+        # And the age itself moves no bit (task 252 (b)): after the first
+        # gap, which any age past a day decays to nothing, the same ticks a
+        # day, a year and a decade in give the same weights to the bit --
+        # the same integer gaps into the same libm calls on one platform.
+        young = np.concatenate([[ns[0]], ns[1:] - ns[1] + ns[0] + 86_400 * 10**9])
+        df_young = df.with_columns(t=pl.Series(young).cast(pl.Datetime("ns")))
+        base = po.ModelBank([spec]).fit_predict(df_young)["m"].struct.field("weight_sum")
+        assert got[1:].tobytes() == base.to_numpy()[1:].tobytes()
 
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     def test_fed_in_chunks_the_gaps_are_the_one_chunk_runs(self):
@@ -1067,6 +1086,8 @@ class TestEveryUnitAgainstEveryColumn:
         )
         got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("weight_sum").to_numpy()
         want = _exact_n_eff(np.concatenate([[0], np.diff(ns)]), 7.0 * u)
+        # Tolerance (task 252 (b)): libm, `exp2` in the bank against `pow`
+        # here, over irregular gaps.
         assert np.max(np.abs(got - want)) < 1e-12 * np.max(want)
         # The decay is real at this scale, so a unit read at another scale
         # could not have passed: no row's weight is trivially 1 or the sum.

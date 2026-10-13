@@ -771,6 +771,8 @@ class TestNanosecondsAreExact:
             w = w * 2.0 ** (-(gap if cap is None else min(gap, cap)) / half_life) + 1.0
         want = np.array(want)
         assert got[0] == 0.0
+        # Tolerance (task 252 (b)): libm, the bank's `exp2` against Python's
+        # `pow` over irregular gaps.
         assert np.all(np.abs(got - want) <= 1e-12 * want), np.max(
             np.abs(got - want) / np.maximum(want, 1)
         )

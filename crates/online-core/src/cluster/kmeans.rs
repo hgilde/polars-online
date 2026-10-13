@@ -1272,6 +1272,9 @@ mod tests {
         }
         assert!(m.seeded(), "twelve rows seed three centres");
         let total: f64 = m.clusters.iter().map(|c| c.n).sum();
+        // Tolerance (task 252 (b)): reassociation and libm. The centres'
+        // weights are each decayed and summed in another order than
+        // `n_eff`'s one recursion, by `exp2` factors over the steps.
         assert!(
             (total - m.n_eff()).abs() <= 1e-12 * m.n_eff(),
             "{total} in the centres, {} in n_eff",
@@ -1434,6 +1437,10 @@ mod tests {
         (preds, seeds.unwrap_or_default(), w_sum)
     }
 
+    /// Tolerance (task 252 (b)): an oracle computed another way. The
+    /// recursion written out keeps plain centres where the model keeps
+    /// compensated pairs, so the centres, the radii and the distances read
+    /// from them part in the last bits.
     fn same(a: f64, b: f64, what: &str) {
         match (a.is_nan(), b.is_nan()) {
             (true, true) => {}
@@ -1489,7 +1496,11 @@ mod tests {
                     );
                 }
             }
-            assert!((m.n_eff() - want_w).abs() < 1e-12);
+            // Exact (task 252 (b)): the weight's recursion is the model's,
+            // `w·λ + w_row` with `λ` from the same `Decay::factor` call, so
+            // both sides take libm's `exp2` of the same step on the same
+            // platform and agree to the bit wherever the test runs.
+            assert_eq!(m.n_eff().to_bits(), want_w.to_bits());
             assert_eq!(m.clusters().len(), 3);
             for (got, want) in m.clusters().iter().zip(&want_clusters) {
                 same(got.n, want.0, "n");
@@ -1523,10 +1534,15 @@ mod tests {
         let before = m.clone();
         let step = m.step(&[100.0, 100.0], &[], 5.0, 0.0);
         assert_eq!(step.n_eff, before.n_eff());
-        assert!((m.n_eff() - 0.5 * before.n_eff()).abs() < 1e-12);
+        // Exact (task 252 (b)): one decay by the model's own factor for the
+        // step, so the bits hold on every platform whatever its `exp2(-1)`
+        // returns; that factor is a half to the tolerance `decay_factors`
+        // holds it to.
+        let lam = c.decay.factor(5.0);
+        assert_eq!(m.n_eff().to_bits(), (lam * before.n_eff()).to_bits());
         for (a, b) in m.clusters().iter().zip(before.clusters()) {
             assert_eq!(a.c, b.c);
-            assert!((a.n - 0.5 * b.n).abs() < 1e-12);
+            assert_eq!(a.n.to_bits(), (lam * b.n).to_bits());
             assert_eq!(a.r2, b.r2);
         }
         assert!(step.pred[0] >= 0.0, "a zero-weight row is still scored");
@@ -1576,7 +1592,8 @@ mod tests {
         m.step(&[1.0, 1.0], &[], 0.0, 1.0);
         let step = m.step(&[2.0, 1.0], &[], 1.0, 1.0);
         assert_eq!(step.pred[0], 0.0);
-        assert!((step.pred[1] - 1.0).abs() < 1e-12);
+        // Exact (task 252 (b)): the root of the square 1, both exact.
+        assert_eq!(step.pred[1], 1.0);
         assert!(step.pred[2].is_nan());
         assert_eq!(m.coefficients(), Some(vec![vec![1.5, 1.0]]));
     }
@@ -1820,7 +1837,12 @@ mod tests {
                 since += 1;
                 if since % 5 == 0 {
                     for (x, y) in a.clusters().iter().zip(b.clusters()) {
-                        assert!((x.n - y.n).abs() < 1e-12);
+                        // Exact (task 252 (b)): unit weights and no decay,
+                        // so either way a weight is a count.
+                        assert_eq!(x.n, y.n);
+                        // Tolerance: a batch of five merged as one mean
+                        // rounds otherwise than five rows absorbed in turn,
+                        // which the code does not promise to match.
                         for d in 0..2 {
                             assert!((x.c[d] - y.c[d]).abs() < 1e-9, "row {i}");
                         }
@@ -2051,6 +2073,8 @@ mod tests {
                 continue;
             }
             assert_eq!(b[0], h[0], "row {i}: the label");
+            // Tolerance (task 252 (b)): the rows at `1e8` are rounded to
+            // `ulp(1e8)`, so the two streams are not the same numbers.
             for j in 1..3 {
                 assert!(
                     (b[j] - h[j]).abs() <= 1e-6 * (1.0 + b[j]),
@@ -2215,7 +2239,9 @@ mod tests {
         }
         for c in m.clusters() {
             assert!(c.n.is_finite() && c.r2.is_finite() && c.r2 >= 0.0, "{c:?}");
-            // A convex combination of bounded rows, up to rounding.
+            // A convex combination of bounded rows, up to rounding: a
+            // bound, whose slack is the rounding of each step (task 252
+            // (b)).
             assert!(
                 c.c.iter()
                     .all(|v| v.is_finite() && v.abs() <= b * (1.0 + 1e-12)),
@@ -2450,6 +2476,9 @@ mod tests {
             let mean = rows.iter().map(|x| x[j]).sum::<f64>() / 4.0;
             let var = rows.iter().map(|x| (x[j] - mean).powi(2)).sum::<f64>() / 4.0;
             let got = scaled.metric()[j];
+            // Tolerance (task 252 (b)): the definition computed another way
+            // (two-pass, where the model steps a Welford update by inexact
+            // ratios such as `2/3`).
             assert!(
                 (got - 1.0 / var).abs() <= 1e-12 / var,
                 "feature {j}: {got} against 1/{var}"
@@ -2557,8 +2586,13 @@ mod tests {
         assert!(m.seeded());
         let lam = decay.factor(1.0);
         let mut v = lam * lam + lam + 1.0;
-        assert!(
-            (m.window_w - v).abs() <= 1e-12 * v,
+        // Exact (task 252 (b)): the buffer's weights, decayed by the
+        // model's own factor and summed in order, and then `V ← λV + w`,
+        // with `λ` from the same `Decay::factor` call: libm's `exp2` of the
+        // same steps on both sides, so the same bits on every platform.
+        assert_eq!(
+            m.window_w.to_bits(),
+            v.to_bits(),
             "{} against {v}",
             m.window_w
         );
@@ -2568,8 +2602,9 @@ mod tests {
             let w = 0.5 + lcg(&mut s).abs();
             m.step(x, &[], d, w);
             v = decay.factor(d) * v + w;
-            assert!(
-                (m.window_w - v).abs() <= 1e-12 * v,
+            assert_eq!(
+                m.window_w.to_bits(),
+                v.to_bits(),
                 "row {i}: {} against {v}",
                 m.window_w
             );
@@ -2779,8 +2814,12 @@ mod tests {
         m.buf = vec![vec![1.0, 2.0], vec![4.0, 6.0], vec![0.0, 2.0]];
         m.buf_w = vec![0.5, 2.0, 1.5];
         let want = m.far_factor * (0.5 * 0.0 + 2.0 * 25.0 + 1.5 * 1.0) / (0.5 + 2.0 + 1.5);
-        assert!(
-            (m.buffer_cut() - want).abs() <= 1e-12 * want,
+        // Exact (task 252 (b)): dyadic weights and distances, so the sums
+        // and the division by 4 are exact and one product by `far_factor`
+        // rounds either way.
+        assert_eq!(
+            m.buffer_cut().to_bits(),
+            want.to_bits(),
             "{} against {want}",
             m.buffer_cut()
         );
@@ -2827,6 +2866,8 @@ mod tests {
                 ..cfg(2)
             },
         );
+        // Tolerance (task 252 (b)): decimal closed forms, `0.05` and
+        // `10.05`, which no double is and the rows' mean rounds to.
         let near = |got: &[f64], want: [f64; 2]| {
             assert!(
                 (got[0] - want[0]).abs() < 1e-12 && (got[1] - want[1]).abs() < 1e-12,

@@ -1325,6 +1325,10 @@ mod tests {
             out
         };
         let (one, many) = (run(1.0), run(100.0));
+        // Tolerance (task 252 (b)): scale invariance holds in exact
+        // arithmetic only. A weight times 100 and the ratios `w / n` built
+        // from it round otherwise, so the code promises no bit-level
+        // invariance; the decay is libm's `exp2` besides.
         for (i, (a, b)) in one.iter().zip(&many).enumerate() {
             for (x, y) in a.iter().zip(b) {
                 assert!(
@@ -1353,9 +1357,13 @@ mod tests {
         assert_ne!(labels[0], labels[1]);
         assert_eq!(m.n_clusters(), 2);
         assert!(out[3999][4] == 2.0);
-        // A potential summary's radius is within the bound.
+        // A potential summary's radius is within the bound, exactly (task
+        // 252 (b)): a radius past it is capped to `eps · eps · p`, this
+        // product, so no rounding slack is owed. (No summary here comes
+        // within 6% of the cap; `a_heavy_row_is_decided_as_a_unit_row`
+        // holds a capped radius to the bound's bits.)
         for c in m.micro_clusters().iter().filter(|c| c.potential) {
-            assert!(c.s.r2 <= 0.3 * 0.3 * 2.0 + 1e-12, "r2 {}", c.s.r2);
+            assert!(c.s.r2 <= 0.3 * 0.3 * 2.0, "r2 {}", c.s.r2);
         }
     }
 
@@ -1365,6 +1373,9 @@ mod tests {
         let mut m = Micro::new(cfg()).unwrap();
         run(&mut m, &rows);
         let floor = LINK_FLOOR * 0.3 * 2f64.sqrt();
+        // Slack (task 252 (b)): the model's link is the root of a square,
+        // `√(LINK_FLOOR²·eps²·p)`, against this product of roots: the same
+        // number in exact arithmetic, a last bit apart in doubles.
         assert!(m.link() >= floor - 1e-12, "{} < floor {floor}", m.link());
         // An override is used as given.
         let mut o = Micro::new(MicroCfg {
@@ -1373,6 +1384,8 @@ mod tests {
         })
         .unwrap();
         run(&mut o, &rows);
+        // Tolerance (task 252 (b)): the root of `0.5²·eps²·p` against a
+        // product of roots, another form of the same closed form.
         assert!((o.link() - 0.5 * 0.3 * 2f64.sqrt()).abs() < 1e-12);
         // Zero links nothing: every potential summary is its own cluster.
         let mut z = Micro::new(MicroCfg {
@@ -1518,9 +1531,16 @@ mod tests {
         }
         let before = m.clone();
         let s = m.step(&[0.0, 0.0], &[], 3.0, 0.0);
-        let lam = 0.5f64.powf(3.0 / 500.0);
-        assert!((m.n_eff() - before.n_eff() * lam).abs() < 1e-12);
-        assert!((m.micro_clusters()[0].s.n - before.micro_clusters()[0].s.n * lam).abs() < 1e-12);
+        // Exact (task 252 (b)): one decay by the model's own factor for the
+        // step, so libm's `exp2` is the same call on both sides and the
+        // bits hold on every platform. (`0.5.powf(3/500)` was another libm
+        // function, a last bit away; `decay_factors` holds the factor.)
+        let lam = m.cfg().decay.factor(3.0);
+        assert_eq!(m.n_eff().to_bits(), (before.n_eff() * lam).to_bits());
+        assert_eq!(
+            m.micro_clusters()[0].s.n.to_bits(),
+            (before.micro_clusters()[0].s.n * lam).to_bits()
+        );
         assert_eq!(m.micro_clusters()[0].s.c, before.micro_clusters()[0].s.c);
         assert_eq!(
             m.micro_clusters()[0].age,
@@ -1542,7 +1562,9 @@ mod tests {
         assert!(s.pred.iter().all(|v| v.is_nan()));
         assert_eq!(m.micro_clusters()[0].s.c, before.micro_clusters()[0].s.c);
         assert_eq!(m.micro_clusters().len(), 1);
-        assert!((m.n_eff() - before.n_eff() * 0.5f64.powf(1.0 / 500.0)).abs() < 1e-12);
+        // Exact (task 252 (b)), as in the zero-weight test above.
+        let lam = m.cfg().decay.factor(1.0);
+        assert_eq!(m.n_eff().to_bits(), (before.n_eff() * lam).to_bits());
     }
 
     #[test]
@@ -1701,6 +1723,8 @@ mod tests {
                 );
             }
             if !b[1].is_nan() {
+                // Tolerance (task 252 (b)): the rows at `1e8` are rounded to
+                // `ulp(1e8)`, so the two streams are not the same numbers.
                 assert!(
                     (b[1] - h[1]).abs() <= 1e-6 * (1.0 + b[1]),
                     "row {i}: distance {} at 1e8 against {} at 0",
@@ -1885,6 +1909,8 @@ mod tests {
         let (tp_l, f_l) = l.prune_horizon().unwrap();
         assert_eq!(tp_h, 59.0);
         assert_eq!(tp_h, tp_l);
+        // Tolerance (task 252 (b)): libm. A factor reads as its half-life
+        // through `ln`, and `0.5.powf(1/100)` is libm's too.
         assert!((f_h - f_l).abs() < 1e-12);
         assert!(
             Micro::new(MicroCfg {
@@ -1968,6 +1994,9 @@ mod tests {
             let mean = rows.iter().map(|x| x[j]).sum::<f64>() / 4.0;
             let var = rows.iter().map(|x| (x[j] - mean).powi(2)).sum::<f64>() / 4.0;
             let got = scaled.metric()[j];
+            // Tolerance (task 252 (b)): the definition computed another way
+            // (two-pass, where the model steps a Welford update by inexact
+            // ratios such as `2/3`).
             assert!(
                 (got - 1.0 / var).abs() <= 1e-12 / var,
                 "feature {j}: {got} against 1/{var}"
@@ -2362,11 +2391,9 @@ mod tests {
         let rank = (9 * xs.len()).div_ceil(10);
         let want = LINK_FACTOR * nn[rank - 1];
         assert_eq!(want, 12.0, "the fixture");
-        assert!(
-            (m.link() - want).abs() < 1e-12,
-            "{} against {want}",
-            m.link()
-        );
+        // Exact (task 252 (b)): integer distances, `1.5 · 8`, squared and
+        // rooted, all exact.
+        assert_eq!(m.link(), want);
 
         // Spacing far below the floor.
         m.mc = (0..3)
@@ -2374,6 +2401,8 @@ mod tests {
             .collect();
         m.link_potential();
         let floor = LINK_FLOOR * 0.3 * 2f64.sqrt();
+        // Tolerance (task 252 (b)): the root of a square against a product
+        // of roots, as above.
         assert!(
             (m.link() - floor).abs() < 1e-12,
             "{} against {floor}",
@@ -2435,6 +2464,8 @@ mod tests {
         assert_eq!(none.half_life(), f64::INFINITY);
         assert!(none.prune_horizon().is_none());
         let half = at(0.5);
+        // Tolerance (task 252 (b)): libm. `−ln 2 / ln λ` is 1 only where
+        // `ln 0.5` is `−ln 2` to the bit, which no libm promises.
         assert!(
             (half.half_life() - 1.0).abs() < 1e-15,
             "{}",

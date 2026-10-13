@@ -410,6 +410,9 @@ fn the_noise_gates_notice_under_lam_names_the_lam_that_opens_it() {
         .trim_end_matches(',')
         .parse()
         .unwrap();
+    // Tolerance (task 252 (b)): both figures are read back from a notice's
+    // text, printed rounded for a reader, and a half-life becomes a factor
+    // through libm's `exp2`.
     assert!(
         (need_lam - (-1.0 / need_h).exp2()).abs() < 1e-5,
         "lam {need_lam} against half_life {need_h}: {by_lam}"

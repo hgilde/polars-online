@@ -10188,6 +10188,31 @@ tick, and that the series holding it up has a count near 1.
       `python/polars_online` (4,635 statements) is not piloted; the pilot
       would be mutmut on one module (`_check.py`) to measure its run time
       and survivors before deciding.
+      *(b) done 2026-10-13*: every tolerance in the three areas' tests --
+      `clock.rs`, the bank's clock readers (`settled_frac`, the temporal and
+      integer clocks), `bocpd.rs`, `comp.rs` and `cluster/`, Rust and Python
+      -- has its reason written beside it, or was converted. Kept: libm in
+      the path (`exp2`/`pow`/`ln` over irregular steps, a half-life read,
+      `lgamma`), an oracle computed another way (longhand Algorithm 1,
+      two-pass definitions, faer, pandas, Polars' rolling sum, scikit-learn,
+      decimal closed forms), reassociation the code does not promise to
+      keep (a batch merged as one mean, a merge against rows in turn,
+      normalizers, weights scaled by 100), and rows rounded at a level of
+      1e8. Converted to bits (33 assertions): every weight that is a count
+      or a sum of exact weights, the fold's `n` and folded log joint, a
+      decay by the model's own `Decay::factor` (the same libm call on both
+      sides is the same bits on every platform), `window_w`, the buffer's
+      cut, exact distances and radii, the micro centre and `eps2`, the bocpd
+      hazard column against the spec's, `predict` against the step, and
+      `settled_frac` at integer `T`; each was shown to fail on a one-ulp
+      perturbation of the library that the old tolerance passed, but for
+      two lines masked by an earlier line of the same mechanism (micro's
+      second centre and radius) and micro's radius bound, which no summary
+      on its stream comes within 6% of. Added bit
+      pins beside kept exact-arithmetic oracles where the stream is
+      libm-free (`comp.rs`'s pairs, a bocpd run's pair), and a temporal
+      clock's weights held to the bit across a day, a year and a decade of
+      age. No numeric defect found.
       Task 250's phase 2 does not wait on (a): its fixes are held by the
       golden pipeline, the fixtures, `compare_release.py` and
       `release_probe.py`'s columns and states, plus an activation test for

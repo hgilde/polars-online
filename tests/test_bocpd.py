@@ -104,6 +104,9 @@ def test_the_posterior_is_the_longhand_algorithm_one():
     posts, scores = longhand(x, 50.0)
     # Row one is gated out: `P(r <= 1)` is 1 there whatever the data, so
     # every comparison starts at row two -- the row is still *learned*.
+    # Tolerances here (task 252 (b)): an oracle computed another way --
+    # probabilities from raw sums, where the model keeps logs and centred
+    # sums -- through libm (`lgamma`, `log`, `exp`).
     assert out["loglik"][0] is None
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
     p_change, mode, mean = [], [], []
@@ -195,6 +198,9 @@ def test_the_gaussian_emission_is_the_longhand_at_three_features():
     )
     out = run(x, covariance_type="full", **common)
     scores, p_change = longhand_gaussian(x, 50.0)
+    # Tolerances (task 252 (b)): an oracle computed another way (raw sums,
+    # numpy's solve and slogdet against centred sums and a Cholesky factor)
+    # through libm.
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-10)
     assert out["p_change"].to_list()[1:] == pytest.approx(list(p_change[1:]), abs=1e-10)
     diag = run(x, covariance_type="diag", **common)["loglik"].to_numpy()[1:]
@@ -209,6 +215,8 @@ def test_the_mass_at_run_length_zero_is_exactly_the_hazard():
     x = np.concatenate([normals(40, 3), normals(40, 4, loc=8.0)])
     for hazard in (25.0, 250.0):
         posts, _ = longhand(x, hazard)
+        # Tolerance (task 252 (b)): the longhand's own normalization, a sum
+        # of products that is `H` in exact arithmetic only.
         assert [p[0] for p in posts] == pytest.approx([1.0 / hazard] * len(posts), abs=1e-14)
 
 
@@ -225,6 +233,8 @@ def test_two_features_are_a_product_of_student_ts():
         prune_below=0.0,
     )
     _, scores = longhand(x, 40.0)
+    # Tolerance (task 252 (b)): the longhand, an oracle computed another way,
+    # through libm.
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
 
 
@@ -453,7 +463,9 @@ def test_the_hazard_can_be_read_from_a_column():
         degrees_of_freedom_prior=2.0,
     )
     plain = run(x, hazard=40.0, covariance_prior=[1.0], degrees_of_freedom_prior=2.0)
-    assert flat["p_change"].to_list()[1:] == pytest.approx(plain["p_change"].to_list()[1:])
+    # Exact (task 252 (b)): the same hazard, read from the row or the spec,
+    # is the same double into the same arithmetic.
+    assert flat["p_change"].to_list()[1:] == plain["p_change"].to_list()[1:]
     # A hazard that switches: the same stream, patient and then twitchy.
     h = np.where(np.arange(200) < 100, 1e9, 5.0)
     mixed = run(x, hazard_col="h", h=h, covariance_prior=[1.0], degrees_of_freedom_prior=2.0)
@@ -508,7 +520,9 @@ def test_an_unusable_hazard_in_the_column_is_refused_naming_the_row():
     )
     got = po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
     want = run(x, hazard=40.0, covariance_prior=[1.0], degrees_of_freedom_prior=2.0)
-    assert got["p_change"].to_list()[1:] == pytest.approx(want["p_change"].to_list()[1:])
+    # Exact (task 252 (b)): the fallback is the spec's hazard, the same
+    # double into the same arithmetic.
+    assert got["p_change"].to_list()[1:] == want["p_change"].to_list()[1:]
 
 
 def test_predict_reads_the_hazard_column():
@@ -530,8 +544,10 @@ def test_predict_reads_the_hazard_column():
     bank = po.ModelBank([spec])
     bank.fit_predict(df.head(150))
     got = bank.predict(df.slice(150, 1))["b"].struct.unnest()
+    # Exact (task 252 (b)): `predict` is the step without the step, on the
+    # same state whatever the chunking (hard rule 3), so to the bit.
     for col in ("p_change", "run_mode", "run_mean", "pred_x0", "loglik"):
-        assert got[col][0] == pytest.approx(step[col][150], rel=1e-12, abs=1e-12), col
+        assert got[col][0] == step[col][150], col
 
 
 def test_a_zero_weight_row_advances_nothing():
@@ -710,6 +726,8 @@ def test_three_features_are_a_product_of_student_ts():
         prune_below=0.0,
     )
     _, scores = longhand(x, 40.0)
+    # Tolerance (task 252 (b)): the longhand, an oracle computed another way,
+    # through libm.
     assert out["loglik"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
 
 
@@ -925,6 +943,8 @@ def test_a_hazard_on_the_clock_is_the_model_it_states(case):
     x, secs, w, text, tau = CLOCK_CASES[case]()
     out = run_clock(x, secs, text, w)
     a, b, m = clock_oracle(x, secs, tau, w)
+    # Tolerances (task 252 (b)): the enumeration, an oracle computed another
+    # way, through libm (`exp`, `expm1`, `lgamma`).
     assert out["p_change"].to_numpy() == pytest.approx(a, abs=1e-13, rel=0)
     assert out["run_mean"].to_numpy() == pytest.approx(b, abs=1e-12, rel=0)
     assert out["run_mode"].to_list() == m.tolist()
@@ -943,6 +963,9 @@ def test_a_hazard_on_the_clock_is_the_model_it_states(case):
         x0, secs0, _, _, _ = _gap_case()
         plain = run_clock(x0, secs0, text)
         kept = out.filter(pl.Series(w > 0))
+        # Tolerance (task 252 (b)): libm. Two steps multiply two `exp`
+        # factors where the gap read whole takes one; equal in exact
+        # arithmetic only.
         for col in ("p_change", "run_mean", "pred_x0", "loglik"):
             assert kept[col].to_numpy() == pytest.approx(plain[col].to_numpy(), abs=1e-12), col
         assert kept["run_mode"].to_list() == plain["run_mode"].to_list()
@@ -1105,6 +1128,8 @@ def test_the_prior_from_the_first_rows_finds_the_same_breaks_at_any_level(emissi
         scaled = run(stepping(1e4, 1e-2), **emission, hazard=250.0)
         assert breaks(scaled) == breaks(unit)
         gap = (unit["p_change"] - scaled["p_change"]).abs().max()
+        # Tolerance (task 252 (b)): the two streams are other numbers, the
+        # scaled one rounded at a level of 1e4, and libm reads both.
         assert gap < 1e-9, gap
 
 

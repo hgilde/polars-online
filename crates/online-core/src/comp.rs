@@ -82,7 +82,17 @@ mod tests {
         // 1,000,001 steps of 1e-10: 1.000001e-4, which the plain sum drops
         // entirely.
         let want = 1.000001e-4;
+        // Tolerance (task 252 (b)): against exact arithmetic, an oracle
+        // computed another way, which the pair follows to about 2^-106 of
+        // the mean. The pair this build computes is pinned to the bit as
+        // well: IEEE sums and differences only, no libm, the same on every
+        // platform.
         assert!(((hi - 1e8) + lo - want).abs() < 1e-18, "{hi} {lo}");
+        assert_eq!(
+            (hi.to_bits(), lo.to_bits()),
+            (4_726_483_295_884_286_519, 13_698_645_039_560_920_696),
+            "{hi} {lo:e}"
+        );
         let mut plain = 1e8;
         for _ in 0..1_000_001 {
             plain += 1e-10;
@@ -102,7 +112,11 @@ mod tests {
             add(&mut hi, &mut lo, 1e-100 * d);
         }
         assert_eq!(hi, 1.0);
+        // Tolerance (task 252 (b)): against exact arithmetic's `4e-96`, an
+        // oracle computed another way; the low part this build computes is
+        // pinned to the bit beside it (no libm in the path).
         assert!((lo - 4e-96).abs() <= 1e-9 * 4e-96, "{lo:e}");
+        assert_eq!(lo.to_bits(), 3_179_847_552_505_719_914, "{lo:e}");
     }
 
     /// A mean given one value row after row: the plain step stops `1/(2b)`
@@ -126,6 +140,9 @@ mod tests {
                 plain += b * (x - plain);
                 let d = dev(x, hi, lo);
                 // The deviation is exact arithmetic's gap, stepped on its own.
+                // Tolerance (task 252 (b)): `exact` is stepped by plain
+                // products, so it is itself rounded each row; the two are
+                // two computations of one quantity, neither the other's.
                 assert!(
                     (d - exact).abs() <= 1e-9 * exact.abs() + 1e-300,
                     "level {level}, row {n}: {d:e} against {exact:e}"

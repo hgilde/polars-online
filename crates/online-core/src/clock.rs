@@ -1424,7 +1424,10 @@ mod tests {
                 None,
                 true,
             );
-            assert!((odd.d_clock - 2.000000001).abs() < 1e-15);
+            // Exact (task 252 (b)): the step is the integer nanoseconds
+            // made seconds, `2 + 1/1e9` in two correctly rounded IEEE
+            // operations and no libm, so it is one double at every age.
+            assert_eq!(odd.d_clock.to_bits(), 2.000000001f64.to_bits());
         }
         let mut c = ClockState::new();
         c.advance(&cfg, Some(ClockValue::F64(decade as f64 / 1e9)), None, true);
@@ -2997,8 +3000,13 @@ mod tests {
 
     #[test]
     fn decay_factors() {
+        // Tolerance (task 252 (b)): libm. `exp2(-1)` is 0.5 in every libm
+        // met so far, but no platform promises it, and a pin of a libm
+        // result failed every Linux CI leg once (task 202).
         assert!((Decay::Halflife(10.0).factor(10.0) - 0.5).abs() < 1e-15);
         assert_eq!(Decay::Halflife(f64::INFINITY).factor(123.0), 1.0);
+        // Tolerance: libm `powf`, against the decimal 0.81, which is not
+        // the double `0.9 * 0.9` either.
         assert!((Decay::Lam(0.9).factor(2.0) - 0.81).abs() < 1e-15);
         assert_eq!(Decay::Halflife(10.0).factor(0.0), 1.0);
     }
@@ -3034,7 +3042,9 @@ mod tests {
                 "{lam}"
             );
         }
-        // Every other step is still the power.
+        // Every other step is still the power. Tolerance: libm `powf`
+        // against IEEE's correctly rounded `sqrt`, which no libm promises
+        // to meet at an exponent of one half.
         assert!((Decay::Lam(0.9).factor(0.5) - 0.9f64.sqrt()).abs() < 1e-15);
         assert_eq!(Decay::Lam(0.9).factor(f64::INFINITY), 0.0);
         assert!(Decay::Lam(0.9).factor(f64::NAN).is_nan());

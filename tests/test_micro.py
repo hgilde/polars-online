@@ -352,7 +352,8 @@ class TestDefinitions:
             if prev is not None:
                 lam = 0.5 ** ((t[i] - t[i - 1]) / half_life)
                 E = float(prev["eps2"])
-                assert pytest.approx(0.3**2 * 2) == E
+                # Exact (task 252 (b)): `eps · eps · p`, two IEEE products.
+                assert E == 0.3 * 0.3 * 2
                 z = X[i]
                 pot = self.nearest(z, [m for m in prev["mc"] if m["potential"]])
                 out_ = self.nearest(z, [m for m in prev["mc"] if not m["potential"]])
@@ -368,6 +369,8 @@ class TestDefinitions:
                 if pot is None:
                     assert dist is None, i
                 else:
+                    # Tolerance (task 252 (b)): the distance read from the
+                    # exported centre, rounded from its compensated pair.
                     assert dist == pytest.approx(pot[1], rel=1e-9), i
                 live = {m["id"] for m in now["mc"]}
                 seen["pruned or evicted"] += len({m["id"] for m in prev["mc"]} - live)
@@ -377,6 +380,9 @@ class TestDefinitions:
                 n = wt.sum()
                 c = (wt[:, None] * X[idx]).sum(axis=0) / n
                 r2 = (wt * ((X[idx] - c) ** 2).sum(axis=1)).sum() / n
+                # Tolerances (task 252 (b)): definitions computed another way
+                # (batch sums of the raw rows at their decayed weights) through
+                # libm (`pow` here, `exp2` in the bank, over an irregular clock).
                 assert float(m["s"]["n"]) == pytest.approx(n, rel=1e-9), (i, m["id"])
                 np.testing.assert_allclose(m["s"]["c"], c, rtol=1e-9, atol=1e-12)
                 assert float(m["s"]["r2"]) == pytest.approx(r2, rel=1e-9, abs=1e-12), (i, m["id"])
@@ -536,6 +542,8 @@ class TestEdgeCases:
         s = spec(eps=0.5, half_life=50.0, min_weight=1.0, weight="w", coef_every=1)
         out = unnested(po.ModelBank([s]).fit_predict(df))
         assert out["weight_sum"][1] == 0.0
+        # Tolerances on the weights (task 252 (b)): libm, Python's `pow`
+        # against the bank's `exp2`.
         lam = 0.5 ** (1 / 50)
         assert out["weight_sum"][151] == pytest.approx(out["weight_sum"][150] * lam, rel=1e-12)
         # The summaries after row 150 are those after row 149, decayed once.
@@ -543,7 +551,8 @@ class TestEdgeCases:
         after = np.array(out["coef"][150]).reshape(-1, 6)
         assert after[:, 0].tolist() == before[:, 0].tolist()
         assert after[:, 2] == pytest.approx(before[:, 2] * lam, rel=1e-12)
-        assert after[:, 3:] == pytest.approx(before[:, 3:], rel=1e-12)
+        # Exact (task 252 (b)): a decay moves no radius and no centre.
+        assert after[:, 3:].tolist() == before[:, 3:].tolist()
         assert out["n_micro"][151] == out["n_micro"][150]
 
     def test_a_null_feature_row_is_skipped_and_the_clock_still_runs(self):
@@ -554,6 +563,8 @@ class TestEdgeCases:
         out = unnested(po.ModelBank([spec(half_life=20.0, min_weight=1.0)]).fit_predict(df))
         assert out["cluster"][150] is None and out["weight_sum"][150] is None
         assert out["micro_id"][150] is None and out["outlier"][150] is None
+        # Tolerances (task 252 (b)): libm, Python's `pow` against the bank's
+        # `exp2`, and `lam ** 2` against one factor for the two ticks.
         lam = 0.5 ** (1 / 20)
         assert out["weight_sum"][151] == pytest.approx(
             out["weight_sum"][149] * lam + 1.0, rel=1e-12
@@ -587,11 +598,18 @@ class TestEdgeCases:
         assert out["outlier"].to_list() == [True, True, True, False, False, False, False]
         c = np.array(out["coef"][5]).reshape(-1, 6)
         assert c.shape == (1, 6)
-        assert c[0, 2] == 10.0 and c[0, 4] == pytest.approx(0.525) and c[0, 5] == 0.0
-        assert c[0, 3] == pytest.approx(eps * math.sqrt(2))  # capped: sqrt(0.276) is above it
+        # Exact (task 252 (b)): the centre steps by `5/10` of `1.05`, a
+        # halving, and the double nearest 1.05 halved is the one nearest
+        # 0.525; the next row sits on it and moves nothing.
+        assert c[0, 2] == 10.0 and c[0, 4] == 0.525 and c[0, 5] == 0.0
+        # The radii exact too: the root of the squared bound `eps · eps · p`
+        # (capped: sqrt(0.276) is above it), then that square scaled by
+        # `10/11` as the next row, at the centre, adds weight and no spread.
+        # IEEE products, quotients and roots, so the same on every platform.
+        assert c[0, 3] == math.sqrt(eps * eps * 2)
         c7 = np.array(out["coef"][6]).reshape(-1, 6)
-        assert c7[0, 2] == 11.0 and c7[0, 4] == pytest.approx(0.525)
-        assert c7[0, 3] == pytest.approx(math.sqrt(10 / 11) * eps * math.sqrt(2))
+        assert c7[0, 2] == 11.0 and c7[0, 4] == 0.525
+        assert c7[0, 3] == math.sqrt(10 / 11 * (eps * eps * 2))
 
     def test_the_cap_evicts_the_lightest_summary(self):
         # Ten far-apart blobs, four summaries allowed: the eleventh distinct
@@ -740,6 +758,7 @@ class TestEdgeCases:
             half = np.arange(n) >= n // 2
             return ari(got[half], lab[half]), out["n_clusters"][-1]
 
+        # A statistical bound on a score, not a rounding tolerance.
         assert score(True) == (pytest.approx(1.0, abs=0.01), 2)
         raw, _ = score(False)
         assert raw < 0.2
