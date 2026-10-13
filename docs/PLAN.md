@@ -10474,6 +10474,43 @@ tick, and that the series holding it up has a count near 1.
       **Potential gain:** at 10,000 features over 9.5 million rows, the
       targets alone are about 660 CPU-seconds of a pass, and the unexplained
       6 ns about 570 more.
+      *Re-measured 2026-10-13 at `e157e46`* (M4 Pro, load 2.5-6;
+      `examples/gram_targets_bench.rs`, scratchpad `bank_bench.py`). One
+      `EwRidge` of 200 features, 256-row block, `pairwise`, never solved,
+      ns per feature-row on one thread: 6.6-6.9 at 1 target, 7.0-7.3 at 2,
+      8.0-8.4 at 5, 9.7-10.2 at 10 -- 0.35 ns a target, with gaps or
+      without, `own_rows` the same; `gram_threads` 14 the same (a 201-wide
+      merge is one piece). `sample` of the 10-target case: the product
+      (gemm kernels, packing, the merge) 50% of the samples, `Acc::learn`
+      37% (each target's `Cross::learn` and the all-row mean's
+      `Cross::advance`, `k` compensated steps each), the flush's centring
+      5%. A bank of 5 such specs (1,000 float32 columns, 20,000 rows, 10%
+      nulls a target): CPU ns per feature-row 13.3-16 at 1 target and
+      16.8-18.8 at 10 on the default pool of 14, 9.4 and 12.9 on a pool of
+      one -- the requester's numbers. **The unexplained part is the bank's,
+      not the model's:** on one thread the bank adds ~3 ns over the model
+      (the chunk's transpose into rows 0.9, the per-row loop around `step`
+      ~2); on the pool, 2-5 more of CPU without wall time: the transpose
+      (`FeatureRows::from_columns`, 27% of the bank's samples on the pool)
+      runs on every thread, memory-bound (a 160 MB block per chunk written
+      and read again), and the pool's idle threads spin. Run on each spec's
+      own thread (no nested `par`) it took 2-2.5 ns less CPU at the same
+      wall (G = 5: 15.1-16.8 against 16.6-19.2; G = 1: 15.1-17.1 against
+      17.0-24.4, wall 12.9 either way).
+      **The fold needs a state field.** Each target's cross-moments, its
+      own feature means and the all-row mean are up to date per row in
+      the state (`gaps::Cross`), so a save mid-block resumes to the bit.
+      Deferred to the block's flush, the targets' values on the held rows
+      must be in the state, as the Gram's held rows already are: there is
+      no other copy of them. Proposed: a trailing `#[serde(default)]`
+      field beside the Gram's block, the held targets (`rows x T`, NaN where
+      absent) and per target its weight and mean at the block's start; a
+      1.0 state mid-block loads with none, its targets already current, so
+      the held targets are a suffix of the Gram's held rows. Upper bound of
+      the gain, measured with the per-row `Cross::learn` skipped and a
+      `k x T` (`2T` with the gap masks) product in the flush: 10 targets
+      9.9-10.2 -> 7.2-7.4 ns (7.6-8.1 with masks), 5 targets 8.3-8.5 ->
+      6.9-7.2; a target then costs ~0.08 ns, where it costs 0.35.
 - [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`
