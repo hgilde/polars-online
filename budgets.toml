@@ -1079,6 +1079,16 @@ darwin = { budget = 201.7032 }
 linux = { budget = 218.9493 }
 windows = { budget = 195.7149 }
 
+[rss.ew_cov_wide]
+darwin = { budget = 441.6563 }
+linux = { budget = 450.7461 }
+windows = { budget = 425.2227 }
+
+[rss.ewridge_10_targets]
+darwin = { budget = 134.375 }
+linux = { budget = 157.6719 }
+windows = { budget = 110.9454 }
+
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]
 key = "tolerance.rss"
