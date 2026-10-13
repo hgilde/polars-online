@@ -53,7 +53,7 @@ REPO = Path(__file__).resolve().parents[1]
 #: to the latest. A release joins the list on its release day
 #: (docs/RELEASE-READINESS.md, "The steps of a release"): before 1.0 each
 #: wrote a schema of its own and is refused; from 1.0 each loads and goes on.
-RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0", "1.0.0"]
+RELEASES = ["0.10.0", "0.11.1", "0.12.0", "0.13.0", "1.0.0", "1.0.1"]
 
 
 def _major(version: str) -> int:

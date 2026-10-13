@@ -10298,7 +10298,7 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
-- [ ] 259. **Release 1.0.1** -- the user, 2026-10-13: "We want not only
+- [x] 259. **Release 1.0.1** -- the user, 2026-10-13: "We want not only
       tests of identity but tests of performance across thread counts. Then
       the rest." A patch: task 255 (a)'s peak cut and speed-up, the three
       fixes task 252 found, the unused window bindings removed; no output
@@ -10315,6 +10315,19 @@ tick, and that the series holding it up has a count near 1.
       build's provenance). Steps after the bump: full gate, push, CI green,
       dispatch, the user's PyPI click, verify, budgets `--release 1.0.1`,
       `RELEASES` += 1.0.1.
+      *Done 2026-10-13*: the first dispatch (38443180802) failed a Windows
+      leg on faer's per-thread buffer and was cancelled (task 258); the
+      second (38455505928, `92554fe`) passed every job, the user approved,
+      PyPI has 1.0.1, verified from a clean venv (1.0.1 / 1.0.1 / 61, a
+      fit). Its tag job was refused ("refusing to allow a GitHub App to
+      create or update workflow `.github/workflows/benchmark.yml` without
+      `workflows` permission"): task 258's push had changed that workflow
+      on `main` while the run waited. The tag (`v1.0.1` on `92554fe`, the
+      run's notes) and the GitHub release (the run's 12 files, the same set
+      as 1.0.0's) were made by hand; RELEASE-READINESS step 9 now says to
+      push no workflow change until the tag exists. Step 12: budgets
+      recorded `--release 1.0.1` (without the four-thread case `main`
+      dropped); `RELEASES` += 1.0.1.
 - [ ] 258. **On x86, faer's matrix product commits about twice the L3
       cache per thread** -- found 2026-10-13: CI 38410183746 (`b796502`, a
       plan-only push) failed its Windows Python 3.14 leg in the Rust tests
