@@ -11,6 +11,13 @@ any change to the numbers a model returns.
 
 ### Performance
 
+- **A wide eager `fit_predict` holds its output once, not twice, for a
+  spec with no group or a single group.** Each run of rows is copied into
+  the output as it ends, on another thread while the next run is learned,
+  rather than every run waiting for the end of the call. A 230-statistic
+  `ew_cov` over 200,000 rows returns 393 MiB and now peaks at 443-446 MiB
+  above where it started, against 803-831 before, and runs 8% faster. A
+  spec of many groups is unchanged. The output is the same to the bit.
 - **The peak-memory (RSS) budgets are recorded, at a 30% tolerance.** Two
   runs of one build on one CI runner read 14-18% apart, so 15% failed one
   of them either way. They are held on CI at each OS's oldest supported

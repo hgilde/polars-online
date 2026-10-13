@@ -10269,7 +10269,7 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
-- [ ] 255. **The memory findings of the 1.0 budgets** -- measured
+- [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`
       at 20 features over 200,000 rows returns 393 MiB (233 fields) and
@@ -10300,7 +10300,39 @@ tick, and that the series holding it up has a count near 1.
       3M; fifteen repeated runs over 1M rows level off at 299 MiB for
       Polars' `collect_batches` alone, 355 MiB with the bank (a constant 56
       above it) and about 700 MiB eagerly -- the allocator's ramp, not a
-      slope. (a) stays open.
+      slope.
+      *(a) done 2026-10-13* (`crates/online-polars/src/bank/assembly.rs`,
+      PERFORMANCE §40): a spec that one stream serves in the chunk (no
+      group, or one group in it) gets a `Sink` before `process`, its output
+      columns allocated and NaN-filled in parallel, and each run is copied
+      into it as the run ends, on another thread while the stream learns the
+      next run (`rayon::join`); the run after that reuses the freed buffers.
+      A spec of many groups keeps the old order (every run, then one job per
+      field), now through the same sink, which allocates, copies and
+      finishes each field in one job as before. Measured interleaved against
+      `8950c46` (M4 Pro, load 2.1-4.7): `ew_cov` 20 features x 200k peaks
+      443-446 MiB above the baseline (803-831 before; output 393), ten-target
+      `ewridge` 144-153 (168-210), `ew_cov` over 8 groups unchanged at
+      813-838. Speed: `ew_cov` +8%, `ew_cov` lags +6%, the light rows
+      (`sgd`, `seqtest`, `ewridge` k=5) and the grouped rows 0 to -2%;
+      `scripts/benchmark.py` geomean +0.2% over 37 rows, none below -2%.
+      Outputs and states bit-identical: `scripts/release_probe.py` (both
+      modes, 31 specs) byte-identical parquet and state files, and 97
+      outputs and 95 states over every model at its fullest, grouped and
+      single-stream, 1 and 7 chunks, byte-identical; a Rust test feeds one
+      bank both ways and compares every field bit for bit. No state layout
+      change. Not built: a sink for a spec of many groups (one column
+      written from several threads at interleaved rows) and for `predict`,
+      which keeps one buffer a stream for the whole chunk; both still peak
+      at about twice their output. **Next**: on CI, `rss.ew_cov_wide` will read
+      under its budget by more than the 30% tolerance (about 0.55 of it, by
+      the local ratio) and `rss.ewridge_10_targets` near the edge (about
+      0.8); tighten them from that run's `memory.json` with
+      `scripts/budgets.py apply`. The
+      bank instruction counts (`bank_seqtest`, `bank_ewridge_k5`, one run of
+      1,000 rows, now through the sink) were not measurable here (no
+      Valgrind on macOS); the work per row is the same copy, so a move
+      should be small.
 - [x] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
       2026-10-12, offered a Linux session. `test_ffi_memory.py`'s
       `test_output_outliving_its_input` failed on both Ubuntu legs of CI

@@ -5,7 +5,7 @@
 //! The buffers are Arrow's already -- a values `Vec` and a validity `Bitmap`
 //! are exactly what a primitive array is -- so every finisher builds an Arrow
 //! array and nothing here touches polars (docs/PLAN.md task 86). The one
-//! hand-off to polars is in `assemble`, where the struct array is named.
+//! hand-off to polars is in the bank, where the struct array is named.
 
 use polars::prelude::PlSmallStr;
 use polars_arrow::array::{
@@ -269,7 +269,7 @@ pub(crate) fn enum_metadata(names: &[&str]) -> Metadata {
 
 impl F64Column {
     /// The boxed forms, for a caller assembling a struct from mixed arrays:
-    /// every branch of `assemble` yields `Box<dyn Array>`, so the boxing lives
+    /// every field a sink finishes is a `Box<dyn Array>`, so the boxing lives
     /// here rather than at fourteen call sites.
     pub(crate) fn finish_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
         Box::new(self.finish_array())
