@@ -254,6 +254,18 @@ class ModelBank:
 
     def __init__(self, specs: Iterable[dict[str, Any]], *, threads: int | None = None) -> None:
         threads = _check_threads(threads)
+        # One spec, or a string, is iterable too: read as a list it was its
+        # keys or its characters, refused as `invalid type: string "name",
+        # expected struct Spec`, which named neither the mistake nor the fix.
+        if isinstance(specs, dict):
+            msg = "ModelBank takes a list of specs, and got one spec: pass [spec] for a bank of one"
+            raise ValueError(msg)
+        if isinstance(specs, (str, bytes)):
+            msg = (
+                "ModelBank takes a list of specs, such as [po.spec.ewridge(...)], got "
+                f"{type(specs).__name__}"
+            )
+            raise ValueError(msg)
         # A hand-written dict may put a window expression in `targets`, as
         # the builders take one; `_json` writes it as the builders would
         # (review R1 D8, R2 P5).

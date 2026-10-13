@@ -895,6 +895,27 @@ class TestNestedComparisonsAreTheirPapers:
             np.testing.assert_allclose(got[rows[j]], want, rtol=1e-7)
         assert np.isnan(got[~ok]).all() or all(v is None for v in got[~ok])
 
+    def test_diebold_mariano_s_exponentially_weighted_form_at_each_row(self):
+        """The ``half_life`` form of Diebold and Mariano's statistic, at each
+        row's present weight, by the same definition as Clark and West's
+        above, on the plain differential ``resid_b**2 - resid_a**2`` (task
+        252: no test ran it)."""
+        h, lags = 150.0, 1
+        out = _nested_out(900, 106, 0.1)
+        ew = po.eval.diebold_mariano(out, a="big", b="small", lags=lags, half_life=h)
+        got = ew["diebold_mariano"].struct.field("dm_y").to_numpy()
+        ra = out["big"].struct.field("resid_y").to_numpy()
+        rb = out["small"].struct.field("resid_y").to_numpy()
+        ok = np.isfinite(ra) & np.isfinite(rb)
+        d = (rb**2 - ra**2)[ok]
+        rows = np.flatnonzero(ok)
+        lam = 0.5 ** (1 / h)
+        for j in (30, 333, len(d) - 1):
+            om = lam ** (j - np.arange(j + 1))
+            want = self._hac(d[: j + 1], lags, om)
+            np.testing.assert_allclose(got[rows[j]], want, rtol=1e-7)
+        assert np.isnan(got[~ok]).all() or all(v is None for v in got[~ok])
+
     def test_clark_west_finds_what_diebold_mariano_leans_away_from(self):
         """A larger model whose extra coefficient is 0.1: Clark and West
         reject the smaller one at 5% on every one of 20 streams, Diebold and
