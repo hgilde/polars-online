@@ -34,6 +34,7 @@ pub const ROWS: usize = 1_000;
 pub const MODEL_CASES: &[&str] = &[
     "ewridge_k5",
     "ewridge_k20",
+    "ewridge_gram_t10",
     "sgd",
     "pa",
     "seqtest",
@@ -209,6 +210,20 @@ fn case_spec(id: &str) -> (Value, Shape) {
     match id {
         "ewridge_k5" | "bank_ewridge_k5" => (fit(json!({"type": "ewridge"}), 5), Shape::Linear),
         "ewridge_k20" => (fit(json!({"type": "ewridge"}), 20), Shape::Linear),
+        // The blocked Gram with ten targets folded into its merge
+        // (docs/PLAN.md task 257): 50 features, a 64-row block, one Gram
+        // over every row, a solve every 400 clock units.
+        "ewridge_gram_t10" => {
+            let model = json!({
+                "type": "ewridge",
+                "gram_block_rows": 64,
+                "target_gaps": "pairwise",
+                "solve_every": 400.0,
+            });
+            let mut s = fit(model, 50);
+            s["targets"] = json!(names("y", 10));
+            (s, Shape::Linear)
+        }
         "sgd" => (
             fit(json!({"type": "sgd", "learning_rate": 0.01}), 20),
             Shape::Linear,

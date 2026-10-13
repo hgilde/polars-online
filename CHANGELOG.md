@@ -53,6 +53,25 @@ any change to the numbers a model returns.
 
 ### Changed
 
+- **A blocked `ewridge`'s target cross-moments move in their last bits**
+  (task 257), and so do its coefficients, predictions and the Gram
+  export's `cross_moments`, `cross_centered` and (under `pairwise`)
+  `means_by_target`, by the merge above: each target's sums are now taken
+  over the block at once, in another order. Measured over three specs of
+  40 features and four targets, 3,000 rows, against the build before: the
+  outputs within `2e-12` relative, `cross_moments` within `2e-16` of their
+  largest entry and `cross_centered` within `6e-15`. The weights, the
+  target means and variances and every model without `gram_block_rows` are
+  the same bits. Each entry is held to an exactly rounded oracle of its
+  definition, within the rounding bound of a sum in any order, at every
+  block size and thread count, with gaps, zero weights and decays; and a
+  target's sums are the same bits at every `gram_threads`, on every
+  platform, and whichever other targets share the block. Under `own_rows`
+  a target's feature means are its Gram's to the bit again. The state
+  file's schema is 62: a blocked fit saved mid-block holds each target's
+  values on the held rows. A file from 1.0 loads and goes on; a blocked one
+  saved mid-block takes the rows after it into the merge, its targets
+  having taken the held rows already.
 - **A ridge fit of `po.gram.solve_subsets` on several targets may move in
   its last bits.** Each target's system is now solved alone on the shared
   factorization, where a blocked solve of every target at once let one
@@ -75,6 +94,29 @@ any change to the numbers a model returns.
 
 ### Performance
 
+- **A blocked `ewridge`'s targets wait for the block's merge with the Gram**
+  (task 257). Under `gram_block_rows`, each target's cross-moments with the
+  features were updated row by row beside the blocked product, about
+  0.35 ns per feature and row each at 200 features; they are now merged
+  once per block, from the same pass over the block's rows as the Gram's
+  product. Measured on an Apple M4 Pro at a load of 3 to 4, one fit of
+  200 features, a 256-row block, never solved, ns per feature and row on
+  one core, three rounds of each build in turn: 1, 2, 5 and 10 targets took
+  7.1-7.4, 7.4-7.7, 8.5-8.7 and 10.2-10.6 before and 6.9-7.1, 7.1-7.3,
+  7.4-7.6 and 8.1-8.3 after; with each target null on one row in ten,
+  10.0-10.3 and 8.5-8.8 at 10 targets. A target now costs about 0.13 ns
+  (0.18 with gaps), beside the product's 5. Nothing changes without
+  `gram_block_rows`.
+- **A bank of several specs transposes each spec's chunk on its own
+  thread** (task 257). Each spec's features are copied from columns into
+  rows once a chunk, and that copy ran on every thread of the pool for
+  every spec at once, waiting on memory: CPU time that bought no wall time.
+  A lone spec keeps the parallel copy. Together with the entry above,
+  measured on the same machine over five specs of 200 float32 features
+  each, 20,000 rows, ten targets null on one row in ten, never solved:
+  13.4-13.7 ns of CPU per feature and row against 17.0-20.4 before, at
+  2.9-3.2 ns of wall time against 3.3-3.8; one target 11.1-12.5 against
+  13.9-17.5. The outputs are the same bits.
 - **A Gram's columns are looked up by name in a table**, where each name
   was a scan of the column list: `po.gram.subset` of 400 of 1,500 columns
   took 3.2 ms and takes 0.56 ms, and every `features=` resolves likewise.

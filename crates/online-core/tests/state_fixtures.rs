@@ -72,7 +72,13 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// them, and `previous_sets` is each set as its `v<N>/index.rs` lists it.
 /// A schema listed without its files does not compile. None before 1.0,
 /// where a layout change regenerates the set instead (the module doc has
-/// the steps from 1.0).
+/// the steps from 1.0). 61, 1.0's, kept since 62 moved a blocked
+/// `ewridge`'s layout (docs/PLAN.md task 257): its states load through the
+/// field's default, a blocked one's targets current through its held rows.
+/// No kept case is blocked, so each converts to the current bytes exactly;
+/// a blocked state saved mid-block at 61 goes on from its held rows within
+/// the fold's bound of the definition, not to the bits a 62 build reaches
+/// from the same rows (`gaps::fold_tests`).
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -82,13 +88,15 @@ macro_rules! previous {
                 mod set {
                     include!(concat!("state_fixtures/v", $schema, "/index.rs"));
                 }
+                // The index is the set as it was generated, its schema with it.
+                assert_eq!(set::SCHEMA, $schema, "v{}/index.rs is another schema's", $schema);
                 ($schema, set::ALL)
             }),*]
         }
     };
 }
 
-previous![];
+previous![61];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -476,13 +484,20 @@ fn held(v: &rmpv::Value) -> usize {
 /// both centroids and values waiting; its counters' two forms, and its
 /// moments over a power of two (`audit_scaled`), are
 /// `an_audits_counters_are_written_in_both_forms`'. Its smallest change per
-/// column and the changes at it (59, task 233).
+/// column and the changes at it (59, task 233). A blocked `ewridge`'s held
+/// targets (62, task 257), `acc.held`, written only while a block holds a
+/// target's values: `ewridge_blocked` is saved mid-block.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 27] = [
+    const FORMS: [(&str, &[&str]); 29] = [
+        ("ewridge_blocked", &["model", "EwRidge", "acc", "held", "y"]),
+        (
+            "ewridge_blocked",
+            &["model", "EwRidge", "acc", "held", "w_end"],
+        ),
         ("ewridge", &["model", "EwRidge", "acc", "cross", "nj"]),
         ("ewridge", &["model", "EwRidge", "acc", "cross", "n"]),
         (

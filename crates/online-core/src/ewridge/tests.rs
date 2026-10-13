@@ -1867,38 +1867,59 @@ fn a_level_costs_the_fit_nothing() {
 }
 
 /// A target present on every row has the all-row mean as its own, to the
-/// bit, blocked or not -- the same steps over the same rows -- and a
-/// target with gaps a mean of its own rows (N1; own means since review
-/// 2026-09-26, G3).
+/// bit, unblocked -- the same steps over the same rows -- and a target with
+/// gaps a mean of its own rows (N1; own means since review 2026-09-26, G3).
+/// Blocked, its mean is merged with its Gram's block, by the steps the
+/// Gram's own takes over the same rows: its Gram's mean to the bit, under
+/// either `target_gaps` (docs/PLAN.md task 257), and the all-row mean, still
+/// taken row by row, to rounding.
 #[test]
 fn a_target_present_on_every_row_has_the_all_row_mean() {
-    for block in [0, 8] {
-        let mut c = cfg(2, 2);
-        c.decay = Decay::Halflife(50.0);
-        if block > 0 {
-            c.gram_block_rows = block;
-            c.solve_every = 5.0;
-            c.max_rows_between_solves = 10;
-        }
-        let mut m = EwRidge::new(c).unwrap();
-        let mut s = 31u64;
-        for i in 0..100 {
-            let x = [1e8 + lcg(&mut s), 3.0 + lcg(&mut s)];
-            // Target 1 is null every fifth row; target 0 never is.
-            let y1 = (i % 5 != 2).then_some(x[1]);
-            let d = if i == 0 { 0.0 } else { 1.0 };
-            m.step(&x, &[Some(x[0] + x[1]), y1], d, 1.0);
-        }
-        assert_eq!(m.acc.cross.mj[0], m.acc.cross.m, "block {block}");
-        assert!(
-            m.acc.cross.mj[1][2] != m.acc.cross.m[2],
-            "block {block}: a target with gaps"
-        );
-        // Unblocked, the cross-moments' copy of the Gram's mean is the
-        // Gram's own, to the bit.
-        if block == 0 {
-            assert_eq!(m.acc.cross.m.as_slice(), m.gram(0).means());
-            assert_eq!(m.acc.cross.mj[0].as_slice(), m.gram(0).means());
+    for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+        for block in [0, 8] {
+            let mut c = cfg(2, 2);
+            c.decay = Decay::Halflife(50.0);
+            c.target_gaps = gaps;
+            if block > 0 {
+                c.gram_block_rows = block;
+                c.solve_every = 5.0;
+                c.max_rows_between_solves = 10;
+            }
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 31u64;
+            for i in 0..100 {
+                let x = [1e8 + lcg(&mut s), 3.0 + lcg(&mut s)];
+                // Target 1 is null every fifth row; target 0 never is.
+                let y1 = (i % 5 != 2).then_some(x[1]);
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                m.step(&x, &[Some(x[0] + x[1]), y1], d, 1.0);
+            }
+            let what = format!("{gaps:?}, block {block}");
+            assert!(
+                (block > 0) == m.acc.grams.grams.iter().any(EwCov::has_pending),
+                "{what}: the stream ends mid-block"
+            );
+            let acc = m.acc.flushed();
+            let gram = acc.grams.grams[acc.grams.of[0]].means();
+            assert!(
+                acc.cross.mj[1][2] != acc.cross.m[2],
+                "{what}: a target with gaps"
+            );
+            if block == 0 {
+                assert_eq!(acc.cross.mj[0], acc.cross.m, "{what}");
+                // Unblocked, the cross-moments' copy of the Gram's mean is
+                // the Gram's own, to the bit.
+                assert_eq!(acc.cross.m.as_slice(), gram, "{what}");
+                assert_eq!(acc.cross.mj[0].as_slice(), gram, "{what}");
+            } else {
+                assert_eq!(acc.cross.mj[0].as_slice(), gram, "{what}");
+                for (a, b) in acc.cross.m.iter().zip(gram) {
+                    assert!(
+                        (a - b).abs() <= 4.0 * f64::EPSILON * b.abs(),
+                        "{what}: {a} {b}"
+                    );
+                }
+            }
         }
     }
 }

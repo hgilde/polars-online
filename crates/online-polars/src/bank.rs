@@ -309,11 +309,20 @@ fn f64_column(
 /// it is contiguous; the layout gather and the transpose are one tiled
 /// pass over all of them, so a wide chunk is never held as `k` separate
 /// vectors first.
+///
+/// `par_transpose` spreads the transpose's row tiles over the pool. It is
+/// for a lone spec: where several specs are extracted at once, each
+/// transposes on its own thread, since the specs already run in parallel
+/// and the transpose is bound by memory. On every thread it measured 2 to
+/// 2.5 ns of CPU more per feature and row at the same wall time, five specs
+/// of 200 float32 features over 20,000 rows on 14 cores, the threads
+/// waiting on memory ([`transposes_in_parallel`]).
 fn feature_rows(
     chunk: &ArrowChunk,
     spec: &Spec,
     layout: Layout<'_>,
     par: bool,
+    par_transpose: bool,
 ) -> PolarsResult<FeatureRows> {
     let arrays =
         map_maybe_par::<_, _, PolarsResult<Vec<&Float64Array>>>(&spec.features, par, |c| {
@@ -330,8 +339,15 @@ fn feature_rows(
         &cols,
         chunk.height(),
         layout,
-        par,
+        par && par_transpose,
     ))
+}
+
+/// Whether a spec's transpose spreads over the pool ([`feature_rows`]):
+/// only where it is the one spec with features, as a lone wide spec's
+/// transpose would otherwise be one thread's while the rest wait.
+fn transposes_in_parallel(specs: &[Spec]) -> bool {
+    specs.iter().filter(|s| !s.features.is_empty()).count() <= 1
 }
 
 /// The order a spec's columns are extracted in: `None` is the frame's own
@@ -481,11 +497,12 @@ fn extract(
     spec: &Spec,
     scoring: bool,
     layout: Layout<'_>,
+    par_transpose: bool,
 ) -> PolarsResult<SpecColumns> {
     let optional = |name: &str| scoring && !chunk.has(name);
     let par =
         chunk.height() >= PAR_MIN_ROWS || chunk.height() * spec.features.len() >= PAR_MIN_CELLS;
-    let features = || feature_rows(chunk, spec, layout, par);
+    let features = || feature_rows(chunk, spec, layout, par, par_transpose);
     let targets = || -> PolarsResult<Vec<Vec<f64>>> {
         // A comparison's targets are residual fields of two other specs'
         // output, which the bank fills in once those have run
@@ -3797,11 +3814,12 @@ impl Bank {
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
         let t_group = t0.elapsed();
         let t1 = std::time::Instant::now();
+        let par_transpose = transposes_in_parallel(&self.specs);
         let mut cols: Vec<SpecColumns> = self
             .specs
             .par_iter()
             .zip(layouts.par_iter())
-            .map(|(s, l)| extract(chunk, s, false, l.as_deref()))
+            .map(|(s, l)| extract(chunk, s, false, l.as_deref(), par_transpose))
             .collect::<PolarsResult<_>>()?;
         let t_extract = t1.elapsed();
         let t2 = std::time::Instant::now();
@@ -4238,11 +4256,12 @@ impl Bank {
             .map(|s| group_indices(chunk, s))
             .collect::<PolarsResult<_>>()?;
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
+        let par_transpose = transposes_in_parallel(&self.specs);
         let mut cols: Vec<SpecColumns> = self
             .specs
             .par_iter()
             .zip(layouts.par_iter())
-            .map(|(s, l)| extract(chunk, s, true, l.as_deref()))
+            .map(|(s, l)| extract(chunk, s, true, l.as_deref(), par_transpose))
             .collect::<PolarsResult<_>>()?;
 
         let specs = &self.specs;

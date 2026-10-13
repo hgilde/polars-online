@@ -146,6 +146,39 @@ impl Pending {
     }
 }
 
+/// A held block as [`EwCov::flush`] has it before its product: each row's
+/// deviation from the block's own weighted mean, `a = x − m_B` (row-major
+/// `n × k`), each row's weight at the end of the block `u`, the block's mean
+/// `m_B` and the residue `δ = Σ uᵢ aᵢ / U` the mean leaves. What an owner
+/// that holds more per row than the features -- `ewridge`'s targets
+/// ([`crate::gaps`], docs/PLAN.md task 257) -- folds into its own moments
+/// from the same pass over the block.
+pub(crate) struct Block<'a> {
+    pub(crate) a: &'a [f64],
+    pub(crate) n: usize,
+    pub(crate) k: usize,
+    pub(crate) u: &'a [f64],
+    pub(crate) m_b: &'a [f64],
+    /// `Σ uᵢ aᵢ` over the rows of weight, in row order: `δ` before its
+    /// division by `U`.
+    pub(crate) sums: &'a [f64],
+    pub(crate) delta: &'a [f64],
+    /// The threads the owner's own `k`-wide work may run on
+    /// ([`EwCov::set_threads`], capped at the pool's).
+    pub(crate) threads: usize,
+}
+
+/// What an owner holds beside a blocked accumulator's rows: told of each
+/// row the block holds, as it is held, and handed the block when it is
+/// merged ([`EwCov::update_riding`], [`EwCov::skip_riding`],
+/// [`EwCov::flush_riding`]). `fold(None)` is a block merged with nothing to
+/// fold -- no weight among its rows, or rows a damaged state could not
+/// trust -- whose held values are dropped.
+pub(crate) trait Rider {
+    fn held(&mut self);
+    fn fold(&mut self, block: Option<&Block<'_>>);
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwCov {
     k: usize,
@@ -639,7 +672,13 @@ impl EwCov {
     /// and no `lam`. Every held row therefore committed, which is what lets
     /// the suffix products in [`Self::flush`] be taken over the buffer as it
     /// stands.
-    fn buffer(&mut self, x: &[f64], lam: f64, w: f64) {
+    fn buffer<'r>(
+        &mut self,
+        x: &[f64],
+        lam: f64,
+        w: f64,
+        mut rider: Option<&mut (dyn Rider + 'r)>,
+    ) {
         let Some((a, _b, w_new)) = self.step_factors(lam, w) else {
             return;
         };
@@ -650,9 +689,17 @@ impl EwCov {
         self.pending.lam.push(lam);
         self.pending.w.push(w);
         self.commit_scalars(lam, w, a, w_new);
-        if self.pending.len() >= self.pending.block_rows {
-            self.flush();
+        if let Some(r) = rider.as_deref_mut() {
+            r.held();
         }
+        if self.pending.len() >= self.pending.block_rows {
+            self.flush_riding(rider);
+        }
+    }
+
+    /// Rows held for the next merge.
+    pub(crate) fn pending_len(&self) -> usize {
+        self.pending.len()
     }
 
     /// Merge the held rows into the mean and co-moments.
@@ -705,10 +752,26 @@ impl EwCov {
     /// `W'` is read from `w_sum`, which the per-row scalars already carried,
     /// so the merge cannot disagree with the count that was reported.
     pub fn flush(&mut self) {
+        self.flush_riding(None);
+    }
+
+    /// [`Self::flush`], handing the block to `rider` between its two passes
+    /// and its product ([`Block`]): the deviations from the block's mean
+    /// and each row's weight, which the rider folds into moments of its own
+    /// (`ewridge`'s targets, docs/PLAN.md task 257). The merge itself is the
+    /// same operations on the same numbers with a rider or without; with one,
+    /// the second pass scales the rows after the rider has read them,
+    /// rather than in the same loop.
+    pub(crate) fn flush_riding<'r>(&mut self, rider: Option<&mut (dyn Rider + 'r)>) {
         let n = self.pending.len();
         if n == 0 {
             return;
         }
+        let drop_rows = |rider: Option<&mut (dyn Rider + 'r)>| {
+            if let Some(r) = rider {
+                r.fold(None);
+            }
+        };
         let k = self.k;
         debug_assert_eq!(self.pending.x.len(), n * k);
         debug_assert_eq!(self.pending.w.len(), n);
@@ -716,6 +779,7 @@ impl EwCov {
             // Only a damaged state file can get here; the rows cannot be
             // trusted, and dropping them is the least wrong thing to do with
             // an accumulator whose scalars already counted them.
+            drop_rows(rider);
             self.pending.clear_rows();
             return;
         }
@@ -745,6 +809,7 @@ impl EwCov {
             "EwCov::flush with no weight: step_factors should have refused every held row"
         );
         if w_new <= 0.0 || w_new.is_nan() {
+            drop_rows(rider);
             self.pending.clear_rows();
             return;
         }
@@ -753,6 +818,7 @@ impl EwCov {
         let Some(first) = u.iter().position(|&ui| ui > 0.0) else {
             // Held rows, no weight among them: the history only aged, and
             // `E_w` of a history that has merely aged is what it was.
+            drop_rows(rider);
             self.pending.clear_rows();
             return;
         };
@@ -778,8 +844,7 @@ impl EwCov {
         // D^T D is S. A zero-weight row becomes a zero row (finite * 0). The
         // residue is taken before the scaling.
         let mut delta = vec![0.0f64; k];
-        for (i, &ui) in u.iter().enumerate() {
-            let row = &mut x[i * k..(i + 1) * k];
+        let centre = |row: &mut [f64], delta: &mut [f64], ui: f64| {
             for (xi, &mb) in row.iter_mut().zip(&m_b) {
                 *xi -= mb;
             }
@@ -788,16 +853,46 @@ impl EwCov {
                     *di += ui * xi;
                 }
             }
-            // `sqrt` is one of the operations IEEE 754 rounds exactly, so
-            // this is the same on every platform (unlike `powi` or `exp`,
-            // which never reach the state).
+        };
+        // `sqrt` is one of the operations IEEE 754 rounds exactly, so this
+        // is the same on every platform (unlike `powi` or `exp`, which never
+        // reach the state).
+        let scale = |row: &mut [f64], ui: f64| {
             let root = ui.sqrt();
             for xi in row.iter_mut() {
                 *xi *= root;
             }
-        }
-        for d in delta.iter_mut() {
-            *d /= u_sum;
+        };
+        if let Some(r) = rider {
+            for (i, &ui) in u.iter().enumerate() {
+                centre(&mut x[i * k..(i + 1) * k], &mut delta, ui);
+            }
+            let sums = delta.clone();
+            for d in delta.iter_mut() {
+                *d /= u_sum;
+            }
+            r.fold(Some(&Block {
+                a: x.as_slice(),
+                n,
+                k,
+                u: &u,
+                m_b: &m_b,
+                sums: &sums,
+                delta: &delta,
+                threads: self.threads.workers(),
+            }));
+            for (i, &ui) in u.iter().enumerate() {
+                scale(&mut x[i * k..(i + 1) * k], ui);
+            }
+        } else {
+            for (i, &ui) in u.iter().enumerate() {
+                let row = &mut x[i * k..(i + 1) * k];
+                centre(row, &mut delta, ui);
+                scale(row, ui);
+            }
+            for d in delta.iter_mut() {
+                *d /= u_sum;
+            }
         }
         // Δ = m_B − m_A, with the residue folded in; m_A is the pair. The
         // covariance takes Δ as one double. The mean takes its two pieces
@@ -855,6 +950,20 @@ impl EwCov {
     /// reaching this far is a bug, so it is caught in debug builds and treated
     /// as a no-op in release rather than corrupting the accumulator.
     pub fn update(&mut self, x: &[f64], lam: f64, w: f64) {
+        self.update_riding(x, lam, w, None);
+    }
+
+    /// [`Self::update`], with `rider` told of the row if the block holds it
+    /// and handed any block merged on the way ([`Rider`]): the one merge
+    /// a full block brings, or the held rows a decay that takes the whole
+    /// history merges before it.
+    pub(crate) fn update_riding<'r>(
+        &mut self,
+        x: &[f64],
+        lam: f64,
+        w: f64,
+        mut rider: Option<&mut (dyn Rider + 'r)>,
+    ) {
         debug_assert_eq!(x.len(), self.k);
         debug_assert!(
             w >= 0.0,
@@ -880,10 +989,11 @@ impl EwCov {
         // prior's scale at 1 across the row, 6.8e-2 from the definition
         // after two such rows (task 159, R1).
         if w == 0.0 && lam * self.w_sum == 0.0 {
+            self.flush_riding(rider.as_deref_mut());
             return self.decay(lam);
         }
         if self.pending.block_rows > 0 {
-            return self.buffer(x, lam, w);
+            return self.buffer(x, lam, w, rider);
         }
         let Some((a, b, w_new)) = self.step_factors(lam, w) else {
             return;
@@ -989,9 +1099,20 @@ impl EwCov {
     /// or a `lam` that takes all of it, there is nothing to hold and `decay`
     /// is the answer.
     pub fn skip(&mut self, x: &[f64], lam: f64) {
+        self.skip_riding(x, lam, None);
+    }
+
+    /// [`Self::skip`] with a [`Rider`], as [`Self::update_riding`].
+    pub(crate) fn skip_riding<'r>(
+        &mut self,
+        x: &[f64],
+        lam: f64,
+        rider: Option<&mut (dyn Rider + 'r)>,
+    ) {
         if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {
-            self.buffer(x, lam, 0.0);
+            self.buffer(x, lam, 0.0, rider);
         } else {
+            self.flush_riding(rider);
             self.decay(lam);
         }
     }

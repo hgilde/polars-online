@@ -1040,7 +1040,13 @@ def ewridge(
         ``window_size``. ``weight_sum``, the timing of every prediction and
         chunk invariance are unchanged to the bit. The blocked sum is the same
         sum in another order, so a blocked fit agrees with an unblocked one to
-        rounding. The held rows travel in the state file, and are refused over
+        rounding. Each target's cross-moments with the features wait for the
+        block as well, and are merged from the same pass over its rows, so a
+        target adds little beside the product: at 200 features about 0.15 ns
+        per feature and row, where updating its cross-moments row by row
+        took 0.35 (one fit, one core of an Apple M4 Pro). A target's weight,
+        mean and variance still take every row. The held rows travel in the
+        state file, with each target's value on them, and are refused over
         256 MiB, ``session_shrink``'s slow twin counted.
     ``gram_threads``
         Run the update of the ``k x k`` matrix on up to that many threads: the

@@ -35,6 +35,7 @@ each reads as of its date, with the names of its day.
 | [37. One wide Gram on several threads](#37-one-wide-gram-on-several-threads-2026-10-08) | one accumulator is the whole job, and you want what `gram_threads` gains on `ewridge` or `ew_cov` | |
 | [38. A solve's bits, whatever the pool](#38-a-solves-bits-whatever-the-pool-2026-10-09) | you want why a wide fit gives the same bits in a pool of any size | |
 | [41. A product's memory on each thread](#41-a-products-memory-on-each-thread-2026-10-13) | a wide fit on many threads takes more memory than its state, or you want what a matrix product allocates on a thread and how its rounding is checked | [what a thread allocates](#what-a-thread-allocates) · [what moved](#what-moved) · [speed](#speed) |
+| [42. A blocked Gram's targets, and a bank's own share](#42-a-blocked-grams-targets-and-a-banks-own-share-2026-10-13) | a blocked `ewridge` with many targets, or a bank of several specs, costs more CPU than its product | [where a target's time went](#where-a-targets-time-went) · [the fold](#the-fold) · [the copy into rows](#the-copy-into-rows) |
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [the scaler's fix](#where-sgd-lost-and-the-scalers-fix) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
 | [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
@@ -2903,6 +2904,101 @@ the table before the change.
 ```sh
 cargo test --release -p online-bench --test product_memory -- --nocapture
 cargo run --release -p online-core --example product_digest
+```
+
+### 42. A blocked Gram's targets, and a bank's own share (2026-10-13)
+
+**Under `gram_block_rows`, each target's cross-moments now wait for the
+block's merge, as the Gram does.** A bank of `ewridge` Gram accumulators
+was measured at 19-20 ns of CPU per feature per row, ten targets, 200
+features to a spec, never solved. The blocked product was about 5.7 ns of
+that. Each target added about 0.7 ns, and about 6 ns had no known source.
+This section finds both and measures what changed.
+
+#### Where a target's time went
+
+`crates/online-core/examples/gram_targets_bench.rs` times one fit:
+200 features, a 256-row block, one Gram over every row, never solved, in
+ns per feature per row on one core. Before the change, 1, 2, 5 and 10
+targets took 6.6-6.9, 7.0-7.3, 8.0-8.4 and 9.7-10.2 ns. A target cost
+0.35 ns, with gaps or without, under either `target_gaps`. A profile
+(`/usr/bin/sample`) of the ten-target fit put half its samples in the
+product and 37% in the row-by-row update of each target's
+cross-moments and feature means. Each of those is `k` compensated steps
+a row.
+
+The rest was the bank's. Five such specs, 1,000 float32 columns over
+20,000 rows, cost 9.4 ns of CPU per feature and row at one target on a
+pool of one thread, and 13.3-16 on the default pool of 14. On one thread
+the bank adds about 3 ns to the model: 0.9 to copy each chunk's columns
+into rows, and about 2 for the loop around each step. On the pool, the
+copy ran on every thread for every spec at once. It writes a block of 160
+MB a chunk and reads it back, so it waits on memory, and the CPU time it
+takes buys no wall time. It was 27% of the bank's samples.
+
+#### The fold
+
+A blocked merge centres its rows on the block's own mean, `a = x − m_B`,
+and multiplies them. Each target now keeps its value on each held row,
+and is merged from the same deviations. Over the rows the target learns
+from, with `u` each row's weight at the end of the block:
+
+```text
+S'  = Σ (uᵢ eᵢ) aᵢ        eᵢ = yᵢ − ȳ_B
+c'  = (H/W')·c + S'/W' + (H·U/W'²)·Δz·Δy − (U/W')·ε·δy
+```
+
+`H` is the target's history weight, `W'` its weight after the block,
+`ε` the offset of its feature means from the block's, and `δy` the
+rounding its own mean leaves. It is the Gram's own merge, for the pair of
+the features and the target, over the target's rows. `S'` is summed
+row by row, four rows at a time with each entry in a register, which is
+the same additions in the same order. It is not a call to the matrix
+product: the order in which that sums one column can follow the other
+columns beside it, and a target's sums would then move with its
+neighbours. Summed by rows, a target's bits are the same at every
+`gram_threads`, on every platform, and whatever targets share its block.
+Each entry is held to an exactly rounded oracle of its definition, within
+the rounding bound of a sum in any order.
+
+| targets | before | after | with gaps, before | with gaps, after |
+|---:|---:|---:|---:|---:|
+| 1 | 7.1-7.4 | 6.9-7.1 | 7.0-7.2 | 7.0-7.1 |
+| 2 | 7.4-7.7 | 7.1-7.3 | 7.4-7.6 | 7.2-7.5 |
+| 5 | 8.5-8.7 | 7.4-7.6 | 8.3-8.6 | 7.7-7.9 |
+| 10 | 10.2-10.6 | 8.1-8.3 | 9.9-10.3 | 8.5-8.8 |
+
+That is ns per feature and row, three rounds of each build in turn at a
+load of 3 to 4. "With gaps" is each target null on one row in ten. A
+target now costs 0.13 ns, or 0.18 with gaps: its rows' sum, and its
+weight, mean and moments, which still take every row.
+
+#### The copy into rows
+
+A bank of several specs now copies each spec's chunk on that spec's own
+thread. The specs already run side by side, and a lone spec keeps the
+copy spread over the pool. The same five specs, ten targets with gaps:
+
+| targets | `gram_threads` | CPU before | CPU after | wall before | wall after |
+|---:|---|---:|---:|---:|---:|
+| 1 | 1 | 14.0-17.4 | 11.3-12.5 | 3.0-3.3 | 2.8-3.3 |
+| 1 | `"auto"` | 13.9-17.5 | 11.1-11.3 | 2.8-3.2 | 2.6-2.8 |
+| 10 | 1 | 17.1-20.4 | 13.4-13.7 | 3.3-3.8 | 2.9-3.2 |
+| 10 | `"auto"` | 17.0-18.9 | 13.4-13.7 | 3.3-3.6 | 3.0-3.1 |
+
+One spec of 1,000 features, so the copy still spread: at one target the
+same within its scatter, 25.1-26.1 ns of wall time either way; at ten,
+26.5-27.6 against 29.3-29.6 on one thread, and 8.4-8.9 against
+11.6-11.8 on `"auto"`. `scripts/benchmark.py`'s rows, none of them
+blocked, were the old build's within their scatter over six rounds of
+each, the median ratio 0.999. About 3 ns of a bank's own remain per
+feature and row: the copy into rows on one thread, and the loop around
+each step. A copy tile by tile inside each stream, never writing the
+whole chunk out in rows, is the next step.
+
+```sh
+cargo run --release -p online-core --example gram_targets_bench -- 200
+GAPS=1 cargo run --release -p online-core --example gram_targets_bench -- 200
 ```
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)

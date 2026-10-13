@@ -10449,7 +10449,7 @@ tick, and that the series holding it up has a count near 1.
       `merge`/`merge_within`/`within_cross` + `lars_paths`/`ridge_fits` on
       the job's columns alone, `fit_subsets` = its jobs, threads, every
       index refusal of `check_jobs`).
-- [ ] 257. **The targets inside the blocked Gram product** -- requested
+- [x] 257. **The targets inside the blocked Gram product** -- requested
       2026-10-13. Measured by the requester on 0.13.0 (M4 Pro, load 4-9;
       re-measure at HEAD first, since `gram_threads="auto"` and task 250
       changed the bank's costs): a bank of `ewridge` Gram accumulators
@@ -10511,6 +10511,82 @@ tick, and that the series holding it up has a count near 1.
       `k x T` (`2T` with the gap masks) product in the flush: 10 targets
       9.9-10.2 -> 7.2-7.4 ns (7.6-8.1 with masks), 5 targets 8.3-8.5 ->
       6.9-7.2; a target then costs ~0.08 ns, where it costs 0.35.
+      *Decided 2026-10-13* (the user, on both recommendations): the field
+      and the fold, and (a) the per-spec transpose; (b) later, its own step.
+      *Built 2026-10-13* (branch `task-257-targets-in-product`). **The
+      fold:** `EwCov::flush_riding` hands a `Rider` the block between its
+      centring and its scaling (`ewcov::Block`: deviations `a = x − m_B`,
+      weights `u`, `m_B`, `δ` and `Σ uᵢaᵢ`), and is told of each row it
+      holds; `gaps::Grams::update` gives each Gram a `Fold` of its readers
+      (on a row where targets part, the absent ones' copy folds them).
+      `gaps::Held` (`acc.held`, schema 62, trailing, written only while a
+      target holds values) keeps per target its values on its Gram's last
+      held rows (NaN where it learns nothing), its history's weight decayed
+      through them, its weight after the last and its mean pair before the
+      first; a decay that forgets its history ([`decay_into`]) restarts
+      them. `gaps::fold_block` mirrors `EwCov::flush` for `(z, y_j)` over the
+      target's rows: `S' = Σ (uᵢeᵢ)aᵢ` summed row by row (four rows a
+      register pass, the same additions in order; a zero coefficient adds
+      nothing since a sum from `+0` is never `−0`), `ε` the Gram's `δ` where
+      the target has every row of weight, else `(Σuᵢaᵢ − M)/U` with `M` over
+      the rows it misses; bands of 256+ columns on `gram_threads`, each
+      entry the same operations. Not faer's product: its kernel's order for
+      a column could follow the other columns beside it (task 256's lesson),
+      and the sum by rows is the same on every platform. The weight, `ȳ_j`
+      (`Cross::learn_mean`), the target moments, `nj` and the all-row mean
+      stay per row (the all-row mean, ~0.35 ns, is a possible follow-up:
+      under `own_rows` no Gram need hold every row). Readers mid-block take
+      `Acc::flushed` (`gram_parts`, `cross_moments`); a solve and a blend
+      `Acc::flush`. Unblocked fits run the old code (`Acc::learn_per_row`).
+      **Bits:** blocked `ewridge`'s `c_j` and `m_j` (so `cross_centered`,
+      `cross_moments`, `means_by_target` under `pairwise`, coefficients and
+      predictions): 3 specs x 40 features x 4 targets x 3,000 rows against
+      `e157e46`, outputs within 2e-12 relative, `cross_moments` 2e-16 and
+      `cross_centered` 6e-15 of their largest entry; `target_weights`,
+      `ȳ`, the target moments, unblocked fits, `release_probe.py`'s 297
+      fields (no blocked spec there) and `benchmark.py`'s rows the same
+      bits. Under `own_rows` a target's `m_j` is its Gram's mean to the bit
+      (the per-row path's promise, which blocking had broken). A share
+      `U/W'` rounds, so a block's merge leaves a mean a rounding of its
+      level short, as the Gram's own always has: an intercept's centred
+      cross-moment reads ~1e-19 where the per-row path wrote 0.
+      **Tests:** `gaps/fold_tests.rs`: every entry of `c_j` and `m_j`
+      within `γ_{8R+32}` of the magnitudes (plus the level's resolution) of
+      `oracle::dot`/`dot3`'s exactly rounded definition, blocks 0-257, 1/3/8
+      threads, both gaps, features at 0 and 1e3 with a constant column,
+      zero weights, decays of 1/2 and 0, a target-only reset; a dropped row
+      and a 1e-12 scale fail it (worst case 0.42 of the bound); thread
+      counts and neighbours to the bit at 600 columns; `own_rows` means = the
+      Gram's; a 61-style state (per-row targets, held Gram rows) going on
+      within the bound; mid-block round trips at six offsets (named and
+      compact) to the bit, the field absent between blocks. `ewridge/tests`'
+      all-row-mean test restated for blocking. `tests/test_gram_block.py`:
+      three targets with gaps, both `target_gaps`, per-row fit to 1e-9,
+      chunks of 1/7/133 and saves at six rows to the bit with `gram()`.
+      **Fixtures:** schema 62, `MIN_SCHEMA_VERSION` and the bank's minimum
+      stay 61; 61's sets kept (`online-core` every case, `online-polars` the
+      bank files and `refresh_time`), `previous![61]`, each loading, going
+      on and re-saving as 62's bytes (no kept case is blocked, so the
+      conversion is exact: every unblocked file's bytes moved only in the
+      schema byte); new case `ewridge_blocked`, saved mid-block, its
+      `acc.held.y` and `w_end` held non-empty. **Transpose (a):**
+      `transposes_in_parallel`: a chunk's transpose spreads over the pool
+      only when one spec has features. **Measured** (M4 Pro, load 2-4,
+      three rounds each build in turn; PERFORMANCE §42): one fit, ns per
+      feature-row, 1/2/5/10 targets 7.1-7.4/7.4-7.7/8.5-8.7/10.2-10.6 ->
+      6.9-7.1/7.1-7.3/7.4-7.6/8.1-8.3 (gaps at 10: 10.0-10.3 -> 8.5-8.8);
+      the bank of 5 x 200 at 10 targets CPU 17.0-20.4 -> 13.4-13.7, wall
+      3.3-3.8 -> 2.9-3.2, at 1 target 13.9-17.5 -> 11.1-12.5; one spec of
+      1,000 features unchanged at 1 target and 29.3 -> 26.5-27.6 ns of wall
+      at 10 (8.4-8.9 against 11.6-11.8 on `"auto"`); `benchmark.py` six
+      rounds each, median ratio 0.999, every row within scatter. New
+      instruction case `ewridge_gram_t10` (50 features, 10 targets, block
+      64), its budget from CI's first run.
+      **Next (b)**, after CI passes on this: transpose tile by tile inside
+      each stream, cache-resident, so a chunk's row block (160 MB at 20,000
+      rows of 1,000 features) is never written and read back; the
+      remaining ~3 ns of a bank's own per feature-row (0.9 the transpose on
+      one thread, ~2 the loop around `step`) is its target.
 - [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`

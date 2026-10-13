@@ -32,6 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ewcov::{Block, Rider};
 use crate::window::EMPTY_FRACTION;
 use crate::{EwCov, Moments, TargetMoments};
 
@@ -204,6 +205,18 @@ impl Cross {
                 *ci = aj * *ci + ab_dy * u; // `ab_dy` is a zero here: `bj` is 0
             }
         }
+        if bj > 0.0 {
+            add(&mut self.my[j], &mut self.my_lo[j], bj * dy);
+        }
+    }
+
+    /// Target `j`'s own mean `ȳ_j` alone takes the row, by the steps
+    /// [`Cross::learn`] takes it: what a blocked Gram's targets keep per row,
+    /// their cross-moments and feature means waiting for the block's merge
+    /// ([`Held`]).
+    pub(crate) fn learn_mean(&mut self, j: usize, y: f64, bj: f64) {
+        use crate::comp::{add, dev};
+        let dy = dev(y, self.my[j], self.my_lo[j]);
         if bj > 0.0 {
             add(&mut self.my[j], &mut self.my_lo[j], bj * dy);
         }
@@ -397,6 +410,10 @@ impl Grams {
     /// takes all of the weight (`lam = 0`, an infinite clock gap) splits
     /// them, since there [`EwCov::update`] refuses the row and
     /// [`EwCov::skip`] empties the Gram.
+    ///
+    /// `ride` is a blocked Gram's targets ([`Riders`]): each Gram tells it
+    /// of the row it holds and hands it each block it merges, for the
+    /// targets that read it.
     pub(crate) fn update(
         &mut self,
         z: &[f64],
@@ -404,19 +421,21 @@ impl Grams {
         lam: f64,
         w: f64,
         gaps: TargetGaps,
+        mut ride: Option<&mut Riders<'_>>,
     ) {
         // A Gram that learns the row forgets a history the row leaves in
         // the subnormal range ([`decay_into`]), by the rule each of its
         // targets' weights does in `Acc::learn`: the two are equal to the
         // bit, so they decide alike and stay equal (task 217).
-        fn learn(g: &mut EwCov, z: &[f64], lam: f64, w: f64) {
+        fn learn(g: &mut EwCov, z: &[f64], lam: f64, w: f64, fold: Option<&mut Fold<'_, '_>>) {
             let lam = decay_into(lam, g.n_eff(), w);
-            g.update(z, lam, w);
+            g.update_riding(z, lam, w, fold.map(|f| f as &mut dyn Rider));
         }
         let Self { grams, of, flags } = self;
         if gaps == TargetGaps::Pairwise {
-            for g in grams.iter_mut() {
-                learn(g, z, lam, w);
+            for (gi, g) in grams.iter_mut().enumerate() {
+                let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, gi, None));
+                learn(g, z, lam, w, fold.as_mut());
             }
             return;
         }
@@ -428,9 +447,16 @@ impl Grams {
             flags.0[o] |= if yj.is_some() { PRESENT } else { ABSENT };
         }
         for g in 0..n {
-            match flags.0[g] {
-                PRESENT => learn(&mut grams[g], z, lam, w),
-                ABSENT => grams[g].skip(z, lam),
+            let flag = flags.0[g];
+            match flag {
+                PRESENT => {
+                    let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, None));
+                    learn(&mut grams[g], z, lam, w, fold.as_mut());
+                }
+                ABSENT => {
+                    let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, None));
+                    grams[g].skip_riding(z, lam, fold.as_mut().map(|f| f as &mut dyn Rider));
+                }
                 // A Gram every target has left; there is none.
                 0 => {}
                 // A row with no weight: no split. Its present and its absent
@@ -438,19 +464,32 @@ impl Grams {
                 // to age or without (task 159, R1: with none, the present
                 // ones' Gram refused the row and kept the prior's scale at 1
                 // where the absent ones' aged it, so the two parted).
-                _ if w == 0.0 => grams[g].update(z, lam, w),
-                // Its targets part on this row.
+                _ if w == 0.0 => {
+                    let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, None));
+                    grams[g].update_riding(z, lam, w, fold.as_mut().map(|f| f as &mut dyn Rider));
+                }
+                // Its targets part on this row. The absent ones' copy holds
+                // their held values (a suffix of the same rows), and folds
+                // them when it merges.
                 _ => {
                     let id = grams.len();
                     let mut own = grams[g].clone();
-                    own.skip(z, lam);
+                    {
+                        let mut fold = ride
+                            .as_deref_mut()
+                            .map(|r| Fold::new(r, of, g, Some(false)));
+                        own.skip_riding(z, lam, fold.as_mut().map(|f| f as &mut dyn Rider));
+                    }
+                    {
+                        let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, Some(true)));
+                        learn(&mut grams[g], z, lam, w, fold.as_mut());
+                    }
                     grams.push(own);
                     for (o, yj) in of.iter_mut().zip(y) {
                         if *o == g && yj.is_none() {
                             *o = id;
                         }
                     }
-                    learn(&mut grams[g], z, lam, w);
                 }
             }
         }
@@ -461,11 +500,14 @@ impl Grams {
         (0..self.of.len()).filter(|&j| self.of[j] == g).collect()
     }
 
-    /// Bring every held block into its matrix.
-    pub(crate) fn flush(&mut self) {
-        for g in &mut self.grams {
-            g.flush();
-        }
+    /// Whether the Grams hold rows for a blocked merge (`gram_block_rows`).
+    pub(crate) fn blocked(&self) -> bool {
+        self.grams.first().is_some_and(|g| g.block_rows() > 0)
+    }
+
+    /// Whether any Gram holds rows not yet merged.
+    fn has_pending(&self) -> bool {
+        self.grams.iter().any(EwCov::has_pending)
     }
 
     /// Every Gram as it stands, decayed by `lam`, for a window's snapshot.
@@ -634,6 +676,18 @@ pub(crate) struct Acc {
     /// other half of what the Gram export hands back (docs/ENHANCEMENTS.md
     /// E45).
     pub(crate) tm: TargetMoments,
+    /// Each row's targets as a blocked Gram's riders read them: a scratch,
+    /// not state.
+    #[serde(skip)]
+    scratch: Scratch,
+    /// Under `gram_block_rows`, each target's values on the rows its Gram
+    /// holds, waiting for the block's merge ([`Held`]; docs/PLAN.md task
+    /// 257). Schema 62. **Last, and it must stay last**: it is written only
+    /// while a block holds a target's rows, and the compact encoding is
+    /// positional, so a field that skips anywhere but the end slides the
+    /// fields after it.
+    #[serde(default, skip_serializing_if = "Held::is_empty")]
+    pub(crate) held: Held,
 }
 
 impl Acc {
@@ -643,7 +697,101 @@ impl Acc {
             wj: vec![0.0; n_targets],
             cross: Cross::new(n_targets, k),
             tm: TargetMoments::new(n_targets),
+            scratch: Scratch::default(),
+            held: Held::default(),
         }
+    }
+
+    /// Bring every held block into its matrix, and each target's held
+    /// values into its cross-moments and feature means.
+    pub(crate) fn flush(&mut self) {
+        let Self {
+            grams,
+            cross,
+            held,
+            wj,
+            ..
+        } = self;
+        let mut ride = Riders {
+            held,
+            cross,
+            row: &[],
+            wj,
+        };
+        let Grams { grams, of, .. } = grams;
+        for (g, gram) in grams.iter_mut().enumerate() {
+            let mut fold = Fold::new(&mut ride, of, g, None);
+            gram.flush_riding(Some(&mut fold));
+        }
+    }
+
+    /// The accumulators with every held block merged, for a reader that
+    /// must not move the block's boundary: the Gram export and the
+    /// cross-moments a caller reads mid-block. Borrows when nothing is held.
+    pub(crate) fn flushed(&self) -> std::borrow::Cow<'_, Self> {
+        if self.grams.has_pending() {
+            let mut merged = self.clone();
+            merged.flush();
+            std::borrow::Cow::Owned(merged)
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
+    }
+
+    /// [`Self::learn`] under a blocked Gram (docs/PLAN.md task 257): every
+    /// per-row number as [`Self::learn`] takes it -- each target's weight,
+    /// mean and moments, the all-row weight and mean -- and each target's
+    /// value held beside its Gram's row, its cross-moments and feature
+    /// means merged with the block ([`fold_block`]).
+    fn learn_held(&mut self, z: &[f64], y: &[Option<f64>], lam: f64, w: f64, gaps: TargetGaps) {
+        let b_all = self.cross.share(lam, w);
+        let rows = &mut self.scratch.0;
+        rows.clear();
+        for (j, yj) in y.iter().enumerate() {
+            let wj = &mut self.wj[j];
+            let my = (self.cross.my[j], self.cross.my_lo[j]);
+            match *yj {
+                // As `Self::learn`: hard rule 9, and task 217's rule for a
+                // history the row leaves in the subnormal range.
+                Some(yj) if lam * *wj + w > 0.0 => {
+                    let lam = decay_into(lam, *wj, w);
+                    if w > 0.0 {
+                        self.cross.nj[j] += 1;
+                    }
+                    let wj_new = lam * *wj + w;
+                    let (a, b) = (lam * *wj / wj_new, w / wj_new);
+                    self.cross.learn_mean(j, yj, b);
+                    self.tm.learn(j, yj, a, b, lam, w);
+                    rows.push(RowTarget {
+                        value: if w > 0.0 { yj } else { f64::NAN },
+                        present: true,
+                        lam,
+                        w_before: *wj,
+                        my,
+                    });
+                    *wj = wj_new;
+                }
+                Some(_) | None => {
+                    self.tm.age(j, lam);
+                    rows.push(RowTarget {
+                        value: f64::NAN,
+                        present: yj.is_some(),
+                        lam,
+                        w_before: *wj,
+                        my,
+                    });
+                    *wj *= lam;
+                }
+            }
+        }
+        let mut ride = Riders {
+            held: &mut self.held,
+            cross: &mut self.cross,
+            row: rows,
+            wj: &self.wj,
+        };
+        self.grams.update(z, y, lam, w, gaps, Some(&mut ride));
+        self.cross.advance(z, lam, w, b_all);
     }
 
     /// One row, at decay `lam` and weight `w`: the Grams by `gaps`, each
@@ -658,8 +806,19 @@ impl Acc {
         w: f64,
         gaps: TargetGaps,
     ) {
+        if self.grams.blocked() {
+            return self.learn_held(z, y, lam, w, gaps);
+        }
+        self.learn_per_row(z, y, lam, w, gaps);
+    }
+
+    /// [`Self::learn`] without a blocked Gram: every target's cross-moments
+    /// and feature means take the row as it comes. What a blocked one did
+    /// before schema 62, so what a state from then holds through its held
+    /// rows.
+    fn learn_per_row(&mut self, z: &[f64], y: &[Option<f64>], lam: f64, w: f64, gaps: TargetGaps) {
         let b_all = self.cross.share(lam, w);
-        self.grams.update(z, y, lam, w, gaps);
+        self.grams.update(z, y, lam, w, gaps, None);
         for (j, yj) in y.iter().enumerate() {
             let wj = &mut self.wj[j];
             match *yj {
@@ -953,6 +1112,9 @@ impl Acc {
             && self.wj.len() == n_targets
             && tm_has_shape(&self.tm, n_targets)
             && self.cross.has_shape(n_targets, k, true)
+            && self
+                .held
+                .has_shape(n_targets, |j| g.grams[g.of[j]].pending_len())
     }
 }
 
@@ -965,6 +1127,464 @@ fn tm_has_shape(t: &TargetMoments, n_targets: usize) -> bool {
         && t.q().len() == n_targets
         && t.means_lo().len() == n_targets
 }
+
+/// One target on one row, as [`Acc::learn_held`] took it: what the target's
+/// [`Held`] values take from the row when its Gram holds the row.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RowTarget {
+    /// The value it learns from, or NaN where it learns none: absent, or a
+    /// row of weight 0.
+    value: f64,
+    /// Whether it is present on the row, weight or not: under `own_rows`
+    /// the targets of a Gram part on that.
+    present: bool,
+    /// The decay its own weight took on the row ([`decay_into`]).
+    lam: f64,
+    /// Its weight and its mean, the pair, as they stood before the row.
+    w_before: f64,
+    my: (f64, f64),
+}
+
+/// [`RowTarget`]s of the row being learned. Not state: equal whatever it
+/// holds, and never written.
+#[derive(Debug, Clone, Default)]
+struct Scratch(Vec<RowTarget>);
+
+impl PartialEq for Scratch {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// Under `gram_block_rows`, each target's part of the held block
+/// (docs/PLAN.md task 257). A blocked Gram holds its rows' features until
+/// its block is merged, by one product. Each target's centred cross-moments
+/// `c_j` and feature means `m_j` wait with it: the target's value on each of
+/// its Gram's held rows is held here, and folded in from the same pass over
+/// the block ([`fold_block`]). Its weight, its own mean `ȳ_j` and its
+/// moments still take every row, so `n_eff`, the gates and the target
+/// moments are the rows' as they arrive.
+///
+/// Per target, empty when nothing is held: `y[j]` its values on the last
+/// `y[j].len()` rows its Gram holds (NaN where it learns nothing from the
+/// row), `hist[j]` the weight of its history before them decayed through
+/// them, `w_end[j]` its weight after the last, and `my[j]`/`my_lo[j]` its
+/// mean, the pair, before the first. A state written before schema 62 holds
+/// none: its targets were current through every held row, so their values
+/// start with the next row, a suffix of the block (and so a target's are
+/// after a decay that forgets its history, [`decay_into`]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct Held {
+    /// NaN where a target learns nothing from a row, so tagged in JSON.
+    #[serde(with = "crate::humanfloat::vec_vec_f64_or_tag")]
+    y: Vec<Vec<f64>>,
+    hist: Vec<f64>,
+    w_end: Vec<f64>,
+    my: Vec<f64>,
+    my_lo: Vec<f64>,
+}
+
+impl Held {
+    /// Whether no target holds a value: what a state between blocks, or of
+    /// an unblocked fit, writes nothing for.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.y.iter().all(Vec::is_empty)
+    }
+
+    /// Whether it is the shape of `n_targets` targets, each holding no more
+    /// rows than its Gram does (`held_by(j)`).
+    fn has_shape(&self, n_targets: usize, held_by: impl Fn(usize) -> usize) -> bool {
+        if self.y.is_empty() {
+            return self.hist.is_empty()
+                && self.w_end.is_empty()
+                && self.my.is_empty()
+                && self.my_lo.is_empty();
+        }
+        [&self.hist, &self.w_end, &self.my, &self.my_lo]
+            .iter()
+            .all(|v| v.len() == n_targets)
+            && self.y.len() == n_targets
+            && self
+                .y
+                .iter()
+                .enumerate()
+                .all(|(j, v)| v.len() <= held_by(j))
+    }
+
+    /// Target `j` on a row its Gram holds, its weight `w_after` after it.
+    fn push(&mut self, j: usize, n_targets: usize, row: &RowTarget, w_after: f64) {
+        if self.y.len() != n_targets {
+            *self = Self {
+                y: vec![Vec::new(); n_targets],
+                hist: vec![0.0; n_targets],
+                w_end: vec![0.0; n_targets],
+                my: vec![0.0; n_targets],
+                my_lo: vec![0.0; n_targets],
+            };
+        }
+        // A decay that forgets the target's history forgets its held rows
+        // with it: they start again from this one.
+        if row.lam == 0.0 {
+            self.y[j].clear();
+        }
+        if self.y[j].is_empty() {
+            self.hist[j] = row.w_before;
+            (self.my[j], self.my_lo[j]) = row.my;
+        }
+        self.hist[j] *= row.lam;
+        self.y[j].push(row.value);
+        self.w_end[j] = w_after;
+    }
+}
+
+/// Equal where every target holds the same values, the same history and
+/// means, to the bit; a target holding nothing holds no history either,
+/// whatever was last written there.
+impl PartialEq for Held {
+    fn eq(&self, other: &Self) -> bool {
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let held = |h: &Held, j: usize| h.y.get(j).is_some_and(|v| !v.is_empty());
+        let n = self.y.len().max(other.y.len());
+        (0..n).all(|j| match (held(self, j), held(other, j)) {
+            (false, false) => true,
+            (true, true) => {
+                bits(&self.y[j]) == bits(&other.y[j])
+                    && [
+                        (self.hist[j], other.hist[j]),
+                        (self.w_end[j], other.w_end[j]),
+                        (self.my[j], other.my[j]),
+                        (self.my_lo[j], other.my_lo[j]),
+                    ]
+                    .iter()
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            }
+            _ => false,
+        })
+    }
+}
+
+/// What a blocked Gram's riders write to: the held values, the
+/// cross-moments a merge folds them into, and the row being learned.
+pub(crate) struct Riders<'a> {
+    held: &'a mut Held,
+    cross: &'a mut Cross,
+    row: &'a [RowTarget],
+    wj: &'a [f64],
+}
+
+/// The riders of Gram `g`: the targets that read it, or -- on the row
+/// where they part -- the present (`only = Some(true)`) or the absent ones.
+pub(crate) struct Fold<'f, 'a> {
+    r: &'f mut Riders<'a>,
+    of: &'f [usize],
+    g: usize,
+    only: Option<bool>,
+}
+
+impl<'f, 'a> Fold<'f, 'a> {
+    fn new(r: &'f mut Riders<'a>, of: &'f [usize], g: usize, only: Option<bool>) -> Self {
+        Self { r, of, g, only }
+    }
+
+    fn targets(&self) -> Vec<usize> {
+        (0..self.of.len())
+            .filter(|&j| {
+                self.of[j] == self.g
+                    && self
+                        .only
+                        .is_none_or(|p| self.r.row.get(j).is_some_and(|t| t.present == p))
+            })
+            .collect()
+    }
+}
+
+impl Rider for Fold<'_, '_> {
+    fn held(&mut self) {
+        let n = self.of.len();
+        for j in 0..n {
+            if self.of[j] != self.g {
+                continue;
+            }
+            let Some(row) = self.r.row.get(j) else {
+                continue;
+            };
+            if self.only.is_some_and(|p| row.present != p) {
+                continue;
+            }
+            self.r.held.push(j, n, row, self.r.wj[j]);
+        }
+    }
+
+    fn fold(&mut self, block: Option<&Block<'_>>) {
+        let js = self.targets();
+        fold_block(self.r.held, self.r.cross, &js, block);
+    }
+}
+
+/// One target's part of a block: the rows it learns from (`counted`, from
+/// `off` on), each row's `uᵢ·eᵢ`, the weight `U` of those rows, its mean
+/// `ȳ_B` over them and the residue `δy` that mean leaves.
+struct Part {
+    j: usize,
+    off: usize,
+    counted: Vec<bool>,
+    coef: Vec<f64>,
+    u_sum: f64,
+    ybar: f64,
+    dy: f64,
+    /// Whether some row of the block with weight is not the target's: its
+    /// feature mean over its own rows is then the block's sum less the
+    /// rows it misses, `G = Σ uᵢ aᵢ − M`, where over every row it is the
+    /// Gram's.
+    gappy: bool,
+}
+
+/// Fold targets `js`' held values into their cross-moments and feature
+/// means, from a Gram's block `b` (docs/PLAN.md task 257): `None` drops them,
+/// the block having merged nothing.
+///
+/// Over the rows target `j` learns from in the block, with `aᵢ = zᵢ − m_B`
+/// the Gram's deviations and `uᵢ` its weights, `U = Σ uᵢ`, and over them
+///
+/// ```text
+/// ȳ_B = Σ uᵢ yᵢ / U        eᵢ = yᵢ − ȳ_B      δy = Σ uᵢ eᵢ / U
+/// ε   = Σ uᵢ aᵢ / U        (the Gram's δ where its rows are every row of
+///                          weight, and the block's sum less the rows it
+///                          misses, `M`, where not)
+/// S'  = Σ (uᵢ eᵢ) aᵢ       (the product: one pass over the block's rows)
+/// Δz  = (m_B − m_A) + ε    Δy = (ȳ_B − ȳ_A) + δy
+/// c'  = (H/W')·c + S'/W' + (H·U/W'²)·Δz·Δy − (U/W')·ε·δy
+/// m'  = m_A + (U/W')·Δz
+/// ```
+///
+/// `H` the target's history weight decayed through the block and `W'` its
+/// weight after it ([`Held`]): the merge [`EwCov::flush`] makes, for the
+/// pair `(z, y_j)` over the target's own rows -- the block's scatter about
+/// its own means, `S' − U·ε·δy`, and the between term from the two means'
+/// difference, so nothing is the size of a level squared. `S'` sums each
+/// entry over the rows in order, one multiply and one add a row, on any
+/// thread count: the bits are the same at every `gram_threads`, on every
+/// platform, and whichever other targets share the block.
+fn fold_block(held: &mut Held, cross: &mut Cross, js: &[usize], block: Option<&Block<'_>>) {
+    use crate::comp::{add, dev};
+    let clear = |held: &mut Held, j: usize| {
+        if let Some(v) = held.y.get_mut(j) {
+            v.clear();
+        }
+    };
+    let Some(b) = block else {
+        for &j in js {
+            clear(held, j);
+        }
+        return;
+    };
+    let (n, k) = (b.n, b.k);
+    let mut parts = Vec::new();
+    for &j in js {
+        let Some(ys) = held.y.get(j) else { continue };
+        if ys.is_empty() {
+            continue;
+        }
+        let nr = ys.len();
+        if nr > n || cross.c[j].len() != k {
+            // Only a damaged state gets here (`Acc::has_shape` refuses one).
+            clear(held, j);
+            continue;
+        }
+        let off = n - nr;
+        let us = &b.u[off..];
+        let counted: Vec<bool> = ys
+            .iter()
+            .zip(us)
+            .map(|(&y, &u)| !y.is_nan() && u > 0.0)
+            .collect();
+        // No weight of the target's in the block: its moments only aged,
+        // and a mean that has only aged is what it was.
+        let Some(first) = counted.iter().position(|&c| c) else {
+            clear(held, j);
+            continue;
+        };
+        // The block's mean on values shifted by one of them, as the Gram's
+        // first pass takes its own.
+        let shift = ys[first];
+        let (mut u_sum, mut sum) = (0.0, 0.0);
+        for i in 0..nr {
+            if counted[i] {
+                u_sum += us[i];
+                sum += us[i] * (ys[i] - shift);
+            }
+        }
+        let ybar = shift + sum / u_sum;
+        let mut coef = vec![0.0; nr];
+        let mut resid = 0.0;
+        for i in 0..nr {
+            if counted[i] {
+                coef[i] = us[i] * (ys[i] - ybar);
+                resid += coef[i];
+            }
+        }
+        let gappy = b.u[..off].iter().any(|&u| u > 0.0)
+            || counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);
+        parts.push(Part {
+            j,
+            off,
+            counted,
+            coef,
+            u_sum,
+            ybar,
+            dy: resid / u_sum,
+            gappy,
+        });
+    }
+    if parts.is_empty() {
+        return;
+    }
+    // `S'` and, where needed, `M`, the sum over the rows of weight the
+    // target misses, each `k` wide per target.
+    let mut s_acc = vec![0.0f64; parts.len() * k];
+    let mut g_acc = vec![0.0f64; parts.len() * k];
+    accumulate(b, &parts, &mut s_acc, &mut g_acc);
+    for (p, (s, g)) in parts
+        .iter()
+        .zip(s_acc.chunks_exact(k).zip(g_acc.chunks_exact(k)))
+    {
+        let j = p.j;
+        let (h, w_end) = (held.hist[j], held.w_end[j]);
+        if !(w_end > 0.0 && w_end.is_finite()) {
+            clear(held, j);
+            continue;
+        }
+        let share = p.u_sum / w_end;
+        let scale = h / w_end;
+        let alpha = 1.0 / w_end;
+        let between = h * p.u_sum / (w_end * w_end);
+        let big_y = dev(p.ybar, held.my[j], held.my_lo[j]) + p.dy;
+        let (c, mj, lo) = (&mut cross.c[j], &mut cross.mj[j], &mut cross.mj_lo[j]);
+        for f in 0..k {
+            let eps = if p.gappy {
+                (b.sums[f] - g[f]) / p.u_sum
+            } else {
+                b.delta[f]
+            };
+            let d_hi = dev(b.m_b[f], mj[f], lo[f]);
+            let big = d_hi + eps;
+            c[f] = scale * c[f] + alpha * s[f] + (between * big * big_y - share * eps * p.dy);
+            add(&mut mj[f], &mut lo[f], share * d_hi);
+            // As the Gram's mean: a step of 0 could round the pair afresh.
+            if eps != 0.0 {
+                add(&mut mj[f], &mut lo[f], share * eps);
+            }
+        }
+        clear(held, j);
+    }
+}
+
+/// `S'` and `M` of each part, `k` wide each: over the block's rows in
+/// order, each row's deviations times the target's `uᵢ·eᵢ` -- and, for
+/// `M`, the `uᵢ` of a row of weight it misses -- added to its sums, one
+/// multiply and one add a row. A row the target does
+/// not learn from adds nothing: its coefficient is 0, and a sum that starts
+/// at `+0` is never `−0`, so adding a zero product leaves every bit. Four
+/// rows at a time, each entry kept in a register across them -- the same
+/// additions in the same order. On `b.threads` threads in bands of
+/// columns, each entry's sum the same operations in the same order on any
+/// count.
+fn accumulate(b: &Block<'_>, parts: &[Part], s_acc: &mut [f64], g_acc: &mut [f64]) {
+    let (n, k) = (b.n, b.k);
+    // Each part's coefficients over every row of the block.
+    let coefs: Vec<(Vec<f64>, Option<Vec<f64>>)> = parts
+        .iter()
+        .map(|p| {
+            let mut s = vec![0.0; n];
+            for (r, (&c, &e)) in p.counted.iter().zip(&p.coef).enumerate() {
+                if c {
+                    s[p.off + r] = e;
+                }
+            }
+            let missed = |i: usize| i < p.off || !p.counted[i - p.off];
+            let g = p.gappy.then(|| {
+                (0..n)
+                    .map(|i| if missed(i) { b.u[i] } else { 0.0 })
+                    .collect()
+            });
+            (s, g)
+        })
+        .collect();
+    let band = |f0: usize, s_band: &mut [&mut [f64]], g_band: &mut [&mut [f64]]| {
+        let f1 = f0 + s_band.first().map_or(0, |v| v.len());
+        let row = |i: usize| &b.a[i * k + f0..i * k + f1];
+        let mut i = 0;
+        while i + 4 <= n {
+            let (a0, a1, a2, a3) = (row(i), row(i + 1), row(i + 2), row(i + 3));
+            for (c, (cs, cg)) in coefs.iter().enumerate() {
+                let sum4 = |acc: &mut [f64], w: &[f64]| {
+                    let (w0, w1, w2, w3) = (w[i], w[i + 1], w[i + 2], w[i + 3]);
+                    if w0 == 0.0 && w1 == 0.0 && w2 == 0.0 && w3 == 0.0 {
+                        return;
+                    }
+                    for ((((t, &x0), &x1), &x2), &x3) in
+                        acc.iter_mut().zip(a0).zip(a1).zip(a2).zip(a3)
+                    {
+                        let mut v = *t;
+                        v += w0 * x0;
+                        v += w1 * x1;
+                        v += w2 * x2;
+                        v += w3 * x3;
+                        *t = v;
+                    }
+                };
+                sum4(s_band[c], cs);
+                if let Some(cg) = cg {
+                    sum4(g_band[c], cg);
+                }
+            }
+            i += 4;
+        }
+        for i in i..n {
+            let a = row(i);
+            for (c, (cs, cg)) in coefs.iter().enumerate() {
+                let sum1 = |acc: &mut [f64], w: f64| {
+                    if w != 0.0 {
+                        for (t, &x) in acc.iter_mut().zip(a) {
+                            *t += w * x;
+                        }
+                    }
+                };
+                sum1(s_band[c], cs[i]);
+                if let Some(cg) = cg {
+                    sum1(g_band[c], cg[i]);
+                }
+            }
+        }
+    };
+    let threads = b.threads.max(1);
+    // Narrow blocks stay on the calling thread: a band is worth a dispatch
+    // only past a few hundred columns.
+    let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {
+        k.div_ceil(threads).max(FOLD_BAND_MIN)
+    } else {
+        k.max(1)
+    };
+    type Band<'s> = (usize, Vec<&'s mut [f64]>, Vec<&'s mut [f64]>);
+    let mut bands: Vec<Band<'_>> = (0..k.div_ceil(width))
+        .map(|t| (t * width, Vec::new(), Vec::new()))
+        .collect();
+    for (s_col, g_col) in s_acc.chunks_exact_mut(k).zip(g_acc.chunks_exact_mut(k)) {
+        for ((_, sb, gb), (s, g)) in bands
+            .iter_mut()
+            .zip(s_col.chunks_mut(width).zip(g_col.chunks_mut(width)))
+        {
+            sb.push(s);
+            gb.push(g);
+        }
+    }
+    crate::pieces::spread(bands, threads, |(f0, mut sb, mut gb)| {
+        band(f0, &mut sb, &mut gb)
+    });
+}
+
+/// The narrowest band of columns [`accumulate`] gives a thread of its own.
+const FOLD_BAND_MIN: usize = 256;
 
 /// [`Acc`] as a window's snapshot holds it: decayed to the row it precedes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1066,6 +1686,9 @@ pub(crate) fn gram_parts(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod fold_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1384,7 +2007,7 @@ mod tests {
         for first in [None, Some([Some(3.0), Some(1.0)])] {
             let mut g = Grams::new(2, 2, 0, false);
             if let Some(both) = first {
-                g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows);
+                g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows, None);
             }
             g.update(
                 &[1.0, 2.0],
@@ -1392,6 +2015,7 @@ mod tests {
                 0.5,
                 0.0,
                 TargetGaps::OwnRows,
+                None,
             );
             assert_eq!((g.grams.len(), g.of.clone()), (1, vec![0, 0]));
             assert_eq!(

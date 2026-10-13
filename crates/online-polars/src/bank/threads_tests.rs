@@ -248,3 +248,18 @@ fn auto_takes_the_pool_share_of_each_task() {
         );
     }
 }
+
+/// A chunk's transpose into rows spreads over the pool for a lone spec
+/// with features, and runs on each spec's own thread where several are
+/// extracted at once (task 257): a spec without features does not count.
+#[test]
+fn the_transpose_spreads_only_for_a_lone_spec_with_features() {
+    use super::transposes_in_parallel;
+    let one = spec("t-one");
+    let mut bare = spec("t-bare");
+    bare.features.clear();
+    assert!(transposes_in_parallel(std::slice::from_ref(&one)));
+    assert!(transposes_in_parallel(&[one.clone(), bare.clone()]));
+    assert!(!transposes_in_parallel(&[one.clone(), spec("t-two")]));
+    assert!(transposes_in_parallel(&[]));
+}

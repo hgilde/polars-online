@@ -530,6 +530,24 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // A blocked Gram saved mid-block (schema 62, docs/PLAN.md task
+        // 257): its held rows, and each target's values on them waiting for
+        // the block's merge, `acc.held`, empty in every other state.
+        case!(
+            "ewridge_blocked",
+            "EwRidge",
+            EwRidge,
+            EwRidge::new(EwRidgeCfg {
+                gram_block_rows: 8,
+                solve_every: 5.0,
+                max_rows_between_solves: 10,
+                ..ewridge_cfg()
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            43
+        ),
         case!(
             "rls",
             "Rls",

@@ -790,7 +790,10 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 61 since
+    """The version a bank file names, held to the library's: 62 since
+    2026-10-13 (task 257: a blocked ``ewridge`` saved mid-block holds its
+    targets' values on the held rows; the first change since 1.0, so the
+    bank still loads 61, 1.0's, through its loader), after 61 since
     2026-10-11 (task 244: an ``ew_cov`` keeps ``bias``; the bank refuses 60
     and older), after 60 since
     2026-10-09 (task 232: under a horizon the diagnostics keep Newey and
@@ -883,7 +886,7 @@ def test_schema_version_is_current():
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 61
+    assert po.schema_version() == 62
 
 
 def test_an_integer_key_used_as_both_session_and_group_orders_numerically():

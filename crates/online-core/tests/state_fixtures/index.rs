@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 61;
+pub const SCHEMA: u32 = 62;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");
@@ -15,6 +15,9 @@ pub mod ewridge_window {
 }
 pub mod ewridge_leverage {
     include!("ewridge_leverage.rs");
+}
+pub mod ewridge_blocked {
+    include!("ewridge_blocked.rs");
 }
 pub mod rls {
     include!("rls.rs");
@@ -134,6 +137,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &ewridge::FIXTURE,
     &ewridge_window::FIXTURE,
     &ewridge_leverage::FIXTURE,
+    &ewridge_blocked::FIXTURE,
     &rls::FIXTURE,
     &lasso::FIXTURE,
     &lasso_window::FIXTURE,
