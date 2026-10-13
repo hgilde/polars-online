@@ -14,12 +14,14 @@
 //!
 //! Each case runs on a pool made for it, so every one of its threads makes
 //! its first product inside the count, where a buffer kept per thread is
-//! made. The bound is per thread, [`PER_THREAD`]: an L2 slab (4 MiB on an
-//! x86-64 server core at most, 16 MiB on Apple's performance cores, as
-//! sysctl reports them) and the packing of a product of these shapes, about
-//! 2 MiB, with the scratch of the factorization and the eigensolver beside
-//! them. Twice an L3 is 64 MiB on GitHub's Linux runners and 960 MiB on its
-//! Windows runners, so the bound fails the old build there.
+//! made. The bound is per thread, [`PER_THREAD`]: the `gemm` crate's slab,
+//! the thread's share of its L2 cache (3.2 MiB on an Apple M4 Pro, its
+//! 16 MiB over the five cores that share it; 0.5 to 2 MiB on an x86-64
+//! core), the packing of a product of these shapes, about 2 MiB, and the
+//! scratch and state of the factorization, the eigensolver and the Gram
+//! beside them: at most 9.6 MiB a thread measured on that M4 Pro. Twice an
+//! L3 is 64 MiB on a 32 MiB L3 and was 960 MiB on GitHub's Windows runners,
+//! so the bound fails the old build on x86-64.
 //!
 //! One test in this binary, so no other test's allocations reach the count.
 

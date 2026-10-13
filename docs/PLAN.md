@@ -10358,7 +10358,10 @@ tick, and that the series holding it up has a count near 1.
       so nothing there moves (release_probe's 297 fields and 31 states,
       `examples/product_digest.rs`, golden and fixtures, all to the bit; speed
       the same within scatter, PERFORMANCE §41). Nothing new linked; faer's
-      `npy`, `rand` and `sparse` defaults dropped with it (unused). Oracle:
+      `npy` default dropped (needs `std`); `rand` and `sparse-linalg` kept,
+      unused, because without them a 20-feature `ew_cov` (no faer code)
+      measured 5.5% slower on aarch64 -- code generation of the changed
+      crate graph; with them it is the old build's speed. Oracle:
       `oracle::dot`/`dot3` (Dekker products, Shewchuk partials, rounded
       once), `pieces/oracle_tests.rs` and `ewcov/par/tests.rs`'s merge test,
       held to `γ₂ₙ₊₂ (|C| + |α|Σ|dd|)` (`γ₂ₙ₊₆` for the merge); a 1e-12

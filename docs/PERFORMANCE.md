@@ -2884,8 +2884,15 @@ same times within their scatter. `examples/gram_threads_bench.rs` at
 `examples/solve_threads_bench.rs` at `k` = 1,000, factorization and a
 solve: 8.2-8.4 ms on one thread before and 8.3-8.8 after; the
 eigendecomposition 142-146 ms in both. `scripts/benchmark.py`'s rows,
-none of which reaches a product this wide, were within their scatter too,
-at a load that rose from 6 to 32 during the runs. On x86-64 the speed is
+none of which reaches a product this wide, are within 2% of the old build's
+at a load of 4.5 to 5.4, but for one cause found on the way. With faer
+built on only the two features it needs, a 20-feature `ew_cov`, which runs
+no faer code at all, read 1.90-1.92M rows/s against the old build's
+2.02-2.04M over four interleaved rounds. With faer's two unused defaults
+`rand` and `sparse-linalg` kept on, as before, it read 2.02-2.04M again,
+outputs the same to the bit. The change in the crate graph had moved the
+code generation of the whole build, so the two are kept, and only `npy`,
+which needs `std`, is dropped. On x86-64 the speed is
 not measured here. CI's Benchmark workflow times the same two examples on
 its Linux runner, and a dispatch with `ref` set to an older commit gives
 the table before the change.

@@ -43,8 +43,14 @@ pyo3-polars = "0.28"
 # thread's one L2-sized slab (docs/PLAN.md task 258). `rayon` keeps
 # `gemm/std`; the four entries after this one turn back on, by Cargo's
 # feature unification, the rest of what faer's `std` turns on -- the same
-# crates already linked, with the same features as before.
-faer = { version = "0.24", default-features = false, features = ["rayon", "linalg"] }
+# crates already linked, with the same features as before. `rand` and
+# `sparse-linalg` are faer's defaults, unused here but kept: without them
+# the crate graph changed enough that a 20-feature `ew_cov`, which runs no
+# faer code, ran 5.5% slower on aarch64 (2.02-2.04M rows/s against
+# 1.90-1.92M, interleaved; with them 2.02-2.04M, the old build's), so the
+# build's code generation, not the product. Only `npy` is dropped, which
+# needs `std`.
+faer = { version = "0.24", default-features = false, features = ["rayon", "linalg", "rand", "sparse-linalg"] }
 faer-traits = { version = "0.24", default-features = false, features = ["std"] }
 pulp = { version = "0.22", default-features = false, features = ["std"] }
 nano-gemm = { version = "0.2", default-features = false, features = ["std"] }
