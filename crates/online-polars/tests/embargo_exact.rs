@@ -766,8 +766,13 @@ fn after_a_drift_reset_settled_frac_keeps_the_held_rows_clock() {
                 let at = |row: usize, t: f64| {
                     let want = 1.0 - (-(t / h)).exp2();
                     let v = got.get(row).unwrap();
-                    assert!(
-                        (v - want).abs() <= 1e-12,
+                    // Exact (task 252 (b)): `T` is a sum of unit steps, an
+                    // integer, and both sides take libm's `exp2` of the same
+                    // `−T/h` on the same platform: the same bits wherever
+                    // the test runs.
+                    assert_eq!(
+                        v.to_bits(),
+                        want.to_bits(),
                         "{what}, instance {sfx:?}: row {row} reads {v}, the definition {want} \
                          (T = {t}; reset at {reset})"
                     );

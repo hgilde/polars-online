@@ -713,6 +713,8 @@ mod tests {
         ] {
             let want = dist2(&c, &z, &mw).sqrt();
             let got = dist(&c, &z, &mw);
+            // Tolerance (task 252 (b)): two computations of one norm, the
+            // overflow-free one scaling each term by the largest first.
             assert!(
                 (got - want).abs() <= 4.0 * f64::EPSILON * want,
                 "{got} vs {want}"
@@ -721,6 +723,8 @@ mod tests {
         assert_eq!(dist(&[1.0], &[1.0], &[3.0]), 0.0);
         let far = dist(&[-2.07, 0.0], &[1e100, 0.0], &[2.5e199, 1.0]);
         assert!(far.is_finite(), "{far}");
+        // Tolerance (task 252 (b)): a closed form computed another way, the
+        // norm scaled by its largest term.
         assert!(
             (far - 1e100 * 2.5e199f64.sqrt()).abs() <= 1e-12 * far,
             "{far}"
@@ -788,7 +792,12 @@ mod tests {
             .map(|(r, wi)| wi * dist2(&mean, r, &mw))
             .sum::<f64>()
             / tot;
-        assert!((s.n - tot).abs() < 1e-12);
+        // Exact (task 252 (b)): weights in halves summed in the same order,
+        // every partial sum a double.
+        assert_eq!(s.n, tot);
+        // Tolerances: the batch way is another computation (one division of
+        // weighted sums, two-pass), where the summary steps a compensated
+        // pair and a Welford radius by inexact ratios.
         assert!((s.c[0] - mean[0]).abs() < 1e-12 && (s.c[1] - mean[1]).abs() < 1e-12);
         assert!((s.r2 - var).abs() < 1e-12 * var, "{} vs {var}", s.r2);
         // radius2_after is absorb without the absorb.
@@ -817,7 +826,12 @@ mod tests {
             all.absorb(r, 1.0, &mw);
         }
         a.merge_welford(&b, &mw);
-        assert!((a.n - all.n).abs() < 1e-12);
+        // Exact (task 252 (b)): unit weights, so either way the weight is
+        // the count 7.
+        assert_eq!(a.n, all.n);
+        // Tolerances: reassociation. A merge of two summaries rounds
+        // otherwise than seven rows absorbed in turn, and the code does not
+        // promise they match.
         assert!((a.c[0] - all.c[0]).abs() < 1e-12 && (a.c[1] - all.c[1]).abs() < 1e-12);
         assert!((a.r2 - all.r2).abs() < 1e-12);
     }
@@ -897,6 +911,8 @@ mod tests {
             m.decay(lam, lam_long(lam));
             m.absorb(&[2.0, (i % 3) as f64], 1.0);
         }
+        // A bound on a variance decaying to 0 over sixty half-lives, not a
+        // rounding tolerance (task 252 (b)).
         assert!(m.var[0] >= 0.0 && m.var[0] < 1e-12, "{}", m.var[0]);
         // Sixty rows at half-life 1 are 7.5 of the reference's half-lives.
         let decayed = m.var_long[0] / reference;
@@ -1002,6 +1018,8 @@ mod tests {
                 "lam {lam}: {} from {var}",
                 m.var_long[0]
             );
+            // A bound, its slack the rounding of the step and of the root
+            // (task 252 (b)).
             assert!(
                 (m.mean_long[0] - mean).abs() <= 0.5 * (CLIP * var).sqrt() + 1e-12,
                 "lam {lam}: {} from {mean}",
@@ -1086,6 +1104,9 @@ mod tests {
             mws
         };
         let (a, b) = (run(1.0), run(1e-3));
+        // Tolerance (task 252 (b)): scale invariance holds in exact
+        // arithmetic only; a weight times 1e-3 and the ratios built from it
+        // round otherwise, which the code does not promise to undo.
         for (i, (x, y)) in a.iter().zip(&b).enumerate() {
             for j in 0..2 {
                 assert!(
@@ -1391,6 +1412,9 @@ mod tests {
         assert_eq!(a.n, 4.0);
         assert_eq!(a.r2, 0.5);
         assert_eq!(a.c[1], 0.0);
-        assert!((a.c[0] - 5e199).abs() <= 1e185, "{}", a.c[0]);
+        // Exact (task 252 (b)): a step of `b = 2/4` toward `1e200` is a
+        // halving, exact in binary, and the double nearest `1e200` halved
+        // is the double nearest `5e199`.
+        assert_eq!(a.c[0], 5e199, "{}", a.c[0]);
     }
 }

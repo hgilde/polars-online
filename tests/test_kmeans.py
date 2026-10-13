@@ -525,6 +525,10 @@ class TestDefinitions:
         )
         out = unnested(po.ModelBank([s]).fit_predict(df))
         # The assignment, and the distances to the nearest and the runner-up.
+        # Tolerances here (task 252 (b)): definitions computed another way
+        # (batch means of the raw rows at their decayed weights, against the
+        # model's running compensated means) through libm (`exp2` in the
+        # bank, `pow` here, over an irregular clock).
         assert out["cluster"][: checkpoints[0] + 1].null_count() == checkpoints[0] + 1
         for i, (j, d1, d2) in scored.items():
             assert out["cluster"][i] == j, i
@@ -710,6 +714,8 @@ class TestDefinitions:
             assert now["n_dead"] == prev["n_dead"] + dead, what
             assert now["rows"] == rows, what
             assert now["far_rows"] == far_rows, what
+            # Tolerances (task 252 (b)): definitions computed another way
+            # from the raw rows, through libm (`pow` here, `exp2` in the bank).
             assert float(now["far_cut"]) == pytest.approx(cut, rel=1e-9), what
             assert float(now["window_w"]) == pytest.approx(V, rel=1e-9), what
             pairs = zip(summaries(now, "clusters") + summaries(now, "far"), C + F, strict=True)
@@ -783,6 +789,8 @@ class TestDefinitions:
         scored = out["cluster"].is_not_null().to_numpy()
         km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(X)
         score = ari(got[scored], km.labels_[scored])
+        # Tolerance (task 252 (b)): scikit-learn's ARI, a second opinion
+        # computed its own way.
         assert score == pytest.approx(adjusted_rand_score(got[scored], km.labels_[scored]))
         assert score > 0.999
         coef = np.array(out["coef"][-1]).reshape(k, 2)
@@ -885,6 +893,8 @@ class TestEdgeCases:
         # The skipped row's tick is folded into the next one: row 151 reads
         # the weight row 150 would have (weight_sum is the weight *before* the
         # row), and row 152 sees two ticks of decay between them.
+        # Tolerances (task 252 (b)): libm, Python's `pow` against the bank's
+        # `exp2`, and `lam ** 2` against one factor for the two ticks.
         lam = 0.5 ** (1 / 20)
         assert out["weight_sum"][151] == pytest.approx(
             out["weight_sum"][149] * lam + 1.0, rel=1e-12
@@ -1040,7 +1050,8 @@ class TestEdgeCases:
         # (it is the model's clock, not the clusters' weight).
         assert burst["cluster"][300:330].to_list() == [0] * 30
         assert burst["dist"][310] > 40.0
-        assert burst["weight_sum"][330] == pytest.approx(330.0)
+        # Exact (task 252 (b)): no decay, unit weights, so a count.
+        assert burst["weight_sum"][330] == 330.0
         # Through the oracle: the cluster weight excludes them.
         m = ref.KMeansRef(
             p=2,

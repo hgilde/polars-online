@@ -1673,6 +1673,27 @@ mod tests {
         let want = level + eighths as f64 / (8.0 * n);
         let step = f64::from_bits(want.to_bits() + 1) - want;
         let steps = |m: f64| (m - want).abs() / step;
+        // The pair this build computes, to the bit (task 252 (b)): the rows
+        // are dyadic and the steps are IEEE sums, products and quotients,
+        // with no libm, so every platform computes the same pair. The
+        // tolerance below is against exact arithmetic, an oracle computed
+        // another way, which the pair meets to two rounding steps.
+        assert_eq!(
+            (
+                run.mean[0].to_bits(),
+                run.mean_lo[0].to_bits(),
+                run.m2[0].to_bits()
+            ),
+            (
+                4_786_511_204_640_099_358,
+                13_762_857_705_633_405_824,
+                4_628_000_683_156_221_124
+            ),
+            "{} {} {}",
+            run.mean[0],
+            run.mean_lo[0],
+            run.m2[0]
+        );
         assert!(
             steps(plain) > 100.0,
             "the plain mean is close; no case: {} steps",
@@ -1734,6 +1755,8 @@ mod tests {
             // Stirling: (z − ½)ln z − z + ½ln 2π + 1/(12z) = 361.4355…
             (100.5, 361.4355404677775),
         ] {
+            // Tolerance (task 252 (b)): an approximation (Lanczos, ~1e-13)
+            // through libm (`ln`), against tabled values.
             assert!(
                 (ln_gamma(x) - want).abs() < 1e-9,
                 "{x}: {} vs {want}",
@@ -1789,6 +1812,9 @@ mod tests {
             // `P(r ≤ 1)`, and `P(r = 0)` is exactly the hazard -- which the
             // longhand shows too, and is why it is not what is reported.
             let want_change = (new[0] + new.get(1).copied().unwrap_or(0.0)) / z;
+            // Tolerances here (task 252 (b)): an oracle computed another way
+            // -- Algorithm 1 in probabilities from raw sums, where the model
+            // works in logs from centred ones -- through libm (`ln`, `exp`).
             assert!(
                 (new[0] / z - h).abs() < 1e-12,
                 "row {t}: P(r = 0) is the hazard, {} vs {h}",
@@ -1941,6 +1967,7 @@ mod tests {
         }
         // `prune_below = 1e-4` drops runs holding up to that much mass each, so
         // `P(r ≤ 1)` can move by a small multiple of it; measured at 3e-4.
+        // (The approximation's cost, not a rounding tolerance.)
         assert!(worst < 1e-3, "p_change moved by {worst}");
         assert!(
             cut.runs.len() < exact.runs.len(),
@@ -1961,6 +1988,8 @@ mod tests {
         }
         assert_eq!(m.runs.len(), 20);
         let p = m.run_posterior();
+        // Tolerance (task 252 (b)): libm (`exp`) and the rounding of a
+        // normalized sum, which is 1 only in exact arithmetic.
         assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(p[19] > 0.5, "the tail holds the mass of every longer run");
         // And the memory is bounded with the vector: after 200 rows no run
@@ -1985,7 +2014,14 @@ mod tests {
         }
         let tail = m.runs.last().unwrap();
         assert_eq!(tail.len, len);
-        assert!((tail.n - w).abs() < 1e-12, "n {} vs {w}", tail.n);
+        // Exact (task 252 (b)): the weight does not depend on the rows --
+        // unit weights, a sum and a scale by `19 / 20` -- so the longhand's
+        // recursion is the model's, to the bit, with no libm in it.
+        assert_eq!(tail.n.to_bits(), w.to_bits(), "n {} vs {w}", tail.n);
+        // Tolerances: an oracle computed another way. The model's mean is
+        // a compensated pair stepped by `b·d` and its scatter is fed the
+        // pair's deviation; the longhand keeps a plain mean and divides.
+        // The rows come through libm (`ln`, `cos`) as well.
         assert!(
             (tail.mean[0] - mean).abs() < 1e-12,
             "mean {} vs {mean}",
@@ -1996,7 +2032,7 @@ mod tests {
             "scatter {} vs {m2}",
             tail.m2[0]
         );
-        assert!((w - 19.0).abs() < 1e-12, "19 rows' weight: {w}");
+        assert_eq!(w, 19.0, "19 rows' weight: {w}");
     }
 
     /// Under heavy pruning the run that dominates a stationary stream keeps
@@ -2213,17 +2249,19 @@ mod tests {
         for _ in 0..100 {
             let before = m.runs.last().unwrap().clone();
             assert_eq!(before.len, cap);
-            assert!(
-                (before.n - cap).abs() < 1e-12,
-                "the weight stays at the cap: {}",
-                before.n
-            );
+            // Exact (task 252 (b)): unit weights, `cap + 1` scaled by
+            // `cap / (cap + 1)`, no libm and nothing from the rows.
+            assert_eq!(before.n, cap, "the weight stays at the cap");
             let x = n.normal();
             m.step(&[x], &[], 1.0, 1.0);
             let after = m.runs.last().unwrap();
             assert_eq!(after.len, cap);
             let step = after.mean[0] - before.mean[0];
             let want = (x - before.mean[0]) / max_run as f64;
+            // Tolerances (task 252 (b)): a closed form computed another way.
+            // The model steps a compensated pair by `b·d`, `d` the deviation
+            // from the pair, so its high part moves by that less what the
+            // low part takes; the closed form reads the high part alone.
             assert!(
                 (step - want).abs() < 1e-14,
                 "the mean steps by 1/max_run: {step} vs {want}"
@@ -2236,6 +2274,7 @@ mod tests {
             assert!((after.m2[0] - m2).abs() < 1e-10, "{} vs {m2}", after.m2[0]);
         }
         let half_life = 2f64.ln() / ((cap + 1.0) / cap).ln();
+        // The docs' rounded figure, through libm (`ln`).
         assert!((half_life - 13.51).abs() < 0.01, "{half_life}");
     }
 
@@ -2271,6 +2310,8 @@ mod tests {
                 longest = longest.max(m.runs.last().unwrap().len);
                 moved |= m.runs.iter().enumerate().any(|(j, r)| r.len > j as f64);
                 let p = m.run_posterior();
+                // Tolerance (task 252 (b)): libm (`exp`) and the rounding
+                // of a normalized sum.
                 assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-12, "row {i}");
             }
             assert_eq!(longest, 19.0, "{prune_below}: the cap was reached");
@@ -2445,6 +2486,10 @@ mod tests {
             (out, m.n_eff())
         };
         let ((one, w1), (many, w100)) = (run(1.0, 1.0), run(100.0, 1.0));
+        // Tolerances (task 252 (b)): scale invariance holds in exact
+        // arithmetic only. `0.5 + 0.1·k` times 100 is not exact, nor are
+        // the ratios `w / n` built from it, and the outputs pass through
+        // libm (`ln`, `exp`); the code promises no bit-level invariance.
         assert!((w100 - 100.0 * w1).abs() <= 1e-9 * w100);
         for (i, (a, b)) in one.iter().zip(&many).enumerate() {
             for (x, y) in a.iter().zip(b) {
@@ -2587,6 +2632,9 @@ mod tests {
             }
             let z: f64 = new.iter().sum();
             let want = (new[0] + new.get(1).copied().unwrap_or(0.0)) / z;
+            // Tolerance below (task 252 (b)): an oracle computed another way
+            // (probabilities, two-pass scatter) through libm, and the
+            // data's own resolution at the level, `ulp(1e8)` a row.
             worst = worst.max((step.pred[0] - want).abs());
             // Line 6: the new slot is the prior's, and every old one takes
             // the row.
@@ -2637,6 +2685,8 @@ mod tests {
             assert!(b.iter().all(|v| v.is_finite()), "row {t}: {b:?}");
             // `p_change` and `run_mean`; the predictive mean and the log
             // score carry the level and the data's rounding at it.
+            // Tolerances (task 252 (b)): the rows at `1e8` are rounded to
+            // `ulp(1e8)`, so the two streams are not the same numbers.
             assert!(
                 (a[0] - b[0]).abs() < 1e-6,
                 "row {t}: p_change {} vs {}",
@@ -2806,6 +2856,8 @@ mod tests {
             (1.0 / 3.0, 2.6789385347077475),
         ] {
             let want = f64::ln(gamma);
+            // Tolerances (task 252 (b)): an approximation (Lanczos) and a
+            // recurrence of logs, both through libm, against tabled values.
             assert!(
                 (ln_gamma(x) - want).abs() < 1e-12,
                 "{x}: {} vs {want}",
@@ -2920,6 +2972,9 @@ mod tests {
                 .map(|(p, (lp, _))| p * lp.exp())
                 .sum::<f64>()
                 .ln();
+            // Tolerances (task 252 (b)): an oracle computed another way --
+            // two-pass scatter, faer's eigenvalues and LU, the gamma
+            // recurrence, probabilities -- through libm.
             assert!(
                 (got[0] - (new[0] + new[1]) / z).abs() < 1e-10,
                 "row {t}: p_change {} vs {}",
@@ -3054,6 +3109,9 @@ mod tests {
                 .zip(&parts)
                 .map(|(p, (lp, _, _))| p.ln() + lp)
                 .collect();
+            // Tolerances (task 252 (b)): an oracle computed another way (the
+            // tempered message written out from each run's rows) through
+            // libm.
             assert!(
                 (got[0] - p_change).abs() < 1e-10,
                 "row {t}: p_change {} vs {p_change}",
@@ -3185,6 +3243,17 @@ mod tests {
         m.prune(None);
         let q = m.run_posterior();
         assert_eq!(q.len(), cut);
+        // To the bit (task 252 (b)): the fold leaves every shorter run's
+        // log joint where it was and gives the folded slot the log-sum-exp
+        // of the tail's, the model's own function of the same doubles.
+        assert_eq!(m.logjoint[..cut - 1], before.logjoint[..cut - 1]);
+        assert_eq!(
+            m.logjoint[cut - 1].to_bits(),
+            log_sum_exp(&before.logjoint[cut - 1..]).to_bits()
+        );
+        // Tolerances on the probabilities: libm (`exp`, `ln`) and a
+        // normalizer summed over another grouping -- the tail now one term
+        // -- which nothing promises to round the same.
         for i in 0..cut - 1 {
             assert!((q[i] - p[i]).abs() < 1e-14, "run {i}: {} vs {}", q[i], p[i]);
         }
@@ -3239,7 +3308,16 @@ mod tests {
         assert_eq!(m.runs[cut - 1], want, "the oldest of the equals");
         // The tail is runs `cut - 1 ..= 30`, each at `top`.
         let tail = (32 - cut) as f64;
-        assert!((m.logjoint[cut - 1] - (top + tail.ln())).abs() < 1e-12);
+        // Exact (task 252 (b)): `exp(0)` is 1 by IEEE 754 and C Annex F, so
+        // the sum is the integer 22 and both sides take `ln` of the same
+        // double on the same platform: the same bits wherever it runs.
+        assert_eq!(
+            m.logjoint[cut - 1].to_bits(),
+            (top + tail.ln()).to_bits(),
+            "{} against {}",
+            m.logjoint[cut - 1],
+            top + tail.ln()
+        );
         // One run in the middle of the tail strictly heavier than the rest:
         // it is the one kept, scaled from its own length.
         let mut m = before.clone();
@@ -3707,6 +3785,9 @@ mod tests {
                 let a = rows.step(&x, &[], step, w).pred;
                 let b = clock.step(&x, &[], step, w).pred;
                 assert_eq!(a[1], b[1], "{name} row {t}: run_mode");
+                // Tolerances (task 252 (b)): two forms equal in exact
+                // arithmetic -- `1/h` from `exp_m1` against the clock's own
+                // `ln` and `exp` of the step -- through libm.
                 for slot in 2..a.len() {
                     assert!(
                         close(a[slot], b[slot], 1e-11),
@@ -3764,6 +3845,9 @@ mod tests {
             let x = [2.4];
             let a = split.step(&x, &[], *last, 1.0).pred;
             let b = whole.step(&x, &[], steps.iter().sum(), 1.0).pred;
+            // Tolerances (task 252 (b)): libm. Composed steps multiply
+            // `exp(-d/τ)` factors where the whole step takes one `exp` of
+            // the sum; equal in exact arithmetic only.
             for (slot, (u, v)) in a.iter().zip(&b).enumerate() {
                 assert!(
                     close(*u, *v, 1e-12),
@@ -4091,6 +4175,9 @@ mod tests {
             let first = &rows[..5];
             for i in 0..d {
                 let want = first.iter().map(|x| x[i]).sum::<f64>() / 5.0;
+                // Tolerances (task 252 (b)): the definition computed another
+                // way (two-pass sums, where the model steps a weighted
+                // Welford update), on rows drawn through libm.
                 assert!((mean[i] - want).abs() <= 1e-14 * want.abs().max(1.0));
                 for j in 0..d {
                     let mj = first.iter().map(|x| x[j]).sum::<f64>() / 5.0;
@@ -4153,6 +4240,9 @@ mod tests {
         let (mean, scale) = prior_at(1.0);
         // Rows 0, 2 and 3 at weights 1, 3 and 2: V1 = 6, V2 = 14.
         let want = (1.0 * 1.0 + 3.0 * 2.0 + 2.0 * 5.0) / 6.0;
+        // Tolerances (task 252 (b)): the closed form computed another way
+        // (one division of the weighted sums; the model steps a Welford
+        // update by inexact ratios such as `3/4`).
         assert!((mean[0] - want).abs() <= 1e-15 * want);
         let ss =
             1.0 * (1.0 - want).powi(2) + 3.0 * (2.0 - want).powi(2) + 2.0 * (5.0 - want).powi(2);
