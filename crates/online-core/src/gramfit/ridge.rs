@@ -133,10 +133,18 @@ pub fn ridge_fits(
         .iter()
         .map(|&t| Response::of(g, t, slots, icept))
         .collect();
-    // Every target's right-hand side at once, column by column.
+    // Every target's right-hand side, a column each, solved one column at
+    // a time: a blocked solve of several columns at once moves a column's
+    // last bits with the columns beside it, and a target's fit must not
+    // depend on which other targets share its call (docs/PLAN.md task 256:
+    // a job's fit is its own, whichever jobs share its columns).
     let mut x = Mat::from_fn(nk, resps.len(), |r, c| resps[c].rhs[keep[r]] / s[keep[r]]);
     match &factor {
-        Some(l) => solve_in_place(l, x.as_mut()),
+        Some(l) => {
+            for c in 0..x.ncols() {
+                solve_in_place(l, x.as_mut().subcols_mut(c, 1));
+            }
+        }
         None => x.fill(f64::NAN),
     }
     // `A⁻¹`'s factor for the standard errors, `A` the system's moments

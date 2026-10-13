@@ -240,6 +240,37 @@ def gram_path_subsets(
     threads: int | None = None,
 ) -> list[list[list[_PathOut]]]: ...
 
+# A job: its subset, target, draw and column set, each a position. Each job's
+# fit, in order: its subset merged, its draw's signs on the cross-moments, its
+# target fitted on `slots[set]` (a path weighted by `weights[set]`).
+_JobIn = tuple[int, int, int, int]
+
+def gram_ridge_jobs(
+    grams: list[_GramIn],
+    subsets: list[list[int]],
+    slots: list[list[int]],
+    jobs: list[_JobIn],
+    icept: int | None,
+    ridge: float,
+    standardize: bool,
+    within: bool,
+    signs: list[list[float]],
+    threads: int | None = None,
+) -> list[_RidgeOut]: ...
+def gram_path_jobs(
+    grams: list[_GramIn],
+    subsets: list[list[int]],
+    slots: list[list[int]],
+    weights: list[list[float]],
+    jobs: list[_JobIn],
+    icept: int | None,
+    max_steps: int | None,
+    max_active: int | None,
+    within: bool,
+    signs: list[list[float]],
+    threads: int | None = None,
+) -> list[_PathOut]: ...
+
 # `po.gbdt`'s native engine (python/polars_online/gbdt.py, docs/PLAN.md task
 # 242). `batches` returns a fresh iterator of frames for each pass; each
 # build returns the library's handle, which the caller owns, and its counts

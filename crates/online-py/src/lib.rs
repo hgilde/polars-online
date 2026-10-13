@@ -1251,6 +1251,8 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gramfit::gram_cd_path, m)?)?;
     m.add_function(wrap_pyfunction!(gramfit::gram_ridge_subsets, m)?)?;
     m.add_function(wrap_pyfunction!(gramfit::gram_path_subsets, m)?)?;
+    m.add_function(wrap_pyfunction!(gramfit::gram_ridge_jobs, m)?)?;
+    m.add_function(wrap_pyfunction!(gramfit::gram_path_jobs, m)?)?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;

@@ -4,7 +4,8 @@
 //! with the GIL released.
 
 use online_polars::gramfit::{
-    FitColumns, GramPath, Pooling, SubsetFit, SubsetOut, cd_path_of, fit_subsets, lars_paths,
+    ColumnSet, FitColumns, GramPath, JobFit, Pooling, SubsetFit, SubsetJob, SubsetOut, cd_path_of,
+    fit_jobs, fit_subsets, lars_paths,
 };
 use online_polars::online_core::gramfit::{Comoments, GramArrays, LarsLimits, LarsStop, OwnedGram};
 use pyo3::buffer::PyBuffer;
@@ -530,6 +531,157 @@ pub(crate) fn gram_path_subsets<'py>(
                         .collect()
                 })
                 .collect()
+        })
+        .collect())
+}
+
+/// A job as the Python layer hands it over: its subset, target, draw and
+/// column set, each a position.
+type JobIn = (usize, usize, usize, usize);
+
+/// The jobs' fits, in order, on the pool `threads` names: each job's subset
+/// of the Grams merged, its draw's signs on the cross-moments, its target
+/// fitted on its column set (`slots[set]`, with `weights[set]`).
+#[allow(clippy::too_many_arguments)]
+fn jobs_fit(
+    py: Python<'_>,
+    grams: &[GramIn<'_>],
+    subsets: &[Vec<usize>],
+    slots: Vec<Vec<usize>>,
+    weights: Vec<Vec<f64>>,
+    jobs: &[JobIn],
+    icept: Option<usize>,
+    fit: JobFit,
+    pooling: Pooling,
+    threads: &online_polars::Threads,
+) -> PyResult<Vec<SubsetOut>> {
+    let owned = read_all(py, grams)?;
+    if weights.len() != slots.len() {
+        return Err(PyValueError::new_err(format!(
+            "{} weight lists for {} column sets",
+            weights.len(),
+            slots.len()
+        )));
+    }
+    let sets: Vec<ColumnSet> = slots
+        .into_iter()
+        .zip(weights)
+        .map(|(slots, weights)| ColumnSet { slots, weights })
+        .collect();
+    let jobs: Vec<SubsetJob> = jobs
+        .iter()
+        .map(|&(subset, target, draw, set)| SubsetJob {
+            subset,
+            target,
+            draw,
+            set,
+        })
+        .collect();
+    py.detach(|| {
+        let views: Vec<GramArrays<'_>> = owned.iter().map(InGram::arrays).collect();
+        fit_jobs(
+            &views, subsets, &sets, &jobs, icept, &fit, &pooling, threads,
+        )
+    })
+    .map_err(value_err)
+}
+
+/// Each job's ridge fit with its statistics, in order: its subset of the
+/// Grams merged (within its parts under `within`, its draw's signs on the
+/// cross-moments), its target fitted on its column set.
+#[pyfunction]
+#[pyo3(signature = (grams, subsets, slots, jobs, icept, ridge, standardize, within, signs, threads=None))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gram_ridge_jobs<'py>(
+    py: Python<'py>,
+    grams: Vec<GramIn<'_>>,
+    subsets: Vec<Vec<usize>>,
+    slots: Vec<Vec<usize>>,
+    jobs: Vec<JobIn>,
+    icept: Option<usize>,
+    ridge: f64,
+    standardize: bool,
+    within: bool,
+    signs: Vec<Vec<f64>>,
+    threads: Option<&Bound<'py, PyAny>>,
+) -> PyResult<Vec<RidgeOut<'py>>> {
+    let threads = crate::threads_pool(threads)?;
+    let weights = vec![Vec::new(); slots.len()];
+    let fit = JobFit::Ridge { ridge, standardize };
+    let out = jobs_fit(
+        py,
+        &grams,
+        &subsets,
+        slots,
+        weights,
+        &jobs,
+        icept,
+        fit,
+        pooling(within, signs),
+        &threads,
+    )?;
+    Ok(out
+        .into_iter()
+        .filter_map(|o| match o {
+            SubsetOut::Ridge(f) => Some((
+                float_bytes(py, &f.coef),
+                float_bytes(py, &f.se),
+                float_bytes(py, &f.t),
+                f.resid_var,
+                f.sigma2,
+                f.r2,
+                f.n,
+            )),
+            SubsetOut::Path(_) => None,
+        })
+        .collect())
+}
+
+/// Each job's lasso path by least angle regression, in order: its subset
+/// of the Grams merged (within its parts under `within`, its draw's signs
+/// on the cross-moments), its target's path on its column set, weighted by
+/// that set's `weights` (empty: 1 for every column).
+#[pyfunction]
+#[pyo3(signature = (grams, subsets, slots, weights, jobs, icept, max_steps, max_active, within, signs, threads=None))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gram_path_jobs<'py>(
+    py: Python<'py>,
+    grams: Vec<GramIn<'_>>,
+    subsets: Vec<Vec<usize>>,
+    slots: Vec<Vec<usize>>,
+    weights: Vec<Vec<f64>>,
+    jobs: Vec<JobIn>,
+    icept: Option<usize>,
+    max_steps: Option<usize>,
+    max_active: Option<usize>,
+    within: bool,
+    signs: Vec<Vec<f64>>,
+    threads: Option<&Bound<'py, PyAny>>,
+) -> PyResult<Vec<PathOut<'py>>> {
+    let threads = crate::threads_pool(threads)?;
+    let fit = JobFit::Path {
+        limits: LarsLimits {
+            max_steps,
+            max_active,
+        },
+    };
+    let out = jobs_fit(
+        py,
+        &grams,
+        &subsets,
+        slots,
+        weights,
+        &jobs,
+        icept,
+        fit,
+        pooling(within, signs),
+        &threads,
+    )?;
+    Ok(out
+        .into_iter()
+        .filter_map(|o| match o {
+            SubsetOut::Path(p) => Some(path_out(py, p)),
+            SubsetOut::Ridge(_) => None,
         })
         .collect())
 }
