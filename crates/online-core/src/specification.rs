@@ -907,4 +907,25 @@ mod tests {
             "a residual on the prediction's line"
         );
     }
+
+    /// Task 252: under Newey and West's lags a break clears the rows the
+    /// two sandwiches pair across it as well as the residuals' own ring,
+    /// and nothing else: the state is the one whose three rings were
+    /// cleared by hand, and not the one that saw no break.
+    #[test]
+    fn a_break_clears_the_sandwiches_lags_too() {
+        let mut s = Specification::new(1, 0, 2, 3);
+        for i in 0..12 {
+            let x = f64::from(i % 4) - 1.5;
+            s.update(&[x], 0.5 * x, 0.1 * x * x - 0.05, 0.95, 1.0);
+        }
+        assert!(s.het_hac.is_some() && s.reset_hac.is_some());
+        let (mut by_hand, unbroken) = (s.clone(), s.clone());
+        s.clear_lags();
+        by_hand.ring.clear();
+        by_hand.het_hac.as_mut().unwrap().clear_lags();
+        by_hand.reset_hac.as_mut().unwrap().clear_lags();
+        assert_eq!(s, by_hand);
+        assert_ne!(s, unbroken, "the sandwiches held lags to clear");
+    }
 }

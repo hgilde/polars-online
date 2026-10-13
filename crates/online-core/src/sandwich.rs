@@ -487,4 +487,22 @@ mod tests {
         assert!(v.iter().all(|&a| a == 0.0), "no residual, no meat");
         assert!(quiet.wald(&idx, true, &pick, &d).is_none());
     }
+
+    /// Task 252: with no intercept and no feature asked for there is no
+    /// coefficient, so no covariance, no standard error and no Wald test,
+    /// however many rows were folded; the same sandwich over its feature
+    /// has all three.
+    #[test]
+    fn no_coefficient_has_no_covariance() {
+        let mut s = Sandwich::new(1, false, 2);
+        for i in 0..20 {
+            let x = f64::from(i % 5) - 2.0;
+            s.update(&[x], 0.1 * x + 0.05 * f64::from(i % 3), 1.0, 1.0);
+        }
+        assert!(s.covariance(&[], false).is_none());
+        assert!(s.covariance(&[], true).is_none());
+        assert!(s.standard_errors(&[], true).is_none());
+        assert!(s.wald(&[], true, &[0], &[1.0]).is_none());
+        assert!(s.covariance(&[0], true).is_some(), "the control");
+    }
 }

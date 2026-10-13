@@ -668,4 +668,22 @@ mod tests {
         assert!(c.coverage().is_some());
         assert!(c.wald().is_none());
     }
+
+    /// Task 252: the default calibration is a fresh one -- no lags, no rows,
+    /// nothing to read -- and learns as one.
+    #[test]
+    fn the_default_calibration_is_a_fresh_one() {
+        let mut d = Calibration::default();
+        assert_eq!(d, Calibration::new());
+        assert!(d.has_shape(0) && !d.has_shape(2));
+        assert_eq!(d.n_eff(), 0.0);
+        assert!(d.slope().is_none() && d.wald().is_none());
+        let mut fresh = Calibration::new();
+        for (p, y) in [(0.5, 1.0), (1.5, 1.25), (-0.5, -1.0)] {
+            d.update(p, y, 0.9, 1.0);
+            fresh.update(p, y, 0.9, 1.0);
+        }
+        assert_eq!(d, fresh);
+        assert!(d.n_eff() > 0.0);
+    }
 }

@@ -1663,4 +1663,15 @@ mod metric_tests {
             assert_eq!(b.hit_rate(), Some(0.0), "{at}: binary");
         }
     }
+
+    /// Task 252: the default slot is a fresh one: nothing scored, nothing
+    /// to read, and the shape a restored slot is held to.
+    #[test]
+    fn the_default_slot_is_a_fresh_one() {
+        let d = SlotMetrics::default();
+        assert_eq!(d, SlotMetrics::new());
+        assert!(d.has_shape());
+        assert_eq!(d.n_eff(), 0.0);
+        assert_eq!((d.ic(), d.r2(), d.hit_rate()), (None, None, None));
+    }
 }
