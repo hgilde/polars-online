@@ -9929,7 +9929,14 @@ tick, and that the series holding it up has a count near 1.
       of data larger than memory; the whole suite passed on 1.37.0 (6,762,
       27 skipped); the two `needs_polars` marks at or below it removed; the
       gbdt parquet limit 1.1 GB (1.37-1.40 read 0.95-1.02 GB, holding is
-      1.12+).
+      1.12+). *Second dispatch (run 38326140458)*: the floor leg on 1.37.0
+      read that build at 1.16-1.18 GB on CI's Linux runner. Polars'
+      read-ahead is constant in the source (`collect_batches` 329 MB at 1 GB
+      and 334 at 2 GB on 1.37.0; 178 and 184 on 2.0.0) but differs by
+      version and machine, so an absolute limit measured Polars. The
+      parquet case now reads the growth from half the source to all of it:
+      0.43 GB per GB on 2.0.0, 0.56 on 1.37.0, 1.30-1.71 on 1.36.1 (shown
+      failing there); limit 1.0. The Arrow case keeps its 0.75 GB.
 - [x] 249. **Step comments in the examples (before 1.0)** -- the user,
       2026-10-11: "Some of the example code is missing the few one-line
       comments to explain large code blocks in sections." WRITING §3's rule

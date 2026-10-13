@@ -368,8 +368,8 @@ Every model is slower than a parquet scan, so on 1.34.0 to 1.36.1 the bank
 held its whole input: `lf.online.fit_predict` sunk to parquet over the same
 source peaked at 1,768 MB on 1.34.0, 920 MB on 1.37.1 and 632 MB on 2.0.0,
 and `po.gbdt`'s parquet build at 2.3 GB on 1.34.0 and 1.36.1. The release's
-floor leg found it: a test that holds `po.gbdt` under 1 GB on that source
-had never run below 2.0. Below 1.37.0 the library could not keep the
+floor leg found it: a test of `po.gbdt`'s memory on that source had never
+run below 2.0. Below 1.37.0 the library could not keep the
 promise it is built on, running on data that does not fit in memory, so
 the floor moved rather than the promise. The whole suite passed on 1.37.0
 the same day: 6,762 tests passed and 27 skipped, 25 by version and two

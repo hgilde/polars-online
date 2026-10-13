@@ -1134,29 +1134,13 @@ def big(tmp_path_factory):
     return d
 
 
-@pytest.mark.extended(
-    reason="memory: a child interpreter builds from a 1 GB source, seconds to write and read"
-)
-# One process, so the 2 GB the module's `big` fixture writes is written once,
-# and alone, since each case holds most of a gigabyte at its peak.
-@pytest.mark.serial
-@pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
-@pytest.mark.parametrize(("source", "limit"), [("ipc", 0.75e9), ("parquet", 1.1e9)])
-def test_a_source_larger_than_memory_streams(big, lib, source, limit):
-    """The build never holds the 1.0 GB source. Arrow IPC files are read a
-    record batch at a time, and two batches wait at most: measured, the peak
-    grew by 0.46 to 0.48 GB, the binned data (a byte a value, 0.12 GB) with its
-    copies and the allocator's retained pages. A Parquet scan reads through
-    Polars' streaming engine, whose read-ahead is Polars' own: cut as the
-    README's memory section cuts it, measured 0.78 GB on py-polars 2.0.0,
-    0.84-0.92 GB on 1.41-1.44 and 0.95-1.02 GB on 1.37-1.40 (2026-10-12).
-    Holding the source would be 1.0 GB and the binned data, 0.12 GB, beside
-    it: py-polars 1.34.0 and 1.36.1, whose `collect_batches` ran ahead of
-    the build without limit, peaked at 2.3 GB."""
+def _build_peak(big, lib: str, source: str, parts: str = "*") -> int:
+    """The peak resident growth, in bytes, of one ``po.gbdt`` build in a
+    child interpreter, from the module's files ``part-<parts>``."""
     import subprocess
     import sys
 
-    path = str(big / f"part-*.{'arrow' if source == 'ipc' else 'parquet'}")
+    path = str(big / f"part-{parts}.{'arrow' if source == 'ipc' else 'parquet'}")
     src = repr(path) if source == "ipc" else f"pl.scan_parquet({path!r})"
     build = (
         'po.gbdt.xgboost_matrix(src, label="y")'
@@ -1172,5 +1156,44 @@ def test_a_source_larger_than_memory_streams(big, lib, source, limit):
         check=False,
     )
     assert res.returncode == 0, res.stderr
-    grew = int(res.stdout.strip().splitlines()[-1])
-    assert grew < limit, f"the peak grew by {grew / 1e6:.0f} MB for a 1.0 GB source"
+    return int(res.stdout.strip().splitlines()[-1])
+
+
+# One process, so the 2 GB the module's `big` fixture writes is written once,
+# and alone, since each case holds most of a gigabyte at its peak.
+@pytest.mark.extended(
+    reason="memory: a child interpreter builds from a 1 GB source, seconds to write and read"
+)
+@pytest.mark.serial
+@pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
+def test_an_arrow_source_larger_than_memory_streams(big, lib):
+    """The build never holds the 1.0 GB source. Arrow IPC files are read by
+    this library, a record batch at a time, and two batches wait at most:
+    measured, the peak grew by 0.46 to 0.48 GB, the binned data (a byte a
+    value, 0.12 GB) with its copies and the allocator's retained pages."""
+    grew = _build_peak(big, lib, "ipc")
+    assert grew < 0.75e9, f"the peak grew by {grew / 1e6:.0f} MB for a 1.0 GB source"
+
+
+@pytest.mark.extended(reason="memory: two child interpreters build from 0.5 and 1 GB sources")
+@pytest.mark.serial
+@pytest.mark.parametrize("lib", ["xgboost", "lightgbm"])
+def test_a_parquet_source_larger_than_memory_streams(big, lib):
+    """The build never holds a Parquet source: its peak grows with the
+    source by what the library keeps, not by the source. A scan reads
+    through Polars' streaming engine, whose read-ahead is Polars' own and
+    the same at any size, but not the same in every Polars or on every
+    machine: one 1 GB build peaked at 0.76 GB on py-polars 2.0.0 and 1.0 GB
+    on 1.37.0 here, and 1.17 GB on 1.37.0 on CI's Linux runner. So the test
+    reads the growth between half the source and all of it, which the
+    read-ahead leaves out. Measured 2026-10-12 per GB of source: 0.43 GB on
+    2.0.0 and 0.56 GB on 1.37.0, the binned data and the libraries' own
+    structures; 1.7 GB on 1.36.1, whose `collect_batches` ran ahead of the
+    build without limit and held the source."""
+    half = _build_peak(big, lib, "parquet", "[0-2]")
+    full = _build_peak(big, lib, "parquet")
+    per_gb = (full - half) / 0.5e9
+    assert per_gb < 1.0, (
+        f"the peak grew by {per_gb:.2f} GB per GB of source "
+        f"({half / 1e6:.0f} MB at 0.5 GB, {full / 1e6:.0f} MB at 1.0 GB)"
+    )
