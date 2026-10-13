@@ -10248,6 +10248,32 @@ tick, and that the series holding it up has a count near 1.
       is given at 1, 4, 14, 28 and 64 groups on 14 threads) and
       `test_auto_shares_the_pool_and_moves_no_bit` (1, 4, 28, 64 groups x
       pools 2, 8, default x 1/7/600 chunks, to the bit).
+- [ ] 255. **The memory findings of the 1.0 budgets** -- measured
+      2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
+      (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`
+      at 20 features over 200,000 rows returns 393 MiB (233 fields) and
+      peaks 797 MiB above the baseline: each stream writes its outputs row
+      by row into its `ChunkOut` buffers, and `assemble` (bank.rs) copies
+      them into one Arrow array per field, so both exist at the peak. Not
+      a leak: after `del` the process holds 748 MiB, and five calls level
+      off near 1.1 GB, which is the allocator keeping freed pages. Ten-target
+      `ewridge` (25 fields) peaks at 0.9x its output. A fix writes each
+      field straight into its final column (column-major), a hot-path
+      refactor; it needs its speed measured against the current path, and a
+      streamed run already peaks at a chunk's worth, so the gain is the
+      eager call's.
+      (b) **The `streaming` RSS budget measures Polars' read-ahead more than
+      this library.** Its peak grows with the rows (286-292 MiB at 1M rows,
+      511-531 at 3M) and so does a plain `scan_parquet(...).with_columns(...)
+      .sink_parquet(...)` with no model (227 -> 473; peak footprint 246 ->
+      477, so not mapped pages); with `POLARS_MAX_THREADS=4
+      POLARS_ROW_GROUP_PREFETCH_SIZE=1` that drops to 95 -> 110, so the
+      growth is Polars' default row-group prefetch reading ahead of the
+      writer, bounded by that setting, and this library's own addition is
+      about 50-65 MiB at either size. Proposed: run the budget's streaming
+      case with the prefetch at 1 so it measures this library, re-measured
+      on CI with its budget replaced in the same change (a lower budget
+      reads as "under" otherwise).
 - [x] 254. **The FFI leak check on Linux (after 1.0)** -- the user,
       2026-10-12, offered a Linux session. `test_ffi_memory.py`'s
       `test_output_outliving_its_input` failed on both Ubuntu legs of CI
