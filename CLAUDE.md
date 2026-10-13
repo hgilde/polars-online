@@ -51,6 +51,7 @@ cargo run -p online-cli -- --config examples/bank.toml
 scripts/quick.sh                         # inside a task: tests for what the branch changed (dev-wheel build)
 scripts/gate.sh --serial                 # either tier in one process (the gate runs tests in parallel)
 scripts/clear_caches.sh --worktrees      # build caches: after each push wave, or under 100 GB free
+scripts/slot.sh take <branch> [<base>]   # a warm worktree slot for a task (give / list)
 scripts/budgets.py check|raises|apply    # performance and memory budgets (budgets.toml)
 ```
 
@@ -58,7 +59,12 @@ Iterating (task 245; docs/TESTING.md, "Iterating" and "Caches and when to
 clear them"): workers run `scripts/quick.sh` while iterating and
 `scripts/gate.sh` (essentials) before each commit; the full tier runs once
 per merge wave on `main` and, always, before every push on the exact sha.
-Run at most about four agents at once on this machine. Nobody runs a full
+Run at most about four agents at once on this machine. A worker gets a
+worktree slot, not a fresh worktree (task 248; docs/TESTING.md, "Worktree
+slots"): the coordinator runs `scripts/slot.sh take <branch> main`, starts
+the worker without `isolation`, told to work only in that path, and runs
+`scripts/slot.sh give <n>` after merging; a warm slot rebuilds the tests in
+23 s and the dev wheel in 6 s where a fresh worktree takes 79 s and 145 s. Nobody runs a full
 `cargo mutants` pass locally (the user, 2026-10-11: "Every task seems to
 spend a lot of time waiting for mutants", then "we need a thorough mutants
 check to run the smallest number of times"): the one thorough check is CI's

@@ -10280,7 +10280,7 @@ tick, and that the series holding it up has a count near 1.
       and requires the child to report exactly one pass (a child that runs
       nothing exits 4 and fails); the three plateau-statistic tests, fed
       scripted readings, stay in-process.
-- [ ] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
+- [x] 248. **A task worktree rebuilds only what it changes (after 1.0)** --
       the user, 2026-10-11: "For after 1.0 what can we do so that a task
       worktree only has to rebuild the artifacts it is working on?" Task
       245 measured why it cannot today: each task gets a fresh worktree and
@@ -10300,6 +10300,20 @@ tick, and that the series holding it up has a count near 1.
       Cargo's build-directory options for sharing dependencies across
       checkouts -- read Cargo's current reference before relying on them
       (CLAUDE.md rule 10). Measure each against task 245's numbers.
+      *Done 2026-10-13* (option 1): `scripts/slot.sh take|give|list`, at
+      most four slots under `.claude/slots/<n>` (gitignored), the holder in
+      the common git dir so a slot's status stays clean; `take` refuses
+      uncommitted work, `give` detaches so the branch can go. Measured, a
+      slot built at `94e6c55` and moved to `fca6699` (40 files, +5,120
+      lines) against itself from nothing, load 10-20: Rust tests 79 -> 23 s,
+      `uv sync` 259 -> 0 s, dev wheel 145 -> 6 s; the release wheel 198 s
+      warm, since thin LTO over one codegen unit relinks it whole (only the
+      gate builds it). 28 GB of `target/` a slot. `clear_caches.sh
+      --worktrees` keeps slots, `--slots` clears them. Workers start without
+      `isolation`, pointed at their slot (CLAUDE.md "Iterating"). Options 2
+      and 3 not taken: a fixed path per slot is what this gives already,
+      and a shared build directory is the clobbering a separate `target/`
+      avoids.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:

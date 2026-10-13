@@ -36,3 +36,6 @@ docs/_build/
 # LLVM coverage profiles (cargo llvm-cov, an instrumented extension)
 *.profraw
 *.profdata
+
+# Long-lived worktree slots (scripts/slot.sh)
+/.claude/slots/

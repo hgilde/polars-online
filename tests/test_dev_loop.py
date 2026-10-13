@@ -419,3 +419,121 @@ def test_clear_caches_refuses_a_cache_directory_that_is_not_sccaches(tmp_path):
     res = _clear(repo, {**env, "SCCACHE_DIR": env["HOME"]})
     assert res.returncode == 2 and "refusing" in res.stderr
     assert all(f.exists() for f in [*caches, *kept])
+
+
+# --- scripts/slot.sh ------------------------------------------------------------
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+
+
+def _slot_repo(tmp_path: Path) -> Path:
+    """A repository of its own, two commits on `main`, with the slot and
+    cache scripts copied in."""
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    for name in ("slot.sh", "clear_caches.sh"):
+        text = (REPO / "scripts" / name).read_text(encoding="utf-8")
+        (repo / "scripts" / name).write_text(text, encoding="utf-8")
+    (repo / ".gitignore").write_text("/target/\n/.claude/slots/\n", encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "one")
+    (repo / "a.txt").write_text("two\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "two")
+    return repo
+
+
+def _slot(repo: Path, *args: str, slots: int = 4) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(repo / "scripts" / "slot.sh"), *args],
+        cwd=repo,
+        env={**os.environ, "POLARS_ONLINE_SLOTS": str(slots)},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+@posix_shell
+def test_a_slot_is_taken_on_its_branch_given_back_and_reused_warm(tmp_path):
+    """`take` makes a worktree on a new branch from the base and prints it;
+    a second task takes the next slot; past the cap it refuses; `give`
+    detaches the slot, and the next `take` reuses it with its target/ --
+    the warm build a slot is for -- and the task's branch free to delete."""
+    repo = _slot_repo(tmp_path)
+    first = _slot(repo, "take", "task-a", "main~1", slots=2)
+    assert first.returncode == 0, first.stderr
+    one = Path(first.stdout.strip())
+    assert one == repo / ".claude" / "slots" / "1"
+    assert _git(one, "rev-parse", "--abbrev-ref", "HEAD") == "task-a"
+    assert _git(one, "rev-parse", "HEAD") == _git(repo, "rev-parse", "main~1")
+    assert _git(repo, "status", "--porcelain") == "", "the slots never show in main"
+    (one / "target" / "debug").mkdir(parents=True)
+    (one / "target" / "debug" / "warm.rlib").write_bytes(b"x")
+
+    second = _slot(repo, "take", "task-b", slots=2)
+    assert Path(second.stdout.strip()) == repo / ".claude" / "slots" / "2"
+    full = _slot(repo, "take", "task-c", slots=2)
+    assert full.returncode == 1 and "all 2 slots are taken" in full.stderr
+    listed = _slot(repo, "list", slots=2).stdout
+    assert "1 taken by task-a" in listed and "2 taken by task-b" in listed
+
+    gave = _slot(repo, "give", "1", slots=2)
+    assert gave.returncode == 0, gave.stderr
+    _git(repo, "branch", "-D", "task-a")  # detached, so the branch can go
+    again = _slot(repo, "take", "task-c", slots=2)
+    assert Path(again.stdout.strip()) == one
+    assert _git(one, "rev-parse", "--abbrev-ref", "HEAD") == "task-c"
+    assert _git(one, "rev-parse", "HEAD") == _git(repo, "rev-parse", "main")
+    assert (one / "target" / "debug" / "warm.rlib").exists(), "the build stays warm"
+
+
+@posix_shell
+def test_a_slot_with_uncommitted_work_is_neither_given_back_nor_taken_over(tmp_path):
+    repo = _slot_repo(tmp_path)
+    one = Path(_slot(repo, "take", "task-a").stdout.strip())
+    (one / "a.txt").write_text("edited\n", encoding="utf-8")
+    res = _slot(repo, "give", "1")
+    assert res.returncode == 1 and "uncommitted work" in res.stderr
+    assert "1 taken by task-a" in _slot(repo, "list").stdout
+    # Freed by hand with the edit still there: a new task does not take it over.
+    lock = Path(_git(repo, "rev-parse", "--git-common-dir"))
+    lock = (repo / lock if not lock.is_absolute() else lock) / "slots" / "1"
+    lock.unlink()
+    res = _slot(repo, "take", "task-b", slots=1)
+    assert res.returncode == 1 and "uncommitted work" in res.stderr
+    assert (one / "a.txt").read_text(encoding="utf-8") == "edited\n"
+
+
+@posix_shell
+def test_clear_caches_keeps_the_slots_warm_unless_asked(tmp_path):
+    repo = _slot_repo(tmp_path)
+    one = Path(_slot(repo, "take", "task-a").stdout.strip())
+    other = tmp_path / "other"
+    _git(repo, "worktree", "add", "-q", "--detach", str(other), "main")
+    slot_build, other_build = one / "target" / "x.rlib", other / "target" / "y.rlib"
+    for f in (slot_build, other_build):
+        f.parent.mkdir(parents=True)
+        f.write_bytes(b"x" * 2048)
+    env = {**os.environ, "SCCACHE_DIR": str(tmp_path / "sccache")}
+    run = lambda *a: subprocess.run(  # noqa: E731
+        ["bash", str(repo / "scripts" / "clear_caches.sh"), *a],
+        cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", check=False,
+    )  # fmt: skip
+    res = run("--worktrees")
+    assert res.returncode == 0, res.stderr
+    assert not other_build.exists() and slot_build.exists(), res.stdout
+    res = run("--slots")
+    assert res.returncode == 0, res.stderr
+    assert not slot_build.exists(), res.stdout

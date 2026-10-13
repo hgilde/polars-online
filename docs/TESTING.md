@@ -727,6 +727,49 @@ crate built on such a crate misses with it, serde and Polars among them.
 The misses cost more than the hits saved: 92 s and 519 s, slower than no
 cache. CI never turns it on (`tests/test_dev_loop.py`).
 
+### Worktree slots
+
+**A task works in a long-lived worktree slot, so it rebuilds only what it
+changes.** A fresh worktree starts with an empty `target/` and an empty
+`.venv/`, and builds Polars and every dependency before its first test. A
+slot is a worktree kept between tasks, with its own `target/` and
+`.venv/`. Taking it for a new task moves it to the task's branch with `git
+checkout -B`, and cargo's fingerprints then rebuild only the workspace
+crates the move changed:
+
+```
+scripts/slot.sh take task-252-core main   # prints the slot's path
+scripts/slot.sh list                      # every slot, and who holds it
+scripts/slot.sh give 1                    # after the branch is merged
+```
+
+Measured on 2026-10-13, a slot built at one commit and moved to a `main`
+40 files and 5,120 lines later, against the same slot from nothing, at a
+load of 10 to 20:
+
+| build | from nothing | a warm slot, moved |
+|---|---:|---:|
+| the Rust tests (`cargo test --no-run`) | 79 s | 23 s |
+| the environment and its editable install (`uv sync`) | 259 s | 0 s |
+| the inner loop's extension (`dev-wheel`) | 145 s | 6 s |
+| the gate's extension (`release`) | built by `uv sync` above | 198 s |
+
+The `release` extension gains least, because thin LTO over one codegen unit
+relinks the whole extension whenever a workspace crate changes. Only the
+gate builds it, once a commit; the inner loop builds `dev-wheel`.
+
+**Each slot has its own `target/`, never a shared one.** cargo hashes a
+package's path relative to the workspace root, so two checkouts building
+into one `target/` overwrite each other's artifacts, and a gate can then
+test another checkout's binary. There are at most four slots
+(`POLARS_ONLINE_SLOTS`), the number of agents this machine runs at once,
+each about 28 GB of builds and 0.9 GB of environment. `take` refuses a
+slot with uncommitted work, and so does `give`. Who holds a slot is a file
+in the repository's git directory, so a slot's `git status` stays clean,
+and `give` detaches the slot so the task's branch can be merged and
+deleted from `main`. `scripts/clear_caches.sh --worktrees` keeps the
+slots' builds; `--slots` clears them too.
+
 ### Caches and when to clear them
 
 **The builds and the tests fill these directories, and each can be deleted
@@ -739,6 +782,7 @@ last column gives. The sizes were measured on this machine on 2026-10-11.
 | the gate's extension | `target/release/` | `maturin develop --release` | 1.5 GB | 241 s |
 | the inner loop's extension | `target/dev-wheel/` | `maturin develop --profile dev-wheel` | 2.3 to 2.4 GB | 130 s |
 | each agent worktree's builds | `target/` under `.claude/worktrees/<name>/` | the three builds above | up to 27 GB each | removed with the worktree, by `git worktree remove` |
+| each worktree slot's builds | `target/` under `.claude/slots/<n>/` | the three builds above, kept between tasks | about 28 GB each, four slots at most | kept by `clear_caches.sh --worktrees`; `--slots` clears them, and the next task in that slot builds from nothing |
 | sccache's cache, when turned on | `~/Library/Caches/Mozilla.sccache` on macOS | builds with `POLARS_ONLINE_SCCACHE=1` | 0.8 GB per checkout path, capped at 10 GB (`SCCACHE_CACHE_SIZE`), oldest out first | a build from nothing |
 | downloaded test data | `.cache/` in each checkout | `tests/data.py`, `scripts/compare_release.py` | 1.1 GB after a full run in a new worktree; 7.1 GB in the main checkout, with the experiments' data | the downloads again, about a minute on a fast line; offline, the tests that need them skip |
 | pytest's temporary directories | `pytest-of-<user>/` in the system's temporary directory | every test's `tmp_path` | about 2 GB for each full run, since the tree-model tests write a 2 GB source, and the last three runs are kept | nothing; pytest keeps three and deletes the rest itself |
@@ -753,7 +797,8 @@ and nextest writes no files unless asked for a report.
 **`scripts/clear_caches.sh` clears the build caches and prints what each
 freed.** By default it removes this checkout's `target/` and sccache's
 cache, after stopping the sccache server. `--worktrees` adds every other
-worktree's `target/`, `--test-data` adds `.cache/` and `.hypothesis/`, and
+worktree's `target/` but the slots', `--slots` adds the slots',
+`--test-data` adds `.cache/` and `.hypothesis/`, and
 `--uv` runs `uv cache prune`. `--dry-run` prints what it would remove and
 removes nothing. It touches nothing outside the repository and sccache's
 own directory unless a flag names it (`tests/test_dev_loop.py`).

@@ -4,7 +4,9 @@
 #
 #   scripts/clear_caches.sh              the build caches: target/ and sccache's cache
 #   scripts/clear_caches.sh --dry-run    what it would clear, and the size of each
-#   scripts/clear_caches.sh --worktrees  also target/ in every other worktree of this repo
+#   scripts/clear_caches.sh --worktrees  also target/ in every other worktree of this repo, but
+#                                        not the worktree slots' (scripts/slot.sh)
+#   scripts/clear_caches.sh --slots      also the slots' target/, which keeping them warm is for
 #   scripts/clear_caches.sh --test-data  also .cache/ (downloads) and .hypothesis/
 #   scripts/clear_caches.sh --uv         also `uv cache prune` (uv's own cache, outside the repo)
 #
@@ -21,15 +23,17 @@ repo="$(pwd)"
 
 dry=
 worktrees=
+slots=
 test_data=
 uv_prune=
 for arg in "$@"; do
     case "$arg" in
         --dry-run) dry=1 ;;
         --worktrees) worktrees=1 ;;
+        --slots) slots=1 ;;
         --test-data) test_data=1 ;;
         --uv) uv_prune=1 ;;
-        *) echo "usage: scripts/clear_caches.sh [--dry-run] [--worktrees] [--test-data] [--uv]" >&2; exit 2 ;;
+        *) echo "usage: scripts/clear_caches.sh [--dry-run] [--worktrees] [--slots] [--test-data] [--uv]" >&2; exit 2 ;;
     esac
 done
 
@@ -50,10 +54,18 @@ case "$(basename "$sccache_dir" | tr '[:upper:]' '[:lower:]')" in
 esac
 
 targets=("$repo/target" "$sccache_dir")
-if [ -n "$worktrees" ]; then
+if [ -n "$worktrees" ] || [ -n "$slots" ]; then
     while IFS= read -r line; do
         case "$line" in
-            "worktree "*) wt="${line#worktree }"; [ "$wt" != "$repo" ] && targets+=("$wt/target") ;;
+            "worktree "*)
+                wt="${line#worktree }"
+                [ "$wt" = "$repo" ] && continue
+                # A slot is kept warm on purpose: it goes only with --slots.
+                case "$wt" in
+                    "$repo/.claude/slots/"*) [ -n "$slots" ] && targets+=("$wt/target") ;;
+                    *) [ -n "$worktrees" ] && targets+=("$wt/target") ;;
+                esac
+                ;;
         esac
     done < <(git worktree list --porcelain)
 fi
