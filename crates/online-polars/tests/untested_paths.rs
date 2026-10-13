@@ -978,3 +978,260 @@ fn a_specs_non_finite_numbers_are_written_as_words() {
     .unwrap_err();
     assert!(e.contains("ridge") && e.contains("-1"), "{e}");
 }
+
+/// Two groups of `n` rows each, keyed `0` then `1`, with `y = 3 x0 + x1`
+/// (and the noise of [`rows`] left out), so a monotone close closes group 0
+/// on the first row of group 1.
+fn two_groups(n: usize, seed: u64) -> DataFrame {
+    let mut df = rows(2 * n, seed);
+    let x0: Vec<f64> = floats(df.column("x0").unwrap().as_materialized_series())
+        .into_iter()
+        .map(Option::unwrap)
+        .collect();
+    let x1: Vec<f64> = floats(df.column("x1").unwrap().as_materialized_series())
+        .into_iter()
+        .map(Option::unwrap)
+        .collect();
+    let y: Vec<f64> = x0.iter().zip(&x1).map(|(a, b)| 3.0 * a + b).collect();
+    df.put(Series::new("y".into(), y)).unwrap();
+    df.put(Series::new(
+        "g".into(),
+        (0..2 * n as i64).map(|i| i / n as i64).collect::<Vec<_>>(),
+    ))
+    .unwrap();
+    df
+}
+
+/// The values of row `i` of a `list[f64]` column, `None` for a null row.
+fn list_row(df: &DataFrame, name: &str, i: usize) -> Option<Vec<Option<f64>>> {
+    df.column(name)
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+        .list()
+        .unwrap()
+        .get_as_series(i)
+        .map(|s| floats(&s))
+}
+
+/// A closed `marginal` row carries its pairs -- the moments, the
+/// correlation, the slope, the t-statistics, the serial and the binned
+/// scalars -- pair for pair and value for value what `marginal()` reports
+/// on the same rows, as `test_a_marginal_spec_closes_with_its_pairs` and
+/// `test_a_closed_marginal_row_carries_its_lags_and_bins` hold in Python.
+/// The closed row is the only readout of a closed group, so a column it
+/// dropped or emptied would be lost.
+#[test]
+fn a_closed_marginal_row_carries_the_pairs_marginal_reports() {
+    let n = 60;
+    let df = two_groups(n, 21);
+    let model = r#""model": {"type": "marginal", "lags": [1, 2], "serial_rule": "truncated",
+        "bin_edges": [[0.0], [-0.5, 0.5]]}, "targets": ["y"], "features": ["x0", "x1"],
+        "half_life": 20.0"#;
+    let mut closing = Bank::new(vec![spec(&format!(
+        r#"{{"name": "m", {model}, "group": "g", "group_close": "monotone"}}"#
+    ))])
+    .unwrap();
+    closing.fit_predict(&df).unwrap();
+    let closed = closing.closed_groups(None, true).unwrap();
+    assert_eq!(closed.height(), 1, "group 0 closed: {closed}");
+
+    let mut plain = Bank::new(vec![spec(&format!(r#"{{"name": "m", {model}}}"#))]).unwrap();
+    plain.fit_predict(&df.slice(0, n)).unwrap();
+    let want = plain.marginal(0, None).unwrap();
+    assert_eq!(want.height(), 2, "{want}");
+
+    for col in [
+        "weight_sum",
+        "n_kish",
+        "mean_x",
+        "var_x",
+        "mean_y",
+        "var_y",
+        "cov",
+        "corr",
+        "beta",
+        "t_stat",
+        "n_serial",
+        "t_stat_serial",
+        "phi_x",
+        "phi_y",
+        "split_gain",
+        "split_at",
+        "split_gain_t",
+    ] {
+        let w = floats(want.column(col).unwrap().as_materialized_series());
+        assert_eq!(
+            list_row(&closed, &format!("pair_{col}"), 0),
+            Some(w),
+            "{col}"
+        );
+    }
+    // The values themselves, not only their agreement: the slope of `y` on
+    // `x0` carries its 3, `n_kish` is a count of rows that are there, and
+    // truncation fits no decay.
+    let beta = list_row(&closed, "pair_beta", 0).unwrap();
+    assert!((beta[0].unwrap() - 3.0).abs() < 0.5, "{beta:?}");
+    let kish = list_row(&closed, "pair_n_kish", 0).unwrap();
+    assert!(kish.iter().all(|k| k.unwrap() > 10.0), "{kish:?}");
+    assert_eq!(
+        list_row(&closed, "pair_phi_x", 0),
+        Some(vec![None, None]),
+        "truncated fits no decay"
+    );
+    let gain = list_row(&closed, "pair_split_gain", 0).unwrap();
+    assert!(gain[0].unwrap() > 0.5, "x0 carries the target: {gain:?}");
+}
+
+/// Two closing marginals, one with lags and bins and one without: on the
+/// row of the one that did not ask, the lag and bin columns are null --
+/// the columns its `marginal()` would not have -- and on the other's they
+/// hold its values, as `test_the_lag_and_bin_blocks_follow_the_specs_that_asked`
+/// holds in Python.
+#[test]
+fn a_closed_marginal_row_nulls_the_blocks_its_spec_did_not_ask_for() {
+    let n = 30;
+    let df = two_groups(n, 22);
+    let common = r#""targets": ["y"], "features": ["x0", "x1"], "half_life": 20.0,
+        "group": "g", "group_close": "monotone""#;
+    let mut bank = Bank::new(vec![
+        spec(&format!(
+            r#"{{"name": "plain", "model": {{"type": "marginal"}}, {common}}}"#
+        )),
+        spec(&format!(
+            r#"{{"name": "asked", "model": {{"type": "marginal", "lags": [1],
+                "serial_rule": "truncated", "bin_edges": [[0.0], [0.0]]}}, {common}}}"#
+        )),
+    ])
+    .unwrap();
+    bank.fit_predict(&df).unwrap();
+    let closed = bank.closed_groups(None, true).unwrap();
+    assert_eq!(closed.height(), 2, "group 0 closed in each spec: {closed}");
+    let names: Vec<Option<&str>> = closed
+        .column("spec")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .collect();
+    let plain = names.iter().position(|s| *s == Some("plain")).unwrap();
+    let asked = names.iter().position(|s| *s == Some("asked")).unwrap();
+    assert!(list_row(&closed, "pair_corr", plain).is_some());
+    for col in [
+        "pair_lag_corr_xx",
+        "pair_lag_corr_yy",
+        "pair_lag_corr_xy",
+        "pair_lag_corr_yx",
+        "pair_bin_edges",
+        "pair_bin_n",
+    ] {
+        let lists = closed.column(col).unwrap().list().unwrap().clone();
+        assert!(lists.get_as_series(plain).is_none(), "{col} on plain");
+        let got = lists.get_as_series(asked).expect(col);
+        assert_eq!(got.len(), 2, "{col}: one per pair");
+    }
+    for col in [
+        "pair_n_serial",
+        "pair_t_stat_serial",
+        "pair_split_gain",
+        "pair_split_at",
+    ] {
+        assert_eq!(list_row(&closed, col, plain), None, "{col} on plain");
+        let got = list_row(&closed, col, asked).expect(col);
+        assert_eq!(got.len(), 2, "{col}: one per pair");
+        assert!(got.iter().all(Option::is_some), "{col}: {got:?}");
+    }
+    // The asked row's lag-1 autocorrelation of `x0` is the one `marginal()`
+    // reports for the same rows.
+    let mut alone = Bank::new(vec![spec(
+        r#"{"name": "asked", "model": {"type": "marginal", "lags": [1],
+            "serial_rule": "truncated", "bin_edges": [[0.0], [0.0]]}, "targets": ["y"], "features": ["x0", "x1"],
+            "half_life": 20.0}"#,
+    )])
+    .unwrap();
+    alone.fit_predict(&df.slice(0, n)).unwrap();
+    let want = alone.marginal(0, None).unwrap();
+    assert_eq!(
+        list_row(&closed, "pair_n_serial", asked),
+        Some(floats(
+            want.column("n_serial").unwrap().as_materialized_series()
+        ))
+    );
+}
+
+/// The averaged forecast over a grid of three ridges for each of two
+/// targets is each target's own slots weighed by `exp(-eta (sigma² /
+/// sigma²_best - 1))`, normalized, from the bank's own columns -- as
+/// `test_the_weights_are_each_error_over_the_best` holds in Python. Every
+/// slot counts, not only the first of each target, and the second target
+/// reads its own slots, not the first target's.
+#[test]
+fn the_averaged_forecast_weighs_each_of_a_targets_own_slots() {
+    let n = 400;
+    // Noisy targets, so that no slot's error dwarfs another's and each
+    // weighs in: `rows`' own `y` is so nearly exact that the best slot
+    // takes every weight, and the average is that slot's forecast alone.
+    let mut df = rows(n, 23);
+    let noise = rows(n, 24);
+    let col = |df: &DataFrame, c: &str| -> Vec<f64> {
+        floats(df.column(c).unwrap().as_materialized_series())
+            .into_iter()
+            .map(Option::unwrap)
+            .collect()
+    };
+    let (x0, x1) = (col(&df, "x0"), col(&df, "x1"));
+    let (e1, e2) = (col(&noise, "x0"), col(&noise, "x1"));
+    let y: Vec<f64> = (0..n).map(|i| 2.0 * x0[i] + 3.0 * e1[i]).collect();
+    let y2: Vec<f64> = (0..n).map(|i| 5.0 - x1[i] + 2.0 * e2[i]).collect();
+    df.put(Series::new("y".into(), y)).unwrap();
+    df.put(Series::new("y2".into(), y2)).unwrap();
+    let eta = 0.7;
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge", "ridge": [1e-8, 1.0, 100.0],
+            "max_rows_between_solves": 1},
+            "targets": ["y", "y2"], "features": ["x0", "x1"], "half_life": 50.0,
+            "min_weight": 5.0, "emit_averaged": true, "average_eta": 0.7, "emit_sigma": true}"#,
+    );
+    let out = Bank::new(vec![s]).unwrap().fit_predict(&df).unwrap();
+    for t in ["y", "y2"] {
+        let slots = ["r1e-8", "r1", "r100"];
+        let preds: Vec<Vec<Option<f64>>> = slots
+            .iter()
+            .map(|r| floats(&field(&out, 0, &format!("pred_{t}__{r}"))))
+            .collect();
+        let sigs: Vec<Vec<Option<f64>>> = slots
+            .iter()
+            .map(|r| floats(&field(&out, 0, &format!("sigma_{t}__{r}"))))
+            .collect();
+        let avg = floats(&field(&out, 0, &format!("pred_{t}__averaged")));
+        let (mut checked, mut apart) = (0, 0);
+        for i in 0..n {
+            let ok: Vec<(f64, f64)> = (0..slots.len())
+                .filter_map(|k| match (sigs[k][i], preds[k][i]) {
+                    (Some(s), Some(p)) if s.is_finite() && p.is_finite() => Some((s * s, p)),
+                    _ => None,
+                })
+                .collect();
+            if ok.len() < slots.len() {
+                continue;
+            }
+            let best = ok.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
+            let w: Vec<f64> = ok
+                .iter()
+                .map(|o| (-eta * (o.0 / best - 1.0)).exp())
+                .collect();
+            let want = w.iter().zip(&ok).map(|(w, o)| w * o.1).sum::<f64>() / w.iter().sum::<f64>();
+            let got = avg[i].unwrap_or_else(|| panic!("{t}: row {i} has no average"));
+            assert!(
+                (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+                "{t} row {i}: {got} vs {want}"
+            );
+            checked += 1;
+            // The slots disagree here, so a forecast of the first slot
+            // alone would not pass for the average.
+            if (want - ok[0].1).abs() > 1e-6 * want.abs().max(1.0) {
+                apart += 1;
+            }
+        }
+        assert!(checked > 300, "{t}: {checked} rows with every slot");
+        assert!(apart > 300, "{t}: the slots agree on all but {apart} rows");
+    }
+}
