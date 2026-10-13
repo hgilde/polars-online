@@ -1,4 +1,6 @@
+import contextlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +35,31 @@ import tiers  # noqa: E402
 tiers.register()
 
 
+@contextlib.contextmanager
+def _build_lock(path: Path):
+    """An exclusive lock across processes, where the platform has `flock`.
+
+    The gate runs pytest in several processes (pytest-xdist), and each is a
+    session of its own, so each builds the CLI. After the caches were
+    cleared, one process ran the executable while another's build replaced
+    it, and the run failed with FileNotFoundError (2026-10-13). CI runs
+    pytest in one process, so a platform without `flock` goes unlocked."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 @pytest.fixture(scope="session")
-def online_cli() -> Path:
+def online_cli(tmp_path_factory) -> Path:
     """The CLI executable, built once per session (docs/IMPROVEMENTS.md T1).
 
     The CLI tests used to `cargo run` on every call, and each call cost 2.9 s
@@ -47,31 +72,36 @@ def online_cli() -> Path:
 
     The path comes from cargo's own artifact message rather than being
     guessed, so `CARGO_TARGET_DIR` and the `.exe` suffix are cargo's problem.
+    The build runs under a lock, and each process runs a copy of its own,
+    so no other process's build can replace the file it runs.
     """
     cmd = ["cargo", "build", "-q", "-p", "online-cli", "--message-format=json-render-diagnostics"]
-    try:
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=str(REPO),
-            check=False,
-        )
-    except FileNotFoundError:
-        pytest.fail("cargo is not on PATH; `source scripts/env.sh` first")
-    assert res.returncode == 0, res.stderr
-    exes = [
-        msg["executable"]
-        for line in res.stdout.splitlines()
-        if line.startswith("{")
-        and (msg := json.loads(line)).get("reason") == "compiler-artifact"
-        and msg.get("executable")
-        and "bin" in msg["target"]["kind"]
-        and msg["target"]["name"] == "polars-online"
-    ]
-    assert len(exes) == 1, f"expected one CLI artifact, got {exes}:\n{res.stdout}"
-    return Path(exes[0])
+    with _build_lock(REPO / "target" / ".online-cli-build.lock"):
+        try:
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=str(REPO),
+                check=False,
+            )
+        except FileNotFoundError:
+            pytest.fail("cargo is not on PATH; `source scripts/env.sh` first")
+        assert res.returncode == 0, res.stderr
+        exes = [
+            msg["executable"]
+            for line in res.stdout.splitlines()
+            if line.startswith("{")
+            and (msg := json.loads(line)).get("reason") == "compiler-artifact"
+            and msg.get("executable")
+            and "bin" in msg["target"]["kind"]
+            and msg["target"]["name"] == "polars-online"
+        ]
+        assert len(exes) == 1, f"expected one CLI artifact, got {exes}:\n{res.stdout}"
+        own = tmp_path_factory.mktemp("online-cli") / Path(exes[0]).name
+        shutil.copy2(exes[0], own)
+    return own
 
 
 def _toml_value(v: object) -> str:
