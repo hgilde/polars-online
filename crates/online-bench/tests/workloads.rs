@@ -120,7 +120,7 @@ fn every_wide_case_learns_its_block_in_runs_on_its_pool() {
     assert!(WIDE_ROWS >= 4 * run_rows, "{run_rows} rows a run");
     const { assert!(WIDE_ROWS >= PAR_MIN_ROWS) };
     let mut outs: Vec<Vec<Column>> = Vec::new();
-    for (&id, threads) in WIDE_CASES.iter().zip([1, 4]) {
+    for (id, threads) in [(WIDE_CASES[0], 1), ("bank_ew_cov_wide_t4", 4)] {
         let mut run = bank_setup(id);
         assert_eq!(run.bank.threads().asked(), Some(threads), "{id}");
         let before = run.bank.rows_fed();

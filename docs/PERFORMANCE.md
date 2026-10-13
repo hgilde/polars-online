@@ -2046,10 +2046,13 @@ also counts the runs each sink took: at least three to a chunk for the
 `ew_cov`, none for the grouped spec. Its fastest form runs in the
 essentials, as does `test_a_spec_one_stream_serves_is_the_same_at_every_count`
 (`tests/test_threads.py`) through `ModelBank(threads=...)`. The instruction
-cases `bank_ew_cov_wide_t1` and `bank_ew_cov_wide_t4` count one
-`fit_predict` of 8,192 rows of the same `ew_cov` on a pool of one thread and
-of four. The four-thread case counts every thread: Callgrind's
-instrumentation is off until a client request turns it on around the call.
+case `bank_ew_cov_wide_t1` counts one `fit_predict` of 8,192 rows of the
+same `ew_cov` on a pool of one thread. A second case on a pool of four,
+counted on every thread, was taken out the day it landed: two runs of one
+binary differed by 0.655%, more than the quarter of the 2% tolerance that
+a count may move between runs, because the pool's idle workers spin and
+steal work for as long as the scheduler lets them. Pool sizes are held by
+the identity tests above and the table.
 
 ## Model by model
 

@@ -52,14 +52,16 @@ pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
 pub const BANK_CASES: &[&str] = &["bank_seqtest", "bank_ewridge_k5"];
 
 /// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
-/// 230 statistics through `Bank::fit_predict`, on a pool of one thread and
-/// of four. The frame is several runs long (about a thousand rows a run at
-/// this width), so each run is copied into the output as it ends while the
+/// 230 statistics through `Bank::fit_predict`, on a pool of one thread.
+/// The frame is several runs long (about a thousand rows a run at this
+/// width), so each run is copied into the output as it ends while the
 /// stream learns the next (`rayon::join`, which on one thread runs the two
 /// in turn), and it is past `PAR_MIN_ROWS`, so the output columns are
-/// allocated and finished in parallel. The count of the four-thread case is
-/// every thread's: the work, and what spreading it over the pool costs.
-pub const WIDE_CASES: &[&str] = &["bank_ew_cov_wide_t1", "bank_ew_cov_wide_t4"];
+/// allocated and finished in parallel. `bank_setup` also knows
+/// `bank_ew_cov_wide_t4`, the same on a pool of four, which the native test
+/// holds to the one-thread case's output; it has no count (benches/
+/// instructions.rs says why).
+pub const WIDE_CASES: &[&str] = &["bank_ew_cov_wide_t1"];
 
 /// Rows in a wide case's measured block.
 pub const WIDE_ROWS: usize = 8_192;
@@ -264,7 +266,7 @@ pub fn spec(id: &str) -> Spec {
 /// A case's rows: warm-up and measured block, from one seed.
 fn rows(id: &str, spec: &Spec) -> Rows {
     let (_, shape) = case_spec(id);
-    let block = if WIDE_CASES.contains(&id) {
+    let block = if WIDE_CASES.contains(&id) || id == "bank_ew_cov_wide_t4" {
         WIDE_ROWS
     } else {
         ROWS

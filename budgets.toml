@@ -136,10 +136,6 @@ release = 5766841
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
 budget = 168992955
 
-[instructions.bank_ew_cov_wide_t4]
-what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of four threads, every thread counted: each run copied into the output while the next is learned"
-budget = 167732103
-
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
 # same rows (tests/test_budgets_memory.py), and the peak resident memory a
