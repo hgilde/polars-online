@@ -7,6 +7,14 @@
 //! copy of a run overlaps the learning of the next through `rayon::join`,
 //! which on a pool of one thread runs the two in turn, so its output is
 //! held to the bit at every pool size as well.
+//!
+//! The two ways read each field from the same place, so a field read from
+//! the wrong place reads wrong both ways alike. A spec at its fullest is
+//! therefore also held to references that know nothing of its other
+//! instances and slots -- the same spec as one half-life, and as one
+//! half-life, target and grid point -- and its selected and averaged
+//! predictions to their definitions over its own fields (task 255 (a),
+//! the mutants that survived it).
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -343,4 +351,582 @@ fn a_run_at_a_time_is_the_same_at_every_thread_count() {
         .chain(std::iter::once(all.clone()))
         .collect();
     same_at_every_count(&banks, &df, &[1, 2], &[Some(2), Some(4), Some(8), None], 3);
+}
+
+/// How a frame's rows fall into groups: no group column, each group's rows
+/// in one block, or the groups' rows interleaved, so that no run of a group
+/// is one unbroken range of the chunk.
+#[derive(Clone, Copy, Debug)]
+enum Layout {
+    Single,
+    Blocks,
+    Interleaved,
+}
+
+/// The features and clock of [`frame`], a target `y` whose relation to `x0`
+/// drifts (so the short half-life tracks it better than the long one) and
+/// that is null over a block of rows (so its weight falls under its
+/// `min_weight` there, for the short half-life only: a slot with an error
+/// spread and no prediction), a target `z` with no nulls, and the groups of
+/// `layout`.
+fn full_frame(n: usize, layout: Layout) -> DataFrame {
+    let mut t = 0.0;
+    let clock: Vec<f64> = (0..n)
+        .map(|i| {
+            t += [0.5, 1.0, 1.5][i % 3] + if i == n / 3 { 40.0 } else { 0.0 };
+            t
+        })
+        .collect();
+    let xv = |i: usize, b: usize| ((i * b) % 23) as f64 / 7.0 - 1.5;
+    let x = |a: usize, b: usize| -> Vec<Option<f64>> {
+        (0..n).map(|i| (i % 97 != a).then(|| xv(i, b))).collect()
+    };
+    let gap = n / 2..n / 2 + 60;
+    let y: Vec<Option<f64>> = (0..n)
+        .map(|i| {
+            let beta = 2.0 * (i as f64 / 120.0).sin();
+            let noise = ((i * 7) % 19) as f64 / 19.0 - 0.5;
+            (i % 89 != 5 && !gap.contains(&i)).then(|| beta * xv(i, 5) + noise)
+        })
+        .collect();
+    let z: Vec<f64> = (0..n)
+        .map(|i| ((i * 11) % 17) as f64 / 3.0 - 2.5 + 0.5 * xv(i, 3))
+        .collect();
+    let w: Vec<f64> = (0..n)
+        .map(|i| if i % 31 == 0 { 0.0 } else { 1.0 })
+        .collect();
+    let mut df = df!("t" => clock, "x0" => x(3, 5), "x1" => x(50, 3), "x2" => x(98, 13),
+        "y" => y, "z" => z, "w" => w)
+    .unwrap();
+    let g: Option<Vec<i64>> = match layout {
+        Layout::Single => None,
+        Layout::Blocks => Some((0..n).map(|i| (i * 3 / n) as i64).collect()),
+        Layout::Interleaved => Some((0..n).map(|i| ((i * 7) % 3) as i64).collect()),
+    };
+    if let Some(g) = g {
+        df.with_column(Column::new("g".into(), g)).unwrap();
+    }
+    df
+}
+
+/// A spec at its fullest: every per-row output `model` can emit, over the
+/// two targets of [`full_frame`] (a `min_weight` that `y` falls under in
+/// its block of nulls), with `extra` over the top (the half-lives, the
+/// grid, the targets, the group).
+fn full_spec(name: &str, model: &serde_json::Value, extra: &serde_json::Value) -> Spec {
+    let mut v = serde_json::json!({
+        "name": name, "model": model, "targets": ["y", "z"],
+        "features": ["x0", "x1", "x2"], "clock": "t", "gap_cap": 6.0, "weight": "w",
+        "min_weight": 25.0, "emit_clocks": true, "coef_every": 0,
+        "emit_sigma": true, "emit_zscore": true, "emit_metrics": true, "conformal": 0.9,
+        "resid_quantiles": [0.1, 0.25, 0.75, 0.9], "emit_autocorr": true,
+        "emit_drift": true, "drift_threshold": 20.0, "emit_calibration": true,
+        "emit_breaks": true, "emit_specification": true, "emit_tails": true,
+        "emit_feature_health": true,
+    });
+    if model["type"] == "ewridge" {
+        for k in [
+            "emit_error_inflation",
+            "emit_se_coef",
+            "emit_robust_se",
+            "emit_influence",
+        ] {
+            v[k] = true.into();
+        }
+    }
+    for (k, x) in extra.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    serde_json::from_value(v).unwrap()
+}
+
+/// One field's values equal another's: the same validity, and for a float
+/// the same bits in every slot, a null's included.
+fn same_field(x: &dyn Array, y: &dyn Array) -> bool {
+    if x.len() != y.len() || x.validity() != y.validity() {
+        return false;
+    }
+    match (
+        x.as_any().downcast_ref::<Float64Array>(),
+        y.as_any().downcast_ref::<Float64Array>(),
+    ) {
+        (Some(x), Some(y)) => x
+            .values()
+            .iter()
+            .zip(y.values().iter())
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        _ => x == y,
+    }
+}
+
+/// A float field's values, null as `None`.
+fn floats(a: &dyn Array) -> Vec<Option<f64>> {
+    let a = a.as_any().downcast_ref::<Float64Array>().unwrap();
+    a.iter().map(|v| v.copied()).collect()
+}
+
+/// The spec a per-instance field of a full spec is held to: the same spec
+/// run as that one half-life (`target` and `ridge` `None`), or as that one
+/// half-life and target (and, for `ewridge`, ridge).
+struct Reference {
+    spec: Spec,
+    half_life: f64,
+    target: Option<String>,
+    ridge: Option<f64>,
+}
+
+/// The references of a full spec of `model` over `grid` (a ridge grid for
+/// `ewridge`, whose grid points are separate fits of one Gram; a penalty
+/// path for `lasso`, whose points are warm-started one from the last, so
+/// its references keep the whole path): each half-life alone, and each
+/// half-life and target (and ridge) alone.
+fn references(
+    name: &str,
+    model: &serde_json::Value,
+    grid: &[f64],
+    half_lives: &[f64],
+    extra: &serde_json::Value,
+) -> Vec<Reference> {
+    use serde_json::json;
+    let ewridge = model["type"] == "ewridge";
+    let mut out = Vec::new();
+    for &h in half_lives {
+        let mut e = extra.clone();
+        e["half_life"] = json!(h);
+        out.push(Reference {
+            spec: full_spec(&format!("{name}-h{h}"), model, &e),
+            half_life: h,
+            target: None,
+            ridge: None,
+        });
+        for t in ["y", "z"] {
+            let mut e = e.clone();
+            e["targets"] = json!([t]);
+            let ridges: Vec<Option<f64>> = if ewridge {
+                grid.iter().copied().map(Some).collect()
+            } else {
+                vec![None]
+            };
+            for r in ridges {
+                let mut m = model.clone();
+                if let Some(r) = r {
+                    m["ridge"] = json!(r);
+                }
+                out.push(Reference {
+                    spec: full_spec(&format!("{name}-h{h}-{t}-r{r:?}"), &m, &e),
+                    half_life: h,
+                    target: Some(t.to_string()),
+                    ridge: r,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The output metadata of `spec`, field by field in struct order.
+fn meta_of(spec: &Spec) -> Vec<crate::FieldMeta> {
+    let mut s = spec.clone();
+    s.check().unwrap();
+    crate::output_index(&s)
+}
+
+/// What [`a_full_spec_is_its_parts`] counted: fields held to a reference,
+/// and the rows where the averaged prediction's two rules part.
+#[derive(Default, Debug)]
+struct Held {
+    fields: usize,
+    /// A slot with an error spread and no prediction, below the best slot
+    /// with both, beside at least two with both: the averaged prediction
+    /// takes the best only over the slots that have both.
+    spread_without_pred: usize,
+    /// A slot of `z` whose prediction is there where `y`'s at the same
+    /// instance and grid point is not, or the other way round.
+    targets_part: usize,
+}
+
+/// A target's averaged prediction, selected prediction and selected slot,
+/// row by row.
+type Derived = (Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<u32>>);
+
+/// `emit_averaged` and `emit_selected` for target `t` of `full`, from its
+/// own `pred` and `sigma` fields, by their definitions: each slot with both
+/// weighs `exp(-eta * (sigma² / best - 1))`, `best` the least `sigma²` of
+/// such slots; the selected slot is the first of least `sigma`, and gives
+/// its prediction where it has one.
+fn derived_of(
+    meta: &[crate::FieldMeta],
+    full: &StructArray,
+    t: &str,
+    eta: f64,
+    held: &mut Held,
+) -> Derived {
+    let field = |kind: &str, t: &str| -> Vec<Vec<Option<f64>>> {
+        meta.iter()
+            .enumerate()
+            .filter(|(_, f)| f.kind == kind && f.target.as_deref() == Some(t))
+            .map(|(i, _)| floats(full.values()[i].as_ref()))
+            .collect()
+    };
+    let (pred, sigma) = (field("pred", t), field("sigma", t));
+    let other = field("pred", if t == "y" { "z" } else { "y" });
+    assert!(pred.len() >= 4 && pred.len() == sigma.len());
+    let n = full.len();
+    let (mut avg, mut sel, mut name) = (vec![None; n], vec![None; n], vec![None; n]);
+    for i in 0..n {
+        let both: Vec<(f64, f64)> = (0..pred.len())
+            .filter_map(|s| Some((sigma[s][i]?, pred[s][i]?)))
+            .collect();
+        let best = both
+            .iter()
+            .map(|(s, _)| s * s)
+            .fold(f64::INFINITY, f64::min);
+        if both.len() >= 2
+            && (0..pred.len())
+                .any(|s| pred[s][i].is_none() && sigma[s][i].is_some_and(|x| x * x < best))
+        {
+            held.spread_without_pred += 1;
+        }
+        if t == "z"
+            && (0..pred.len())
+                .any(|s| sigma[s][i].is_some() && pred[s][i].is_some() != other[s][i].is_some())
+        {
+            held.targets_part += 1;
+        }
+        if best.is_finite() {
+            let (mut num, mut den) = (0.0, 0.0);
+            for &(s, p) in &both {
+                let excess = if best > 0.0 {
+                    s * s / best - 1.0
+                } else if s * s == 0.0 {
+                    0.0
+                } else {
+                    f64::INFINITY
+                };
+                let wgt = if excess > 0.0 {
+                    (-eta * excess).exp()
+                } else {
+                    1.0
+                };
+                num += wgt * p;
+                den += wgt;
+            }
+            if den > 0.0 {
+                avg[i] = Some(num / den);
+            }
+        }
+        let mut pick: Option<(f64, usize)> = None;
+        for (s, sig) in sigma.iter().enumerate() {
+            if let Some(x) = sig[i]
+                && pick.is_none_or(|(b, _)| x < b)
+            {
+                pick = Some((x, s));
+            }
+        }
+        if let Some((_, s)) = pick
+            && let Some(p) = pred[s][i]
+        {
+            sel[i] = Some(p);
+            name[i] = Some(s as u32);
+        }
+    }
+    (avg, sel, name)
+}
+
+/// Every field of `full` (a spec of several half-lives, two targets and a
+/// grid) against its references, in one chunk's output: each per-instance
+/// field is the same field of the spec run as that half-life alone, and
+/// each per-slot one the same field of the spec run as that half-life,
+/// target and grid point alone, to the bit; no two of its float fields are
+/// the same column, so a field read from another's place cannot pass; and
+/// the selected and averaged predictions are what their definitions make of
+/// its own `pred` and `sigma` fields.
+fn hold_to_references(
+    full_spec: &Spec,
+    full: &StructArray,
+    refs: &[(&Reference, &StructArray)],
+    what: &str,
+    held: &mut Held,
+) {
+    let meta = meta_of(full_spec);
+    assert_eq!(meta.len(), full.values().len(), "{what}");
+    let ref_meta: Vec<Vec<crate::FieldMeta>> = refs.iter().map(|(r, _)| meta_of(&r.spec)).collect();
+    for (i, f) in meta.iter().enumerate() {
+        if f.instance.is_none() {
+            continue;
+        }
+        let (ri, (r, out)) = refs
+            .iter()
+            .enumerate()
+            .find(|(_, (r, _))| {
+                f.half_life == Some(r.half_life)
+                    && r.target == f.target
+                    && (r.ridge.is_none() || r.ridge == f.ridge)
+            })
+            .unwrap_or_else(|| panic!("{what}: no reference for {}", f.field));
+        let hit = ref_meta[ri]
+            .iter()
+            .position(|g| {
+                (
+                    &g.kind, &g.target, g.quantile, &g.columns, g.ridge, g.penalty,
+                ) == (
+                    &f.kind, &f.target, f.quantile, &f.columns, f.ridge, f.penalty,
+                )
+            })
+            .unwrap_or_else(|| panic!("{what}: {} not in {}", f.field, r.spec.name));
+        assert!(
+            same_field(full.values()[i].as_ref(), out.values()[hit].as_ref()),
+            "{what}: {} is not {}'s {}",
+            f.field,
+            r.spec.name,
+            ref_meta[ri][hit].field
+        );
+        held.fields += 1;
+    }
+    // Every float field is a column of its own.
+    let float: Vec<usize> = (0..meta.len())
+        .filter(|&i| full.values()[i].as_any().is::<Float64Array>())
+        .collect();
+    // Except `break_wald` across a grid: the distance between two
+    // least-squares fits of the target on the features, which no grid
+    // point enters.
+    let twins = |f: &crate::FieldMeta, g: &crate::FieldMeta| {
+        f.kind == "break_wald"
+            && g.kind == f.kind
+            && (&f.target, &f.instance) == (&g.target, &g.instance)
+    };
+    let mut dup = vec![];
+    for (a, &i) in float.iter().enumerate() {
+        for &j in &float[a + 1..] {
+            if !twins(&meta[i], &meta[j])
+                && same_field(full.values()[i].as_ref(), full.values()[j].as_ref())
+            {
+                dup.push(format!(
+                    "{} == {} ({} nulls)",
+                    meta[i].field,
+                    meta[j].field,
+                    full.values()[i].null_count()
+                ));
+            }
+        }
+    }
+    assert!(dup.is_empty(), "{what}: the same column: {dup:#?}");
+    // The selected and averaged predictions, by their definitions.
+    let eta = full_spec.average_eta_or_default();
+    for t in ["y", "z"] {
+        let (avg, sel, name) = derived_of(&meta, full, t, eta, held);
+        let at = |field: &str| {
+            let i = meta.iter().position(|f| f.field == field).unwrap();
+            full.values()[i].as_ref()
+        };
+        let bits = |v: &[Option<f64>]| v.iter().map(|x| x.map(f64::to_bits)).collect::<Vec<_>>();
+        assert_eq!(
+            bits(&floats(at(&format!("pred_{t}__averaged")))),
+            bits(&avg),
+            "{what}: {t}"
+        );
+        assert_eq!(
+            bits(&floats(at(&format!("pred_{t}__selected")))),
+            bits(&sel),
+            "{what}: {t}"
+        );
+        // An `Enum` over the slots' labels, in slot order, as its codes.
+        let keys = at(&format!("selected_{t}"))
+            .as_any()
+            .downcast_ref::<polars_arrow::array::PrimitiveArray<u8>>()
+            .unwrap()
+            .iter()
+            .map(|k| k.map(|&k| u32::from(k)))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, name, "{what}: selected_{t}");
+    }
+}
+
+/// The full specs of the test below and their references, under `layout`:
+/// `ewridge` over a ridge grid and `lasso` over a penalty path, each over two
+/// half-lives, every per-row output on, the selected and averaged
+/// predictions too; each full spec twice, under a `sink-on-` name (a spec one
+/// stream serves takes its runs one at a time) and under a `sink-off-` one
+/// (every run at once).
+fn full_banks(tag: &str, layout: Layout) -> Vec<(Spec, Spec, Vec<Reference>)> {
+    use serde_json::json;
+    let half_lives = [25.0, 100.0];
+    let mut extra = json!({"half_life": half_lives});
+    if !matches!(layout, Layout::Single) {
+        // A group's rows come a third as often, and its weight tops out at a
+        // third: about 12 at the short half-life, interleaved.
+        extra["group"] = json!("g");
+        extra["min_weight"] = json!(8.0);
+    }
+    let mut full = extra.clone();
+    full["emit_averaged"] = json!(true);
+    full["emit_selected"] = json!(true);
+    let ridge = [1e-6, 3.0, 30.0];
+    [
+        (
+            json!({"type": "ewridge", "ridge": ridge}),
+            ridge.to_vec(),
+            "ewridge",
+        ),
+        (
+            json!({"type": "lasso", "penalties": [0.2, 0.05, 0.0]}),
+            vec![],
+            "lasso",
+        ),
+    ]
+    .into_iter()
+    .map(|(model, grid, kind)| {
+        let name = format!("{tag}-{kind}");
+        (
+            full_spec(&format!("sink-on-{name}"), &model, &full),
+            full_spec(&format!("sink-off-{name}"), &model, &full),
+            references(&format!("ref-{name}"), &model, &grid, &half_lives, &extra),
+        )
+    })
+    .collect()
+}
+
+/// A spec at its fullest -- several half-lives, two targets, a grid, every
+/// per-instance output on -- is its parts: each of its per-instance fields
+/// is the field of the same spec run as that half-life alone, and each of
+/// its per-slot fields the field of the spec run as that half-life, target
+/// and grid point alone, to the bit, null slots included. The run-at-a-time
+/// way and the every-run-at-once way give the same output; but a field read
+/// from the wrong place reads wrong both ways alike, and only a reference
+/// that knows nothing of the other instances and slots tells it.
+fn a_full_spec_is_its_parts(n: usize, layout: Layout, parts: &[usize]) -> Held {
+    let df = full_frame(n, layout);
+    let mut held = Held::default();
+    for &p in parts {
+        let tag = format!("full-{layout:?}-{p}").to_lowercase();
+        let sets = full_banks(&tag, layout);
+        let mut specs = Vec::new();
+        for (on, off, refs) in &sets {
+            specs.push(on.clone());
+            specs.push(off.clone());
+            specs.extend(refs.iter().map(|r| r.spec.clone()));
+        }
+        let names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+        let mut bank = Bank::new(specs).unwrap();
+        let step = df.height().div_ceil(p);
+        for c in 0..p {
+            let out = structs(
+                &bank
+                    .fit_predict(&df.slice((c * step) as i64, step))
+                    .unwrap(),
+            );
+            let by = |name: &str| &out[names.iter().position(|x| x == name).unwrap()];
+            for (on, off, refs) in &sets {
+                let what = format!("{}, {p} chunks, chunk {c}", on.name);
+                assert_same(by(&on.name), by(&off.name), &what);
+                let refs: Vec<(&Reference, &StructArray)> =
+                    refs.iter().map(|r| (r, by(&r.spec.name))).collect();
+                hold_to_references(on, by(&on.name), &refs, &what, &mut held);
+            }
+        }
+        for (on, off, _) in &sets {
+            // One stream serves a chunk of a single group: in blocks, each of
+            // three chunks is one group's block.
+            let runs = runs_absorbed(&on.name);
+            match (layout, p) {
+                (Layout::Single, _) | (Layout::Blocks, 3) => {
+                    assert!(runs >= p, "{}: {runs} runs", on.name);
+                }
+                _ => assert_eq!(runs, 0, "{}", on.name),
+            }
+            assert_eq!(runs_absorbed(&off.name), 0, "{}", off.name);
+        }
+    }
+    held
+}
+
+/// [`a_full_spec_is_its_parts`] for a spec one stream serves, in two
+/// chunks, its runs taken one at a time: every field is where its
+/// references put it, and the averaged prediction's two rules -- the best
+/// slot is of those with a prediction, the slots are each target's own --
+/// each part somewhere in it.
+#[test]
+fn a_full_spec_one_stream_serves_is_its_parts() {
+    let held = a_full_spec_is_its_parts(1500, Layout::Single, &[2]);
+    assert!(held.fields > 1000, "{held:?}");
+    assert!(held.spread_without_pred > 0, "{held:?}");
+    assert!(held.targets_part > 0, "{held:?}");
+}
+
+/// [`a_full_spec_is_its_parts`] for a spec of three groups, whose runs wait
+/// for the end of a chunk of several: each group's rows in a block, so each
+/// run is one unbroken range of the chunk (and in three chunks each chunk is
+/// one group's, whose runs go to the sink one at a time), and the groups
+/// interleaved, so none is; over one chunk and three.
+#[test]
+#[ignore = "extended: grouped full specs over two layouts and two chunkings"]
+fn a_full_spec_of_groups_is_its_parts() {
+    for layout in [Layout::Blocks, Layout::Interleaved] {
+        let held = a_full_spec_is_its_parts(1800, layout, &[1, 3]);
+        assert!(held.fields > 1000, "{layout:?}: {held:?}");
+    }
+}
+
+/// The selected and averaged predictions at their edges, held to their
+/// definitions over the spec's own `pred` and `sigma` fields: a `lasso`
+/// path whose two largest penalties both shrink every coefficient to 0, so
+/// their slots predict the same and tie on `sigma` (the first of the tied
+/// slots is the one selected), and `average_eta = "inf"`, the argmin, at
+/// which the best slot still weighs 1 and every other none.
+#[test]
+fn the_selected_and_averaged_predictions_at_ties_and_an_infinite_eta() {
+    use serde_json::json;
+    let df = full_frame(900, Layout::Single);
+    let model = json!({"type": "lasso", "penalties": [50.0, 20.0, 0.0]});
+    let extra = json!({"half_life": [25.0, 100.0], "emit_averaged": true,
+        "emit_selected": true, "average_eta": "inf"});
+    let spec = full_spec("sink-on-ties", &model, &extra);
+    let meta = meta_of(&spec);
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
+    let out = structs(&bank.fit_predict(&df).unwrap()).remove(0);
+    let mut held = Held::default();
+    let eta = spec.average_eta_or_default();
+    assert_eq!(eta, f64::INFINITY);
+    let (mut ties, mut averaged) = (0, 0);
+    for t in ["y", "z"] {
+        let (avg, sel, name) = derived_of(&meta, &out, t, eta, &mut held);
+        let at = |field: &str| {
+            let i = meta.iter().position(|f| f.field == field).unwrap();
+            out.values()[i].as_ref()
+        };
+        let bits = |v: &[Option<f64>]| v.iter().map(|x| x.map(f64::to_bits)).collect::<Vec<_>>();
+        assert_eq!(
+            bits(&floats(at(&format!("pred_{t}__averaged")))),
+            bits(&avg),
+            "{t}"
+        );
+        assert_eq!(
+            bits(&floats(at(&format!("pred_{t}__selected")))),
+            bits(&sel),
+            "{t}"
+        );
+        let keys = at(&format!("selected_{t}"))
+            .as_any()
+            .downcast_ref::<polars_arrow::array::PrimitiveArray<u8>>()
+            .unwrap()
+            .iter()
+            .map(|k| k.map(|&k| u32::from(k)))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, name, "selected_{t}");
+        // The rows whose least `sigma` two slots share.
+        let sigma: Vec<Vec<Option<f64>>> = meta
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.kind == "sigma" && f.target.as_deref() == Some(t))
+            .map(|(i, _)| floats(out.values()[i].as_ref()))
+            .collect();
+        for i in 0..out.len() {
+            let row: Vec<f64> = sigma.iter().filter_map(|s| s[i]).collect();
+            let least = row.iter().copied().fold(f64::INFINITY, f64::min);
+            ties += usize::from(row.iter().filter(|&&s| s == least).count() >= 2);
+        }
+        averaged += avg.iter().flatten().count();
+    }
+    assert!(ties > 100, "{ties} rows tie");
+    assert!(averaged > 100, "{averaged} rows averaged");
 }
