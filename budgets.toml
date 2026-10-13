@@ -72,6 +72,9 @@ what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step"
 budget = 8114926
 release = 8112926
 
+[instructions.ewridge_gram_t10]
+what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step, the targets folded into the block's merge"
+
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step"
 budget = 3150039

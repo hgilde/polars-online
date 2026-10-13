@@ -668,7 +668,17 @@ pub use window::{
 ///   `window_rows`, `change_action`), and `ew_class`'s and `hmm`'s
 ///   configuration writes its covariance as `"tied"` and `"diag"`. Pre-1.0
 ///   no loader is written.
-pub const SCHEMA_VERSION: u32 = 61;
+/// - 62 (2026-10-13, task 257): the first layout change since 1.0, so the
+///   first with a loader. Under `gram_block_rows`, `ewridge`'s targets fold
+///   their cross-moments and feature means into the block's merge, and a
+///   state saved mid-block holds each target's values on the held rows,
+///   its history's weight and its mean at the block's start
+///   (`gaps::Held`, `acc.held`), written only while a block holds them. A
+///   state of 61 holds none: its targets were current through the held
+///   rows, so the loader is the field's default, and the rows after it
+///   are folded as a suffix of the block. Schema 61's fixtures are kept
+///   (`tests/state_fixtures/v61/`).
+pub const SCHEMA_VERSION: u32 = 62;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -692,7 +702,9 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 /// minimum (`online_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
 /// rule.
 ///
-/// **61 since review round 7 and task 244** (2026-10-11): a quantile
+/// **61 since review round 7 and task 244** (2026-10-11), 1.0's schema,
+/// where it stays: schema 62 (task 257) loads a state of 61 through its
+/// loader, held to schema 61's kept fixtures. Before that: a quantile
 /// fit's residuals' lag products under a horizon (A-2), and `ew_cov`'s
 /// `bias`; a state from before 61 is refused by its number, and the
 /// fixtures are regenerated at 61. **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums

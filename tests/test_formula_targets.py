@@ -986,19 +986,21 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     diagnostics' Newey-West sums under a horizon (59 refused); and 61 since
     review round 7 (A-2), for a quantile fit's residuals' lag products under
     a horizon, and task 244, for ``ew_cov``'s ``bias`` and the names a spec
-    keeps at 1.0 (60 refused)."""
+    keeps at 1.0 (60 refused); 62 since task 257, for a blocked ``ewridge``'s
+    held targets, the first change since 1.0, so 61 still loads."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 61, state[i]
+    assert state[i] == 62, state[i]
     for before in range(25, 61):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
             ValueError, match=rf"schema version {before} not supported \(this build loads 61"
         ):
             po.ModelBank.load_bytes(old)
+    po.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])
 
 
 def test_a_target_named_after_its_own_column_is_refused_at_the_builder(

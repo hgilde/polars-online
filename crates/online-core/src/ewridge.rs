@@ -145,7 +145,10 @@ pub struct EwRidgeCfg {
     /// buffered and the matrix is brought up to date once per `B` rows by a
     /// `k×B` times `B×k` product, `6.6×` faster than the rank-one updates at
     /// `k = 1,000` with `B = 256`; the four scalars still run per row, so
-    /// `n_eff` and `min_weight` are unchanged to the bit.
+    /// `n_eff` and `min_weight` are unchanged to the bit. Each target's
+    /// centred cross-moments and feature means wait with the block too,
+    /// merged from the same pass over its rows (`gaps::Held`, docs/PLAN.md
+    /// task 257), while its weight, its mean and its moments take every row.
     ///
     /// The matrix is also brought up to date before every solve, so the
     /// effective block is `min(B, rows between solves)` and the option pays
@@ -154,8 +157,9 @@ pub struct EwRidgeCfg {
     /// matrix on every row. A row a Gram skips under `target_gaps =
     /// "own_rows"` is held as a zero-weight row rather than flushing the
     /// block. Memory: `B × k_total` floats per Gram -- one, or under
-    /// `own_rows` one per pattern of missing targets -- twice with
-    /// `session_shrink`'s twin, held in the state file mid-block, and refused
+    /// `own_rows` one per pattern of missing targets -- and `B` per target,
+    /// twice with `session_shrink`'s twin, held in the state file mid-block,
+    /// and refused
     /// over 256 MiB a Gram. The block's product is a floating-point sum in a
     /// different order from the per-row one, so a blocked fit is not
     /// bit-identical to an unblocked one and its last bits may differ across
@@ -589,16 +593,16 @@ impl EwRidge {
                 gram_parts(&v.acc.grams, of, &v.acc.cross, &v.acc.wj, gaps),
                 v.acc.tm,
             ),
-            None => (
-                gram_parts(
-                    &self.acc.grams.grams,
-                    of,
-                    &self.acc.cross,
-                    &self.acc.wj,
-                    gaps,
-                ),
-                Some(self.acc.tm.clone()),
-            ),
+            // A held block is merged into a copy, the targets' part of it
+            // with it (docs/PLAN.md task 257), leaving the model's block
+            // where it was.
+            None => {
+                let acc = self.acc.flushed();
+                (
+                    gram_parts(&acc.grams.grams, of, &acc.cross, &acc.wj, gaps),
+                    Some(acc.tm.clone()),
+                )
+            }
         }
     }
 
@@ -618,9 +622,8 @@ impl EwRidge {
     /// (review 2026-09-12, N1). [`Self::gram_parts`] pairs each with the Gram
     /// it is solved against.
     pub fn cross_moments(&self) -> Vec<Vec<f64>> {
-        (0..self.cfg.n_targets)
-            .map(|j| self.acc.cross.raw(j))
-            .collect()
+        let acc = self.acc.flushed();
+        (0..self.cfg.n_targets).map(|j| acc.cross.raw(j)).collect()
     }
 
     /// Per-target accumulated weight, the denominator behind
@@ -671,8 +674,8 @@ impl EwRidge {
             return;
         };
         // Every matrix is read in full; a held block goes in first.
-        slow.grams.flush();
-        self.acc.grams.flush();
+        slow.flush();
+        self.acc.flush();
         let Some(slow) = self.slow.as_deref() else {
             return;
         };
@@ -778,7 +781,7 @@ impl EwRidge {
         // scheduled by the clock and the row count, never by a chunk end, so
         // the block boundary this moves is the same whichever way the stream
         // was chunked.
-        self.acc.grams.flush();
+        self.acc.flush();
         let k_total = self.cfg.k_total();
         let m = self.cfg.n_targets;
         let combos = self.cfg.combos();

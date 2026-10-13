@@ -83,7 +83,8 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// `tests/state_fixtures/v<N>/` and loaded by this build: `PREVIOUS` lists
 /// them, and `previous_sets` is each set as its `v<N>/index.rs` lists it.
 /// A schema listed without its files does not compile. None before 1.0
-/// (the module doc has the steps from 1.0).
+/// (the module doc has the steps from 1.0). 61, 1.0's, kept since 62
+/// (docs/PLAN.md task 257): the bank files and `refresh_time` states.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -99,7 +100,7 @@ macro_rules! previous {
     };
 }
 
-previous![];
+previous![61];
 
 /// The golden pipeline's tolerance, off the writer's platform.
 const TOL: f64 = 1e-12;

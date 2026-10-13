@@ -463,3 +463,89 @@ def test_the_budget_names_the_size():
         spec(1 << 30)
     with pytest.raises(ValueError, match="twice for the slow twin"):
         spec(1 << 30, session="s", session_gap=0.0, session_shrink=0.5, long_half_life=1e4)
+
+
+# ---- several targets, folded into the block's merge (docs/PLAN.md task 257) ----
+
+
+def targets_stream(n: int = 600, seed: int = 4) -> pl.DataFrame:
+    """Three targets with gaps of their own, on different rows, at a level
+    of 1e3, over the stream above: zero weights, a gap of five half-lives,
+    a session change."""
+    df = stream(n, seed)
+    rng = np.random.default_rng(seed + 1)
+    X = df.select(f"x{j}" for j in range(K)).to_numpy()
+    cols = {}
+    for t in range(3):
+        y = 1e3 + X @ np.linspace(1.0 + t, -1.0, K) + 0.1 * rng.standard_normal(n)
+        y[(3 + 2 * t) :: (7 + 4 * t)] = np.nan
+        cols[f"y{t}"] = pl.Series(y).fill_nan(None)
+    return df.with_columns(**cols)
+
+
+def targets_spec(block: int | None, gaps: str, **kw):
+    return spec(block, targets=["y0", "y1", "y2"], target_gaps=gaps, **kw)
+
+
+def gram_bits(bank: po.ModelBank) -> list:
+    """Every float array and scalar of every Gram, as its bits."""
+    out = []
+    for g in bank.gram("m"):
+        for key in sorted(g):
+            v = g[key]
+            if isinstance(v, np.ndarray) and v.dtype == np.float64:
+                out.append((key, v.view(np.uint64).tolist()))
+            elif isinstance(v, float):
+                out.append((key, np.float64(v).view(np.uint64).item()))
+            elif isinstance(v, list) and v and isinstance(v[0], np.ndarray):
+                out.append((key, [a.view(np.uint64).tolist() for a in v]))
+    return out
+
+
+@pytest.mark.parametrize("gaps", ["own_rows", "pairwise"])
+def test_several_targets_blocked_are_the_per_row_fit(gaps):
+    """Each target's cross-moments wait for the block's merge with the
+    Gram's, folded in from the same pass over its rows: the fit is the
+    per-row one to rounding, every weight to the bit, and the Gram export's
+    target moments too."""
+    df = targets_stream()
+    plain = fields(po.ModelBank([targets_spec(0, gaps)]).fit_predict(df))
+    a = po.ModelBank([targets_spec(16, gaps)])
+    blocked = fields(a.fit_predict(df))
+    assert_same_fit(plain, blocked)
+    b = po.ModelBank([targets_spec(0, gaps)])
+    b.fit_predict(df)
+    for ga, gb in zip(a.gram("m"), b.gram("m"), strict=True):
+        assert ga["targets"] == gb["targets"]
+        for key in ("cross_moments", "cross_centered", "means_by_target"):
+            for p, q in zip(ga[key], gb[key], strict=True):
+                assert np.allclose(p, q, rtol=1e-9, atol=1e-9), key
+        assert np.array_equal(ga["target_weights"], gb["target_weights"])
+
+
+@pytest.mark.parametrize("gaps", ["own_rows", "pairwise"])
+def test_several_targets_held_mid_block_resume_and_rechunk_to_the_bit(gaps, tmp_path):
+    """The targets' values on the held rows are in the state: saved at any
+    row -- inside a block, at its edge, right after a merge -- the stream
+    resumes to the bit, and every chunking is the one-chunk stream, the
+    Gram export included."""
+    df = targets_stream()
+    whole_bank = po.ModelBank([targets_spec(16, gaps)])
+    whole = fields(whole_bank.fit_predict(df))
+    want = gram_bits(whole_bank)
+    for chunk in (1, 7, 133):
+        bank = po.ModelBank([targets_spec(16, gaps)])
+        got = fields(pl.concat([bank.fit_predict(c) for c in df.iter_slices(chunk)]))
+        assert got.equals(whole, null_equal=True), f"chunks of {chunk}"
+        assert gram_bits(bank) == want, f"chunks of {chunk}"
+    saw_held = False
+    for cut in (3, 16, 17, 101, 302, 599):
+        a = po.ModelBank([targets_spec(16, gaps)])
+        a.fit_predict(df.slice(0, cut))
+        saw_held |= bool(ridge_state(a)["acc"].get("held"))
+        a.save(tmp_path / f"cut{cut}.state")
+        b = po.ModelBank.load(tmp_path / f"cut{cut}.state")
+        rest = fields(b.fit_predict(df.slice(cut)))
+        assert rest.equals(whole.slice(cut), null_equal=True), f"saved after row {cut}"
+        assert gram_bits(b) == want, f"saved after row {cut}"
+    assert saw_held, "no save held a target's values"
