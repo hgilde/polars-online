@@ -1073,16 +1073,11 @@ withheld_reason = { budget = 1.125, release = 1.125 }
 zscore_y = { budget = 8.125, release = 8.125 }
 zscore_z = { budget = 8.125, release = 8.125 }
 
-[rss.ew_cov_wide]
-darwin = { budget = 823.8594, release = 823.8594 }
-linux = { budget = 836.5508, release = 836.5508 }
-windows = { budget = 812.1719, release = 812.1719 }
 
-[rss.ewridge_10_targets]
-darwin = { budget = 165.4688, release = 165.4688 }
-linux = { budget = 230.1836, release = 230.1836 }
-windows = { budget = 172.8243, release = 172.8243 }
-
+[rss.streaming_bounded]
+darwin = { budget = 201.7032 }
+linux = { budget = 218.9493 }
+windows = { budget = 195.7149 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]

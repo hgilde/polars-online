@@ -1054,23 +1054,11 @@ impl PyWindows {
         Ok(this.inner.needed())
     }
 
-    /// Rows fed and not yet out.
-    fn held(slf: &Bound<'_, Self>) -> PyResult<usize> {
-        let this = slf.try_borrow().map_err(|_| windows_busy("held"))?;
-        Ok(this.inner.held())
-    }
-
     /// Rows of this run's input the run consumed, skipped or fed: what a
     /// run resumed on the same input must skip.
     fn consumed(slf: &Bound<'_, Self>) -> PyResult<usize> {
         let this = slf.try_borrow().map_err(|_| windows_busy("consumed"))?;
         Ok(this.inner.consumed())
-    }
-
-    /// Contributing rows the windows' queues hold.
-    fn queued(slf: &Bound<'_, Self>) -> PyResult<usize> {
-        let this = slf.try_borrow().map_err(|_| windows_busy("queued"))?;
-        Ok(this.inner.queued())
     }
 }
 

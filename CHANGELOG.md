@@ -46,6 +46,11 @@ any change to the numbers a model returns.
   as `coef` already was, and `str.json_decode(pl.List(pl.String))` reads
   it back.
 
+### Removed
+
+- **`Windows.held()` and `Windows.queued()` on the native extension's window class.**
+  Nothing in the package called them; they were not part of the public API.
+
 ### Tests and documents
 
 - **The FFI leak checks each run in a fresh interpreter.** One failed on
