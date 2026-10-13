@@ -4516,3 +4516,117 @@ fn the_cut_bound_holds_at_its_edge() {
         );
     }
 }
+
+/// Task 252: `"geometric"` with a product of the fitted decays at or above
+/// one -- a series whose geometric tail does not sum -- reads no factor,
+/// and still reports the two decays it fitted.
+#[test]
+fn a_geometric_product_at_or_above_one_reads_no_factor() {
+    let (f, px, py) = serial_factor(SerialRule::Geometric, &[1, 2], &[1.0, 1.0], &[1.0, 1.0]);
+    assert!(f.is_nan(), "{f}");
+    assert_eq!((px, py), (1.0, 1.0), "exp(0)");
+    let (f, px, py) = serial_factor(SerialRule::Geometric, &[1, 2], &[1.2, 1.44], &[0.9, 0.81]);
+    assert!(f.is_nan(), "{f}");
+    assert!(
+        (px - 1.2).abs() < 1e-14 && (py - 0.9).abs() < 1e-14,
+        "{px} {py}"
+    );
+    assert!(px * py > 1.0);
+}
+
+/// Task 252: a windowed state with lags -- every snapshot holding the lag
+/// moments of the lags the model keeps -- round-trips to the byte, and one
+/// whose snapshots hold lag moments the model does not keep is refused.
+#[test]
+fn a_windowed_state_with_lags_round_trips_and_stray_lag_moments_are_refused() {
+    use crate::{ModelState, StateError};
+    let mut m = Marginal::new(MarginalCfg {
+        window: Some(10.0),
+        lags: vec![1, 2],
+        ..cfg(2, 1)
+    })
+    .unwrap();
+    let mut s = 5u64;
+    for i in 0..60 {
+        let x = [lcg(&mut s), lcg(&mut s)];
+        let y = x[0] + 0.5 * x[1] + 0.1 * lcg(&mut s);
+        m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+    }
+    let win = m.win.as_ref().expect("windowed");
+    assert!(
+        win.snaps.iter().next().is_some() && win.snaps.iter().all(|s| s.lag.is_some()),
+        "every snapshot holds lag moments"
+    );
+    let back = Marginal::restore(&m.state()).unwrap();
+    assert_eq!(state_bytes(&back), state_bytes(&m));
+    let mut st = m.state();
+    let ModelState::Marginal(inner) = &mut st.model else {
+        unreachable!()
+    };
+    inner.lag = None;
+    inner.cfg.lags.clear();
+    assert!(matches!(
+        Marginal::restore(&st),
+        Err(StateError::Invalid(e)) if e.contains("wrong shape")
+    ));
+}
+
+/// Task 252: a stamp handed to a model with no window keys nothing: the
+/// state is the same to the byte.
+#[test]
+fn a_stamp_handed_to_a_model_with_no_window_changes_nothing() {
+    let mut m = Marginal::new(cfg(2, 1)).unwrap();
+    m.step(&[0.5, -0.5], &[Some(1.0)], 0.0, 1.0);
+    let before = state_bytes(&m);
+    m.stamp_next(crate::Stamp::Raw(5.0, 0.0));
+    assert_eq!(state_bytes(&m), before);
+}
+
+/// Task 252: a snapshot cadence with no window is refused by name.
+#[test]
+fn a_cadence_without_a_window_is_refused_by_name() {
+    let e = MarginalCfg {
+        window_every: Some(1.0),
+        ..cfg(2, 1)
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(e, "marginal: snapshot_every needs `window_size`");
+}
+
+/// Task 252: each shard names the features it steps, and the shards of
+/// every flush cover the features once, in order, none of them empty.
+#[test]
+fn the_shards_of_a_flush_cover_the_features_once() {
+    use std::sync::Mutex;
+    let p = 7;
+    let seen = Mutex::new(Vec::new());
+    let run = |shards: &mut [MarginalShard<'_>]| {
+        let ranges: Vec<_> = shards.iter().map(MarginalShard::features).collect();
+        seen.lock().unwrap().push(ranges);
+        shards.iter_mut().for_each(MarginalShard::run);
+    };
+    let shards = Shards {
+        count: 3,
+        run: &run,
+    };
+    let mut m = Marginal::new(cfg(p, 1)).unwrap();
+    let mut s = 7u64;
+    for i in 0..300 {
+        let x: Vec<f64> = (0..p).map(|_| lcg(&mut s)).collect();
+        m.step_sharded(&x, &[Some(x[0])], f64::from(u8::from(i > 0)), 1.0, &shards);
+    }
+    m.flush(&shards);
+    let seen = seen.into_inner().unwrap();
+    assert!(!seen.is_empty(), "no flush ran the shards");
+    for ranges in &seen {
+        assert_eq!(ranges.len(), 3, "{ranges:?}");
+        assert_eq!((ranges[0].start, ranges[2].end), (0, p), "{ranges:?}");
+        for w in ranges.windows(2) {
+            assert!(
+                w[0].start < w[0].end && w[0].end == w[1].start,
+                "{ranges:?}"
+            );
+        }
+    }
+}

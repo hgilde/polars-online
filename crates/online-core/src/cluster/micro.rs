@@ -2380,4 +2380,66 @@ mod tests {
             m.link()
         );
     }
+
+    /// Task 252: past `LINK_MATRIX_MAX` potential summaries `link_potential`
+    /// links through the pairs, with no matrix of `n²` distances, and gives
+    /// what the pairs give: the same threshold, clusters and labels, to the
+    /// bit. Points 0.2 apart along rows 3 apart, under a threshold of
+    /// `1.5 · eps √p`, about 0.64: each row links into one cluster, and no
+    /// two rows link.
+    #[test]
+    fn past_the_matrix_ceiling_the_linkage_takes_the_pairs() {
+        let n = LINK_MATRIX_MAX + 1;
+        let mut m = Micro::new(MicroCfg {
+            macro_link: Some(1.5),
+            ..still()
+        })
+        .unwrap();
+        m.mc = (0..n)
+            .map(|i| {
+                let (a, b) = ((i % 64) as f64, (i / 64) as f64);
+                placed(i as u64, vec![0.2 * a, 3.0 * b], true)
+            })
+            .collect();
+        m.next_id = n as u64;
+        let idx: Vec<usize> = (0..n).collect();
+        let mut pairs = m.clone();
+        pairs.link_by_pairs(&idx);
+        m.link_potential();
+        assert_eq!(m.link2.to_bits(), pairs.link2.to_bits());
+        assert_eq!(m.n_clusters, pairs.n_clusters);
+        assert!(
+            m.mc.iter().zip(&pairs.mc).all(|(a, b)| a.label == b.label),
+            "the labels"
+        );
+        assert!(
+            m.n_clusters > 1 && m.n_clusters < n,
+            "some linked and some did not: {}",
+            m.n_clusters
+        );
+    }
+
+    /// Task 252: a decay given as a factor reads as its half-life, `−ln 2 /
+    /// ln λ`, and a factor of 1 as no decay: an infinite half-life, under
+    /// which no outlier summary is pruned by age.
+    #[test]
+    fn a_decay_factor_reads_as_its_half_life() {
+        let at = |l: f64| {
+            Micro::new(MicroCfg {
+                decay: Decay::Lam(l),
+                ..cfg()
+            })
+            .unwrap()
+        };
+        let none = at(1.0);
+        assert_eq!(none.half_life(), f64::INFINITY);
+        assert!(none.prune_horizon().is_none());
+        let half = at(0.5);
+        assert!(
+            (half.half_life() - 1.0).abs() < 1e-15,
+            "{}",
+            half.half_life()
+        );
+        assert!(half.prune_horizon().is_some() || half.cfg.beta_mu <= 1.0);
+    }
 }

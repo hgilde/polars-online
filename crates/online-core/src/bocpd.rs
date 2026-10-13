@@ -4552,4 +4552,75 @@ mod tests {
         );
         assert!(back.gammas.misses > 0 && back.gammas.hits > back.gammas.misses);
     }
+
+    /// Task 252: no columns, and a scale prior that is not finite, are
+    /// refused by name; with no scale prior the configuration's `Ψ₀` reads
+    /// as the identity.
+    #[test]
+    fn no_columns_or_a_scale_that_is_not_finite_is_refused_and_none_is_the_identity() {
+        let bad = |c: BocpdCfg, msg: &str| {
+            let e = Bocpd::new(c).unwrap_err();
+            assert_eq!(e, msg);
+        };
+        bad(
+            BocpdCfg {
+                n_features: 0,
+                prior_mean: Some(vec![]),
+                ..cfg(1)
+            },
+            "bocpd: at least one column is required",
+        );
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            bad(
+                BocpdCfg {
+                    prior_scale: Some(vec![v]),
+                    ..cfg(1)
+                },
+                "bocpd: covariance_prior must be finite",
+            );
+            bad(
+                BocpdCfg {
+                    prior_scale: Some(vec![1.0, 0.0, 0.0, v]),
+                    ..cfg(2)
+                },
+                "bocpd: covariance_prior must be finite",
+            );
+        }
+        // And a pruning share no run reaches drops none: with `H = 1/2`
+        // the first row splits the mass evenly, below 0.9 on each side, and
+        // never-pruning `r = 0` beside a dropped rest is not done either --
+        // the runs and the joint are the unpruned model's to the bit.
+        let mut pruned = Bocpd::new(BocpdCfg {
+            hazard: 2.0,
+            prune_below: 0.9,
+            ..cfg(1)
+        })
+        .unwrap();
+        let mut plain = Bocpd::new(BocpdCfg {
+            hazard: 2.0,
+            ..cfg(1)
+        })
+        .unwrap();
+        pruned.step(&[0.3], &[], 1.0, 1.0);
+        plain.step(&[0.3], &[], 1.0, 1.0);
+        assert_eq!(pruned.runs.len(), 2, "both runs kept");
+        assert_eq!(pruned.runs, plain.runs);
+        assert_eq!(
+            pruned
+                .logjoint
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>(),
+            plain
+                .logjoint
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+        let none = BocpdCfg {
+            prior_scale: None,
+            ..cfg(3)
+        };
+        assert_eq!(none.psi0(), [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
 }

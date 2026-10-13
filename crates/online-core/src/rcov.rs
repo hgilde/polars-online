@@ -2955,4 +2955,14 @@ mod tests {
             }
         }
     }
+
+    /// Task 252: a covariance of no columns is refused by name, in each
+    /// kind.
+    #[test]
+    fn a_covariance_of_no_columns_is_refused_by_name() {
+        for kind in [RcovKind::Plain, RcovKind::Kernel, RcovKind::Preavg] {
+            let e = Rcov::new(cfg(0, kind)).unwrap_err();
+            assert_eq!(e, "rcov: at least one column is required", "{kind:?}");
+        }
+    }
 }

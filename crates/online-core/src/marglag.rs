@@ -1290,4 +1290,14 @@ mod tests {
         }
         assert_eq!(Marginal::restore(&m.state()).unwrap(), m);
     }
+
+    /// Task 252: a lag accumulator with no lags is refused by name, before
+    /// its ring is sized from the last of them.
+    #[test]
+    fn a_lag_accumulator_with_no_lags_is_refused_by_name() {
+        for shared in [false, true] {
+            let e = MarginalLags::new(2, 1, vec![], None, shared).unwrap_err();
+            assert_eq!(e, "marginal: lags must not be empty");
+        }
+    }
 }

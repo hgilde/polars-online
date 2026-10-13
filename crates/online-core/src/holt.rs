@@ -1097,4 +1097,15 @@ mod tests {
         }
         assert!(m.since[1] > 0.0, "the second target has aged since");
     }
+
+    /// Task 252: a model with no targets is refused by name.
+    #[test]
+    fn a_model_with_no_targets_is_refused_by_name() {
+        let e = Holt::new(HoltCfg {
+            n_targets: 0,
+            ..cfg(6.0, 25.0)
+        })
+        .unwrap_err();
+        assert_eq!(e, "holt: n_targets must be >= 1");
+    }
 }
