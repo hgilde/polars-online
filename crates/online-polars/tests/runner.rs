@@ -648,3 +648,273 @@ fn a_glob_input_is_read_in_the_lexicographic_order_of_its_paths() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- Task 252: runner paths no test reached. ----
+
+/// What a config cannot ask for together, each refused before a row is
+/// read, in words that say which key to drop.
+#[test]
+fn validate_refuses_a_config_that_asks_for_what_cannot_be() {
+    let base = config(Path::new("in.parquet"), Path::new("out.parquet"));
+    let refused = |cfg: RunConfig, want: &str| {
+        let e = cfg.validate().unwrap_err();
+        assert!(e.contains(want), "wanted {want:?} in: {e}");
+    };
+    let mut c = base.clone();
+    c.specs = vec![closing_spec()];
+    c.predict = true;
+    c.load_state = Some("state.bin".into());
+    c.closed_groups = Some("closed.parquet".into());
+    refused(c, "predict = true does not learn, so no group ever closes");
+    let mut c = base.clone();
+    c.closed_groups = Some("closed.parquet".into());
+    refused(c, "closed_groups names a file but no spec closes groups");
+    let mut c = base.clone();
+    c.predict = true;
+    refused(c, "predict = true needs load_state");
+    let mut c = base.clone();
+    c.predict = true;
+    c.load_state = Some("state.bin".into());
+    c.save_state = Some("again.bin".into());
+    refused(
+        c,
+        "predict = true does not update the bank, so save_state has nothing to save",
+    );
+    let mut c = base.clone();
+    c.input = PathBuf::new();
+    assert_eq!(
+        c.input_format().unwrap_err(),
+        "input is required: the config's `input`, or --input"
+    );
+}
+
+/// A config that leaves out `chunk_size` reads at the default, as the
+/// options a library run starts from do.
+#[test]
+fn a_config_without_chunk_size_reads_at_the_default() {
+    let cfg: RunConfig = toml::from_str(
+        r#"input = "in.parquet"
+output = "out.parquet"
+[[specs]]
+name = "m"
+targets = ["y"]
+features = ["x0"]
+half_life = 10.0
+model = { type = "ewridge" }
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg.chunk_size, online_polars::DEFAULT_CHUNK_SIZE);
+    let opts = RunOptions::default();
+    assert_eq!(opts.chunk_size, online_polars::DEFAULT_CHUNK_SIZE);
+    assert!(!opts.predict && !opts.learn_only);
+}
+
+/// An output in a directory that is not there is refused before the bank
+/// learns a row, naming the file and the directory.
+#[test]
+fn an_output_in_a_directory_that_is_not_there_is_refused_first() {
+    let dir = tmp("no-such-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = dir.join("out.parquet");
+    let cfg = config(Path::new(""), &output);
+    let e = run_config_on(&cfg, Input::Lazy(stream(10).lazy()), no_progress).unwrap_err();
+    let msg = e.to_string();
+    assert!(
+        msg.contains(&format!("writing output {}", output.display()))
+            && msg.contains(&format!("{} is not a directory", dir.display())),
+        "{msg}"
+    );
+    assert!(matches!(e, PolarsError::IO { .. }), "{e:?}");
+}
+
+/// The closed groups sidecar: a run that closes nothing writes it empty with
+/// its schema; a run whose first chunk closes nothing and a later one does
+/// writes what was closed; and as CSV, which carries no list of strings,
+/// a Gram model's is refused and another model's written whole.
+#[test]
+fn the_closed_groups_file_holds_what_closed_in_any_format() {
+    let df = closing_stream();
+    let output = tmp("closed-out.parquet");
+    // One group: nothing ever closes.
+    let one = df.slice(0, 5);
+    let closed = tmp("closed-none.parquet");
+    let mut cfg = config(Path::new(""), &output);
+    cfg.specs = vec![closing_spec()];
+    cfg.closed_groups = Some(closed.clone());
+    run_config_on(&cfg, Input::Lazy(one.lazy()), no_progress).unwrap();
+    let got = read(&closed, Format::Parquet);
+    assert_eq!(got.height(), 0);
+    let mut bank = online_polars::Bank::new(vec![closing_spec()]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let want = bank.closed_groups(None, true).unwrap();
+    assert_eq!(names(&got), names(&want), "the schema of a closing run");
+    // Chunks of 3: the first holds one key and closes nothing.
+    cfg.chunk_size = 3;
+    run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap();
+    let got = read(&closed, Format::Parquet);
+    assert_eq!(got.height(), 11, "every group but the last");
+    assert!(got.equals_missing(&want), "{got}\nvs\n{want}");
+    // As CSV: a closed frame has no struct to unnest. A Gram's column names
+    // are a list of strings, which CSV cannot carry: refused, naming the
+    // column and the formats that can.
+    let csv = tmp("closed.csv");
+    cfg.closed_groups = Some(csv.clone());
+    let e = run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap_err();
+    assert!(
+        e.to_string().contains(
+            "csv cannot carry `columns` (list[str]): write parquet, ipc or ndjson instead"
+        ),
+        "{e}"
+    );
+    assert!(!csv.exists(), "nothing published");
+    // A model that keeps no Gram closes rows CSV carries whole.
+    cfg.specs = vec![
+        serde_json::from_str(
+            r#"{"name": "s", "model": {"type": "sgd"}, "targets": ["y"], "features": ["x0"],
+                "half_life": 40.0, "group": "g", "group_close": "monotone"}"#,
+        )
+        .unwrap(),
+    ];
+    run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap();
+    let text = std::fs::read_to_string(&csv).unwrap();
+    let mut bank = online_polars::Bank::new(cfg.specs.clone()).unwrap();
+    bank.fit_predict(&df).unwrap();
+    let want = bank.closed_groups(None, true).unwrap();
+    let header: Vec<&str> = text.lines().next().unwrap().split(',').collect();
+    assert_eq!(header, names(&want));
+    assert_eq!(text.lines().count(), 1 + want.height());
+    cleanup(&[output, closed, csv]);
+}
+
+/// A run with a closed-groups file that fails before anything closed
+/// publishes neither file.
+#[test]
+fn a_run_that_fails_before_anything_closed_publishes_no_sidecar() {
+    let df = closing_stream();
+    let output = tmp("fail-early-out.parquet");
+    let closed = tmp("fail-early-closed.parquet");
+    let _ = std::fs::remove_file(&closed);
+    let mut cfg = config(Path::new(""), &output);
+    cfg.specs = vec![closing_spec()];
+    cfg.closed_groups = Some(closed.clone());
+    let frames = vec![
+        Ok(df.slice(0, 3)),
+        Err(polars_err!(ComputeError: "the source went away")),
+    ];
+    let err = run_config_on(
+        &cfg,
+        Input::Batches {
+            frames: Box::new(frames.into_iter()),
+            schema: df.schema().as_ref().clone(),
+        },
+        no_progress,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("the source went away"), "{err}");
+    assert!(!output.exists() && !closed.exists());
+}
+
+/// A dry run of a resumed config that skips what it learned takes the
+/// learned positions before its first row: a bank whose specs read no clock
+/// has none, and is refused there, as the run refuses it.
+#[test]
+fn a_dry_run_that_skips_what_was_learned_takes_the_positions_first() {
+    let input = tmp("dry-skip-in.parquet");
+    let output = tmp("dry-skip-out.parquet");
+    let state = tmp("dry-skip-state.bin");
+    write(&input, Format::Parquet, &stream(50));
+    let mut cfg = config(&input, &output);
+    cfg.save_state = Some(state.clone());
+    run_config(&cfg, no_progress).unwrap();
+    let mut resumed = config(&input, &output);
+    resumed.load_state = Some(state.clone());
+    resumed.skip_learned = true;
+    resumed.dry_run().unwrap();
+    // Without a clock there is no position to resume from.
+    let mut rows = config(&input, &output);
+    rows.specs[0].clock = None;
+    rows.specs[0].gap_cap = None;
+    rows.save_state = Some(state.clone());
+    run_config(&rows, no_progress).unwrap();
+    let mut resumed = rows.clone();
+    resumed.save_state = None;
+    resumed.load_state = Some(state.clone());
+    resumed.skip_learned = true;
+    let e = resumed.dry_run().unwrap_err().to_string();
+    assert!(
+        e.contains(
+            "skip_learned: no spec reads a clock, so the bank has no position to resume from"
+        ),
+        "{e}"
+    );
+    cleanup(&[input, output, state]);
+}
+
+/// The run's closing lines on readiness pass over a spec that writes no
+/// row -- an `audit` keeps its counts in the state, and emits no
+/// `withheld_reason` to count -- and speak of the spec that does.
+#[test]
+fn readiness_lines_pass_over_a_spec_that_withholds_nothing() {
+    let df = stream(200);
+    let output = tmp("readiness-audit.parquet");
+    let mut cfg = config(Path::new(""), &output);
+    let audit: online_polars::Spec = serde_json::from_str(
+        r#"{"name": "a", "model": {"type": "audit"}, "targets": ["x0"],
+            "features": ["x0", "x1"]}"#,
+    )
+    .unwrap();
+    let mut slow = spec();
+    slow.name = "slow".into();
+    slow.min_weight = Some(online_polars::FloatOrList::Float(online_polars::Num(1e9)));
+    cfg.specs = vec![audit, slow];
+    let (stats, lines) =
+        online_polars::run_config_on_reported(&cfg, Input::Lazy(df.lazy()), no_progress).unwrap();
+    assert_eq!(stats.rows, 200);
+    assert!(!lines.is_empty(), "the slow spec withheld every row");
+    assert!(lines.iter().all(|l| !l.contains("\"a\"")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("slow")), "{lines:?}");
+    cleanup(&[output]);
+}
+
+/// A writer that cannot create its file -- a directory the run may read but
+/// not write -- ends the run with the writer's own error, naming the file,
+/// not the run's "the writer stopped"; for the output and for the closed
+/// groups alike, and nothing is published.
+///
+/// Unix only: a directory is made unwritable by its mode bits, which
+/// Windows does not read (its read-only attribute on a directory does not
+/// stop a file being created in it).
+#[cfg(unix)]
+#[test]
+fn a_writer_that_cannot_create_its_file_ends_the_run_with_its_own_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("read-only-dir");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let df = closing_stream();
+    let writable = tmp("read-only-out.parquet");
+    for which in ["output", "closed groups"] {
+        let (output, closed) = if which == "output" {
+            (dir.join("out.parquet"), tmp("read-only-closed.parquet"))
+        } else {
+            (writable.clone(), dir.join("closed.parquet"))
+        };
+        let mut cfg = config(Path::new(""), &output);
+        cfg.specs = vec![closing_spec()];
+        cfg.closed_groups = Some(closed.clone());
+        let e = run_config_on(&cfg, Input::Lazy(df.clone().lazy()), no_progress).unwrap_err();
+        let bad = if which == "output" { &output } else { &closed };
+        let msg = e.to_string();
+        assert!(
+            matches!(e, PolarsError::IO { .. }) && msg.contains(&format!("{}", bad.display())),
+            "{which}: {msg}"
+        );
+        assert!(!msg.contains("the writer stopped"), "{which}: {msg}");
+        assert!(!output.exists() || which != "output", "{which}");
+        cleanup(&[writable.clone(), tmp("read-only-closed.parquet")]);
+    }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

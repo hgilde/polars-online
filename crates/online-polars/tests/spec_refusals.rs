@@ -449,3 +449,370 @@ fn a_renamed_key_cites_no_plan_task() {
     assert!(msg.contains("halflife was renamed half_life"), "{msg}");
     assert!(!msg.contains("PLAN") && !msg.contains("task"), "{msg}");
 }
+
+// ---- Task 252: each refusal below had no test that reached it. ----
+
+/// A count that must be at least 1, given as 0, is refused by name with
+/// the value, for every parameter that sizes or schedules something.
+#[test]
+fn a_count_of_zero_is_refused_by_name() {
+    const HL: &str = r#", "half_life": 10.0"#;
+    let cases: Vec<(String, &str)> = vec![
+        (
+            unsup(r#"{"type": "kmeans", "n_clusters": 0}"#, HL),
+            "kmeans n_clusters must be >= 1, got 0",
+        ),
+        (
+            unsup(
+                r#"{"type": "kmeans", "n_clusters": 2, "update_every_rows": 0}"#,
+                HL,
+            ),
+            "update_every_rows must be >= 1, got 0",
+        ),
+        (
+            unsup(
+                r#"{"type": "kmeans", "n_clusters": 2, "split_merge_every_rows": 0}"#,
+                HL,
+            ),
+            "split_merge_every_rows must be >= 1, got 0",
+        ),
+        (
+            unsup(r#"{"type": "micro", "eps": 0.5, "max_clusters": 0}"#, HL),
+            "max_clusters must be >= 1, got 0",
+        ),
+        (
+            sup(
+                r#"{"type": "ewridge"}"#,
+                r#", "emit_specification": true, "ljung_box_lags": 0"#,
+            ),
+            "ljung_box_lags must be >= 1, got 0",
+        ),
+        (
+            sup(
+                r#"{"type": "ewridge"}"#,
+                r#", "emit_autocorr": true, "resid_autocorr_lag": 0"#,
+            ),
+            "resid_autocorr_lag must be >= 1, got 0",
+        ),
+    ];
+    for (json, want) in cases {
+        refused(&json, &[want]);
+    }
+}
+
+/// `horizon_rows` sizes Newey and West's ring before the first row: past
+/// half the lag ceiling it is refused with the ceiling, and at it accepted.
+#[test]
+fn a_horizon_past_half_the_lag_ceiling_is_refused() {
+    let half = online_polars::online_core::MAX_LAG / 2;
+    let at = |h: usize| {
+        sup(
+            r#"{"type": "ewridge"}"#,
+            &format!(r#", "emit_calibration": true, "horizon_rows": {h}"#),
+        )
+    };
+    refused(
+        &at(half + 1),
+        &[
+            &format!(
+                "horizon_rows must be at most {half} (2^19), got {}",
+                half + 1
+            ),
+            "Newey and West",
+        ],
+    );
+    accepted(&at(half));
+}
+
+/// `gram_threads = 0` is refused by the reader, and a spec built in Rust
+/// with it is refused by `check`, naming the parameter and the way out.
+#[test]
+fn a_spec_built_in_rust_with_no_gram_threads_is_refused() {
+    let mut s: Spec = serde_json::from_str(&sup(r#"{"type": "ewridge"}"#, "")).unwrap();
+    let online_polars::ModelKind::EwRidge { gram_threads, .. } = &mut s.model else {
+        unreachable!("an ewridge spec");
+    };
+    *gram_threads = Some(online_polars::CountOrAuto::Count(0));
+    let e = s.check().expect_err("gram_threads = 0 accepted");
+    assert!(
+        e.starts_with("spec \"m\": gram_threads must be >= 1") && e.contains("got 0"),
+        "{e}"
+    );
+}
+
+/// What a model cannot take: holt's features, `ew_class`'s second target,
+/// a `coef_prior` of the wrong shape, a feature set naming a column that is
+/// not a feature, and `corrchange`'s sequential kind without its history.
+#[test]
+fn a_model_given_what_it_cannot_read_is_refused() {
+    refused(
+        r#"{"name": "m", "model": {"type": "holt"}, "targets": ["y"], "features": ["x0"],
+            "half_life": 10.0}"#,
+        &["holt takes no features (got 1)"],
+    );
+    refused(
+        r#"{"name": "m", "model": {"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0},
+            "targets": ["y", "z"], "features": ["x0"], "half_life": 10.0}"#,
+        &["ew_class takes exactly one target, the label column (got 2)"],
+    );
+    refused(
+        &sup(r#"{"type": "rls", "coef_prior": [[1.0, 2.0]]}"#, ""),
+        &["coef_prior must be n_targets x (n_features + intercept)"],
+    );
+    refused(
+        &sup(
+            r#"{"type": "ewridge", "feature_sets": [["a", ["x0", "nope"]]]}"#,
+            "",
+        ),
+        &["feature set \"a\" references unknown feature \"nope\""],
+    );
+    let e = check(&unsup(
+        r#"{"type": "deco", "blocks": [["a", ["x0", "zz"]], ["b", ["x1", "x2"]]]}"#,
+        r#", "half_life": 10.0"#,
+    ))
+    .expect_err("a deco block naming no feature accepted");
+    assert!(e.contains("zz"), "{e}");
+    let e = check(&unsup(
+        r#"{"type": "corrchange", "kind": "sequential"}"#,
+        "",
+    ))
+    .expect_err("sequential without window_rows accepted");
+    assert!(
+        e.contains("kind = \"sequential\" needs `window_rows`")
+            && e.contains("the rows of history each monitoring period is tested against"),
+        "{e}"
+    );
+}
+
+/// A formula target is refused, with the reason, by a model that does not
+/// regress on a real-valued target: `seqtest` tests signs, `sgd` under the
+/// logistic loss fits a probability and under the Poisson one a log rate.
+/// (A comparison is a `seqtest`, refused for its signs before its sides.)
+#[test]
+fn a_formula_target_is_refused_by_a_model_it_does_not_apply_to() {
+    let target = r#"[{"name": "fwd", "formula": ["rewm_mean", ["col", "y"], {"half_life": 5.0, "window_size": 10.0}]}]"#;
+    let with = |model: &str| {
+        format!(
+            r#"{{"name": "m", "model": {model}, "targets": {target}, "features": ["x0"],
+                "half_life": 10.0, "embargo": 10.0}}"#
+        )
+    };
+    for (model, why) in [
+        (
+            r#"{"type": "sgd", "loss": "logistic"}"#,
+            "fits a probability to a 0/1 target (loss = \"logistic\")",
+        ),
+        (
+            r#"{"type": "sgd", "loss": "poisson"}"#,
+            "fits a log rate to a count (loss = \"poisson\")",
+        ),
+    ] {
+        refused(&with(model), &["a formula target", why]);
+    }
+    let e = check(&format!(
+        r#"{{"name": "m", "model": {{"type": "seqtest"}}, "targets": {target},
+            "features": []}}"#
+    ))
+    .expect_err("a seqtest over a formula target accepted");
+    assert!(e.contains("tests the signs of its targets"), "{e}");
+}
+
+/// A session column needs a `session_gap` (or a session close), and a
+/// word that is not `"reset"` is refused naming the forms it can take.
+#[test]
+fn a_session_without_its_rule_or_with_a_word_it_does_not_know_is_refused() {
+    let clocked = r#", "clock": "t", "gap_cap": 5.0, "session": "s""#;
+    let e = check(&sup(r#"{"type": "ewridge"}"#, clocked)).expect_err("no session_gap");
+    assert!(
+        e.contains("session_gap is required when session is given")
+            && e.contains("group_close = \"session\""),
+        "{e}"
+    );
+    // The reader takes no word but "reset"; a spec built in Rust is held to
+    // the same.
+    let mut s: Spec = serde_json::from_str(&sup(
+        r#"{"type": "ewridge"}"#,
+        &format!(r#"{clocked}, "session_gap": "reset""#),
+    ))
+    .unwrap();
+    s.session_gap = Some(online_polars::SessionGapSpec::Word("restart".into()));
+    let e = s.check().expect_err("a session_gap word accepted");
+    assert!(
+        e.contains("session_gap must be a number, a duration or \"reset\", got \"restart\""),
+        "{e}"
+    );
+    // A negative integer is read as a number, and refused as one.
+    let e = check(&sup(
+        r#"{"type": "ewridge"}"#,
+        &format!(r#"{clocked}, "session_gap": -2"#),
+    ))
+    .expect_err("a negative session_gap accepted");
+    assert!(e.contains("session_gap must be >= 0 or \"reset\""), "{e}");
+}
+
+/// The window operators' run says the same about a session and its gap,
+/// and about a cap that is not finite, in a window's words rather than a
+/// model's.
+#[test]
+fn a_window_runs_clock_rules_are_said_in_a_windows_words() {
+    use online_polars::{WindowsConfig, WindowsRun};
+    let schema = polars::prelude::Schema::from_iter([
+        ("t".into(), polars::prelude::DataType::Float64),
+        ("s".into(), polars::prelude::DataType::String),
+        ("x".into(), polars::prelude::DataType::Float64),
+    ]);
+    let refusal = |extra: &str| {
+        let config: WindowsConfig = serde_json::from_str(&format!(
+            r#"{{"formulas": [{{"name": "f", "tree": ["ewm_mean", ["col", "x"], {{"half_life": 5.0}}]}}],
+                "clock": "t"{extra}}}"#
+        ))
+        .unwrap();
+        WindowsRun::new(config, &schema)
+            .err()
+            .expect("the run started")
+    };
+    let e = refusal(r#", "gap_cap": "inf""#);
+    assert!(
+        e.contains("gap_cap must be finite; it is the longest step a window spans"),
+        "{e}"
+    );
+    let e = refusal(r#", "gap_cap": 5.0, "session": "s""#);
+    assert!(
+        e.ends_with("session_gap is required when session is given"),
+        "{e}"
+    );
+}
+
+/// A deprecated model key forwarded beside the key it became is refused;
+/// one forwarded alone keeps a value that is not its word for the new key
+/// to refuse in its own words, and says so.
+#[test]
+fn a_deprecated_model_key_beside_its_new_name_is_refused() {
+    use online_polars::forward_deprecated_in_models;
+    for json in [
+        r#"{"type": "bocpd", "emission": "robust", "covariance_type": "diag"}"#,
+        r#"{"type": "corrchange", "reset_on_flag": true, "change_action": "flag"}"#,
+    ] {
+        let mut v: serde_json::Value = serde_json::from_str(json).unwrap();
+        let e = forward_deprecated_in_models(&mut v).unwrap_err();
+        assert!(
+            e.contains("was renamed") && e.contains("both are given"),
+            "{e}"
+        );
+    }
+    // A word that never was one goes on as itself, with no robust_beta.
+    let mut v: serde_json::Value =
+        serde_json::from_str(r#"{"type": "bocpd", "emission": "laplace"}"#).unwrap();
+    let notices = forward_deprecated_in_models(&mut v).unwrap();
+    assert_eq!(v["covariance_type"], "laplace");
+    assert!(v.get("robust_beta").is_none(), "{v}");
+    assert_eq!(
+        notices,
+        [
+            "emission = \"laplace\" is deprecated: it is covariance_type = \"laplace\". It is \
+          read so until the next major version, which refuses it"
+        ]
+    );
+    // A value that is not a word at all goes on unchanged.
+    let mut v: serde_json::Value =
+        serde_json::from_str(r#"{"type": "bocpd", "emission": 3}"#).unwrap();
+    forward_deprecated_in_models(&mut v).unwrap();
+    assert_eq!(v["covariance_type"], 3);
+    // `reset_on_flag = false` is the flag, and a value that is not a
+    // boolean goes on unchanged.
+    let mut v: serde_json::Value =
+        serde_json::from_str(r#"{"type": "corrchange", "reset_on_flag": false}"#).unwrap();
+    forward_deprecated_in_models(&mut v).unwrap();
+    assert_eq!(v["change_action"], "flag");
+    let mut v: serde_json::Value =
+        serde_json::from_str(r#"{"type": "corrchange", "reset_on_flag": "yes"}"#).unwrap();
+    let notices = forward_deprecated_in_models(&mut v).unwrap();
+    assert_eq!(v["change_action"], "yes");
+    assert!(
+        notices[0].contains("change_action = \"flag\""),
+        "{notices:?}"
+    );
+}
+
+/// A word refusal from serde with an empty list of words is not one this
+/// library can reword: passed on as it is (`None`).
+#[test]
+fn a_variant_message_with_no_words_is_not_reworded() {
+    assert_eq!(
+        online_polars::word_refusal_body("unknown variant `x`, expected `` or ``"),
+        None
+    );
+    assert!(online_polars::word_refusal_body("unknown variant `x`, expected `a` or `b`").is_some());
+}
+
+/// A word a model does not know is refused naming the word, whichever of
+/// the model's word keys it is given to.
+#[test]
+fn a_model_word_it_does_not_know_is_refused_naming_it() {
+    for (model, word) in [
+        (r#"{"type": "ew_cov", "stats": ["kurtosis"]}"#, "kurtosis"),
+        (r#"{"type": "sgd", "loss": "hinge"}"#, "hinge"),
+        (r#"{"type": "sgd", "schedule": "cosine"}"#, "cosine"),
+        (r#"{"type": "pa", "mode": "pa3"}"#, "pa3"),
+        (
+            r#"{"type": "marginal", "feature_moments": "pooled"}"#,
+            "pooled",
+        ),
+    ] {
+        let json = if model.contains("ew_cov") {
+            unsup(model, r#", "half_life": 10.0"#)
+        } else {
+            sup(model, "")
+        };
+        let e = check(&json).expect_err(model);
+        assert!(e.contains(word), "{model}: {e}");
+    }
+}
+
+/// What needs a decay reads `lam` as it reads a half-life: `lam < 1`
+/// forgets, and `lam = 1` does not, for `min_settled_frac` and for feature
+/// health alike; `lam` beside `half_life` is refused.
+#[test]
+fn lam_is_a_decay_where_a_decay_is_needed() {
+    let at = |lam: &str, extra: &str| {
+        format!(
+            r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"],
+                "features": ["x0", "x1"], "lam": {lam}{extra}}}"#
+        )
+    };
+    for extra in [
+        r#", "min_settled_frac": 0.5"#,
+        r#", "emit_feature_health": true"#,
+    ] {
+        accepted(&at("0.99", extra));
+        let e = check(&at("1.0", extra)).expect_err(extra);
+        assert!(e.starts_with("spec \"m\": "), "{e}");
+    }
+    let mut both: Spec = serde_json::from_str(&at("0.99", "")).unwrap();
+    both.half_life = Some(online_polars::SpanList::One(online_polars::Span::Units(
+        10.0,
+    )));
+    assert_eq!(
+        both.decays().unwrap_err(),
+        "spec \"m\": half_life and lam are mutually exclusive"
+    );
+}
+
+/// A relative target with no column or name is refused with the removal's
+/// own words; a formula target's name must not be empty.
+#[test]
+fn a_target_table_with_nothing_to_name_is_refused() {
+    let parse = |targets: &str| {
+        serde_json::from_str::<Spec>(&format!(
+            r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": {targets},
+                "features": ["x0"], "half_life": 10.0}}"#
+        ))
+        .expect_err("parsed")
+        .to_string()
+    };
+    let e = parse(r#"[{"relative_to": "x0"}]"#);
+    assert!(!e.contains("target \""), "no column to name: {e}");
+    assert!(e.contains("relative"), "{e}");
+    let e = parse(r#"[{"name": "", "formula": ["col", "y"]}]"#);
+    assert!(e.contains("formula target: name must not be empty"), "{e}");
+}

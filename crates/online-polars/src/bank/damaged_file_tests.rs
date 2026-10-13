@@ -510,3 +510,379 @@ fn drop_groups_drops_the_groups_pca_continuity() {
     bank.drop_groups(&gone[2..], Some(0)).unwrap();
     assert!(held(&bank).is_empty());
 }
+
+// ---- Task 252: damage no test had reached. ----
+
+/// A model state of a kind the bank never builds -- `ew_cov`'s bare
+/// accumulator, which only the core uses -- is refused at load, by kind.
+#[test]
+fn a_model_state_the_bank_never_builds_is_refused_by_kind() {
+    let mut bank = Bank::new(vec![ridge()]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let b = reencoded(&bank.save_bytes().unwrap(), |f| {
+        f.states[0][0].1.models[0].model =
+            online_core::ModelState::EwCov(Box::new(online_core::EwCov::new(1)));
+    });
+    let err = Bank::load_bytes(&b, None).err().expect("loaded");
+    assert!(
+        err.contains("state is for a different model: expected a bank-supported model"),
+        "{err}"
+    );
+}
+
+/// A diagnostic kept under the spec's switches but shaped for another lag
+/// or horizon than the file's own spec now says is damage, refused at load,
+/// where a fresh start would hide it.
+#[test]
+fn a_diagnostic_shaped_for_another_lag_or_horizon_is_refused() {
+    let at = |extra: &str| {
+        spec(&format!(
+            r#"{{"name": "m", "model": {{"type": "ewridge"}}, "targets": ["y"],
+                "features": ["x"], "group": "g", "half_life": 10.0{extra}}}"#
+        ))
+    };
+    type Edit = fn(&mut Spec);
+    let cases: [(&str, &str, Edit, &str); 2] = [
+        (
+            "autocorrelation",
+            r#", "emit_autocorr": true, "resid_autocorr_lag": 1"#,
+            |s| s.resid_autocorr_lag = Some(3),
+            "saved state's autocorrelations do not fit this spec",
+        ),
+        (
+            "horizon",
+            r#", "emit_calibration": true, "horizon_rows": 1"#,
+            |s| s.horizon_rows = Some(4),
+            "saved state's residual diagnostics",
+        ),
+    ];
+    for (what, extra, edit, want) in cases {
+        let mut bank = Bank::new(vec![at(extra)]).unwrap();
+        bank.fit_predict(&frame()).unwrap();
+        let bytes = bank.save_bytes().unwrap();
+        let b = reencoded(&bytes, |f| edit(&mut f.specs[0]));
+        let err = Bank::load_bytes(&b, None).err().expect(what);
+        assert!(err.contains(want), "{what}: {err}");
+        assert!(Bank::load_bytes(&bytes, None).is_ok());
+    }
+}
+
+/// A formula target's window core whose saved bytes do not load is refused
+/// at the chunk that resumes it, naming the spec and the formula target,
+/// and the refused chunk teaches nothing.
+#[test]
+fn a_formula_targets_window_core_that_does_not_load_is_refused_at_its_chunk() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge"},
+            "targets": [{"name": "fwd", "formula": ["rewm_mean", ["col", "y"], {"half_life": 2.0, "window_size": 3.0}]}],
+            "features": ["x"], "clock": "t", "gap_cap": 5.0, "half_life": 10.0,
+            "embargo": 3.0}"#,
+    );
+    let rows = |from: i32| {
+        df!(
+            "t" => (from..from + 6).map(f64::from).collect::<Vec<_>>(),
+            "x" => (from..from + 6).map(|i| f64::from(i % 4)).collect::<Vec<_>>(),
+            "y" => (from..from + 6).map(|i| f64::from(i % 3)).collect::<Vec<_>>()
+        )
+        .unwrap()
+    };
+    let mut bank = Bank::new(vec![s]).unwrap();
+    bank.fit_predict(&rows(0)).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let b = reencoded(&bytes, |f| {
+        assert_eq!(f.resolvers.len(), 1, "the core is saved");
+        for (_, groups) in &mut f.resolvers {
+            for (_, saved) in groups {
+                *saved = vec![0xc1, 0xc1];
+            }
+        }
+    });
+    let mut damaged = Bank::load_bytes(&b, None).unwrap();
+    let fed = damaged.rows_fed();
+    let err = damaged.fit_predict(&rows(6)).unwrap_err().to_string();
+    assert!(err.starts_with("spec \"m\": formula target: "), "{err}");
+    assert_eq!(damaged.rows_fed(), fed, "the refused chunk taught nothing");
+    let mut good = Bank::load_bytes(&bytes, None).unwrap();
+    good.fit_predict(&rows(6)).unwrap();
+}
+
+/// A stream whose file keeps no data summary loads and goes on without
+/// one, for good: counting from the load would report a number that looks
+/// like the whole history and is not.
+#[test]
+fn a_stream_without_a_summary_goes_on_without_one() {
+    let mut bank = Bank::new(vec![ridge()]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let b = reencoded(&bank.save_bytes().unwrap(), |f| {
+        for (_, st) in &mut f.states[0] {
+            st.persisted.summary = None;
+        }
+    });
+    let mut loaded = Bank::load_bytes(&b, None).unwrap();
+    let out = loaded.fit_predict(&frame()).unwrap();
+    assert_eq!(out[0].len(), 6);
+    let again: BankFile = rmp_serde::from_slice(&loaded.save_bytes().unwrap()).unwrap();
+    assert!(
+        again.states[0]
+            .iter()
+            .all(|(_, s)| s.persisted.summary.is_none()),
+        "a summary was started after the load"
+    );
+}
+
+/// Rows held under `embargo` whose score-time predictions the file does not
+/// keep fold nothing into the residual spread when they mature: there is no
+/// honest prediction to fold. The model learns them as it would.
+#[test]
+fn a_held_row_without_its_score_folds_nothing_when_it_matures() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
+            "features": ["x"], "half_life": 10.0, "embargo": 2, "emit_sigma": true}"#,
+    );
+    let first = df!("x" => [1.0, 2.0, 3.0, 4.0, 5.0], "y" => [2.1, 3.9, 6.2, 7.8, 10.1]).unwrap();
+    let rest = df!("x" => [6.0, 7.0, 8.0, 9.0], "y" => [12.2, 13.8, 16.1, 18.0]).unwrap();
+    let mut whole = Bank::new(vec![s]).unwrap();
+    whole.fit_predict(&first).unwrap();
+    let bytes = whole.save_bytes().unwrap();
+    let b = reencoded(&bytes, |f| {
+        let p = &mut f.states[0][0].1.persisted;
+        assert!(!p.pending.is_empty(), "rows are held");
+        p.score_pred
+            .iter_mut()
+            .for_each(std::collections::VecDeque::clear);
+    });
+    let mut emptied = Bank::load_bytes(&b, None).unwrap();
+    let a = whole.fit_predict(&rest).unwrap();
+    let e = emptied.fit_predict(&rest).unwrap();
+    let field = |out: &[Column], name: &str| {
+        out[0]
+            .struct_()
+            .unwrap()
+            .field_by_name(name)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        field(&a, "pred_y"),
+        field(&e, "pred_y"),
+        "the model learned the same rows"
+    );
+    let resid_w = |bank: &Bank| {
+        let f: BankFile = rmp_serde::from_slice(&bank.save_bytes().unwrap()).unwrap();
+        f.states[0][0].1.persisted.resid_w[0][0]
+    };
+    assert!(
+        resid_w(&emptied) < resid_w(&whole),
+        "the held rows folded: {} against {}",
+        resid_w(&emptied),
+        resid_w(&whole)
+    );
+}
+
+/// A closed row the rest of the file contradicts: its spec closes no
+/// group, it carries a Gram its spec's model keeps none of, its per-target
+/// lists are of another length than the targets it names, or its lags have
+/// no co-moments beside them. Each is refused at load, naming the damage.
+#[test]
+fn a_closed_row_its_spec_or_its_own_gram_contradicts_is_refused() {
+    let (s, bytes) = closing();
+    fn gram(f: &mut BankFile) -> &mut super::Gram {
+        f.closed[0].gram.as_mut().expect("ewridge keeps a Gram")
+    }
+    type Edit = fn(&mut BankFile);
+    let cases: Vec<(&str, Edit)> = vec![
+        ("which closes no group", |f| f.specs[0].group_close = None),
+        ("carries per-target lists of another length", |f| {
+            gram(f).target_weights.push(1.0)
+        }),
+        (
+            "carries lag co-moments that are not one 2 x 2 block per lag",
+            |f| {
+                gram(f).lags = Some(vec![1]);
+            },
+        ),
+    ];
+    for (want, edit) in cases {
+        let b = reencoded(&bytes, edit);
+        let err = Bank::load_bytes(&b, None).err().expect(want);
+        assert!(
+            err.starts_with("bank state file is damaged: a closed row of group 1")
+                && err.contains(want),
+            "{want}: {err}"
+        );
+    }
+    // A null group is named as one.
+    let b = reencoded(&bytes, |f| {
+        f.specs[0].group_close = None;
+        f.closed[0].group = GroupKey(None);
+    });
+    let err = Bank::load_bytes(&b, None)
+        .err()
+        .expect("a null group's row");
+    assert!(
+        err.contains("a closed row of group <null group> belongs to spec \"m\""),
+        "{err}"
+    );
+    // A Gram on the closed row of a spec whose model keeps none.
+    let sgd = spec(
+        r#"{"name": "m", "model": {"type": "sgd"}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0,
+            "group_close": "monotone"}"#,
+    );
+    let mut bank = Bank::new(vec![sgd]).unwrap();
+    bank.fit_predict(
+        &df!("g" => [1i64, 1, 2, 2], "x" => [1.0, 2.0, 1.0, 2.0], "y" => [2.0, 4.0, 2.0, 4.0])
+            .unwrap(),
+    )
+    .unwrap();
+    let ridge: BankFile = rmp_serde::from_slice(&bytes).unwrap();
+    let g = ridge.closed[0].gram.clone();
+    let b = reencoded(&bank.save_bytes().unwrap(), move |f| {
+        assert!(f.closed[0].gram.is_none(), "sgd keeps no Gram");
+        f.closed[0].gram = g;
+    });
+    let err = Bank::load_bytes(&b, None)
+        .err()
+        .expect("a Gram on sgd's row");
+    assert!(
+        err.contains("carries a Gram, and spec \"m\" keeps none"),
+        "{err}"
+    );
+    assert!(Bank::load_bytes(&bytes, Some(std::slice::from_ref(&s))).is_ok());
+}
+
+/// An envelope newer than this build's is told to upgrade, by number.
+#[test]
+fn a_file_of_a_newer_format_is_refused_by_number() {
+    let (_, bytes) = closing();
+    let newer = super::BANK_FORMAT_VERSION + 1;
+    let b = reencoded(&bytes, |f| f.format_version = newer);
+    let err = Bank::load_bytes(&b, None).err().expect("loaded");
+    assert_eq!(
+        err,
+        format!(
+            "bank state file format version {newer} is newer than this build supports ({})",
+            super::BANK_FORMAT_VERSION
+        )
+    );
+}
+
+/// A high-water mark that is not an integer, under an integer group
+/// column, is a mark saved under another key column: the next chunk is
+/// refused, naming the mark, rather than read against a key it does not
+/// order with.
+#[test]
+fn a_high_water_mark_that_is_not_an_integer_is_refused_under_an_integer_key() {
+    let (_, bytes) = closing();
+    let b = reencoded(&bytes, |f| {
+        assert_eq!(f.high_water.len(), 1, "group 1 closed");
+        f.high_water[0].1 = GroupKey(Some("one".into()));
+    });
+    let mut bank = Bank::load_bytes(&b, None).unwrap();
+    let next = df!("g" => [3i64], "x" => [1.0], "y" => [2.0]).unwrap();
+    let err = bank.fit_predict(&next).unwrap_err().to_string();
+    assert!(
+        err.contains(
+            "the saved high-water key one is not an integer, and the group column \"g\" is"
+        ),
+        "{err}"
+    );
+}
+
+/// The JSON export is checked against the state it came from: a text that
+/// drops a value fails to read back, and the failure shows the lines around
+/// the place it failed, the failing one marked; a text that reads back as
+/// another state is refused as not faithful.
+#[test]
+fn a_json_export_that_is_not_the_state_is_refused_with_its_place() {
+    let (_, bytes) = closing();
+    let file: BankFile = rmp_serde::from_slice(&bytes).unwrap();
+    let text = serde_json::to_string_pretty(&file).unwrap();
+    super::json_is_faithful(&file, &text).unwrap();
+    // The package version, a string, written as null: the read fails there.
+    let line = text
+        .lines()
+        .position(|l| l.contains("\"package_version\""))
+        .expect("the export names the package version")
+        + 1;
+    let broken = text
+        .lines()
+        .map(|l| {
+            if l.contains("\"package_version\"") {
+                "  \"package_version\": null,".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let err = super::json_is_faithful(&file, &broken).unwrap_err();
+    assert!(
+        err.starts_with("the JSON export dropped a value the state holds")
+            && err.contains(", at:\n")
+            && err.contains("\n  >   \"package_version\": null,")
+            && err.contains("without it serde_json writes NaN and +/-inf as null"),
+        "{err}"
+    );
+    assert_eq!(super::near(&broken, 0), "", "no line, no context");
+    let shown = super::near(&broken, line);
+    assert_eq!(shown.lines().count(), 1 + line.min(4), "{shown}");
+    // Another state's text reads back, and is not this state.
+    let mut other = rmp_serde::from_slice::<BankFile>(&bytes).unwrap();
+    other.rows_fed += 1;
+    let err = super::json_is_faithful(&file, &serde_json::to_string(&other).unwrap()).unwrap_err();
+    assert!(
+        err.starts_with("the JSON export did not read back"),
+        "{err}"
+    );
+}
+
+/// A windowed spread's ring kept for another number of slots is damage:
+/// refused at load, where it would index past this spec's slots at the
+/// next row.
+#[test]
+fn a_windowed_spreads_ring_of_another_width_is_refused() {
+    let s = spec(
+        r#"{"name": "m", "model": {"type": "ewridge", "window_size": 4.0}, "targets": ["y"],
+            "features": ["x"], "group": "g", "half_life": 10.0, "emit_sigma": true}"#,
+    );
+    let mut bank = Bank::new(vec![s]).unwrap();
+    bank.fit_predict(&frame()).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    // Through msgpack's own tree: the ring's fields are its module's.
+    let mut v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+    fn key<'a>(v: &'a mut rmpv::Value, k: &str) -> &'a mut rmpv::Value {
+        let rmpv::Value::Map(m) = v else {
+            panic!("not a map at {k}")
+        };
+        &mut m
+            .iter_mut()
+            .find(|(name, _)| name.as_str() == Some(k))
+            .unwrap_or_else(|| panic!("no {k}"))
+            .1
+    }
+    fn at(v: &mut rmpv::Value, i: usize) -> &mut rmpv::Value {
+        let rmpv::Value::Array(a) = v else {
+            panic!("not a list at {i}")
+        };
+        &mut a[i]
+    }
+    let state = at(at(at(key(&mut v, "states"), 0), 0), 1);
+    let ring = at(key(key(state, "persisted"), "resid_win"), 0);
+    let rmpv::Value::Array(rows) = key(ring, "rows") else {
+        panic!("rows is a list")
+    };
+    assert_eq!(rows.len(), 1, "one slot");
+    rows.push(rmpv::Value::from(0u64));
+    let mut b = Vec::new();
+    rmpv::encode::write_value(&mut b, &v).unwrap();
+    let err = Bank::load_bytes(&b, None).err().expect("loaded");
+    assert!(
+        err.contains("saved state's residual window does not fit this spec"),
+        "{err}"
+    );
+    assert!(Bank::load_bytes(&bytes, None).is_ok());
+}

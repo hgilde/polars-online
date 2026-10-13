@@ -326,3 +326,125 @@ fn threads_from_the_flag_or_the_key_and_the_variable_only_without_them() {
     assert!(err.contains("POLARS_ONLINE_MAX_THREADS=\"eight\""), "{err}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+// ---- Task 252: command-line paths no test reached. ----
+
+/// A config that does not parse and holds a backslash is told how a
+/// Windows path is written in TOML; one whose specs give a model that is
+/// not a table, or a table with no `type`, is refused with TOML's message
+/// and no key it cannot name.
+#[test]
+fn a_config_that_does_not_parse_is_told_what_it_can_be() {
+    let dir = fresh_dir("parse-hints");
+    let cfg = dir.join("job.toml");
+    std::fs::write(
+        &cfg,
+        "input = \"C:\\Users\\in.parquet\"\noutput = \"out.parquet\"\n",
+    )
+    .unwrap();
+    let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("hint: a backslash starts an escape sequence in a TOML basic string")
+            && err.contains("input = 'C:\\data\\in.parquet'"),
+        "{err}"
+    );
+    std::fs::write(
+        &cfg,
+        "input = 'in.parquet'\noutput = 'out.parquet'\n[[specs]]\nname = \"a\"\n\
+         targets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = 20.0\nmodel = \"ewridge\"\n\
+         [[specs]]\nname = \"b\"\ntargets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = 20.0\n\
+         [specs.model]\nridge = 1.0\n",
+    )
+    .unwrap();
+    let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains("parsing ") && !err.contains("\nat spec"),
+        "{err}"
+    );
+    assert!(!err.contains("hint: a backslash"), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A model key deprecated in one model's table is read as its new name,
+/// with a warning that says so, and the run goes on.
+#[test]
+fn a_deprecated_model_key_is_read_with_a_warning() {
+    let dir = fresh_dir("deprecated-model-key");
+    let input = dir.join("in.parquet");
+    write_input(&input, 60);
+    let cfg = dir.join("job.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"cp\"\nfeatures = [\"x0\"]\n\
+             [specs.model]\ntype = \"bocpd\"\nemission = \"gaussian\"\n",
+            text(&input),
+            text(&dir.join("out.parquet"))
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        err.contains(
+            "polars-online: warning: emission = \"gaussian\" is deprecated: it is \
+             covariance_type = \"full\""
+        ),
+        "{err}"
+    );
+    assert!(out.starts_with("config OK: 1 spec(s)"), "{out}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A dry run of a run with no output names what the run's products are,
+/// the state and the closed groups, and where the closed groups go.
+#[test]
+fn a_dry_run_with_no_output_names_the_runs_products() {
+    let dir = fresh_dir("dry-no-output");
+    let input = dir.join("in.parquet");
+    let mut df = df!(
+        "g" => (0..20i64).map(|i| i / 5).collect::<Vec<_>>(),
+        "x0" => (0..20).map(|i| f64::from(i % 5)).collect::<Vec<_>>(),
+        "y" => (0..20).map(|i| f64::from(i % 3)).collect::<Vec<_>>()
+    )
+    .unwrap();
+    ParquetWriter::new(std::fs::File::create(&input).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (state, closed) = (dir.join("state.bin"), dir.join("closed.parquet"));
+    let cfg = dir.join("job.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "input = '{}'\nsave_state = '{}'\nclosed_groups = '{}'\n[[specs]]\nname = \"c\"\n\
+             features = [\"x0\", \"y\"]\ngroup = \"g\"\nhalf_life = 10.0\n\
+             group_close = \"monotone\"\n[specs.model]\ntype = \"ew_cov\"\n",
+            text(&input),
+            text(&state),
+            text(&closed)
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        out.contains(&format!(
+            "output: none (--no-output); the run's product is the state, {}, and the closed \
+             groups, {}",
+            state.display(),
+            closed.display()
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("closed groups: {} (parquet)", closed.display())),
+        "{out}"
+    );
+    assert!(
+        !state.exists() && !closed.exists(),
+        "a dry run writes nothing"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
