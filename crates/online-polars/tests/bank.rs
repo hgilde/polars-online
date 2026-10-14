@@ -998,7 +998,7 @@ fn coef_rows(out: &DataFrame, name: &str) -> Vec<usize> {
 fn runs_through_a_wide_model_are_invisible() {
     // The bank feeds a task's rows through its stream in runs of
     // `ChunkOut::run_rows` rows, one set of buffers each (docs/PERFORMANCE.md
-    // §13). A 230-statistic `ew_cov` gets runs of 1 040 rows, so 5 000 rows
+    // §13). A 230-statistic `ew_cov` gets runs of 976 rows, so 5 000 rows
     // in one chunk are five runs, the last of them partial; the same rows in
     // five chunks are one run each, and one row at a time is 5 000 runs of
     // one. Chunk invariance says all three are the same computation, and
@@ -1009,7 +1009,7 @@ fn runs_through_a_wide_model_are_invisible() {
     assert_eq!(stream.n_slots(), k + k + k * (k - 1) / 2);
     assert_eq!(
         ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots()),
-        1040
+        976
     );
     let df = make_wide_df(5000, k);
     let one = run_spec_chunked(&spec, &df, 1);
@@ -1034,14 +1034,15 @@ fn runs_through_a_wide_model_are_invisible() {
 fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     // The last row of a *chunk* reports the coefficients, not the last row
     // of every run inside it: `process_chunk`'s `last` flag is what tells the
-    // two apart. A narrow `ewridge` gets runs of 13 104 rows (four values
-    // a row -- pred, resid, n_eff, settled_frac -- against a 2 MiB budget),
+    // two apart. A narrow `ewridge` gets runs of 11 888 rows (four values
+    // a row -- pred, resid, n_eff, settled_frac -- the plan's sixteen and
+    // the two features, against a 2 MiB budget),
     // so a chunk of twice that plus a hundred is three runs with two
     // boundaries inside it, and exactly one `coef`.
     let spec = ridge_spec("");
     let stream = Stream::new(&spec).unwrap();
     let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
-    assert_eq!(run_rows, 13_104);
+    assert_eq!(run_rows, 11_888);
     let n = 2 * run_rows + 100;
     let df = make_wide_df(n, 2);
 
