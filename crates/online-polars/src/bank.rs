@@ -2,7 +2,6 @@
 //! state, fan-out over (spec x group) on the bank's pool (pool.rs), versioned
 //! msgpack save/load.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -21,13 +20,14 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::{
-    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, chunk_from_frame_at, f64_values,
+    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, chunk_from_frame_at, f64_filled,
+    f64_values,
 };
 use crate::column::F64Column;
 use crate::resolvers::{
     FormulaBundle, SavedResolvers, TargetWindows, prepare_targets, resolve_targets,
 };
-use crate::rows::FeatureRows;
+use crate::rows::{FeatureCol, FeatureCols, FeatureRows};
 use crate::spec::{ModelKind, Spec};
 use crate::stream::{
     AnyModel, ChunkOut, ClockDtype, ClockRefusal, StepRefusal, Stream, StreamState, combo_labels,
@@ -268,7 +268,7 @@ pub(crate) fn session_hash(v: Option<&str>) -> u64 {
 /// only when finite, so null and NaN are both "no target". The clock is the
 /// one column where null is an *error*, and that is checked at extraction.
 struct SpecColumns {
-    features: FeatureRows,
+    features: FeatureCols,
     targets: Vec<Vec<f64>>,
     clock: Option<ClockCol>,
     session: Option<Vec<u64>>,
@@ -304,41 +304,47 @@ fn f64_column(
     })
 }
 
-/// The spec's feature columns as one row-major block (docs/PERFORMANCE.md
-/// §20). Each column is cast in the frame's order and read in place where
-/// it is contiguous; the layout gather and the transpose are one tiled
-/// pass over all of them, so a wide chunk is never held as `k` separate
-/// vectors first.
+/// The spec's feature columns, as the chunk holds them (docs/PERFORMANCE.md
+/// §20, §42): each column itself, copied only where it has nulls to fill
+/// in. A stream copies the rows of each run it learns into a buffer of its
+/// own just before it learns them ([`FeatureCols::rows_into`]), so the
+/// chunk is never written out in rows: as one block that was 160 MB at
+/// 20,000 rows of 1,000 features, written to memory and read back.
 ///
-/// `par_transpose` spreads the transpose's row tiles over the pool. It is
-/// for a lone spec: where several specs are extracted at once, each
-/// transposes on its own thread, since the specs already run in parallel
-/// and the transpose is bound by memory. On every thread it measured 2 to
-/// 2.5 ns of CPU more per feature and row at the same wall time, five specs
-/// of 200 float32 features over 20,000 rows on 14 cores, the threads
-/// waiting on memory ([`transposes_in_parallel`]).
-fn feature_rows(
+/// `par_transpose` lets a pass that copies many rows at once (scoring, the
+/// window pre-pass) spread the copy over the pool. It is for a lone spec:
+/// where several specs run at once, each copies on its own thread, since the
+/// specs already run in parallel and the copy is bound by memory. On every
+/// thread it measured 2 to 2.5 ns of CPU more per feature and row at the
+/// same wall time, five specs of 200 float32 features over 20,000 rows on 14
+/// cores, the threads waiting on memory ([`transposes_in_parallel`]).
+fn feature_cols(
     chunk: &ArrowChunk,
     spec: &Spec,
     layout: Layout<'_>,
     par: bool,
     par_transpose: bool,
-) -> PolarsResult<FeatureRows> {
+) -> PolarsResult<FeatureCols> {
     let arrays =
         map_maybe_par::<_, _, PolarsResult<Vec<&Float64Array>>>(&spec.features, par, |c| {
             chunk.f64(spec, "feature", c)
         })?;
-    // In place where the column has no nulls to fill in, a copy otherwise.
-    let sources: Vec<Cow<'_, [f64]>> = if par {
-        arrays.par_iter().map(|a| f64_values(a)).collect()
+    // Shared where the column has no nulls to fill in, a copy otherwise.
+    let cols = if par {
+        arrays
+            .par_iter()
+            .map(|a| FeatureCol::new(f64_filled(a)))
+            .collect()
     } else {
-        arrays.iter().map(|a| f64_values(a)).collect()
+        arrays
+            .iter()
+            .map(|a| FeatureCol::new(f64_filled(a)))
+            .collect()
     };
-    let cols: Vec<&[f64]> = sources.iter().map(|s| &s[..]).collect();
-    Ok(FeatureRows::from_columns(
-        &cols,
+    Ok(FeatureCols::new(
+        cols,
         chunk.height(),
-        layout,
+        layout.map(<[usize]>::to_vec),
         par && par_transpose,
     ))
 }
@@ -502,7 +508,7 @@ fn extract(
     let optional = |name: &str| scoring && !chunk.has(name);
     let par =
         chunk.height() >= PAR_MIN_ROWS || chunk.height() * spec.features.len() >= PAR_MIN_CELLS;
-    let features = || feature_rows(chunk, spec, layout, par, par_transpose);
+    let features = || feature_cols(chunk, spec, layout, par, par_transpose);
     let targets = || -> PolarsResult<Vec<Vec<f64>>> {
         // A comparison's targets are residual fields of two other specs'
         // output, which the bank fills in once those have run
@@ -1030,6 +1036,10 @@ fn process<'s>(
             // The group's last accepted row in the chunk, which `coef` rides
             // on without a cadence, whichever run or session span it is in.
             let coef_at = last_accepted(&sc.features, sc.weight.as_deref(), base, idx.len());
+            // The run's features as rows, copied from the columns just before
+            // the run is learned and read from cache, one buffer reused run
+            // after run (docs/PERFORMANCE.md §42).
+            let mut rows = FeatureRows::default();
             let mut starts: Vec<usize> = Vec::with_capacity(bounds.len() + 1);
             starts.push(0);
             starts.extend_from_slice(&bounds);
@@ -1054,34 +1064,36 @@ fn process<'s>(
                 let mut off = start;
                 for run in idx[start..end].chunks(run_rows) {
                     let mut out = ChunkOut::new(spec, n_models, n_slots, run.len());
-                    let learn = |stream: &mut Stream, out: &mut ChunkOut| {
-                        stream.process_chunk(
-                            spec,
-                            &cfgs[si],
-                            &sc.features,
-                            &sc.targets,
-                            sc.clock.as_ref(),
-                            sc.session.as_deref(),
-                            sc.weight.as_deref(),
-                            run,
-                            base + off,
-                            out,
-                            coef_at,
-                            formula_targets,
-                        )
-                    };
+                    let learn =
+                        |stream: &mut Stream, out: &mut ChunkOut, rows: &mut FeatureRows| {
+                            sc.features.rows_into(rows, base + off, run.len());
+                            stream.process_chunk(
+                                spec,
+                                &cfgs[si],
+                                rows,
+                                &sc.targets,
+                                sc.clock.as_ref(),
+                                sc.session.as_deref(),
+                                sc.weight.as_deref(),
+                                run,
+                                base + off,
+                                out,
+                                coef_at,
+                                formula_targets,
+                            )
+                        };
                     // The run before this one is copied into its sink on
                     // another thread while this one is learned.
                     let r = match (sink.as_mut(), pending.as_mut()) {
                         (Some(sink), Some(prev)) => {
                             let (r, ()) = rayon::join(
-                                || learn(stream, &mut out),
+                                || learn(stream, &mut out, &mut rows),
                                 || sink.absorb(std::slice::from_mut(prev)),
                             );
                             pending = None;
                             r
                         }
-                        _ => learn(stream, &mut out),
+                        _ => learn(stream, &mut out, &mut rows),
                     };
                     off += run.len();
                     match r {
@@ -1181,10 +1193,12 @@ fn score(
             let sc = &cols[si];
             // Scoring refuses no clock (`Stream::predict_chunk`).
             let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+            // Every row of the task at once: scoring is one pass.
+            let rows = sc.features.rows(base, idx.len());
             stream.predict_chunk(
                 spec,
                 &cfgs[si],
-                &sc.features,
+                &rows,
                 &sc.targets,
                 sc.clock.as_ref(),
                 sc.session.as_deref(),

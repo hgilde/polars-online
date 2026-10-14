@@ -91,7 +91,7 @@ pub use online_core;
 pub use polars::VERSION as POLARS_VERSION;
 pub use pool::{THREADS_VAR, Threads, check_threads, pool, thread_pool_size, threads_refusal};
 pub use refresh::{RefreshCols, RefreshTime};
-pub use rows::FeatureRows;
+pub use rows::{FeatureCol, FeatureCols, FeatureRows};
 pub use runner::{
     DEFAULT_CHUNK_SIZE, Format, Input, Output, RENAMED_RUN_KEYS, RunConfig, RunOptions, RunStats,
     name_renamed_run_key, run, run_config, run_config_on, run_config_on_reported,

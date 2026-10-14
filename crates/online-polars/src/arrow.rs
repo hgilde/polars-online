@@ -519,6 +519,16 @@ pub fn f64_values(a: &Float64Array) -> std::borrow::Cow<'_, [f64]> {
     }
 }
 
+/// [`f64_values`] as an array the caller may keep, with no validity: the
+/// column itself, its buffer shared, where it has no nulls to fill in, else
+/// the filled copy.
+pub fn f64_filled(a: &Float64Array) -> Float64Array {
+    match f64_values(a) {
+        std::borrow::Cow::Owned(v) => Float64Array::from_vec(v),
+        std::borrow::Cow::Borrowed(_) => a.clone(),
+    }
+}
+
 /// One spec's output struct as the two C Data Interface structs a consumer
 /// imports: the field, which carries the name and the struct's schema, and
 /// the array.

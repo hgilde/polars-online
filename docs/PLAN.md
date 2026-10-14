@@ -10636,6 +10636,54 @@ tick, and that the series holding it up has a count near 1.
       rows of 1,000 features) is never written and read back; the
       remaining ~3 ns of a bank's own per feature-row (0.9 the transpose on
       one thread, ~2 the loop around `step`) is its target.
+      *(b) built 2026-10-13* (branch `task-257b-tile-transpose`, the user's
+      approval). Re-measured at `63c2495` (M4 Pro, load 2.5-4.5, scratchpad
+      `t257b/bank_bench.py`, one process per pool size): 5 x 200 float32
+      features, 20k rows, 10% nulls a target, `fit`, CPU ns per feature-row
+      9.5-10.1 at 1 target and 11.7-12.3 at 10 on a pool of one, 11.4-11.7
+      and 13.9-14.6 on the default (wall 2.8-3.2, 3.2-3.4); the lone spec of
+      1,000 features 25.0-25.8 / 26.3-27.2 on one thread, 41.5-46 CPU at
+      8.0-9.4 wall on the default. `sample` of the 10-target bank:
+      `FeatureRows::from_columns` 7.7-7.9% of the busy samples on one thread
+      (~0.9 ns), 9.4% on the pool; `process_chunk`'s own loop 6.6%,
+      `schedule` 1.5-3.1%. **Built:** `rows::FeatureCols` (the chunk's
+      feature columns, each its `Float64Array`, shared where it has no
+      nulls, the filled copy otherwise, and the layout) replaces the
+      chunk's row block in `SpecColumns`; `process` keeps one
+      `FeatureRows` per task, filled by `FeatureCols::rows_into` for each
+      run's positions just before `process_chunk` (same tiled loop, the
+      layout gather folded in, positions read through `row(i)` with the
+      window's start subtracted); `ChunkOut::run_rows` counts `k` f64s a
+      row in its 2 MiB, so a run's rows stay in cache (976 at the old
+      1,040 for `ew_cov` 20; ~1,000 at 200 features, 240 at 1,000).
+      `last_accepted` reads `FeatureCols::usable_at` (the same fold of
+      `usable` over the row, from the columns); scoring and the window
+      pre-pass take the task's or segment's rows at once
+      (`FeatureCols::rows`, spread over the pool for a lone spec), the
+      pre-pass only past its early returns -- built first before them, it
+      copied every segment of every chunk for nothing and the bank ran
+      0.8 ns slower. Targets, weights, clock and groups unchanged.
+      **Bits:** `release_probe.py` outputs and `--states` byte-identical;
+      its workload on a 203-feature stream (float32/float64, nulls, NaN,
+      +-inf, 1e150; interleaved groups, embargo, window budget, blocked
+      Gram, ungrouped): 4,500 rows fit in 1, 6 and 8 chunks, 1,500 more
+      scored, 316 files byte for byte; `online-polars`' tests (run_rows
+      pins moved with the width), the gate. **Measured** (PERFORMANCE §42,
+      *the copy, a run at a time*): CPU 11.1-11.6 (pool 1) and 12.8-13.4
+      (default) at 10 targets, 9.0-9.4 and 10.4-11.0 at 1; wall 2.9-3.2;
+      the lone 1,000 same wall, CPU 1-7 ns less on the pool; the copy 5.2%
+      of the samples on one thread, 5.9% on the pool, `schedule` 1.0%.
+      Peak RSS: the five specs' `fit` 395 -> 231 MiB, a 1,000-feature
+      `sgd` 165 -> 14, `rss.ewridge_10_targets` 145-152 -> 122,
+      `rss.ew_cov_wide` 444-446 -> 418, streaming unchanged.
+      `benchmark.py` six rounds, median ratio 1.002, `sgd`/`pa` +4-5%.
+      Native instruction counts of the bank cases (proc_pid_rusage, median
+      of 7): `bank_seqtest` 2,204k -> 2,213k (+0.4%, within its run-to-run
+      scatter of 2,199k-2,357k), `bank_ewridge_k5` 7,390k -> 7,373k,
+      `bank_ew_cov_wide_t1` 143.49M -> 142.94M. **Next:** the float32 ->
+      float64 cast when the chunk is read (`crate::arrow`) is now the one
+      whole-chunk copy of the features (160 MB for the five specs); the
+      run's copy could read the float32 column and cast in the tile.
 - [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`
