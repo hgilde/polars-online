@@ -182,6 +182,8 @@ impl From<Vec<f64>> for FeatureCol {
 /// a group of columns at a time, through a scratch of [`ROW_TILE`] rows of
 /// one group.
 const GROUP: usize = 8;
+// `by_groups` copies a group out by its width, 1 to 8.
+const _: () = assert!(GROUP == 8);
 
 /// The tile's scratch: a row tile's values for one group of columns.
 type Scratch = [[f64; GROUP]; ROW_TILE];
@@ -382,8 +384,10 @@ const ROW_TILE: usize = 128;
 /// The columns of a plain run copied together, row by row: a cache line of
 /// each of them serves eight rows, and their writes are a contiguous run.
 const COL_TILE: usize = 64;
-/// The widest row copied through the scratch alone.
-const WIDE: usize = 512;
+/// The widest row copied through the scratch alone: between 400 and 500
+/// features the two ways cross (at 400 the scratch was the faster for
+/// float32 and the same for float64, at 500 the slower for both).
+const WIDE: usize = 448;
 
 /// The transpose row by row, for a run of plain columns starting at column `c0`:
 /// row by row, [`COL_TILE`] columns at a time, each value widened by `as
@@ -432,22 +436,32 @@ fn by_groups<C: Source>(
         for (g, col) in cols[g0..g1].iter().enumerate() {
             col.put(scratch, g, j0, layout);
         }
-        let (d0, d1) = (c0 + g0, c0 + g1);
-        // A whole group is a copy of a known length, inlined; a copy of a
-        // length known only at run time was a call to `memcpy` per row and
-        // group.
-        if d1 - d0 == GROUP {
-            for (row, s) in tile.chunks_exact_mut(k).zip(scratch.iter()) {
-                let dst: &mut [f64; GROUP] = (&mut row[d0..d1]).try_into().unwrap();
-                *dst = *s;
-            }
-        } else {
-            for (row, s) in tile.chunks_exact_mut(k).zip(scratch.iter()) {
-                for (d, v) in row[d0..d1].iter_mut().zip(s) {
-                    *d = *v;
-                }
-            }
+        // Each width a copy of a length known when compiled, inlined: a copy
+        // of a length known only at run time was a call to `memcpy` per row
+        // and group, and a loop over a short group cost 2.5 times the copy
+        // row by row at 4 features.
+        let d0 = c0 + g0;
+        match g1 - g0 {
+            8 => out_of_scratch::<8>(tile, k, d0, scratch),
+            7 => out_of_scratch::<7>(tile, k, d0, scratch),
+            6 => out_of_scratch::<6>(tile, k, d0, scratch),
+            5 => out_of_scratch::<5>(tile, k, d0, scratch),
+            4 => out_of_scratch::<4>(tile, k, d0, scratch),
+            3 => out_of_scratch::<3>(tile, k, d0, scratch),
+            2 => out_of_scratch::<2>(tile, k, d0, scratch),
+            _ => out_of_scratch::<1>(tile, k, d0, scratch),
         }
+    }
+}
+
+/// The scratch's first `N` columns into columns `d0..d0 + N` of each of the
+/// tile's rows.
+#[inline]
+fn out_of_scratch<const N: usize>(tile: &mut [f64], k: usize, d0: usize, scratch: &[[f64; GROUP]]) {
+    for (row, s) in tile.chunks_exact_mut(k).zip(scratch) {
+        let dst: &mut [f64; N] = (&mut row[d0..d0 + N]).try_into().unwrap();
+        let src: &[f64; N] = s[..N].try_into().unwrap();
+        *dst = *src;
     }
 }
 
@@ -497,10 +511,11 @@ impl FeatureRows {
                 _ => runs.push((c, c + 1)),
             }
         }
-        let fill = |(t, tile): (usize, &mut [f64])| {
+        // The scratch is made once for a thread's tiles, not once a tile:
+        // zeroing 8 KiB a tile cost more than the copy itself at 4 features.
+        let fill = |scratch: &mut Scratch, (t, tile): (usize, &mut [f64])| {
             let j0 = start + t * ROW_TILE;
             let rows = tile.len() / k;
-            let mut scratch: Scratch = [[0.0; GROUP]; ROW_TILE];
             let scratch = &mut scratch[..rows];
             for &(a, b) in &runs {
                 match plain[a] {
@@ -522,12 +537,13 @@ impl FeatureRows {
             self.data
                 .par_chunks_mut(ROW_TILE * k)
                 .enumerate()
-                .for_each(fill);
+                .for_each_init(|| [[0.0; GROUP]; ROW_TILE], fill);
         } else {
+            let mut scratch: Scratch = [[0.0; GROUP]; ROW_TILE];
             self.data
                 .chunks_mut(ROW_TILE * k)
                 .enumerate()
-                .for_each(fill);
+                .for_each(|tile| fill(&mut scratch, tile));
         }
     }
 

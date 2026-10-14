@@ -3,7 +3,10 @@
 //!
 //! The bank reads a chunk in exactly two forms: numbers as `f64`, and keys as
 //! text. [`ArrowChunk`] is that, and nothing more -- a caller holding Arrow
-//! arrays can build one and feed the bank without polars in the process.
+//! arrays can build one and feed the bank without polars in the process. A
+//! feature is the one exception: a column only features read may stay in
+//! its own numeric type ([`NumArray`]), widened to `f64` as each run of rows
+//! is copied, so a chunk of float32 features is never cast whole.
 //!
 //! Everything *polars-shaped* about reading a frame lives here rather than in
 //! the bank: finding a column by name, refusing a dtype that cannot be read,
@@ -354,7 +357,8 @@ pub struct ArrowChunk {
 impl ArrowChunk {
     /// A chunk from columns the caller has already cast: numbers as
     /// `Float64Array`, keys and labels as `Utf8ViewArray`, integer group keys
-    /// as `Int64Array` or `UInt64Array`.
+    /// as `Int64Array` or `UInt64Array`. A column only features read may
+    /// instead be [`ArrowCol::Num`], in its own type.
     ///
     /// `names` is every column the source had, which may be more than the
     /// columns given here but never fewer: it is what an error message lists,
