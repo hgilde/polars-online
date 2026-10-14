@@ -10684,6 +10684,59 @@ tick, and that the series holding it up has a count near 1.
       float64 cast when the chunk is read (`crate::arrow`) is now the one
       whole-chunk copy of the features (160 MB for the five specs); the
       run's copy could read the float32 column and cast in the tile.
+      *(c) built 2026-10-14* (branch `task-257c-cast-in-tile`). **Built:**
+      `Want::Feature` in the adapter: a column only features read is kept
+      in its own type, `ArrowCol::Num(NumArray)` (Float32, Int8-64,
+      UInt8-64; `NumArray::of` rechunks only a kept dtype), and is read by
+      `ArrowChunk::feature`; a column another role reads as a number (the
+      `form_of` "a number" set, e.g. a weight that is also a feature) is
+      cast once to Float64 and shared, and Boolean, Decimal, Int128 and
+      Float16 still cast. `rows::FeatureCol` holds the array (any of the ten
+      types) and its validity where it marks a null; `f64_filled` is gone.
+      The copy (`FeatureRows::fill`), per 128-row tile: up to `WIDE` = 448
+      features, `by_groups` -- eight columns at a time, each read for the
+      tile's rows into an 8 KiB scratch (one type, one validity branch, `as
+      f64`, `NULL` for a null), then a fixed-length copy of a cache line
+      per row; past 448, runs of plain columns (no nulls, all f64 or all
+      f32) `by_rows`, the old row-by-row loop over `COL_TILE` = 64, the
+      rest by groups. Measured (scratch `tile_bench`): the scratch's first build 0.46-0.83
+      ns a value at 20-200 features against 0.55-1.0 row by row, but
+      1.2-1.3 at 1,000 and 1.8-2.0 at 1,024 (rows 8 KiB apart, one cache
+      set); crossover 400-500. Two slips found by measuring: a runtime-length
+      `copy_from_slice` per row and group was a `memcpy` call (a third of
+      the copy at 1,000), and `NumArray::of` rechunked a multi-chunk
+      Float64 column before declining it (+1.6 MiB on `rss.ew_cov_wide`).
+      **Bits:** `release_probe.py` outputs and 31 `--states` byte-identical;
+      the 203-feature probe plus five integer feature types (Int8, Int32
+      with nulls, Int64 past 2^62, UInt16 with nulls, UInt64 past 2^63) and
+      a Float32 weight that is also a feature (shared path), 1/6/8 chunks
+      then scored, 325 files; the same at 608 features with 150-column runs
+      of plain f32 and f64 (the row path), 46 files; an `audit` of
+      float32/int16/float64 columns with NaN, +-inf and nulls (counts kept
+      apart); float fields equal across chunkings. Tests: `rows` each kept
+      type, NaN payloads (signalling, negative), +-inf, extremes, subnormal,
+      integers past 2^53, nulls, against polars' cast and fill, by `at`, the
+      run copy, a layout and the pool, at 36 and 538 features;
+      `arrow_chunk`: Float32/Int32 features and a shared Float32 weight
+      learn and save what the frame cast to Float64 does, at 600 and 97-row
+      chunks, and a target lookup on a kept column names its type.
+      A third slip: the scratch zeroed per tile and a short last group
+      copied in a loop made 4 features 0.97 ns a value against 0.33; now
+      the scratch is made once a thread (`for_each_init`) and each group
+      copied out by a fixed-width copy of its width (`out_of_scratch::<N>`).
+      **Measured** (PERFORMANCE §42, *the cast, in the copy*; M4 Pro, load
+      4-6): peak RSS the five specs' `fit` 230 -> 67 MiB, a 1,000-feature
+      float32 `sgd` 179 -> 14, the `rss.*` cases unchanged; the five specs'
+      wall on the default pool 2.44-2.54 -> 2.08-2.14 (T = 1), 2.89-3.01 ->
+      2.55-2.66 (T = 10), CPU 0.1-0.4 ns less at pool 1 and default; the
+      lone 1,000 the same within scatter (the first build, scratch at every
+      width with the `memcpy`, was +1-1.5% on one thread and +4-5% wall on
+      the pool); the copy alone 0.31-0.67 ns a value at 4-200 features
+      against 0.32-0.95 row by row, 0.99-1.03 at 1,000-1,024 against
+      1.01-1.04. `benchmark.py` eight ABBA rounds each, median ratio 1.001,
+      `sgd`/`pa` +1.6%. Native instruction counts (median of 7):
+      `bank_seqtest` 2,481k -> 2,485k, `bank_ewridge_k5` 7,665k -> 7,631k,
+      `bank_ew_cov_wide_t1` 143.24M -> 142.36M.
 - [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`

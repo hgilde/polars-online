@@ -35,7 +35,7 @@ each reads as of its date, with the names of its day.
 | [37. One wide Gram on several threads](#37-one-wide-gram-on-several-threads-2026-10-08) | one accumulator is the whole job, and you want what `gram_threads` gains on `ewridge` or `ew_cov` | |
 | [38. A solve's bits, whatever the pool](#38-a-solves-bits-whatever-the-pool-2026-10-09) | you want why a wide fit gives the same bits in a pool of any size | |
 | [41. A product's memory on each thread](#41-a-products-memory-on-each-thread-2026-10-13) | a wide fit on many threads takes more memory than its state, or you want what a matrix product allocates on a thread and how its rounding is checked | [what a thread allocates](#what-a-thread-allocates) · [what moved](#what-moved) · [speed](#speed) |
-| [42. A blocked Gram's targets, and a bank's own share](#42-a-blocked-grams-targets-and-a-banks-own-share-2026-10-13) | a blocked `ewridge` with many targets, or a bank of several specs, costs more CPU than its product | [where a target's time went](#where-a-targets-time-went) · [the fold](#the-fold) · [the copy into rows](#the-copy-into-rows) · [the copy, a run at a time](#the-copy-a-run-at-a-time) |
+| [42. A blocked Gram's targets, and a bank's own share](#42-a-blocked-grams-targets-and-a-banks-own-share-2026-10-13) | a blocked `ewridge` with many targets, or a bank of several specs, costs more CPU than its product | [where a target's time went](#where-a-targets-time-went) · [the fold](#the-fold) · [the copy into rows](#the-copy-into-rows) · [the copy, a run at a time](#the-copy-a-run-at-a-time) · [the cast, in the copy](#the-cast-in-the-copy) |
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [the scaler's fix](#where-sgd-lost-and-the-scalers-fix) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
 | [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
@@ -3062,6 +3062,117 @@ each byte for byte.
 cargo run --release -p online-core --example gram_targets_bench -- 200
 GAPS=1 cargo run --release -p online-core --example gram_targets_bench -- 200
 ```
+
+#### The cast, in the copy
+
+A float32 feature column is no longer cast to float64 when the chunk is
+read. A column that only features read stays in the type the frame holds it
+in: float32, or an integer of 8 to 64 bits. A float64 column with nulls
+keeps them in its validity instead of a filled copy. The run's copy widens
+each value with `as f64`, the conversion polars' own cast makes, and writes
+`NULL` where the validity marks a null. So the bits a stream reads are the
+ones the cast gave. A column another role reads as a number, a weight that
+is also a feature, is cast once and shared, as before. Boolean, decimal and
+128-bit integer columns are still cast.
+
+The copy changed shape with it, since a row now mixes types. Up to 448
+features, a tile of 128 rows is copied a group of eight columns at a time.
+Each column is read for all 128 rows at once, one type and one validity
+test per column, into a scratch of 8 KiB. The scratch is then written out a
+cache line of each row at a time. Past that width the rows of a tile are
+far apart, and a pass that writes one line of each of 128 of them falls out
+of cache: at 1,024 features the rows are 8 KiB apart, in one cache set. So
+there a run of plain columns, with no nulls and all float64 or all float32,
+is copied row by row as before, and only the other columns take the
+scratch. The two ways cross between 400 and 500 features: at 400 the
+scratch was faster on float32 and the same on float64, at 500 slower on
+both. The copy alone, in ns a value, for a run's rows from 20,000-row
+columns on one thread, two rounds at a load of 6 to 7 (`tile_bench`, a
+scratch program, not kept):
+
+| features | run | cast and copy, before | copy alone, before | float32, after | float64, after |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 20,000 | 0.75-0.84 | 0.55 | 0.41-0.42 | 0.43 |
+| 4 | 20,000 | 0.43-0.44 | 0.32-0.33 | 0.31-0.34 | 0.34-0.36 |
+| 20 | 3,000 | 0.78-0.83 | 0.53-0.54 | 0.31 | 0.32-0.33 |
+| 50 | 3,000 | 1.20-1.22 | 0.86 | 0.31 | 0.33 |
+| 200 | 1,000 | 1.56-1.93 | 0.91-0.95 | 0.42 | 0.63-0.67 |
+| 400 | 600 | 1.90-1.97 | 0.95-1.03 | 0.69 | 0.88-0.91 |
+| 500 | 480 | 1.84-1.85 | 0.98-1.00 | 0.98-1.02 | 1.01-1.05 |
+| 1,000 | 240 | 1.74-1.91 | 1.01 | 0.99-1.00 | 1.00-1.01 |
+| 1,024 | 240 | 1.83-1.84 | 1.04 | 1.00-1.02 | 1.03 |
+
+"Before" is the cast of every column when the chunk was read, then the
+copy row by row; a float64 column with no nulls was not cast, so its
+"before" is the copy alone. With the scratch at every width, 1,000
+features took 1.2-1.3 and 1,024 took 1.8-2.0. Three slips on the way were
+found by measuring. The first build copied each group out of the scratch
+with a slice whose length was known only at run time: a call to `memcpy`
+per row and group, a third of the copy's time at 1,000 features. It zeroed
+the scratch for every tile, and copied a group of fewer than eight columns
+in a loop: 0.97 ns a value at 4 features, three times the copy row by row.
+Each group is now copied by a fixed-width copy of its own width, and the
+scratch is made once for each thread's tiles. And it joined a float64
+column read from several row groups before deciding to cast it, and its
+cast joined it again: 1.6 MiB more peak on `rss.ew_cov_wide`, gone.
+
+The bank, ns per feature and row, three rounds of each build in turn at a
+load of 4.1 to 5.8, the five specs and the lone spec as above:
+
+| specs | targets | pool | CPU before | CPU after | wall before | wall after |
+|---|---:|---|---:|---:|---:|---:|
+| 5 x 200 | 1 | 1 | 9.08-9.20 | 8.81-8.87 | 9.03-9.17 | 8.78-8.82 |
+| 5 x 200 | 1 | default | 10.10-10.59 | 10.02-10.34 | 2.44-2.54 | 2.08-2.14 |
+| 5 x 200 | 10 | 1 | 11.36-11.50 | 10.94-11.03 | 11.28-11.46 | 10.90-10.95 |
+| 5 x 200 | 10 | default | 12.76-13.17 | 12.46-12.90 | 2.89-3.01 | 2.55-2.66 |
+| 1 x 1,000 | 1 | 1 | 24.53-24.62 | 24.53-24.62 | 24.53-24.62 | 24.53-24.62 |
+| 1 x 1,000 | 1 | default | 35.59-37.00 | 35.59-36.16 | 7.73-7.81 | 7.66-7.77 |
+| 1 x 1,000 | 10 | 1 | 25.69-26.04 | 25.82-25.86 | 25.69-26.05 | 25.82-25.87 |
+| 1 x 1,000 | 10 | default | 36.58-38.19 | 36.88-42.51 | 8.42-8.70 | 8.53-8.95 |
+
+The five specs' wall time on the pool fell 12-15%: the cast was a pass
+over every column of the chunk, one after another, before any spec ran.
+The lone spec of 1,000 features is the same within its scatter; at ten
+targets on the pool the first round of each of two sets ran 3-4% slower
+and the other four the same (8.53-8.58 against 8.42-8.65). The first
+build, the scratch at every width with its `memcpy`, ran 1-1.5% slower on
+one thread and 4-5% slower in wall time on the pool, where the copy is on
+the stream's thread while the product runs on the rest.
+
+Peak resident memory over the baseline, in MiB, three runs of each build
+in turn, measured as above:
+
+| run | before | after |
+|---|---:|---:|
+| the five specs, ten targets, `fit` (float32 columns) | 230.3-230.7 | 66.7-67.0 |
+| one `sgd` of 1,000 float32 features, 20,000 rows, `fit_predict` | 179.4-179.8 | 14.0-14.2 |
+| the same on float64 features | 13.5-13.8 | 13.8 |
+| `ewridge`, 20 features, 10 targets, 200,000 rows (`rss.ewridge_10_targets`) | 113-120 | 113-119 |
+| `ew_cov`, 20 features, 200,000 rows (`rss.ew_cov_wide`) | 417.5-418.0 | 417.4-417.6 |
+| one `ewridge` streamed, a million rows (`rss.streaming_bounded`) | 194-204 | 193-200 |
+
+The five specs fall by the cast: 80 MB of float32 widened to 160 MB of
+float64 a chunk. No copy of the chunk's features is left: one `sgd` over
+1,000 float32 features now peaks where it does over float64, and what the
+five specs keep is their own (a run's rows on each stream, the Grams and
+their blocks, each thread's buffers for the product).
+
+`scripts/benchmark.py`'s rows, none of them past 50 features, were the
+old build's within their scatter over eight rounds of each build, in turn
+and in both orders at a load of 3.7 to 5.4: the median ratio 1.001, `sgd`
+and `pa` at 20 features 1.6% faster. Native instruction counts of the bank
+cases (`proc_pid_rusage`, median of 7): `bank_seqtest` 2,481k -> 2,485k,
+`bank_ewridge_k5` 7,665k -> 7,631k, `bank_ew_cov_wide_t1` 143.24M ->
+142.36M.
+
+Every output and state is the same bits: `scripts/release_probe.py`'s
+outputs and its 31 saved states; the 203-feature probe of the section
+above, now with integer features of five types (one past 2^62, one of
+unsigned values past 2^63) and a float32 weight that is also a feature,
+325 files; the same workload at 608 features with runs of 150 plain
+float32 and 150 plain float64 columns, so the copy by rows runs, 46 files;
+and an `audit` of float32, int16 and float64 columns with NaN, infinities
+and nulls, whose null and NaN counts stay apart.
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)
 
