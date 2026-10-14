@@ -5,7 +5,10 @@
 //! take the whole history, and a reset of one target's own; to the bit at
 //! every thread count and whatever other targets share the block; and a
 //! state from before the fold, whose targets were current through the held
-//! rows, going on from it.
+//! rows, going on from it. A target far above its spread, where the block's
+//! own mean and its residue must both be carried; what a blocked fit still
+//! takes row by row, to the unblocked fit's bits; a row the block decays to
+//! nothing; and a damaged held block, dropped.
 
 use super::*;
 use crate::oracle;
@@ -228,6 +231,9 @@ fn run(rows: &[Row], block: usize, threads: usize, gaps: TargetGaps) -> Acc {
     acc.flushed().into_owned()
 }
 
+/// A named change to a `T`: a damage, or a part changed alone.
+pub(super) type Damage<'a, T> = (&'a str, &'a dyn Fn(&mut T));
+
 fn pool(n: usize) -> rayon::ThreadPool {
     rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -448,6 +454,265 @@ fn a_state_saved_mid_block_goes_on_to_the_bit() {
                     "{gaps:?}, saved after row {cut}"
                 );
             }
+        }
+    }
+}
+
+/// `n` rows of `k` features near 0 (the first a constant 1) and `t`
+/// targets at a level of `1e8`, far above both their spread and the
+/// features': a block's own mean `ȳ_B` then rounds at `1e8`'s resolution,
+/// and the residue `δy` it leaves is a rounding step of that level, which
+/// the fold must carry. And every 16th row, so the first of every block of
+/// 16, 32 or 64, is an outlier `1e6` above the others at a weight of
+/// `2^-40`: the block's
+/// mean is summed on values shifted by its first, so the shift is far
+/// from the mean, and a mean the shift did not come back from would leave
+/// the scatter `1e6` off centre. Each target has gaps, never on an outlier.
+fn far_stream(k: usize, t: usize, n: usize, seed: u64) -> Vec<Row> {
+    let mut s = seed;
+    (0..n)
+        .map(|i| {
+            let z: Vec<f64> = (0..k)
+                .map(|f| if f == 0 { 1.0 } else { lcg(&mut s) })
+                .collect();
+            let fit = z
+                .iter()
+                .enumerate()
+                .map(|(f, v)| v / (f + 1) as f64)
+                .sum::<f64>();
+            let outlier = i % 16 == 0;
+            let w = match i % 7 {
+                _ if outlier => 2f64.powi(-40),
+                3 => 0.0,
+                1 => 2.5,
+                5 => 0.5,
+                _ => 1.0,
+            };
+            let y = (0..t)
+                .map(|j| {
+                    let v = 1e8 + fit * (1.0 + j as f64) + 0.2 * lcg(&mut s);
+                    let v = if outlier { v + 1e6 } else { v };
+                    (outlier || i % (5 + 2 * j) != 2).then_some(v)
+                })
+                .collect();
+            Row { z, y, lam: 1.0, w }
+        })
+        .collect()
+}
+
+/// A target far above its spread keeps what its block's mean leaves out,
+/// and its block's scatter is taken about its own mean, not about the
+/// value the sum was shifted by: within the bound of the definition at
+/// every block size. Measured (2026-10-14): the fold at under 0.04 of the
+/// bound; a block mean not brought back from the shift, or a residue
+/// dropped or of the wrong sign, at 45 to 2.8e5 times it. Under `pairwise`
+/// the targets' gaps put their own feature means apart from the Gram's (`ε
+/// ≠ δ`), so the residue's own term, `U·ε·δy`, is read as well.
+#[test]
+fn a_target_far_from_its_spread_is_centred_on_its_own_block_mean() {
+    let rows = far_stream(4, 3, 160, 23);
+    for gaps in GAPS {
+        for block in [16usize, 32, 64] {
+            let acc = run(&rows, block, 1, gaps);
+            for j in 0..3 {
+                let w = worst(&acc, &rows, j, None);
+                assert!(
+                    w <= 1.0,
+                    "{gaps:?}, block {block}, target {j}: {w} of the bound"
+                );
+            }
+        }
+    }
+}
+
+/// What a blocked fit still takes row by row -- each target's weight, its
+/// own mean `ȳ_j`, its moments and its row count, and the weight, mean and
+/// row count over every row -- is the unblocked fit's to the bit: the same
+/// steps on the same numbers, the block holding only the cross-moments and
+/// feature means back. At every block size, both `target_gaps` and each
+/// kind of stream, zero weights among the rows, the first row's among
+/// them; and each target's count of rows of weight is the rows it was
+/// present on with weight.
+#[test]
+fn what_a_block_takes_row_by_row_is_the_unblocked_fits_to_the_bit() {
+    fn per_row(acc: &Acc) -> Vec<u64> {
+        let (c, tm) = (&acc.cross, &acc.tm);
+        let floats = [c.w]
+            .iter()
+            .chain(&acc.wj)
+            .chain(&c.m)
+            .chain(&c.m_lo)
+            .chain(&c.my)
+            .chain(&c.my_lo)
+            .chain(tm.means())
+            .chain(tm.means_lo())
+            .chain(tm.vars())
+            .chain(tm.q())
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>();
+        floats
+            .into_iter()
+            .chain(c.nj.iter().copied())
+            .chain([c.n])
+            .collect()
+    }
+    for kind in [Kind::Plain, Kind::Decays, Kind::Reset] {
+        for level in [0.0, 1e3] {
+            let rows = stream(kind, 4, 3, 140, level, 29);
+            for gaps in GAPS {
+                let mut unblocked = Acc::new(3, 4, 0, false);
+                let mut blocked: Vec<Acc> = [1usize, 3, 16]
+                    .iter()
+                    .map(|&b| Acc::new(3, 4, b, false))
+                    .collect();
+                for (i, r) in rows.iter().enumerate() {
+                    unblocked.learn(&r.z, &r.y, r.lam, r.w, gaps);
+                    let want = per_row(&unblocked);
+                    for acc in &mut blocked {
+                        acc.learn(&r.z, &r.y, r.lam, r.w, gaps);
+                        assert!(
+                            per_row(acc) == want,
+                            "{kind:?}, level {level}, {gaps:?}, block {}, row {i}",
+                            acc.grams.grams[0].block_rows()
+                        );
+                    }
+                }
+                // The rows of weight each target was present on, counted.
+                let counted: Vec<u64> = (0..3)
+                    .map(|j| {
+                        rows.iter()
+                            .filter(|r| r.y[j].is_some() && r.w > 0.0)
+                            .count() as u64
+                    })
+                    .collect();
+                assert_eq!(unblocked.cross.nj, counted, "{kind:?}, {gaps:?}");
+            }
+        }
+    }
+}
+
+/// A row of no weight leaves a target's own mean `ȳ_j` where it was, to the
+/// bit, under a blocked Gram as without one (CLAUDE.md hard rule 9): its
+/// step is not taken, where a step of 0 would round the pair afresh. After
+/// `0.1` at weight 1 and `1.0` at weight `0.5` the pair is `0.4 −
+/// 5.6e-17`, whose low part is a whole rounding step of `0.4`, and adding 0
+/// to it gives `0.39999999999999997 + 0`: the same number, other bits.
+#[test]
+fn a_row_of_no_weight_leaves_a_targets_mean_where_it_was() {
+    use crate::comp::{add, dev};
+    for gaps in GAPS {
+        for block in [0usize, 4] {
+            let mut acc = Acc::new(1, 2, block, false);
+            let z = [1.0, 0.5];
+            acc.learn(&z, &[Some(0.1)], 1.0, 1.0, gaps);
+            acc.learn(&z, &[Some(1.0)], 1.0, 0.5, gaps);
+            let before = (acc.cross.my[0], acc.cross.my_lo[0]);
+            // The case is the one it is for: a step of 0 moves these bits.
+            let (mut hi, mut lo) = before;
+            let step = 0.0 * dev(3.0, hi, lo);
+            add(&mut hi, &mut lo, step);
+            assert_ne!(
+                (hi.to_bits(), lo.to_bits()),
+                (before.0.to_bits(), before.1.to_bits()),
+                "a step of 0 leaves this pair alone; no case"
+            );
+            acc.learn(&z, &[Some(3.0)], 1.0, 0.0, gaps);
+            assert_eq!(
+                (acc.cross.my[0].to_bits(), acc.cross.my_lo[0].to_bits()),
+                (before.0.to_bits(), before.1.to_bits()),
+                "{gaps:?}, block {block}"
+            );
+        }
+    }
+}
+
+/// A row whose weight the rest of its block decays to nothing is not a row
+/// of the block's for a target, as it is not for the Gram (`u = 0`): a
+/// target present on no other row of the block keeps its cross-moments and
+/// feature means where they were, as if it had been absent there. Its row
+/// weighs `5e-324`, the least double, and a decay of `1/2` after it in the
+/// same block rounds that to 0.
+#[test]
+fn a_row_the_block_decays_to_nothing_is_not_the_targets() {
+    for gaps in GAPS {
+        // Target 1 on the first block's rows, then only on the second
+        // block's first row, the one of weight `5e-324`.
+        let rows = |present: bool| -> Vec<Row> {
+            (0..8)
+                .map(|i| {
+                    let x = i as f64;
+                    let z = vec![1.0, 0.3 * x - 0.1 * x * x];
+                    let w = if i == 4 { 5e-324 } else { 1.0 };
+                    let lam = if i == 5 { 0.5 } else { 1.0 };
+                    let y1 = (i < 4 || (i == 4 && present)).then_some(0.2 * x + 1.0);
+                    Row {
+                        z,
+                        y: vec![Some(x), y1],
+                        lam,
+                        w,
+                    }
+                })
+                .collect()
+        };
+        let (with, without) = (run(&rows(true), 4, 1, gaps), run(&rows(false), 4, 1, gaps));
+        let of1 = |acc: &Acc| -> Vec<u64> {
+            acc.cross.c[1]
+                .iter()
+                .chain(&acc.cross.mj[1])
+                .chain(&acc.cross.mj_lo[1])
+                .map(|v| v.to_bits())
+                .collect()
+        };
+        assert!(with.cross.c[1].iter().all(|c| c.is_finite()), "{gaps:?}");
+        assert!(of1(&with) == of1(&without), "{gaps:?}");
+        assert_eq!(
+            with.cross.nj[1], 5,
+            "{gaps:?}: the row of weight 5e-324 is a row"
+        );
+    }
+}
+
+/// A held block a damaged state could carry -- a target holding more rows
+/// than its Gram, cross-moments of another width, a weight after the block
+/// of 0, infinite or NaN -- is dropped, its target's moments left where
+/// they were: never read past the block, and never divided by a weight
+/// that is not one. `Acc::has_shape` refuses the first two on load; the
+/// weight is not a shape.
+#[test]
+fn a_damaged_held_block_is_dropped_whole() {
+    let rows = stream(Kind::Plain, 3, 2, 12, 0.0, 31);
+    for gaps in GAPS {
+        let mut acc = Acc::new(2, 3, 16, false);
+        for r in &rows {
+            acc.learn(&r.z, &r.y, r.lam, r.w, gaps);
+        }
+        assert!(
+            acc.held.y.iter().all(|v| v.len() > 2),
+            "{gaps:?}: nothing held"
+        );
+        let damages: [Damage<'_, Acc>; 5] = [
+            ("more rows than the Gram's", &|a| {
+                let more = a.grams.grams[a.grams.of[1]].pending_len() + 1;
+                a.held.y[1].resize(more, 0.5);
+            }),
+            ("cross-moments a slot short", &|a| {
+                a.cross.c[1].pop();
+            }),
+            ("a weight of 0", &|a| a.held.w_end[1] = 0.0),
+            ("an infinite weight", &|a| a.held.w_end[1] = f64::INFINITY),
+            ("a weight of NaN", &|a| a.held.w_end[1] = f64::NAN),
+        ];
+        for (what, damage) in damages {
+            let mut a = acc.clone();
+            damage(&mut a);
+            let (c, mj) = (a.cross.c[1].clone(), a.cross.mj[1].clone());
+            a.flush();
+            assert!(a.held.is_empty(), "{gaps:?}, {what}: still held");
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&a.cross.c[1]), bits(&c), "{gaps:?}, {what}");
+            assert_eq!(bits(&a.cross.mj[1]), bits(&mj), "{gaps:?}, {what}");
+            // Target 0's block is whole, and folded.
+            assert_ne!(a.cross.mj[0], acc.cross.mj[0], "{gaps:?}, {what}: target 0");
         }
     }
 }

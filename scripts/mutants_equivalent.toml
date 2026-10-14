@@ -2136,3 +2136,99 @@ line_has = "((bits ^ (bits >> 29) ^ (bits >> 47)) as usize) & (Self::SLOTS - 1)"
 why = """as `replace ^ with |` here: a shift left by 29 cannot overflow into a \
 panic, and the mask keeps the slot inside the 256, where a hit compares \
 the key whole"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "fold_block"
+mutation = "replace > with >="
+line_has = "let gappy = b.u[..off].iter().any(|&u| u > 0.0)"
+why = """`gappy` only picks how the target's `ε` is formed, and a mutant here \
+can only turn it from false to true. Where it was false every row of \
+weight in the block is a row the target learns from, so `U` is the Gram's \
+`Σ uᵢ` (the same nonzero additions in the same order), `M` sums only \
+coefficients of 0, which `accumulate` skips, and stays `+0`, and `(Σ uᵢaᵢ − \
+M)/U` is the Gram's `δ` to the bit. Taken where it was not needed, the \
+gappy form is the same number"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "fold_block"
+mutation = "delete !"
+line_has = "|| counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);"
+why = """as `replace > with >=` on the line before: the clause then holds on \
+every block (a target with no row of weight in it returned earlier), so \
+`gappy` is always true, and where it was false the gappy `ε` is the \
+Gram's `δ` to the bit"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "fold_block"
+mutation = "replace && with ||"
+line_has = "|| counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);"
+why = """as `delete !` here: some row the target learns from has weight, so \
+the clause always holds, and where `gappy` was false the gappy `ε` is the \
+Gram's `δ` to the bit"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "fold_block"
+mutation = "replace > with >="
+line_has = "|| counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);"
+why = """as `replace > with >=` on the line before: it adds the rows of no \
+weight the target misses, which turns `gappy` only from false to true, \
+and where it was false the gappy `ε` is the Gram's `δ` to the bit"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace > with <"
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = """`width` only cuts the `k` columns into bands, one a thread. Each \
+entry of `S'` and `M` is its own sum over the block's rows in order, the \
+same multiplies and adds whichever band holds its column and whichever \
+thread runs it, so any width of at least 1 (every mutant's, `k.max(1)` or \
+at least `FOLD_BAND_MIN`) gives the same bits \
+(`every_thread_count_and_every_neighbour_gives_the_same_bits`). The \
+mutants move the cost alone"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace > with =="
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace > with >="
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace && with ||"
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace >= with <"
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace * with +"
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace * with /"
+line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
+why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
