@@ -10469,6 +10469,95 @@ tick, and that the series holding it up has a count near 1.
       `merge`/`merge_within`/`within_cross` + `lars_paths`/`ridge_fits` on
       the job's columns alone, `fit_subsets` = its jobs, threads, every
       index refusal of `check_jobs`).
+      *256 (b), 2026-10-14* (branch `task-256b-ridge-solve`): the
+      one-column-at-a-time solve cost 6-12% at 50 targets (0.76 -> 0.82 ms
+      at 200 x 10, 13.8 -> 15.5 at 500 x 50, 190 -> 202 at 1,500 x 50):
+      each target read the factor twice alone and paid a scratch and a
+      dispatch. **Kernel** (`gramfit/trisolve.rs`): forward then back
+      substitution on the factor where it lies (column-major), every
+      column's arithmetic the textbook recurrence -- `s = s - L_ij x_j`, `j`
+      ascending forward and descending back, one rounded product and one
+      rounded difference a term (Rust never contracts to an FMA), then
+      `/ L_ii` -- so a column's bits cannot depend on its neighbours, the
+      tile shapes or the platform's tile choice. Panels of 16 rows: every
+      term from outside the panel in register tiles (4 rows x 8 targets, 8
+      x 4 and 16 x 1 on aarch64; 4 x 4 and 16 x 1 elsewhere), the targets of
+      a tile sharing each load of `L`, then the panel's own triangle row by
+      row. No packing copy (an `n²` transpose would be 800 MB at 10,000).
+      **The statistics were the larger cost:** `sample` at 1,500 x 50 put
+      the per-target `b' C b` (a `k²` chain of dependent adds) and
+      `quadratic`'s `m' C⁻¹ m` (`k²/2`, a strided row of `L⁻¹`) at about
+      half the call, the solve at 4%. `gramfit/colstats.rs` runs both for
+      every target at once in the same tiles, each sum the left fold from
+      `-0.0` that `Iterator::sum` is over the same terms in the same order:
+      the bits of the loop they replace. **Tests:**
+      `gramfit/trisolve_tests.rs` -- a column alone = beside others, random
+      subsets in random orders, n = 1-65 x T = 1-64 across the panel and
+      tile edges, to the bit; each column = the scalar recurrence to the
+      bit; each substitution's componentwise backward error within `γ_n`
+      by an exactly rounded residual (`oracle::dot`), well and
+      ill-conditioned; the solve against faer's partial-pivot LU
+      (`oracle::solve_columns`, new) within Cholesky's forward bound
+      `2κ n γ_{3n+1}`, κ as large as that bound allows (4e12 at n = 4, 2e9 at
+      200, 3e7 at 1,500) at n = 1-200, and 511 and
+      1,500 in the extended tier; and a target's whole `RidgeFit` the same
+      bits alone or in any subset and order of 13 or 21 targets, with and
+      without intercept and standardize (fails on faer's blocked solve:
+      checked). `gramfit/colstats_tests.rs` -- both forms = the old per-target
+      expressions to the bit, zeros' signs included. **Bits:** single-target
+      fits move too (faer's one-column solve is not the recurrence: 3 of 3
+      entries differ at n = 3), within `6e-15` of `coef`'s largest entry and
+      `6e-14` of `se`'s against 1.0.1; `release_probe.py`'s 297 fields and
+      31 states byte-identical to main's; `solve.rs` untouched. FMA was
+      left out on purpose: it would fix a column's bits only per platform,
+      and x86-64's baseline has none. **Speed** (M4 Pro, load 6-20; one
+      subset of a Gram on 2,000 rows, ridge 1; 1.0.1 / main / branch, ms,
+      `threads=1`, the pool the same within noise):
+
+    | k | T = 1 | T = 10 | T = 50 |
+    |---|---|---|---|
+    | 200 | 0.53 / 0.54 / 0.52 | 0.78 / 0.85 / 0.62 | 1.88 / 2.16 / 1.00 |
+    | 500 | 4.43 / 4.42 / 4.39 | 6.10 / 6.41 / 4.83 | 13.6 / 15.4 / 6.76 |
+    | 1,500 | 95.1 / 93.0 / 89.0 | 112 / 114 / 93.3 | 195 / 209 / 109 |
+    | 3,000 | 253 / 252 / 247 | 300 / 318 / 258 | 513 / 609 / 309 |
+    | 5,000 | 1,039 / 1,017 / 1,013 | 1,164 / 1,193 / 1,047 | 1,770 / 2,137 / 1,207 |
+    | 10,000 | 6,907 / 6,894 / 6,846 | 7,417 / 7,588 / 6,991 | 9,607 / 10,658 / 7,601 |
+
+      Best of 15, 9, 5, 3, 2 and 1 calls at 200 to 10,000 columns, in 3, 3,
+      3, 3, 2 and 2 rounds of fresh processes, the builds in rotated order;
+      load 6-20; peak RSS the same for all three (5.2 GB at 10,000). One
+      target ties 1.0.1 (a rerun at 200 and 500: 40 and 20 calls x 5 rounds,
+      medians 0.487 vs 0.485 ms and 4.23 vs 4.33 ms at `threads=1`, 0.510 vs
+      0.505 and 4.20 vs 4.29 on the pool): its call is the merge, two
+      Cholesky factorizations and a triangular inverse, and the kernel's one-column solve costs 8 us
+      against faer's 7 at 200 (a Rust micro-bench, `tribench` in the
+      scratchpad), 2.9 ms against 3.4 at 3,000. x86-64 is not measured
+      here: its tiles are 4 x 4 and 16 x 1 under SSE2 (no AVX at the
+      baseline target), where faer's products dispatch to AVX2 at run time,
+      so `examples/ridge_solve_bench.rs` measures it: `ridge_fits` against
+      a copy of 1.0.1's (faer's blocked solve, each target's forms summed
+      alone) in one process, rounds of the shared part (design, two
+      factorizations, triangular inverse), 1.0.1's call and today's in turn,
+      after asserting a target's fit is the same bits alone, among 10 and
+      among 50 (and printing that 1.0.1's was not). Its Gram is positive
+      definite with a Kish size past `k`, so the standard errors run at every
+      `k`: the Python table above fits 2,000 rows, so from 3,000 columns its
+      `sigma2` is NaN (no degrees of freedom) and it times the solve, `b' C b`
+      and one factorization only. `benchmark.yml` runs it at 500-5,000 beside
+      the wide products, for the x86 numbers. Local run (M4 Pro, load 4-5),
+      ms, 1.0.1 / now (ratio), and the solve and statistics alone (the
+      call less the shared part):
+
+    | k | T | call | solve + statistics |
+    |---|---|---|---|
+    | 500 | 1 / 10 / 50 | 4.06 / 4.05, 5.84 / 4.50, 13.3 / 6.15 (1.00, 0.77, 0.46) | 0.96, 0.33, 0.25 |
+    | 1,500 | 1 / 10 / 50 | 80.2 / 79.1, 98.7 / 83.6, 177 / 98.8 (0.99, 0.85, 0.56) | 0.70, 0.32, 0.22 |
+    | 3,000 | 1 / 10 / 50 | 576 / 574, 663 / 609, 1,028 / 659 (1.00, 0.92, 0.64) | 0.85, 0.46, 0.21 |
+    | 5,000 | 1 / 10 / 50 | 2,571 / 2,560, 2,904 / 2,627, 4,246 / 2,845 (1.00, 0.90, 0.67) | 0.70, 0.26, 0.18 |
+    | 10,000 | 1 / 10 / 50 | 20,377 / 20,020, 21,049 / 19,961, 26,781 / 20,914 (0.98, 0.95, 0.78) | one round: noise |
+
+      At 10,000 one round took 265 s and 5.0 GB, so CI stops at 5,000 (a
+      16 GB, 4-cpu runner; about 2 minutes here at 500-5,000).
 - [x] 257. **The targets inside the blocked Gram product** -- requested
       2026-10-13. Measured by the requester on 0.13.0 (M4 Pro, load 4-9;
       re-measure at HEAD first, since `gram_threads="auto"` and task 250

@@ -1978,7 +1978,7 @@ every row on one thread, is caught"""
 file = "crates/online-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace > with >="
-line_has = "if sigma2.is_finite() && nkish > 0.0 {"
+line_has = ".filter(|&col| fits[col].sigma2.is_finite() && fits[col].n > 0.0)"
 why = """the second operand only (`sigma2` is not compared): `sigma2` is \
 finite only where `dof = nkish − p > 0` with `p >= 0` parameters, so \
 wherever the first operand holds `nkish > 0` does too, and `nkish = 0` \

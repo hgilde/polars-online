@@ -72,11 +72,35 @@ any change to the numbers a model returns.
   values on the held rows. A file from 1.0 loads and goes on; a blocked one
   saved mid-block takes the rows after it into the merge, its targets
   having taken the held rows already.
-- **A ridge fit of `po.gram.solve_subsets` on several targets may move in
-  its last bits.** Each target's system is now solved alone on the shared
-  factorization, where a blocked solve of every target at once let one
-  target's last bits depend on the others beside it, so a fit is the same
-  whichever targets (or jobs) share its call.
+- **A ridge fit of `po.gram.solve_subsets` may move in its last bits, on
+  one target or several, and is its own whichever targets share the call**
+  (task 256 (b)). faer's blocked solve of every target at once let one
+  target's last bits depend on the others beside it. The targets are now
+  solved together by forward and back substitution in which each target's
+  arithmetic is the textbook recurrence's, one rounded product and one
+  rounded difference per term in index order, whatever targets run beside
+  it: the factor is read once for a tile of targets, and the targets share
+  its loads without sharing a sum. A fit's `coef`, `se`, `t`, `resid_var`,
+  `sigma2` and `r2` are the same bits alone or beside any set of targets,
+  in any order, at any thread count. Measured against 1.0.1 on three Grams
+  of 12 to 300 columns, ridge 0 and 0.5, with and without `standardize`:
+  `coef` within `6e-15` of its largest entry and `se` within `6e-14`. Each
+  target's `b' A b` and the intercept's `m' A⁻¹ m` are summed beside the
+  other targets' the same way, the bits of the sums they replace. **Faster
+  on several targets:** measured on an Apple M4 Pro at a load of 6 to 20
+  (other work on the machine), one subset of a Gram fitted on 2,000 rows,
+  ridge 1, best of 1 to 15 calls in 2 or 3 interleaved rounds of each
+  build, 50 targets took 1.00 ms against 1.88 on 1.0.1 at 200 columns, 6.8
+  against 13.6 ms at 500, 109 against 195 ms at 1,500, 309 against 513 ms
+  at 3,000, 1.21 against 1.77 s at 5,000 and 7.6 against 9.6 s at 10,000;
+  10 targets 0.62 against 0.78 ms at 200 and 7.0 against 7.4 s at 10,000;
+  one target the same as 1.0.1 (0.52 against 0.53 ms at 200, 6.85 against
+  6.91 s at 10,000), its time the factorizations'. The same at `threads=1`
+  and on the default pool. From 3,000 columns those 2,000 rows leave no
+  degrees of freedom, so no standard errors; with them, in one process
+  (`examples/ridge_solve_bench.rs`, which CI's Benchmark runs), 50 targets
+  took 0.46 to 0.67 of 1.0.1's time at 500 to 5,000 columns, 10 targets
+  0.77 to 0.92, one target 0.99 to 1.00.
 
 - **On x86-64 (Linux, Windows and Intel macOS), a wide model's last bits
   can move** (task 258): every matrix product past 16 × 16 × 16 entries,

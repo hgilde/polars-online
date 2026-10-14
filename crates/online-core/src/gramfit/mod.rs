@@ -15,6 +15,9 @@
 //! - [`ridge_fits`]: a ridge fit of each target with its standard errors.
 
 mod cd;
+mod colstats;
+#[cfg(test)]
+mod colstats_tests;
 mod lars;
 #[cfg(test)]
 mod lars_tie_tests;
@@ -25,6 +28,9 @@ mod ridge;
 mod system;
 #[cfg(test)]
 mod tests;
+mod trisolve;
+#[cfg(test)]
+mod trisolve_tests;
 #[cfg(test)]
 mod within_tests;
 
