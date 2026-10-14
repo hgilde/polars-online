@@ -96,7 +96,11 @@ any change to the numbers a model returns.
   10 targets 0.62 against 0.78 ms at 200 and 7.0 against 7.4 s at 10,000;
   one target the same as 1.0.1 (0.52 against 0.53 ms at 200, 6.85 against
   6.91 s at 10,000), its time the factorizations'. The same at `threads=1`
-  and on the default pool.
+  and on the default pool. From 3,000 columns those 2,000 rows leave no
+  degrees of freedom, so no standard errors; with them, in one process
+  (`examples/ridge_solve_bench.rs`, which CI's Benchmark runs), 50 targets
+  took 0.46 to 0.67 of 1.0.1's time at 500 to 5,000 columns, 10 targets
+  0.77 to 0.92, one target 0.99 to 1.00.
 
 - **On x86-64 (Linux, Windows and Intel macOS), a wide model's last bits
   can move** (task 258): every matrix product past 16 × 16 × 16 entries,

@@ -10534,10 +10534,30 @@ tick, and that the series holding it up has a count near 1.
       scratchpad), 2.9 ms against 3.4 at 3,000. x86-64 is not measured
       here: its tiles are 4 x 4 and 16 x 1 under SSE2 (no AVX at the
       baseline target), where faer's products dispatch to AVX2 at run time,
-      and no case of CI's Benchmark or `online-bench` runs `ridge_fits`:
-      **open**, a case there would measure it. The two statistics, which
-      are most of the gain at several targets, are SSE2 against a single
-      chain of adds either way.
+      so `examples/ridge_solve_bench.rs` measures it: `ridge_fits` against
+      a copy of 1.0.1's (faer's blocked solve, each target's forms summed
+      alone) in one process, rounds of the shared part (design, two
+      factorizations, triangular inverse), 1.0.1's call and today's in turn,
+      after asserting a target's fit is the same bits alone, among 10 and
+      among 50 (and printing that 1.0.1's was not). Its Gram is positive
+      definite with a Kish size past `k`, so the standard errors run at every
+      `k`: the Python table above fits 2,000 rows, so from 3,000 columns its
+      `sigma2` is NaN (no degrees of freedom) and it times the solve, `b' C b`
+      and one factorization only. `benchmark.yml` runs it at 500-5,000 beside
+      the wide products, for the x86 numbers. Local run (M4 Pro, load 4-5),
+      ms, 1.0.1 / now (ratio), and the solve and statistics alone (the
+      call less the shared part):
+
+    | k | T | call | solve + statistics |
+    |---|---|---|---|
+    | 500 | 1 / 10 / 50 | 4.06 / 4.05, 5.84 / 4.50, 13.3 / 6.15 (1.00, 0.77, 0.46) | 0.96, 0.33, 0.25 |
+    | 1,500 | 1 / 10 / 50 | 80.2 / 79.1, 98.7 / 83.6, 177 / 98.8 (0.99, 0.85, 0.56) | 0.70, 0.32, 0.22 |
+    | 3,000 | 1 / 10 / 50 | 576 / 574, 663 / 609, 1,028 / 659 (1.00, 0.92, 0.64) | 0.85, 0.46, 0.21 |
+    | 5,000 | 1 / 10 / 50 | 2,571 / 2,560, 2,904 / 2,627, 4,246 / 2,845 (1.00, 0.90, 0.67) | 0.70, 0.26, 0.18 |
+    | 10,000 | 1 / 10 / 50 | 20,377 / 20,020, 21,049 / 19,961, 26,781 / 20,914 (0.98, 0.95, 0.78) | one round: noise |
+
+      At 10,000 one round took 265 s and 5.0 GB, so CI stops at 5,000 (a
+      16 GB, 4-cpu runner; about 2 minutes here at 500-5,000).
 - [x] 257. **The targets inside the blocked Gram product** -- requested
       2026-10-13. Measured by the requester on 0.13.0 (M4 Pro, load 4-9;
       re-measure at HEAD first, since `gram_threads="auto"` and task 250
