@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::arrow::ClockCol;
 use crate::checks::{CheckCfg, Checks, RowView};
 use crate::resid_window::ResidWindow;
-use crate::rows::FeatureRows;
+use crate::rows::{FeatureCols, FeatureRows};
 use crate::span::{Span, SpanList};
 use crate::spec::{FloatOrList, ModelKind, ShardSpec, Spec};
 use crate::summary::{DataSummary, Fed};
@@ -2486,15 +2486,18 @@ fn accepts(features: &FeatureRows, weight: Option<&[f64]>, i: usize) -> bool {
 /// stream accepts: where `coef` is written without a cadence (review round
 /// 4, PB2). `None` when every one is skipped, and the chunk writes no
 /// `coef` for the group.
+///
+/// Read from the columns, a row at a time from the last: [`accepts`]'s test
+/// on the same values, before any run has copied them into rows.
 pub fn last_accepted(
-    features: &FeatureRows,
+    features: &FeatureCols,
     weight: Option<&[f64]>,
     base: usize,
     n: usize,
 ) -> Option<usize> {
     (base..base + n)
         .rev()
-        .find(|&i| accepts(features, weight, i))
+        .find(|&i| features.usable_at(i) && weight.map(|w| usable(w[i])).unwrap_or(true))
 }
 
 /// True when this target has not reached its own warmup threshold yet.
@@ -2698,7 +2701,8 @@ impl ChunkOut {
     /// - The run's buffers stay within `BUDGET` bytes, so the lines a wide
     ///   model's row touches are still in cache when the next rows complete
     ///   them; over a 400k-row chunk, a 230-statistic `ew_cov` spent a third
-    ///   of its time on stores to lines that had already been evicted.
+    ///   of its time on stores to lines that had already been evicted. The
+    ///   run's feature rows count against it too.
     /// - A slot's stride is an odd number of 128-byte lines, so no two slots
     ///   of a row share a cache set. A power-of-two chunk (65 536 rows, the
     ///   natural streaming batch) put every slot of that `ew_cov` in the
@@ -2718,7 +2722,12 @@ impl ChunkOut {
         /// thousand rows held 13 to 16 MB of it, past the cache, and a `seqtest`
         /// row spent a large share storing and reloading it (task 250).
         const PLAN: usize = std::mem::size_of::<RowPlan>().div_ceil(8);
-        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1) + PLAN;
+        // The run's features as rows, which the bank copies from the
+        // chunk's columns just before the run and the passes read back: a
+        // `f64` a feature (docs/PERFORMANCE.md §42). Inside the budget they
+        // are read from cache; the whole chunk in rows was written to
+        // memory and read back, 160 MB at 20,000 rows of 1,000 features.
+        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1) + PLAN + spec.k();
         let lines = BUDGET / (8 * width * LINE);
         let lines = if lines.is_multiple_of(2) {
             lines.saturating_sub(1)
@@ -3531,7 +3540,7 @@ impl Stream {
         &self,
         spec: &Spec,
         cfg: &online_core::ClockCfg,
-        features: &FeatureRows,
+        features: &FeatureCols,
         targets: &[Vec<f64>],
         clock: Option<&ClockCol>,
         session: Option<&[u64]>,
@@ -3550,6 +3559,9 @@ impl Stream {
         if !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
             return None;
         }
+        // The rows at once, only for a replay that may refuse: the replay is
+        // one pass over them.
+        let features = &features.rows(base, rows.len());
         let Scheduled {
             mut plans, elapsed, ..
         } = self

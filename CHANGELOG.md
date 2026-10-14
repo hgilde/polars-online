@@ -117,6 +117,24 @@ any change to the numbers a model returns.
   13.4-13.7 ns of CPU per feature and row against 17.0-20.4 before, at
   2.9-3.2 ns of wall time against 3.3-3.8; one target 11.1-12.5 against
   13.9-17.5. The outputs are the same bits.
+- **A stream copies its features into rows a run at a time, in cache**
+  (task 257 (b)). The bank used to transpose each chunk's feature columns
+  into one block of rows before any stream read them: 160 MB at 20,000
+  rows of 1,000 features, written to memory and read back. Each stream now
+  copies only the rows of the run it is about to learn (about a thousand
+  rows at 200 features) into a buffer of its own, reused run after run,
+  and reads them back from cache; a float64 column with no nulls is read
+  in place. Measured on an Apple M4 Pro at a load of 2 to 4, three rounds
+  of each build in turn, five specs of 200 float32 features over 20,000
+  rows, ten targets, never solved: 11.1-11.6 ns of CPU per feature and row
+  on one thread against 11.7-12.4, and 12.8-13.4 on the default pool
+  against 13.9-14.5, at 2.9-3.2 ns of wall time against 3.1-3.5. One spec
+  of 1,000 features: the same wall time, 1 to 7 ns of CPU less on the
+  default pool. Peak memory of an eager fit falls by the block: those five
+  specs 395 -> 231 MiB, one `sgd` of 1,000 float64 features over 20,000
+  rows 165 -> 14 MiB, ten-target `ewridge` over 200,000 rows 145-152 ->
+  122 MiB. `scripts/benchmark.py`'s rows are the same within their scatter
+  (median ratio 1.002), and every output and saved state is the same bits.
 - **A Gram's columns are looked up by name in a table**, where each name
   was a scan of the column list: `po.gram.subset` of 400 of 1,500 columns
   took 3.2 ms and takes 0.56 ms, and every `features=` resolves likewise.

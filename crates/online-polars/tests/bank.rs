@@ -1090,12 +1090,13 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
     // Every row carries `settled_frac` beside `n_eff` now
     // (docs/WARMUP-AND-CONVERGENCE.md §3); `withheld_reason` is a byte and
     // does not count against the f64 budget.
-    // Each row's schedule counts too: 16 f64s of it (task 250).
+    // Each row's schedule counts too: 16 f64s of it (task 250). So do its
+    // features, an f64 each, copied into rows for the run (task 257 (b)).
     let cases: Vec<(Spec, usize)> = vec![
-        (ew_cov_spec(20), 232 + 16),     // 230 statistics + n_eff + settled_frac
-        (ew_cov_spec(2), 7 + 16),        // 5 statistics + n_eff + settled_frac
-        (ridge_spec(""), 4 + 16),        // pred + resid + n_eff + settled_frac
-        (ew_cov_spec(200), 20_302 + 16), // wider than the budget's floor allows
+        (ew_cov_spec(20), 232 + 16 + 20), // 230 statistics + n_eff + settled_frac
+        (ew_cov_spec(2), 7 + 16 + 2),     // 5 statistics + n_eff + settled_frac
+        (ridge_spec(""), 4 + 16 + 2),     // pred + resid + n_eff + settled_frac
+        (ew_cov_spec(200), 20_302 + 16 + 200), // wider than the budget's floor allows
     ];
     for (spec, width) in cases {
         let stream = Stream::new(&spec).unwrap();
@@ -1116,18 +1117,18 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
             assert!(bytes > budget, "{}: at the floor for a reason", spec.name);
         }
     }
-    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 1040);
-    assert_eq!(ChunkOut::run_rows(&ridge_spec(""), 1, 1), 13_104);
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 976);
+    assert_eq!(ChunkOut::run_rows(&ridge_spec(""), 1, 1), 11_888);
     // A no-target model with one statistic and one instance writes three
     // values a row -- the statistic, `n_eff`, `settled_frac` -- and gets
     // the widest run there is.
-    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 13_776);
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 12_464);
 }
 
 /// A narrow model's runs at one chunk, 7 chunks and 600 chunks (hard rule
 /// 3; task 250). A run's row budget counts the row plan pass 1 writes and
 /// pass 2 reads, so a narrow `ewridge` -- five values a row with `n_eff`,
-/// `settled_frac` and the plan's sixteen -- now runs about thirteen
+/// `settled_frac`, the plan's sixteen and its two features -- runs about twelve
 /// thousand rows at a time, and one chunk of two and a half runs has two
 /// boundaries inside it. Every float field of every row is the same to the
 /// bit at every chunking: a run boundary is invisible, as a chunk boundary

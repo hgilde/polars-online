@@ -35,7 +35,7 @@ each reads as of its date, with the names of its day.
 | [37. One wide Gram on several threads](#37-one-wide-gram-on-several-threads-2026-10-08) | one accumulator is the whole job, and you want what `gram_threads` gains on `ewridge` or `ew_cov` | |
 | [38. A solve's bits, whatever the pool](#38-a-solves-bits-whatever-the-pool-2026-10-09) | you want why a wide fit gives the same bits in a pool of any size | |
 | [41. A product's memory on each thread](#41-a-products-memory-on-each-thread-2026-10-13) | a wide fit on many threads takes more memory than its state, or you want what a matrix product allocates on a thread and how its rounding is checked | [what a thread allocates](#what-a-thread-allocates) · [what moved](#what-moved) · [speed](#speed) |
-| [42. A blocked Gram's targets, and a bank's own share](#42-a-blocked-grams-targets-and-a-banks-own-share-2026-10-13) | a blocked `ewridge` with many targets, or a bank of several specs, costs more CPU than its product | [where a target's time went](#where-a-targets-time-went) · [the fold](#the-fold) · [the copy into rows](#the-copy-into-rows) |
+| [42. A blocked Gram's targets, and a bank's own share](#42-a-blocked-grams-targets-and-a-banks-own-share-2026-10-13) | a blocked `ewridge` with many targets, or a bank of several specs, costs more CPU than its product | [where a target's time went](#where-a-targets-time-went) · [the fold](#the-fold) · [the copy into rows](#the-copy-into-rows) · [the copy, a run at a time](#the-copy-a-run-at-a-time) |
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [the scaler's fix](#where-sgd-lost-and-the-scalers-fix) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
 | [15. The correlation families](#15-the-correlation-families-bocpds-prune_below-keeps-it-finite-and-rcovs-estimator-sets-its-cost-2026-09-06) | you run `bocpd`, `rcov`, `deco`, `hmm` or `corrchange` | [`bocpd`](#bocpd-prune_below-is-what-makes-it-finite) · [`rcov`](#rcov-the-cost-is-at-the-close-and-the-kernel-chooses-it) · [the other three](#the-other-three) · [going wide](#and-they-go-wide) |
@@ -2995,6 +2995,68 @@ each, the median ratio 0.999. About 3 ns of a bank's own remain per
 feature and row: the copy into rows on one thread, and the loop around
 each step. A copy tile by tile inside each stream, never writing the
 whole chunk out in rows, is the next step.
+
+#### The copy, a run at a time
+
+The bank now keeps a chunk's features as the columns it read, and each
+stream copies only the rows of the run it is about to learn into a buffer
+of its own, reused run after run. A run is sized to stay in cache with its
+outputs (`ChunkOut::run_rows`, which now counts a run's features in its
+2 MiB), so the passes over the run read rows that were written a moment
+before and are still in cache. At 200 features a run is about a thousand
+rows; at 1,000, 240. The whole chunk is never held in rows, and a float64
+column with no nulls is not copied at all: the copy reads it in place.
+`last_accepted`, which looks for the group's last usable row before any
+run, reads the columns. Scoring and the window pre-pass, each one pass over
+a task's rows, still copy those rows at once.
+
+On one thread, the copy was 7.9% of a busy profile (`/usr/bin/sample`) of
+the five specs at ten targets, and is 5.2%; on the default pool, 9.4% and
+5.9%, and the schedule's accept test, which reads every feature of a row,
+fell from 3.1% to 1.0%. What is left of the copy reads the columns from
+memory once. The same five specs as above, ns per feature and row, three
+rounds of each build in turn at a load of 2 to 4; "pool 1" is
+`POLARS_ONLINE_MAX_THREADS=1`:
+
+| specs | targets | pool | CPU before | CPU after | wall before | wall after |
+|---|---:|---|---:|---:|---:|---:|
+| 5 x 200 | 1 | 1 | 9.53-9.88 | 9.03-9.37 | 9.49-9.86 | 9.02-9.34 |
+| 5 x 200 | 1 | default | 11.25-11.98 | 10.36-10.96 | 2.73-3.29 | 2.50-2.75 |
+| 5 x 200 | 10 | 1 | 11.67-12.35 | 11.12-11.58 | 11.61-12.29 | 11.06-11.48 |
+| 5 x 200 | 10 | default | 13.92-14.50 | 12.83-13.41 | 3.11-3.45 | 2.93-3.21 |
+| 1 x 1,000 | 1 | 1 | 24.85-25.27 | 24.33-24.68 | 24.86-25.27 | 24.33-24.69 |
+| 1 x 1,000 | 1 | default | 43.15-44.35 | 36.68-40.66 | 8.17-8.44 | 7.76-8.41 |
+| 1 x 1,000 | 10 | 1 | 26.14-26.59 | 25.72-26.18 | 26.14-26.59 | 25.72-26.18 |
+| 1 x 1,000 | 10 | default | 44.66-45.47 | 38.00-43.70 | 8.93-9.27 | 8.73-9.46 |
+
+The lone spec copied its chunk on every thread of the pool before; it now
+copies each run on its stream's thread, in cache, which is 1 to 7 ns of CPU
+less per feature and row at the same wall time.
+
+The memory is the larger gain. Peak resident memory over the baseline, in
+MiB, of a child process per run (as `tests/test_budgets_memory.py`
+measures it), three runs of each build in turn:
+
+| run | before | after |
+|---|---:|---:|
+| the five specs, ten targets, `fit` (float32 columns) | 395-396 | 230-233 |
+| one `sgd` of 1,000 float64 features, 20,000 rows, `fit_predict` | 165 | 13.8 |
+| `ewridge`, 20 features, 10 targets, 200,000 rows (`rss.ewridge_10_targets`) | 145-152 | 122 |
+| `ew_cov`, 20 features, 200,000 rows (`rss.ew_cov_wide`) | 444-446 | 418 |
+| one `ewridge` streamed, a million rows (`rss.streaming_bounded`) | 202-208 | 197-205 |
+
+The first two lose the whole chunk in rows: 160 MB for the five specs, 160
+MB for the 1,000 features. The five specs keep a copy of their own: a
+float32 column is cast to float64 when the chunk is read, which writes each
+column once more, and is now the one whole-chunk copy of the features left.
+`scripts/benchmark.py`'s rows, none of them wide, were the old build's
+within their scatter over six rounds of each, the median ratio 1.002;
+`sgd` and `pa` at 20 features ran 4-5% faster. Every output and state is
+the same bits: `scripts/release_probe.py`'s outputs and states, and the
+same workload on a stream of 203 features (float32 and float64, nulls,
+NaN and infinities among them): its first 4,500 rows fit in one chunk, in
+chunks of 858 and in chunks of 600, the last 1,500 then scored, 316 files
+each byte for byte.
 
 ```sh
 cargo run --release -p online-core --example gram_targets_bench -- 200
