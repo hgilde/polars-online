@@ -30,10 +30,15 @@
 //! inverse of the raw moments `[[1, m'], [m, C + m m']]`: `ȳ` and the
 //! slopes are uncorrelated, so `Var[b_0] = Var[ȳ] + m' Var[b] m`. A Gram
 //! pooled within parts recovers no intercept, and gives it no error. Both
-//! systems are
-//! factorized by Cholesky (`faer`, sequential, so the numbers do not
-//! depend on a thread count) where numpy runs an eigendecomposition and an
-//! LU: the two agree to rounding on a positive definite system. Where the
+//! systems are factorized by Cholesky (`faer`, sequential, so the numbers
+//! do not depend on a thread count) where numpy runs an eigendecomposition
+//! and an LU: the two agree to rounding on a positive definite system.
+//!
+//! Every target is solved and summed beside the others, but in its own
+//! arithmetic: the substitutions ([`super::trisolve`]) and the two
+//! quadratic forms, `b' A b` and `m' A⁻¹ m` ([`super::colstats`]), each
+//! run a target's terms in an order fixed by the target alone, so a fit's
+//! bits do not depend on which targets share its call. Where the
 //! factorization fails -- a constant column under a ridge of 0, whose pivot
 //! is exactly 0 -- this gives NaN, where numpy divides by an eigenvalue of
 //! 0 or of rounding size.
@@ -43,6 +48,8 @@ use faer::dyn_stack::{MemBuffer, MemStack};
 use faer::linalg::cholesky::llt;
 use faer::prelude::*;
 
+use super::colstats::{lower_quad, sym_quad};
+use super::trisolve::solve_llt;
 use super::{Design, GramArrays, Response};
 
 /// One target's ridge fit and its statistics, over the Gram's `k` columns.
@@ -81,22 +88,6 @@ fn cholesky(a: &[f64], n: usize) -> Option<Mat<f64>> {
     Some(l)
 }
 
-/// `X ← A⁻¹ X` from `A`'s lower factor.
-fn solve_in_place(l: &Mat<f64>, rhs: MatMut<'_, f64>) {
-    let mut mem = MemBuffer::new(llt::solve::solve_in_place_scratch::<f64>(
-        l.nrows(),
-        rhs.ncols(),
-        Par::Seq,
-    ));
-    llt::solve::solve_in_place_with_conj(
-        l.as_ref(),
-        faer::Conj::No,
-        rhs,
-        Par::Seq,
-        MemStack::new(&mut mem),
-    );
-}
-
 /// The ridge fit of each of `targets` on `g`'s `slots`, the intercept at
 /// `icept` or none, with penalty `ridge` (finite and at least 0).
 pub fn ridge_fits(
@@ -133,42 +124,48 @@ pub fn ridge_fits(
         .iter()
         .map(|&t| Response::of(g, t, slots, icept))
         .collect();
-    // Every target's right-hand side, a column each, solved one column at
-    // a time: a blocked solve of several columns at once moves a column's
-    // last bits with the columns beside it, and a target's fit must not
-    // depend on which other targets share its call (docs/PLAN.md task 256:
-    // a job's fit is its own, whichever jobs share its columns).
-    let mut x = Mat::from_fn(nk, resps.len(), |r, c| resps[c].rhs[keep[r]] / s[keep[r]]);
-    match &factor {
-        Some(l) => {
-            for c in 0..x.ncols() {
-                solve_in_place(l, x.as_mut().subcols_mut(c, 1));
-            }
+    // Every target's right-hand side, a column each of a row-major `nk ×
+    // T`, solved together on the shared factor by forward and back
+    // substitution in which each column's arithmetic is its own
+    // ([`super::trisolve`]): a target's fit must not depend on which other
+    // targets share its call (docs/PLAN.md task 256: a job's fit is its
+    // own, whichever jobs share its columns).
+    let nt = resps.len();
+    let mut x = vec![0.0; nk * nt];
+    for (r, &p) in keep.iter().enumerate() {
+        for (c, resp) in resps.iter().enumerate() {
+            x[r * nt + c] = resp.rhs[p] / s[p];
         }
+    }
+    match &factor {
+        Some(l) => solve_llt(l, &mut x, nt),
         None => x.fill(f64::NAN),
     }
-    // `A⁻¹`'s factor for the standard errors, `A` the system's moments
-    // unpenalized -- centred with an intercept, raw without one -- formed
-    // once and only if a target asks.
-    let mut inv: Option<(Option<Mat<f64>>, Vec<f64>)> = None;
+    // Each target's slopes, a column each of a row-major `n × T`, 0 at a
+    // dropped slot, and its `b' A b`, `A` the system's moments unpenalized
+    // -- centred with an intercept, raw without one.
     let c = &design.a;
+    let mut bs = vec![0.0; n * nt];
+    for (r, &p) in keep.iter().enumerate() {
+        for col in 0..nt {
+            bs[p * nt + col] = x[r * nt + col] / s[p];
+        }
+    }
+    let cbs = sym_quad(c, n, &bs, nt);
     // A Gram pooled within parts spent an intercept on each part it holds
     // the target's rows of, and has none of its own (docs/PLAN.md task 240).
     let dof_used = |t: usize| match g.within {
         Some(parts) => n + parts[t],
         None => n + usize::from(icept.is_some()),
     };
-    targets
+    let mut fits: Vec<RidgeFit> = targets
         .iter()
         .zip(&resps)
         .enumerate()
         .map(|(col, (&t, resp))| {
             let mut coef = vec![0.0; k];
             let mut fit = 0.0;
-            let mut b = vec![0.0; n];
-            for (r, &p) in keep.iter().enumerate() {
-                b[p] = x[(r, col)] / s[p];
-            }
+            let b: Vec<f64> = (0..n).map(|p| bs[p * nt + col]).collect();
             for (p, &i) in slots.iter().enumerate() {
                 coef[i] = b[p];
                 fit += b[p] * resp.means[p];
@@ -184,10 +181,7 @@ pub fn ridge_fits(
             };
             let nkish = g.target_n_kish[t];
             let bc: f64 = b.iter().zip(&resp.rhs).map(|(u, v)| u * v).sum();
-            let cb: f64 = (0..n)
-                .map(|p| b[p] * (0..n).map(|q| c[p * n + q] * b[q]).sum::<f64>())
-                .sum();
-            let mut resid_var = var_y - 2.0 * bc + cb;
+            let mut resid_var = var_y - 2.0 * bc + cbs[col];
             // numpy's `max(resid_var, 0.0)` keeps a NaN, as this does.
             if resid_var < 0.0 {
                 resid_var = 0.0;
@@ -198,35 +192,10 @@ pub fn ridge_fits(
             } else {
                 f64::NAN
             };
-            let mut se = vec![f64::NAN; k];
-            let mut tstat = vec![f64::NAN; k];
-            if sigma2.is_finite() && nkish > 0.0 {
-                let (l_inv, diag) = inv.get_or_insert_with(|| {
-                    let l_inv = inverse_factor(c, n);
-                    let diag = inverse_diagonal(l_inv.as_ref(), n);
-                    (l_inv, diag)
-                });
-                for (p, &i) in slots.iter().enumerate() {
-                    // A rounding below 0 is 0, but the NaN of a system that
-                    // is not positive definite stays NaN: `f64::max(NaN, 0)`
-                    // is 0, a standard error that reads as an exact
-                    // coefficient (review 6, E-1).
-                    let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };
-                    let v = (d * sigma2 / nkish).sqrt();
-                    se[i] = v;
-                    tstat[i] = if v > 0.0 { coef[i] / v } else { f64::NAN };
-                }
-                if let (Some(ci), None) = (icept, g.within) {
-                    let q = quadratic(l_inv.as_ref(), &resp.means);
-                    let v = ((1.0 + q) * sigma2 / nkish).sqrt();
-                    se[ci] = v;
-                    tstat[ci] = if v > 0.0 { coef[ci] / v } else { f64::NAN };
-                }
-            }
             RidgeFit {
                 coef,
-                se,
-                t: tstat,
+                se: vec![f64::NAN; k],
+                t: vec![f64::NAN; k],
                 resid_var,
                 sigma2,
                 r2: if var_y > 0.0 {
@@ -237,7 +206,53 @@ pub fn ridge_fits(
                 n: nkish,
             }
         })
-        .collect()
+        .collect();
+    // The standard errors, from `A⁻¹`'s factor, formed once and only if a
+    // target asks.
+    let asks: Vec<usize> = (0..nt)
+        .filter(|&col| fits[col].sigma2.is_finite() && fits[col].n > 0.0)
+        .collect();
+    if asks.is_empty() {
+        return fits;
+    }
+    let l_inv = inverse_factor(c, n);
+    let diag = inverse_diagonal(l_inv.as_ref(), n);
+    for &col in &asks {
+        let fit = &mut fits[col];
+        for (p, &i) in slots.iter().enumerate() {
+            // A rounding below 0 is 0, but the NaN of a system that is not
+            // positive definite stays NaN: `f64::max(NaN, 0)` is 0, a
+            // standard error that reads as an exact coefficient (review 6,
+            // E-1).
+            let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };
+            let v = (d * fit.sigma2 / fit.n).sqrt();
+            fit.se[i] = v;
+            fit.t[i] = if v > 0.0 { fit.coef[i] / v } else { f64::NAN };
+        }
+    }
+    // The intercept's, from each asking target's `m' A⁻¹ m`.
+    if let (Some(ci), None) = (icept, g.within) {
+        let nq = asks.len();
+        let qs = match &l_inv {
+            Some(inv) => {
+                let mut ms = vec![0.0; n * nq];
+                for (j, &col) in asks.iter().enumerate() {
+                    for (p, &m) in resps[col].means.iter().enumerate() {
+                        ms[p * nq + j] = m;
+                    }
+                }
+                lower_quad(inv, &ms, nq)
+            }
+            None => vec![f64::NAN; nq],
+        };
+        for (&col, q) in asks.iter().zip(qs) {
+            let fit = &mut fits[col];
+            let v = ((1.0 + q) * fit.sigma2 / fit.n).sqrt();
+            fit.se[ci] = v;
+            fit.t[ci] = if v > 0.0 { fit.coef[ci] / v } else { f64::NAN };
+        }
+    }
+    fits
 }
 
 /// `L⁻¹` for a row-major `n × n` `C = L Lᵀ`, or `None` if `C` is not
@@ -263,16 +278,5 @@ fn inverse_diagonal(l_inv: Option<&Mat<f64>>, n: usize) -> Vec<f64> {
             .map(|i| (i..n).map(|j| inv[(j, i)] * inv[(j, i)]).sum())
             .collect(),
         None => vec![f64::NAN; n],
-    }
-}
-
-/// `m' C⁻¹ m` from `L⁻¹` ([`inverse_factor`]): the squared length of `L⁻¹
-/// m`. NaN for a `C` that is not positive definite.
-fn quadratic(l_inv: Option<&Mat<f64>>, m: &[f64]) -> f64 {
-    match l_inv {
-        Some(inv) => (0..m.len())
-            .map(|j| (0..=j).map(|i| inv[(j, i)] * m[i]).sum::<f64>().powi(2))
-            .sum(),
-        None => f64::NAN,
     }
 }

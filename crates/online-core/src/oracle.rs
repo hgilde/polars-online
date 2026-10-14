@@ -7,7 +7,8 @@
 //! checks (CLAUDE.md, Style; docs/TESTING.md). So nothing here calls
 //! `solve.rs`, nor any Cholesky:
 //!
-//! - `solve`, `inverse` and `quad_form` run faer's partial-pivot LU, which
+//! - `solve`, `solve_columns`, `inverse` and `quad_form` run faer's
+//!   partial-pivot LU, which
 //!   no model runs;
 //! - `log_det`, `gaussian_log_density` and `sym_eigen` run faer's
 //!   self-adjoint eigensolver. `ewcov`'s `Pca::of` and `rcov`'s `clip_psd`
@@ -53,6 +54,18 @@ pub(crate) fn solve(a: &[f64], b: &[f64]) -> Vec<f64> {
         .partial_piv_lu()
         .solve(Mat::from_fn(n, 1, |i, _| b[i]));
     (0..n).map(|i| x[(i, 0)]).collect()
+}
+
+/// `X` with `A X = B`, for a square `A` and the columns `B` of a row-major
+/// `n x t`, returned the same way: one partial-pivot LU of `A`, as
+/// [`solve`] runs it, for every column.
+pub(crate) fn solve_columns(a: &[f64], b: &[f64], t: usize) -> Vec<f64> {
+    let n = order(a.len());
+    assert_eq!(b.len(), n * t, "an {n} x {t} right-hand side");
+    let x = dense(a, n)
+        .partial_piv_lu()
+        .solve(Mat::from_fn(n, t, |i, c| b[i * t + c]));
+    (0..n * t).map(|ic| x[(ic / t, ic % t)]).collect()
 }
 
 /// `A⁻¹`, row-major, for a square `A`: the inverse faer forms from its
