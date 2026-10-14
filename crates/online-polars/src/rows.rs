@@ -186,8 +186,33 @@ const GROUP: usize = 8;
 /// The tile's scratch: a row tile's values for one group of columns.
 type Scratch = [[f64; GROUP]; ROW_TILE];
 
+/// A column's values as one slice of `f64` or of `f32` with no null among
+/// them, which the transpose copies a row at a time; `Other` for every
+/// other column, copied through the scratch.
+#[derive(Clone, Copy)]
+enum Plain<'a> {
+    F64(&'a [f64]),
+    F32(&'a [f32]),
+    Other,
+}
+
+impl Plain<'_> {
+    /// Which of the three: consecutive columns of one kind are copied
+    /// together.
+    fn kind(&self) -> u8 {
+        match self {
+            Self::F64(_) => 0,
+            Self::F32(_) => 1,
+            Self::Other => 2,
+        }
+    }
+}
+
 /// A column the transpose reads: [`FeatureCol`], or a plain slice of `f64`.
 trait Source: Sync {
+    /// The column as a plain slice, where it is one.
+    fn plain(&self) -> Plain<'_>;
+
     /// Source rows `j0..j0 + out.len()` -- or `layout[j]` for each such
     /// position `j` -- as `f64`, into slot `g` of each scratch row.
     fn put(&self, out: &mut [[f64; GROUP]], g: usize, j0: usize, layout: Option<&[usize]>);
@@ -233,6 +258,14 @@ fn put_values<T: Copy>(
 }
 
 impl Source for FeatureCol {
+    fn plain(&self) -> Plain<'_> {
+        match (&self.values, &self.nulls) {
+            (Values::F64(a), None) => Plain::F64(a.values()),
+            (Values::F32(a), None) => Plain::F32(a.values()),
+            _ => Plain::Other,
+        }
+    }
+
     #[allow(
         clippy::unnecessary_cast,
         reason = "one arm of `each_type!` is f64 already"
@@ -244,6 +277,10 @@ impl Source for FeatureCol {
 }
 
 impl Source for &[f64] {
+    fn plain(&self) -> Plain<'_> {
+        Plain::F64(self)
+    }
+
     fn put(&self, out: &mut [[f64; GROUP]], g: usize, j0: usize, layout: Option<&[usize]>) {
         put_values(self, |x| x, None, out, g, j0, layout)
     }
@@ -329,14 +366,90 @@ pub struct FeatureRows {
     n: usize,
 }
 
-/// The transpose's row tile, the unit of parallelism. Inside a tile each
-/// column is read for [`ROW_TILE`] rows at once (one type, one branch on its
-/// validity), widened into a scratch of one [`GROUP`] of columns that stays
-/// in L1, and the scratch is then written out a cache line of each row at a
-/// time. The scratch keeps the writes of one column, a row apart, out of
-/// the tile itself, where at a width of a power of two they would all land
-/// in one set of the cache.
+/// The transpose's row tile, the unit of parallelism. A tile is copied one
+/// of two ways, by the row's width, both measured (docs/PERFORMANCE.md §42).
+/// Up to [`WIDE`] features, [`by_groups`]: each column read for the tile's
+/// rows at once (one type, one branch on its validity) into a scratch of
+/// [`GROUP`] columns that stays in L1, then written out a cache line of each
+/// row at a time -- 0.4-0.6 ns a value at 20 to 200 features, where the
+/// copy row by row took 0.55-1.0. Past it, the tile's rows are far apart and
+/// a pass that writes one line of each of 128 of them falls out of cache --
+/// at 1,024 features, rows 8 KiB apart, all in one set -- so a run of
+/// columns with no nulls, all `f64` or all `f32`, is copied row by row
+/// ([`by_rows`], the transpose as it was before the columns kept their
+/// types), and only the other columns take the scratch.
 const ROW_TILE: usize = 128;
+/// The columns of a plain run copied together, row by row: a cache line of
+/// each of them serves eight rows, and their writes are a contiguous run.
+const COL_TILE: usize = 64;
+/// The widest row copied through the scratch alone.
+const WIDE: usize = 512;
+
+/// The transpose row by row, for a run of plain columns starting at column `c0`:
+/// row by row, [`COL_TILE`] columns at a time, each value widened by `as
+/// f64`. The reads stay within `COL_TILE` columns -- a cache line of each
+/// serves the next rows -- and the writes are contiguous runs of
+/// `COL_TILE` values.
+#[inline]
+fn by_rows<'a, T: Copy + Into<f64> + 'a>(
+    tile: &mut [f64],
+    k: usize,
+    j0: usize,
+    layout: Option<&[usize]>,
+    c0: usize,
+    plain: &[Plain<'a>],
+    slice: impl Fn(Plain<'a>) -> &'a [T],
+) {
+    let cols: Vec<&[T]> = plain.iter().map(|p| slice(*p)).collect();
+    for t0 in (0..cols.len()).step_by(COL_TILE) {
+        let t1 = (t0 + COL_TILE).min(cols.len());
+        let (d0, d1) = (c0 + t0, c0 + t1);
+        for (r, row) in tile.chunks_exact_mut(k).enumerate() {
+            let src = layout.map_or(j0 + r, |p| p[j0 + r]);
+            for (dst, col) in row[d0..d1].iter_mut().zip(&cols[t0..t1]) {
+                *dst = col[src].into();
+            }
+        }
+    }
+}
+
+/// The transpose for columns `c0..c0 + cols.len()` of any type, nulls and
+/// all: [`GROUP`] columns at a time, each read for the tile's rows into the
+/// scratch (one type, one branch on its validity), the scratch then
+/// written out a cache line of each row at a time.
+#[inline]
+fn by_groups<C: Source>(
+    tile: &mut [f64],
+    k: usize,
+    j0: usize,
+    layout: Option<&[usize]>,
+    c0: usize,
+    cols: &[C],
+    scratch: &mut [[f64; GROUP]],
+) {
+    for g0 in (0..cols.len()).step_by(GROUP) {
+        let g1 = (g0 + GROUP).min(cols.len());
+        for (g, col) in cols[g0..g1].iter().enumerate() {
+            col.put(scratch, g, j0, layout);
+        }
+        let (d0, d1) = (c0 + g0, c0 + g1);
+        // A whole group is a copy of a known length, inlined; a copy of a
+        // length known only at run time was a call to `memcpy` per row and
+        // group.
+        if d1 - d0 == GROUP {
+            for (row, s) in tile.chunks_exact_mut(k).zip(scratch.iter()) {
+                let dst: &mut [f64; GROUP] = (&mut row[d0..d1]).try_into().unwrap();
+                *dst = *s;
+            }
+        } else {
+            for (row, s) in tile.chunks_exact_mut(k).zip(scratch.iter()) {
+                for (d, v) in row[d0..d1].iter_mut().zip(s) {
+                    *d = *v;
+                }
+            }
+        }
+    }
+}
 
 impl FeatureRows {
     /// Row `j`, column `c` is `cols[c][layout[j]]`, or `cols[c][j]` without
@@ -369,18 +482,39 @@ impl FeatureRows {
         if k == 0 {
             return;
         }
+        // Past `WIDE` features, each column once as a plain slice where it
+        // is one, and the runs of consecutive columns of one kind; below it,
+        // every column goes through the scratch.
+        let plain: Vec<Plain<'_>> = if k > WIDE {
+            cols.iter().map(Source::plain).collect()
+        } else {
+            vec![Plain::Other; k]
+        };
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for c in 0..k {
+            match runs.last_mut() {
+                Some((_, end)) if plain[*end - 1].kind() == plain[c].kind() => *end = c + 1,
+                _ => runs.push((c, c + 1)),
+            }
+        }
         let fill = |(t, tile): (usize, &mut [f64])| {
             let j0 = start + t * ROW_TILE;
             let rows = tile.len() / k;
             let mut scratch: Scratch = [[0.0; GROUP]; ROW_TILE];
             let scratch = &mut scratch[..rows];
-            for c0 in (0..k).step_by(GROUP) {
-                let c1 = (c0 + GROUP).min(k);
-                for (g, col) in cols[c0..c1].iter().enumerate() {
-                    col.put(scratch, g, j0, layout);
-                }
-                for (row, s) in tile.chunks_exact_mut(k).zip(scratch.iter()) {
-                    row[c0..c1].copy_from_slice(&s[..c1 - c0]);
+            for &(a, b) in &runs {
+                match plain[a] {
+                    Plain::F64(_) => by_rows(tile, k, j0, layout, a, &plain[a..b], |p| match p {
+                        Plain::F64(v) => v,
+                        _ => unreachable!("a run is of one kind"),
+                    }),
+                    Plain::F32(_) => by_rows(tile, k, j0, layout, a, &plain[a..b], |p| match p {
+                        Plain::F32(v) => v,
+                        _ => unreachable!("a run is of one kind"),
+                    }),
+                    Plain::Other => {
+                        by_groups(tile, k, j0, layout, a, &cols[a..b], scratch);
+                    }
                 }
             }
         };
@@ -646,30 +780,49 @@ mod tests {
         wants.push(want_f64);
         wants.push((0..n).map(|i| i as f64).collect());
         cols.push(FeatureCol::from(wants.last().unwrap().clone()));
+        // A float32 column with no nulls, which the copy row by row takes.
+        let s = polars::prelude::Series::new(
+            "f32 plain".into(),
+            (0..n).map(|i| i as f32 * 0.1 - 3.0).collect::<Vec<f32>>(),
+        );
+        wants.push(cast(&s));
+        let a = crate::arrow::NumArray::of(&s).unwrap().expect("kept as is");
+        cols.push(FeatureCol::num(&a));
+        assert!(matches!(cols.last().unwrap().plain(), Plain::F32(_)));
+        assert!(matches!(cols[cols.len() - 2].plain(), Plain::F64(_)));
         for (c, want) in cols.iter().zip(&wants) {
             for (i, w) in want.iter().enumerate() {
                 assert_eq!(c.at(i).to_bits(), w.to_bits(), "column {c:?} row {i}");
             }
         }
-        // Repeated past a group of eight, so a tile holds several groups.
-        let k = 3 * cols.len();
-        let cols: Vec<FeatureCol> = (0..k).map(|c| cols[c % cols.len()].clone()).collect();
-        let perm: Vec<usize> = (0..n).map(|j| (j * 13) % n).collect();
-        for layout in [None, Some(perm)] {
-            let fc = FeatureCols::new(cols.clone(), n, layout.clone(), false);
-            let mut rows = FeatureRows::default();
-            for (start, len) in [(0, n), (0, 129), (129, 1), (130, 171)] {
-                fc.rows_into(&mut rows, start, len);
-                let whole =
-                    FeatureCols::new(cols.clone(), n, layout.clone(), true).rows(start, len);
-                for i in start..start + len {
-                    let src = layout.as_ref().map_or(i, |p| p[i]);
-                    for (c, (got, par)) in rows.row(i).iter().zip(whole.row(i)).enumerate() {
-                        let w = wants[c % wants.len()][src];
-                        assert_eq!(got.to_bits(), w.to_bits(), "row {i} column {c}");
-                        assert_eq!(par.to_bits(), w.to_bits(), "row {i} column {c}");
+        // Repeated past a group of eight, so a tile holds several groups;
+        // and past `WIDE`, in runs of seven alike, so the copy row by row
+        // takes the runs of plain `f64` and `f32` and the scratch the rest.
+        let m = cols.len();
+        let pick_narrow = |c: usize| c % m;
+        let pick_wide = |c: usize| (c / 7) % m;
+        for (k, pick) in [
+            (3 * m, &pick_narrow as &dyn Fn(usize) -> usize),
+            (WIDE + 90, &pick_wide),
+        ] {
+            let wide: Vec<FeatureCol> = (0..k).map(|c| cols[pick(c)].clone()).collect();
+            let perm: Vec<usize> = (0..n).map(|j| (j * 13) % n).collect();
+            for layout in [None, Some(perm)] {
+                let fc = FeatureCols::new(wide.clone(), n, layout.clone(), false);
+                let par = FeatureCols::new(wide.clone(), n, layout.clone(), true);
+                let mut rows = FeatureRows::default();
+                for (start, len) in [(0, n), (0, 129), (129, 1), (130, 171)] {
+                    fc.rows_into(&mut rows, start, len);
+                    let whole = par.rows(start, len);
+                    for i in start..start + len {
+                        let src = layout.as_ref().map_or(i, |p| p[i]);
+                        for (c, (got, par)) in rows.row(i).iter().zip(whole.row(i)).enumerate() {
+                            let w = wants[pick(c)][src];
+                            assert_eq!(got.to_bits(), w.to_bits(), "k={k} row {i} column {c}");
+                            assert_eq!(par.to_bits(), w.to_bits(), "k={k} row {i} column {c}");
+                        }
+                        assert_eq!(fc.usable_at(i), online_core::all_usable(rows.row(i)));
                     }
-                    assert_eq!(fc.usable_at(i), online_core::all_usable(rows.row(i)));
                 }
             }
         }

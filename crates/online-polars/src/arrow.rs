@@ -191,6 +191,24 @@ impl NumArray {
                 .cloned()
                 .unwrap_or_else(|| polars_arrow::array::PrimitiveArray::from_vec(Vec::new()))
         }
+        // Rechunked only once the dtype is known to be kept: a `Float64`
+        // column read from several row groups would be joined here for
+        // nothing, and again by its cast.
+        let kept = matches!(
+            s.dtype(),
+            DataType::Float32
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64
+        );
+        if !kept {
+            return Ok(None);
+        }
         let r = s.rechunk();
         Ok(Some(match s.dtype() {
             DataType::Float32 => Self::F32(one(r.f32()?)),
@@ -202,7 +220,7 @@ impl NumArray {
             DataType::UInt16 => Self::U16(one(r.u16()?)),
             DataType::UInt32 => Self::U32(one(r.u32()?)),
             DataType::UInt64 => Self::U64(one(r.u64()?)),
-            _ => return Ok(None),
+            _ => unreachable!("a dtype kept as is"),
         }))
     }
 }
