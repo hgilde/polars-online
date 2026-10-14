@@ -174,9 +174,28 @@ pub(crate) struct Block<'a> {
 /// [`EwCov::flush_riding`]). `fold(None)` is a block merged with nothing to
 /// fold -- no weight among its rows, or rows a damaged state could not
 /// trust -- whose held values are dropped.
+///
+/// The rider is a type parameter, not a trait object, so the accumulator
+/// without one -- [`NoRider`], every caller but a blocked `ewridge`'s
+/// targets -- compiles to the code it had before riders existed: no check
+/// per row, no call, and the merge's two passes in one loop.
 pub(crate) trait Rider {
+    /// Whether the rider reads the block. `false` only for [`NoRider`], and
+    /// a constant, so the branch on it is decided at compile time.
+    const RIDES: bool = true;
     fn held(&mut self);
     fn fold(&mut self, block: Option<&Block<'_>>);
+}
+
+/// No rider: [`EwCov::update`], [`EwCov::skip`] and [`EwCov::flush`].
+pub(crate) struct NoRider;
+
+impl Rider for NoRider {
+    const RIDES: bool = false;
+    #[inline(always)]
+    fn held(&mut self) {}
+    #[inline(always)]
+    fn fold(&mut self, _: Option<&Block<'_>>) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -672,13 +691,7 @@ impl EwCov {
     /// and no `lam`. Every held row therefore committed, which is what lets
     /// the suffix products in [`Self::flush`] be taken over the buffer as it
     /// stands.
-    fn buffer<'r>(
-        &mut self,
-        x: &[f64],
-        lam: f64,
-        w: f64,
-        mut rider: Option<&mut (dyn Rider + 'r)>,
-    ) {
+    fn buffer<R: Rider>(&mut self, x: &[f64], lam: f64, w: f64, rider: &mut R) {
         let Some((a, _b, w_new)) = self.step_factors(lam, w) else {
             return;
         };
@@ -689,9 +702,7 @@ impl EwCov {
         self.pending.lam.push(lam);
         self.pending.w.push(w);
         self.commit_scalars(lam, w, a, w_new);
-        if let Some(r) = rider.as_deref_mut() {
-            r.held();
-        }
+        rider.held();
         if self.pending.len() >= self.pending.block_rows {
             self.flush_riding(rider);
         }
@@ -752,7 +763,7 @@ impl EwCov {
     /// `W'` is read from `w_sum`, which the per-row scalars already carried,
     /// so the merge cannot disagree with the count that was reported.
     pub fn flush(&mut self) {
-        self.flush_riding(None);
+        self.flush_riding(&mut NoRider);
     }
 
     /// [`Self::flush`], handing the block to `rider` between its two passes
@@ -762,16 +773,12 @@ impl EwCov {
     /// same operations on the same numbers with a rider or without; with one,
     /// the second pass scales the rows after the rider has read them,
     /// rather than in the same loop.
-    pub(crate) fn flush_riding<'r>(&mut self, rider: Option<&mut (dyn Rider + 'r)>) {
+    pub(crate) fn flush_riding<R: Rider>(&mut self, rider: &mut R) {
         let n = self.pending.len();
         if n == 0 {
             return;
         }
-        let drop_rows = |rider: Option<&mut (dyn Rider + 'r)>| {
-            if let Some(r) = rider {
-                r.fold(None);
-            }
-        };
+        let drop_rows = |rider: &mut R| rider.fold(None);
         let k = self.k;
         debug_assert_eq!(self.pending.x.len(), n * k);
         debug_assert_eq!(self.pending.w.len(), n);
@@ -863,7 +870,7 @@ impl EwCov {
                 *xi *= root;
             }
         };
-        if let Some(r) = rider {
+        if R::RIDES {
             for (i, &ui) in u.iter().enumerate() {
                 centre(&mut x[i * k..(i + 1) * k], &mut delta, ui);
             }
@@ -871,7 +878,7 @@ impl EwCov {
             for d in delta.iter_mut() {
                 *d /= u_sum;
             }
-            r.fold(Some(&Block {
+            rider.fold(Some(&Block {
                 a: x.as_slice(),
                 n,
                 k,
@@ -950,20 +957,14 @@ impl EwCov {
     /// reaching this far is a bug, so it is caught in debug builds and treated
     /// as a no-op in release rather than corrupting the accumulator.
     pub fn update(&mut self, x: &[f64], lam: f64, w: f64) {
-        self.update_riding(x, lam, w, None);
+        self.update_riding(x, lam, w, &mut NoRider);
     }
 
     /// [`Self::update`], with `rider` told of the row if the block holds it
     /// and handed any block merged on the way ([`Rider`]): the one merge
     /// a full block brings, or the held rows a decay that takes the whole
     /// history merges before it.
-    pub(crate) fn update_riding<'r>(
-        &mut self,
-        x: &[f64],
-        lam: f64,
-        w: f64,
-        mut rider: Option<&mut (dyn Rider + 'r)>,
-    ) {
+    pub(crate) fn update_riding<R: Rider>(&mut self, x: &[f64], lam: f64, w: f64, rider: &mut R) {
         debug_assert_eq!(x.len(), self.k);
         debug_assert!(
             w >= 0.0,
@@ -989,7 +990,7 @@ impl EwCov {
         // prior's scale at 1 across the row, 6.8e-2 from the definition
         // after two such rows (task 159, R1).
         if w == 0.0 && lam * self.w_sum == 0.0 {
-            self.flush_riding(rider.as_deref_mut());
+            self.flush_riding(rider);
             return self.decay(lam);
         }
         if self.pending.block_rows > 0 {
@@ -1099,16 +1100,11 @@ impl EwCov {
     /// or a `lam` that takes all of it, there is nothing to hold and `decay`
     /// is the answer.
     pub fn skip(&mut self, x: &[f64], lam: f64) {
-        self.skip_riding(x, lam, None);
+        self.skip_riding(x, lam, &mut NoRider);
     }
 
     /// [`Self::skip`] with a [`Rider`], as [`Self::update_riding`].
-    pub(crate) fn skip_riding<'r>(
-        &mut self,
-        x: &[f64],
-        lam: f64,
-        rider: Option<&mut (dyn Rider + 'r)>,
-    ) {
+    pub(crate) fn skip_riding<R: Rider>(&mut self, x: &[f64], lam: f64, rider: &mut R) {
         if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {
             self.buffer(x, lam, 0.0, rider);
         } else {
@@ -1179,7 +1175,11 @@ impl TargetMoments {
     /// One present target, with the `a` and `b` its cross-moment update
     /// computed from the same `W_t` -- [`EwCov::update`]'s weighted Welford
     /// step, so the variance matches an `ew_cov` over the column to the bit.
-    #[inline]
+    ///
+    /// Always inlined: `ewridge`'s accumulator calls it from its per-row and
+    /// its blocked path, and at two call sites `#[inline]` left it out of
+    /// line, a call per target on every row (task 257's per-row cost).
+    #[inline(always)]
     pub fn learn(&mut self, t: usize, y: f64, a: f64, b: f64, lam: f64, w: f64) {
         let d = crate::comp::dev(y, self.mean[t], self.mean_lo[t]);
         self.var[t] = a * self.var[t] + a * b * d * d;

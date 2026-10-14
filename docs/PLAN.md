@@ -10602,6 +10602,35 @@ tick, and that the series holding it up has a count near 1.
       rounds each, median ratio 0.999, every row within scatter. New
       instruction case `ewridge_gram_t10` (50 features, 10 targets, block
       64), its budget from CI's first run.
+      **Per-row cost** (2026-10-13, branch `task-257-per-row-cost`). CI's
+      counts on `b440a24` put a fixed ~44-52 instructions a row on the
+      *unblocked* path (`ewridge_k5` 2,961,513 -> 3,013,824, +1.77%;
+      `bank_ewridge_k5` +0.9%; `ewridge_k20` +0.54%, the same amount at
+      k = 5 and 20): inside the tolerance, but a slip. Cause: the rider was
+      an `Option<&mut dyn Rider>` threaded through every row, and with two
+      callers (`learn_per_row`, `learn_held`) `Grams::update` and
+      `TargetMoments::learn` left `Acc::learn` for calls of their own -- a
+      call per Gram and per target each row, with their spills. Fix: the
+      rider a type parameter (`ewcov::NoRider`, whose `RIDES = false`
+      picks the merge's one-loop pass at compile time; `gaps::Ride` with
+      `NoRide`, `Grams::update` over `update_with`), so `EwCov::update`,
+      `skip` and `flush` monomorphise to `733e3f4`'s code (its `update` and
+      `update_riding::<NoRider>` differ in register allocation alone), and
+      `TargetMoments::learn` `#[inline(always)]`. What is left on the
+      unblocked row is `Acc::learn`'s `blocked()` test, a few instructions.
+      Measured natively (M4 Pro, load 2.5-5) as instructions retired
+      (`/usr/bin/time -l`, 1M rows of the bench cases' workloads through
+      `EwRidge::step` less a run of none, median of 7): k = 5 3,990 /
+      4,064 / 3,972 a row at `733e3f4` / `main` / this; k = 20 8,087 /
+      8,167 / 8,074; the blocked `ewridge_gram_t10` workload 14,135 ->
+      13,987 (-1.0%) against `main`. Six interleaved timing rounds, ns a
+      row, k = 5 134.8 / 138.8 / 133.1, k = 20 270.5 / 271.1 / 270.0.
+      **Bits:** `release_probe.py`'s outputs (31 specs) and `--states`
+      files byte-identical to `main`'s wheel, and so are blocked fits
+      (both `target_gaps`, blocks 5/64/256, 1 and 4 Gram threads, states
+      saved mid-block at every 333-row chunk); `online-core`'s every test
+      with `--include-ignored`, the fold tests and the frozen fixtures
+      pass. CI's counts on the push are the check.
       **Next (b)**, after CI passes on this: transpose tile by tile inside
       each stream, cache-resident, so a chunk's row block (160 MB at 20,000
       rows of 1,000 features) is never written and read back; the
