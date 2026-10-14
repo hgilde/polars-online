@@ -159,6 +159,28 @@ any change to the numbers a model returns.
   rows 165 -> 14 MiB, ten-target `ewridge` over 200,000 rows 145-152 ->
   122 MiB. `scripts/benchmark.py`'s rows are the same within their scatter
   (median ratio 1.002), and every output and saved state is the same bits.
+- **A float32 or integer feature column is no longer cast to float64 when
+  a chunk is read** (task 257 (c)). A column only features read stays in
+  the type the frame holds it in (float32, or an integer of 8 to 64 bits),
+  and a float64 column's nulls stay in its validity rather than in a filled
+  copy. The copy of a run's rows widens each value as it writes it, with
+  the conversion polars' own cast makes, so every value a model reads is
+  the same bits. That cast was the last copy of a whole chunk's features:
+  160 MB a chunk at 20,000 rows of 1,000 float32 features. Measured on an
+  Apple M4 Pro, three runs of each build in turn: the peak memory of five
+  specs of 200 float32 features over 20,000 rows, `fit`, falls from 230 MiB
+  to 67, and one `sgd` of 1,000 float32 features from 179 MiB to 14, as on
+  float64. At a load of 4 to 6 the same five specs take 2.08-2.14 ns of
+  wall time per feature and row on the default pool against 2.44-2.54 at
+  one target, and 2.55-2.66 against 2.89-3.01 at ten, with 0.1-0.4 ns less
+  CPU; one spec of 1,000 features is the same within its scatter. The copy
+  of a run now reads up to 448 features eight columns at a time through a
+  small buffer: 0.31-0.67 ns a value at 4 to 200 features, where the copy
+  row by row took 0.32-0.95. Past that width it copies plain float64 or
+  float32 columns row by row, as before. A column another role also reads
+  as a number, and a boolean, decimal or 128-bit integer column, is still
+  cast once. `scripts/benchmark.py`'s rows are the same within their
+  scatter (median ratio 1.001).
 - **A Gram's columns are looked up by name in a table**, where each name
   was a scan of the column list: `po.gram.subset` of 400 of 1,500 columns
   took 3.2 ms and takes 0.56 ms, and every `features=` resolves likewise.

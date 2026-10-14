@@ -407,3 +407,75 @@ fn a_u64_key_built_by_hand_matches_the_frame_path() {
         .unwrap();
     same(&want, got);
 }
+
+/// Task 257 (c): a feature column only features read is kept in the type
+/// the frame holds it in -- here `Float32` with nulls and `Int32` -- and
+/// widened as each run is copied into rows; one another role reads too (a
+/// `Float32` weight that is also a feature) is cast once to `Float64` and
+/// shared. Either way the bank learns, to the bit, what it learns from the
+/// same frame cast to `Float64` first, and a role other than a feature that
+/// meets the kept form names it.
+#[test]
+fn a_feature_in_its_own_type_learns_what_its_cast_does() {
+    let spec: Spec = {
+        let mut v: serde_json::Value = serde_json::to_value(spec()).unwrap();
+        v["features"] = serde_json::json!(["x0", "x1", "w"]);
+        serde_json::from_value(v).unwrap()
+    };
+    let d = data(600);
+    let native = frame(&d)
+        .lazy()
+        .with_columns([
+            col("x0").cast(DataType::Float32),
+            (col("x1") * lit(1000.0)).cast(DataType::Int32).alias("x1"),
+            col("w").cast(DataType::Float32),
+        ])
+        .collect()
+        .unwrap();
+    let widened = native
+        .clone()
+        .lazy()
+        .with_columns([
+            col("x0").cast(DataType::Float64),
+            col("x1").cast(DataType::Float64),
+            col("w").cast(DataType::Float64),
+        ])
+        .collect()
+        .unwrap();
+    let specs = vec![spec.clone()];
+    let chunk = chunk_from_frame(&native, &specs).unwrap();
+    assert!(chunk.feature(&spec, "x0").is_ok() && chunk.feature(&spec, "w").is_ok());
+    assert!(
+        chunk.f64(&spec, "weight", "w").is_ok(),
+        "the shared column is Float64"
+    );
+    let err = chunk.f64(&spec, "target", "x0").unwrap_err().to_string();
+    assert!(
+        err.contains("is given as Float32 numbers, which only a feature reads"),
+        "{err}"
+    );
+    let err = chunk.f64(&spec, "target", "x1").unwrap_err().to_string();
+    assert!(err.contains("given as Int32 numbers"), "{err}");
+    for chunk_rows in [600, 97] {
+        let mut a = Bank::new(vec![spec.clone()]).unwrap();
+        let mut b = Bank::new(vec![spec.clone()]).unwrap();
+        for off in (0..600).step_by(chunk_rows) {
+            let want = b
+                .fit_predict(&widened.slice(off as i64, chunk_rows))
+                .unwrap();
+            let got = a
+                .fit_predict(&native.slice(off as i64, chunk_rows))
+                .unwrap();
+            assert_eq!(want.len(), got.len());
+            for (w, g) in want.iter().zip(&got) {
+                assert!(
+                    w.as_materialized_series()
+                        .equals_missing(g.as_materialized_series()),
+                    "{:?} differs",
+                    w.name()
+                );
+            }
+        }
+        assert_eq!(a.save_bytes().unwrap(), b.save_bytes().unwrap());
+    }
+}

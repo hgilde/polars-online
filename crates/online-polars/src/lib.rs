@@ -64,7 +64,7 @@ mod windows;
 mod windows_frame;
 
 pub use arrow::{
-    ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame, chunk_from_frame_at,
+    ArrowChunk, ArrowCol, ClockArray, ClockCol, NumArray, chunk_from_frame, chunk_from_frame_at,
     export_struct_to_c,
 };
 // The Arrow types an `ArrowChunk` is built from and a `fit_predict_arrow`

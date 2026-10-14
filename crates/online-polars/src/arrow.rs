@@ -3,7 +3,10 @@
 //!
 //! The bank reads a chunk in exactly two forms: numbers as `f64`, and keys as
 //! text. [`ArrowChunk`] is that, and nothing more -- a caller holding Arrow
-//! arrays can build one and feed the bank without polars in the process.
+//! arrays can build one and feed the bank without polars in the process. A
+//! feature is the one exception: a column only features read may stay in
+//! its own numeric type ([`NumArray`]), widened to `f64` as each run of rows
+//! is copied, so a chunk of float32 features is never cast whole.
 //!
 //! Everything *polars-shaped* about reading a frame lives here rather than in
 //! the bank: finding a column by name, refusing a dtype that cannot be read,
@@ -17,7 +20,8 @@ use polars::prelude::*;
 // struct, not `array::Array`, and the two must not collide.
 use polars_arrow::array::Array as _;
 use polars_arrow::array::{
-    BooleanArray, Float64Array, Int64Array, StructArray, UInt64Array, Utf8ViewArray,
+    BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
+    StructArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array, Utf8ViewArray,
 };
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
@@ -26,6 +30,7 @@ use online_core::ClockValue;
 use polars_utils::aliases::{PlHashMap, PlHashSet};
 use serde::{Deserialize, Serialize};
 
+use crate::rows::FeatureCol;
 use crate::spec::{ClockScale, ModelKind, Spec};
 
 /// One column of an [`ArrowChunk`], in the form the bank reads it.
@@ -34,6 +39,10 @@ pub enum ArrowCol {
     /// A number: null is a NaN to every consumer, so the validity is applied
     /// when the values are read rather than carried alongside.
     F64(Float64Array),
+    /// A number in the type the source holds it in, read only as a feature
+    /// ([`NumArray`]): widened to `f64` as each run of rows is copied, so
+    /// the chunk is never cast whole. Any other role reads [`Self::F64`].
+    Num(NumArray),
     /// A key or a label, as text.
     Str(Utf8ViewArray),
     /// A signed integer: a group key, kept as an integer so the bank can
@@ -62,6 +71,7 @@ impl ArrowCol {
     pub fn len(&self) -> usize {
         match self {
             Self::F64(a) => a.len(),
+            Self::Num(a) => a.len(),
             Self::Str(a) => a.len(),
             Self::I64(a) => a.len(),
             Self::U64(a) => a.len(),
@@ -95,12 +105,126 @@ impl ArrowCol {
     /// The form, for a message: what a caller gave, against what a role reads.
     pub fn form(&self) -> &'static str {
         match self {
-            Self::F64(_) => "a number",
+            Self::F64(_) | Self::Num(_) => "a number",
             Self::Str(_) => "text",
             Self::I64(_) | Self::U64(_) => "an integer key",
             Self::Nanos(_) => "a temporal clock",
             Self::Bool(_) => "a boolean",
         }
+    }
+}
+
+/// A feature column in the type its source holds it in: `Float32`, or an
+/// integer of 8 to 64 bits. The polars adapter keeps a column in this form
+/// when only features read it, and the copy into rows widens each value as
+/// it writes it, `as f64` -- the conversion polars' own cast to `Float64`
+/// makes -- with a null read as [`online_core::NULL`]. Cast when the chunk
+/// was read, a float32 column was a whole-chunk copy of its own: 160 MB a
+/// chunk at 20,000 rows of 1,000 features.
+#[derive(Clone, Debug)]
+pub enum NumArray {
+    F32(Float32Array),
+    I8(Int8Array),
+    I16(Int16Array),
+    I32(Int32Array),
+    I64(Int64Array),
+    U8(UInt8Array),
+    U16(UInt16Array),
+    U32(UInt32Array),
+    U64(UInt64Array),
+}
+
+impl NumArray {
+    /// The array, as the trait object polars builds a `Series` from.
+    fn boxed(&self) -> Box<dyn polars_arrow::array::Array> {
+        match self {
+            Self::F32(a) => a.clone().boxed(),
+            Self::I8(a) => a.clone().boxed(),
+            Self::I16(a) => a.clone().boxed(),
+            Self::I32(a) => a.clone().boxed(),
+            Self::I64(a) => a.clone().boxed(),
+            Self::U8(a) => a.clone().boxed(),
+            Self::U16(a) => a.clone().boxed(),
+            Self::U32(a) => a.clone().boxed(),
+            Self::U64(a) => a.clone().boxed(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::F32(a) => a.len(),
+            Self::I8(a) => a.len(),
+            Self::I16(a) => a.len(),
+            Self::I32(a) => a.len(),
+            Self::I64(a) => a.len(),
+            Self::U8(a) => a.len(),
+            Self::U16(a) => a.len(),
+            Self::U32(a) => a.len(),
+            Self::U64(a) => a.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The type, as polars names it, for a message.
+    pub fn dtype_name(&self) -> &'static str {
+        match self {
+            Self::F32(_) => "Float32",
+            Self::I8(_) => "Int8",
+            Self::I16(_) => "Int16",
+            Self::I32(_) => "Int32",
+            Self::I64(_) => "Int64",
+            Self::U8(_) => "UInt8",
+            Self::U16(_) => "UInt16",
+            Self::U32(_) => "UInt32",
+            Self::U64(_) => "UInt64",
+        }
+    }
+
+    /// `s` in this form, when its dtype is one of these; `None` for any
+    /// other, which is cast to `Float64` instead.
+    pub(crate) fn of(s: &Series) -> PolarsResult<Option<Self>> {
+        fn one<T: PolarsNumericType>(
+            ca: &ChunkedArray<T>,
+        ) -> polars_arrow::array::PrimitiveArray<T::Native> {
+            ca.downcast_iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| polars_arrow::array::PrimitiveArray::from_vec(Vec::new()))
+        }
+        // Rechunked only once the dtype is known to be kept: a `Float64`
+        // column read from several row groups would be joined here for
+        // nothing, and again by its cast.
+        let kept = matches!(
+            s.dtype(),
+            DataType::Float32
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32
+                | DataType::UInt64
+        );
+        if !kept {
+            return Ok(None);
+        }
+        let r = s.rechunk();
+        Ok(Some(match s.dtype() {
+            DataType::Float32 => Self::F32(one(r.f32()?)),
+            DataType::Int8 => Self::I8(one(r.i8()?)),
+            DataType::Int16 => Self::I16(one(r.i16()?)),
+            DataType::Int32 => Self::I32(one(r.i32()?)),
+            DataType::Int64 => Self::I64(one(r.i64()?)),
+            DataType::UInt8 => Self::U8(one(r.u8()?)),
+            DataType::UInt16 => Self::U16(one(r.u16()?)),
+            DataType::UInt32 => Self::U32(one(r.u32()?)),
+            DataType::UInt64 => Self::U64(one(r.u64()?)),
+            _ => unreachable!("a dtype kept as is"),
+        }))
     }
 }
 
@@ -233,7 +357,8 @@ pub struct ArrowChunk {
 impl ArrowChunk {
     /// A chunk from columns the caller has already cast: numbers as
     /// `Float64Array`, keys and labels as `Utf8ViewArray`, integer group keys
-    /// as `Int64Array` or `UInt64Array`.
+    /// as `Int64Array` or `UInt64Array`. A column only features read may
+    /// instead be [`ArrowCol::Num`], in its own type.
     ///
     /// `names` is every column the source had, which may be more than the
     /// columns given here but never fewer: it is what an error message lists,
@@ -392,6 +517,7 @@ impl ArrowChunk {
         let name: PlSmallStr = name.into();
         let series = match col {
             ArrowCol::F64(a) => Series::from_arrow(name, Box::new(a.clone())),
+            ArrowCol::Num(a) => Series::from_arrow(name, a.boxed()),
             ArrowCol::Str(a) => Series::from_arrow(name, Box::new(a.clone())),
             ArrowCol::I64(a) => Series::from_arrow(name, Box::new(a.clone())),
             ArrowCol::U64(a) => Series::from_arrow(name, Box::new(a.clone())),
@@ -411,6 +537,17 @@ impl ArrowChunk {
         match self.find(name, |c| matches!(c, ArrowCol::F64(_))) {
             Some(ArrowCol::F64(a)) => Ok(a),
             _ => Err(self.missing(spec, role, name, "a number")),
+        }
+    }
+
+    /// A feature column as the copy into rows reads it: a number in the type
+    /// the chunk holds it in, `Float64` or one of [`NumArray`]'s, or the
+    /// error naming the spec.
+    pub fn feature(&self, spec: &Spec, name: &str) -> PolarsResult<FeatureCol> {
+        match self.find(name, |c| matches!(c, ArrowCol::F64(_) | ArrowCol::Num(_))) {
+            Some(ArrowCol::F64(a)) => Ok(FeatureCol::f64(a)),
+            Some(ArrowCol::Num(a)) => Ok(FeatureCol::num(a)),
+            _ => Err(self.missing(spec, "feature", name, "a number")),
         }
     }
 
@@ -484,6 +621,15 @@ impl ArrowChunk {
     /// the wanted form, so that branch is only ever an Arrow caller's.
     fn missing(&self, spec: &Spec, role: &str, name: &str, wanted: &str) -> PolarsError {
         if let Some((_, c)) = self.cols.iter().find(|(n, _)| n == name) {
+            // A number in its own type is read only as a feature; every
+            // other role reads a number as `Float64`.
+            if let ArrowCol::Num(a) = c {
+                return polars_err!(SchemaMismatch:
+                    "spec {:?}: {} column {:?} is given as {} numbers, which only a feature \
+                     reads; a {} is read as {}, and a number as Float64",
+                    spec.name, role, name, a.dtype_name(), role, wanted
+                );
+            }
             return polars_err!(SchemaMismatch:
                 "spec {:?}: {} column {:?} is given as {}, but a {} is read as {}",
                 spec.name, role, name, c.form(), role, wanted
@@ -519,16 +665,6 @@ pub fn f64_values(a: &Float64Array) -> std::borrow::Cow<'_, [f64]> {
     }
 }
 
-/// [`f64_values`] as an array the caller may keep, with no validity: the
-/// column itself, its buffer shared, where it has no nulls to fill in, else
-/// the filled copy.
-pub fn f64_filled(a: &Float64Array) -> Float64Array {
-    match f64_values(a) {
-        std::borrow::Cow::Owned(v) => Float64Array::from_vec(v),
-        std::borrow::Cow::Borrowed(_) => a.clone(),
-    }
-}
-
 /// One spec's output struct as the two C Data Interface structs a consumer
 /// imports: the field, which carries the name and the struct's schema, and
 /// the array.
@@ -558,6 +694,10 @@ pub fn export_struct_to_c(name: &str, st: StructArray) -> (ArrowSchema, ArrowArr
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Want {
     Number,
+    /// A feature: a number, kept in its own type where it is a `Float32` or
+    /// an integer of up to 64 bits ([`NumArray`]) and no other role reads
+    /// the column as a number; cast to `Float64` otherwise.
+    Feature,
     Text,
     /// A group key: an integer stays an integer, anything else becomes text.
     Key,
@@ -585,7 +725,7 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
     };
     for s in specs {
         for f in &s.features {
-            push(f, Want::Number);
+            push(f, Want::Feature);
         }
         // `ew_class` reads its target as a label; every other model as a number.
         let target_want = match &s.model {
@@ -626,7 +766,7 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
 /// away. Must agree with [`ArrowCol::form`].
 fn form_of(want: Want, dtype: &DataType) -> &'static str {
     match want {
-        Want::Number => "a number",
+        Want::Number | Want::Feature => "a number",
         Want::Text => "text",
         Want::Key | Want::Clock if fits_64(dtype) => "an integer key",
         Want::Key => "text",
@@ -671,6 +811,10 @@ fn cast_to(
                 .unwrap_or_else(|| Float64Array::new_empty(ArrowDataType::Float64));
             Ok(ArrowCol::F64(arr))
         }
+        Want::Feature => match NumArray::of(s)? {
+            Some(a) => Ok(ArrowCol::Num(a)),
+            None => cast_to(s, Want::Number, spec_name, role, name),
+        },
         Want::Text => Ok(ArrowCol::Str(text_array(s, spec_name, role, name)?)),
         // A temporal clock is read in nanoseconds before a cast is asked
         // for (`chunk_from_frame_at`).
@@ -861,8 +1005,26 @@ pub fn chunk_from_frame_at(
             key_dtypes.push((c.into(), col.dtype().clone()));
         }
     }
+    let wanted = wanted(specs);
+    // The columns some role other than a feature reads as a number: a
+    // feature on one of them shares that role's `Float64` array, rather
+    // than holding a second form of the same column.
+    let numbers: PlHashSet<&str> = wanted
+        .iter()
+        .filter(|(name, want)| {
+            *want != Want::Feature
+                && df
+                    .column(name.as_str())
+                    .is_ok_and(|c| form_of(*want, c.dtype()) == "a number")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
     let mut have: PlHashSet<(PlSmallStr, &'static str)> = PlHashSet::default();
-    for (name, want) in wanted(specs) {
+    for (name, want) in wanted.iter().cloned() {
+        let want = match want {
+            Want::Feature if numbers.contains(name.as_str()) => Want::Number,
+            w => w,
+        };
         // A column a scoring chunk may leave out is not an error here: the
         // bank decides, because whether it is optional depends on the call.
         let Some(col) = df.column(name.as_str()).ok() else {
