@@ -32,7 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ewcov::{Block, Rider};
+use crate::ewcov::{Block, NoRider, Rider};
 use crate::window::EMPTY_FRACTION;
 use crate::{EwCov, Moments, TargetMoments};
 
@@ -411,9 +411,8 @@ impl Grams {
     /// them, since there [`EwCov::update`] refuses the row and
     /// [`EwCov::skip`] empties the Gram.
     ///
-    /// `ride` is a blocked Gram's targets ([`Riders`]): each Gram tells it
-    /// of the row it holds and hands it each block it merges, for the
-    /// targets that read it.
+    /// Without riders: every Gram unblocked, or a caller with no targets'
+    /// values to hold ([`Self::update_with`]).
     pub(crate) fn update(
         &mut self,
         z: &[f64],
@@ -421,21 +420,35 @@ impl Grams {
         lam: f64,
         w: f64,
         gaps: TargetGaps,
-        mut ride: Option<&mut Riders<'_>>,
+    ) {
+        self.update_with(z, y, lam, w, gaps, &mut NoRide);
+    }
+
+    /// [`Self::update`], with `ride` a blocked Gram's targets ([`Riders`]):
+    /// each Gram tells it of the row it holds and hands it each block it
+    /// merges, for the targets that read it. Generic, so [`NoRide`] compiles
+    /// to the update without riders.
+    pub(crate) fn update_with<P: Ride>(
+        &mut self,
+        z: &[f64],
+        y: &[Option<f64>],
+        lam: f64,
+        w: f64,
+        gaps: TargetGaps,
+        ride: &mut P,
     ) {
         // A Gram that learns the row forgets a history the row leaves in
         // the subnormal range ([`decay_into`]), by the rule each of its
         // targets' weights does in `Acc::learn`: the two are equal to the
         // bit, so they decide alike and stay equal (task 217).
-        fn learn(g: &mut EwCov, z: &[f64], lam: f64, w: f64, fold: Option<&mut Fold<'_, '_>>) {
+        fn learn<R: Rider>(g: &mut EwCov, z: &[f64], lam: f64, w: f64, rider: &mut R) {
             let lam = decay_into(lam, g.n_eff(), w);
-            g.update_riding(z, lam, w, fold.map(|f| f as &mut dyn Rider));
+            g.update_riding(z, lam, w, rider);
         }
         let Self { grams, of, flags } = self;
         if gaps == TargetGaps::Pairwise {
             for (gi, g) in grams.iter_mut().enumerate() {
-                let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, gi, None));
-                learn(g, z, lam, w, fold.as_mut());
+                learn(g, z, lam, w, &mut ride.rider(of, gi, None));
             }
             return;
         }
@@ -449,14 +462,8 @@ impl Grams {
         for g in 0..n {
             let flag = flags.0[g];
             match flag {
-                PRESENT => {
-                    let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, None));
-                    learn(&mut grams[g], z, lam, w, fold.as_mut());
-                }
-                ABSENT => {
-                    let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, None));
-                    grams[g].skip_riding(z, lam, fold.as_mut().map(|f| f as &mut dyn Rider));
-                }
+                PRESENT => learn(&mut grams[g], z, lam, w, &mut ride.rider(of, g, None)),
+                ABSENT => grams[g].skip_riding(z, lam, &mut ride.rider(of, g, None)),
                 // A Gram every target has left; there is none.
                 0 => {}
                 // A row with no weight: no split. Its present and its absent
@@ -464,26 +471,15 @@ impl Grams {
                 // to age or without (task 159, R1: with none, the present
                 // ones' Gram refused the row and kept the prior's scale at 1
                 // where the absent ones' aged it, so the two parted).
-                _ if w == 0.0 => {
-                    let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, None));
-                    grams[g].update_riding(z, lam, w, fold.as_mut().map(|f| f as &mut dyn Rider));
-                }
+                _ if w == 0.0 => grams[g].update_riding(z, lam, w, &mut ride.rider(of, g, None)),
                 // Its targets part on this row. The absent ones' copy holds
                 // their held values (a suffix of the same rows), and folds
                 // them when it merges.
                 _ => {
                     let id = grams.len();
                     let mut own = grams[g].clone();
-                    {
-                        let mut fold = ride
-                            .as_deref_mut()
-                            .map(|r| Fold::new(r, of, g, Some(false)));
-                        own.skip_riding(z, lam, fold.as_mut().map(|f| f as &mut dyn Rider));
-                    }
-                    {
-                        let mut fold = ride.as_deref_mut().map(|r| Fold::new(r, of, g, Some(true)));
-                        learn(&mut grams[g], z, lam, w, fold.as_mut());
-                    }
+                    own.skip_riding(z, lam, &mut ride.rider(of, g, Some(false)));
+                    learn(&mut grams[g], z, lam, w, &mut ride.rider(of, g, Some(true)));
                     grams.push(own);
                     for (o, yj) in of.iter_mut().zip(y) {
                         if *o == g && yj.is_none() {
@@ -720,8 +716,7 @@ impl Acc {
         };
         let Grams { grams, of, .. } = grams;
         for (g, gram) in grams.iter_mut().enumerate() {
-            let mut fold = Fold::new(&mut ride, of, g, None);
-            gram.flush_riding(Some(&mut fold));
+            gram.flush_riding(&mut Fold::new(&mut ride, of, g, None));
         }
     }
 
@@ -790,7 +785,7 @@ impl Acc {
             row: rows,
             wj: &self.wj,
         };
-        self.grams.update(z, y, lam, w, gaps, Some(&mut ride));
+        self.grams.update_with(z, y, lam, w, gaps, &mut ride);
         self.cross.advance(z, lam, w, b_all);
     }
 
@@ -818,7 +813,7 @@ impl Acc {
     /// rows.
     fn learn_per_row(&mut self, z: &[f64], y: &[Option<f64>], lam: f64, w: f64, gaps: TargetGaps) {
         let b_all = self.cross.share(lam, w);
-        self.grams.update(z, y, lam, w, gaps, None);
+        self.grams.update(z, y, lam, w, gaps);
         for (j, yj) in y.iter().enumerate() {
             let wj = &mut self.wj[j];
             match *yj {
@@ -1270,6 +1265,39 @@ pub(crate) struct Riders<'a> {
     cross: &'a mut Cross,
     row: &'a [RowTarget],
     wj: &'a [f64],
+}
+
+/// Who rides each Gram's blocks for [`Grams::update_with`]: nobody
+/// ([`NoRide`]), or a blocked Gram's targets ([`Riders`]), each Gram's
+/// rider the targets that read it ([`Fold`]).
+pub(crate) trait Ride {
+    type Rider<'s>: Rider
+    where
+        Self: 's;
+    /// The rider of Gram `g`, its readers by `of`; on the row where they
+    /// part, the present (`only = Some(true)`) or the absent ones.
+    fn rider<'s>(&'s mut self, of: &'s [usize], g: usize, only: Option<bool>) -> Self::Rider<'s>;
+}
+
+/// No riders: [`Grams::update`].
+pub(crate) struct NoRide;
+
+impl Ride for NoRide {
+    type Rider<'s> = NoRider;
+    #[inline(always)]
+    fn rider<'s>(&'s mut self, _: &'s [usize], _: usize, _: Option<bool>) -> NoRider {
+        NoRider
+    }
+}
+
+impl<'a> Ride for Riders<'a> {
+    type Rider<'s>
+        = Fold<'s, 'a>
+    where
+        Self: 's;
+    fn rider<'s>(&'s mut self, of: &'s [usize], g: usize, only: Option<bool>) -> Fold<'s, 'a> {
+        Fold::new(self, of, g, only)
+    }
 }
 
 /// The riders of Gram `g`: the targets that read it, or -- on the row
@@ -2007,7 +2035,7 @@ mod tests {
         for first in [None, Some([Some(3.0), Some(1.0)])] {
             let mut g = Grams::new(2, 2, 0, false);
             if let Some(both) = first {
-                g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows, None);
+                g.update(&[1.0, 2.0], &both, 1.0, 1.0, TargetGaps::OwnRows);
             }
             g.update(
                 &[1.0, 2.0],
@@ -2015,7 +2043,6 @@ mod tests {
                 0.5,
                 0.0,
                 TargetGaps::OwnRows,
-                None,
             );
             assert_eq!((g.grams.len(), g.of.clone()), (1, vec![0, 0]));
             assert_eq!(
