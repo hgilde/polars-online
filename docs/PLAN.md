@@ -10994,6 +10994,46 @@ tick, and that the series holding it up has a count near 1.
       and 3 not taken: a fixed path per slot is what this gives already,
       and a shared build directory is the clobbering a separate `target/`
       avoids.
+- [ ] 261. **Fit and predict in one bank** -- requested by the user
+      2026-10-14 ("Add a plan item to allow fit and predict in one bank").
+      Today a bank serves `predict` or learns, never both at once:
+      `fit_predict`, `fit` and `fit_predict_batches` take the bank
+      exclusively for each native call (one chunk; `try_borrow_mut` in
+      `crates/online-py/src/lib.rs`), and a `predict` arriving meanwhile
+      from another thread is refused with "the bank is in use on another
+      thread", not made to wait. Between chunks the borrow is free, so a
+      `predict` succeeds or fails on timing alone. Serving while learning
+      takes a second bank, refreshed by save and load. (Task 260 is held
+      by the faer kernel branch.)
+      **Requirement:** (a) `predict` (and `predict_arrow`) on a bank that
+      is learning returns, scored against a consistent state: the state
+      as of a chunk boundary, never a chunk half learned. Learning order
+      and every number `fit_predict` writes stay as they are, to the bit
+      (hard rules 2 and 3), and concurrent `predict` calls still never
+      wait on each other. (b) In one call, some specs learn while others
+      only score, frozen: a per-spec choice rather than the whole call's
+      `learn_only` -- or a documented reason not to, if (a) and a second
+      bank cover it.
+      **Options for (a), cheapest first:** 1. wait, do not refuse: a
+      blocking lock taken per chunk with the GIL released, so a `predict`
+      waits for the chunk in flight (at most one chunk's time) and sees
+      the state after it; 2. publish a snapshot at each chunk boundary
+      that `predict` reads while the next chunk learns (no wait, one
+      chunk stale), copy-on-write per group so only the groups a chunk
+      touches are copied; 3. both, chosen per bank. Each option's
+      memory and per-chunk cost measured before choosing (CLAUDE.md:
+      a per-row or layout change carries its cost), on a wide `ewridge`
+      and on many small groups.
+      **Check:** a thread scoring in a loop while another streams a
+      LazyFrame through `fit`: no refusal; every `predict` result equal,
+      to the bit, to `predict` on a copy of the bank saved at some chunk
+      boundary of that stream; the stream's own output equal to a run
+      with no scoring beside it; under (b), a frozen spec's state the
+      same bytes before and after the call, its output equal to
+      `predict`'s.
+      **Potential gain:** one process serves and learns from one bank:
+      no second bank in memory, no save/load refresh loop, and no
+      refusal to retry on timing.
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
