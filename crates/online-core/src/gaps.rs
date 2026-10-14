@@ -1719,6 +1719,9 @@ pub(crate) fn gram_parts(
 mod fold_tests;
 
 #[cfg(test)]
+mod held_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::Footprint;

@@ -10826,6 +10826,24 @@ tick, and that the series holding it up has a count near 1.
       `sgd`/`pa` +1.6%. Native instruction counts (median of 7):
       `bank_seqtest` 2,481k -> 2,485k, `bank_ewridge_k5` 7,665k -> 7,631k,
       `bank_ew_cov_wide_t1` 143.24M -> 142.36M.
+      *Survivors* (2026-10-14, branch `task-257-survivors`): CI's
+      changed-lines pass on `b440a24` (run 38490073010) left 42 survivors
+      and a timeout in `gaps.rs`. Why they lived: the fold tests read `c_j`
+      and `m_j` within `γ_{8R+32}` at levels where a block mean `ȳ_B` taken
+      about the wrong centre, or its residue `δy` dropped, costs only
+      roundings (the merge is exact in any centre); nothing compared the
+      per-row numbers of a blocked fit with the unblocked fit's (`nj`, the
+      target moments' `a`, `ȳ_j` on a zero-weight row); nothing read the
+      held state's values, its equality, its empty shape or the borrow of
+      `Acc::flushed`; and no case reached a row its block decays to `u = 0`
+      or a damaged held weight. Caught now by `fold_tests`' far target
+      (`1e8`, an outlier first row of `2^-40`: the fold at under 0.04 of the
+      bound, each mistake 45 to 2.8e5 times it), per-row bits against the
+      unblocked fit, a zero-weight row's `ȳ_j`, a row decayed to nothing
+      and damaged blocks, and `held_tests`. Equivalent (recorded): `gappy`
+      turned true where it was false (4; the gappy `ε` is the Gram's `δ` to
+      the bit there) and `accumulate`'s band width (7; a column's sum is the
+      same operations in any band). Tolerated, `loop`: `i += 4` -> `*=`.
 - [x] 255. **The memory findings of the 1.0 budgets** -- measured
       2026-10-13 on this machine (py-polars 2.0.0, `a2f794a`):
       (a) **A wide eager `fit_predict` peaks at twice its output.** `ew_cov`

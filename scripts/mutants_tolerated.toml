@@ -576,3 +576,13 @@ kind = "loop"
 why = """as `replace Active::leave_all -> Vec<(usize, f64)> with vec![]`: no \
 column leaves; the returned column's `b` set to 0 is the coefficient at 0 \
 already, or another set to 0 at a knot made again and again"""
+
+[[tolerated]]
+file = "crates/online-core/src/gaps.rs"
+function = "accumulate"
+mutation = "replace += with *="
+line_has = "i += 4;"
+kind = "loop"
+why = """`i` starts at 0 and `0 * 4` is 0, so the four-row pass repeats the \
+block's first four rows for ever on any block of four rows or more: \
+nothing leaves the loop for a test to read before the time limit"""
