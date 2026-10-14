@@ -20,8 +20,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::arrow::{
-    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, chunk_from_frame_at, f64_filled,
-    f64_values,
+    ArrowChunk, ArrowCol, ClockArray, ClockCol, KeyDtype, KeyForm, chunk_from_frame_at, f64_values,
 };
 use crate::column::F64Column;
 use crate::resolvers::{
@@ -305,11 +304,14 @@ fn f64_column(
 }
 
 /// The spec's feature columns, as the chunk holds them (docs/PERFORMANCE.md
-/// §20, §42): each column itself, copied only where it has nulls to fill
-/// in. A stream copies the rows of each run it learns into a buffer of its
+/// §20, §42): each column itself, in its source's type, its nulls in its
+/// validity -- nothing copied. A stream copies the rows of each run it learns into a buffer of its
 /// own just before it learns them ([`FeatureCols::rows_into`]), so the
 /// chunk is never written out in rows: as one block that was 160 MB at
-/// 20,000 rows of 1,000 features, written to memory and read back.
+/// 20,000 rows of 1,000 features, written to memory and read back. The
+/// copy widens a `Float32` or integer value to `f64` and reads a null as
+/// `online_core::NULL` as it writes the row, where a whole-chunk cast and
+/// fill was another 160 MB.
 ///
 /// `par_transpose` lets a pass that copies many rows at once (scoring, the
 /// window pre-pass) spread the copy over the pool. It is for a lone spec:
@@ -325,22 +327,12 @@ fn feature_cols(
     par: bool,
     par_transpose: bool,
 ) -> PolarsResult<FeatureCols> {
-    let arrays =
-        map_maybe_par::<_, _, PolarsResult<Vec<&Float64Array>>>(&spec.features, par, |c| {
-            chunk.f64(spec, "feature", c)
-        })?;
-    // Shared where the column has no nulls to fill in, a copy otherwise.
-    let cols = if par {
-        arrays
-            .par_iter()
-            .map(|a| FeatureCol::new(f64_filled(a)))
-            .collect()
-    } else {
-        arrays
-            .iter()
-            .map(|a| FeatureCol::new(f64_filled(a)))
-            .collect()
-    };
+    // Each column's buffer and validity, shared: nothing is copied here.
+    let cols = spec
+        .features
+        .iter()
+        .map(|c| chunk.feature(spec, c))
+        .collect::<PolarsResult<Vec<FeatureCol>>>()?;
     Ok(FeatureCols::new(
         cols,
         chunk.height(),
@@ -1513,7 +1505,7 @@ fn group_indices(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<Vec<(GroupKey,
                 }
                 // `ArrowChunk::key` never returns the numeric form, a clock
                 // or a boolean.
-                ArrowCol::F64(_) | ArrowCol::Nanos(_) | ArrowCol::Bool(_) => {
+                ArrowCol::F64(_) | ArrowCol::Num(_) | ArrowCol::Nanos(_) | ArrowCol::Bool(_) => {
                     unreachable!("a group key is never read as a number, a clock or a boolean")
                 }
             }
