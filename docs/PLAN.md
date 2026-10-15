@@ -10388,7 +10388,54 @@ tick, and that the series holding it up has a count near 1.
       x86's speed (not measurable on this machine, which has no x86 nor
       Rosetta); the to-the-bit pieces tests stay guarded off x86 until a
       CI run shows the `gemm` crate's x86 kernels sum a tile as the whole.
-**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257.
+- [x] 260. **faer's x86 kernel back on Linux and Intel macOS, off Windows
+      only** -- found 2026-10-14 by the user's Linux session (Intel Xeon):
+      `po.gram.solve_subsets` at one thread 15-41% slower than 1.0.1 at
+      `03abe0e`, traced to task 258 (faer without `std`, so no
+      `private-gemm-x86`). Measured with the kernel (B) against without (A),
+      interleaved on one machine each: the Xeon's solves 0.67-0.75 of A's
+      time (1.0.1's speed); wide `ewridge` (200-1,000 features) on the
+      default schedule 8-38% faster on five x86 processors (CI's AMD Zen 3,
+      Zen 4, Zen 5, Intel Ice Lake; the user's Xeon), blocked 1-52%;
+      `benchmark.py`'s 38 narrow configurations level (median 1.00);
+      `lasso` within 5%. A microbenchmark found a thread 3x slower at the
+      rank-one update right after the kernel's blocked product on Zen 4/5
+      (its hand-written assembly returns without `vzeroupper`, checked in
+      `private-gemm-x86` 0.1.20's code generator; our SSE2 code pays for
+      the dirty AVX state), none on Zen 3 or the Xeon, and no spec showed
+      it on any processor; left as measured (PERFORMANCE §43). Memory on
+      Linux is a reservation, backed where touched; strict overcommit
+      counts it, as in 1.0.1. *Decided 2026-10-14* (the user: "Yes" to
+      landing it): `online-core`'s manifest turns faer's `std` on for
+      `cfg(all(target_arch = "x86_64", not(windows)))`; aarch64's and
+      Windows' feature graphs identical to before (`cargo tree -e
+      features`); `product_memory` runs on Windows and off x86-64 only.
+      CHANGELOG's Fixed and Changed entries now say Windows; PERFORMANCE
+      §43 has the tables. CI runs 38610653398, 38625365356, 38626170815,
+      38645950981, 38658964449; the user's artifact
+      claude.ai/artifact/Tb3tizyExD1PLqpxnwknDe.
+- [ ] 263. **Why the bounded product costs twice as much on Windows** --
+      found 2026-10-14 (CI 38658964449, a Windows runner, Intel Xeon
+      8573C, against 1.0.1's wheel): wide `ewridge` 0.74-0.88 of 1.0.1's
+      speed on the default schedule and 0.37-0.71 with `gram_block_rows`
+      256, where the same processor family without the kernel on Linux
+      loses 1.34 at most; commit for a 4-thread wide fit 374 MiB against
+      2,382. Hypothesis: the `gemm` crate allocates each product's packed
+      right-hand side (`gemm-common` 0.19 `gemm.rs` ~437,
+      `MemBuffer::new` per call; 15 allocations, 16 MiB a flush at 1,000
+      features), and Windows returns blocks that large to the system on
+      free, so each product pays page faults again; Linux's allocator keeps
+      them. **First check:** `online-bench/examples/alloc_probe.rs` on a
+      throwaway branch, the blocked Gram timed with and without a
+      per-thread cache of freed blocks of 1 MiB or more, Windows against
+      Linux. **Then:** if it is the allocation, a fix that keeps the
+      memory bounded (a bounded per-thread reuse of the packing, in
+      `online-py`'s allocator path or upstream in `gemm`), measured on
+      Windows against 1.0.1; if not, the user chooses for Windows between
+      the bounded product and 1.0.1's kernel. Before 1.1.0 (the user,
+      2026-10-14: "Yes"). The CHANGELOG's Windows performance entry comes
+      with it.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 and 263 (2026-10-14).
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under

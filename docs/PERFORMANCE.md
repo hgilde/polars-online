@@ -2820,7 +2820,8 @@ at once, ran out of commit there twice: "memory allocation of 1006632960
 bytes failed", on a rayon worker inside the Gram's pieces (§37). A wide
 Gram fitted on many threads can do the same to a user.
 
-**The fix leaves that kernel out of the build.** faer is built without its
+**The fix leaves that kernel out of the build** (on Windows only since
+§43: Linux and Intel macOS build with it again). faer is built without its
 `std` feature, the only feature that links the kernel. The rest of what
 `std` turns on is turned back on through Cargo's feature unification:
 `faer-traits`, `pulp`, `nano-gemm` and `libm`, each named with the same
@@ -3173,6 +3174,72 @@ unsigned values past 2^63) and a float32 weight that is also a feature,
 float32 and 150 plain float64 columns, so the copy by rows runs, 46 files;
 and an `audit` of float32, int16 and float64 columns with NaN, infinities
 and nulls, whose null and NaN counts stay apart.
+
+### 43. faer's x86 kernel, kept off Windows only (2026-10-15)
+
+**Linux and Intel macOS build faer with its x86 product kernel again;
+Windows builds without it.** §41 left the kernel out everywhere for its
+memory: a packing buffer of twice the L3 cache on each thread that has
+multiplied, which Windows commits whole. On Linux and macOS that buffer is
+address space reserved, and only the pages a product touches are backed,
+while the kernel is the faster product. So the kernel's `std` feature is
+turned on in `online-core`'s manifest for `cfg(all(target_arch = "x86_64",
+not(windows)))`. Apple Silicon and Windows build the crate graph they were
+measured with (`cargo tree -e features`, identical to before), so nothing
+moves there. A host that refuses to overcommit memory
+(`vm.overcommit_memory=2`) counts the whole reservation, as 1.0.1 did.
+
+#### Speed on Linux, with the kernel against without it
+
+Rows per second, the kernel's build over the other's, medians of
+interleaved rounds on one machine each (bold: the two ranges do not
+overlap). GitHub's runners for AMD (three to twelve rounds a build, over
+one to four runners per processor), the user's Claude Code container for
+the Xeon (three rounds). `ewridge` with one target, `half_life` 1,000 on a
+clock of one per row, and `min_weight` the feature count:
+
+| configuration | Zen 3 (EPYC 7763) | Zen 4 (9V74) | Zen 5 (9V45) | Ice Lake (8370C) | Xeon, 260 MiB L3 |
+|---|---|---|---|---|---|
+| 200 features, default schedule (a solve about every 20 rows) | **1.11** | 1.10 | **1.15** | **1.09** | 1.11 |
+| 500, default schedule | **1.08** | 1.13 | **1.23** | **1.22** | **1.16** |
+| 1,000, default schedule | **1.08** | 1.14 | **1.38** | **1.32** | **1.20** |
+| 200, a solve every row | **1.19** | 1.18 | **1.24** | **1.25** | **1.19** |
+| 1,000, a solve every 256 rows | **1.02** | 1.01 | **1.19** | **1.10** | **1.07** |
+| 1,000, every 256 rows, `gram_block_rows` 256 | 1.01 | 1.07 | **1.52** | **1.48** | **1.34** |
+| `lasso`, 200 features, three penalties | **0.955** | 1.00 | 1.11 | 1.00 | 0.98 |
+
+`scripts/benchmark.py`'s 38 configurations, up to 50 features, reach no
+product the kernel takes: medians 1.002 over nine rounds on Zen 3 (0.95 to
+1.04) and 1.001 over three on the Xeon. `po.gram.solve_subsets` at one
+thread on the Xeon took 0.67-0.75 of the time with the kernel at 500 to
+5,000 features, the time of 1.0.1 at one target and less at ten.
+
+A microbenchmark on Zen 4 and Zen 5 found a thread 3x slower at the
+rank-one Gram update right after it had run the kernel's blocked product:
+the kernel's assembly returns without `vzeroupper`, and this crate's
+SSE2 code pays for the AVX state left dirty. Zen 3, which has no AVX-512,
+and the Xeon showed none of it, and no spec above did on any processor,
+the default schedule's solve-then-update included. It is left at that,
+with the measurement here should a spec ever show it.
+
+#### Windows, against 1.0.1
+
+A GitHub Windows runner (Intel Xeon Platinum 8573C, two cores, 260 MiB of
+L3), 1.0.1's wheel from PyPI against this build, four interleaved rounds:
+
+| measure | this build / 1.0.1 |
+|---|---|
+| `benchmark.py`'s 38 configurations | median 0.987 (0.92 to 1.03) |
+| `ewridge`, default schedule, 200 / 500 / 1,000 features | 0.88 / 0.81 / 0.74 |
+| `ewridge`, every 256 rows with `gram_block_rows` 256, 200 / 500 / 1,000 | 0.71 / 0.56 / 0.37 |
+| `ewridge`, a solve every row, 200 features | 0.81 |
+| `lasso`, 200 and 500 features | 1.00 |
+| one 1,000-feature fit, `gram_block_rows` 256, four `gram_threads`: peak commit | 374 MiB, against 2,382 |
+
+The commit is what the change is for. The speed costs about twice what the
+same processor family loses without the kernel on Linux (1.34 at 1,000
+features blocked), which points at something Windows does with the `gemm`
+crate's packing, allocated and freed on every product.
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)
 
