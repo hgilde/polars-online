@@ -10557,7 +10557,30 @@ tick, and that the series holding it up has a count near 1.
       wrong products where no L3 is reported, the commit); PERFORMANCE §43
       the finding. Upstream reports (the kernel's cache detection and its
       products with no L3) are the user's to file.
-**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build; 266 reverted it (wrong products on Windows), 267 restored it at the user's choice; 265 (2026-10-15); 263's options for later work.
+- [x] 268. **`private-gemm-x86` 0.1.22: the kernel's wrong products fixed
+      upstream** -- the user, 2026-10-15: "Is there a new version of [faer]
+      that would fix it", then "Yes" to updating and verifying. faer 0.24.4
+      is the latest; its kernel `private-gemm-x86` 0.1.20 (our lock) is
+      yanked, and 0.1.22 (2026-10-05) changes exactly the block sizing:
+      `lib.rs` ~1438 now clamps a chunk to the L3 before rounding it up to a
+      multiple of the chunk nested in it (0.1.20 rounded first, so a clamp
+      to `l3 / 2` could break the tiling), and three triangle tests
+      (`tril && pos.row + mr > pos.col`) compare against `row_chunk`. The
+      user's Linux session (artifact claude.ai/artifact/WYiVhsfUJZhRWBYzbNLV83)
+      proved the cause on 0.1.20: the kernel's used L3 forced to 2 MiB fails
+      the order-1,500 solve test exactly as the Windows EPYC 7763 runners
+      do (their CPUID reports no L3, floored to 4 x L2 = 2 MiB), 4/8/33 MiB
+      pass. With 0.1.22 (CI 38804802757) the product and solve tests pass on
+      ten runners -- four Windows EPYC 7763 (0.1.20: four of four failed),
+      Windows Zen 4/5 and Xeon 8573C, Linux Xeon 8573C and Zen 4. Built:
+      the lock bumps only `private-gemm-x86` (version, checksum, and
+      online-core's dependency list), `online-core` names it on x86-64 for
+      its minimum (`>= 0.1.22`), task 267's Windows test guard removed;
+      CHANGELOG's known issue becomes a Fixed entry (1.0.x's wrong
+      products); PERFORMANCE §43. Still open: the width probe (0.1.20 at
+      other L3 sizes and widths) in the user's Linux session, to state how
+      far 0.1.20's bug reached on ordinary machines.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build; 266 reverted it (wrong products on Windows), 267 restored it at the user's choice; 268, the kernel's fix (0.1.22); 265 (2026-10-15); 263's options for later work.
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under

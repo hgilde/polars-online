@@ -3252,19 +3252,28 @@ hypervisor an AMD EPYC 7763 reported 32 KiB / 512 KiB / no L3, against
 16 KiB / 256 KiB / 32 MiB from Linux's sysfs on the same processor; a
 physical machine may not show that.
 
-#### Windows: the kernel's products, where no L3 is reported
+#### The kernel's wrong products, and the version that fixes them
 
-**The kernel's products were also wrong on Windows where the processor
-reports no L3.** It sizes its blocks from the L3 it reads, from CPUID on
-Windows. A ridge solve at 1,500 columns came out 2.7e-4 from an LU solve
-of the same system, where Cholesky's forward bound allows 2.3e-6
-(`gramfit::trisolve_tests`), on every Windows runner with an AMD EPYC
-7763 tried, four of four, the same value each time, at two test threads
-as at more. It passed on four Windows runners with an AMD EPYC 9V74 or
-9V45, on the EPYC 7763 under Linux, where the kernel reads its caches
-from sysfs, and on every Windows runner with the kernel left out. The
-kernel is kept on Windows for its speed, that test is held off Windows,
-and the CHANGELOG gives it as a known issue; 1.0.0 and 1.0.1 have it too.
+**Version 0.1.20 of the kernel computed some wide products wrongly, and
+0.1.22 fixes it.** The kernel sizes its blocks from the L3 it reads: from
+CPUID on Windows, from sysfs on Linux, and never smaller than 4 x L2. A
+ridge solve at 1,500 columns came out 2.7e-4 from an LU solve of the same
+system, where Cholesky's forward bound allows 2.3e-6
+(`gramfit::trisolve_tests`), on every Windows runner with an AMD EPYC 7763
+tried, four of four, the same value each time: its CPUID reports no L3, so
+the kernel took 4 x 512 KiB = 2 MiB. On an Intel Linux machine, forcing
+the kernel's L3 to 2 MiB gave the same failure (3.2e-4), while 4, 8 and
+33 MiB passed. The cause is in the kernel's block sizes: each outer chunk
+was rounded up to a multiple of the chunk inside it and only then clamped
+to the L3, which could leave it no longer a multiple, so the blocks did not
+tile the product; 0.1.22 clamps first and rounds last, and also fixes three
+tests of a triangular product that compared against the microkernel's row
+count instead of the row chunk. 0.1.20 is yanked. With 0.1.22 the same test
+passes on ten runners, the four EPYC 7763 Windows ones among them, along
+with every other product and solve test. The kernel is therefore on every
+x86 build, `online-core` requires 0.1.22 at least, and a result on x86 can
+move in its last bits against a build on 0.1.20 where the block sizes
+changed.
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)
 

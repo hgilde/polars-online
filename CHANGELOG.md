@@ -29,22 +29,30 @@ any change to the numbers a model returns.
   columns, 3.3 ms against 24 ms (65 ms on 1.0.1). `docs/GRAM.md`, *A
   screen of its own for each path*, has a recipe.
 
+### Fixed
+
+- **On x86, some wide matrix products were wrong, in the product kernel
+  1.0.0 and 1.0.1 shipped** (tasks 266 to 268). faer's x86 kernel,
+  `private-gemm-x86` 0.1.20 (since yanked by its author), sizes its blocks
+  from the L3 cache, and once a chunk was clamped to fit that cache it
+  could stop being a multiple of the chunk inside it, so the blocks no
+  longer tiled the product; three tests of a triangular product compared
+  against the wrong size as well. Version 0.1.22, which this release
+  builds with and requires, fixes both. Found on GitHub's Windows runners
+  with an AMD EPYC 7763, whose CPUID reports no L3, so that the kernel
+  falls back to 4 x L2 = 2 MiB: a ridge solve at 1,500 columns came out
+  2.7e-4 from an LU solve of the same system, where rounding allows
+  2.3e-6, on four runners of four; with 0.1.22 it passes on those four
+  and on every other runner tried, Windows and Linux, AMD and Intel.
+  Forcing the kernel's L3 to 2 MiB on an Intel Linux machine gave the same
+  failure with 0.1.20. The wide models (`ewridge`, `ew_cov` and the rest
+  of the Gram's users at hundreds of features and more) and the `po.gram`
+  functions run those products on every x86 platform. Where the block
+  sizes changed, an x86 result's last bits can move against 1.0.1; Apple
+  Silicon never runs this kernel.
+
 ### Known issues
 
-- **On Windows on x86, a wide fit's matrix products can be inexact on a
-  processor that reports no L3 cache**, as in 1.0.0 and 1.0.1 (tasks 266
-  and 267), as the AMD EPYC 7763 virtual machines of GitHub's Windows
-  runners do. faer's x86 product kernel sizes its blocks from the L3 it
-  reads, on Windows from CPUID, and with none read a ridge solve at 1,500
-  columns came out 2.7e-4 from an LU solve of the same system, where
-  rounding allows 2.3e-6, on every such runner tried (four of four, the
-  same value each time, at two test threads as at more). It passes on
-  Windows runners whose AMD EPYC 9V74 and 9V45 report their L3, on the
-  same EPYC 7763 under Linux, where the kernel reads the caches from the
-  operating system, and on Windows with the kernel left out (as tasks 258
-  to 266 built it, wide fits 12-63% slower there). The kernel stays on
-  every x86 build for its speed, and that test is held off Windows. A
-  processor that reports its L3 is not affected.
 - **On Windows on x86, each thread that runs one of faer's larger matrix
   products commits memory of about twice the CPU's L3 cache**, as in 1.0.0
   and 1.0.1 (tasks 258, 260, 263 and 264). faer's x86 product kernel keeps

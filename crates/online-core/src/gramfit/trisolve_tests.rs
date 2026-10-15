@@ -289,15 +289,6 @@ fn the_solve_is_the_lu_solve_within_its_forward_error() {
     );
 }
 
-/// Not on Windows: there faer's x86 product kernel reads its cache sizes
-/// from CPUID, and on a processor that reports no L3 (the EPYC 7763 of
-/// GitHub's Windows runners, four of four) its products come out wrong --
-/// this solve at 1,500 columns 2.7e-4 from the LU, past a bound of 2.3e-6
-/// -- where the same processor passes under Linux and Windows without the
-/// kernel passes on every runner. The kernel is kept on Windows for its
-/// speed (docs/PLAN.md tasks 266 and 267; the CHANGELOG's known issue), so
-/// the test that finds it is held off there, as a platform guard.
-#[cfg(not(windows))]
 #[test]
 #[ignore = "extended: orders 511 and 1,500, faer's LU at each (90 s, debug build)"]
 fn the_solve_is_the_lu_solve_within_its_forward_error_up_to_1500() {
