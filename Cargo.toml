@@ -32,17 +32,20 @@ polars = { version = "=0.55.2", default-features = false, features = ["object", 
 pyo3 = "0.29"
 pyo3-polars = "0.28"
 
-# faer without its `std` feature here, so aarch64 takes the `gemm` crate,
-# whose packing is sized to the product and freed after it, beside a
-# thread's one L2-sized slab (docs/PLAN.md task 258). `std` also links
-# `private-gemm-x86` on x86-64, the faster product kernel, which keeps a
-# packing buffer of twice the L3 cache on every thread that has ever
-# multiplied (960 MiB a thread on a GitHub Windows runner, committed whole
-# by Windows) and takes every product past 16 x 16 x 16 there -- the
-# Gram's tiles, and the products inside faer's Cholesky, triangular solves
-# and eigensolver. online-core's Cargo.toml turns `std` on for every
-# x86-64 build (tasks 260 and 264; the Windows alternatives measured in
-# task 263). `rayon`
+# faer without its `std` feature, which on x86-64 also links
+# `private-gemm-x86`: that crate keeps a packing buffer of twice the L3
+# cache on every thread that has ever multiplied (960 MiB a thread on a
+# GitHub Windows runner), and faer sends every product past 16 x 16 x 16 to
+# it on x86-64 -- the Gram's tiles, and the products inside its Cholesky,
+# triangular solves and eigensolver. Windows commits that buffer whole, and
+# on a processor that reports no L3 through CPUID the kernel's products are
+# wrong there (task 266), so
+# there faer goes without `std` and takes the `gemm` crate, the path aarch64
+# always took, whose packing is sized to the product and freed after it,
+# beside a thread's one L2-sized slab (docs/PLAN.md task 258). On x86-64
+# Linux and macOS online-core's Cargo.toml turns `std` back on (task 260):
+# there the buffer is an address-space reservation, backed only where a
+# product touches it, and that kernel is the faster one. `rayon`
 # keeps `gemm/std`; the four entries after this one turn back on, by Cargo's
 # feature unification, the rest of what faer's `std` turns on -- the same
 # crates already linked, with the same features as before. `rand` and

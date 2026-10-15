@@ -2820,8 +2820,8 @@ at once, ran out of commit there twice: "memory allocation of 1006632960
 bytes failed", on a rayon worker inside the Gram's pieces (§37). A wide
 Gram fitted on many threads can do the same to a user.
 
-**The fix leaves that kernel out of the build** (on aarch64 only since §43:
-every x86 build has it again). faer is built without its
+**The fix leaves that kernel out of the build** (on Windows only since
+§43: Linux and Intel macOS build with it again). faer is built without its
 `std` feature, the only feature that links the kernel. The rest of what
 `std` turns on is turned back on through Cargo's feature unification:
 `faer-traits`, `pulp`, `nano-gemm` and `libm`, each named with the same
@@ -3175,22 +3175,21 @@ float32 and 150 plain float64 columns, so the copy by rows runs, 46 files;
 and an `audit` of float32, int16 and float64 columns with NaN, infinities
 and nulls, whose null and NaN counts stay apart.
 
-### 43. faer's x86 kernel on every x86 build (2026-10-15)
+### 43. faer's x86 kernel, kept off Windows only (2026-10-15)
 
-**Every x86-64 build has faer's x86 product kernel again; Apple Silicon,
-which has none, builds as before.** §41 left the kernel out everywhere for
-its memory: a packing buffer of twice the L3 cache on each thread that has
-multiplied. On Linux and macOS that buffer is address space reserved, and
-only the pages a product touches are backed; Windows commits all of it.
-The kernel is the faster product, so its `std` feature is turned on in
-`online-core`'s manifest for `cfg(target_arch = "x86_64")`, and the
-products run where 1.0.1 ran them, with its last bits. Apple Silicon's
-crate graph is the one it was measured with (`cargo tree -e features`), so
-nothing moves there. On Windows the commit stays, as in 1.0.0 and 1.0.1:
-fewer threads bound it, and CI's Windows Rust tests run two at a time. A
-Linux host that refuses to overcommit memory (`vm.overcommit_memory=2`)
-counts the whole reservation. The Windows measurements below are what the
-build without the kernel would trade.
+**Linux and Intel macOS build faer with its x86 product kernel again;
+Windows builds without it.** §41 left the kernel out everywhere for its
+memory: a packing buffer of twice the L3 cache on each thread that has
+multiplied, which Windows commits whole. On Linux and macOS that buffer is
+address space reserved, and only the pages a product touches are backed,
+while the kernel is the faster product. So the kernel's `std` feature is
+turned on in `online-core`'s manifest for `cfg(all(target_arch = "x86_64",
+not(windows)))`. Apple Silicon and Windows build the crate graph they were
+measured with (`cargo tree -e features`, identical to before), so nothing
+moves there. A host that refuses to overcommit memory
+(`vm.overcommit_memory=2`) counts the whole reservation, as 1.0.1 did. On
+Windows the kernel's products were also wrong on a processor that reports
+no L3 to CPUID, as below, which settles Windows' build whatever its speed.
 
 #### Speed on Linux, with the kernel against without it
 
@@ -3225,13 +3224,12 @@ and the Xeon showed none of it, and no spec above did on any processor,
 the default schedule's solve-then-update included. It is left at that,
 with the measurement here should a spec ever show it.
 
-#### Windows: the build without the kernel, against 1.0.1
+#### Windows, against 1.0.1
 
 A GitHub Windows runner (Intel Xeon Platinum 8573C, two cores, 260 MiB of
-L3), 1.0.1's wheel from PyPI (the kernel) against a build without the
-kernel, four interleaved rounds:
+L3), 1.0.1's wheel from PyPI against this build, four interleaved rounds:
 
-| measure | without the kernel / 1.0.1 |
+| measure | this build / 1.0.1 |
 |---|---|
 | `benchmark.py`'s 38 configurations | median 0.987 (0.92 to 1.03) |
 | `ewridge`, default schedule, 200 / 500 / 1,000 features | 0.88 / 0.81 / 0.74 |
@@ -3240,17 +3238,30 @@ kernel, four interleaved rounds:
 | `lasso`, 200 and 500 features | 1.00 |
 | one 1,000-feature fit, `gram_block_rows` 256, four `gram_threads`: peak commit | 374 MiB, against 2,382 |
 
-The commit is what leaving the kernel out buys. The speed costs about
-twice what the same processor family loses without the kernel on Linux
-(1.34 at 1,000 features blocked). Two causes were found and neither
-explains all of it. A per-thread cache of freed blocks of 1 MiB or more
-made the blocked Gram 18-21% faster on a Windows runner: the `gemm` crate
-allocates each product's packing and frees it after, and Windows returns
-blocks that large to the system each time. And the `gemm` crate reads the
-cache sizes it blocks for from CPUID on Windows, where under the runners'
-hypervisor an AMD EPYC 7763 reported 32 KiB / 512 KiB / no L3, against
-16 KiB / 256 KiB / 32 MiB from Linux's sysfs on the same processor; a
-physical machine may not show that.
+The commit is one reason for the change. The speed costs about twice what
+the same processor family loses without the kernel on Linux (1.34 at 1,000
+features blocked). Two causes were found and neither explains all of it. A
+per-thread cache of freed blocks of 1 MiB or more made the blocked Gram
+18-21% faster on a Windows runner: the `gemm` crate allocates each
+product's packing and frees it after, and Windows returns blocks that
+large to the system each time. And on Windows the `gemm` crate reads the
+cache sizes it blocks for from CPUID, where under the runners' hypervisor
+an AMD EPYC 7763 reported 32 KiB / 512 KiB / no L3, against 16 KiB /
+256 KiB / 32 MiB from Linux's sysfs on the same processor; a physical
+machine may not show that.
+
+#### Windows: the kernel's products, where no L3 is reported
+
+**The other reason is correctness.** The kernel also sizes its blocks from
+the L3 it reads, from CPUID on Windows. With the kernel built for Windows,
+a ridge solve at 1,500 columns came out 2.7e-4 from an LU solve of the same
+system, where Cholesky's forward bound allows 2.3e-6
+(`gramfit::trisolve_tests`), on every Windows runner with an AMD EPYC 7763
+tried, four of four, the same value each time. It passed on four Windows
+runners with an AMD EPYC 9V74 or 9V45, and on the EPYC 7763 under Linux,
+where the kernel reads its caches from sysfs. The `gemm` crate's build
+passes it on every Windows runner. 1.0.0 and 1.0.1 built the kernel for
+Windows, so they have it on such a machine.
 
 ### 19. Against `sklearn.linear_model.SGDRegressor` (2026-09-08)
 

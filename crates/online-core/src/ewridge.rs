@@ -1471,17 +1471,18 @@ impl EwRidge {
     }
 
     /// Take the shares of every solve nothing has read yet, and drop the
-    /// factors they were read from (docs/PLAN.md task 140): what the stream
-    /// calls at the end of each run, so a factor is held only while its
-    /// stream runs. The values are the ones a read would have given.
+    /// factors they were read from (docs/PLAN.md task 140): what the bank
+    /// calls once a stream's rows of a chunk are learned (task 265), so a
+    /// factor is held only while its stream runs. The values are the ones a
+    /// read would have given.
     pub fn settle_readiness(&mut self) {
         self.ready.settle();
     }
 
     /// Slots whose readiness shares still hold the factor of the solve they
     /// come from, read or not (docs/PLAN.md task 140): 0 once
-    /// [`Self::settle_readiness`] has run, as it does at the end of every
-    /// run of a stream.
+    /// [`Self::settle_readiness`] has run, as it does at the end of each
+    /// stream's chunk.
     pub fn pending_readiness(&self) -> usize {
         self.ready.pending.iter().flatten().count()
     }

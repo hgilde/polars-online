@@ -197,13 +197,21 @@ impl AnyModel {
     }
 
     /// End a run of rows: learn every row a sharded step holds
-    /// ([`Self::step_sharded`]), and take the readiness shares of every
-    /// solve an `ewridge`, `huber` or `quantile` left unread, dropping the
-    /// factors they wait on ([`online_core::EwRidge::settle_readiness`],
-    /// docs/PLAN.md tasks 140 and 116).
+    /// ([`Self::step_sharded`]).
     pub fn flush(&mut self, shards: usize) {
+        if let AnyModel::Marginal(m) = self {
+            m.flush(&on_the_pool(shards));
+        }
+    }
+
+    /// Take the readiness shares of every solve an `ewridge`, `huber` or
+    /// `quantile` left unread, dropping the factors they wait on
+    /// ([`online_core::EwRidge::settle_readiness`], docs/PLAN.md tasks 140
+    /// and 116). Once a stream's chunk is done, not once a run: a share
+    /// costs a solve against the identity, about `k³`, and a chunk of a
+    /// wide spec is many cache-sized runs (task 265).
+    pub fn settle_readiness(&mut self) {
         match self {
-            AnyModel::Marginal(m) => m.flush(&on_the_pool(shards)),
             AnyModel::EwRidge(m) => m.settle_readiness(),
             AnyModel::Robust(m) => m.settle_readiness(),
             _ => {}
@@ -2413,6 +2421,16 @@ impl Stream {
     pub fn set_gram_threads(&mut self, threads: usize) {
         for (_, m) in &mut self.models {
             m.set_gram_threads(threads);
+        }
+    }
+
+    /// Settle every model instance's readiness shares
+    /// ([`AnyModel::settle_readiness`]): what the bank calls once the
+    /// stream's rows of a chunk are learned, so no factor outlives the
+    /// chunk that solved it.
+    pub fn settle_readiness(&mut self) {
+        for (_, m) in &mut self.models {
+            m.settle_readiness();
         }
     }
 
