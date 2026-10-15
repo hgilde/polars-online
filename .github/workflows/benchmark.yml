@@ -87,10 +87,10 @@ jobs:
             echo
             # The products the throughput rows above are too narrow to reach:
             # a wide Gram's blocked and per-row update on 1 to 4 threads, and a
-            # factorization, solve and eigendecomposition. faer's x86 kernel
-            # was left out of the build for its memory (PLAN task 258), so on
-            # this x86 runner these are the numbers that move; a dispatch with
-            # `ref` set to an older commit gives the same table before it.
+            # factorization, solve and eigendecomposition: the numbers faer's
+            # x86 kernel moves, which Linux builds with and Windows without
+            # (PLAN tasks 258 and 260); a dispatch with `ref` set to an older
+            # commit gives the same table before a change.
             echo '```'
             POOL=4 cargo run --release --locked -p online-core --example gram_threads_bench -- 1000
             cargo run --release --locked -p online-core --example solve_threads_bench -- 1000

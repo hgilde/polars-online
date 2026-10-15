@@ -7,10 +7,16 @@
 //! the L3 cache on every thread that has ever multiplied, made at the
 //! thread's first product and kept until it exits: 960 MiB a thread on a
 //! GitHub Windows runner, which Windows commits whole, so a wide Gram on
-//! many threads ran out of commit. The build now leaves that feature off,
-//! and every product takes the `gemm` crate, as aarch64 always did: a
+//! many threads ran out of commit. On Windows the build leaves that feature
+//! off, and every product takes the `gemm` crate, as aarch64 always did: a
 //! thread keeps one slab the size of its L2 cache, and a product's packing
 //! is sized to the product and freed when it returns.
+//!
+//! Only where the `gemm` crate runs: Windows, and every target that is not
+//! x86-64. Linux and macOS on x86-64 build faer with `std` and its x86
+//! kernel (task 260), the faster product; there its buffer is an address-space
+//! reservation, backed only where a product touches it, which an allocator
+//! counting requested bytes cannot tell from memory in use.
 //!
 //! Each case runs on a pool made for it, so every one of its threads makes
 //! its first product inside the count, where a buffer kept per thread is
@@ -24,6 +30,8 @@
 //! so the bound fails the old build on x86-64.
 //!
 //! One test in this binary, so no other test's allocations reach the count.
+
+#![cfg(any(windows, not(target_arch = "x86_64")))]
 
 use faer::linalg::matmul::matmul;
 use faer::linalg::matmul::triangular::{BlockStructure, matmul as tri};

@@ -31,25 +31,34 @@ any change to the numbers a model returns.
 
 ### Fixed
 
-- **A matrix product no longer keeps twice the CPU's L3 cache on each
-  thread that runs one, on x86** (task 258). faer's x86 product kernel
-  kept a packing buffer of that size on every thread that had ever
-  multiplied, made at the thread's first product and held until it
-  exited: 960 MiB a thread on GitHub's Windows runners, which Windows
+- **On Windows, a matrix product no longer commits twice the CPU's L3
+  cache on each thread that runs one** (tasks 258 and 260). faer's x86
+  product kernel keeps a packing buffer of that size on every thread that
+  has ever multiplied, made at the thread's first product and held until it
+  exits: 960 MiB a thread on GitHub's Windows runners, which Windows
   commits whole, so a wide Gram (`ewridge`, `ew_cov`, the `po.gram`
   functions) fitted on many threads could exhaust the commit limit, as
-  1.0.1's known issue says. The build now leaves that kernel out, and every
-  product the library runs takes the `gemm` crate, as Apple Silicon always
-  did: the Gram's blocked update and its pieces on `gram_threads`, and the
-  products inside the Cholesky factorization, the triangular solves and
-  the eigensolver. A thread keeps one slab the size of its share of the L2
-  cache, and a product's packing is sized to the product and freed when it
-  returns. Measured on an Apple M4 Pro: at most 9.6 MiB a thread for a
-  700-feature Gram on four `gram_threads`, its factorization and solve,
-  or a 300-feature eigendecomposition on eight threads, of which 3.2 MiB
-  is the slab. A test holds every thread under 24 MiB on each platform CI
-  runs, and CI's Windows Rust tests run at the default parallelism again.
-  Nothing new is linked; one crate fewer is.
+  1.0.1's known issue says. On Windows the build now leaves that kernel
+  out, and every product the library runs takes the `gemm` crate, as Apple
+  Silicon always did: the Gram's blocked update and its pieces on
+  `gram_threads`, and the products inside the Cholesky factorization, the
+  triangular solves and the eigensolver. A thread keeps one slab the size
+  of its share of the L2 cache, and a product's packing is sized to the
+  product and freed when it returns. Measured on a GitHub Windows runner
+  (Intel Xeon, 260 MiB of L3), one 1,000-feature `ewridge` fit with
+  `gram_block_rows=256` on four `gram_threads` peaked at 374 MiB of commit,
+  where 1.0.1 peaked at 2,382 MiB. A test holds every thread under 24 MiB
+  on Windows and on Apple Silicon, and CI's Windows Rust tests run at the
+  default parallelism again. Linux and Intel macOS keep the kernel, the
+  faster product there. On five x86 processors, from AMD Zen 3 to Zen 5
+  and Intel Ice Lake to Emerald Rapids, wide `ewridge` fits (200 to 1,000
+  features) on the default solve schedule ran 8-38% faster with it than
+  without, and with `gram_block_rows` 1-52% faster; none was slower beyond
+  the runs' scatter, wide `lasso` was within 5% either way, and narrower
+  models do not reach it. Its buffer there is address space reserved, of
+  which only the pages a product touches are backed; a host that refuses
+  to overcommit memory (`vm.overcommit_memory=2`) counts the whole
+  reservation, as 1.0.1 did. Nothing new is linked.
 
 ### Changed
 
@@ -102,19 +111,19 @@ any change to the numbers a model returns.
   took 0.46 to 0.67 of 1.0.1's time at 500 to 5,000 columns, 10 targets
   0.77 to 0.92, one target 0.99 to 1.00.
 
-- **On x86-64 (Linux, Windows and Intel macOS), a wide model's last bits
-  can move** (task 258): every matrix product past 16 × 16 × 16 entries,
-  and every product into a triangle (a blocked Gram's diagonal blocks, at
-  any width), the Gram's own or one inside a factorization, a solve or an
+- **On Windows on x86-64, a wide model's last bits can move** (tasks 258
+  and 260): every matrix product past 16 × 16 × 16 entries, and every
+  product into a triangle (a blocked Gram's diagonal blocks, at any
+  width), the Gram's own or one inside a factorization, a solve or an
   eigendecomposition, now runs on another kernel, which sums in another
-  order. Each entry of the Gram's
-  product is held, on every platform, to an exactly rounded oracle within
-  the rounding bound of a sum in any order, and the thread-count tests
-  still hold every `gram_threads` and pool size to the same bits. On Apple
-  Silicon nothing moves: the code that runs there is the same, and every
-  one of `scripts/release_probe.py`'s 297 output fields and 31 saved
-  states is the same as 1.0.1's, bit for bit, as are the wide products'
-  digests (`examples/product_digest.rs`) at up to 700 features.
+  order. Each entry of the Gram's product is held, on every platform, to
+  an exactly rounded oracle within the rounding bound of a sum in any
+  order, and the thread-count tests still hold every `gram_threads` and
+  pool size to the same bits. On Linux, macOS and Apple Silicon this
+  moves nothing: the products run on the kernel 1.0.1 ran them on, and on Apple
+  Silicon every one of `scripts/release_probe.py`'s 297 output fields and
+  31 saved states is the same as 1.0.1's, bit for bit, as are the wide
+  products' digests (`examples/product_digest.rs`) at up to 700 features.
 
 ### Performance
 
