@@ -42,15 +42,18 @@ thiserror.workspace = true
 # backed only where a product touches it, but committed whole on Windows,
 # where many threads multiplying can exhaust the commit limit (fewer
 # threads bound it; PLAN task 263 holds the measured alternatives, none
-# chosen). On Windows it reads its cache sizes from CPUID, and where the
-# processor reports no L3 (GitHub's EPYC 7763 runners) its products came
-# out wrong: a ridge solve 100 times past its rounding bound (tasks 266 and
-# 267, the user's choice to keep the kernel for its speed; that test is
-# held off Windows). aarch64 has no such kernel; there the feature would link nothing
-# more but change the crate graph, which once moved an unrelated loop's
-# code generation by 5%, so aarch64 keeps the build it was measured with.
+# chosen). Version 0.1.22 at least: 0.1.20, which 1.0.0 and 1.0.1 shipped
+# and which is yanked, sized its blocks so that they could stop tiling the
+# product once a chunk was clamped to the L3, and computed wrong products
+# -- a ridge solve 100 times past its rounding bound on every Windows EPYC
+# 7763 runner, whose CPUID reports no L3 (tasks 266 to 268). Not used by
+# name: the entry holds the minimum. aarch64 has no such kernel; there the
+# feature would link nothing more but change the crate graph, which once
+# moved an unrelated loop's code generation by 5%, so aarch64 keeps the
+# build it was measured with.
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 faer = { workspace = true, features = ["std"] }
+private-gemm-x86.workspace = true
 
 [dev-dependencies]
 rmp-serde.workspace = true

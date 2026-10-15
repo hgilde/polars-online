@@ -54,6 +54,9 @@ pyo3-polars = "0.28"
 # needs `std`.
 faer = { version = "0.24", default-features = false, features = ["rayon", "linalg", "rand", "sparse-linalg"] }
 faer-traits = { version = "0.24", default-features = false, features = ["std"] }
+# faer's x86 product kernel, through its `std` feature: named only for its
+# minimum version, the first with the block-size fix (online-core, task 268).
+private-gemm-x86 = { version = "0.1.22", default-features = false }
 pulp = { version = "0.22", default-features = false, features = ["std"] }
 nano-gemm = { version = "0.2", default-features = false, features = ["std"] }
 libm = { version = "0.2", default-features = false, features = ["arch"] }
