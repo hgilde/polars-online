@@ -29,47 +29,39 @@ any change to the numbers a model returns.
   columns, 3.3 ms against 24 ms (65 ms on 1.0.1). `docs/GRAM.md`, *A
   screen of its own for each path*, has a recipe.
 
-### Fixed
+### Known issues
 
-- **On Windows on x86, a wide model's and a `po.gram` function's matrix
-  products were inexact on a processor that reports no L3 cache** (task
-  266), as the AMD EPYC 7763 virtual machines of GitHub's Windows runners
-  do. faer's x86 product kernel sizes its blocks from the L3 it reads, on
-  Windows from CPUID, and with none read a ridge solve at 1,500 columns
-  came out 2.7e-4 from an LU solve of the same system, where rounding
-  allows 2.3e-6, on every such runner tried (four of four). The same test
-  passes on the same processor under Linux, where the kernel reads the
-  caches from the operating system, and on Windows runners whose AMD
-  EPYC 9V74 and 9V45 report theirs (four of four). 1.0.0 and 1.0.1 have
-  it on such machines. Windows now builds without that kernel, as below.
-- **On Windows, a matrix product no longer commits twice the CPU's L3
-  cache on each thread that runs one** (tasks 258, 260 and 266). faer's x86
-  product kernel keeps a packing buffer of that size on every thread that
-  has ever multiplied, made at the thread's first product and held until it
-  exits: 960 MiB a thread on GitHub's Windows runners, which Windows
-  commits whole, so a wide Gram (`ewridge`, `ew_cov`, the `po.gram`
-  functions) fitted on many threads could exhaust the commit limit, as
-  1.0.1's known issue says. On Windows the build now leaves that kernel
-  out, and every product the library runs takes the `gemm` crate, as Apple
-  Silicon always did: the Gram's blocked update and its pieces on
-  `gram_threads`, and the products inside the Cholesky factorization, the
-  triangular solves and the eigensolver. A thread keeps one slab the size
-  of its share of the L2 cache, and a product's packing is sized to the
-  product and freed when it returns. Measured on a GitHub Windows runner
-  (Intel Xeon, 260 MiB of L3), one 1,000-feature `ewridge` fit with
-  `gram_block_rows=256` on four `gram_threads` peaked at 374 MiB of commit,
-  where 1.0.1 peaked at 2,382 MiB. A test holds every thread under 24 MiB
-  on Windows and on Apple Silicon, and CI's Windows Rust tests run at the
-  default parallelism again. Linux and Intel macOS keep the kernel, the
-  faster product there. On five x86 processors, from AMD Zen 3 to Zen 5
-  and Intel Ice Lake to Emerald Rapids, wide `ewridge` fits (200 to 1,000
-  features) on the default solve schedule ran 8-38% faster with it than
-  without, and with `gram_block_rows` 1-52% faster; none was slower beyond
-  the runs' scatter, wide `lasso` was within 5% either way, and narrower
-  models do not reach it. Its buffer there is address space reserved, of
-  which only the pages a product touches are backed; a host that refuses
-  to overcommit memory (`vm.overcommit_memory=2`) counts the whole
-  reservation, as 1.0.1 did. Nothing new is linked.
+- **On Windows on x86, a wide fit's matrix products can be inexact on a
+  processor that reports no L3 cache**, as in 1.0.0 and 1.0.1 (tasks 266
+  and 267), as the AMD EPYC 7763 virtual machines of GitHub's Windows
+  runners do. faer's x86 product kernel sizes its blocks from the L3 it
+  reads, on Windows from CPUID, and with none read a ridge solve at 1,500
+  columns came out 2.7e-4 from an LU solve of the same system, where
+  rounding allows 2.3e-6, on every such runner tried (four of four, the
+  same value each time, at two test threads as at more). It passes on
+  Windows runners whose AMD EPYC 9V74 and 9V45 report their L3, on the
+  same EPYC 7763 under Linux, where the kernel reads the caches from the
+  operating system, and on Windows with the kernel left out (as tasks 258
+  to 266 built it, wide fits 12-63% slower there). The kernel stays on
+  every x86 build for its speed, and that test is held off Windows. A
+  processor that reports its L3 is not affected.
+- **On Windows on x86, each thread that runs one of faer's larger matrix
+  products commits memory of about twice the CPU's L3 cache**, as in 1.0.0
+  and 1.0.1 (tasks 258, 260, 263 and 264). faer's x86 product kernel keeps
+  a packing buffer of that size on every thread that has multiplied, made
+  at the thread's first product and held until it exits, and Windows
+  commits all of it: a wide Gram (`ewridge`, `ew_cov` and the `po.gram`
+  functions) fitted on many threads can exhaust the commit limit. Measured
+  on a GitHub Windows runner (Intel Xeon, 260 MiB of L3), one 1,000-feature
+  `ewridge` fit with `gram_block_rows=256` on four `gram_threads` peaked at
+  2,382 MiB of commit (1.0.1's wheel, the same kernel). Fewer threads
+  (`threads=` or `gram_threads=`) bound it. The kernel stays on every x86 build because it is the faster product:
+  a build without it held that fit to 374 MiB, but ran wide `ewridge`
+  12-26% slower there on the default solve schedule and 29-63% slower with
+  `gram_block_rows`. On Linux and macOS the buffer is address space
+  reserved, of which only the pages a product touches are backed; a host
+  that refuses to overcommit memory (`vm.overcommit_memory=2`) counts the
+  whole reservation.
 
 ### Changed
 
@@ -121,20 +113,6 @@ any change to the numbers a model returns.
   (`examples/ridge_solve_bench.rs`, which CI's Benchmark runs), 50 targets
   took 0.46 to 0.67 of 1.0.1's time at 500 to 5,000 columns, 10 targets
   0.77 to 0.92, one target 0.99 to 1.00.
-
-- **On Windows on x86-64, a wide model's last bits can move** (tasks 258
-  and 260): every matrix product past 16 × 16 × 16 entries, and every
-  product into a triangle (a blocked Gram's diagonal blocks, at any
-  width), the Gram's own or one inside a factorization, a solve or an
-  eigendecomposition, now runs on another kernel, which sums in another
-  order. Each entry of the Gram's product is held, on every platform, to
-  an exactly rounded oracle within the rounding bound of a sum in any
-  order, and the thread-count tests still hold every `gram_threads` and
-  pool size to the same bits. On Linux, macOS and Apple Silicon this
-  moves nothing: the products run on the kernel 1.0.1 ran them on, and on Apple
-  Silicon every one of `scripts/release_probe.py`'s 297 output fields and
-  31 saved states is the same as 1.0.1's, bit for bit, as are the wide
-  products' digests (`examples/product_digest.rs`) at up to 700 features.
 
 ### Performance
 
