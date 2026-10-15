@@ -10435,7 +10435,46 @@ tick, and that the series holding it up has a count near 1.
       the bounded product and 1.0.1's kernel. Before 1.1.0 (the user,
       2026-10-14: "Yes"). The CHANGELOG's Windows performance entry comes
       with it.
-**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 and 263 (2026-10-14).
+      *Found 2026-10-15* (`online-bench/examples/alloc_probe.rs` on the
+      throwaway branches `win-alloc-263`/`-263b`, since deleted; CI
+      38664722353, 38665929118, 38667980193): (1) **allocation**: a
+      per-thread cache of freed blocks of 1 MiB or more made the blocked
+      Gram 18-21% faster at 1,000 features on a Windows runner (AMD Zen 5;
+      15 large allocations, 23.5 MiB a flush), nothing on Linux; (2)
+      **cache detection**: `gemm-common` 0.19 reads cache sizes from sysfs
+      on Linux and CPUID elsewhere, and under the runners' hypervisor an
+      AMD EPYC 7763 reports L1/L2/L3 32 KiB / 512 KiB / **0** on Windows
+      against 16 KiB / 256 KiB / 32 MiB on Linux (`gemm_common::cache::
+      CACHE_INFO`); `gemm` sizes its blocks from it, and there its path was
+      30-55% slower than the kernel where Linux has them level; an Intel
+      Xeon 6973P read 48 KiB / 2 MiB / 480 MiB on Windows, so (2) does not
+      explain (3) **the rest** of the Python-level 2.7x on the Intel 8573C.
+      A physical Windows PC may not show (2). Commit model of the kernel:
+      2 x L3 per thread that has ever run a large product, held until the
+      thread exits (desktop L3 16-64 MB: 32-128 MB a thread; the runners'
+      260-480 MiB: 520-960 MiB a thread); in a bank with many groups every
+      pool thread can multiply, not only `gram_threads`.
+      **Options recorded, none chosen:** (a) ship the bounded path on
+      Windows as on `main` since task 260 (commit 374 MiB against 2,382 for
+      a 4-thread wide fit; wide `ewridge` 12-26% slower on the default
+      schedule, 29-63% with `gram_block_rows`, narrow specs level);
+      (b) a bounded per-thread reuse of freed large blocks in a
+      `#[global_allocator]` that forwards to `PolarsAllocator` (~15-20%
+      back; changes the line CLAUDE.md says must stay, so the user's word);
+      (c) 1.0.1's kernel on Windows too (one path and the same last bits on
+      all x86; the wide speed back), with CI's Windows Rust tests at
+      `--test-threads=2` again and a CHANGELOG known issue plus a docs note
+      giving the commit rule and the knobs (`threads=`, `gram_threads=`,
+      the pool size) -- the user's suggestion, 2026-10-15: "we could just
+      reduce the thread count on windows ci runners and such"; (d) (c) plus
+      a Windows-only cap on the threads that run products, holding 2 x L3 x
+      threads under a share of the commit limit; (e) upstream asks, the
+      user's to file: a bounded or reused packing buffer in
+      `private-gemm-x86`, cache detection under hypervisors in `gemm`.
+      *Deferred by the user 2026-10-15*: "Let's not make changes only for
+      windows for now. Record everything and we will pick later." `main`
+      keeps task 260's build (the bounded path on Windows) until then.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 263's choice deferred (2026-10-15).
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under
