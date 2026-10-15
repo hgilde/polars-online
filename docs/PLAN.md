@@ -10540,7 +10540,24 @@ tick, and that the series holding it up has a count near 1.
       (wide `ewridge` 12-63% slower than 1.0.1 on the runners). An upstream
       report (the kernel's cache detection under a hypervisor, and its
       products with no L3) is the user's to file.
-**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build, reverted by 266 (wrong products on Windows); 265 (2026-10-15); 263's options for later work.
+- [x] 267. **The kernel on Windows after all, the wrong products a known
+      issue** -- the user, 2026-10-15, after task 266 merged: "Something
+      is wrong windows should not be bounded memory it should have the
+      kernel", "When the windows tests run they should reduce the threads
+      to stay within the memory bounds for ci"; told that the failure was
+      a wrong answer, not memory, and that two test threads had not
+      changed it (run 38731522819 ran at two), with A (bounded, correct)
+      against B (kernel, the wrong products a known issue): "B". Task 266
+      reverted to task 264's build: faer's `std` for every x86-64 target,
+      CI's Windows Rust tests at `--test-threads=2`, `product_memory` off
+      x86-64. `trisolve_tests::the_solve_is_the_lu_solve_within_its_
+      forward_error_up_to_1500` held off Windows by `#[cfg(not(windows))]`,
+      a platform guard with its reason (the smaller-order test still runs
+      there and passed on every runner). CHANGELOG: two Known issues (the
+      wrong products where no L3 is reported, the commit); PERFORMANCE §43
+      the finding. Upstream reports (the kernel's cache detection and its
+      products with no L3) are the user's to file.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build; 266 reverted it (wrong products on Windows), 267 restored it at the user's choice; 265 (2026-10-15); 263's options for later work.
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under
