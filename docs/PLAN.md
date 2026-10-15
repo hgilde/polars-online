@@ -10515,7 +10515,32 @@ tick, and that the series holding it up has a count near 1.
       `main` in the same rounds. `scripts/wide_benchmark.py` (the wide
       configurations that found it) joins step 2 of the release steps
       (docs/RELEASE-READINESS.md).
-**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build (2026-10-15); 263's options for later work.
+- [x] 266. **Windows back on the `gemm` crate: the kernel's products were
+      wrong there on a processor that reports no L3** -- found 2026-10-15:
+      CI on task 264's push (`5959531`, run 38720754422) failed its Windows
+      Python 3.14 leg in `gramfit::trisolve_tests::the_solve_is_the_lu_solve_
+      within_its_forward_error_up_to_1500`: n = 1,500, `2.69e-4 > 2.25e-6`
+      (κ ≤ 1,501). Rerun on eight Windows runners (run 38731522819): all
+      four AMD EPYC 7763 failed with that same value, all four EPYC 9V74 /
+      9V45 passed; the Linux legs (EPYC 7763, the kernel since task 260)
+      pass it, and every Windows leg on the `gemm` crate (tasks 258-260)
+      did. `private-gemm-x86` 0.1.20 reads cache sizes from sysfs on Linux
+      and CPUID elsewhere, and sizes its blocks from the L3 (`lib.rs`
+      ~1278-1464: chunks of `2 * l3`, `l3 / 2`, strides zeroed past
+      `l3 / 2`); on Windows the runners' EPYC 7763 reports no L3 to CPUID
+      (the `gemm` crate read 32 KiB / 512 KiB / 0 there, task 263). 1.0.0
+      and 1.0.1 built the kernel for Windows, so they have it on such a
+      machine (that test arrived with task 256 (b), after 1.0.1). *Decided
+      2026-10-15* (the user: "Your reco windows"): task 264 reverted --
+      faer's `std` for `cfg(all(target_arch = "x86_64", not(windows)))`
+      again, `product_memory` on Windows again, CI's Windows Rust tests at
+      the default parallelism again; the CHANGELOG's Fixed entries give the
+      wrong products and the commit, its Changed entry Windows' last bits;
+      PERFORMANCE §43 the finding. Windows' speed is task 263's numbers
+      (wide `ewridge` 12-63% slower than 1.0.1 on the runners). An upstream
+      report (the kernel's cache detection under a hypervisor, and its
+      products with no L3) is the user's to file.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build, reverted by 266 (wrong products on Windows); 265 (2026-10-15); 263's options for later work.
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under
