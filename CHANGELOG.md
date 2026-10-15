@@ -31,25 +31,32 @@ any change to the numbers a model returns.
 
 ### Fixed
 
-- **On x86, some wide matrix products were wrong, in the product kernel
-  1.0.0 and 1.0.1 shipped** (tasks 266 to 268). faer's x86 kernel,
-  `private-gemm-x86` 0.1.20 (since yanked by its author), sizes its blocks
-  from the L3 cache, and once a chunk was clamped to fit that cache it
-  could stop being a multiple of the chunk inside it, so the blocks no
-  longer tiled the product; three tests of a triangular product compared
-  against the wrong size as well. Version 0.1.22, which this release
-  builds with and requires, fixes both. Found on GitHub's Windows runners
-  with an AMD EPYC 7763, whose CPUID reports no L3, so that the kernel
-  falls back to 4 x L2 = 2 MiB: a ridge solve at 1,500 columns came out
-  2.7e-4 from an LU solve of the same system, where rounding allows
-  2.3e-6, on four runners of four; with 0.1.22 it passes on those four
-  and on every other runner tried, Windows and Linux, AMD and Intel.
-  Forcing the kernel's L3 to 2 MiB on an Intel Linux machine gave the same
-  failure with 0.1.20. The wide models (`ewridge`, `ew_cov` and the rest
-  of the Gram's users at hundreds of features and more) and the `po.gram`
-  functions run those products on every x86 platform. Where the block
-  sizes changed, an x86 result's last bits can move against 1.0.1; Apple
-  Silicon never runs this kernel.
+- **On x86, wide fits could be wrong in 1.0.0 and 1.0.1, at widths set
+  by the CPU's L3 cache: upgrade if you fit hundreds of features or more
+  on x86** (tasks 266 to 268). Apple Silicon is not affected. faer's x86
+  product kernel, `private-gemm-x86` 0.1.20 (since yanked by its author),
+  sizes its blocks from the L3 cache, and once a chunk was clamped to fit
+  that cache it could stop being a multiple of the chunk inside it, so the
+  blocks no longer covered the product; three tests of a triangular
+  product compared against the wrong size as well. Version 0.1.22, which
+  this release builds with and requires, fixes both. Measured with a
+  ridge solve against an LU solve of the same system, the kernel's L3
+  forced on one Intel Linux machine: with an L3 of 8 MiB, a common
+  desktop size, solves at 3,700 and 3,900 columns were wrong by 3e-4 to
+  1e-3 relative, where rounding allows 4e-5; at 4 MiB, at 1,800 to 1,920
+  and 2,600 to 2,650 columns; at 2 MiB, at 700 and 1,350 to 1,540 columns,
+  by up to 1e-2. The failures come in bands of width, not past one size,
+  and larger caches move them wider: at the machine's own 33 MiB nothing
+  failed at the widths tried, up to 4,097. Every one of those 29 cases
+  passes with 0.1.22. On GitHub's Windows runners with an AMD EPYC 7763,
+  whose CPUID reports no L3 (the kernel then takes 4 x L2 = 2 MiB), the
+  1,500-column solve failed on four runners of four with 0.1.20 and passes
+  on all of them with 0.1.22, as on every other runner tried, Windows and
+  Linux, AMD and Intel. The products in question are those of the wide
+  models (`ewridge`, `ew_cov` and the rest of the Gram's users, blocked or
+  not) and of the `po.gram` functions: the factorizations, solves and
+  Gram products past 16 x 16 x 16. Where the block sizes changed, an x86
+  result's last bits can move against 1.0.1.
 
 ### Known issues
 

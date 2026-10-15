@@ -10577,9 +10577,16 @@ tick, and that the series holding it up has a count near 1.
       online-core's dependency list), `online-core` names it on x86-64 for
       its minimum (`>= 0.1.22`), task 267's Windows test guard removed;
       CHANGELOG's known issue becomes a Fixed entry (1.0.x's wrong
-      products); PERFORMANCE §43. Still open: the width probe (0.1.20 at
-      other L3 sizes and widths) in the user's Linux session, to state how
-      far 0.1.20's bug reached on ordinary machines.
+      products); PERFORMANCE §43. The width probe (the user's Linux
+      session, artifact claude.ai/artifact/JQv5vS19ZiDKFm2uNC3sBz, the
+      kernel's used L3 forced): 0.1.20 failed 29 (n, t) cases -- 2 MiB at
+      n = 700 and 1,350-1,540, 4 MiB at 1,800-1,920 and 2,600-2,650, 8 MiB
+      at 3,700 and 3,900 (errors up to 1.3e-2 against bounds of 1e-6 to
+      4e-5), none at the detected 33 MiB up to 4,097 -- in bands, not at
+      `2 x L3 / 4096`; 0.1.22 passed all 29. So 1.0.0 and 1.0.1 could be
+      wrong on ordinary x86 machines (an 8 MiB L3 at about 3,700-3,900
+      features), not only on VMs that hide their L3; the CHANGELOG's Fixed
+      entry says so and tells 1.0.x users on x86 to upgrade.
 **1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build; 266 reverted it (wrong products on Windows), 267 restored it at the user's choice; 268, the kernel's fix (0.1.22); 265 (2026-10-15); 263's options for later work.
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no

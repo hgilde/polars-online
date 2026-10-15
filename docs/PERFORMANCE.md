@@ -3263,7 +3263,10 @@ system, where Cholesky's forward bound allows 2.3e-6
 tried, four of four, the same value each time: its CPUID reports no L3, so
 the kernel took 4 x 512 KiB = 2 MiB. On an Intel Linux machine, forcing
 the kernel's L3 to 2 MiB gave the same failure (3.2e-4), while 4, 8 and
-33 MiB passed. The cause is in the kernel's block sizes: each outer chunk
+33 MiB passed; probing widths, 0.1.20 also failed at 4 MiB (1,800-1,920
+and 2,600-2,650 columns) and 8 MiB (3,700 and 3,900 columns), in bands
+rather than past one width, and 0.1.22 passed all 29 failing cases. The
+cause is in the kernel's block sizes: each outer chunk
 was rounded up to a multiple of the chunk inside it and only then clamped
 to the L3, which could leave it no longer a multiple, so the blocks did not
 tile the product; 0.1.22 clamps first and rounds last, and also fixes three
