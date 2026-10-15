@@ -7,7 +7,7 @@ stable API takes a major version, and a minor version may also correct numbers
 that were wrong. Before 1.0, the minor version carried breaking changes, and
 any change to the numbers a model returns.
 
-## [Unreleased]
+## [1.1.0] — 2026-10-15
 
 ### Added
 
@@ -123,6 +123,23 @@ any change to the numbers a model returns.
   0.77 to 0.92, one target 0.99 to 1.00.
 
 ### Performance
+
+- **1.1.0 against 1.0.1, measured before the release**: every one of
+  `scripts/compare_release.py`'s 297 output fields over 31 specs is
+  identical to 1.0.1's, bit for bit (the changes under *Changed* are in
+  models and calls it does not run, and it runs on Apple Silicon, which
+  the x86 kernel's fix does not reach). On an Apple M4 Pro at a load of
+  2.1 to 4.8, both builds compiled here, five interleaved rounds of
+  `scripts/benchmark.py` at 200,000 rows: 18 of its 38 configurations are
+  faster beyond the runs' scatter, by 1-8% (`sgd` 7.8%, `pa` 6.8%,
+  `ew_cov` with lags 5.9%, `ewridge` at 20 features about 3%), and
+  `corrchange`'s monitor at four features is 3.1% slower (479 against 464
+  thousand rows a second); the rest are within the scatter. Three rounds
+  of `scripts/wide_benchmark.py`, the wide specs `benchmark.py` does not
+  reach: `ewridge` at 200 features 1-3% faster, at 500 features 1-3%
+  slower, at 1,000 features the same (blocked 38.7-39.1 against
+  38.5-39.4 thousand rows a second), `lasso` at 200 and 500 features
+  0.99.
 
 - **A blocked `ewridge`'s targets wait for the block's merge with the Gram**
   (task 257). Under `gram_block_rows`, each target's cross-moments with the

@@ -8,7 +8,7 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 
 - Data: public intraday (BTCUSDT 1m, Binance public dump, 2024-01-02..2024-01-11, 10 days)
 - Rows: 14335, features: ['x0', 'x1', 'x2', 'x3'], targets: ['y0', 'y1']
-- Polars 2.0.0, polars-online 1.0.1
+- Polars 2.0.0, polars-online 1.1.0
 
 ## How the runs are set
 
