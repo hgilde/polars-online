@@ -10472,9 +10472,25 @@ tick, and that the series holding it up has a count near 1.
       user's to file: a bounded or reused packing buffer in
       `private-gemm-x86`, cache detection under hypervisors in `gemm`.
       *Deferred by the user 2026-10-15*: "Let's not make changes only for
-      windows for now. Record everything and we will pick later." `main`
-      keeps task 260's build (the bounded path on Windows) until then.
-**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 263's choice deferred (2026-10-15).
+      windows for now. Record everything and we will pick later." Then,
+      the same day: "Keep the kernel for every build for now, record all
+      the findings for later work" -- task 264. The options above stay
+      open for later work, measured against that build.
+- [x] 264. **The kernel on every x86 build** -- the user, 2026-10-15:
+      "Keep the kernel for every build for now, record all the findings for
+      later work." `online-core`'s manifest turns faer's `std` on for
+      `cfg(target_arch = "x86_64")` (task 260 had `not(windows)`), so
+      Windows runs 1.0.1's kernel and its last bits again, with its commit
+      of 2 x L3 per thread that multiplies (2,382 MiB for a 4-thread
+      1,000-feature fit on a runner with 260 MiB of L3; 374 MiB without the
+      kernel, which ran wide `ewridge` 12-63% slower there). CI's Windows
+      Rust tests at `--test-threads=2` again, as in 1.0.1; `product_memory`
+      off x86-64 only; aarch64's feature graph unchanged. CHANGELOG:
+      task 258/260's Windows Fixed entry and the x86 last-bits entry become
+      a Known issue with these figures; PERFORMANCE §43 says every x86
+      build. All findings and the Windows options are task 263's, for later
+      work.
+**1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build (2026-10-15); 263's options for later work.
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under

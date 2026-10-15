@@ -35,17 +35,17 @@ rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
-# faer's `std` feature, and with it `private-gemm-x86`, on x86-64 Linux and
-# macOS (docs/PLAN.md task 260). That crate's product kernel is the faster
-# one there, and the packing buffer it keeps on each thread (twice the L3
-# cache) is an address-space reservation, backed only where a product
-# touches it. Windows commits the whole buffer against the page file, so
-# there faer stays without `std` and takes the `gemm` crate (the workspace
-# Cargo.toml, task 258), as aarch64 does: there the feature would link
-# nothing more, but it changes the crate graph, which once moved an
-# unrelated loop's code generation by 5%, so aarch64 keeps the build it was
-# measured with.
-[target.'cfg(all(target_arch = "x86_64", not(windows)))'.dependencies]
+# faer's `std` feature, and with it `private-gemm-x86`, on every x86-64
+# build (docs/PLAN.md tasks 260 and 264). That crate's product kernel is the
+# faster one, and it keeps a packing buffer of twice the L3 cache on each
+# thread that has multiplied: address space reserved on Linux and macOS,
+# backed only where a product touches it, but committed whole on Windows,
+# where many threads multiplying can exhaust the commit limit (fewer
+# threads bound it; PLAN task 263 holds the measured alternatives, none
+# chosen). aarch64 has no such kernel; there the feature would link nothing
+# more but change the crate graph, which once moved an unrelated loop's
+# code generation by 5%, so aarch64 keeps the build it was measured with.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 faer = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
