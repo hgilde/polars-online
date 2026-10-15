@@ -1111,6 +1111,11 @@ fn process<'s>(
                     stream.persisted.last_session = session_of(idx[end - 1]);
                 }
             }
+            // The readiness shares of the chunk's last solves, once the
+            // stream's runs are done (task 265): taken after each run, they
+            // were a solve against the identity a run, about `k³`, and a
+            // chunk of a wide spec is many cache-sized runs.
+            stream.settle_readiness();
             if let (Some(sink), Some(prev)) = (sink.as_mut(), pending.as_mut()) {
                 sink.absorb(std::slice::from_mut(prev));
             }

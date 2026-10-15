@@ -1,5 +1,5 @@
-//! No solve holds its factor past the end of a run, and a stream's `flush`
-//! settles one learned outside it. A file of its own, keeping bank.rs under
+//! No solve holds its factor past the end of a chunk, and a model's
+//! `settle_readiness` settles one learned outside it. A file of its own, keeping bank.rs under
 //! `tests/test_repo_hygiene.py`'s 250 KB cap for a source file.
 use crate::stream::AnyModel;
 use crate::{Bank, Spec};
@@ -7,12 +7,12 @@ use online_core::OnlineModel;
 use polars::prelude::*;
 
 /// A solve's readiness shares wait for a read, holding the solve's
-/// factor (docs/PLAN.md task 140), and the end of each run takes them
-/// and drops it: after a chunk no group's model holds one. One more row
-/// learned outside the stream leaves one held, which the stream's
-/// `flush` settles.
+/// factor (docs/PLAN.md task 140), and the end of each stream's chunk
+/// takes them and drops it (task 265): after a chunk no group's model
+/// holds one. One more row learned outside the stream leaves one held,
+/// which `settle_readiness` settles, and a run's `flush` does not.
 #[test]
-fn no_solve_holds_its_factor_past_the_end_of_a_run() {
+fn no_solve_holds_its_factor_past_the_end_of_a_chunk() {
     let spec: Spec = serde_json::from_str(
         r#"{"name": "m", "model": {"type": "ewridge", "max_rows_between_solves": 1},
                 "targets": ["y"], "features": ["x0", "x1"], "group": "g",
@@ -45,6 +45,11 @@ fn no_solve_holds_its_factor_past_the_end_of_a_run() {
         let AnyModel::EwRidge(m) = &stream.models[0].1 else {
             unreachable!();
         };
-        assert_eq!(m.pending_readiness(), 0, "flush settles");
+        assert!(m.pending_readiness() > 0, "a run's flush settles nothing");
+        stream.settle_readiness();
+        let AnyModel::EwRidge(m) = &stream.models[0].1 else {
+            unreachable!();
+        };
+        assert_eq!(m.pending_readiness(), 0, "settle_readiness settles");
     }
 }

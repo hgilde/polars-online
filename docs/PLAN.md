@@ -10490,6 +10490,31 @@ tick, and that the series holding it up has a count near 1.
       a Known issue with these figures; PERFORMANCE §43 says every x86
       build. All findings and the Windows options are task 263's, for later
       work.
+- [x] 265. **A wide `ewridge` at 0.56 of 1.0.1's speed, from one settle a
+      run** -- found 2026-10-15 by the 1.1.0 release benchmark on an Apple
+      M4 Pro, both builds compiled here: 1,000 features, 2,000 rows, a solve
+      every 256 rows, 38.6k rows/s on 1.0.1 against 21.9k with
+      `gram_block_rows` 256, 13.2k against 11.4k without; every
+      `benchmark.py` row unchanged (50 features at most) and
+      `compare_release.py` identical. Bisected to task 257 (b) (`28a1525`;
+      `63c2495` before it 37.3k/12.6k): its run budget counts the run's
+      feature rows (`ChunkOut::run_rows`, `+ spec.k()`), so a 1,000-feature
+      chunk became about nine runs of 240 rows where it had been one, and
+      each run's end settled the readiness shares (task 140,
+      `AnyModel::flush` -> `settle_readiness`), which takes a solve's
+      `inverse_diagonal`, a solve against the identity, about `k³`
+      (sampled: `ewridge::settle` -> `shares` -> `inverse_diagonal` the
+      largest share of the profile). **Fixed** by settling once a
+      stream's rows of a chunk are learned (`Stream::settle_readiness`,
+      called after the bank's run loop); a run's `flush` keeps
+      `marginal`'s held rows only. The shares are the same bits whenever
+      they are taken, so no output moves, and no factor outlives the chunk
+      that solved it (`readiness_settle_tests`, now also holding that a
+      run's `flush` settles nothing). Measured after: 34.9-36.6k and
+      13.7-14.3k at a load of 5-7, against 20.6-22.4k and 11.1-11.4k for
+      `main` in the same rounds. `scripts/wide_benchmark.py` (the wide
+      configurations that found it) joins step 2 of the release steps
+      (docs/RELEASE-READINESS.md).
 **1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build (2026-10-15); 263's options for later work.
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
