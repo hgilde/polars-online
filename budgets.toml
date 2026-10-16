@@ -36,7 +36,7 @@ gungraun = "0.20.0"
 rows = 1000
 # The release whose measurements are the `release` numbers; "" before the
 # first one is recorded.
-release = "1.0.1"
+release = "1.1.0"
 drift_signoff = 0.10
 
 [meta.tolerance]
@@ -65,16 +65,17 @@ rss = 0.30
 [instructions.ewridge_k5]
 what = "ewridge, 5 features, 1 target, half-life 1000: AnyModel::step"
 budget = 2962547
-release = 2960547
+release = 2940548
 
 [instructions.ewridge_k20]
 what = "ewridge, 20 features, 1 target, half-life 1000: AnyModel::step"
 budget = 8114926
-release = 8112926
+release = 8082469
 
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step, the targets folded into the block's merge"
 budget = 13923740
+release = 13923716
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step"
@@ -114,7 +115,7 @@ release = 18698007
 [instructions.ew_cov]
 what = "ew_cov, 20 features, mean, std and corr: AnyModel::step"
 budget = 13889690
-release = 13887690
+release = 13888690
 
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
@@ -129,17 +130,17 @@ release = 394029
 [instructions.bank_seqtest]
 what = "Bank::fit_predict of one frame, seqtest: every per-row step of the bank around the cheapest model"
 budget = 2019524
-release = 2013545
+release = 2015679
 
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
 budget = 5753653
-release = 5797792
+release = 5757429
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
 budget = 168992955
-release = 168993367
+release = 167032238
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
@@ -1085,19 +1086,19 @@ zscore_z = { budget = 8.125, release = 8.125 }
 
 
 [rss.streaming_bounded]
-darwin = { budget = 201.7032, release = 177.25 }
-linux = { budget = 218.9493, release = 164.375 }
-windows = { budget = 195.7149, release = 169.9532 }
+darwin = { budget = 201.7032, release = 178.3125 }
+linux = { budget = 218.9493, release = 154.2383 }
+windows = { budget = 195.7149, release = 151.8907 }
 
 [rss.ew_cov_wide]
-darwin = { budget = 441.6563, release = 438.3282 }
-linux = { budget = 450.7461, release = 451.8594 }
-windows = { budget = 425.2227, release = 425.4024 }
+darwin = { budget = 441.6563, release = 410.0938 }
+linux = { budget = 450.7461, release = 419.1016 }
+windows = { budget = 425.2227, release = 396.1915 }
 
 [rss.ewridge_10_targets]
-darwin = { budget = 134.375, release = 140.4532 }
-linux = { budget = 157.6719, release = 155.3516 }
-windows = { budget = 110.9454, release = 107.7618 }
+darwin = { budget = 134.375, release = 104.1407 }
+linux = { budget = 157.6719, release = 123.1016 }
+windows = { budget = 110.9454, release = 80.129 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]

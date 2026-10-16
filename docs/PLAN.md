@@ -10588,6 +10588,21 @@ tick, and that the series holding it up has a count near 1.
       features), not only on VMs that hide their L3; the CHANGELOG's Fixed
       entry says so and tells 1.0.x users on x86 to upgrade.
 **1.1.0** (the user, 2026-10-13): tasks 258's fix, 256 and 257; 260 (2026-10-14); 264, the kernel on every x86 build; 266 reverted it (wrong products on Windows), 267 restored it at the user's choice; 268, the kernel's fix (0.1.22); 265 (2026-10-15); 263's options for later work.
+      *Released 2026-10-15* (the user: "Do the release", then "Release
+      1.1" for the dispatch): run 38832066738 on `7fa8ee0`, every job green
+      (CI on all three OSes, six wheels, the sdist, the CLI binaries, the
+      state hand-off, the floor / newest / next-major Polars and NumPy legs,
+      the budgets), PyPI approved by the user, `v1.1.0` and the GitHub
+      release made by the workflow. Verified from a clean venv: 1.1.0
+      native 1.1.0 schema 62, a fit recovers its coefficients. Before the
+      dispatch: compare_release identical (297 fields), benchmark.py 18 of
+      38 faster by 1-8% and `corrchange`'s monitor 3.1% slower (declared),
+      wide_benchmark.py level, the floor Polars 1.37.0 suite green, kernel
+      0.1.22 the speed of 0.1.20 on three CPUs (same-runner, CI 38821326415).
+      Recorded after: budgets.toml's release counts from the run's artifacts
+      (`--release 1.1.0`; the floor-Python peaks fell, e.g. 155 -> 123 MiB
+      and 452 -> 419 MiB on Linux), RELEASES gains 1.1.0 (its states load
+      and go on as this build's own).
       *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
       leg green, the Windows legs' Rust tests at full parallelism again (no
       `--test-threads=2`), and `product_memory` holding each thread under
