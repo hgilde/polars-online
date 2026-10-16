@@ -142,46 +142,101 @@ fn forward_models(v: &mut serde_json::Value, notices: &mut Vec<String>) -> Resul
     Ok(())
 }
 
-fn forward_model(
+/// A model's table as [`forward_model`] reads and rewrites it: a JSON
+/// object here, and a parsed TOML table in the command line, which
+/// forwards over TOML's own values -- they hold an infinity, which JSON
+/// cannot, and the place of each key in the file (task 269, D-2 and D-7).
+pub trait ModelTable {
+    /// Whether the table has `key`.
+    fn has(&self, key: &str) -> bool;
+    /// `key`'s value when it is a string.
+    fn word(&self, key: &str) -> Option<String>;
+    /// `key`'s value when it is a bool.
+    fn flag(&self, key: &str) -> Option<bool>;
+    /// `key`'s value as a notice shows it: a string quoted, anything else
+    /// as written.
+    fn shown(&self, key: &str) -> String;
+    /// `old`'s value moved to `new`, which the caller has checked is not
+    /// there.
+    fn rename(&mut self, old: &str, new: &str);
+    /// `key`'s value replaced by the string `word`.
+    fn set_word(&mut self, key: &str, word: &str);
+    /// `key` set to the float `text` writes (a literal, which a parsed
+    /// TOML table needs to make one), unless the table has it, in the place
+    /// of the key `beside`.
+    fn or_float(&mut self, key: &str, text: &'static str, beside: &str);
+}
+
+impl ModelTable for serde_json::Map<String, serde_json::Value> {
+    fn has(&self, key: &str) -> bool {
+        self.contains_key(key)
+    }
+    fn word(&self, key: &str) -> Option<String> {
+        self.get(key).and_then(|v| v.as_str()).map(str::to_string)
+    }
+    fn flag(&self, key: &str) -> Option<bool> {
+        self.get(key).and_then(serde_json::Value::as_bool)
+    }
+    fn shown(&self, key: &str) -> String {
+        self.get(key).map(ToString::to_string).unwrap_or_default()
+    }
+    fn rename(&mut self, old: &str, new: &str) {
+        if let Some(value) = self.remove(old) {
+            self.insert(new.to_string(), value);
+        }
+    }
+    fn set_word(&mut self, key: &str, word: &str) {
+        self.insert(key.to_string(), word.into());
+    }
+    fn or_float(&mut self, key: &str, text: &'static str, _beside: &str) {
+        if let Ok(value) = text.parse::<f64>() {
+            self.entry(key).or_insert(value.into());
+        }
+    }
+}
+
+/// One model table's renamed keys and words read as the new ones, for a
+/// model of type `kind` ([`forward_deprecated_in_models`]).
+///
+/// # Errors
+///
+/// An old name beside its new one, naming both.
+pub fn forward_model<M: ModelTable + ?Sized>(
     kind: &str,
-    map: &mut serde_json::Map<String, serde_json::Value>,
+    map: &mut M,
     notices: &mut Vec<String>,
 ) -> Result<(), String> {
     let both = |old: &str, new: &str| {
         format!("{old} was renamed {new}, and both are given: give {new} alone")
     };
     for (model, old, new) in DEPRECATED_IN {
-        if *model == kind
-            && let Some(value) = map.remove(*old)
-        {
-            if map.contains_key(*new) {
+        if *model == kind && map.has(old) {
+            if map.has(new) {
                 return Err(both(old, new));
             }
-            map.insert((*new).to_string(), value);
+            map.rename(old, new);
             notices.push(deprecation_notice(old, new));
         }
     }
-    if kind == "bocpd"
-        && let Some(value) = map.remove("emission")
-    {
-        if map.contains_key("covariance_type") {
+    if kind == "bocpd" && map.has("emission") {
+        if map.has("covariance_type") {
             return Err(both("emission", "covariance_type"));
         }
         // A value that is no word, or a word that never was one, is passed
         // on for `covariance_type` to refuse in its own words.
-        let word = value.as_str().unwrap_or_default().to_string();
+        let given = map.word("emission");
+        let word = given.clone().unwrap_or_default();
         let (covariance, beta) = match word.as_str() {
             "gaussian" => ("full", false),
             "robust" => ("diag", true),
             other => (other, false),
         };
-        if value.is_string() {
-            map.insert("covariance_type".into(), covariance.into());
-        } else {
-            map.insert("covariance_type".into(), value);
+        map.rename("emission", "covariance_type");
+        if given.is_some() {
+            map.set_word("covariance_type", covariance);
         }
         let robust = if beta {
-            map.entry("robust_beta").or_insert(0.1.into());
+            map.or_float("robust_beta", "0.1", "covariance_type");
             " with robust_beta, 0.1 where none is given"
         } else {
             ""
@@ -191,30 +246,25 @@ fn forward_model(
              It is read so until the next major version, which refuses it"
         ));
     }
-    if kind == "corrchange"
-        && let Some(value) = map.remove("reset_on_flag")
-    {
-        if map.contains_key("change_action") {
+    if kind == "corrchange" && map.has("reset_on_flag") {
+        if map.has("change_action") {
             return Err(both("reset_on_flag", "change_action"));
         }
-        let action = if value.as_bool() == Some(true) {
-            "reset"
-        } else {
-            "flag"
-        };
-        if value.is_boolean() {
-            map.insert("change_action".into(), action.into());
-        } else {
-            map.insert("change_action".into(), value.clone());
+        let flag = map.flag("reset_on_flag");
+        let shown = map.shown("reset_on_flag");
+        let action = if flag == Some(true) { "reset" } else { "flag" };
+        map.rename("reset_on_flag", "change_action");
+        if flag.is_some() {
+            map.set_word("change_action", action);
         }
         notices.push(format!(
-            "reset_on_flag = {value} is deprecated: it is change_action = {action:?}. It is read \
+            "reset_on_flag = {shown} is deprecated: it is change_action = {action:?}. It is read \
              so until the next major version, which refuses it"
         ));
     }
     for (model, key, old, new) in DEPRECATED_WORDS_IN {
-        if *model == kind && map.get(*key).and_then(|w| w.as_str()) == Some(*old) {
-            map.insert((*key).to_string(), (*new).into());
+        if *model == kind && map.word(key).as_deref() == Some(*old) {
+            map.set_word(key, new);
             notices.push(word_deprecation_notice(key, old, new));
         }
     }

@@ -17,6 +17,9 @@ use std::sync::LazyLock;
 
 use clap::{CommandFactory, Parser};
 use online_polars::{Format, RunConfig, RunStats, run_config_reported};
+use serde::Deserialize;
+use toml::Spanned;
+use toml::de::{DeTable, DeValue};
 
 /// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
 fn parse_format(s: &str) -> Result<Format, String> {
@@ -192,8 +195,7 @@ struct Cli {
 /// variant, so the error points at the `[specs.model]` table and names no
 /// key (review 2026-10-06, PC11). Each model's keys are read again alone
 /// beside its `type`, and the first that gives the same message is the one.
-fn model_key(text: &str, msg: &str) -> Option<String> {
-    let doc: toml::Table = toml::from_str(text).ok()?;
+fn model_key(doc: &toml::Table, msg: &str) -> Option<String> {
     for spec in doc.get("specs")?.as_array()? {
         let Some(model) = spec.get("model").and_then(toml::Value::as_table) else {
             continue;
@@ -233,64 +235,154 @@ const FORMULA_UNSTABLE: &str = "warning: a formula target's written form -- its 
      without it being considered a breaking change (set POLARS_ONLINE_WARN_UNSTABLE=0 or \
      unset it to silence this).";
 
-/// `text`, a TOML config, with each key `table` deprecates read as its new
-/// name at any depth, and a notice for each (`online_polars::DEPRECATED`,
-/// docs/PLAN.md task 198, D2). The text itself where nothing was renamed, or
-/// where it is not TOML at all, which the config's own parse then reports.
+/// A parsed TOML model table, as the model-level forwarding reads and
+/// rewrites it (`online_polars::ModelTable`). A renamed key keeps the old
+/// one's place in the file and a replaced word the old word's, so an error
+/// about either names the file's own line.
+struct TomlModel<'a, 'i>(&'a mut DeTable<'i>);
+
+impl online_polars::ModelTable for TomlModel<'_, '_> {
+    fn has(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+    fn word(&self, key: &str) -> Option<String> {
+        match self.0.get(key).map(Spanned::get_ref) {
+            Some(DeValue::String(s)) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+    fn flag(&self, key: &str) -> Option<bool> {
+        match self.0.get(key).map(Spanned::get_ref) {
+            Some(DeValue::Boolean(b)) => Some(*b),
+            _ => None,
+        }
+    }
+    fn shown(&self, key: &str) -> String {
+        match self.0.get(key).map(Spanned::get_ref) {
+            Some(DeValue::String(s)) => format!("{s:?}"),
+            Some(DeValue::Boolean(b)) => b.to_string(),
+            Some(DeValue::Integer(i)) => i.to_string(),
+            Some(DeValue::Float(f)) => f.to_string(),
+            Some(DeValue::Datetime(d)) => d.to_string(),
+            Some(DeValue::Array(_)) => "an array".into(),
+            Some(DeValue::Table(_)) => "a table".into(),
+            None => String::new(),
+        }
+    }
+    fn rename(&mut self, old: &str, new: &str) {
+        if let Some((key, value)) = self.0.remove_entry(old) {
+            self.0
+                .insert(Spanned::new(key.span(), new.to_string().into()), value);
+        }
+    }
+    fn set_word(&mut self, key: &str, word: &str) {
+        if let Some(value) = self.0.get_mut(key) {
+            *value = Spanned::new(value.span(), DeValue::String(word.to_string().into()));
+        }
+    }
+    fn or_float(&mut self, key: &str, text: &'static str, beside: &str) {
+        if self.0.contains_key(key) {
+            return;
+        }
+        // A float TOML parses from its text: `DeFloat` has no other
+        // constructor.
+        let span = self.0.get_key_value(beside).map_or(0..0, |(k, _)| k.span());
+        if let Ok(number) = DeValue::parse(text) {
+            self.0.insert(
+                Spanned::new(span.clone(), key.to_string().into()),
+                Spanned::new(span, number.into_inner()),
+            );
+        }
+    }
+}
+
+/// `root`, a parsed TOML config, with each key `table` deprecates read as
+/// its new name at any depth, and each model table's renamed keys and words
+/// read as the new ones (`online_polars::DEPRECATED`,
+/// `online_polars::forward_model`), and a notice for each.
+///
+/// Done over TOML's own values: it went through JSON, which has no
+/// infinity, so a `half_life = inf` anywhere became null and the config was
+/// refused; and the text it rewrote moved the lines a later error named
+/// (task 269, D-2 and D-7).
 fn forward_deprecated_toml(
-    text: &str,
+    root: &mut DeTable<'_>,
     table: &[(&str, &str)],
-) -> Result<(String, Vec<String>), String> {
-    fn walk(
-        v: &mut toml::Value,
+) -> Result<Vec<String>, String> {
+    fn keys(
+        t: &mut DeTable<'_>,
         table: &[(&str, &str)],
         notices: &mut Vec<String>,
     ) -> Result<(), String> {
-        match v {
-            toml::Value::Table(t) => {
-                for (old, new) in table {
-                    if let Some(value) = t.remove(*old) {
-                        if t.contains_key(*new) {
-                            return Err(format!(
-                                "{old} was renamed {new}, and both are given: give {new} alone"
-                            ));
-                        }
-                        t.insert((*new).to_string(), value);
-                        notices.push(online_polars::deprecation_notice(old, new));
-                    }
+        for (old, new) in table {
+            if let Some((key, value)) = t.remove_entry(*old) {
+                if t.contains_key(*new) {
+                    return Err(format!(
+                        "{old} was renamed {new}, and both are given: give {new} alone"
+                    ));
                 }
-                for (_, value) in t.iter_mut() {
-                    walk(value, table, notices)?;
-                }
+                t.insert(Spanned::new(key.span(), (*new).to_string().into()), value);
+                notices.push(online_polars::deprecation_notice(old, new));
             }
-            toml::Value::Array(items) => {
-                for value in items {
-                    walk(value, table, notices)?;
-                }
-            }
-            _ => {}
+        }
+        for (_, value) in t.iter_mut() {
+            walk(value.get_mut(), &mut |t| keys(t, table, notices))?;
         }
         Ok(())
     }
-    let Ok(doc) = toml::from_str::<toml::Table>(text) else {
-        return Ok((text.to_string(), Vec::new()));
-    };
-    let mut doc = toml::Value::Table(doc);
+    fn models(t: &mut DeTable<'_>, notices: &mut Vec<String>) -> Result<(), String> {
+        let kind = match t.get("type").map(Spanned::get_ref) {
+            Some(DeValue::String(s)) => Some(s.to_string()),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            online_polars::forward_model(&kind, &mut TomlModel(t), notices)?;
+        }
+        for (_, value) in t.iter_mut() {
+            walk(value.get_mut(), &mut |t| models(t, notices))?;
+        }
+        Ok(())
+    }
+    /// `on` for each table in `v`: `v` itself, or each item of an array.
+    fn walk(
+        v: &mut DeValue<'_>,
+        on: &mut dyn FnMut(&mut DeTable<'_>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        match v {
+            DeValue::Table(t) => on(t),
+            DeValue::Array(items) => items.iter_mut().try_for_each(|i| walk(i.get_mut(), on)),
+            _ => Ok(()),
+        }
+    }
     let mut notices = Vec::new();
-    walk(&mut doc, table, &mut notices)?;
+    keys(root, table, &mut notices)?;
     // A key or a word renamed in one model's table, which `table` cannot
     // say: `kmeans`' `k` is `n_clusters` and `hmm`'s `n_components`.
-    let mut json = serde_json::to_value(&doc).map_err(|e| format!("reading the config: {e}"))?;
-    let models = online_polars::forward_deprecated_in_models(&mut json)?;
-    if !models.is_empty() {
-        doc = serde_json::from_value(json).map_err(|e| format!("rewriting the config: {e}"))?;
-        notices.extend(models);
-    }
-    if notices.is_empty() {
-        return Ok((text.to_string(), notices));
-    }
-    let text = toml::to_string(&doc).map_err(|e| format!("rewriting the config: {e}"))?;
-    Ok((text, notices))
+    models(root, &mut notices)?;
+    Ok(notices)
+}
+
+/// What [`read_config`] gives back: the config or TOML's refusal of it,
+/// with the forwarded document as a table, for [`model_key`].
+type Read = (Result<RunConfig, toml::de::Error>, Option<toml::Table>);
+
+/// `text`, a TOML config, read as a [`RunConfig`] after its deprecated
+/// names are forwarded ([`forward_deprecated_toml`]), and the notices.
+/// The document is parsed once and read from its parsed form, so an error
+/// names the file's own line and quotes it. Text that is not TOML is
+/// refused by the parse.
+fn read_config(text: &str, table: &[(&str, &str)]) -> Result<(Read, Vec<String>), String> {
+    let mut root = match DeTable::parse(text) {
+        Ok(root) => root,
+        Err(e) => return Ok(((Err(e), None), Vec::new())),
+    };
+    let notices = forward_deprecated_toml(root.get_mut(), table)?;
+    let doc = toml::Table::deserialize(toml::de::Deserializer::from(root.clone())).ok();
+    let cfg = RunConfig::deserialize(toml::de::Deserializer::from(root)).map_err(|mut e| {
+        e.set_input(Some(text));
+        e
+    });
+    Ok(((cfg, doc), notices))
 }
 
 /// `cfg`'s relative paths, read from `dir`, the config file's directory, so
@@ -350,12 +442,12 @@ fn run() -> Result<(), String> {
     let text = std::fs::read_to_string(&cli.config)
         .map_err(|e| format!("reading {}: {e}", cli.config.display()))?;
     // A key renamed after 1.0 is read as its new name, with a warning.
-    let (text, notices) = forward_deprecated_toml(&text, online_polars::DEPRECATED)
+    let ((cfg, doc), notices) = read_config(&text, online_polars::DEPRECATED)
         .map_err(|e| format!("parsing {}: {e}", cli.config.display()))?;
     for notice in notices {
         eprintln!("polars-online: warning: {notice}");
     }
-    let mut cfg: RunConfig = toml::from_str(&text).map_err(|e| {
+    let mut cfg: RunConfig = cfg.map_err(|e| {
         // A Windows path in a TOML basic string is the most common way this
         // fails, and TOML's own message ("too few unicode value digits", from
         // reading `\U` in `C:\Users\...` as an escape) gives no hint why.
@@ -368,7 +460,10 @@ fn run() -> Result<(), String> {
         } else {
             ""
         };
-        let key = model_key(&text, e.message()).map_or(String::new(), |at| format!("\nat {at}"));
+        let key = doc
+            .as_ref()
+            .and_then(|doc| model_key(doc, e.message()))
+            .map_or(String::new(), |at| format!("\nat {at}"));
         format!(
             "parsing {}: {}{key}{backslash_hint}",
             cli.config.display(),
@@ -580,15 +675,32 @@ mod tests {
     }
     /// A key the table deprecates is read as its new name at any depth, a
     /// spec's own and its model's, with a notice each; an old and a new name
-    /// side by side are refused; the production table, empty before 1.0,
-    /// leaves the text as it is (docs/PLAN.md task 198, D2).
+    /// side by side are refused; the production table leaves the document
+    /// as it is (docs/PLAN.md task 198, D2). A renamed key keeps its place
+    /// in the file (task 269, D-7).
     #[test]
     fn a_deprecated_toml_key_is_forwarded_with_a_notice() {
         let table = [("half_lyfe", "half_life"), ("rigde", "ridge")];
         let text = "input = \"in.parquet\"\n\n[[specs]]\nname = \"m\"\ntargets = [\"y\"]\n\
                     features = [\"x\"]\nhalf_lyfe = 10.0\n\n[specs.model]\ntype = \"ew_ridge\"\n\
                     rigde = 0.5\n";
-        let (out, notices) = super::forward_deprecated_toml(text, &table).unwrap();
+        let forwarded = |text: &str, table: &[(&str, &str)]| {
+            let mut root = super::DeTable::parse(text).unwrap();
+            let notices = super::forward_deprecated_toml(root.get_mut(), table)?;
+            let at = match root.get_ref().get("specs").map(super::Spanned::get_ref) {
+                Some(super::DeValue::Array(specs)) => match specs[0].get_ref() {
+                    super::DeValue::Table(t) => t.get_key_value("half_life").map(|(k, _)| k.span()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let doc = <toml::Table as serde::Deserialize>::deserialize(
+                toml::de::Deserializer::from(root),
+            )
+            .unwrap();
+            Ok::<_, String>((doc, notices, at))
+        };
+        let (doc, notices, at) = forwarded(text, &table).unwrap();
         assert_eq!(
             notices,
             [
@@ -596,21 +708,41 @@ mod tests {
                 online_polars::deprecation_notice("rigde", "ridge"),
             ]
         );
-        let doc: toml::Table = toml::from_str(&out).unwrap();
         let spec = &doc["specs"].as_array().unwrap()[0];
         assert_eq!(spec["half_life"].as_float(), Some(10.0));
         assert_eq!(spec["model"]["ridge"].as_float(), Some(0.5));
         assert!(spec.get("half_lyfe").is_none());
+        let old = text.find("half_lyfe").unwrap();
+        assert_eq!(at, Some(old..old + "half_lyfe".len()));
         let both = "half_lyfe = 1.0\nhalf_life = 2.0\n";
-        let err = super::forward_deprecated_toml(both, &table).unwrap_err();
+        let err = forwarded(both, &table).unwrap_err();
         assert!(
             err.contains("half_lyfe") && err.contains("half_life"),
             "{err}"
         );
-        let (same, none) = super::forward_deprecated_toml(text, online_polars::DEPRECATED).unwrap();
-        assert!(none.is_empty() && same == text);
-        // Text that is not TOML is left for the config's own parse to report.
-        let (bad, none) = super::forward_deprecated_toml("= [", &table).unwrap();
-        assert!(none.is_empty() && bad == "= [");
+        let (same, none, _) = forwarded(text, online_polars::DEPRECATED).unwrap();
+        assert!(none.is_empty() && same == toml::from_str::<toml::Table>(text).unwrap());
+        // Text that is not TOML is refused by the parse, with nothing said
+        // of a rename.
+        let ((cfg, doc), none) = super::read_config("= [", &table).unwrap();
+        assert!(cfg.is_err() && doc.is_none() && none.is_empty());
+    }
+
+    /// `bocpd`'s `emission = "robust"` becomes two keys: the renamed one and
+    /// a `robust_beta` of 0.1 where none is given, a float as TOML writes it.
+    #[test]
+    fn a_robust_emission_gains_a_robust_beta_over_toml() {
+        let text = "[model]\ntype = \"bocpd\"\nemission = \"robust\"\n";
+        let mut root = super::DeTable::parse(text).unwrap();
+        let notices =
+            super::forward_deprecated_toml(root.get_mut(), online_polars::DEPRECATED).unwrap();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        let doc =
+            <toml::Table as serde::Deserialize>::deserialize(toml::de::Deserializer::from(root))
+                .unwrap();
+        let model = doc["model"].as_table().unwrap();
+        assert_eq!(model["covariance_type"].as_str(), Some("diag"));
+        assert_eq!(model["robust_beta"].as_float(), Some(0.1));
+        assert!(model.get("emission").is_none());
     }
 }

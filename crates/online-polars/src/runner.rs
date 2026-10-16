@@ -174,7 +174,11 @@ pub struct RunConfig {
     /// process default (`POLARS_ONLINE_MAX_THREADS`, else one thread per
     /// core). The numbers are the same at any count. Not saved with the
     /// state: a resumed run takes the config's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "threads_count"
+    )]
     pub threads: Option<usize>,
     /// Load the bank state from here before running (resume).
     #[serde(default)]
@@ -1120,6 +1124,72 @@ fn read_frames(
     let _ = tx.send(Read::End(Ok(())));
 }
 
+/// `df` written to `path` in `format` as the runner writes a file: through
+/// its writer -- a CSV's lists as JSON text ([`csv_flat`]) -- and a
+/// temporary renamed into place, so the file is the runner's to the byte.
+/// What Python's surfaces write a closed-groups CSV with, so theirs is the
+/// CLI's.
+///
+/// # Errors
+///
+/// The writer's: `IO` naming the file, or [`csv_flat`]'s refusal of a
+/// column CSV cannot carry.
+pub fn write_frame(path: &Path, format: Format, df: DataFrame) -> PolarsResult<()> {
+    let (tx, rx) = sync_channel::<Write_>(2);
+    // Both fit in the channel, so neither send waits for the writer.
+    tx.send(Write_::Chunk(df))
+        .and_then(|()| tx.send(Write_::End))
+        .map_err(|_| polars_err!(ComputeError: "internal: the writer's channel closed"))?;
+    drop(tx);
+    write_file(path, format, rx).map(|_| ())
+}
+
+/// A config's `threads`, read from any value so that what is no count --
+/// a negative or fractional number, a word, a bool -- is refused in
+/// [`crate::threads_refusal`]'s words, as 0 is ([`RunConfig::validate`])
+/// and as Python's surfaces refuse it, and not as serde's "expected usize"
+/// (task 269, D-5). Null, which JSON can give, is no count given.
+fn threads_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>, D::Error> {
+    use serde::de::Error;
+    struct Count;
+    impl<'de> serde::de::Visitor<'de> for Count {
+        type Value = Option<usize>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a number of threads, an integer of 1 or more")
+        }
+        fn visit_u64<E: Error>(self, v: u64) -> Result<Self::Value, E> {
+            usize::try_from(v)
+                .map(Some)
+                .map_err(|_| E::custom(crate::threads_refusal(&v.to_string())))
+        }
+        fn visit_i64<E: Error>(self, v: i64) -> Result<Self::Value, E> {
+            match u64::try_from(v) {
+                Ok(v) => self.visit_u64(v),
+                Err(_) => Err(E::custom(crate::threads_refusal(&v.to_string()))),
+            }
+        }
+        fn visit_f64<E: Error>(self, v: f64) -> Result<Self::Value, E> {
+            Err(E::custom(crate::threads_refusal(&format!("{v:?}"))))
+        }
+        fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
+            Err(E::custom(crate::threads_refusal(&v.to_string())))
+        }
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            Err(E::custom(crate::threads_refusal(&format!("{v:?}"))))
+        }
+        fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: serde::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(self)
+        }
+    }
+    d.deserialize_any(Count)
+}
+
 /// Stage 3: write the frames to `path` in `format`, through a temporary
 /// that is renamed into place on `End`. A sender that goes away without
 /// `End` is a failed run, and the temporary is removed instead. Returns the
@@ -1342,7 +1412,12 @@ impl<'a> ParquetSink<'a> {
 /// a closed Gram's `columns` -- as JSON text too (`["x0","x1"]`), which
 /// `str.json_decode(pl.List(pl.String))` reads back. Anything else nested
 /// has no CSV form, and the error says which column and what to do.
-fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
+///
+/// # Errors
+///
+/// `ComputeError` naming a nested column that is neither a struct nor a
+/// list of numbers or strings.
+pub fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
     let structs: Vec<PlSmallStr> = df
         .columns()
         .iter()

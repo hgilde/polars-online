@@ -398,6 +398,118 @@ fn a_deprecated_model_key_is_read_with_a_warning() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `kmeans` reading `x0`, its clusters under the deprecated `k` or as
+/// `n_clusters`, with `half_life = <half_life>` written as given: a config
+/// for `input`, writing `output`.
+fn kmeans_job(dir: &Path, input: &Path, output: &Path, clusters: &str, half_life: &str) -> PathBuf {
+    let cfg = dir.join("job.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "input = '{}'\noutput = '{}'\n[[specs]]\nname = \"km\"\nfeatures = [\"x0\"]\n\
+             half_life = {half_life}\n[specs.model]\ntype = \"kmeans\"\n{clusters} = 2\n",
+            text(input),
+            text(output)
+        ),
+    )
+    .unwrap();
+    cfg
+}
+
+/// Task 269, D-2: a deprecated model key was forwarded by a round trip
+/// through JSON, which has no infinity, so a TOML float `inf` anywhere in
+/// the file became null and the config was refused ("invalid type: null").
+/// Forwarded over TOML's own values, the run reads it as the infinity it
+/// is: the output is the one the new name writes.
+#[test]
+fn a_toml_infinity_beside_a_deprecated_model_key_is_kept() {
+    let dir = fresh_dir("deprecated-inf");
+    let input = dir.join("in.parquet");
+    write_input(&input, 60);
+    let (old, new) = (dir.join("old.parquet"), dir.join("new.parquet"));
+    let cfg = kmeans_job(&dir, &input, &old, "k", "inf");
+    let (code, out, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        err.contains("warning: k is deprecated: it was renamed n_clusters"),
+        "{err}"
+    );
+    assert!(out.starts_with("config OK: 1 spec(s)"), "{out}");
+    let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
+    assert_eq!(code, Some(0), "{err}");
+    let cfg = kmeans_job(&dir, &input, &new, "n_clusters", "inf");
+    let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("deprecated"), "{err}");
+    // And a finite half-life writes another frame, so the two agreeing is
+    // the infinity read, not a half-life ignored.
+    let finite = dir.join("finite.parquet");
+    let cfg = kmeans_job(&dir, &input, &finite, "n_clusters", "5.0");
+    let (code, _, err) = run(cli().args(["--config", text(&cfg)]));
+    assert_eq!(code, Some(0), "{err}");
+    let read = |p: &Path| {
+        ParquetReader::new(std::fs::File::open(p).unwrap())
+            .finish()
+            .unwrap()
+    };
+    assert!(read(&old).equals_missing(&read(&new)));
+    assert!(!read(&old).equals_missing(&read(&finite)));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Task 269, D-7: a config with a deprecated key was rewritten, and a parse
+/// error after it quoted the rewritten text's line; it names the file's own
+/// line and quotes it, as it does with nothing to forward.
+#[test]
+fn a_parse_error_beside_a_deprecated_key_names_the_files_own_line() {
+    let dir = fresh_dir("deprecated-line");
+    let input = dir.join("in.parquet");
+    let output = dir.join("out.parquet");
+    for clusters in ["n_clusters", "k"] {
+        let cfg = kmeans_job(&dir, &input, &output, clusters, "\"ten\"");
+        // Two lines of comment above it, which a rewrite drops.
+        let body = std::fs::read_to_string(&cfg).unwrap();
+        std::fs::write(&cfg, format!("# a job\n# of one spec\n{body}")).unwrap();
+        let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+        assert_eq!(code, Some(1), "{err}");
+        // The file's eighth line, `half_life = "ten"`.
+        assert!(
+            err.contains("line 8") && err.contains("half_life = \"ten\""),
+            "{clusters}: {err}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Task 269, D-5: a `threads` that is no positive integer -- negative, a
+/// fraction, a word, a bool -- is refused in the words 0 is, and Python's
+/// surfaces use, not by serde's "expected usize".
+#[test]
+fn a_threads_that_is_no_count_is_refused_in_the_one_message() {
+    let dir = fresh_dir("threads-type");
+    let input = dir.join("in.parquet");
+    write_input(&input, 10);
+    for (value, shown) in [
+        ("-1", "-1"),
+        ("2.5", "2.5"),
+        ("\"auto\"", "\"auto\""),
+        ("true", "true"),
+    ] {
+        let extra = format!("threads = {value}");
+        let cfg = job(&dir, text(&input), text(&dir.join("o.parquet")), &extra);
+        let (code, _, err) = run(cli().args(["--config", text(&cfg), "--dry-run"]));
+        assert_eq!(code, Some(1), "{err}");
+        assert!(
+            err.contains(&format!(
+                "threads={shown} is not a number of threads: give an integer of 1 or more"
+            )),
+            "{value}: {err}"
+        );
+        assert!(!err.contains("expected usize"), "{value}: {err}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A dry run of a run with no output names what the run's products are,
 /// the state and the closed groups, and where the closed groups go.
 #[test]

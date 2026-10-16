@@ -94,17 +94,17 @@ pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::{FeatureCol, FeatureCols, FeatureRows};
 pub use runner::{
     DEFAULT_CHUNK_SIZE, Format, Input, Output, RENAMED_RUN_KEYS, RunConfig, RunOptions, RunStats,
-    name_renamed_run_key, run, run_config, run_config_on, run_config_on_reported,
-    run_config_reported,
+    csv_flat, name_renamed_run_key, run, run_config, run_config_on, run_config_on_reported,
+    run_config_reported, write_frame,
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
     CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, CountOrAuto, DEPRECATED, DEPRECATED_IN,
     DEPRECATED_WORDS_IN, DURATION_OR_UNIT_FREE_FIELDS, FloatOrList, GramThreads, INIT_WORDS,
-    ModelKind, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec, Spec,
-    deprecation_notice, forward_deprecated, forward_deprecated_in_models, forward_deprecated_with,
-    name_renamed, spec_words_refusal, word_deprecation_notice, word_refusal_body, words_body,
-    words_refusal,
+    ModelKind, ModelTable, Num, RENAMED, RENAMED_VALUES, RidgeScale, SessionGapSpec, ShardSpec,
+    Spec, deprecation_notice, forward_deprecated, forward_deprecated_in_models,
+    forward_deprecated_with, forward_model, name_renamed, spec_words_refusal,
+    word_deprecation_notice, word_refusal_body, words_body, words_refusal,
 };
 pub use stream::{
     AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,

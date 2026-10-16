@@ -152,6 +152,18 @@ def _columns(g: Gram) -> list[str]:
     return list(cols)
 
 
+def _as_position(v: Any) -> int | None:
+    """``v`` as an integer -- anything ``operator.index`` reads as one,
+    numpy's integers included -- or ``None`` for a name, a bool, or anything
+    else, which is looked up as a name (task 269, D-6)."""
+    if isinstance(v, (str, bool)):
+        return None
+    try:
+        return operator.index(v)
+    except TypeError:
+        return None
+
+
 def _col_index(g: Gram, cols: Sequence[str | int]) -> list[int]:
     names = _columns(g)
     # Each name's first position, looked up once: `list.index` per name made
@@ -161,12 +173,13 @@ def _col_index(g: Gram, cols: Sequence[str | int]) -> list[int]:
         where.setdefault(name, i)
     out = []
     for c in cols:
-        if isinstance(c, int):
-            if not -len(names) <= c < len(names):
+        at = _as_position(c)
+        if at is not None:
+            if not -len(names) <= at < len(names):
                 msg = f"column {c} out of range for a Gram of {len(names)} columns"
                 raise IndexError(msg)
-            out.append(c % len(names))
-        elif c in where:
+            out.append(at % len(names))
+        elif isinstance(c, str) and c in where:
             out.append(where[c])
         else:
             msg = f"no column {c!r} in this Gram; it has {names}"
@@ -176,16 +189,35 @@ def _col_index(g: Gram, cols: Sequence[str | int]) -> list[int]:
 
 def _target_index(g: Gram, target: str | int) -> int:
     names = list(g.get("targets") or [])
-    if isinstance(target, int):
+    i = _as_position(target)
+    if i is not None:
         n = len(g["cross_moments"])
-        if not -n <= target < n:
+        if not -n <= i < n:
             msg = f"target {target} out of range for a Gram with {n} targets"
             raise IndexError(msg)
-        return target % n
-    if target not in names:
+        return i % n
+    if not isinstance(target, str) or target not in names:
         msg = f"no target {target!r} in this Gram; it has {names}"
         raise KeyError(msg)
     return names.index(target)
+
+
+#: Why a fit refuses a column named twice; the Rust side's words
+#: (``online_polars::gramfit::TWICE``), so a direct native call says the same.
+_TWICE = (
+    "a column is one regressor, and a fit given it twice solves a singular system and writes "
+    "one of its two coefficients over the other: name it once"
+)
+
+
+def _repeated(names: list[str], slots: list[int]) -> str | None:
+    """The name of the first column ``slots`` holds twice, or ``None``."""
+    seen: set[int] = set()
+    for c in slots:
+        if c in seen:
+            return names[c]
+        seen.add(c)
+    return None
 
 
 def _means_of(np: Any, g: Gram, t: int) -> Any:
@@ -240,6 +272,10 @@ def _feature_slots(g: Gram, features: Sequence[str | int] | None) -> tuple[list[
                 f"{INTERCEPT!r} is a constant column, not a feature; it is "
                 "handled by the solve, so leave it out of `features`"
             )
+            raise ValueError(msg)
+        twice = _repeated(names, slots)
+        if twice is not None:
+            msg = f"features names column {twice!r} twice; {_TWICE}"
             raise ValueError(msg)
     return slots, icept
 
@@ -984,8 +1020,10 @@ def solve(
         grid = po.gram.solve(g, target="y", ridge=[1e-6, 0.01, 0.1, 1.0])  # one row per ridge
 
     ``KeyError`` / ``IndexError`` for a target or column the Gram has not got;
-    ``ValueError`` for the intercept among ``features``, and for a ``ridge``
-    that is not finite and at least 0, as a spec's ``ridge`` must be.
+    ``ValueError`` for the intercept among ``features`` or a column named twice in
+    them (one regressor solved twice is a singular system, and only one of its two
+    coefficients could be reported), and for a ``ridge`` that is not finite and at
+    least 0, as a spec's ``ridge`` must be.
 
     See *A ridge and its t* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
@@ -1111,9 +1149,10 @@ def lasso_path(
         g = bank.gram("ridge")[0]
         path = po.gram.lasso_path(g, [0.1, 0.01, 0.001], target="y")   # one row per penalty
 
-    ``ValueError`` for ``penalty_weights`` of the wrong length, and for a
-    number outside its range, by the rule a spec applies to the same
-    parameter:
+    ``ValueError`` for ``penalty_weights`` of the wrong length, for the
+    intercept or a column named twice among ``features`` (as for
+    :func:`solve`), and for a number outside its range, by the rule a spec
+    applies to the same parameter:
 
     - a penalty or a weight that is not finite and at least 0;
     - an ``l1_ratio`` outside ``[0, 1]``;
@@ -1381,8 +1420,8 @@ def lars_path(
 
     ``ValueError`` for a limit that is not a whole number of at least 1, and
     for ``penalty_weights`` of the wrong length or not finite and above 0.
-    ``KeyError``, ``IndexError`` and the intercept among ``features`` as for
-    :func:`solve`.
+    ``KeyError``, ``IndexError``, and the intercept or a column named twice
+    among ``features``, as for :func:`solve`.
     """
     return lars_paths(
         [g],
@@ -1661,9 +1700,10 @@ def solve_subsets(
     - with ``jobs``: ``targets`` given; a job that is not a mapping, with a
       key it does not take, without its ``subset`` or ``target``, with a
       ``subset`` or ``draw`` out of range, a ``draw`` without
-      ``target_signs`` or none with them, ``features`` that are one name or
-      hold the intercept, or ``penalty_weights`` without ``path``, of
-      another length than its columns, or not finite and above 0;
+      ``target_signs`` or none with them, ``features`` that are one name,
+      hold the intercept or name a column twice, or ``penalty_weights``
+      without ``path``, of another length than its columns, or not finite
+      and above 0;
     - a Gram without ``means_by_target`` or ``cross_centered``, which
       :func:`merge` forms after pooling and this does not;
     - for a ridge fit, a ``ridge`` that is not finite and at least 0, or a
@@ -2028,6 +2068,10 @@ def _subset_jobs(
                     "by the fit, so leave it out of 'features'"
                 )
                 raise ValueError(msg)
+            twice = _repeated(names, slots)
+            if twice is not None:
+                msg = f"{at}: 'features' names column {twice!r} twice; {_TWICE}"
+                raise ValueError(msg)
         own = job.get("penalty_weights")
         weights: list[float] = []
         if path is None:
@@ -2143,8 +2187,8 @@ def coef_stats(
     ``ValueError`` for a ``coef`` without one entry per Gram column, and for
     a Gram without target moments (``target_vars`` and ``target_n_kish``),
     such as a mapping built by hand without them: :meth:`~polars_online.ModelBank.gram`
-    reports both. ``KeyError``, ``IndexError`` and the intercept among
-    ``features`` as for :func:`solve`.
+    reports both. ``KeyError``, ``IndexError``, and the intercept or a column
+    named twice among ``features``, as for :func:`solve`.
 
     See *A ridge and its t* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__
@@ -2263,8 +2307,9 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
     5e-13, far below ``sqrt(eps)``. It read 1.0002 where ``a`` and ``c``
     read ``inf``.
 
-    ``ValueError`` for the intercept among ``features``, ``KeyError`` for a
-    name the Gram has not got and ``IndexError`` for a position.
+    ``ValueError`` for the intercept or a column named twice among
+    ``features``, ``KeyError`` for a name the Gram has not got and
+    ``IndexError`` for a position.
 
     See *Is the fit determined?* in
     `docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__

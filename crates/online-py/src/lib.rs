@@ -1071,6 +1071,28 @@ fn format_of_path(path: &str) -> PyResult<&'static str> {
         .map_err(PyValueError::new_err)
 }
 
+/// `df` as the runner's CSV carries it (`online_polars::csv_flat`): each
+/// list column as JSON text. A nested column it cannot carry is a
+/// `ValueError` naming it.
+#[pyfunction]
+fn csv_flat(df: PyDataFrame) -> PyResult<PyDataFrame> {
+    online_polars::csv_flat(&df.0)
+        .map(PyDataFrame)
+        .map_err(|e| run_err(&e))
+}
+
+/// `df` written to `path` in the format its extension names, by the
+/// runner's own writer (`online_polars::write_frame`), so the bytes are
+/// the command line's. A file that cannot be written is the `OSError` of
+/// its kind, naming it.
+#[pyfunction]
+fn write_frame(py: Python<'_>, df: PyDataFrame, path: &str) -> PyResult<()> {
+    let path = std::path::Path::new(path);
+    let format = online_polars::Format::from_path(path).map_err(PyValueError::new_err)?;
+    py.detach(|| online_polars::write_frame(path, format, df.0))
+        .map_err(|e| run_err(&e))
+}
+
 /// The bank's `chunk_size` when a caller does not say.
 #[pyfunction]
 fn default_chunk_size() -> usize {
@@ -1200,10 +1222,12 @@ fn thread_pool_size(threads: Option<&Bound<'_, PyAny>>) -> PyResult<usize> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// A `threads` argument as a count: `None`, or an integer of 1 or more.
-/// A bool, a float or any other type is a `TypeError`, and 0 or a negative
-/// integer a `ValueError`, each with `online_polars::threads_refusal`'s
-/// text, which `polars_online._bank._check_threads` raises too.
+/// A `threads` argument as a count: `None`, or an integer of 1 or more --
+/// anything `operator.index` reads as one, numpy's integers included (task
+/// 269, D-6). A bool, a float or any other type is a `TypeError`, and 0 or
+/// a negative integer a `ValueError`, each with
+/// `online_polars::threads_refusal`'s text, which
+/// `polars_online._bank._check_threads` raises too.
 pub(crate) fn threads_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usize>> {
     let Some(obj) = obj.filter(|o| !o.is_none()) else {
         return Ok(None);
@@ -1212,12 +1236,18 @@ pub(crate) fn threads_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usi
         obj.repr()
             .map_or_else(|_| "?".to_string(), |r| r.to_string())
     };
-    if obj.is_instance_of::<pyo3::types::PyBool>() || !obj.is_instance_of::<pyo3::types::PyInt>() {
-        return Err(pyo3::exceptions::PyTypeError::new_err(
-            online_polars::threads_refusal(&shown()),
-        ));
+    let refused =
+        || pyo3::exceptions::PyTypeError::new_err(online_polars::threads_refusal(&shown()));
+    if obj.is_instance_of::<pyo3::types::PyBool>() {
+        return Err(refused());
     }
-    match obj.extract::<i64>() {
+    let index = obj
+        .py()
+        .import("operator")
+        .and_then(|m| m.getattr("index"))
+        .and_then(|f| f.call1((obj,)))
+        .map_err(|_| refused())?;
+    match index.extract::<i64>() {
         Ok(n) if n >= 1 => usize::try_from(n)
             .map(Some)
             .map_err(|_| PyValueError::new_err(online_polars::threads_refusal(&shown()))),
@@ -1262,6 +1292,8 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_duration, m)?)?;
     m.add_function(wrap_pyfunction!(spec_clock_fields, m)?)?;
     m.add_function(wrap_pyfunction!(format_of_path, m)?)?;
+    m.add_function(wrap_pyfunction!(csv_flat, m)?)?;
+    m.add_function(wrap_pyfunction!(write_frame, m)?)?;
     m.add_function(wrap_pyfunction!(default_chunk_size, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;

@@ -379,3 +379,102 @@ def test_jobs_that_are_no_list_of_jobs_are_refused():
         pg.solve_subsets(
             grams, SUBSETS, within=True, jobs=[{"subset": 0, "target": 0}, {"subset": 1}]
         )
+
+
+# --- a column named twice (task 269, D-3) -------------------------------------
+#
+# The merged design holds a column once, so a column named twice was solved
+# twice -- singular: `nan`, or an arbitrary split by rounding -- and each
+# slot's coefficient written to the one output column, the last write winning
+# beside the fit's own `r2`. Refused by name wherever a fit reads a column
+# set; `subset()` is a selection and keeps taking one.
+
+
+def test_a_column_named_twice_in_features_is_refused_by_name():
+    grams = blocks(frame(seed=21))
+    x1 = grams[0]["columns"].index("x1")  # named, then by its position
+    calls = {
+        "solve_subsets": lambda f: pg.solve_subsets(grams, [[0]], features=f),
+        "solve_subsets path": lambda f: pg.solve_subsets(grams, [[0]], features=f, path={}),
+        "solve": lambda f: pg.solve(grams[0], features=f),
+        "lasso_path": lambda f: pg.lasso_path(grams[0], penalties=[0.1], features=f),
+        "lars_path": lambda f: pg.lars_path(grams[0], features=f),
+        "lars_paths": lambda f: pg.lars_paths(grams, features=f),
+        "coef_stats": lambda f: pg.coef_stats(grams[0], [0.0] * (K + 1), features=f),
+        "vif": lambda f: pg.vif(grams[0], features=f),
+    }
+    for call in calls.values():
+        for feats in (["x0", "x0"], ["x0", "x1", "x1"], ["x1", x1]):
+            with pytest.raises(ValueError, match=r"names column 'x\d' twice"):
+                call(feats)
+    # A selection is not a fit: `subset` keeps taking a column twice.
+    assert pg.subset(grams[0], ["x0", "x0"])["columns"][-2:] == ["x0", "x0"]
+
+
+@pytest.mark.parametrize("path", [None, {}])
+def test_a_job_naming_a_column_twice_is_refused_naming_the_job(path):
+    grams = blocks(frame(seed=22))
+    jobs = [
+        {"subset": 0, "target": "y", "features": ["x0", "x1"]},
+        {"subset": 1, "target": "y", "features": ["x0", "x1", "x1"]},
+    ]
+    with pytest.raises(ValueError, match=r"jobs\[1\]: 'features' names column 'x1' twice"):
+        pg.solve_subsets(grams, SUBSETS, within=True, jobs=jobs, path=path)
+
+
+def test_the_native_fits_refuse_a_column_twice():
+    """The native calls, reached without the Python check, refuse a slot
+    named twice too."""
+    from polars_online import _polars_online as native
+
+    grams = blocks(frame(seed=23))
+    cols = grams[0]["columns"]
+    icept = cols.index("intercept")
+    x0, x1 = cols.index("x0"), cols.index("x1")
+    gin = [pg._native_gram(np, g, icept) for g in grams]
+    calls = {
+        "gram_ridge_subsets": lambda s: native.gram_ridge_subsets(
+            gin, [[0]], [0], s, icept, 0.0, False, False, []
+        ),
+        "gram_path_subsets": lambda s: native.gram_path_subsets(
+            gin, [[0]], [0], s, icept, [], None, None, False, []
+        ),
+        "gram_lars_paths": lambda s: native.gram_lars_paths(
+            gin[:1], [[0]], s, icept, [], None, None
+        ),
+        "gram_cd_path": lambda s: native.gram_cd_path(
+            gin[0], 0, s, icept, [0.1], 1.0, [1.0] * len(s), 100, 1e-7
+        ),
+        "gram_ridge_jobs": lambda s: native.gram_ridge_jobs(
+            gin, [[0]], [s], [(0, 0, 0, 0)], icept, 0.0, False, False, []
+        ),
+        "gram_path_jobs": lambda s: native.gram_path_jobs(
+            gin, [[0]], [s], [[]], [(0, 0, 0, 0)], icept, None, None, False, []
+        ),
+    }
+    for call in calls.values():
+        call([x0, x1])  # the same call with each column once runs
+        with pytest.raises(ValueError, match=rf"column {x1} .*twice"):
+            call([x0, x1, x1])
+
+
+# --- numpy integers (task 269, D-6) ------------------------------------------
+
+
+def test_a_job_takes_numpy_integers_and_refuses_a_bool():
+    """A job's `target` and `features` take numpy's integers, as its
+    `subset` and `draw` do and as a DataFrame of jobs hands over; a bool is
+    no position."""
+    grams = blocks(frame(seed=24))
+    x1 = grams[0]["columns"].index("x1")
+    plain = {"subset": 0, "target": 0, "features": ["x0", x1]}
+    numpy = {"subset": np.int64(0), "target": np.int64(0), "features": ["x0", np.int32(x1)]}
+    a = pg.solve_subsets(grams, SUBSETS, within=True, jobs=[plain])
+    b = pg.solve_subsets(grams, SUBSETS, within=True, jobs=[numpy])
+    assert np.array_equal(a[0]["coef"], b[0]["coef"], equal_nan=True)
+    with pytest.raises(KeyError, match=r"jobs\[0\]: no target True"):
+        pg.solve_subsets(grams, SUBSETS, within=True, jobs=[{"subset": 0, "target": True}])
+    with pytest.raises(KeyError, match=r"jobs\[0\]: no column True"):
+        pg.solve_subsets(
+            grams, SUBSETS, within=True, jobs=[{"subset": 0, "target": 0, "features": [True]}]
+        )
