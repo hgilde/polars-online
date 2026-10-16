@@ -9,6 +9,72 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
+## [Unreleased]
+
+### Fixed
+
+- **`closed_groups="….csv"` now works from `df.online.fit_predict`,
+  `lf.online.fit_predict` and `ModelBank.fit_predict_batches` / `fit`**
+  (task 269). Every closed row carries a list column (`coef` at least,
+  twelve for a Gram kind), which Polars' CSV writer refuses, so the call
+  failed after the whole fit, and the plan form then saved no
+  `save_state`. The CSV now goes through the command line's own writer,
+  each list as JSON text that `str.json_decode` reads back, so the file is
+  the command line's byte for byte. A CSV that cannot carry a column is
+  refused before the fit, and a sidecar that cannot be written still
+  leaves the state saved before its error is raised.
+- **A column named twice in `features=` or in a job's `features` is
+  refused by name** (task 269) by `po.gram.solve_subsets`, `solve`,
+  `lasso_path`, `lars_path`, `lars_paths`, `coef_stats`, `vif` and the
+  native fits. It used to be solved as two regressors, a singular system,
+  with one coefficient written over the other: `solve_subsets` reported 0
+  for the column beside the fit's own `r2`, and `lars_path` reported 0
+  for a column it listed as active. `po.gram.subset` still takes a column
+  twice.
+- **The command line no longer refuses a config holding a TOML float `inf`
+  or `nan` beside a deprecated model key** ("invalid type: null"; task
+  269). Deprecated names are now forwarded over the parsed TOML document
+  rather than through JSON, which has no infinity, and an error after a
+  forwarded key names and quotes the file's own line.
+- **`threads=` takes numpy's integers** (anything `operator.index` reads)
+  on every surface, and a hand-built job's `target` and `features` take
+  them too, as its `subset` and `draw` already did (task 269). A bool is
+  refused, and a bool given as a column or target position, once read as
+  0 or 1, is now refused as well. The command line refuses a `threads`
+  that is not a positive integer (`-1`, `2.5`, `"auto"`, `true`) with the
+  same message `0` and the Python surfaces give.
+- **The tooling around the tests and the budgets** (task 269):
+  `scripts/budgets.py raises` holds each budget to the last number the
+  file's history gave it, so a budget deleted and written back higher
+  needs a `[[raised]]` entry like any other raise; a `[[signoff]]` must
+  name a budget that exists, and on a push only a sign-off for a release
+  after the last one silences the drift warning; the peak-memory
+  measurements are written out only by the CI leg that holds their
+  budget; `scripts/slot.sh take` refuses a branch another worktree has
+  checked out; `scripts/clear_caches.sh --worktrees` run from inside a
+  slot keeps the other slots' builds; `scripts/gate.sh` builds with
+  `--locked`, as CI does, and in the extended tier treats an empty
+  `serial` selection as a failure; and every `subprocess` call in the
+  tests and scripts that decodes a child's output names UTF-8 rather than
+  the locale's encoding (cp1252 on Windows).
+
+### Changed
+
+- **The peak-memory (RSS) budgets tighten whenever a run reads more than
+  7.5% under them**, a quarter of their 30% tolerance, instead of only
+  past the whole 30% (task 269). Before, a budget could sit 43% above the
+  run that set it and a later run could pass 86% above that run; now the
+  most is 41%. Six of the nine RSS budgets were tightened to the 1.1.0
+  release run's measurements at the oldest supported Python (Linux
+  streaming 218.9 to 154.2 MiB, Windows ten-target `ewridge` 110.9 to
+  80.1 MiB); none was raised.
+- **The `gram_threads` docstring says it caps the update of the `k x k`
+  matrix alone** (task 269): a solve's factorization can use every thread
+  of the pool, so only `threads=` bounds how many threads multiply. The
+  corrections to 1.1.0's, 1.0.1's and 1.0.0's notes are made in place
+  (the Windows commit's remedy, a four-thread instruction case, the
+  Polars floor of 1.0.0, a pair of transposed figures).
+
 ## [1.1.0] — 2026-10-15
 
 ### Added
