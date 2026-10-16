@@ -274,7 +274,7 @@ against the last. There are three kinds:
 
 | kind | what is measured | where it runs | tolerance |
 |---|---|---|---|
-| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread and of four, every thread of the four counted | `.github/workflows/budgets.yml`, on Linux | 2% |
+| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `ewridge` at 50 features with 10 targets folded into a 64-row block's merge, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
 | `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another with Polars reading one row group ahead on four threads, since its default read-ahead grows with a file this size and would be most of the number | the same file, in the extended tier: held on CI at each OS's floor Python and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23% | 30%: two runs of one build on one CI runner read 14-18% apart |
 
@@ -2807,6 +2807,10 @@ cargo run --release -p online-core --example solve_threads_bench -- 512 1000 200
 
 ### 41. A product's memory on each thread (2026-10-13)
 
+*Since 2026-10-15* this section holds on aarch64 alone. Every x86-64
+build has the kernel and its buffer again, and CI's Windows Rust tests run
+two at a time ([§43](#43-faers-x86-kernel-on-every-x86-build-2026-10-15)).
+
 **A matrix product now allocates a few MiB on a thread, not twice the L3
 cache.** faer 0.24 sends every product past 16 × 16 × 16 entries, and every
 product into a triangle, to a kernel of its own on x86-64 when its `std`
@@ -2851,8 +2855,7 @@ Pro the slab is 3.2 MiB, the L2's 16 MiB over the five cores that share it:
 
 The test holds every thread under 24 MiB. On x86-64 the old kernel's
 buffer alone was 64 MiB on a 32 MiB L3 and 960 MiB on the Windows runners,
-so the bound fails the old build there. The Windows Rust tests run at the
-default parallelism again.
+so the bound fails the old build there.
 
 #### What moved
 
@@ -3186,8 +3189,14 @@ The kernel is the faster product, so its `std` feature is turned on in
 `online-core`'s manifest for `cfg(target_arch = "x86_64")`, and the
 products run where 1.0.1 ran them, with its last bits. Apple Silicon's
 crate graph is the one it was measured with (`cargo tree -e features`), so
-nothing moves there. On Windows the commit stays, as in 1.0.0 and 1.0.1:
-fewer threads bound it, and CI's Windows Rust tests run two at a time. A
+nothing moves there. On Windows the commit stays, as in 1.0.0 and 1.0.1.
+Only a smaller pool bounds it, the bank's `threads=`: a solve's
+factorization spreads over every thread of the pool, and in a bank of many
+groups every thread runs a group, so the commit is at most about twice the
+L3 times `threads`. `gram_threads=` caps the update of the `k x k` matrix
+alone, and bounds nothing here
+(`crates/online-bench/tests/solve_threads.rs` counts the threads that
+multiply). CI's Windows Rust tests run two at a time. A
 Linux host that refuses to overcommit memory (`vm.overcommit_memory=2`)
 counts the whole reservation. The Windows measurements below are what the
 build without the kernel would trade.
@@ -4990,8 +4999,10 @@ setting; or keep the cost and let the README's throughput say so.
 
 The user chose the first. A solve keeps its factor, and the shares are
 computed on the first read: a `coef` row, `summary()`, a save, or the noise
-gate where the bound on `edf` cannot decide. The end of each run takes the
-rest and drops the factors. The bound needed a guard. With no ridge, an
+gate where the bound on `edf` cannot decide. Once a stream's rows of a
+chunk are learned, the bank takes the rest and drops the factors, so a
+factor is held only while its stream runs (when this was written, the end
+of each run did). The bound needed a guard. With no ridge, an
 inverse that overflowed gives a share of `1 − 0·∞`, which is NaN. The
 exact ratio is then infinite and the row is withheld, where the bound
 would have passed it. `SpdFactor::inverse_is_finite` bounds every quantity the

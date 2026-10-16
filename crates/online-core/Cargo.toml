@@ -40,9 +40,10 @@ thiserror.workspace = true
 # faster one, and it keeps a packing buffer of twice the L3 cache on each
 # thread that has multiplied: address space reserved on Linux and macOS,
 # backed only where a product touches it, but committed whole on Windows,
-# where many threads multiplying can exhaust the commit limit (fewer
-# threads bound it; PLAN task 263 holds the measured alternatives, none
-# chosen). Version 0.1.22 at least: 0.1.20, which 1.0.0 and 1.0.1 shipped
+# where many threads multiplying can exhaust the commit limit (only a
+# smaller pool, `threads=`, bounds it: a solve spreads over the whole pool
+# whatever `gram_threads` says, `online-bench/tests/solve_threads.rs`;
+# PLAN task 263 holds the measured alternatives, none chosen). Version 0.1.22 at least: 0.1.20, which 1.0.0 and 1.0.1 shipped
 # and which is yanked, sized its blocks so that they could stop tiling the
 # product once a chunk was clamped to the L3, and computed wrong products
 # -- a ridge solve 100 times past its rounding bound on every Windows EPYC

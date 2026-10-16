@@ -21,7 +21,8 @@ serde_json.workspace = true
 
 [dev-dependencies]
 # `tests/product_memory.rs` calls faer's products directly, as the Gram's
-# pieces do; faer is already linked, through online-core.
+# pieces do, and it and `tests/solve_threads.rs` make pools of their own;
+# faer and rayon are already linked, through online-core.
 faer.workspace = true
 rayon.workspace = true
 

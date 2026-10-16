@@ -419,7 +419,7 @@ The files the repository promises are held the same way:
 | the public API | `tests/test_api_surface.py` | every name, default, signature and output field name, against the snapshot `tests/api_surface.txt`, so a change is a reviewable diff; since 2026-10-07 also the defaults that resolve in Rust, the frames' columns and dtypes, the TOML keys, the CLI's flags, the environment variables, and the words each string-valued parameter takes |
 | the README's warm-up defaults | `tests/test_spec_defaults.py` | the `min_weight` table's rule for every model, at two feature counts and with and without an intercept, and the readiness gates' defaults, against what the bank resolves |
 | the names that follow Polars (2026-10-02) | `tests/test_renames.py` | an old parameter is refused naming the new one, from a builder and from a spec dict; an old output name is gone |
-| a released state | `tests/test_released_state.py` | the files each release in its `RELEASES` list wrote, from 0.10.0 on, each from its wheel on PyPI, are refused by their schema version; offline, the test skips |
+| a released state | `tests/test_released_state.py` | the files each release in its `RELEASES` list wrote, from 0.10.0 on, each from its wheel on PyPI: a 0.x release's are refused by their schema version, and a 1.x release's load and go on as this build's own; offline, the test skips |
 | a released output | `scripts/compare_release.py` | every output against the newest release's, bit for bit: a report in CI, and a step of each release |
 | the documentation | `tests/test_production_hardening.py`, `tests/test_api_links.py`, `tests/test_doc_structure.py`, `tests/test_llms_txt.py`, and Sphinx with `-W` | every README python block and docstring example runs; every link into the API reference resolves; every Markdown file git tracks passes `docs/WRITING.md`'s structure checks; `llms.txt`'s model names and links are current; every docstring is valid reStructuredText |
 | docstring text | `test_weight_scale.py::test_the_docs_say_what_each_unit_is`; `test_temporal_clock.py::TestEveryClockParameterTakesADuration` | whole phrases of `ftrl`'s and `micro`'s docstrings, a line wrap included; "clock units" in the entry of each parameter measured in them. A docstring pass keeps both (`docs/WRITING.md` §6) |
@@ -901,7 +901,7 @@ test named in [Beyond the eight classes](#beyond-the-eight-classes):
 | every python block in the README, and every example in the API reference | each one runs |
 | some docstring text | pinned where a test reads it |
 | everything under `examples/` | runs unmodified: the TOML through the real command line, the Pathway example's operator over plain batches, and the cursor examples against real DuckDB and SQLite databases ([Examples are executed](#examples-are-executed)) |
-| the state files every release from 0.10.0 on wrote | read and refused by their schema, as the CHANGELOG says they are |
+| the state files every release from 0.10.0 on wrote | a 0.x release's refused by their schema, and a 1.x release's loaded and continued, as the CHANGELOG says |
 | `docs/VALIDATION.md`, where the defaults were chosen | regenerated and compared, so the numbers behind them cannot silently stop being true |
 | no data files in the repository | tests generate or download their own data, and a data file, a large file or generated output that gets tracked fails a test ([Hard rule 1](#hard-rule-1-is-enforced-not-remembered)) |
 

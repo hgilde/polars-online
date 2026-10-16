@@ -77,6 +77,27 @@ class TestARunWithNoOutput:
         )
         assert quiet.read_bytes() == loud.read_bytes(), "the same run, minus the file"
 
+    def test_the_state_is_the_bytes_a_bank_fed_the_same_chunks_saves(self, tmp_path, online_cli):
+        """docs/STATE-WORKFLOW.md: a query, the command line and a
+        `ModelBank` fed the same chunks write identical bytes (task 269,
+        review 8 F-11, where the page still named the removed `po.run`; the
+        query's half is `tests/test_frame.py`'s)."""
+        df = frame(seed=2)
+        src = tmp_path / "in.parquet"
+        df.write_parquet(src)
+        specs = [cov_spec(), ridge_spec()]
+        cli = tmp_path / "cli.state"
+        run_online(
+            online_cli, tmp_path, specs, input=src, save_state=cli, chunk_size=64,
+            args=["--no-output"],
+        )  # fmt: skip
+        bank = po.ModelBank(specs)
+        for chunk in df.iter_slices(64):
+            bank.fit(chunk)
+        own = tmp_path / "bank.state"
+        bank.save(own)
+        assert cli.read_bytes() == own.read_bytes()
+
     def test_no_output_clears_a_config_that_names_one(self, tmp_path, online_cli):
         df = frame()
         src = tmp_path / "in.parquet"

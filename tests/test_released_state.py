@@ -271,3 +271,20 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
     # release comparison allows (a declared numeric change moves both).
     bound = 0.0 if version == THIS_BUILD else 1e-12
     assert max(gaps.values()) <= bound, {k: f"{v:.1e}" for k, v in gaps.items() if v > bound}
+
+
+def test_the_policy_page_lists_every_release_the_test_holds():
+    """``docs/RELEASE-READINESS.md``'s paragraph on ``RELEASES`` names the
+    first and the newest release this test holds, and does not call every
+    release's files refused once a 1.x release is listed (task 269, review 8
+    F-2: it stopped at 1.0.0 and said every release was refused after 1.1.0
+    joined the list and 1.x files loaded)."""
+    page = (REPO / "docs" / "RELEASE-READINESS.md").read_text(encoding="utf-8")
+    section = page.split("#### A released build's state files", 1)[1].split("\n#### ", 1)[0]
+    lead = "**Add each release to `RELEASES` there.**"
+    assert lead in section
+    paragraph = section.split(lead, 1)[1].split("\n\n", 1)[0]
+    for version in (RELEASES[0], RELEASES[-1]):
+        assert version in paragraph, f"{version} is not named after {lead}"
+    if any(_major(v) >= 1 for v in RELEASES):
+        assert "any release so far is refused" not in section

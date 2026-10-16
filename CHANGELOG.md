@@ -4,8 +4,10 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/). From 1.0, a breaking change to the
 stable API takes a major version, and a minor version may also correct numbers
-that were wrong. Before 1.0, the minor version carried breaking changes, and
-any change to the numbers a model returns.
+that were wrong, or move their last bits within rounding (a sum in another
+order, another kernel), each declared with its size. Before 1.0, the minor
+version carried breaking changes, and any change to the numbers a model
+returns.
 
 ## [1.1.0] — 2026-10-15
 
@@ -70,7 +72,12 @@ any change to the numbers a model returns.
   on a GitHub Windows runner (Intel Xeon, 260 MiB of L3), one 1,000-feature
   `ewridge` fit with `gram_block_rows=256` on four `gram_threads` peaked at
   2,382 MiB of commit (1.0.1's wheel, the same kernel). Fewer threads
-  (`threads=` or `gram_threads=`) bound it. The kernel stays on every x86 build because it is the faster product:
+  bound it: `threads=` sizes the pool, and every thread of the pool can
+  multiply, because a solve's factorization spreads over the whole pool
+  and in a bank of many groups every thread runs a group. So the commit is
+  at most about twice the L3 times `threads`. `gram_threads=` caps the
+  update of the `k x k` matrix alone, and bounds nothing here. The kernel
+  stays on every x86 build because it is the faster product:
   a build without it held that fit to 374 MiB, but ran wide `ewridge`
   12-26% slower there on the default solve schedule and 29-63% slower with
   `gram_block_rows`. On Linux and macOS the buffer is address space
@@ -140,7 +147,7 @@ any change to the numbers a model returns.
   `scripts/benchmark.py` at 200,000 rows: 18 of its 38 configurations are
   faster beyond the runs' scatter, by 1-8% (`sgd` 7.8%, `pa` 6.8%,
   `ew_cov` with lags 5.9%, `ewridge` at 20 features about 3%), and
-  `corrchange`'s monitor at four features is 3.1% slower (479 against 464
+  `corrchange`'s monitor at four features is 3.1% slower (464 against 479
   thousand rows a second); the rest are within the scatter. Three rounds
   of `scripts/wide_benchmark.py`, the wide specs `benchmark.py` does not
   reach: `ewridge` at 200 features 1-3% faster, at 500 features 1-3%
@@ -227,8 +234,10 @@ any change to the numbers a model returns.
   thread. Linux backs only the pages touched, and Apple Silicon takes
   another path, so it shows only on Windows: a wide Gram (`ewridge`,
   `ew_cov` and the `po.gram` functions) fitted on many threads can exhaust
-  the commit limit. Present since 1.0.0. Until a release fixes it, fewer
-  threads (`threads=` or `gram_threads=`) bound it.
+  the commit limit. Present since 1.0.0. Until a release fixes it, a
+  smaller pool (`threads=`) bounds it: a solve's factorization spreads over
+  every thread of the pool, whatever `gram_threads=` says, so that option,
+  which caps the update of the `k x k` matrix alone, does not bound it.
 
 ### Performance
 
@@ -310,8 +319,9 @@ any change to the numbers a model returns.
   `cargo mutants` run over it left 43 mutants; tests holding each field to
   the same spec run as its parts now catch 34, and the other 9 change no
   output (each with its reason). The output is held to the bit at 1, 2, 4
-  and 8 threads, and instruction-count budgets cover it at one thread and
-  at four.
+  and 8 threads, and an instruction-count budget covers it at one thread
+  (a four-thread count did not repeat within its tolerance, and was
+  dropped).
 
 ## [1.0.0] — 2026-10-12
 
@@ -2441,7 +2451,8 @@ project's versioning that is carried by the minor version before 1.0.
   stable at 1.0, and which release each kind of change needs from 1.0
   (task 199; review round 4, D3).
 - Every release, and the canary each month, run the suite on the Polars
-  floor (1.34.0); a test that needs a newer Polars skips there by version,
+  floor (1.34.0 then; 1.37.0 since this release, under *Changed
+  (breaking)*); a test that needs a newer Polars skips there by version,
   naming it (task 199, D4). The changed-lines mutation job runs in
   shards with one report (D10), a shard for every forty mutants since
   task 219, a weekly job checks the declared rust-version, 1.95 (D11), and
@@ -2454,8 +2465,9 @@ project's versioning that is carried by the minor version before 1.0.
   emission is not free of the data's units, so centre and scale its
   features (task 202).
 - The development environment is built and tested against polars 2.0.0,
-  where it was 1.44.2; the declared range `>=1.34.0,<3` and the Rust crate
-  pin are unchanged (D9).
+  where it was 1.44.2; the declared range `>=1.34.0,<3` (raised to
+  `>=1.37.0,<3` by this release, under *Changed (breaking)*) and the Rust
+  crate pin were unchanged by this move (D9).
 
 ## [0.13.0] — 2026-09-30
 

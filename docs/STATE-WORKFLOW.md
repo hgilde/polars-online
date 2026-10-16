@@ -18,7 +18,8 @@ These subsections are the guide to using the state workflow. The numbered
 sections after them are the research that decided it.
 
 A state file is the same file, byte for byte, whichever wrote it: a query,
-`po.run` and a `ModelBank` fed the same chunks write identical bytes.
+the `polars-online` command line and a `ModelBank` fed the same chunks
+write identical bytes.
 A query and an eager frame take it as `load_state` and `save_state`, and
 the TOML under the same two keys. The command line spells them `--load-state`
 and `--save-state`, and a `ModelBank` has `load` and `save`.
@@ -368,7 +369,7 @@ holds the checks:
 | what is guaranteed | the fact about Polars it rests on | how it was checked |
 |---|---|---|
 | `save_state` is written when the bank has been fed its last row: the input's end, or the rows a `head(n)` asked for. Never on a run the caller abandoned, or one the bank ended with an error. The write is atomic | a run the caller abandons, by a `break` out of `collect_batches`, is left suspended rather than ended, so only the source's own end can trigger the write | a `break` out of `collect_batches` wrote no file, nor did a bank error at row 700 |
-| every run of a query ends in the same state, so two runs write the same bytes. A query that uses the bank twice runs it twice when it writes a state, and with nothing to write Polars may run it once | a query that uses a plan twice, as `lf.join(lf)`, `pl.concat([lf, lf])` or `pl.collect_all` over two sinks do, runs its source twice, at the same time on two threads | each of those three wrote the file twice, on two threads, and the file was byte-identical to `po.run`'s |
+| every run of a query ends in the same state, so two runs write the same bytes. A query that uses the bank twice runs it twice when it writes a state, and with nothing to write Polars may run it once | a query that uses a plan twice, as `lf.join(lf)`, `pl.concat([lf, lf])` or `pl.collect_all` over two sinks do, runs its source twice, at the same time on two threads | each of those three wrote the file twice, on two threads, and the file was byte-identical to the one the file-to-file runner of the time wrote (`po.run`, since removed; the command line runs the same Rust runner) |
 | `load_state` and `predict(path)` are read when the query is built, so a query run twice gives the same result | the two runs above overlap, so a state read at run time could be read while the other run writes it | a query built against a state file, run again after the file was overwritten, gave the same frame |
 | the bank is fed exactly the rows the query pulled | a `head(n)` reaches the source as a row count, and the source stops there; a `sort().head(n)` does not, so the bank reads every row | `head(613)` wrote the state of a bank fed the first 613 rows, byte for byte, and `sort().head(5)` the whole stream's |
 | `predict` refuses `save_state`, as `polars-online --predict` does, since it learns nothing | | `predict(save_state=...)` is refused |
