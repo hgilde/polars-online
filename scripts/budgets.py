@@ -12,9 +12,11 @@ passing against the last. Three kinds:
   over its process's baseline, in MiB (the same file, one per platform).
 
 A measurement past its budget by more than the kind's tolerance fails. One
-*below* it by more than the tolerance fails too, with the number to tighten
-the budget to, so a gain is locked in by the change that made it -- unless
-the run is a measuring run. A budget may only be raised with a ``[[raised]]``
+*below* it by more than the tolerance fails too -- by more than a quarter of
+it for resident memory, whose wide tolerance would otherwise let a budget
+sit far above what it holds -- with the number to tighten the budget to, so
+a gain is locked in by the change that made it, unless the run is a
+measuring run. A budget may only be raised with a ``[[raised]]``
 entry in the file naming the old and new number, the date, the reason and
 the CHANGELOG *Performance* entry it points to; ``raises`` holds every
 increase in the file's git history to that.
@@ -56,6 +58,13 @@ KINDS = ("instructions", "memory", "rss")
 PLATFORMS = ("linux", "darwin", "windows")
 #: How far two runs of one binary may differ, as a share of the tolerance.
 REPEAT_SHARE = 0.25
+#: How far under its budget a run may read before the budget is tightened,
+#: as a share of the tolerance, where it is not the whole of it. A budget
+#: tightened only past the whole tolerance ``t`` settles anywhere up to
+#: ``m/(1-t)`` of the run that set it, and a later run then passes up to
+#: ``m(1+t)/(1-t)``: +86% at the resident memory's 30%. Past a quarter of
+#: it, the ceiling is ``m(1+t)/(1-t/4)``, +41%.
+TIGHTEN_SHARE = {"rss": 0.25}
 MEASURE_VARIABLE = "POLARS_ONLINE_BUDGETS"
 #: The line that opens the file's last section, the raises and sign-offs.
 RAISES_MARK = "# --- raises and sign-offs"
@@ -100,6 +109,11 @@ def tolerances(doc: dict) -> dict[str, float]:
 
 def tolerance(doc: dict, key: str) -> float:
     return float(doc["meta"]["tolerance"][key.split(".", 1)[0]])
+
+
+def tighten_at(key: str, tol: float) -> float:
+    """How far under its budget ``key`` may read before it is tightened."""
+    return tol * TIGHTEN_SHARE.get(key.split(".", 1)[0], 1.0)
 
 
 def bench_cases(text: str | None = None) -> list[str]:
@@ -177,6 +191,8 @@ def check_file(doc: dict, changelog: str, cases: list[str]) -> list[str]:
         missing = {"key", "version", "reason"} - set(s)
         if missing:
             errors.append(f"[[signoff]] #{i + 1} has no {sorted(missing)}")
+        elif s["key"] not in entries(doc):
+            errors.append(f"[[signoff]] #{i + 1} ({s['key']}): no such budget")
     return errors
 
 
@@ -193,8 +209,11 @@ def unexplained_raises(old: dict, new: dict, ledger: dict | None = None) -> list
     the file as it stands (``new`` when not given): entries accumulate, so
     a raise is answered by an entry in any later version, and deleting an
     entry brings its raise back."""
-    before, after = budget_numbers(old), budget_numbers(new)
     ledger = new if ledger is None else ledger
+    return _unexplained(budget_numbers(old), budget_numbers(new), ledger)
+
+
+def _unexplained(before: dict[str, float], after: dict[str, float], ledger: dict) -> list[str]:
     raised = {(r.get("key"), r.get("from"), r.get("to")) for r in ledger.get("raised", [])}
     return [
         f"{key}: {before[key]} -> {after[key]} with no [[raised]] entry "
@@ -220,18 +239,24 @@ def history(path: str = "budgets.toml", repo: Path = REPO) -> tuple[list[tuple[s
 
 
 def check_history(versions: list[tuple[str, str]], working: str | None) -> list[str]:
-    """Every raise from one version of the file to the next, the working
-    tree's last, answered by a ``[[raised]]`` entry of the file as it
-    stands."""
+    """Every raise in the file's versions, the working tree's last, answered
+    by a ``[[raised]]`` entry of the file as it stands. Each number is held
+    to the last one the history gave its key, not only to the version
+    before: a budget deleted in one version and written back higher in a
+    later one is a raise like any other."""
     texts = [(sha[:10], text) for sha, text in versions]
     if working is not None and (not texts or texts[-1][1] != working):
         texts.append(("working tree", working))
     if not texts:
         return []
     ledger = loads(texts[-1][1])
-    errors = []
-    for (_, a), (label, b) in zip(texts, texts[1:], strict=False):
-        errors += [f"{label}: {e}" for e in unexplained_raises(loads(a), loads(b), ledger)]
+    errors: list[str] = []
+    last: dict[str, float] = {}
+    for i, (label, text) in enumerate(texts):
+        numbers = budget_numbers(loads(text))
+        if i:
+            errors += [f"{label}: {e}" for e in _unexplained(last, numbers, ledger)]
+        last.update(numbers)
     return errors
 
 
@@ -290,10 +315,13 @@ def _fmt(v: float) -> str:
     return f"{v:,.4f}".rstrip("0").rstrip(".")
 
 
-def judge(key: str, measured: float, table: dict | None, tol: float) -> Verdict:
+def judge(
+    key: str, measured: float, table: dict | None, tol: float, tighten: float | None = None
+) -> Verdict:
     """One measurement against its budget: past it by more than ``tol``
-    fails as a regression; below it by more than ``tol`` fails as a budget
-    to tighten, to the measurement itself."""
+    fails as a regression; below it by more than ``tighten`` (``tol`` when
+    not given) fails as a budget to tighten, to the measurement itself."""
+    tighten = tol if tighten is None else tighten
     table = table or {}
     budget, release = table.get("budget"), table.get("release")
     if budget is None:
@@ -311,7 +339,7 @@ def judge(key: str, measured: float, table: dict | None, tol: float) -> Verdict:
             "with a [[raised]] entry naming the reason and a CHANGELOG *Performance* entry."
         )
         return Verdict(key, measured, budget, release, "over", msg)
-    if ratio < -tol:
+    if ratio < -tighten:
         msg = against + (
             f"under its budget of {_fmt(budget)}: tighten the budget to "
             f"{_round(key, measured)}, so the gain is kept."
@@ -334,19 +362,29 @@ def judge_all(doc: dict, measured: dict[str, float], measure: bool = False) -> l
     table = entries(doc)
     out = []
     for key, value in measured.items():
-        v = judge(key, value, table.get(key), tolerance(doc, key))
+        tol = tolerance(doc, key)
+        v = judge(key, value, table.get(key), tol, tighten_at(key, tol))
         if measure and v.failed:
             v = Verdict(v.key, v.measured, v.budget, v.release, "ok", f"measuring: {v.message}")
         out.append(v)
     return out
 
 
+def _version(text: str) -> tuple[int, ...]:
+    return tuple(int(n) for n in re.findall(r"\d+", text))
+
+
 def signoff_failures(doc: dict, verdicts: list[Verdict], version: str | None = None) -> list[str]:
     """The cases that moved past ``meta.drift_signoff`` since the last
-    release, either way, with no ``[[signoff]]`` for ``version``."""
+    release, either way, with no ``[[signoff]]`` for ``version`` -- or, on
+    a push (no ``version``), none for a release above ``meta.release``: a
+    past release's sign-off speaks for nothing to come."""
     limit = float(doc["meta"]["drift_signoff"])
+    released = _version(str(doc["meta"].get("release") or ""))
     signed = {
-        s["key"] for s in doc.get("signoff", []) if version is None or s["version"] == version
+        s["key"]
+        for s in doc.get("signoff", [])
+        if (s["version"] == version if version is not None else _version(s["version"]) > released)
     }
     return [
         f"{v.key}: {v.drift:+.1%} since {doc['meta'].get('release')} -- past "
@@ -377,8 +415,14 @@ def report(
     meta = doc["meta"]
     lines = [f"### {title or 'Budgets'}", ""]
     release = meta.get("release")
+    tighter = ", ".join(
+        f"{k} past {float(meta['tolerance'][k]) * share:.1%} under"
+        for k, share in TIGHTEN_SHARE.items()
+        if k in meta["tolerance"]
+    )
     lines.append(
-        f"Tolerance {', '.join(f'{k} {v:.0%}' for k, v in meta['tolerance'].items())}; "
+        f"Tolerance {', '.join(f'{k} {v:.0%}' for k, v in meta['tolerance'].items())}"
+        f"{f' (tightened {tighter})' if tighter else ''}; "
         f"drift since {'release ' + release if release else 'the last release (none recorded)'}"
         f", sign-off past {float(meta['drift_signoff']):.0%}."
     )

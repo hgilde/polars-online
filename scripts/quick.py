@@ -203,7 +203,9 @@ def changed(base: str) -> list[str]:
     """The paths changed since `base`: committed, staged, edited and untracked."""
 
     def git(*args: str) -> list[str]:
-        res = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=True)
+        res = subprocess.run(
+            ["git", *args], cwd=REPO, capture_output=True, text=True, encoding="utf-8", check=True
+        )
         return [line for line in res.stdout.splitlines() if line]
 
     return sorted(
@@ -214,7 +216,12 @@ def changed(base: str) -> list[str]:
 
 def default_base() -> str:
     res = subprocess.run(
-        ["git", "merge-base", "HEAD", "main"], cwd=REPO, capture_output=True, text=True, check=True
+        ["git", "merge-base", "HEAD", "main"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     )
     return res.stdout.strip()
 
@@ -264,6 +271,7 @@ def main() -> int:
                 [sys.executable, str(REPO / "scripts" / "workers.py")],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 check=True,
             ).stdout.strip()
             many = ["-n", workers, "--dist", "worksteal"]

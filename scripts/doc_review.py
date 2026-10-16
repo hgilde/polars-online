@@ -585,7 +585,7 @@ def render(path: Path, title: str, label: str) -> str:
     body = subprocess.run(
         ["gh", "api", "markdown", "-f", "mode=markdown", "-f", "context=hgilde/polars-online",
          "-F", f"text=@{path}"],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, encoding="utf-8",
     ).stdout  # fmt: skip
     banner = f'<div class="banner">{html.escape(label)}</div>' if label else ""
     return (
@@ -624,7 +624,9 @@ def main() -> int:
         for f in args.files:
             if args.rev:
                 git = ["git", "show", f"{args.rev}:{f}"]
-                text = subprocess.run(git, capture_output=True, text=True, check=True).stdout
+                text = subprocess.run(
+                    git, capture_output=True, text=True, encoding="utf-8", check=True
+                ).stdout
             else:
                 text = Path(f).read_text(encoding="utf-8")
             numbers, sentences = measure(text)

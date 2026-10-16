@@ -98,23 +98,29 @@ $(echo "$out" | tail -25 | sed 's/^/    /')"
 pytest_or_none() {
     uv run pytest "$@"
     local rc=$?
-    [ "$rc" -eq 5 ] && return 0
+    # Exit 5 is pytest's "no test selected". The essentials hold no `serial`
+    # test today, so there that is not a failure; the extended tier holds the
+    # memory tests, so there an empty selection is a mark gone wrong.
+    [ "$rc" -eq 5 ] && [ "$tier" = essentials ] && return 0
     return "$rc"
 }
 
 step "cargo fmt"   cargo fmt --all -- --check
-step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
+step "cargo clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
 # online-py is left out: it has no Rust tests, and with it in the build every
 # test binary links libpython (.github/workflows/ci.yml says why that fails).
+# `--locked` on every cargo step, as CI's: without it cargo re-resolves a
+# Cargo.lock that no longer matches the manifests, silently, and the
+# rewritten lock rides into the commit.
 # The time printed includes the test build when Rust changed. The `+`
 # expansions keep an empty tier's arguments empty under macOS's bash 3.2,
 # where `set -u` calls an empty array unbound.
 if [ -n "$nextest" ]; then
-    step "cargo nextest"  cargo nextest run --workspace --exclude online-py --no-fail-fast \
+    step "cargo nextest"  cargo nextest run --workspace --exclude online-py --locked --no-fail-fast \
         --test-threads "$workers" ${nextest_tier[@]+"${nextest_tier[@]}"}
-    step "cargo doctests" cargo test --workspace --exclude online-py --doc
+    step "cargo doctests" cargo test --workspace --exclude online-py --doc --locked
 else
-    step "cargo test"   cargo test --workspace --exclude online-py ${cargo_tier[@]+"${cargo_tier[@]}"}
+    step "cargo test"   cargo test --workspace --exclude online-py --locked ${cargo_tier[@]+"${cargo_tier[@]}"}
 fi
 # Before the first `uv run`, which re-locks by default and would rewrite a
 # stale uv.lock before the check could see it.
@@ -132,8 +138,6 @@ if [ -n "$serial" ]; then
     step "pytest"       uv run pytest -q ${pytest_tier[@]+"${pytest_tier[@]}"}
 else
     step "pytest"       uv run pytest -q -n "$workers" --dist worksteal -m "$marks and not serial"
-    # Exit 5 is pytest's "no test selected": the essentials hold no
-    # `serial` test today, and that is not a failure.
     step "pytest serial" pytest_or_none -q -m "$marks and serial"
 fi
 # The API reference imports the package, so it runs after the build. -W: a

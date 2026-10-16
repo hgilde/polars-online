@@ -216,6 +216,59 @@ def test_drift_since_the_release_past_the_signoff_needs_a_signoff():
     assert budgets.signoff_failures(signed, verdicts, "1.2.0") == [failure]
 
 
+def test_on_a_push_only_a_signoff_for_a_coming_release_counts():
+    """On a push the drift since the release is a warning, silenced by a
+    sign-off -- once by one of any version, a past release's too (review 8,
+    E-6). Only a sign-off above ``meta.release`` speaks for the release to
+    come."""
+
+    def signed(version: str) -> dict:
+        doc = small(
+            f'[[signoff]]\nkey = "instructions.a"\nversion = "{version}"\nreason = "the prior"\n'
+        )
+        doc["instructions"]["a"]["budget"] = 1_120_000
+        return doc
+
+    verdicts = budgets.judge_all(signed("1.1.0"), {"instructions.a": 1_120_000})
+    assert budgets.signoff_failures(signed("1.1.0"), verdicts) == []
+    assert budgets.signoff_failures(signed("1.0.10"), verdicts) == []
+    for stale in ("0.9.0", "1.0.0"):  # the file's release is 1.0.0
+        (failure,) = budgets.signoff_failures(signed(stale), verdicts)
+        assert "+12.0% since 1.0.0" in failure
+
+
+def test_a_signoff_names_a_budget():
+    changelog = "### Performance\n\nexact clock stamps\n"
+    entry = '[[signoff]]\nkey = "{}"\nversion = "1.1.0"\nreason = "the prior"\n'
+    assert budgets.check_file(small(entry.format("instructions.a")), changelog, ["a", "b"]) == []
+    (error,) = budgets.check_file(small(entry.format("instructions.nope")), changelog, ["a", "b"])
+    assert "[[signoff]] #1 (instructions.nope): no such budget" in error
+
+
+@pytest.mark.parametrize(
+    ("measured", "status"),
+    [(93.0, "ok"), (92.0, "under"), (129.0, "ok"), (131.0, "over"), (100.0, "ok")],
+)
+def test_a_resident_memory_budget_tightens_past_a_quarter_of_its_tolerance(measured, status):
+    """Tightened only past the whole tolerance, an RSS budget settled
+    anywhere up to m/(1-t) of the run that set it, and a later run passed up
+    to m(1+t)/(1-t): +86% at 30% (review 8, E-4). Tightened past a quarter
+    of it, the ceiling is m(1+t)/(1-t/4), +41%; a run over it still fails
+    only past the whole tolerance, since two runs of one build read 14-18%
+    apart."""
+    doc = small()
+    doc["meta"]["tolerance"]["rss"] = 0.30
+    (v,) = budgets.judge_all(doc, {"rss.streaming.linux": measured})
+    assert v.status == status, v.message
+    if status == "under":
+        assert f"tighten the budget to {measured}" in v.message
+        text, done = budgets.apply(SMALL, [v])
+        assert tomllib.loads(text)["rss"]["streaming"]["linux"]["budget"] == measured, done
+    # The instruction and memory budgets keep the whole tolerance either way.
+    (i,) = budgets.judge_all(doc, {"instructions.a": 1_000_000 * (1 - 0.019)})
+    assert i.status == "ok"
+
+
 def test_two_runs_of_one_binary_must_agree_well_inside_the_tolerance():
     doc = small()
     a = {"instructions.a": 1_000_000.0}
@@ -310,6 +363,30 @@ def test_the_history_is_read_from_git(tmp_path):
     assert not shallow and len(versions) == 2
     (error,) = budgets.check_history(versions, None)
     assert "1000000 -> 1100000" in error
+
+
+def test_a_budget_deleted_then_returned_higher_is_a_raise():
+    """Each version was compared with the next only, so a key missing from
+    one version was in neither side of the comparison: deleting a budget in
+    one commit and writing it back higher in the next raised it with no
+    entry (review 8, E-2). The last number seen for each key is carried
+    through the history instead."""
+    gone = SMALL.replace(
+        '[instructions.a]\nwhat = "case a"\nbudget = 1000000\nrelease = 1000000\n', ""
+    )
+    assert "instructions.a" not in budgets.entries(tomllib.loads(gone))
+    versions = [("a" * 40, SMALL), ("b" * 40, gone)]
+    (error,) = budgets.check_history(versions, _raised(5_000_000))
+    assert "instructions.a: 1000000 -> 5000000 with no [[raised]] entry" in error
+    raise_ = RAISE.replace("to = 1100000", "to = 5000000")
+    assert budgets.check_history(versions, _raised(5_000_000, raise_)) == []
+    # Back at or below the last number it had: no raise.
+    assert budgets.check_history(versions, _raised(1_000_000)) == []
+    assert budgets.check_history(versions, _raised(900_000)) == []
+    # Tightened, deleted, then back at the old number: a raise from the tighter.
+    versions = [("a" * 40, SMALL), ("b" * 40, _raised(900_000)), ("c" * 40, gone)]
+    (error,) = budgets.check_history(versions, SMALL)
+    assert "instructions.a: 900000 -> 1000000" in error
 
 
 # --- reading the harness, and writing the file ----------------------------------------

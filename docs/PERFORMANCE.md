@@ -276,7 +276,7 @@ against the last. There are three kinds:
 |---|---|---|---|
 | `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind; one case each for `ewridge` at 5 and 20 features, `sgd`, `pa`, `seqtest`, `bocpd`, `kmeans`, `micro`, `kalman`, `ew_cov`, the clock's step on a float and on a nanosecond clock, and `Bank::fit_predict` around `seqtest` and around `ewridge`; and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread and of four, every thread of the four counted | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
-| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another with Polars reading one row group ahead on four threads, since its default read-ahead grows with a file this size and would be most of the number | the same file, in the extended tier: held on CI at each OS's floor Python and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23% | 30%: two runs of one build on one CI runner read 14-18% apart |
+| `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB: ten targets over 200,000 rows, 230 moments a row over 200,000, and a million rows streamed from one parquet file to another with Polars reading one row group ahead on four threads, since its default read-ahead grows with a file this size and would be most of the number | the same file, in the extended tier: held on CI at each OS's floor Python and reported everywhere else, since the interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23% | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
 
 **An instruction count can gate where a timing cannot.** Two release builds
 of one source measured up to 19% apart in wall time, from where the linker
@@ -301,7 +301,14 @@ names all three in `[meta]`. Changing one re-measures every case.
 - A measurement under its budget by more than the tolerance fails too, and
   names the number to tighten the budget to. The change that made a gain
   then keeps it. `scripts/budgets.py apply measured.json` writes the
-  tightened budgets from a run's measurements.
+  tightened budgets from a run's measurements. A resident-memory budget is
+  tightened past a quarter of its tolerance, 7.5% under. Tightened only
+  past the whole 30%, a budget could settle 43% above the run that set it,
+  and a later run could pass 86% above that run; at 7.5% the most a later
+  run passes by is 41%.
+- `scripts/budgets.py raises` holds each number to the last one the file's
+  history gave its key, so a budget deleted in one commit and written back
+  higher in a later one is a raise like any other.
 - A case with no budget is reported with its measurement and fails nothing,
   which is how a new case gets its first budget. A measuring run, a dispatch
   of the workflow with `measure` or `POLARS_ONLINE_BUDGETS=measure` for the
@@ -309,7 +316,8 @@ names all three in `[meta]`. Changing one re-measures every case.
 - Beside each budget, `release` keeps the measurement at the last release.
   Every run reports each case's drift since then. A release fails on a case
   that moved more than 10% either way unless `budgets.toml` holds a
-  `[[signoff]]` for it at that version.
+  `[[signoff]]` for it at that version. A push only warns of it, and only
+  a sign-off for a release after the last one silences the warning.
 
 **Valgrind does not run on macOS on Apple silicon, so the counts come from
 CI.** `cargo test -p online-bench` runs every case natively on any platform

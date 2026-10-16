@@ -204,7 +204,12 @@ def read(text: str, rel: str) -> Doc:
 def tracked(root: Path) -> set[str]:
     """Every file git tracks under ``root``, and every directory holding one."""
     out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True
+        ["git", "ls-files", "-z"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout
     files = {f for f in out.split("\0") if f}
     dirs = {Path(f).parent.as_posix() for f in files}

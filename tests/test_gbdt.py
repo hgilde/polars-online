@@ -1152,6 +1152,7 @@ def _build_peak(big, lib: str, source: str, parts: str = "*") -> int:
         [sys.executable, "-c", _PEAK.format(lib=lib, source=src, build=build)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         check=False,
     )

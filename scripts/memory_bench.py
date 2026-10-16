@@ -122,7 +122,12 @@ def _config(d: Path, size: str) -> Path:
 
 def _footprint(cmd: list[str], env: dict[str, str]) -> float:
     res = subprocess.run(
-        ["/usr/bin/time", "-l", *cmd], env=env, capture_output=True, text=True, check=True
+        ["/usr/bin/time", "-l", *cmd],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     )
     line = next(ln for ln in res.stderr.splitlines() if "peak memory footprint" in ln)
     return int(line.split()[0]) / 1e9

@@ -223,4 +223,33 @@ def test_every_text_read_and_write_names_its_encoding():
                             mode = str(k.value.value)
                     if "b" not in mode and "encoding" not in keywords:
                         missing.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}")
+                elif _decodes_without_an_encoding(node):
+                    missing.append(f"{path.relative_to(REPO).as_posix()}:{node.lineno}")
     assert not missing, "\n".join(missing)
+
+
+def _decodes_without_an_encoding(node) -> bool:
+    """A `subprocess` call that decodes the child's output -- `text=True` or
+    `universal_newlines=True` -- with no `encoding=`: it decodes with the
+    locale's encoding, cp1252 on the Windows runners until Python 3.15
+    (review 8, B-2). Named as `subprocess.<f>` or, imported, as `<f>`."""
+    import ast
+
+    func = node.func
+    called = (
+        func.attr
+        if isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "subprocess"
+        else func.id
+        if isinstance(func, ast.Name)
+        else None
+    )
+    if called not in ("run", "check_output", "check_call", "call", "Popen"):
+        return False
+    given = {k.arg: k.value for k in node.keywords}
+    decodes = any(
+        name in given and not (isinstance(given[name], ast.Constant) and not given[name].value)
+        for name in ("text", "universal_newlines")
+    )
+    return decodes and "encoding" not in given

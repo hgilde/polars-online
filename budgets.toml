@@ -54,7 +54,10 @@ memory = 0.02
 # apart, read 236.7 and 193.4 MiB for the streaming case and 192.5 and 165.5
 # for ten-target ewridge (2026-10-12/13): 14-18% apart, so 15% failed one
 # of them either way. 30% still catches what this budget is for, the dense
-# `coef` that added 3.9 GiB at 1M rows.
+# `coef` that added 3.9 GiB at 1M rows. A run under its budget by more than
+# a quarter of this, 7.5%, tightens it (`TIGHTEN_SHARE` in
+# scripts/budgets.py): tightened only past the whole 30%, a later run could
+# pass 86% above the run that set the budget; past 7.5%, 41%.
 rss = 0.30
 
 # --- instruction counts --------------------------------------------------------
@@ -1086,9 +1089,9 @@ zscore_z = { budget = 8.125, release = 8.125 }
 
 
 [rss.streaming_bounded]
-darwin = { budget = 201.7032, release = 178.3125 }
-linux = { budget = 218.9493, release = 154.2383 }
-windows = { budget = 195.7149, release = 151.8907 }
+darwin = { budget = 178.3125, release = 178.3125 }
+linux = { budget = 154.2383, release = 154.2383 }
+windows = { budget = 151.8907, release = 151.8907 }
 
 [rss.ew_cov_wide]
 darwin = { budget = 441.6563, release = 410.0938 }
@@ -1096,9 +1099,9 @@ linux = { budget = 450.7461, release = 419.1016 }
 windows = { budget = 425.2227, release = 396.1915 }
 
 [rss.ewridge_10_targets]
-darwin = { budget = 134.375, release = 104.1407 }
-linux = { budget = 157.6719, release = 123.1016 }
-windows = { budget = 110.9454, release = 80.129 }
+darwin = { budget = 104.1407, release = 104.1407 }
+linux = { budget = 123.1016, release = 123.1016 }
+windows = { budget = 80.129, release = 80.129 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]
