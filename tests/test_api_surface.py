@@ -980,27 +980,41 @@ FREE_TEXT = {
 
 
 def test_every_word_valued_parameter_is_probed():
-    """A builder's or the shared parameters' keyword typed as a bare `str`
-    takes a word of a fixed set, unless it names something of the caller's
-    (`FREE_TEXT`); each such keyword is in `ENUM_PROBES`, so a new one cannot
-    stay out of `[enum values]`. (`session_gap`'s `"reset"`, `window_budget`'s
-    keys and `ew_cov`'s `stats` are typed otherwise and probed by hand.)"""
+    """A builder's or the shared parameters' keyword that takes a word of a
+    fixed set -- typed as a `Literal[...]` of its words, or as a bare `str`
+    that names nothing of the caller's (`FREE_TEXT`) -- is in
+    `ENUM_PROBES`, so a new one cannot stay out of `[enum values]`; and each
+    probe is such a keyword or one of `PROBED_BY_HAND`, typed otherwise.
+
+    It collected the bare-`str` keywords alone, and every word parameter
+    has been a `Literal` since the words were typed, so it found none and
+    could not fail (task 269, D-4)."""
     from test_model_registry import MINIMAL
 
     probed = {label for label, *_ in ENUM_PROBES}
 
     def worded(fn) -> list[str]:
-        return [
-            p.name
-            for p in inspect.signature(fn).parameters.values()
-            if "str" in [part.strip() for part in str(p.annotation).split("|")]
-            and p.name not in FREE_TEXT
-        ]
+        out = []
+        for p in inspect.signature(fn).parameters.values():
+            text = str(p.annotation)
+            parts = [part.strip() for part in text.split("|")]
+            if "Literal[" in text or ("str" in parts and p.name not in FREE_TEXT):
+                out.append(p.name)
+        return out
 
     wanted = {f"spec.{p}" for p in worded(_spec._common)}
     for name in MINIMAL:
         wanted |= {f"{name}.{p}" for p in worded(getattr(po.spec, name))}
-    assert wanted <= probed, f"string-valued parameters with no probe: {sorted(wanted - probed)}"
+    assert len(wanted) > 30, sorted(wanted)
+    assert wanted - probed == set(), f"word parameters with no probe: {sorted(wanted - probed)}"
+    assert probed - wanted == PROBED_BY_HAND, (
+        f"probes of no word parameter: {sorted(probed - wanted - PROBED_BY_HAND)}"
+    )
+
+
+#: The probes whose parameter is typed other than by its words:
+#: `session_gap` takes a clock span or the word `"reset"`, typed `float | Duration`.
+PROBED_BY_HAND = {"spec.session_gap"}
 
 
 def test_api_surface_matches_the_snapshot(online_cli):

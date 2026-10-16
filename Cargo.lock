@@ -2062,7 +2062,6 @@ dependencies = [
  "online-polars",
  "polars",
  "serde",
- "serde_json",
  "toml",
 ]
 

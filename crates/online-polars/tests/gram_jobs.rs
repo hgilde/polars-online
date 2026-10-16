@@ -589,6 +589,16 @@ fn every_index_out_of_range_is_refused_by_name() {
             signs(),
             None,
         ),
+        // Task 269, D-3: a column twice is one regressor solved twice, its
+        // coefficient written once, the last write winning.
+        (
+            "column set 0 names column 2 twice",
+            vec![SubsetJob { set: 0, ..ok }],
+            subsets(),
+            set(vec![1, 2, 3, 2], Vec::new()),
+            signs(),
+            None,
+        ),
         (
             "column set 0: 1 penalty weights for 2 features",
             vec![SubsetJob { set: 0, ..ok }],

@@ -696,8 +696,9 @@ fn pooling(within: bool, signs: Vec<Vec<f64>>) -> Pooling {
     }
 }
 
-/// Every slot, the intercept and every target in range of every Gram: the
-/// Python layer resolves names to positions, so this guards the indexing.
+/// Every slot, the intercept and every target in range of every Gram, and
+/// no slot twice: the Python layer resolves names to positions and refuses
+/// a column named twice, so this guards the indexing and a direct call.
 /// Every Gram has the same columns; with `same_targets`, the same number
 /// of targets too, which a merge needs and a path per Gram does not (review
 /// 6, E-4: `lars_paths` refused Grams whose targets differ, which its
@@ -709,6 +710,12 @@ pub(crate) fn check_axes(
     icept: Option<usize>,
     same_targets: bool,
 ) -> PyResult<()> {
+    if let Some(c) = online_polars::gramfit::repeated_slot(slots) {
+        return Err(PyValueError::new_err(format!(
+            "the features name column {c} twice; {}",
+            online_polars::gramfit::TWICE
+        )));
+    }
     for (g, ts) in grams.iter().map(|g| &g.base).zip(targets) {
         let m = g.target_weights.len();
         if let Some(&c) = slots.iter().chain(icept.as_ref()).find(|&&c| c >= g.k) {

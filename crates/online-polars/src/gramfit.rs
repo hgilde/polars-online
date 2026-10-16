@@ -346,7 +346,20 @@ pub fn fit_jobs(
     Ok(out.into_iter().flatten().collect())
 }
 
-/// Every index [`fit_jobs`] reads, in range.
+/// Why a column named twice in one fit is refused: what follows "names
+/// column `c` twice; " wherever a fit's columns are checked.
+pub const TWICE: &str = "a column is one regressor, and a fit given it twice solves a singular \
+    system and writes one of its two coefficients over the other: name it once";
+
+/// The first column `slots` names a second time, if any (task 269, D-3).
+/// A selection may repeat a column; a fit may not ([`TWICE`]).
+pub fn repeated_slot(slots: &[usize]) -> Option<usize> {
+    let mut seen = std::collections::HashSet::with_capacity(slots.len());
+    slots.iter().copied().find(|&c| !seen.insert(c))
+}
+
+/// Every index [`fit_jobs`] reads, in range, and no column set naming a
+/// column twice.
 fn check_jobs(
     grams: &[GramArrays<'_>],
     subsets: &[Vec<usize>],
@@ -381,6 +394,9 @@ fn check_jobs(
         if let Some(&c) = set.slots.iter().find(|&&c| c >= k || Some(c) == icept) {
             polars_bail!(ComputeError: "column set {i} names column {c}, out of range for {k} \
                 columns or the intercept");
+        }
+        if let Some(c) = repeated_slot(&set.slots) {
+            polars_bail!(ComputeError: "column set {i} names column {c} twice; {TWICE}");
         }
         if !set.weights.is_empty() && set.weights.len() != set.slots.len() {
             polars_bail!(ComputeError: "column set {i}: {} penalty weights for {} features",

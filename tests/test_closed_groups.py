@@ -779,6 +779,164 @@ def test_the_cli_writes_the_sidecar(tmp_path, online_cli):
     assert pl.read_parquet(side)["group"].to_list() == ["a", "b"]
 
 
+# --- the sidecar as CSV, from every surface (task 269, D-1) -------------------
+#
+# A closed row carries a list column in every kind -- `coef` at the least, a
+# Gram's twelve -- which Polars' CSV writer refuses. The runner writes each
+# list as JSON text (`["x0","x1"]`, `[1.5,-0.25]`); the Python surfaces wrote
+# the frame as it came, so `closed_groups="*.csv"` failed after the whole fit,
+# and the plan form then saved no state.
+
+
+def _closing(name):
+    """`name`'s minimal spec (`test_model_registry.MINIMAL`), closing on `g`."""
+    from test_model_registry import MINIMAL
+
+    kw = {"targets": ["y"], "features": ["x0"], "half_life": 50.0}
+    kw.update({"group": "g", "group_close": "monotone"})
+    kw.update(MINIMAL[name])
+    return getattr(po.spec, name)("m", **{k: v for k, v in kw.items() if v is not None})
+
+
+def _closing_kinds():
+    """Every kind that closes groups: all but `audit`, which refuses
+    `group_close` (its counts would leave the bank with the group)."""
+    from test_model_registry import MINIMAL
+
+    return sorted(set(MINIMAL) - {"audit"})
+
+
+def _csv_read_back(path, like):
+    """The CSV at `path` read with `like`'s schema, each list column read as
+    text and decoded with `str.json_decode` into its dtype: the documented
+    way back."""
+    lists = {c: dt for c, dt in like.schema.items() if isinstance(dt, pl.List)}
+    schema = {c: pl.String if c in lists else dt for c, dt in like.schema.items()}
+    got = pl.read_csv(path, schema=schema)
+    return got.with_columns(pl.col(c).str.json_decode(dt) for c, dt in lists.items())
+
+
+def _as_json_says(df):
+    """`df` as its CSV form can say it: JSON has no NaN or infinity, so a
+    non-finite float inside a list is written `null`."""
+    return df.with_columns(
+        pl.col(c).list.eval(pl.when(pl.element().is_finite()).then(pl.element()).otherwise(None))
+        for c, dt in df.schema.items()
+        if isinstance(dt, pl.List) and dt.inner.is_float()
+    )
+
+
+def _chunks(df, n):
+    return [df[i : i + n] for i in range(0, df.height, n)]
+
+
+@pytest.mark.parametrize("name", _closing_kinds())
+def test_every_surface_writes_closed_groups_as_csv(tmp_path, name):
+    """The eager frame form, the plan form (with `save_state`, which is then
+    written) and `fit_predict_batches` each write a kind's closed rows as
+    CSV, and the file read back -- its lists by `str.json_decode` -- is the
+    frame a bank fed the same chunks drains."""
+    from test_every_kind import frame_for
+
+    spec = _closing(name)
+    df = frame_for(name)
+    driver = po.ModelBank([spec])
+    drained = []
+    for chunk in _chunks(df, 50):
+        driver.fit_predict(chunk)
+        drained.append(driver.closed_groups())
+    want = pl.concat(drained)
+    assert want.height == 3, "groups 0, 1 and 2 closed; 3 is open"
+    assert any(isinstance(dt, pl.List) for dt in want.schema.values()), "a list to write"
+
+    eager = tmp_path / "eager.csv"
+    df.online.fit_predict([spec], closed_groups=eager, chunk_size=50)
+    plan, state = tmp_path / "plan.csv", tmp_path / "plan.state"
+    df.lazy().online.fit_predict(
+        [spec], closed_groups=plan, save_state=state, chunk_size=50
+    ).collect()
+    batches = tmp_path / "batches.csv"
+    for _ in po.ModelBank([spec]).fit_predict_batches(_chunks(df, 50), closed_groups=batches):
+        pass
+
+    for path in (eager, plan, batches):
+        got = _csv_read_back(path, want)
+        assert got.equals(_as_json_says(want), null_equal=True), path.name
+    assert eager.read_bytes() == plan.read_bytes() == batches.read_bytes()
+    assert po.ModelBank.load(state).rows_fed == df.height
+
+
+def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, online_cli):
+    """The three Python surfaces and the CLI write one CSV: the same text
+    for every list (Rust's shortest round-trip float in a JSON array, a
+    name as a JSON string) and every other field."""
+    from test_every_kind import frame_for
+
+    spec = _closing("ewridge")
+    df = frame_for("ewridge")
+    df.write_parquet(tmp_path / "in.parquet")
+    cli = tmp_path / "cli.csv"
+    run_online(
+        online_cli,
+        tmp_path,
+        [spec],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        closed_groups=cli,
+        chunk_size=50,
+    )
+    ours = tmp_path / "ours.csv"
+    df.online.fit_predict([spec], closed_groups=ours, chunk_size=50)
+    text = cli.read_text(encoding="utf-8")
+    # The list of names as JSON text, quoted as CSV quotes a field.
+    assert text.count("\n") == 4 and '"[""intercept"",""x0""]"' in text, text
+    assert ours.read_bytes() == cli.read_bytes()
+
+
+def test_an_empty_closed_groups_csv_is_the_cli_s_header(tmp_path, online_cli):
+    """A run in which nothing closed writes the header alone, as the CLI
+    does."""
+    from test_every_kind import frame_for
+
+    spec = _closing("ewridge")
+    df = frame_for("ewridge").head(30)
+    df.write_parquet(tmp_path / "in.parquet")
+    cli = tmp_path / "cli.csv"
+    run_online(
+        online_cli,
+        tmp_path,
+        [spec],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        closed_groups=cli,
+    )
+    ours = tmp_path / "ours.csv"
+    df.lazy().online.fit_predict([spec], closed_groups=ours).collect()
+    assert cli.read_text(encoding="utf-8").count("\n") == 1
+    assert ours.read_bytes() == cli.read_bytes()
+
+
+@pytest.mark.parametrize("form", ["eager", "plan"])
+def test_a_closed_groups_file_that_cannot_be_written_still_saves_the_state(tmp_path, form):
+    """The sidecar is written before the state, as the CLI writes it, so a
+    state file has its closed rows beside it; but a sidecar that cannot be
+    written does not take the fit's state with it: the state is saved, and
+    then the sidecar's error raised."""
+    from test_every_kind import frame_for
+
+    spec = _closing("ewridge")
+    df = frame_for("ewridge")
+    side = tmp_path / "closed.csv"
+    side.mkdir()  # a directory where the file would go
+    state = tmp_path / "bank.state"
+    with pytest.raises((OSError, pl.exceptions.ComputeError)):
+        if form == "eager":
+            df.online.fit_predict([spec], closed_groups=side, save_state=state)
+        else:
+            df.lazy().online.fit_predict([spec], closed_groups=side, save_state=state).collect()
+    assert po.ModelBank.load(state).rows_fed == df.height
+
+
 def test_from_row_refuses_a_row_with_no_accumulators():
     spec = po.spec.holt("h", targets=["x0"], half_life=HALFLIFE, group="g", group_close="monotone")
     bank = po.ModelBank([spec])

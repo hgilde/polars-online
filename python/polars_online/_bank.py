@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import io
+import operator
 import os
 import warnings
 from collections.abc import Collection, Iterable, Iterator
@@ -165,16 +166,21 @@ def _threads_refusal(shown: str) -> str:
 
 def _check_threads(threads: object) -> int | None:
     """``threads`` checked where it is given, before anything is built: ``None``
-    or an integer of 1 or more. A bool, a float or another type is a
-    ``TypeError``, and 0 or a negative integer a ``ValueError``, each with
-    the message the native side raises for the same value."""
+    or an integer of 1 or more -- anything ``operator.index`` reads as one,
+    numpy's integers included (task 269, D-6). A bool, a float or another
+    type is a ``TypeError``, and 0 or a negative integer a ``ValueError``,
+    each with the message the native side raises for the same value."""
     if threads is None:
         return None
-    if isinstance(threads, bool) or not isinstance(threads, int):
+    if isinstance(threads, bool):
         raise TypeError(_threads_refusal(repr(threads)))
-    if threads < 1:
+    try:
+        count = operator.index(threads)  # type: ignore[arg-type]
+    except TypeError:
+        raise TypeError(_threads_refusal(repr(threads))) from None
+    if count < 1:
         raise ValueError(_threads_refusal(repr(threads)))
-    return threads
+    return count
 
 
 def thread_pool_size(*, threads: int | None = None) -> int:
@@ -772,7 +778,9 @@ class ModelBank:
         and :meth:`save` writes them all. The file is written however the chunks stop
         -- at their end, at a ``break``, or at an error -- because a drained row has
         left the bank, and the file is then the only place it is. The file and the
-        bank's queue together always hold every group that closed.
+        bank's queue together always hold every group that closed. A CSV holds each
+        list column, such as ``coef``, as JSON text, the bytes the command line
+        writes; read it back with ``str.json_decode``.
         """
         return self._batches(batches, closed_groups, chunk_size, "fit_predict_batches")
 
@@ -787,6 +795,7 @@ class ModelBank:
         arguments checked eagerly, then a generator. ``what`` is the public
         method the caller used, for the messages that name it."""
         from polars_online._frame import (
+            _check_closed_format,
             _closed_path,
             _order_free,
             _plan_text,
@@ -797,6 +806,8 @@ class ModelBank:
             msg = f"chunk_size must be at least 1, got {chunk_size}"
             raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
+        if path is not None:
+            _check_closed_format(path, self.closed_groups(drop=False).clear())
         # Bound as a narrowed local rather than an `is_plan` flag: a bool does
         # not carry the type, so mypy could not see that the three calls below
         # get a `LazyFrame`. Only a frame or an iterator of frames reaches

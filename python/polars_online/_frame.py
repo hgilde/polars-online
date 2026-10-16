@@ -160,7 +160,6 @@ def _save_path(save_state: State | None) -> str | None:
 _WRITE: dict[str, str] = {
     "parquet": "write_parquet",
     "ipc": "write_ipc",
-    "csv": "write_csv",
     "ndjson": "write_ndjson",
 }
 
@@ -187,12 +186,28 @@ def _closed_path(closed_groups: State | None, specs: Iterable[dict[str, Any]]) -
     return path
 
 
+def _check_closed_format(path: str | None, schema: pl.DataFrame) -> None:
+    """A ``closed_groups`` file the closed rows' columns can be written to,
+    checked before the fit: CSV carries a list column only as JSON text,
+    and a nested column that is not such a list not at all (the error
+    names it)."""
+    if path is not None and _native.format_of_path(path) == "csv":
+        _native.csv_flat(schema)
+
+
 def _write_closed(path: str, frames: list[pl.DataFrame], schema: pl.DataFrame) -> None:
     """The drained closed rows as one file, in the format the extension
     names. An empty run writes the empty frame with the schema, as an empty
-    output does."""
+    output does. A CSV goes through the command line's own writer: every
+    closed row has a list column, which Polars' CSV writer refuses, and the
+    runner writes each list as JSON text (task 269, D-1), so the file is the
+    CLI's to the byte."""
     df = pl.concat(frames) if frames else schema
-    getattr(df, _WRITE[_native.format_of_path(path)])(path)
+    fmt = _native.format_of_path(path)
+    if fmt == "csv":
+        _native.write_frame(df, path)
+    else:
+        getattr(df, _WRITE[fmt])(path)
 
 
 def _explain_kwargs(specs: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -871,6 +886,7 @@ def _source(
     # (`lf.online.predict(bank)`), whose queue building a plan must leave
     # alone (review 2026-09-12, C4).
     closed_schema = bank.closed_groups(drop=False).clear()
+    _check_closed_format(closed_path, closed_schema)
 
     def source(
         with_columns: list[str] | None,
@@ -929,11 +945,16 @@ def _source(
         # A node after this one failing does not stop this one (polars
         # drains a Python source first), so the state is written even then;
         # the CLI saves after its output is committed, for callers who need
-        # the two tied together.
-        if closed_path is not None:
-            _write_closed(closed_path, closed, closed_schema)
-        if save_path is not None:
-            bank.save(save_path)
+        # the two tied together. The sidecar goes first, as the CLI writes
+        # it, so a state file has its closed rows beside it; but a sidecar
+        # that cannot be written does not take the fit's state with it
+        # (task 269, D-1: a refused CSV once lost both).
+        try:
+            if closed_path is not None:
+                _write_closed(closed_path, closed, closed_schema)
+        finally:
+            if save_path is not None:
+                bank.save(save_path)
         # Last, so a state file is written before anything is said about it.
         # `n_rows == 0` is a `head(0)` pushed into the scan, where no rows is
         # what the query asked for rather than a stream that is spent.
@@ -1211,7 +1232,11 @@ class LazyFrameOnlineNamespace:
         ``save_state`` is written and under the same rules: only when the source reaches
         its last row, once per execution of the plan, and twice with the same bytes for
         a plan used twice in one query. It needs a spec with ``group_close``. A run in
-        which nothing closed writes an empty frame with the schema.
+        which nothing closed writes an empty frame with the schema. The file is written
+        before ``save_state``, and one that cannot be written still leaves the state
+        saved before its error is raised. A CSV holds each list column, such as
+        ``coef``, as JSON text, the bytes the command line writes; read it back with
+        ``str.json_decode``.
 
         What the schema decides is reported while the plan is built, as polars reports
         its own schema errors:
@@ -1420,7 +1445,9 @@ class DataFrameOnlineNamespace:
         move. Keep a bank of your own to feed it more rows. ``closed_groups``
         writes the groups that finished to a sidecar file in the format its
         extension names, before ``save_state``
-        (:meth:`~polars_online.ModelBank.closed_groups`).
+        (:meth:`~polars_online.ModelBank.closed_groups`). A sidecar that cannot be
+        written still leaves the state saved before its error is raised. A CSV
+        holds each list column as JSON text, as the plan form writes it.
 
         ``chunk_size`` feeds the frame that many rows at a time, as the plan form
         reads its input. The numbers are the same either way. Only ``coef``'s
@@ -1447,14 +1474,19 @@ class DataFrameOnlineNamespace:
         save_path = _save_path(save_state)
         bank = _bank(specs, load_state, "fit_predict", threads)()
         closed_path = _closed_path(closed_groups, bank.specs)
-        out = _in_chunks(self._df, chunk_size, bank._fit_predict_from)
         if closed_path is not None:
-            # One drain, and its empty frame the schema: two calls were right
-            # only by the order Python evaluates arguments in (C4).
-            drained = bank.closed_groups()
-            _write_closed(closed_path, [drained], drained.clear())
-        if save_path is not None:
-            bank.save(save_path)
+            _check_closed_format(closed_path, bank.closed_groups(drop=False).clear())
+        out = _in_chunks(self._df, chunk_size, bank._fit_predict_from)
+        try:
+            if closed_path is not None:
+                # One drain, and its empty frame the schema: two calls were
+                # right only by the order Python evaluates arguments in (C4).
+                drained = bank.closed_groups()
+                _write_closed(closed_path, [drained], drained.clear())
+        finally:
+            # Saved even when the sidecar fails, as the plan form saves it.
+            if save_path is not None:
+                bank.save(save_path)
         return out
 
     def predict(

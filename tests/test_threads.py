@@ -350,6 +350,63 @@ def test_a_count_that_is_not_one_is_refused_by_name_everywhere(tmp_path, value, 
         assert str(caught.value) == message, name
 
 
+@pytest.mark.parametrize("value", [np.int64(2), np.int32(2), np.uint8(2)], ids=repr)
+def test_a_numpy_integer_is_a_count_everywhere(tmp_path, value):
+    """Anything Python reads as an integer (`__index__`) is a count, numpy's
+    included, on every surface and on the native side; numpy's bool is not
+    one (task 269, D-6)."""
+    spec = specs()[2]
+    df = stream().head(10)
+    bank = po.ModelBank([spec])
+    data = bank.save_bytes()
+    path = str(tmp_path / "bank.state")
+    bank.save(path)
+    grams = _grams()
+    calls = {
+        "ModelBank": lambda: po.ModelBank([spec], threads=value).threads,
+        "ModelBank.load_bytes": lambda: po.ModelBank.load_bytes(data, threads=value).threads,
+        "fit_predict(DataFrame)": lambda: po.fit_predict(df, [spec], threads=value),
+        "fit_predict(LazyFrame)": lambda: po.fit_predict(
+            df.lazy(), [spec], threads=value
+        ).collect(),
+        "df.online.predict": lambda: df.online.predict(path, threads=value),
+        "lf.online.predict": lambda: df.lazy().online.predict(path, threads=value).collect(),
+        "thread_pool_size": lambda: po.thread_pool_size(threads=value),
+        "gram.lars_paths": lambda: po.gram.lars_paths(grams, threads=value),
+        "gram.solve_subsets": lambda: po.gram.solve_subsets(grams, [[0, 1]], threads=value),
+        "native ModelBank": lambda: native.ModelBank(_json([spec]), value).threads,
+        "native thread_pool_size": lambda: native.thread_pool_size(value),
+    }
+    got = {name: call() for name, call in calls.items()}
+    for name in ("ModelBank", "ModelBank.load_bytes", "thread_pool_size", "native ModelBank"):
+        assert got[name] == 2 and type(got[name]) is int, name
+    assert got["native thread_pool_size"] == 2
+    message = _threads_refusal(repr(np.True_))
+    for call in (
+        lambda: po.ModelBank([spec], threads=np.True_),
+        lambda: native.thread_pool_size(np.True_),
+    ):
+        with pytest.raises(TypeError) as caught:
+            call()
+        assert str(caught.value) == message
+
+
+def _grams() -> list:
+    rng = np.random.default_rng(3)
+    df = pl.DataFrame({f"x{j}": rng.standard_normal(80) for j in range(3)}).with_columns(
+        y=pl.Series(rng.standard_normal(80)), g=pl.Series([0, 1] * 40)
+    )
+    bank = po.ModelBank(
+        [
+            po.spec.ewridge(
+                "r", targets=["y"], features=["x0", "x1", "x2"], half_life=50.0, group="g"
+            )
+        ]
+    )
+    bank.fit_predict(df)
+    return bank.gram("r")
+
+
 def test_none_is_the_default_pool_and_a_count_is_its_own():
     assert po.thread_pool_size(threads=None) == po.thread_pool_size()
     assert po.thread_pool_size(threads=3) == 3
