@@ -37,7 +37,8 @@ returns.
   rather than through JSON, which has no infinity, and an error after a
   forwarded key names and quotes the file's own line.
 - **`threads=` takes numpy's integers** (anything `operator.index` reads)
-  on every surface, and a hand-built job's `target` and `features` take
+  on `ModelBank`, the frame and query surfaces, `po.gram` and
+  `po.thread_pool_size` (not yet `po.gbdt`), and a hand-built job's `target` and `features` take
   them too, as its `subset` and `draw` already did (task 269). A bool is
   refused, and a bool given as a column or target position, once read as
   0 or 1, is now refused as well. The command line refuses a `threads`
@@ -80,7 +81,7 @@ returns.
   measurements are written out only by the CI leg that holds their
   budget; `scripts/slot.sh take` refuses a branch another worktree has
   checked out; `scripts/clear_caches.sh --worktrees` run from inside a
-  slot keeps the other slots' builds; `scripts/gate.sh` builds with
+  slot keeps the other slots' builds and the main checkout's; `scripts/gate.sh` builds with
   `--locked`, as CI does, and in the extended tier treats an empty
   `serial` selection as a failure; and every `subprocess` call in the
   tests and scripts that decodes a child's output names UTF-8 rather than

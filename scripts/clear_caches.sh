@@ -5,7 +5,8 @@
 #   scripts/clear_caches.sh              the build caches: target/ and sccache's cache
 #   scripts/clear_caches.sh --dry-run    what it would clear, and the size of each
 #   scripts/clear_caches.sh --worktrees  also target/ in every other worktree of this repo, but
-#                                        not the worktree slots' (scripts/slot.sh)
+#                                        not the worktree slots' (scripts/slot.sh), nor the main
+#                                        checkout's when run from another worktree
 #   scripts/clear_caches.sh --slots      also the slots' target/, which keeping them warm is for
 #   scripts/clear_caches.sh --test-data  also .cache/ (downloads) and .hypothesis/
 #   scripts/clear_caches.sh --uv         also `uv cache prune` (uv's own cache, outside the repo)
@@ -64,6 +65,10 @@ if [ -n "$worktrees" ] || [ -n "$slots" ]; then
             "worktree "*)
                 wt="${line#worktree }"
                 [ "$wt" = "$repo" ] && continue
+                # The main checkout's build is where the coordinator's gate
+                # runs: only a run from there clears it (task 269, the
+                # second look after review round 8).
+                [ "$wt" = "$main" ] && continue
                 # A slot is kept warm on purpose: it goes only with --slots.
                 case "$wt" in
                     "$main/.claude/slots/"*) [ -n "$slots" ] && targets+=("$wt/target") ;;

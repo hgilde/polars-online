@@ -15765,14 +15765,20 @@ size; C-1 the bound documented. Built as task 269 in four batches.
       driven (B); `gram_threads=n` pieces wandering across the pool over a
       long run (F); the release benchmark's raw rows kept in the repository
       so its CHANGELOG figures can be traced (F); `po.gbdt`'s `threads`
-      (D); TOML datetimes through the CLI's forwarding (D).
+      (D); TOML datetimes through the CLI's forwarding (D); a budget key
+      renamed in one commit still enters the history with nothing to
+      compare against, so tighten-only does not hold across a rename
+      (E-2's second path: a key new to the history could be held to
+      `budget == release` or a `[[raised]]` entry; `check_history` over the
+      16 committed versions finds no such entry today) (E, the second look).
       *Done 2026-10-16*, four batches merged into `main`, each new test
       failing on `bb69654` where its finding says. (a) `fdb514c`: D-1 the
       closed-groups CSV through the runner's `csv_flat` (`_native.write_frame`);
       D-2/D-7 forwarding over `toml::de::DeTable`; D-3 a duplicate column
       refused by name in Python and Rust; D-4 the Literal collector; D-5/D-6
       `threads` and job fields through one integer reader. (c) `825a6be`:
-      E-1..E-9 and B-2 (slot holder refused, budgets' last-seen history, the
+      E-1..E-9 and B-2 (E-2's delete-then-re-add only; its rename path is
+      under Remaining) (slot holder refused, budgets' last-seen history, the
       main checkout from the git common dir, `TIGHTEN_SHARE = {"rss": 0.25}`
       with six RSS budgets tightened, the RSS file only where held, sign-off
       rules, E-7's limit recorded beside the test, `--locked`, an empty
@@ -15788,4 +15794,8 @@ size; C-1 the bound documented. Built as task 269 in four batches.
       A-3 `lu_rows`; A-4 comments; A-5 the standard errors over the columns
       with variance in `ridge_fits` and in Python's `coef_stats` alike; B-1
       a rechunk before the IPC write (no frozen fixture moved); C-1 the bound
-      stated and held by the source's test.
+      stated and held by the source's test. The second look over
+      `bb69654..0b6ced8` found no high or medium defect; of its three lows,
+      the CHANGELOG's numpy-integer scope and `clear_caches.sh --worktrees`
+      sparing the main checkout from another worktree were fixed, and the
+      budget-rename path went to Remaining.

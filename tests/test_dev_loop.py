@@ -599,9 +599,11 @@ def test_clear_caches_run_from_a_slot_keeps_the_other_slots_warm(tmp_path):
             if line.startswith("would free") and line.split()[-1].endswith("/target")
         }
 
-    assert listed("--worktrees") == {one, repo, other}
+    # Nor the main checkout's, where the coordinator's gate builds (task 269,
+    # the second look): only a run from the main checkout clears it.
+    assert listed("--worktrees") == {one, other}
     assert listed("--slots") == {one, two}
-    assert listed("--worktrees", "--slots") == {one, two, repo, other}
+    assert listed("--worktrees", "--slots") == {one, two, other}
     assert all((wt / "target" / "x.rlib").exists() for wt in (repo, one, two, other))
 
 

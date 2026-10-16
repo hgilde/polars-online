@@ -801,7 +801,9 @@ and nextest writes no files unless asked for a report.
 freed.** By default it removes this checkout's `target/` and sccache's
 cache, after stopping the sccache server. `--worktrees` adds every other
 worktree's `target/` but the slots', which it knows by the main checkout's
-`.claude/slots/` wherever it runs from, `--slots` adds the slots',
+`.claude/slots/` wherever it runs from, and but the main checkout's when it
+runs from another worktree, so a worker cannot clear the build a gate in
+the main checkout is using; `--slots` adds the slots',
 `--test-data` adds `.cache/` and `.hypothesis/`, and
 `--uv` runs `uv cache prune`. `--dry-run` prints what it would remove and
 removes nothing. It touches nothing outside the repository and sccache's
