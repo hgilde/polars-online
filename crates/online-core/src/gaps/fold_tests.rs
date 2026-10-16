@@ -212,9 +212,17 @@ fn worst(acc: &Acc, rows: &[Row], j: usize, drop: Option<usize>) -> f64 {
             + 4.0 * U * d.c[f].abs()
             + 4.0 * U * d.m[f].abs() * d.y_size
             + 1e-300;
-        worst = worst
-            .max((m - d.m[f]).abs() / m_bound)
-            .max((acc.cross.c[j][f] - d.c[f]).abs() / c_bound);
+        // A NaN is past every bound: `f64::max` would drop it.
+        for r in [
+            (m - d.m[f]).abs() / m_bound,
+            (acc.cross.c[j][f] - d.c[f]).abs() / c_bound,
+        ] {
+            worst = if r.is_nan() {
+                f64::INFINITY
+            } else {
+                worst.max(r)
+            };
+        }
     }
     worst
 }
@@ -713,6 +721,104 @@ fn a_damaged_held_block_is_dropped_whole() {
             assert_eq!(bits(&a.cross.mj[1]), bits(&mj), "{gaps:?}, {what}");
             // Target 0's block is whole, and folded.
             assert_ne!(a.cross.mj[0], acc.cross.mj[0], "{gaps:?}, {what}: target 0");
+        }
+    }
+}
+
+/// A target on a light share of a block under `pairwise` takes its block
+/// mean from its own rows, not as the whole block's sum less the rows it
+/// misses (review round 8, A-1; docs/PLAN.md task 269): that difference
+/// carried the whole block's rounding, amplified by the block's weight over
+/// the target's, 300 to 506,290 ulps for a target on one row of a 256-row
+/// block where the row-by-row path is exact. Held here to the bound of a
+/// sum over the target's own rows, against the exact oracle: target 1 on
+/// one row of the block at weight `2^-10` (or `2^-20`), target 2 on two,
+/// beside target 0 on every row, the features at a level ten times their
+/// spread. Measured (2026-10-16): on `19ffdd5` the light targets at 11 to
+/// 26 times the bound at `2^-10` and 21,000 to 31,000 times at `2^-20`;
+/// from their own rows, 0 (one row: exact) and at most 0.0023 of it.
+#[test]
+fn a_light_target_takes_its_block_mean_from_its_own_rows() {
+    let block = 256;
+    for (light, level, spread) in [(2f64.powi(-10), 1e3, 1e2), (2f64.powi(-20), 1e4, 1e3)] {
+        let mut s = 77u64;
+        let rows: Vec<Row> = (0..block)
+            .map(|i| {
+                let z = vec![
+                    1.0,
+                    level + spread * lcg(&mut s),
+                    -level + spread * lcg(&mut s),
+                ];
+                let fit = (z[1] + z[2]) / spread;
+                let one = i == block - 5;
+                let two = i == block - 40 || i == block - 9;
+                let w = if one || two { light } else { 1.0 };
+                let y = vec![
+                    Some(fit + 0.1 * lcg(&mut s)),
+                    one.then(|| fit + 0.1 * lcg(&mut s)),
+                    two.then(|| 2.0 * fit + 0.1 * lcg(&mut s)),
+                ];
+                Row { z, y, lam: 1.0, w }
+            })
+            .collect();
+        for gaps in GAPS {
+            for b in [0usize, block] {
+                let acc = run(&rows, b, 1, gaps);
+                for j in 0..3 {
+                    let w = worst(&acc, &rows, j, None);
+                    assert!(
+                        w <= 1.0,
+                        "light {light:e}, {gaps:?}, block {b}, target {j}: {w} of the bound"
+                    );
+                }
+            }
+        }
+        // The case is the one it is for: one Gram over every row, whose
+        // block the light targets miss most of.
+        let mut acc = Acc::new(3, 3, block, false);
+        for r in &rows[..block - 1] {
+            acc.learn(&r.z, &r.y, r.lam, r.w, TargetGaps::Pairwise);
+        }
+        assert_eq!(acc.grams.grams.len(), 1);
+        let present = |j: usize| acc.held.y[j].iter().filter(|v| !v.is_nan()).count();
+        assert_eq!((present(1), present(2)), (1, 2), "the light rows held");
+        assert!(
+            acc.held.y[1].iter().any(|v| v.is_nan()),
+            "target 1 misses rows"
+        );
+        assert!(acc.held.y[2].len() > 30 && acc.held.y[2].iter().any(|v| v.is_nan()));
+    }
+}
+
+/// A weight past `1.34e154`, whose square overflows, or below `1.5e-154`,
+/// whose square leaves the normal range, merges a block as a row at a time
+/// does (review round 8, A-2; docs/PLAN.md task 269): the between term's
+/// `H·U/W'²` read `inf/inf` or `0/0` there, a NaN the moments never shed.
+/// Every weight scaled by `2^515` (about `1.1e155`) and by `2^-560` (about
+/// `2.6e-169`), exactly, so the oracle's discounts stay exact: within the
+/// bound of the definition, row by row and in blocks, under both
+/// `target_gaps`.
+#[test]
+fn a_weight_whose_square_leaves_the_doubles_merges_a_block() {
+    for scale in [2f64.powi(515), 2f64.powi(-560)] {
+        let rows: Vec<Row> = stream(Kind::Decays, 4, 3, 60, 1e3, 37)
+            .into_iter()
+            .map(|r| Row {
+                w: r.w * scale,
+                ..r
+            })
+            .collect();
+        for gaps in GAPS {
+            for block in [0usize, 3, 16] {
+                let acc = run(&rows, block, 1, gaps);
+                for j in 0..3 {
+                    let w = worst(&acc, &rows, j, None);
+                    assert!(
+                        w <= 1.0,
+                        "scale {scale:e}, {gaps:?}, block {block}, target {j}: {w} of the bound"
+                    );
+                }
+            }
         }
     }
 }

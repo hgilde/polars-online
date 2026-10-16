@@ -701,11 +701,15 @@ fn the_comoments_say_their_size_and_form() {
     }
 }
 
-/// A ridge makes a system with a constant column solvable, but the
-/// standard errors read the centred co-moments without it, which are not
-/// positive definite: they are NaN, as numpy's clip keeps a NaN, never the
-/// 0 `f64::max(NaN, 0)` gives, which reads as an exact coefficient (review
-/// 6, E-1).
+/// A ridge makes a system with a constant column solvable, and the
+/// standard errors read the centred co-moments of the columns with
+/// variance: the constant's own is NaN, the other's least squares' on it
+/// alone (review round 8, A-5; docs/PLAN.md task 269), where a factor of
+/// the whole, which is not positive definite, made every one NaN. And
+/// where the columns with variance are not positive definite themselves --
+/// two copies -- the errors are NaN, as numpy's clip keeps a NaN, never
+/// the 0 `f64::max(NaN, 0)` gives, which reads as an exact coefficient
+/// (review 6, E-1).
 #[test]
 fn a_standard_error_of_a_system_that_is_not_positive_definite_is_nan() {
     let k = 3;
@@ -728,10 +732,41 @@ fn a_standard_error_of_a_system_that_is_not_positive_definite_is_nan() {
         let fit = &ridge_fits(&g, &[0], &[1, 2], Some(0), 0.1, standardize)[0];
         assert!(fit.coef.iter().all(|c| c.is_finite()), "{:?}", fit.coef);
         assert!(fit.sigma2.is_finite(), "{}", fit.sigma2);
-        for p in [1, 2] {
-            assert!(fit.se[p].is_nan(), "{standardize}: {:?}", fit.se);
-            assert!(fit.t[p].is_nan(), "{standardize}: {:?}", fit.t);
-        }
+        // Slot 2 is the constant: no variance, no error.
+        assert!(
+            fit.se[2].is_nan() && fit.t[2].is_nan(),
+            "{standardize}: {:?}",
+            fit.se
+        );
+        // Slot 1 on its own: `C⁻¹ = 1/4`, and the intercept's `1 + m²/4`.
+        let se1 = (0.25 * fit.sigma2 / 50.0).sqrt();
+        assert!(
+            (fit.se[1] - se1).abs() <= 1e-15 * se1,
+            "{standardize}: {:?}",
+            fit.se
+        );
+        assert_eq!(fit.t[1], fit.coef[1] / fit.se[1]);
+        let se0 = ((1.0 + 2.0 * 2.0 / 4.0) * fit.sigma2 / 50.0).sqrt();
+        assert!(
+            (fit.se[0] - se0).abs() <= 1e-15 * se0,
+            "{standardize}: {:?}",
+            fit.se
+        );
+    }
+    // Two copies of a column with variance: their co-moments are singular.
+    let copies = [0.0, 0.0, 0.0, 0.0, 4.0, 4.0, 0.0, 4.0, 4.0];
+    let g = GramArrays {
+        comoments: Comoments::Full(&copies),
+        cross_centred: &[0.0, 1.0, 1.0],
+        means: &[1.0, 2.0, 2.0],
+        means_by_target: &[1.0, 2.0, 2.0],
+        ..g
+    };
+    let fit = &ridge_fits(&g, &[0], &[1, 2], Some(0), 0.1, false)[0];
+    assert!(fit.coef.iter().all(|c| c.is_finite()), "{:?}", fit.coef);
+    assert!(fit.sigma2.is_finite(), "{}", fit.sigma2);
+    for p in [0, 1, 2] {
+        assert!(fit.se[p].is_nan() && fit.t[p].is_nan(), "{p}: {:?}", fit.se);
     }
 }
 

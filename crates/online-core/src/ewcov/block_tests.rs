@@ -693,3 +693,59 @@ fn a_decay_that_underflows_the_weight_empties_the_accumulator() {
     c.update(&[7.0], 1.0, 1.0);
     assert_eq!((c.n_eff(), c.mean(0)), (1.0, 7.0));
 }
+
+/// A weight whose square leaves the normal doubles -- past `1.34e154`,
+/// where it overflows, or below `1.5e-154`, where it underflows -- merges a
+/// block as the rows one at a time do (review round 8, A-2; docs/PLAN.md
+/// task 269): the between term's `W_A·U/W'²` read `inf/inf` or `0/0`
+/// there, and every co-moment was NaN for good. Twelve rows at `1e155`,
+/// the level moving half way, and the same at `1e-170`.
+#[test]
+fn a_weight_whose_square_leaves_the_doubles_merges_a_block() {
+    for w in [1e155, 1e-170] {
+        let rows: Vec<(Vec<f64>, f64, f64)> = stream(12, 2, 5, 0.0, 1.0, 0)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (mut x, lam, _))| {
+                if i >= 6 {
+                    x[0] += 10.0;
+                }
+                (x, lam, w)
+            })
+            .collect();
+        let seq = run(&rows, 2, 0);
+        assert!(
+            seq.c.iter().all(|c| c.is_finite() && *c != 0.0),
+            "{w:e}: row by row"
+        );
+        for block in [3usize, 8] {
+            let blk = run(&rows, 2, block);
+            let what = format!("weight {w:e}, block {block}");
+            assert_scalars_equal(&seq, &blk, &what);
+            assert_moments_close(&seq, &blk, &what);
+        }
+    }
+}
+
+/// A block whose weight is subnormal -- the first rows at `1e-310` -- merges
+/// as the rows one at a time do (docs/PLAN.md task 269): `1/W'` is
+/// infinite there, and `1/W'` times the product read `inf · 0` on the
+/// constant column, a NaN the rows of weight 1 after it never shed.
+#[test]
+fn a_block_of_subnormal_weight_merges_as_the_rows_do() {
+    let rows: Vec<(Vec<f64>, f64, f64)> = stream(40, 3, 9, 1e3, 1.0, 0)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (mut x, lam, _))| {
+            x[0] = 1.0;
+            (x, lam, if i < 6 { 1e-310 } else { 1.0 })
+        })
+        .collect();
+    let seq = run(&rows, 3, 0);
+    for block in [1usize, 2, 3, 16] {
+        let blk = run(&rows, 3, block);
+        let what = format!("block {block}");
+        assert_scalars_equal(&seq, &blk, &what);
+        assert_moments_close(&seq, &blk, &what);
+    }
+}

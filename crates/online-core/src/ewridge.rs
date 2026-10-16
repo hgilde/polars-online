@@ -964,8 +964,8 @@ impl EwRidge {
                     // `O(k³)`, and a solve runs every few rows, so it is
                     // taken when something reads it: a `coef` row, the
                     // noise gate where its bound does not decide, `summary`,
-                    // a save, or the end of the run (`Pending`; docs/PLAN.md
-                    // task 140).
+                    // a save, or the end of the stream's chunk (`Pending`;
+                    // docs/PLAN.md tasks 140 and 265).
                     let is_intercept = |pos: usize| self.cfg.fit_intercept && pos == 0;
                     let mut sup0 = vec![f64::NAN; k_total];
                     for (pos, &zi) in zidx.iter().enumerate() {
@@ -1592,13 +1592,15 @@ struct Readiness {
     systems: Vec<Option<System>>,
     /// Per slot, its index into `systems`.
     system_of: Vec<usize>,
-    /// Per slot, the last solve, until the end of the run stores its
-    /// shares: while one is here, it is the slot's `edf` and `support`,
-    /// computed on the first read, and the two stored above are an earlier
-    /// solve's. Not state: a save writes the shares it would give
-    /// (`serialize_settled`), and the end of a run stores them and drops
-    /// the factor ([`Readiness::settle`]), so the memory lasts only while a
-    /// stream runs (docs/PLAN.md task 140).
+    /// Per slot, the last solve, until something reads its shares or the
+    /// stream's chunk is done: while one is here, it is the slot's `edf`
+    /// and `support`, computed on the first read, and the two stored above
+    /// are an earlier solve's. Not state: a save writes the shares it would
+    /// give (`serialize_settled`), and once a stream's rows of a chunk are
+    /// learned the bank stores them and drops the factor
+    /// ([`Readiness::settle`], through [`EwRidge::settle_readiness`]), so
+    /// the memory lasts only while a stream's chunk runs (docs/PLAN.md
+    /// tasks 140 and 265).
     #[serde(skip)]
     pending: Vec<Option<Arc<Pending>>>,
 }

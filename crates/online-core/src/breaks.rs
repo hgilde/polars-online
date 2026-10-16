@@ -459,7 +459,20 @@ pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
 /// (`u, v → ∞`), `r → u / (u + v)`, [`cusum_null`]'s `κ_c / (κ_m + κ_c)`.
 /// Near `v = 0` the decayed form cancels, so a `v` below `1e-8` reads the
 /// undecayed one (they part by about `v`); near `u = 0` so does `F'`, which
-/// a series reads below 0.1. `inf` for `own_half_life` reads 1, as
+/// a series reads below 0.1.
+///
+/// **The decayed form's rounding is about `2⁻⁵²/v` absolute.** Its bracket
+/// `F(u + v) − e^{−2v} F(u − v)` is of order `u + v` and rounds to about
+/// `2⁻⁵²`, and `C²/v` scales that by `1/v`. Where the share is of order 1
+/// that is nothing, but where the window is far shorter than both
+/// memories (`u` and `v` small) the share itself is about `2u/3`, so its
+/// relative error is about `1.5 · 2⁻⁵² / (u v)`: `4.6e-5` at a window of 1
+/// beside a decay half-life of `1e7` and a CUSUM memory of `1e4`
+/// (`2.3e-5` on the CUSUM, which reads the square root). Measured against
+/// the share's series in `u` and `v`, `2u/3 − uv/6 − u²/4 + …`, the error
+/// stayed below `0.9 · 2⁻⁵²/v` for `u ≤ 1e-4` and `1e-8 ≤ v ≤ 1e-5`. At
+/// the switch, `v = 1e-8`, the rounding and the undecayed form's
+/// truncation are the same size, `2e-8`. `inf` for `own_half_life` reads 1, as
 /// [`cusum_null`] does for the run-once sums; an infinite or non-positive
 /// `window` is no window, and reads [`cusum_null`].
 pub fn cusum_null_window(window: f64, fit_half_life: f64, own_half_life: f64) -> f64 {
@@ -1086,6 +1099,30 @@ mod tests {
             let r = cusum_null_window(1.0, inf, ln2 / u);
             let want = 2.0 * u / 3.0 - u * u / 4.0 + u * u * u / 15.0;
             assert!((r - want).abs() < 1e-9 * want, "{u}: {r} vs {want}");
+        }
+        // Where the window is far shorter than both memories the decayed
+        // form rounds to about `2⁻⁵²/v` absolute, as its doc says (review
+        // round 8, C-1): held to that against the series `r = u (2/3 −
+        // v/6) − u²/4 + u² v/12 + u³/15 + …`, whose next terms are below
+        // `1e-14` here, at the reviewer's two points (`(W, h_m, h_c) = (1,
+        // 1e7, 1e4)` and `(12, 1e7, 1.2e5)`, where the grid above cannot
+        // see it) and across `u ≤ 1e-4`, `1e-8 ≤ v ≤ 1e-5`.
+        let mut points = vec![(1.0, 1e7, 1e4), (12.0, 1e7, 1.2e5)];
+        for u0 in [1e-6, 1e-5, 1e-4] {
+            for v0 in [1.0001e-8, 1e-7, 1e-6, 1e-5] {
+                points.push((1.0, ln2 / v0, ln2 / u0));
+            }
+        }
+        for (w, hm, hc) in points {
+            let (u, v) = (ln2 / hc * w, ln2 / hm * w);
+            let want =
+                u * (2.0 / 3.0 - v / 6.0) - u * u / 4.0 + u * u * v / 12.0 + u * u * u / 15.0;
+            let got = cusum_null_window(w, hm, hc);
+            assert!(
+                (got - want).abs() <= f64::EPSILON / v,
+                "({w}, {hm:e}, {hc:e}): {got:e} vs {want:e}, {:e} past 2^-52/v",
+                (got - want).abs() * v / f64::EPSILON
+            );
         }
         // Each switch's edge reads the closed form, which parts from the
         // other form in its last bits: `u = 0.1` reads `F'` in closed form,

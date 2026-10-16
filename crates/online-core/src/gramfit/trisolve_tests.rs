@@ -239,10 +239,20 @@ fn ill(n: usize) -> f64 {
     n as f64 * forward_bound(n, 1.0) / 0.05
 }
 
+/// The rows of [`spd`]'s `G` for [`against_lu`]'s systems of order `n`:
+/// fewer than `n` (but one at `n = 1`), so `GᵀG` is singular, `ρ` alone
+/// sets the least eigenvalue and the condition number is its bound. At `n
+/// ≤ 6`, `n/2 + 3` rows made `GᵀG` full rank, and the ill leg's `κ` was
+/// 2.1e9 at `n = 4`, 2,000 times below the bound it was meant to reach
+/// (review round 8, A-3; docs/PLAN.md task 269).
+fn lu_rows(n: usize) -> usize {
+    (n / 2 + 3).min(n.saturating_sub(1)).max(1)
+}
+
 /// `‖x̂ − x‖₂ / ‖x‖₂` for each column against faer's partial-pivot LU on
 /// `A` itself, held to [`forward_bound`]; the worst ratio of the two.
 fn against_lu(seed: u64, n: usize, t: usize, noise: f64, rho: f64) -> f64 {
-    let (a, kappa) = spd(seed, n, n / 2 + 3, noise, rho);
+    let (a, kappa) = spd(seed, n, lu_rows(n), noise, rho);
     let l = factor(&a, n);
     let b = rhs(seed + 1, n, t);
     let x = solved(&l, &b, t);
@@ -277,8 +287,8 @@ fn the_solve_is_the_lu_solve_within_its_forward_error() {
         for t in [1, 2, 3, 8, 13, 64] {
             let seed = 900 + 100 * case as u64 + t as u64;
             // Well conditioned, then near-collinear columns under a ridge
-            // near 0, `κ` as large as the bound allows (to 4e12 at n = 4,
-            // 2e9 at 200).
+            // near 0, `κ` as large as the bound allows (4e12 at n = 4, 2e9
+            // at 200: [`the_ill_systems_are_as_ill_as_their_bound`]).
             worst[0] = worst[0].max(against_lu(seed, n, t, 1.0, 1.0));
             worst[1] = worst[1].max(against_lu(seed, n, t, 1e-4, ill(n)));
         }
@@ -287,6 +297,34 @@ fn the_solve_is_the_lu_solve_within_its_forward_error() {
         "worst error / bound: well {:e}, ill {:e}",
         worst[0], worst[1]
     );
+}
+
+/// The ill leg of [`the_solve_is_the_lu_solve_within_its_forward_error`]
+/// is as ill as the bound it is held to says, at every order it visits: its
+/// condition number, from faer's self-adjoint eigensolver, at least half
+/// [`spd`]'s bound on it, which the forward bound is computed from
+/// (review round 8, A-3; docs/PLAN.md task 269). With `n/2 + 3` rows, the
+/// orders up to 6 sat 50 to 2,000 times below it.
+#[test]
+fn the_ill_systems_are_as_ill_as_their_bound() {
+    for (case, &n) in ORDERS.iter().chain(&[130, 200]).enumerate() {
+        if n < 2 {
+            // A system of one is as well conditioned as a number.
+            continue;
+        }
+        let seed = 900 + 100 * case as u64 + 8;
+        let (a, bound) = spd(seed, n, lu_rows(n), 1e-4, ill(n));
+        let (evals, _) = oracle::sym_eigen(&a);
+        let top = evals.iter().copied().fold(f64::MIN, f64::max);
+        let least = evals.iter().copied().fold(f64::MAX, f64::min);
+        let kappa = top / least;
+        assert!(
+            // The eigensolver's least eigenvalue is `ρ` to `ε·λ_max`, a
+            // few thousandths of it at the smallest orders.
+            kappa <= 1.05 * bound && kappa >= 0.5 * bound,
+            "n={n}: κ {kappa:e} against its bound {bound:e}"
+        );
+    }
 }
 
 #[test]

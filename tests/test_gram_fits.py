@@ -469,14 +469,17 @@ class TestSolveSubsets:
         (fit,) = pg.solve_subsets(grams, [[0, 1]], ridge=0.01)[0]
         want = pg.solve(pg.merge(grams), ridge=0.01)
         assert np.abs(fit["coef"] - want).max() < 1e-9
-        # The ridge makes the coefficients finite, but the unridged system
-        # the standard errors read is still not positive definite: they are
-        # nan, as ``coef_stats`` gives, and never 0, which reads as an exact
-        # coefficient (review 6, E-1: ``f64::max(NaN, 0)`` is 0).
+        # The ridge makes the coefficients finite, and the standard errors
+        # read the unridged moments of the columns with variance: the
+        # constant's own is nan, as ``coef_stats`` gives, never 0, which
+        # reads as an exact coefficient (review 6, E-1: ``f64::max(NaN, 0)``
+        # is 0), and the others' are the fit's without it, where a factor
+        # of the whole system made every one nan (review round 8, A-5).
         stats = pg.coef_stats(pg.merge(grams), want)
         for key in ("se", "t"):
-            assert np.isnan(stats[key]).all(), key
-            assert np.isnan(fit[key]).all(), (key, fit[key])
+            assert np.isnan(stats[key][5]) and np.isnan(fit[key][5]), (key, fit[key])
+            assert np.isfinite(fit[key][:5]).all(), (key, fit[key])
+            np.testing.assert_allclose(fit[key][:5], stats[key][:5], rtol=1e-9)
         for kw in (dict(ridge=0.1, standardize=True), dict(standardize=True)):
             (fit,) = pg.solve_subsets(grams, [[0, 1]], **kw)[0]
             assert not np.any(fit["se"] == 0.0), (kw, fit["se"])

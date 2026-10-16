@@ -4633,6 +4633,42 @@ class TestCoefStatsIsStatsmodelsOls:
         )
         assert centred[0] > 3.0 * ols.bse[0], (centred, ols.bse)
 
+    @pytest.mark.parametrize("ridge", [0.0, 0.3])
+    def test_a_constant_column_leaves_the_others_their_errors(self, ridge):
+        """A constant column among the features, which ``standardize`` drops
+        at 0: its ``se`` and ``t`` are ``nan``, and the others' are
+        statsmodels' OLS on the columns kept, at this fit's ``sigma2`` (whose
+        degrees of freedom count the constant's slot, so the two scales are
+        set side by side). A factor of the whole system, whose row for the
+        constant is zero, made every error ``nan``."""
+        import statsmodels.api as sm
+
+        x, y = self._rows()
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": np.full(len(y), 3.0), "y": y})
+        spec = po.spec.ewridge(
+            "m", targets=["y"], features=["x0", "x1", "c"], half_life=float("inf"), min_weight=5.0
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        g = bank.gram("m")[0]
+        ((fit,),) = po.gram.solve_subsets([g], [[0]], ridge=ridge, standardize=True)
+        ols = sm.OLS(y, sm.add_constant(x)).fit()
+        n = len(y)
+        assert fit["coef"][3] == 0.0
+        assert np.isnan(fit["se"][3]) and np.isnan(fit["t"][3])
+        assert fit["sigma2"] == pytest.approx(fit["resid_var"] * n / (n - 4), rel=1e-12)
+        # Least squares' errors at the fit's residual variance: the inverse
+        # moments are the kept columns' whatever the ridge.
+        se = fit["se"][:3] * np.sqrt(ols.scale / fit["sigma2"])
+        np.testing.assert_allclose(se, ols.bse, rtol=1e-8)
+        np.testing.assert_allclose(fit["t"][:3], fit["coef"][:3] / fit["se"][:3], rtol=1e-12)
+        if ridge == 0.0:
+            np.testing.assert_allclose(fit["coef"][:3], ols.params, rtol=1e-8)
+        # And ``coef_stats`` reads the same columns.
+        st = po.gram.coef_stats(g, fit["coef"])
+        assert np.isnan(st["se"][3])
+        np.testing.assert_allclose(st["se"][:3], fit["se"][:3], rtol=1e-9)
+
     def test_a_gram_pooled_within_is_unmoved(self):
         """A Gram pooled within parts has means of 0, the target's too, so
         its raw moments are its centred ones: through the origin, the fit
