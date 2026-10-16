@@ -15745,7 +15745,7 @@ a field removed since a previous schema would refuse that schema's files);
 F-12 a policy row for last-bits moves within rounding, declared with their
 size; C-1 the bound documented. Built as task 269 in four batches.
 
-- [ ] 269. **Review round 8's fixes** -- the user, 2026-10-16 (above).
+- [x] 269. **Review round 8's fixes** -- the user, 2026-10-16 (above).
       Batches, one worker each in a slot, test first (each new test fails
       on `bb69654` where its finding says): (a) Python, bindings and CLI:
       D-1, D-2, D-3, D-4, D-5, D-6, D-7; (b) numerics: A-1, A-2, A-3, A-4
@@ -15766,3 +15766,26 @@ size; C-1 the bound documented. Built as task 269 in four batches.
       long run (F); the release benchmark's raw rows kept in the repository
       so its CHANGELOG figures can be traced (F); `po.gbdt`'s `threads`
       (D); TOML datetimes through the CLI's forwarding (D).
+      *Done 2026-10-16*, four batches merged into `main`, each new test
+      failing on `bb69654` where its finding says. (a) `fdb514c`: D-1 the
+      closed-groups CSV through the runner's `csv_flat` (`_native.write_frame`);
+      D-2/D-7 forwarding over `toml::de::DeTable`; D-3 a duplicate column
+      refused by name in Python and Rust; D-4 the Literal collector; D-5/D-6
+      `threads` and job fields through one integer reader. (c) `825a6be`:
+      E-1..E-9 and B-2 (slot holder refused, budgets' last-seen history, the
+      main checkout from the git common dir, `TIGHTEN_SHARE = {"rss": 0.25}`
+      with six RSS budgets tightened, the RSS file only where held, sign-off
+      rules, E-7's limit recorded beside the test, `--locked`, an empty
+      extended `serial` refused, 29 subprocess sites given `encoding=` and an
+      AST check). (d) `57861b2`: F-1..F-12 and A-4 in PERFORMANCE, with tests
+      holding the policy page's releases and every guide's floor to the
+      declared ones. (b) `447c8d1`: A-1 `G` accumulated over the counted
+      rows in the same pass as `S'` (worst cost +4.6% at ten gappy targets,
+      k=100; `own_rows` bit-identical over every case of a dump); A-2 a shared
+      `between_share` for a `W'²` that is not normal, and A-2b found beside
+      it (a subnormal `W'` made `1/W'` infinite and the fold NaN: the rows
+      weighted by `uᵢ/W'`, `fold_tests::worst` now counts NaN as a failure);
+      A-3 `lu_rows`; A-4 comments; A-5 the standard errors over the columns
+      with variance in `ridge_fits` and in Python's `coef_stats` alike; B-1
+      a rechunk before the IPC write (no frozen fixture moved); C-1 the bound
+      stated and held by the source's test.

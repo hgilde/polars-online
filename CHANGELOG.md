@@ -43,6 +43,34 @@ returns.
   0 or 1, is now refused as well. The command line refuses a `threads`
   that is not a positive integer (`-1`, `2.5`, `"auto"`, `true`) with the
   same message `0` and the Python surfaces give.
+- **A blocked `pairwise` fit now forms each target's feature means over
+  a block from that target's own rows** (task 269). Under
+  `target_gaps="pairwise"` and `gram_block_rows`, it took the block's
+  whole sum and subtracted the rows the target missed. That difference
+  carried the whole block's rounding, magnified by the block's weight over
+  the target's: for a target present on one light row of a 256-row block
+  it was 300 to 500,000 last-place units off, where a row at a time is
+  exact. Blocked `pairwise` fits move by at most 3e-16 of a target's
+  largest cross-moment, and feature means by at most 1.8e-14 relative.
+  `own_rows`, the default, is unchanged to the bit, as is every fit a row
+  at a time. With ten targets that each have gaps, a blocked fit takes 1.0%
+  to 4.6% longer at 100 to 400 features (one thread, measured
+  interleaved); without gaps it takes no longer.
+- **A blocked Gram, and the targets folded into it, no longer turn NaN for
+  good** when the accumulated weight's square overflows (weights past
+  about 1.3e154) or leaves the normal range (below about 1.5e-154), or
+  when the weight is subnormal (task 269). Each now merges as a row at a
+  time does; every other merge keeps its bits.
+- **`po.gram.solve_subsets` (and `jobs=`) and `po.gram.coef_stats` give
+  the other columns their standard errors when one fitted column has no
+  variance** (task 269), such as a constant that `standardize` drops, or a
+  constant in a Gram pooled within parts and fitted through the origin.
+  Before, every `se` and `t` was NaN. The constant's own stay NaN; the
+  others are least squares' on the columns kept.
+- **A query with a formula target, or a `with_windows` state, writes the
+  same state bytes however its input was chunked** (task 269). The rows
+  held for an open window were written as one record batch per chunk fed.
+  No file written before changes how it loads.
 - **The tooling around the tests and the budgets** (task 269):
   `scripts/budgets.py raises` holds each budget to the last number the
   file's history gave it, so a budget deleted and written back higher
