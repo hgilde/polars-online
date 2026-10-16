@@ -263,6 +263,30 @@ fn a_state_saved_mid_window_resumes_as_one_run() {
     assert_eq!(again, bytes);
 }
 
+/// A state's bytes are the same however the input was chunked (review
+/// round 8, B-1; docs/PLAN.md task 269): the rows the resolver holds for
+/// an open window were written as one IPC record batch per chunk fed, so
+/// the same held rows after 600 chunks of one row saved to other bytes than
+/// after one chunk, where every other part of the state was the same. Cut
+/// at the end of the stream and inside it, where a window is open and its
+/// rows span several chunks.
+#[test]
+fn a_state_s_bytes_are_the_same_however_the_input_was_chunked() {
+    let df = stream(600, 7);
+    for rows in [600usize, 403] {
+        let part = df.slice(0, rows);
+        let saved = |chunks: usize| {
+            let mut bank = Bank::new(vec![native(Some(12.5))]).unwrap();
+            feed(&mut bank, &part, chunks);
+            bank.save_bytes().unwrap()
+        };
+        let one = saved(1);
+        for chunks in [7, rows] {
+            assert!(saved(chunks) == one, "{rows} rows in {chunks} chunks");
+        }
+    }
+}
+
 /// Each group has its own window core, as it has its own stream: groups
 /// interleaved on clocks of their own run, and each group's predictions are
 /// the predictions of that group's rows run alone.

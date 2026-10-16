@@ -159,13 +159,27 @@ pub(crate) struct Block<'a> {
     pub(crate) k: usize,
     pub(crate) u: &'a [f64],
     pub(crate) m_b: &'a [f64],
-    /// `Σ uᵢ aᵢ` over the rows of weight, in row order: `δ` before its
-    /// division by `U`.
-    pub(crate) sums: &'a [f64],
     pub(crate) delta: &'a [f64],
     /// The threads the owner's own `k`-wide work may run on
     /// ([`EwCov::set_threads`], capped at the pool's).
     pub(crate) threads: usize,
+}
+
+/// A merge's between-term weight, `W_A·U/W'²`: the history's and the
+/// block's shares of `W'`, multiplied. Formed as the one quotient where
+/// `W'²` is a normal double, and as the product of the two shares where it
+/// is not -- past `W' ≈ 1.34e154`, where the square overflows, and below
+/// `1.5e-154`, where it leaves the normal range, both read `inf/inf` or
+/// `0/0` as the quotient (docs/PLAN.md task 269, review round 8 A-2). Every
+/// merge whose square is normal keeps the quotient's bits.
+#[inline]
+pub(crate) fn between_share(w_a: f64, u_sum: f64, w_new: f64) -> f64 {
+    let sq = w_new * w_new;
+    if sq.is_normal() {
+        w_a * u_sum / sq
+    } else {
+        (w_a / w_new) * (u_sum / w_new)
+    }
 }
 
 /// What an owner holds beside a blocked accumulator's rows: told of each
@@ -863,9 +877,19 @@ impl EwCov {
         };
         // `sqrt` is one of the operations IEEE 754 rounds exactly, so this
         // is the same on every platform (unlike `powi` or `exp`, which never
-        // reach the state).
+        // reach the state). Where `1/W'` is not a double -- a `W'` below
+        // `5.6e-309`, in the subnormal range -- the rows are weighted by
+        // their shares `uᵢ/W'` and the product taken whole, where `1/W'`
+        // times it read `inf · 0` (docs/PLAN.md task 269); every other merge
+        // keeps its bits.
+        let inv_w = 1.0 / w_new;
+        let shares = !inv_w.is_finite();
         let scale = |row: &mut [f64], ui: f64| {
-            let root = ui.sqrt();
+            let root = if shares {
+                (ui / w_new).sqrt()
+            } else {
+                ui.sqrt()
+            };
             for xi in row.iter_mut() {
                 *xi *= root;
             }
@@ -874,7 +898,6 @@ impl EwCov {
             for (i, &ui) in u.iter().enumerate() {
                 centre(&mut x[i * k..(i + 1) * k], &mut delta, ui);
             }
-            let sums = delta.clone();
             for d in delta.iter_mut() {
                 *d /= u_sum;
             }
@@ -884,7 +907,6 @@ impl EwCov {
                 k,
                 u: &u,
                 m_b: &m_b,
-                sums: &sums,
                 delta: &delta,
                 threads: self.threads.workers(),
             }));
@@ -915,12 +937,12 @@ impl EwCov {
         // then the two rank-1 corrections, then mirror -- each entry in that
         // order, one piece of the triangle at a time (`par::merge_lower`).
         let within = u_sum / w_new;
-        let between = w_a * u_sum / (w_new * w_new);
+        let between = between_share(w_a, u_sum, w_new);
         let wi: Vec<f64> = delta.iter().map(|&di| within * di).collect();
         let bi: Vec<f64> = big.iter().map(|&gi| between * gi).collect();
         let merge = par::Merge {
             scale: w_a / w_new,
-            alpha: 1.0 / w_new,
+            alpha: if shares { 1.0 } else { inv_w },
             bi: &bi,
             wi: &wi,
             big: &big,

@@ -1988,7 +1988,7 @@ comes with a NaN `sigma2` that makes the line false either way"""
 file = "crates/online-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace < with <="
-line_has = "let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };"
+line_has = "let d = if diag[r] < 0.0 { 0.0 } else { diag[r] };"
 why = """`diag[p]` is `inverse_diagonal`'s squared length of a column of \
 `L⁻¹`, a sum of squares, so never below 0 (numpy's `inv` can round one \
 below; a Cholesky inverse cannot), and NaN where `C` is not positive \
@@ -1999,7 +1999,7 @@ branches give 0"""
 file = "crates/online-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace < with =="
-line_has = "let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };"
+line_has = "let d = if diag[r] < 0.0 { 0.0 } else { diag[r] };"
 why = """as `replace < with <=` here: no entry is below 0, NaN fails `==` \
 as it fails `<`, and at 0 both branches give 0"""
 

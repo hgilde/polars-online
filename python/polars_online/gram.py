@@ -1538,7 +1538,10 @@ def solve_subsets(
     system whose factorization fails, such as a constant column under a
     ridge of 0, gives ``nan`` here, where :func:`solve` divides by an
     eigenvalue of 0 or of rounding size. A nearly singular one gives what
-    any solve of it gives, rounding noise.
+    any solve of it gives, rounding noise. A column of no variance, such as
+    a constant that ``standardize`` drops at 0, has ``nan`` for its ``se``
+    and ``t``, and the other columns' are read from the inverse of the
+    columns kept, as a fit without it gives them.
 
     .. rubric:: Parameters
 
@@ -2119,7 +2122,9 @@ def coef_stats(
     ``se``, ``t``
         Arrays over the same slots as ``coef``, the intercept's included
         (``nan`` on a Gram pooled within parts), and ``nan`` for a column
-        not fitted.
+        not fitted. A fitted column of no variance, such as a constant, has
+        ``nan`` too, and the others' are read from the inverse of the
+        columns with variance, as a fit without it gives them.
 
     ``n`` is Kish's effective sample size, not ``weight_sum``: a weighted stream's
     weight sum is not a count, and dividing by it would report standard errors too
@@ -2207,15 +2212,21 @@ def coef_stats(
     se = np.full(k, np.nan)
     tstat = np.full(k, np.nan)
     if np.isfinite(sigma2) and n > 0.0:
+        # Over the columns with variance: one of none, such as a constant,
+        # is a zero row no inverse of the whole takes, and keeps its nan.
+        kept = np.flatnonzero(np.diag(a) > 0.0)
+        a_kept = a[np.ix_(kept, kept)]
         try:
-            inv = np.linalg.inv(a)
+            inv = np.linalg.inv(a_kept)
         except np.linalg.LinAlgError:
-            inv = np.full_like(a, np.nan)
-        se[slots] = np.sqrt(np.clip(np.diag(inv), 0.0, None) * sigma2 / n)
+            inv = np.full_like(a_kept, np.nan)
+        se[np.asarray(slots, dtype=int)[kept]] = np.sqrt(
+            np.clip(np.diag(inv), 0.0, None) * sigma2 / n
+        )
         if icept >= 0 and not _is_within(g):
             # Least squares' inverse moment matrix at the intercept: ybar and
             # the slopes are uncorrelated, so Var[b_0] = Var[ybar] + m' Var[b] m.
-            mt = m[slots]
+            mt = m[slots][kept]
             se[icept] = np.sqrt((1.0 + mt @ inv @ mt) * sigma2 / n)
         with np.errstate(divide="ignore", invalid="ignore"):
             tstat = np.where(se > 0.0, beta / se, np.nan)

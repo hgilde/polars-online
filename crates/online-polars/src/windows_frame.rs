@@ -1693,6 +1693,11 @@ impl WindowsRun {
         for part in &self.held {
             rows.vstack_mut(part).map_err(|e| e.to_string())?;
         }
+        // One chunk: the IPC writer writes a record batch per chunk, so
+        // held rows still in the chunks they came in saved to other bytes
+        // after 600 chunks of one row than after one chunk (docs/PLAN.md
+        // task 269, review round 8 B-1). The bytes are the rows' alone.
+        rows.rechunk_mut();
         let mut held = Vec::new();
         IpcWriter::new(&mut held)
             .finish(&mut rows)

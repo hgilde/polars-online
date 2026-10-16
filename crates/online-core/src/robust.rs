@@ -442,8 +442,8 @@ impl std::ops::DerefMut for RowBuf {
 /// One solve's data shares for one target, taken when something reads them
 /// (docs/PLAN.md task 116): `A⁻¹`'s diagonal is `O(k³)` and a solve runs
 /// every few rows, so it waits for a `coef` row, the summary, a save or the
-/// end of the run, as `ewridge`'s does (task 140). The arithmetic is the
-/// same whenever it runs.
+/// end of the stream's chunk, as `ewridge`'s does (tasks 140 and 265). The
+/// arithmetic is the same whenever it runs.
 #[derive(Debug, Clone)]
 struct PendingShares {
     factor: SpdFactor,

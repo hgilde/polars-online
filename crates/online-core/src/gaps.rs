@@ -1361,9 +1361,8 @@ struct Part {
     ybar: f64,
     dy: f64,
     /// Whether some row of the block with weight is not the target's: its
-    /// feature mean over its own rows is then the block's sum less the
-    /// rows it misses, `G = Σ uᵢ aᵢ − M`, where over every row it is the
-    /// Gram's.
+    /// feature mean over its own rows is then its own sum over them, `G =
+    /// Σ uᵢ aᵢ`, where over every row it is the Gram's.
     gappy: bool,
 }
 
@@ -1377,8 +1376,8 @@ struct Part {
 /// ```text
 /// ȳ_B = Σ uᵢ yᵢ / U        eᵢ = yᵢ − ȳ_B      δy = Σ uᵢ eᵢ / U
 /// ε   = Σ uᵢ aᵢ / U        (the Gram's δ where its rows are every row of
-///                          weight, and the block's sum less the rows it
-///                          misses, `M`, where not)
+///                          weight, and its own sum `G` over them where
+///                          not)
 /// S'  = Σ (uᵢ eᵢ) aᵢ       (the product: one pass over the block's rows)
 /// Δz  = (m_B − m_A) + ε    Δy = (ȳ_B − ȳ_A) + δy
 /// c'  = (H/W')·c + S'/W' + (H·U/W'²)·Δz·Δy − (U/W')·ε·δy
@@ -1467,8 +1466,12 @@ fn fold_block(held: &mut Held, cross: &mut Cross, js: &[usize], block: Option<&B
     if parts.is_empty() {
         return;
     }
-    // `S'` and, where needed, `M`, the sum over the rows of weight the
-    // target misses, each `k` wide per target.
+    // `S'` and, where needed, `G`, the sum of `uᵢ aᵢ` over the target's own
+    // rows, each `k` wide per target. Not the block's sum less the rows it
+    // misses: that difference carries the whole block's rounding, which
+    // the block's weight over the target's amplifies -- 300 ulps and more
+    // for a target on one light row of a 256-row block (docs/PLAN.md task
+    // 269, review round 8 A-1).
     let mut s_acc = vec![0.0f64; parts.len() * k];
     let mut g_acc = vec![0.0f64; parts.len() * k];
     accumulate(b, &parts, &mut s_acc, &mut g_acc);
@@ -1485,18 +1488,22 @@ fn fold_block(held: &mut Held, cross: &mut Cross, js: &[usize], block: Option<&B
         let share = p.u_sum / w_end;
         let scale = h / w_end;
         let alpha = 1.0 / w_end;
-        let between = h * p.u_sum / (w_end * w_end);
+        let between = crate::ewcov::between_share(h, p.u_sum, w_end);
         let big_y = dev(p.ybar, held.my[j], held.my_lo[j]) + p.dy;
         let (c, mj, lo) = (&mut cross.c[j], &mut cross.mj[j], &mut cross.mj_lo[j]);
         for f in 0..k {
-            let eps = if p.gappy {
-                (b.sums[f] - g[f]) / p.u_sum
-            } else {
-                b.delta[f]
-            };
+            let eps = if p.gappy { g[f] / p.u_sum } else { b.delta[f] };
             let d_hi = dev(b.m_b[f], mj[f], lo[f]);
             let big = d_hi + eps;
-            c[f] = scale * c[f] + alpha * s[f] + (between * big * big_y - share * eps * p.dy);
+            // `S'/W'` as the Gram takes it: `1/W'` times it, or, where `1/W'`
+            // is not a double (a subnormal `W'`), the quotient, where the
+            // product read `inf · 0` (docs/PLAN.md task 269).
+            let product = if alpha.is_finite() {
+                alpha * s[f]
+            } else {
+                s[f] / w_end
+            };
+            c[f] = scale * c[f] + product + (between * big * big_y - share * eps * p.dy);
             add(&mut mj[f], &mut lo[f], share * d_hi);
             // As the Gram's mean: a step of 0 could round the pair afresh.
             if eps != 0.0 {
@@ -1507,9 +1514,9 @@ fn fold_block(held: &mut Held, cross: &mut Cross, js: &[usize], block: Option<&B
     }
 }
 
-/// `S'` and `M` of each part, `k` wide each: over the block's rows in
+/// `S'` and `G` of each part, `k` wide each: over the block's rows in
 /// order, each row's deviations times the target's `uᵢ·eᵢ` -- and, for
-/// `M`, the `uᵢ` of a row of weight it misses -- added to its sums, one
+/// `G`, the `uᵢ` of a row it learns from -- added to its sums, one
 /// multiply and one add a row. A row the target does
 /// not learn from adds nothing: its coefficient is 0, and a sum that starts
 /// at `+0` is never `−0`, so adding a zero product leaves every bit. Four
@@ -1529,11 +1536,14 @@ fn accumulate(b: &Block<'_>, parts: &[Part], s_acc: &mut [f64], g_acc: &mut [f64
                     s[p.off + r] = e;
                 }
             }
-            let missed = |i: usize| i < p.off || !p.counted[i - p.off];
             let g = p.gappy.then(|| {
-                (0..n)
-                    .map(|i| if missed(i) { b.u[i] } else { 0.0 })
-                    .collect()
+                let mut g = vec![0.0; n];
+                for (r, &c) in p.counted.iter().enumerate() {
+                    if c {
+                        g[p.off + r] = b.u[p.off + r];
+                    }
+                }
+                g
             });
             (s, g)
         })
@@ -1561,9 +1571,40 @@ fn accumulate(b: &Block<'_>, parts: &[Part], s_acc: &mut [f64], g_acc: &mut [f64
                         *t = v;
                     }
                 };
-                sum4(s_band[c], cs);
-                if let Some(cg) = cg {
-                    sum4(g_band[c], cg);
+                let Some(cg) = cg else {
+                    sum4(s_band[c], cs);
+                    continue;
+                };
+                // `S'` and `G` in one pass over the four rows' entries, each
+                // sum its own additions in their own order: the bits of the
+                // two passes, the rows loaded once.
+                let (w0, w1, w2, w3) = (cs[i], cs[i + 1], cs[i + 2], cs[i + 3]);
+                let (g0, g1, g2, g3) = (cg[i], cg[i + 1], cg[i + 2], cg[i + 3]);
+                if g0 == 0.0 && g1 == 0.0 && g2 == 0.0 && g3 == 0.0 {
+                    // No row of the target's among the four: `S'`'s
+                    // coefficients are 0 there too.
+                    continue;
+                }
+                let (sb, gb) = (&mut *s_band[c], &mut *g_band[c]);
+                for (((((ts, tg), &x0), &x1), &x2), &x3) in sb
+                    .iter_mut()
+                    .zip(gb.iter_mut())
+                    .zip(a0)
+                    .zip(a1)
+                    .zip(a2)
+                    .zip(a3)
+                {
+                    let (mut v, mut h) = (*ts, *tg);
+                    v += w0 * x0;
+                    h += g0 * x0;
+                    v += w1 * x1;
+                    h += g1 * x1;
+                    v += w2 * x2;
+                    h += g2 * x2;
+                    v += w3 * x3;
+                    h += g3 * x3;
+                    *ts = v;
+                    *tg = h;
                 }
             }
             i += 4;

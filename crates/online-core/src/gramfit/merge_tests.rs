@@ -351,6 +351,80 @@ fn a_system_that_does_not_factorize_gives_nan() {
     assert!(fits[0].coef[1].is_finite() && fits[0].coef[3].is_finite());
 }
 
+/// A column of no variance among the slots -- a constant, which
+/// `standardize` drops at 0, or through a Gram pooled within parts, where
+/// every mean is 0 -- leaves the others their standard errors: least
+/// squares' on the columns kept, `C_kept⁻¹` by faer's LU, at the fit's own
+/// `sigma2`, and the intercept's `1 + m' C_kept⁻¹ m`. Its own is NaN. A
+/// factor of the whole system, whose row for it is zero, made every error
+/// NaN (review round 8, A-5; docs/PLAN.md task 269).
+#[test]
+fn a_column_of_no_variance_leaves_the_others_their_standard_errors() {
+    let mut r = rows(34, 300, 3, 1.0);
+    for row in &mut r.z {
+        row[2] = 4.0;
+    }
+    let g = gram_of(&r);
+    assert_eq!(
+        g.comoments[2 * 4 + 2],
+        0.0,
+        "the case: a column of no variance"
+    );
+    let kept = [1usize, 3];
+    let sub = |c: &[f64]| -> Vec<f64> {
+        kept.iter()
+            .flat_map(|&i| kept.iter().map(move |&j| c[i * 4 + j]))
+            .collect()
+    };
+    let check = |fit: &RidgeFit, a_kept: &[f64], m: Option<&[f64]>, what: &str| {
+        assert!(fit.sigma2.is_finite() && fit.n > 0.0, "{what}");
+        let inv = oracle::inverse(a_kept);
+        for (p, &i) in kept.iter().enumerate() {
+            let se = (inv[p * 2 + p] * fit.sigma2 / fit.n).sqrt();
+            close(&[fit.se[i]], &[se], 1e-12, what);
+            close(&[fit.t[i]], &[fit.coef[i] / se], 1e-12, what);
+        }
+        assert!(
+            fit.se[2].is_nan() && fit.t[2].is_nan(),
+            "{what}: {:?}",
+            fit.se
+        );
+        match m {
+            Some(m) => {
+                let mk: Vec<f64> = kept.iter().map(|&i| m[i]).collect();
+                let se0 = ((1.0 + oracle::quad_form(a_kept, &mk)) * fit.sigma2 / fit.n).sqrt();
+                close(&[fit.se[0]], &[se0], 1e-12, what);
+            }
+            None => assert!(fit.se[0].is_nan(), "{what}"),
+        }
+    };
+    // Standardized, with an intercept: the constant dropped at 0.
+    for ridge in [0.0, 0.3] {
+        let fits = ridge_fits(&g.arrays(), &[0, 1], &[1, 2, 3], Some(0), ridge, true);
+        for (t, fit) in fits.iter().enumerate() {
+            assert_eq!(fit.coef[2], 0.0);
+            let m = &g.means_by_target[t * 4..(t + 1) * 4];
+            let what = format!("standardized, ridge {ridge}, target {t}");
+            check(fit, &sub(&g.comoments), Some(m), &what);
+        }
+    }
+    // Pooled within parts, through the origin: means of 0, so the raw
+    // moments are the centred ones, and the constant has none.
+    let mut w = g.clone();
+    w.within = Some(vec![1, 1]);
+    w.means.iter_mut().for_each(|m| *m = 0.0);
+    w.means_by_target.iter_mut().for_each(|m| *m = 0.0);
+    w.target_means.iter_mut().for_each(|m| *m = 0.0);
+    w.cross_moments = w.cross_centred.clone();
+    for standardize in [false, true] {
+        let fits = ridge_fits(&w.arrays(), &[0, 1], &[1, 2, 3], None, 0.3, standardize);
+        for (t, fit) in fits.iter().enumerate() {
+            let what = format!("within, through the origin, standardize {standardize}, target {t}");
+            check(fit, &sub(&w.comoments), None, &what);
+        }
+    }
+}
+
 #[test]
 fn without_an_intercept_the_system_is_the_raw_moments() {
     // A level in the target that no column carries, so the fit through

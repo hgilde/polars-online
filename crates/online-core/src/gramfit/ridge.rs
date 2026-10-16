@@ -6,7 +6,9 @@
 //! `standardize` the same in correlation form, `(S⁻¹ A S⁻¹ + ρ I) b̃ =
 //! S⁻¹ r_t` with `b = S⁻¹ b̃` and a column of zero variance dropped at 0.
 //! The intercept is `ȳ_t − m_t · b`. Then, with `A` the system's moments
-//! and `n` the target's Kish size,
+//! over the slots with variance (a slot of none, such as the constant
+//! `standardize` drops, has NaN for its standard error) and `n` the
+//! target's Kish size,
 //!
 //! ```text
 //! resid_var = S_yy − 2 b' r_t + b' A b               (at least 0)
@@ -57,8 +59,8 @@ use super::{Design, GramArrays, Response};
 pub struct RidgeFit {
     /// The coefficients, the intercept recovered, 0 off the slots.
     pub coef: Vec<f64>,
-    /// Standard errors and t-statistics, NaN off the slots, and at the
-    /// intercept of a Gram pooled within parts.
+    /// Standard errors and t-statistics, NaN off the slots, at a slot of
+    /// no variance, and at the intercept of a Gram pooled within parts.
     pub se: Vec<f64>,
     pub t: Vec<f64>,
     pub resid_var: f64,
@@ -215,30 +217,51 @@ pub fn ridge_fits(
     if asks.is_empty() {
         return fits;
     }
-    let l_inv = inverse_factor(c, n);
-    let diag = inverse_diagonal(l_inv.as_ref(), n);
+    // Over the slots with variance: a column of none -- the one
+    // `standardize` drops, or a constant through a Gram pooled within parts
+    // -- is a zero row of `A`, which no factor of the whole takes, and its
+    // NaN was every slot's (docs/PLAN.md task 269, review round 8 A-5). Its
+    // own error stays NaN; the others are least squares' on the columns
+    // kept, as a fit without it gives them.
+    let kept: Vec<usize> = (0..n).filter(|&p| c[p * n + p] > 0.0).collect();
+    let nk_se = kept.len();
+    let c_kept: std::borrow::Cow<'_, [f64]> = if nk_se == n {
+        std::borrow::Cow::Borrowed(c)
+    } else {
+        let mut sub = vec![0.0; nk_se * nk_se];
+        for (r, &p) in kept.iter().enumerate() {
+            for (q, &pq) in kept.iter().enumerate() {
+                sub[r * nk_se + q] = c[p * n + pq];
+            }
+        }
+        std::borrow::Cow::Owned(sub)
+    };
+    let l_inv = inverse_factor(&c_kept, nk_se);
+    let diag = inverse_diagonal(l_inv.as_ref(), nk_se);
     for &col in &asks {
         let fit = &mut fits[col];
-        for (p, &i) in slots.iter().enumerate() {
+        for (r, &p) in kept.iter().enumerate() {
+            let i = slots[p];
             // A rounding below 0 is 0, but the NaN of a system that is not
             // positive definite stays NaN: `f64::max(NaN, 0)` is 0, a
             // standard error that reads as an exact coefficient (review 6,
             // E-1).
-            let d = if diag[p] < 0.0 { 0.0 } else { diag[p] };
+            let d = if diag[r] < 0.0 { 0.0 } else { diag[r] };
             let v = (d * fit.sigma2 / fit.n).sqrt();
             fit.se[i] = v;
             fit.t[i] = if v > 0.0 { fit.coef[i] / v } else { f64::NAN };
         }
     }
-    // The intercept's, from each asking target's `m' A⁻¹ m`.
+    // The intercept's, from each asking target's `m' A⁻¹ m` over the same
+    // columns.
     if let (Some(ci), None) = (icept, g.within) {
         let nq = asks.len();
         let qs = match &l_inv {
             Some(inv) => {
-                let mut ms = vec![0.0; n * nq];
+                let mut ms = vec![0.0; nk_se * nq];
                 for (j, &col) in asks.iter().enumerate() {
-                    for (p, &m) in resps[col].means.iter().enumerate() {
-                        ms[p * nq + j] = m;
+                    for (r, &p) in kept.iter().enumerate() {
+                        ms[r * nq + j] = resps[col].means[p];
                     }
                 }
                 lower_quad(inv, &ms, nq)
