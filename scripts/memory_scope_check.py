@@ -44,7 +44,9 @@ def mib(text: str) -> int:
 def inside() -> None:
     """In the scope: start the runaway, wait for it, then show this process
     still runs by allocating and touching memory of its own."""
-    child = subprocess.Popen([sys.executable, "-c", RUNAWAY], stdout=subprocess.PIPE, text=True)
+    child = subprocess.Popen(
+        [sys.executable, "-c", RUNAWAY], stdout=subprocess.PIPE, text=True, encoding="utf-8"
+    )
     assert child.stdout is not None
     reached = 0
     for line in child.stdout:
@@ -61,6 +63,7 @@ def main(cap: str) -> int:
         + ["--inside"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     print(r.stdout, r.stderr, sep="\n")
     if r.returncode != 0:

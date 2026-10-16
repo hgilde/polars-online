@@ -62,6 +62,7 @@ def _run(tmp_path: Path, sudo: str, *command: str) -> tuple[subprocess.Completed
         ["bash", str(SCOPE), "12G", "--", *command],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         check=False,
     )
@@ -96,7 +97,9 @@ def test_a_scope_that_never_ran_the_command_fails(tmp_path):
 
 @needs_posix
 def test_it_refuses_a_call_without_its_separator():
-    r = subprocess.run(["bash", str(SCOPE), "12G", "true"], capture_output=True, text=True)
+    r = subprocess.run(
+        ["bash", str(SCOPE), "12G", "true"], capture_output=True, text=True, encoding="utf-8"
+    )
     assert r.returncode == 2 and "usage" in r.stderr
 
 

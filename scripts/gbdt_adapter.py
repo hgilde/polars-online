@@ -885,7 +885,7 @@ def _driver(*args: str) -> dict:
     exe = os.environ.get("GBDT_DRIVER")
     if not exe:
         raise SystemExit("set GBDT_DRIVER to the built scripts/gbdt_driver binary")
-    res = subprocess.run([exe, *args], capture_output=True, text=True)
+    res = subprocess.run([exe, *args], capture_output=True, text=True, encoding="utf-8")
     if res.returncode:
         raise SystemExit(f"driver failed: {res.stderr[-2000:]}")
     return json.loads([ln for ln in res.stdout.splitlines() if ln.startswith("{")][-1])
@@ -1184,7 +1184,7 @@ def main() -> None:
         cmd += ["--spill", str(a.spill)] if a.spill is not None else []
         cmd += ["--f32"] if a.f32 else []
         cmd += ["--sample-seed", str(a.sample_seed)]
-        res = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        res = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8")
         line = [ln for ln in res.stdout.splitlines() if ln.startswith("{")]
         if res.returncode or not line:
             fail = {"route": name, "failed": res.returncode, "stderr": res.stderr[-2000:]}

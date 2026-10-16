@@ -12,10 +12,11 @@
 # tests, 241 s for the release wheel and 130 s for the dev wheel before any
 # test runs, where a warm one rebuilds after an edit in 4.5-37 s. A slot is
 # a worktree kept between tasks: `take` moves it to the new branch with
-# `git checkout -B`, and cargo's fingerprints then rebuild only what the
-# move changed. Each slot keeps its own target/, never a shared one: cargo
-# hashes package paths relative to the workspace root, so two checkouts in
-# one target/ overwrite each other's artifacts.
+# `git checkout -B` (refusing a branch another worktree holds), and cargo's
+# fingerprints then rebuild only what the move changed. Each slot keeps its
+# own target/, never a shared one: cargo hashes package paths relative to
+# the workspace root, so two checkouts in one target/ overwrite each other's
+# artifacts.
 #
 # Slots live under .claude/slots/<n>, at most POLARS_ONLINE_SLOTS of them
 # (default 4, the number of agents this machine runs at once). Who holds a
@@ -60,6 +61,17 @@ case "$cmd" in
             # The lock is taken by creating it, so two takers cannot both win.
             if ( set -o noclobber; printf '%s %s\n' "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$locks/$n" ) 2>/dev/null; then
                 dir="$(slot_dir "$n")"
+                # `checkout -B` does not refuse a branch another worktree has
+                # checked out, as a plain checkout does; two worktrees on one
+                # branch leave one's tree behind the HEAD the other commits.
+                holder="$(git -C "$main" worktree list --porcelain | awk -v ref="branch refs/heads/$branch" '
+                    /^worktree / { wt = substr($0, 10) }
+                    $0 == ref && !found { print wt; found = 1 }')"
+                if [ -n "$holder" ] && { [ ! -e "$dir/.git" ] || [ "$(cd "$holder" && pwd -P)" != "$(cd "$dir" && pwd -P)" ]; }; then
+                    rm -f "$locks/$n"
+                    echo "slot: $branch is checked out at $holder; take a new branch, or free that one there first" >&2
+                    exit 1
+                fi
                 if [ ! -e "$dir/.git" ]; then
                     mkdir -p "$(dirname "$dir")"
                     git -C "$main" worktree add --quiet --detach "$dir" "$base" >&2

@@ -55,6 +55,10 @@ esac
 
 targets=("$repo/target" "$sccache_dir")
 if [ -n "$worktrees" ] || [ -n "$slots" ]; then
+    # The slots belong to the main checkout, as scripts/slot.sh makes them,
+    # wherever this runs from: matched against this checkout, a run from
+    # inside a slot took every other slot for an ordinary worktree.
+    main="$(dirname "$(cd "$(git rev-parse --git-common-dir)" && pwd)")"
     while IFS= read -r line; do
         case "$line" in
             "worktree "*)
@@ -62,7 +66,7 @@ if [ -n "$worktrees" ] || [ -n "$slots" ]; then
                 [ "$wt" = "$repo" ] && continue
                 # A slot is kept warm on purpose: it goes only with --slots.
                 case "$wt" in
-                    "$repo/.claude/slots/"*) [ -n "$slots" ] && targets+=("$wt/target") ;;
+                    "$main/.claude/slots/"*) [ -n "$slots" ] && targets+=("$wt/target") ;;
                     *) [ -n "$worktrees" ] && targets+=("$wt/target") ;;
                 esac
                 ;;

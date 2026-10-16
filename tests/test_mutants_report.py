@@ -391,7 +391,7 @@ def test_round_robin_deals_no_shard_past_its_share_and_none_nothing():
 def _shards_cli(listing: Path) -> subprocess.CompletedProcess[str]:
     script = str(REPO / "scripts/mutants_shards.py")
     cmd = [sys.executable, script, str(listing), "--per-shard", str(PER_SHARD)]
-    return subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
 
 
 def test_the_listing_job_reads_its_outputs_from_the_script(tmp_path):

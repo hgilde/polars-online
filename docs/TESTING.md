@@ -764,7 +764,10 @@ into one `target/` overwrite each other's artifacts, and a gate can then
 test another checkout's binary. There are at most four slots
 (`POLARS_ONLINE_SLOTS`), the number of agents this machine runs at once,
 each about 28 GB of builds and 0.9 GB of environment. `take` refuses a
-slot with uncommitted work, and so does `give`. Who holds a slot is a file
+slot with uncommitted work, and so does `give`. `take` also refuses a
+branch another worktree has checked out and names that worktree: `git
+checkout -B` would move the slot onto it, and a commit in either worktree
+would leave the other's files behind its branch. Who holds a slot is a file
 in the repository's git directory, so a slot's `git status` stays clean,
 and `give` detaches the slot so the task's branch can be merged and
 deleted from `main`. `scripts/clear_caches.sh --worktrees` keeps the
@@ -797,7 +800,8 @@ and nextest writes no files unless asked for a report.
 **`scripts/clear_caches.sh` clears the build caches and prints what each
 freed.** By default it removes this checkout's `target/` and sccache's
 cache, after stopping the sccache server. `--worktrees` adds every other
-worktree's `target/` but the slots', `--slots` adds the slots',
+worktree's `target/` but the slots', which it knows by the main checkout's
+`.claude/slots/` wherever it runs from, `--slots` adds the slots',
 `--test-data` adds `.cache/` and `.hypothesis/`, and
 `--uv` runs `uv cache prune`. `--dry-run` prints what it would remove and
 removes nothing. It touches nothing outside the repository and sccache's

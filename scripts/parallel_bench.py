@@ -119,6 +119,7 @@ def timed(code: str, env: dict[str, str]) -> tuple[str, float]:
         env={**os.environ, **env},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     m = re.search(pattern, r.stderr) if pattern else None

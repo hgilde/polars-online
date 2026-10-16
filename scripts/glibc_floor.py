@@ -39,7 +39,7 @@ def main() -> int:
     parser.add_argument("--max", default="2.17", help="the newest glibc allowed (default 2.17)")
     args = parser.parse_args()
     text = subprocess.run(
-        ["objdump", "-p", args.binary], capture_output=True, text=True, check=True
+        ["objdump", "-p", args.binary], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout
     found = versions(text)
     if not found:

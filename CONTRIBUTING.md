@@ -174,7 +174,9 @@ says which of two things happened:
 
 The instruction counts come from the `Budgets` workflow on Linux, whose
 artifact holds them as `measured.json`. The memory measurements come from
-pytest on every CI leg, written where `POLARS_ONLINE_BUDGETS_OUT` points.
+pytest on every CI leg, written where `POLARS_ONLINE_BUDGETS_OUT` points;
+the peak resident memory (`rss-<platform>.json`) only on each OS's leg at
+the oldest supported Python, the one that holds its budget.
 
 **A proposal the measurement rejects is a good outcome.** Several in
 `docs/PERFORMANCE.md` were rejected *because* the measurement said so, and

@@ -63,6 +63,7 @@ def _env_sh(tmp_path: Path, **env: str) -> str:
         env={**base, **env},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     return res.stdout
@@ -377,6 +378,7 @@ def _clear(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedP
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -537,3 +539,89 @@ def test_clear_caches_keeps_the_slots_warm_unless_asked(tmp_path):
     res = run("--slots")
     assert res.returncode == 0, res.stderr
     assert not slot_build.exists(), res.stdout
+
+
+@posix_shell
+def test_a_slot_is_never_taken_on_a_branch_another_worktree_holds(tmp_path):
+    """`git checkout -B` does not refuse a branch checked out elsewhere, as a
+    plain checkout does, so two worktrees could share one branch and a
+    commit in either leave the other's tree behind its HEAD (review 8, E-1).
+    `take` refuses the branch, names the worktree that holds it and leaves
+    no lock behind."""
+    repo = _slot_repo(tmp_path)
+    held = tmp_path / "wt-x"
+    _git(repo, "worktree", "add", "-q", "-b", "task-x", str(held), "main")
+    common = Path(_git(repo, "rev-parse", "--git-common-dir"))
+    locks = (common if common.is_absolute() else repo / common) / "slots"
+    for branch, holder in (("task-x", held), ("main", repo)):
+        res = _slot(repo, "take", branch)
+        assert res.returncode == 1, (branch, res.stdout, res.stderr)
+        assert f"{branch} is checked out at {holder.resolve()}" in res.stderr, res.stderr
+        assert not any(locks.glob("*")), f"{branch}: a lock was left behind"
+        assert not (repo / ".claude" / "slots" / "1" / ".git").exists(), branch
+    # A slot's own branch: given back without detaching (the lock removed by
+    # hand), the slot may be taken again on the branch it holds.
+    one = Path(_slot(repo, "take", "task-a").stdout.strip())
+    (locks / "1").unlink()
+    again = _slot(repo, "take", "task-a")
+    assert again.returncode == 0, again.stderr
+    assert Path(again.stdout.strip()) == one
+    # And another slot's branch is refused, naming that slot.
+    res = _slot(repo, "take", "task-a")
+    assert res.returncode == 1 and f"is checked out at {one.resolve()}" in res.stderr
+
+
+@posix_shell
+def test_clear_caches_run_from_a_slot_keeps_the_other_slots_warm(tmp_path):
+    """Run from inside a slot, `--worktrees` once took every other slot for
+    an ordinary worktree, since it matched the slots against its own
+    checkout (review 8, E-3: 186 GB of warm builds on this machine). The
+    slots belong to the main checkout wherever the script runs from."""
+    repo = _slot_repo(tmp_path)
+    one = Path(_slot(repo, "take", "task-a").stdout.strip())
+    two = Path(_slot(repo, "take", "task-b").stdout.strip())
+    other = tmp_path / "other"
+    _git(repo, "worktree", "add", "-q", "--detach", str(other), "main")
+    for wt in (repo, one, two, other):
+        (wt / "target").mkdir()
+        (wt / "target" / "x.rlib").write_bytes(b"x" * 2048)
+    env = {**os.environ, "SCCACHE_DIR": str(tmp_path / "sccache")}
+
+    def listed(*args: str) -> set[Path]:
+        res = subprocess.run(
+            ["bash", str(one / "scripts" / "clear_caches.sh"), "--dry-run", *args],
+            cwd=one, env=env, capture_output=True, text=True, encoding="utf-8", check=False,
+        )  # fmt: skip
+        assert res.returncode == 0, res.stderr
+        return {
+            Path(line.split()[-1]).parent
+            for line in res.stdout.splitlines()
+            if line.startswith("would free") and line.split()[-1].endswith("/target")
+        }
+
+    assert listed("--worktrees") == {one, repo, other}
+    assert listed("--slots") == {one, two}
+    assert listed("--worktrees", "--slots") == {one, two, repo, other}
+    assert all((wt / "target" / "x.rlib").exists() for wt in (repo, one, two, other))
+
+
+@posix_shell
+@pytest.mark.parametrize(("tier", "rc"), [("essentials", 0), ("extended", 5)])
+def test_an_empty_serial_selection_passes_only_in_the_essentials(tmp_path, tier, rc):
+    """pytest exits 5 when no test is selected. The essentials hold no
+    `serial` test, so there that is no failure; the extended tier holds the
+    memory tests, where an empty selection is a mark gone wrong (review 8,
+    E-8). The gate's own function, run with a stand-in `uv` that selects
+    nothing."""
+    m = re.search(r"^pytest_or_none\(\) \{\n.*?^\}\n", GATE, re.M | re.S)
+    assert m, "the gate defines pytest_or_none"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "uv").write_text("#!/bin/sh\nexit 5\n", encoding="utf-8")
+    (fake / "uv").chmod(0o755)
+    res = subprocess.run(
+        ["bash", "-c", f'tier={tier}\n{m.group(0)}pytest_or_none -q -m serial; echo "rc=$?"'],
+        env={**os.environ, "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )  # fmt: skip
+    assert res.stdout.strip().splitlines()[-1] == f"rc={rc}", (res.stdout, res.stderr)

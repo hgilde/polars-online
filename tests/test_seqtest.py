@@ -919,6 +919,7 @@ class TestEdgeCases:
             [str(online_cli), "--config", str(cfg), "--dry-run"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         assert res.returncode != 0, res.stdout
@@ -934,6 +935,7 @@ class TestEdgeCases:
             [str(online_cli), "--config", str(cfg), "--dry-run"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         assert "c (seqtest):" in res.stdout and "c.wins_a_y" in res.stdout

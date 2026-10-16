@@ -17,8 +17,10 @@ Both are held by ``scripts/budgets.py``'s rules: past the budget by more
 than the tolerance fails, and so does under it, naming the number to
 tighten it to. ``POLARS_ONLINE_BUDGETS=measure`` makes a measuring run,
 which reports and never fails; ``POLARS_ONLINE_BUDGETS_OUT=<dir>`` writes
-the measurements there as JSON for ``scripts/budgets.py apply``. A run in
-GitHub Actions writes its table to the job summary.
+the measurements there as JSON for ``scripts/budgets.py apply`` -- the
+resident memory only on the leg that holds its budget, so no other leg's
+peaks can be applied to it. A run in GitHub Actions writes its table to the
+job summary.
 """
 
 from __future__ import annotations
@@ -326,7 +328,9 @@ def _held(kind: str, measured: dict[str, float], measure: bool = False) -> None:
     title += f"{sys.version_info.minor})" + (" -- measuring run" if measure else "")
     budgets.write_summary(budgets.report(doc, verdicts, title=title))
     out = os.environ.get("POLARS_ONLINE_BUDGETS_OUT")
-    if out:
+    # The resident memory only where its budget is held: every leg wrote it
+    # under one name per platform, so `apply` could take a 3.14 leg's file.
+    if out and (kind != "rss" or _rss_held_here()):
         Path(out).mkdir(parents=True, exist_ok=True)
         name = kind if kind == "memory" else f"{kind}-{PLATFORM}"
         (Path(out) / f"{name}.json").write_text(
@@ -463,6 +467,12 @@ def _floor_python() -> tuple[int, int]:
     return int(major), int(minor)
 
 
+def _rss_held_here() -> bool:
+    """Whether this run holds the resident memory to its budget: CI's leg at
+    each OS's floor Python."""
+    return os.environ.get("CI") == "true" and sys.version_info[:2] == _floor_python()
+
+
 @pytest.mark.extended(reason="memory: three child interpreters, up to a million rows each")
 @pytest.mark.serial
 @pytest.mark.pins
@@ -491,5 +501,29 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
     # the peak by about a fifth by themselves (2026-10-12): on CI's
     # macOS runner 3.14 read 18-20% under 3.12, and the streaming run read
     # 291 MiB on a 14-core M4 Pro against 237 on that runner, one build.
-    held_here = os.environ.get("CI") == "true" and sys.version_info[:2] == _floor_python()
-    _held("rss", measured, measure=not held_here)
+    _held("rss", measured, measure=not _rss_held_here())
+
+
+@pytest.mark.parametrize("floor", [True, False])
+def test_the_resident_memory_is_written_out_only_where_its_budget_is_held(
+    tmp_path, monkeypatch, floor
+):
+    """Every CI leg wrote ``rss-<platform>.json`` under one name, so
+    ``budgets.py apply`` given a 3.14 leg's file would set the floor's
+    budgets from peaks up to 7% apart (review 8, E-5). Only the leg that
+    holds the budget writes it."""
+    module = sys.modules[__name__]
+    here = sys.version_info[:2]
+    monkeypatch.setattr(module, "_floor_python", lambda: here if floor else (here[0], here[1] + 1))
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setenv("POLARS_ONLINE_BUDGETS_OUT", str(tmp_path))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    measured = {f"rss.{case}.{PLATFORM}": 1.0 for case in RSS_CASES}
+    _held("rss", measured, measure=True)
+    written = tmp_path / f"rss-{PLATFORM}.json"
+    assert written.exists() == floor
+    if floor:
+        assert json.loads(written.read_text(encoding="utf-8")) == measured
+    # The bytes per row are the same number on every leg, written by each.
+    _held("memory", {"memory.ewridge.pred_y": 8.125}, measure=True)
+    assert (tmp_path / "memory.json").exists()

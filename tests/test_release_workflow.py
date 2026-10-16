@@ -336,6 +336,17 @@ def test_every_build_uses_the_lock_as_committed():
     assert len(cargo) == 2, cargo
     for job, step in cargo:
         assert "--locked" in step["run"].split(), (job, step.get("name"))
+    # The local gate, which a commit passes before CI sees it: a re-resolved
+    # lock there rode into the commit (review 8, E-9).
+    gate = [
+        line
+        for line in (REPO / "scripts" / "gate.sh").read_text(encoding="utf-8").splitlines()
+        if re.search(r"\bcargo (build|test|clippy|nextest run|doc)\b", line)
+        and not line.lstrip().startswith("#")
+    ]
+    assert len(gate) == 4, gate
+    for line in gate:
+        assert "--locked" in line.split(), line
 
 
 def test_every_wheel_is_installed_and_run_where_it_belongs():
@@ -453,7 +464,12 @@ def test_the_tags_annotation_keeps_the_changelogs_headings(tmp_path):
 
     def call(*args: str) -> str:
         return subprocess.run(
-            [*git, *args], cwd=tmp_path, capture_output=True, text=True, check=True
+            [*git, *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         ).stdout
 
     call("init", "-q")

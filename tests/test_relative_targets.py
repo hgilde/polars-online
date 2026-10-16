@@ -134,7 +134,11 @@ def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
         encoding="utf-8",
     )
     res = subprocess.run(
-        [str(online_cli), "--config", str(cfg)], capture_output=True, text=True, check=False
+        [str(online_cli), "--config", str(cfg)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     assert res.returncode != 0
     assert f"{REMOVED}; derive the target column upstream" in res.stderr, res.stderr

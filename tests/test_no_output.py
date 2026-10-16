@@ -187,6 +187,7 @@ type = "ew_cov"
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert "output: none (--no-output)" in r.stdout
         assert "b.state" in r.stdout
@@ -225,6 +226,7 @@ type = "ew_cov"
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         assert r.returncode != 0
         assert "cannot be used with" in r.stderr

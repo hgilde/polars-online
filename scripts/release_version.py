@@ -115,6 +115,7 @@ def _remote_tag_exists(tag: str) -> bool:
         cwd=REPO,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout
     return bool(out.strip())

@@ -743,6 +743,18 @@ fn a_kept_schema_without_its_set_on_disk_is_refused() {
 /// check). The sets must share a writer, since a libm bit in a decayed
 /// sum differs by platform. Nothing to run before 1.0, where `PREVIOUS`
 /// is empty.
+///
+/// What it cannot see (review 8, E-7; recorded by the user's decision,
+/// 2026-10-16): a previous fixture whose map *key* is corrupted, when the
+/// field it named defaults to the value the fixture froze. The persisted
+/// state structs do not `deny_unknown_fields`, so the unknown key is
+/// skipped, the field takes its `#[serde(default)]`, and the state loads,
+/// goes on and converts to the current bytes as if nothing were wrong
+/// (one hex digit of `v61/bank.rs`'s `prev_session` key passed all six
+/// tests). A corrupted *value*, or any byte of a current fixture, fails.
+/// The structs stay open on purpose: a field removed since a previous
+/// schema is an unknown key in that schema's files, and denying unknown
+/// fields would refuse every one of them.
 #[test]
 fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
     if regenerating() {

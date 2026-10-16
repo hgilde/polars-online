@@ -145,7 +145,12 @@ def test_child_interpreters_run_without_pyarrow_too() -> None:
         "    print('absent', 'without_pyarrow' in str(e))\nelse:\n    print('present')"
     )
     run = lambda env: subprocess.run(  # noqa: E731
-        [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout.split()
     assert run(child.env()) == ["absent", "True"]
     assert run(None) == ["present"]
@@ -307,6 +312,7 @@ def test_every_rust_test_library_carries_an_open_licence() -> None:
         cwd=REPO,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     ).stdout
     meta = json.loads(out)

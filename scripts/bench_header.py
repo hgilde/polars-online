@@ -28,7 +28,9 @@ REPO = Path(__file__).resolve().parents[1]
 
 def _git(*args: str) -> str:
     try:
-        res = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=False)
+        res = subprocess.run(
+            ["git", *args], cwd=REPO, capture_output=True, text=True, encoding="utf-8", check=False
+        )
     except FileNotFoundError:
         return ""
     return res.stdout.strip() if res.returncode == 0 else ""
