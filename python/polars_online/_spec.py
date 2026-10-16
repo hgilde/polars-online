@@ -1055,8 +1055,10 @@ def ewridge(
         ``"auto"``. Default ``"auto"``. The threads come from the bank's
         pool, which the bank's ``threads`` sizes (``POLARS_ONLINE_MAX_THREADS``
         when it is ``None``). This option caps how much of that pool one
-        spec's matrix work may take, so a count above the pool's size runs on
-        the pool's size, and it never adds a thread. The output is the same to
+        spec's update of the ``k x k`` matrix may take, so a count above the
+        pool's size runs on the pool's size, and it never adds a thread. A
+        solve is not capped by this count: its factorization can use every
+        thread of the pool. The output is the same to
         the bit at every count. Each entry of the matrix is still summed by
         one thread in one order, because the product is cut into pieces by
         ``k`` alone, never by the count.

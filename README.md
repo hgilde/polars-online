@@ -246,7 +246,7 @@ These hold for every spec, however a bank is run:
 |---|---|
 | **honest predictions** | every row is predicted before its own outcome is learned ([Row order and the two guarantees](#row-order-and-the-two-guarantees)), and a target that looks ahead is learned only once its window has closed ([Windows as a model's inputs and target](docs/WINDOWS.md#windows-as-a-models-inputs-and-target)) |
 | **bounded memory** | memory grows with the models' state and the rows a delay or a window holds, and never with the number of rows that have passed ([Memory](#memory)) |
-| **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients, `coef` and `support_coef`, can change ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
+| **any chunking** | one chunk or a thousand, with or without a save and resume in the middle, gives the same numbers, to the last bit. Only which rows carry the coefficients can change: `coef`, and `support_coef` and the standard errors beside it ([Row order and the two guarantees](#row-order-and-the-two-guarantees)) |
 | **any thread count** | the thread count, set with a bank's `threads=` (or `POLARS_ONLINE_MAX_THREADS` for the default pool), changes only the speed. Each spec and group is one task on the bank's thread pool: with 64 groups, 14 threads process 7.3× the rows per second of one ([Parallelism](#parallelism)) |
 | **unusable values** | NaN, ±inf and any magnitude above `1e100` count as null, so a sentinel value never reaches a model. A null skips an update but never stops the clock ([Nulls, and three ways to hold a row back](#nulls-and-three-ways-to-hold-a-row-back)) |
 | **zero weights** | a row of weight 0 is scored and moves the clock, but teaches the model nothing ([Weights](#weights)) |
@@ -4147,10 +4147,11 @@ promise it.
 **To keep your code working across the 1.x series, pin the major version
 in your requirements, as `polars-online~=1.0` or `polars-online>=1,<2`.**
 A minor release adds models, parameters, outputs and functions, and breaks
-nothing stable. It can also correct numbers that were wrong, so pin the
-minor as well if your numbers must not move. `polars-online~=1.1.0` pins
-the current minor: it takes that minor's patch releases and stops before
-the next minor. The package follows semantic versioning
+nothing stable. It can also correct numbers that were wrong, or move last
+bits when a sum is taken in another order, each declared with its size, so
+pin the minor as well if your numbers must not move.
+`polars-online~=1.1.0` pins the current minor: it takes that minor's patch
+releases and stops before the next minor. The package follows semantic versioning
 ([CHANGELOG.md](CHANGELOG.md)).
 
 **Code written for 0.x needs the changes the CHANGELOG lists under
@@ -4180,6 +4181,7 @@ the model's stated definition, the update equations its docstring gives:
 |---|---|
 | a fix that moves no number | patch |
 | a fix to numbers that were wrong | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures from the last release |
+| a change of arithmetic order or kernel that moves last bits within rounding | minor, declared in the CHANGELOG with its measured size |
 | a new model, parameter, output or function | minor |
 | a stable name renamed | minor, and the old name keeps working until the next major. Using it warns with a `PolarsOnlineDeprecationWarning` that names the new one, as the next paragraph says |
 | a default or a meaning changed, or a stable name removed | major |

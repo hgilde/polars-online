@@ -169,24 +169,27 @@ fail.
 
 #### A released build's state files
 
-**A state file written by any release so far is refused, with a message
-naming the way out: refit from the input.** This build's bank reads the
-schemas from `MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`)
-to its own, `SCHEMA_VERSION` (`crates/online-core/src/lib.rs`), which
-`po.schema_version()` gives. The releases wrote older ones: schema 14
+**A state file written by a 0.x release is refused, with a message
+naming the way out: refit from the input. A file a 1.x release wrote loads
+and goes on.** This build's bank reads the schemas from
+`MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) to its own,
+`SCHEMA_VERSION` (`crates/online-core/src/lib.rs`), which
+`po.schema_version()` gives. The 0.x releases wrote older ones: schema 14
 (0.10.0), 17 (0.11.1), 19 (0.12.0) and 20 (0.13.0).
 
 `tests/test_released_state.py` holds each release it lists to that. It
 installs the release into the comparison's cache, and runs
 `scripts/release_probe.py --states` under it: the workload's 30 specs,
 fitted on the first half of the stream and saved. This build must then
-refuse each file by its version, naming "refit it from its input". It runs
+refuse each 0.x file by its version, naming "refit it from its input". It runs
 in the suite, and is skipped offline, since it downloads the releases (hard
 rule 1 in `CLAUDE.md`).
 
 **Add each release to `RELEASES` there.** It lists every release from
-0.10.0 to 1.0.0. On 2026-10-03 each release before 1.0 saved all 30 specs,
-and this build refused every file by its version.
+0.10.0 to 1.1.0. The four before 1.0 are refused by their schema (14, 17,
+19 and 20): on 2026-10-03 each saved all 30 specs, and this build refused
+every file by its version. 1.0.0, 1.0.1 and 1.1.0 load and go on, as
+the rule for a 1.x release's files says.
 
 **From 1.0, a file a 1.x release wrote loads in every later 1.x and goes on
 as this build's own**, as decided on 2026-10-06. The same test holds a 1.x
@@ -1010,13 +1013,18 @@ of its lines carry no promise:
 
 **From 1.0, a changed default or meaning needs a major release, and a fix
 to numbers that were wrong a minor one**, as decided on 2026-10-06. A number is wrong when it disagrees with the model's stated
-definition, the update equations its docstring gives. Changing a default
-is breaking, because it changes results silently:
+definition, the update equations its docstring gives. A sum taken in
+another order, or a product run on another kernel, moves the last bits of
+numbers that were right, within the rounding of the computation. That
+takes a minor too, declared with its measured size, as decided on
+2026-10-16. Changing a default is breaking, because it changes results
+silently:
 
 | a change | before 1.0 | from 1.0 |
 |---|---|---|
 | a fix that moves no number | patch | patch |
 | a fix to numbers that were wrong against the model's stated definition | minor | minor, declared in the CHANGELOG with the difference `scripts/compare_release.py` measures against the last release ([Compare with the last release](#compare-with-the-last-release-bit-for-bit)) |
+| a change of arithmetic order or kernel that moves last bits within rounding | minor | minor, declared in the CHANGELOG with its measured size |
 | a new model, parameter, output or function | minor | minor |
 | a stable name renamed | minor: the old name is refused, naming the new one | minor: the old name is forwarded to the new one with a `PolarsOnlineDeprecationWarning` (a spec parameter by the table, anything else by a forwarding of its own, below), and removed at the next major |
 | a default or a meaning changed, or a stable name removed | minor, with a CHANGELOG entry saying what moved and by how much | major, with the same entry |
@@ -1074,8 +1082,8 @@ floor ([The floor and the ceiling](#the-floor-and-the-ceiling)):
 
 **From 1.0, a user who wants stability pins the major, as `~=1.0` or
 `>=1,<2`, and the current minor as well to hold the numbers.** Before 1.0 the minor carries breaking changes. From 1.0 it carries
-none, but it can carry a declared fix to numbers that were wrong, so
-`~=1.0` keeps code working and `~=1.4.0` holds the numbers as well. The
+none, but it can carry a declared fix to numbers that were wrong, or a
+declared move of their last bits, so `~=1.0` keeps code working and `~=1.4.0` holds the numbers as well. The
 README's example pin names the current minor, as `~=0.13.0` names the
 0.13 series, and a minor release updates that example
 ([step 6](#the-steps-of-a-release)). The current release is the version

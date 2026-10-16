@@ -10388,6 +10388,17 @@ tick, and that the series holding it up has a count near 1.
       x86's speed (not measurable on this machine, which has no x86 nor
       Rosetta); the to-the-bit pieces tests stay guarded off x86 until a
       CI run shows the `gemm` crate's x86 kernels sum a tile as the whole.
+      *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836;
+      reversed for x86 by 264 and 267, which put faer's x86 kernel back on
+      every x86 build, Windows included, with CI's Windows Rust tests at
+      `--test-threads=2` and `product_memory` off x86-64; this paragraph
+      sat under the 1.1.0 record until task 269 moved it back): every
+      leg green, the Windows legs' Rust tests at full parallelism again (no
+      `--test-threads=2`), and `product_memory` holding each thread under
+      24 MiB on Linux and Windows x86. x86 throughput, CI's Benchmark on
+      `e157e46` against `92554fe` (one run each, 4 cpus, load 5.2): 35 of
+      38 configurations 1.00-1.31 of the old (the wide ones 1.12-1.15),
+      the rest 0.95-0.99, inside one run's scatter; Budgets green.
 - [x] 260. **faer's x86 kernel back on Linux and Intel macOS, off Windows
       only** -- found 2026-10-14 by the user's Linux session (Intel Xeon):
       `po.gram.solve_subsets` at one thread 15-41% slower than 1.0.1 at
@@ -10603,13 +10614,6 @@ tick, and that the series holding it up has a count near 1.
       (`--release 1.1.0`; the floor-Python peaks fell, e.g. 155 -> 123 MiB
       and 452 -> 419 MiB on Linux), RELEASES gains 1.1.0 (its states load
       and go on as this build's own).
-      *Done 2026-10-13, measured on CI* (`e157e46`, run 38466643836): every
-      leg green, the Windows legs' Rust tests at full parallelism again (no
-      `--test-threads=2`), and `product_memory` holding each thread under
-      24 MiB on Linux and Windows x86. x86 throughput, CI's Benchmark on
-      `e157e46` against `92554fe` (one run each, 4 cpus, load 5.2): 35 of
-      38 configurations 1.00-1.31 of the old (the wide ones 1.12-1.15),
-      the rest 0.95-0.99, inside one run's scatter; Budgets green.
 - [x] 256. **Per-job feature lists in `po.gram.solve_subsets` and
       `lars_paths`** -- requested 2026-10-13. Today one call takes a single
       `features` list for every subset, target and draw, so a workload

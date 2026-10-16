@@ -516,8 +516,9 @@ The command line needs no Python: it carries its own Rust Polars, 0.55.2.
 state schema its saved states are written in, and the Rust Polars it
 carries. `-V` prints the first line alone.
 So the py-polars floor applies only to the Python calls this guide names.
-That floor is `LazyFrame.collect_batches`, which `lf.online.fit_predict`
-and `ModelBank.fit_predict_batches` read with, and which py-polars added in
-1.34.0. The README's
+That floor is py-polars 1.37.0. `lf.online.fit_predict` and
+`ModelBank.fit_predict_batches` read with `LazyFrame.collect_batches`.
+py-polars added it in 1.34.0, but before 1.37.0 it ran ahead of a slower
+reader without limit, holding the input whole. The README's
 [Versioning and the Polars pin](../README.md#versioning-and-the-polars-pin)
 has the versions the suite passes on and which interfaces carry a promise.
