@@ -15638,3 +15638,127 @@ convention), one sentence in GRAM.md; the README's *Versions* rewritten for
 1.x beside the user's 1.0 note (`review7-fix4`). Not changed: the Int64
 choice (Polars' data integer; its index type UInt32 is for positions), the
 pairwise convention, the two settled rules.
+
+## 22. Review round 8 (2026-10-16): everything since round 7, code and concepts
+
+The user, 2026-10-16: "Review code changes since the last review". Six
+read-only reviewers over `93d0ef4..bb69654` (229 commits, 453 files; tasks
+244-268 and the releases 1.0.0, 1.0.1, 1.1.0), one slice each in a worktree
+slot: A the Gram numerics (256, 256 (b), 257, 258's oracle, 265), B the
+bank's plumbing (250, 253, 255 (a), 257 (b)/(c), 265), C the models'
+rewrites and diagnostics (250, review 7 fix 5, 252 core, `breaks.rs`), D
+the Python package, bindings and API (244, 249, 252 python, 253, 256), E
+the infrastructure and build (245, 248, 251, 254, 255 (b), 258-268, the
+releases, the schema 62 fixtures), F the concepts and documents with a 1.x
+lens. Every finding shown by a probe; the coordinator reproduced D-1, D-3
+and A-1 on the main checkout, and audited the locks: no locked crate (467)
+or PyPI package (88) is yanked, and task 268's manifest entry leaves the
+x86 crate-feature sets identical (1,282 Linux, 1,369 Windows pairs).
+Findings and probes: the session scratchpad, `review8/FINDINGS-*.md` and
+`review8/<slice>/`.
+
+**Found: 1 high, 11 medium, 24 low.**
+- High. D-1: `closed_groups="*.csv"` crashes every Python surface after the
+  whole fit (each closed row has a `List` column; Polars' CSV writer refuses
+  it), and the plan form then writes no `save_state`; fca6699 flattened the
+  runner's CSV only (`csv_flat`).
+- Medium. A-1: under `target_gaps="pairwise"` a gappy target's block mean is
+  `(Σ_all u·a − M)/U_j`, a subtraction whose rounding is the whole block's
+  amplified by `U_all/U_j` (300 to 506,290 ulps for a one-row light target
+  in a 256-row block; the per-row path exact), so the CHANGELOG's "within
+  the rounding bound of a sum in any order" fails there; `own_rows`
+  unaffected. D-2: a TOML float `inf` beside a deprecated model key refuses
+  the config ("invalid type: null"; the forwarding round-trips through
+  JSON). D-3: a column named twice in `features=` or a job is not refused;
+  `solve_subsets` reports coef 0 for it beside the fit's own `r2`. D-4:
+  `test_every_word_valued_parameter_is_probed` collects bare-`str`
+  annotations, none since task 244's `Literal`s, so it cannot fail. E-1:
+  `slot.sh take` checks out a branch another worktree holds (`checkout -B`
+  skips git's guard). E-2: `budgets.py`'s tighten-only history is bypassed
+  by deleting a key and re-adding it higher, or renaming it. E-3:
+  `clear_caches.sh --worktrees` run from a slot treats every other slot and
+  the main checkout as other worktrees (185 GB of warm builds). E-4: the RSS
+  budgets' 30% two-sided tolerance admits up to +86% over the last tightening
+  on every push (`rss.streaming_bounded.linux` passes at 284.6 MiB against a
+  release run of 154.2). F-1: CHANGELOG 1.1.0/1.0.1 and PERFORMANCE §43 say
+  `gram_threads=` bounds the Windows commit; a solve spreads over the whole
+  pool (8 of 8 threads allocate in a k=1,500 factorization with
+  `gram_threads=1`), so only `threads=` bounds it. F-2: RELEASE-READINESS
+  says every release's state files are refused and `RELEASES` stops at
+  1.0.0, against its own 1.x rule and the test. F-3: RUNNER.md states the
+  py-polars floor as 1.34.0.
+- Low. A-2 (a blocked merge's `W'²` overflows from weights ~1e154: NaN for
+  good); A-3 (the trisolve test's ill leg is full rank below n = 7, κ 2.1e9
+  at n = 4 where the PLAN says 4e12); A-4 (three spots still say the factor
+  is dropped at a run's end); A-5 (pre-existing: one constant column makes
+  every `se`/`t` NaN, `inverse_factor` factoring the dropped slot); B-1 (a
+  formula-target spec's state bytes depend on chunking: the resolver's held
+  rows written as one IPC batch per chunk fed); B-2 (eight `subprocess(...,
+  text=True)` without `encoding=`); C-1 (`cusum_null_window`'s decayed form
+  loses ~1.5ε/(u·v) where the window is far shorter than both memories,
+  2.3e-5 relative at the worst grid point); D-5 (a non-integer TOML
+  `threads` refused by serde, not the shared message); D-6 (numpy ints
+  refused for `threads=` and a hand-built job's `target`/`features`); D-7 (a
+  parse error after a forwarded key quotes the rewritten line); E-5 (every CI
+  leg writes `rss-<platform>.json`; `apply` must be given the floor's); E-6
+  (a sign-off of any past version silences the push warning; `check_file`
+  ignores a sign-off's key); E-7 (a corrupted v61 map key whose field
+  defaults to the frozen value passes the previous-schema check: state
+  structs do not `deny_unknown_fields`); E-8 (the gate accepts an empty
+  `serial` selection in the extended tier); E-9 (the gate's cargo steps lack
+  `--locked`); F-4 (TESTING says released states are refused); F-5 (the
+  1.1.0 `corrchange` figures transposed); F-6 (PERFORMANCE §41's Windows and
+  24 MiB sentences after §43); F-7 (a four-thread instruction case claimed
+  twice); F-8 (CHANGELOG 1.0.0's 1.34.0 remnants); F-9 (task 258's Done
+  paragraph displaced under the 1.1.0 record); F-10 (README:249 omits
+  `se_coef`); F-11 (STATE-WORKFLOW names `po.run`); F-12 (the API policy has
+  no row for a change that moves last bits within rounding, which 1.1.0's
+  256 (b), 257 and the kernel did).
+
+**Checked and found right** (the reviewers' lists): every task 250 rewrite
+bit-identical to `93d0ef4` (128 digests over bocpd, kalman, sgd, kmeans,
+micro, EwCov); the fold within the exact oracle on 1,728 edge cases and the
+same bits at every thread count; a blocked fit with held targets chunk
+invariant through 14 save cuts and a real 1.0.1 blocked state continuing
+within the fold's bound; the typed copy at every integer width and float32
+edge with null and NaN apart; threads identical at every pool size and the
+Sink's error paths; every rename forwarded on four Python surfaces and the
+CLI; `jobs=` refused by name and bit-equal to the per-job recipe; the
+budgets' 1.1.0 apply; the kernel entry; the 1.1.0 Fixed entry against the
+probe record; 400 doc tests and the Sphinx build.
+
+**Decided** (the user, 2026-10-16: "Yes and keep the remaining list in the
+project", to fixing every finding, the decisions as recommended): A-1
+option 1, the target's block mean accumulated over its counted rows (no
+subtraction; blocked-pairwise bits move; cost measured with
+`examples/gram_targets_bench.rs`, raised if large); D-3 a refusal by name;
+E-4 an RSS budget tightened whenever a run is under it by more than a
+quarter of the tolerance; A-5 the standard errors from the factor of the
+kept columns (NaN becomes numbers where the doc promises them); B-1 the
+held rows rechunked before the IPC write (fixtures regenerated where they
+move); E-7 the limit recorded beside the test (no `deny_unknown_fields`:
+a field removed since a previous schema would refuse that schema's files);
+F-12 a policy row for last-bits moves within rounding, declared with their
+size; C-1 the bound documented. Built as task 269 in four batches.
+
+- [ ] 269. **Review round 8's fixes** -- the user, 2026-10-16 (above).
+      Batches, one worker each in a slot, test first (each new test fails
+      on `bb69654` where its finding says): (a) Python, bindings and CLI:
+      D-1, D-2, D-3, D-4, D-5, D-6, D-7; (b) numerics: A-1, A-2, A-3, A-4
+      (code comments), A-5, B-1, C-1; (c) infrastructure: E-1..E-9, B-2;
+      (d) documents: F-1..F-12, A-4 (PERFORMANCE). Workers do not edit the
+      CHANGELOG's `[Unreleased]` or this plan; the coordinator adds both at
+      merge. Then a second look over the merged diff before the push.
+      **Remaining, kept here for later work** (not in this batch): a
+      `with_windows`/bank fixture freezing `Held` with a NaN target value
+      and several held rows per target, and a blocked spec in
+      `release_probe.py`'s workload so `test_released_state` loads a
+      released blocked file (E); every shape of a schema 61 blocked state
+      continuing within the fold's bound, `lam = 0` mid-block among them
+      (E); two pools of `n` threads alive when `Threads::new(Some(n))` runs
+      before the process pool (B, documented, unmeasured); a window past a
+      refusing budget under `drift_action = "reset"` on a sink'd spec,
+      driven (B); `gram_threads=n` pieces wandering across the pool over a
+      long run (F); the release benchmark's raw rows kept in the repository
+      so its CHANGELOG figures can be traced (F); `po.gbdt`'s `threads`
+      (D); TOML datetimes through the CLI's forwarding (D).
