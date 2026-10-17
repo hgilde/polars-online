@@ -15799,3 +15799,13 @@ size; C-1 the bound documented. Built as task 269 in four batches.
       the CHANGELOG's numpy-integer scope and `clear_caches.sh --worktrees`
       sparing the main checkout from another worktree were fixed, and the
       budget-rename path went to Remaining.
+      The push (`24114c5`, 2026-10-17) failed two checks, fixed after it:
+      Windows' `exp` put C-1's new bound test at 1.7 · 2⁻⁵²/v (Apple and
+      glibc 0.9), so the test allows 4 and the doc states each; and the
+      changed-lines mutants left five survivors in (b)'s code -- the
+      subnormal shares path in `EwCov::flush_riding` and the fold (`/` read
+      as `*` or `%`; the tests read the moments only after rows of weight 1
+      washed them out, now also over the subnormal rows alone, held to the
+      rows at 1e-9 since no path meets the oracle's bound at 44 bits), and
+      the fused pass's skip at a four's third row (target 2's second row
+      moved to 246). Each mutant applied by hand fails its test.

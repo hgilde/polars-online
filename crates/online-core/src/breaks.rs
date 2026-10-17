@@ -470,7 +470,8 @@ pub fn cusum_null(fit_half_life: f64, own_half_life: f64) -> f64 {
 /// beside a decay half-life of `1e7` and a CUSUM memory of `1e4`
 /// (`2.3e-5` on the CUSUM, which reads the square root). Measured against
 /// the share's series in `u` and `v`, `2u/3 − uv/6 − u²/4 + …`, the error
-/// stayed below `0.9 · 2⁻⁵²/v` for `u ≤ 1e-4` and `1e-8 ≤ v ≤ 1e-5`. At
+/// stayed below `0.9 · 2⁻⁵²/v` with Apple's and glibc's `exp` and below
+/// `1.8 · 2⁻⁵²/v` with Windows', for `u ≤ 1e-4` and `1e-8 ≤ v ≤ 1e-5`. At
 /// the switch, `v = 1e-8`, the rounding and the undecayed form's
 /// truncation are the same size, `2e-8`. `inf` for `own_half_life` reads 1, as
 /// [`cusum_null`] does for the run-once sums; an infinite or non-positive
@@ -1118,8 +1119,11 @@ mod tests {
             let want =
                 u * (2.0 / 3.0 - v / 6.0) - u * u / 4.0 + u * u * v / 12.0 + u * u * u / 15.0;
             let got = cusum_null_window(w, hm, hc);
+            // A few `2⁻⁵²/v`: the bracket goes through `exp`, whose last
+            // bits are the platform's (0.9 measured with Apple's and
+            // glibc's, 1.7 with Windows', CI 2026-10-17).
             assert!(
-                (got - want).abs() <= f64::EPSILON / v,
+                (got - want).abs() <= 4.0 * f64::EPSILON / v,
                 "({w}, {hm:e}, {hc:e}): {got:e} vs {want:e}, {:e} past 2^-52/v",
                 (got - want).abs() * v / f64::EPSILON
             );

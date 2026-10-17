@@ -751,7 +751,10 @@ fn a_light_target_takes_its_block_mean_from_its_own_rows() {
                 ];
                 let fit = (z[1] + z[2]) / spread;
                 let one = i == block - 5;
-                let two = i == block - 40 || i == block - 9;
+                // Target 2's rows sit first and third of their fours (216
+                // and 246), target 1's last (251): the fused pass skips a
+                // four by all four of its coefficients, each position held.
+                let two = i == block - 40 || i == block - 10;
                 let w = if one || two { light } else { 1.0 };
                 let y = vec![
                     Some(fit + 0.1 * lcg(&mut s)),
@@ -800,6 +803,39 @@ fn a_light_target_takes_its_block_mean_from_its_own_rows() {
 /// `target_gaps`.
 #[test]
 fn a_weight_whose_square_leaves_the_doubles_merges_a_block() {
+    // The six rows of `Kind::Reset` at weight `1e-310` alone, where `1/W'`
+    // is infinite at every merge and nothing after them washes a wrong
+    // `S'/W'` out (task 269, the mutants after review round 8). A subnormal
+    // weight keeps about 44 bits, so no path meets the oracle's bound here
+    // (row by row reads 430 times it); each block is held to the rows
+    // instead, closely enough that a share read wrong, an error of the
+    // moments' own size, cannot pass.
+    let rows = stream(Kind::Reset, 4, 3, 140, 1e3, 11);
+    let rows = &rows[..6];
+    assert!(rows.iter().all(|r| r.w == 1e-310));
+    for gaps in GAPS {
+        let seq = run(rows, 0, 1, gaps);
+        for block in [1usize, 2, 3] {
+            let acc = run(rows, block, 1, gaps);
+            for j in 0..3 {
+                assert!(defined(rows, j, None).is_some(), "target {j} has rows");
+                for (what, a, b) in [
+                    ("c", &seq.cross.c[j], &acc.cross.c[j]),
+                    ("m", &seq.cross.mj[j], &acc.cross.mj[j]),
+                ] {
+                    let size = a.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                    assert!(size > 0.0, "{what} of target {j} is not all 0");
+                    for (x, y) in a.iter().zip(b.iter()) {
+                        assert!(
+                            (x - y).abs() <= 1e-9 * size,
+                            "subnormal rows, {gaps:?}, block {block}, target {j}, {what}: \
+                             {y:e} against the rows' {x:e}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     for scale in [2f64.powi(515), 2f64.powi(-560)] {
         let rows: Vec<Row> = stream(Kind::Decays, 4, 3, 60, 1e3, 37)
             .into_iter()

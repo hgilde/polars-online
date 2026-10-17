@@ -748,4 +748,14 @@ fn a_block_of_subnormal_weight_merges_as_the_rows_do() {
         assert_scalars_equal(&seq, &blk, &what);
         assert_moments_close(&seq, &blk, &what);
     }
+    // And read before the rows of weight 1 wash the subnormal ones out:
+    // every merge here takes the shares path (task 269, the mutants after
+    // review round 8: `uᵢ/W'` read as `uᵢ·W'` passed the test above).
+    let seq = run(&rows[..6], 3, 0);
+    for block in [1usize, 2, 3] {
+        let blk = run(&rows[..6], 3, block);
+        let what = format!("subnormal rows alone, block {block}");
+        assert_scalars_equal(&seq, &blk, &what);
+        assert_moments_close(&seq, &blk, &what);
+    }
 }
