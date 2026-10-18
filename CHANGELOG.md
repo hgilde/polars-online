@@ -9,7 +9,7 @@ order, another kernel), each declared with its size. Before 1.0, the minor
 version carried breaking changes, and any change to the numbers a model
 returns.
 
-## [Unreleased]
+## [1.2.0] — 2026-10-17
 
 ### Fixed
 
@@ -103,6 +103,23 @@ returns.
   corrections to 1.1.0's, 1.0.1's and 1.0.0's notes are made in place
   (the Windows commit's remedy, a four-thread instruction case, the
   Polars floor of 1.0.0, a pair of transposed figures).
+
+### Performance
+
+- **1.2.0 against 1.1.0, measured before the release**: every one of
+  `scripts/compare_release.py`'s 297 output fields over 31 specs is
+  identical to 1.1.0's, bit for bit (the number moves under *Fixed* are in
+  a blocked `pairwise` fit with gaps and in `po.gram`, which it does not
+  run; each entry states its own size). On an Apple M4 Pro at a load of
+  3.5 to 7.7, both builds compiled here, six interleaved rounds of
+  `scripts/benchmark.py` at 200,000 rows: 37 of its 38 configurations
+  have a median within 2% of 1.1.0's, and `scripts/wide_benchmark.py`'s
+  twelve, `ewridge` and `lasso` at 200 to 1,000 features, have medians
+  from 0.98 to 1.01. `rcov`'s kernel estimator over groups of 1,000 rows
+  read 0.91 of 1.1.0 in every round, though none of its code changed. It
+  comes from where the compiler lays out code in the binary: with the
+  symbols kept, everything else unchanged, this build runs it at 0.99 of a
+  build without the numeric fixes above, inside the runs' scatter.
 
 ## [1.1.0] — 2026-10-15
 
