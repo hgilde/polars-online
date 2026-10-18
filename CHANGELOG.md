@@ -93,10 +93,12 @@ returns.
   7.5% under them**, a quarter of their 30% tolerance, instead of only
   past the whole 30% (task 269). Before, a budget could sit 43% above the
   run that set it and a later run could pass 86% above that run; now the
-  most is 41%. Six of the nine RSS budgets were tightened to the 1.1.0
+  most is 41%. All nine RSS budgets were tightened: eight to the 1.1.0
   release run's measurements at the oldest supported Python (Linux
   streaming 218.9 to 154.2 MiB, Windows ten-target `ewridge` 110.9 to
-  80.1 MiB); none was raised.
+  80.1 MiB, the wide `ew_cov` on macOS and Windows about 7%), and the
+  wide `ew_cov` on Linux to 416.8 MiB, which the first 1.2.0 release run
+  read 7.5% under its budget of 450.7; none was raised.
 - **The `gram_threads` docstring says it caps the update of the `k x k`
   matrix alone** (task 269): a solve's factorization can use every thread
   of the pool, so only `threads=` bounds how many threads multiply. The

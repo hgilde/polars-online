@@ -1094,9 +1094,9 @@ linux = { budget = 154.2383, release = 154.2383 }
 windows = { budget = 151.8907, release = 151.8907 }
 
 [rss.ew_cov_wide]
-darwin = { budget = 441.6563, release = 410.0938 }
-linux = { budget = 450.7461, release = 419.1016 }
-windows = { budget = 425.2227, release = 396.1915 }
+darwin = { budget = 410.0938, release = 410.0938 }
+linux = { budget = 416.7813, release = 419.1016 }
+windows = { budget = 396.1915, release = 396.1915 }
 
 [rss.ewridge_10_targets]
 darwin = { budget = 104.1407, release = 104.1407 }
