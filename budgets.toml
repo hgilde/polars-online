@@ -36,7 +36,7 @@ gungraun = "0.20.0"
 rows = 1000
 # The release whose measurements are the `release` numbers; "" before the
 # first one is recorded.
-release = "1.1.0"
+release = "1.2.0"
 drift_signoff = 0.10
 
 [meta.tolerance]
@@ -78,7 +78,7 @@ release = 8082469
 [instructions.ewridge_gram_t10]
 what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve every 400: AnyModel::step, the targets folded into the block's merge"
 budget = 13923740
-release = 13923716
+release = 13874374
 
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step"
@@ -138,12 +138,12 @@ release = 2015679
 [instructions.bank_ewridge_k5]
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
 budget = 5753653
-release = 5757429
+release = 5757497
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"
 budget = 168992955
-release = 167032238
+release = 167032168
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the
@@ -1089,19 +1089,19 @@ zscore_z = { budget = 8.125, release = 8.125 }
 
 
 [rss.streaming_bounded]
-darwin = { budget = 178.3125, release = 178.3125 }
-linux = { budget = 154.2383, release = 154.2383 }
-windows = { budget = 151.8907, release = 151.8907 }
+darwin = { budget = 178.3125, release = 170.8594 }
+linux = { budget = 154.2383, release = 171.1368 }
+windows = { budget = 151.8907, release = 164.8594 }
 
 [rss.ew_cov_wide]
-darwin = { budget = 410.0938, release = 410.0938 }
-linux = { budget = 416.7813, release = 419.1016 }
-windows = { budget = 396.1915, release = 396.1915 }
+darwin = { budget = 410.0938, release = 414.6875 }
+linux = { budget = 416.7813, release = 418.5625 }
+windows = { budget = 396.1915, release = 395.2266 }
 
 [rss.ewridge_10_targets]
-darwin = { budget = 104.1407, release = 104.1407 }
-linux = { budget = 123.1016, release = 123.1016 }
-windows = { budget = 80.129, release = 80.129 }
+darwin = { budget = 104.1407, release = 104.5782 }
+linux = { budget = 123.1016, release = 123.8672 }
+windows = { budget = 80.129, release = 79.3321 }
 
 # --- raises and sign-offs -------------------------------------------------------
 [[raised]]

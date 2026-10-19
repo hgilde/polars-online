@@ -15809,3 +15809,25 @@ size; C-1 the bound documented. Built as task 269 in four batches.
       rows at 1e-9 since no path meets the oracle's bound at 44 bits), and
       the fused pass's skip at a four's third row (target 2's second row
       moved to 246). Each mutant applied by hand fails its test.
+      *Released as 1.2.0 on 2026-10-19* (the user: "What is the next
+      version number" -> 1.2.0, a minor by the policy's last-bits and
+      wrong-numbers rows; "Go", then "Release" twice for the dispatch, which
+      the classifier refused once). First run 39152507210 on `b496262`
+      failed one check and was cancelled before the approval, nothing
+      uploaded: `rss.ew_cov_wide.linux` read 416.78 MiB, 7.54% under its
+      budget, past the quarter line this task set (the push's CI on the same
+      sha read inside it); `a5e2f8c` tightened it and the case's macOS and
+      Windows legs (7.15%, 6.83% under) to their 1.1.0 readings. Second run
+      39163116713 on `a5e2f8c`, every job green, PyPI approved by the user,
+      `v1.2.0` and the GitHub release by the workflow. Verified from a clean
+      venv: 1.2.0 native 1.2.0 schema 62, a fit tracks its target. Before
+      the dispatch: compare_release identical to 1.1.0 (297 fields of 31
+      specs); benchmark.py against 1.1.0 built here, six interleaved rounds,
+      37 of 38 medians within 2%; `rcov` 0.91 in every round, bisected to
+      batch (b), whose code it does not run, and 0.99 with the symbols kept:
+      code layout, declared; the PyPI wheel at a load of 53 read 0.98
+      (median, too noisy to settle); wide_benchmark.py medians 0.98-1.01;
+      budgets drift at most 0.4%; the floor Polars 1.37.0 suite green.
+      Recorded after: budgets.toml's release counts from the run's artifacts
+      (`--release 1.2.0`), RELEASES gains 1.2.0 (its states load and go on
+      as this build's own), RELEASE-READINESS's list follows.
