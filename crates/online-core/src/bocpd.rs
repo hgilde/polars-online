@@ -19,7 +19,11 @@
 //!
 //! `πₜ^{(r)}` is the posterior predictive of run `r` -- the density of this
 //! row under the rows that run has seen. Each run keeps its own conjugate
-//! sufficient statistics, so the whole thing is `O(runs·d²)` a row.
+//! sufficient statistics, so a row costs `O(runs·d)` under the diagonal
+//! emission and `O(runs·d³)` under the full one, which factors each run's
+//! `d × d` predictive scale every row (measured with 50 runs held: 187,
+//! 251, 464, 1,040 and 3,095 ns a run at d = 2, 4, 8, 16 and 32, ×3.0 for
+//! the last doubling; review 2026-10-23, D-3).
 //!
 //! **Line 6 of their algorithm is where the bookkeeping is easy to get
 //! wrong**, and it is worth writing out: `ν⁽ʳ⁺¹⁾_{t+1} = ν⁽ʳ⁾_t + u(xₜ)`
@@ -34,8 +38,9 @@
 //! before it already inside the run.
 //!
 //! The run vector would grow by one every row, so runs whose normalised
-//! mass falls below `prune_below` are dropped and the rest renormalised, and
-//! `max_run` caps a run's length. The runs that reach `max_run − 1` rows are
+//! mass falls below `prune_below` are dropped, and `max_run` caps a run's
+//! length. The joint is not renormalised after a drop (see `prune`): every
+//! output is read against its log-sum, so no reported number needs it. The runs that reach `max_run − 1` rows are
 //! folded into the one of them carrying the most mass, the oldest among
 //! equals, which keeps its statistics, scaled back to `max_run − 1` rows'
 //! weight as a decay would scale them. The capped slot is then an
@@ -50,8 +55,8 @@
 //! spreads over thousands of run lengths -- 2,001 kept after 2,000 rows and
 //! 7,036 at most by 20,000 under the defaults (`prune_below = 1e-6`,
 //! measured 2026-09-27). `max_run` is then the bound on the vector -- at
-//! most `max_run` distinct lengths -- and on the `O(runs·d²)` work a row
-//! costs; a shift collapses it to a few dozen.
+//! most `max_run` distinct lengths -- and on the `O(runs·d)` (diagonal) or
+//! `O(runs·d³)` (full) work a row costs; a shift collapses it to a few dozen.
 //!
 //! # The emissions
 //!

@@ -749,3 +749,36 @@ class TestRunner:
         out = pl.read_parquet(tmp_path / "e.parquet")
         assert out.height == 0
         assert "ridge" in out.columns
+
+
+def test_predict_reads_no_coefficient_cadence():
+    """``coef_every`` and ``max_rows_between_coefs`` are learning settings:
+    ``predict`` fills ``coef`` on each chunk's last accepted row whatever they
+    say, and every other field is the same however the frame is chunked
+    (review round 9, I-3, which the docs now state)."""
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal((600, 2))
+    df = pl.DataFrame(
+        {"t": np.arange(600.0), "x0": x[:, 0], "x1": x[:, 1], "y": x @ [1.0, -0.5]}
+    ).with_columns(y=pl.col("y") + 0.1 * pl.Series(rng.standard_normal(600)))
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        clock="t",
+        half_life=50.0,
+        gap_cap=5.0,
+        coef_every=0,
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df.head(300))
+    rows = df.slice(300)
+    eager = rows.online.predict(bank)
+    chunked = rows.online.predict(bank, chunk_size=60)
+    filled = lambda out: out["m"].struct.field("coef").is_not_null().sum()  # noqa: E731
+    assert (filled(eager), filled(chunked)) == (1, 5)
+    a, b = eager.select("m").unnest("m"), chunked.select("m").unnest("m")
+    rest = [c for c in a.columns if c not in ("coef", "support_coef")]
+    assert a.select(rest).equals(b.select(rest), null_equal=True)
+    # Learning reads it: every row.
+    assert filled(po.ModelBank([spec]).fit_predict(rows)) == rows.height

@@ -1777,13 +1777,6 @@ writes"""
 
 [[equivalent]]
 file = "crates/online-core/src/audit.rs"
-function = "Counts::merge"
-mutation = "replace < with <="
-line_has = "(Some(a), Some(b)) if a.0 < b.0 => {"
-why = "the arm above takes `a.0 == b.0`, so here the keys differ and `<`, `<=` agree"
-
-[[equivalent]]
-file = "crates/online-core/src/audit.rs"
 function = "Counts::top"
 mutation = "replace < with <="
 line_has = "Some((bv, bc)) if c > bc || (c == bc && v < bv) => {"

@@ -46,7 +46,26 @@ pub const MODEL_CASES: &[&str] = &[
     "kalman",
     "ew_cov",
     "lasso_k20",
+    // One case per model kind that had none, and the paths the review of
+    // 2026-10-23 found costly (task 270 (e): J-3, slice M's table, F-2).
+    "rls",
+    "quantile",
+    "ftrl",
+    "holt",
+    "marginal",
+    "ew_class",
+    "deco",
+    "hmm",
+    "rcov",
+    "audit_continuous",
+    "bocpd_full",
+    "ew_cov_lags",
 ];
+
+/// The model cases whose model predicts nothing by design: `Step::pred` is
+/// empty on every row, so the native test holds each to the path it is
+/// named for by another reading (`tests/workloads.rs`).
+pub const SILENT_CASES: &[&str] = &["marginal", "rcov", "audit_continuous"];
 
 /// The clock cases: a float clock, and a temporal one on the exact path.
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
@@ -122,6 +141,9 @@ enum Shape {
     /// Four features around one of three centres six apart, as
     /// `scripts/benchmark.py`'s blobs: what a clustering model is for.
     Blobs,
+    /// `k` features around one of three centres two apart, and the centre's
+    /// number as the target: a label a classifier learns, not always right.
+    Labelled,
 }
 
 /// Rows in the layout a model steps them: features row-major, targets
@@ -152,6 +174,11 @@ impl Rows {
                     let label = (3.0 * g.next()).floor() as usize;
                     x.extend((0..k).map(|j| g.signed() + if j % 3 == label { 6.0 } else { 0.0 }));
                 }
+                Shape::Labelled => {
+                    let label = (3.0 * g.next()).floor() as usize;
+                    x.extend((0..k).map(|j| g.signed() + if j % 3 == label { 2.0 } else { 0.0 }));
+                    y.extend((0..m).map(|_| Some(label as f64)));
+                }
             }
             let fit: f64 = x[row..]
                 .iter()
@@ -161,7 +188,9 @@ impl Rows {
             // With no features, a column whose sign a sequential test
             // watches: either sign, a small drift up.
             let (level, noise) = if k == 0 { (0.05, 1.0) } else { (0.5, 0.3) };
-            y.extend((0..m).map(|j| Some(level + fit + j as f64 + noise * g.signed())));
+            if !matches!(shape, Shape::Labelled) {
+                y.extend((0..m).map(|j| Some(level + fit + j as f64 + noise * g.signed())));
+            }
             let step = if i == 0 { 0.0 } else { step_of(g.next()) };
             clock += step;
             d.push(step);
@@ -334,6 +363,89 @@ fn case_spec(id: &str) -> (Value, Shape) {
         ),
         "micro" => (
             four(json!({"type": "micro", "eps": 1.0}), true),
+            Shape::Blobs,
+        ),
+        // From here, the cases added with the review of 2026-10-23 (task
+        // 270 (e)), each `scripts/benchmark.py`'s row of the same kind.
+        "rls" => (fit(json!({"type": "rls", "delta": 1.0}), 20), Shape::Linear),
+        "quantile" => (
+            fit(json!({"type": "quantile", "quantile": 0.5}), 20),
+            Shape::Linear,
+        ),
+        "ftrl" => (fit(json!({"type": "ftrl"}), 20), Shape::Linear),
+        // Level and trend of one column, no features.
+        "holt" => {
+            let mut s = fit(json!({"type": "holt"}), 0);
+            s.as_object_mut().expect("an object").remove("min_weight");
+            (s, Shape::Linear)
+        }
+        // Twenty features against one target, every pair's moments.
+        "marginal" => (fit(json!({"type": "marginal"}), 20), Shape::Linear),
+        "ew_class" => {
+            let model = json!({
+                "type": "ew_class",
+                "classes": ["0", "1", "2"],
+                "precision_prior": 1.0,
+            });
+            let mut s = fit(model, 20);
+            s.as_object_mut().expect("an object").remove("min_weight");
+            (s, Shape::Labelled)
+        }
+        "deco" | "ew_cov_lags" => {
+            let model = if id == "deco" {
+                json!({"type": "deco"})
+            } else {
+                json!({"type": "ew_cov", "stats": ["mean", "cov"], "lags": [1, 2, 3, 4, 5]})
+            };
+            let mut s = fit(model, 20);
+            let o = s.as_object_mut().expect("an object");
+            o.remove("targets");
+            o.remove("min_weight");
+            (s, Shape::Linear)
+        }
+        "hmm" => (
+            four(
+                json!({"type": "hmm", "n_components": 2, "precision_prior": 1.0}),
+                true,
+            ),
+            Shape::Blobs,
+        ),
+        // The kernel estimator, as `scripts/benchmark.py`'s row.
+        // A group that closes is required; the case counts the rows the
+        // block takes in, not its close, which the bank calls.
+        "rcov" => {
+            let mut s = four(
+                json!({"type": "rcov", "kind": "kernel", "block_rows": 2000}),
+                false,
+            );
+            s["group"] = json!("g");
+            s["group_close"] = json!("monotone");
+            (s, Shape::Blobs)
+        }
+        // A continuous column at the default cap of 256 counters: nearly
+        // every value new, so past the cap on nearly every row (F-2).
+        "audit_continuous" => (
+            json!({
+                "name": "m",
+                "model": {"type": "audit"},
+                "features": ["x0"],
+                "clock": "t",
+                "gap_cap": 100.0,
+            }),
+            Shape::Linear,
+        ),
+        // The full covariance, whose runs each factor a 4 x 4 scale a row.
+        "bocpd_full" => (
+            four(
+                json!({
+                    "type": "bocpd",
+                    "covariance_type": "full",
+                    "degrees_of_freedom_prior": 6.0,
+                    "prune_below": 1e-6,
+                    "max_run": 200,
+                }),
+                false,
+            ),
             Shape::Blobs,
         ),
         other => panic!("no case {other:?}"),

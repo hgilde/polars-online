@@ -171,7 +171,8 @@ impl KMeansCfg {
         if self.k > KMeans::MAX_K {
             return Err(format!(
                 "kmeans: n_clusters must be at most {} (2^16), got {}: every row is scored against every \
-                 centre, and seeding is O(k²) over the warm-up buffer",
+                 centre, and the default seeding (`init = \"lloyd\"`) makes about 120 passes over the warm-up \
+                 buffer, each O(k · n_features) a buffered row",
                 KMeans::MAX_K,
                 self.k
             ));

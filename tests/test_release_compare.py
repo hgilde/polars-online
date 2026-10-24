@@ -96,3 +96,71 @@ def test_a_spec_this_build_refuses_is_a_difference_not_a_silence():
     assert code == 1, text
     assert "rls" in text and "RuntimeError: boom" in text, text
     assert "identical" not in text, text
+
+
+def _sgd_on(loss: str):
+    return lambda b, kw: b == "sgd" and kw.get("loss") == loss
+
+
+#: The paths the release comparison must reach, each by the keyword that
+#: takes it (review round 9, J-2: the workload ran 135 of the 346 field names
+#: the fullest workload writes, and none of these). A spec of the workload
+#: must satisfy each.
+PATHS = {
+    "a temporal clock": lambda b, kw: kw.get("clock") == "ts",
+    "a duration parameter": lambda b, kw: isinstance(kw.get("half_life"), str),
+    "gram_block_rows": lambda b, kw: "gram_block_rows" in kw,
+    "gram_threads": lambda b, kw: "gram_threads" in kw,
+    "target_gaps pairwise": lambda b, kw: kw.get("target_gaps") == "pairwise",
+    "a formula target": lambda b, kw: (
+        any(isinstance(t, probe._Formula) for t in kw["targets"]) if "targets" in kw else False
+    ),
+    "feature_sets": lambda b, kw: "feature_sets" in kw,
+    "coef_prior": lambda b, kw: "coef_prior" in kw,
+    "revert_half_life": lambda b, kw: "revert_half_life" in kw,
+    "share_p": lambda b, kw: kw.get("share_p") is True,
+    "kalman q and obs_var": lambda b, kw: "q" in kw and "obs_var" in kw,
+    "kalman standardized": lambda b, kw: b == "kalman" and kw.get("standardize") is True,
+    "drift_action reset": lambda b, kw: kw.get("drift_action") == "reset",
+    "max_rows_between_solves": lambda b, kw: "max_rows_between_solves" in kw,
+    "max_rows_between_coefs": lambda b, kw: "max_rows_between_coefs" in kw,
+    "restart_after_step_back": lambda b, kw: "restart_after_step_back" in kw,
+    "a lam accumulator": lambda b, kw: "lam" in kw,
+    "closed both": lambda b, kw: kw.get("closed") == "both",
+    "a lasso window": lambda b, kw: b == "lasso" and "window_size" in kw,
+    "an ew_class window": lambda b, kw: b == "ew_class" and "window_size" in kw,
+    "marginal window_lags": lambda b, kw: kw.get("window_lags") is True,
+    "marginal bin_edges": lambda b, kw: "bin_edges" in kw,
+    "group_close session": lambda b, kw: kw.get("group_close") == "session",
+    "ftrl squared": lambda b, kw: b == "ftrl" and kw.get("loss") == "squared",
+    "pa1": lambda b, kw: b == "pa" and kw.get("mode") == "pa1",
+    "pa2": lambda b, kw: b == "pa" and kw.get("mode") == "pa2",
+    "sgd adagrad": lambda b, kw: b == "sgd" and kw.get("schedule") == "adagrad",
+    **{
+        f"sgd {loss}": _sgd_on(loss)
+        for loss in ("huber", "quantile", "epsilon_insensitive", "poisson", "logistic")
+    },
+}
+
+
+def test_the_workload_reaches_every_field_name_and_every_named_path():
+    """The release comparison is read as comparing every output: it holds
+    the fullest workload's field names (the memory budgets', every output of
+    every model switched on), all of them, and every path in `PATHS`."""
+    import polars_online as po
+    import test_budgets_memory as memory
+
+    probed: set[str] = set()
+    for name, builder, kw, _ in probe.WORKLOAD:
+        probed |= set(po.spec.output_fields(probe.build(builder, name, kw)))
+    fullest: set[str] = set()
+    for name, builder, kw, _ in memory.WORKLOAD:
+        fullest |= set(po.spec.output_fields(getattr(po.spec, builder)(name, **kw)))
+    assert len(fullest) > 300, len(fullest)
+    assert fullest <= probed, sorted(fullest - probed)
+    missed = [
+        p
+        for p, reached in PATHS.items()
+        if not any(reached(b, kw) for _, b, kw, _ in probe.WORKLOAD)
+    ]
+    assert not missed, missed

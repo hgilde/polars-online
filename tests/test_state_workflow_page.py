@@ -48,3 +48,20 @@ def test_a_recipe_prints_what_the_page_shows(line, code, shown, tmp_path, monkey
     monkeypatch.chdir(tmp_path)  # a recipe writes its parquet and state files where it runs
     problems = differences(shown, run(code, PAGE))
     assert not problems, f"STATE-WORKFLOW.md:{line}:\n" + "\n".join(problems)
+
+
+def test_the_windows_state_version_is_the_one_the_code_writes():
+    """The guide and the release record each name the window run's state
+    version, and both had stayed at 7 while the code wrote 9 (review round 9,
+    K-3): a reader checking a saved state's header against the guide would
+    call a 9 foreign. Both are read against the constant the code writes."""
+    import re
+
+    source = (REPO / "crates/online-polars/src/windows_frame.rs").read_text(encoding="utf-8")
+    (written,) = re.findall(r"const WINDOWS_VERSION: u32 = (\d+);", source)
+    guide = re.findall(r"The windows state is version (\d+)", PAGE.read_text(encoding="utf-8"))
+    record = re.findall(
+        r"The window run's state reached version (\d+)",
+        (REPO / "docs/RELEASE-READINESS.md").read_text(encoding="utf-8"),
+    )
+    assert guide == [written] and record == [written], (written, guide, record)

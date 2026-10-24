@@ -270,7 +270,7 @@ pip install polars-online      # or: uv add polars-online
 | depends on | nothing beyond `polars` at run time, since the wheel carries its own copy of Polars' Rust code |
 | numpy | needed only by `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` helpers: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError` |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
-| size | 8 to 10 MB to download and 26 to 37 MB installed, by platform, for 0.13.0 |
+| size | 24 to 30 MB to download and 70 to 98 MB installed, by platform, for 1.2.0 |
 
 To build from a checkout, install uv and a stable Rust toolchain
 ([Development](#development)), then run from its root:
@@ -2274,8 +2274,8 @@ To score rows without learning from them, call `bank.predict(frame)` on a
 bank object, or `lf.online.predict(...)` in a query. Every row is scored
 from the same state, which `predict` never moves. Since it skips each
 row's update, `ewridge` scores 1.8 times as fast as it learns at 5
-features, and 2.9 times at 20 ([docs/PERFORMANCE.md](docs/PERFORMANCE.md)
-§9). A query takes the bank object, read as it stands when the query runs,
+features, and 2.8 times at 20
+([PERFORMANCE §30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)). A query takes the bank object, read as it stands when the query runs,
 or a path, read when the query is built.
 This code uses `df`, `today` and `later` from [Example data](#example-data):
 
@@ -3457,10 +3457,11 @@ permutation null redraws `n_perm` statistics every `permute_every_rows` rows.**
 To skip the redraws, give `crit` a number, which fixes the threshold.
 
 **`bocpd` slows with the number of run lengths it keeps, so a larger
-`prune_below` makes it faster.** It does `O(runs · d²)` work a row for `d`
-features. `prune_below` drops every run holding less than that share of the
-probability mass, and `max_run`, 10,000 by default, caps how many runs it
-keeps. With neither bound the runs grow by one every row, and a stream
+`prune_below` makes it faster.** It does `O(runs · d)` work a row for `d`
+features under `covariance_type="diag"`, and `O(runs · d³)` under `"full"`,
+which factors each run's `d × d` scale every row. `prune_below` drops
+every run holding less than that share of the probability mass, and
+`max_run`, 10,000 by default, caps how many runs it keeps. With neither bound the runs grow by one every row, and a stream
 takes `O(rows²)`. A changepoint collapses them to a few dozen, so `bocpd`
 runs faster on data that breaks. A stream that does not break spreads them
 over thousands of run lengths, and there `max_run` is the bound. On 20,000

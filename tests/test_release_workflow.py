@@ -700,6 +700,21 @@ def test_the_readmes_pin_names_the_current_minor(copy):
     assert "README.md" in bad and f"~={major}.{minor}.0" in bad, bad
 
 
+def test_the_readmes_install_size_names_a_recent_release():
+    """The README's *size* row stated 0.13.0's wheels (8 to 10 MB) three
+    releases into 1.x, whose wheels are three times that (review round 9,
+    K-2). The row names the release it measured; it must be one of the two
+    newest in the CHANGELOG, so a release can ship before its wheels are
+    measured (step 12 refreshes the row) but not stay stale past the next."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    (row,) = [line for line in text.splitlines() if line.startswith("| size |")]
+    (named,) = re.findall(r"for (\d+\.\d+\.\d+) \|$", row)
+    log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    released = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", log, flags=re.M)
+    assert named in released[:2], (row, released[:2])
+    assert re.search(r"\d+ to \d+ MB to download and \d+ to \d+ MB installed", row), row
+
+
 def test_publishing_with_entries_left_under_unreleased_is_refused(copy):
     """Step 5 promotes `[Unreleased]` to the version's section, and the tag's
     notes are that section, so an entry left behind would ship with notes

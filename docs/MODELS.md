@@ -2226,7 +2226,12 @@ index = po.spec.coef_index(km)   # how coef is labelled: cluster = 0, 1, ..., te
 rows.** One k-means++ start lands in the wrong partition a third of the time
 on five blobs in four dimensions. So the default, `init="lloyd"`, takes
 ten starts, refines each by ten Lloyd iterations, and keeps the one of least
-inertia. `seed=` fixes the random draws.
+inertia. `seed=` fixes the random draws. That is about 120 passes over the
+buffer, paid once by each group's stream: with the default 500 rows and 8
+centres it took 93 ms at 400 features and 3.2 ms at 20, where
+`init="k-means++"` took 0.2 and 0.03 ms (one thread, the load average about
+24, 2026-10-23). A bank of many groups at many features pays it per group:
+10,000 groups at 400 features spend about a quarter of an hour seeding.
 
 **While `split_merge` is above 0, a far row is scored but not learned from.**
 A row is far when it sits outside its cluster, about four standard deviations
@@ -2942,7 +2947,7 @@ of the rows, and `robust_beta` to temper it:
 | setting | each run's model | note |
 |---|---|---|
 | `covariance_type="diag"`, as in the example | a normal-inverse-gamma per feature | |
-| `covariance_type="full"` | a normal-inverse-Wishart over all of them, O(runs p²) a row | the one that can see a break in the *correlation* alone |
+| `covariance_type="full"` | a normal-inverse-Wishart over all of them, O(runs p³) a row, since each run's p × p scale is factored every row | the one that can see a break in the *correlation* alone |
 | `robust_beta=0.1`, under `"diag"` | each row's contribution weighted by `(pi(x)/pi(mode))**robust_beta` | one 20-sigma row moves nothing; untempered, that row is a changepoint at `p_change` 0.91. Not free of the data's units |
 
 **Keep `robust_beta` below about 0.2.** Above it, the weighting forgives the

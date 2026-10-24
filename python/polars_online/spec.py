@@ -177,7 +177,8 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     column it is the row's number, the first row being 1: ``coef_every=10``
     writes the tenth row, the twentieth and so on. A reset of the clock
     starts the count over. Under either, the ``coef`` rows are the same
-    however the stream is chunked. With neither, the default, ``coef`` is
+    however the stream is chunked. ``predict`` reads neither: it fills
+    ``coef`` on each chunk's last accepted row of each group. With neither, the default, ``coef`` is
     filled on **each group's** last row within every chunk: one row per
     group per chunk, not one per chunk. Only that schedule follows the
     chunking; every other field is chunk-invariant, so one chunk or a
