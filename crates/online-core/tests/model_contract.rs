@@ -2499,6 +2499,10 @@ fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
 ) {
     let mut m = build();
     let kind = m.state().model.kind();
+    // A twin stepped through `step_into` on one kept buffer, as the bank
+    // steps every model (task 270, M-4).
+    let mut twin = build();
+    let mut kept = Step::default();
     let mut s = 20260902u64;
     let mut ready = 0usize;
     for i in 0..400 {
@@ -2534,6 +2538,18 @@ fn predict_is_the_step_without_the_step<M: OnlineModel + Clone>(
         let p = m.predict_with(&x, &y, d);
         let step = m.step(&x, &y, d, w);
         same_step(kind, i, &p, &step);
+        if i % 3 == 0 {
+            kept = stale_step();
+        }
+        twin.step_into(&x, &y, d, w, &mut kept);
+        assert!(
+            same_bits(&kept, &step),
+            "{kind}: row {i}: step_into wrote {kept:?}, step returned {step:?}"
+        );
+        assert!(
+            state_bytes(&twin) == state_bytes(&m),
+            "{kind}: row {i}: step_into left another state than step"
+        );
         let flagged_only = |slot: usize| ONLY_ON_A_FLAG.contains(&(kind, slot));
         if step
             .pred
@@ -2856,6 +2872,40 @@ fn same_bits(a: &Step, b: &Step) -> bool {
         && extra
 }
 
+/// A buffer holding another row's answer, of the wrong length and with an
+/// `extra`, for [`OnlineModel::step_into`] to overwrite whole.
+fn stale_step() -> Step {
+    Step {
+        pred: vec![7.25; 13],
+        n_eff: -3.5,
+        extra: Some(Extra::Lasso {
+            lam_selected: vec![0.5; 3],
+        }),
+    }
+}
+
+/// [`OnlineModel::step_into`] on a [`stale_step`] against `step` on a copy:
+/// the same answer to the bit, and the same state, byte for byte.
+fn step_into_is_step<M: OnlineModel + Clone>(
+    m: &M,
+    (x, y, d, w): (&[f64], &[Option<f64>], f64, f64),
+    kind: &str,
+    what: &str,
+) {
+    let (mut a, mut b) = (m.clone(), m.clone());
+    let want = a.step(x, y, d, w);
+    let mut got = stale_step();
+    b.step_into(x, y, d, w, &mut got);
+    assert!(
+        same_bits(&got, &want),
+        "{kind}: {what}: step_into wrote {got:?}, step returned {want:?}"
+    );
+    assert!(
+        state_bytes(&a) == state_bytes(&b),
+        "{kind}: {what}: step_into left another state than step"
+    );
+}
+
 /// Nothing reported: NaN in every slot, and in every number of `extra`.
 fn reports_nothing(s: &Step) -> bool {
     s.pred.iter().all(|v| v.is_nan())
@@ -2925,6 +2975,7 @@ fn refuses_unusable_values<M: OnlineModel + Clone>(
                 reports_nothing(&s),
                 "{kind}: {what}: the step reported {s:?}"
             );
+            step_into_is_step(m, (&xb, y, d, 1.0), kind, &what);
             for (how, p) in [
                 ("predict", m.predict(&xb, d)),
                 ("predict_with", m.predict_with(&xb, y, d)),
@@ -2974,6 +3025,7 @@ fn refuses_unusable_values<M: OnlineModel + Clone>(
                 same_bits(&pb, &pn),
                 "{kind}: {what}: predict_with reported {pb:?}, and {pn:?} for None"
             );
+            step_into_is_step(m, (x, &yb, d, 1.0), kind, &what);
             let (mut b, mut n) = (m.clone(), m.clone());
             let (sb, sn) = (b.step(x, &yb, d, 1.0), n.step(x, &yn, d, 1.0));
             assert!(
@@ -2992,6 +3044,7 @@ fn refuses_unusable_values<M: OnlineModel + Clone>(
     for bad in UNUSABLE {
         let what = format!("weight {bad:e}");
         let p = m.predict_with(x, y, d);
+        step_into_is_step(m, (x, y, d, bad), kind, &what);
         let mut c = m.clone();
         let s = c.step(x, y, d, bad);
         assert!(

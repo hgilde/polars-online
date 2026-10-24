@@ -174,30 +174,45 @@ impl AnyModel {
         dispatch!(self, m => m.step(x, y, d_clock, weight))
     }
 
-    /// [`Self::step`], with a `marginal`'s pair work split into `shards`
-    /// ranges of features and run on the pool a batch of rows at a time
-    /// ([`online_core::Marginal::step_sharded`], docs/PLAN.md task 126).
-    /// Every other model, and one shard, steps as `step` does. The rows a
-    /// sharded step holds are learned by [`Self::flush`], which every run
-    /// of rows ends with; the numbers are `step`'s to the bit.
-    pub fn step_sharded(
+    /// [`Self::step`], into `out` ([`OnlineModel::step_into`]): the same
+    /// numbers, with `out`'s buffers reused where the model writes in place
+    /// (docs/PLAN.md task 270, M-4).
+    pub fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut online_core::Step,
+    ) {
+        dispatch!(self, m => m.step_into(x, y, d_clock, weight, out))
+    }
+
+    /// [`Self::step_into`], with a `marginal`'s pair work split into
+    /// `shards` ranges of features and run on the pool a batch of rows at a
+    /// time ([`online_core::Marginal::step_sharded`], docs/PLAN.md task
+    /// 126). Every other model, and one shard, steps as `step_into` does.
+    /// The rows a sharded step holds are learned by [`Self::flush`], which
+    /// every run of rows ends with; the numbers are `step`'s to the bit.
+    pub fn step_sharded_into(
         &mut self,
         x: &[f64],
         y: &[Option<f64>],
         d_clock: f64,
         weight: f64,
         shards: usize,
-    ) -> online_core::Step {
+        out: &mut online_core::Step,
+    ) {
         match self {
             AnyModel::Marginal(m) if shards > 1 => {
-                m.step_sharded(x, y, d_clock, weight, &on_the_pool(shards))
+                *out = m.step_sharded(x, y, d_clock, weight, &on_the_pool(shards));
             }
-            _ => self.step(x, y, d_clock, weight),
+            _ => self.step_into(x, y, d_clock, weight, out),
         }
     }
 
     /// End a run of rows: learn every row a sharded step holds
-    /// ([`Self::step_sharded`]).
+    /// ([`Self::step_sharded_into`]).
     pub fn flush(&mut self, shards: usize) {
         if let AnyModel::Marginal(m) = self {
             m.flush(&on_the_pool(shards));
@@ -4464,6 +4479,10 @@ pub struct Scratch {
     /// Each slot's recursive residual, `resid / error_inflation`, under
     /// `emit_breaks` (docs/PLAN.md task 221 (b)).
     z: Vec<f64>,
+    /// The row's step, kept so a model that writes it in place
+    /// ([`OnlineModel::step_into`]) allocates no `pred` a row (task 270,
+    /// M-4). Taken for the row and put back after it.
+    step: online_core::Step,
 }
 
 /// One model instance's state and its disjoint slice of the chunk output.
@@ -4770,7 +4789,10 @@ fn run_instance(
         // nothing.
         let seeding = inst.model.get().seeding();
 
-        let mut step = if learn {
+        // The instance's kept step, its buffers reused (task 270, M-4); put
+        // back at the end of the row.
+        let mut step = std::mem::take(&mut sc.step);
+        if learn {
             // The row's stamp, for a window to key its snapshot by and
             // decide its edge from (task 175); decay reads `d_clock`.
             if let Some(stamp) = plan.stamp {
@@ -4785,10 +4807,10 @@ fn run_instance(
             };
             inst.model
                 .get_mut()
-                .step_sharded(xs, &sc.ys, d_clock, w, inst.shards)
+                .step_sharded_into(xs, &sc.ys, d_clock, w, inst.shards, &mut step);
         } else {
-            inst.model.get().predict(xs, &sc.ys, plan.d_clock)
-        };
+            step = inst.model.get().predict(xs, &sc.ys, plan.d_clock);
+        }
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
         // maps to "target 0" for the warmup check. Slot `s` belongs to target
@@ -5418,6 +5440,7 @@ fn run_instance(
         if reset_on_drift && row_drift {
             inst.reset();
         }
+        inst.scratch.step = step;
     }
     // Rows a sharded `marginal` held are learned before the run ends:
     // nothing outside a run reads a model with rows held.
