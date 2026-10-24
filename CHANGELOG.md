@@ -22,6 +22,53 @@ returns.
   with a fit half-life of 500 rows and a +20 shift, the mean absolute
   error over rows 200-400 after the shift is 19.5 at the fit's half-life
   and 14.6 at `huber_scale_half_life=100`, against least squares' 13.3.
+- **`po.spec.huber(feature_sets=...)`**: named subsets of the features,
+  each fitted from the same per-target sums and reported as
+  `pred_<t>__<set>`, as `ewridge`'s are (task 272). A row's Huber weight and
+  the residual scale come from the largest set's residual: the sets share
+  one set of sums per target, which holds a row at one weight. The largest
+  set is the plain Huber fit to the bit, a smaller set the weighted least
+  squares fit at those weights. Sets of 5, 10 and 20 features cost about
+  60% more a row than one fit (443 against 272 ns at 20 features).
+- **`po.spec.huber(ridge_scale="sum")`**: the decaying prior on the sum
+  scale, as for `ewridge`; at `huber_delta=inf` it gives `rls`'s
+  predictions within 1e-9, so it is the Huber form of `rls` (task 272).
+- **`po.spec.huber(emit_huber_scale=True)`** writes `huber_scale_<t>`, the
+  scale each row's Huber cut is drawn in, read before the row's own
+  residual enters it, so it can serve as a causal weight or scoring scale
+  (task 272).
+- **`marginal(bin_stat="huber")`**: each bin's location is Huber's
+  M-estimate of location, learned in one pass (task 272). A row counts for
+  `w·min(1, c/|e|)` against the bin's location before it, with the cut
+  `c = bin_huber_delta · σ_t` (default 1.345) and `σ_t` the target's
+  exponentially weighted MAD about its own robust location, so one spike
+  moves a thin bin by at most the cut times its share, where it moves the
+  mean by its whole size times its share. Against statsmodels' converged
+  M-location per bin on 20,000 rows in 16 bins it lands within 0.001,
+  0.002 and 0.03 of the target's scale at 1%, 5% and 12% spikes, where the
+  mean is off by 0.45, 1.5 and 3. `bin_n` stays the rows' weight;
+  `bin_var_y` is the clipped mean square and `split_gain` reads both. The
+  default `"mean"` is unchanged to the bit, as is `bin_huber_delta=inf`.
+  Under `"huber"` a cell keeps 40 bytes instead of 32 and a row runs at
+  0.75 to 0.9 times the mean's speed.
+- **`po.ewm_quantile`**: the exponentially weighted quantile of a column
+  over the window operators' windows, looking back or ahead with
+  `reverse=True`, with or without a `window_size` (task 272). Each row is
+  weighed as `po.ewm_sum` weighs it, and the result is within 0.78% of
+  numpy's weighted `inverted_cdf` quantile. A hard window holds 24 bytes a
+  row per operator: a row leaving restores the weights it kept, with no
+  subtraction. The median of `|r|` over 0.6745 is a robust scale (the
+  EW-MAD); WINDOWS.md gives the recipe and the rule for a scale of a target
+  used as a weight (leave the label out until it matures). It costs 1.7 to
+  1.9 times `ewm_mean` a row. The `with_windows` state is version 10 and
+  still reads version 9.
+- `docs/GRAM.md`, *Huber regression on a Gram*: Huber's algorithm H on one
+  shared Gram, a Polars query each pass, reaching statsmodels' Huber
+  M-estimate within 3e-5 on the slope in ten passes; why weighting only
+  the cross-moments is not weighted least squares (slope −59.4 where the
+  fit is 2.04), and why to start from a fit that has the target's level.
+  GBDT.md names XGBoost's and LightGBM's Huber objectives with their slope
+  set from the MAD (task 272).
 - **`--output-layout flat`** on the command line (TOML
   `output_layout = "flat"`) writes each spec's output as `<spec>.<field>`
   columns, as a CSV already gets, in parquet, IPC and NDJSON; the default
@@ -68,6 +115,12 @@ returns.
   This changes a default in a minor release,
   by the maintainer's decision, against the policy's row for a changed
   default; the way back is the one setting above.
+- `huber`'s docs state how a delayed label is weighed: under `embargo` or
+  a look-ahead formula target a held row is weighed when it is learned, by
+  the fit of every row before it, which is the undelayed run's fit (`coef`
+  under an embargo of E rows is the undelayed `coef` from E rows earlier,
+  to the bit); `ewridge`'s and `rls`' docs point to `huber` for a Huber
+  loss (task 272).
 - **The command line refuses a URL in any path** (input, output,
   `load_state`, `save_state`, `closed_groups`), from a flag or the TOML,
   naming it before anything is read, under `--dry-run` too (task 270). An
