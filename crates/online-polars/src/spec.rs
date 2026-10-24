@@ -707,6 +707,12 @@ pub enum ModelKind {
         /// serializes as it did.
         #[serde(default, skip_serializing_if = "RidgeScale::is_mean")]
         ridge_scale: RidgeScale,
+        /// Emit `huber_scale_<t>`: each target's residual scale as the row's
+        /// cut reads it, before the row's own residual (docs/PLAN.md task
+        /// 272 (a)). Skipped when off, so a spec written before it
+        /// serializes as it did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        emit_huber_scale: bool,
     },
     /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
     Quantile {

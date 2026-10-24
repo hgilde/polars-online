@@ -755,6 +755,14 @@ penalized too. The prior fades as the rows arrive. At `huber_delta=inf`,
 solved on every row, it gives `rls`'s predictions with `delta=ridge`
 within 1e-9, as `ewridge(ridge_scale="sum")` does.
 
+**`emit_huber_scale=True` writes `huber_scale_<t>`, the scale each row's
+cut is drawn in.** It is read after the row's decay and before the row's
+own residual enters the scale, so a wild value cannot widen its own scale:
+the field is causal by construction. Use it as a row weight downstream, or
+as the scale of a robust loss on the residuals. It is one field per target,
+the largest set's under `feature_sets`, and null until the target has a
+`σ` above 0.
+
 **The scale `σ` is the part of Huber's estimator that makes it robust.**
 The cut is `δσ`, so a scale that the outliers inflate moves the cut out of
 their way. `huber_scale=` chooses between two scales:

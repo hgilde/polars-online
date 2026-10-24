@@ -24,7 +24,8 @@ pub struct Row {
 }
 
 /// What a row reports: the prediction slots, `n_eff`, and the numbers of
-/// the step's extra (lasso's selected penalties), in that order.
+/// the step's extra (lasso's selected penalties, or `huber`'s emitted
+/// scales), in that order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Out {
     pub pred: Vec<f64>,
@@ -45,6 +46,7 @@ impl<M: OnlineModel> Run for Model<M> {
         let s = self.0.step(&r.x, &r.y, r.d, r.w);
         let extra = match s.extra {
             Some(Extra::Lasso { lam_selected }) => lam_selected,
+            Some(Extra::Huber { scale }) => scale,
             Some(other) => panic!("an extra the harness does not know: {other:?}"),
             None => Vec::new(),
         };
@@ -312,6 +314,7 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         huber_scale_decay: None,
         feature_sets: Vec::new(),
         ridge_scale: false,
+        emit_scale: false,
     }
 }
 
@@ -659,7 +662,8 @@ pub fn all() -> Vec<Case> {
             40
         ),
         // RLS's sum-scale prior on each target's raw moments (schema 63,
-        // docs/PLAN.md task 272 (a)), its prior scale aged in the sums.
+        // docs/PLAN.md task 272 (a)), its prior scale aged in the sums, and
+        // the emitted scale switched on.
         case!(
             "huber_sum",
             "Robust",
@@ -668,6 +672,7 @@ pub fn all() -> Vec<Case> {
                 ridge: 0.5,
                 standardize: false,
                 ridge_scale: true,
+                emit_scale: true,
                 ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
             })
             .unwrap(),

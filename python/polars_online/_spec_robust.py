@@ -28,6 +28,7 @@ def huber(
     max_rows_between_solves: int | None = None,
     feature_sets: dict[str, list[str]] | None = None,
     ridge_scale: Literal["mean", "sum"] = "mean",
+    emit_huber_scale: bool = False,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -185,6 +186,14 @@ def huber(
         ``ewridge(ridge_scale="sum")`` is its least-squares form. ``"sum"``
         is refused beside ``standardize`` and beside two or more
         ``feature_sets``.
+    ``emit_huber_scale``
+        Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
+        row's cut reads it: after the row's decay and before the row's own
+        residual enters it, so the field is causal by construction and can
+        serve as a weight or as the scale of a robust score of the
+        residuals. Null until the target has an ``s`` above 0. Under an
+        ``embargo`` it is read where the row is scored, as ``pred_<t>`` is.
+        Default ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -208,6 +217,8 @@ def huber(
     ``settled_frac``, ``withheld_reason``
         How far the decay window had filled before the row, and which gate
         withheld the row's predictions, null where none did, as everywhere.
+    ``huber_scale_<t>``
+        Under ``emit_huber_scale``: the scale the row's cut is drawn in.
     ``coef``
         Per target, the intercept then one entry per feature (:func:`coef_index`);
         per target and set under ``feature_sets``, 0 for a feature outside the set.
@@ -249,8 +260,9 @@ def huber(
         "feature_sets": (
             [[k, list(v)] for k, v in feature_sets.items()] if feature_sets is not None else None
         ),
-        # Written only away from its default, which the Rust spec skips.
+        # Written only away from their defaults, which the Rust spec skips.
         "ridge_scale": None if ridge_scale == "mean" else ridge_scale,
+        "emit_huber_scale": True if emit_huber_scale else None,
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

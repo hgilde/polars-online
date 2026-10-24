@@ -499,7 +499,7 @@ fn held(v: &rmpv::Value) -> usize {
 /// `sgd_huber`; each MAD sketch names its band (task 271 (b)). `huber`'s
 /// feature sets (63, task 272 (a)): `huber_sets` names them in its cfg and
 /// holds a fit per target and set; `huber_sum` asks for the sum-scale
-/// prior.
+/// prior and the emitted scale.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
@@ -575,16 +575,18 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             );
         }
     }
-    // `huber_sum` asks for the sum-scale prior and the rest do not (63,
-    // task 272 (a)).
+    // `huber_sum` asks for the sum-scale prior and the emitted scale, and
+    // the rest do not (63, task 272 (a)).
     for (name, want) in [("huber_sum", true), ("huber", false), ("huber_sets", false)] {
         let f = frozen::ALL
             .iter()
             .find(|f| f.name == name)
             .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
         let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
-        let got = at(&v, &["model", "Robust", "cfg", "ridge_scale"]).and_then(rmpv::Value::as_bool);
-        assert_eq!(got, Some(want), "{name}: cfg.ridge_scale");
+        for field in ["ridge_scale", "emit_scale"] {
+            let got = at(&v, &["model", "Robust", "cfg", field]).and_then(rmpv::Value::as_bool);
+            assert_eq!(got, Some(want), "{name}: cfg.{field}");
+        }
     }
     // Each Huber form names its scale, and the RMS's keeps no sketch.
     for (name, variant, scale) in [

@@ -304,6 +304,15 @@ pub struct RobustCfg {
     /// State since schema 63, false in a state written before it.
     #[serde(default)]
     pub ridge_scale: bool,
+    /// Report each target's residual scale `s` with every prediction, as
+    /// [`crate::Extra::Huber`]: the scale the row's Huber cut is drawn in,
+    /// read before the row's own residual enters it, so a caller can use it
+    /// as a weight or a scoring scale that is causal by construction. NaN
+    /// where the target has no scale yet (the module docs). Huber only
+    /// (docs/PLAN.md task 272 (a)). State since schema 63, false in a state
+    /// written before it.
+    #[serde(default)]
+    pub emit_scale: bool,
 }
 
 /// A target's band system as a solve factorizes it -- `A`, the band Gram
@@ -465,6 +474,11 @@ impl RobustCfg {
             return Err(format!(
                 "{kind}: feature_sets are for huber: a quantile fit's nudges read one band \
                  system per target"
+            ));
+        }
+        if self.emit_scale && !matches!(self.loss, RobustLoss::Huber { .. }) {
+            return Err(format!(
+                "{kind}: emit_huber_scale is for huber: a quantile fit's band has no cut"
             ));
         }
         if self.ridge_scale {
@@ -1570,8 +1584,12 @@ impl OnlineModel for Robust {
         }
 
         // ---- predict (state before the update) ----
-        let out = self.predict(x, d_clock);
+        let mut out = self.predict(x, d_clock);
         let pred = &out.pred;
+        // Each target's scale as this row's cut reads it, after its decay
+        // and before its residual (`RobustCfg::emit_scale`).
+        let emit = self.cfg.emit_scale;
+        let mut seen = if emit { vec![f64::NAN; m] } else { Vec::new() };
         // The slot whose prediction weighs the row, per target: under
         // feature sets the largest set's, since the sets share the target's
         // sums and a row enters them at one weight (`RobustCfg::feature_sets`).
@@ -1628,6 +1646,9 @@ impl OnlineModel for Robust {
             self.wsig[j] *= lam_scale;
             if let Some(q) = self.mad.get_mut(j) {
                 q.age(lam_scale);
+            }
+            if emit {
+                seen[j] = self.residual_scale(j).unwrap_or(f64::NAN);
             }
             let present = lam * self.wobs[j];
             let rows = lam * self.nobs[j];
@@ -1766,6 +1787,9 @@ impl OnlineModel for Robust {
         if due {
             self.solve();
         }
+        if emit {
+            out.extra = Some(crate::Extra::Huber { scale: seen });
+        }
         out
     }
 
@@ -1783,11 +1807,14 @@ impl OnlineModel for Robust {
                 }
             }
         }
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        // Each target's scale as it stands: a row scored and not learned
+        // (held under an embargo) reads it so (`RobustCfg::emit_scale`).
+        let extra = self.cfg.emit_scale.then(|| crate::Extra::Huber {
+            scale: (0..self.cfg.n_targets)
+                .map(|j| self.residual_scale(j).unwrap_or(f64::NAN))
+                .collect(),
+        });
+        Step { pred, n_eff, extra }
     }
 
     fn state(&self) -> State {
@@ -1993,6 +2020,7 @@ mod tests {
             huber_scale_decay: None,
             feature_sets: Vec::new(),
             ridge_scale: false,
+            emit_scale: false,
         }
     }
 

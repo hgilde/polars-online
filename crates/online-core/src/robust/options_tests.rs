@@ -32,6 +32,7 @@ fn huber(k: usize, m: usize) -> RobustCfg {
         huber_scale_decay: Some(Decay::Halflife(60.0)),
         feature_sets: Vec::new(),
         ridge_scale: false,
+        emit_scale: false,
     }
 }
 
@@ -414,4 +415,84 @@ fn ridge_scale_is_refused_where_ewridge_refuses_it() {
         })
         .is_ok()
     );
+}
+
+fn scales(step: &Step) -> Vec<f64> {
+    match &step.extra {
+        Some(crate::Extra::Huber { scale }) => scale.clone(),
+        other => panic!("no scale: {other:?}"),
+    }
+}
+
+/// The emitted scale is the one the row's cut is drawn in: each target's
+/// residual scale after the row's decay and before its residual, NaN
+/// before there is one. It does not read the row's own target, so a wild
+/// value on the row leaves it as it was, and the next row reads the wild
+/// residual in it. A row scored and not learned reads it too.
+#[test]
+fn the_emitted_scale_is_the_cuts_and_reads_no_row_its_own() {
+    for scale in [HuberScale::Mad, HuberScale::Rms] {
+        let cfg = RobustCfg {
+            emit_scale: true,
+            huber_scale: scale,
+            ..huber(3, 2)
+        };
+        let mut m = Robust::new(cfg.clone()).unwrap();
+        let mut quiet = Robust::new(RobustCfg {
+            emit_scale: false,
+            ..cfg
+        })
+        .unwrap();
+        let mut s = 12u64;
+        let mut set = 0;
+        for i in 0..600 {
+            let (x, y, d, w) = row(i, &mut s);
+            let before: Vec<f64> = (0..2)
+                .map(|j| m.residual_scale(j).unwrap_or(f64::NAN))
+                .collect();
+            let scored = m.predict(&x, d);
+            let got = scales(&m.step(&x, &y, d, w));
+            let off = quiet.step(&x, &y, d, w);
+            assert!(off.extra.is_none(), "{scale:?}: off is off");
+            for j in 0..2 {
+                // The scale's decay moves neither a median nor a mean.
+                assert_eq!(got[j].to_bits(), before[j].to_bits(), "{scale:?} row {i}");
+                assert_eq!(scales(&scored)[j].to_bits(), before[j].to_bits());
+                set += usize::from(got[j].is_finite());
+            }
+            if i == 0 {
+                assert!(got.iter().all(|v| v.is_nan()), "no scale before a residual");
+            }
+        }
+        assert!(set > 1100, "{scale:?}: {set}");
+        // A wild target on the row: its own scale is unmoved, the next
+        // row's is.
+        let (x, mut y, d, w) = row(600, &mut s);
+        let mut wild = m.clone();
+        let tame = scales(&m.step(&x, &y, d, w));
+        y[0] = Some(1e6);
+        assert_eq!(scales(&wild.step(&x, &y, d, w)), tame, "{scale:?}");
+        let (x, y, d, w) = row(601, &mut s);
+        let (a, b) = (
+            scales(&m.step(&x, &y, d, w)),
+            scales(&wild.step(&x, &y, d, w)),
+        );
+        assert!(
+            b[0] > a[0],
+            "{scale:?}: the wild residual enters the next row's scale"
+        );
+    }
+}
+
+#[test]
+fn the_emitted_scale_is_refused_on_a_quantile_fit() {
+    let e = Robust::new(RobustCfg {
+        emit_scale: true,
+        loss: RobustLoss::Quantile { tau: 0.5 },
+        huber_scale: HuberScale::Rms,
+        huber_scale_decay: None,
+        ..huber(3, 1)
+    })
+    .unwrap_err();
+    assert!(e.contains("emit_huber_scale is for huber"), "{e}");
 }

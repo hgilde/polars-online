@@ -239,3 +239,84 @@ class TestRidgeScale:
             po.spec.huber("m", ridge_scale="sum", feature_sets=SETS, **COMMON)
         with pytest.raises(ValueError, match='ridge_scale must be one of "mean", "sum"'):
             po.spec.huber("m", ridge_scale="median", **COMMON)  # type: ignore[arg-type]
+
+
+class TestEmittedScale:
+    """``emit_huber_scale``: each target's residual scale as the row's cut
+    reads it, before the row's own residual, as ``huber_scale_<t>``."""
+
+    def test_the_field_is_there_only_when_asked(self):
+        on = po.spec.output_index(po.spec.huber("m", emit_huber_scale=True, **COMMON))
+        off = po.spec.output_index(po.spec.huber("m", **COMMON))
+        assert {"huber_scale_y0", "huber_scale_y1"} <= set(on["field"].to_list())
+        assert not any(f.startswith("huber_scale") for f in off["field"].to_list())
+        sets = po.spec.huber("m", emit_huber_scale=True, feature_sets=SETS, **COMMON)
+        fields = po.spec.output_index(sets)["field"].to_list()
+        assert [f for f in fields if f.startswith("huber_scale")] == [
+            "huber_scale_y0",
+            "huber_scale_y1",
+        ], "one scale per target, the largest set's, whatever the sets"
+
+    def test_it_reads_no_row_its_own(self):
+        """A wild value on a row leaves that row's scale as it was, and
+        enters the next row's: the field is causal by construction. Under
+        the root mean square, which a wild residual moves by its size; the
+        MAD's median moves by one row's weight, often within its bucket."""
+        df = _frame()
+        spec = po.spec.huber("m", emit_huber_scale=True, huber_scale="rms", **COMMON)
+        at = 700
+        wild = df.with_columns(
+            y0=pl.when(pl.int_range(pl.len()) == at).then(1e6).otherwise(pl.col("y0"))
+        )
+        a = _field(po.ModelBank([spec]).fit_predict(df), "huber_scale_y0")
+        b = _field(po.ModelBank([spec]).fit_predict(wild), "huber_scale_y0")
+        assert np.isnan(a[0]) and np.isfinite(a[50:]).all()
+        assert np.array_equal(a[: at + 1], b[: at + 1], equal_nan=True)
+        assert b[at + 1] > a[at + 1]
+
+    def test_each_set_is_weighed_by_the_largest_sets_residual_under_the_mad(self):
+        """The feature sets' reference of ``TestFeatureSets`` under the
+        default scale, the MAD, whose sketch no recursion here reproduces:
+        the scale is the plain fit's ``huber_scale_y0``, emitted before each
+        row, and the weight is formed from it and the plain fit's residual."""
+        df = _frame(900).drop("y1")
+        c = dict(COMMON, targets=["y0"], half_life=200.0, solve_every=0.0)
+        c.pop("coef_every")
+        sets = {"one": ["x1"], "all": FEATURES}
+        out = po.ModelBank([po.spec.huber("m", feature_sets=sets, ridge=1e-4, **c)]).fit_predict(df)
+        plain = po.ModelBank(
+            [po.spec.huber("m", emit_huber_scale=True, ridge=1e-4, **c)]
+        ).fit_predict(df)
+        pred, scale = _field(plain, "pred_y0"), _field(plain, "huber_scale_y0")
+        r = np.abs(df["y0"].to_numpy() - pred)
+        cut = 1.345 * scale
+        w_rob = np.where(np.isfinite(r) & np.isfinite(cut) & (r > cut), cut / r, 1.0)
+        assert (w_rob < 1.0).sum() > 30, "the cut must bind"
+        assert np.array_equal(_field(out, "pred_y0__all"), pred, equal_nan=True)
+        ref = po.ModelBank(
+            [
+                po.spec.ewridge(
+                    "m",
+                    ridge=1e-4,
+                    **dict(c, features=["x1"], weight="wr"),
+                    max_rows_between_solves=1,
+                )
+            ]
+        ).fit_predict(df.with_columns(wr=pl.Series(df["w"].to_numpy() * w_rob)))
+        a, b = _field(out, "pred_y0__one"), _field(ref, "pred_y0")
+        both = np.isfinite(a) & np.isfinite(b)
+        assert both.sum() > 850
+        np.testing.assert_allclose(a[both], b[both], rtol=1e-9, atol=1e-9)
+
+    @pytest.mark.parametrize("rows", [1, 7, 600])
+    def test_one_chunk_or_many_give_one_run(self, rows):
+        df = _frame()
+        spec = po.spec.huber("m", emit_huber_scale=True, feature_sets=SETS, **COMMON)
+        whole = po.ModelBank([spec]).fit_predict(df)
+        bank = po.ModelBank([spec])
+        parts = [bank.fit_predict(df.slice(i, rows)) for i in range(0, df.height, rows)]
+        assert pl.concat(parts).equals(whole, null_equal=True), rows
+
+    def test_it_is_refused_on_quantile(self):
+        with pytest.raises(TypeError):
+            po.spec.quantile("m", quantile=0.5, emit_huber_scale=True, **COMMON)  # type: ignore[call-arg]

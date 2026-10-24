@@ -4965,10 +4965,14 @@ fn run_instance(
                     inst.o_inflation[slot * n_rows + ri] = *r;
                 }
             }
-            if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
-                for (t_i, l) in lam_selected.iter().enumerate() {
-                    inst.o_lam[t_i * n_rows + ri] = *l;
+            match &step.extra {
+                Some(online_core::Extra::Lasso { lam_selected: v })
+                | Some(online_core::Extra::Huber { scale: v }) => {
+                    for (t_i, l) in v.iter().enumerate() {
+                        inst.o_lam[t_i * n_rows + ri] = *l;
+                    }
                 }
+                _ => {}
             }
         }
         // The decay time advances with the rows the model learns from, by

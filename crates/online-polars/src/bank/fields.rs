@@ -1314,6 +1314,24 @@ fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
                 );
             }
         }
+        // `huber`'s residual scale per target, in the same buffer as
+        // lasso's selected penalty (docs/PLAN.md task 272 (a)).
+        if matches!(
+            spec.model,
+            crate::ModelKind::Huber {
+                emit_huber_scale: true,
+                ..
+            }
+        ) {
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                fields.push(
+                    FieldMeta::new(format!("huber_scale_{t}{suffix}"), "huber_scale")
+                        .decay(suffix, d)
+                        .target(t)
+                        .src(Source::LamSelected(mi * m + t_i)),
+                );
+            }
+        }
     }
     if spec.emit_selected {
         for (t_i, t) in spec.targets.iter().enumerate() {

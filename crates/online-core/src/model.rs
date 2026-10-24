@@ -23,6 +23,10 @@ pub struct Step {
 pub enum Extra {
     /// Lasso path: selected lambda per target (docs/PLAN.md §4.3).
     Lasso { lam_selected: Vec<f64> },
+    /// Huber: each target's residual scale as the row reads it, before its
+    /// own residual, NaN where there is none yet (`RobustCfg::emit_scale`;
+    /// docs/PLAN.md task 272 (a)).
+    Huber { scale: Vec<f64> },
 }
 
 /// The coefficients' sampling variances ([`OnlineModel::coef_variance`]),
