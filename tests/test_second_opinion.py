@@ -4637,13 +4637,14 @@ class TestCoefStatsIsStatsmodelsOls:
     def test_a_constant_column_leaves_the_others_their_errors(self, ridge):
         """A constant column among the features, which ``standardize`` drops
         at 0: its ``se`` and ``t`` are ``nan``, and the others' are
-        statsmodels' OLS on the columns kept, at this fit's ``sigma2`` (whose
-        degrees of freedom count the constant's slot, so the two scales are
-        set side by side). A factor of the whole system, whose row for the
-        constant is zero, made every error ``nan``."""
+        statsmodels' OLS on the columns kept. The dropped column is no degree
+        of freedom: ``sigma2`` divides by ``n - 3``, the kept columns and the
+        intercept, where counting the constant's slot divided by ``n - 4``
+        (task 270, review round 9 B-3 and I-2). A factor of the whole system,
+        whose row for the constant is zero, made every error ``nan``."""
         import statsmodels.api as sm
 
-        x, y = self._rows()
+        x, y = self._rows(n=500)
         frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": np.full(len(y), 3.0), "y": y})
         spec = po.spec.ewridge(
             "m", targets=["y"], features=["x0", "x1", "c"], half_life=float("inf"), min_weight=5.0
@@ -4656,18 +4657,60 @@ class TestCoefStatsIsStatsmodelsOls:
         n = len(y)
         assert fit["coef"][3] == 0.0
         assert np.isnan(fit["se"][3]) and np.isnan(fit["t"][3])
-        assert fit["sigma2"] == pytest.approx(fit["resid_var"] * n / (n - 4), rel=1e-12)
-        # Least squares' errors at the fit's residual variance: the inverse
-        # moments are the kept columns' whatever the ridge.
-        se = fit["se"][:3] * np.sqrt(ols.scale / fit["sigma2"])
-        np.testing.assert_allclose(se, ols.bse, rtol=1e-8)
+        assert fit["sigma2"] == pytest.approx(fit["resid_var"] * n / (n - 3), rel=1e-12)
         np.testing.assert_allclose(fit["t"][:3], fit["coef"][:3] / fit["se"][:3], rtol=1e-12)
-        if ridge == 0.0:
-            np.testing.assert_allclose(fit["coef"][:3], ols.params, rtol=1e-8)
-        # And ``coef_stats`` reads the same columns.
         st = po.gram.coef_stats(g, fit["coef"])
         assert np.isnan(st["se"][3])
-        np.testing.assert_allclose(st["se"][:3], fit["se"][:3], rtol=1e-9)
+        assert st["sigma2"] == pytest.approx(fit["sigma2"], rel=1e-12)
+        np.testing.assert_allclose(st["se"][:3], fit["se"][:3], rtol=1e-12)
+        if ridge == 0.0:
+            # Least squares on the kept columns, statsmodels' to rounding.
+            np.testing.assert_allclose(fit["coef"][:3], ols.params, rtol=1e-12)
+            for got in (fit, st):
+                assert got["sigma2"] == pytest.approx(ols.scale, rel=1e-12)
+                np.testing.assert_allclose(got["se"][:3], ols.bse, rtol=1e-12)
+        else:
+            # Least squares' errors at the fit's residual variance: the
+            # inverse moments are the kept columns' whatever the ridge.
+            se = fit["se"][:3] * np.sqrt(ols.scale / fit["sigma2"])
+            np.testing.assert_allclose(se, ols.bse, rtol=1e-12)
+
+    def test_a_constant_column_within_parts_is_no_degree_of_freedom(self):
+        """Pooled within parts, a constant column has no variance and is no
+        degree of freedom either: ``sigma2`` is statsmodels' OLS on the kept
+        slopes and a dummy per part, in ``coef_stats`` and ``solve_subsets``
+        alike."""
+        import statsmodels.api as sm
+
+        x, y = self._rows(n=800)
+        part = np.arange(len(y)) // 200
+        y = y + 2.0 * part
+
+        def gram(rows):
+            frame = pl.DataFrame(
+                {"x0": x[rows, 0], "x1": x[rows, 1], "c": np.full(rows.sum(), 3.0), "y": y[rows]}
+            )
+            spec = po.spec.ewridge(
+                "m",
+                targets=["y"],
+                features=["x0", "x1", "c"],
+                half_life=float("inf"),
+                min_weight=5.0,
+            )
+            bank = po.ModelBank([spec])
+            bank.fit_predict(frame)
+            return bank.gram("m")[0]
+
+        g = po.gram.merge([gram(part == p) for p in range(4)], within=True)
+        b = po.gram.solve(g, standardize=True)
+        assert b[3] == 0.0
+        st = po.gram.coef_stats(g, b)
+        ((fit,),) = po.gram.solve_subsets([g], [[0]], ridge=0.0, standardize=True)
+        dummies = (part[:, None] == np.arange(4)).astype(float)
+        ols = sm.OLS(y, np.column_stack([x, dummies])).fit()
+        for got in (st, fit):
+            assert got["sigma2"] == pytest.approx(ols.scale, rel=1e-12)
+            np.testing.assert_allclose(got["se"][1:3], ols.bse[:2], rtol=1e-12)
 
     def test_a_gram_pooled_within_is_unmoved(self):
         """A Gram pooled within parts has means of 0, the target's too, so

@@ -159,8 +159,8 @@ pub struct EwRidgeCfg {
     /// block. Memory: `B × k_total` floats per Gram -- one, or under
     /// `own_rows` one per pattern of missing targets -- and `B` per target,
     /// twice with `session_shrink`'s twin, held in the state file mid-block,
-    /// and refused
-    /// over 256 MiB a Gram. The block's product is a floating-point sum in a
+    /// and refused over 256 MiB in all, counting under `own_rows` a block
+    /// for each target, the most Grams there can be. The block's product is a floating-point sum in a
     /// different order from the per-row one, so a blocked fit is not
     /// bit-identical to an unblocked one and its last bits may differ across
     /// CPUs; it is identical whichever way the stream is chunked.
@@ -309,17 +309,27 @@ impl EwRidgeCfg {
                     self.solve_every, self.max_rows_between_solves
                 ));
             }
-            // Held rows: `B × k_total` per accumulator, the slow twin included.
+            // Held rows: `B × k_total` per accumulator, the slow twin
+            // included, and per Gram: under `own_rows` each pattern of
+            // missing rows has a Gram of its own holding its own block, and
+            // Grams only ever split, a target to one, so `n_targets` of them
+            // at most (docs/PLAN.md task 270, review round 9 A-1: one block
+            // was counted, and ten targets held ten times the budget).
             let twins = 1 + usize::from(self.session_shrink.is_some());
+            let grams = match self.target_gaps {
+                TargetGaps::OwnRows => self.n_targets,
+                TargetGaps::Pairwise => 1,
+            };
             let cells = self
                 .gram_block_rows
                 .saturating_mul(self.k_total())
-                .saturating_mul(twins);
+                .saturating_mul(twins)
+                .saturating_mul(grams);
             let bytes = cells.saturating_mul(std::mem::size_of::<f64>());
             if bytes > GRAM_BLOCK_BUDGET {
                 return Err(format!(
                     "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows ({} × {} \
-                     features{}), over the {} MiB budget; reduce it, or narrow the features",
+                     features{}{}), over the {} MiB budget; reduce it, or narrow the features{}",
                     self.gram_block_rows,
                     bytes as f64 / (1u64 << 30) as f64,
                     self.gram_block_rows,
@@ -329,7 +339,20 @@ impl EwRidgeCfg {
                     } else {
                         ""
                     },
+                    if grams > 1 {
+                        format!(
+                            ", per pattern of missing rows, of which target_gaps = \
+                             \"own_rows\" keeps up to one per target: {grams}"
+                        )
+                    } else {
+                        String::new()
+                    },
                     GRAM_BLOCK_BUDGET >> 20,
+                    if grams > 1 {
+                        ", or set target_gaps = \"pairwise\", whose one Gram holds one block"
+                    } else {
+                        ""
+                    },
                 ));
             }
         }

@@ -125,7 +125,9 @@ impl Sandwich {
 
     /// One row: its features, its out-of-sample residual, the step's decay
     /// and its weight. A residual or a feature that is not finite, or a
-    /// weight of 0, only ages (CLAUDE.md hard rule 9).
+    /// weight of 0, only ages (CLAUDE.md hard rule 9), and so does a row
+    /// whose score `u = w e z` or bread term `w z z'` would put a sum past
+    /// `f64`: kept, its `inf` would stay in the sums for good.
     pub fn update(&mut self, x: &[f64], e: f64, lam: f64, w: f64) {
         self.age(lam);
         if !(e.is_finite() && w > 0.0 && x.len() == self.k && x.iter().all(|v| v.is_finite())) {
@@ -143,6 +145,18 @@ impl Sandwich {
             z.extend_from_slice(x);
         }
         let u: Vec<f64> = z.iter().map(|v| w * e * v).collect();
+        // The bread and the meat are sums of positive semidefinite terms, so
+        // each entry is bounded by its diagonal ones (Cauchy-Schwarz), and
+        // each lag sum by the meat's diagonal at the two rows' present
+        // weights: a finite diagonal after the row keeps every sum finite
+        // (docs/PLAN.md task 270, review round 9 B-2).
+        let fits = (0..d).all(|i| {
+            (self.bread[i * d + i] + w * z[i] * z[i]).is_finite()
+                && (self.meat[i * d + i] + u[i] * u[i]).is_finite()
+        });
+        if !fits {
+            return;
+        }
         for i in 0..d {
             for j in 0..d {
                 self.bread[i * d + j] += w * z[i] * z[j];
@@ -242,11 +256,14 @@ impl Sandwich {
         let off = usize::from(self.intercept);
         let p = idx.len() + off;
         let mut out = vec![f64::NAN; self.k + off];
+        // A rounding below 0 is 0, but a NaN variance stays NaN: `f64::max`
+        // read it as 0.0, a standard error that says the coefficient is
+        // exact (review round 9, B-2).
         for (a, &i) in idx.iter().enumerate() {
-            out[off + i] = v[(a + off) * p + a + off].max(0.0).sqrt();
+            out[off + i] = crate::solve::clamp_rounding(v[(a + off) * p + a + off]).sqrt();
         }
         if self.intercept {
-            out[0] = v[0].max(0.0).sqrt();
+            out[0] = crate::solve::clamp_rounding(v[0]).sqrt();
         }
         out.iter().any(|v| v.is_finite()).then_some(out)
     }
@@ -394,6 +411,60 @@ mod tests {
         s.update(&[0.3, -0.2], 0.4, 1.0, 1.0);
         assert_eq!(s.gammas[0], before, "no lag product across a break");
         assert!(s.has_shape(2, false, 1));
+    }
+
+    /// A row whose score `u = w e z` would put a sum past `f64` -- one
+    /// wild row whose square overflows, or a row the meat's running sum
+    /// cannot take -- only ages, as a residual that is not finite does: the
+    /// sandwich after it is the one that aged past it, and its errors stay
+    /// numbers. Folded, its `inf` stayed in the meat for good and every
+    /// later standard error read `NaN.max(0.0) = 0.0`, an exact coefficient
+    /// (review round 9, B-2; docs/PLAN.md task 270).
+    #[test]
+    fn a_score_past_f64_is_refused() {
+        let mut st = 29u64;
+        let rows: Vec<(f64, f64)> = (0..80).map(|_| (lcg(&mut st), lcg(&mut st))).collect();
+        let (mut s, mut aged) = (Sandwich::new(1, true, 2), Sandwich::new(1, true, 2));
+        for (i, &(x, e)) in rows.iter().enumerate() {
+            if i == 40 {
+                s.update(&[1e60], 1e100, 1.0, 1.0);
+                aged.update(&[1e60], f64::NAN, 1.0, 1.0);
+            }
+            s.update(&[x], e, 1.0, 1.0);
+            aged.update(&[x], e, 1.0, 1.0);
+        }
+        assert_eq!(s, aged, "the wild row only aged");
+        for hac in [false, true] {
+            let se = s.standard_errors(&[0], hac).unwrap();
+            assert!(se.iter().all(|v| v.is_finite() && *v > 0.0), "{se:?}");
+        }
+        // Each square finite, their sum not: the second is refused.
+        let mut s = Sandwich::new(1, true, 0);
+        s.update(&[0.0], 1e154, 1.0, 1.0);
+        let one = s.clone();
+        s.update(&[0.0], 1e154, 1.0, 1.0);
+        assert_eq!(s, one);
+        assert!(s.has_shape(1, true, 0));
+    }
+
+    /// A variance that is not a number -- here `B⁻¹ M B⁻¹` past `f64`, its
+    /// intercept mapped by `inf − inf` -- is no standard error, not one of
+    /// 0.0, which reads as an exact coefficient (review round 9, B-2).
+    #[test]
+    fn a_variance_that_is_not_a_number_is_no_standard_error() {
+        let mut s = Sandwich::new(1, true, 0);
+        let mut st = 31u64;
+        for _ in 0..20 {
+            s.update(&[5.0 + 1e-9 * lcg(&mut st)], 1e150 * lcg(&mut st), 1.0, 1.0);
+        }
+        let v = s.covariance(&[0], false).unwrap();
+        assert!(
+            v.iter().any(|v| v.is_nan()),
+            "the case: a NaN variance, {v:?}"
+        );
+        let se = s.standard_errors(&[0], false);
+        let se = se.as_deref().unwrap_or(&[]);
+        assert!(se.iter().all(|v| *v != 0.0), "{se:?}");
     }
 
     /// A sandwich over `k` rows of `(1, x)` at `lags` lags, its ring full.

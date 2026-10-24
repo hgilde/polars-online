@@ -1047,7 +1047,8 @@ def ewridge(
         took 0.35 (one fit, one core of an Apple M4 Pro). A target's weight,
         mean and variance still take every row. The held rows travel in the
         state file, with each target's value on them, and are refused over
-        256 MiB, ``session_shrink``'s slow twin counted.
+        256 MiB, counting ``session_shrink``'s slow twin and, under
+        ``target_gaps = "own_rows"``, a block per target.
     ``gram_threads``
         Run the update of the ``k x k`` matrix on up to that many threads: the
         block's matrix product under ``gram_block_rows``, and each row's

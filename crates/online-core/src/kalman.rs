@@ -1886,7 +1886,14 @@ impl Kalman {
                 }
                 quad += v[i] * acc;
             }
-            out[0] = quad.max(0.0);
+            // A rounding below 0 is 0; a NaN stays NaN, where `f64::max`
+            // read it as 0.0, an exact intercept (review round 9, B-2; the
+            // sandwich's twin). Not reached by a test: a NaN here needs a
+            // NaN in `P`, which `size_again` refuses at the end of the row
+            // that made it, or `±inf` terms cancelling in `v' P v`, which
+            // needs `P` near `f64`'s largest number (`p0` times a noise
+            // near 1e300) beside a feature far from its scale.
+            out[0] = crate::solve::clamp_rounding(quad);
         }
         out
     }
