@@ -104,7 +104,10 @@ input and leaves the objective to the caller's `xgb.train` or `lgb.train`.
 XGBoost's `{"objective": "reg:pseudohubererror", "huber_slope": δ}` and
 LightGBM's `{"objective": "huber", "alpha": δ}` each take a Huber loss:
 quadratic for a residual within `δ` and linear beyond it, so a wild label
-pulls a tree no harder than a residual of `δ` does. `δ` is in the label's
+pulls a tree no harder than a residual of `δ` does. LightGBM's is Huber's
+piecewise loss; XGBoost's is the pseudo-Huber loss
+`δ²(√(1 + (r/δ)²) − 1)`, a smooth version of it that bends from the one
+regime to the other around `δ` rather than at it. `δ` is in the label's
 units, and the defaults, 1.0 and 0.9, are fixed numbers. On a target whose
 residuals are about 0.001, every row falls inside the cut and the loss is
 squared error by another name; on one whose residuals are about 100, every

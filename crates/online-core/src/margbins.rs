@@ -86,11 +86,16 @@
 //! bin by at most `δ·σ_t` times its share where it moves the mean by its
 //! whole size times its share. The step is divided by `Ω`, the weight the
 //! rows count for, and not by `W`, the weight they carry: a location that
-//! starts far from its bin's sample -- its first row a spike -- then
-//! recovers as a mean does, in about `1.7·|error|/c` rows, where a step over
-//! `W` moves at most `c·w/W` a row and recovers only as `c·ln(rows)`
-//! (measured: a spike seeding a bin left it 15 to 19 scales off after
-//! 20,000 rows over `W`, 0.02 to 0.06 over `Ω`).
+//! starts far from its bin's sample -- its first row a spike `E₀` off at
+//! full weight `Ω₀`, which happens only before the target has a scale, as
+//! a later first row is winsorized at `m_t ± c` -- then recovers
+//! exponentially: while every row is clipped, `ω = w·c/E`, so `Ω·E` stays
+//! `Ω₀E₀` and `E(n) = E₀·exp(−c·n/(Ω₀E₀))`, within one scale `σ` after about
+//! `(Ω₀E₀/c)·ln(E₀/σ)` rows. A step over `W` moves at most `c·w/W` a row and
+//! recovers only `c·ln(rows)`. Simulated (no decay, unit weights, `σ`
+//! fixed; docs/PLAN.md task 272 (e), R6-2): spikes of 10, 30 and 100 scales
+//! were within one scale after 27, 101 and 381 rows over `Ω`; over `W`,
+//! 0.14, 17 and 87 scales off after 20,000 rows.
 //!
 //! A bin has no location of its own to judge its first row against, so it
 //! judges it against the target's: `m = m_t + max(−c, min(c, y − m_t))`,
@@ -2489,6 +2494,44 @@ mod tests {
                 cut / om
             );
             assert_eq!(thin(&h).n, 21.0, "the spike still counts as a row");
+        }
+
+        /// The step's bound is `c·w/Ω'`, the bin's weight after the row,
+        /// `λΩ + ω`, and not `c·w/Ω`: under a decay of `λ = 0.5` the spike
+        /// moves the thin bin by `c/(10 + c/|e|)`, nearly twice `c/20`
+        /// (docs/PLAN.md task 272 (e), R6-1).
+        #[test]
+        fn under_decay_the_step_is_bounded_by_the_weight_after_the_row() {
+            let edges = vec![vec![-1.0, 1.0]];
+            let mut h = MarginalBins::new_with(1, 1, edges, HUBER).unwrap();
+            let mut seed = 5u64;
+            for i in 0..420 {
+                let (x, level) = match i % 21 {
+                    0 => (0.0, 0.0),
+                    k if k % 2 == 0 => (-2.0, -5.0),
+                    _ => (2.0, 5.0),
+                };
+                h.update_row(&[x], &[Some(level + 0.01 * lcg(&mut seed))], 1.0);
+            }
+            let thin = |b: &MarginalBins| b.bins(0, 0)[1];
+            assert_eq!(thin(&h).n, 20.0, "Ω = W = 20: nothing clipped yet");
+            assert_eq!(h.om[1].to_bits(), h.w[1].to_bits());
+            h.decay(0.5);
+            let cut = h.scales.as_ref().unwrap().judge(0).cut;
+            let h0 = thin(&h).mean_y;
+            h.update_row(&[0.0], &[Some(1000.0)], 1.0);
+            let dh = thin(&h).mean_y - h0;
+            let om = 0.5 * 20.0 + cut / (1000.0 - h0);
+            assert!(
+                (dh - cut / om).abs() < 1e-12 * cut,
+                "{dh} against c/Ω' = {}",
+                cut / om
+            );
+            assert!(
+                dh > 1.9 * cut / 20.0,
+                "{dh} is not above c·w/Ω = {}",
+                cut / 20.0
+            );
         }
 
         /// The scale trick by brute force: every bin's and every target's

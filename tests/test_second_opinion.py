@@ -3067,10 +3067,15 @@ class TestAlgorithmHOnAGramAgainstStatsmodels:
     """``docs/GRAM.md``, *Huber regression on a Gram* (task 272 (a), batch
     (b)): Huber's algorithm H on the bank's Gram, the pseudo-response's
     moments read by a Polars query a pass, converges to statsmodels' Huber
-    M-estimate with the MAD scale, ``RLM(HuberT(1.345)).fit(scale_est=mad)``
-    iterated to 1e-12. Measured on the page's stream: 2.039252 against
-    2.039232 after 30 passes; the tolerance is 1e-4 on the slope and 1e-3
-    on the intercept, over three seeds."""
+    M-estimate with the MAD scale, ``RLM(HuberT(1.345)).fit(scale_est="mad")``
+    iterated to 1e-12: the median of ``|r|`` about 0 over the normal
+    quartile, the recipe's own scale. The callable ``sm.robust.scale.mad``
+    centres at the residuals' median and multiplies by ``sqrt(n / (n - p))``,
+    a different scale, and its M-estimate sat 2e-5 from the passes' fixed
+    point (task 272 (e), R5-2). Measured on the page's stream: 2.0392517
+    against 2.0392520 after 30 passes, 2.5e-7 apart on each seed, which is
+    0.6745 against the quartile to full precision (with it, 1e-12); the
+    tolerance is 1e-6 on the slope and the intercept, over three seeds."""
 
     @pytest.mark.parametrize("seed", [3, 4, 5])
     def test_the_passes_reach_the_m_estimate(self, seed, tmp_path):
@@ -3110,11 +3115,11 @@ class TestAlgorithmHOnAGramAgainstStatsmodels:
             warnings.simplefilter("ignore")
             theirs = (
                 sm.RLM(y, sm.add_constant(x), M=sm.robust.norms.HuberT(1.345))
-                .fit(scale_est=sm.robust.scale.mad, tol=1e-12, maxiter=500)
+                .fit(scale_est="mad", tol=1e-12, maxiter=500)
                 .params
             )
-        assert abs(coef[1] - theirs[1]) < 1e-4, (coef, theirs)
-        assert abs(coef[0] - theirs[0]) < 1e-3, (coef, theirs)
+        assert abs(coef[1] - theirs[1]) < 1e-6, (coef, theirs)
+        assert abs(coef[0] - theirs[0]) < 1e-6, (coef, theirs)
 
 
 class TestTheBinsAgainstScipyAndAStump:

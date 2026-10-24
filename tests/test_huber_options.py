@@ -80,6 +80,37 @@ class TestFeatureSets:
                 "a smaller set is not the full fit"
             )
 
+    def test_a_largest_set_short_of_every_feature_needs_the_same_min_weight(self):
+        """The largest set is the plain fit of its features to the bit when
+        it is every feature, or under one ``min_weight``: the default counts
+        every feature of the spec, a coefficient each with the intercept, so
+        a largest set short of them predicts later than a ``huber`` on its
+        features alone, its first Huber weights and scale differ, and the
+        two part until the decay forgets those rows (task 272 (e), R5-1)."""
+        df = _frame()
+        base = {k: v for k, v in COMMON.items() if k != "features"}
+        sets = {"a": ["x0", "x1"], "b": ["x2"]}
+
+        def pair(**kw):
+            wide = po.spec.huber(
+                "m", features=FEATURES, feature_sets=sets, emit_huber_scale=True, **base, **kw
+            )
+            alone = po.spec.huber("m", features=["x0", "x1"], emit_huber_scale=True, **base, **kw)
+            return (po.ModelBank([wide]).fit_predict(df), po.ModelBank([alone]).fit_predict(df))
+
+        wide, alone = pair(min_weight=6.0)
+        for t in ("y0", "y1"):
+            for a, b in ((f"pred_{t}__a", f"pred_{t}"), (f"huber_scale_{t}", f"huber_scale_{t}")):
+                assert np.array_equal(_field(wide, a), _field(alone, b), equal_nan=True), (t, a)
+        wide, alone = pair()
+        a, b = _field(wide, "pred_y0__a"), _field(alone, "pred_y0")
+        first = lambda v: int(np.nonzero(np.isfinite(v))[0][0])  # noqa: E731
+        assert first(a) > first(b), "the wider spec's default waits for more weight"
+        gap = np.abs(a - b)[first(a) :]
+        early, late = np.nanmax(gap[:50]), np.nanmax(gap[-200:])
+        assert early > 1e-3, early
+        assert late < early / 100, (early, late)
+
     def test_each_set_is_weighed_by_the_largest_sets_residual(self):
         """A smaller set's fit is the weighted ridge fit of its features at
         the row's weight times the Huber weight of the largest set's
@@ -273,6 +304,21 @@ class TestEmittedScale:
         assert np.isnan(a[0]) and np.isfinite(a[50:]).all()
         assert np.array_equal(a[: at + 1], b[: at + 1], equal_nan=True)
         assert b[at + 1] > a[at + 1]
+
+    def test_a_row_with_an_unusable_feature_has_no_scale(self):
+        """A row the model does not read, a feature NaN or null, reports no
+        scale, as ``lasso``'s ``lam_selected``: the field is null there and
+        the rows around it read the scale as it stands (task 272 (e),
+        R5-3)."""
+        df = _frame()
+        spec = po.spec.huber("m", emit_huber_scale=True, **COMMON)
+        idx = pl.int_range(pl.len())
+        bad = df.with_columns(
+            x0=pl.when(idx == 150).then(float("nan")).when(idx == 151).then(None).otherwise("x0")
+        )
+        s = _field(po.ModelBank([spec]).fit_predict(bad), "huber_scale_y0")
+        assert np.isfinite(s[149]) and np.isfinite(s[152])
+        assert np.isnan(s[150]) and np.isnan(s[151])
 
     def test_each_set_is_weighed_by_the_largest_sets_residual_under_the_mad(self):
         """The feature sets' reference of ``TestFeatureSets`` under the

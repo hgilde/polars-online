@@ -1986,9 +1986,13 @@ the weights on x·y alone, after 30 passes: slope -59.4
 
 From least squares the slope is 2.620 after one pass, 2.199 after two,
 2.042 after five and 2.0393 after ten; from the median, 1.738, 1.987,
-2.039 and 2.0393. statsmodels' `RLM` with `HuberT(1.345)` and the MAD
-scale, iterated to a tolerance of 1e-12 on the same rows, gives 2.03923,
-3e-5 from the passes' 2.03925, and the same intercept, 1000.049. Weighted
+2.039 and 2.0393. statsmodels' `RLM` with `HuberT(1.345)` and
+`scale_est="mad"`, the recipe's scale (the median of `|r|` about 0, over
+the normal quartile), iterated to a tolerance of 1e-12 on the same rows,
+gives a slope of 2.0392520 and the same intercept, 1000.049. The passes
+are within 1.2e-6 of it after ten and 3e-7 from twenty on, and the 3e-7
+is the constant: with Φ⁻¹(3/4) to full precision in place of 0.6745 they
+reach statsmodels' fit to 1e-12. Weighted
 least squares, a new Gram in each pass, reaches 2.0393 in five passes, and
 algorithm H in ten, each a query over the rows and a solve against the
 one factor. A `huber` spec instead weighs each row once, by its residual
