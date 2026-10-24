@@ -412,26 +412,114 @@ fn a_fold_moves_the_weight_past_the_band_into_its_end_bucket() {
     assert_eq!(q.at[0], Some(0), "the median stays in the bucket of 1");
 }
 
-/// A value inside the span the buckets already cover folds nothing, as a
-/// fold waits for a value past them. The span can be wider than the band:
-/// while the median is in the zero bucket there is no band to keep, so the
-/// buckets of 1 and 16 both stay, 256 apart; a heavy row at 4, bucket 128,
-/// then takes the median out of the zero bucket. Rows exactly at either
-/// end of the span still fold nothing (docs/PLAN.md task 272 (m)).
+/// While half the weight or more is at exactly 0 the median is 0, and the
+/// band is kept from the lowest value up: half the weight at 0 and two
+/// values at `1e-300` and `1e300`, 1,993 octaves apart, spanned 127,563
+/// buckets, a megabyte, where the band holds `2·64·8 + 1 = 1,025`. The
+/// value past the band counts in its end bucket, and no weight is lost
+/// (docs/PLAN.md task 272 (m2)).
 #[test]
-fn a_value_at_an_end_of_the_span_folds_nothing() {
-    let mut q = EwQuantile::bounded(&[0.5], 1).unwrap();
-    q.add(0.0, 10.0);
-    q.add(1.0, 1.0);
-    q.add(16.0, 1.0);
-    assert_eq!(q.at[0], None, "the median is in the zero bucket");
-    q.add(4.0, 100.0);
-    assert_eq!(q.at[0], Some(128));
-    assert_eq!((q.lo, q.buckets.len()), (0, 257), "wider than the band");
-    for (v, k) in [(1.0, 0), (16.0, 256)] {
-        q.add(v, 1.0);
-        assert_eq!((q.lo, q.buckets.len()), (0, 257), "{v}");
-        assert!(held(&q).contains(&(k, 2.0)), "{v}: {:?}", held(&q));
+fn a_median_at_zero_keeps_the_band_from_the_lowest_value() {
+    let mut q = EwQuantile::bounded(&[0.5], 8).unwrap();
+    q.add(0.0, 2.0);
+    q.add(1e-300, 1.0);
+    q.add(1e300, 1.0);
+    assert_eq!(q.at[0], None, "the median is 0");
+    assert_eq!(q.get(0), Some(0.0));
+    let most = EwQuantile::one_level_buckets(8);
+    let (len, cap) = q.buckets_held();
+    assert!(len <= most && cap <= most, "{len} spanned, {cap} held");
+    let low = EwQuantile::index(1e-300);
+    assert_eq!(held(&q), vec![(low, 1.0), (low + 1024, 1.0)]);
+    assert_eq!((q.zero, q.total), (2.0, 4.0));
+    // Unbounded, the same rows span the octaves between them.
+    let mut wide = EwQuantile::new(&[0.5]).unwrap();
+    for (v, w) in [(0.0, 2.0), (1e-300, 1.0), (1e300, 1.0)] {
+        wide.add(v, w);
     }
-    assert_eq!(held(&q), vec![(0, 2.0), (128, 100.0), (256, 2.0)]);
+    assert_eq!(wide.buckets_held().0, 127_563);
+}
+
+/// The median leaves 0 for the bucket an unbounded sketch reads, to the
+/// bit, when the values sit within the band above the lowest of them: the
+/// zeros of the first rows decay away under a stream spanning 12 octaves,
+/// and from the row the median steps off 0 the two read alike.
+#[test]
+fn a_median_leaving_zero_is_the_unbounded_sketchs() {
+    let mut bounded = EwQuantile::bounded(&[0.5], 8).unwrap();
+    let mut wide = EwQuantile::new(&[0.5]).unwrap();
+    let mut s = 3u64;
+    let mut left = None;
+    for i in 0..400 {
+        let (v, w) = if i < 5 {
+            (0.0, 4.0)
+        } else {
+            ((12.0 * lcg(&mut s)).exp2(), 1.0)
+        };
+        for q in [&mut bounded, &mut wide] {
+            q.age(0.97);
+            q.add(v, w);
+        }
+        assert_eq!(bounded.get(0), wide.get(0), "row {i}");
+        if left.is_none() && bounded.get(0) != Some(0.0) {
+            left = Some(i);
+        }
+    }
+    assert!(left.is_some_and(|i| i > 5), "{left:?}");
+    assert!(
+        bounded.zero > 0.0,
+        "the zeros are still held, at a small share"
+    );
+}
+
+/// Where the values sit past the band above the lowest of them, the median
+/// leaving 0 reads the band's end bucket, a bound on the quantile, as past
+/// any band: one row at 1 (bucket 0) and the rest at `2^20` (bucket 1,280),
+/// folded into bucket 1,024 while the median was 0, so it steps from 0 to
+/// `2^16`. The rows still arriving at `2^20` then fold the band about the
+/// median, and once their weight passes the folded weight's the median
+/// reads the unbounded sketch's bucket again.
+#[test]
+fn a_median_leaving_zero_past_the_band_reads_its_end_bucket() {
+    let mut bounded = EwQuantile::bounded(&[0.5], 8).unwrap();
+    let mut wide = EwQuantile::new(&[0.5]).unwrap();
+    let rows = std::iter::once((0.0, 20.0))
+        .chain(std::iter::once((1.0, 1.0)))
+        .chain(std::iter::repeat_n((2f64.powi(20), 1.0), 200));
+    let (mut at_end, mut agreed) = (0, None);
+    for (i, (v, w)) in rows.enumerate() {
+        for q in [&mut bounded, &mut wide] {
+            q.age(0.97);
+            q.add(v, w);
+        }
+        let (b, u) = (bounded.at[0], wide.at[0]);
+        if b == Some(1024) {
+            at_end += 1;
+            assert_eq!(u, Some(1280), "row {i}");
+        }
+        if b.is_some() && b == u && agreed.is_none() {
+            agreed = Some(i);
+        }
+        assert!(bounded.buckets_held().1 <= EwQuantile::one_level_buckets(8));
+        assert!((bounded.total - wide.total).abs() <= 1e-12 * wide.total);
+    }
+    assert!(at_end > 0, "the median read the end bucket");
+    assert!(agreed.is_some(), "and then the unbounded sketch's bucket");
+}
+
+/// A sketch wider than its band, as a state written while a median at 0
+/// kept none, folds on its next value, even one inside its buckets.
+#[test]
+fn a_sketch_wider_than_its_band_folds_on_its_next_value() {
+    let mut q = EwQuantile::new(&[0.5]).unwrap();
+    for (v, w) in [(0.0, 2.0), (1e-300, 1.0), (1e300, 1.0)] {
+        q.add(v, w);
+    }
+    q.band = Some(8);
+    assert!(q.has_shape());
+    assert_eq!(q.buckets_held().0, 127_563);
+    q.add(1.0, 1.0);
+    assert_eq!(q.buckets_held().0, EwQuantile::one_level_buckets(8));
+    assert_eq!(q.total, 5.0);
+    assert_eq!(q.buckets.iter().sum::<f64>(), 3.0);
 }

@@ -73,7 +73,11 @@ pub const MAX_BAND_OCTAVES: u32 = 2048;
 /// the rest to the other -- and folds the rest into the end bucket on its
 /// side when a value arrives past them, the value counting there too: the
 /// collapsing DDSketch (Masson, Rim & Lee, §2.3), at both ends and relative
-/// to the levels. Nothing folds while the values span less than the
+/// to the levels. A level at the zero bucket -- a median of 0, while half
+/// the weight or more is on values of exactly 0 -- counts at the lowest
+/// bucket holding weight, the one it steps to when it leaves 0, so the band
+/// reaches up from the lowest value.
+/// Nothing folds while the values span less than the
 /// band's width, and a fold keeps the weight, so the total and the weight
 /// below each level do not move. A level reads the bucket the unbounded
 /// sketch reads, to the bit, unless weight folded from one side of its
@@ -297,14 +301,29 @@ impl EwQuantile {
     /// and one above the highest's, each as long as the extent reaches,
     /// with `2 · 64 · band` buckets between them. An arm shorter than half
     /// lends the rest to the other; past that, the longer arm is cut, both
-    /// to half if both are longer. `None` without a bound, and while no
-    /// level is in a bucket (each is at the zero bucket, below every one,
-    /// which no band is relative to).
+    /// to half if both are longer. `None` without a bound.
+    ///
+    /// A level at the zero bucket counts at the lowest bucket that holds
+    /// weight, the value included: while the zero bucket holds its share of
+    /// the weight the level reads 0, and once that share falls short it
+    /// steps to the next bucket up, which is that one. So a median at 0
+    /// keeps the whole band reaching up from the lowest value, the arm
+    /// below it lent to the arm above, and weight past the band folds into
+    /// the end bucket as past any band. Left unbounded there, half the
+    /// weight at exactly 0 and two values at `1e-300` and `1e300` spanned
+    /// 127,563 buckets where the band holds 1,025 (docs/PLAN.md task 272
+    /// (m2)).
     fn kept(&self, lo: i32, hi: i32) -> Option<(i32, i32)> {
         let half = i64::from(self.band?) * BINS as i64;
-        let mut at = self.at.iter().flatten();
-        let first = *at.next()?;
-        let (low, high) = at.fold((first, first), |(a, b), &k| (a.min(k), b.max(k)));
+        // The extent's low end is the lowest bucket holding weight: the
+        // value's, where it arrives below the buckets, and otherwise the
+        // first bucket, which every step that writes the buckets leaves
+        // holding weight (a fold or a rescale keeps it so, a new bucket below
+        // takes the value). A state written with empty buckets first anchors
+        // lower than it need, and holds to the band all the same.
+        let mut at = self.at.iter().map(|a| a.unwrap_or(lo));
+        let first = at.next()?;
+        let (low, high) = at.fold((first, first), |(a, b), k| (a.min(k), b.max(k)));
         let (low, high) = (i64::from(low), i64::from(high));
         let below = (low - i64::from(lo)).max(0);
         let above = (i64::from(hi) - high).max(0);
@@ -408,8 +427,11 @@ impl EwQuantile {
             // it keeps: the far buckets fold, and the value counts in the
             // end bucket on its side, below every level's bucket or above,
             // as it is.
+            // A sketch longer than one level's band -- a state written while
+            // a median at 0 kept no band -- is folded on its next value too,
+            // wherever the value falls.
             if !self.buckets.is_empty()
-                && (k < self.lo || k > self.end())
+                && (k < self.lo || k > self.end() || self.wider_than_one_band())
                 && let Some((lo, hi)) = self.kept(self.lo.min(k), self.end().max(k))
             {
                 self.fold_to(lo, hi);
@@ -457,6 +479,15 @@ impl EwQuantile {
         } else {
             self.buckets.reserve(more);
         }
+    }
+
+    /// Whether a bounded sketch spans more buckets than one level's band
+    /// holds: what `add` checks before it reads the band anew where a value
+    /// falls inside the buckets. A sketch of one level is never wider after
+    /// an `add`; one of several levels can be, its levels' buckets apart.
+    fn wider_than_one_band(&self) -> bool {
+        self.band
+            .is_some_and(|b| self.buckets.len() > Self::one_level_buckets(b))
     }
 
     /// The most buckets a bounded sketch of one level spans, at a band of

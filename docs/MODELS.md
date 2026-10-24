@@ -807,6 +807,9 @@ The sketch's buckets span at most 16 octaves around the median, a factor
 of 65,536. A residual beyond them is folded into the outermost bucket on
 its side, its weight kept, so a wild residual of `1e200` costs no more
 memory than any other.
+While half the weight or more is on residuals of exactly 0, the median is
+0, and the 16 octaves reach up from the smallest residual instead: the
+median steps there when it leaves 0.
 Nothing is folded while the residuals span less than that, and the median
 stays the one an unbounded sketch reads unless it later moves past a
 bucket a residual was folded into, at least a factor of 256 from where the
