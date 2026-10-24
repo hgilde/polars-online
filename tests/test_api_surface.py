@@ -742,15 +742,20 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
         return refuse
 
-    # Each operator, and the three that look ahead under `reverse=True` (the
-    # form that replaced `rewm_*`, task 244), which check their words apart.
+    # Each operator, and the four that look ahead under `reverse=True` (the
+    # form that replaced `rewm_*`, task 244), which check their words apart;
+    # a quantile with its level (task 272 (d)).
     ops: list[tuple[str, str, dict[str, object]]] = [
-        (op, op, {}) for op in ("ewm_mean", "ewm_rate", "ewm_std", "ewm_sum", "ewm_var")
+        (op, op, {})
+        for op in ("ewm_mean", "ewm_quantile", "ewm_rate", "ewm_std", "ewm_sum", "ewm_var")
     ]
     ops += [
-        (f"{op}(reverse=True)", op, {"reverse": True}) for op in ("ewm_mean", "ewm_rate", "ewm_sum")
+        (f"{op}(reverse=True)", op, {"reverse": True})
+        for op in ("ewm_mean", "ewm_quantile", "ewm_rate", "ewm_sum")
     ]
     for label, op, extra in ops:
+        if op == "ewm_quantile":
+            extra = {**extra, "quantile": 0.5}
         for key in ("closed", "partial"):
             refuse = python_refusal(
                 getattr(po, op),

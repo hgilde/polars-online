@@ -1,6 +1,6 @@
-"""The window operators: exponentially weighted means, sums and rates over
-a stream's clock, looking back or ahead, a variance and a standard
-deviation looking back, and the increment of a running sum. Each returns a
+"""The window operators: exponentially weighted means, sums, rates and
+quantiles over a stream's clock, looking back or ahead, a variance and a
+standard deviation looking back, and the increment of a running sum. Each returns a
 ``pl.Expr`` that composes with Polars' own -- ``pl.col`` is the current
 row. It is computed by :func:`polars_online.stream.with_windows` in one
 pass, in O(window) memory, or given to a spec as a target. A target that
@@ -52,6 +52,13 @@ half_life)``:
      - Polars' ``ewm_var`` and ``ewm_std`` under ``adjust=False`` on a
        clock that steps by 1 a row, the correction for unequal weights
        Polars' own
+   * - :func:`ewm_quantile`
+     - the smallest ``x`` with ``W(<= x) >= q W``, each row of the window
+       weighing ``lam**|t_j - tau_t|``, as in :func:`ewm_sum`, ``W`` their
+       total; read from buckets each spanning a ratio of ``e**(1/64)``, so
+       within ``tanh(1/128)``, 0.78%, of it, relatively
+     - numpy's ``inverted_cdf`` quantile over the window's values and
+       their weights
    * - :func:`increment`
      - ``x_i - x_{i-1}`` within the group and session; null on a session's
        first row; seconds on a temporal column
@@ -183,11 +190,12 @@ it refuses:
 
 - ``TypeError`` for an input that is neither a column name nor a
   ``pl.Expr``, a ``half_life`` or ``window_size`` that is neither a number
-  nor a duration, and a ``bias`` that is not a bool;
+  nor a duration, a ``bias`` that is not a bool, and a ``quantile`` that is
+  not a number;
 - ``ValueError`` for a ``half_life`` or ``window_size`` that is NaN or not
   above 0, an infinite ``window_size``, a ``closed`` or ``partial`` it does
-  not know, ``partial`` without ``window_size``, and a ``min_samples``
-  below 1 or above ``2**32 - 1``;
+  not know, ``partial`` without ``window_size``, a ``min_samples`` below 1
+  or above ``2**32 - 1``, and a ``quantile`` not above 0 and below 1;
 - ``ValueError`` for an input expression that holds another window
   operator, or a node that is not element-wise, or that reads a column
   whose name starts with ``@po:``, the prefix the operators' own columns
@@ -214,6 +222,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ewm_mean",
+    "ewm_quantile",
     "ewm_rate",
     "ewm_std",
     "ewm_sum",
@@ -232,10 +241,11 @@ def _window(
     min_samples: int,
     partial: Literal["keep", "null", "drop"] | None,
     reverse: bool,
+    quantile: float | None = None,
 ) -> pl.Expr:
-    """The mean, sum or rate ``name`` names, looking back, or ahead under
-    ``reverse``: the operator over the rows after each row, which the tree
-    keeps as ``r<name>``."""
+    """The mean, sum, rate or quantile ``name`` names, looking back, or ahead
+    under ``reverse``: the operator over the rows after each row, which the
+    tree keeps as ``r<name>``."""
     if not isinstance(reverse, bool):
         raise TypeError(f"po.{name}: reverse must be a bool, got {type(reverse).__name__}")
     if reverse and window_size is None:
@@ -251,6 +261,7 @@ def _window(
         closed=closed,
         min_samples=min_samples,
         partial=partial,
+        quantile=quantile,
         who=f"po.{name}(reverse=True)" if reverse else None,
     )
 
@@ -349,6 +360,63 @@ def ewm_rate(
         min_samples=min_samples,
         partial=partial,
         reverse=reverse,
+    )
+
+
+def ewm_quantile(
+    input: str | pl.Expr,
+    *,
+    quantile: float,
+    half_life: float | Duration,
+    window_size: float | Duration | None = None,
+    closed: Literal["right", "left", "both", "none"] = "right",
+    min_samples: int = 1,
+    partial: Literal["keep", "null", "drop"] | None = None,
+    reverse: bool = False,
+) -> pl.Expr:
+    """The exponentially weighted quantile at level ``quantile`` of ``input``
+    over the rows at or before each row, less than ``window_size`` older
+    (none: every row since the stretch began, decayed).
+
+    Each row of the window with a value counts once, at its own time, with
+    the weight :func:`ewm_sum` gives it, ``w_j = lam ** (tau_t - t_j)``. The
+    quantile at ``q`` is the smallest ``x`` with ``W(<= x) >= q W``, where
+    ``W(<= x)`` is the weight of the values at or below ``x`` and ``W`` the
+    weight of all of them: numpy's ``inverted_cdf`` quantile over the
+    window's values and weights. A value is read as
+    the bucket it falls in, each bucket spanning a ratio of ``e ** (1/64)``,
+    so the result is within ``tanh(1/128)``, 0.78%, of the exact quantile,
+    relatively, at any scale and either sign; a magnitude below the smallest
+    normal double counts as 0. A row whose value is missing counts for
+    nothing and gives the window as it stands, as the sums do.
+
+    **A robust scale.** The median of ``|r|`` over ``Φ⁻¹(3/4) =
+    0.6744897501960817`` is the median absolute deviation of ``r`` about 0,
+    which estimates a standard deviation for normal ``r`` and holds while up
+    to half the window is wild, where a root mean square is moved by one
+    row. For a residual, centred on 0 by the fit::
+
+        mad = po.ewm_quantile(pl.col("resid").abs(), quantile=0.5, half_life=500)
+        scale = mad / 0.6744897501960817
+
+    ``closed="left"`` leaves the row's own value out of its window, so a
+    scale of a target used as a weight on the same row does not see the
+    label it weighs.
+
+    ``reverse=True`` looks ahead instead: the quantile of the rows after
+    each row, at most ``window_size`` later, which it then requires, each
+    weighing ``lam ** (t_j - tau_t)``.
+    """
+    return _window(
+        "ewm_quantile",
+        input,
+        half_life=half_life,
+        window_size=window_size,
+        closed=closed,
+        min_samples=min_samples,
+        partial=partial,
+        reverse=reverse,
+        quantile=quantile,
     )
 
 

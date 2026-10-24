@@ -677,9 +677,9 @@ def formula_target(who: str, expr: pl.Expr) -> Target | FormulaTarget:
         else:
             make = "it holds no operator at all, so add it as a column with Polars' with_columns"
         raise ValueError(
-            f"{who}: target {name!r} holds no operator looking ahead (ewm_mean, ewm_sum or "
-            f"ewm_rate with reverse=True), so it is known at its own row: {make}, and name the "
-            "column as the target"
+            f"{who}: target {name!r} holds no operator looking ahead (ewm_mean, ewm_sum, "
+            f"ewm_rate or ewm_quantile with reverse=True), so it is known at its own row: "
+            f"{make}, and name the column as the target"
         )
     return {"name": name, "formula": tree}
 

@@ -1002,8 +1002,8 @@ The rest of the policy lives here, and CONTRIBUTING carries none of it.
 | **not stable** | anything underscore-prefixed, apart from `po.stream.embargo`'s `_online_role` and `_online_role_weight`: a user passes the second to a spec's `weight` and filters on the first, so both are stable; the Rust crates, which the going-public item [R3](#r3--rust-crates-not-published) decided not to publish; and the exact numeric output, which depends on the polars version and the platform, within the 1e-12 tolerance `test_golden_pipeline.py` pins |
 
 **Each part is unstable for a reason that a 1.0 promise would make
-costly.** The window run's state reached version 9 in nine days
-(2026-09-30 to 2026-10-08). The formula tree is read from `expr.meta.serialize`, whose form
+costly.** The window run's state reached version 10 in under four weeks
+(2026-09-30 to 2026-10-24), versions 2 to 9 in the first nine days. The formula tree is read from `expr.meta.serialize`, whose form
 Polars calls unstable across its versions. The Arrow export's input side
 still arrives as a Polars frame, and its import is unbuilt.
 `po.sim` and `po.corr` stand beside the bank: neither reads its outputs,

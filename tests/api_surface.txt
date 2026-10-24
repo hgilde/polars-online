@@ -16,6 +16,7 @@
   corr  # unstable
   eval
   ewm_mean(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+  ewm_quantile(input: 'str | pl.Expr', *, quantile: 'float', half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
   ewm_rate(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
   ewm_std(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
   ewm_sum(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
@@ -1320,6 +1321,7 @@
     vif(g: 'Gram', *, features: 'Sequence[str | int] | None' = None) -> 'Any'
   ops:
     ewm_mean(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
+    ewm_quantile(input: 'str | pl.Expr', *, quantile: 'float', half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
     ewm_rate(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
     ewm_std(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, bias: 'bool' = False) -> 'pl.Expr'
     ewm_sum(input: 'str | pl.Expr', *, half_life: 'float | Duration', window_size: 'float | Duration | None' = None, closed: "Literal['right', 'left', 'both', 'none']" = 'right', min_samples: 'int' = 1, partial: "Literal['keep', 'null', 'drop'] | None" = None, reverse: 'bool' = False) -> 'pl.Expr'
@@ -2380,6 +2382,8 @@
   sgd.schedule: adagrad, constant, inv_scaling
   po.ewm_mean.closed: both, left, none, right
   po.ewm_mean.partial: drop, keep, null
+  po.ewm_quantile.closed: both, left, none, right
+  po.ewm_quantile.partial: drop, keep, null
   po.ewm_rate.closed: both, left, none, right
   po.ewm_rate.partial: drop, keep, null
   po.ewm_std.closed: both, left, none, right
@@ -2390,6 +2394,8 @@
   po.ewm_var.partial: drop, keep, null
   po.ewm_mean(reverse=True).closed: both, left, none, right
   po.ewm_mean(reverse=True).partial: drop, keep, null
+  po.ewm_quantile(reverse=True).closed: both, left, none, right
+  po.ewm_quantile(reverse=True).partial: drop, keep, null
   po.ewm_rate(reverse=True).closed: both, left, none, right
   po.ewm_rate(reverse=True).partial: drop, keep, null
   po.ewm_sum(reverse=True).closed: both, left, none, right

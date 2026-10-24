@@ -17,7 +17,8 @@
 //! `["when", p, then, else]`, `["cast", x, "Float64"]` and
 //! `["alias", x, name]`. An operator is `[name, input, {params}]` for
 //! `ewm_mean`, `rewm_mean`, `ewm_sum`, `rewm_sum`, `ewm_rate`,
-//! `rewm_rate`, `ewm_var` and `ewm_std` (these two with a `bias` too), and
+//! `rewm_rate`, `ewm_var` and `ewm_std` (these two with a `bias` too),
+//! `ewm_quantile` and `rewm_quantile` (with a `quantile`, the level), and
 //! `["increment", input]`. Nothing else is read, so a
 //! `shift`, a `cum_sum`, a rolling window or an aggregation -- which would
 //! depend on the chunking (hard rule 3) -- is refused by name, at build time.
@@ -97,6 +98,9 @@ pub struct OpNode {
     /// A variance's (`ewm_var`, `ewm_std`): uncorrected for the weights'
     /// count, Polars' `bias`; false for every other operator.
     pub bias: bool,
+    /// A quantile's level (`ewm_quantile`, `rewm_quantile`), in (0, 1);
+    /// `None` for every other operator.
+    pub quantile: Option<f64>,
 }
 
 impl OpNode {
@@ -132,6 +136,9 @@ impl OpNode {
         }
         if self.kind.stat().is_some_and(Stat::is_var) {
             m.insert("bias".into(), json!(self.bias));
+        }
+        if let Some(q) = self.quantile {
+            m.insert("quantile".into(), json!(q));
         }
         Value::Object(m)
     }
@@ -363,6 +370,7 @@ impl Node {
                     min_samples: 1,
                     partial: None,
                     bias: false,
+                    quantile: None,
                 }))
             }
             name if OpKind::parse(name).is_some() => {
@@ -385,8 +393,10 @@ impl Node {
                     min_samples: 1,
                     partial: None,
                     bias: false,
+                    quantile: None,
                 };
                 let var = kind.stat().is_some_and(Stat::is_var);
+                let quantile = kind.stat() == Some(Stat::Quantile);
                 for (k, v) in params {
                     match k.as_str() {
                         "half_life" => {
@@ -437,14 +447,34 @@ impl Node {
                                 format!("{name}: bias must be true or false, got {}", short(v))
                             })?;
                         }
+                        "quantile" if quantile => {
+                            op.quantile = Some(
+                                v.as_f64().filter(|q| *q > 0.0 && *q < 1.0).ok_or_else(|| {
+                                    format!(
+                                        "{name}: quantile must be a number above 0 and below \
+                                             1, got {}",
+                                        short(v)
+                                    )
+                                })?,
+                            );
+                        }
                         other => {
                             return Err(format!(
                                 "{name}: unknown parameter {other:?}; the parameters are half_life, \
                                  window_size, closed, min_samples and partial{}",
-                                if var { ", and bias" } else { "" }
+                                if var {
+                                    ", and bias"
+                                } else if quantile {
+                                    ", and quantile"
+                                } else {
+                                    ""
+                                }
                             ));
                         }
                     }
+                }
+                if quantile && op.quantile.is_none() {
+                    return Err(format!("{name}: quantile is required"));
                 }
                 let Some(h) = &op.half_life else {
                     return Err(format!("{name}: half_life is required"));
@@ -1072,6 +1102,72 @@ mod tests {
             panic!("an operator");
         };
         assert!(op.bias);
+    }
+
+    /// Task 272 (d): a quantile's level is required, a number above 0 and
+    /// below 1, and no other operator's; it reads, is kept, and is written
+    /// back in the list form, so one quantile asked for twice is one column
+    /// and two levels are two.
+    #[test]
+    fn a_quantiles_level_is_read_kept_and_refused_in_its_own_words() {
+        for (text, says) in [
+            (
+                r#"["ewm_quantile",["col","a"],{"half_life":1}]"#,
+                "ewm_quantile: quantile is required",
+            ),
+            (
+                r#"["rewm_quantile",["col","a"],{"half_life":1,"window_size":2}]"#,
+                "rewm_quantile: quantile is required",
+            ),
+            (
+                r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":1}]"#,
+                "ewm_quantile: quantile must be a number above 0 and below 1, got 1",
+            ),
+            (
+                r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":0}]"#,
+                "got 0",
+            ),
+            (
+                r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":"half"}]"#,
+                "got \"half\"",
+            ),
+            (
+                r#"["ewm_sum",["col","a"],{"half_life":1,"quantile":0.5}]"#,
+                "ewm_sum: unknown parameter \"quantile\"",
+            ),
+            (
+                r#"["ewm_quantile",["col","a"],{"half_life":1,"quantile":0.5,"bias":true}]"#,
+                "unknown parameter \"bias\"; the parameters are half_life, window_size, closed, \
+                 min_samples and partial, and quantile",
+            ),
+            (
+                r#"["rewm_quantile",["col","a"],{"half_life":1,"quantile":0.5}]"#,
+                "a forward operator needs a window_size",
+            ),
+        ] {
+            let err = Node::parse(text).unwrap_err();
+            assert!(err.contains(says), "{text}: {err}");
+        }
+        let text = r#"["ewm_quantile",["abs",["col","r"]],{"half_life":"inf","quantile":0.25}]"#;
+        let Node::Op(op) = tree(text) else {
+            panic!("an operator");
+        };
+        assert_eq!((op.kind, op.quantile), (OpKind::EwmQuantile, Some(0.25)));
+        let again = Node::Op(op.clone()).to_json().to_string();
+        assert!(again.contains(r#""quantile":0.25"#), "{again}");
+        assert_eq!(Node::parse(&again).unwrap(), Node::Op(op.clone()));
+        let other =
+            tree(r#"["ewm_quantile",["abs",["col","r"]],{"half_life":"inf","quantile":0.75}]"#);
+        let Node::Op(other) = other else {
+            panic!("an operator");
+        };
+        assert_ne!(op.key(), other.key());
+        let Node::Op(fwd) =
+            tree(r#"["rewm_quantile",["col","a"],{"half_life":1,"window_size":2,"quantile":0.9}]"#)
+        else {
+            panic!("an operator");
+        };
+        assert_eq!(fwd.direction(), Direction::Forward);
     }
 
     /// Task 252: the expression a `clip` with no bound at all, a `clip` with

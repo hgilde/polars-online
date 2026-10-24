@@ -101,6 +101,8 @@ fn bank(mut run: BankRun) -> BankRun {
 #[library_benchmark(config = counted_from("polars_online_budget_windows_rows"))]
 #[bench::window_ewm_mean_w10k(args = ("window_ewm_mean_w10k"), setup = windows_setup)]
 #[bench::window_ewm_sum_w10k(args = ("window_ewm_sum_w10k"), setup = windows_setup)]
+#[bench::window_ewm_quantile_w10k(args = ("window_ewm_quantile_w10k"), setup = windows_setup)]
+#[bench::window_ewm_quantile_running(args = ("window_ewm_quantile_running"), setup = windows_setup)]
 fn windows(mut run: WindowsCase) -> WindowsCase {
     black_box(polars_online_budget_windows_rows(black_box(&mut run)));
     run

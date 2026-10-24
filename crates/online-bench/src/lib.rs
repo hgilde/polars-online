@@ -112,8 +112,15 @@ fn grouped(id: &str) -> bool {
 /// where nothing has left it yet and a mean cuts its oldest row's held
 /// interval at the window's edge on every row: the path that cost a mean
 /// O(rows in the window) a row where the sum costs O(1) (docs/PLAN.md task
-/// 270, M-2). The two are held within twice each other.
-pub const WINDOW_CASES: &[&str] = &["window_ewm_mean_w10k", "window_ewm_sum_w10k"];
+/// 270, M-2). The two are held within twice each other. And the quantile
+/// (task 272 (d)): over the same window, its sketches walked on every row,
+/// and with no window, the running sketch an EW-MAD reads.
+pub const WINDOW_CASES: &[&str] = &[
+    "window_ewm_mean_w10k",
+    "window_ewm_sum_w10k",
+    "window_ewm_quantile_w10k",
+    "window_ewm_quantile_running",
+];
 
 /// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
 /// 230 statistics through `Bank::fit_predict`, on a pool of one thread.
@@ -707,6 +714,12 @@ fn window_tree(id: &str) -> Value {
     let op = match id {
         "window_ewm_mean_w10k" => "ewm_mean",
         "window_ewm_sum_w10k" => "ewm_sum",
+        "window_ewm_quantile_w10k" => {
+            return json!(["ewm_quantile", ["col", "x0"], {"half_life": 1000.0, "window_size": 12_500.0, "quantile": 0.5}]);
+        }
+        "window_ewm_quantile_running" => {
+            return json!(["ewm_quantile", ["abs", ["col", "x0"]], {"half_life": 1000.0, "quantile": 0.5}]);
+        }
         other => panic!("no case {other:?}"),
     };
     json!([op, ["col", "x0"], {"half_life": 1000.0, "window_size": 12_500.0}])

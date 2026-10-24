@@ -214,11 +214,13 @@ fn every_window_case_reads_its_block_inside_the_first_window() {
             .expect("floats");
         assert_eq!(w.null_count(), 0, "{id}");
         assert!(w.into_no_null_iter().all(f64::is_finite), "{id}");
-        assert_eq!(
-            run.run.queued(),
-            WARM_ROWS + ROWS,
-            "{id}: a row left the window"
-        );
+        // A window with no size keeps its running sums alone, no row.
+        let held = if id.ends_with("_running") {
+            0
+        } else {
+            WARM_ROWS + ROWS
+        };
+        assert_eq!(run.run.queued(), held, "{id}: a row left the window");
     }
 }
 

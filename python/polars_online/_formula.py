@@ -51,11 +51,16 @@ OPERATORS = (
     "rewm_rate",
     "ewm_var",
     "ewm_std",
+    "ewm_quantile",
+    "rewm_quantile",
     "increment",
 )
 
 #: The operators that take ``bias``: a variance's own (task 212).
 VARIANCES = ("ewm_var", "ewm_std")
+
+#: The operators that take ``quantile``, the level (task 272 (d)).
+QUANTILES = ("ewm_quantile", "rewm_quantile")
 
 _BINARY = {
     "Plus": "+",
@@ -292,7 +297,7 @@ def operators(tree: Any) -> list[list[Any]]:
 
 #: The operators that look ahead: a formula with one is a target of the
 #: row's future (docs/PLAN.md task 104).
-FORWARD = ("rewm_mean", "rewm_sum", "rewm_rate")
+FORWARD = ("rewm_mean", "rewm_sum", "rewm_rate", "rewm_quantile")
 
 
 def columns(tree: Any) -> list[str]:
@@ -479,13 +484,14 @@ def operator(
     min_samples: int = 1,
     partial: str | None = None,
     bias: Any = None,
+    quantile: Any = None,
     who: str | None = None,
 ) -> pl.Expr:
     """The expression of operator ``name`` over ``input`` with these
     parameters, checked here so a wrong value names its parameter; ``bias``
-    a variance's alone. ``who`` is the call a message names, ``po.<name>``
-    unless given: a window looking ahead is ``ewm_*(reverse=True)`` to the
-    caller and ``rewm_*`` in the tree."""
+    a variance's alone, ``quantile`` a quantile's. ``who`` is the call a
+    message names, ``po.<name>`` unless given: a window looking ahead is
+    ``ewm_*(reverse=True)`` to the caller and ``rewm_*`` in the tree."""
     who = who or f"po.{name}"
     tree = _input_tree(who, input)
     if name == "increment":
@@ -534,4 +540,14 @@ def operator(
         params["bias"] = bias
     elif bias is not None:
         raise TypeError(f"{who}: bias is a variance's parameter (ewm_var, ewm_std)")
+    if name in QUANTILES:
+        # A number in (0, 1), as Polars' `quantile` takes it; NaN and the
+        # ends refused by name.
+        if isinstance(quantile, bool) or not isinstance(quantile, numbers.Real):
+            raise TypeError(f"{who}: quantile must be a number, got {type(quantile).__name__}")
+        if not 0.0 < float(quantile) < 1.0:
+            raise ValueError(f"{who}: quantile must be above 0 and below 1, got {quantile!r}")
+        params["quantile"] = float(quantile)
+    elif quantile is not None:
+        raise TypeError(f"{who}: quantile is ewm_quantile's parameter")
     return operator_column([name, tree, params])

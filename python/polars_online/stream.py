@@ -719,8 +719,9 @@ def with_windows(
     Reads like ``with_columns``: each expression adds a column named by its
     keyword or its ``.alias()``, and the input's columns come through
     unchanged, in order. The operators -- :func:`~polars_online.ops.ewm_mean`,
-    :func:`~polars_online.ops.ewm_sum` and :func:`~polars_online.ops.ewm_rate`,
-    each looking back or, under ``reverse=True``, ahead,
+    :func:`~polars_online.ops.ewm_sum`, :func:`~polars_online.ops.ewm_rate`
+    and :func:`~polars_online.ops.ewm_quantile`, each looking back or, under
+    ``reverse=True``, ahead,
     :func:`~polars_online.ops.ewm_var`, :func:`~polars_online.ops.ewm_std`
     and :func:`~polars_online.ops.increment` -- are stateful kernels computed
     by the core, each distinct one once. The

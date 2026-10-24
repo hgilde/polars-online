@@ -365,6 +365,22 @@ fn window_input(df: &DataFrame) -> DataFrame {
     df.select(["t", "mid"]).unwrap()
 }
 
+/// The quantile's three sketches (docs/PLAN.md task 272 (d), windows state
+/// 10): a running one with no window, a windowed one, whose `front` rows
+/// keep what their buckets held before them, and one looking ahead, so rows
+/// are held across the save; each with its level.
+fn windows_quantile_config() -> WindowsConfig {
+    serde_json::from_str(
+        r#"{"formulas": [
+               {"name": "median", "tree": ["ewm_quantile", ["col", "mid"], {"half_life": 5.0, "quantile": 0.5}]},
+               {"name": "high", "tree": ["ewm_quantile", ["abs", ["col", "mid"]], {"half_life": 5.0, "window_size": 10.0, "quantile": 0.9}]},
+               {"name": "ahead", "tree": ["rewm_quantile", ["col", "mid"], {"half_life": 5.0, "window_size": 10.0, "quantile": 0.25}]}
+             ],
+             "clock": "t", "gap_cap": 50.0}"#,
+    )
+    .unwrap()
+}
+
 /// The same two means on the `Int64` clock, under a fractional `gap_cap`,
 /// and an `increment` of an integer input (task 200; review round 5, B1):
 /// the rows' `off` in the integer form, and the increment's previous value
@@ -495,6 +511,14 @@ fn windows_run(bytes: &[u8], input: &DataFrame) -> Ran {
     windows_run_of(windows_config(), bytes, input)
 }
 
+fn windows_quantile_first() -> (Vec<u8>, DataFrame) {
+    windows_first_of(windows_quantile_config(), window_input(&frame()))
+}
+
+fn windows_quantile_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    windows_run_of(windows_quantile_config(), bytes, input)
+}
+
 fn windows_int_first() -> (Vec<u8>, DataFrame) {
     windows_first_of(windows_int_config(), window_int_input(&frame()))
 }
@@ -554,6 +578,11 @@ fn kinds() -> Vec<Kind> {
             name: "with_windows_int",
             first: windows_int_first,
             run: windows_int_run,
+        },
+        Kind {
+            name: "with_windows_quantile",
+            first: windows_quantile_first,
+            run: windows_quantile_run,
         },
         Kind {
             name: "refresh_time",
@@ -931,6 +960,24 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
         ("with_windows", "an operator's bias", |p, v| {
             p.ends_with(".bias") && v.as_bool() == Some(true)
         }),
+        // Windows state 10 (task 272 (d)): a quantile's level, its running
+        // sketch's buckets, and a windowed quantile's `front` rows, each
+        // keeping what its bucket held before it.
+        ("with_windows_quantile", "an operator's quantile", |p, v| {
+            p.ends_with(".quantile") && v.as_f64() == Some(0.9)
+        }),
+        ("with_windows_quantile", "a sketch's buckets", |p, v| {
+            p.contains(".quant.")
+                && p.contains(".back.pos.w.")
+                && v.as_f64().is_some_and(|f| f > 0.0)
+        }),
+        (
+            "with_windows_quantile",
+            "a front row's kept weights",
+            |p, v| {
+                p.contains(".quant.") && p.contains(".prev.") && v.as_f64().is_some_and(|f| f > 0.0)
+            },
+        ),
         ("refresh_time_int", "Instant::Int", |p, _| {
             p.contains(".last_time.") && p.ends_with(".Int")
         }),

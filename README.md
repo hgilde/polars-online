@@ -527,7 +527,7 @@ hit_rate of diff: 0.51
 ```
 
 **A target expression requires an operator that looks ahead
-(`po.ewm_mean`, `po.ewm_sum` or `po.ewm_rate` with `reverse=True`); otherwise, make the
+(`po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate` or `po.ewm_quantile` with `reverse=True`); otherwise, make the
 target a column with Polars' `with_columns`, chained in the query before
 the bank, and name it in `targets`.** The bank's refusal names the call
 that makes the column. Here the target, how far from the mid each trade

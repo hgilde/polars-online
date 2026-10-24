@@ -113,6 +113,7 @@ from polars_online._warnings import (
 )
 from polars_online.ops import (
     ewm_mean,
+    ewm_quantile,
     ewm_rate,
     ewm_std,
     ewm_sum,
@@ -129,6 +130,7 @@ __version__ = "1.2.0"
 
 __all__ = [
     "ewm_mean",
+    "ewm_quantile",
     "ewm_rate",
     "ewm_std",
     "ewm_sum",
