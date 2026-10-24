@@ -349,6 +349,36 @@ def test_every_build_uses_the_lock_as_committed():
         assert "--locked" in line.split(), line
 
 
+def test_every_uv_sync_uses_the_lock_as_committed_or_moves_a_package_on_purpose():
+    """``uv sync`` re-resolves a ``uv.lock`` that no longer matches
+    ``pyproject.toml``, silently, unless told ``--locked``: the job that ran
+    the suite, the leak check and the benchmark tested packages nobody
+    committed, and only the lint job's own ``--locked`` turned the run red
+    (review 9, J-4). Every ``uv sync`` in a workflow passes ``--locked``, or
+    moves a package on purpose -- the canary's and the release's Polars and
+    NumPy legs (``--upgrade-package``, ``--prerelease``)."""
+    syncs = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for job, spec in _load(path.name)["jobs"].items():
+            for step in spec.get("steps", []):
+                for line in str(step.get("run", "")).splitlines():
+                    if re.search(r"\buv sync\b", line) and not line.lstrip().startswith("#"):
+                        syncs.append((path.name, job, line.strip()))
+    assert len(syncs) >= 8, syncs
+    for where in syncs:
+        words = where[2].split()
+        assert "--locked" in words or any(
+            w.startswith(("--upgrade-package", "--prerelease")) for w in words
+        ), where
+    locked = {(name, job) for name, job, line in syncs if "--locked" in line.split()}
+    assert {
+        ("ci.yml", "lint"),
+        ("ci.yml", "test"),
+        ("leakcheck.yml", "native"),
+        ("benchmark.yml", "throughput"),
+    } <= locked, locked
+
+
 def test_every_wheel_is_installed_and_run_where_it_belongs():
     """Three of the six wheels were built and uploaded without ever being
     imported, and none was run as the file that ships (task 160, CI3). Each

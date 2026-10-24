@@ -62,7 +62,7 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync
+      - run: uv sync --locked
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
 
       # Both tables go to the job summary and to `benchmark.md`, which the

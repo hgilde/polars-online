@@ -224,7 +224,7 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync
+      - run: uv sync --locked
 
       # XGBoost's and LightGBM's macOS wheels load `@rpath/libomp.dylib` from
       # Homebrew's prefix, and tests/test_gbdt.py imports both (task 242).

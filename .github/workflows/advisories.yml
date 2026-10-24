@@ -1,0 +1,43 @@
+name: Advisories
+
+# Both lock files against the advisories OSV publishes (RustSec's and PyPI's
+# among them), weekly and by hand. No job checked them: the locks carried
+# rustls, rustls-webpki and tokio with published advisories whose fixes were
+# patch releases, and nothing said so (review 9, X-1; decision D3, task 270).
+# `scripts/advisories.py` sends every registry package in `Cargo.lock` and
+# `uv.lock` to OSV's batch API and fails on a vulnerability against a crate
+# in a shipped graph -- the wheel's (`online-py`) or the command line's
+# (`online-cli`), as `cargo tree --locked` lists them on every target. An
+# informational advisory (unmaintained, unsound), one the script lists as
+# accepted with its reason, and every advisory outside those graphs (a
+# dev-dependency's, the Python dev and docs groups') are reported in the job
+# summary without failing. Weekly rather than on every push: an advisory is
+# published against a lock nobody changed, so a push is not when it appears.
+# Standard library only; the toolchain is for `cargo tree`.
+on:
+  schedule:
+    - cron: "41 5 * * 4" # Thursdays, 05:41 UTC
+  workflow_dispatch:
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+concurrency:
+  group: advisories-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  osv:
+    name: OSV advisories against both locks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: query OSV; fail on an advisory against a shipped crate
+        run: python3 scripts/advisories.py
