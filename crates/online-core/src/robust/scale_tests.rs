@@ -79,10 +79,21 @@ fn digest(cfg: RobustCfg) -> (u64, Vec<f64>) {
 /// MAD was added, to the bit, and so is the quantile band, which reads the
 /// same variance: the digests and picks were taken on the build before task
 /// 271 (`b418fc3`).
+///
+/// The quantile fit's band at `quantile_eps = 0.65`, above the floor
+/// `(k / W)^0.4` at its largest, `(1/3)^0.4 = 0.644` once the band starts
+/// at `W = 3k`: the floor is a `powf`, whose last bits are the platform's,
+/// and at the default 0.2 it set the band on every row of this stream (its
+/// weight stays near `1/(1 − 0.9914)`, below the `55.9 k` where 0.2 takes
+/// over), so the digest held Apple's `powf` (docs/PLAN.md task 273). The
+/// digest at 0.65 was taken on `b418fc3` too.
 #[test]
 fn the_rms_scale_and_the_quantile_band_did_not_move() {
     let huber = digest(base(RobustLoss::Huber { delta: 1.345 }));
-    let quantile = digest(base(RobustLoss::Quantile { tau: 0.7 }));
+    let quantile = digest(RobustCfg {
+        quantile_eps: 0.65,
+        ..base(RobustLoss::Quantile { tau: 0.7 })
+    });
     println!("huber {huber:x?}\nquantile {quantile:x?}");
     for (what, (h, got), (digest, picks)) in [
         (
@@ -104,14 +115,14 @@ fn the_rms_scale_and_the_quantile_band_did_not_move() {
             "quantile",
             quantile,
             (
-                0x4c68_f651_7faa_dfde_u64,
+                0x4428_1619_41eb_e382_u64,
                 [
-                    4.073600568098862,
-                    1000.7795194598039,
-                    4.4341509298869415,
-                    1000.0355330770761,
-                    1.9325823542509095,
-                    1000.8926474200136,
+                    4.620933794352661,
+                    1001.2017726626575,
+                    5.228724189582916,
+                    1000.752855779901,
+                    2.613752251894228,
+                    1001.6195467619373,
                 ],
             ),
         ),

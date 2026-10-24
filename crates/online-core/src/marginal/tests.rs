@@ -1736,7 +1736,11 @@ fn n_eff_is_the_weight_before_the_row_and_min_periods_gates_the_derived_values()
     let mut c = cfg(1, 1);
     c.min_weight = vec![3.0];
     let mut m = Marginal::new(c).unwrap();
-    let lam = 0.5f64.powf(1.0 / 20.0);
+    // The model's own factor, `2^(−1/20)` from `exp2`: the recursion is
+    // what this pins, to the bit, and `0.5.powf(1/20)` is another libm
+    // function, whose last bit Apple's happened to share and another
+    // platform's need not (docs/PLAN.md task 273).
+    let lam = m.cfg().decay.factor(1.0);
     let mut expect = 0.0;
     for i in 0..6 {
         let x = [i as f64];
@@ -1984,9 +1988,13 @@ fn learned_edges_lose_no_row() {
 /// row so that a run of them cannot grow the hold, and the replay ages
 /// the histogram by the product, `scale·(a·b)` where given edges age it
 /// `(scale·a)·b` (docs/MARGINAL-LAGS-AND-BINS.md, "Invariance"). Measured
-/// here, the two differ by 1.5e-15 of the data's scale; the bound below
+/// here, the two differ by 1.6e-15 of the data's scale; the bound below
 /// is ten times that, and the test fails if they stop differing, since
-/// the docs would then understate the replay.
+/// the docs would then understate the replay. Under a literal `lam` at
+/// unit steps, so `a` and `b` are that literal on every platform: under a
+/// half-life of 200 they were Apple's `exp2`, and with it 1 ulp off the
+/// two products rounded alike and stopped differing (docs/PLAN.md task
+/// 273).
 #[test]
 fn learned_edges_lose_no_row_across_targets() {
     let (p, n_targets) = (3, 5);
@@ -1994,7 +2002,7 @@ fn learned_edges_lose_no_row_across_targets() {
         Marginal::new(MarginalCfg {
             n_features: p,
             n_targets,
-            decay: Decay::Halflife(200.0),
+            decay: Decay::Lam(0.9965),
             min_weight: vec![0.0; n_targets],
             lags: Vec::new(),
             serial_rule: None,

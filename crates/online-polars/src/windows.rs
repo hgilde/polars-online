@@ -3210,7 +3210,20 @@ mod tests {
         }
         let got = kernel(2.0).mass(3.0);
         let want = 2.0 / ln2 * (1.0 - 0.5f64.powf(1.5));
-        assert!((got - want).abs() < 1e-15, "{got} vs {want}");
+        // `(2.2 k + 4.4)·2⁻⁵²` for a libm `k` ulps off (docs/PLAN.md task
+        // 273): `mass` is `−(h/ln 2)·exp_m1(−t ln 2/h)`, `exp_m1`'s `k` ulps
+        // of 0.65 amplified 2.9 times (1.4 k), its argument's two
+        // roundings (1.1), `h/ln 2`'s (0.9) and the product's (0.5); the
+        // closed form's `powf` adds `k` ulps of 0.35, amplified alike (0.7
+        // k), and its own three roundings (1.9). Held at `10·2⁻⁵²`, a libm
+        // up to 2.5 ulps off: measured 1 with Apple's, and 5 with Apple's
+        // moved by up to 2 ulps, where `1e-15` (4.5), the bound before,
+        // failed.
+        assert!(
+            (got - want).abs() <= 10.0 * f64::EPSILON,
+            "{got} vs {want}: {:e} of 2^-52",
+            (got - want).abs() / f64::EPSILON
+        );
     }
 
     /// A subnormal half-life passed `check`: `mass·x` underflowed to 0 and
@@ -4676,9 +4689,16 @@ mod tests {
         )
         .unwrap();
         let whole = 2f64.powf(-0.5) + 2f64.powf(-1.0) + 2f64.powf(-2.5);
+        // `(1.25 k + 2)·2⁻⁵²` for a libm `k` ulps off (docs/PLAN.md task
+        // 273): each side takes `2^(−1/2)` (`k` ulps of `2⁻⁵³`) and
+        // `2^(−5/2)` (`k` of `2⁻⁵⁵`) from its libm, `exp2` here and `powf`
+        // above, `2⁻¹` exactly, and rounds two sums near 1.4 (½ ulp each).
+        // Held at `8·2⁻⁵²`, a libm up to 4.8 ulps off: measured 0 with
+        // Apple's, 3 with Apple's moved by up to 2 ulps and 5 by up to 4,
+        // where `1e-15` (4.5), the bound before, failed.
         for o in 0..3 {
             assert!(
-                (reset.values[o][0] - whole).abs() < 1e-15,
+                (reset.values[o][0] - whole).abs() <= 8.0 * f64::EPSILON,
                 "op {o}: {} vs {whole}",
                 reset.values[o][0]
             );

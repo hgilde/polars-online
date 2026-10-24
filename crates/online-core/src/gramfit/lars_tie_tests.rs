@@ -509,11 +509,18 @@ fn the_columns_a_tie_admits_are_the_one_subset_the_lasso_allows() {
 /// Two copies of a four-column block in disjoint rows, standardized from
 /// the rows: column j and column j + 4 tie before rounding, and the Gram's
 /// own sums, over the rows in other orders, part them by a few ulps. Near
-/// the end of the path columns 2 and 6 leave at one knot, their steps 5.3
+/// the end of the path columns 2 and 6 leave at one knot, their steps 7.2
 /// ulps of `λ_max` apart. Their coefficients fall 1.6e7 times as fast as
 /// `λ`, so the later one, set to 0 at the earlier step, was moved by
-/// `4.5e-8`. Solving the columns that stay afresh at the knot keeps the
-/// conditions to `1e-14`; without it they were off by `4.5e-8` from there.
+/// `6.1e-8`. Solving the columns that stay afresh at the knot keeps the
+/// conditions to `1.2e-14`; without it they would be off by that `6.1e-8`
+/// from there (measured as `4.5e-8`, on steps 5.3 ulps apart, on the
+/// stream before task 273).
+///
+/// The stream's `ln` and `cos` are the `libm` crate's, the same bits on
+/// every platform (docs/PLAN.md task 273): the tie, the knot and the steps'
+/// ulps all turn on the stream's last bits, and with the platform's `ln`
+/// and `cos` moved by an ulp the Gram's sums left columns 0 and 4 tied.
 #[test]
 fn columns_merged_at_a_knot_leave_the_conditions_to_rounding() {
     let (n, m, seed) = (40, 4, 113);
@@ -521,7 +528,7 @@ fn columns_merged_at_a_knot_leave_the_conditions_to_rounding() {
     let mut normal = || {
         let u = 1.0 - rng.uniform();
         let v = rng.uniform();
-        (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        (-2.0 * libm::log(u)).sqrt() * libm::cos(std::f64::consts::TAU * v)
     };
     let mix: Vec<f64> = (0..m * m)
         .map(|ij| normal() + if ij / m == ij % m { 1.0 } else { 0.0 })

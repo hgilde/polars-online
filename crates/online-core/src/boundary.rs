@@ -292,7 +292,15 @@ mod tests {
     #[test]
     fn the_series_is_the_law_of_the_supremum() {
         assert_eq!(sup_abs_bm_cdf(0.0), 0.0);
-        assert_eq!(sup_abs_bm_cdf(12.0), 1.0);
+        // 1 to rounding, which is libm's (docs/PLAN.md task 273): 34 terms
+        // `e^{−n²a}/n` summing to 1.68 in magnitude, each `k + ½` ulps off
+        // through `exp` and its division, 33 additions of partial sums
+        // under 1 (each ¼ ulp of 1), and `4/π` with its product: at most
+        // `1.27·((k + ½)·1.68 + 8.25) + 1` ulps of 1, 17 for a libm 2 ulps
+        // off. Apple's reads 1 exactly, and at most 1 − 2⁻⁵² moved by up to
+        // 2 ulps, where `== 1.0` failed.
+        let tail = 1.0 - sup_abs_bm_cdf(12.0);
+        assert!((0.0..=18.0 * f64::EPSILON).contains(&tail), "{tail:e}");
         for x in [0.5, 1.0, 1.5, 2.0, 3.0] {
             assert!(sup_abs_bm_cdf(x) < sup_abs_bm_cdf(x + 0.05), "{x}");
         }
@@ -434,9 +442,17 @@ mod tests {
             for z in [z, -z] {
                 let series = 1.0 - z / 2.0 + z * z / 12.0 - z.powi(4) / 720.0;
                 let got = bernoulli(z);
+                // `(k + 2)·2⁻⁵²` for a libm `k` ulps off (docs/PLAN.md task
+                // 273): `exp_m1`'s `k` ulps pass through `z / e^z − 1` as `k`
+                // ulps of the quotient, which rounds once more (½), and the
+                // series' own roundings come to 1½ ulps of 1 (its next term
+                // is below 1e-28). Held at 6, a libm up to 4 ulps off:
+                // measured 1 with Apple's, 2 with Apple's moved by up to 2
+                // ulps, where 4e-16, the bound before (1.8), failed.
                 assert!(
-                    (got - series).abs() <= 4e-16,
-                    "z = {z:e}: {got} against {series}"
+                    (got - series).abs() <= 6.0 * f64::EPSILON,
+                    "z = {z:e}: {got} against {series}, {:e} of 2^-52",
+                    (got - series).abs() / f64::EPSILON
                 );
             }
         }

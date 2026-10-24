@@ -1218,11 +1218,19 @@ mod tests {
             let want =
                 u * (2.0 / 3.0 - v / 6.0) - u * u / 4.0 + u * u * v / 12.0 + u * u * u / 15.0;
             let got = cusum_null_window(w, hm, hc);
-            // A few `2⁻⁵²/v`: the bracket goes through `exp`, whose last
-            // bits are the platform's (0.9 measured with Apple's and
-            // glibc's, 1.7 with Windows', CI 2026-10-17).
+            // `(1.5 k + 0.75)·2⁻⁵²/v` for a libm `k` ulps off (docs/PLAN.md
+            // task 273): the bracket `F(u + v) − e^{−2v} F(u − v)` holds
+            // values just under 1, each `F` an `exp_m1` (`k` ulps of
+            // `2⁻⁵³`) and a division (½), the tail an `exp` (`k`) and a
+            // product (½), `(3k + 1.5)·2⁻⁵³` in all, and `c²/v` scales it
+            // by `1/v`; `c`'s own `k` ulps reach the share unscaled. Held at
+            // 9, twice the worst measured with a libm 2 ulps off: 0.9 with
+            // Apple's and glibc's `exp` and 1.7 with Windows' (CI
+            // 2026-10-17, which took task 269's bound from 1 to 4), and 4.3
+            // with Apple's moved by up to 2 ulps, where the derivation (`k
+            // = 2.5`) gives 4.5; 4 failed there.
             assert!(
-                (got - want).abs() <= 4.0 * f64::EPSILON / v,
+                (got - want).abs() <= 9.0 * f64::EPSILON / v,
                 "({w}, {hm:e}, {hc:e}): {got:e} vs {want:e}, {:e} past 2^-52/v",
                 (got - want).abs() * v / f64::EPSILON
             );
