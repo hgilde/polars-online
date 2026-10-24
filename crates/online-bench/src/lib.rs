@@ -35,7 +35,9 @@ pub const MODEL_CASES: &[&str] = &[
     "ewridge_k5",
     "ewridge_k20",
     "ewridge_gram_t10",
+    "huber_k20",
     "sgd",
+    "sgd_huber",
     "pa",
     "seqtest",
     "bocpd",
@@ -270,8 +272,18 @@ fn case_spec(id: &str) -> (Value, Shape) {
             s["targets"] = json!(names("y", 10));
             (s, Shape::Linear)
         }
+        // Huber's cut in the MAD scale, the default since task 271: a
+        // sketch of `|e|` per target, aged and fed each row.
+        "huber_k20" => (fit(json!({"type": "huber"}), 20), Shape::Linear),
         "sgd" => (
             fit(json!({"type": "sgd", "learning_rate": 0.01}), 20),
+            Shape::Linear,
+        ),
+        "sgd_huber" => (
+            fit(
+                json!({"type": "sgd", "learning_rate": 0.01, "loss": "huber"}),
+                20,
+            ),
             Shape::Linear,
         ),
         "pa" => (fit(json!({"type": "pa"}), 20), Shape::Linear),

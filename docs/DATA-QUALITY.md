@@ -1202,7 +1202,7 @@ info heavy_tails audit y 175.0
 90% interval from sigma covers 0.952; conformal covers 0.899
 sigma from 0.52 to 6.99; drift flagged 12
 ewridge  slope: 99% of rows within 0.224 of 0.5
-huber    slope: 99% of rows within 0.057 of 0.5
+huber    slope: 99% of rows within 0.045 of 0.5
 ```
 
 The audit finds `y`'s largest value 175 robust standard deviations from
@@ -1210,7 +1210,7 @@ its median. Over the last 40,000 rows, the 90% Gaussian interval built
 from `sigma` covered 95.2% of them, too wide on average, because
 `sigma` ranged from 0.52 to 6.99 as the large rows came and went. The
 conformal interval covered 89.9%. `drift` flagged 12 rows of a relation
-that never changed. `huber`'s slope stayed within 0.057 of 0.5 on 99% of
+that never changed. `huber`'s slope stayed within 0.045 of 0.5 on 99% of
 the rows, and `ewridge`'s within 0.224.
 
 **What to do.** Fit `huber` or `quantile` when the coefficients matter,

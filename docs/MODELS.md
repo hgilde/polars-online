@@ -672,7 +672,8 @@ pl.DataFrame({"x": x, "y": y}).write_parquet("wild.parquet")
 common = dict(targets=["y"], features=["x"], half_life=float("inf"))
 specs = [
     po.spec.ewridge("ewridge", **common),
-    po.spec.huber("huber", **common),                     # huber_delta=1.345, the default
+    po.spec.huber("huber", **common),                         # huber_delta=1.345 and huber_scale="mad", the defaults
+    po.spec.huber("huber_rms", huber_scale="rms", **common),  # the cut drawn in the residuals' root mean square
     po.spec.quantile("median", quantile=0.5, **common),
 ]
 bank = po.ModelBank(specs)
@@ -686,19 +687,39 @@ for r in bank.coef().filter(pl.col("term") == "x").iter_rows(named=True):
 ```text
 wild rows: 218 of 10000; the true slope: 2
 ewridge: slope 2.89
-huber: slope 2.18
+huber: slope 2.02
+huber_rms: slope 2.18
 median: slope 2.03
 ```
 
 `huber` still learns from a wild row, at a weight that shrinks with its
-miss, so it lands nearer the truth than least squares and not on it. The
-median takes only the sign of a row's miss beyond the band, so a wild row
-counts no more than an ordinary one.
+miss, so it lands near the truth and not exactly on it. The median takes
+only the sign of a row's miss beyond the band, so a wild row counts no more
+than an ordinary one. `huber_rms` draws its cut in a scale that the wild
+rows themselves widen, so it lets more of their pull through (the scales
+are below).
 
-`e` is the row's residual, and `σ` the exponentially weighted root mean
-square of the target's residuals, about 0. `δ` is `huber_delta` and `τ`
-the `quantile` level. The *Gram* is `ewridge`'s `S`, and the cross-moment
-its `η_j`:
+**Huber's loss is quadratic for a small miss and linear for a large one.**
+With `u = e/σ` the residual `e` in units of a scale `σ`, and `δ` the cut
+`huber_delta`:
+
+```
+ρ(u) = u²/2           |u| ≤ δ
+     = δ|u| − δ²/2    |u| > δ
+ψ(u) = ρ'(u) = u inside the cut, ±δ beyond it
+```
+
+`ψ` is a row's pull on the fit, and it stops growing at the cut. Least
+squares has `ρ(u) = u²/2`, so one row that misses by 50 pulls as hard as
+10,000 rows that miss by 0.5. Writing `ψ(u) = w(u)·u` with
+`w(u) = min(1, δ/|u|)` turns the fit into weighted least squares, each row
+at the weight `w` of its own residual. A batch fit iterates: fit, compute
+the residuals, reweight, fit again. `huber` weighs each row once, by its
+residual against the fit before the row, and keeps only the weighted sums.
+
+`e` is the row's residual, and `σ` the target's residual scale (below).
+`δ` is `huber_delta` and `τ` the `quantile` level. The *Gram* is
+`ewridge`'s `S`, and the cross-moment its `η_j`:
 
 ```
 huber:     the ridge update at weight  w · min(1, δσ / |e|)
@@ -710,18 +731,91 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
 ```
 
 The weights are per target, so `huber` and `quantile` keep one set of
-sums per target, where `ewridge` shares one set across targets. `σ` is not
-itself robust: a burst of outliers widens the cut for the rows after it,
-until the exponentially weighted mean forgets them.
+sums per target, where `ewridge` shares one set across targets.
+
+**The scale `σ` is the part of Huber's estimator that makes it robust.**
+The cut is `δσ`, so a scale that the outliers inflate moves the cut out of
+their way. `huber_scale=` chooses between two scales:
+
+| `huber_scale` | `σ` | what one wild row does to it |
+|---|---|---|
+| `"mad"`, the default | the exponentially weighted median of `\|e\|`, over `Φ⁻¹(3/4) = 0.6745` so that it is the standard deviation when the errors are normal | moves it by the row's weight, whatever the size of the miss, so the scale holds until half the weight is outliers |
+| `"rms"` | the exponentially weighted root mean square of `e`, about 0 | sets it: every row counts at full weight, a wild row included |
+
+The median is read from a quantile sketch kept per target, within 0.78% of
+the exact weighted median. Each scale learns a residual at the row's own
+weight, not at its Huber weight, and ages on every row.
+
+**The root mean square is not robust, and the median is.** Measured on
+`y = 1000 + 2x + 0.5ε` over 20,000 rows with no decay, and a wild row 50
+too high on a share of the rows with `x` above 0, as the median slope over
+five seeds:
+
+| wild rows | least squares | `"mad"` | `"rms"` | statsmodels `RLM`, MAD scale, iterated to convergence |
+|---|---|---|---|---|
+| none | 1.999 | 2.000 | 2.000 | 2.000 |
+| 1% | 2.415 | 2.008 | 2.057 | 2.008 |
+| 5% | 4.050 | 2.041 | 2.676 | 2.039 |
+| 12.6% | 6.975 | 2.128 | 4.885 | 2.124 |
+
+The root mean square fails twice. Its first residuals are the target's whole
+level, about 1,000 while the intercept is still near 0, and without decay
+they stay in it for good. And the wild rows inflate the scale that is meant
+to catch them. The median leaves the first residuals behind once the fit has
+the level. The small bias left at 1% and 5% is Huber's own: a wild row still
+teaches, at about `1.345 · 0.5 / 50 ≈ 0.013` of an ordinary row's weight,
+and hundreds of them add up.
+
+**One pass with the median lands where the fully iterated batch fit does.**
+`huber` weighs each row once, by its residual against the fit before it.
+The early rows get their weights from a poor fit and the later rows from a
+good one, so the one pass converges to the batch fit on a stream that does
+not change. The table above shows the two within 0.005 up to 12.6% wild
+rows. Reweighting more passes over a trailing window of 256 rows would
+close less than half of what is left at 12.5%, measured in a simulation of
+this recursion (2.183 to 2.155, against 2.124 for the batch fit), and it
+would cost the window's rows in memory.
+
+**A robust scale slows the fit after a change of level.** In a series, a
+run of large residuals is either a burst of outliers or a new level, and no
+rule on one row tells them apart. The median treats every row after a level
+shift as an outlier until the median itself has moved, which holds the fit
+back. `huber_scale_half_life=` gives the scale a memory of its own, the
+spec's `half_life` by default: shorter than the fit's, the scale follows a
+shift sooner. The price is that a longer burst of outliers widens the cut.
+Measured with a fit half-life of 500 rows, a shift of +20 at row 10,000
+and no outliers, as the mean absolute error after the shift:
+
+| scale | rows 0-200 after the shift | rows 200-400 |
+|---|---|---|
+| least squares (`huber_delta=inf`) | 17.6 | 13.3 |
+| `"rms"` | 19.0 | 15.1 |
+| `"mad"`, the scale's half-life the fit's 500 rows | 19.9 | 19.5 |
+| `"mad"`, `huber_scale_half_life=100` | 19.2 | 14.6 |
+
+The fit's own half-life sets how long the fit takes to settle at the new
+level, about 2,000 rows in every row of the table. The break tests of
+[DIAGNOSTICS.md](DIAGNOSTICS.md#has-it-broken) flag such a shift as it
+happens.
+
+**Huber's weights read the residual alone, so they do not protect against a
+wild feature.** A row whose features are far from the rest pulls the fit
+toward itself, so its residual is small and it keeps its full weight. Wild
+rows concentrated in one region of `x` act the same way, because there they
+are the majority: at 30% of the rows (60% of those with `x` above 0) the
+median breaks too, and every estimator that reads only residuals does.
 
 **Until a target has a `σ` above 0, `huber` down-weights no row.** That is
-before its first residual, or while every residual so far is exactly zero:
-there is nothing to judge an outlier against. `quantile` has no band to draw
-there, and takes least-squares rows.
+before its first residual, or while every residual so far is exactly zero
+(under `"mad"`, while half the weight is on such residuals): there is
+nothing to judge an outlier against. `quantile` has no band to draw there,
+and takes least-squares rows. `quantile`'s `σ` is always the root mean
+square, on the model's clock: it sets the width of the band, not a weight.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
-                    huber_delta=1.5)      # a residual beyond huber_delta * sigma is down-weighted (default 1.345)
+                    huber_delta=1.5,             # a residual beyond huber_delta * sigma is down-weighted (default 1.345)
+                    huber_scale_half_life=120.0)  # sigma's own memory, shorter than the fit's (default half_life)
 med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", gap_cap=300.0, half_life=600.0,
                        quantile=0.5,      # the level, strictly between 0 and 1: 0.5 is a median regression
                        quantile_eps=0.2)  # the band's half-width, in units of sigma (default 0.2)
@@ -730,7 +824,9 @@ med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", g
 **`huber_delta`'s default, 1.345, is the cut at which Huber's estimator is
 95% as efficient as least squares when the errors are normal.**
 statsmodels' `HuberT` takes 1.345 and scikit-learn's `HuberRegressor`
-1.35. `huber_delta=inf` cuts nothing, which is least squares.
+1.35. `huber_delta=inf` cuts nothing, which is least squares. To reproduce
+the numbers of a version before `huber_scale` existed, give
+`huber_scale="rms"`.
 
 **The band's rows, those with `|e| < h`, give the Newton step its
 curvature.** So a much smaller `quantile_eps` narrows the band and slows
@@ -755,7 +851,7 @@ equal, for three reasons:
 | reason | applies to |
 |---|---|
 | each row's weight was set by the fit before it | both |
-| `σ` is the plain spread rather than a robust one | `huber` |
+| `σ` is an exponentially weighted median, read from a sketch, where a batch fit takes the median of the final residuals | `huber` |
 | the check loss is smoothed over the band | `quantile` |
 
 ### `sgd` — stochastic gradient descent
@@ -832,14 +928,15 @@ The loss sets the link and the gradient:
 | loss | link | `dL/d eta` | its constant |
 |---|---|---|---|
 | `squared` | identity | `p − y` | |
-| `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is |
+| `huber` | identity | `clamp(p − y, ±delta·s)` | `delta` is `huber_delta=`, 1.345 by default, in units of `s` as `huber`'s is; `huber_scale=` and `huber_scale_half_life=` choose `s` as for `huber` |
 | `quantile` | identity | `1{y < p} − τ` | `τ` is `quantile=`, the level, between 0 and 1 |
 | `epsilon_insensitive` | identity | 0 within `eps·s_y` of `y`, else `sign(p − y)` | the tube's half-width is `eps=`, 0.01 by default, in units of `s_y` |
 | `poisson` | log, for count targets | `p − y` | a negative target refuses the chunk, naming the row |
 | `logistic` | sigmoid, for 0/1 targets | `p − clamp(y, 0, 1)` | `strict_binary=True` refuses a chunk with a label not 0 or 1 |
 
-**`s` is the exponentially weighted root mean square of the target's
-out-of-sample residuals**, as `huber`'s `σ` is, and **`s_y` is the
+**`s` is the scale of the target's out-of-sample residuals**, `huber`'s
+`σ`: the exponentially weighted median of `|y − p|` over 0.6745 by default
+(`huber_scale="mad"`), or their root mean square (`"rms"`). **`s_y` is the
 target's own spread**, around its exponentially weighted mean. So a cut and
 a tube mean the same thing at any scale of the target. Until the target has
 an `s`, the Huber row is a squared-loss row. Until it has an `s_y`, which
@@ -860,7 +957,13 @@ the moments instead, a half-life of 10 put the slope at 3.03 for a truth of
 **The cut reads the residuals and the tube does not, because the fit starts
 from zero.** Its first residuals are the target's whole level. Beyond the
 cut the gradient is clipped, not zero, so a cut those residuals widen still
-lets every row teach. Inside the tube the gradient is zero. A tube drawn in
+lets every row teach, and the median scale leaves them behind once the fit
+has the level. The root mean square does not: without decay the first
+residuals stay in it, the cut stays wider than every later residual, and the
+Huber loss is the squared loss. On `y = 1000 + 2x + 0.5ε` with a row 50 too
+high on 5% of the rows, all with `x` above 0, and no decay, the slope is
+3.751 under the squared loss and under `huber_scale="rms"` alike, and 2.016
+under the default `"mad"`. Inside the tube the gradient is zero. A tube drawn in
 the residuals' spread on a target at 1,000 with a spread of 2 was about 100
 wide and held every row, and without decay it never narrowed.
 

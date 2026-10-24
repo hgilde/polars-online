@@ -66,10 +66,14 @@
 //! does (below). The ridge is on the slope in the row's coordinates, `s_i
 //! b_i`, as it was on `b_i` while the scaler warmed up.
 //!
-//! **`delta` is in units of `s`**, the target's EW residual standard
-//! deviation as the row arrives, as `huber`'s `huber_delta` is
-//! (`crate::Robust`); **`eps` is in units of `s_y`**, the target's own EW
-//! standard deviation as the row arrives. A cut and a tube in the target's
+//! **`delta` is in units of `s`**, the target's residual scale as the row
+//! arrives, as `huber`'s `huber_delta` is (`crate::Robust`), in the scale
+//! `huber_scale` names ([`crate::HuberScale`]): the EW median of `|y − p|`
+//! over `Φ⁻¹(3/4)` under `Mad`, a spec's default, one [`crate::EwQuantile`]
+//! per target fed the residuals and weights `s²` is below, or `√s²` under
+//! `Rms`, each aged on `huber_scale_decay` (the model's decay unless
+//! given); **`eps` is in units of `s_y`**, the target's own EW standard
+//! deviation as the row arrives. A cut and a tube in the target's
 //! own units fitted one scale and failed the others -- a target in
 //! thousandths never left a tube of 0.1, so the model was passive for
 //! ever, and one in thousands never entered it (docs/PLAN.md task 195,
@@ -99,7 +103,13 @@
 //! **Why two units.** The fit starts from zero coefficients, so its first
 //! residuals are the target's whole level. Outside the Huber cut the
 //! gradient is clipped, not zero, so a cut drawn wide by those residuals
-//! still lets every row teach, and narrows as they leave the mean. Inside
+//! still lets every row teach. Under `Mad` the cut narrows once the fit has
+//! the level, since the median leaves those residuals behind; under `Rms`
+//! it narrows only as a decay forgets them, so without decay it never
+//! does, every later residual is inside the cut, and the loss is the
+//! squared loss to the bit (C-1, review round 9: slope 3.751 under both on
+//! a target at 1,000 with 5% one-sided outliers, 2.016 under `Mad`;
+//! docs/PLAN.md task 271). Inside
 //! the tube the gradient is zero: a tube of `eps = 0.1` drawn in the
 //! residual's spread on a target at 1,000 in a spread of 2 was about 100
 //! wide, held every row, and without decay never narrowed, so the fit
@@ -151,9 +161,10 @@ use crate::{Constraint, Decay, EwDiag, Warmup};
 #[serde(rename_all = "snake_case")]
 pub enum SgdLoss {
     Squared,
-    /// `delta` is in units of the target's EW residual std, as `robust`'s
-    /// Huber is: a clipped gradient keeps learning, so a cut a fit's first
-    /// residuals widen does not stop it (the module docs).
+    /// `delta` is in units of the target's residual scale
+    /// ([`SgdCfg::huber_scale`]), as `robust`'s Huber is: a clipped
+    /// gradient keeps learning, so a cut a fit's first residuals widen does
+    /// not stop it (the module docs).
     Huber {
         delta: f64,
     },
@@ -283,6 +294,18 @@ pub struct SgdCfg {
     /// the row (docs/PLAN.md task 195, S4).
     #[serde(default)]
     pub strict_binary: bool,
+    /// The scale the Huber cut is drawn in, `huber`'s
+    /// ([`crate::HuberScale`]; the module docs). A state written before
+    /// schema 63 has no such field and was fitted under the RMS, so it
+    /// loads as [`crate::HuberScale::Rms`], where a spec's default under
+    /// `loss = "huber"` is the MAD. Every other loss keeps
+    /// [`crate::HuberScale::Rms`], which it does not read.
+    #[serde(default = "crate::HuberScale::of_a_state_before_63")]
+    pub huber_scale: crate::HuberScale,
+    /// The Huber scale's own memory: `None` ages it on `decay`, as before
+    /// schema 63. Huber only.
+    #[serde(default)]
+    pub huber_scale_decay: Option<Decay>,
 }
 
 impl SgdCfg {
@@ -337,6 +360,16 @@ impl SgdCfg {
         if self.strict_binary && self.loss != SgdLoss::Logistic {
             return Err("sgd: strict_binary applies to the logistic loss only".into());
         }
+        // The Huber cut's scale and its memory are the Huber loss's
+        // (docs/PLAN.md task 271).
+        if matches!(self.loss, SgdLoss::Huber { .. }) {
+            if let Some(d) = self.huber_scale_decay {
+                d.check()
+                    .map_err(|e| format!("sgd: huber_scale_half_life: {e}"))?;
+            }
+        } else if self.huber_scale != crate::HuberScale::Rms || self.huber_scale_decay.is_some() {
+            return Err("sgd: huber_scale and huber_scale_half_life are for loss \"huber\"".into());
+        }
         // What the spec layer refuses, refused here too, so the Rust API
         // and a state file are held to it (review round 5, C6): a NaN
         // `min_weight` is never reached, and a negative one is no floor.
@@ -379,6 +412,12 @@ pub struct Sgd {
     /// under every other.
     sig2: Vec<f64>,
     wsig: Vec<f64>,
+    /// Per target, the sketch of `|y − p|` whose median over
+    /// [`crate::NORMAL_Q3`] is the Huber cut's scale under
+    /// [`crate::HuberScale::Mad`]: fed the residuals and weights `s²` is,
+    /// and aged alike. Empty under the RMS, under every other loss, and in
+    /// a state written before schema 63 (docs/PLAN.md task 271).
+    mad: Vec<crate::EwQuantile>,
     /// Per target, the EW mean and variance of the target itself: the unit
     /// `eps` is in (the module docs; docs/PLAN.md task 202). Kept under the
     /// epsilon-insensitive loss only, and empty under every other.
@@ -428,6 +467,8 @@ struct SgdV3 {
     w_target: Vec<f64>,
     sig2: Vec<f64>,
     wsig: Vec<f64>,
+    #[serde(default)]
+    mad: Vec<crate::EwQuantile>,
     spread: TargetSpread,
 }
 
@@ -436,7 +477,7 @@ impl TryFrom<SgdV3> for Sgd {
 
     fn try_from(v: SgdV3) -> Result<Self, String> {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
-        let (sig2, wsig, spread) = (v.sig2, v.wsig, v.spread);
+        let (sig2, wsig, mad, spread) = (v.sig2, v.wsig, v.mad, v.spread);
         let (w_target, warmup) = (v.w_target, v.warmup);
         let k = cfg.k_total();
         let m = cfg.n_targets;
@@ -484,6 +525,17 @@ impl TryFrom<SgdV3> for Sgd {
         if !spread.has_shape(scales(own)) {
             return Err("sgd: the state's target spreads do not match its cfg's loss".into());
         }
+        // The MAD's sketches, one per target at 0.5 exactly under it.
+        let huber_scale = if residual {
+            cfg.huber_scale
+        } else {
+            crate::HuberScale::Rms
+        };
+        if !crate::robust::mad_sketches_fit(huber_scale, m, &mad) {
+            return Err(
+                "sgd: the state's residual sketches do not match its cfg's huber_scale".into(),
+            );
+        }
         Ok(Self {
             cfg,
             scaler,
@@ -494,6 +546,7 @@ impl TryFrom<SgdV3> for Sgd {
             w_target,
             sig2,
             wsig,
+            mad,
             spread,
             zbuf: vec![],
             mbuf: vec![],
@@ -527,6 +580,11 @@ impl Sgd {
             }
         }
         let (residual, own) = scales_kept(&cfg.loss);
+        let mad = if residual {
+            crate::robust::mad_sketches(cfg.huber_scale, m)
+        } else {
+            Vec::new()
+        };
         let residual = if residual { m } else { 0 };
         Ok(Self {
             scaler,
@@ -537,6 +595,7 @@ impl Sgd {
             w_target: vec![0.0; m],
             sig2: vec![0.0; residual],
             wsig: vec![0.0; residual],
+            mad,
             spread: if own {
                 TargetSpread::new(m)
             } else {
@@ -625,6 +684,12 @@ impl Sgd {
         &self.sig2
     }
 
+    /// Per target, the sketch of `|e|` the MAD scale is read from, under
+    /// `huber_scale = "mad"`; empty otherwise.
+    pub fn mad_sketch(&self) -> &[crate::EwQuantile] {
+        &self.mad
+    }
+
     /// Per target, the EW variance of the target itself, `s_y²`, under the
     /// epsilon-insensitive loss; empty under every other (the module docs).
     pub fn target_variance(&self) -> Vec<f64> {
@@ -640,6 +705,9 @@ impl Sgd {
     fn scale(&self, j: usize) -> Option<f64> {
         match self.cfg.loss {
             SgdLoss::Huber { .. } => {
+                if let Some(q) = self.mad.get(j) {
+                    return crate::robust::mad_scale(q);
+                }
                 let s2 = self.sig2[j];
                 (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
             }
@@ -1038,6 +1106,12 @@ impl OnlineModel for Sgd {
         let m = self.cfg.n_targets;
         let off = usize::from(self.cfg.fit_intercept);
         let lam = self.cfg.decay.factor(d_clock);
+        // The Huber scale's own clock (`huber_scale_decay`), the model's
+        // unless given: the same factor, to the bit, where it is not.
+        let lam_scale = self
+            .cfg
+            .huber_scale_decay
+            .map_or(lam, |d| d.factor(d_clock));
 
         // The row the model sees. Without a scaler it is `x` itself, the
         // intercept's constant 1 folded into `dot` and the update below:
@@ -1140,7 +1214,10 @@ impl OnlineModel for Sgd {
             // learns the row's `y` at once, whatever the fit.
             let scale = self.scale(j);
             if let Some(ws) = self.wsig.get_mut(j) {
-                *ws *= lam;
+                *ws *= lam_scale;
+            }
+            if let Some(q) = self.mad.get_mut(j) {
+                q.age(lam_scale);
             }
             if !self.spread.is_empty() {
                 self.spread.update(j, y[j], lam, weight);
@@ -1163,6 +1240,12 @@ impl OnlineModel for Sgd {
                 if s2.is_finite() {
                     self.sig2[j] = s2;
                     self.wsig[j] = ws_new;
+                }
+                // The MAD's sketch takes the same residual at the same
+                // weight (`huber`'s rule; an `|e|` that is not finite adds
+                // nothing).
+                if let Some(q) = self.mad.get_mut(j) {
+                    q.add(resid.abs(), weight);
                 }
             }
             if held {
@@ -1382,6 +1465,8 @@ mod tests {
             constraint: None,
             standardize: false,
             strict_binary: false,
+            huber_scale: crate::HuberScale::Rms,
+            huber_scale_decay: None,
         }
     }
 

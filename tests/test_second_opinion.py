@@ -2920,13 +2920,18 @@ class TestHuberAgainstScikitLearn:
     gross error, ``huber`` at its default ``huber_delta = 1.345`` and
     ``HuberRegressor()`` at its default ``epsilon = 1.35``, the same constant
     rounded, land together where least squares does not. The
-    algorithms differ -- ours reweights each row by its prior residual in
-    units of the residuals' EW spread, theirs solves for the scale jointly --
-    so they agree to a tolerance: 0.044 at this seed, at most 0.08 over eight,
-    against 0.38 to 0.47 for least squares. The spread ours measures in is
-    not itself robust (review D4, ``robust.rs``), so at one row in ten the
-    cut widens and the intercept sits halfway to least squares: 1.5 against
-    theirs at 0.66, the truth at 0.5 and least squares at 2.7."""
+    algorithms differ -- ours reweights each row once by its prior residual
+    in units of the residuals' EW median absolute deviation (``huber_scale =
+    "mad"``, the default since task 271), theirs solves for the scale jointly
+    -- so they agree to a tolerance. Re-measured under the MAD (task 271,
+    seeds 2-9): 0.0016 at this seed and at most 0.011 over eight, against
+    0.38 to 0.45 for least squares; the tolerance went from 0.1 to 0.03 with
+    it. Under the RMS scale, the only one before task 271, the same seeds
+    gave 0.044 to 0.074 (the old figures: 0.044 here, at most 0.08). At one
+    row in ten the RMS's cut widens and its intercept sits halfway to least
+    squares, 1.5 to 1.66 against theirs at 0.64 to 0.68; the MAD's sits at
+    0.69 to 0.76, at most 0.092 from theirs over the eight seeds, where the
+    RMS is 0.84 to 1.0 off (``test_at_one_row_in_ten_the_mad_holds``)."""
 
     @staticmethod
     def fit(df, **kw):
@@ -2975,9 +2980,82 @@ class TestHuberAgainstScikitLearn:
         theirs = np.concatenate(([theirs.intercept_], theirs.coef_))
         ols = LinearRegression().fit(x, y)
         ols = np.concatenate(([ols.intercept_], ols.coef_))
-        np.testing.assert_allclose(ours, theirs, atol=0.1)
+        np.testing.assert_allclose(ours, theirs, atol=0.03)
         # The control: least squares is pulled away by the same rows.
         assert np.abs(ols - theirs).max() > 4 * np.abs(ours - theirs).max()
+
+    def test_at_one_row_in_ten_the_mad_holds(self):
+        """One row in ten a gross error: the MAD's fit stays within 0.15 of
+        scikit-learn's (0.031 to 0.092 measured over seeds 2-9), where the
+        RMS's is 0.84 to 1.0 off."""
+        from sklearn.linear_model import HuberRegressor
+
+        rng = np.random.default_rng(2)
+        n = 4000
+        x = rng.normal(0.0, 1.0, (n, 2))
+        y = 0.5 + x @ np.array([1.2, -0.7]) + rng.normal(0.0, 1.0, n)
+        bad = rng.random(n) < 0.10
+        y[bad] += rng.uniform(15.0, 30.0, bad.sum())
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        theirs = HuberRegressor(alpha=0.0, max_iter=1000).fit(x, y)
+        theirs = np.concatenate(([theirs.intercept_], theirs.coef_))
+        np.testing.assert_allclose(self.fit(df), theirs, atol=0.15)
+        assert np.abs(self.fit(df, huber_scale="rms") - theirs).max() > 0.5
+
+
+class TestHuberMadAgainstStatsmodels:
+    """``huber`` under its default scale, the MAD (``huber_scale = "mad"``),
+    held to statsmodels' Huber M-estimator with the MAD scale,
+    ``RLM(HuberT(1.345)).fit(scale_est=mad)`` iterated to a tolerance of
+    1e-10 (task 271; ``docs/HUBER.md`` §2-§3). The stream is the record's:
+    ``y = 1000 + 2x + 0.5ε`` over 20,000 rows, no decay, +50 on a share of
+    the rows with ``x > 0``, which tilts the slope. One online pass, each row
+    weighted once by its residual against the fit before it, lands where the
+    converged batch fit does: measured over seeds 0-4, within 0.0022 of it
+    at 1% of the rows and 0.0065 at 5%, where the RMS scale is 0.05 and 0.64
+    off and least squares 0.41 and 2.0. The tolerance is 0.01."""
+
+    @staticmethod
+    def stream(frac: float, seed: int) -> pl.DataFrame:
+        rng = np.random.default_rng(seed)
+        n = 20_000
+        x = rng.standard_normal(n)
+        y = 1000.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
+        y[(rng.random(n) < frac) & (x > 0)] += 50.0
+        return pl.DataFrame({"x": x, "y": y})
+
+    @staticmethod
+    def slope(df: pl.DataFrame, **kw: Any) -> float:
+        spec = po.spec.huber("h", targets=["y"], features=["x"], half_life=float("inf"), **kw)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        return float(bank.coef("h")["coef"].to_list()[1])
+
+    @pytest.mark.parametrize("frac", [0.02, 0.10], ids=["1% of rows", "5% of rows"])
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_one_pass_is_the_converged_fit(self, frac, seed):
+        import warnings
+
+        import statsmodels.api as sm
+
+        df = self.stream(frac, seed)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            theirs = float(
+                sm.RLM(
+                    df["y"].to_numpy(),
+                    sm.add_constant(df["x"].to_numpy()),
+                    M=sm.robust.norms.HuberT(1.345),
+                )
+                .fit(scale_est=sm.robust.scale.mad, tol=1e-10, maxiter=300)
+                .params[1]
+            )
+        ours = self.slope(df)
+        assert abs(ours - theirs) < 0.01, (ours, theirs)
+        assert ours == self.slope(df, huber_scale="mad"), "the default is the MAD"
+        # The control: the RMS scale, which the outliers inflate, is not.
+        rms = self.slope(df, huber_scale="rms")
+        assert abs(rms - theirs) > 4 * abs(ours - theirs) + 0.02, (rms, ours, theirs)
 
 
 class TestTheBinsAgainstScipyAndAStump:
