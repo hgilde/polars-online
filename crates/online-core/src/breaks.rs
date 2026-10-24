@@ -584,6 +584,7 @@ fn d_absorbed(u: f64) -> f64 {
 /// value somewhere in 13% of the no-break streams against 9% at four and
 /// eight times; eight is four within the noise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TwinFitWire")]
 pub struct TwinFit {
     /// EW moments of `(x_0, ..., x_{k-1}, y)` at the fast memory.
     fast: crate::EwCov,
@@ -599,6 +600,78 @@ pub struct TwinFit {
     hss: Vec<f64>,
     #[serde(default)]
     hfs: Vec<f64>,
+    /// Rows learned since the history was last wiped numerically
+    /// ([`history_wiped`]): the count [`Self::wald`] waits on for `2k`.
+    /// `fast.rows_learned()` counted every row since the first, so after a
+    /// gap that left the old rows below the rounding of the new ones the
+    /// distance was read on the `k` to `2k` rows after it, off a variance
+    /// whose rank was the new rows' alone (task 270, R1-2). A state saved
+    /// before the count existed loads with every row it learned
+    /// ([`TwinFitWire`]).
+    fresh_rows: u64,
+}
+
+/// [`TwinFit`] as a file holds it: a state saved before
+/// [`TwinFit::fresh_rows`] existed has none, and loads with every row it
+/// has learned, the count that state's gate read. A stream no gap has
+/// wiped counts the same, so such a state saves the bytes a current build
+/// writes from the same stream, and one saved inside its first `2k` rows
+/// waits out the rest of them as it did. (`u64::MAX`, "past the wait",
+/// would have skipped that wait and saved other bytes.)
+#[derive(Deserialize)]
+struct TwinFitWire {
+    fast: crate::EwCov,
+    slow: crate::EwCov,
+    #[serde(default)]
+    origin: Vec<f64>,
+    #[serde(default)]
+    hff: Vec<f64>,
+    #[serde(default)]
+    hss: Vec<f64>,
+    #[serde(default)]
+    hfs: Vec<f64>,
+    #[serde(default)]
+    fresh_rows: Option<u64>,
+}
+
+impl From<TwinFitWire> for TwinFit {
+    fn from(w: TwinFitWire) -> Self {
+        let fresh_rows = w.fresh_rows.unwrap_or_else(|| w.fast.rows_learned());
+        Self {
+            fast: w.fast,
+            slow: w.slow,
+            origin: w.origin,
+            hff: w.hff,
+            hss: w.hss,
+            hfs: w.hfs,
+            fresh_rows,
+        }
+    }
+}
+
+/// Whether a history carried into a row at weight `carried` (the fast fit's
+/// weight times the step's decay) is wiped numerically by a row of weight
+/// `w`: its share of the weight after the row, `s = carried / (carried +
+/// w)`, squared, at most `2^-53`. The old rows' terms in the fast fit's
+/// `H_ff = Σ ω² z z'` sum to at most `carried²` times their `z z'`, the new
+/// row's is `w²` times its own, so below that share they are under the
+/// rounding of the new row's term: the fast half of the difference's
+/// variance has the new rows' rank alone, `n − k` over `n` of them, and the
+/// variance as a whole holds the old rows only through the slow fit, at
+/// `λ^½` in `H_ss`, where the cancellation `A_f H_ff A_f + A_s H_ss A_s −
+/// A_f H_fs A_s − A_s H_fs A_f` resolves them to `2^-53 / λ^½` of themselves
+/// and the distance amplifies that some thousands of times. Measured on the
+/// distance across weight scales of 2, 100 and 0.01 (20 seeds, 40 rows at a
+/// decay of 0.97, one row after a decay of `λ`, then 20 rows; the largest
+/// relative move): `λ = 2^-26`, 1.9e-9; `2^-40`, 1.8e-7; `2^-45`, 2.3e-6;
+/// `2^-53`, 2.7e-5; `2^-60`, 8.6e-4; `2^-80`, 2.6; from `2^-100` the
+/// distance flips between a number and none, and 121 times at a decay of 0.
+/// The share composes over a gap split by zero-weight rows, which age the
+/// fast fit's weight, and counts a row whose own weight dwarfs the history
+/// as the wipe it is; a share is free of the weights' scale.
+fn history_wiped(carried: f64, w: f64) -> bool {
+    let share = carried / (carried + w);
+    share * share <= 2f64.powi(-53)
 }
 
 /// The slow memory's factor from the fast one's: its fourth root, a half-life
@@ -632,6 +705,7 @@ impl TwinFit {
             hff: vec![0.0; d],
             hss: vec![0.0; d],
             hfs: vec![0.0; d],
+            fresh_rows: 0,
         }
     }
 
@@ -675,6 +749,11 @@ impl TwinFit {
             return self.age(lam);
         }
         let slow = slow_factor(lam);
+        self.fresh_rows = if history_wiped(lam * self.fast.n_eff(), w) {
+            1
+        } else {
+            self.fresh_rows.saturating_add(1)
+        };
         let mut row = Vec::with_capacity(x.len() + 1);
         row.extend_from_slice(x);
         row.push(y);
@@ -702,7 +781,8 @@ impl TwinFit {
     /// The Wald distance between the two fits' coefficients over the
     /// features `idx` (positions in `x`), with the intercept when
     /// `intercept`: `None` until both fits are determined and their
-    /// difference has a variance -- `2k` learned rows, each fit with more
+    /// difference has a variance -- `2k` rows learned since the history
+    /// was last wiped numerically ([`history_wiped`]), each fit with more
     /// than `k` rows of Kish's size and a Gram that factorizes -- while the
     /// memories coincide (no decay: the run-once form has no slow fit, and
     /// the difference no variance) or the slow fit leaves no residual.
@@ -718,8 +798,9 @@ impl TwinFit {
         // The difference's variance is singular below `2k` rows, whatever
         // their weights (the struct's docs): reading it there would leave
         // whether it factorizes, and the distance if it does, to the
-        // rounding (task 270 (g)).
-        if self.fast.rows_learned() < 2 * k as u64 {
+        // rounding (task 270 (g)). Rows since the history was last wiped
+        // numerically, which a gap can do long after the first row (R1-2).
+        if self.fresh_rows < 2 * k as u64 {
             return None;
         }
         let (nf, ns) = (self.fast.n_kish()?, self.slow.n_kish()?);
@@ -1909,5 +1990,158 @@ mod tests {
             }
         }
         assert_eq!(early, 0, "distances read off a singular variance");
+    }
+
+    /// One row after a decay of `lam_gap`, past 40 rows at 0.97, under
+    /// weight scales 2, 100 and 0.01 beside unit weights: how often the
+    /// distance is a number on one side and none on the other over the 20
+    /// rows after the gap, and the largest relative move between the sides,
+    /// on the row where the count since the last wipe is exactly `2k` and
+    /// on the rows past it. Every subset of the two features, with the
+    /// intercept and without, 20 seeds. `split` ages the gap in two steps
+    /// of `√lam_gap` before the row, as zero-weight rows do.
+    fn across_a_gap(lam_gap: f64, split: bool) -> (usize, f64, f64) {
+        let (mut flips, mut at, mut past) = (0, 0.0f64, 0.0f64);
+        for seed in 0..20u64 {
+            for c in [2.0, 100.0, 0.01] {
+                let (mut a, mut b) = (TwinFit::new(2), TwinFit::new(2));
+                let mut s = 900 + seed;
+                for i in 0..61 {
+                    let x = [lcg(&mut s), lcg(&mut s) + 1.0];
+                    let y = 0.5 + x[0] - 0.5 * x[1] + 0.3 * lcg(&mut s);
+                    let lam = match (i, split) {
+                        (40, false) => lam_gap,
+                        (40, true) => {
+                            let half = lam_gap.sqrt();
+                            for t in [&mut a, &mut b] {
+                                t.age(half);
+                            }
+                            half
+                        }
+                        _ => 0.97,
+                    };
+                    a.update(&x, y, lam, 1.0);
+                    b.update(&x, y, lam, c);
+                    if i < 40 {
+                        continue;
+                    }
+                    for intercept in [true, false] {
+                        for idx in [&[0usize][..], &[1], &[0, 1]] {
+                            let k = (idx.len() + usize::from(intercept)) as u64;
+                            match (a.wald(idx, intercept, 1.0), b.wald(idx, intercept, 1.0)) {
+                                (Some(u), Some(v)) => {
+                                    let r = (u - v).abs() / u.abs().max(1.0);
+                                    if a.fresh_rows == 2 * k {
+                                        at = at.max(r);
+                                    } else {
+                                        past = past.max(r);
+                                    }
+                                }
+                                (None, None) => {}
+                                _ => flips += 1,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (flips, at, past)
+    }
+
+    /// A gap that leaves the old rows below the rounding of the new ones
+    /// starts the `2k`-row wait over (task 270, R1-2): the count was of
+    /// every row since the first, so on the `k` to `2k` rows after such a
+    /// gap the distance was read off a variance whose rank was the new
+    /// rows' alone. Before: at a gap's decay of `2^-60`, no flip but a
+    /// relative move of 8.6e-4 between weight scales; at 0, 121 flips
+    /// between a number and none. Now no flip at any gap from `2^-30` to
+    /// 0, nor at a gap split in two, and within 1e-6 past the `2k`-th row
+    /// after the wipe (4.1e-10 at most). On that row itself the variance
+    /// is the cancellation the struct's docs describe, of terms far larger
+    /// than it, which moves with another scale's rounding: 1.3e-5 at most
+    /// here, where a fresh pair fed the same rows moves 2.5e-7 (its origin,
+    /// the first row it saw, is not the one kept from before the gap).
+    #[test]
+    fn a_gap_that_wipes_the_history_starts_the_wait_over() {
+        for e in [60, 0, 30, 40, 45, 53, 80, 120] {
+            let lam_gap = if e == 0 { 0.0 } else { 2f64.powi(-e) };
+            for split in [false, true] {
+                let (flips, at, past) = across_a_gap(lam_gap, split);
+                let what = format!("a gap of 2^-{e}, split {split}");
+                assert_eq!(flips, 0, "{what}");
+                assert!(past <= 1e-6, "{what}: {past:e} past the 2k-th row");
+                assert!(at <= 5e-5, "{what}: {at:e} on the 2k-th row");
+            }
+        }
+    }
+
+    /// [`history_wiped`]'s edge, a share whose square is `2^-53`, from both
+    /// sides: a row of weight 1 meeting a history carried at `2^-27` wipes
+    /// it, at `2^-26` it does not; so does a row of weight 4 meeting four
+    /// times either, the share being free of the scale; a first row wipes
+    /// the history of none. And through the fits: a gap's decay putting
+    /// the carried weight just past the edge waits `2k` rows again, just
+    /// short of it reads a distance on a row before `2k` after the gap.
+    #[test]
+    fn the_wipe_is_a_shares_square_below_two_to_the_minus_53() {
+        assert!(history_wiped(2f64.powi(-27), 1.0));
+        assert!(!history_wiped(2f64.powi(-26), 1.0));
+        assert!(history_wiped(4.0 * 2f64.powi(-27), 4.0));
+        assert!(!history_wiped(4.0 * 2f64.powi(-26), 4.0));
+        assert!(history_wiped(0.0, 1.0));
+        let edge = 2f64.powf(-26.5);
+        let after = |carried: f64| -> Vec<bool> {
+            let mut t = TwinFit::new(2);
+            let mut s = 3u64;
+            let mut read = Vec::new();
+            for i in 0..47 {
+                let x = [lcg(&mut s), lcg(&mut s) + 1.0];
+                let y = 0.5 + x[0] - 0.5 * x[1] + 0.3 * lcg(&mut s);
+                // The gap's decay that carries `carried` of the fast fit's
+                // weight into the row.
+                let lam = if i == 40 {
+                    carried / t.fast.n_eff()
+                } else {
+                    0.97
+                };
+                t.update(&x, y, lam, 1.0);
+                if i >= 40 {
+                    read.push(t.wald(&[0, 1], true, 1.0).is_some());
+                }
+            }
+            read
+        };
+        // `k` = 3, the gap's own row the first after it. Either way the
+        // fast fit's Kish size is above `k` from the fourth row; wiped, the
+        // distance waits for the sixth, `2k`, kept, it is read from the
+        // fourth.
+        let wiped = after(edge * 0.99);
+        assert_eq!(wiped, [false, false, false, false, false, true, true]);
+        let kept = after(edge * 1.01);
+        assert_eq!(kept, [false, false, false, true, true, true, true]);
+    }
+
+    /// A state saved before the wipe count existed loads with every row it
+    /// learned, which is what a stream no gap wiped counts: the same state,
+    /// so the same bytes saved (rule 5's exact conversion of a kept
+    /// fixture), whether it was saved inside its first `2k` rows or past
+    /// them.
+    #[test]
+    fn a_state_without_the_count_loads_with_every_row_it_learned() {
+        for rows in [3, 40] {
+            let mut t = TwinFit::new(2);
+            let mut s = 8u64;
+            for _ in 0..rows {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                t.update(&x, x[0] + 0.3 * lcg(&mut s), 0.97, 1.0);
+            }
+            assert_eq!(t.fresh_rows, rows);
+            let mut v = serde_json::to_value(&t).unwrap();
+            assert!(v.as_object_mut().unwrap().remove("fresh_rows").is_some());
+            let back: TwinFit = serde_json::from_value(v).unwrap();
+            assert_eq!(back, t, "{rows} rows");
+            let named = |t: &TwinFit| rmp_serde::to_vec_named(t).unwrap();
+            assert_eq!(named(&back), named(&t));
+        }
     }
 }

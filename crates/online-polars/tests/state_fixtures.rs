@@ -1,7 +1,8 @@
 //! Frozen state fixtures for the files a bank and its helpers write: a bank
 //! file (several specs, a group closed and drained, rows held under an
 //! `embargo`, a temporal clock, a window), a second bank file of the
-//! diagnostics with a memory of their own (`bank_diagnosed`), a `with_windows` state holding
+//! diagnostics with a memory of their own (`bank_diagnosed`), a third of an autocorrelation's
+//! lagged values (`bank_autocorr`), a `with_windows` state holding
 //! rows for a window that looks ahead, and a `refresh_time` state part-way
 //! through an interval -- each embedded as its bytes beside the input that
 //! follows it and the frames that input gave (docs/PLAN.md task 198; review
@@ -201,6 +202,22 @@ fn diagnosed_specs() -> Vec<Spec> {
         r#"{"name": "changing", "model": {"type": "bocpd", "covariance_type": "full", "mean_prior": [0.0, 0.0], "mean_precision_prior": 1.0, "degrees_of_freedom_prior": 5.0, "covariance_prior": [1.0], "max_run": 40}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 50.0}"#,
         r#"{"name": "corr_window", "model": {"type": "corrchange", "kind": "window", "window_rows": 10, "change_action": "reset", "n_perm": 20}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "gap_cap": 50.0}"#,
         r#"{"name": "components", "model": {"type": "ew_cov", "pca": 1, "max_rows_between_pcas": 5, "window_size": 12.0, "snapshot_every": 3.0}, "targets": ["x0"], "features": ["x0", "x1"], "clock": "t", "half_life": 20.0, "gap_cap": 50.0}"#,
+    ]
+    .iter()
+    .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
+    .collect()
+}
+
+/// The spec of the third bank file, `bank_autocorr`: the residuals' EW
+/// autocorrelation at a lag of 3, so that the values it keeps for the lag
+/// are frozen non-empty (review round 9 of tasks 270 and 271, R3-3). In a
+/// file of its own: a spec added to `bank_diagnosed` would change the
+/// stream the kept schemas' `bank_diagnosed` files were written from, and
+/// they could no longer convert to the current bytes; and that file is
+/// near the 250 KB cap.
+fn autocorr_specs() -> Vec<Spec> {
+    [
+        r#"{"name": "autocorrelated", "model": {"type": "ewridge"}, "targets": ["y"], "features": ["x0", "x1"], "clock": "t", "half_life": 10.0, "gap_cap": 50.0, "emit_autocorr": true, "resid_autocorr_lag": 3}"#,
     ]
     .iter()
     .map(|text| serde_json::from_str(text).unwrap_or_else(|e| panic!("{text}: {e}")))
@@ -431,6 +448,24 @@ fn diagnosed_run(bytes: &[u8], input: &DataFrame) -> Ran {
     Ok((again, vec![("fit_predict".into(), out)]))
 }
 
+fn autocorr_first() -> (Vec<u8>, DataFrame) {
+    let df = frame();
+    let mut bank = Bank::new(autocorr_specs()).unwrap();
+    bank.fit_predict(&df.slice(0, SPLIT)).unwrap();
+    (
+        bank.save_bytes().unwrap(),
+        df.slice(SPLIT as i64, N - SPLIT),
+    )
+}
+
+fn autocorr_run(bytes: &[u8], input: &DataFrame) -> Ran {
+    let mut bank = Bank::load_bytes(bytes, Some(&autocorr_specs()))?;
+    let again = bank.save_bytes()?;
+    let cols = bank.fit_predict(input).map_err(|e| e.to_string())?;
+    let out = DataFrame::new(input.height(), cols).map_err(|e| e.to_string())?;
+    Ok((again, vec![("fit_predict".into(), out)]))
+}
+
 fn windows_first_of(config: WindowsConfig, input: DataFrame) -> (Vec<u8>, DataFrame) {
     let mut run = WindowsRun::new(config, input.schema()).unwrap();
     run.feed(&input.slice(0, SPLIT), None).unwrap();
@@ -504,6 +539,11 @@ fn kinds() -> Vec<Kind> {
             name: "bank_diagnosed",
             first: diagnosed_first,
             run: diagnosed_run,
+        },
+        Kind {
+            name: "bank_autocorr",
+            first: autocorr_first,
+            run: autocorr_run,
         },
         Kind {
             name: "with_windows",
@@ -1095,6 +1135,27 @@ fn every_form_a_schema_moved_is_written_by_a_fixture() {
             |p, v| {
                 p.contains(".checks.")
                     && p.contains(".health.slow.")
+                    && v.as_f64().is_some_and(|f| f != 0.0)
+            },
+        ),
+        // Task 270 (i), R1-2: a target's twin fits' count of the rows
+        // since the history was last wiped numerically.
+        (
+            "bank_diagnosed",
+            "a target's twin fits' rows since a wipe",
+            |p, v| {
+                p.contains(".twin.")
+                    && p.ends_with(".fresh_rows")
+                    && v.as_u64().is_some_and(|n| n > 0 && n < u64::MAX)
+            },
+        ),
+        // R3-3: the values an autocorrelation keeps for its lag.
+        (
+            "bank_autocorr",
+            "an autocorrelation's lagged values",
+            |p, v| {
+                p.contains(".autocorr.")
+                    && p.contains(".buf.")
                     && v.as_f64().is_some_and(|f| f != 0.0)
             },
         ),
