@@ -85,6 +85,15 @@ returns.
   precision `partial_corr` already computed; on that path `mahal` moves
   within rounding, about 1e-15 relative (1.03e-15 on the test stream,
   which holds it to 4e-15) (task 270).
+- **`sgd(schedule="inv_scaling")`'s rate is `learning_rate / (1 +
+  λ·weight_sum)^power`**, with λ the row's decay (task 270). It read the
+  weight before the row's decay, so a zero-weight row in between moved the
+  next row's rate, by up to 1.6e-2 relative at a half-life of 1. Numbers
+  move under any finite half-life and not without decay: on a 20,000-row
+  stream the largest move in a prediction or coefficient, relative to 1 +
+  its value, is 9.5e-2 at half-life 1 (median about 1e-3), 3.1e-3 at 50 and
+  3.3e-4 at 500; the rate itself moves by 22%, 0.69% and 0.069% at the
+  weight ceiling. No release-probe spec uses `inv_scaling`.
 - `corrchange`'s `monitor` statistic is computed from one pass of running
   sums per pair instead of two passes per prefix; it moves in its last
   bits, by about 1e-13 relative over 60,000-row streams (5.3e-14 at a
@@ -130,8 +139,21 @@ returns.
   that row and the next and leaving every later exact stamp NaN (task
   270). The bank already refused these; `with_windows` now refuses an
   overflowing step by row, naming both values.
+- **`sgd` under `standardize` with a constraint or `schedule="adagrad"`,
+  and `pa` with a constraint and `standardize`, no longer turn NaN for good
+  after a zero-weight row about 1,074 half-lives on** (task 270): the
+  feature scaler kept a history of subnormal weight, the next row's scale
+  came out near 1e-161 and every coefficient became NaN. A scaler history
+  whose share of the weight after the row is below the smallest normal
+  double is now forgotten, as one the decay takes to exactly 0 already was;
+  no output moves anywhere else (112,320 probe cases over gaps of 0 to
+  1,075 half-lives).
 - **`break_wald` waits for twice as many learned rows as the coefficients
-  it compares** (task 270). The variance of the difference between the
+  it compares** (task 270), from a stream's first row and again after a
+  gap that leaves the old rows below the rounding of the new ones (a
+  history of W unit rows and a gap of 26.5 + log₂ W half-lives or more),
+  where the distance was otherwise read off a variance of the new rows'
+  rank alone. The variance of the difference between the
   fast and slow fits has rank at most `n − k` over `n` rows, so it is
   singular below `2k` rows; rounding used to decide whether that singular
   variance factorized, and what the distance was when it did, so
