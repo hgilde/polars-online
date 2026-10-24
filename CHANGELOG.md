@@ -116,6 +116,16 @@ returns.
   that row and the next and leaving every later exact stamp NaN (task
   270). The bank already refused these; `with_windows` now refuses an
   overflowing step by row, naming both values.
+- **`break_wald` waits for twice as many learned rows as the coefficients
+  it compares** (task 270). The variance of the difference between the
+  fast and slow fits has rank at most `n − k` over `n` rows, so it is
+  singular below `2k` rows; rounding used to decide whether that singular
+  variance factorized, and what the distance was when it did, so
+  multiplying every weight by one constant, even by 2, could turn
+  `break_wald` on or off on a row. On the release probe's 400-row stream
+  this turns 1-3 early rows per spec from a number into null and changes no
+  other value; `break_wald` is now invariant to the weights' scale, as
+  every other output of these models is.
 - Documentation: `bocpd`'s full covariance costs `O(runs·d³)` a row, not
   `O(runs·d²)`; `predict` reads no `coef_every`/`max_rows_between_coefs`;
   a wide eager `predict` peaks at the width of its input (164 MiB at 1,000
@@ -134,11 +144,12 @@ returns.
   1,298 and 2,556 → 1,800. Ten rows per group run 1.03-1.24× faster; a
   single stream is unchanged.
 - **The model's step no longer allocates its prediction vector** in
-  `seqtest`, `pa`, `ewridge`, `ew_cov` and `kmeans` (task 270): the bank
+  `seqtest`, `pa`, `sgd`, `ewridge`, `ew_cov` and `kmeans` (task 270): the bank
   keeps one output buffer per model instance. Through the wheel, ns a row:
   `seqtest` 79 → 70, `pa` (20 features) 131 → 121, `ewridge` 5 features
   209 → 199, 20 features 343 → 334, `kmeans` (20 features, 8 clusters)
-  323 → 309. Outputs unchanged to the bit.
+  323 → 309, `sgd` (20 features) 135 → 126 (standardized 190 → 179,
+  Huber loss 153 → 144). Outputs unchanged to the bit.
 - **The command line has its own allocator**, jemalloc off Windows and
   mimalloc on it, as py-polars uses; the wheel is unchanged (task 270). On
   the system allocator the binary ran 1.23-1.25× slower a row on one
