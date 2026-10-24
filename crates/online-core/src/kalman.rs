@@ -3071,18 +3071,116 @@ mod tests {
         .unwrap();
         // Accumulate the normal equations alongside, then compare with the
         // closed-form ridge solution (1 / p0 is the implied penalty).
+        //
+        // Task 274: within a bound on both sides' rounding, where it was
+        // `1e-9`. The filter's: its covariance form `P' = P − g(Pz)ᵀ`, `g =
+        // Pz/(z'Pz + R)`, `β' = β + g·e`, carries an error `ΔP` to `(I −
+        // gzᵀ)ΔP(I − zgᵀ)` and `Δβ` to `(I − gzᵀ)Δβ` (first order, exactly,
+        // `ΔP`'s reaching `β` as `(I − gzᵀ)ΔP z/s` times the innovation), and
+        // `I − gzᵀ = A'⁻¹A` for the information `A = P⁻¹ = I/(p₀R) + Σzzᵀ/R`,
+        // so an error made at row `t` reaches row `N` through `A_N⁻¹A_t`.
+        // Each row's own: `Pz`, `z'Pz` and the gain (`γ₂` of each sum and
+        // `u` of each quotient), `u` of each product and difference of the
+        // two updates, and `ΔP`'s reach into `β`. The magnitudes are the
+        // exact recursion's, from the information sums. The definition's:
+        // its sums, `u` of each term and of each partial sum (Higham §3.3),
+        // through the ridge system's forward error, and its LU's own.
+        // Measured on aarch64 (macOS): at most 0.021 of the bound.
+        use crate::oracle::{self, U, abs_times, gamma};
         let mut s = 55u64;
         let (mut xtx, mut xty) = ([[0.0f64; 2]; 2], [0.0f64; 2]);
+        let (mut exx, mut exy) = ([[0.0f64; 2]; 2], [0.0f64; 2]);
+        let r = obs_var;
+        let info = |xtx: &[[f64; 2]; 2]| -> Vec<f64> {
+            let a0 = 1.0 / (p0 * r);
+            vec![
+                a0 + xtx[0][0] / r,
+                xtx[0][1] / r,
+                xtx[1][0] / r,
+                a0 + xtx[1][1] / r,
+            ]
+        };
+        // `A_t` after each row, each row's error in `β` and in `P`.
+        let mut infos: Vec<Vec<f64>> = vec![info(&xtx)];
+        let (mut loc_b, mut loc_p): (Vec<[f64; 2]>, Vec<Vec<f64>>) = (Vec::new(), Vec::new());
+        // `A_to⁻¹·A_from`, each inverse taken once.
+        let mut inverses: Vec<Vec<f64>> = vec![oracle::inverse(&infos[0])];
+        let reach =
+            |inverses: &[Vec<f64>], infos: &[Vec<f64>], to: usize, from: usize| -> Vec<f64> {
+                crate::sandwich::rounding::mul(&inverses[to], &infos[from], 2)
+            };
         for i in 0..400 {
             let x = [lcg(&mut s), lcg(&mut s)];
             let y = 1.25 * x[0] - 0.5 * x[1];
             m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            // The filter's row, from the exact recursion's magnitudes.
+            let t = infos.len() - 1;
+            let pm = inverses[t].clone();
+            let beta: Vec<f64> = (0..2)
+                .map(|a| (0..2).map(|b| pm[a * 2 + b] * xty[b] / r).sum())
+                .collect();
+            let e = y - x[0] * beta[0] - x[1] * beta[1];
+            let pz = [pm[0] * x[0] + pm[1] * x[1], pm[2] * x[0] + pm[3] * x[1]];
+            let sn = x[0] * pz[0] + x[1] * pz[1] + r;
+            let g = [pz[0] / sn, pz[1] / sn];
+            // `ΔP` as the row finds it: every earlier row's, carried.
+            let mut dp = vec![0.0; 4];
+            for (u0, lp) in loc_p.iter().enumerate() {
+                let mm = reach(&inverses, &infos, t, u0 + 1);
+                let mt: Vec<f64> = (0..4).map(|ij| mm[(ij % 2) * 2 + ij / 2]).collect();
+                let c = crate::sandwich::rounding::abs_mul(
+                    &crate::sandwich::rounding::abs_mul(&mm, lp, 2),
+                    &mt,
+                    2,
+                );
+                dp.iter_mut().zip(c).for_each(|(a, b)| *a += b);
+            }
+            let az = [x[0].abs(), x[1].abs()];
+            let abs_p: Vec<f64> = pm.iter().map(|v| v.abs()).collect();
+            let dpz = abs_times(&abs_p, &az)
+                .iter()
+                .map(|v| gamma(2) * v)
+                .collect::<Vec<_>>();
+            let dzpz = gamma(2) * (az[0] * pz[0].abs() + az[1] * pz[1].abs())
+                + az[0] * dpz[0]
+                + az[1] * dpz[1];
+            let dg: Vec<f64> = (0..2)
+                .map(|a| (dpz[a] + g[a].abs() * (dzpz + U * sn)) / sn + U * g[a].abs())
+                .collect();
+            let igz = [
+                1.0 - g[0] * x[0],
+                -g[0] * x[1],
+                -g[1] * x[0],
+                1.0 - g[1] * x[1],
+            ];
+            let reach_p = abs_times(&igz, &abs_times(&dp, &az));
+            let bn = [beta[0] + g[0] * e, beta[1] + g[1] * e];
+            loc_b.push(std::array::from_fn(|a| {
+                reach_p[a] / sn * e.abs() + dg[a] * e.abs() + U * (g[a] * e).abs() + U * bn[a].abs()
+            }));
+            loc_p.push(
+                (0..4)
+                    .map(|ij| {
+                        let (a, b) = (ij / 2, ij % 2);
+                        let pn = pm[ij] - g[a] * pz[b];
+                        U * ((g[a] * pz[b]).abs() + pn.abs())
+                            + dg[a] * pz[b].abs()
+                            + g[a].abs() * dpz[b]
+                    })
+                    .collect(),
+            );
             for a in 0..2 {
-                xty[a] += x[a] * y;
+                let t = x[a] * y;
+                xty[a] += t;
+                exy[a] += U * t.abs() + U * xty[a].abs();
                 for b in 0..2 {
-                    xtx[a][b] += x[a] * x[b];
+                    let t = x[a] * x[b];
+                    xtx[a][b] += t;
+                    exx[a][b] += U * t.abs() + U * xtx[a][b].abs();
                 }
             }
+            infos.push(info(&xtx));
+            inverses.push(oracle::inverse(infos.last().unwrap()));
         }
         // The ridge normal equations solved by faer's LU (`crate::oracle`),
         // which the filter shares no arithmetic with, where Cramer's rule by
@@ -3091,13 +3189,25 @@ mod tests {
         let gram = [xtx[0][0] + lam, xtx[0][1], xtx[1][0], xtx[1][1] + lam];
         let want = crate::oracle::solve(&gram, &xty);
         let got = &m.coefficients()[0];
+        let n = infos.len() - 1;
+        let mut lib = [0.0f64; 2];
+        for (t, lb) in loc_b.iter().enumerate() {
+            let mm = reach(&inverses, &infos, n, t + 1);
+            let c = abs_times(&mm, lb);
+            lib[0] += c[0];
+            lib[1] += c[1];
+        }
+        let eg = [
+            exx[0][0] + U * gram[0].abs(),
+            exx[0][1],
+            exx[1][0],
+            exx[1][1] + U * gram[3].abs(),
+        ];
+        let def = oracle::forward_error(&gram, &want, &eg, &exy);
+        let own = oracle::solve_error(&gram, &xty, &want);
         for i in 0..2 {
-            assert!(
-                (got[i] - want[i]).abs() < 1e-9,
-                "coef {i}: {} vs ridge closed form {}",
-                got[i],
-                want[i]
-            );
+            let bound = lib[i] + U * want[i].abs() + def[i] + own[i];
+            oracle::assert_within(got[i], want[i], bound, format_args!("coef {i}"));
         }
     }
 

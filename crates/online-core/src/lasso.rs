@@ -2452,6 +2452,107 @@ mod tests {
         model
     }
 
+    /// How far the model's fit through the origin with no penalty may be
+    /// off the oracle's solve of `E[xx'] β = E[xy]` over the features
+    /// `keep` (docs/PLAN.md task 274), to first order, `A = E[xx']` and `r
+    /// = E[xy]` the oracle's:
+    ///
+    /// - the model's moments, its Gram's and its cross-moments' weighted
+    ///   Welford steps carried along the run
+    ///   ([`crate::ewcov::rounding::Rounding`] over `(x, y)`), read as raw
+    ///   `C + m mᵀ` (`|m|Δm` twice, and two roundings), then scaled to unit
+    ///   diagonal (two more of each entry, one of each `r`): any scale is
+    ///   undone exactly by the unscaling, so only these roundings count;
+    /// - the descent's stop: each coordinate's last update solved its row
+    ///   from the others, so at the end its residual is the update's own
+    ///   rounding, `γ_{k+1}(|dᵢ| + Σⱼ|cᵢⱼbⱼ|)`, its quotient's `u|cᵢᵢbᵢ|`, and
+    ///   the later coordinates' last moves, under `tol` each, `tol·Σⱼ>ᵢ|cᵢⱼ|`
+    ///   -- in the scaled system, so `S` times that in `A`'s units;
+    /// - the oracle's sums, each term two products and each addition `u` of
+    ///   the partial sum, over the weight's own sum, and its LU's own;
+    ///
+    /// all through `|A⁻¹|`, and the unscaling's `u|β|`.
+    fn through_origin_error(
+        rows: &[Row],
+        keep: &[usize],
+        tol: f64,
+        want: &[f64],
+        b: &[f64],
+    ) -> Vec<f64> {
+        use crate::oracle::{self, U, gamma};
+        let k = rows[0].0.len();
+        let mut tr = crate::ewcov::rounding::Rounding::new(k + 1, 0.0);
+        for (x, y, w) in rows {
+            let v: Vec<f64> = x
+                .iter()
+                .copied()
+                .chain(std::iter::once(y[0].unwrap()))
+                .collect();
+            tr.update(&v, 1.0, *w);
+        }
+        let p = keep.len();
+        let raw = |i: usize, j: usize| tr.c[i * (k + 1) + j] + tr.m[i] * tr.m[j];
+        let draw = |i: usize, j: usize| {
+            tr.ec[i * (k + 1) + j]
+                + tr.m[i].abs() * tr.em[j]
+                + tr.em[i] * tr.m[j].abs()
+                + U * ((tr.m[i] * tr.m[j]).abs() + raw(i, j).abs())
+        };
+        let ky = k;
+        let s: Vec<f64> = keep.iter().map(|&i| raw(i, i).sqrt()).collect();
+        let mut da = vec![0.0; p * p];
+        let mut dr = vec![0.0; p];
+        for (a, &i) in keep.iter().enumerate() {
+            for (c, &j) in keep.iter().enumerate() {
+                da[a * p + c] = draw(i, j) + 2.0 * U * raw(i, j).abs();
+            }
+            dr[a] = draw(i, ky) + U * raw(i, ky).abs();
+        }
+        // The descent's residual, scaled, then in `A`'s units.
+        let cs = |a: usize, c: usize| raw(keep[a], keep[c]) / (s[a] * s[c]);
+        let bs: Vec<f64> = (0..p).map(|a| b[a] * s[a]).collect();
+        for a in 0..p {
+            let d = raw(keep[a], ky) / s[a];
+            let terms: f64 = (0..p).map(|c| (cs(a, c) * bs[c]).abs()).sum();
+            let later: f64 = (a + 1..p).map(|c| cs(a, c).abs()).sum();
+            let res = gamma(p + 1) * (d.abs() + terms) + U * (cs(a, a) * bs[a]).abs() + tol * later;
+            dr[a] += s[a] * res;
+        }
+        // The oracle's sums.
+        let ws: f64 = rows.iter().map(|r| r.2).sum();
+        let mut ews = 0.0;
+        let mut acc = 0.0;
+        for r in rows {
+            acc += r.2;
+            ews += U * acc;
+        }
+        let e_sum = |f: &dyn Fn(&Row) -> f64| -> (f64, f64) {
+            let (mut sum, mut e) = (0.0f64, 0.0f64);
+            for r in rows {
+                let t = r.2 * f(r);
+                sum += t;
+                e += 2.0 * U * t.abs() + U * sum.abs();
+            }
+            (sum / ws, e / ws + sum.abs() / ws * (ews / ws + U))
+        };
+        for (a, &i) in keep.iter().enumerate() {
+            for (c, &j) in keep.iter().enumerate() {
+                da[a * p + c] += e_sum(&|r| r.0[i] * r.0[j]).1;
+            }
+            dr[a] += e_sum(&|r| r.0[i] * r.1[0].unwrap()).1;
+        }
+        let a_mat: Vec<f64> = (0..p * p)
+            .map(|ac| e_sum(&|r| r.0[keep[ac / p]] * r.0[keep[ac % p]]).0)
+            .collect();
+        let rhs: Vec<f64> = (0..p)
+            .map(|a| e_sum(&|r| r.0[keep[a]] * r.1[0].unwrap()).0)
+            .collect();
+        let fe = oracle::forward_error(&a_mat, want, &da, &dr);
+        let own = oracle::solve_error(&a_mat, &rhs, want);
+
+        (0..p).map(|a| fe[a] + own[a] + U * want[a].abs()).collect()
+    }
+
     /// With no intercept and no penalty the descent lands on least squares
     /// through the origin, `E[xx'] β = E[xy]`, whatever the features' means
     /// (review 2026-09-12, C8's form, now held to its closed form).
@@ -2472,11 +2573,13 @@ mod tests {
         let b: Vec<f64> = (0..3).map(|i| e(&|r| r.0[i] * r.1[0].unwrap())).collect();
         let want = crate::oracle::solve(&a.concat(), &b);
         let got = &m.coefficients().unwrap()[0][0];
-        for (g, w) in got.iter().zip(&want) {
-            assert!(
-                (g - w).abs() <= 1e-8 * (1.0 + w.abs()),
-                "{got:?} against {want:?}"
-            );
+        // Task 274: [`through_origin_error`], where it was `1e-8` relative
+        // to `1 + |β|`.
+        // Measured on aarch64 (macOS): at most 0.0053 of the bound: eighty rows with no decay,
+        // the moments' worst-case running bound linear in their count.
+        let bound = through_origin_error(&rows, &[0, 1, 2], 1e-15, &want, got);
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            crate::oracle::assert_within(*g, *w, bound[i], format_args!("slope {i}"));
         }
     }
 
@@ -2646,11 +2749,13 @@ mod tests {
         let want = crate::oracle::solve(&a.concat(), &b);
         let got = &m.coefficients().unwrap()[0][0];
         assert_eq!(got[1], 0.0, "{got:?}");
-        for (g, w) in [got[0], got[2]].iter().zip(&want) {
-            assert!(
-                (g - w).abs() <= 1e-8 * (1.0 + w.abs()),
-                "{got:?} against {want:?}"
-            );
+        // Task 274: [`through_origin_error`] on the features kept, where it
+        // was `1e-8` relative to `1 + |β|`.
+        // Measured on aarch64 (macOS): at most 0.0013 of the bound, for the same reason.
+        let kept = [got[0], got[2]];
+        let bound = through_origin_error(&rows, &keep, 1e-15, &want, &kept);
+        for (i, (g, w)) in kept.iter().zip(&want).enumerate() {
+            crate::oracle::assert_within(*g, *w, bound[i], format_args!("slope {}", keep[i]));
         }
     }
 

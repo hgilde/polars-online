@@ -4595,12 +4595,76 @@ mod tests {
             let inv = crate::oracle::inverse(&a);
             let got = m.support_coef().unwrap();
             assert!(got[0][0].is_nan(), "the intercept is not a share");
+            // Task 274: a share moves by `0.4·Δ(A⁻¹)ⱼⱼ`, and `(A⁻¹)ⱼⱼ` by
+            // `cⱼᵀ·ΔA·cⱼ` (`cⱼ` its column) for every error `ΔA` of the system
+            // on either side: the model's co-moments, carried along its
+            // weighted Welford run ([`crate::ewcov::rounding::Rounding`]); the
+            // test's, two-pass, each term three roundings and each addition
+            // `u` of its partial sum, the means' errors second order; under
+            // `standardize` each side's correlation `C_ij/√(C_ii C_jj)`, its
+            // inputs' errors through `ΔC_ij/(sᵢsⱼ) + ½|R_ij|(ΔC_ii/C_ii +
+            // ΔC_jj/C_jj)` and three roundings; the ridge's addition; the
+            // model's `diag(A⁻¹)`, a Cholesky solve per column (its backward
+            // error); and the oracle's inverse, by its residual. It was
+            // `1e-9`.
+            // Measured on aarch64 (macOS): at most 0.0071 (plain) and 0.0020 (standardized) of
+            // the bound: two hundred rows with no decay, the moments' worst-case running bound
+            // linear in their count.
+            use crate::oracle::{self, U, abs_form};
+            let mut tr = crate::ewcov::rounding::Rounding::new(2, 0.0);
+            for r in &rows {
+                tr.update(r, 1.0, 1.0);
+            }
+            let mut et = [0.0f64; 4];
+            let mut acc = [0.0f64; 4];
+            for r in &rows {
+                for (i, j) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    let t = (r[i] - mean[i]) * (r[j] - mean[j]) / n;
+                    acc[i * 2 + j] += t;
+                    et[i * 2 + j] += 3.0 * U * t.abs() + U * acc[i * 2 + j].abs();
+                }
+            }
+            let cmat = acc;
+            let to_system = |e: &[f64]| -> Vec<f64> {
+                if !standardize {
+                    return e.to_vec();
+                }
+                let sd = [cmat[0].sqrt(), cmat[3].sqrt()];
+                (0..4)
+                    .map(|ij| {
+                        let (i, j) = (ij / 2, ij % 2);
+                        let r = cmat[ij] / (sd[i] * sd[j]);
+                        e[ij] / (sd[i] * sd[j])
+                            + 0.5 * r.abs() * (e[i * 3] / cmat[i * 3] + e[j * 3] / cmat[j * 3])
+                            + 3.0 * U * r.abs()
+                    })
+                    .collect()
+            };
+            let (dl, dt) = (to_system(&tr.ec), to_system(&et));
+            let e = oracle::cholesky_backward(&a);
+            let own = oracle::inverse_error(&a);
             for j in 0..2 {
                 let want = 1.0 - 0.4 * inv[j * 2 + j];
-                assert!(
-                    (got[0][j + 1] - want).abs() < 1e-9,
-                    "standardize {standardize}, {j}: {} vs {want}",
-                    got[0][j + 1]
+                let cj = [inv[j], inv[2 + j]];
+                let da: Vec<f64> = (0..4)
+                    .map(|ij| {
+                        dl[ij]
+                            + dt[ij]
+                            + e[ij]
+                            + if ij % 3 == 0 {
+                                2.0 * U * a[ij].abs()
+                            } else {
+                                0.0
+                            }
+                    })
+                    .collect();
+                let dinv = abs_form(&cj, &da, &cj) + own[j * 2 + j];
+                let bound = 0.4 * dinv + 2.0 * U * (want.abs() + 0.4 * inv[j * 2 + j].abs());
+                oracle::assert_within(
+                    got[0][j + 1],
+                    want,
+                    bound,
+                    format_args!("standardize {standardize}, share {j}"),
                 );
             }
         }
