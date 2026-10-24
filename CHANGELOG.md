@@ -76,6 +76,10 @@ returns.
 - `ew_cov` with both `partial_corr` and `mahal` reads `mahal` from the
   precision `partial_corr` already computed; on that path `mahal` moves
   within rounding, at most 1e-15 relative in the tests (task 270).
+- `corrchange`'s `monitor` statistic is computed from one pass of running
+  sums per pair instead of two passes per prefix; it moves in its last
+  bits, by at most 5e-15 relative in the tests and on the release probe (1
+  ulp on one row), with no flag or change date different (task 270).
 - Dependencies: rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.54.1,
   which fix published advisories; the dev group's pillow 13.0.0 and the
   docs group's certifi 2026.10.23 (task 270).
@@ -143,6 +147,20 @@ returns.
   groups and 1,990 → 1,308 at 10,000; `ewridge` with 5 features 1,863 →
   1,298 and 2,556 → 1,800. Ten rows per group run 1.03-1.24× faster; a
   single stream is unchanged.
+- **Paths whose cost grew with the rows they held now cost the same each
+  row** (task 270), every value the same to the bit unless stated: a
+  windowed `ewm_mean`, `ewm_var` or `ewm_std` during a stream's first
+  window and after each restart (at a window of 100,000 rows the mean
+  39,317 → 172 ns a row, the variance 73,954 → 182); a target that is a
+  window expression, or any `embargo` (10,000 rows held: 21,526 → 523 ns a
+  row, the same rows learned in the same order and the same saved bytes);
+  `emit_autocorr` with a long `resid_autocorr_lag` (lag 100,000: about
+  9,000-12,000 → under 340 ns a row); `corrchange`'s `monitor`, which
+  closed a span in time quadratic in the span (4 features, `window_rows =
+  4000`: 17,206 → 269 ns a row; 10 features 179,744 → 944); and
+  `corrchange`'s `window` kind, which copied its two windows every row and
+  the pooled rows every permutation draw (286 → about 6 allocations a row,
+  5,842 → 2,307 ns a row at `window_rows = 100`).
 - **The model's step no longer allocates its prediction vector** in
   `seqtest`, `pa`, `sgd`, `ewridge`, `ew_cov` and `kmeans` (task 270): the bank
   keeps one output buffer per model instance. Through the wheel, ns a row:
