@@ -16172,13 +16172,27 @@ model), with ulp comparisons in Python (`np.testing.assert_array_max_ulp`).
       wanted, `exp2` alone first (the half-life decay factor). The 126
       Python replay tests that hold the wheel to the bit through
       `math.exp2` would need their streams moved under any swap.
-- [ ] 274. **Linear-algebra oracle bounds derived** -- from task 273's Rust
+      *Decided by the user, 2026-10-24*: "no libm" -- online-core keeps the
+      platform's `exp`/`ln`/`exp2`/`powf`; the 126 Python replay tests stay
+      as they are.
+- [x] 274. **Linear-algebra oracle bounds derived** -- from task 273's Rust
       audit: with every tolerance literal scaled by 1e-5, 30 of the 42
       `crate::oracle` comparisons still pass, so a small-width kernel 100×
       past its rounding would pass a 1e-9 tolerance, and the weekly SDE
       legs could run exactly such a kernel. Add an `oracle::forward_bound`
       helper (γ_n·κ, as `trisolve_tests.rs`' `forward_bound` does) and hold
       each comparison to it, with the measured headroom in a comment.
+      *Done 2026-10-24*: `oracle.rs` gained γ_n, dot and running-error
+      bounds, normwise and componentwise forward bounds (Higham 7.2, 7.11),
+      the library Cholesky's backward bound (Thm 10.4) and a posteriori
+      errors of the oracle itself; two test-only replays (`ewcov/rounding.rs`,
+      `sandwich/rounding.rs`). About 32 comparisons sit at 0.01-0.31 of
+      their bounds or agree to the bit, and fail at 100× their rounding;
+      eleven dominated by long accumulations sit at 1e-4 to 1e-2 (the
+      worst-case per-step bound grows with N, the realized error as √N),
+      still 10³-10⁶ tighter than the tolerances they replaced. Definitions
+      summed about 0 at a level are now summed about the level (their own
+      rounding was 1e3-1e5 times the library's). No library defect.
 - [x] 275. **A window's boundary factor from the product of the per-row
       factors** -- from task 273 (w)'s finding 1; the user, 2026-10-24,
       chose option A. Under a half-life the live moments decay by each

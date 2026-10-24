@@ -150,7 +150,7 @@ budget = 107969440
 
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
-budget = 112029
+budget = 103029
 release = 112029
 
 [instructions.clock_temporal]
@@ -1223,7 +1223,7 @@ windows = { budget = 80.129, release = 79.3321 }
 # read passed: five million, the allocator's pages given back at once, and a
 # whole read the test's negative control.
 [rss.streaming_5m]
-windows = { budget = 162.6172 }
+windows = { budget = 148.6602 }
 darwin = { budget = 142.4688 }
 linux = { budget = 140.7852 }
 

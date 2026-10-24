@@ -113,6 +113,12 @@ returns.
   Prescott, SandyBridge and Haswell and NumPy's loops capped at its
   baseline or X86_V3. Each leg shows that the path it asked for took effect
   before its tests count (task 273).
+  Its Prescott leg expects the name OpenBLAS reports for forced Prescott
+  kernels, "Katmai": NumPy's and SciPy's Windows builds compile five cores
+  and alias the rest, and OpenBLAS's name lookup reaches the Katmai alias
+  first. On Windows the peak-memory budgets are held on `windows-latest`
+  alone and reported on `windows-2022`, whose machines read the same build
+  up to 8% apart (task 273).
 
 ### Changed
 
@@ -194,6 +200,12 @@ returns.
 - A window's saved state keeps the running products of its decay factors:
   12 bytes more per snapshot per decay (23 for `lasso`), and 48 bytes more
   per snapshot in memory; no measurable change in speed (task 275).
+- `lasso`'s coordinate descent subtracts each row's terms in two runs
+  either side of the coordinate, with no bound checked per term: 28% fewer
+  instructions on a 20-feature `lasso` (Linux x86-64), the same bits. A
+  bank's per-row copy of the predictions into its output columns no longer
+  reloads the column on every slot: 2.3% fewer instructions on a
+  230-statistic `ew_cov` bank (task 275).
 - Tests: six Python tests whose results moved when the math library or a
   linear-algebra kernel changed in its last bits now hold derived bounds
   (the quantile fit's nudge ratio by the band system's condition number,
