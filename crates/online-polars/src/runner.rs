@@ -142,6 +142,101 @@ impl Format {
     }
 }
 
+/// How a file output lays out each struct column the bank adds, one per
+/// spec: `struct` (the default) keeps the column, `flat` writes each of its
+/// fields as a column of its own, named `<spec>.<field>`, as a CSV output
+/// always is ([`csv_flat`]).
+///
+/// Flat is for a wide spec. Polars' parquet writer encodes a struct's
+/// fields at several times the cost of the same values as plain columns --
+/// measured on an `ew_cov` over 20 series, 233 fields, 2,785 ns a row as
+/// the struct against 365 flat, and over 50 series, 1,328 fields, 44,642
+/// against 2,914 -- so the writer, not the bank, set such a run's pace. IPC
+/// writes the struct at about the cost of the flat columns (325 against 467
+/// at 20 series). A list field (`coef`) stays one list column either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputLayout {
+    /// One struct column per spec, as the bank writes it.
+    #[default]
+    Struct,
+    /// Each struct column's fields as `<spec>.<field>` columns.
+    Flat,
+}
+
+impl OutputLayout {
+    /// Every layout, the default first.
+    pub const ALL: [OutputLayout; 2] = [OutputLayout::Struct, OutputLayout::Flat];
+
+    /// The flag's and the TOML's name: `struct`, `flat`.
+    pub fn name(self) -> &'static str {
+        match self {
+            OutputLayout::Struct => "struct",
+            OutputLayout::Flat => "flat",
+        }
+    }
+}
+
+/// The URL scheme `path` begins with, as `https` in
+/// `https://host/x.parquet`: two or more of a letter then letters, digits,
+/// `+`, `-` or `.`, before `://` (RFC 3986's scheme, at least two long).
+/// `None` for a path with none -- among them a Windows path, whose drive
+/// letter is one character (`C:\data\x.parquet`, `C:/data/x.parquet`) --
+/// and for a path that is not UTF-8. Read from the text alone, so it says
+/// the same on every OS.
+pub fn url_scheme(path: &Path) -> Option<&str> {
+    let s = path.to_str()?;
+    let scheme = &s[..s.find("://")?];
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    (scheme.len() >= 2
+        && first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
+    .then_some(scheme)
+}
+
+/// The refusal of a URL given as the runner's `what` path. The runner reads
+/// and writes local files: handed to polars' scan, a URL went to its cloud
+/// reader, which fetched an `https://` input over its own client with ten
+/// retries before anything here refused it.
+fn url_refusal(what: &str, path: &Path) -> String {
+    format!(
+        "{what} {} is a URL; the command line reads and writes local files, so give a local \
+         path (copy the file down first)",
+        path.display()
+    )
+}
+
+/// `path` with a `file://` URL read as the local path it names
+/// (`file:///data/x.parquet` is `/data/x.parquet`, `file:///C:/data/x.parquet`
+/// is `C:/data/x.parquet`, and `localhost` is the empty host), and any other
+/// URL refused naming it ([`url_refusal`]). A path with no scheme is
+/// returned as it is. The text after the host is taken as written: no
+/// percent-decoding.
+fn local_path(what: &str, path: &Path) -> Result<PathBuf, String> {
+    match url_scheme(path) {
+        None => Ok(path.to_path_buf()),
+        Some(scheme) if scheme.eq_ignore_ascii_case("file") => {
+            let s = path.to_str().unwrap_or_default();
+            let rest = &s[scheme.len() + 3..];
+            let (host, local) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) || local.is_empty() {
+                return Err(url_refusal(what, path));
+            }
+            // `/C:/...`: a drive letter after the root slash is a Windows
+            // path's, and the slash is the URL's.
+            let b = local.as_bytes();
+            let local = if b.len() >= 3 && b[1].is_ascii_alphabetic() && b[2] == b':' {
+                &local[1..]
+            } else {
+                local
+            };
+            Ok(PathBuf::from(local))
+        }
+        Some(_) => Err(url_refusal(what, path)),
+    }
+}
+
 /// A run description, deserialized from TOML by the CLI (and, until task 83
 /// removed it, from JSON by the Python runner). An unknown key is refused,
 /// naming the keys there
@@ -165,6 +260,10 @@ pub struct RunConfig {
     /// How to write `output`; its extension decides when unset.
     #[serde(default)]
     pub output_format: Option<Format>,
+    /// How `output` lays out each spec's struct column ([`OutputLayout`]):
+    /// the struct itself unless set. A CSV is flat whatever this says.
+    #[serde(default)]
+    pub output_layout: OutputLayout,
     /// Rows per chunk, [`DEFAULT_CHUNK_SIZE`] when unset. Chunking never
     /// changes the numbers (docs/PLAN.md §9 class 2); it only trades memory
     /// for overhead.
@@ -261,7 +360,49 @@ impl RunConfig {
         }
     }
 
+    /// Every path this config names -- `input`, `output`, `load_state`,
+    /// `save_state`, `closed_groups` -- with a `file://` URL read as the
+    /// local path it names, or the refusal of the first that is any other
+    /// URL, naming it: the runner reads and writes local files. The command
+    /// line calls it once the flags are applied; [`Self::validate`] refuses
+    /// what it would refuse, and a `file://` URL besides.
+    pub fn localize(&mut self) -> Result<(), String> {
+        self.input = local_path("input", &self.input)?;
+        self.output = local_path("output", &self.output)?;
+        for (what, p) in [
+            ("load_state", &mut self.load_state),
+            ("save_state", &mut self.save_state),
+            ("closed_groups", &mut self.closed_groups),
+        ] {
+            if let Some(p) = p {
+                *p = local_path(what, p)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The refusal of the first path that is a URL ([`url_scheme`]), naming
+    /// it, `file://` among them: [`Self::localize`] reads those.
+    fn check_local(&self) -> Result<(), String> {
+        let named = [
+            ("input", Some(&self.input)),
+            ("output", Some(&self.output)),
+            ("load_state", self.load_state.as_ref()),
+            ("save_state", self.save_state.as_ref()),
+            ("closed_groups", self.closed_groups.as_ref()),
+        ];
+        match named
+            .into_iter()
+            .find_map(|(what, p)| p.filter(|p| url_scheme(p).is_some()).map(|p| (what, p)))
+        {
+            Some((what, p)) => Err(url_refusal(what, p)),
+            None => Ok(()),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        // Before anything reads a path: a URL went to polars' cloud reader.
+        self.check_local()?;
         if self.specs.is_empty() {
             return Err("config has no [[specs]] entries".into());
         }
@@ -363,6 +504,9 @@ impl RunConfig {
     pub fn input_format(&self) -> Result<Format, String> {
         if self.input.as_os_str().is_empty() {
             return Err("input is required: the config's `input`, or --input".into());
+        }
+        if url_scheme(&self.input).is_some() {
+            return Err(url_refusal("input", &self.input));
         }
         self.input_format
             .map_or_else(|| Format::from_path(&self.input), Ok)
@@ -481,8 +625,13 @@ pub enum Input<'a> {
 pub enum Output<'a> {
     /// A file in `format`, written through a temporary sibling that is
     /// renamed into place once the run has completed, so a run that fails
-    /// leaves any previous output where it was.
-    File { path: &'a Path, format: Format },
+    /// leaves any previous output where it was; each struct column laid out
+    /// as `layout` says.
+    File {
+        path: &'a Path,
+        format: Format,
+        layout: OutputLayout,
+    },
     /// Each augmented frame, in stream order, on the calling thread. For a
     /// destination polars cannot write to: a database, a socket, a test.
     Batches(&'a mut dyn FnMut(DataFrame) -> PolarsResult<()>),
@@ -661,6 +810,7 @@ pub fn run_config_on_reported(
         Output::File {
             path: &cfg.output,
             format,
+            layout: cfg.output_layout,
         }
     };
     // The sidecar is written as the run goes -- drained after every chunk --
@@ -782,9 +932,13 @@ fn run_with(
         let (write_tx, write_rx) = sync_channel::<Write_>(1);
         let discarding = matches!(output, Output::Discard);
         let (mut sink, writer) = match output {
-            Output::File { path, format } => (
+            Output::File {
+                path,
+                format,
+                layout,
+            } => (
                 None,
-                Some(scope.spawn(move || write_file(path, format, write_rx))),
+                Some(scope.spawn(move || write_file(path, format, layout, write_rx))),
             ),
             Output::Batches(f) => (Some(f), None),
             // No writer thread and no sink: `deliver` drops the frame.
@@ -792,8 +946,9 @@ fn run_with(
         };
         // The closed groups' writer, fed a drained frame after every chunk.
         let (closed_tx, closed_rx) = sync_channel::<Write_>(1);
-        let closed_writer =
-            closed.map(|(path, format)| scope.spawn(move || write_file(path, format, closed_rx)));
+        let closed_writer = closed.map(|(path, format)| {
+            scope.spawn(move || write_file(path, format, OutputLayout::Struct, closed_rx))
+        });
         let mut closed_sent = false;
         // Hand a frame on, to the writer thread or the caller's callback.
         // A closed writer channel means the writer failed; its own error is
@@ -1141,7 +1296,7 @@ pub fn write_frame(path: &Path, format: Format, df: DataFrame) -> PolarsResult<(
         .and_then(|()| tx.send(Write_::End))
         .map_err(|_| polars_err!(ComputeError: "internal: the writer's channel closed"))?;
     drop(tx);
-    write_file(path, format, rx).map(|_| ())
+    write_file(path, format, OutputLayout::Struct, rx).map(|_| ())
 }
 
 /// A config's `threads`, read from any value so that what is no count --
@@ -1194,8 +1349,13 @@ fn threads_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<usize>
 /// that is renamed into place on `End`. A sender that goes away without
 /// `End` is a failed run, and the temporary is removed instead. Returns the
 /// time spent writing, for the timing line.
-fn write_file(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult<Duration> {
-    write_frames(path, format, rx).map_err(|e| match e {
+fn write_file(
+    path: &Path,
+    format: Format,
+    layout: OutputLayout,
+    rx: Receiver<Write_>,
+) -> PolarsResult<Duration> {
+    write_frames(path, format, layout, rx).map_err(|e| match e {
         // Polars' writers report the filesystem without the file; name it.
         PolarsError::IO { error, msg } => {
             let inner = msg.map_or_else(|| error.to_string(), |m| m.to_string());
@@ -1208,14 +1368,25 @@ fn write_file(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult
     })
 }
 
-fn write_frames(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult<Duration> {
+fn write_frames(
+    path: &Path,
+    format: Format,
+    layout: OutputLayout,
+    rx: Receiver<Write_>,
+) -> PolarsResult<Duration> {
+    // Each frame as the layout has it, before the writer sees it; a CSV
+    // flattens its own (`csv_flat`).
+    let laid_out = |df: DataFrame| match layout {
+        OutputLayout::Flat if format != Format::Csv => unnest_structs(&df),
+        _ => Ok(df),
+    };
     let (file, pending) = AtomicFile::create(path)?;
     let mut buf = BufWriter::new(file);
     let mut busy = Duration::ZERO;
     // The run always sends a frame before `End` -- an empty one for an empty
     // source -- so the first message is what the writer is opened on.
     let first = match rx.recv() {
-        Ok(Write_::Chunk(df)) => df,
+        Ok(Write_::Chunk(df)) => laid_out(df)?,
         Ok(Write_::End) => polars_bail!(ComputeError: "internal: a run with no frames"),
         Err(_) => return Ok(busy),
     };
@@ -1228,7 +1399,7 @@ fn write_frames(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResu
         match msg {
             Write_::Chunk(df) => {
                 let t = Instant::now();
-                writer.write(&df)?;
+                writer.write(&laid_out(df)?)?;
                 busy += t.elapsed();
             }
             Write_::End => {
@@ -1307,7 +1478,7 @@ impl<'a> FormatWriter<'a> {
 /// (docs/IMPROVEMENTS.md C8, docs/PLAN.md task 115 (g)).
 ///
 /// It serialized a slice per thread of polars' pool, which on macOS's
-/// system allocator -- the CLI has no allocator of its own -- ran anywhere
+/// system allocator -- the CLI had no allocator of its own until task 270 -- ran anywhere
 /// from 4.8 s to 54 s on 3M rows (2026-09-02): every thread grew and freed
 /// multi-megabyte buffers, which that allocator hands to the kernel. Measured
 /// again on 2026-09-28, the three-spec example bank over 3M rows: this
@@ -1418,17 +1589,7 @@ impl<'a> ParquetSink<'a> {
 /// `ComputeError` naming a nested column that is neither a struct nor a
 /// list of numbers or strings.
 pub fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
-    let structs: Vec<PlSmallStr> = df
-        .columns()
-        .iter()
-        .filter(|c| matches!(c.dtype(), DataType::Struct(_)))
-        .map(|c| c.name().clone())
-        .collect();
-    let mut flat = if structs.is_empty() {
-        df.clone()
-    } else {
-        df.unnest(structs, Some("."))?
-    };
+    let mut flat = unnest_structs(df)?;
     for i in 0..flat.width() {
         let c = &flat.columns()[i];
         match c.dtype() {
@@ -1450,6 +1611,22 @@ pub fn csv_flat(df: &DataFrame) -> PolarsResult<DataFrame> {
         }
     }
     Ok(flat)
+}
+
+/// `df` with each struct column taken apart into `<name>.<field>` columns
+/// in its place: what CSV writes and [`OutputLayout::Flat`] asks for.
+fn unnest_structs(df: &DataFrame) -> PolarsResult<DataFrame> {
+    let structs: Vec<PlSmallStr> = df
+        .columns()
+        .iter()
+        .filter(|c| matches!(c.dtype(), DataType::Struct(_)))
+        .map(|c| c.name().clone())
+        .collect();
+    if structs.is_empty() {
+        Ok(df.clone())
+    } else {
+        df.unnest(structs, Some("."))
+    }
 }
 
 /// A string list column as JSON arrays of JSON strings in a string column,
@@ -1514,4 +1691,72 @@ fn list_as_json(c: &Column) -> PolarsResult<Column> {
         }
     }
     Ok(out.finish().into_column())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{local_path, url_scheme};
+
+    /// Review 9, H-1: a scheme is two or more characters before `://`, read
+    /// from the text on every OS, so a Windows path -- its drive letter one
+    /// character, with or without a slash after the colon -- is a path
+    /// wherever it is read, and so is a UNC or extended-length one.
+    #[test]
+    fn a_url_has_a_scheme_and_a_windows_path_has_none() {
+        for (path, scheme) in [
+            ("https://127.0.0.1:9/x.parquet", Some("https")),
+            ("s3://bucket/x.parquet", Some("s3")),
+            ("abfss://c@a.dfs.core.windows.net/x", Some("abfss")),
+            ("hf://datasets/x", Some("hf")),
+            ("git+ssh://h/x", Some("git+ssh")),
+            ("file:///data/x.parquet", Some("file")),
+            (r"C:\data\x.parquet", None),
+            ("C:/data/x.parquet", None),
+            ("C://data/x.parquet", None),
+            (r"\\server\share\x.parquet", None),
+            (r"\\?\C:\data\x.parquet", None),
+            ("data/x.parquet", None),
+            ("/abs/x.parquet", None),
+            ("1s://x", None),
+            ("a b://x", None),
+            ("", None),
+        ] {
+            assert_eq!(url_scheme(Path::new(path)), scheme, "{path}");
+        }
+    }
+
+    /// A `file://` URL is the local path it names, a Windows drive's
+    /// included; one naming another host, and every other URL, is refused
+    /// naming it; a path with no scheme is itself.
+    #[test]
+    fn a_file_url_is_its_path_and_another_url_is_refused() {
+        for (path, local) in [
+            ("file:///data/x.parquet", "/data/x.parquet"),
+            ("file://localhost/data/x.parquet", "/data/x.parquet"),
+            ("FILE:///data/x.parquet", "/data/x.parquet"),
+            ("file:///C:/data/x.parquet", "C:/data/x.parquet"),
+            (r"C:\data\x.parquet", r"C:\data\x.parquet"),
+            ("rel/x.parquet", "rel/x.parquet"),
+        ] {
+            assert_eq!(
+                local_path("input", Path::new(path)),
+                Ok(PathBuf::from(local)),
+                "{path}"
+            );
+        }
+        for path in [
+            "file://host/data/x.parquet",
+            "file://",
+            "https://127.0.0.1:9/x.parquet",
+            "s3://bucket/x.parquet",
+        ] {
+            let err = local_path("output", Path::new(path)).unwrap_err();
+            assert!(
+                err.starts_with(&format!("output {path} is a URL")) && err.contains("local files"),
+                "{err}"
+            );
+        }
+    }
 }

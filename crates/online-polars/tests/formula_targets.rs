@@ -207,6 +207,7 @@ fn validate_refuses_a_short_embargo_where_the_run_would() {
         output: output.into(),
         input_format: None,
         output_format: None,
+        output_layout: Default::default(),
         chunk_size: 64,
         threads: None,
         load_state: None,

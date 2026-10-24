@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use online_polars::{Bank, RunConfig, run_config};
+use online_polars::{Bank, Format, RunConfig, run_config};
 use polars::prelude::*;
 
 fn tmp(name: &str) -> PathBuf {
@@ -1135,4 +1135,227 @@ type = "ewridge"
         "{stdout}"
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Review 9, H-1 and H-2: a URL as a path reached polars' cloud reader --
+/// an `https://` input was fetched over the binary's own TLS client, ten
+/// retries over up to 180 s, before anything of this library's refused it --
+/// and a URL in the TOML was joined under the config's directory first
+/// (`conf/s3://...`). The command line reads and writes local files: a URL
+/// in any path, a flag's or the TOML's, is refused by name before a byte is
+/// fetched, under `--dry-run` too and in well under the retry policy's
+/// first second. A `file://` URL is the local path it names; a Windows path
+/// (`C:\data\x.parquet`: a drive letter is one character) is no URL.
+#[test]
+fn a_url_in_any_path_is_refused_by_name_before_a_fetch() {
+    let dir = fresh_dir("h1");
+    let (input, output) = (dir.join("in.parquet"), dir.join("out.parquet"));
+    write_input(&input, 50).unwrap();
+    let urls = [
+        "https://127.0.0.1:9/x.parquet",
+        "http://127.0.0.1:9/x.parquet",
+        "s3://no-such-bucket/x.parquet",
+        "gs://no-such-bucket/x.parquet",
+    ];
+    let refused = |label: &str, (code, stdout, err): (Option<i32>, String, String), url: &str| {
+        assert_eq!(code, Some(1), "{label}: {stdout}{err}");
+        assert!(!stdout.contains("config OK"), "{label}: {stdout}");
+        assert!(
+            err.contains(url) && err.contains("local files"),
+            "{label}: {err}"
+        );
+        assert!(
+            !err.contains("object-store") && !err.contains("feature"),
+            "{label}: {err}"
+        );
+    };
+    for url in urls {
+        for flag in ["--input", "--output", "--save-state", "--load-state"] {
+            let t = std::time::Instant::now();
+            let got = online_with(&dir, &input, &output, "", 50.0, &["--dry-run", flag, url]);
+            refused(&format!("{flag} {url}"), got, url);
+            assert!(
+                t.elapsed().as_secs_f64() < 1.0,
+                "{flag} {url}: {:?}",
+                t.elapsed()
+            );
+        }
+    }
+    // The TOML form, from a config in a subdirectory: refused naming the URL
+    // as written, not the directory joined to it.
+    let conf = dir.join("conf");
+    std::fs::create_dir_all(&conf).unwrap();
+    for url in urls {
+        for key in ["input", "output", "save_state", "closed_groups"] {
+            let (inp, out) = match key {
+                "input" => (url.to_string(), toml_path(&output)),
+                "output" => (toml_path(&input), url.to_string()),
+                _ => (toml_path(&input), toml_path(&output)),
+            };
+            let extra = match key {
+                "save_state" | "closed_groups" => format!("{key} = \"{url}\"\n"),
+                _ => String::new(),
+            };
+            let toml = format!(
+                "input = \"{inp}\"\noutput = \"{out}\"\n{extra}\n[[specs]]\nname = \"m\"\n\
+                 targets = [\"y\"]\nfeatures = [\"x0\"]\nhalf_life = 50.0\ngroup_close = \
+                 \"monotone\"\nclock = \"t\"\ngroup = \"group\"\n[specs.model]\ntype = \
+                 \"ewridge\"\n"
+            );
+            let cfg = conf.join("job.toml");
+            std::fs::write(&cfg, toml).unwrap();
+            let t = std::time::Instant::now();
+            let got = online_args(
+                &[std::ffi::OsStr::new("--config"), cfg.as_os_str()],
+                &["--dry-run"],
+            );
+            assert!(
+                !got.2.contains("conf/s3") && !got.2.contains("conf\\s3"),
+                "{}",
+                got.2
+            );
+            refused(&format!("TOML {key} = {url}"), got, url);
+            assert!(
+                t.elapsed().as_secs_f64() < 1.0,
+                "TOML {key} {url}: {:?}",
+                t.elapsed()
+            );
+        }
+    }
+    // A `file://` URL is the local path it names, from a flag and from the
+    // TOML alike.
+    let file_url = |p: &Path| {
+        let s = p.display().to_string().replace('\\', "/");
+        if s.starts_with('/') {
+            format!("file://{s}")
+        } else {
+            format!("file:///{s}")
+        }
+    };
+    let (code, stdout, err) = online_with(
+        &dir,
+        &input,
+        &output,
+        "",
+        50.0,
+        &["--dry-run", "--input", &file_url(&input)],
+    );
+    assert_eq!(code, Some(0), "{stdout}{err}");
+    assert!(
+        stdout.contains(&format!("input:  {} (parquet)", input.display())),
+        "{stdout}"
+    );
+    let (code, stdout, err) = online_with(
+        &dir,
+        &PathBuf::from(file_url(&input)),
+        &output,
+        "",
+        50.0,
+        &["-q"],
+    );
+    assert_eq!(code, Some(0), "{stdout}{err}");
+    assert!(stdout.contains("wrote 50 rows"), "{stdout}");
+    // A Windows path is a path on any OS: what this one says is that the
+    // file is not there, not that it is a URL.
+    let (code, _, err) = online_with(
+        &dir,
+        &input,
+        &output,
+        "",
+        50.0,
+        &["--dry-run", "--input", r"C:\data\x.parquet"],
+    );
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        !err.contains("local files") && !err.contains("URL"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Review 9, M-1 (decision D4): Polars' parquet writer encodes a struct
+/// column's leaves at 7.6-15x what the same values cost as flat columns,
+/// so a wide spec's run went at the writer's pace. `--output-layout flat`
+/// (TOML `output_layout = "flat"`) writes each struct column as the
+/// `<spec>.<field>` columns CSV already gets, in parquet, IPC and NDJSON;
+/// the default stays the struct. The flat columns are the struct's fields
+/// to the bit, `coef` a list column of its own.
+#[test]
+fn output_layout_flat_writes_each_field_as_a_column_of_the_same_values() {
+    let dir = fresh_dir("m1");
+    let input = dir.join("in.parquet");
+    write_input(&input, 300).unwrap();
+    for (ext, read) in [
+        ("parquet", Format::Parquet),
+        ("arrow", Format::Ipc),
+        ("ndjson", Format::Ndjson),
+    ] {
+        let nested = dir.join(format!("nested.{ext}"));
+        let flat = dir.join(format!("flat.{ext}"));
+        let keyed = dir.join(format!("keyed.{ext}"));
+        let (code, _, err) = online_with(&dir, &input, &nested, "", 50.0, &["-q"]);
+        assert_eq!(code, Some(0), "{err}");
+        let (code, _, err) = online_with(
+            &dir,
+            &input,
+            &flat,
+            "",
+            50.0,
+            &["-q", "--output-layout", "flat"],
+        );
+        assert_eq!(code, Some(0), "{err}");
+        let (code, _, err) = online_with(
+            &dir,
+            &input,
+            &keyed,
+            "output_layout = \"flat\"",
+            50.0,
+            &["-q"],
+        );
+        assert_eq!(code, Some(0), "{err}");
+        let nested = read_any(&nested, read);
+        assert!(
+            matches!(nested.column("ridge").unwrap().dtype(), DataType::Struct(_)),
+            "{ext}: the default is the struct"
+        );
+        let want = nested.unnest(["ridge"], Some(".")).unwrap();
+        assert!(want.column("ridge.pred_y").is_ok() && want.column("ridge.coef").is_ok());
+        for got in [read_any(&flat, read), read_any(&keyed, read)] {
+            assert_eq!(got.get_column_names(), want.get_column_names(), "{ext}");
+            assert!(got.equals_missing(&want), "{ext}");
+        }
+    }
+    // A layout it has not got is a usage error, named.
+    let out = dir.join("x.parquet");
+    let (code, _, err) = online_with(&dir, &input, &out, "", 50.0, &["--output-layout", "wide"]);
+    assert_eq!(code, Some(2), "{err}");
+    assert!(err.contains("wide") && err.contains("flat"), "{err}");
+    // The dry run says which.
+    let (code, stdout, err) = online_with(
+        &dir,
+        &input,
+        &out,
+        "",
+        50.0,
+        &["--dry-run", "--output-layout", "flat"],
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        stdout.contains("output: ") && stdout.contains("(parquet, flat)"),
+        "{stdout}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A file the runner wrote, read in `format`.
+fn read_any(path: &Path, format: Format) -> DataFrame {
+    let f = std::fs::File::open(path).unwrap();
+    match format {
+        Format::Parquet => ParquetReader::new(f).finish().unwrap(),
+        Format::Ipc => IpcReader::new(f).finish().unwrap(),
+        _ => JsonReader::new(f)
+            .with_json_format(JsonFormat::JsonLines)
+            .finish()
+            .unwrap(),
+    }
 }

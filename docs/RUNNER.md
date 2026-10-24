@@ -276,6 +276,7 @@ A flag given on the command line wins over its key in the TOML file:
 | `--no-output` | `output` left out | write no per-row output |
 | `--input-format` | `input_format` | how to read the input: `parquet`, `ipc`, `csv` or `ndjson`. The extension decides when it is not given |
 | `--output-format` | `output_format` | how to write the output, from the same four |
+| `--output-layout` | `output_layout` | `struct` (the default) writes each spec as one struct column; `flat` writes each of its fields as a `<spec>.<field>` column, as a CSV always is |
 | `--chunk-size` | `chunk_size` | rows per chunk; 100,000 by default |
 | `--threads` | `threads` | the threads the bank runs on, a whole number of at least 1; left out, the default pool, sized by `POLARS_ONLINE_MAX_THREADS`. The output is the same at any count |
 | `--load-state` | `load_state` | start from a saved state |
@@ -297,6 +298,15 @@ configuration runs the same from wherever a scheduler starts it, and
 such as `--input today.parquet` names the file the shell sees, in the
 directory the command runs in. The input, the output, `load_state`,
 `save_state` and `closed_groups` all follow the rule.
+
+**Every path is a local file.** A URL in any of them, such as
+`https://host/x.parquet` or `s3://bucket/x.parquet`, is refused by name
+before anything is read, under `--dry-run` too. Polars' own reader would
+otherwise fetch it with its built-in cloud client, which retries a host that
+does not answer for up to three minutes. Copy the file down first, or read it
+from Python, where py-polars' reader takes the URL. A `file://` URL is read as
+the local path it names: `file:///data/x.parquet` is `/data/x.parquet`. A
+Windows path such as `C:\data\x.parquet` is a path, not a URL.
 
 Read and write any of the four formats. The extension decides, unless
 `--input-format` or `--output-format` names the format, and a file whose
@@ -329,6 +339,18 @@ columns. A numeric list such as `coef` becomes JSON text, which
 names, such as a closed Gram's `columns`, read back with
 `str.json_decode(pl.List(pl.String))`. Any other nested field is refused,
 naming the column and the formats that carry it.
+
+**A wide spec writes faster to parquet flat.** Parquet, IPC and NDJSON keep
+each spec's output as one struct column by default. Polars' parquet writer
+encodes a struct's fields at several times the cost of the same values as
+plain columns. An `ew_cov` over 20 series has 233 fields. Over 300,000
+rows of parquet, the command line took 7,697 ns a row writing them as the
+struct, and 1,274 flat, against 676 with no output at all. That is the
+best of three runs on 14 cores, under a load of 22 to 24 from other work.
+`--output-layout flat` writes the `<spec>.<field>` columns a CSV gets, so
+the writer no longer sets the run's pace. A list field such as `coef`
+stays one list column. IPC gains less: the same run took 1,262 ns a row as
+the struct and 1,029 flat.
 
 In TOML, a Windows path needs single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted

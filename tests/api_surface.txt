@@ -2397,6 +2397,7 @@
     load_state
     output
     output_format
+    output_layout
     predict
     save_state
     skip_learned
@@ -2491,6 +2492,7 @@
   --no-output
   --input-format <INPUT_FORMAT>
   --output-format <OUTPUT_FORMAT>
+  --output-layout <OUTPUT_LAYOUT>
   --chunk-size <CHUNK_SIZE>
   --threads <N>
   --load-state <LOAD_STATE>

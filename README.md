@@ -1855,6 +1855,14 @@ is the weight a fit rests on, so the filter keeps each stock's rows once
 its fit has seen about 50 rows' worth. `lf.online.fit_predict([spec]).head(5)`
 feeds the bank the first 5 rows and no more.
 
+**Unnest a wide spec before `sink_parquet`.** Polars' parquet writer
+encodes a record's fields at several times the cost of the same values as
+plain columns. An `ew_cov` over 20 series writes 233 fields: 2,785 ns a row
+as the record, 365 unnested, where the bank's own work is 550. So write
+`.online.unnest([spec]).sink_parquet("fitted.parquet")`, which turns each
+field into a column of its own. The command line's `--output-layout flat`
+does the same for its files ([RUNNER.md](docs/RUNNER.md)).
+
 **Filter after the bank, not before it.** A `filter` after the bank keeps
 the query running a chunk at a time. One before the bank makes Polars hold
 several blocks of each parquet file per thread: 3.1 GB at 12M rows,
