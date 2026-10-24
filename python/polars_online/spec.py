@@ -392,7 +392,8 @@ releases none. A regression writes, with ``<t>`` a target:
     order, the first that withheld anything. ``below_warm_rows`` is the
     model's own warm-up: the rows ``kmeans``, ``hmm`` and ``bocpd`` hold to
     seed their centres, states or prior from (``warm_rows``), a count of
-    rows, where ``min_weight`` is a weight. Fields null for another reason,
+    rows, where ``min_weight`` is a weight, and the rows ``kalman`` takes a
+    target's prior from before it is sized. Fields null for another reason,
     such as a skipped row or a statistic not yet due, leave it null. An
     ``Enum`` rather than a string, because a string column costs sixteen
     bytes a row even when every value is null.

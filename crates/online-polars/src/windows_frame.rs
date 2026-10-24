@@ -1534,6 +1534,24 @@ impl WindowsRun {
                 min_backwards_jump,
             } => {
                 let column = self.config.clock.as_deref().unwrap_or("<row count>");
+                // A step that is no number (the core refuses it like a step
+                // back): two finite values whose difference is past the
+                // largest double, since a value that is not finite was
+                // refused by row before it (task 270, F-1).
+                if !back.is_finite() {
+                    let label = |v: Option<ClockValue>| {
+                        v.map_or_else(String::new, |v| crate::spec::num_label(v.seconds()))
+                    };
+                    return polars_err!(ComputeError:
+                        "{WHO}: clock column {column:?} steps from {} to {} at row {}, a \
+                         difference past the largest double, which is no number of clock \
+                         units. Shift or rescale the clock column so that the step between two \
+                         of its values is finite.",
+                        label(prev),
+                        label(now),
+                        row(seq)
+                    );
+                }
                 let step = match (now, prev) {
                     (Some(ClockValue::Ns(c)), Some(ClockValue::Ns(p))) => {
                         i64::try_from(i128::from(p) - i128::from(c))
@@ -3183,6 +3201,24 @@ mod tests {
         );
         let out = run_whole(&ok, &df);
         assert_eq!(values_of(&out, "m").len(), 2);
+    }
+
+    /// Task 270 (review round 9, F-1): two finite clock values whose
+    /// difference is past the largest double are refused by row, naming
+    /// both, where the step was taken at the cap and left every later
+    /// stamp's removed time infinite.
+    #[test]
+    fn a_step_past_the_largest_double_is_refused_by_row() {
+        let cfg = r#"{"formulas": [{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 3}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = df!("t" => [-1e308, 1e308, 1e308], "x" => [1.0, 2.0, 3.0]).unwrap();
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        let err = run.feed(&df, None).unwrap_err().to_string();
+        assert!(
+            err.contains("with_windows: clock column \"t\" steps from")
+                && err.contains("at row 1, a difference past the largest double"),
+            "{err}"
+        );
     }
 
     /// Task 252: an integer clock is read as its integers: a null on it is
