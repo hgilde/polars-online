@@ -89,7 +89,7 @@ impl ResidWindow {
     /// boundary, counted ([`Self::rows`]), or no weight the subtraction can
     /// read. With no snapshot yet there is nothing to subtract.
     pub fn inside(&self, decay: Decay, slot: usize, w: f64, var: f64) -> Option<f64> {
-        let Some((t, old)) = self.snaps.boundary() else {
+        let Some((f, old)) = self.snaps.cut(self.clock, decay, 0) else {
             return Some(var);
         };
         if let Some(&then) = old.n.get(slot)
@@ -97,7 +97,6 @@ impl ResidWindow {
         {
             return None;
         }
-        let f = decay.factor(self.clock - t);
         truncated_scalar(w, var, old.w[slot], old.var[slot], f).map(|(_, v)| v)
     }
 
@@ -122,11 +121,12 @@ impl ResidWindow {
             self.rows = vec![0; w.len()];
         }
         let rows = &self.rows;
-        self.snaps.learn(&mut self.clock, d_clock, || Spread {
-            w: w.iter().map(|w| w * lam).collect(),
-            var: var.to_vec(),
-            n: rows.clone(),
-        });
+        self.snaps
+            .learn_decayed(&mut self.clock, d_clock, &[lam], || Spread {
+                w: w.iter().map(|w| w * lam).collect(),
+                var: var.to_vec(),
+                n: rows.clone(),
+            });
         if weight > 0.0 {
             for (n, r) in self.rows.iter_mut().zip(resid) {
                 if r.is_finite() {

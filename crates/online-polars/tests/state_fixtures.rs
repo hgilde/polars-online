@@ -88,7 +88,12 @@ const REGENERATE: &str = "PRINT_STATE_FIXTURES=1 cargo test -p online-polars --t
 /// (docs/PLAN.md task 257): the bank files and `refresh_time` states. 62
 /// kept since 63 moved `huber`'s and `sgd`'s layout (docs/PLAN.md task
 /// 271): no bank fixture holds either model, so each converts to the
-/// current bytes exactly.
+/// current bytes exactly. The bank files that hold a window (`bank`,
+/// `bank_diagnosed`) convert otherwise since the windows' running products
+/// (schema 63 before its release, docs/PLAN.md task 275; the core's
+/// `state_fixtures.rs` has why): their first output row is the old build's
+/// to the bit, the rest to the golden tolerance, and the state they save is
+/// not compared with the current fixture's.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -854,20 +859,62 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                  platform, or their bytes differ in libm's last bit",
                 f.writer, current.writer
             );
-            assert!(
-                again == unhex(current.state),
-                "{what}: loaded, the state does not save the current schema's fixture bytes of \
-                 the same kind: the loader converts it to another state than this build reaches \
-                 from the same stream"
-            );
+            // A window's snapshots from before task 275 carry no running
+            // products (the doc above `previous!`): its continuation goes on
+            // from the saved state's reads, the first to the bit, and parts
+            // from the old build's in the last bits once a snapshot taken
+            // after the load is the boundary, as a fresh run's reads do; the
+            // state it saves is then not the current fixture's, whose window
+            // read its products from the first row.
+            let windowed = holds_a_window(&unhex(f.state));
+            if !windowed {
+                assert!(
+                    again == unhex(current.state),
+                    "{what}: loaded, the state does not save the current schema's fixture bytes \
+                     of the same kind: the loader converts it to another state than this build \
+                     reaches from the same stream"
+                );
+            }
             let tol = if f.writer == writer() { 0.0 } else { TOL };
             assert_eq!(frames.len(), f.output.len(), "{what}");
             for ((name, got), (frozen_name, want)) in frames.iter().zip(f.output) {
                 assert_eq!(name, frozen_name, "{what}");
-                same(&format!("{what}: {name}"), got, &from_ipc(want), tol);
+                let want = from_ipc(want);
+                if windowed {
+                    same(
+                        &format!("{what}: {name}, the first row"),
+                        &got.slice(0, 1),
+                        &want.slice(0, 1),
+                        tol,
+                    );
+                }
+                let tol = if windowed { tol.max(TOL) } else { tol };
+                same(&format!("{what}: {name}"), got, &want, tol);
             }
         }
     }
+}
+
+/// Whether a saved state holds a window's snapshots: a non-empty `ring`
+/// under a `snaps` anywhere in it.
+fn holds_a_window(bytes: &[u8]) -> bool {
+    fn find(v: &rmpv::Value) -> bool {
+        match v {
+            rmpv::Value::Map(m) => m.iter().any(|(k, v)| {
+                (k.as_str() == Some("snaps")
+                    && v.as_map().is_some_and(|m| {
+                        m.iter().any(|(k, r)| {
+                            k.as_str() == Some("ring")
+                                && r.as_array().is_some_and(|r| !r.is_empty())
+                        })
+                    }))
+                    || find(v)
+            }),
+            rmpv::Value::Array(a) => a.iter().any(find),
+            _ => false,
+        }
+    }
+    find(&rmpv::decode::read_value(&mut &bytes[..]).unwrap())
 }
 
 /// Every leaf of a msgpack value: its dotted path and its value.

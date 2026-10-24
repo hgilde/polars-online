@@ -321,9 +321,8 @@ impl EwClass {
         let Some(win) = self.win.as_ref() else {
             return self.n_eff;
         };
-        match win.snaps.boundary() {
-            Some((u, old)) if old.n_eff > 0.0 => {
-                let f = self.cfg.decay.factor(win.clock - u);
+        match win.snaps.cut(win.clock, self.cfg.decay, 0) {
+            Some((f, old)) if old.n_eff > 0.0 => {
                 let wn = self.n_eff - f * old.n_eff;
                 // Zeroed below the same `EMPTY_FRACTION` the windowed
                 // covariance uses, so after a gap that empties the window the
@@ -347,11 +346,10 @@ impl EwClass {
     /// is `O(k^3)`.
     fn view(&self) -> Option<Vec<EwCov>> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         if old.n_eff == 0.0 {
             return None;
         }
-        let f = self.cfg.decay.factor(win.clock - u);
         let mut out = Vec::with_capacity(self.classes.len());
         for (cov, old_c) in self.classes.iter().zip(&old.classes) {
             match crate::truncated(cov, old_c, f) {
@@ -659,14 +657,15 @@ impl OnlineModel for EwClass {
             // Built inside the closure so the per-class snapshot is only
             // formed on the rows `offer` keeps, not on every row (review
             // 2026-09-18, P1).
-            win.snaps.learn(&mut win.clock, d_clock, || ClassMoments {
-                n_eff: self.n_eff * lam,
-                classes: self
-                    .classes
-                    .iter()
-                    .map(|c| crate::Moments::of(c, lam))
-                    .collect(),
-            });
+            win.snaps
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || ClassMoments {
+                    n_eff: self.n_eff * lam,
+                    classes: self
+                        .classes
+                        .iter()
+                        .map(|c| crate::Moments::of(c, lam))
+                        .collect(),
+                });
             // A window's truncated covariance moves every row, because the
             // decay carried to the boundary does, so no cached factor
             // survives a row. This is the cost the `window` doc states.
@@ -1761,7 +1760,8 @@ mod tests {
                 // The window holds no weighted row: what the subtraction
                 // leaves is rounding, and it reads as 0.
                 empty += 1;
-                let raw = m.n_eff - m.cfg.decay.factor(win.clock - u) * old.n_eff;
+                let (f, _) = win.snaps.cut(win.clock, m.cfg.decay, 0).unwrap();
+                let raw = m.n_eff - f * old.n_eff;
                 assert!(raw.abs() < 1e-9 * m.n_eff, "scale {scale}: {raw}");
                 crumbs += usize::from(raw > 0.0);
                 assert_eq!(m.n_eff(), 0.0, "scale {scale}: n_eff is a crumb, not 0");
