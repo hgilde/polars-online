@@ -116,6 +116,23 @@ DECLARED: dict[tuple[str, str], str] = {
     # a file of one goes on from that variance.
     ("kalman_unsized", "1.2.0"): "the next release, Fixed: `kalman` no longer predicts 0.0 "
     "before a target's prior is sized",
+    # Task 275 (the next release's Fixed, and rule 5's exception the user
+    # allowed on 2026-10-24): a window's snapshot decays by the product of
+    # the per-row factors its moments took. A windowed file saved by a
+    # release recorded no such products, so once a snapshot taken after its
+    # load is the window's edge it goes on within the golden tolerance, not
+    # to the bit (1.8e-15 at most here).
+    **{
+        (name, "1.2.0"): "the next release, Fixed: a window's snapshot decays by the "
+        "product of the per-row factors"
+        for name in (
+            "ridge_window",
+            "ridge_both",
+            "marginal_window",
+            "lasso_window",
+            "ew_class_window",
+        )
+    },
 }
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
