@@ -840,11 +840,11 @@ impl Marginal {
     /// `window` is set and something has aged out of it.
     fn boundary(&self) -> Option<(&MarginalMoments, f64)> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         if old.w_sum == 0.0 {
             return None;
         }
-        Some((old, self.cfg.decay.factor(win.clock - u)))
+        Some((old, f))
     }
 
     /// One truncated `(weight, mean, centred second moment)` triple:
@@ -1334,7 +1334,7 @@ impl Marginal {
             // Built inside the closure so the snapshot is only formed on the
             // rows `offer` keeps, not on every row (review 2026-09-18, P1).
             win.snaps
-                .learn(&mut win.clock, d_clock, || MarginalMoments {
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || MarginalMoments {
                     w_sum: self.w_sum * lam,
                     wt: self.wt.iter().map(|w| w * lam).collect(),
                     qt: self.qt.iter().map(|q| q * lam * lam).collect(),

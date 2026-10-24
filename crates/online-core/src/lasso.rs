@@ -455,8 +455,7 @@ impl Lasso {
     /// others stay windowed (review 2026-09-12, C2).
     fn view(&self) -> Option<LassoView> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
-        let f = self.cfg.decay.factor(win.clock - u);
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         let acc = self.acc.window(&old.acc, f)?;
         Some(LassoView { acc })
     }
@@ -468,10 +467,9 @@ impl Lasso {
     #[cfg(test)]
     fn view_sel_err(&self) -> Option<Vec<Vec<f64>>> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
-        let f = self.cfg.decay.factor(win.clock - u);
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         let acc = self.acc.window(&old.acc, f)?;
-        let f_sel = self.select_decay().factor(win.clock - u);
+        let (f_sel, _) = win.snaps.cut(win.clock, self.select_decay(), 1)?;
         let mut sel_err = self.sel_err.clone();
         if acc.cross.w > 0.0 {
             for (j, err) in sel_err.iter_mut().enumerate() {
@@ -498,8 +496,7 @@ impl Lasso {
     /// a Gram with no weight.
     fn gram_kish(&self) -> Vec<Option<f64>> {
         let windowed = self.win.as_ref().and_then(|win| {
-            let (u, old) = win.snaps.boundary()?;
-            let f = self.cfg.decay.factor(win.clock - u);
+            let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
             self.acc.window_kish(&old.acc, f)
         });
         windowed.unwrap_or_else(|| self.acc.grams.grams.iter().map(EwCov::n_kish).collect())
@@ -511,8 +508,7 @@ impl Lasso {
     /// answer.
     fn window_weights(&self) -> Option<(f64, Vec<f64>)> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
-        let f = self.cfg.decay.factor(win.clock - u);
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         self.acc.window_weights(&old.acc, f)
     }
 
@@ -573,7 +569,7 @@ impl Lasso {
         let Some(win) = self.win.as_ref() else {
             return live();
         };
-        let Some((u, old)) = win.snaps.boundary() else {
+        let Some((f, old)) = win.snaps.cut(win.clock, self.select_decay(), 1) else {
             return live();
         };
         if old.sel_w[j] == 0.0 {
@@ -587,7 +583,6 @@ impl Lasso {
         if !(this_row || self.acc.holds_rows_of(&old.acc, j)) {
             return None;
         }
-        let f = self.select_decay().factor(win.clock - u);
         crate::truncated_mean(
             self.sel_w[j],
             &self.sel_err[j],
@@ -969,11 +964,16 @@ impl OnlineModel for Lasso {
         if let Some(win) = self.win.as_mut() {
             // Built inside the closure so the snapshot is only formed on the
             // rows `offer` keeps, not on every row (review 2026-09-18, P1).
-            win.snaps.learn(&mut win.clock, d_clock, || LassoMoments {
-                acc: self.acc.snapshot(lam_decay),
-                sel_w: self.sel_w.iter().map(|w| w * sel_lam).collect(),
-                sel_err: self.sel_err.clone(),
-            });
+            // Two products: the moments' decay and the selection's
+            // (`Snapshots::cut`'s `which`, 0 and 1; docs/PLAN.md task 275).
+            win.snaps
+                .learn_decayed(&mut win.clock, d_clock, &[lam_decay, sel_lam], || {
+                    LassoMoments {
+                        acc: self.acc.snapshot(lam_decay),
+                        sel_w: self.sel_w.iter().map(|w| w * sel_lam).collect(),
+                        sel_err: self.sel_err.clone(),
+                    }
+                });
         }
 
         // ---- lambda selection: EW mean squared OOS error, free from preds ----
