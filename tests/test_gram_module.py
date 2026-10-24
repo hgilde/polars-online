@@ -1129,6 +1129,13 @@ class TestTheDocstringsMeasuredClaims:
             a = rng.standard_normal((50, 4)) * rng.uniform(0.1, 10.0, 4)
             r = pg.correlation({"columns": ["a", "b", "c", "d"], "comoments": np.cov(a.T)})
             worst = max(worst, float(np.max(np.abs(np.diag(r) - 1.0))))
+        # Bound (task 273): 2.3e-16 sits 1.04 times over the worst seen, which
+        # is quantization rather than thin headroom. The diagonal is
+        # `c / fl(sqrt(c))**2`, from IEEE operations each correctly rounded on
+        # every platform, and over 2e8 values of `c` spanning 80 binades it
+        # took only 1 - 2^-52, 1 - 2^-53, 1 and 1 + 2^-52 (macOS, 2026-10-24):
+        # the next value it could take, 1 - 3 * 2^-53, is 3.3e-16. The
+        # platform's BLAS moves `np.cov`'s `c`, not that set.
         assert 0.0 < worst <= 2.3e-16, worst
         assert "within 2.2e-16" in " ".join((pg.correlation.__doc__ or "").split())
 

@@ -261,7 +261,17 @@ class TestParameterExtremes:
         pa_ = a["m"].struct.field("pred_y0").to_numpy().astype(float)
         pb = b["m"].struct.field("pred_y0").to_numpy().astype(float)
         m = np.isfinite(pa_)
-        np.testing.assert_allclose(pa_[m], pb[m], rtol=1e-12)
+        # Bound (task 273): the two decay factors come from two functions,
+        # `exp2(-1/h)` in the bank and Python's `pow(0.5, 1/h)` here, each
+        # within an ulp or two of the exact factor, so they may differ by up
+        # to 4 ulp (4.4e-16 at 0.995) where they agree to the bit on macOS.
+        # A relative change `d` in the factor moves the weight of a row `k`
+        # rows back by `k d`; the fit reads rows a mean `h / ln 2 = 198`
+        # rows back, and the solve amplifies it by about 12 more: the bank
+        # with every `exp2` it calls moved by 2 ulp (a scratch build) moved
+        # `pred` by 5.3e-13 relative, so 4 ulp is 1.1e-12, past the 1e-12
+        # this held. A wrong conversion moves it at the first decimals.
+        np.testing.assert_allclose(pa_[m], pb[m], rtol=1e-11)
 
     def test_pure_ridge_lasso_limit_matches_ewridge(self):
         """`l1_ratio = 0` turns the coordinate descent into pure ridge; at a

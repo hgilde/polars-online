@@ -1807,7 +1807,19 @@ class TestAStandardizedKalmanIsFilterpy:
         # Task 97: coef after row i, applied to row i + 1, is row i + 1's pred.
         coef = out["coef"].to_list()
         via = np.array([np.dot(coef[i], [1.0, *x[i + 1]]) for i in range(2, n - 1)])
-        np.testing.assert_allclose(via, got[3:], rtol=1e-12, atol=1e-12)
+        # Bound (task 273): the dot product over three terms here, the
+        # coefficients' reading-out to the original units (`b_i / s_i`, and
+        # the intercept less `sum b_i m_i / s_i`) and the bank's own
+        # prediction in standardized units each round by a few 2^-53 of
+        # `sum |c_i x_i|`, which at a level of 1,000 is 1.8e5 where the
+        # prediction crosses zero. Measured: at most 2.05 times `2^-53 sum
+        # |c_i x_i|` on macOS, 2.29 with every `exp`, `exp2`, `ln` and `powf`
+        # the bank calls moved by 2 ulp (a scratch build), where the 1e-12
+        # this held went from 0.30 to 0.47 of itself.
+        size = np.array([np.abs(coef[i]) @ np.abs([1.0, *x[i + 1]]) for i in range(2, n - 1)])
+        assert np.all(np.abs(via - got[3:]) <= 16 * 2.0**-53 * size), np.max(
+            np.abs(via - got[3:]) / (2.0**-53 * size)
+        )
 
     @pytest.mark.parametrize("level", [1e3, -1e3])
     def test_a_target_at_a_level_settles_where_one_at_zero_does(self, level):
