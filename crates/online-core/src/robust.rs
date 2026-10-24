@@ -4940,6 +4940,119 @@ mod tests {
         );
         assert_eq!(m.cross[0], cross);
     }
+
+    /// A late target's own first solve reads whether a solve has fit *it*:
+    /// under feature sets each target has one slot per set, target-major,
+    /// and the one read is its own weighing set's. With two targets and two
+    /// sets the late target's slot is the fourth; the first target's
+    /// weighing slot, the second, was fit at row 1, and read in its place
+    /// the late target would wait for the row cap, 25 rows after it, null
+    /// meanwhile (docs/PLAN.md task 272 (m)).
+    #[test]
+    fn a_late_targets_first_solve_reads_its_own_slot_under_feature_sets() {
+        let mut c = cfg(2, 2, RobustLoss::Huber { delta: 1.5 });
+        c.min_weight = 2.0;
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 25;
+        c.feature_sets = vec![("a".into(), vec![0]), ("all".into(), vec![0, 1])];
+        let mut m = Robust::new(c).unwrap();
+        assert_eq!((m.cfg.n_sets(), m.cfg.weighing_set()), (2, 1));
+        let mut s = 4u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let late = (i >= 10).then(|| 1.0 - 2.0 * x[0] + x[1] + 0.01 * lcg(&mut s));
+            let y0 = 0.5 + x[0] - x[1] + 0.01 * lcg(&mut s);
+            m.step(&x, &[Some(y0), late], f64::from(u8::from(i > 0)), 1.0);
+            if i >= 1 {
+                let beta = m.coefficients().expect("solved at row 1");
+                assert!(beta[..2].iter().flatten().all(|v| v.is_finite()), "row {i}");
+                // Its own first solve at the end of its second row, row 11.
+                for slot in [2, 3] {
+                    assert_eq!(
+                        beta[slot].iter().all(|v| v.is_finite()),
+                        i >= 11,
+                        "row {i}, slot {slot}: {beta:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A target that the first solve fit -- present on the rows before it,
+    /// below its own threshold -- has no first solve of its own when its
+    /// weight later reaches that threshold: a solve has fit it, and the
+    /// next falls on the cadence, here the row cap 25 rows on, so the
+    /// coefficients hold until then (docs/PLAN.md task 195, S9b, and 272
+    /// (m)).
+    #[test]
+    fn a_target_the_first_solve_fit_waits_for_the_cadence_at_its_own_threshold() {
+        let mut c = cfg(1, 2, RobustLoss::Huber { delta: 1.5 });
+        c.min_weight = 2.0;
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 25;
+        let mut m = Robust::new(c).unwrap();
+        m.set_target_min_weight(vec![2.0, 5.0]).unwrap();
+        let mut s = 6u64;
+        let mut first = None;
+        for i in 0..24 {
+            let x = [lcg(&mut s)];
+            let y = [
+                Some(0.5 + x[0] + 0.01 * lcg(&mut s)),
+                Some(1.0 - 2.0 * x[0] + 0.01 * lcg(&mut s)),
+            ];
+            m.step(&x, &y, f64::from(u8::from(i > 0)), 1.0);
+            if i == 1 {
+                let beta = m.coefficients().expect("the first solve, at row 1");
+                assert!(beta.iter().flatten().all(|v| v.is_finite()), "both fit");
+                assert!(
+                    m.wobs[1] < 5.0,
+                    "the second target is below its own threshold"
+                );
+                first = Some(beta.to_vec());
+            }
+            if i > 1 {
+                assert_eq!(m.coefficients(), first.as_deref(), "row {i}");
+            }
+        }
+        assert!(
+            m.wobs[1] >= 5.0,
+            "the second target's weight passed its threshold"
+        );
+    }
+
+    /// A target whose weight its decay has taken to exactly 0 has forgotten
+    /// its rows, as every model forgets what a decay that underflows takes
+    /// (`model_contract.rs`): it predicts nothing, while a target with
+    /// weight goes on, though the fit the last solve made for it is kept
+    /// for when its rows return (docs/PLAN.md task 115 (c), and 272 (m)).
+    #[test]
+    fn a_target_whose_weight_has_decayed_to_nothing_predicts_nothing() {
+        let mut c = cfg(1, 2, RobustLoss::Huber { delta: 1.5 });
+        c.decay = Decay::Halflife(1.0);
+        c.min_weight = 1.0;
+        c.solve_every = f64::INFINITY;
+        c.max_rows_between_solves = 1000;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 9u64;
+        for i in 0..30 {
+            let x = [lcg(&mut s)];
+            let y = [
+                Some(0.5 + x[0]),
+                Some(1.0 - 2.0 * x[0] + 0.01 * lcg(&mut s)),
+            ];
+            m.step(&x, &y, f64::from(u8::from(i > 0)), 1.0);
+        }
+        // A gap of 2,000 halflives, on a row the second target is absent
+        // from: its weight decays to 0, the first's starts over.
+        m.step(&[0.3], &[Some(0.8), None], 2000.0, 1.0);
+        assert_eq!(m.wj[1], 0.0);
+        assert!(m.wj[0] > 0.0 && m.w_raw >= 1.0);
+        let beta = m.coefficients().unwrap();
+        assert!(beta[1].iter().all(|v| v.is_finite()), "the kept fit");
+        let p = m.predict(&[0.3], 0.0);
+        assert!(p.pred[0].is_finite(), "{:?}", p.pred);
+        assert!(p.pred[1].is_nan(), "{:?}", p.pred);
+    }
 }
 
 #[cfg(test)]

@@ -380,3 +380,58 @@ fn a_band_out_of_range_is_refused_and_reset_keeps_it() {
     q.reset();
     assert_eq!(q, EwQuantile::bounded(&[0.5], 8).unwrap());
 }
+
+/// The weight each bucket of a sketch holds, by bucket index, the empty
+/// ones left out.
+fn held(q: &EwQuantile) -> Vec<(i32, f64)> {
+    (q.lo..)
+        .zip(q.buckets.iter().copied())
+        .filter(|(_, b)| *b != 0.0)
+        .collect()
+}
+
+/// A fold at both ends, written out: at a band of one octave the median's
+/// bucket keeps 128 buckets beside it. Ten rows at 1 (bucket 0) hold the
+/// median there; one in bucket 121, near `2^1.89`, spans less than the band and
+/// folds nothing; one at `1/2` (bucket −64) then spans 185, more than the
+/// band, so the arm below keeps its 64 and the one above is cut to 64:
+/// the row at bucket 121 now counts in bucket 64, the end bucket on its
+/// side, and no weight is lost (docs/PLAN.md task 272 (m)).
+#[test]
+fn a_fold_moves_the_weight_past_the_band_into_its_end_bucket() {
+    let mut q = EwQuantile::bounded(&[0.5], 1).unwrap();
+    q.add(1.0, 10.0);
+    let high = EwQuantile::representative(121);
+    assert_eq!(EwQuantile::index(high), 121);
+    q.add(high, 1.0);
+    assert_eq!(held(&q), vec![(0, 10.0), (121, 1.0)], "no fold yet");
+    q.add(0.5, 1.0);
+    assert_eq!((q.lo, q.buckets.len()), (-64, 129));
+    assert_eq!(held(&q), vec![(-64, 1.0), (0, 10.0), (64, 1.0)]);
+    assert_eq!(q.total, 12.0);
+    assert_eq!(q.at[0], Some(0), "the median stays in the bucket of 1");
+}
+
+/// A value inside the span the buckets already cover folds nothing, as a
+/// fold waits for a value past them. The span can be wider than the band:
+/// while the median is in the zero bucket there is no band to keep, so the
+/// buckets of 1 and 16 both stay, 256 apart; a heavy row at 4, bucket 128,
+/// then takes the median out of the zero bucket. Rows exactly at either
+/// end of the span still fold nothing (docs/PLAN.md task 272 (m)).
+#[test]
+fn a_value_at_an_end_of_the_span_folds_nothing() {
+    let mut q = EwQuantile::bounded(&[0.5], 1).unwrap();
+    q.add(0.0, 10.0);
+    q.add(1.0, 1.0);
+    q.add(16.0, 1.0);
+    assert_eq!(q.at[0], None, "the median is in the zero bucket");
+    q.add(4.0, 100.0);
+    assert_eq!(q.at[0], Some(128));
+    assert_eq!((q.lo, q.buckets.len()), (0, 257), "wider than the band");
+    for (v, k) in [(1.0, 0), (16.0, 256)] {
+        q.add(v, 1.0);
+        assert_eq!((q.lo, q.buckets.len()), (0, 257), "{v}");
+        assert!(held(&q).contains(&(k, 2.0)), "{v}: {:?}", held(&q));
+    }
+    assert_eq!(held(&q), vec![(0, 2.0), (128, 100.0), (256, 2.0)]);
+}

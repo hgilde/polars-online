@@ -4840,3 +4840,41 @@ fn a_restored_histogram_is_the_statistic_its_cfg_names() {
         );
     }
 }
+
+/// A held row carries one judge per target under `bin_stat = "huber"`,
+/// what its cells are judged against at the flush, and none under the
+/// mean, which judges nothing: the buffer stays empty, rather than holding
+/// a judge of 32 bytes per row and target no cell reads (docs/PLAN.md task
+/// 272 (m)).
+#[test]
+fn held_rows_carry_judges_under_huber_alone() {
+    let p = 4;
+    let rows = shard_stream(200, p);
+    let cfgs = shard_cfgs(p);
+    for (name, huber) in [
+        ("given bins", false),
+        ("learned bins", false),
+        ("given bins, huber, shared moments with lags", true),
+        ("learned bins, huber", true),
+    ] {
+        let c = cfgs.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+        let n_targets = c.n_targets;
+        let mut m = Marginal::new(c).unwrap();
+        let shards = Shards {
+            count: 2,
+            run: &run_in_order,
+        };
+        let mut most = 0;
+        for (i, r) in rows.iter().enumerate() {
+            if r.clear {
+                OnlineModel::clear_lags(&mut m);
+            }
+            m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+            let held = m.held_rows();
+            most = most.max(held);
+            let want = if huber { held * n_targets } else { 0 };
+            assert_eq!(m.defer.judges.len(), want, "{name}, row {i}: {held} held");
+        }
+        assert!(most > 20, "{name}: {most} rows held at most");
+    }
+}

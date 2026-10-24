@@ -2225,3 +2225,59 @@ function = "accumulate"
 mutation = "replace * with /"
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
 why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
+
+# Task 272 (m): the survivors of CI's changed-lines pass on 0f8b879a that no
+# test can catch.
+
+[[equivalent]]
+file = "crates/online-core/src/margbins.rs"
+function = "BinScales::learn"
+mutation = "replace > with >="
+line_has = "if ob > 0.0 {"
+why = """the clipped arm runs only where `j.has`, which `judge` read as the \
+target's weight `w[t] > 0` with nothing between it and `learn` (both callers \
+call one then the other); `ob = w[t] + u·(c/|e|)` adds a term that is finite \
+and at least 0 (`u > 0` finite, `0 <= c < |e|`), so `ob >= w[t] > 0`, never \
+0 and never NaN. The cell's twin in `update_cells_huber` is not: a cell's \
+`Ω` can round to 0 while its `W` is above it, and a test catches that one"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::kept"
+mutation = "replace * with +"
+line_has = "let (below, above) = if below + above <= 2 * half {"
+why = """`kept` is read only by `add`, which folds to the range it returns and \
+clamps the value into it. A lower threshold (`2 + half`, or `2 / half`, 0 \
+at any band) sends a span that fits the band to the arms' other branches, \
+which return a range holding the whole span: an arm of `2·half − above` is \
+at least `below` when `below + above <= 2·half`, and likewise above; the \
+fourth branch needs both arms past `half`, which such a span does not have. \
+So `fold_to` folds nothing (it moves only buckets outside the range) and \
+the clamp moves no value inside the span, as for the span itself; a span \
+that does not fit takes the same branch either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::kept"
+mutation = "replace * with /"
+line_has = "let (below, above) = if below + above <= 2 * half {"
+why = """as `replace * with +` here: `2 / half` is 0, a lower threshold still, \
+and each branch it sends a fitting span to returns a range holding it"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::fold_to"
+mutation = "replace < with <="
+line_has = "if self.lo < lo {"
+why = """at `self.lo == lo` the arm drains no bucket, adds their sum, `+0.0`, to \
+the first bucket, a weight that is never `-0.0`, and sets `lo` to itself: \
+nothing changes. `fold_to` runs only on buckets that are not empty, so the \
+first bucket exists"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "EwQuantile::fold_to"
+mutation = "replace > with >="
+line_has = "if self.end() > hi {"
+why = """at `end == hi`, `keep` is the buckets' length: the arm drains nothing \
+and adds `+0.0` to the last bucket, which changes no weight"""

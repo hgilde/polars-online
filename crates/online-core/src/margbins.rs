@@ -330,11 +330,18 @@ pub(crate) fn histogram_bytes(p: usize, n_targets: usize, width: usize, values: 
         })
 }
 
-/// The most a target's location and scale take under [`BinStat::Huber`]:
-/// three doubles, and a sketch bounded to `2 · 64 · MAD_BAND_OCTAVES`
-/// buckets beside its level's, with room for its fields.
-const SCALES_BYTES_PER_TARGET: usize =
-    (2 * 64 * crate::robust::MAD_BAND_OCTAVES as usize + 2 + 3) * 8 + 256;
+/// The most a target's location and scale take under [`BinStat::Huber`],
+/// as each vector reports its allocation: three doubles for the location,
+/// and a sketch of one level -- its fields, its level and the weight below
+/// it, the bucket the level is in, and the buckets its band spans
+/// ([`EwQuantile::one_level_buckets`]). It held room for the fields where
+/// the sketch's buckets could take more than their band spans; the sketch
+/// now allocates no more than that, and the bound is what it allocates at
+/// its most (docs/PLAN.md task 272 (m)).
+const SCALES_BYTES_PER_TARGET: usize = std::mem::size_of::<EwQuantile>()
+    + (EwQuantile::one_level_buckets(crate::robust::MAD_BAND_OCTAVES) + 2 + 3)
+        * std::mem::size_of::<f64>()
+    + std::mem::size_of::<Option<i32>>();
 
 /// Where each feature's value fell on the row being learned, as a cell
 /// offset within one target's block ([`MarginalBins::update_row`]). A
@@ -2672,9 +2679,20 @@ mod tests {
             let mut targets = h.clone();
             targets.scales.as_mut().unwrap().w.pop();
             assert!(!targets.has_shape(1, 2));
-            let mut delta = h;
-            delta.scales.as_mut().unwrap().delta = f64::NAN;
-            assert!(!delta.has_shape(1, 2));
+            for bad in [f64::NAN, 0.0, -1.0] {
+                let mut delta = h.clone();
+                delta.scales.as_mut().unwrap().delta = bad;
+                assert!(!delta.has_shape(1, 2), "a cut of {bad}");
+            }
+            // A target's weight is a finite number, not below 0.
+            for bad in [-1.0, f64::INFINITY, f64::NAN] {
+                let mut weight = h.clone();
+                weight.scales.as_mut().unwrap().w[1] = bad;
+                assert!(!weight.has_shape(1, 2), "a target's weight of {bad}");
+            }
+            let mut empty = h;
+            empty.scales.as_mut().unwrap().w[1] = 0.0;
+            assert!(empty.has_shape(1, 2), "a target with no weight yet");
             assert!(run(BinStat::Mean, 0.97, 50).has_shape(1, 2));
         }
 
@@ -2731,6 +2749,146 @@ mod tests {
                 )
                 .is_ok()
             );
+            // The spec's check, before any histogram is made, says the same.
+            let spec = |delta| BinCfg {
+                n_bins: 3,
+                edges: Some(vec![vec![0.0, 1.0]]),
+                rule: BinRule::Quantile,
+                warm_rows: 3,
+                stat: BinStat::Huber { delta },
+                budget_mib: None,
+            };
+            for bad in [0.0, -1.0, f64::NAN] {
+                let e = spec(bad).validate(1, 1).unwrap_err();
+                assert!(e.contains("bin_huber_delta must be > 0"), "{bad}: {e}");
+            }
+            for good in [1e-9, 1.0, f64::INFINITY] {
+                assert!(spec(good).validate(1, 1).is_ok(), "{good}");
+            }
+        }
+
+        /// Deviations whose span widens a bucket at a time: up, and both
+        /// ways at once.
+        fn widening(mode: usize, i: usize) -> f64 {
+            let k = i as f64 / 64.0;
+            match mode {
+                0 => (0.25 * k).exp2(),
+                _ if i.is_multiple_of(2) => (0.1 * k).exp2(),
+                _ => -(-0.1 * k).exp2(),
+            }
+        }
+
+        /// The budget's bound on a target's location and scale is what they
+        /// allocate at their most, to the byte: three doubles, and a sketch
+        /// of one level whose buckets fill its band, reached here by
+        /// deviations whose span widens a bucket at a time. A bound under
+        /// it would let a spec through whose model takes more than its
+        /// budget; one over it refuses specs that fit (docs/PLAN.md task
+        /// 272 (m)).
+        #[test]
+        fn the_scales_bound_is_what_a_targets_scale_allocates_at_its_most() {
+            let mut h = MarginalBins::new_with(1, 2, vec![vec![0.0]], HUBER).unwrap();
+            let mut most = [0usize; 2];
+            for i in 0..20_000 {
+                h.update_row(&[-1.0], &[Some(widening(0, i)), Some(widening(1, i))], 1.0);
+                let sc = h.scales.as_ref().unwrap();
+                for (t, m) in most.iter_mut().enumerate() {
+                    // Each of `w`, `m` and `m_lo` holds one double a target.
+                    assert_eq!([&sc.w, &sc.m, &sc.m_lo].map(|v| v.capacity()), [2, 2, 2]);
+                    *m = (*m).max(3 * std::mem::size_of::<f64>() + sc.mad[t].bytes());
+                }
+            }
+            let sc = h.scales.as_ref().unwrap();
+            for (t, most) in most.iter().enumerate() {
+                let (len, _) = sc.mad[t].buckets_held();
+                assert_eq!(
+                    len,
+                    2 * 64 * crate::robust::MAD_BAND_OCTAVES as usize + 1,
+                    "target {t}: the band filled"
+                );
+                assert_eq!(*most, SCALES_BYTES_PER_TARGET, "target {t}");
+            }
+        }
+
+        /// The cut is inclusive: a bin's first row exactly the cut from the
+        /// target's location is inside it, so it seeds the bin at its own
+        /// value, at its full weight, as the location's `ψ(e) = e` for
+        /// `|e| <= c` has it. Seeded as a clipped row would be, from the
+        /// location stepped by the cut, it is the same number in exact
+        /// arithmetic and not to the bit: the case is searched for where the
+        /// two part, so the test reads which one the code took.
+        #[test]
+        fn a_first_row_exactly_at_the_cut_seeds_the_bin_at_its_own_value() {
+            let mut h = MarginalBins::new_with(1, 1, vec![vec![0.0]], HUBER).unwrap();
+            let mut seed = 17u64;
+            let mut found = None;
+            for _ in 0..400 {
+                let level = if lcg(&mut seed) > 0.0 { 7.0 } else { 1.0 };
+                h.update_row(&[-1.0], &[Some(level + 0.3 * lcg(&mut seed))], 1.0);
+                let j = h.scales.as_ref().unwrap().judge(0);
+                if !j.cut.is_finite() {
+                    continue;
+                }
+                let below = j.m - j.cut;
+                found = (-64..=64).find_map(|k: i64| {
+                    let y = f64::from_bits((below.to_bits() as i64 + k) as u64);
+                    let e = crate::comp::dev(y, j.m, j.m_lo);
+                    let (mut hi, mut lo) = (j.m, j.m_lo);
+                    crate::comp::add(&mut hi, &mut lo, j.cut.copysign(e));
+                    (e.abs() == j.cut && hi.to_bits() != y.to_bits()).then_some((y, j))
+                });
+                if found.is_some() {
+                    break;
+                }
+            }
+            let (y, j) = found.expect("a row exactly at the cut where the two forms part");
+            assert!(j.has && j.m_lo != 0.0, "{j:?}");
+            assert!(h.w[1] == 0.0, "the second bin is empty");
+            h.update_row(&[1.0], &[Some(y)], 1.0);
+            let bin = h.bins(0, 0)[1];
+            assert_eq!(
+                bin.mean_y.to_bits(),
+                y.to_bits(),
+                "{} against {y}",
+                bin.mean_y
+            );
+            assert_eq!(h.om[1], 1.0, "at its full weight");
+            assert_eq!(bin.var_y, 0.0);
+        }
+
+        /// A clipped row's weight `u·c/|e|` can round to 0: then it takes no
+        /// step, and counts in the bin's row weight alone. Here a bin's two
+        /// rows, at a weight of `1e-300` and `1e30` from a target whose cut
+        /// is under 1, each weigh under the least subnormal: the first
+        /// seeds the bin at the location stepped by the cut, with no weight,
+        /// and the second, judged against a weight of 0, leaves it there,
+        /// where `c·u/0` would have taken it to infinity (hard rule 9).
+        #[test]
+        fn a_clipped_row_whose_weight_rounds_to_nothing_takes_no_step() {
+            let mut h = MarginalBins::new_with(1, 1, vec![vec![0.0]], HUBER).unwrap();
+            let mut seed = 23u64;
+            for i in 0..40 {
+                let y = f64::from(i % 2) + 0.01 * lcg(&mut seed);
+                h.update_row(&[-1.0], &[Some(y)], 1.0);
+            }
+            let j = h.scales.as_ref().unwrap().judge(0);
+            assert!(j.cut > 0.1 && j.cut < 1.0, "{j:?}");
+            let (u, y) = (1e-300, 1e30);
+            assert_eq!(
+                u * (j.cut / (y - j.m)),
+                0.0,
+                "the clipped weight rounds to 0"
+            );
+            h.update_row(&[1.0], &[Some(y)], u);
+            assert_eq!((h.w[1], h.om[1]), (u, 0.0), "seeded, clipped to no weight");
+            let seeded = h.bins(0, 0)[1];
+            assert!((seeded.mean_y - (j.m + j.cut)).abs() < 1e-12, "{seeded:?}");
+            h.update_row(&[1.0], &[Some(y)], u);
+            let bin = h.bins(0, 0)[1];
+            assert_eq!(bin.mean_y.to_bits(), seeded.mean_y.to_bits(), "{bin:?}");
+            assert_eq!(bin.var_y, 0.0);
+            assert_eq!(h.om[1], 0.0);
+            assert_eq!(bin.n, 2.0 * u, "both rows count in the row weight");
         }
     }
 }

@@ -420,10 +420,13 @@ impl EwQuantile {
                 self.buckets.push(0.0);
             } else if k < self.lo {
                 let grow = (self.lo - k) as usize;
+                self.reserve(grow);
                 self.buckets.splice(0..0, std::iter::repeat_n(0.0, grow));
                 self.lo = k;
             } else if k >= self.lo + self.buckets.len() as i32 {
-                self.buckets.resize((k - self.lo + 1) as usize, 0.0);
+                let len = (k - self.lo + 1) as usize;
+                self.reserve(len - self.buckets.len());
+                self.buckets.resize(len, 0.0);
             }
             self.buckets[(k - self.lo) as usize] += s;
             Some(k)
@@ -439,6 +442,28 @@ impl EwQuantile {
             self.below[l] = if under { below + s } else { below };
             self.settle(l);
         }
+    }
+
+    /// Room for `more` buckets. A bounded sketch takes exactly that, so it
+    /// allocates no more buckets than its band spans, which is what a memory
+    /// budget counts for it ([`Self::one_level_buckets`]): grown as a vector
+    /// grows, by doubling, a span widening a bucket at a time took a band of
+    /// 8 octaves to 1,376 buckets where it spans 1,025 (docs/PLAN.md task
+    /// 272 (m)). Its buckets grow only until the band is full, and a fold
+    /// keeps what they hold, so this reallocates at most once a bucket.
+    fn reserve(&mut self, more: usize) {
+        if self.band.is_some() {
+            self.buckets.reserve_exact(more);
+        } else {
+            self.buckets.reserve(more);
+        }
+    }
+
+    /// The most buckets a bounded sketch of one level spans, at a band of
+    /// `octaves`: an arm of `64 · octaves` buckets either side of its
+    /// level's.
+    pub(crate) const fn one_level_buckets(octaves: u32) -> usize {
+        2 * BINS as usize * octaves as usize + 1
     }
 
     /// A pointer's place in the order, the zero bucket below every bucket.
@@ -463,6 +488,22 @@ impl EwQuantile {
         let band = self.band;
         *self = Self::empty(std::mem::take(&mut self.levels));
         self.band = band;
+    }
+
+    /// The bytes this sketch takes, its fields and what each vector has
+    /// allocated: what a memory budget holding sketches must count.
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.levels.capacity() + self.buckets.capacity() + self.below.capacity())
+                * std::mem::size_of::<f64>()
+            + self.at.capacity() * std::mem::size_of::<Option<i32>>()
+    }
+
+    /// The buckets the sketch spans now, and the buckets it has allocated.
+    #[cfg(test)]
+    pub(crate) fn buckets_held(&self) -> (usize, usize) {
+        (self.buckets.len(), self.buckets.capacity())
     }
 }
 
@@ -1424,6 +1465,88 @@ mod tests {
         );
         let got = q.get(0).unwrap();
         assert!((got - 2.0).abs() <= EW_QUANTILE_ALPHA * 2.0, "{got}");
+    }
+
+    /// The window operator's quantile buckets its values by
+    /// `EwQuantile::bucket_of` and reports `bucket_value` for each: every
+    /// positive normal value, from the smallest to the largest, is within
+    /// `α` of the value its bucket reports, and a power of two `2^k` starts
+    /// bucket `64·k`, the buckets being 64 to an octave.
+    #[test]
+    fn the_public_buckets_are_within_alpha_of_every_value_in_them() {
+        for k in [-1022, -7, 0, 1, 33, 1023] {
+            assert_eq!(EwQuantile::bucket_of(2f64.powi(k)), 64 * k, "2^{k}");
+        }
+        let mut s = 91u64;
+        let mut values = vec![
+            f64::MIN_POSITIVE,
+            1e-300,
+            1e-3,
+            0.37,
+            1.0,
+            5.5,
+            1e9,
+            f64::MAX,
+        ];
+        values.extend((0..2000).map(|_| (60.0 * lcg(&mut s)).exp2() * (1.0 + lcg(&mut s).abs())));
+        for v in values {
+            let rep = EwQuantile::bucket_value(EwQuantile::bucket_of(v));
+            assert!(
+                (rep - v).abs() <= EW_QUANTILE_ALPHA * v * (1.0 + 1e-12),
+                "{v}: its bucket reports {rep}"
+            );
+        }
+    }
+
+    /// Values whose span widens a bucket at a time, up, down, both ways
+    /// at once, and up then down, and three buckets at a time, against a
+    /// bounded sketch of one level.
+    fn sweep(mode: usize, i: usize) -> f64 {
+        let k = i as f64 / 64.0;
+        match mode {
+            0 => (0.25 * k).exp2(),
+            1 => (-0.25 * k).exp2(),
+            2 if i.is_multiple_of(2) => (0.1 * k).exp2(),
+            2 => (-0.1 * k).exp2(),
+            // Three buckets a row: a span that widens by more than one.
+            4 => (3.0 * k).exp2(),
+            _ if i < 3000 => (0.5 * k).exp2(),
+            _ => (-0.5 * (k - 47.0)).exp2(),
+        }
+    }
+
+    /// A bounded sketch of one level allocates no more buckets than its
+    /// band spans, `2·64·band + 1`, however its values reach the band's
+    /// edges, and a span that widens a bucket at a time reaches it. Grown
+    /// as a vector grows, by doubling, such a span took a band of 8 octaves
+    /// to 1,376 buckets, 11,168 bytes where the Huber bins' budget counted
+    /// 8,488 for it (docs/PLAN.md task 272 (m)).
+    #[test]
+    fn a_bounded_sketch_allocates_no_more_buckets_than_its_band_spans() {
+        for band in [1, 3, 8] {
+            let most = EwQuantile::one_level_buckets(band);
+            assert_eq!(most, 2 * 64 * band as usize + 1);
+            for mode in 0..5 {
+                let mut q = EwQuantile::bounded(&[0.5], band).unwrap();
+                let (mut longest, mut held) = (0, 0);
+                for i in 0..20_000 {
+                    q.add(sweep(mode, i), 1.0);
+                    let (len, cap) = q.buckets_held();
+                    longest = longest.max(len);
+                    held = held.max(cap);
+                }
+                assert!(
+                    held <= most,
+                    "band {band}, sweep {mode}: {held} buckets held"
+                );
+                assert_eq!(longest, most, "band {band}, sweep {mode}: the band filled");
+            }
+        }
+        // An unbounded sketch grows as a vector does.
+        let mut q = EwQuantile::new(&[0.5]).unwrap();
+        (0..2000).for_each(|i| q.add(sweep(0, i), 1.0));
+        let (len, cap) = q.buckets_held();
+        assert!(cap > len, "{len} spanned, {cap} held");
     }
 }
 
