@@ -1133,8 +1133,8 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file holds 240
-entries (2026-10-14), each an equivalent mutant -- a few
+`scripts/mutants_equivalent.toml` does not list. That file holds 249
+entries (2026-10-24), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.

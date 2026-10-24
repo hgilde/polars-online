@@ -3449,6 +3449,69 @@ mod tests {
         }
     }
 
+    /// A window's correlations, as [`CorrChange::window_corr`] lays them out
+    /// after the means and the squared deviations, are [`CorrChange::corr_of`]'s
+    /// for each pair in the pairs' order, to the bit: on correlated columns,
+    /// one pair of them negatively; on two columns whose spreads are each a
+    /// number but whose product underflows to 0, where there is no
+    /// correlation to read, NaN and not the `±inf` of a sum over 0; and on
+    /// a column that is exactly `3 − 2x` of another, whose correlation is
+    /// `−1` by the definition.
+    #[test]
+    fn a_windows_correlations_are_each_pairs_own() {
+        let w = 20usize;
+        let mut n = Normals::new(31);
+        let windows: [Vec<Vec<f64>>; 3] = [
+            (0..w)
+                .map(|_| {
+                    let mut r = n.pair(-0.6);
+                    r.push(n.normal() + 0.4 * r[0]);
+                    r
+                })
+                .collect(),
+            (0..w)
+                .map(|_| {
+                    let mut r: Vec<f64> = n.pair(0.5).iter().map(|v| 1e-90 * v).collect();
+                    r.push(n.normal());
+                    r
+                })
+                .collect(),
+            (0..w)
+                .map(|_| {
+                    let x = n.normal();
+                    vec![x, 3.0 - 2.0 * x, n.normal()]
+                })
+                .collect(),
+        ];
+        let m = CorrChange::new(CorrChangeCfg {
+            span_rows: w,
+            crit: Some(0.5),
+            ..cfg(3, CorrChangeKind::Window)
+        })
+        .unwrap();
+        for (k, rows) in windows.iter().enumerate() {
+            let got = m.window_corr(w, |i| &rows[i]);
+            let pairs = [(0, 1), (0, 2), (1, 2)];
+            assert_eq!(got.len(), 6 + pairs.len());
+            for (p, &(a, b)) in pairs.iter().enumerate() {
+                let want = CorrChange::corr_of(rows, w, a, b);
+                assert!(
+                    same(got[6 + p], want),
+                    "window {k}, pair ({a}, {b}): {} vs {want}",
+                    got[6 + p]
+                );
+            }
+        }
+        // The cases: a negative correlation, a spread whose product
+        // underflows, and an exact line.
+        assert!(m.window_corr(w, |i| &windows[0][i])[6] < -0.3);
+        let tiny = m.window_corr(w, |i| &windows[1][i]);
+        assert!(tiny[3] > 0.0 && tiny[4] > 0.0 && tiny[3] * tiny[4] == 0.0);
+        assert!(tiny[6].is_nan() && tiny[7].is_finite());
+        let line = m.window_corr(w, |i| &windows[2][i])[6];
+        assert!((line + 1.0).abs() < 1e-12, "{line}");
+    }
+
     /// A window in which one pair has no correlation (a column constant in
     /// the first window) gives no statistic under either norm: the L∞
     /// norm's running maximum would otherwise pass over the NaN (`f64::max`

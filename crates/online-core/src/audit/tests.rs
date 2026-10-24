@@ -1487,3 +1487,62 @@ fn a_merged_audit_at_a_level_goes_on_as_one_audit_of_every_stream() {
     let p = m.pair(0, 1).unwrap();
     assert!(close(p.corr, corr(&all), 1e-12), "{}", p.corr);
 }
+
+/// The counters' hash of a key is SplitMix64's finalizer, the generator's
+/// output for a state of `k`, held to the generator's published outputs:
+/// the first of seed 0, `0xe220a8397b1dcdaf`, and the first two of seed
+/// 1234567, `6457827717110365317` and `3203168211198807973` (the second
+/// the finalizer of the seed plus one increment). Values that share their
+/// low bits, the small integers, spread over the low bits a table reads.
+#[test]
+fn the_key_hash_is_splitmix64s_finalizer() {
+    let hash = |k: u64| {
+        let mut h = KeyHasher::default();
+        h.write_u64(k);
+        h.finish()
+    };
+    assert_eq!(hash(0), 0xe220_a839_7b1d_cdaf);
+    assert_eq!(hash(1_234_567), 6_457_827_717_110_365_317);
+    assert_eq!(
+        hash(1_234_567u64.wrapping_add(0x9e37_79b9_7f4a_7c15)),
+        3_203_168_211_198_807_973
+    );
+    let low: std::collections::HashSet<u64> =
+        (1..=256).map(|i| hash(key(f64::from(i))) & 0xfff).collect();
+    assert!(low.len() > 240, "{} of 256 low-bit patterns", low.len());
+}
+
+/// A hash of bytes, which the trait asks for and a `u64` key never takes,
+/// is FNV-1a's step: from FNV's offset basis it is FNV-1a, held to its
+/// published values for `"a"`, `0xaf63dc4c8601ec8c`, and `"foobar"`,
+/// `0x85944171f73967e8`, and no bytes leave the basis.
+#[test]
+fn a_hash_of_bytes_is_fnv_1a() {
+    let fnv = |bytes: &[u8]| {
+        let mut h = KeyHasher(0xcbf2_9ce4_8422_2325);
+        h.write(bytes);
+        h.finish()
+    };
+    assert_eq!(fnv(b"a"), 0xaf63_dc4c_8601_ec8c);
+    assert_eq!(fnv(b"foobar"), 0x8594_4171_f739_67e8);
+    assert_eq!(fnv(b""), 0xcbf2_9ce4_8422_2325);
+}
+
+/// Counters read from a file whose pairs were out of order stay flagged
+/// through a merge, from either side, so the merged counters are refused
+/// as the file was: a merge does not launder a damaged file.
+#[test]
+fn a_merge_keeps_a_damaged_files_flag() {
+    let mut fresh = Counts::default();
+    fresh.add(1.0, 8);
+    assert!(fresh.has_shape(8));
+    let mut into_fresh = fresh.clone();
+    into_fresh.merge(&unordered(vec![(5, 1), (3, 1)]), 8);
+    assert!(into_fresh.unordered && !into_fresh.has_shape(8));
+    let mut into_bad = unordered(vec![(5, 1), (3, 1)]);
+    into_bad.merge(&fresh, 8);
+    assert!(into_bad.unordered && !into_bad.has_shape(8));
+    let mut clean = fresh.clone();
+    clean.merge(&fresh, 8);
+    assert!(!clean.unordered && clean.has_shape(8));
+}

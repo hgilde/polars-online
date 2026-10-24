@@ -2083,6 +2083,25 @@ mod tests {
         }
     }
 
+    /// [`history_wiped`]'s share is of the weight after the row, `carried +
+    /// w`, the old rows' and the new one's together: a history at `2^-26.5`
+    /// of a row's weight has a share of `2^-26.5 / (1 + 2^-26.5)`, whose
+    /// square is `2^-53 (1 - 2^-25.5)` to first order, so the row wipes it.
+    /// Read against the weight the row adds less the history, `w - carried`,
+    /// the square would be `2^-53 (1 + 2^-25.5)`, and it would not; the
+    /// band between the two is 2^-25.5 wide, far from the rounding.
+    #[test]
+    fn the_wipe_reads_the_share_of_the_weight_after_the_row() {
+        let edge = 2f64.powi(-53).sqrt();
+        for w in [1.0, 4.0, 0.01] {
+            assert!(history_wiped(edge * w, w), "w = {w}");
+            assert!(
+                !history_wiped(edge * w * (1.0 + 2f64.powi(-24)), w),
+                "w = {w}"
+            );
+        }
+    }
+
     /// [`history_wiped`]'s edge, a share whose square is `2^-53`, from both
     /// sides: a row of weight 1 meeting a history carried at `2^-27` wipes
     /// it, at `2^-26` it does not; so does a row of weight 4 meeting four

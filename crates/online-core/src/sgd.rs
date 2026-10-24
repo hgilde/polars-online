@@ -3493,6 +3493,69 @@ mod tests {
         );
     }
 
+    /// Under `huber_scale = "mad"` each target has its own sketch of `|e|`
+    /// ([`Sgd::mad_sketch`]), and its median is the EW median of that
+    /// target's out-of-sample residuals within the sketch's accuracy: held
+    /// on two targets of different spreads, under a decay, with uneven and
+    /// zero weights, to the exact weighted median of the residuals kept
+    /// with their decayed weights (the smallest `|e|` whose cumulative
+    /// weight reaches half the total). The residuals come from the
+    /// predictions the model reported.
+    #[test]
+    fn each_targets_mad_sketch_holds_the_ew_median_of_its_residuals() {
+        let mut c = cfg(1, SgdLoss::Huber { delta: 1.345 });
+        c.n_targets = 2;
+        c.decay = Decay::Lam(0.98);
+        c.huber_scale = crate::HuberScale::Mad;
+        let mut m = Sgd::new(c).unwrap();
+        let mut kept: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
+        let mut s = 41u64;
+        let mut checked = 0;
+        for i in 0..600 {
+            let x = lcg(&mut s);
+            let y = [
+                1.0 + 2.0 * x + 0.3 * lcg(&mut s),
+                -4.0 + 0.5 * x + 3.0 * lcg(&mut s),
+            ];
+            let w = if i % 7 == 3 {
+                0.0
+            } else {
+                0.5 + lcg(&mut s).abs()
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let pred = m.step(&[x], &[Some(y[0]), Some(y[1])], d, w).pred;
+            assert_eq!(m.mad_sketch().len(), 2, "row {i}");
+            for j in 0..2 {
+                kept[j].iter_mut().for_each(|k| k.1 *= 0.98);
+                if pred[j].is_finite() && w > 0.0 {
+                    kept[j].push(((y[j] - pred[j]).abs(), w));
+                }
+                let Some(got) = m.mad_sketch()[j].get(0) else {
+                    assert!(kept[j].is_empty(), "row {i}, target {j}");
+                    continue;
+                };
+                let total: f64 = kept[j].iter().map(|k| k.1).sum();
+                let mut sorted = kept[j].clone();
+                sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut acc = 0.0;
+                let want = sorted
+                    .iter()
+                    .find(|(_, w)| {
+                        acc += w;
+                        acc >= 0.5 * total
+                    })
+                    .unwrap()
+                    .0;
+                assert!(
+                    (got - want).abs() <= crate::EW_QUANTILE_ALPHA * want * (1.0 + 1e-9),
+                    "row {i}, target {j}: {got} against {want}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 1100, "{checked}");
+    }
+
     /// Task 252: under `huber`, a row whose weighted squared residual is
     /// past the range (`1e300 · (1e99)²`) leaves the residual scale `s²` and
     /// its weight where they were: an infinite scale would make every cut
