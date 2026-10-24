@@ -18,6 +18,7 @@ from math import expm1, inf, lgamma, log, pi
 import numpy as np
 import polars as pl
 import pytest
+from scipy.special import logsumexp
 
 import polars_online as po
 
@@ -811,8 +812,13 @@ def clock_oracle(x, secs, tau, w=None):
                 memo[(a, b)] = _log_marginal(xr[a : b + 1])
             return memo[(a, b)]
 
-        num = den = -inf
-        runs: dict[int, float] = {}
+        # Each sum over segmentations is one `logsumexp` over all its terms
+        # (task 273): accumulated one `logaddexp` at a time, as it was, the
+        # 8,192 segmentations of 14 rows each carried that call's rounding
+        # into the next, and numpy's `logaddexp` moved by 2 ulp a call, at
+        # random, put `p_change` 0.81 of its 1e-13 from the bank's.
+        nums, dens = [], []
+        runs: dict[int, list[float]] = {}
         for bits in itertools.product((0, 1), repeat=m - 1):
             prior = sum(brk[j] if bit else stay[j] for j, bit in enumerate(bits))
             if prior == -inf:
@@ -821,17 +827,18 @@ def clock_oracle(x, secs, tau, w=None):
             ends = [s - 1 for s in starts[1:]] + [m - 1]
             head = sum(seg(s, e) for s, e in zip(starts[:-1], ends[:-1], strict=True))
             with_k = prior + head + seg(starts[-1], m - 1)
-            den = np.logaddexp(den, with_k)
+            dens.append(with_k)
             if bits[-1]:
-                num = np.logaddexp(num, with_k)
+                nums.append(with_k)
             before_k = prior + head + seg(starts[-1], m - 2)
             run = (m - 1) - starts[-1]
-            runs[run] = np.logaddexp(runs.get(run, -inf), before_k)
-        a_out.append(0.0 if num == -inf else float(np.exp(num - den)))
-        total = np.logaddexp.reduce(list(runs.values()))
-        b_out.append(sum(r * float(np.exp(v - total)) for r, v in runs.items()))
-        top = max(runs.values())
-        m_out.append(min(r for r, v in runs.items() if v == top))
+            runs.setdefault(run, []).append(before_k)
+        a_out.append(float(np.exp(logsumexp(nums) - logsumexp(dens))) if nums else 0.0)
+        mass = {r: float(logsumexp(v)) for r, v in runs.items()}
+        total = logsumexp(list(mass.values()))
+        b_out.append(sum(r * float(np.exp(v - total)) for r, v in mass.items()))
+        top = max(mass.values())
+        m_out.append(min(r for r, v in mass.items() if v == top))
     return np.array(a_out), np.array(b_out), np.array(m_out)
 
 
@@ -935,8 +942,9 @@ def test_a_hazard_on_the_clock_is_the_model_it_states(case):
     ``p_change`` is the chance that row ``k`` began a run, and ``run_mean``
     and ``run_mode`` count the learned rows of its run before it.
 
-    Agreement measured over the five cases: ``p_change`` to 1.1e-14,
-    ``run_mean`` to 8e-14, ``run_mode`` exactly. Taking the chance from the
+    Agreement measured over the five cases: ``p_change`` to 1.9e-15,
+    ``run_mean`` to 9e-15, ``run_mode`` exactly (1.1e-14 and 8e-14 while the
+    oracle summed its segmentations one ``logaddexp`` at a time). Taking the chance from the
     row's own step on the boundary after the row, as this was first briefed,
     missed by 0.93 and 6.5 rows on the gap case and dated the break a row
     late (task 179)."""
@@ -944,7 +952,11 @@ def test_a_hazard_on_the_clock_is_the_model_it_states(case):
     out = run_clock(x, secs, text, w)
     a, b, m = clock_oracle(x, secs, tau, w)
     # Tolerances (task 252 (b)): the enumeration, an oracle computed another
-    # way, through libm (`exp`, `expm1`, `lgamma`).
+    # way, through libm (`exp`, `expm1`, `lgamma`). Task 273: with every
+    # `exp`, `exp2`, `ln` and `powf` the bank calls, and every numpy and
+    # `math` transcendental here, moved by 2 ulp (a scratch build, biased
+    # and at random), at most 0.038 and 0.015 of these bounds; 0.81 of the
+    # first before the oracle's sums became one `logsumexp` each.
     assert out["p_change"].to_numpy() == pytest.approx(a, abs=1e-13, rel=0)
     assert out["run_mean"].to_numpy() == pytest.approx(b, abs=1e-12, rel=0)
     assert out["run_mode"].to_list() == m.tolist()
