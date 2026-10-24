@@ -11,6 +11,9 @@ name: CI
 #   private, manual dispatch      ->  all three (an explicit human decision)
 #   public, anything              ->  all three
 #
+# Windows is two images wherever it runs, Server 2025 and Server 2022 (see
+# the matrix), so the public matrix is nine legs.
+#
 # The switch is `github.event.repository.private`, tested with `== false` so a
 # missing field -- an event whose payload has no repository -- falls to the
 # CHEAP side rather than the expensive one: only an explicit `private == false`
@@ -167,13 +170,22 @@ jobs:
         # See COST POLICY at the top. Reads: public -> all three; else manual
         # dispatch -> all three; else weekly -> add Windows, the platform that
         # cannot be checked locally; else (push, pull_request) -> Linux only.
+        #
+        # Windows twice, wherever it runs: `windows-latest` (Server 2025)
+        # and `windows-2022` (Server 2022). On Windows `exp`, `log`, `pow`
+        # and the rest come from `ucrtbase.dll`, for Rust, CPython and NumPy
+        # alike, and that DLL is part of the OS, so each Windows build has
+        # its own and their last bits can differ (a Rust test measured 1.7
+        # times its bound on Server 2025 where glibc's and Apple's `exp`
+        # gave 0.9). Two builds test the bounds against two of those
+        # libraries; glibc and Apple's library are fixed per image.
         os: >-
           ${{ github.event.repository.private == false
-              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
+              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest", "windows-2022"]')
            || github.event_name == 'workflow_dispatch'
-              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
+              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest", "windows-2022"]')
            || github.event_name == 'schedule'
-              && fromJSON('["ubuntu-latest", "windows-latest"]')
+              && fromJSON('["ubuntu-latest", "windows-latest", "windows-2022"]')
            || fromJSON('["ubuntu-latest"]') }}
         # PYTHON, at the top: the floor and the newest everywhere, and every
         # version between on Linux. Quoted, since YAML reads 3.10 as 3.1.
@@ -185,6 +197,13 @@ jobs:
       UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # First, so a failure names its machine: a runner label is a pool of
+      # CPUs (AVX-512 or not, any L3), and on Windows the math library
+      # changes with the OS build. The CPU model, its caches and features,
+      # the cores, the OS build and its math library, into the log and the
+      # job summary (docs/TESTING.md, "The machines and the CPU paths").
+      - name: the machine this job ran on
+        uses: ./.github/actions/machine-report
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       # MUST precede the cache restore. The Ubuntu image starts with 9.3 GB
       # free, and the restored `target/` does not fit: the job died with
