@@ -98,6 +98,24 @@ median of three interleaved runs on 8 threads, from Arrow IPC files, on an
 Apple M4 Pro at a load average of 4.5 to 10. The docstrings of
 `xgboost_matrix` and `lightgbm_dataset` have every parameter.
 
+**A Huber loss is the train call's objective, and its slope is a scale to
+set from the residuals, not a fixed number.** `po.gbdt` builds the training
+input and leaves the objective to the caller's `xgb.train` or `lgb.train`.
+XGBoost's `{"objective": "reg:pseudohubererror", "huber_slope": δ}` and
+LightGBM's `{"objective": "huber", "alpha": δ}` each take a Huber loss:
+quadratic for a residual within `δ` and linear beyond it, so a wild label
+pulls a tree no harder than a residual of `δ` does. `δ` is in the label's
+units, and the defaults, 1.0 and 0.9, are fixed numbers. On a target whose
+residuals are about 0.001, every row falls inside the cut and the loss is
+squared error by another name; on one whose residuals are about 100, every
+row falls beyond it. So set `δ = 1.345 · MAD / 0.6745`, where the MAD is the
+median absolute deviation of the residuals of a first fit, such as a
+squared-error model trained for a few rounds. At 1.345 standard deviations Huber's loss keeps
+95% of least squares' efficiency on normal errors, and the MAD is not moved
+by the wild labels the cut is meant to catch, where a root mean square is.
+On a stream, `po.ewm_quantile` gives the same scale as it moves
+([Quantiles and a robust scale](WINDOWS.md#quantiles-and-a-robust-scale)).
+
 ## What each step does
 
 Each step of a build, for each library:

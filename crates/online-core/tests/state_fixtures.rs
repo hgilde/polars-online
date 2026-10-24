@@ -499,14 +499,33 @@ fn held(v: &rmpv::Value) -> usize {
 /// `sgd_huber`; each MAD sketch names its band (task 271 (b)). `huber`'s
 /// feature sets (63, task 272 (a)): `huber_sets` names them in its cfg and
 /// holds a fit per target and set; `huber_sum` asks for the sum-scale
-/// prior and the emitted scale.
+/// prior and the emitted scale. `marginal`'s Huber location per bin (63,
+/// task 272 (c)): `marginal_bins_huber` keeps each cell's robust weight and
+/// each target's location and scale, and its cfg names its statistic and
+/// cut.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 33] = [
+    const FORMS: [(&str, &[&str]); 37] = [
         ("huber_sets", &["model", "Robust", "cfg", "feature_sets"]),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "bins", "hist", "om"],
+        ),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "bins", "hist", "scales", "w"],
+        ),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "bins", "hist", "scales", "mad"],
+        ),
+        (
+            "marginal_bins_huber",
+            &["model", "Marginal", "cfg", "bins", "stat", "huber", "delta"],
+        ),
         ("huber_mad", &["model", "Robust", "mad"]),
         (
             "huber_mad",

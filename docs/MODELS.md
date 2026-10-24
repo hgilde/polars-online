@@ -1851,6 +1851,92 @@ gives their `corr`. A spec whose held rows or histogram would pass 256 MiB,
 per group and per half-life, is refused when it is built. To allow more,
 give a larger `bin_budget`, or `float("inf")` for no limit.
 
+**Give `bin_stat="huber"` when one spike should not draw a shape.** A bin's
+mean moves by a row's size times its share of the bin, so one wild row in a
+thin bin bends the response curve there, and a screen that reads binned
+means of a residual, or of its square, sees a shape that is not in the data.
+Under `"huber"` each bin's location is Huber's M-estimate of location,
+learned in one pass, as [`huber`](#huber--quantile--robust-regression)
+learns a regression. With `c` the cut, `bin_huber_delta` (default 1.345)
+times the target's robust scale `σ_t`, both read before the row, and `e` the
+row's distance from the bin's location `m`:
+
+```
+ω = w·min(1, c/|e|)      Ω' = λΩ + ω      m' = m + (ω/Ω')·e
+```
+
+The location is the mean over the weights `ω`, so its fixed point is the
+Huber M-location of the bin's rows, and one row moves it by at most
+`c·w/Ω`. A row far from the bin still counts, at weight `c/|e|` of a row.
+
+| quantity | under `"huber"` |
+|---|---|
+| `σ_t` | one per target: the exponentially weighted median of `\|y − m_t\|` over Φ⁻¹(3/4) = 0.6745, `m_t` the target's own location by the same recursion. A cut is there for a row far from the target's spread, which is the same row whichever feature bins it, so a scale per feature would cost a quantile sketch per pair and buy nothing |
+| a bin's first row | judged against `m_t`, the only location there is: winsorized at `m_t ± c` |
+| before `σ_t` exists | the target's first two rows: nothing is clipped, and the numbers are the mean's, as `huber` weighs no row down before its scale exists |
+| `bin_mean_y` | the location `m` |
+| `bin_n` | the rows' weight, as under the mean: a clipped row still counts as a row |
+| `bin_var_y` | the weighted mean square of `e` clipped at `±c`; the variance where nothing is clipped |
+| `split_gain` | read from those, so a spike bounds its pull on the curve and on the spread alike |
+| `bin_huber_delta=float("inf")` | nothing clipped: the mean, to the bit |
+
+This code puts one row of 1,000 into a bin of twenty rows near 0:
+
+```python
+import numpy as np
+import polars as pl
+import polars_online as po
+
+# Twenty rows near 0 in the middle bin, among rows at -5 and +5, then a spike there.
+rng = np.random.default_rng(3)
+i = np.arange(420)
+x = np.where(i % 21 == 0, 0.0, np.where(i % 2 == 0, -0.9, 0.9))
+y = np.where(x == 0.0, 0.0, 5.0 * np.sign(x)) + 0.01 * rng.standard_normal(420)
+pl.DataFrame({"x": np.append(x, 0.0), "y": np.append(y, 1000.0)}).write_parquet("thin.parquet")
+
+# The same bins under each statistic; print the middle bin.
+for stat in ["mean", "huber"]:
+    spec = po.spec.marginal("m", targets=["y"], features=["x"], half_life=float("inf"),
+                            bin_edges=[[-0.5, 0.5]], bin_stat=stat)
+    bank = po.ModelBank([spec])
+    bank.fit(pl.scan_parquet("thin.parquet"))
+    r = bank.marginal("m").row(0, named=True)
+    print(f"{stat}: middle bin {r['bin_mean_y'][1]:.2f} over {r['bin_n'][1]:.0f} rows")
+```
+
+```text
+mean: middle bin 47.62 over 21 rows
+huber: middle bin 0.51 over 21 rows
+```
+
+The mean takes the spike's twenty-first share, 47.6. The location moves by
+the cut over twenty, 0.51, and the count still takes the row.
+
+**The one pass lands on the converged batch estimate.** Against
+statsmodels' M-location of each bin (`estimate_location` with
+`HuberT(1.345)` at the target's MAD), on 20,000 rows in 16 bins with no
+decay, with spikes of 50 on a share of the rows, the largest gap over ten
+streams, in units of the target's scale:
+
+| spikes | `"huber"` against the batch estimate | the mean against it |
+|---|---|---|
+| none | 0.0006 | 0 |
+| 1% | 0.0010 | 0.45 |
+| 5% | 0.0016 | 1.51 |
+| 12% | 0.030 | 2.95 |
+
+The gap is the pass's: the first rows are weighed against a location and a
+scale still settling. On 2,000 rows, 125 to a bin, it was 0.013 at 1% and
+0.37 at 5%, the largest from a spike on a stream's second row. A spike among a target's first two rows, before it has a scale,
+counts in full, and leaves the bins it lands in as a mean's start does. The
+location steps over `Ω`, the weight its rows count for, rather than `W`:
+over `W`, a bin whose first row was a spike moves back at most `c·w/W` a row
+and stayed 15 to 19 scales off after 20,000 rows; over `Ω` it is back within
+a few dozen rows. A bin keeps a fifth more state, 40 bytes a cell in place of
+32, and each target up to 9 KB for its scale. Measured at 16 bins, a row
+took 0.75 to 0.9 times the mean's throughput at 100 and 10,000 features
+and one and ten targets, and the saved state was a fifth to a third larger.
+
 **Give a screen a `window_size` when a relation may flip sign**, because two
 regimes of opposite sign average to nothing over a long history. The window
 truncates every pair moment, so `corr`, `beta` and `t_stat` describe the

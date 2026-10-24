@@ -642,6 +642,7 @@ ENUM_PROBES: list[
     ("lasso.target_gaps", "lasso", {}, "model.target_gaps", "word"),
     ("lasso.window_budget", "lasso", {"window_size": 100.0}, "model.window_budget", "key"),
     ("marginal.bin_rule", "marginal", {"bins": 4}, "model.bin_rule", "word"),
+    ("marginal.bin_stat", "marginal", {"bins": 4}, "model.bin_stat", "word"),
     ("marginal.feature_moments", "marginal", {}, "model.feature_moments", "word"),
     ("marginal.serial_rule", "marginal", {"lags": [1]}, "model.serial_rule", "word"),
     ("marginal.shards", "marginal", {}, "model.shards", "word"),
@@ -743,15 +744,20 @@ def enum_values_section(cli: Path | None) -> list[str]:
 
         return refuse
 
-    # Each operator, and the three that look ahead under `reverse=True` (the
-    # form that replaced `rewm_*`, task 244), which check their words apart.
+    # Each operator, and the four that look ahead under `reverse=True` (the
+    # form that replaced `rewm_*`, task 244), which check their words apart;
+    # a quantile with its level (task 272 (d)).
     ops: list[tuple[str, str, dict[str, object]]] = [
-        (op, op, {}) for op in ("ewm_mean", "ewm_rate", "ewm_std", "ewm_sum", "ewm_var")
+        (op, op, {})
+        for op in ("ewm_mean", "ewm_quantile", "ewm_rate", "ewm_std", "ewm_sum", "ewm_var")
     ]
     ops += [
-        (f"{op}(reverse=True)", op, {"reverse": True}) for op in ("ewm_mean", "ewm_rate", "ewm_sum")
+        (f"{op}(reverse=True)", op, {"reverse": True})
+        for op in ("ewm_mean", "ewm_quantile", "ewm_rate", "ewm_sum")
     ]
     for label, op, extra in ops:
+        if op == "ewm_quantile":
+            extra = {**extra, "quantile": 0.5}
         for key in ("closed", "partial"):
             refuse = python_refusal(
                 getattr(po, op),

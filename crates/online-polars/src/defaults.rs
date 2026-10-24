@@ -114,11 +114,17 @@ fn derived(model: &AnyModel) -> Option<Value> {
                 "preavg_rows": c.window_for(),
             }))
         }
-        AnyModel::Marginal(m) => m
-            .cfg()
-            .bins
-            .as_ref()
-            .map(|b| json!({ "bin_budget": number(b.budget_mib_or_default()) })),
+        AnyModel::Marginal(m) => m.cfg().bins.as_ref().map(|b| match b.stat {
+            // The cut `"huber"` resolves to; the mean has none, and its
+            // specs' snapshot is what it was.
+            online_core::BinStat::Huber { delta } => json!({
+                "bin_budget": number(b.budget_mib_or_default()),
+                "bin_huber_delta": number(delta),
+            }),
+            online_core::BinStat::Mean => {
+                json!({ "bin_budget": number(b.budget_mib_or_default()) })
+            }
+        }),
         _ => None,
     }
 }

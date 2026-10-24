@@ -1232,6 +1232,19 @@ pub enum ModelKind {
         /// `bins` or `bin_edges`. Skipped when absent, as `lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_budget: Option<Num>,
+        /// What each bin's location is: `"mean"`, the default, or
+        /// `"huber"`, Huber's M-estimate of location learned in one pass,
+        /// with the cut at `bin_huber_delta` times the target's robust scale
+        /// (`online_core::BinStat`; docs/PLAN.md task 272 (c)). Needs `bins`
+        /// or `bin_edges`. Skipped when absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_stat: Option<String>,
+        /// The cut in units of the target's robust scale under
+        /// `bin_stat = "huber"`: above 0, default 1.345 (`huber`'s), and
+        /// `"inf"` clips nothing, which is the mean to the bit. Refused
+        /// under any other `bin_stat`. Skipped when absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_huber_delta: Option<Num>,
         /// Ranges of features to split the pair work into, run on the bank's
         /// pool a batch of rows at a time (docs/PLAN.md task 126): a count,
         /// or `"auto"` for as many as the width can keep busy. The numbers
@@ -4625,6 +4638,8 @@ impl Spec {
                 bin_warm_rows,
                 bin_edges,
                 bin_budget,
+                bin_stat,
+                bin_huber_delta,
                 window_size: window,
                 lags,
                 cross_lags,
@@ -4712,6 +4727,42 @@ impl Spec {
                         "spec {:?}: marginal bin_budget bounds the bins' memory and needs bins \
                          or bin_edges",
                         self.name
+                    ));
+                }
+                // Each bin's location (docs/PLAN.md task 272 (c)): a
+                // statistic of the bins, so it needs them; its cut belongs to
+                // `"huber"` alone, and a cut given under the mean was taken
+                // and ignored.
+                match bin_stat.as_deref() {
+                    None | Some("mean") | Some("huber") => {}
+                    Some(other) => {
+                        return Err(spec_words_refusal(
+                            &self.name,
+                            "bin_stat",
+                            &["mean", "huber"],
+                            other,
+                        ));
+                    }
+                }
+                if bin_stat.is_some() && bins.is_none() && bin_edges.is_none() {
+                    return Err(format!(
+                        "spec {:?}: marginal bin_stat is each bin's location and needs bins or \
+                         bin_edges",
+                        self.name
+                    ));
+                }
+                if bin_huber_delta.is_some() && bin_stat.as_deref() != Some("huber") {
+                    return Err(format!(
+                        "spec {:?}: marginal bin_huber_delta is the cut of bin_stat = \"huber\" \
+                         and applies only with it",
+                        self.name
+                    ));
+                }
+                if let Some(d) = bin_huber_delta.filter(|d| !positive(d.0)) {
+                    return Err(format!(
+                        "spec {:?}: marginal bin_huber_delta must be > 0 (\"inf\" is the mean), \
+                         got {}",
+                        self.name, d.0
                     ));
                 }
                 // The lag ring is sized before the first row: `[2^62]`

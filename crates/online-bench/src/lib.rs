@@ -55,6 +55,8 @@ pub const MODEL_CASES: &[&str] = &[
     "ftrl",
     "holt",
     "marginal",
+    // Its bins under Huber's location (docs/PLAN.md task 272 (c)).
+    "marginal_bins_huber",
     "ew_class",
     "deco",
     "hmm",
@@ -75,7 +77,12 @@ pub const SPAN_CASE: &str = "corrchange_monitor_w2500";
 /// The model cases whose model predicts nothing by design: `Step::pred` is
 /// empty on every row, so the native test holds each to the path it is
 /// named for by another reading (`tests/workloads.rs`).
-pub const SILENT_CASES: &[&str] = &["marginal", "rcov", "audit_continuous"];
+pub const SILENT_CASES: &[&str] = &[
+    "marginal",
+    "marginal_bins_huber",
+    "rcov",
+    "audit_continuous",
+];
 
 /// The clock cases: a float clock, and a temporal one on the exact path.
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
@@ -114,8 +121,15 @@ fn grouped(id: &str) -> bool {
 /// where nothing has left it yet and a mean cuts its oldest row's held
 /// interval at the window's edge on every row: the path that cost a mean
 /// O(rows in the window) a row where the sum costs O(1) (docs/PLAN.md task
-/// 270, M-2). The two are held within twice each other.
-pub const WINDOW_CASES: &[&str] = &["window_ewm_mean_w10k", "window_ewm_sum_w10k"];
+/// 270, M-2). The two are held within twice each other. And the quantile
+/// (task 272 (d)): over the same window, its sketches walked on every row,
+/// and with no window, the running sketch an EW-MAD reads.
+pub const WINDOW_CASES: &[&str] = &[
+    "window_ewm_mean_w10k",
+    "window_ewm_sum_w10k",
+    "window_ewm_quantile_w10k",
+    "window_ewm_quantile_running",
+];
 
 /// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
 /// 230 statistics through `Bank::fit_predict`, on a pool of one thread.
@@ -458,6 +472,20 @@ fn case_spec(id: &str) -> (Value, Shape) {
         }
         // Twenty features against one target, every pair's moments.
         "marginal" => (fit(json!({"type": "marginal"}), 20), Shape::Linear),
+        // The same, with four given bins a feature and each bin's location
+        // Huber's (docs/PLAN.md task 272 (c)): a cell's step, its judge
+        // and each target's scale on every row.
+        "marginal_bins_huber" => (
+            fit(
+                json!({
+                    "type": "marginal",
+                    "bin_edges": vec![vec![-0.5, 0.0, 0.5]; 20],
+                    "bin_stat": "huber",
+                }),
+                20,
+            ),
+            Shape::Linear,
+        ),
         "ew_class" => {
             let model = json!({
                 "type": "ew_class",
@@ -729,6 +757,12 @@ fn window_tree(id: &str) -> Value {
     let op = match id {
         "window_ewm_mean_w10k" => "ewm_mean",
         "window_ewm_sum_w10k" => "ewm_sum",
+        "window_ewm_quantile_w10k" => {
+            return json!(["ewm_quantile", ["col", "x0"], {"half_life": 1000.0, "window_size": 12_500.0, "quantile": 0.5}]);
+        }
+        "window_ewm_quantile_running" => {
+            return json!(["ewm_quantile", ["abs", ["col", "x0"]], {"half_life": 1000.0, "quantile": 0.5}]);
+        }
         other => panic!("no case {other:?}"),
     };
     json!([op, ["col", "x0"], {"half_life": 1000.0, "window_size": 12_500.0}])

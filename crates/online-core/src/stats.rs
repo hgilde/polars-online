@@ -194,6 +194,20 @@ impl EwQuantile {
         &self.levels
     }
 
+    /// The bucket a positive normal value lands in, and [`Self::bucket_value`]
+    /// the value it reports for one: the window operator's quantile sketch
+    /// (`online-polars`, `ewm_quantile`) buckets its values by these, so it
+    /// is within [`EW_QUANTILE_ALPHA`] of its quantile as this sketch is.
+    pub fn bucket_of(v: f64) -> i32 {
+        Self::index(v)
+    }
+
+    /// The value reported for bucket `k`: within [`EW_QUANTILE_ALPHA`],
+    /// relatively, of every value [`Self::bucket_of`] puts in it.
+    pub fn bucket_value(k: i32) -> f64 {
+        Self::representative(k)
+    }
+
     /// The bucket of a positive normal value.
     fn index(v: f64) -> i32 {
         let bits = v.to_bits();

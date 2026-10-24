@@ -190,6 +190,11 @@ what = "holt, level and trend of one column, half-life 1000: AnyModel::step_into
 [instructions.marginal]
 what = "marginal, 20 features against one target, half-life 1000: AnyModel::step_into, into one kept Step"
 
+# Task 272 (c): no budget until CI's first count, which
+# `scripts/budgets.py apply` writes.
+[instructions.marginal_bins_huber]
+what = "marginal, 20 features against one target, four given bins a feature under bin_stat huber, half-life 1000: AnyModel::step_into, into one kept Step"
+
 [instructions.ew_class]
 what = "ew_class, 20 features, 3 classes, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
 
@@ -219,6 +224,12 @@ what = "WindowsRun::feed of one frame, ewm_mean over a window of 12,500 clock un
 
 [instructions.window_ewm_sum_w10k]
 what = "WindowsRun::feed of one frame, ewm_sum over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window"
+
+[instructions.window_ewm_quantile_w10k]
+what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 over a window of 12,500 clock units (about 10,000 rows), half-life 1000, inside the stream's first window: the sketches walked an octave at a time on every row"
+
+[instructions.window_ewm_quantile_running]
+what = "WindowsRun::feed of one frame, ewm_quantile at 0.5 of abs(x0) with no window, half-life 1000: the running sketch an EW-MAD reads, one value added and the sketch walked on every row"
 
 # --- memory ----------------------------------------------------------------------
 # Bytes per row of every output field of every model at its fullest, over the

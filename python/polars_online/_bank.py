@@ -1660,6 +1660,10 @@ class ModelBank:
             response curve. One more entry than ``bin_edges``, since the outer two
             bins are open. A bin no row has landed in has ``bin_n = 0`` and null for
             the two moments.
+            Under ``bin_stat="huber"`` the mean is Huber's M-location of the bin's
+            rows and the variance the mean square of their deviations from it
+            clipped at the cut; the weight is the rows' either way
+            (:func:`polars_online.spec.marginal`).
         ``split_gain``, ``split_at``
             The fraction of the target's variance removed by the best single cut of
             the feature, and where that cut falls. Directly comparable with ``corr **

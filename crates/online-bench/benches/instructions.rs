@@ -62,6 +62,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::ftrl(args = ("ftrl"), setup = model_setup)]
 #[bench::holt(args = ("holt"), setup = model_setup)]
 #[bench::marginal(args = ("marginal"), setup = model_setup)]
+#[bench::marginal_bins_huber(args = ("marginal_bins_huber"), setup = model_setup)]
 #[bench::ew_class(args = ("ew_class"), setup = model_setup)]
 #[bench::deco(args = ("deco"), setup = model_setup)]
 #[bench::hmm(args = ("hmm"), setup = model_setup)]
@@ -103,6 +104,8 @@ fn bank(mut run: BankRun) -> BankRun {
 #[library_benchmark(config = counted_from("polars_online_budget_windows_rows"))]
 #[bench::window_ewm_mean_w10k(args = ("window_ewm_mean_w10k"), setup = windows_setup)]
 #[bench::window_ewm_sum_w10k(args = ("window_ewm_sum_w10k"), setup = windows_setup)]
+#[bench::window_ewm_quantile_w10k(args = ("window_ewm_quantile_w10k"), setup = windows_setup)]
+#[bench::window_ewm_quantile_running(args = ("window_ewm_quantile_running"), setup = windows_setup)]
 fn windows(mut run: WindowsCase) -> WindowsCase {
     black_box(polars_online_budget_windows_rows(black_box(&mut run)));
     run
