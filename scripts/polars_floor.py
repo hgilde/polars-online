@@ -1,6 +1,6 @@
 """The floor of the polars range ``pyproject.toml`` declares.
 
-Usage: python3 scripts/polars_floor.py      prints ``version=1.34.0``
+Usage: python3 scripts/polars_floor.py      prints ``version=1.37.0``
 
 ``release.yml``'s ``floor-polars`` leg and the canary's monthly job of the
 same name append that line to ``$GITHUB_OUTPUT``, then install exactly that

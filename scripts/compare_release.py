@@ -116,7 +116,7 @@ def same(a: pl.Series, b: pl.Series) -> bool:
 def _explode(s: pl.Series) -> pl.Series:
     """A list column's values, an empty list as one null: the keyword keeps
     that behaviour past polars 2.0, and py-polars before it, down to the
-    floor 1.34.0, has no keyword and already does it."""
+    floor 1.37.0, has no keyword and already does it."""
     try:
         return s.explode(empty_as_null=True)
     except TypeError:
