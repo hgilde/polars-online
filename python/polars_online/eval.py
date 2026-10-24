@@ -1099,8 +1099,12 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     enters as one term of a sum, never as a difference of running totals, so
     merging a thousand chunks loses about as much as merging two. Measured on
     100,000 rows at a level of 1e4 standard deviations, against the exact
-    sums in rational arithmetic: 2 chunks and 1,000 each merged within 3e-15
-    of the exact ``m2_y``, ``m2_pred`` and ``cov``, relative to each.
+    sums in rational arithmetic, over eight random streams: 2 chunks merged
+    within 6e-15 of the exact ``m2_y``, ``m2_pred`` and ``cov``, relative to
+    each, and 1,000 chunks within 9e-15. Most of that is each part's mean
+    rounded to a double at that level, before any merging. A difference of
+    running totals loses the level's square over the variance times the
+    rounding, about 1e-8 there.
 
     Returns a frame with the same columns. Keys present in one part and not
     another are carried through as they are; merging one frame returns it
