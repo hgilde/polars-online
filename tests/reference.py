@@ -25,6 +25,9 @@ section 9). Conventions, shared with the core:
 
 from __future__ import annotations
 
+import math
+import sys
+
 import numpy as np
 
 
@@ -974,6 +977,78 @@ def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps
     return "nudge", weight * 2.0 * h * (tau if r > 0.0 else tau - 1.0), None
 
 
+#: ``Φ⁻¹(3/4)``: ``median|e| / NORMAL_Q3`` is the normal's standard deviation.
+NORMAL_Q3 = 0.6744897501960817
+
+
+def _sketch_bucket(v: float) -> int:
+    """DDSketch's bucket of a positive normal value, as ``EwQuantile``
+    reads it from the float's bits: ``v = m · 2^e`` with ``m`` in ``[1, 2)``
+    lands in ``64 e + ⌊64 (m − 1)⌋``. ``math.frexp`` gives ``m/2`` and
+    ``e + 1``, exactly."""
+    m, e = math.frexp(v)
+    return 64 * (e - 1) + math.floor((2.0 * m - 1.0) * 64.0)
+
+
+def _sketch_value_at(y: float) -> float:
+    e = math.floor(y)
+    if e + 1023 >= 2047:
+        return math.inf
+    return (1.0 + (y - e)) * 2.0**e
+
+
+def _sketch_representative(k: int) -> float:
+    """The value a bucket reports: ``2 lo hi / (lo + hi)`` of its bounds,
+    the ratio taken an octave down where the top bound overflows."""
+    y0, y1 = k / 64.0, (k + 1) / 64.0
+    lo, hi = _sketch_value_at(y0), _sketch_value_at(y1)
+    r = lo / hi if math.isfinite(hi) else _sketch_value_at(y0 - 1.0) / _sketch_value_at(y1 - 1.0)
+    return lo * (2.0 / (1.0 + r))
+
+
+class EwMedian:
+    """The exponentially weighted median of non-negative values on
+    DDSketch's buckets (``stats.rs``'s ``EwQuantile`` at 0.5), written from
+    its definition: every bucket's weight decays by the row's factor, a value
+    adds its weight to its bucket, and the median is the representative of
+    the first bucket, ascending, at which the cumulative weight reaches half
+    the total. A value below the smallest normal float counts as 0; a weight
+    of 0 or a value that is not finite adds nothing. The core keeps the decay
+    as one factor beside the buckets; here each bucket is multiplied."""
+
+    def __init__(self) -> None:
+        self.w: dict[int | None, float] = {}
+
+    def age(self, lam: float) -> None:
+        for key in self.w:
+            self.w[key] *= lam
+
+    def add(self, v: float, weight: float) -> None:
+        if not (v >= 0.0 and math.isfinite(v) and weight > 0.0 and math.isfinite(weight)):
+            return
+        key = None if v < sys.float_info.min else _sketch_bucket(v)
+        self.w[key] = self.w.get(key, 0.0) + weight
+
+    def get(self) -> float | None:
+        total = sum(self.w.values())
+        if not total > 0.0:
+            return None
+        acc = 0.0
+        for key in sorted(self.w, key=lambda k: -math.inf if k is None else k):
+            acc += self.w[key]
+            if acc >= 0.5 * total:
+                return 0.0 if key is None else _sketch_representative(key)
+        return None
+
+    def scale(self) -> float | None:
+        """The MAD scale, ``median / Φ⁻¹(3/4)``, once it is above 0."""
+        q = self.get()
+        if q is None:
+            return None
+        s = q / NORMAL_Q3
+        return s if 0.0 < s < math.inf else None
+
+
 def robust_ref(
     X: np.ndarray,
     Y: np.ndarray,
@@ -990,8 +1065,16 @@ def robust_ref(
     fit_intercept: bool = True,
     min_weight: float | None = None,
     gap_cap: float = np.inf,
+    huber_scale: str = "mad",
+    huber_scale_half_life: float | None = None,
 ) -> dict[str, np.ndarray]:
     """Huber / quantile oracle (docs/PLAN.md section 4.5).
+
+    Huber's cut is drawn in ``huber_scale``'s scale: ``"mad"``, an
+    :class:`EwMedian` of ``|e|`` over ``Φ⁻¹(3/4)`` per target, fed and aged as
+    ``sigma2_j`` is, or ``"rms"``, ``sqrt(sigma2_j)``; both age on
+    ``huber_scale_half_life``, the model's ``half_life`` unless given (task
+    271). The quantile band reads ``sigma2_j`` on the model's clock.
 
     Both losses read each row's *prior* residual, so both stay out-of-sample;
     what they do with it is :func:`_row_update`'s. Because the weights are per
@@ -1049,6 +1132,7 @@ def robust_ref(
             "nobs": np.zeros(m),
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
+            "mad": [EwMedian() for _ in range(m)],
             # EW count of observations under the RAW row weights: the
             # accumulators are scaled by the IRLS weights, the count is not.
             "w_raw": 0.0,
@@ -1067,6 +1151,8 @@ def robust_ref(
         d = min(dclock[i] + st["pending"], gap_cap)
         st["pending"] = 0.0
         lam = 0.5 ** (d / half_life)
+        lam_s = lam if huber_scale_half_life is None else 0.5 ** (d / huber_scale_half_life)
+        mad = loss == "huber" and huber_scale == "mad"
 
         weight_sum[i] = st["w_raw"]
         ready = st["w_raw"] >= min_weight and st["beta"] is not None
@@ -1086,8 +1172,10 @@ def robust_ref(
         for j in range(m):
             present = lam * st["wobs"][j]
             rows = lam * st["nobs"][j]
-            # sigma2's weight ages on every row the model sees (S13, N6).
-            st["wsig"][j] *= lam
+            # sigma2's weight ages on every row the model sees (S13, N6), on
+            # the scale's clock, and so does the MAD's sketch.
+            st["wsig"][j] *= lam_s
+            st["mad"][j].age(lam_s)
             if np.isnan(Y[i, j]):
                 st["W"][j] *= lam
                 st["wj"][j] *= lam
@@ -1096,9 +1184,11 @@ def robust_ref(
                 continue
             st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
             st["nobs"][j] = rows + (1.0 if w[i] > 0.0 else 0.0)
-            # The residual scale exists once sigma2 is finite and above 0.
+            # The residual scale exists once it is finite and above 0.
             s2 = st["sig2"][j]
             scale = float(np.sqrt(s2)) if 0.0 < s2 < np.inf else None
+            if mad:
+                scale = st["mad"][j].scale()
             aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
             aged_rows = aged_wj * (rows / present) if present > 0.0 else 0.0
             kind, value, target = _row_update(
@@ -1161,6 +1251,7 @@ def robust_ref(
                 ws_new = st["wsig"][j] + w[i]
                 st["sig2"][j] = (st["wsig"][j] * st["sig2"][j] + w[i] * rr * rr) / ws_new
                 st["wsig"][j] = ws_new
+                st["mad"][j].add(abs(rr), w[i])
 
         st["w_raw"] = lam * st["w_raw"] + w[i]
 

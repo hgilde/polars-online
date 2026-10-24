@@ -50,6 +50,8 @@
 //! rows from the one where target `j`'s own weight reaches its own
 //! `min_weight` (`LassoCfg::target_min_weight`; review 2026-10-05, CA3).
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
@@ -562,8 +564,12 @@ impl Lasso {
     /// `this_row` says whether the row the step is on, whose error the
     /// selection has folded in and the accumulators have yet to learn, is
     /// one of the target's rows of positive weight.
-    fn window_sel_err(&self, j: usize, this_row: bool) -> Option<Vec<f64>> {
-        let live = || Some(self.sel_err[j].clone());
+    ///
+    /// The live errors are lent, not copied: the choice reads them once for
+    /// an argmin, and a copy was an allocation per target per row (task
+    /// 270, C-2).
+    fn window_sel_err(&self, j: usize, this_row: bool) -> Option<Cow<'_, [f64]>> {
+        let live = || Some(Cow::Borrowed(self.sel_err[j].as_slice()));
         let Some(win) = self.win.as_ref() else {
             return live();
         };
@@ -589,7 +595,7 @@ impl Lasso {
             &old.sel_err[j],
             f,
         )
-        .map(|(_w, e)| e.into_iter().map(|v| v.max(0.0)).collect())
+        .map(|(_w, e)| Cow::Owned(e.into_iter().map(|v| v.max(0.0)).collect()))
     }
 
     /// One Gram's statistics in correlation form, for the targets `readers`
@@ -632,16 +638,18 @@ impl Lasso {
         }
         // Centered co-moments come straight from the accumulator; deriving them
         // as raw - mean*mean would reintroduce the cancellation the Welford
-        // representation exists to avoid.
-        let mut cov = vec![0.0; k * k];
+        // representation exists to avoid. Scaled in place into the
+        // correlations below: each entry reads only itself and the scales,
+        // so a second `k × k` matrix a solve was not needed (task 270, C-2).
+        let mut c = vec![0.0; k * k];
         for i in 0..k {
             for j in 0..k {
-                cov[i * k + j] = acc.cov(i + off, j + off);
+                c[i * k + j] = acc.cov(i + off, j + off);
             }
         }
         let s: Vec<f64> = (0..k)
             .map(|i| {
-                let v = cov[i * k + i];
+                let v = c[i * k + i];
                 if crate::variance_is_usable(v, acc.raw(i + off, i + off)) {
                     v.sqrt()
                 } else {
@@ -649,11 +657,11 @@ impl Lasso {
                 }
             })
             .collect();
-        let mut c = vec![0.0; k * k];
         for i in 0..k {
             for j in 0..k {
+                let cov = c[i * k + j];
                 c[i * k + j] = if s[i] > 0.0 && s[j] > 0.0 {
-                    cov[i * k + j] / (s[i] * s[j])
+                    cov / (s[i] * s[j])
                 } else {
                     f64::from(i == j)
                 };

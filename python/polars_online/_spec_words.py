@@ -140,8 +140,10 @@ _INF_OK: dict[str, frozenset[str]] = {
     "ewridge": frozenset({"long_half_life"}),
     "lasso": frozenset({"select_half_life"}),
     "kalman": frozenset({"coef_half_life", "revert_half_life"}),
-    "huber": frozenset({"huber_delta"}),
-    "sgd": frozenset({"clip_gradient", "coef_min", "coef_max", "huber_delta"}),
+    "huber": frozenset({"huber_delta", "huber_scale_half_life"}),
+    "sgd": frozenset(
+        {"clip_gradient", "coef_min", "coef_max", "huber_delta", "huber_scale_half_life"}
+    ),
     "pa": frozenset({"c", "coef_min", "coef_max"}),
     "holt": frozenset({"trend_half_life"}),
     # No bound on the bins' memory (docs/PLAN.md task 131).

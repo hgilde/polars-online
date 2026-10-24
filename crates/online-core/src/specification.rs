@@ -114,6 +114,10 @@ pub struct Specification {
     het_hac: Option<crate::Sandwich>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reset_hac: Option<crate::Sandwich>,
+    /// The row Breusch and Pagan's moments take, `(x, e²)`, kept so a row
+    /// allocates nothing (task 270, F-3): not state.
+    #[serde(skip)]
+    row: crate::ewcov::Scratch,
 }
 
 impl Specification {
@@ -135,6 +139,7 @@ impl Specification {
             origin: None,
             het_hac: (nw > 0).then(|| crate::Sandwich::new(k, true, nw)),
             reset_hac: (nw > 0).then(|| crate::Sandwich::new(3, true, nw)),
+            row: Default::default(),
         }
     }
 
@@ -242,10 +247,11 @@ impl Specification {
             };
             h.update(&[q, q * q, q * q * q], r, lam, w);
         }
-        let mut row = Vec::with_capacity(x.len() + 1);
+        let row = &mut self.row.0;
+        row.clear();
         row.extend_from_slice(x);
         row.push(e * e);
-        self.het.update(&row, lam, w);
+        self.het.update(row, lam, w);
         self.reset.update(&[q, q * q, q * q * q, e], lam, w);
     }
 

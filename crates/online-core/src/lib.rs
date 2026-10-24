@@ -173,7 +173,7 @@ pub use rcov::{
     psi1, psi2,
 };
 pub use rls::{Rls, RlsCfg};
-pub use robust::{Robust, RobustCfg, RobustLoss};
+pub use robust::{HuberScale, NORMAL_Q3, Robust, RobustCfg, RobustLoss};
 pub use runs::Runs;
 pub use sandwich::Sandwich;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
@@ -678,7 +678,19 @@ pub use window::{
 ///   rows, so the loader is the field's default, and the rows after it
 ///   are folded as a suffix of the block. Schema 61's fixtures are kept
 ///   (`tests/state_fixtures/v61/`).
-pub const SCHEMA_VERSION: u32 = 62;
+/// - 63 (2026-10-23, task 271): `huber` and `sgd(loss="huber")` draw the
+///   Huber cut in a scale the configuration names, `huber_scale` (`"mad"`,
+///   the EW median of `|e|` over `Φ⁻¹(3/4)`, or `"rms"`, the EW root mean
+///   square, the one scale there was), aged on `huber_scale_decay` (`None`:
+///   the model's decay). Under the MAD each target keeps an `EwQuantile` of
+///   `|e|` at 0.5 (`mad`, empty under the RMS). A state of 62 has neither
+///   field and was fitted under the RMS, so the loader is the fields'
+///   defaults: `huber_scale` defaults to `"rms"` on load
+///   (`HuberScale::of_a_state_before_63`), where a spec's default is
+///   `"mad"`, the decay to the model's and the sketches to none, and the
+///   state goes on to the bit. Schema 62's fixtures are kept
+///   (`tests/state_fixtures/v62/`).
+pub const SCHEMA_VERSION: u32 = 63;
 
 /// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
 /// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
@@ -704,7 +716,8 @@ pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
 ///
 /// **61 since review round 7 and task 244** (2026-10-11), 1.0's schema,
 /// where it stays: schema 62 (task 257) loads a state of 61 through its
-/// loader, held to schema 61's kept fixtures. Before that: a quantile
+/// loader, held to schema 61's kept fixtures, and schema 63 (task 271) a
+/// state of 62 through its own, held to schema 62's. Before that: a quantile
 /// fit's residuals' lag products under a horizon (A-2), and `ew_cov`'s
 /// `bias`; a state from before 61 is refused by its number, and the
 /// fixtures are regenerated at 61. **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums

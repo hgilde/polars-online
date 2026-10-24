@@ -65,229 +65,13 @@ pub use names::*;
 /// in rustc's float formatting, which has happened historically) fails a test
 /// instead of silently renaming users' columns.
 #[cfg(test)]
-mod kinds_tests {
-    use super::ModelKind;
-
-    /// serde's unknown-variant error names every variant the enum has -- the
-    /// one place that list exists outside the enum itself.
-    #[test]
-    fn kinds_lists_every_variant_in_order() {
-        let err = serde_json::from_str::<ModelKind>(r#"{"type": "nope"}"#)
-            .unwrap_err()
-            .to_string();
-        let quoted: Vec<&str> = err.split('`').skip(1).step_by(2).collect();
-        assert_eq!(quoted[0], "nope", "{err}");
-        assert_eq!(
-            &quoted[1..],
-            ModelKind::KINDS,
-            "ModelKind::KINDS is out of date"
-        );
-    }
-
-    /// A key no spec has -- a typo in a TOML -- is refused, naming it and the
-    /// keys there are, rather than left at its default without a word. Both
-    /// levels: the spec's own keys and the model's.
-    #[test]
-    fn an_unknown_key_is_refused_at_either_level() {
-        let spec = serde_json::from_str::<super::Spec>(
-            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
-                "features": ["x"], "halflfe": 10}"#,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            spec.contains("unknown field `halflfe`") && spec.contains("`half_life`"),
-            "{spec}"
-        );
-        let model = serde_json::from_str::<ModelKind>(r#"{"type": "ewridge", "rigde": 0.1}"#)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            model.contains("unknown field `rigde`") && model.contains("`ridge`"),
-            "{model}"
-        );
-    }
-
-    /// Task 144: an old name is refused naming the new one, from JSON and
-    /// from TOML, at the spec's level and the model's.
-    #[test]
-    fn an_old_name_is_refused_naming_the_new_one() {
-        let json = serde_json::from_str::<super::Spec>(
-            r#"{"name": "m", "model": {"type": "ewridge"}, "targets": ["y"],
-                "features": ["x"], "halflife": 10}"#,
-        )
-        .unwrap_err()
-        .to_string();
-        let json = super::name_renamed(&json);
-        assert!(json.contains("halflife was renamed half_life"), "{json}");
-        let toml = toml::from_str::<super::Spec>(
-            "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x\"]\nhalf_life = 10.0\n\
-             [model]\ntype = \"ewridge\"\nwindow = 10.0\n",
-        )
-        .unwrap_err()
-        .to_string();
-        let toml = super::name_renamed(&toml);
-        assert!(toml.contains("window was renamed window_size"), "{toml}");
-        for (old, new) in super::RENAMED {
-            let msg = super::name_renamed(&format!("unknown field `{old}`, expected one of `x`"));
-            assert!(msg.contains(&format!("{old} was renamed {new}")), "{msg}");
-        }
-        assert_eq!(
-            super::name_renamed("unknown field `rigde`"),
-            "unknown field `rigde`"
-        );
-        // `rls`'s `ridge` is `delta` (task 195, N11): named where the model
-        // takes `delta`, and not where another model refuses a `ridge` it
-        // never had.
-        let rls = serde_json::from_str::<super::Spec>(
-            r#"{"name": "m", "model": {"type": "rls", "ridge": 1.0}, "targets": ["y"],
-                "features": ["x"], "half_life": 10}"#,
-        )
-        .unwrap_err()
-        .to_string();
-        let rls = super::name_renamed(&rls);
-        assert!(rls.contains("ridge was renamed delta"), "{rls}");
-        let sgd = serde_json::from_str::<super::Spec>(
-            r#"{"name": "m", "model": {"type": "sgd", "ridge": 1.0}, "targets": ["y"],
-                "features": ["x"], "half_life": 10}"#,
-        )
-        .unwrap_err()
-        .to_string();
-        let sgd = super::name_renamed(&sgd);
-        assert!(
-            sgd.contains("unknown field `ridge`") && !sgd.contains("renamed"),
-            "{sgd}"
-        );
-    }
-}
+mod kinds_tests;
 
 #[cfg(test)]
-mod fill_tests {
-    use super::Spec;
-
-    fn spec(json: &str) -> Spec {
-        serde_json::from_str(json).unwrap()
-    }
-
-    /// A column a model reads from the targets slot, named and not listed:
-    /// `fill_defaults` fills `targets` with it, as the builders write them,
-    /// not with `features[0]`, which was then read as the hazard or the
-    /// exogenous series (review 2026-09-12, C20).
-    #[test]
-    fn a_named_hazard_or_exogenous_column_fills_the_targets() {
-        for (model, col) in [
-            (r#"{"type": "bocpd", "hazard_col": "h"}"#, "h"),
-            (
-                r#"{"type": "hmm", "n_components": 2, "precision_prior": 0.1, "exog_tvtp": "z"}"#,
-                "z",
-            ),
-        ] {
-            let mut s = spec(&format!(
-                r#"{{"name": "m", "model": {model}, "features": ["x"]}}"#
-            ));
-            s.fill_defaults();
-            assert_eq!(*s.targets, vec![col.to_string()], "{model}");
-        }
-    }
-
-    /// And a spec that lists another column in that slot is refused, naming
-    /// both: the model reads `targets[0]` whatever `hazard_col` says. The
-    /// message prints the names (review 2026-09-26, D5: `Targets`' derived
-    /// `Debug` printed every field).
-    #[test]
-    fn a_hazard_column_beside_another_target_is_refused() {
-        let s = spec(
-            r#"{"name": "m", "model": {"type": "bocpd", "hazard_col": "h"},
-                "targets": ["y"], "features": ["x"]}"#,
-        );
-        let err = s.validate().unwrap_err();
-        assert!(err.contains("hazard_col") && err.contains("\"h\""), "{err}");
-        assert!(err.contains("(got [\"y\"])"), "{err}");
-    }
-
-    /// The slot is the column itself: a table named like the hazard but
-    /// reading another column is refused, and so is the hazard column under
-    /// another name, for `bocpd` and `hmm` alike (review 2026-09-26, D4: the
-    /// names were compared, and the first put column `z` in the slot).
-    #[test]
-    fn a_renamed_table_cannot_smuggle_another_column_into_the_hazard_slot() {
-        // `hmm` wants its `n_components`, a prior, the tvtp coefficients and a
-        // half-life, which `bocpd` refuses.
-        for (model, key, top) in [
-            ("\"bocpd\"", "hazard_col", ""),
-            (
-                "\"hmm\", \"n_components\": 2, \"precision_prior\": 1.0, \
-                 \"tvtp_coef\": [[0.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5]]",
-                "exog_tvtp",
-                ", \"half_life\": 20.0",
-            ),
-        ] {
-            for targets in [
-                r#"[{"column": "z", "name": "h"}]"#,
-                r#"[{"column": "h", "name": "hz"}]"#,
-            ] {
-                let s = spec(&format!(
-                    r#"{{"name": "m", "model": {{"type": {model}, "{key}": "h"}},
-                        "targets": {targets}, "features": ["x"]{top}}}"#
-                ));
-                let err = s.validate().unwrap_err();
-                assert!(
-                    err.contains(key) && err.contains("the column itself"),
-                    "{err}"
-                );
-            }
-            let s = spec(&format!(
-                r#"{{"name": "m", "model": {{"type": {model}, "{key}": "h"}},
-                    "targets": ["h"], "features": ["x"]{top}}}"#
-            ));
-            assert!(
-                s.validate().is_ok(),
-                "{model}: the column itself: {:?}",
-                s.validate()
-            );
-        }
-    }
-}
+mod fill_tests;
 
 #[cfg(test)]
-mod num_label_tests {
-    use super::num_label;
-
-    #[test]
-    fn ordinary_values_render_exactly_as_before() {
-        // The compact form must not change any name the suite already pins.
-        assert_eq!(num_label(1e-6), "0.000001");
-        assert_eq!(num_label(1e-7 * 10.0), "0.000001");
-        assert_eq!(num_label(0.1), "0.1");
-        assert_eq!(num_label(0.5), "0.5");
-        assert_eq!(num_label(100.0), "100");
-        assert_eq!(num_label(250.5), "250.5");
-        assert_eq!(num_label(3200.0), "3200");
-        assert_eq!(num_label(0.0), "0");
-        // One number, one name (review 2026-10-06, PC10).
-        assert_eq!(num_label(-0.0), "0");
-    }
-
-    #[test]
-    fn extreme_values_render_compactly() {
-        // The bug this exists for: 1e-300 was a 311-character field name.
-        assert_eq!(num_label(1e-300), "1e-300");
-        assert_eq!(num_label(2.5e8), "2.5e8");
-        assert_eq!(num_label(1e7), "1e7");
-        assert_eq!(num_label(1e9), "1e9");
-        assert_eq!(num_label(-1e-300), "-1e-300");
-        assert!(num_label(1e-300).len() < 10);
-    }
-
-    #[test]
-    fn the_thresholds_are_where_the_doc_says() {
-        // Just inside: plain. Just outside: scientific.
-        assert_eq!(num_label(1e-6), "0.000001");
-        assert_eq!(num_label(9.999e-7), "9.999e-7");
-        assert_eq!(num_label(9_999_999.0), "9999999");
-        assert_eq!(num_label(1e7), "1e7");
-    }
-}
+mod num_label_tests;
 
 pub fn num_label(v: f64) -> String {
     // `-0.0` is `0.0` (`==`), so one name: a ridge grid of the two was two
@@ -312,6 +96,29 @@ pub fn num_label(v: f64) -> String {
 /// `v > 0` as a named predicate, so that `!positive(v)` refuses NaN too (a
 /// plain `v <= 0.0` lets it through, and NaN in any of these parameters is
 /// a state that never washes out).
+/// The words a Huber scale takes, the default first (docs/PLAN.md task 271).
+pub const HUBER_SCALES: [&str; 2] = ["mad", "rms"];
+
+/// `huber_scale` one of [`HUBER_SCALES`] and `huber_scale_half_life` above
+/// 0, `"inf"` included (no forgetting), as `trend_half_life` is held.
+fn check_huber_scale(
+    name: &str,
+    scale: Option<&str>,
+    half_life: Option<&Span>,
+) -> Result<(), String> {
+    if let Some(w) = scale
+        && !HUBER_SCALES.contains(&w)
+    {
+        return Err(spec_words_refusal(name, "huber_scale", &HUBER_SCALES, w));
+    }
+    if let Some(h) = half_life.filter(|h| h.value() <= 0.0 || h.value().is_nan()) {
+        return Err(format!(
+            "spec {name:?}: huber_scale_half_life must be > 0 (\"inf\" forgets no residual), got {h}"
+        ));
+    }
+    Ok(())
+}
+
 fn positive(v: f64) -> bool {
     v > 0.0
 }
@@ -853,12 +660,24 @@ pub enum ModelKind {
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {
-        /// Cut point in units of the EW residual std. Default 1.345, the
+        /// Cut point in units of the residual scale. Default 1.345, the
         /// constant of 95% efficiency at the normal (Huber 1981), filled
         /// where the model is built ([`crate::build_models`]); `"inf"` cuts
         /// nothing, which is least squares.
         #[serde(default)]
         huber_delta: Option<Num>,
+        /// The scale the cut is drawn in, per target: `"mad"` (the
+        /// default), the EW median of `|e|` over `Φ⁻¹(3/4)`, or `"rms"`,
+        /// the EW root mean square, which one wild row sets
+        /// ([`online_core::HuberScale`]; docs/PLAN.md task 271). Filled
+        /// where the model is built. Skipped when absent, so a spec written
+        /// before it serializes as it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale: Option<String>,
+        /// The scale's own half-life, in clock units; default the spec's
+        /// `half_life` (or `lam`). `"inf"` forgets no residual.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale_half_life: Option<Span>,
         #[serde(default)]
         ridge: Option<f64>,
         #[serde(default)]
@@ -999,7 +818,7 @@ pub enum ModelKind {
         /// "poisson" or "logistic".
         #[serde(default)]
         loss: Option<String>,
-        /// Huber cut, in units of the target's EW residual std, as
+        /// Huber cut, in units of the target's residual scale, as
         /// `huber`'s; default 1.345. `"inf"` clips nothing, which is the
         /// squared loss. The residual's std, where `eps` is in the target's
         /// own: a clipped gradient keeps learning while early residuals
@@ -1007,6 +826,15 @@ pub enum ModelKind {
         /// (docs/PLAN.md task 202).
         #[serde(default)]
         huber_delta: Option<Num>,
+        /// The scale the Huber cut is drawn in, `huber`'s: `"mad"` (the
+        /// default under `loss = "huber"`) or `"rms"`. Refused under any
+        /// other loss.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale: Option<String>,
+        /// The Huber scale's own half-life, `huber`'s; default the spec's
+        /// `half_life`. Refused under any other loss.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale_half_life: Option<Span>,
         #[serde(default)]
         quantile: Option<f64>,
         /// Half-width of the insensitive tube, in units of the target's
@@ -1865,6 +1693,14 @@ impl ModelKind {
         }
     }
 
+    /// Whether a stream of this kind keeps a window's ring: a model's, or a
+    /// spread's cut from it, both of which need a `window_size`. Without one
+    /// the window pre-pass has nothing to replay (task 270, G-1).
+    pub fn keeps_window_ring(&self) -> bool {
+        self.window_parts()
+            .is_some_and(|(window, _)| window.is_some())
+    }
+
     /// A windowed kind's `window_size` and `window_budget`; `None` for a kind with
     /// no window to bound.
     pub fn window_parts(&self) -> Option<(Option<f64>, Option<WindowBudgetSpec>)> {
@@ -2153,10 +1989,11 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
         ],
     ),
     ("kalman", &["coef_half_life", "revert_half_life"]),
-    ("huber", &["solve_every"]),
+    ("huber", &["solve_every", "huber_scale_half_life"]),
     ("quantile", &["solve_every"]),
     ("ew_cov", &["pca_every", "window_size", "snapshot_every"]),
     ("holt", &["trend_half_life"]),
+    ("sgd", &["huber_scale_half_life"]),
     ("micro", &["prune_every"]),
     ("ew_class", &["window_size", "snapshot_every"]),
     ("marginal", &["window_size", "snapshot_every"]),
@@ -2421,8 +2258,30 @@ impl Spec {
                 put_list(&mut out, "coef_half_life", coef_half_life.as_ref());
                 put_list(&mut out, "revert_half_life", revert_half_life.as_ref());
             }
-            ModelKind::Huber { solve_every, .. } | ModelKind::Quantile { solve_every, .. } => {
+            ModelKind::Huber {
+                solve_every,
+                huber_scale_half_life,
+                ..
+            } => {
                 put(&mut out, "solve_every", solve_every.as_ref());
+                put(
+                    &mut out,
+                    "huber_scale_half_life",
+                    huber_scale_half_life.as_ref(),
+                );
+            }
+            ModelKind::Quantile { solve_every, .. } => {
+                put(&mut out, "solve_every", solve_every.as_ref());
+            }
+            ModelKind::Sgd {
+                huber_scale_half_life,
+                ..
+            } => {
+                put(
+                    &mut out,
+                    "huber_scale_half_life",
+                    huber_scale_half_life.as_ref(),
+                );
             }
             ModelKind::EwCov {
                 pca_every,
@@ -4285,6 +4144,8 @@ impl Spec {
             ModelKind::Sgd {
                 loss,
                 huber_delta,
+                huber_scale,
+                huber_scale_half_life,
                 quantile,
                 eps,
                 learning_rate,
@@ -4293,6 +4154,11 @@ impl Spec {
                 strict_binary,
                 ..
             } => {
+                check_huber_scale(
+                    &self.name,
+                    huber_scale.as_deref(),
+                    huber_scale_half_life.as_ref(),
+                )?;
                 if let Some(l) = loss {
                     const OK: [&str; 6] = [
                         "squared",
@@ -4341,6 +4207,14 @@ impl Spec {
                 let schedule = schedule.as_deref().unwrap_or("constant");
                 for (key, given, what, owner, chosen) in [
                     ("huber_delta", huber_delta.is_some(), "loss", "huber", loss),
+                    ("huber_scale", huber_scale.is_some(), "loss", "huber", loss),
+                    (
+                        "huber_scale_half_life",
+                        huber_scale_half_life.is_some(),
+                        "loss",
+                        "huber",
+                        loss,
+                    ),
                     ("quantile", quantile.is_some(), "loss", "quantile", loss),
                     ("eps", eps.is_some(), "loss", "epsilon_insensitive", loss),
                     ("strict_binary", *strict_binary, "loss", "logistic", loss),
@@ -4991,6 +4865,8 @@ impl Spec {
             }
             ModelKind::Huber {
                 huber_delta,
+                huber_scale,
+                huber_scale_half_life,
                 ridge,
                 solve_every,
                 ..
@@ -5001,6 +4877,11 @@ impl Spec {
                         self.name, d.0
                     ));
                 }
+                check_huber_scale(
+                    &self.name,
+                    huber_scale.as_deref(),
+                    huber_scale_half_life.as_ref(),
+                )?;
                 check_ridge(&self.name, *ridge)?;
                 check_solve_every(&self.name, solve_every.as_ref())?;
             }
@@ -5338,6 +5219,9 @@ mod clock_tests;
 
 #[cfg(test)]
 mod sgd_tests;
+
+#[cfg(test)]
+mod huber_scale_tests;
 
 #[cfg(test)]
 mod pa_tests;

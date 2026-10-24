@@ -1196,7 +1196,10 @@ impl Marginal {
     /// `ew_cov(lags=)`, which `lagged_pair_moments_are_ew_covs_to_the_bit`
     /// checks.
     fn learn_lags(&mut self, x: &[f64], y: &[Option<f64>], lam: f64, w: f64) {
-        if w < 0.0 {
+        // A row of weight 0 steps every lagged moment by `a = 1`, `b = 0`
+        // or not at all, which moves none (task 270, E-3); the ring is
+        // pushed elsewhere, by rows that teach.
+        if w <= 0.0 {
             return;
         }
         let p = self.cfg.n_features;
@@ -1276,6 +1279,12 @@ impl Marginal {
                 .enumerate()
                 .map(|(t, &yt)| self.advance_target(t, yt, lam, w))
                 .collect();
+            if w == 0.0 {
+                // The row's own mix is `a = 1`, `b = 0` where the model has
+                // weight, and no target's pairs move (`advance_target`): the
+                // feature moments would be stepped by nothing.
+                return;
+            }
             let mut sxy: Vec<&mut [f64]> = self.sxy.chunks_exact_mut(p).collect();
             pair_kernel_shared(
                 shared_mix(lam, w_before, w),
@@ -1427,7 +1436,14 @@ impl Marginal {
         }
         let r = self.defer.n;
         if self.cfg.shared() {
-            self.defer.shared.push(shared_mix(lam, self.w_sum, w));
+            // A row of weight 0 steps the feature moments by nothing
+            // (`learn`), so it holds no mix for them.
+            let mix = if w == 0.0 {
+                None
+            } else {
+                shared_mix(lam, self.w_sum, w)
+            };
+            self.defer.shared.push(mix);
         }
         self.w_sum = lam * self.w_sum + w;
         if let Some(lag) = self.lag.as_ref() {
@@ -1673,6 +1689,16 @@ impl Marginal {
             // gap while the model's does not.
             self.wt[t] = 0.0;
             self.qt[t] = 0.0;
+            return None;
+        }
+        if w == 0.0 {
+            // A row of weight 0 with weight behind it: the mix is `a = 1`,
+            // `b = 0`, which moves no moment of the target's or of its pairs
+            // -- each is `1·s + 0·…` -- so only the weights age, as they
+            // would below. The pair pass it skips was most of a learned
+            // row's cost at width (task 270, E-3).
+            self.wt[t] = w_new;
+            self.qt[t] *= lam * lam;
             return None;
         }
         let a = lam * self.wt[t] / w_new;

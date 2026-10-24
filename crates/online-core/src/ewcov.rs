@@ -75,7 +75,7 @@ fn rank_one_rows(c: &mut [f64], k: usize, d: &[f64], a: f64, b: f64) {
 /// moments are the same accumulator whatever is left in their scratch, and a
 /// state file carries none of it.
 #[derive(Debug, Clone, Default)]
-struct Scratch(Vec<f64>);
+pub(crate) struct Scratch(pub(crate) Vec<f64>);
 
 impl PartialEq for Scratch {
     fn eq(&self, _: &Self) -> bool {
@@ -1893,6 +1893,36 @@ impl EwCovModel {
     /// The Mahalanobis distance of `x` from `cov`'s moments in the metric of
     /// `scale·(C + s·prior·I)`: the co-moments and their ridge scaled
     /// together, so the squared distance is divided by `scale`.
+    /// [`Self::mahal_of`] from the precision matrix `p` of `cov`
+    /// ([`EwCov::precision`]): `d² = δᵀPδ / scale`. The same quantity by
+    /// the same factorization, its inverse formed and read where `mahal_of`
+    /// solves against the row; the two agree to rounding.
+    fn mahal_by(cov: &EwCov, x: &[f64], p: &[f64], scale: f64) -> f64 {
+        let k = cov.k();
+        let delta: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, &xi)| cov.deviation(i, xi))
+            .collect();
+        let quad: f64 = delta
+            .iter()
+            .enumerate()
+            .map(|(i, di)| {
+                di * p[i * k..(i + 1) * k]
+                    .iter()
+                    .zip(&delta)
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>()
+            })
+            .sum();
+        let d2 = quad / scale;
+        if d2.is_finite() {
+            d2.max(0.0).sqrt()
+        } else {
+            f64::NAN
+        }
+    }
+
     fn mahal_of(cov: &EwCov, x: &[f64], scale: f64) -> f64 {
         if !cov.has_precision_prior() {
             return f64::NAN;
@@ -2120,7 +2150,13 @@ impl EwCovModel {
                         }
                     }
                 }
-                EwCovStat::Mahal => out.push(Self::mahal_of(cov, x, scale)),
+                // From the precision in hand where the partial correlations
+                // asked for it: the same matrix factorized again was a
+                // second `k³` a row (task 270, A-2).
+                EwCovStat::Mahal => out.push(match &precision {
+                    Some(p) => Self::mahal_by(cov, x, p, scale),
+                    None => Self::mahal_of(cov, x, scale),
+                }),
                 EwCovStat::LagCorr => {
                     // `C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`: the lagged
                     // covariance over the contemporaneous standard
@@ -3098,6 +3134,73 @@ mod tests {
         let out = crate::OnlineModel::predict(&m, &[6.0, -4.0], 1.0).pred;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], d);
+    }
+
+    /// `mahal` beside `partial_corr` is read from the precision matrix the
+    /// partial correlations factorized, where it used to factorize the same
+    /// matrix again (task 270, A-2): the distance agrees with the one solved
+    /// against the row to 1e-12 relative on every row, and with the
+    /// definition by the oracle's LU, on a stream with a level, correlated
+    /// columns, gaps and rows of weight 0, on the unbiased scale and `bias`.
+    #[test]
+    fn mahal_beside_partial_corr_is_mahal_alone() {
+        for bias in [false, true] {
+            let prior = 0.01;
+            let mut alone = mahal_cfg(4, prior);
+            alone.bias = bias;
+            let mut both = alone.clone();
+            both.stats = vec![EwCovStat::PartialCorr, EwCovStat::Mahal];
+            let (mut a, mut b) = (
+                EwCovModel::new(alone).unwrap(),
+                EwCovModel::new(both).unwrap(),
+            );
+            let mut s = 11u64;
+            let (mut read, mut largest) = (0, 0.0f64);
+            for i in 0..300 {
+                let u = lcg(&mut s);
+                let x = [
+                    50.0 + u,
+                    0.8 * u + 0.3 * lcg(&mut s),
+                    lcg(&mut s) - 0.5 * u,
+                    2.0 * lcg(&mut s),
+                ];
+                let d = if i == 0 {
+                    0.0
+                } else if i % 41 == 0 {
+                    9.0
+                } else {
+                    1.0
+                };
+                let w = if i % 13 == 5 { 0.0 } else { 1.0 };
+                let pa = crate::OnlineModel::step(&mut a, &x, &[], d, w).pred;
+                let pb = crate::OnlineModel::step(&mut b, &x, &[], d, w).pred;
+                let (ma, mb) = (pa[0], *pb.last().unwrap());
+                if ma.is_nan() {
+                    assert!(mb.is_nan(), "row {i}: {mb}");
+                    continue;
+                }
+                let rel = (ma - mb).abs() / ma.abs().max(f64::MIN_POSITIVE);
+                assert!(rel <= 1e-12, "row {i}: {ma} against {mb} ({rel:e})");
+                largest = largest.max(rel);
+                read += 1;
+            }
+            assert!(read > 250, "{read} rows read a distance");
+            eprintln!("bias = {bias}: largest relative move {largest:e} over {read} rows");
+            // The definition, by the oracle's LU.
+            let cov = b.cov();
+            let ridge = prior * cov.precision_scale();
+            let m: Vec<f64> = (0..16)
+                .map(|ij| cov.cov(ij / 4, ij % 4) + if ij / 4 == ij % 4 { ridge } else { 0.0 })
+                .collect();
+            let x = [50.7, -0.4, 1.1, 0.3];
+            let delta: Vec<f64> = (0..4).map(|i| x[i] - cov.mean(i)).collect();
+            let want = (crate::oracle::quad_form(&m, &delta) / b.second_moment_scale(cov)).sqrt();
+            let got = *crate::OnlineModel::predict(&b, &x, 0.0)
+                .pred
+                .last()
+                .unwrap();
+            assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+        }
     }
 
     #[test]

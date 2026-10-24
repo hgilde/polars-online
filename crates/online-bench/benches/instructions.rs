@@ -44,7 +44,9 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::ewridge_k5(args = ("ewridge_k5"), setup = model_setup)]
 #[bench::ewridge_k20(args = ("ewridge_k20"), setup = model_setup)]
 #[bench::ewridge_gram_t10(args = ("ewridge_gram_t10"), setup = model_setup)]
+#[bench::huber_k20(args = ("huber_k20"), setup = model_setup)]
 #[bench::sgd(args = ("sgd"), setup = model_setup)]
+#[bench::sgd_huber(args = ("sgd_huber"), setup = model_setup)]
 #[bench::pa(args = ("pa"), setup = model_setup)]
 #[bench::seqtest(args = ("seqtest"), setup = model_setup)]
 #[bench::bocpd(args = ("bocpd"), setup = model_setup)]
@@ -52,6 +54,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::micro(args = ("micro"), setup = model_setup)]
 #[bench::kalman(args = ("kalman"), setup = model_setup)]
 #[bench::ew_cov(args = ("ew_cov"), setup = model_setup)]
+#[bench::lasso_k20(args = ("lasso_k20"), setup = model_setup)]
 #[bench::rls(args = ("rls"), setup = model_setup)]
 #[bench::quantile(args = ("quantile"), setup = model_setup)]
 #[bench::ftrl(args = ("ftrl"), setup = model_setup)]
@@ -83,6 +86,8 @@ fn clock(mut run: ClockRun) -> ClockRun {
 #[library_benchmark(config = counted_from("polars_online_budget_bank_rows"))]
 #[bench::bank_seqtest(args = ("bank_seqtest"), setup = bank_setup)]
 #[bench::bank_ewridge_k5(args = ("bank_ewridge_k5"), setup = bank_setup)]
+#[bench::bank_seqtest_groups(args = ("bank_seqtest_groups"), setup = bank_setup)]
+#[bench::bank_ewridge_k5_groups(args = ("bank_ewridge_k5_groups"), setup = bank_setup)]
 #[bench::bank_ew_cov_wide_t1(args = ("bank_ew_cov_wide_t1"), setup = bank_setup)]
 fn bank(mut run: BankRun) -> BankRun {
     let pool = online_polars::pool().expect("the bank's pool, built by the setup");

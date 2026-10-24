@@ -80,10 +80,16 @@ what = "ewridge, 50 features, 10 targets, gram_block_rows 64, pairwise, a solve 
 budget = 13923740
 release = 13874374
 
+[instructions.huber_k20]
+what = "huber, 20 features, 1 target, half-life 1000, the MAD scale: AnyModel::step"
+
 [instructions.sgd]
 what = "sgd, 20 features, squared loss, learning rate 0.01, standardized: AnyModel::step"
 budget = 3150039
 release = 3150039
+
+[instructions.sgd_huber]
+what = "sgd, 20 features, Huber loss in the MAD scale, learning rate 0.01, standardized: AnyModel::step"
 
 [instructions.pa]
 what = "pa, 20 features, standardized: AnyModel::step"
@@ -120,6 +126,9 @@ what = "ew_cov, 20 features, mean, std and corr: AnyModel::step"
 budget = 13889690
 release = 13888690
 
+[instructions.lasso_k20]
+what = "lasso, 20 features, 1 target, half-life 1000, penalties 0.1, 0.01 and 0, the default cadence: AnyModel::step"
+
 [instructions.clock_float]
 what = "ClockState::advance_stamped, a float clock, gap_cap 100"
 budget = 112029
@@ -139,6 +148,12 @@ release = 2015679
 what = "Bank::fit_predict of one frame, ewridge with 5 features"
 budget = 5753653
 release = 5757497
+
+[instructions.bank_seqtest_groups]
+what = "Bank::fit_predict of one frame of 1,000 groups, one row each, seqtest, on a pool of one thread: what a (spec, group) task costs whatever its rows"
+
+[instructions.bank_ewridge_k5_groups]
+what = "Bank::fit_predict of one frame of 1,000 groups, one row each, ewridge with 5 features and a solve every 20 rows, on a pool of one thread"
 
 [instructions.bank_ew_cov_wide_t1]
 what = "Bank::fit_predict of one frame of 8,192 rows, ew_cov's 230 statistics, on a pool of one thread: each run copied into the output as it ends, after the next is learned"

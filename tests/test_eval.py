@@ -561,3 +561,61 @@ def test_a_poisson_fits_hit_rate_is_null_in_the_bank_and_here_with_the_spec():
     here = po.eval.metrics(out.head(n - 1), spec, min_samples=1)
     for metric in ("r2", "ic"):
         assert here[metric][0] == pytest.approx(bank[f"{metric}_y"][0], abs=1e-12), metric
+
+
+def test_a_score_carries_only_the_columns_it_reads(monkeypatch):
+    """The scores build their long form from ``slot``, ``target``, ``pred``,
+    ``y`` and the columns they read -- the group keys, the clock, the weight
+    -- where it carried every input column once per slot: a 290 MiB frame
+    of 43 columns and 8 slots asked 2 GiB of ``metrics`` (task 270, I-1).
+    Each score is the one the whole long form gives, to the bit, and the
+    long form it reads is a small multiple of ``pred`` and ``y``."""
+    rng = np.random.default_rng(3)
+    df, _ = synthetic(seed=51, n_groups=2, n_rows=400, k=3, null_frac=0.0)
+    wide = df.with_columns(
+        [pl.Series(f"c{i}", rng.standard_normal(df.height)) for i in range(40)]
+        + [pl.Series("w", rng.uniform(0.0, 2.0, df.height))]
+    )
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y0"],
+        features=["x0", "x1", "x2"],
+        half_life=[50.0, 400.0],
+        ridge=[1e-6, 0.1],
+        clock="t",
+        gap_cap=50.0,
+        group="group",
+        min_weight=3.0,
+    )
+    out = po.ModelBank([spec]).fit_predict(wide)
+    real = po.eval._scored
+    seen: list[pl.DataFrame] = []
+
+    def spy(long: pl.DataFrame) -> pl.DataFrame:
+        seen.append(long)
+        return real(long)
+
+    monkeypatch.setattr(po.eval, "_scored", spy)
+    got = {
+        "metrics": po.eval.metrics(out, spec, group="group"),
+        "window_metrics": po.eval.window_metrics(out, spec, clock="t", every=100.0, group="group"),
+        "sums": po.eval.sums(out, spec, group="group", weight="w"),
+    }
+    monkeypatch.setattr(po.eval, "_scored", real)
+    assert [sorted(s.columns) for s in seen] == [
+        sorted(["group", "slot", "target", "pred", "y"]),
+        sorted(["group", "t", "slot", "target", "pred", "y"]),
+        sorted(["group", "w", "slot", "target", "pred", "y"]),
+    ]
+    full = po.eval.unpack(out, spec)
+    assert full.width > 45 and full.estimated_size() > 8 * max(s.estimated_size() for s in seen)
+    # The same scores from the whole long form, as the scores built it.
+    monkeypatch.setattr(po.eval, "_unpack", lambda df, spec, targets=None, columns=None: full)
+    want = {
+        "metrics": po.eval.metrics(out, spec, group="group"),
+        "window_metrics": po.eval.window_metrics(out, spec, clock="t", every=100.0, group="group"),
+        "sums": po.eval.sums(out, spec, group="group", weight="w"),
+    }
+    for name, frame in got.items():
+        assert frame.height > 0, name
+        assert frame.equals(want[name], null_equal=True), name

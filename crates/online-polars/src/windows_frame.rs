@@ -2502,9 +2502,9 @@ mod tests {
         // and 61 for review round 7's residual lag products on a quantile
         // fit (A-2), task 244's `bias` in an `ew_cov` and its 1.0 names, and
         // 62 for task 257's held targets of a blocked `ewridge`, the first
-        // change since 1.0, whose loader reads 61: the windows state
-        // unchanged.
-        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 62));
+        // change since 1.0, whose loader reads 61, and 63 for task 271's
+        // Huber scale, whose loader reads 62: the windows state unchanged.
+        assert_eq!((WINDOWS_VERSION, online_core::SCHEMA_VERSION), (9, 63));
     }
 
     /// Review R6, D2: a run on the next file under a slice keeps the first

@@ -365,7 +365,8 @@ impl Spec {
     ///   `half_life` its standardization and noise statistics read.
     /// - **`ewridge`**, the long fit's `long_half_life` under
     ///   `session_shrink`; **`lasso`**, the `select_half_life` its choice of
-    ///   `lambda` reads.
+    ///   `lambda` reads; **`huber`** and **`sgd`**, the Huber scale's
+    ///   `huber_scale_half_life` (task 271).
     ///
     /// The instance's decay comes back as it was where it is the longest,
     /// so no platform's logarithm enters a `lam`'s readiness. `inf` where
@@ -401,6 +402,14 @@ impl Spec {
             }
             | super::ModelKind::Lasso {
                 select_half_life: Some(h),
+                ..
+            }
+            | super::ModelKind::Huber {
+                huber_scale_half_life: Some(h),
+                ..
+            }
+            | super::ModelKind::Sgd {
+                huber_scale_half_life: Some(h),
                 ..
             } => take(h.value()),
             _ => {}

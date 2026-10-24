@@ -546,9 +546,28 @@ class TestLassoPredPath:
 
 
 class TestRobustOracles:
-    """T-A3: Huber and quantile vs `tests/reference.py::robust_ref`."""
+    """T-A3: Huber and quantile vs `tests/reference.py::robust_ref`. Huber's
+    cases run under each scale its cut can be drawn in (task 271): the MAD,
+    the default, and the RMS; ``scale_half_life`` gives the scale a memory of
+    its own."""
 
-    def _compare(self, df, k=2, targets=("y0",), model="huber", ref_kw=None, **spec_kw):
+    def _compare(
+        self,
+        df,
+        k=2,
+        targets=("y0",),
+        model="huber",
+        ref_kw=None,
+        scale="mad",
+        scale_half_life=None,
+        **spec_kw,
+    ):
+        if model == "huber":
+            ref_kw = {**(ref_kw or {}), "huber_scale": scale}
+            spec_kw = {**spec_kw, "huber_scale": scale}
+            if scale_half_life is not None:
+                ref_kw["huber_scale_half_life"] = scale_half_life
+                spec_kw["huber_scale_half_life"] = scale_half_life
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
         ref = robust_ref(
@@ -593,9 +612,23 @@ class TestRobustOracles:
         )
         return out
 
-    def test_huber(self):
+    @pytest.mark.parametrize("scale", ["mad", "rms"])
+    def test_huber(self, scale):
         df, _ = synthetic(seed=91, n_groups=1, n_rows=250, k=2, null_frac=0.0)
-        self._compare(df)
+        self._compare(df, scale=scale)
+
+    @pytest.mark.parametrize("scale", ["mad", "rms"])
+    def test_huber_with_outliers_and_a_scale_memory_of_its_own(self, scale):
+        """One row in ten 30 noise standard deviations high, so the cut
+        binds and the scales part, and the scale aging on a half-life a
+        tenth of the fit's."""
+        df, _ = synthetic(seed=99, n_groups=1, n_rows=400, k=2, null_frac=0.02)
+        y = df["y0"].to_numpy().copy()
+        rng = np.random.default_rng(99)
+        bad = rng.random(len(y)) < 0.1
+        y[bad] += 30.0 * np.nanstd(y)
+        df = df.with_columns(pl.Series("y0", y))
+        self._compare(df, scale=scale, scale_half_life=30.0)
 
     @pytest.mark.parametrize("model", ["huber", "quantile"])
     @pytest.mark.parametrize(
@@ -603,7 +636,8 @@ class TestRobustOracles:
         [(250, slice(60, None, 7)), (300, slice(100, 200))],
         ids=["every seventh row", "a hundred rows in a row"],
     )
-    def test_rows_of_weight_zero(self, model, n_rows, zeros):
+    @pytest.mark.parametrize("scale", ["mad", "rms"])
+    def test_rows_of_weight_zero(self, model, n_rows, zeros, scale):
         """A row of weight 0 advances the clock and teaches nothing (hard rule
         9). The core's residual scale keeps three rules for it: sigma2's
         weight ages on every row the model sees, a row of weight 0 or with no
@@ -619,7 +653,7 @@ class TestRobustOracles:
         w[zeros] = 0.0
         df = df.with_columns(pl.Series("w", w))
         if model == "huber":
-            out = self._compare(df)
+            out = self._compare(df, scale=scale)
         else:
             out = self._compare(df, model="quantile", ref_kw={"quantile": 0.9}, quantile=0.9)
         pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
@@ -627,10 +661,11 @@ class TestRobustOracles:
             withheld = np.isnan(pred[zeros.start :])
             assert withheld.any() and not withheld.all(), "the weight must fall under min_weight"
 
+    @pytest.mark.parametrize("scale", ["mad", "rms"])
     @pytest.mark.parametrize("delta", [0.5, 1.5, 10.0])
-    def test_huber_delta_values(self, delta):
+    def test_huber_delta_values(self, delta, scale):
         df, _ = synthetic(seed=92, n_groups=1, n_rows=250, k=2, null_frac=0.0)
-        self._compare(df, ref_kw={"huber_delta": delta}, huber_delta=delta)
+        self._compare(df, ref_kw={"huber_delta": delta}, scale=scale, huber_delta=delta)
 
     @pytest.mark.parametrize("tau", [0.1, 0.5, 0.9])
     def test_quantile_levels(self, tau):
@@ -642,6 +677,7 @@ class TestRobustOracles:
         # advance that target's accumulator), so it gets an oracle comparison.
         df, _ = synthetic(seed=94, n_groups=1, n_rows=300, k=2, null_frac=0.05)
         self._compare(df)
+        self._compare(df, scale="rms")
 
     def test_multi_target_has_independent_accumulators(self):
         df, _ = synthetic(seed=95, n_groups=1, n_rows=250, k=2, n_targets=2, null_frac=0.0)
@@ -663,6 +699,7 @@ class TestRobustOracles:
         y0 = pl.when(pl.int_range(pl.len()) < 20).then(0.0).otherwise(pl.col("y0"))
         df = df.with_columns(y0.alias("y0")).with_columns(pl.col("y0", "y1") * 1e6)
         self._compare(df, targets=("y0", "y1"))
+        self._compare(df, targets=("y0", "y1"), scale="rms")
 
     def test_quantile_draws_no_band_before_a_scale_exists(self):
         """Task 177: until a target has a residual scale, a quantile row is

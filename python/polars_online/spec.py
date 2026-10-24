@@ -247,8 +247,9 @@ the diagnostics
     forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.
     That memory is the fit's, but ``holt``'s trend (``trend_half_life``, four
     times its level's by default), the longest of ``kalman``'s
-    ``coef_half_life`` and ``half_life``, ``ewridge``'s ``long_half_life`` and
-    ``lasso``'s ``select_half_life``. The twin fits of ``break_wald`` and
+    ``coef_half_life`` and ``half_life``, ``ewridge``'s ``long_half_life``,
+    ``lasso``'s ``select_half_life`` and the Huber scale's
+    ``huber_scale_half_life`` of ``huber`` and ``sgd``. The twin fits of ``break_wald`` and
     feature health read no prediction, and fold every row. ``horizon_rows`` is
     the target's horizon in rows: the rows a target that looks ahead shares its
     shocks over, so that its residuals overlap. Without a clock column it
@@ -310,7 +311,7 @@ and each diagnostic's own ``*_half_life`` below, and in the models
 ``snapshot_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
-``revert_half_life`` and ``trend_half_life``.
+``revert_half_life``, ``trend_half_life`` and ``huber_scale_half_life``.
 
 One parameter takes either form, with a meaning for each: ``bocpd``'s
 ``hazard``. A number, finite and above 1, is the expected rows between
@@ -874,9 +875,10 @@ A parameter whose switch is off is refused rather than ignored:
   diagnostic that reads it;
 - ``snapshot_every``, ``max_rows_between_snapshots``, ``window_budget`` or
   ``closed = "both"`` without ``window_size``;
-- ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
-  not use it, its ``strict_binary`` beside a loss other than ``"logistic"``,
-  and its ``power`` beside a schedule other than ``"inv_scaling"``;
+- ``sgd``'s ``huber_delta``, ``huber_scale``, ``huber_scale_half_life``,
+  ``quantile`` or ``eps`` beside a loss that does not use it, its
+  ``strict_binary`` beside a loss other than ``"logistic"``, and its
+  ``power`` beside a schedule other than ``"inv_scaling"``;
 - ``ftrl``'s ``strict_binary`` beside ``loss = "squared"``;
 - ``holt``'s ``trend_half_life`` beside ``trend = False``;
 - ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``, and its and

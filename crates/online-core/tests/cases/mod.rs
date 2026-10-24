@@ -308,6 +308,8 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         max_rows_between_solves: 1,
         solve_share: None,
         quantile_eps: 1e-3,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     }
 }
 
@@ -400,6 +402,8 @@ fn sgd_cfg(loss: SgdLoss, n_targets: usize) -> SgdCfg {
         standardize: true,
         min_weight: 3.0,
         strict_binary: false,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     }
 }
 
@@ -619,6 +623,22 @@ pub fn all() -> Vec<Case> {
             Targets::Linear(2),
             40
         ),
+        // The MAD's sketch of `|e|` per target and the scale's own memory
+        // (schema 63, docs/PLAN.md task 271); `huber` is the RMS's form.
+        case!(
+            "huber_mad",
+            "Robust",
+            Robust,
+            Robust::new(RobustCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                huber_scale_decay: Some(Decay::Halflife(8.0)),
+                ..robust_cfg(RobustLoss::Huber { delta: 1.5 })
+            })
+            .unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
         case!(
             "quantile",
             "Robust",
@@ -711,6 +731,21 @@ pub fn all() -> Vec<Case> {
             "Sgd",
             Sgd,
             Sgd::new(sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)).unwrap(),
+            K,
+            Targets::Linear(2),
+            40
+        ),
+        // The MAD's sketch under the Huber loss, on the model's clock
+        // (schema 63, docs/PLAN.md task 271).
+        case!(
+            "sgd_huber_mad",
+            "Sgd",
+            Sgd,
+            Sgd::new(SgdCfg {
+                huber_scale: online_core::HuberScale::Mad,
+                ..sgd_cfg(SgdLoss::Huber { delta: 1.5 }, 2)
+            })
+            .unwrap(),
             K,
             Targets::Linear(2),
             40
