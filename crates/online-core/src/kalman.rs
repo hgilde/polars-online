@@ -3868,6 +3868,52 @@ mod tests {
         assert_eq!(m.coefficients()[0], m.beta[0]);
     }
 
+    /// The filter is sizing ([`Kalman::sizing`], the stream's `seeding`)
+    /// exactly while a target it has weight on waits for its prior: never
+    /// before a row, nor for a target no row has carried; standardized
+    /// without `obs_var`, from a target's first row until three of its rows
+    /// have sized it, as the predictions show (`an_unsized_prior_predicts_nothing`):
+    /// a target that arrives later makes the filter size again; shared,
+    /// the one prior serves the later target at once. Unstandardized, the
+    /// first observed row sizes `P`, so the filter is never seen sizing
+    /// between rows. Each row's state is checked against what the next
+    /// row's prediction shows: a target with weight past `min_weight` and
+    /// no prediction.
+    #[test]
+    fn the_filter_is_sizing_while_a_weighted_target_waits_for_its_prior() {
+        for (standardize, share_p) in [(true, false), (true, true), (false, false)] {
+            let mut c = cfg(1, 2, vec![100.0]);
+            c.standardize = standardize;
+            c.share_p = share_p;
+            c.min_weight = 0.5;
+            let mut m = Kalman::new(c).unwrap();
+            assert!(!m.sizing(), "before a row");
+            let mut s = 20261024u64;
+            let mut seen = Vec::new();
+            for i in 0..16 {
+                let x = [lcg(&mut s)];
+                let y0 = 10.0 + 2.0 * x[0] + 0.5 * lcg(&mut s);
+                let y1 = (i >= 8).then(|| -5.0 + x[0] + 0.5 * lcg(&mut s));
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                m.step(&x, &[Some(y0), y1], d, 1.0);
+                seen.push(m.sizing());
+                // What the next row would show: a target with weight and
+                // no prediction.
+                let next = m.predict(&[0.3], 1.0).pred;
+                let waiting = (0..2).any(|j| m.wj[j] > 0.0 && next[j].is_nan());
+                assert_eq!(
+                    m.sizing(),
+                    waiting,
+                    "standardize {standardize}, share {share_p}, row {i}"
+                );
+            }
+            let want: Vec<bool> = (0..16)
+                .map(|i| standardize && (i < 2 || (!share_p && (8..10).contains(&i))))
+                .collect();
+            assert_eq!(seen, want, "standardize {standardize}, share {share_p}");
+        }
+    }
+
     /// A filter whose prior is not sized predicts nothing (review round 9,
     /// B-1; docs/PLAN.md task 270). Standardized without `obs_var`, a slot
     /// is sized once three observed rows give the noise a median, and on a

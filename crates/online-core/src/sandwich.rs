@@ -447,6 +447,41 @@ mod tests {
         assert!(s.has_shape(1, true, 0));
     }
 
+    /// The guard reads each sum's own diagonal after the row, `B_ii + w
+    /// z_i²` and `M_ii + u_i²`, and refuses the row only when one would be
+    /// past `f64`. With no intercept, `z = x` on two features, the second
+    /// at `1e154`: its square `1e308` fits, a second row's does not, and
+    /// the row only ages, while the off-diagonal `Σ w z_1 z_2`, at `1e154`,
+    /// would take it; the same of the meat, with `u_2 = 1e154` from a
+    /// feature of `1e100` and a residual of `1e54`. Two diagonals of
+    /// `1e200` sum to `2e200`, a number, and the second row is folded,
+    /// though their product is not one. A weight of `1e-10` on a feature of
+    /// `1e155` gives a term `(w z) z = 1e300`, folded, though `z²` alone is
+    /// past `f64`.
+    #[test]
+    fn a_row_is_refused_by_its_own_diagonals_after_it() {
+        let refused = |x: [f64; 2], e: f64, w: f64| {
+            let mut s = Sandwich::new(2, false, 0);
+            s.update(&x, e, 1.0, w);
+            let one = s.clone();
+            assert!(s.has_shape(2, false, 0), "the first row is folded");
+            s.update(&x, e, 1.0, w);
+            assert!(s.has_shape(2, false, 0), "{x:?}, e {e}: every sum a number");
+            s == one
+        };
+        assert!(refused([1.0, 1e154], 1e-200, 1.0), "the bread's diagonal");
+        assert!(refused([1.0, 1e100], 1e54, 1.0), "the meat's diagonal");
+        assert!(!refused([1.0, 1e100], 1e-200, 1.0), "two terms of 1e200");
+        let mut s = Sandwich::new(2, false, 0);
+        s.update(&[1.0, 1e100], 1e-200, 1.0, 1.0);
+        s.update(&[1.0, 1e100], 1e-200, 1.0, 1.0);
+        assert_eq!(s.bread[3], 2e200);
+        let mut s = Sandwich::new(2, false, 0);
+        s.update(&[1.0, 1e155], 1e-200, 1.0, 1e-10);
+        assert_eq!(s.bread[3], 1e-10 * 1e155 * 1e155);
+        assert!(s.bread[3] > 1e299 && s.bread[3].is_finite());
+    }
+
     /// A variance that is not a number -- here `B⁻¹ M B⁻¹` past `f64`, its
     /// intercept mapped by `inf − inf` -- is no standard error, not one of
     /// 0.0, which reads as an exact coefficient (review round 9, B-2).

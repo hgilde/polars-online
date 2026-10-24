@@ -253,6 +253,54 @@ impl OnlineModel for SeqTest {
 mod tests {
     use super::*;
 
+    /// Before `min_weight` a row reports one NaN for each of its four slots
+    /// for each target, `SLOTS * n_targets` of them, from `step`, from
+    /// `predict` and from `step_into` into a buffer that held more; past
+    /// it, the same count, a target's four being its `ln E⁺`, `ln E⁻` and
+    /// the positive and negative rows learned from.
+    #[test]
+    fn every_target_reports_its_four_slots_before_and_after_min_weight() {
+        for n_targets in [1usize, 2, 3] {
+            let mut m = SeqTest::new(SeqTestCfg {
+                n_targets,
+                min_weight: 3.0,
+            })
+            .unwrap();
+            let y: Vec<Option<f64>> = (0..n_targets).map(|j| Some(j as f64 - 0.5)).collect();
+            let mut out = Step {
+                pred: vec![7.0; 20],
+                ..Step::default()
+            };
+            for i in 0..6 {
+                let want = 4 * n_targets;
+                let served = m.predict(&[], 1.0).pred;
+                m.step_into(&[], &y, 1.0, 1.0, &mut out);
+                let what = format!("{n_targets} targets, row {i}");
+                assert_eq!(served.len(), want, "{what}");
+                assert_eq!(out.pred.len(), want, "{what}");
+                if i < 3 {
+                    assert!(
+                        out.pred.iter().all(|v| v.is_nan()),
+                        "{what}: {:?}",
+                        out.pred
+                    );
+                } else {
+                    for j in 0..n_targets {
+                        let slots = &out.pred[4 * j..4 * j + 4];
+                        let (np, nn) = if j == 0 {
+                            (0.0, i as f64)
+                        } else {
+                            (i as f64, 0.0)
+                        };
+                        assert_eq!(slots[2..], [np, nn], "{what}, target {j}");
+                        assert!(slots[..2].iter().all(|v| v.is_finite()), "{what}");
+                    }
+                }
+                assert_eq!(m.step(&[], &y, 1.0, 0.0).pred.len(), want, "{what}");
+            }
+        }
+    }
+
     /// A state whose vectors are not the cfg's is refused, where it loaded
     /// and panicked on the first `step` (review 2026-09-18, B3).
     #[test]
