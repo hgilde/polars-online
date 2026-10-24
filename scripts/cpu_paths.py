@@ -163,6 +163,26 @@ def numpy_disable(dispatch: Sequence[str], keep: Sequence[str]) -> list[str]:
     return [f for f in dispatch if f not in keep]
 
 
+#: The name `openblas_get_corename` reports for a forced core, where it is
+#: not the core's own. NumPy's and SciPy's OpenBLAS on Windows are the
+#: scipy-openblas builds (MacPython/openblas-libs,
+#: `tools/build_steps_windows.sh`), made with `DYNAMIC_LIST="PRESCOTT
+#: NEHALEM SANDYBRIDGE HASWELL SKYLAKEX"`; in such a build OpenBLAS's
+#: `driver/others/dynamic.c` defines each core left out as an alias of one
+#: kept, `gotoblas_KATMAI` among them as `gotoblas_PRESCOTT`, and
+#: `gotoblas_corename` tests Katmai before Prescott, so Prescott's kernels
+#: report "Katmai" (the first run of cpu-paths.yml, both libraries). A
+#: runner's own detection picks Haswell or SkylakeX (Zen is an alias of
+#: Haswell in these builds), never these kernels, so the name still tells a
+#: forced Prescott from the core a runner picks for itself.
+REPORTED_AS = {"prescott": "katmai"}
+
+
+def reported_core(core: str) -> str:
+    """The name, lower-cased, OpenBLAS reports when `core` is forced."""
+    return REPORTED_AS.get(core.lower(), core.lower())
+
+
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess[str]:
     print("+", shlex.join(cmd), flush=True)
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", **kw)
@@ -262,7 +282,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def check() -> int:
     """Fail unless OpenBLAS runs the kernels `OPENBLAS_CORETYPE` names, in
-    NumPy's copy and SciPy's alike, and NumPy's loops leave out every
+    NumPy's copy and SciPy's alike, under the name it reports for them
+    (`reported_core`), and NumPy's loops leave out every
     feature `NPY_DISABLE_CPU_FEATURES` names. NumPy refuses a baseline
     feature with an error and only warns of a name it does not dispatch,
     so that warning is an error here."""
@@ -277,11 +298,13 @@ def check() -> int:
     print("dispatch:", mu.__cpu_dispatch__)
     problems = []
     core = os.environ.get("OPENBLAS_CORETYPE", "")
+    want = reported_core(core)
     blas = [i for i in threadpoolctl.threadpool_info() if i.get("internal_api") == "openblas"]
     for info in blas:
         print(f"{info['filepath']}: {info.get('architecture')}")
-        if str(info.get("architecture", "")).lower() != core.lower():
-            problems.append(f"{info['filepath']} runs {info.get('architecture')}, not {core}")
+        if str(info.get("architecture", "")).lower() != want:
+            got = info.get("architecture")
+            problems.append(f"{info['filepath']} runs {got}, not {core} (reported as {want})")
     if core and len(blas) < 2:
         problems.append(f"expected NumPy's and SciPy's OpenBLAS, found {len(blas)}")
     for name in os.environ.get("NPY_DISABLE_CPU_FEATURES", "").split():

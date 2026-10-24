@@ -149,6 +149,21 @@ class TestTheScript:
         with pytest.raises(SystemExit):
             cp.main(["probe", "p", "--sde", "s", "--sde-args", "-hsw", "--expect", "a=b"])
 
+    def test_openblas_names_a_forced_prescott_katmai_and_the_rest_their_own(self):
+        """The first dispatch: both OpenBLAS builds reported "Katmai" for
+        a forced Prescott, and "Sandybridge" and "Haswell" for those two
+        (task 273 (a2)). What a runner picks for itself, Haswell or SkylakeX
+        (Zen is an alias of Haswell in these builds), is never Katmai, so
+        the Prescott leg still fails if the forced core did not take."""
+        assert cp.reported_core("Prescott") == "katmai"
+        assert cp.reported_core("SandyBridge") == "sandybridge"
+        assert cp.reported_core("Haswell") == "haswell"
+        for auto in ("Haswell", "SkylakeX"):
+            assert cp.reported_core(auto) != cp.reported_core("Prescott")
+        legs = WF["jobs"]["oracles"]["strategy"]["matrix"]["include"]
+        built = {"prescott", "nehalem", "sandybridge", "haswell", "skylakex"}
+        assert {leg["openblas"].lower() for leg in legs} <= built
+
     def test_sde_keeps_the_definition_files_leaves(self):
         assert cp._sde("sde.exe", "-cpuid_in D:/a/cpuid.def") == [
             "sde.exe",

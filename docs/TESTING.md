@@ -943,6 +943,14 @@ leg's. `scripts/cpu_paths.py check` then fails unless threadpoolctl reports
 the named core in both copies of OpenBLAS and NumPy reports each disabled
 target off, with that warning made an error.
 
+One core reports another name. NumPy's and SciPy's OpenBLAS on Windows are
+built with five cores of kernels: Prescott, Nehalem, Sandybridge, Haswell
+and SkylakeX. In such a build OpenBLAS makes each core left out an alias of
+one kept, Katmai of Prescott among them, and its name lookup tests Katmai
+first, so forced Prescott kernels report "Katmai". A runner's own choice is
+Haswell or SkylakeX, so the check still fails if the forced core did not
+take effect.
+
 No leg forces AVX-512 kernels. OpenBLAS runs a forced core type without
 checking the CPU (`force_coretype` in its `driver/others/dynamic.c`), so
 SkylakeX on one of the pool's AMD machines would stop at an illegal
