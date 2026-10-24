@@ -19,7 +19,7 @@
 //! every platform and checks that it reaches the path it is named for.
 
 use online_polars::online_core::{ClockCfg, ClockState, ClockValue, ExactCaps};
-use online_polars::{AnyModel, Bank, Spec, build_models};
+use online_polars::{AnyModel, Bank, Spec, WindowsConfig, WindowsRun, build_models};
 use polars::prelude::*;
 use serde_json::{Value, json};
 
@@ -49,8 +49,21 @@ pub const MODEL_CASES: &[&str] = &[
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
 
 /// The bank cases: a frame through `Bank::fit_predict`, every per-row step
-/// of the bank around the model, for the cheapest model and a regression.
-pub const BANK_CASES: &[&str] = &["bank_seqtest", "bank_ewridge_k5"];
+/// of the bank around the model, for the cheapest model and a regression;
+/// and a regression whose target is a window expression looking 1,000 rows
+/// ahead under an embargo of the same span, so each row waits behind about
+/// a thousand held rows (docs/PLAN.md task 270, M-3).
+pub const BANK_CASES: &[&str] = &["bank_seqtest", "bank_ewridge_k5", "formula_target_held1k"];
+
+/// The window cases: a frame through the window operators' core
+/// (`WindowsRun::feed`, as `with_windows` runs it), one operator over a
+/// window of 12,500 clock units, about 10,000 rows at the cases' mean step
+/// of 1.25. The warm-up and the block are inside the stream's first window,
+/// where nothing has left it yet and a mean cuts its oldest row's held
+/// interval at the window's edge on every row: the path that cost a mean
+/// O(rows in the window) a row where the sum costs O(1) (docs/PLAN.md task
+/// 270, M-2). The two are held within twice each other.
+pub const WINDOW_CASES: &[&str] = &["window_ewm_mean_w10k", "window_ewm_sum_w10k"];
 
 /// The wide bank cases: a frame of [`WIDE_ROWS`] rows of the `ew_cov` case's
 /// 230 statistics through `Bank::fit_predict`, on a pool of one thread.
@@ -210,6 +223,19 @@ fn case_spec(id: &str) -> (Value, Shape) {
     match id {
         "ewridge_k5" | "bank_ewridge_k5" => (fit(json!({"type": "ewridge"}), 5), Shape::Linear),
         "ewridge_k20" => (fit(json!({"type": "ewridge"}), 20), Shape::Linear),
+        // The target the mean of `y0` over the next 1,250 clock units
+        // (about 1,000 rows), resolved by the bank's own window core, each
+        // row learned once its window has closed and an embargo of the
+        // same span has passed: about a thousand rows held at every row.
+        "formula_target_held1k" => {
+            let mut s = fit(json!({"type": "ewridge"}), 5);
+            s["targets"] = json!([{
+                "name": "fwd",
+                "formula": ["rewm_mean", ["col", "y0"], {"half_life": 1000.0, "window_size": 1250.0}],
+            }]);
+            s["embargo"] = json!(1250.0);
+            (s, Shape::Linear)
+        }
         // The blocked Gram with ten targets folded into its merge
         // (docs/PLAN.md task 257): 50 features, a 64-row block, one Gram
         // over every row, a solve every 400 clock units.
@@ -438,5 +464,50 @@ pub fn bank_setup(id: &str) -> BankRun {
 pub fn polars_online_budget_bank_rows(run: &mut BankRun) -> Vec<Column> {
     run.bank
         .fit_predict(&run.frame)
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// A window case, warmed up: the core and the frame of its measured block.
+pub struct WindowsCase {
+    pub run: WindowsRun,
+    frame: DataFrame,
+}
+
+/// A window case's formula, as `po.ops` writes it.
+fn window_tree(id: &str) -> Value {
+    let op = match id {
+        "window_ewm_mean_w10k" => "ewm_mean",
+        "window_ewm_sum_w10k" => "ewm_sum",
+        other => panic!("no case {other:?}"),
+    };
+    json!([op, ["col", "x0"], {"half_life": 1000.0, "window_size": 12_500.0}])
+}
+
+/// The setup of a window case: the core over one feature column and the
+/// clock, fed the warm-up rows as one frame.
+pub fn windows_setup(id: &str) -> WindowsCase {
+    let config: WindowsConfig = serde_json::from_value(json!({
+        "formulas": [{"name": "w", "tree": window_tree(id)}],
+        "clock": "t",
+        "gap_cap": 100.0,
+    }))
+    .unwrap_or_else(|e| panic!("{id}: {e}"));
+    let rows = Rows::generate(Shape::Linear, 1, 0, WARM_ROWS + ROWS, 7);
+    let warm = rows.frame(0, WARM_ROWS);
+    let mut run = WindowsRun::new(config, warm.schema()).unwrap_or_else(|e| panic!("{id}: {e}"));
+    run.feed(&warm, None)
+        .unwrap_or_else(|e| panic!("{id}: {e}"));
+    let frame = rows.frame(WARM_ROWS, rows.len());
+    WindowsCase { run, frame }
+}
+
+/// The measured block of a window case: one `WindowsRun::feed` of [`ROWS`]
+/// rows. A backward window emits each row as it is read, so the output is
+/// the block's values, returned so its drop falls outside the count.
+#[unsafe(no_mangle)]
+#[inline(never)]
+pub fn polars_online_budget_windows_rows(run: &mut WindowsCase) -> DataFrame {
+    run.run
+        .feed(&run.frame, None)
         .unwrap_or_else(|e| panic!("{e}"))
 }

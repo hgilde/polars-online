@@ -4,9 +4,10 @@
 //! path no user runs, so each case proves it ran past the warm-up first.
 
 use online_bench::{
-    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, WIDE_CASES, WIDE_ROWS, bank_setup, clock_setup,
-    model_setup, polars_online_budget_bank_rows, polars_online_budget_clock_rows,
-    polars_online_budget_model_rows, spec,
+    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, WARM_ROWS, WIDE_CASES, WIDE_ROWS, WINDOW_CASES,
+    bank_setup, clock_setup, model_setup, polars_online_budget_bank_rows,
+    polars_online_budget_clock_rows, polars_online_budget_model_rows,
+    polars_online_budget_windows_rows, spec, windows_setup,
 };
 use online_polars::{ChunkOut, PAR_MIN_ROWS, Stream};
 use polars::prelude::*;
@@ -26,6 +27,7 @@ fn the_bench_names_every_case_and_nothing_else() {
         .chain(CLOCK_CASES)
         .chain(BANK_CASES)
         .chain(WIDE_CASES)
+        .chain(WINDOW_CASES)
         .copied()
         .collect();
     let mut sorted = named.clone();
@@ -78,6 +80,7 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
     for (id, field) in [
         ("bank_seqtest", "log_e_pos_y0"),
         ("bank_ewridge_k5", "pred_y0"),
+        ("formula_target_held1k", "pred_fwd"),
     ] {
         assert!(BANK_CASES.contains(&id), "{id}");
         let mut run = bank_setup(id);
@@ -105,7 +108,64 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
             "{id}: {field}"
         );
     }
-    assert_eq!(BANK_CASES.len(), 2);
+    assert_eq!(BANK_CASES.len(), 3);
+}
+
+/// The formula-target case holds about a thousand rows behind each one: its
+/// window of 1,250 clock units and its embargo of the same span, at a mean
+/// step of 1.25.
+#[test]
+fn the_formula_target_case_holds_about_a_thousand_rows() {
+    let mut run = bank_setup("formula_target_held1k");
+    polars_online_budget_bank_rows(&mut run);
+    // The rows the embargo holds, read from the saved state: the stream's
+    // `pending` rows, beside which `notified.pending` holds only strings.
+    fn held(v: &serde_json::Value) -> usize {
+        match v {
+            serde_json::Value::Object(m) => m
+                .iter()
+                .map(|(k, v)| match v {
+                    serde_json::Value::Array(a)
+                        if k == "pending" && a.iter().all(|r| r.is_object()) =>
+                    {
+                        a.len()
+                    }
+                    _ => held(v),
+                })
+                .sum(),
+            serde_json::Value::Array(a) => a.iter().map(held).sum(),
+            _ => 0,
+        }
+    }
+    let state: serde_json::Value =
+        serde_json::from_str(&run.bank.save_json_string(false).expect("a state")).expect("json");
+    let held = held(&state);
+    assert!((800..1_300).contains(&held), "{held} rows held");
+}
+
+/// Each window case emits its block, valued on every row, from inside the
+/// stream's first window: no row has left it, so every row the case reads
+/// is the case's path (a mean cuts its oldest row's held interval at the
+/// edge on every one).
+#[test]
+fn every_window_case_reads_its_block_inside_the_first_window() {
+    for &id in WINDOW_CASES {
+        let mut run = windows_setup(id);
+        let out = polars_online_budget_windows_rows(&mut run);
+        assert_eq!(out.height(), ROWS, "{id}");
+        let w = out
+            .column("w")
+            .expect("the operator")
+            .f64()
+            .expect("floats");
+        assert_eq!(w.null_count(), 0, "{id}");
+        assert!(w.into_no_null_iter().all(f64::is_finite), "{id}");
+        assert_eq!(
+            run.run.queued(),
+            WARM_ROWS + ROWS,
+            "{id}: a row left the window"
+        );
+    }
 }
 
 /// The wide cases learn their block on the pool they are named for, in
