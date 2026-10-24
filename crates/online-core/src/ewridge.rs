@@ -757,8 +757,7 @@ impl EwRidge {
     /// *empty* view, never the live state (review 2026-09-12, C2).
     fn view(&self) -> Option<RidgeView> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
-        let f = self.cfg.decay.factor(win.clock - u);
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         let acc = self.acc.window(&old.acc, f)?;
         let m = self.cfg.n_targets;
         let sig2 = if acc.cross.w > 0.0 {
@@ -794,8 +793,7 @@ impl EwRidge {
     /// where the live accumulators are the answer.
     fn window_weights(&self) -> Option<(f64, Vec<f64>)> {
         let win = self.win.as_ref()?;
-        let (u, old) = win.snaps.boundary()?;
-        let f = self.cfg.decay.factor(win.clock - u);
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
         self.acc.window_weights(&old.acc, f)
     }
 
@@ -1440,8 +1438,7 @@ impl EwRidge {
     /// otherwise. `None` for a Gram with no weight, or with no Kish sum.
     fn gram_kish(&self) -> Vec<Option<f64>> {
         let windowed = self.win.as_ref().and_then(|win| {
-            let (u, old) = win.snaps.boundary()?;
-            let f = self.cfg.decay.factor(win.clock - u);
+            let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
             self.acc.window_kish(&old.acc, f)
         });
         windowed.unwrap_or_else(|| self.acc.grams.grams.iter().map(EwCov::n_kish).collect())
@@ -2100,11 +2097,12 @@ impl OnlineModel for EwRidge {
             // rather than on every row and then dropped (review 2026-09-18,
             // P1). The closure reads `acc`/`wsig`/`sig2`, disjoint fields from
             // `win`, so the borrows do not collide.
-            win.snaps.learn(&mut win.clock, d_clock, || RidgeMoments {
-                acc: self.acc.snapshot(lam),
-                wsig: self.wsig.iter().map(|w| w * lam).collect(),
-                sig2: self.sig2.clone(),
-            });
+            win.snaps
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || RidgeMoments {
+                    acc: self.acc.snapshot(lam),
+                    wsig: self.wsig.iter().map(|w| w * lam).collect(),
+                    sig2: self.sig2.clone(),
+                });
         }
         // EW residual variance from the primary (first-combo) pred. Its
         // weight ages on every row, and a row with a target, a weight and a

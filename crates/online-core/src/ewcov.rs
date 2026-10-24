@@ -1819,7 +1819,7 @@ impl EwCovModel {
         let Some(win) = self.win.as_ref() else {
             return Cow::Borrowed(&self.cov);
         };
-        let Some((u, old)) = win.snaps.boundary() else {
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
             return Cow::Borrowed(&self.cov);
         };
         if old.w == 0.0 {
@@ -1829,7 +1829,6 @@ impl EwCovModel {
             // the untruncated numbers to the bit.
             return Cow::Borrowed(&self.cov);
         }
-        let f = self.cfg.decay.factor(win.clock - u);
         match crate::truncated(&self.cov, old, f) {
             Some(cov) => Cow::Owned(cov),
             None => {
@@ -2021,13 +2020,12 @@ impl EwCovModel {
         let Some(win) = self.win.as_ref() else {
             return live;
         };
-        let Some((u, old)) = win.snaps.boundary() else {
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
             return live;
         };
         if old.w == 0.0 {
             return live;
         }
-        let f = self.cfg.decay.factor(win.clock - u);
         let w = live - f * old.w;
         if w <= crate::window::EMPTY_FRACTION * live || !w.is_finite() {
             0.0
@@ -2386,9 +2384,10 @@ impl crate::OnlineModel for EwCovModel {
         if let Some(win) = self.win.as_mut() {
             // Built inside the closure so the O(k²) snapshot is only formed on
             // the rows `offer` keeps, not on every row (review 2026-09-18, P1).
-            win.snaps.learn(&mut win.clock, d_clock, || {
-                crate::Moments::of(&self.cov, lam)
-            });
+            win.snaps
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || {
+                    crate::Moments::of(&self.cov, lam)
+                });
         }
         self.cov.update(x, lam, weight);
         if self.cfg.pca > 0 {
@@ -5458,12 +5457,11 @@ mod tests {
             };
             let want = m.windowed_cov().n_eff();
             assert_eq!(m.n_eff().to_bits(), want.to_bits(), "row {i}");
-            if let Some((u, old)) = m.win.as_ref().and_then(|win| {
-                let (u, old) = win.snaps.boundary()?;
-                Some((u, old.w))
+            if let Some((f, old)) = m.win.as_ref().and_then(|win| {
+                let (f, old) = win.snaps.cut(win.clock, m.cfg.decay, 0)?;
+                Some((f, old.w))
             }) {
                 let live = m.cov.n_eff();
-                let f = m.cfg.decay.factor(m.win.as_ref().unwrap().clock - u);
                 let crumb = live - f * old;
                 if crumb != 0.0 && crumb.abs() <= crate::window::EMPTY_FRACTION * live {
                     crumbs += 1;

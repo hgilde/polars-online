@@ -85,6 +85,18 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// sketch, and goes on to the bit; the `huber` and `sgd_huber` cases are
 /// the RMS's, so each converts to the current bytes exactly, and the MAD's
 /// form is the new cases `huber_mad` and `sgd_huber_mad`.
+///
+/// The windowed cases convert otherwise since the running products
+/// (schema 63 before its release, docs/PLAN.md task 275): a ring saved
+/// without them loads with none, so the first read after loading is the
+/// saved state's to the bit, and its snapshots go on decaying by the summed
+/// clock until they leave. Once a snapshot taken after the load is the
+/// boundary, its products decay it and the reads part from the old build's
+/// in the last bits (from row 12 of 16 in `ewridge_window`), as a fresh
+/// run's do, within the golden tolerance; and the state it saves is not
+/// the current fixture's, whose reads took the products from the first
+/// row. So a windowed case is held to its first row exactly, the rest to
+/// the golden tolerance, and to saving bytes that load back to the same.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -348,14 +360,33 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
                  platform, or their bytes differ in libm's last bit",
                 f.writer, current.writer
             );
-            assert!(
-                named(&m.state()) == current.bytes(),
-                "{what}: loaded, the state does not save the current schema's fixture bytes of \
-                 the same case: the loader converts it to another state than this build reaches \
-                 from the same rows"
-            );
+            let windowed = holds_a_window(&f.bytes());
+            if windowed {
+                // A window's snapshots from before task 275 carry no running
+                // products (the doc above `previous!`): converted, they say
+                // so, and the state saves bytes that load back to the same.
+                let saved = named(&m.state());
+                assert!(holds_a_window(&saved), "{what}: the window is gone");
+                let again = load(&case, &saved).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(
+                    named(&again.state()) == saved,
+                    "{what}: saved, loaded, saved"
+                );
+            } else {
+                assert!(
+                    named(&m.state()) == current.bytes(),
+                    "{what}: loaded, the state does not save the current schema's fixture bytes \
+                     of the same case: the loader converts it to another state than this build \
+                     reaches from the same rows"
+                );
+            }
             let tol = if f.writer == writer() { 0.0 } else { TOL };
             for (i, (row, want)) in f.rows().iter().zip(f.outs()).enumerate() {
+                // Under a window, the first read is the saved state's to the
+                // bit; once a snapshot taken after the load is the boundary,
+                // its products decay it, and the reads part from the old
+                // build's in their last bits, as a fresh run's do.
+                let tol = if windowed && i > 0 { tol.max(TOL) } else { tol };
                 same_out(
                     &format!("{what}, row {i} after the save"),
                     &m.step(row),
@@ -365,6 +396,20 @@ fn every_previous_fixture_loads_goes_on_and_converts_to_the_current_bytes() {
             }
         }
     }
+}
+
+/// Whether a saved state holds a window's ring of snapshots: a model's
+/// `win.snaps.ring`, non-empty.
+fn holds_a_window(bytes: &[u8]) -> bool {
+    let v = rmpv::decode::read_value(&mut &bytes[..]).unwrap();
+    let Some(model) = at(&v, &["model"]).and_then(rmpv::Value::as_map) else {
+        return false;
+    };
+    model.iter().any(|(_, m)| {
+        at(m, &["win", "snaps", "ring"])
+            .and_then(rmpv::Value::as_array)
+            .is_some_and(|r| !r.is_empty())
+    })
 }
 
 /// The variant names of [`ModelState`], as serde lists them: the one place
@@ -646,10 +691,9 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
             .unwrap_or_else(|| panic!("{name}: the state has no window ring"));
         assert!(!ring.is_empty(), "{name}: the window holds no snapshot");
         for (i, item) in ring.iter().enumerate() {
-            let moments = item
-                .as_array()
-                .and_then(|t| t.last())
-                .unwrap_or_else(|| panic!("{name}: snapshot {i} is no (clock, stamp, moments)"));
+            let moments = item.as_array().and_then(|t| t.get(2)).unwrap_or_else(|| {
+                panic!("{name}: snapshot {i} is no (clock, stamp, moments, products)")
+            });
             for field in ["nj", "n"] {
                 let Some(count) = at(moments, &["acc", "cross", field]) else {
                     panic!("{name}: snapshot {i} has no acc.cross.{field}");
@@ -659,6 +703,46 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                     "{name}: snapshot {i}'s acc.cross.{field} is empty"
                 );
             }
+        }
+    }
+    // Every windowed model keeps the running products of its decays, one
+    // per decay its window is read with -- two for `lasso`, its selection's
+    // beside its moments' -- and every snapshot the products it was taken
+    // at (docs/PLAN.md task 275).
+    for (name, variant, decays) in [
+        ("ewridge_window", "EwRidge", 1),
+        ("lasso_window", "Lasso", 2),
+        ("ew_cov_window", "EwCovModel", 1),
+        ("ew_class_window", "EwClass", 1),
+        ("marginal_window", "Marginal", 1),
+    ] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let snaps = at(&v, &["model", variant, "win", "snaps"])
+            .unwrap_or_else(|| panic!("{name}: the state has no window"));
+        let live = at(snaps, &["decay"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: the window has no running products"));
+        assert_eq!(live.len(), decays, "{name}: the running products");
+        assert!(held(&rmpv::Value::Array(live.clone())) > 0, "{name}: decay");
+        let ring = at(snaps, &["ring"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap();
+        assert!(!ring.is_empty(), "{name}: the window holds no snapshot");
+        for (i, item) in ring.iter().enumerate() {
+            let products = item
+                .as_array()
+                .and_then(|t| t.get(3))
+                .and_then(rmpv::Value::as_array)
+                .unwrap_or_else(|| panic!("{name}: snapshot {i} keeps no products"));
+            assert_eq!(products.len(), decays, "{name}: snapshot {i}'s products");
+            assert!(
+                held(item.as_array().unwrap().get(3).unwrap()) > 0,
+                "{name}: snapshot {i}"
+            );
         }
     }
     type Listed<'a> = (&'a str, &'a [&'a str], &'a [&'a str]);

@@ -47,9 +47,8 @@
 //!
 //! **The edge is decided on each row's stamp, the decayed clock held
 //! exactly** ([`crate::Stamp`]; docs/PLAN.md task 175). A snapshot is keyed
-//! by two clocks of the row it precedes ([`At`]). The model's own clock,
-//! summed from the steps it decays by, decays the snapshot forward, as it
-//! always did. The stamp decides everything a comparison with `window` or
+//! by two clocks of the row it precedes ([`At`]). The model's own clock is
+//! summed from the steps it decays by; the stamp decides everything a comparison with `window` or
 //! `spacing` decides: which snapshots are trimmed, and when one is due. The
 //! summed clock drifted: a thousand steps of 1 ms came to
 //! 1.0000000000000007 s, and a row exactly one window old was dropped on
@@ -57,6 +56,20 @@
 //! integer nanoseconds; on a number clock, two rows without a capped gap
 //! between them differ by one subtraction of their raw values, as the window
 //! operators decide their edge.
+//!
+//! **A snapshot is decayed forward by the factors the moments took**
+//! ([`Product`]; docs/PLAN.md task 275). The live moments decay row by row,
+//! by `factor(d_i)` on each row; the snapshot to subtract was decayed by one
+//! `factor(Σ d_i)` of the summed clock. Equal in exact arithmetic, the two
+//! part in doubles by the per-row factor's rounding times the rows: a factor
+//! `e` ulps off, as another platform's `exp2(−1/h)` may be, `d·e` ulps over
+//! `d` rows, which the subtraction's guards cannot tell from spread (a target
+//! held over a window of 199 rows read a variance of 1.4e-15). The ring keeps
+//! the running product of the factors the model hands each learned row, and
+//! each snapshot the product it was taken at; their ratio is the factor
+//! ([`Snapshots::cut`]), the same factors the moments went through, so only
+//! the roundings of the products themselves are left, about `√d·ε` and of
+//! either sign.
 
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -67,8 +80,9 @@ use crate::{EwCov, Stamp};
 
 /// Where a snapshot sits: the two clocks of the row it precedes
 /// (docs/PLAN.md task 175). `clock` is the model's own, summed from the
-/// steps it decays by, and a snapshot is decayed forward by the difference
-/// of two of these, as it always was. `stamp` is the row's decayed clock
+/// steps it decays by; a snapshot from a state saved before the running
+/// products (task 275) is decayed forward by the difference of two of
+/// these, as it always was. `stamp` is the row's decayed clock
 /// held exactly, and it alone places the snapshot against the window's edge
 /// and the cadence's spacing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -278,7 +292,7 @@ impl WindowShadow {
     /// of the one `make` forms: the closure the model hands `offer`.
     pub fn new<S: Footprint>(clock: f64, ring: &Snapshots<S>, make: impl FnOnce() -> S) -> Self {
         let snapshot = match ring.ring.back() {
-            Some((_, _, s)) => s.footprint(),
+            Some(e) => e.snap.footprint(),
             None => make().footprint(),
         };
         Self {
@@ -292,8 +306,14 @@ impl WindowShadow {
                 ring: ring
                     .ring
                     .iter()
-                    .map(|(t, stamp, s)| (*t, *stamp, Bytes(s.footprint())))
+                    .map(|e| Entry {
+                        clock: e.clock,
+                        stamp: e.stamp,
+                        snap: Bytes(e.snap.footprint()),
+                        decay: Products::default(),
+                    })
                     .collect(),
+                decay: Products::default(),
                 limit: ring.limit.clone(),
                 next: None,
             },
@@ -467,6 +487,182 @@ pub(crate) fn assert_footprint_counts_every_vector<S: Footprint + Serialize>(
     );
 }
 
+/// A running product of decay factors, `m · 2^(−512·k)`, with `m` kept in
+/// `(2⁻⁵¹², 1]` by exact scalings by `2⁵¹²`, so a product over any stream
+/// never underflows (docs/PLAN.md task 275). A factor of 0, or one below
+/// about `2⁻¹⁰²⁴`, forgets everything before it: the product starts again
+/// at 1 four scalings on, past which every older snapshot's ratio is 0.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Product(f64, i64);
+
+impl Product {
+    pub const ONE: Product = Product(1.0, 0);
+    /// `2⁵¹²`, and its inverse, exact.
+    const UP: f64 = f64::from_bits((1023 + 512) << 52);
+    const DOWN: f64 = f64::from_bits((1023 - 512) << 52);
+
+    /// The product times `lam`, a decay factor in `[0, 1]`. A factor of 1, a
+    /// step of 0, leaves the bits as they are.
+    #[inline]
+    pub fn take(&mut self, lam: f64) {
+        let m = self.0 * lam;
+        if m >= Self::DOWN {
+            self.0 = m;
+            return;
+        }
+        // Scaled first, exactly (`m` is at most 1), so the product is
+        // rounded once, in the normal range.
+        let m = (self.0 * Self::UP) * lam;
+        if m >= Self::DOWN {
+            self.0 = m;
+            self.1 += 1;
+        } else {
+            // A factor below about `2⁻¹⁰²⁴` on one row: what came before
+            // it is gone, as `factor` over a span holding it underflows.
+            self.0 = 1.0;
+            self.1 += 4;
+        }
+    }
+
+    /// The product of the factors taken since `then`, an earlier value of
+    /// this one: their ratio, rounded once, then scaled down exactly by
+    /// `2⁵¹²` for each scaling between them. 1 where none was taken.
+    #[inline]
+    pub fn since(self, then: Product) -> f64 {
+        let mut f = self.0 / then.0;
+        let mut k = self.1 - then.1;
+        while k > 0 && f > 0.0 {
+            f *= Self::DOWN;
+            k -= 1;
+        }
+        f
+    }
+}
+
+/// The running products of a ring, one per decay its model reads the
+/// window with: one, or two for `lasso` (its selection's beside its
+/// moments'). Held inline, so a snapshot's copy allocates nothing; written
+/// as the list of its products.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Products {
+    n: u8,
+    p: [Product; 2],
+}
+
+impl Default for Product {
+    fn default() -> Self {
+        Product::ONE
+    }
+}
+
+impl Products {
+    /// `n` products, each 1.
+    fn ones(n: usize) -> Self {
+        assert!(n <= 2, "a window is read with at most two decays, not {n}");
+        Products {
+            n: n as u8,
+            p: [Product::ONE; 2],
+        }
+    }
+
+    fn len(&self) -> usize {
+        usize::from(self.n)
+    }
+
+    fn get(&self, i: usize) -> Option<Product> {
+        (i < self.len()).then(|| self.p[i])
+    }
+
+    /// Each product takes its factor.
+    #[inline]
+    fn take(&mut self, lams: &[f64]) {
+        for (p, &lam) in self.p.iter_mut().zip(lams) {
+            p.take(lam);
+        }
+    }
+}
+
+impl Serialize for Products {
+    fn serialize<Z: serde::Serializer>(&self, z: Z) -> Result<Z::Ok, Z::Error> {
+        z.collect_seq(&self.p[..self.len()])
+    }
+}
+
+impl<'de> Deserialize<'de> for Products {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Vec::<Product>::deserialize(d)?;
+        if v.len() > 2 {
+            return Err(serde::de::Error::invalid_length(
+                v.len(),
+                &"at most two products",
+            ));
+        }
+        let mut out = Products::ones(v.len());
+        out.p[..v.len()].copy_from_slice(&v);
+        Ok(out)
+    }
+}
+
+/// One snapshot in a ring, with where it sits and the running products it
+/// was taken at ([`Snapshots::cut`]). Written as the tuple `(clock, stamp,
+/// snapshot, products)`; a ring saved before the products (docs/PLAN.md
+/// task 275) wrote `(clock, stamp, snapshot)`, which reads with none, an
+/// empty list.
+#[derive(Debug, Clone, PartialEq)]
+struct Entry<S> {
+    clock: f64,
+    stamp: Stamp,
+    snap: S,
+    decay: Products,
+}
+
+impl<S: Serialize> Serialize for Entry<S> {
+    fn serialize<Z: serde::Serializer>(&self, z: Z) -> Result<Z::Ok, Z::Error> {
+        use serde::ser::SerializeTuple;
+        let mut t = z.serialize_tuple(4)?;
+        t.serialize_element(&self.clock)?;
+        t.serialize_element(&self.stamp)?;
+        t.serialize_element(&self.snap)?;
+        t.serialize_element(&self.decay)?;
+        t.end()
+    }
+}
+
+impl<'de, S: Deserialize<'de>> Deserialize<'de> for Entry<S> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit<S>(std::marker::PhantomData<S>);
+        impl<'de, S: Deserialize<'de>> serde::de::Visitor<'de> for Visit<S> {
+            type Value = Entry<S>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a snapshot as (clock, stamp, snapshot[, products])")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<Entry<S>, A::Error> {
+                use serde::de::Error;
+                let clock = a
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                let stamp = a
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                let snap = a
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(2, &self))?;
+                let decay = a.next_element::<Products>()?.unwrap_or_default();
+                Ok(Entry {
+                    clock,
+                    stamp,
+                    snap,
+                    decay,
+                })
+            }
+        }
+        d.deserialize_tuple(4, Visit(std::marker::PhantomData))
+    }
+}
+
 /// Snapshots of an accumulator, oldest first, spanning at most one window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshots<S> {
@@ -493,11 +689,25 @@ pub struct Snapshots<S> {
     /// Rows since the last snapshot, so the cadence is counted in the
     /// *stream* and never in the chunk (hard rule 3).
     since: usize,
-    /// `(clock of the row the snapshot precedes, its stamp, snapshot)`: the
-    /// model's summed clock, which decays the snapshot forward, and the
-    /// row's decayed clock held exactly, which places it against the
-    /// window's edge and the spacing ([`At`]; docs/PLAN.md task 175).
-    ring: VecDeque<(f64, Stamp, S)>,
+    /// `(clock of the row the snapshot precedes, its stamp, snapshot, the
+    /// running products at it)`: the model's summed clock, the row's
+    /// decayed clock held exactly, which places it against the window's
+    /// edge and the spacing ([`At`]; docs/PLAN.md task 175), and the
+    /// products [`Self::decay`] held when the snapshot was taken, which
+    /// decay it forward ([`Entry`]; docs/PLAN.md task 275).
+    ring: VecDeque<Entry<S>>,
+    /// The running product of the per-row factors the model's moments have
+    /// decayed by, one per decay the model reads its window with
+    /// ([`Product`]; docs/PLAN.md task 275): a snapshot is decayed forward by
+    /// the ratio of this to the product it was taken at, the same factors
+    /// the live moments went through, rather than by one `factor` of the
+    /// summed clock, which a per-row factor `e` ulps off parts from them
+    /// by about `d·e` ulps over `d` rows. Empty before the first learned
+    /// row, and in a state saved before it, whose snapshots carry none and
+    /// are decayed forward by the summed clock as they were. Last of the
+    /// written fields: the compact encoding is positional.
+    #[serde(default)]
+    decay: Products,
     /// The budget, and a refusing budget's overrun: configuration the caller
     /// sets after building or restoring the model, so not part of the
     /// state, and two rings that differ only here are equal.
@@ -571,6 +781,7 @@ impl<S> Snapshots<S> {
             closed: WindowClosed::default(),
             since: usize::MAX, // the first row always snapshots
             ring: VecDeque::new(),
+            decay: Products::default(),
             limit: Limit::default(),
             next: None,
         })
@@ -624,26 +835,44 @@ impl<S> Snapshots<S> {
 
     /// The snapshots, oldest first.
     pub fn iter(&self) -> impl Iterator<Item = &S> {
-        self.ring.iter().map(|(_, _, s)| s)
+        self.ring.iter().map(|e| &e.snap)
     }
 
     /// Every snapshot held, oldest first, for a caller that must rewrite them
     /// in place: a state converted as it is read.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
-        self.ring.iter_mut().map(|(_, _, s)| s)
+        self.ring.iter_mut().map(|e| &mut e.snap)
     }
 
     /// The snapshot to subtract, and the model's clock it is referenced at,
     /// which decays it forward.
     pub fn boundary(&self) -> Option<(f64, &S)> {
-        self.ring.front().map(|(t, _, s)| (*t, s))
+        self.ring.front().map(|e| (e.clock, &e.snap))
+    }
+
+    /// The snapshot to subtract, and the factor that decays it forward to
+    /// the model's `clock`, by the model's `which`-th decay: the ratio of the
+    /// running product to the one the snapshot was taken at, the product of
+    /// the very factors the live moments decayed by since (docs/PLAN.md task
+    /// 275). A snapshot from a state saved before the products, which holds
+    /// none, is decayed by `decay` over the summed clock, as it always was,
+    /// so the state's first read after loading is the one it saved.
+    pub fn cut(&self, clock: f64, decay: crate::Decay, which: usize) -> Option<(f64, &S)> {
+        self.ring.front().map(|e| {
+            let f = match (e.decay.get(which), self.decay.get(which)) {
+                (Some(then), Some(now)) => now.since(then),
+                _ => decay.factor(clock - e.clock),
+            };
+            (f, &e.snap)
+        })
     }
 
     /// The newest snapshot's place, which the spacing is measured from.
     pub(crate) fn newest(&self) -> Option<At> {
-        self.ring
-            .back()
-            .map(|&(clock, stamp, _)| At { clock, stamp })
+        self.ring.back().map(|e| At {
+            clock: e.clock,
+            stamp: e.stamp,
+        })
     }
 
     /// The next learned row's stamp, its decayed clock held exactly
@@ -687,9 +916,9 @@ impl<S: Footprint> Snapshots<S> {
     /// the row it precedes, which keeps that row -- review 2026-09-12, S6.)
     pub fn trim(&mut self, now: impl Into<Stamp>) {
         let now = now.into();
-        while self.ring.len() > 1 && self.closed.has_left(now, self.ring[0].1, self.window) {
-            if let Some((_, _, s)) = self.ring.pop_front() {
-                self.limit.held = self.limit.held.saturating_sub(s.footprint());
+        while self.ring.len() > 1 && self.closed.has_left(now, self.ring[0].stamp, self.window) {
+            if let Some(e) = self.ring.pop_front() {
+                self.limit.held = self.limit.held.saturating_sub(e.snap.footprint());
             }
         }
     }
@@ -737,7 +966,12 @@ impl<S: Footprint> Snapshots<S> {
                 return;
             }
             self.limit.held = held;
-            self.ring.push_back((at.clock, at.stamp, snap));
+            self.ring.push_back(Entry {
+                clock: at.clock,
+                stamp: at.stamp,
+                snap,
+                decay: self.decay,
+            });
             self.enforce();
         }
     }
@@ -748,6 +982,29 @@ impl<S: Footprint> Snapshots<S> {
     /// Every windowed model's step does exactly this, before it learns the
     /// row.
     pub fn learn(&mut self, clock: &mut f64, d_clock: f64, make: impl FnOnce() -> S) {
+        self.learn_decayed(clock, d_clock, &[], make);
+    }
+
+    /// [`Self::learn`] for a model whose moments decay by `lams` on this row,
+    /// one factor per decay it reads its window with ([`Self::cut`]'s
+    /// `which`): each running product takes its factor before the snapshot
+    /// is offered, since the snapshot holds the state already decayed to the
+    /// row. Every learned row, whatever its weight or its targets, decays
+    /// the moments, and so moves the products (hard rule 9).
+    pub fn learn_decayed(
+        &mut self,
+        clock: &mut f64,
+        d_clock: f64,
+        lams: &[f64],
+        make: impl FnOnce() -> S,
+    ) {
+        if self.decay.len() != lams.len() {
+            // The first learned row, or the first since a state saved before
+            // the products: from 1. A snapshot held from before keeps none and
+            // reads the summed clock (`Self::cut`).
+            self.decay = Products::ones(lams.len());
+        }
+        self.decay.take(lams);
         let at = self.next_at(*clock, d_clock);
         self.next = None;
         self.offer(at, make);
@@ -776,7 +1033,7 @@ impl<S: Footprint> Snapshots<S> {
 
     /// The bytes the ring's snapshots hold.
     pub fn bytes(&self) -> usize {
-        self.ring.iter().map(|(_, _, s)| s.footprint()).sum()
+        self.ring.iter().map(|e| e.snap.footprint()).sum()
     }
 
     fn enforce(&mut self) {
@@ -1108,6 +1365,165 @@ mod tests {
         fn footprint(&self) -> usize {
             8
         }
+    }
+
+    /// A target's moments and weight before a row, decayed to it: a ring
+    /// snapshot for the tests of the running products.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Held(f64, crate::TargetMoments);
+
+    impl Footprint for Held {
+        fn footprint(&self) -> usize {
+            8
+        }
+    }
+
+    /// The window `d` rows long reads a target held over it as no spread
+    /// when the moments decay by a per-row factor 1 ulp off the one its
+    /// decay names, as another platform's `exp2(−1/h)` may round it
+    /// (docs/PLAN.md task 275). Read through the summed clock, the
+    /// snapshot was decayed by `lam^d` from `powf` against moments that went
+    /// through `lam'^d`, `d` ulps apart, and the subtraction left a
+    /// variance where there is none: 6.2e-17 at a window of 500 rows 1 ulp
+    /// off, 2.2e-15 at 199 and 1.2e-16 at 500 2 ulps off (and in `gaps`'
+    /// held-target cases, 140 of 490 with Apple's `exp2` moved by 1 ulp).
+    /// Through the running products the snapshot decays by the very factors
+    /// the moments did.
+    #[test]
+    fn a_window_decays_its_snapshot_by_the_factors_the_moments_took() {
+        let lam: f64 = 0.990_15;
+        let shapes = [(199.0, 300, 230), (500.0, 300, 600), (30.0, 100, 40)];
+        let offsets = [-2i64, -1, 1, 2];
+        for (k, (window, moving, held)) in offsets.iter().flat_map(|&k| shapes.map(|s| (k, s))) {
+            let off = f64::from_bits(lam.to_bits().wrapping_add_signed(k));
+            let mut ring = Snapshots::new(window, 1)
+                .unwrap()
+                .closed(WindowClosed::Both);
+            let (mut tm, mut w, mut clock) = (crate::TargetMoments::new(1), 0.0f64, 0.0);
+            let mut s = 7u64;
+            for i in 0..moving + held {
+                let y = if i >= moving { 0.87 } else { 0.5 + lcg(&mut s) };
+                let (d, l) = if i == 0 { (0.0, 1.0) } else { (1.0, off) };
+                ring.learn_decayed(&mut clock, d, &[l], || Held(w * l, tm.decayed(l)));
+                let wn = l * w + 1.0;
+                tm.learn(0, y, l * w / wn, 1.0 / wn, l, 1.0);
+                w = wn;
+            }
+            let case = format!("window {window}, {held} rows held, {k} ulps");
+            let (f, Held(w_then, old)) = ring.cut(clock, Decay::Lam(lam), 0).unwrap();
+            let w_old = f * w_then;
+            let rest = w - w_old;
+            let out = tm.truncated(old, f, &[Some((w_old / rest, w / rest))]);
+            assert_eq!(out.vars()[0], 0.0, "{case}: the held target");
+            assert!(
+                (out.means()[0] - 0.87).abs() < 1e-12,
+                "{case}: {}",
+                out.means()[0]
+            );
+            // The factor is the product of the `d` factors since the
+            // boundary, to a rounding or two of each.
+            let (u, _) = ring.boundary().unwrap();
+            let want = off.powi((clock - u) as i32);
+            assert!((f - want).abs() <= 1e-13 * want, "{case}: {f} vs {want}");
+        }
+    }
+
+    /// The running product keeps its value across its scalings, which are
+    /// exact, never underflows, and forgets everything before a factor of
+    /// 0 (docs/PLAN.md task 275).
+    #[test]
+    fn a_running_product_scales_exactly_and_forgets_at_zero() {
+        let lam = 0.5f64.powi(7);
+        let mut p = Product::ONE;
+        let then = p;
+        let mut marks = Vec::new();
+        for i in 1..=300 {
+            p.take(lam);
+            if i % 50 == 0 {
+                marks.push((i, p));
+            }
+        }
+        // 2100 halvings: four scalings, every value a power of two, exact.
+        assert_eq!(p.1, 4);
+        for &(i, m) in &marks {
+            let want = 0.5f64.powi(7 * (300 - i));
+            assert_eq!(p.since(m), want, "since row {i}");
+        }
+        assert_eq!(p.since(then), 0.0, "2^-2100 underflows");
+        assert_eq!(p.since(p), 1.0);
+        // A factor of 1 leaves the bits; one of 0 forgets.
+        let before = p;
+        p.take(1.0);
+        assert_eq!(p, before);
+        p.take(0.0);
+        assert_eq!(p.since(before), 0.0);
+        let after = p;
+        p.take(0.75);
+        assert_eq!(p.since(after), 0.75);
+        // A factor below `2^-1024` on one row forgets too, and a subnormal
+        // one as well.
+        for tiny in [f64::from_bits(1), 1e-310, 2f64.powi(-1030)] {
+            let mut q = Product(0.75, 3);
+            let before = q;
+            q.take(tiny);
+            assert_eq!(q.since(before), 0.0, "{tiny:e}");
+            assert!(q.0 >= Product::DOWN && q.0 <= 1.0);
+        }
+    }
+
+    /// A ring saved before the running products, `(clock, stamp, snapshot)`
+    /// per snapshot, loads with none: its snapshots decay by the summed
+    /// clock, as they did, the first read after loading is the one the state
+    /// saved, and the snapshots taken after the load carry products
+    /// (docs/PLAN.md task 275).
+    #[test]
+    fn a_ring_saved_before_the_products_reads_the_summed_clock() {
+        let decay = Decay::Halflife(5.0);
+        let mut ring = Snapshots::new(4.0, 1).unwrap();
+        let mut clock = 0.0;
+        for i in 0..10usize {
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            ring.learn_decayed(&mut clock, d, &[decay.factor(d)], || i);
+        }
+        let (f_new, _) = ring.cut(clock, decay, 0).unwrap();
+        // The same ring as a build before the products wrote it.
+        let named = rmp_serde::to_vec_named(&ring).unwrap();
+        let legacy = rmpv::Value::Map(
+            match rmpv::decode::read_value(&mut named.as_slice()).unwrap() {
+                rmpv::Value::Map(m) => m,
+                v => panic!("a ring is written as a map: {v}"),
+            }
+            .into_iter()
+            .filter(|(k, _)| k.as_str() != Some("decay"))
+            .map(|(k, v)| {
+                if k.as_str() == Some("ring") {
+                    let entries = v
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|e| rmpv::Value::Array(e.as_array().unwrap()[..3].to_vec()))
+                        .collect();
+                    (k, rmpv::Value::Array(entries))
+                } else {
+                    (k, v)
+                }
+            })
+            .collect(),
+        );
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &legacy).unwrap();
+        let mut old: Snapshots<usize> = rmp_serde::from_slice(&bytes).unwrap();
+        let (f_old, &snap) = old.cut(clock, decay, 0).unwrap();
+        let (u, _) = old.boundary().unwrap();
+        assert_eq!(f_old.to_bits(), decay.factor(clock - u).to_bits());
+        assert_eq!(snap, *ring.boundary().unwrap().1);
+        assert!((f_old - f_new).abs() <= 1e-15, "{f_old} vs {f_new}");
+        // Rows after the load: the new snapshots carry products, the old
+        // ones still read the summed clock until they leave.
+        for i in 10..20usize {
+            old.learn_decayed(&mut clock, 1.0, &[decay.factor(1.0)], || i);
+        }
+        assert!(old.ring.iter().all(|e| e.decay.len() == 1));
     }
 
     /// The scalar truncation is the slice one's arithmetic, to the bit, and
@@ -2161,7 +2577,7 @@ mod tests {
 
     /// The clocks of a ring's snapshots, oldest first.
     fn clocks_of<S>(r: &Snapshots<S>) -> Vec<f64> {
-        r.ring.iter().map(|(t, _, _)| *t).collect()
+        r.ring.iter().map(|e| e.clock).collect()
     }
 
     /// A ring fed `clocks`, a snapshot offered and the ring trimmed at each
@@ -2373,7 +2789,7 @@ mod tests {
         let mid = |r: &Snapshots<usize>, t: f64| {
             r.ring
                 .back()
-                .is_some_and(|&(u, _, _)| t - u > 0.0 && t - u < cadence.spacing)
+                .is_some_and(|e| t - e.clock > 0.0 && t - e.clock < cadence.spacing)
         };
         // Cuts where the last row learned is part of a spacing past the
         // newest snapshot, and the next row takes none.
