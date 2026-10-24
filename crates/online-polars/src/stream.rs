@@ -334,13 +334,13 @@ impl AnyModel {
 
     /// Whether the model is still holding its first rows to seed itself
     /// from, its `warm_rows`, and so reports nothing: `kmeans`' centres,
-    /// `hmm`'s states, `bocpd`'s prior. Every other model has no such
-    /// buffer.
+    /// `hmm`'s states, `bocpd`'s prior, `kalman`'s unsized priors.
     pub fn seeding(&self) -> bool {
         match self {
             AnyModel::KMeans(m) => !m.seeded(),
             AnyModel::Hmm(m) => !m.seeded(),
             AnyModel::Bocpd(m) => m.warming(),
+            AnyModel::Kalman(m) => m.sizing(),
             _ => false,
         }
     }

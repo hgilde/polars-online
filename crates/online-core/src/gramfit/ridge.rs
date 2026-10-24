@@ -154,11 +154,18 @@ pub fn ridge_fits(
         }
     }
     let cbs = sym_quad(c, n, &bs, nt);
+    // The slots with variance: a column of none -- the one `standardize`
+    // drops, or a constant through a Gram pooled within parts -- has a
+    // coefficient of 0 by construction and spends no degree of freedom
+    // (docs/PLAN.md task 270, review round 9 B-3: counting it divided the
+    // residuals by one too few). The standard errors below read the same
+    // columns.
+    let kept: Vec<usize> = (0..n).filter(|&p| c[p * n + p] > 0.0).collect();
     // A Gram pooled within parts spent an intercept on each part it holds
     // the target's rows of, and has none of its own (docs/PLAN.md task 240).
     let dof_used = |t: usize| match g.within {
-        Some(parts) => n + parts[t],
-        None => n + usize::from(icept.is_some()),
+        Some(parts) => kept.len() + parts[t],
+        None => kept.len() + usize::from(icept.is_some()),
     };
     let mut fits: Vec<RidgeFit> = targets
         .iter()
@@ -223,7 +230,6 @@ pub fn ridge_fits(
     // NaN was every slot's (docs/PLAN.md task 269, review round 8 A-5). Its
     // own error stays NaN; the others are least squares' on the columns
     // kept, as a fit without it gives them.
-    let kept: Vec<usize> = (0..n).filter(|&p| c[p * n + p] > 0.0).collect();
     let nk_se = kept.len();
     let c_kept: std::borrow::Cow<'_, [f64]> = if nk_se == n {
         std::borrow::Cow::Borrowed(c)

@@ -425,6 +425,87 @@ fn a_column_of_no_variance_leaves_the_others_their_standard_errors() {
     }
 }
 
+/// A column `standardize` drops is no degree of freedom: the fit's
+/// `sigma2` is least squares' on the columns kept, by faer's LU of the raw
+/// normal equations of `[1, z1, z3]` and the residuals themselves, over
+/// `n - 3`. Counting the dropped column divided by `n - 4` (review round
+/// 9, B-3; docs/PLAN.md task 270). Pooled within parts, the kept columns
+/// and the parts' intercepts.
+#[test]
+fn a_dropped_column_is_no_degree_of_freedom() {
+    let mut r = rows(35, 60, 3, 1.0);
+    for row in &mut r.z {
+        row[2] = 1.5;
+    }
+    let g = gram_of(&r);
+    let n = r.z.len() as f64;
+    let fits = ridge_fits(&g.arrays(), &[0], &[1, 2, 3], Some(0), 0.0, true);
+    let fit = &fits[0];
+    assert_eq!(fit.coef[2], 0.0, "the case: the constant dropped");
+    let cols = [0usize, 1, 3];
+    let raw: Vec<f64> = cols
+        .iter()
+        .flat_map(|&i| cols.iter().map(move |&j| (i, j)))
+        .map(|(i, j)| r.z.iter().map(|z| z[i] * z[j]).sum::<f64>())
+        .collect();
+    let rhs: Vec<f64> = cols
+        .iter()
+        .map(|&i| {
+            r.z.iter()
+                .zip(&r.y)
+                .map(|(z, y)| z[i] * y[0].unwrap())
+                .sum()
+        })
+        .collect();
+    let b = oracle::solve(&raw, &rhs);
+    let coef = [b[0], b[1], b[2]];
+    close(
+        &[fit.coef[0], fit.coef[1], fit.coef[3]],
+        &coef,
+        1e-12,
+        "least squares on the kept columns",
+    );
+    let rss: f64 =
+        r.z.iter()
+            .zip(&r.y)
+            .map(|(z, y)| {
+                let e = y[0].unwrap() - cols.iter().zip(&coef).map(|(&i, c)| c * z[i]).sum::<f64>();
+                e * e
+            })
+            .sum();
+    close(
+        &[fit.sigma2],
+        &[rss / (n - 3.0)],
+        1e-12,
+        "sigma2 over n - 3",
+    );
+    let inv = oracle::inverse(&raw);
+    for (p, &i) in cols.iter().enumerate() {
+        let se = (inv[p * 3 + p] * rss / (n - 3.0)).sqrt();
+        close(&[fit.se[i]], &[se], 1e-10, "se");
+    }
+    // Pooled within parts, through the origin: the constant has no
+    // variance and is no degree of freedom either.
+    let mut w = g.clone();
+    w.within = Some(vec![2, 2]);
+    w.means.iter_mut().for_each(|m| *m = 0.0);
+    w.means_by_target.iter_mut().for_each(|m| *m = 0.0);
+    w.target_means.iter_mut().for_each(|m| *m = 0.0);
+    w.cross_moments = w.cross_centred.clone();
+    for standardize in [false, true] {
+        let fits = ridge_fits(&w.arrays(), &[0, 1], &[1, 2, 3], None, 0.3, standardize);
+        for (t, fit) in fits.iter().enumerate() {
+            let nk = w.target_n_kish[t];
+            close(
+                &[fit.sigma2],
+                &[fit.resid_var * nk / (nk - 2.0 - 2.0)],
+                1e-12,
+                &format!("within, standardize {standardize}, target {t}"),
+            );
+        }
+    }
+}
+
 #[test]
 fn without_an_intercept_the_system_is_the_raw_moments() {
     // A level in the target that no column carries, so the fit through

@@ -257,7 +257,8 @@ SHARED_FIELDS: list[tuple[str, str, str]] = [
         "why the row's predictions are null: `below_min_settled_frac`, `below_min_weight`, "
         "`above_max_error_inflation` or `below_warm_rows`. That order is their precedence, so "
         "the first that applies is the one named. `below_warm_rows` is the model's own "
-        "warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from",
+        "warm-up, the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the "
+        "rows `kalman` sizes a target's prior from",
         "where nothing was withheld",
     ),
     (
