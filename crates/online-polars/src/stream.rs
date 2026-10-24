@@ -522,6 +522,11 @@ const DEFAULT_BINS: usize = 16;
 /// not move much -- and hold 8 KB per feature while they wait.
 const DEFAULT_BIN_WARM_ROWS: usize = 1_000;
 
+/// The cut of `bin_stat = "huber"` in units of the target's robust scale
+/// when the spec names none: `huber`'s default, the cut at which Huber's
+/// estimator keeps 95% of the mean's efficiency on normal errors.
+pub(crate) const DEFAULT_BIN_HUBER_DELTA: f64 = 1.345;
+
 /// Build the model instances for a spec: one per half-life grid entry. A
 /// model's own refusal names the spec, as `Spec::validate` names it for
 /// `bocpd`'s and the other cfg builders': in a bank of several specs
@@ -1070,6 +1075,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             bin_warm_rows,
             bin_edges,
             bin_budget,
+            bin_stat,
+            bin_huber_delta,
             // How the pairs are run, not what they are (`marginal_shards`).
             shards: _,
         } => {
@@ -1113,6 +1120,19 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                             }
                         },
                         warm_rows: bin_warm_rows.unwrap_or(DEFAULT_BIN_WARM_ROWS),
+                        stat: match bin_stat.as_deref() {
+                            None | Some("mean") => online_core::BinStat::Mean,
+                            Some("huber") => online_core::BinStat::Huber {
+                                delta: bin_huber_delta.map_or(DEFAULT_BIN_HUBER_DELTA, |n| n.0),
+                            },
+                            Some(other) => {
+                                return Err(crate::words_refusal(
+                                    "bin_stat",
+                                    &["mean", "huber"],
+                                    other,
+                                ));
+                            }
+                        },
                         budget_mib: bin_budget.map(|n| n.0),
                     })),
                 },

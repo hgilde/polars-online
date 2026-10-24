@@ -641,6 +641,7 @@ ENUM_PROBES: list[
     ("lasso.target_gaps", "lasso", {}, "model.target_gaps", "word"),
     ("lasso.window_budget", "lasso", {"window_size": 100.0}, "model.window_budget", "key"),
     ("marginal.bin_rule", "marginal", {"bins": 4}, "model.bin_rule", "word"),
+    ("marginal.bin_stat", "marginal", {"bins": 4}, "model.bin_stat", "word"),
     ("marginal.feature_moments", "marginal", {}, "model.feature_moments", "word"),
     ("marginal.serial_rule", "marginal", {"lags": [1]}, "model.serial_rule", "word"),
     ("marginal.shards", "marginal", {}, "model.shards", "word"),

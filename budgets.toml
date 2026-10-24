@@ -184,6 +184,11 @@ what = "holt, level and trend of one column, half-life 1000: AnyModel::step_into
 [instructions.marginal]
 what = "marginal, 20 features against one target, half-life 1000: AnyModel::step_into, into one kept Step"
 
+# Task 272 (c): no budget until CI's first count, which
+# `scripts/budgets.py apply` writes.
+[instructions.marginal_bins_huber]
+what = "marginal, 20 features against one target, four given bins a feature under bin_stat huber, half-life 1000: AnyModel::step_into, into one kept Step"
+
 [instructions.ew_class]
 what = "ew_class, 20 features, 3 classes, full covariance, precision prior 1: AnyModel::step_into, into one kept Step"
 

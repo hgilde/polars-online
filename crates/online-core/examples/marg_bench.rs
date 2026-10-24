@@ -18,8 +18,10 @@
 //! feature ranges that [`Marginal::step_sharded`] steps through each batch of
 //! held rows in turn on this thread (0, unsplit): the same arithmetic with
 //! a range's pairs kept in cache across the batch, which is how task 127
-//! measured the state's traffic (docs/PERFORMANCE.md §39). `-- targets=9
-//! bins=16` is E71's shape (docs/PLAN.md task 122), and `-- targets=9
+//! measured the state's traffic (docs/PERFORMANCE.md §39). `stat`, `mean`
+//! or `huber`, is each bin's location (docs/PLAN.md task 272 (c)), and
+//! `spikes`, a percentage of rows whose targets take a spike of 50 (0).
+//! `-- targets=9 bins=16` is E71's shape (docs/PLAN.md task 122), and `-- targets=9
 //! lags=1,2,5,10,20,50 cross=1` E70's (task 123). The last line is a
 //! checksum of every pair's numbers, so two builds, or two loop orders, that
 //! should agree to the bit can be seen to.
@@ -43,7 +45,7 @@ fn main() {
         .collect();
     let known = [
         "targets", "bins", "features", "absent", "lags", "cross", "rows", "runs", "moments",
-        "shards",
+        "shards", "stat", "spikes",
     ];
     if let Some((k, _)) = args.iter().find(|(k, _)| !known.contains(&k.as_str())) {
         panic!("unknown argument {k:?}; expected one of {known:?}");
@@ -79,7 +81,13 @@ fn main() {
             let x: Vec<f64> = (0..k).map(|_| lcg(&mut seed)).collect();
             let y = (0..n_targets)
                 .map(|t| {
-                    let v = x[t % k] + 0.3 * lcg(&mut seed);
+                    let mut v = x[t % k] + 0.3 * lcg(&mut seed);
+                    // Drawn only when asked, so the stream is the one an
+                    // older build of this bench made.
+                    let spikes = num("spikes", 0) as f64;
+                    if spikes > 0.0 && (lcg(&mut seed) + 1.0) * 50.0 < spikes {
+                        v += 50.0;
+                    }
                     let absent = t > 0 && (lcg(&mut seed) + 1.0) * 50.0 < absent_pct as f64;
                     (!absent).then_some(v)
                 })
@@ -104,6 +112,11 @@ fn main() {
                     edges: None,
                     rule: BinRule::Quantile,
                     warm_rows: 1_000,
+                    stat: match get("stat") {
+                        None | Some("mean") => BinStat::Mean,
+                        Some("huber") => BinStat::Huber { delta: 1.345 },
+                        Some(other) => panic!("stat is mean or huber, got {other:?}"),
+                    },
                     budget_mib: None,
                 })
             }),
@@ -170,4 +183,11 @@ fn main() {
         }
     }
     println!("checksum {h:016x}");
+    // The state as the bank writes it, named msgpack, and per target.
+    let bytes = rmp_serde::to_vec_named(&m.state()).expect("a state encodes");
+    println!(
+        "state {} bytes, {:.0} per target",
+        bytes.len(),
+        bytes.len() as f64 / n_targets as f64
+    );
 }

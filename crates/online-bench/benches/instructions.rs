@@ -60,6 +60,7 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::ftrl(args = ("ftrl"), setup = model_setup)]
 #[bench::holt(args = ("holt"), setup = model_setup)]
 #[bench::marginal(args = ("marginal"), setup = model_setup)]
+#[bench::marginal_bins_huber(args = ("marginal_bins_huber"), setup = model_setup)]
 #[bench::ew_class(args = ("ew_class"), setup = model_setup)]
 #[bench::deco(args = ("deco"), setup = model_setup)]
 #[bench::hmm(args = ("hmm"), setup = model_setup)]

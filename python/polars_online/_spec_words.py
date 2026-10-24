@@ -147,5 +147,5 @@ _INF_OK: dict[str, frozenset[str]] = {
     "pa": frozenset({"c", "coef_min", "coef_max"}),
     "holt": frozenset({"trend_half_life"}),
     # No bound on the bins' memory (docs/PLAN.md task 131).
-    "marginal": frozenset({"bin_budget"}),
+    "marginal": frozenset({"bin_budget", "bin_huber_delta"}),
 }

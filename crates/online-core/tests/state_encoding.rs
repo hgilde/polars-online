@@ -85,6 +85,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                                 edges: None,
                                 rule: online_core::BinRule::Quantile,
                                 warm_rows: 4,
+                                stat: online_core::BinStat::Mean,
                                 budget_mib: None,
                             })
                         }),
@@ -290,11 +291,13 @@ fn a_human_readable_float_does_not_move_the_msgpack() {
 
 /// A bins budget is the one field of `BinCfg` that skips, and it is last, so
 /// a model with it set and one without both round-trip in both encodings,
-/// and one without writes the bytes it did before the field existed
-/// (docs/PLAN.md task 131).
+/// and one without writes no budget (docs/PLAN.md task 131). The bins'
+/// statistic is written whatever it is, ahead of the budget (task 272 (c)),
+/// and a Huber histogram -- its cells' robust weights and its targets'
+/// scales -- round-trips in both encodings too.
 #[test]
 fn a_bins_budget_round_trips_in_both_encodings() {
-    let build = |budget_mib| {
+    let build = |budget_mib, stat| {
         let cfg = MarginalCfg {
             n_features: 2,
             n_targets: 1,
@@ -308,6 +311,7 @@ fn a_bins_budget_round_trips_in_both_encodings() {
                 edges: None,
                 rule: online_core::BinRule::Quantile,
                 warm_rows: 4,
+                stat,
                 budget_mib,
             })),
             feature_moments: online_core::FeatureMomentLayout::PerTarget,
@@ -322,17 +326,27 @@ fn a_bins_budget_round_trips_in_both_encodings() {
         }
         m
     };
+    let huber = online_core::BinStat::Huber { delta: 1.345 };
     for budget in [None, Some(512.0), Some(f64::INFINITY)] {
-        roundtrip(&build(budget), &format!("marginal bin_budget={budget:?}"));
+        for stat in [online_core::BinStat::Mean, huber] {
+            roundtrip(
+                &build(budget, stat),
+                &format!("marginal bin_budget={budget:?} {stat:?}"),
+            );
+        }
     }
-    // Absent, the field is not written at all.
+    // Absent, the budget is not written at all.
     let bins = online_core::BinCfg {
         n_bins: 2,
         edges: None,
         rule: online_core::BinRule::Quantile,
         warm_rows: 4,
+        stat: online_core::BinStat::Mean,
         budget_mib: None,
     };
     let compact = rmp_serde::to_vec(&bins).unwrap();
-    assert_eq!(compact[0], 0x94, "four fields, as before the budget");
+    assert_eq!(
+        compact[0], 0x95,
+        "five fields: the statistic, and no budget"
+    );
 }
