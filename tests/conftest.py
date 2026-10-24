@@ -34,6 +34,18 @@ import tiers  # noqa: E402
 
 tiers.register()
 
+# The `oracle` mark, on every test that compares with another library's
+# computation (tests/oracle_marks.py). Before pytest's own `-m` selection,
+# which reads it.
+import oracle_marks  # noqa: E402
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        if oracle_marks.is_oracle_test(item.path, getattr(item, "fixturenames", ())):
+            item.add_marker(pytest.mark.oracle)
+
 
 @contextlib.contextmanager
 def _build_lock(path: Path):
