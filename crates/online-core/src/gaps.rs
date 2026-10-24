@@ -2467,6 +2467,69 @@ mod tests {
         }
     }
 
+    /// A held target whose spread from before the window has sunk into the
+    /// subnormals still reads no spread inside the window (docs/PLAN.md
+    /// task 273). At `lam = 0.70711` over 2,100 held rows the live variance
+    /// is 5.6e-317 and the snapshot's share of it the same: they differ by
+    /// one subnormal step, 5e-324, and the guard `var ≤ 64 ε·terms` read
+    /// it as spread, since `64 ε·terms` underflows to 0 there. A double
+    /// below the normal range holds a fixed step, 2⁻¹⁰⁷⁴, rather than `ε`
+    /// of itself, so the guard is 64 of whichever is larger.
+    #[test]
+    // 0.70711 on purpose: under `FRAC_1_SQRT_2` this stream's held target
+    // already read 0, and the subnormal remainder is what this pins.
+    #[allow(clippy::approx_constant)]
+    fn a_held_target_whose_history_sank_below_the_normal_range_reads_no_spread() {
+        use crate::{EwRidge, EwRidgeCfg, OnlineModel};
+        for level in [0.5, 1e3, -1e8] {
+            let mut m = EwRidge::new(EwRidgeCfg {
+                n_features: 1,
+                n_targets: 2,
+                fit_intercept: true,
+                decay: crate::Decay::Lam(0.70711),
+                ridge: vec![1e-6],
+                feature_sets: vec![],
+                standardize: false,
+                ridge_scale: false,
+                coef_prior: None,
+                session_shrink: None,
+                long_half_life: None,
+                min_weight: 3.0,
+                solve_every: 0.0,
+                max_rows_between_solves: 1,
+                solve_share: None,
+                gram_block_rows: 0,
+                target_gaps: TargetGaps::OwnRows,
+                window: Some(1999.0),
+                window_every: None,
+                max_rows_between_snapshots: None,
+            })
+            .unwrap();
+            m.set_window_closed(crate::WindowClosed::Both);
+            let (held, n) = (2100, 2400);
+            let mut s = 2u64;
+            for i in 0..n {
+                let x = lcg(&mut s);
+                let y0 = if i >= n - held {
+                    level + 0.37
+                } else {
+                    level + lcg(&mut s)
+                };
+                let y1 = level + 0.5 * x + lcg(&mut s);
+                let w = 0.75 + 0.5 * lcg(&mut s).abs();
+                m.step(
+                    &[x],
+                    &[Some(y0), Some(y1)],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    w,
+                );
+            }
+            let tm = m.gram_parts().1.expect("the window's target moments");
+            assert_eq!(tm.vars()[0], 0.0, "level {level}: the held target");
+            assert!(tm.vars()[1] > 0.1, "level {level}: the moving target");
+        }
+    }
+
     /// A target absent long enough that its own weight's per-row decay
     /// reaches the subnormal range keeps that history -- a subnormal times
     /// a decay near 1 rounds back to itself, so it sticks a few steps above

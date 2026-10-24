@@ -1249,7 +1249,9 @@ impl TargetMoments {
     /// With `crate::truncated`'s floor: a variance no larger than the
     /// rounding of the terms it is formed from, `64 ε (g·v + ratio·v_u)`,
     /// carries no digit of the window's spread and is 0, so a target held at
-    /// one value over the window reads none (review 2026-10-05, CB2). The
+    /// one value over the window reads none (review 2026-10-05, CB2), and
+    /// below the normal range 64 steps of `2⁻¹⁰⁷⁴` instead
+    /// (`crate::window::rounding_floor`; docs/PLAN.md task 273). The
     /// Grams' other guard, a run that says a slot held one value since a
     /// row inside the window, has no target-side twin: the targets keep no
     /// runs. A `Q_R` within `64 ε` of `Q` keeps no digit and is 0, so no
@@ -1273,7 +1275,7 @@ impl TargetMoments {
                 g * self.var[t] - ratio * old.var[t] - ratio * g * d * d,
             );
             let terms = g * self.var[t] + ratio * old.var[t];
-            out.var[t] = if var <= 64.0 * f64::EPSILON * terms {
+            out.var[t] = if var <= crate::window::rounding_floor(terms) {
                 0.0
             } else {
                 var

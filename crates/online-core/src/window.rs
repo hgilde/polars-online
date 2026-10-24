@@ -999,7 +999,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         // rounding through `d`, the means' at the level, does (task 217).
         let terms = g * c_now[ii] + ratio * old.c[ii];
         let level = ratio * g * d[i].abs() * (cov.mean(i).abs() + old.m[i].abs());
-        unresolved[i] = cen[ii] <= 64.0 * f64::EPSILON * (terms + level);
+        unresolved[i] = cen[ii] <= rounding_floor(terms + level);
     }
     for i in (0..k).filter(|&i| unresolved[i]) {
         for j in 0..k {
@@ -1046,6 +1046,18 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let mut out = cov.clone();
     out.set_moments(&mean, &cen, w, q);
     Some(out)
+}
+
+/// The rounding a window's subtraction leaves in a variance formed from
+/// `terms` of that size: 64 times `ε·terms`, or 64 times `2⁻¹⁰⁷⁴` where that
+/// is larger (docs/PLAN.md task 273). A double below the normal range holds
+/// a fixed step of `2⁻¹⁰⁷⁴` rather than `ε` of itself, so there each
+/// rounding of the subtraction is that step, and `64 ε·terms` underflows to
+/// 0: a held target whose history had sunk to 5.6e-317 read a variance of
+/// 5e-324, one step. From `terms = 2⁻¹⁰²²` up, `ε·terms ≥ 2⁻¹⁰⁷⁴`, and the
+/// floor is `64 ε·terms` to the bit, as it was.
+pub(crate) fn rounding_floor(terms: f64) -> f64 {
+    64.0 * (f64::EPSILON * terms).max(f64::from_bits(1))
 }
 
 /// One mean-form accumulator's worth of subtraction: `(w, mean)` truncated
