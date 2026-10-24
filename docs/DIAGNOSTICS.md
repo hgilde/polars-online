@@ -690,7 +690,14 @@ Each fit is `β = G⁻¹ Σ ω z y` over `z = (1, x)`. With noise of variance
 ```
 
 where `A = G⁻¹`, and the `H` are the sums of `ω_f² z z'`, `ω_s² z z'`
-and `ω_f ω_s z z'`, which the diagnostic keeps. The slow fit's Gram alone
+and `ω_f ω_s z z'`, which the diagnostic keeps. That variance is a sum
+of one outer product per row, of `(A_f ω_f − A_s ω_s) z`, and those
+vectors are orthogonal to the design: summed against `z'` they give
+`A_f G_f − A_s G_s`, the identity less itself. So over `n` rows its rank
+is at most `n − k` for `k` coefficients, and `break_wald` waits for `2k`
+rows, whatever their weights. Read sooner, the rounding would decide the
+distance, and multiplying every weight by one constant could turn it on
+or off. The slow fit's Gram alone
 would serve both fits only while the design holds still. When a feature's
 spread fell tenfold with nothing broken, that shortcut passed 21.1 after
 the change on 85% of 100 streams, and the exact variance on none. On

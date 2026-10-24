@@ -711,9 +711,11 @@ The diagnostics add, per slot:
        is the Wald distance between two least-squares fits of the target on
        the slot's features, one at the memory and one at four times it,
        over the exact variance of their difference, about ``chi2(k)`` with
-       no break and null run once. Over the slow fit's Gram for both, a
-       feature whose spread fell tenfold with nothing broken passed 21.1 on
-       85% of streams; over the exact variance, on none. On 200 streams of
+       no break and null run once. That variance is singular over fewer
+       than ``2k`` rows, whatever their weights, so it waits for them.
+       Over the slow fit's Gram for both, a feature whose spread fell
+       tenfold with nothing broken passed 21.1 on 85% of streams; over the
+       exact variance, on none. On 200 streams of
        3,000 rows with a break at 1,500, run once, the CUSUM crossed on 3.5%
        with no break and on every
        stream whose intercept moved half a noise sd, 244 rows after it
