@@ -767,11 +767,21 @@ impl Lasso {
                                 b[i] = 0.0;
                                 continue;
                             }
+                            // `rho = d_i − Σ_{j≠i} c_ij b_j`, the terms in
+                            // the order `j` runs, as two runs either side of
+                            // `i`: the same subtractions in the same order,
+                            // so the same bits, with no bound checked or
+                            // branch taken per term. The loop the descent
+                            // spends its time in: one instruction more per
+                            // term, a block placement, was 3% of
+                            // `lasso_k20`'s count (task 275 (b)).
                             let mut rho = d[jj][i];
-                            for (jn, bj) in b.iter().enumerate() {
-                                if jn != i {
-                                    rho -= c[i * k + jn] * bj;
-                                }
+                            let row = &c[i * k..(i + 1) * k];
+                            for (cij, bj) in row[..i].iter().zip(&b[..i]) {
+                                rho -= cij * bj;
+                            }
+                            for (cij, bj) in row[i + 1..].iter().zip(&b[i + 1..]) {
+                                rho -= cij * bj;
                             }
                             let denom = c[i * k + i] + l2;
                             let newb = if rho > l1 {

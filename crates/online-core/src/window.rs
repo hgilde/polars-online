@@ -1471,6 +1471,40 @@ mod tests {
         }
     }
 
+    /// A factor that forgets, taken by a product that has never scaled,
+    /// moves it four scalings on, so what came before reads 0; and a
+    /// product any number of scalings on reads 0 at once rather than by
+    /// walking each scaling (task 275 (b): the survivors `+= 4` → `*= 4`,
+    /// whose product from no scaling stayed at none, and `f > 0` → `f >= 0`,
+    /// which walked them all).
+    #[test]
+    fn a_forgetting_factor_from_no_scaling_and_a_far_product_read_zero() {
+        let mut p = Product::ONE;
+        p.take(0.0);
+        assert_eq!(p.1, 4);
+        assert_eq!(p.since(Product::ONE), 0.0);
+        let mut q = Product::ONE;
+        q.take(1e-310);
+        assert_eq!(q.since(Product::ONE), 0.0);
+        let far = Product(0.5, i64::MAX / 2);
+        assert_eq!(far.since(Product::ONE), 0.0);
+        assert_eq!(far.since(far), 1.0);
+    }
+
+    /// An entry that is not a snapshot's tuple is refused with what one is
+    /// (task 275 (b): the survivor that emptied `expecting`).
+    #[test]
+    fn a_malformed_ring_entry_says_what_an_entry_is() {
+        let e = serde_json::from_str::<Entry<usize>>("\"x\"").unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("a snapshot as (clock, stamp, snapshot[, products])"),
+            "{e}"
+        );
+        let e = serde_json::from_str::<Entry<usize>>("[1.0]").unwrap_err();
+        assert!(e.to_string().contains("a snapshot as"), "{e}");
+    }
+
     /// A ring saved before the running products, `(clock, stamp, snapshot)`
     /// per snapshot, loads with none: its snapshots decay by the summed
     /// clock, as they did, the first read after loading is the one the state

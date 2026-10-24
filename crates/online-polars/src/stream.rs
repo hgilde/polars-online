@@ -4888,12 +4888,20 @@ fn run_instance(
         }
 
         if emit {
+            // Slot `s` at `s·n_rows + ri`, through a slice taken once, which
+            // holds the column's pointer and length in registers: indexing
+            // the instance's vector reloaded both from it on every slot once
+            // other code in this function took the registers (task 273 (c2)
+            // gave the copy an instruction more a slot, 1.1% of a
+            // 230-statistic `ew_cov` bank's count; task 275 (b)).
+            let out = &mut inst.o_pred[..];
             for (slot, &p) in step.pred.iter().enumerate() {
-                inst.o_pred[slot * n_rows + ri] = p;
+                out[slot * n_rows + ri] = p;
             }
             if inst.residuals {
+                let out = &mut inst.o_resid[..];
                 for (slot, &rv) in sc.r.iter().enumerate() {
-                    inst.o_resid[slot * n_rows + ri] = rv;
+                    out[slot * n_rows + ri] = rv;
                 }
             }
             if !inst.o_sigma.is_empty() {
