@@ -93,9 +93,9 @@ pub use pool::{THREADS_VAR, Threads, check_threads, pool, thread_pool_size, thre
 pub use refresh::{RefreshCols, RefreshTime};
 pub use rows::{FeatureCol, FeatureCols, FeatureRows};
 pub use runner::{
-    DEFAULT_CHUNK_SIZE, Format, Input, Output, RENAMED_RUN_KEYS, RunConfig, RunOptions, RunStats,
-    csv_flat, name_renamed_run_key, run, run_config, run_config_on, run_config_on_reported,
-    run_config_reported, write_frame,
+    DEFAULT_CHUNK_SIZE, Format, Input, Output, OutputLayout, RENAMED_RUN_KEYS, RunConfig,
+    RunOptions, RunStats, csv_flat, name_renamed_run_key, run, run_config, run_config_on,
+    run_config_on_reported, run_config_reported, url_scheme, write_frame,
 };
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{

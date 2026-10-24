@@ -111,6 +111,7 @@ fn config(input: &Path, output: &Path) -> RunConfig {
         output: output.to_path_buf(),
         input_format: None,
         output_format: None,
+        output_layout: Default::default(),
         chunk_size: 64,
         threads: None,
         load_state: None,

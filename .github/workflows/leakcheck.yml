@@ -68,7 +68,7 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync
+      - run: uv sync --locked
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
 
       # pytest collects tests/test_gbdt.py, which imports XGBoost and

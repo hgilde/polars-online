@@ -6,9 +6,11 @@
 //! pushes every value into its bin. Streamed, that is two passes: the first
 //! gathers the sampled rows and builds the bins
 //! (`LGBM_DatasetCreateFromSampledColumn`), the second pushes each segment
-//! as float32 rows built in parallel (`LGBM_DatasetPushRows`, itself
-//! parallel over rows), and the label and weight are set at the end. A
-//! validation set takes its training set's bins
+//! as float32 rows built in parallel, with its labels and weights
+//! (`LGBM_DatasetPushRowsWithMetadata`, itself parallel over rows, on a
+//! dataset made ready for it by `LGBM_DatasetInitStreaming` and finished by
+//! `LGBM_DatasetMarkFinished`), so no pass holds more than a segment's
+//! labels. A validation set takes its training set's bins
 //! (`LGBM_DatasetCreateByReference`) and needs the push pass alone.
 //!
 //! In memory, every segment's features go in as one Arrow stream
@@ -103,8 +105,57 @@ fn cstr(s: &str) -> Result<CString, GbdtError> {
     CString::new(s).map_err(|_| GbdtError::msg(format!("`{s}` holds a NUL character")))
 }
 
+/// Whether `ds` holds the float field `name` (`label`, `weight`): LightGBM
+/// gives a field it has not got a null pointer and no length.
+fn has_field(lib: &LgbLib, ds: Handle, name: &str) -> Result<bool, GbdtError> {
+    let f = cstr(name)?;
+    let (mut len, mut ptr, mut kind): (c_int, *const c_void, c_int) = (0, std::ptr::null(), 0);
+    // SAFETY: a live dataset; LightGBM writes the three out-parameters.
+    let rc = unsafe { (lib.get_field)(ds, f.as_ptr(), &mut len, &mut ptr, &mut kind) };
+    lib.check(rc, &format!("reading the {name} field"))?;
+    Ok(len > 0 && !ptr.is_null())
+}
+
+/// `v` as LightGBM keeps a label or weight given to `LGBM_DatasetSetField`:
+/// float32, with a value at or past `1e38` in magnitude held at `1e38`
+/// (`Common::AvoidInf`, `include/LightGBM/utils/common.h`, 4.0.0 to 4.7.0).
+/// `LGBM_DatasetPushRowsWithMetadata` copies its labels as they are, so the
+/// streamed route rounds them here, and a finite label past float32's range
+/// is the one `SetField` would have stored, not infinity. A NaN cannot
+/// arrive: `checked_f64` refuses it.
+fn as_lightgbm_f32(v: f64) -> f32 {
+    (v as f32).clamp(-1e38, 1e38)
+}
+
+/// A segment's labels, and its weights where the layout has them, as
+/// LightGBM keeps them ([`as_lightgbm_f32`]), into `labels` and `weights`.
+fn segment_meta(
+    seg: &Segment,
+    layout: &Layout,
+    row: u64,
+    labels: &mut Vec<f32>,
+    weights: &mut Vec<f32>,
+) -> Result<(), GbdtError> {
+    let p = layout.names.len();
+    labels.clear();
+    labels.extend(
+        checked_f64(seg, p, layout, row)?
+            .iter()
+            .map(|&v| as_lightgbm_f32(v)),
+    );
+    weights.clear();
+    if layout.weight.is_some() {
+        weights.extend(
+            checked_f64(seg, p + 1, layout, row)?
+                .iter()
+                .map(|&v| as_lightgbm_f32(v)),
+        );
+    }
+    Ok(())
+}
+
 /// The label and weight of every row, in order, as LightGBM stores them
-/// (float32).
+/// (float32): the in-memory route's, which holds every row anyway.
 struct Meta {
     labels: Vec<f32>,
     weights: Option<Vec<f32>>,
@@ -287,25 +338,49 @@ fn rows_route<'a>(
     };
     reader.restart();
     let t = Instant::now();
-    let mut meta = Meta::new(layout, n as usize);
+    // Each segment's labels and weights go in with its rows, so the pass
+    // holds one segment's, where it held the whole dataset's -- 4 bytes a
+    // row, 8 with weights -- until the last push (review 9, H-4). One
+    // pushing thread; LightGBM's own threads per push as before. A dataset
+    // made on a reference that has weights has its own already, which
+    // `InitStreaming` refuses to make again; they are pushed into the same.
+    let has_weights = i32::from(layout.weight.is_some() && !has_field(lib, ds.h, "weight")?);
+    // SAFETY: a live dataset, its metadata not yet set.
+    lib.check(
+        unsafe { (lib.init_streaming)(ds.h, has_weights, 0, 0, 1, 1, -1) },
+        "making the dataset ready for its rows",
+    )?;
     let mut buf: Vec<f32> = Vec::new();
+    let (mut labels, mut weights) = (Vec::new(), Vec::new());
     let mut start: u64 = 0;
     while let Some(df) = reader.next()? {
         for seg in segments_of(df, layout)? {
             if start + seg.n as u64 > n as u64 {
                 return Err(wrong_rows(n as u64, start + seg.n as u64));
             }
-            meta.push(&seg, layout, start)?;
+            segment_meta(&seg, layout, start, &mut labels, &mut weights)?;
             rows_f32(&seg, p, &mut buf, pool);
-            // SAFETY: `buf` holds `seg.n * p` float32 values, row-major.
+            let weight = if weights.is_empty() {
+                std::ptr::null()
+            } else {
+                weights.as_ptr()
+            };
+            // SAFETY: `buf` holds `seg.n * p` float32 values, row-major;
+            // `labels` and a non-null `weight` hold `seg.n` float32 values
+            // each, which LightGBM copies; no initial scores or queries.
             let rc = unsafe {
-                (lib.push_rows)(
+                (lib.push_rows_meta)(
                     ds.h,
                     buf.as_ptr().cast::<c_void>(),
                     DTYPE_FLOAT32,
                     seg.n as i32,
                     p as i32,
                     start as i32,
+                    labels.as_ptr(),
+                    weight,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
                 )
             };
             lib.check(rc, "pushing rows")?;
@@ -315,7 +390,11 @@ fn rows_route<'a>(
     if start != n as u64 {
         return Err(wrong_rows(n as u64, start));
     }
-    meta.set(lib, ds.h)?;
+    // SAFETY: a live dataset, every row pushed.
+    lib.check(
+        unsafe { (lib.mark_finished)(ds.h) },
+        "finishing the dataset",
+    )?;
     set_names(lib, ds.h, layout)?;
     Ok((ds, sample_s, t.elapsed().as_secs_f64()))
 }
