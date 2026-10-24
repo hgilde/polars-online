@@ -2046,7 +2046,8 @@ def kalman(
         chi-squared of one degree, so it reads the noise variance as a mean
         would. With ``obs_var``, ``R`` is ``obs_var``, and the intercept is
         sized from the start. Until then the coefficient is 0 and takes no
-        correction. A median, so one wild row among the first three, a target
+        correction, and with no slot sized the target is not predicted. A
+        median, so one wild row among the first three, a target
         at the input bound, does not size the prior from itself: a prior sized
         from such a row could leave ``P`` with a negative variance and the
         filter stuck for good. One squared innovation falls below 1% of the

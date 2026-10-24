@@ -209,6 +209,10 @@
 //! intercept), a raw second moment above 0 (without) -- and until then the
 //! coefficient is 0 and its variance 0: it takes no correction and no
 //! process noise, and a row's raw reading of the feature reaches nothing.
+//! A target none of whose slots is sized is not predicted: its prediction
+//! would be the uncorrected coefficients', `0.0` whatever its level, and
+//! would seed the residual variance with the level squared (docs/PLAN.md
+//! task 270, review round 9 B-1).
 //! The intercept's scale is always usable. A feature whose variance becomes
 //! usable later than the others' gets its own prior then. Under
 //! `standardize` the prior of slot `i` is `P_ii = p0 R`, carried into the
@@ -1425,6 +1429,25 @@ impl Kalman {
         (0..k).all(|i| p[i * k + i] == 0.0)
     }
 
+    /// Whether target `j` is predicted, `min_weight` aside: it has weight,
+    /// and its covariance is sized. An unsized prior's prediction is `z·b`
+    /// at coefficients nothing has corrected, `0.0` whatever the target's
+    /// level, and it would seed the residual variance with the level
+    /// squared (review round 9, B-1; docs/PLAN.md task 270): standardized
+    /// without `obs_var` the slots wait for three observed rows, which a
+    /// weight column or a lowered `min_weight` lets a row get past.
+    fn predicts(&self, j: usize) -> bool {
+        let pi = if self.cfg.share_p { 0 } else { j };
+        self.wj[j] > 0.0 && !self.is_unsized(pi)
+    }
+
+    /// Whether a target with weight waits for its prior to be sized, and so
+    /// is not predicted ([`Self::predicts`]): the filter's own warm-up,
+    /// the rows its noise estimate is taken from.
+    pub fn sizing(&self) -> bool {
+        (0..self.cfg.n_targets).any(|j| self.wj[j] > 0.0 && !self.predicts(j))
+    }
+
     /// `share_p`'s noise before any target has a residual variance: the
     /// mean of the row's squared innovations over the targets it observes
     /// (present, at a positive weight), each read from `zb`, before any
@@ -2133,7 +2156,7 @@ impl OnlineModel for Kalman {
         let mut pred = vec![f64::NAN; m];
         if ready {
             for (j, p) in pred.iter_mut().enumerate() {
-                if self.wj[j] > 0.0 {
+                if self.predicts(j) {
                     *p = a_number_or_none(self.zb[j]);
                 }
             }
@@ -2378,7 +2401,7 @@ impl OnlineModel for Kalman {
                 (vec![], vec![], false)
             };
             for (j, p) in pred.iter_mut().enumerate() {
-                if self.wj[j] > 0.0 {
+                if self.predicts(j) {
                     let v = if reverts {
                         let mut b = self.beta[j].clone();
                         transit(&mut b, &phi, coupled.then_some(&g[..]));
@@ -3381,7 +3404,7 @@ mod tests {
             }
             let x = [3.0 + spread * lcg(&mut s)];
             let y = 1.0 + 2.0 * (x[0] - 3.0) / spread + 0.1 * lcg(&mut s);
-            assert!(m.step(&x, &[Some(y)], 1.0, 1.0).pred[0].is_finite() || i < 2);
+            assert!(m.step(&x, &[Some(y)], 1.0, 1.0).pred[0].is_finite() || i < 3);
             let a = m.scales()[1] / m.anchor_scale[1];
             assert!(
                 i < 10 || (0.5..=2.0).contains(&a),
@@ -3517,8 +3540,20 @@ mod tests {
                     z[off + f] = (x[f] - mean[f]) / scale[f];
                 }
                 let dotz = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
+                // A covariance not yet sized predicts nothing (task 270,
+                // review round 9 B-1).
+                let sized = |j: usize| {
+                    let pj = &p[if share { 0 } else { j }];
+                    (0..k).any(|a| pj[a * k + a] != 0.0)
+                };
                 let want: Vec<f64> = (0..2)
-                    .map(|j| if wj[j] > 0.0 { dotz(&b[j]) } else { f64::NAN })
+                    .map(|j| {
+                        if wj[j] > 0.0 && sized(j) {
+                            dotz(&b[j])
+                        } else {
+                            f64::NAN
+                        }
+                    })
                     .collect();
                 let got = m.step(&x, &ys, d, w).pred;
                 for j in 0..2 {
@@ -3831,6 +3866,53 @@ mod tests {
         assert_eq!(m.p[0][0], p0[0]);
         // And the state is what `coefficients` reports: unstandardized.
         assert_eq!(m.coefficients()[0], m.beta[0]);
+    }
+
+    /// A filter whose prior is not sized predicts nothing (review round 9,
+    /// B-1; docs/PLAN.md task 270). Standardized without `obs_var`, a slot
+    /// is sized once three observed rows give the noise a median, and on a
+    /// row past `min_weight` before then -- here every row carries weight
+    /// 3 and the floor is 1 -- the prediction was `z·b = 0.0` whatever the
+    /// target's level, and that 0 seeded the residual variance with the
+    /// level squared. Unstandardized, `P` is sized on the first observed
+    /// row, after its prediction. Each row's prediction is withheld exactly
+    /// while the target's covariance is unsized, `predict` agrees, no
+    /// prediction is 0.0 on a target at 100, and the residual variance is
+    /// 0 until the first prediction and then that prediction's squared
+    /// residual: it starts at the sized filter's first prediction.
+    #[test]
+    fn an_unsized_prior_predicts_nothing() {
+        for standardize in [true, false] {
+            let mut c = cfg(1, 1, vec![100.0]);
+            c.standardize = standardize;
+            c.min_weight = 1.0;
+            let mut m = Kalman::new(c).unwrap();
+            let mut s = 20261023u64;
+            let mut first = None;
+            for i in 0..200 {
+                let x = [lcg(&mut s)];
+                let yv = 100.0 + 2.0 * x[0] + 0.5 * lcg(&mut s);
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let waiting = m.is_unsized(0);
+                let served = m.predict(&x, d).pred[0];
+                let got = m.step(&x, &[Some(yv)], d, 3.0).pred[0];
+                let what = format!("standardize {standardize}, row {i}");
+                assert_eq!(served.to_bits(), got.to_bits(), "{what}");
+                assert_eq!(got.is_nan(), waiting || i == 0, "{what}: {got}");
+                assert_ne!(got, 0.0, "{what}");
+                if got.is_nan() && first.is_none() {
+                    assert_eq!(m.sig2[0], 0.0, "{what}: no prediction, no residual");
+                } else if first.is_none() {
+                    first = Some(i);
+                    assert_eq!(m.sig2[0], (yv - got) * (yv - got), "{what}");
+                }
+            }
+            let first = first.unwrap();
+            assert!(
+                if standardize { first == 3 } else { first == 1 },
+                "standardize {standardize}: first prediction at row {first}"
+            );
+        }
     }
 
     /// A target at the input bound among the first rows (docs/PLAN.md task
@@ -4287,13 +4369,15 @@ mod tests {
                     got.to_bits(),
                     "row {i}: predict is step's number"
                 );
-                assert_eq!(got.is_nan(), i < 2, "row {i}: {got}");
+                // Withheld until the prior is sized, from the first three
+                // rows that carry the target, 1 to 3 (task 270, B-1).
+                assert_eq!(got.is_nan(), i < 4, "row {i}: {got}");
                 preds.push(got);
             }
             preds
         };
         let (a, b) = (run([1.0, 1.0]), run([1000.0, 0.001]));
-        for (i, (pa, pb)) in a.iter().zip(&b).enumerate().skip(2) {
+        for (i, (pa, pb)) in a.iter().zip(&b).enumerate().skip(4) {
             assert!(
                 (pa - pb).abs() <= 1e-9 * pa.abs().max(1.0),
                 "row {i}: {pa} against {pb}"
@@ -4352,8 +4436,20 @@ mod tests {
                 let lam = 0.5f64.powf(d / h);
                 let z = [1.0, x[0], x[1]];
                 let dotz = |v: &[f64]| -> f64 { (0..k).map(|a| z[a] * v[a]).sum() };
+                // A covariance not yet sized predicts nothing (task 270,
+                // review round 9 B-1).
+                let sized = |j: usize| {
+                    let pj = &p[if share { 0 } else { j }];
+                    (0..k).any(|a| pj[a * k + a] != 0.0)
+                };
                 let want: Vec<f64> = (0..2)
-                    .map(|j| if wj[j] > 0.0 { dotz(&b[j]) } else { f64::NAN })
+                    .map(|j| {
+                        if wj[j] > 0.0 && sized(j) {
+                            dotz(&b[j])
+                        } else {
+                            f64::NAN
+                        }
+                    })
                     .collect();
                 let got = m.step(&x, &ys, d, w).pred;
                 for j in 0..2 {

@@ -515,7 +515,10 @@ by `w`, so with a fixed `obs_var=` the observation's variance is
 **Until a target has a residual variance, each row takes its noise from
 its own innovation:** `R_j = (y_j − zᵀβ_j)²`, computed before the update,
 so the prediction stays out of sample. The process noise reads the same
-number. The residual variance starts at the target's first prediction. A
+number. The residual variance starts at the target's first prediction,
+which waits for the target's prior to be sized: a row before then is
+withheld (`below_warm_rows`), since its prediction would be the
+uncorrected coefficients' `0.0` whatever the target's level. A
 row whose innovation is exactly 0 says nothing about the size of the noise,
 and changes nothing.
 

@@ -1800,11 +1800,14 @@ class TestAStandardizedKalmanIsFilterpy:
             kalman, t, Z, y_seen, w, half_life, coef_hl, None, usable
         )
         assert np.nanmax(np.abs(stale - got)) > 1e-3
-        assert np.isfinite(got[1:]).all()
+        # From the first row its prior is sized for, the fourth, after three
+        # observed rows (task 270, review round 9 B-1: before it the unsized
+        # prior's 0.0).
+        assert np.isfinite(got[3:]).all() and np.isnan(got[:3]).all()
         # Task 97: coef after row i, applied to row i + 1, is row i + 1's pred.
         coef = out["coef"].to_list()
-        via = np.array([np.dot(coef[i], [1.0, *x[i + 1]]) for i in range(1, n - 1)])
-        np.testing.assert_allclose(via, got[2:], rtol=1e-12, atol=1e-12)
+        via = np.array([np.dot(coef[i], [1.0, *x[i + 1]]) for i in range(2, n - 1)])
+        np.testing.assert_allclose(via, got[3:], rtol=1e-12, atol=1e-12)
 
     @pytest.mark.parametrize("level", [1e3, -1e3])
     def test_a_target_at_a_level_settles_where_one_at_zero_does(self, level):
@@ -1842,7 +1845,9 @@ class TestAStandardizedKalmanIsFilterpy:
 
         p0, y0 = fit(0.0)
         p, y = fit(level)
-        assert np.isfinite(p[1:]).all()
+        # A prediction at every row from the first the prior is sized for,
+        # the fourth (task 270, review round 9 B-1).
+        assert np.isfinite(p[3:]).all()
         assert rmse(p, y) <= 1.01 * rmse(p0, y0), (rmse(p, y), rmse(p0, y0))
 
 
@@ -1897,7 +1902,8 @@ class TestASharedCovarianceIsFilterpy:
             z = Z[i]
             zb = [z @ kf.x[:, 0] for kf in kfs]
             for j in range(m):
-                if wj[j] > 0.0:
+                # Not before the shared prior is sized (task 270, B-1).
+                if wj[j] > 0.0 and sized:
                     preds[j][i] = zb[j]
             seen = [not np.isnan(ys[j][i]) and w[i] > 0.0 for j in range(m)]
             # The noise, read once for the row: the mean residual variance,
@@ -3671,6 +3677,9 @@ def _filterpy_run(
             infl[i] = np.sqrt(1.0 + z @ prior @ z / held)
         Q = np.diag(np.where(sized, noise_of(s2) * gap2(gap), 0.0)) if seen else 0.0 * P_prior
         kf.predict(Q=Q, F=Fi)
+        # A filter with no slot sized as the row arrives predicts nothing
+        # (task 270, review round 9 B-1).
+        sized_before = sized.any()
         if seen:
             gap = 0.0
             if standardize:
@@ -3684,7 +3693,7 @@ def _filterpy_run(
             elif not sized.any() and s2 > 0.0:
                 kf.P = np.eye(k1) * p0 * s2
                 sized[:] = True
-        if wj > 0.0:
+        if wj > 0.0 and sized_before:
             pred[i] = z @ kf.x[:, 0]
         if not seen:
             wj *= lam

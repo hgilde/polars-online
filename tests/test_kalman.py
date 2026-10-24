@@ -279,3 +279,39 @@ def test_a_short_history_fits_from_its_first_rows(half_life, floor):
     assert sel.sum() > 0.7 * 25 * n_groups
     r2 = 1.0 - np.sum((y[sel] - pred[sel]) ** 2) / np.sum((y[sel] - y[sel].mean()) ** 2)
     assert r2 > floor, r2
+
+
+def test_an_unsized_prior_predicts_nothing():
+    """Standardized without ``obs_var`` a target's prior is sized from its
+    first three observed rows; a row past ``min_weight`` before then -- a
+    weight of 3 a row meets a floor of 2 after one -- was predicted as
+    ``0.0`` whatever the target's level, and that 0 seeded the residual
+    variance with the level squared (task 270, review round 9 B-1). Now
+    those rows are withheld as the filter's warm-up, no prediction is 0.0
+    on a target at 100, and the residual variance starts at the first
+    prediction: ``sigma`` on the row after it is that row's residual."""
+    rng = np.random.default_rng(3)
+    n = 300
+    x = rng.standard_normal(n)
+    y = 100.0 + 2.0 * x + 0.5 * rng.standard_normal(n)
+    frame = pl.DataFrame({"t": np.arange(n, dtype=float), "x": x, "y": y, "w": np.full(n, 3.0)})
+    spec = po.spec.kalman(
+        "m",
+        targets=["y"],
+        features=["x"],
+        clock="t",
+        gap_cap=10.0,
+        weight="w",
+        half_life=200.0,
+        coef_half_life=100.0,
+        emit_sigma=True,
+    )
+    out = po.ModelBank([spec]).fit_predict(frame)["m"].struct.unnest()
+    pred = out["pred_y"].to_numpy().astype(float)
+    reason = out["withheld_reason"].cast(pl.String).to_list()
+    assert reason[:4] == ["below_min_weight", "below_warm_rows", "below_warm_rows", None]
+    assert np.isnan(pred[:3]).all() and np.isfinite(pred[3:]).all()
+    assert not (pred == 0.0).any()
+    sigma = out["sigma_y"].to_numpy().astype(float)
+    assert np.isnan(sigma[:4]).all()
+    assert sigma[4] == pytest.approx(abs(y[3] - pred[3]), rel=1e-12)

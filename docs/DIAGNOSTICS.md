@@ -1884,7 +1884,7 @@ prediction's `withheld_reason` names the gate that held it:
 | `min_settled_frac` | `below_min_settled_frac` |
 | `min_weight` | `below_min_weight` |
 | `max_error_inflation` | `above_max_error_inflation` |
-| `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centres, states or prior | `below_warm_rows` |
+| `warm_rows` (`kmeans`, `hmm`, `bocpd`): the rows a model learns from before it has seeded its centres, states or prior; `kalman`'s rows before a target's prior is sized | `below_warm_rows` |
 
 The reasons are listed in their order of precedence, which is the order
 `withheld_reason` reports them in. `max_error_inflation` is on by default
