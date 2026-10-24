@@ -162,8 +162,36 @@ pub struct LgbLib {
         *mut Handle,
     ) -> c_int,
     pub(crate) by_reference: unsafe extern "C" fn(Handle, i64, *mut Handle) -> c_int,
-    pub(crate) push_rows:
-        unsafe extern "C" fn(Handle, *const c_void, c_int, i32, i32, i32) -> c_int,
+    /// `LGBM_DatasetInitStreaming(dataset, has_weights, has_init_scores,
+    /// has_queries, nclasses, nthreads, omp_max_threads)`, from 4.0.0 on.
+    pub(crate) init_streaming: unsafe extern "C" fn(Handle, i32, i32, i32, i32, i32, i32) -> c_int,
+    /// `LGBM_DatasetPushRowsWithMetadata(dataset, data, data_type, nrow,
+    /// ncol, start_row, label, weight, init_score, query, tid)`, from 4.0.0
+    /// on: a batch's rows with its labels and weights.
+    pub(crate) push_rows_meta: unsafe extern "C" fn(
+        Handle,
+        *const c_void,
+        c_int,
+        i32,
+        i32,
+        i32,
+        *const f32,
+        *const f32,
+        *const f64,
+        *const i32,
+        i32,
+    ) -> c_int,
+    /// `LGBM_DatasetGetField(dataset, field_name, out_len, out_ptr,
+    /// out_type)`.
+    pub(crate) get_field: unsafe extern "C" fn(
+        Handle,
+        *const c_char,
+        *mut c_int,
+        *mut *const c_void,
+        *mut c_int,
+    ) -> c_int,
+    /// `LGBM_DatasetMarkFinished`, from 4.0.0 on.
+    pub(crate) mark_finished: unsafe extern "C" fn(Handle) -> c_int,
     pub(crate) set_field:
         unsafe extern "C" fn(Handle, *const c_char, *const c_void, c_int, c_int) -> c_int,
     pub(crate) set_names: unsafe extern "C" fn(Handle, *const *const c_char, c_int) -> c_int,
@@ -199,7 +227,10 @@ impl LgbLib {
             sample_indices = "LGBM_SampleIndices",
             from_sampled = "LGBM_DatasetCreateFromSampledColumn",
             by_reference = "LGBM_DatasetCreateByReference",
-            push_rows = "LGBM_DatasetPushRows",
+            init_streaming = "LGBM_DatasetInitStreaming",
+            push_rows_meta = "LGBM_DatasetPushRowsWithMetadata",
+            mark_finished = "LGBM_DatasetMarkFinished",
+            get_field = "LGBM_DatasetGetField",
             set_field = "LGBM_DatasetSetField",
             set_names = "LGBM_DatasetSetFeatureNames",
             free = "LGBM_DatasetFree",
@@ -215,7 +246,10 @@ impl LgbLib {
             sample_indices,
             from_sampled,
             by_reference,
-            push_rows,
+            init_streaming,
+            push_rows_meta,
+            mark_finished,
+            get_field,
             set_field,
             set_names,
             free,

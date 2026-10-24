@@ -501,6 +501,10 @@ class TestEveryClockParameterTakesADuration:
             kw["coef_half_life"] = "1m"
         if builder == "ew_class":
             kw["label"] = "lab"
+        if builder == "sgd":
+            # `sgd`'s one clock parameter, the Huber scale's memory, is the
+            # Huber loss's (task 271).
+            kw["loss"] = "huber"
         kw.update(clock="t", gap_cap="1h")
         return kw
 
@@ -519,6 +523,7 @@ class TestEveryClockParameterTakesADuration:
         "coef_half_life": ("2m", {}),
         "revert_half_life": ("1h", {}),
         "trend_half_life": ("20m", {}),
+        "huber_scale_half_life": ("20m", {}),
         "pca_every": ("10m", {"pca": 1}),
         "prune_every": ("10m", {}),
         "snapshot_every": ("1m", {"window_size": "30m"}),
@@ -552,6 +557,7 @@ class TestEveryClockParameterTakesADuration:
         "half_life": float("inf"),
         "coef_half_life": float("inf"),
         "trend_half_life": float("inf"),
+        "huber_scale_half_life": float("inf"),
         "long_half_life": float("inf"),
         "select_half_life": float("inf"),
         "revert_half_life": float("inf"),

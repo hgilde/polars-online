@@ -270,7 +270,7 @@ pip install polars-online      # or: uv add polars-online
 | depends on | nothing beyond `polars` at run time, since the wheel carries its own copy of Polars' Rust code |
 | numpy | needed only by `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` helpers: to use them, install it with the package, as `pip install "polars-online[numpy]"`. Without it, those calls raise `ModuleNotFoundError` |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries. On any other platform, the install builds the package from its source distribution, which needs a stable Rust toolchain ([rustup](https://rustup.rs)) |
-| size | 8 to 10 MB to download and 26 to 37 MB installed, by platform, for 0.13.0 |
+| size | 24 to 30 MB to download and 70 to 98 MB installed, by platform, for 1.2.0 |
 
 To build from a checkout, install uv and a stable Rust toolchain
 ([Development](#development)), then run from its root:
@@ -1383,7 +1383,7 @@ The readiness fields:
 | field | on | what it holds |
 |---|---|---|
 | `settled_frac` | every model that writes a row | how full the decay window is |
-| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation` or `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from), in that order of precedence |
+| `withheld_reason` | every model that writes a row | why `pred_y` is null, or null when it is not: `below_min_settled_frac`, `below_min_weight`, `above_max_error_inflation` or `below_warm_rows` (the rows `kmeans`, `hmm` and `bocpd` hold to seed themselves from, and the rows `kalman` sizes a target's prior from), in that order of precedence |
 | `error_inflation_y` | `ewridge`, `rls`, `kalman`, under `emit_error_inflation` | the row's own estimation variance over the noise: high on a row leaning on a direction the data never showed, at one triangular solve a row |
 | `support_coef` | `ewridge`, `huber`, `quantile`, beside `coef` | each coefficient's data share, `1 - ridge * (S^-1)_jj` on the system the solve inverts. A duplicated pair of features reads 0.5 each |
 | `se_coef` | `ewridge`, `rls`, `kalman`, under `emit_se_coef`, beside `coef` | each coefficient's standard error in its own units: `sigma` times the fit's own covariance, `kalman`'s posterior exactly. A report, not a gate; it errs large in warm-up and under a ridge |
@@ -1855,6 +1855,14 @@ is the weight a fit rests on, so the filter keeps each stock's rows once
 its fit has seen about 50 rows' worth. `lf.online.fit_predict([spec]).head(5)`
 feeds the bank the first 5 rows and no more.
 
+**Unnest a wide spec before `sink_parquet`.** Polars' parquet writer
+encodes a record's fields at several times the cost of the same values as
+plain columns. An `ew_cov` over 20 series writes 233 fields: 2,785 ns a row
+as the record, 365 unnested, where the bank's own work is 550. So write
+`.online.unnest([spec]).sink_parquet("fitted.parquet")`, which turns each
+field into a column of its own. The command line's `--output-layout flat`
+does the same for its files ([RUNNER.md](docs/RUNNER.md)).
+
 **Filter after the bank, not before it.** A `filter` after the bank keeps
 the query running a chunk at a time. One before the bank makes Polars hold
 several blocks of each parquet file per thread: 3.1 GB at 12M rows,
@@ -2266,8 +2274,8 @@ To score rows without learning from them, call `bank.predict(frame)` on a
 bank object, or `lf.online.predict(...)` in a query. Every row is scored
 from the same state, which `predict` never moves. Since it skips each
 row's update, `ewridge` scores 1.8 times as fast as it learns at 5
-features, and 2.9 times at 20 ([docs/PERFORMANCE.md](docs/PERFORMANCE.md)
-§9). A query takes the bank object, read as it stands when the query runs,
+features, and 2.8 times at 20
+([PERFORMANCE §30](docs/PERFORMANCE.md#30-where-every-row-solves-2026-09-29)). A query takes the bank object, read as it stands when the query runs,
 or a path, read when the query is built.
 This code uses `df`, `today` and `later` from [Example data](#example-data):
 
@@ -3449,10 +3457,11 @@ permutation null redraws `n_perm` statistics every `permute_every_rows` rows.**
 To skip the redraws, give `crit` a number, which fixes the threshold.
 
 **`bocpd` slows with the number of run lengths it keeps, so a larger
-`prune_below` makes it faster.** It does `O(runs · d²)` work a row for `d`
-features. `prune_below` drops every run holding less than that share of the
-probability mass, and `max_run`, 10,000 by default, caps how many runs it
-keeps. With neither bound the runs grow by one every row, and a stream
+`prune_below` makes it faster.** It does `O(runs · d)` work a row for `d`
+features under `covariance_type="diag"`, and `O(runs · d³)` under `"full"`,
+which factors each run's `d × d` scale every row. `prune_below` drops
+every run holding less than that share of the probability mass, and
+`max_run`, 10,000 by default, caps how many runs it keeps. With neither bound the runs grow by one every row, and a stream
 takes `O(rows²)`. A changepoint collapses them to a few dozen, so `bocpd`
 runs faster on data that breaks. A stream that does not break spreads them
 over thousands of run lengths, and there `max_run` is the bound. On 20,000

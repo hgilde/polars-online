@@ -36,7 +36,7 @@ uv run python scripts/regime_experiments.py all        # the docs/REGIMES.md exp
 uv run python scripts/benchmark.py                     # throughput
 uv run python scripts/windows_bench.py                 # the window operators against Polars' rolling recipe
 uv run python scripts/sklearn_comparison.py            # the comparison with scikit-learn
-uv run python scripts/compare_release.py               # every output against the newest release's, bit for bit
+uv run python scripts/compare_release.py               # the release workload's outputs against the newest release's, bit for bit
 uv run pytest -m soak                                  # the opt-in 10M-row soak
 ./scripts/mutants.sh --in-diff <(git diff main...)     # mutation testing of the code a branch touches
 ```

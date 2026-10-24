@@ -228,12 +228,12 @@ impl<'a> Sink<'a> {
     /// rest is read. One job per field from `PAR_MIN_ROWS` rows between them
     /// (docs/PERFORMANCE.md P10): one spec with a grid of instances used to
     /// assemble on a single thread.
-    pub(super) fn absorb(&mut self, chunks: &mut [ChunkOut]) {
+    pub(super) fn absorb(&mut self, chunks: &mut [Box<ChunkOut>]) {
         #[cfg(test)]
         tests::absorbed(&self.spec.name);
         self.prepare(chunks);
         let (shape, n) = (self.shape, self.n);
-        let chunks: &[ChunkOut] = chunks;
+        let chunks: &[Box<ChunkOut>] = chunks;
         let job = |(acc, f): (&mut Acc, &FieldMeta)| {
             for ch in chunks {
                 absorb_field(acc, &f.src, ch, shape, n);
@@ -374,7 +374,7 @@ impl<'a> Sink<'a> {
 
     /// The `coef`-like lists and the selected and averaged fields of every
     /// run: what [`Self::absorb`] does on the calling thread.
-    fn prepare(&mut self, chunks: &mut [ChunkOut]) {
+    fn prepare(&mut self, chunks: &mut [Box<ChunkOut>]) {
         for ch in chunks.iter() {
             self.absorb_derived(ch);
         }
@@ -560,13 +560,13 @@ pub(super) fn assemble(
     spec: &Spec,
     d: &SpecDerived,
     n: usize,
-    chunks: &mut [ChunkOut],
+    chunks: &mut [Box<ChunkOut>],
     clock_dtype: Option<&crate::stream::ClockDtype>,
 ) -> PolarsResult<StructArray> {
     let mut sink = Sink::new(spec, d, n, clock_dtype, false);
     sink.prepare(chunks);
     let fields = std::mem::take(&mut sink.fields);
-    let (sink, chunks): (&Sink<'_>, &[ChunkOut]) = (&sink, chunks);
+    let (sink, chunks): (&Sink<'_>, &[Box<ChunkOut>]) = (&sink, chunks);
     let job = |(mut acc, f): (Acc, &FieldMeta)| {
         for ch in chunks {
             absorb_field(&mut acc, &f.src, ch, sink.shape, n);

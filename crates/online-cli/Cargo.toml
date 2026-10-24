@@ -27,5 +27,16 @@ clap.workspace = true
 serde.workspace = true
 toml.workspace = true
 
+# The global allocator (`main.rs`), a statically linked C library on each
+# target: jemalloc where py-polars uses it, mimalloc on Windows. On the
+# system allocator the binary ran the same bank 1.3x slower a row and 1.8x
+# slower a one-row task than the wheel, whose `PolarsAllocator` is jemalloc
+# or mimalloc too (review 9, M-5).
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+tikv-jemallocator.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+mimalloc.workspace = true
+
 [dev-dependencies]
 polars = { workspace = true, features = ["parquet", "ipc", "csv", "json", "lazy", "dtype-struct"] }

@@ -595,7 +595,8 @@ class ModelBank:
              - the values the bank holds, frozen
            * - ``coef``
              - filled on the last accepted row, since the same coefficients
-               score every row
+               score every row; ``coef_every`` and ``max_rows_between_coefs``
+               are not read
            * - ``drift``
              - never fires
            * - a row of a group the bank has never seen, or without usable

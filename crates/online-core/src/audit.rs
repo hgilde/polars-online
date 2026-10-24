@@ -100,6 +100,10 @@
 //! recompressing their centroids together. A run or a lag pair that would
 //! have spanned the two streams is not counted, since they were not one.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::hash::{BuildHasherDefault, Hasher};
+
 use serde::{Deserialize, Serialize};
 
 use crate::{INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema, comp};
@@ -434,16 +438,98 @@ impl CoMoments {
 }
 
 /// Exact counts of up to `cap` distinct values, a Misra-Gries summary past
-/// them. Keys are a value's bits, `-0` read as `0`, sorted for a binary
-/// search and so the state's bytes do not depend on a hash.
+/// them. Keys are a value's bits, `-0` read as `0`.
+///
+/// A hash map under a fixed hash, so a value costs `O(1)` held or not: a
+/// sorted `Vec` took one `insert` a row on a continuous column, a shift of
+/// half the table, 75 / 214 / 3,183 ns a row at caps of 256 / 4,096 /
+/// 65,536, a `BTreeMap` 98 / 111 / 131, this map 59 / 52 / 58 (review
+/// 2026-10-23, F-2; `Audit::step` alone, one continuous column). The
+/// file keeps the `Vec`'s form, the `(key, count)` pairs ascending by key, so
+/// a state's bytes are what they were in both encodings (`CountsFile`),
+/// and whatever is summed over the counters is summed in that order. A file
+/// whose pairs are out of order or repeat a key loads with `unordered` set,
+/// and `has_shape` refuses it, as it did the `Vec`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "CountsFile")]
 pub struct Counts {
-    pub counts: Vec<(u64, u64)>,
+    #[serde(serialize_with = "pairs")]
+    pub counts: HashMap<u64, u64, BuildHasherDefault<KeyHasher>>,
     /// The decrements so far: no count is more than this below its true
     /// one, and a value not held has a true count of at most this.
     pub decrements: u64,
     /// More than `cap` distinct values were seen: the counts are a summary.
     pub over: bool,
+    /// The file's pairs were not strictly ascending by key: not state, and
+    /// never set by a stream.
+    #[serde(skip_serializing)]
+    pub unordered: bool,
+}
+
+/// The counters' hash of a key, a value's bits: SplitMix64's finalizer, so
+/// values that share their low bits (small integers, whose mantissas end in
+/// zeros) spread over the table. Fixed, so a run's cost does not depend on a
+/// random seed; nothing observable depends on the table's order.
+#[derive(Default, Clone, Copy)]
+pub struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn write_u64(&mut self, k: u64) {
+        let mut z = k.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        self.0 = z ^ (z >> 31);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// `Counts` as the file holds it, the counters a sorted `Vec<(u64, u64)>`:
+/// what a state is read through.
+#[derive(Deserialize)]
+struct CountsFile {
+    counts: Vec<(u64, u64)>,
+    decrements: u64,
+    over: bool,
+}
+
+impl From<CountsFile> for Counts {
+    /// A repeated key keeps its first count; the file is flagged either way.
+    fn from(f: CountsFile) -> Self {
+        let unordered = f.counts.windows(2).any(|w| w[0].0 >= w[1].0);
+        let mut counts = HashMap::with_capacity_and_hasher(f.counts.len(), Default::default());
+        for (k, c) in f.counts {
+            counts.entry(k).or_insert(c);
+        }
+        Counts {
+            counts,
+            decrements: f.decrements,
+            over: f.over,
+            unordered,
+        }
+    }
+}
+
+/// `Counts::counts` written as the ascending `(key, count)` pairs the
+/// `Vec` was.
+fn pairs<S: serde::Serializer>(
+    m: &HashMap<u64, u64, BuildHasherDefault<KeyHasher>>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    let mut v: Vec<(u64, u64)> = m.iter().map(|(&k, &c)| (k, c)).collect();
+    v.sort_unstable_by_key(|e| e.0);
+    s.collect_seq(v)
 }
 
 #[inline]
@@ -454,14 +540,17 @@ fn key(v: f64) -> u64 {
 impl Counts {
     fn add(&mut self, v: f64, cap: usize) {
         let k = key(v);
-        match self.counts.binary_search_by_key(&k, |e| e.0) {
-            Ok(i) => self.counts[i].1 += 1,
-            Err(i) if self.counts.len() < cap => self.counts.insert(i, (k, 1)),
-            Err(_) => {
+        let len = self.counts.len();
+        match self.counts.entry(k) {
+            Entry::Occupied(mut e) => *e.get_mut() += 1,
+            Entry::Vacant(e) if len < cap => {
+                e.insert(1);
+            }
+            Entry::Vacant(_) => {
                 self.over = true;
                 self.decrements += 1;
-                self.counts.iter_mut().for_each(|e| e.1 -= 1);
-                self.counts.retain(|e| e.1 > 0);
+                self.counts.values_mut().for_each(|c| *c -= 1);
+                self.counts.retain(|_, c| *c > 0);
             }
         }
     }
@@ -469,42 +558,29 @@ impl Counts {
     /// Agarwal et al.'s (2012) merge: add the counters, then take the
     /// `(cap + 1)`-th largest count from every counter.
     fn merge(&mut self, o: &Counts, cap: usize) {
-        let mut all: Vec<(u64, u64)> = Vec::with_capacity(self.counts.len() + o.counts.len());
-        let (mut i, mut j) = (0, 0);
-        while i < self.counts.len() || j < o.counts.len() {
-            match (self.counts.get(i), o.counts.get(j)) {
-                (Some(a), Some(b)) if a.0 == b.0 => {
-                    all.push((a.0, a.1 + b.1));
-                    i += 1;
-                    j += 1;
-                }
-                (Some(a), Some(b)) if a.0 < b.0 => {
-                    all.push(*a);
-                    i += 1;
-                }
-                (Some(a), None) => {
-                    all.push(*a);
-                    i += 1;
-                }
-                (_, Some(b)) => {
-                    all.push(*b);
-                    j += 1;
-                }
-                (None, None) => unreachable!(),
-            }
+        for (&k, &c) in &o.counts {
+            *self.counts.entry(k).or_insert(0) += c;
         }
         self.decrements += o.decrements;
         self.over |= o.over;
-        if all.len() > cap {
-            let mut c: Vec<u64> = all.iter().map(|e| e.1).collect();
+        self.unordered |= o.unordered;
+        if self.counts.len() > cap {
+            let mut c: Vec<u64> = self.counts.values().copied().collect();
             c.sort_unstable_by(|a, b| b.cmp(a));
             let cut = c[cap];
-            all.iter_mut().for_each(|e| e.1 -= cut);
-            all.retain(|e| e.1 > 0);
+            self.counts.values_mut().for_each(|e| *e -= cut);
+            self.counts.retain(|_, e| *e > 0);
             self.decrements += cut;
             self.over = true;
         }
-        self.counts = all;
+    }
+
+    /// The counters ascending by key: the order the file holds them in, and
+    /// the one a sum over them is taken in.
+    fn sorted(&self) -> Vec<(u64, u64)> {
+        let mut v: Vec<(u64, u64)> = self.counts.iter().map(|(&k, &c)| (k, c)).collect();
+        v.sort_unstable_by_key(|e| e.0);
+        v
     }
 
     /// The most repeated value and its count, and the next count: ties go
@@ -512,7 +588,7 @@ impl Counts {
     fn top(&self) -> Option<(f64, u64, u64)> {
         let mut best: Option<(f64, u64)> = None;
         let mut second = 0;
-        for &(k, c) in &self.counts {
+        for (k, c) in self.sorted() {
             let v = f64::from_bits(k);
             match best {
                 Some((bv, bc)) if c > bc || (c == bc && v < bv) => {
@@ -535,10 +611,10 @@ impl Counts {
             return f64::NAN;
         }
         let n = n as f64;
-        self.counts
+        self.sorted()
             .iter()
-            .map(|e| {
-                let p = e.1 as f64 / n;
+            .map(|&(_, c)| {
+                let p = c as f64 / n;
                 p * p
             })
             .sum()
@@ -552,7 +628,7 @@ impl Counts {
         let mut v: Vec<(f64, u64)> = self
             .counts
             .iter()
-            .map(|&(k, c)| (f64::from_bits(k), c))
+            .map(|(&k, &c)| (f64::from_bits(k), c))
             .collect();
         v.sort_by(|a, b| a.0.total_cmp(&b.0));
         Some(v)
@@ -560,10 +636,10 @@ impl Counts {
 
     fn has_shape(&self, cap: usize) -> bool {
         self.counts.len() <= cap
-            && self.counts.windows(2).all(|w| w[0].0 < w[1].0)
-            && self.counts.iter().all(|e| {
-                let v = f64::from_bits(e.0);
-                e.1 > 0 && v.abs() <= INPUT_BOUND && e.0 != (-0.0f64).to_bits()
+            && !self.unordered
+            && self.counts.iter().all(|(&k, &c)| {
+                let v = f64::from_bits(k);
+                c > 0 && v.abs() <= INPUT_BOUND && k != (-0.0f64).to_bits()
             })
     }
 }

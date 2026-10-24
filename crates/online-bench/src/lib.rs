@@ -35,7 +35,9 @@ pub const MODEL_CASES: &[&str] = &[
     "ewridge_k5",
     "ewridge_k20",
     "ewridge_gram_t10",
+    "huber_k20",
     "sgd",
+    "sgd_huber",
     "pa",
     "seqtest",
     "bocpd",
@@ -43,6 +45,21 @@ pub const MODEL_CASES: &[&str] = &[
     "micro",
     "kalman",
     "ew_cov",
+    "lasso_k20",
+    // One case per model kind that had none, and the paths the review of
+    // 2026-10-23 found costly (task 270 (e): J-3, slice M's table, F-2).
+    "rls",
+    "quantile",
+    "ftrl",
+    "holt",
+    "marginal",
+    "ew_class",
+    "deco",
+    "hmm",
+    "rcov",
+    "audit_continuous",
+    "bocpd_full",
+    "ew_cov_lags",
     "corrchange_monitor_w2500",
     "corrchange_window_w100",
 ];
@@ -53,15 +70,40 @@ pub const MODEL_CASES: &[&str] = &[
 /// That close is the cost the case is for (docs/PLAN.md task 270, D-1).
 pub const SPAN_CASE: &str = "corrchange_monitor_w2500";
 
+/// The model cases whose model predicts nothing by design: `Step::pred` is
+/// empty on every row, so the native test holds each to the path it is
+/// named for by another reading (`tests/workloads.rs`).
+pub const SILENT_CASES: &[&str] = &["marginal", "rcov", "audit_continuous"];
+
 /// The clock cases: a float clock, and a temporal one on the exact path.
 pub const CLOCK_CASES: &[&str] = &["clock_float", "clock_temporal"];
 
 /// The bank cases: a frame through `Bank::fit_predict`, every per-row step
 /// of the bank around the model, for the cheapest model and a regression;
-/// and a regression whose target is a window expression looking 1,000 rows
-/// ahead under an embargo of the same span, so each row waits behind about
-/// a thousand held rows (docs/PLAN.md task 270, M-3).
-pub const BANK_CASES: &[&str] = &["bank_seqtest", "bank_ewridge_k5", "formula_target_held1k"];
+/// and the same two over [`GROUPS`] groups of one row each, on a pool of one
+/// thread, where what a `(spec, group)` task costs whatever its rows is most
+/// of the count (docs/PLAN.md task 270, G-1); and a regression whose target
+/// is a window expression looking 1,000 rows ahead under an embargo of the
+/// same span, so each row waits behind about a thousand held rows
+/// (docs/PLAN.md task 270, M-3).
+pub const BANK_CASES: &[&str] = &[
+    "bank_seqtest",
+    "bank_ewridge_k5",
+    "bank_seqtest_groups",
+    "bank_ewridge_k5_groups",
+    "formula_target_held1k",
+];
+
+/// Groups in a grouped bank case: its block is one row of each.
+pub const GROUPS: usize = 1_000;
+
+/// Rows of a grouped case's warm-up: ten a group, past `min_weight` and the
+/// first solve of each group's fit.
+pub const GROUPED_WARM_ROWS: usize = 10 * GROUPS;
+
+fn grouped(id: &str) -> bool {
+    id.ends_with("_groups")
+}
 
 /// The window cases: a frame through the window operators' core
 /// (`WindowsRun::feed`, as `with_windows` runs it), one operator over a
@@ -121,11 +163,17 @@ enum Shape {
     /// Four features around one of three centres six apart, as
     /// `scripts/benchmark.py`'s blobs: what a clustering model is for.
     Blobs,
+    /// `k` features around one of three centres two apart, and the centre's
+    /// number as the target: a label a classifier learns, not always right.
+    Labelled,
 }
 
 /// Rows in the layout a model steps them: features row-major, targets
-/// row-major, and each row's clock step and clock value.
+/// row-major, and each row's clock step and clock value. Over `groups`
+/// groups (0: none), row `i` is group `i % groups`'s, and each group keeps
+/// a clock of its own, a unit a row.
 pub struct Rows {
+    groups: usize,
     k: usize,
     m: usize,
     x: Vec<f64>,
@@ -135,7 +183,7 @@ pub struct Rows {
 }
 
 impl Rows {
-    fn generate(shape: Shape, k: usize, m: usize, n: usize, seed: u64) -> Self {
+    fn generate(shape: Shape, k: usize, m: usize, n: usize, groups: usize, seed: u64) -> Self {
         let mut g = Lcg(seed);
         let (mut x, mut y) = (Vec::with_capacity(n * k), Vec::with_capacity(n * m));
         let (mut d, mut t) = (Vec::with_capacity(n), Vec::with_capacity(n));
@@ -148,6 +196,11 @@ impl Rows {
                     let label = (3.0 * g.next()).floor() as usize;
                     x.extend((0..k).map(|j| g.signed() + if j % 3 == label { 6.0 } else { 0.0 }));
                 }
+                Shape::Labelled => {
+                    let label = (3.0 * g.next()).floor() as usize;
+                    x.extend((0..k).map(|j| g.signed() + if j % 3 == label { 2.0 } else { 0.0 }));
+                    y.extend((0..m).map(|_| Some(label as f64)));
+                }
             }
             let fit: f64 = x[row..]
                 .iter()
@@ -157,13 +210,26 @@ impl Rows {
             // With no features, a column whose sign a sequential test
             // watches: either sign, a small drift up.
             let (level, noise) = if k == 0 { (0.05, 1.0) } else { (0.5, 0.3) };
-            y.extend((0..m).map(|j| Some(level + fit + j as f64 + noise * g.signed())));
+            if !matches!(shape, Shape::Labelled) {
+                y.extend((0..m).map(|j| Some(level + fit + j as f64 + noise * g.signed())));
+            }
             let step = if i == 0 { 0.0 } else { step_of(g.next()) };
             clock += step;
             d.push(step);
-            t.push(clock);
+            t.push(match i.checked_div(groups) {
+                None => clock,
+                Some(row) => 1_000.0 + row as f64,
+            });
         }
-        Self { k, m, x, y, d, t }
+        Self {
+            groups,
+            k,
+            m,
+            x,
+            y,
+            d,
+            t,
+        }
     }
 
     fn len(&self) -> usize {
@@ -191,6 +257,10 @@ impl Rows {
             Column::new(format!("y{j}").into(), v)
         }));
         cols.push(Column::new("t".into(), self.t[from..to].to_vec()));
+        if self.groups > 0 {
+            let g: Vec<i64> = (from..to).map(|i| (i % self.groups) as i64).collect();
+            cols.push(Column::new("g".into(), g));
+        }
         DataFrame::new_infer_height(cols).expect("columns of one length")
     }
 }
@@ -230,6 +300,14 @@ fn case_spec(id: &str) -> (Value, Shape) {
     };
     match id {
         "ewridge_k5" | "bank_ewridge_k5" => (fit(json!({"type": "ewridge"}), 5), Shape::Linear),
+        // A solve every 20 rows of a group's clock: at the default cadence a
+        // fit ten rows old solves on nearly every row, and the case is for
+        // the task's constant, not a young fit's solves.
+        "bank_ewridge_k5_groups" => {
+            let mut s = fit(json!({"type": "ewridge", "solve_every": 20.0}), 5);
+            s["group"] = json!("g");
+            (s, Shape::Linear)
+        }
         "ewridge_k20" => (fit(json!({"type": "ewridge"}), 20), Shape::Linear),
         // The target the mean of `y0` over the next 1,250 clock units
         // (about 1,000 rows), resolved by the bank's own window core, each
@@ -258,15 +336,37 @@ fn case_spec(id: &str) -> (Value, Shape) {
             s["targets"] = json!(names("y", 10));
             (s, Shape::Linear)
         }
+        // Huber's cut in the MAD scale, the default since task 271: a
+        // sketch of `|e|` per target, aged and fed each row.
+        "huber_k20" => (fit(json!({"type": "huber"}), 20), Shape::Linear),
         "sgd" => (
             fit(json!({"type": "sgd", "learning_rate": 0.01}), 20),
             Shape::Linear,
         ),
+        "sgd_huber" => (
+            fit(
+                json!({"type": "sgd", "learning_rate": 0.01, "loss": "huber"}),
+                20,
+            ),
+            Shape::Linear,
+        ),
         "pa" => (fit(json!({"type": "pa"}), 20), Shape::Linear),
+        // The penalty path's selection on every row and its solves on the
+        // default cadence (docs/PLAN.md task 270, C-2); the path is
+        // `scripts/wide_benchmark.py`'s.
+        "lasso_k20" => (
+            fit(json!({"type": "lasso", "penalties": [0.1, 0.01, 0.0]}), 20),
+            Shape::Linear,
+        ),
         "kalman" => (
             fit(json!({"type": "kalman", "coef_half_life": 2000.0}), 20),
             Shape::Linear,
         ),
+        "bank_seqtest_groups" => {
+            let (mut s, shape) = case_spec("seqtest");
+            s["group"] = json!("g");
+            (s, shape)
+        }
         "seqtest" | "bank_seqtest" => (
             json!({
                 "name": "m",
@@ -320,6 +420,89 @@ fn case_spec(id: &str) -> (Value, Shape) {
             ),
             Shape::Linear,
         ),
+        // From here, the cases added with the review of 2026-10-23 (task
+        // 270 (e)), each `scripts/benchmark.py`'s row of the same kind.
+        "rls" => (fit(json!({"type": "rls", "delta": 1.0}), 20), Shape::Linear),
+        "quantile" => (
+            fit(json!({"type": "quantile", "quantile": 0.5}), 20),
+            Shape::Linear,
+        ),
+        "ftrl" => (fit(json!({"type": "ftrl"}), 20), Shape::Linear),
+        // Level and trend of one column, no features.
+        "holt" => {
+            let mut s = fit(json!({"type": "holt"}), 0);
+            s.as_object_mut().expect("an object").remove("min_weight");
+            (s, Shape::Linear)
+        }
+        // Twenty features against one target, every pair's moments.
+        "marginal" => (fit(json!({"type": "marginal"}), 20), Shape::Linear),
+        "ew_class" => {
+            let model = json!({
+                "type": "ew_class",
+                "classes": ["0", "1", "2"],
+                "precision_prior": 1.0,
+            });
+            let mut s = fit(model, 20);
+            s.as_object_mut().expect("an object").remove("min_weight");
+            (s, Shape::Labelled)
+        }
+        "deco" | "ew_cov_lags" => {
+            let model = if id == "deco" {
+                json!({"type": "deco"})
+            } else {
+                json!({"type": "ew_cov", "stats": ["mean", "cov"], "lags": [1, 2, 3, 4, 5]})
+            };
+            let mut s = fit(model, 20);
+            let o = s.as_object_mut().expect("an object");
+            o.remove("targets");
+            o.remove("min_weight");
+            (s, Shape::Linear)
+        }
+        "hmm" => (
+            four(
+                json!({"type": "hmm", "n_components": 2, "precision_prior": 1.0}),
+                true,
+            ),
+            Shape::Blobs,
+        ),
+        // The kernel estimator, as `scripts/benchmark.py`'s row.
+        // A group that closes is required; the case counts the rows the
+        // block takes in, not its close, which the bank calls.
+        "rcov" => {
+            let mut s = four(
+                json!({"type": "rcov", "kind": "kernel", "block_rows": 2000}),
+                false,
+            );
+            s["group"] = json!("g");
+            s["group_close"] = json!("monotone");
+            (s, Shape::Blobs)
+        }
+        // A continuous column at the default cap of 256 counters: nearly
+        // every value new, so past the cap on nearly every row (F-2).
+        "audit_continuous" => (
+            json!({
+                "name": "m",
+                "model": {"type": "audit"},
+                "features": ["x0"],
+                "clock": "t",
+                "gap_cap": 100.0,
+            }),
+            Shape::Linear,
+        ),
+        // The full covariance, whose runs each factor a 4 x 4 scale a row.
+        "bocpd_full" => (
+            four(
+                json!({
+                    "type": "bocpd",
+                    "covariance_type": "full",
+                    "degrees_of_freedom_prior": 6.0,
+                    "prune_below": 1e-6,
+                    "max_run": 200,
+                }),
+                false,
+            ),
+            Shape::Blobs,
+        ),
         other => panic!("no case {other:?}"),
     }
 }
@@ -340,7 +523,17 @@ fn rows(id: &str, spec: &Spec) -> Rows {
     } else {
         ROWS
     };
-    Rows::generate(shape, spec.k(), spec.m(), WARM_ROWS + block, 7)
+    let groups = if grouped(id) { GROUPS } else { 0 };
+    Rows::generate(shape, spec.k(), spec.m(), warm_rows(id) + block, groups, 7)
+}
+
+/// Rows a case steps before its measured block.
+fn warm_rows(id: &str) -> usize {
+    if grouped(id) {
+        GROUPED_WARM_ROWS
+    } else {
+        WARM_ROWS
+    }
 }
 
 /// A model case, warmed up: the model and the rows of its measured block.
@@ -456,7 +649,8 @@ pub struct BankRun {
 }
 
 /// The setup of a bank case: a bank of the case's one spec, fed the
-/// warm-up rows as one frame. A wide case's bank is given its pool size:
+/// warm-up rows as one frame. A wide or grouped case's bank is given its
+/// pool size:
 /// one thread is the process default's pool when that has one thread, as
 /// under the bench, so the rows are learned on the thread that calls.
 pub fn bank_setup(id: &str) -> BankRun {
@@ -466,6 +660,7 @@ pub fn bank_setup(id: &str) -> BankRun {
     let threads = match id {
         "bank_ew_cov_wide_t1" => Some(1),
         "bank_ew_cov_wide_t4" => Some(4),
+        id if grouped(id) => Some(1),
         _ => None,
     };
     if threads.is_some() {
@@ -473,9 +668,10 @@ pub fn bank_setup(id: &str) -> BankRun {
         bank.set_threads(threads)
             .unwrap_or_else(|e| panic!("{id}: {e}"));
     }
-    bank.fit_predict(&rows.frame(0, WARM_ROWS))
+    let warm = warm_rows(id);
+    bank.fit_predict(&rows.frame(0, warm))
         .unwrap_or_else(|e| panic!("{id}: {e}"));
-    let frame = rows.frame(WARM_ROWS, rows.len());
+    let frame = rows.frame(warm, rows.len());
     BankRun { bank, frame }
 }
 
@@ -520,7 +716,7 @@ pub fn windows_setup(id: &str) -> WindowsCase {
         "gap_cap": 100.0,
     }))
     .unwrap_or_else(|e| panic!("{id}: {e}"));
-    let rows = Rows::generate(Shape::Linear, 1, 0, WARM_ROWS + ROWS, 7);
+    let rows = Rows::generate(Shape::Linear, 1, 0, WARM_ROWS + ROWS, 0, 7);
     let warm = rows.frame(0, WARM_ROWS);
     let mut run = WindowsRun::new(config, warm.schema()).unwrap_or_else(|e| panic!("{id}: {e}"));
     run.feed(&warm, None)

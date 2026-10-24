@@ -151,13 +151,18 @@ def streams(
     sign: float | None = None,
     offset: float = 0.0,
     columns: tuple[str, ...] = ("x0", "x1", "y0"),
+    min_groups=1,
 ):
     """An adversarial but *valid* stream: the clock is non-decreasing within
     each group (mis-ordered input is its own test, T-E4). With a ``sign``,
-    ``columns`` sit on its side of zero at ``offset`` (`SIGNS`)."""
-    n = draw(st.integers(min_value=min_rows, max_value=max_rows))
-    n_groups = draw(st.integers(min_value=1, max_value=max_groups))
+    ``columns`` sit on its side of zero at ``offset`` (`SIGNS`). Its first
+    ``min_groups`` rows are each of a group of their own, so that many
+    groups always appear: generated, not filtered after (review round 9,
+    J-6: `assume(len(keys) > 1)` dropped a third of the streams)."""
+    n = draw(st.integers(min_value=max(min_rows, min_groups), max_value=max_rows))
+    n_groups = draw(st.integers(min_value=min_groups, max_value=max(max_groups, min_groups)))
     groups = draw(st.lists(st.integers(0, n_groups - 1), min_size=n, max_size=n))
+    groups[:min_groups] = range(min_groups)
 
     # per-group non-decreasing clock, with duplicates and long gaps allowed
     clocks, last = [], dict.fromkeys(range(n_groups), 0.0)
@@ -226,11 +231,20 @@ def warmed_streams(
     weight 1, so every stream has a row the model scored. Drawn at random, too
     few streams had one, and kalman failed Hypothesis's `filter_too_much`
     health check once in a gate and once in 460 runs (2026-10-07). With a
-    ``sign``, the warm rows' ``columns`` sit on its side of zero too."""
+    ``sign``, the warm rows' ``columns`` sit on its side of zero too. Their
+    targets are at least 1e-3 from 0, and their features 0 or at least 1e-3
+    from it: kalman sizes a target's prior from three squared innovations
+    above 0 and predicts nothing while it is unsized (task 270, review round
+    9 B-1), so warm targets of 0, or of 1e-172, whose square underflows to
+    0, left it no row to score, and so did a feature at 7.9e-57 beside one
+    at 11, after which its prior was unsized again at the fourth row."""
     df = draw(streams(sign=sign, offset=offset, columns=columns))
     finite = st.floats(min_value=-1e3, max_value=1e3, allow_nan=False, allow_infinity=False)
     rows = st.lists(finite, min_size=WARM_ROWS, max_size=WARM_ROWS)
     warm = {c: draw(rows) for c in ("x0", "x1", "y0")}
+    warm["y0"] = [v if abs(v) >= 1e-3 else 1.0 for v in warm["y0"]]
+    for c in ("x0", "x1"):
+        warm[c] = [v if abs(v) >= 1e-3 else 0.0 for v in warm[c]]
     for c in columns:
         warm[c] = [_signed(v, sign, offset) for v in warm[c]]
     head = pl.DataFrame(
@@ -414,7 +428,7 @@ class TestUniversalProperties:
         def prop(df):
             df = binarize(df, model)
             keys = df["g"].unique().to_list()
-            assume(len(keys) > 1)
+            assert len(keys) > 1, keys
             spec = build(model, extra)
             both = po.ModelBank([spec]).fit_predict(df)
             for key in keys:
@@ -423,7 +437,7 @@ class TestUniversalProperties:
                 b = unnested(solo)
                 assert a.equals(b, null_equal=True), f"group {key} was affected by the others"
 
-        _given(sign, prop, df=_streams(model, sign, max_groups=3))
+        _given(sign, prop, df=_streams(model, sign, min_groups=2, max_groups=3))
 
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     def test_prediction_never_depends_on_the_current_target(self, model, extra, sign):

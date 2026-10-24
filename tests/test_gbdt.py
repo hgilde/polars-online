@@ -518,6 +518,33 @@ def test_lightgbm_grows_its_own_trees_from_float32(data, valid, engine, in_memor
     assert '"decision_type": "=="' in dumped, "a categorical split"
 
 
+@pytest.mark.parametrize("in_memory", [False, True])
+def test_a_label_or_weight_past_float32_s_range_is_stored_as_lightgbm_s_own_route_stores_it(
+    data, in_memory
+):
+    """LightGBM stores a label or weight given to ``LGBM_DatasetSetField``
+    as float32 held to +-1e38; the streamed route hands each batch's to
+    ``LGBM_DatasetPushRowsWithMetadata``, which copies them as they are, so
+    it holds them to 1e38 itself, and a finite value past float32's range
+    is stored as 1e38 by both, never as infinity (review 9, H-4)."""
+    big = data.with_columns(
+        pl.when(pl.int_range(pl.len()) == 11)
+        .then(1e39)
+        .when(pl.int_range(pl.len()) == 12)
+        .then(-3e38)
+        .otherwise("y")
+        .alias("y"),
+        pl.when(pl.int_range(pl.len()) == 13).then(5e38).otherwise("w").alias("w"),
+    )
+    ds = gbdt.lightgbm_dataset(
+        big, label="y", weight="w", params=LGB_DATA, in_memory=in_memory, engine="native"
+    )
+    own = lgb_own(big, LGB_DATA)
+    assert ds.get_label()[11:13].tolist() == own.get_label()[11:13].tolist()
+    assert ds.get_label()[11] == np.float32(1e38) and ds.get_weight()[13] == np.float32(1e38)
+    assert lgb_trees(lgb.train(LGB, ds, 5)) == lgb_trees(lgb.train(LGB, own, 5))
+
+
 @pytest.mark.parametrize("engine", ["native", "python"])
 def test_a_validation_dataset_is_binned_on_the_training_bins(data, valid, engine):
     train = gbdt.lightgbm_dataset(data, label="y", weight="w", params=LGB_DATA, engine=engine)

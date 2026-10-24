@@ -53,6 +53,10 @@ def stream(n: int = 400, seed: int = 7) -> pl.DataFrame:
     x0[[30, 31, 200]] = np.nan
     yy = y.copy()
     yy[[45, 46, 300]] = np.nan
+    # A clock that steps back by 30 at row 150: a restart under
+    # `restart_after_step_back = 10`.
+    t_back = t.copy()
+    t_back[150:] -= 30.0
     return pl.DataFrame(
         {
             "t": t,
@@ -67,8 +71,14 @@ def stream(n: int = 400, seed: int = 7) -> pl.DataFrame:
             "w": w,
             "hit": (y > 0.5).astype(float),
             "lab": np.where(y > 0.5, "up", "down"),
+            "t_back": t_back,
         }
-    ).with_columns(pl.col("x0", "y").fill_nan(None))
+    ).with_columns(
+        pl.col("x0", "y").fill_nan(None),
+        # `t` as a time of day: the temporal clock and its duration
+        # parameters, on the same steps.
+        ts=pl.datetime(2024, 1, 2, 9, 30) + pl.duration(milliseconds=(pl.col("t") * 1000)),
+    )
 
 
 #: Where `states` stops: the first half of `stream()`.
@@ -76,6 +86,94 @@ HALF = 200
 
 CLOCK = dict(clock="t", gap_cap=6.0, weight="w")
 FIT = dict(targets=["y"], features=["x0", "x1", "x2"], group="g", half_life=25.0, **CLOCK)
+
+
+class _Formula:
+    """A window expression as a target, built from ``po.<op>`` only when its
+    spec is: the probe imports under releases that have no such operator, and
+    one of those refuses the spec that names it, not the run."""
+
+    def __init__(self, op: str, column: str, *, alias: str, **kw) -> None:
+        self.op, self.column, self.alias, self.kw = op, column, alias, kw
+
+    def build(self) -> pl.Expr:
+        kw = dict(self.kw)
+        if self.op.startswith("ewm"):
+            kw.setdefault("half_life", INF)
+        return getattr(po, self.op)(self.column, reverse=True, **kw).alias(self.alias)
+
+
+def _fullest() -> dict[str, dict]:
+    """Each regression with every output it can emit, as
+    ``tests/test_budgets_memory.py``'s ``fullest`` switches them on."""
+    every = dict(
+        coef_every=0,
+        emit_clocks=True,
+        emit_sigma=True,
+        emit_zscore=True,
+        emit_metrics=True,
+        conformal=0.9,
+        resid_quantiles=[0.1, 0.9],
+        emit_autocorr=True,
+        emit_drift=True,
+        drift_threshold=20.0,
+        emit_calibration=True,
+        emit_breaks=True,
+        emit_specification=True,
+        emit_tails=True,
+        emit_feature_health=True,
+        emit_averaged=True,
+        emit_error_inflation=True,
+        emit_se_coef=True,
+        emit_robust_se=True,
+        emit_influence=True,
+        emit_selected=True,
+    )
+    simple = {"emit_selected", "emit_error_inflation", "emit_se_coef", "emit_robust_se"}
+    simple |= {"emit_influence"}
+    lacks = {
+        "ewridge": {"emit_selected"},
+        "rls": {"emit_selected"},
+        "lasso": {"emit_error_inflation", "emit_se_coef", "emit_robust_se", "emit_influence"},
+        "kalman": {"emit_selected", "emit_robust_se"},
+        "huber": simple,
+        "quantile": simple,
+        "ftrl": simple,
+        "sgd": simple,
+        "pa": simple,
+        "holt": simple | {"emit_feature_health"},
+    }
+    fit = dict(FIT, targets=["y", "z"])
+    base = {
+        "ewridge": fit,
+        "rls": fit,
+        "lasso": dict(fit, penalties=[0.2, 0.05, 0.0]),
+        "kalman": dict(fit, coef_half_life=50.0),
+        "huber": fit,
+        "quantile": dict(fit, quantile=0.8),
+        "ftrl": dict(fit, targets=["hit"]),
+        "sgd": dict(fit, learning_rate=0.01),
+        "pa": fit,
+        "holt": dict(targets=["y"], group="g", half_life=25.0, **CLOCK),
+    }
+    return {
+        kind: {**kw, **{k: v for k, v in every.items() if k not in lacks[kind]}}
+        for kind, kw in base.items()
+    }
+
+
+def _ew_class_window() -> dict:
+    return dict(
+        features=["x1", "x2"],
+        label="lab",
+        classes=["down", "up"],
+        precision_prior=1.0,
+        half_life=25.0,
+        window_size=60.0,
+        coef_every=0,
+        **CLOCK,
+    )
+
 
 #: (name, builder, keyword arguments, the specs it reads, if any).
 WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
@@ -114,6 +212,17 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
     ("enet", "lasso", dict(FIT, penalties=[0.1, 0.0], l1_ratio=0.5), []),
     ("kalman", "kalman", dict(FIT, coef_half_life=50.0), []),
     ("huber", "huber", dict(FIT), []),
+    # Task 271's scales: the MAD, the default since, with a memory of its
+    # own, and the RMS, every release's before it; and sgd's Huber loss.
+    # A release without `huber_scale` refuses them: not comparable.
+    ("huber_mad", "huber", dict(FIT, huber_scale="mad", huber_scale_half_life=10.0), []),
+    ("huber_rms", "huber", dict(FIT, huber_scale="rms"), []),
+    (
+        "sgd_huber_mad",
+        "sgd",
+        dict(FIT, learning_rate=0.01, loss="huber", huber_scale="mad"),
+        [],
+    ),
     ("quantile", "quantile", dict(FIT, quantile=0.8), []),
     ("ftrl", "ftrl", dict(FIT, targets=["hit"]), []),
     ("sgd", "sgd", dict(FIT, learning_rate=0.01), []),
@@ -198,6 +307,182 @@ WORKLOAD: list[tuple[str, str, dict, list[str]]] = [
         [],
     ),
 ]
+
+#: The switches and paths the workload above never reached (review round 9,
+#: J-2), written against the 1.0 API: every output each regression can emit,
+#: a temporal clock, the blocked Gram, feature sets and a prior, the other
+#: losses and modes, the windows of the other kinds, a formula target, a
+#: drift reset, a solve and coefficient cadence, a restart on a step back.
+#: A release before 1.0 refuses some of them by a parameter it lacks.
+#: `tests/test_release_compare.py` holds the workload to every field name
+#: the fullest workload emits and to the paths it names.
+REACH: list[tuple[str, str, dict, list[str]]] = [
+    # Every output each regression can emit, as the memory budgets'
+    # workload switches them on (tests/test_budgets_memory.py).
+    *[(f"full_{kind}", kind, kw, []) for kind, kw in _fullest().items()],
+    (
+        "ew_cov_full",
+        "ew_cov",
+        dict(
+            features=["x0", "x1", "x2"],
+            stats=["mean", "var", "std", "cov", "corr", "partial_corr", "mahal"],
+            precision_prior=1e-6,
+            mahal_quantiles=[0.5, 0.99],
+            pca=2,
+            group="g",
+            half_life=25.0,
+            emit_clocks=True,
+            **CLOCK,
+        ),
+        [],
+    ),
+    # A temporal clock, every clock parameter a duration.
+    (
+        "ridge_datetime",
+        "ewridge",
+        dict(
+            FIT,
+            clock="ts",
+            half_life="25s",
+            gap_cap="6s",
+            coef_every="20s",
+            solve_every="2s",
+            embargo="3s",
+            session="s",
+            session_gap="10s",
+            emit_clocks=True,
+        ),
+        [],
+    ),
+    # The blocked Gram on two threads, the targets' rows apart.
+    (
+        "ridge_blocked",
+        "ewridge",
+        dict(
+            FIT,
+            targets=["y", "z"],
+            gram_block_rows=16,
+            gram_threads=2,
+            target_gaps="pairwise",
+        ),
+        [],
+    ),
+    (
+        "ridge_sets",
+        "ewridge",
+        dict(
+            FIT,
+            feature_sets={"a": ["x0", "x1"], "b": ["x1", "x2"]},
+            emit_selected=True,
+        ),
+        [],
+    ),
+    ("ridge_prior", "ewridge", dict(FIT, coef_prior=[[0.4, 1.0, -0.4, 0.1]]), []),
+    (
+        "ridge_reset",
+        "ewridge",
+        dict(FIT, emit_drift=True, drift_threshold=3.0, drift_action="reset"),
+        [],
+    ),
+    (
+        "ridge_cadence",
+        "ewridge",
+        dict(FIT, solve_every=8.0, max_rows_between_solves=3, max_rows_between_coefs=5),
+        [],
+    ),
+    (
+        "ridge_step_back",
+        "ewridge",
+        dict(FIT, group=None, clock="t_back", restart_after_step_back=10.0),
+        [],
+    ),
+    ("ridge_both", "ewridge", dict(FIT, window_size=40.0, closed="both"), []),
+    ("ridge_lam", "ewridge", dict(FIT, half_life=None, lam=0.97), []),
+    (
+        "kalman_shared",
+        "kalman",
+        dict(
+            FIT,
+            targets=["y", "z"],
+            revert_half_life=200.0,
+            share_p=True,
+            q=[1e-4, 1e-3, 1e-3, 1e-3],
+            obs_var=0.1,
+        ),
+        [],
+    ),
+    ("kalman_standardized", "kalman", dict(FIT, coef_half_life=50.0, standardize=True), []),
+    *[
+        (f"sgd_{loss}", "sgd", dict(FIT, learning_rate=0.01, loss=loss, **extra), [])
+        for loss, extra in (
+            ("huber", {"huber_delta": 1.0}),
+            ("quantile", {"quantile": 0.8}),
+            ("epsilon_insensitive", {"eps": 0.1}),
+            ("poisson", {"targets": ["hit"]}),
+            ("logistic", {"targets": ["hit"]}),
+        )
+    ],
+    ("sgd_adagrad", "sgd", dict(FIT, learning_rate=0.1, schedule="adagrad"), []),
+    ("ftrl_squared", "ftrl", dict(FIT, loss="squared"), []),
+    *[(f"pa_{mode}", "pa", dict(FIT, mode=mode, c=0.5), []) for mode in ("pa1", "pa2")],
+    (
+        "marginal_window",
+        "marginal",
+        dict(
+            targets=["y"],
+            features=["x1", "x2"],
+            lags=[1, 2],
+            window_lags=True,
+            window_size=60.0,
+            closed="both",
+            half_life=25.0,
+            **CLOCK,
+        ),
+        [],
+    ),
+    (
+        "marginal_edges",
+        "marginal",
+        dict(
+            targets=["y"],
+            features=["x1", "x2"],
+            bin_edges=[[-1.0, 0.0, 1.0], [-0.5, 0.5]],
+            half_life=25.0,
+            **CLOCK,
+        ),
+        [],
+    ),
+    ("lasso_window", "lasso", dict(FIT, penalties=[0.1, 0.0], window_size=40.0), []),
+    ("ew_class_window", "ew_class", _ew_class_window(), []),
+    # A target that is a window expression over the next 10 clock
+    # units, learned once they have passed. Built when the spec is,
+    # so a release without the operator refuses the spec alone.
+    (
+        "ridge_formula",
+        "ewridge",
+        dict(
+            FIT,
+            group=None,
+            targets=[_Formula("ewm_mean", "y", window_size=10.0, alias="fwd_y")],
+            embargo=10.0,
+        ),
+        [],
+    ),
+    (
+        "rcov_session",
+        "rcov",
+        dict(
+            features=["x1", "x2"],
+            group="g",
+            session="s",
+            group_close="session",
+            block_rows=30,
+        ),
+        [],
+    ),
+]
+
+WORKLOAD += REACH
 
 
 #: Task 144's renames, new name -> old, so the probe can run under a released
@@ -306,6 +591,16 @@ def _speak(builder: str, kw: dict) -> dict:
     return out
 
 
+def build(builder: str, name: str, kw: dict) -> dict:
+    """The spec ``builder`` makes of ``kw`` in the installed package's names,
+    a formula target built only now (`_Formula`)."""
+    kw = {
+        k: [t.build() if isinstance(t, _Formula) else t for t in v] if k == "targets" else v
+        for k, v in kw.items()
+    }
+    return getattr(po.spec, builder)(name, **_speak(builder, kw))
+
+
 def main(out_path: str, manifest_path: str) -> None:
     warnings.simplefilter("ignore")
     df = stream()
@@ -315,7 +610,7 @@ def main(out_path: str, manifest_path: str) -> None:
     built: dict[str, dict] = {}
     for name, builder, kw, reads in WORKLOAD:
         try:
-            built[name] = getattr(po.spec, builder)(name, **_speak(builder, kw))
+            built[name] = build(builder, name, kw)
             bank = po.ModelBank([built[r] for r in reads] + [built[name]])
             out = bank.fit_predict(df)
             closed = bank.closed_groups()
@@ -346,7 +641,7 @@ def states(out_dir: str, manifest_path: str) -> None:
     built: dict[str, dict] = {}
     for name, builder, kw, reads in WORKLOAD:
         try:
-            built[name] = getattr(po.spec, builder)(name, **_speak(builder, kw))
+            built[name] = build(builder, name, kw)
             bank = po.ModelBank([built[r] for r in reads] + [built[name]])
             bank.fit_predict(first)
             bank.save(f"{out_dir}/{name}.state")

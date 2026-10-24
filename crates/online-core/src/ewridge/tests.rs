@@ -2157,6 +2157,35 @@ fn gram_block_rows_is_refused_where_it_cannot_pay() {
     assert!(EwRidge::new(c).is_ok(), "0 is off, whatever the schedule");
 }
 
+/// Under `own_rows`, the default, each pattern of missing rows has a Gram
+/// of its own and each Gram holds its own block, so `n_targets` blocks at
+/// most: the budget counts that many. One block each was counted, so ten
+/// targets missing on different rows held ten times the 256 MiB the
+/// refusal named (review round 9, A-1; docs/PLAN.md task 270). One target,
+/// and `pairwise`'s single Gram, count one.
+#[test]
+fn the_block_budget_counts_a_block_per_pattern_of_missing_rows() {
+    let err = |c: EwRidgeCfg| EwRidge::new(c).err().unwrap_or_default();
+    let targets = 10usize;
+    // k_total = 4: three features and the intercept.
+    let edge = (256 << 20) / (8 * 4 * targets);
+    let mut c = blocked_cfg(3, edge);
+    c.n_targets = targets;
+    assert!(EwRidge::new(c.clone()).is_ok(), "just inside the budget");
+    c.gram_block_rows = edge + 1;
+    let e = err(c.clone());
+    assert!(
+        e.contains("over the 256 MiB budget") && e.contains("per pattern of missing rows"),
+        "{e}"
+    );
+    let mut one = c.clone();
+    one.n_targets = 1;
+    assert!(EwRidge::new(one).is_ok(), "one target holds one block");
+    let mut pairwise = c;
+    pairwise.target_gaps = TargetGaps::Pairwise;
+    assert!(EwRidge::new(pairwise).is_ok(), "pairwise holds one block");
+}
+
 // ---- target_gaps (docs/PLAN.md task 81) ----
 
 /// Features, three targets, clock delta, weight.

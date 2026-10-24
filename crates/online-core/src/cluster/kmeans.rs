@@ -88,6 +88,10 @@ use super::summary::{ClusterSummary, FeatureMoments, SplitMix64, StepFactors, di
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 
+/// A row's nearest centre and runner-up: `(j*, d²_j*, d²_second, j_second)`
+/// ([`KMeans::nearest2`]).
+type Near = (usize, f64, f64, Option<usize>);
+
 /// How the first `k` centres are chosen from the warm-up buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -167,7 +171,8 @@ impl KMeansCfg {
         if self.k > KMeans::MAX_K {
             return Err(format!(
                 "kmeans: n_clusters must be at most {} (2^16), got {}: every row is scored against every \
-                 centre, and seeding is O(k²) over the warm-up buffer",
+                 centre, and the default seeding (`init = \"lloyd\"`) makes about 120 passes over the warm-up \
+                 buffer, each O(k · n_features) a buffered row",
                 KMeans::MAX_K,
                 self.k
             ));
@@ -416,7 +421,7 @@ impl KMeans {
     /// the input bound still has a nearest and a runner-up (review
     /// 2026-09-26, G1: an infinite square never won against the infinity
     /// the search starts from, and the runner-up was never set).
-    fn nearest2(&self, z: &[f64]) -> (usize, f64, f64, Option<usize>) {
+    fn nearest2(&self, z: &[f64]) -> Near {
         let closer = |d: f64, j: usize, bd: f64, bj: usize| {
             if d.is_finite() || bd.is_finite() {
                 d < bd
@@ -458,10 +463,18 @@ impl KMeans {
         }
     }
 
-    fn score(&self, x: &[f64], valid: bool, n_eff: f64) -> Vec<f64> {
+    /// The row's nearest centre and runner-up ([`Self::nearest2`]) where
+    /// the row has one to find: a usable row, once the centres are seeded.
+    fn near(&self, x: &[f64], valid: bool) -> Option<Near> {
+        (valid && self.seeded()).then(|| self.nearest2(x))
+    }
+
+    /// The assignment and the two distances, from the search `near` made.
+    fn score(&self, x: &[f64], near: Option<Near>, n_eff: f64) -> Vec<f64> {
         let mut pred = vec![f64::NAN; 3];
-        if valid && self.seeded() && n_eff >= self.cfg.min_weight {
-            let (j, d2, d2_second, second_j) = self.nearest2(x);
+        if let Some((j, d2, d2_second, second_j)) = near
+            && n_eff >= self.cfg.min_weight
+        {
             pred[0] = j as f64;
             pred[1] = self.reported(d2, j, x);
             pred[2] = match second_j {
@@ -472,8 +485,17 @@ impl KMeans {
         pred
     }
 
-    fn learn_row(&mut self, x: &[f64], w: f64) {
-        let (j, d2, _, _) = self.nearest2(x);
+    /// Learn a row into its nearest centre, from the search `step` made to
+    /// score it: decay moves no centre and `moments.absorb` neither a centre
+    /// nor the metric, so a second search found the same centre and square,
+    /// at the row's dominant cost (task 270, E-1). Every build with debug
+    /// assertions checks that to the bit.
+    fn learn_row(&mut self, x: &[f64], w: f64, (j, d2, _, _): Near) {
+        debug_assert_eq!(
+            (j, d2.to_bits()),
+            (self.nearest2(x).0, self.nearest2(x).1.to_bits()),
+            "the search the row was scored by is the one it learns by"
+        );
         let far = self.cfg.split_merge > 0.0 && self.is_far(d2);
         self.absorb(j, x, w, d2, far);
         self.since += 1;
@@ -991,12 +1013,14 @@ impl OnlineModel for KMeans {
 
         // Decay moves no centre and the metric is refreshed only below, so
         // this is exactly what `predict` reads.
-        let pred = self.score(x, valid, n_before);
+        let near = self.near(x, valid);
+        let pred = self.score(x, near, n_before);
 
         if learn {
             self.moments.absorb(x, weight);
-            if self.seeded() {
-                self.learn_row(x, weight);
+            // `learn` implies a usable row, so a seeded model searched.
+            if let Some(near) = near {
+                self.learn_row(x, weight, near);
             } else {
                 self.buf.push(x.to_vec());
                 self.buf_w.push(weight);
@@ -1019,7 +1043,7 @@ impl OnlineModel for KMeans {
         }
         let valid = x.iter().all(|v| v.is_finite());
         Step {
-            pred: self.score(x, valid, self.moments.w),
+            pred: self.score(x, self.near(x, valid), self.moments.w),
             n_eff: self.moments.w,
             extra: None,
         }

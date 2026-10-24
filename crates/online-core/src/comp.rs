@@ -17,13 +17,22 @@
 //! that divides one by the other reads the ratio of two rounding artefacts.
 //!
 //! Here a mean is a pair, `hi + lo`: `hi` the double nearest it and `lo`
-//! what `hi` leaves out. A row's step `b·d` is added to the pair exactly
-//! (two error-free sums), with `d = (x − hi) − lo` the deviation from the
-//! pair, so no part of any step is dropped. The pair follows exact
-//! arithmetic to about 2^-106 of the mean, and the deviation, a small number
-//! in its own right, keeps its full precision as it shrinks: a value held
-//! row after row is approached as exact arithmetic approaches it, and what
-//! is fed its deviation decays with its history. Nothing needs to know that
+//! what `hi` leaves out. A row's step `s = b·d`, with `d = (x − hi) − lo`
+//! the deviation from the pair, goes in by Kahan's compensated step: `y = s
+//! + lo` is a plain rounded sum, and `hi + y` is split exactly into its
+//! double and the part left out (Fast2Sum) while `|y| ≤ |hi|`. So the pair
+//! is not a double-double: it carries each step's own rounding, about
+//! `ε·|b·d|` a row, which is `ε·σ/L` of a mean at level `L` over values of
+//! spread `σ`, not 2^-106 of it. Measured against the same recursion in
+//! 80-digit decimals (`b = 0.034`, 20,000 rows): a value held at 1e8 is
+//! approached to 5.7e-26 of the mean (the plain step stalls at 2.1e-15),
+//! values of spread 1 moving at 1e8 are followed to 4.7e-25 (plain
+//! 6.6e-16), and at level 1, where `|y| ≤ |hi|` often fails, to 5.9e-17,
+//! a rounding of the mean (plain 8.4e-16; review 2026-10-23, A-4). What
+//! matters is the held value: the deviation, a small number in its own
+//! right, keeps its full precision as it shrinks, so a value held row
+//! after row is approached as exact arithmetic approaches it, and what is
+//! fed its deviation decays with its history. Nothing needs to know that
 //! the value is held, how much the row weighs, or whether the mean decays.
 
 /// The deviation of `x` from the mean `hi + lo`: `(x − hi) − lo`. Where `x`

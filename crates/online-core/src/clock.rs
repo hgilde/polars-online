@@ -172,6 +172,13 @@ pub struct ClockAdvance {
     /// the step back is no larger than `min_backwards_jump` (`disorder`
     /// carries the numbers). The caller must turn this into an error naming
     /// the row. Carries the offending raw delta.
+    ///
+    /// Set too, for a learned row, when the row's clock value or its step is
+    /// no finite number of clock units -- a NaN or infinite value, or two
+    /// values whose difference is past the largest double -- carrying that
+    /// NaN or infinite step (the value itself on a stream's first row). Such
+    /// a row steps nothing (`d_clock` and `elapsed` 0, no stamp) and leaves
+    /// the clock where the row before left it; a scored one is a step of 0.
     pub backwards: Option<f64>,
     /// With `backwards`: the step and the minimum it did not exceed, `None`
     /// when it was the `error` policy.
@@ -966,6 +973,10 @@ impl ClockState {
         clock: Option<ClockValue>,
         session: Option<u64>,
     ) -> Option<(f64, Option<Disorder>)> {
+        // As the step: refused, and the previous clock and session kept.
+        if let Some(bad) = not_a_step(clock, self.prev_clock) {
+            return Some((bad, None));
+        }
         let prev = std::mem::replace(&mut self.prev_clock, clock);
         let prev_session = std::mem::replace(&mut self.prev_session, session);
         let (Some(c), Some(p)) = (clock, prev) else {
@@ -1031,9 +1042,9 @@ impl ClockState {
             return None;
         }
         let raw = c - p;
-        // A step forward (and not a NaN), as `step_any`'s within-session arm.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        if !(raw >= 0.0) {
+        // A step forward, finite (not a NaN, nor past the largest double,
+        // which `step_any` refuses), as `step_any`'s within-session arm.
+        if !(0.0..f64::INFINITY).contains(&raw) {
             return None;
         }
         let ex = self.exact.as_mut()?;
@@ -1083,6 +1094,28 @@ impl ClockState {
         accept: bool,
         scoring: bool,
     ) -> ClockAdvance {
+        // A value or a step that is no number of clock units is refused like
+        // a step back, scored as a step of 0, and touches nothing: the clock
+        // stays where the row before left it, so the next row steps from
+        // there. Taken by the arms below, a NaN step was a step of `gap_cap`
+        // (`NaN.min(cap)` is `cap`) on its row and, its value kept as the
+        // last, on the next, and its removed time stayed NaN in every later
+        // stamp (review round 9, F-1; docs/PLAN.md task 270). The bank
+        // refuses both first, by row and by chunk.
+        if let Some(bad) = not_a_step(clock, self.prev_clock) {
+            return ClockAdvance {
+                d_clock: 0.0,
+                reset: false,
+                accepted: accept,
+                backwards: (!scoring).then_some(bad),
+                disorder: None,
+                session_changed: false,
+                capped: false,
+                elapsed: 0.0,
+                stamp: None,
+                elapsed_stamp: None,
+            };
+        }
         let raw = match (clock, self.prev_clock) {
             (Some(c), Some(p)) => Some(c.delta(p)),
             (Some(_), None) => None, // first row of the stream
@@ -1296,6 +1329,25 @@ impl ClockState {
             }
         }
     }
+}
+
+/// The row's clock value or its step from the previous row's, where either
+/// is no finite number of clock units -- a float value that is NaN or
+/// infinite (the value itself on a stream's first row), or two finite ones
+/// whose difference is past the largest double -- else `None`. Only a float
+/// clock can give one: an integer or temporal clock's steps are taken in
+/// integers and always finite.
+#[inline]
+fn not_a_step(clock: Option<ClockValue>, prev: Option<ClockValue>) -> Option<f64> {
+    let c = clock?;
+    let raw = match prev {
+        Some(p) => c.delta(p),
+        None => match c {
+            ClockValue::F64(v) => v,
+            _ => return None,
+        },
+    };
+    (!raw.is_finite()).then_some(raw)
 }
 
 /// What a learned step back within a session does under the policy: a
@@ -1857,19 +1909,20 @@ mod tests {
         // Within the new stretch, one subtraction again.
         let on = row(3.3, 3, true).unwrap();
         assert_eq!(on.cmp_span(restart, 3.3 - 3.0), Ordering::Equal);
-        // A step that overflows to infinity passed more than any embargo,
-        // and leaves the places after it whole.
+        // A step that overflows to infinity is no number of clock units:
+        // refused, with no place on either clock, and the places after it
+        // read from the row before it (review round 9, F-1; docs/PLAN.md
+        // task 270).
         let mut c = ClockState::new();
         let mut row = |t: f64| {
             c.advance_stamped(&cfg, &caps, Some(ClockValue::F64(t)), None, true)
                 .elapsed_stamp
-                .unwrap()
         };
-        let low = row(-1e308);
-        let high = row(1e308);
-        assert_eq!(high, Stamp::Raw(1e308, 0.0));
-        assert_eq!(high.cmp_span(low, 1e300), Ordering::Greater);
-        assert_eq!(row(1e308).cmp_span(high, 0.0), Ordering::Equal);
+        let low = row(-1e308).unwrap();
+        assert_eq!(row(1e308), None);
+        let next = row(0.0).unwrap();
+        assert_eq!(next, Stamp::Raw(0.0, 0.0));
+        assert_eq!(next.cmp_span(low, 1e308), Ordering::Equal);
     }
 
     /// Without a clock column a row's place on the elapsed clock is its
@@ -3102,6 +3155,11 @@ mod finite_steps {
             Just(0.0),
             Just(1e300),
             Just(-1e300),
+            // A value that is not a number, and two whose difference is past
+            // the largest double (review round 9, F-1; docs/PLAN.md task 270).
+            Just(f64::NAN),
+            Just(1e308),
+            Just(-1e308),
         ]
     }
 
@@ -3382,11 +3440,14 @@ mod task_250_paths {
         assert!(any_taken > 5_000, "{any_taken}");
     }
 
-    /// A step past the largest double is `+inf`: the short cut takes it,
-    /// as the general step does, a NaN removed time under an infinite cap
-    /// included; and a row after it.
+    /// A step past the largest double is `+inf`: the short cut declines
+    /// it and the general step refuses it, stepping nothing, under a finite
+    /// cap and an infinite one; the row after it steps from the row before
+    /// it, through the short cut, as the general step does. Both took it,
+    /// at the cap, and left the removed time infinite, or NaN under an
+    /// infinite cap, for good (review round 9, F-1; docs/PLAN.md task 270).
     #[test]
-    fn a_step_past_the_largest_double_takes_the_short_cut_as_the_general_step() {
+    fn a_step_past_the_largest_double_is_refused_by_the_general_step() {
         let caps = ExactCaps::default();
         for gap_cap in [5.0, f64::INFINITY] {
             let cfg = ClockCfg {
@@ -3395,20 +3456,24 @@ mod task_250_paths {
             };
             let mut fast = ClockState::new();
             let mut general = ClockState::new();
-            for (i, t) in [-1e308, 1e308, 1.5e308].into_iter().enumerate() {
+            for (i, t) in [-1e308, 1e308, 0.0].into_iter().enumerate() {
                 let c = Some(ClockValue::F64(t));
                 let took = fast
                     .clone()
                     .step_forward(&cfg, Some(&caps), c, None, true, false)
                     .is_some();
-                assert_eq!(took, i > 0);
+                assert_eq!(took, i == 2);
                 let a = fast.advance_stamped(&cfg, &caps, c, None, true);
                 let b = general.step_any(&cfg, Some(&caps), c, None, true, false);
                 assert!(same(&a, &b), "{a:?}\n{b:?}");
                 assert!(same(&fast, &general));
                 if i == 1 {
-                    assert_eq!(a.d_clock, gap_cap);
-                    assert_eq!(a.elapsed, f64::INFINITY);
+                    assert_eq!(a.backwards, Some(f64::INFINITY));
+                    assert_eq!((a.d_clock, a.elapsed, a.stamp), (0.0, 0.0, None));
+                }
+                if i == 2 {
+                    assert_eq!(a.d_clock, 1e308_f64.min(gap_cap));
+                    assert!(matches!(a.stamp, Some(Stamp::Raw(v, r)) if v == 0.0 && r.is_finite()));
                 }
             }
         }
@@ -3673,11 +3738,15 @@ mod task_250_paths {
         }
     }
 
-    /// A float clock's NaN row and a step back across a session change are
-    /// no refusal, for [`ClockState::refusal`] as for the step; and a
-    /// row-count clock never steps back.
+    /// A float clock's NaN row is refused, for [`ClockState::refusal`] as
+    /// for the step, with a step of 0, and leaves the clock where it was,
+    /// so the row after it steps from the row before it: 5.0 -> 4.0 is a
+    /// step back. A NaN row was a step of `gap_cap`, and so was the row
+    /// after it (review round 9, F-1; docs/PLAN.md task 270). A step back
+    /// across a session change is no refusal, and a row-count clock never
+    /// steps back.
     #[test]
-    fn a_nan_row_a_session_change_and_no_clock_refuse_nothing() {
+    fn a_nan_row_is_refused_and_a_session_change_and_no_clock_refuse_nothing() {
         let cfg = ClockCfg::default();
         let mut s = ClockState::new();
         let mut r = ClockState::new();
@@ -3691,17 +3760,77 @@ mod task_250_paths {
             (None, Some(2)),
         ];
         let mut refused = Vec::new();
-        for (c, session) in rows {
+        for (i, (c, session)) in rows.into_iter().enumerate() {
             let a = s.advance(&cfg, c, session, true);
             let got = r.refusal(&cfg, c, session);
             assert_eq!(
                 got.map(|(raw, d)| (raw.to_bits(), d)),
                 a.backwards.map(|raw| (raw.to_bits(), a.disorder))
             );
+            if i == 1 {
+                assert!(a.backwards.is_some_and(f64::is_nan), "{a:?}");
+                assert_eq!((a.d_clock, a.elapsed, a.capped), (0.0, 0.0, false));
+                assert_eq!(s.last_clock(), Some(ClockValue::F64(5.0)));
+            }
             refused.push(got.is_some());
         }
-        // Only 3.0 -> 2.0, within session 2, is a step back the policy refuses.
-        assert_eq!(refused, [false, false, false, false, true, false, false]);
+        // The NaN, 5.0 -> 4.0 behind it, and 3.0 -> 2.0 within session 2.
+        assert_eq!(refused, [false, true, true, false, true, false, false]);
+    }
+
+    /// A clock value that is not a number, or a step past the largest
+    /// double, is refused and steps nothing, under an infinite cap and a
+    /// finite one, stamped and not: every stamp stays finite and the rows
+    /// after it step as the stream without it does. It was a step of
+    /// `gap_cap` on its row and the next (to nothing, under an infinite
+    /// cap), and the stamps' removed time was NaN or infinite for good
+    /// (review round 9, F-1; docs/PLAN.md task 270).
+    #[test]
+    fn a_clock_that_is_not_a_number_steps_nothing() {
+        let caps = ExactCaps::default();
+        let f = |v: f64| Some(ClockValue::F64(v));
+        let cases: [(&[f64], usize); 4] = [
+            (&[0.0, 1.0, 2.0, f64::NAN, 3.0, 4.5, 100.0], 3),
+            (&[f64::NAN, 0.0, 1.0, 70.0], 0),
+            (&[-1e308, 1e308, -1e308, -1e308 + 1e292], 1),
+            (&[0.0, 1.0, f64::INFINITY, 2.0], 2),
+        ];
+        for gap_cap in [f64::INFINITY, 60.0] {
+            let cfg = ClockCfg {
+                gap_cap,
+                ..ClockCfg::default()
+            };
+            for stamped in [false, true] {
+                for (rows, bad) in cases {
+                    let (mut with, mut without) = (ClockState::new(), ClockState::new());
+                    let step = |c: &mut ClockState, v: f64| {
+                        if stamped {
+                            c.advance_stamped(&cfg, &caps, f(v), None, true)
+                        } else {
+                            c.advance(&cfg, f(v), None, true)
+                        }
+                    };
+                    for (i, &v) in rows.iter().enumerate() {
+                        let a = step(&mut with, v);
+                        let what = format!("cap {gap_cap}, stamped {stamped}, {rows:?}, row {i}");
+                        for st in [a.stamp, a.elapsed_stamp].into_iter().flatten() {
+                            if let Stamp::Raw(v, removed) = st {
+                                assert!(v.is_finite() && removed.is_finite(), "{what}: {st:?}");
+                            }
+                        }
+                        if i == bad {
+                            assert!(a.backwards.is_some_and(|b| !b.is_finite()), "{what}: {a:?}");
+                            assert_eq!((a.d_clock, a.elapsed), (0.0, 0.0), "{what}");
+                            assert_eq!((a.stamp, a.elapsed_stamp), (None, None), "{what}");
+                            continue;
+                        }
+                        let b = step(&mut without, v);
+                        assert_eq!(format!("{a:?}"), format!("{b:?}"), "{what}");
+                    }
+                    assert_eq!(format!("{with:?}"), format!("{without:?}"));
+                }
+            }
+        }
     }
 
     /// A direct caller's stream of mixed forms leaves integer steps

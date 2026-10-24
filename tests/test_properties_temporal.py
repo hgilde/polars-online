@@ -463,6 +463,14 @@ def clock_specs(draw, model: str, step: int, cap: int):
         kw |= dict(half_life=steps(1, 30)) | maybe("window_size", 1, 60)
     elif model in ("huber", "quantile"):
         kw |= xy | maybe("solve_every", 1, 5) | ({"quantile": 0.5} if model == "quantile" else {})
+        if model == "huber":
+            # Task 271: the scale's own memory, and either scale.
+            kw |= maybe("huber_scale_half_life", 1, 60)
+            kw["huber_scale"] = draw(st.sampled_from(["mad", "rms"]))
+    elif model == "sgd":
+        # `sgd`'s one clock parameter is the Huber scale's memory (task 271).
+        kw |= xy | dict(loss="huber", huber_scale=draw(st.sampled_from(["mad", "rms"])))
+        kw |= maybe("huber_scale_half_life", 1, 60)
     elif model == "marginal":
         kw |= xy | maybe("window_size", 1, 60)
     elif model == "micro":

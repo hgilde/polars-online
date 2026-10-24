@@ -34,7 +34,7 @@
   target(column: 'str', *, name: 'str | None' = None) -> 'Target'
   thread_pool_size(*, threads: 'int | None' = None) -> 'int'
   unnest(frame: 'pl.LazyFrame | pl.DataFrame', specs: 'Specs | ModelBank | State', *, separator: 'str | None' = None) -> 'pl.LazyFrame | pl.DataFrame'
-  schema_version = 62
+  schema_version = 63
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -237,6 +237,8 @@
     targets
     features
     huber_delta = None
+    huber_scale = None
+    huber_scale_half_life = None
     ridge = None
     standardize = False
     solve_every = None
@@ -382,6 +384,8 @@
     features
     loss = 'squared'
     huber_delta = None
+    huber_scale = None
+    huber_scale_half_life = None
     quantile = None
     eps = None
     learning_rate = None
@@ -635,6 +639,8 @@
   huber(features=['x0'], half_life=50.0, targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
+    model.huber_scale = "mad"
+    model.huber_scale_decay = null
     model.loss.huber.delta = 1.345
     model.max_rows_between_solves = 4294967295
     model.min_weight = 2.0
@@ -792,6 +798,8 @@
   quantile(features=['x0'], half_life=50.0, quantile=0.5, targets=['y']):
     model.decay.Halflife = 50.0
     model.fit_intercept = true
+    model.huber_scale = "rms"
+    model.huber_scale_decay = null
     model.loss.quantile.tau = 0.5
     model.max_rows_between_solves = 4294967295
     model.min_weight = 2.0
@@ -869,6 +877,8 @@
     model.constraint = null
     model.decay.Halflife = 50.0
     model.fit_intercept = true
+    model.huber_scale = "rms"
+    model.huber_scale_decay = null
     model.l2 = 0.0
     model.learning_rate = 0.01
     model.loss = "squared"
@@ -909,6 +919,7 @@
     stream.tails_half_life = 29.99914583364482
     stream.window_budget.refuse = 256.0
   sgd(features=['x0'], half_life=50.0, loss='huber', targets=['y']), the lines that differ from sgd's:
+    model.huber_scale = "mad"
     model.loss.huber.delta = 1.345
   sgd(features=['x0'], half_life=50.0, loss='epsilon_insensitive', targets=['y']), the lines that differ from sgd's:
     model.loss.epsilon_insensitive.eps = 0.01
@@ -2352,6 +2363,7 @@
   ftrl.loss: logistic, squared
   hmm.covariance_type: diag, full, tied
   hmm.init: farthest, first, k-means++, lloyd
+  huber.huber_scale: mad, rms
   kmeans.init: farthest, first, k-means++, lloyd
   lasso.target_gaps: own_rows, pairwise
   lasso.window_budget: refuse, thin
@@ -2363,6 +2375,7 @@
   pa.mode: pa, pa1, pa2
   rcov.kernel: parzen
   rcov.kind: kernel, plain, preavg
+  sgd.huber_scale: mad, rms
   sgd.loss: epsilon_insensitive, huber, logistic, poisson, quantile, squared
   sgd.schedule: adagrad, constant, inv_scaling
   po.ewm_mean.closed: both, left, none, right
@@ -2397,6 +2410,7 @@
     load_state
     output
     output_format
+    output_layout
     predict
     save_state
     skip_learned
@@ -2470,7 +2484,7 @@
     ftrl: alpha, beta, l1, l2, loss, strict_binary
     hmm: covariance_type, covs, exog_tvtp, init, learn, means, n_components, precision_prior, seed, transition, transition_prior, tvtp_coef, warm_rows
     holt: trend, trend_half_life
-    huber: huber_delta, max_rows_between_solves, ridge, solve_every, standardize
+    huber: huber_delta, huber_scale, huber_scale_half_life, max_rows_between_solves, ridge, solve_every, standardize
     kalman: coef_half_life, obs_var, p0, q, revert_half_life, share_p, standardize
     kmeans: dead_frac, init, n_clusters, scale_floor, seed, split_merge, split_merge_every_rows, standardize, update_every_rows, warm_rows
     lasso: closed, l1_ratio, max_iter, max_rows_between_snapshots, max_rows_between_solves, penalties, select_half_life, snapshot_every, solve_every, target_gaps, tol, window_budget, window_size
@@ -2481,7 +2495,7 @@
     rcov: bandwidth, block_rows, iv_stride, jitter, kernel, kind, max_bandwidth, noise_stride, preavg_rows, psd, theta
     rls: coef_prior, delta
     seqtest: a, a_suffix, b, b_suffix
-    sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, l2, learning_rate, loss, power, quantile, schedule, standardize, strict_binary
+    sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, huber_scale, huber_scale_half_life, l2, learning_rate, loss, power, quantile, schedule, standardize, strict_binary
 
 [cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
   Usage: polars-online [OPTIONS] --config <CONFIG>
@@ -2491,6 +2505,7 @@
   --no-output
   --input-format <INPUT_FORMAT>
   --output-format <OUTPUT_FORMAT>
+  --output-layout <OUTPUT_LAYOUT>
   --chunk-size <CHUNK_SIZE>
   --threads <N>
   --load-state <LOAD_STATE>

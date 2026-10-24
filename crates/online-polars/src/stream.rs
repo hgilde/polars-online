@@ -7,11 +7,11 @@ use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
     EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
-    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, KMeans, KMeansCfg,
-    Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg,
-    ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
-    SlotMetrics, State, StateError, WindowShadow,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, HuberScale, KMeans,
+    KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
+    MicroCfg, ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind,
+    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
+    SgdLoss, SlotMetrics, State, StateError, WindowShadow,
 };
 use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
@@ -336,13 +336,13 @@ impl AnyModel {
 
     /// Whether the model is still holding its first rows to seed itself
     /// from, its `warm_rows`, and so reports nothing: `kmeans`' centres,
-    /// `hmm`'s states, `bocpd`'s prior. Every other model has no such
-    /// buffer.
+    /// `hmm`'s states, `bocpd`'s prior, `kalman`'s unsized priors.
     pub fn seeding(&self) -> bool {
         match self {
             AnyModel::KMeans(m) => !m.seeded(),
             AnyModel::Hmm(m) => !m.seeded(),
             AnyModel::Bocpd(m) => m.warming(),
+            AnyModel::Kalman(m) => m.sizing(),
             _ => false,
         }
     }
@@ -543,6 +543,16 @@ pub(crate) fn init_rule(init: Option<&str>) -> Result<SeedRule, String> {
 /// `coef_max` and `coef_sum`: a scalar bound is broadcast to every feature,
 /// a list is taken as given (its length is checked by the model's config,
 /// which names the offence). `None` when nothing is constrained.
+/// A spec's `huber_scale` word as the model takes it: `"mad"` where none
+/// is given, the default since task 271 (the word was validated with the
+/// spec).
+fn huber_scale_of(word: Option<&str>) -> HuberScale {
+    match word {
+        Some("rms") => HuberScale::Rms,
+        _ => HuberScale::Mad,
+    }
+}
+
 fn constraint(
     k: usize,
     coef_min: &Option<FloatOrList>,
@@ -774,67 +784,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
         }
-        ModelKind::Huber {
-            huber_delta,
-            ridge,
-            standardize,
-            solve_every,
-            max_rows_between_solves,
-        } => {
-            let cfg = RobustCfg {
-                n_features: spec.k(),
-                n_targets: spec.m(),
-                fit_intercept: spec.fit_intercept,
-                decay,
-                // The 95%-efficiency constant (Huber 1981; statsmodels'
-                // `HuberT`, scikit-learn's 1.35): task 195, U3.
-                loss: RobustLoss::Huber {
-                    delta: huber_delta.map_or(1.345, |n| n.0),
-                },
-                ridge: ridge.unwrap_or(1e-6),
-                standardize: *standardize,
-                min_weight: spec.min_periods_or_default(),
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
-                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
-                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
-                quantile_eps: 1e-3,
-            };
-            let mut m = Robust::new(cfg)?;
-            // Each target's own threshold, for its own first solve (S9b).
-            m.set_target_min_weight(spec.min_periods_per_target())?;
-            Ok(AnyModel::Robust(Box::new(m)))
-        }
-        ModelKind::Quantile {
-            quantile,
-            ridge,
-            standardize,
-            solve_every,
-            max_rows_between_solves,
-            quantile_eps,
-        } => {
-            let cfg = RobustCfg {
-                n_features: spec.k(),
-                n_targets: spec.m(),
-                fit_intercept: spec.fit_intercept,
-                decay,
-                loss: RobustLoss::Quantile { tau: *quantile },
-                ridge: ridge.unwrap_or(1e-6),
-                standardize: *standardize,
-                min_weight: spec.min_periods_or_default(),
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
-                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
-                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
-                quantile_eps: quantile_eps.unwrap_or(0.2),
-            };
-            let mut m = Robust::new(cfg)?;
-            // Each target's own threshold, for its own first solve (S9b).
-            m.set_target_min_weight(spec.min_periods_per_target())?;
-            Ok(AnyModel::Robust(Box::new(m)))
-        }
+        ModelKind::Huber { .. } => huber_model(spec, decay),
+        ModelKind::Quantile { .. } => quantile_model(spec, decay),
         ModelKind::Ftrl {
             alpha,
             beta,
@@ -928,68 +879,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }
-        ModelKind::Sgd {
-            loss,
-            huber_delta,
-            quantile,
-            eps,
-            learning_rate,
-            schedule,
-            power,
-            l2,
-            clip_gradient,
-            standardize,
-            coef_min,
-            coef_max,
-            strict_binary,
-            coef_sum,
-        } => {
-            let loss = match loss.as_deref().unwrap_or("squared") {
-                "squared" => SgdLoss::Squared,
-                // In units of the target's residual std, `huber`'s constant
-                // under `huber`'s name (task 195, U1 and U3).
-                "huber" => SgdLoss::Huber {
-                    delta: huber_delta.map_or(1.345, |n| n.0),
-                },
-                "quantile" => SgdLoss::Quantile {
-                    tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
-                },
-                // 1% of the target's own spread (task 203), kept by task
-                // 207's sweep, which measured it against the residual's
-                // spread capped by the target's.
-                "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
-                    eps: eps.unwrap_or(0.01),
-                },
-                "poisson" => SgdLoss::Poisson,
-                "logistic" => SgdLoss::Logistic,
-                other => return Err(format!("unknown sgd loss {other:?}")),
-            };
-            let sched = match schedule.as_deref().unwrap_or("constant") {
-                "constant" => LearningRate::Constant,
-                "inv_scaling" => LearningRate::InvScaling {
-                    power: power.unwrap_or(0.5),
-                },
-                "adagrad" => LearningRate::AdaGrad,
-                other => return Err(format!("unknown sgd schedule {other:?}")),
-            };
-            let cfg = SgdCfg {
-                n_features: spec.k(),
-                n_targets: spec.m(),
-                fit_intercept: spec.fit_intercept,
-                decay,
-                loss,
-                learning_rate: learning_rate.unwrap_or(0.01),
-                schedule: sched,
-                l2: l2.unwrap_or(0.0),
-                min_weight: spec.min_periods_or_default(),
-                // Finite by default: see SgdCfg::clip_gradient.
-                clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
-                standardize: *standardize,
-                constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
-                strict_binary: *strict_binary,
-            };
-            Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
-        }
+        ModelKind::Sgd { .. } => sgd_model(spec, decay),
         ModelKind::Pa {
             mode,
             c,
@@ -1256,7 +1146,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
 
 mod model_cfgs;
 pub use model_cfgs::{
-    audit_cfg, bocpd_cfg, corrchange_cfg, deco_block_names, deco_cfg, hmm_cfg, rcov_cfg,
+    audit_cfg, bocpd_cfg, corrchange_cfg, deco_block_names, deco_cfg, hmm_cfg, huber_model,
+    quantile_model, rcov_cfg, sgd_model,
 };
 
 /// One grid combo: the rendered label plus the machine values it encodes, so
@@ -2254,6 +2145,11 @@ pub struct Stream {
     /// they are durations, for the rows' stamps (docs/PLAN.md task 175):
     /// configuration from the spec, like `embargo`.
     exact_caps: ExactCaps,
+    /// What each instance's diagnostics decay by, from the spec and the
+    /// instance's decay alone: configuration, built once with the stream.
+    /// Built for every run, it named every combo's label a run (task 270,
+    /// G-1).
+    check_cfgs: Vec<CheckCfg>,
 }
 
 impl Stream {
@@ -2467,259 +2363,9 @@ fn step_n_eff_below(n_eff: f64, min_weight: &[f64], target: usize) -> bool {
     min_weight.get(target).is_some_and(|t| n_eff < *t)
 }
 
-/// Flat output buffers for one (stream, chunk) task (docs/PERFORMANCE.md P1).
-///
-/// One allocation per output *column* for the whole chunk, rather than the
-/// ~11 `Vec`s per row the previous `RowOut` needed. Every numeric buffer is
-/// `n_slots * n_rows`, slot-major, so a slot's values are contiguous and the
-/// scatter into the final column is a straight walk. NaN is null.
-///
-/// `processed` distinguishes "this row was skipped" from "this row produced a
-/// NaN", which matters only for `drift` (a bool, with no NaN to spare) and for
-/// `n_eff`, which is otherwise always finite.
-pub struct ChunkOut {
-    /// Absolute row indices this task wrote, in order.
-    pub rows: Vec<usize>,
-    /// Per row: false = skipped, every output is null.
-    pub processed: Vec<bool>,
-    /// `n_models * n_slots * n_rows` unless noted; NaN = null.
-    pub pred: Vec<f64>,
-    pub resid: Vec<f64>,
-    pub sigma: Vec<f64>,
-    pub zscore: Vec<f64>,
-    pub autocorr: Vec<f64>,
-    /// `(ic, r2, hit_rate)`, model-major: `n_models * 3 * n_slots * n_rows`.
-    pub metrics: Vec<f64>,
-    /// `(pred_lo, pred_hi, coverage)`, laid out like `metrics`.
-    pub conformal: Vec<f64>,
-    /// Task 221's values, `n_checks` per slot, laid out like `metrics`:
-    /// `n_models * n_checks * n_slots * n_rows` ([`crate::checks`]).
-    pub checks: Vec<f64>,
-    /// Feature health under `emit_feature_health`, per instance and
-    /// feature, not per slot: `n_models * 2 * k * n_rows`, the spread
-    /// ratios' block and then the mean shifts' (task 221 (g)).
-    pub health: Vec<f64>,
-    /// Model-major: `n_models * n_levels * n_slots * n_rows`.
-    pub resid_q: Vec<f64>,
-    pub drift: Vec<bool>,
-    /// `n_models * n_rows`.
-    pub n_eff: Vec<f64>,
-    /// `n_models * n_targets * n_rows`, lasso only.
-    pub lam_selected: Vec<f64>,
-    /// Emitted on a cadence rather than every row, so it stays boxed:
-    /// `[model][row]`.
-    pub coef: Vec<Vec<Option<Vec<f64>>>>,
-    /// `n_models * n_rows`: how settled the instance was before the row
-    /// (docs/WARMUP-AND-CONVERGENCE.md §3); NaN = null, where nothing decays.
-    pub settled: Vec<f64>,
-    /// `n_models * n_rows`: why the row's predictions were withheld, as an
-    /// index into [`WITHHELD_REASONS`] plus one; 0 = none (null).
-    pub reason: Vec<u8>,
-    /// `n_models * n_slots * n_rows` under `emit_error_inflation`, else
-    /// empty: the row's own error inflation per slot.
-    pub inflation: Vec<f64>,
-    /// Each coefficient's data share, on `coef`'s cadence: `[model][row]`.
-    pub support_coef: Vec<Vec<Option<Vec<f64>>>>,
-    /// Each coefficient's standard error under `emit_se_coef`, on `coef`'s
-    /// cadence: `[model][row]` (docs/PLAN.md task 116, F).
-    pub se_coef: Vec<Vec<Option<Vec<f64>>>>,
-    /// The robust standard errors under `emit_robust_se`, HC0's and Newey
-    /// and West's, laid out like `se_coef` (docs/PLAN.md task 221 (c)).
-    pub se_coef_hc0: Vec<Vec<Option<Vec<f64>>>>,
-    pub se_coef_hac: Vec<Vec<Option<Vec<f64>>>>,
-    /// `n_rows` each under `emit_clocks`, else empty: the row's own clock,
-    /// and the newest learned row's when it was scored (task 152).
-    pub scored_clock: Vec<Option<ClockValue>>,
-    pub learned_clock: Vec<Option<ClockValue>>,
-    /// Slot counts this layout was built for.
-    pub n_models: usize,
-    pub n_slots: usize,
-    pub n_levels: usize,
-    pub n_checks: usize,
-}
-
-/// Which optional buffers a spec fills: read by `ChunkOut::new` to size them
-/// and by `ChunkOut::run_rows` to count the values a row writes.
-struct Buffers {
-    residuals: bool,
-    extras: bool,
-    n_levels: usize,
-    is_lasso: bool,
-}
-
-impl Buffers {
-    fn of(spec: &Spec) -> Self {
-        Self {
-            // A model with no target to predict has no residual field, so its
-            // `resid` buffer would be filled, written once per slot per row
-            // and never read: for a 230-statistic `ew_cov` that was a fifth
-            // of the row (docs/PERFORMANCE.md §13).
-            residuals: !spec.model.predicts_no_target(),
-            // `sigma` is also the loss that `emit_selected` and
-            // `emit_averaged` rank slots by (E13/E14 reuse E12's tracked
-            // error), so it has to be materialized for them even when it is
-            // not itself an output field.
-            extras: spec.emit_sigma || spec.emit_zscore || spec.emit_selected || spec.emit_averaged,
-            n_levels: spec.resid_quantiles.as_ref().map_or(0, Vec::len),
-            is_lasso: matches!(spec.model, crate::ModelKind::Lasso { .. }),
-        }
-    }
-
-    /// `f64` values one row writes across every buffer, for `n_models`
-    /// instances of `n_slots` slots.
-    fn per_row(&self, spec: &Spec, n_models: usize, n_slots: usize) -> usize {
-        let per = n_models * n_slots;
-        let on = |flag: bool| if flag { per } else { 0 };
-        per + on(self.residuals)
-            + 2 * on(self.extras)
-            + on(spec.emit_autocorr)
-            + 3 * on(spec.emit_metrics)
-            + 3 * on(spec.conformal.is_some())
-            + crate::checks::value_names(spec).len() * per
-            + if spec.emit_feature_health {
-                n_models * 2 * spec.k()
-            } else {
-                0
-            }
-            + self.n_levels * per
-            + n_models
-            + n_models
-            + on(spec.emit_error_inflation)
-            + if self.is_lasso {
-                n_models * spec.m()
-            } else {
-                0
-            }
-    }
-}
-
-impl ChunkOut {
-    /// Buffers for `n_rows` rows of one stream, all null until written.
-    pub fn new(spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) -> Self {
-        let per = n_models * n_slots * n_rows;
-        let on = |flag: bool| if flag { per } else { 0 };
-        let Buffers {
-            residuals,
-            extras,
-            n_levels,
-            is_lasso,
-        } = Buffers::of(spec);
-        let n_checks = crate::checks::value_names(spec).len();
-        Self {
-            rows: Vec::with_capacity(n_rows),
-            processed: vec![false; n_rows],
-            pred: vec![f64::NAN; per],
-            resid: vec![f64::NAN; on(residuals)],
-            sigma: vec![f64::NAN; on(extras)],
-            zscore: vec![f64::NAN; on(extras)],
-            autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
-            metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
-            conformal: vec![f64::NAN; 3 * on(spec.conformal.is_some())],
-            checks: vec![f64::NAN; n_checks * per],
-            health: vec![
-                f64::NAN;
-                if spec.emit_feature_health {
-                    n_models * 2 * spec.k() * n_rows
-                } else {
-                    0
-                }
-            ],
-            resid_q: vec![f64::NAN; n_levels * per],
-            drift: vec![false; on(spec.emit_drift)],
-            n_eff: vec![f64::NAN; n_models * n_rows],
-            lam_selected: vec![
-                f64::NAN;
-                if is_lasso {
-                    n_models * spec.m() * n_rows
-                } else {
-                    0
-                }
-            ],
-            coef: vec![vec![None; n_rows]; n_models],
-            settled: vec![f64::NAN; n_models * n_rows],
-            reason: vec![0; n_models * n_rows],
-            inflation: vec![f64::NAN; on(spec.emit_error_inflation)],
-            support_coef: vec![vec![None; n_rows]; n_models],
-            se_coef: vec![vec![None; n_rows]; n_models],
-            se_coef_hc0: vec![vec![None; n_rows]; n_models],
-            se_coef_hac: vec![vec![None; n_rows]; n_models],
-            scored_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
-            learned_clock: vec![None; if spec.emit_clocks { n_rows } else { 0 }],
-            n_models,
-            n_slots,
-            n_levels,
-            n_checks,
-        }
-    }
-
-    /// How many rows one learning run covers (docs/PERFORMANCE.md §13).
-    ///
-    /// The buffers are slot-major, so a row is one store per slot, each a
-    /// slot's stride apart. Two things about that stride decide how fast a
-    /// wide model runs, and both are set here rather than by whoever chose
-    /// the chunk size:
-    ///
-    /// - The run's buffers stay within `BUDGET` bytes, so the lines a wide
-    ///   model's row touches are still in cache when the next rows complete
-    ///   them; over a 400k-row chunk, a 230-statistic `ew_cov` spent a third
-    ///   of its time on stores to lines that had already been evicted. The
-    ///   run's feature rows count against it too.
-    /// - A slot's stride is an odd number of 128-byte lines, so no two slots
-    ///   of a row share a cache set. A power-of-two chunk (65 536 rows, the
-    ///   natural streaming batch) put every slot of that `ew_cov` in the
-    ///   same set and ran it 2-3x slower than a chunk 16 rows longer.
-    ///
-    /// A narrow model writes a few values per row and gets runs of a hundred
-    /// thousand rows: a chunk is one or two, and nothing changes for it. A
-    /// model too wide for the budget gets the floor, five lines. Chunk
-    /// invariance is what makes the split invisible.
-    pub fn run_rows(spec: &Spec, n_models: usize, n_slots: usize) -> usize {
-        const BUDGET: usize = 2 << 20;
-        /// `f64`s in a 128-byte line, the longest of the two OSes' lines.
-        const LINE: usize = 16;
-        /// The row's schedule, written in pass 1 and read in pass 2, in
-        /// `f64`s: 128 bytes since the exact stamps joined it, against 56
-        /// before. Left out of the budget, a narrow model's run of a hundred
-        /// thousand rows held 13 to 16 MB of it, past the cache, and a `seqtest`
-        /// row spent a large share storing and reloading it (task 250).
-        const PLAN: usize = std::mem::size_of::<RowPlan>().div_ceil(8);
-        // The run's features as rows, which the bank copies from the
-        // chunk's columns just before the run and the passes read back: a
-        // `f64` a feature (docs/PERFORMANCE.md §42). Inside the budget they
-        // are read from cache; the whole chunk in rows was written to
-        // memory and read back, 160 MB at 20,000 rows of 1,000 features.
-        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1) + PLAN + spec.k();
-        let lines = BUDGET / (8 * width * LINE);
-        let lines = if lines.is_multiple_of(2) {
-            lines.saturating_sub(1)
-        } else {
-            lines
-        };
-        lines.max(5) * LINE
-    }
-
-    /// Offset of `(model, slot)` at row `ri`, in any `n_models * n_slots *
-    /// n_rows` buffer. The single place the layout is spelled out: each
-    /// instance's block is written by `run_instance` at `slot * n_rows + ri`,
-    /// and the sink in `bank/assembly.rs` reads the whole buffer through this.
-    #[inline]
-    pub fn at(n_slots: usize, n_rows: usize, mi: usize, slot: usize, ri: usize) -> usize {
-        (mi * n_slots + slot) * n_rows + ri
-    }
-
-    /// The first row when this task's rows are one unbroken run `base..base +
-    /// n`: a single group, or a group that arrives in blocks. `rows` is
-    /// strictly increasing by construction (`group_indices` walks the chunk
-    /// in order and each row belongs to one group), so the two ends decide.
-    pub fn contiguous(&self) -> Option<usize> {
-        let (&first, &last) = (self.rows.first()?, self.rows.last()?);
-        debug_assert!(
-            self.rows.windows(2).all(|w| w[0] < w[1]),
-            "rows out of order"
-        );
-        (last - first + 1 == self.rows.len()).then_some(first)
-    }
-}
+mod chunk_out;
+use chunk_out::Buffers;
+pub use chunk_out::ChunkOut;
 
 /// One row of a [`ChunkOut`], as a value: the output-struct fields of the
 /// last row a stream learned from, kept with its state so that a bank loaded
@@ -2812,6 +2458,18 @@ fn take_row<T: Copy>(dst: &mut Vec<T>, src: &[T], n_rows: usize, ri: usize) {
     dst.extend(src.iter().skip(ri).step_by(n_rows.max(1)));
 }
 
+/// Row `ri` of a `coef`-like buffer, one list per instance, cloned into the
+/// lists `dst` already holds, so a list of the same length as the last is
+/// copied into its memory rather than allocated (task 270, G-1).
+fn take_list_row(dst: &mut Vec<Option<Vec<f64>>>, src: &[Vec<Option<Vec<f64>>>], ri: usize) {
+    dst.truncate(src.len());
+    for (d, s) in dst.iter_mut().zip(src) {
+        d.clone_from(&s[ri]);
+    }
+    let have = dst.len();
+    dst.extend(src[have..].iter().map(|s| s[ri].clone()));
+}
+
 impl LastRow {
     /// Overwrite with row `ri` of `out`, reusing the vectors.
     pub fn take(&mut self, out: &ChunkOut, ri: usize) {
@@ -2832,23 +2490,14 @@ impl LastRow {
         take_row(&mut self.scored_clock, &out.scored_clock, n, ri);
         take_row(&mut self.learned_clock, &out.learned_clock, n, ri);
         take_row(&mut self.lam_selected, &out.lam_selected, n, ri);
-        self.coef.clear();
-        self.coef.extend(out.coef.iter().map(|c| c[ri].clone()));
+        take_list_row(&mut self.coef, &out.coef, ri);
         take_row(&mut self.settled, &out.settled, n, ri);
         take_row(&mut self.reason, &out.reason, n, ri);
         take_row(&mut self.inflation, &out.inflation, n, ri);
-        self.support_coef.clear();
-        self.support_coef
-            .extend(out.support_coef.iter().map(|c| c[ri].clone()));
-        self.se_coef.clear();
-        self.se_coef
-            .extend(out.se_coef.iter().map(|c| c[ri].clone()));
-        self.se_coef_hc0.clear();
-        self.se_coef_hc0
-            .extend(out.se_coef_hc0.iter().map(|c| c[ri].clone()));
-        self.se_coef_hac.clear();
-        self.se_coef_hac
-            .extend(out.se_coef_hac.iter().map(|c| c[ri].clone()));
+        take_list_row(&mut self.support_coef, &out.support_coef, ri);
+        take_list_row(&mut self.se_coef, &out.se_coef, ri);
+        take_list_row(&mut self.se_coef_hc0, &out.se_coef_hc0, ri);
+        take_list_row(&mut self.se_coef_hac, &out.se_coef_hac, ri);
     }
 
     /// A one-row chunk at absolute row `row`, marked processed, for
@@ -2937,6 +2586,7 @@ impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
         let models = build_models(spec)?;
         let decays: Vec<Decay> = spec.decays()?.into_iter().map(|(_, d)| d).collect();
+        let check_cfgs = decays.iter().map(|&d| CheckCfg::of(spec, d)).collect();
         let slots: Vec<usize> = models.iter().map(|(_, m)| m.n_outputs()).collect();
         let drift = if spec.emit_drift {
             // 20 only without a clock, where a row is one unit: the spec
@@ -3020,6 +2670,17 @@ impl Stream {
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
             embargo,
             exact_caps: spec.exact_caps(),
+            check_cfgs,
+        })
+        .inspect(|stream| {
+            // The bank replays only the rings of a spec that says it keeps
+            // one (`ModelKind::keeps_window_ring`).
+            debug_assert_eq!(
+                spec.model.keeps_window_ring(),
+                !stream.window_shadows().is_empty(),
+                "spec {:?}",
+                spec.name
+            );
         })
     }
 
@@ -3807,7 +3468,16 @@ impl Stream {
             pending_clock: &mut self.persisted.pending_clock,
             notified: &mut self.persisted.notified,
         };
-        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
+        let mut insts = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            &self.check_cfgs,
+            diag,
+            out,
+            n_rows,
+        );
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -4091,7 +3761,16 @@ impl Stream {
             .resid_win
             .iter()
             .map(|r| r.as_ref().map(SpreadRef::Score));
-        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
+        let mut insts = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            &self.check_cfgs,
+            diag,
+            out,
+            n_rows,
+        );
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
@@ -4182,6 +3861,7 @@ fn build_instances<'a>(
     models: impl Iterator<Item = ModelRef<'a>>,
     mut rings: impl Iterator<Item = Option<SpreadRef<'a>>>,
     decays: &[Decay],
+    check_cfgs: &'a [CheckCfg],
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
     n_rows: usize,
@@ -4229,6 +3909,7 @@ fn build_instances<'a>(
 
     let n_slots = out.n_slots;
     let mut decays = decays.iter();
+    let mut check_cfgs = check_cfgs.iter();
     let mut resid_var = diag.resid_var.iter_mut();
     let mut resid_w = diag.resid_w.iter_mut();
     let mut scratch = diag.scratch.iter_mut();
@@ -4248,7 +3929,7 @@ fn build_instances<'a>(
                 model,
                 resid_win: rings.next().expect("one per instance"),
                 decay,
-                check_cfg: CheckCfg::of(spec, decay),
+                check_cfg: check_cfgs.next().expect("one per instance"),
                 residuals: !spec.model.predicts_no_target(),
                 resid_var: resid_var.next().expect("one per instance"),
                 resid_w: resid_w.next().expect("one per instance"),
@@ -4446,7 +4127,7 @@ struct Instance<'a> {
     /// Task 221's accumulators, and what they decay by: `None` when the
     /// spec switches none on.
     checks: Option<&'a mut Checks>,
-    check_cfg: CheckCfg,
+    check_cfg: &'a CheckCfg,
     scratch: &'a mut Scratch,
     /// This instance's score-time predictions for the rows still waiting
     /// under `embargo`, oldest first (C21).
@@ -5220,7 +4901,7 @@ fn run_instance(
             c.recursive(&row, &mut sc.z);
             if emit {
                 c.read(
-                    &inst.check_cfg,
+                    inst.check_cfg,
                     &row,
                     &sc.z,
                     inst.n_slots,
@@ -5231,7 +4912,7 @@ fn run_instance(
                 c.read_health(xs.len(), n_rows, ri, inst.o_health);
             }
             if learn {
-                c.learn(&inst.check_cfg, plan.d_clock, &row, &sc.z, w, diag_ready);
+                c.learn(inst.check_cfg, plan.d_clock, &row, &sc.z, w, diag_ready);
             }
         }
 
@@ -5337,11 +5018,11 @@ fn run_instance(
             // The robust standard errors of the fit after the row, as
             // `se_coef`'s (task 221 (c)).
             if let Some(c) = inst.checks.as_deref() {
-                if let Some(hc0) = c.robust_se(&inst.check_cfg, false) {
+                if let Some(hc0) = c.robust_se(inst.check_cfg, false) {
                     inst.o_se_hc0[ri] = Some(hc0);
                 }
                 if inst.check_cfg.hac() {
-                    inst.o_se_hac[ri] = c.robust_se(&inst.check_cfg, true);
+                    inst.o_se_hac[ri] = c.robust_se(inst.check_cfg, true);
                 }
             }
             if inst.spec.emit_se_coef {

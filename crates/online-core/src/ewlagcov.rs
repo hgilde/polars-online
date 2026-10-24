@@ -84,6 +84,12 @@ pub struct EwLagCov {
     /// `L * k * k`, row-major within a lag: `c[li*k*k + i*k + j]` is
     /// `E_w[d_i(t)·d_j(t−lags[li])]`.
     c: Vec<f64>,
+    /// The row's scaled deviations and a past row's, kept so a row
+    /// allocates nothing (task 270, D-5): not state.
+    #[serde(skip)]
+    now: crate::ewcov::Scratch,
+    #[serde(skip)]
+    then: crate::ewcov::Scratch,
 }
 
 impl EwLagCov {
@@ -99,6 +105,8 @@ impl EwLagCov {
             lags,
             ring: VecDeque::with_capacity(max),
             c: vec![0.0; l * k * k],
+            now: Default::default(),
+            then: Default::default(),
         })
     }
 
@@ -203,8 +211,11 @@ impl EwLagCov {
         // subtractions per lag that task 101 put in the inner loop, which
         // also kept it from vectorising (0.11.1 ran `ew_cov(lags=[1..5])`
         // at k = 20 at 0.53 of 0.10.0's rows a second; PERFORMANCE §26).
-        let now: Vec<f64> = (0..k).map(|i| a * b * dev(i, x[i])).collect();
-        let mut then = vec![0.0; k];
+        let (now, then) = (&mut self.now.0, &mut self.then.0);
+        now.clear();
+        now.extend((0..k).map(|i| a * b * dev(i, x[i])));
+        then.clear();
+        then.resize(k, 0.0);
         for (li, &lag) in self.lags.iter().enumerate() {
             let block = &mut self.c[li * k * k..(li + 1) * k * k];
             match self.ring.len().checked_sub(lag).map(|i| &self.ring[i]) {
@@ -214,7 +225,7 @@ impl EwLagCov {
                     }
                     for (i, &ab_di) in now.iter().enumerate() {
                         let row = &mut block[i * k..(i + 1) * k];
-                        for (cj, &dj) in row.iter_mut().zip(&then) {
+                        for (cj, &dj) in row.iter_mut().zip(then.iter()) {
                             *cj = a * *cj + ab_di * dj;
                         }
                     }
@@ -233,10 +244,16 @@ impl EwLagCov {
             // exactly `len`, so a ring saved while it was short would keep
             // that length for ever and the deeper lags would only decay.
             let max_lag = *self.lags.last().expect("non-empty, strictly increasing");
-            if self.ring.len() >= max_lag {
-                self.ring.pop_front();
-            }
-            self.ring.push_back(x.to_vec());
+            // The row that falls off holds the new one: the ring allocates
+            // nothing once full (task 270, D-5).
+            let mut row = if self.ring.len() >= max_lag {
+                self.ring.pop_front().expect("a full ring")
+            } else {
+                Vec::with_capacity(k)
+            };
+            row.clear();
+            row.extend_from_slice(x);
+            self.ring.push_back(row);
         }
     }
 }

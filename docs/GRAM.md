@@ -707,7 +707,7 @@ decaying scale and a prior other than zero. Read those fits from
 
 ```text
 resid_var = V − 2 b'c + b'C b
-sigma2    = resid_var · n / (n − p)      n = target_n_kish; p, the columns with the intercept
+sigma2    = resid_var · n / (n − p)      n = target_n_kish; p, the columns with variance and the intercept
 se_j      = sqrt((C⁻¹)_jj · sigma2 / n)
 se_0      = sqrt((1 + m'C⁻¹m) · sigma2 / n)      the intercept's, m the column means
 t_j       = b_j / se_j

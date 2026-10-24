@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -54,6 +55,16 @@ def time_spec(df: pl.DataFrame, spec: dict, repeats: int = 3) -> float:
         bank = po.ModelBank([spec])
         t0 = time.perf_counter()
         bank.fit_predict(df)
+        best = min(best, time.perf_counter() - t0)
+    return df.height / best
+
+
+def time_write(df: pl.DataFrame, path: Path, repeats: int = 3) -> float:
+    """Best-of-N rows/sec of ``write_parquet`` alone."""
+    best = float("inf")
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        df.write_parquet(path)
         best = min(best, time.perf_counter() - t0)
     return df.height / best
 
@@ -302,10 +313,41 @@ def main() -> None:
             "k=20: mean, cov, lags 1-5",
             po.spec.ew_cov("m", stats=["mean", "cov"], lags=[1, 2, 3, 4, 5], **no_target),
         ),
+        # The kinds the release's comparison of throughput could not see
+        # (review 9, J-3).
+        ("quantile", "k=20, the median", po.spec.quantile("m", quantile=0.5, **common)),
+        (
+            "holt",
+            "level and trend of one column",
+            po.spec.holt("m", targets=["y0"], clock="t", half_life=1000.0, gap_cap=100.0),
+        ),
+        ("marginal", "20 features against one target", po.spec.marginal("m", **common)),
+        (
+            "audit",
+            "20 continuous columns, 256 counters",
+            po.spec.audit("m", columns=feats, clock="t", gap_cap=100.0),
+        ),
     ]
     other_results: list[tuple[str, str, float]] = []
     for name, note, spec in others:
         other_results.append((name, note, time_spec(df, spec)))
+
+    # A wide spec's output through Polars' parquet writer, as the struct the
+    # bank emits and unnested: the writer encodes a struct's fields at several
+    # times the cost of flat columns, so it, not the bank, set the pace of a
+    # wide run's `sink_parquet` (review 9, M-1).
+    wide = po.spec.ew_cov("m", **no_target)
+    out = po.ModelBank([wide]).fit_predict(df).select("m")
+    flat = out.unnest("m")
+    with tempfile.TemporaryDirectory() as tmp:
+        for layout, frame in (("struct", out), ("flat", flat)):
+            other_results.append(
+                (
+                    f"ew_cov, write_parquet {layout}",
+                    "k=20, 230 statistics: the writer alone",
+                    time_write(frame, Path(tmp) / f"{layout}.parquet"),
+                )
+            )
 
     if args.markdown:
         print(f"Rows per run: {rows:,}. Best of 3, single process.")

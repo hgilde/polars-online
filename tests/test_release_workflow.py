@@ -349,6 +349,36 @@ def test_every_build_uses_the_lock_as_committed():
         assert "--locked" in line.split(), line
 
 
+def test_every_uv_sync_uses_the_lock_as_committed_or_moves_a_package_on_purpose():
+    """``uv sync`` re-resolves a ``uv.lock`` that no longer matches
+    ``pyproject.toml``, silently, unless told ``--locked``: the job that ran
+    the suite, the leak check and the benchmark tested packages nobody
+    committed, and only the lint job's own ``--locked`` turned the run red
+    (review 9, J-4). Every ``uv sync`` in a workflow passes ``--locked``, or
+    moves a package on purpose -- the canary's and the release's Polars and
+    NumPy legs (``--upgrade-package``, ``--prerelease``)."""
+    syncs = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for job, spec in _load(path.name)["jobs"].items():
+            for step in spec.get("steps", []):
+                for line in str(step.get("run", "")).splitlines():
+                    if re.search(r"\buv sync\b", line) and not line.lstrip().startswith("#"):
+                        syncs.append((path.name, job, line.strip()))
+    assert len(syncs) >= 8, syncs
+    for where in syncs:
+        words = where[2].split()
+        assert "--locked" in words or any(
+            w.startswith(("--upgrade-package", "--prerelease")) for w in words
+        ), where
+    locked = {(name, job) for name, job, line in syncs if "--locked" in line.split()}
+    assert {
+        ("ci.yml", "lint"),
+        ("ci.yml", "test"),
+        ("leakcheck.yml", "native"),
+        ("benchmark.yml", "throughput"),
+    } <= locked, locked
+
+
 def test_every_wheel_is_installed_and_run_where_it_belongs():
     """Three of the six wheels were built and uploaded without ever being
     imported, and none was run as the file that ships (task 160, CI3). Each
@@ -668,6 +698,21 @@ def test_the_readmes_pin_names_the_current_minor(copy):
     readme.write_text(text.replace(pin, "polars-online"), encoding="utf-8")
     (bad,) = release_version.problems(copy)
     assert "README.md" in bad and f"~={major}.{minor}.0" in bad, bad
+
+
+def test_the_readmes_install_size_names_a_recent_release():
+    """The README's *size* row stated 0.13.0's wheels (8 to 10 MB) three
+    releases into 1.x, whose wheels are three times that (review round 9,
+    K-2). The row names the release it measured; it must be one of the two
+    newest in the CHANGELOG, so a release can ship before its wheels are
+    measured (step 12 refreshes the row) but not stay stale past the next."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    (row,) = [line for line in text.splitlines() if line.startswith("| size |")]
+    (named,) = re.findall(r"for (\d+\.\d+\.\d+) \|$", row)
+    log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    released = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", log, flags=re.M)
+    assert named in released[:2], (row, released[:2])
+    assert re.search(r"\d+ to \d+ MB to download and \d+ to \d+ MB installed", row), row
 
 
 def test_publishing_with_entries_left_under_unreleased_is_refused(copy):

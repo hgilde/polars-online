@@ -4,12 +4,12 @@
 //! path no user runs, so each case proves it ran past the warm-up first.
 
 use online_bench::{
-    BANK_CASES, CLOCK_CASES, MODEL_CASES, ROWS, SPAN_CASE, WARM_ROWS, WIDE_CASES, WIDE_ROWS,
-    WINDOW_CASES, bank_setup, clock_setup, model_setup, polars_online_budget_bank_rows,
-    polars_online_budget_clock_rows, polars_online_budget_model_rows,
-    polars_online_budget_windows_rows, spec, windows_setup,
+    BANK_CASES, CLOCK_CASES, GROUPS, MODEL_CASES, ROWS, SILENT_CASES, SPAN_CASE, WARM_ROWS,
+    WIDE_CASES, WIDE_ROWS, WINDOW_CASES, bank_setup, clock_setup, model_setup,
+    polars_online_budget_bank_rows, polars_online_budget_clock_rows,
+    polars_online_budget_model_rows, polars_online_budget_windows_rows, spec, windows_setup,
 };
-use online_polars::{ChunkOut, PAR_MIN_ROWS, Stream};
+use online_polars::{AnyModel, ChunkOut, PAR_MIN_ROWS, Stream};
 use polars::prelude::*;
 
 /// The bench names every case, and names nothing else: a case missing from
@@ -38,12 +38,57 @@ fn the_bench_names_every_case_and_nothing_else() {
 
 #[test]
 fn every_model_case_predicts_on_every_row_of_its_block() {
-    for &id in MODEL_CASES {
+    for &id in MODEL_CASES.iter().filter(|id| !SILENT_CASES.contains(id)) {
         let mut run = model_setup(id);
         let block = polars_online_budget_model_rows(&mut run);
         assert!(block.checksum.is_finite(), "{id}: {block:?}");
         let want = if id == SPAN_CASE { 1 } else { ROWS };
         assert_eq!(block.predicted, want, "{id}: still warming up: {block:?}");
+    }
+}
+
+/// The cases whose model predicts nothing reach their path by another
+/// reading. `marginal`: every pair's moments past the warm-up, a correlation
+/// read from each. `rcov`: every row taken into the block, and an estimate
+/// read from it as its close would. `audit_continuous`: every row counted,
+/// and the column past its cap of counters, the Misra-Gries path a
+/// continuous column takes on nearly every row (review 2026-10-23, F-2).
+#[test]
+fn every_silent_case_reaches_its_path() {
+    assert_eq!(SILENT_CASES, ["marginal", "rcov", "audit_continuous"]);
+    let rows = (online_bench::WARM_ROWS + ROWS) as u64;
+    for &id in SILENT_CASES {
+        assert!(MODEL_CASES.contains(&id), "{id}");
+        let mut run = model_setup(id);
+        let block = polars_online_budget_model_rows(&mut run);
+        assert_eq!(block.predicted, 0, "{id}");
+        assert!(block.checksum.is_finite(), "{id}: {block:?}");
+        match &run.model {
+            AnyModel::Marginal(m) => {
+                assert!(m.n_eff() > 500.0, "{id}: {}", m.n_eff());
+                for j in 0..20 {
+                    let p = m.pair(0, j);
+                    assert!(
+                        p.corr.is_finite() && p.n_eff > 500.0,
+                        "{id}: pair {j}: {p:?}"
+                    );
+                }
+            }
+            AnyModel::Rcov(r) => {
+                assert_eq!(r.n(), rows, "{id}");
+                let e = r.estimate();
+                let cov = e.rcov.unwrap_or_else(|| panic!("{id}: no estimate"));
+                assert!(cov.iter().all(|v| v.is_finite()), "{id}: {cov:?}");
+            }
+            AnyModel::Audit(a) => {
+                let c = a.column(0);
+                assert_eq!(c.distinct, None, "{id}: not past the cap");
+                // A table of 256 counters emptied once every 257 new values.
+                assert!(c.count_error >= rows / 257 - 1, "{id}: {}", c.count_error);
+                assert_eq!(c.count, rows, "{id}");
+            }
+            _ => panic!("{id}: no reading for this model"),
+        }
     }
 }
 
@@ -81,10 +126,18 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
     for (id, field) in [
         ("bank_seqtest", "log_e_pos_y0"),
         ("bank_ewridge_k5", "pred_y0"),
+        ("bank_seqtest_groups", "log_e_pos_y0"),
+        ("bank_ewridge_k5_groups", "pred_y0"),
         ("formula_target_held1k", "pred_fwd"),
     ] {
         assert!(BANK_CASES.contains(&id), "{id}");
         let mut run = bank_setup(id);
+        if id.ends_with("_groups") {
+            // One row of each group, on the pool of one thread the count
+            // is taken on.
+            assert_eq!(run.bank.threads().asked(), Some(1), "{id}");
+            assert_eq!(ROWS, GROUPS, "{id}: one row a group");
+        }
         let before = run.bank.rows_fed();
         let out = polars_online_budget_bank_rows(&mut run);
         assert_eq!(run.bank.rows_fed() - before, ROWS as u64, "{id}");
@@ -109,7 +162,7 @@ fn every_bank_case_learns_its_block_below_the_parallel_threshold() {
             "{id}: {field}"
         );
     }
-    assert_eq!(BANK_CASES.len(), 3);
+    assert_eq!(BANK_CASES.len(), 5);
 }
 
 /// The formula-target case holds about a thousand rows behind each one: its

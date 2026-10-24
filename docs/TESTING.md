@@ -158,7 +158,8 @@ in `tests/test_second_opinion.py`, Vowpal Wabbit among them.
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
 | the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref` (`tests/test_oracles_lasso_paths.py`): every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `penalty_selected` under a window and with a `min_weight` list, and a window down to one row of a target, since 2026-09-24 | pred 4.5e-14 | |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
-| `huber` | scikit-learn's `LinearRegression` at `huber_delta = 1e9`, where no row is down-weighted; `HuberRegressor`, a batch fit of the same objective, with one row in fifty a gross error | 1e-9; 0.1 (0.044 measured, at the default `huber_delta = 1.345` against scikit-learn's 1.35), where least squares is 0.38 to 0.47 off | T-S4 |
+| `huber` | scikit-learn's `LinearRegression` at `huber_delta = 1e9`, where no row is down-weighted; `HuberRegressor`, a batch fit of the same objective, with one row in fifty a gross error, and one in ten | 1e-9; 0.03 (0.0016 measured, at most 0.011 over eight seeds, at the default `huber_delta = 1.345` and `huber_scale = "mad"` against scikit-learn's 1.35), where least squares is 0.38 to 0.45 off; 0.15 at one in ten (0.031 to 0.092), where the RMS scale is 0.84 to 1.0 off | T-S4 |
+| `huber`'s MAD scale | statsmodels' `RLM(HuberT(1.345))` with `scale_est=mad`, iterated to 1e-10, on a stream at a level of 1,000 with no decay and one-sided outliers on 1% and 5% of the rows (`TestHuberMadAgainstStatsmodels`); `robust_ref` with the sketch's buckets written from their definition (`EwMedian`), both scales, a scale memory of its own | 0.01 on the slope (0.0022 and 0.0065 measured, seeds 0-4), where the RMS scale is 0.05 and 0.64 off; ~1e-13 | |
 | `quantile` | statsmodels' `QuantReg`, a batch fit of the same objective, after 20,000 rows (`TestQuantileIsQuantReg`) | 0.05 at the median and 0.08 at τ = 0.9 (0.005 and 0.006 measured) | T-S4 |
 | `quantile`'s every fit | the stationarity condition of the smoothed check loss it solves, rebuilt from the rows by the module doc's rules, band and nudge rows alike (`TestTheQuantileFitsDefinition`) | 1e-10 of the gradient's scale (1e-15 measured) | |
 | Huber | `river.linear_model.LinearRegression(loss=optim.losses.Huber)` | statistical | T-R6 |
@@ -420,7 +421,7 @@ The files the repository promises are held the same way:
 | the README's warm-up defaults | `tests/test_spec_defaults.py` | the `min_weight` table's rule for every model, at two feature counts and with and without an intercept, and the readiness gates' defaults, against what the bank resolves |
 | the names that follow Polars (2026-10-02) | `tests/test_renames.py` | an old parameter is refused naming the new one, from a builder and from a spec dict; an old output name is gone |
 | a released state | `tests/test_released_state.py` | the files each release in its `RELEASES` list wrote, from 0.10.0 on, each from its wheel on PyPI: a 0.x release's are refused by their schema version, and a 1.x release's load and go on as this build's own; offline, the test skips |
-| a released output | `scripts/compare_release.py` | every output against the newest release's, bit for bit: a report in CI, and a step of each release |
+| a released output | `scripts/compare_release.py` | the release workload's outputs, every field name a model writes among them, against the newest release's, bit for bit: a report in CI, and a step of each release |
 | the documentation | `tests/test_production_hardening.py`, `tests/test_api_links.py`, `tests/test_doc_structure.py`, `tests/test_llms_txt.py`, and Sphinx with `-W` | every README python block and docstring example runs; every link into the API reference resolves; every Markdown file git tracks passes `docs/WRITING.md`'s structure checks; `llms.txt`'s model names and links are current; every docstring is valid reStructuredText |
 | docstring text | `test_weight_scale.py::test_the_docs_say_what_each_unit_is`; `test_temporal_clock.py::TestEveryClockParameterTakesADuration` | whole phrases of `ftrl`'s and `micro`'s docstrings, a line wrap included; "clock units" in the entry of each parameter measured in them. A docstring pass keeps both (`docs/WRITING.md` §6) |
 | the workflows | `tests/test_release_workflow.py`, `tests/test_release_packaging.py` (T-W5), `tests/test_ci_cost_policy.py` | the release tags what it published, after everything ran; the release artifacts' names; the CI matrix and its timeouts |
@@ -662,7 +663,7 @@ so neither LTO nor the number of codegen units can move a result. That was
 checked rather than assumed. `scripts/release_probe.py`, which runs every
 spec over a stream built to reach every path, gave 297 output columns over
 400 rows identical in every bit under both builds. Its 31 saved states were
-identical byte for byte. All 6,665 Python tests passed on the dev build,
+identical byte for byte. The whole Python suite passed on the dev build,
 the goldens and the saved-state tests among them. The gate, CI and the shipped wheel still build `release`, because
 what ships is what a push is tested on.
 
@@ -826,11 +827,11 @@ own schedule:
 |---|---|---|
 | each commit while a task is in progress | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test |
-| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); every output compared with the newest release's, bit for bit, as a report; the Python coverage, as a report |
+| every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, and on macOS and Windows at 3.12 and 3.14; on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
 | every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
-| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares |
+| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest |
 | monthly | `polars-canary.yml` | the suite on the floor of the Polars range, the version `pyproject.toml` declares |
 
 The canary and the release's Polars and NumPy legs leave out the tests
@@ -1024,7 +1025,7 @@ other thin spot on 2026-08-30 at 75%, is at 98%.
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
 `online-core` and `online-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
-`scripts/mutants_equivalent.toml` does not list. That file holds 241
+`scripts/mutants_equivalent.toml` does not list. That file holds 240
 entries (2026-10-14), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
 the original. The weekly pass over all of `online-core`, 11,138 mutants on
@@ -1974,7 +1975,7 @@ runs all three OSes, and Windows has been green on every release since 0.1.0.
 **PyPI.** `polars-online` is published there, 0.1.0 on 2026-09-03 and 0.1.1
 on 2026-09-04, through the trusted-publisher `release.yml`. The Polars pin
 question is settled as `polars>=1.37.0,<3`: see "The Polars pin" in
-`docs/RELEASE-READINESS.md`. The newest release is 1.0.1, published on
-2026-10-13. A release is dispatched on `main`, and the workflow
+`docs/RELEASE-READINESS.md`. Every release since, with its date, is a
+section of `CHANGELOG.md`. A release is dispatched on `main`, and the workflow
 tags only what it published, after everything ran
 (`tests/test_release_workflow.py`).

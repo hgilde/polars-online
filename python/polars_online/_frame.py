@@ -1184,6 +1184,15 @@ class LazyFrameOnlineNamespace:
             # one column per field, coef as one column per coefficient
             flat = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
 
+        Unnest a wide spec before ``sink_parquet()``. Polars' parquet writer
+        encodes a struct's fields at several times the cost of the same values
+        as plain columns. An ``ew_cov`` over 20 series writes 233 fields: 2,785
+        ns a row as the struct, 365 unnested, where the bank's own work is 550.
+        Over 50 series, 1,328 fields, the struct took 44,642 ns a row against
+        2,914, and the writer set the run's pace. So write
+        ``lf.online.fit_predict([spec]).online.unnest([spec]).sink_parquet(path)``.
+        ``sink_ipc()`` writes the struct at about the cost of flat columns.
+
         Filters, selections and ``head`` applied after are pushed into the source. A
         filter never changes what the bank learns from. To keep rows from the bank,
         filter before it. A selection is read from the input, so a wide scan reads
@@ -1287,7 +1296,9 @@ class LazyFrameOnlineNamespace:
         saved state, read when the plan is built. Build the plan again to
         pick up a newer file. Target columns are optional, as for
         :meth:`~polars_online.ModelBank.predict`. ``chunk_size`` is the read chunk, 100,000
-        rows by default. ``threads`` scores on a pool of that many threads, as
+        rows by default; ``coef`` is filled on each chunk's last accepted row,
+        whatever ``coef_every`` and ``max_rows_between_coefs`` say.
+        ``threads`` scores on a pool of that many threads, as
         :class:`~polars_online.ModelBank` takes it; a bank given with one is
         scored as a copy, so its own pool stays its own. Without it a bank
         scores on its own pool and a path on the process's.
@@ -1502,7 +1513,8 @@ class DataFrameOnlineNamespace:
 
         ``chunk_size`` scores the frame that many rows at a time, as the plan form
         reads its input. The numbers are the same either way, and ``coef`` is
-        filled on each chunk's last accepted row. Without it the frame is one
+        filled on each chunk's last accepted row, whatever ``coef_every`` and
+        ``max_rows_between_coefs`` say. Without it the frame is one
         chunk. ``threads`` is as for :meth:`LazyFrameOnlineNamespace.predict`.
 
         Raises what :meth:`~polars_online.ModelBank.load` (for a path) and

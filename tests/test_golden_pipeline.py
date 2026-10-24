@@ -656,11 +656,11 @@ GOLDEN: dict[str, float | str | None] = {
     "lasso.penalty_selected_y0@60": 0.0,
     "lasso.penalty_selected_y0@119": 0.0,
     "huber.pred_y0@25": -4.684375830329454,
-    "huber.pred_y0@60": -0.25626086249461966,
-    "huber.pred_y0@119": -0.1610180929365141,
+    "huber.pred_y0@60": -0.2539548816049366,
+    "huber.pred_y0@119": -0.1595742266777896,
     "huber.resid_y0@25": -0.16722999390526194,
-    "huber.resid_y0@60": -0.21578026632245828,
-    "huber.resid_y0@119": 0.11031932197828526,
+    "huber.resid_y0@60": -0.21808624721214132,
+    "huber.resid_y0@119": 0.10887545571956075,
     "huber.weight_sum@25": 7.999488060097996,
     "huber.weight_sum@60": 12.473100285951407,
     "huber.weight_sum@119": 15.110060335371337,
@@ -1148,7 +1148,11 @@ GOLDEN: dict[str, float | str | None] = {
 #: release with its arrival's capped clock, as the stream replays it, gives
 #: ``embargo``'s rows 25 and 60 to 1e-14, and parts from row 75 on (row
 #: 119 by 2e-4), which that emulation of the stream's release does not
-#: reproduce. ``formula``'s window target has no replica here.
+#: reproduce. ``formula``'s window target has no replica here. Task 270
+#: (review round 9, B-1) moved ``formula``'s: its row 25, a row of weight
+#: past ``min_weight`` before its prior was sized, was predicted as the
+#: unsized prior's 0.0 and is now withheld (``below_warm_rows``), and the
+#: residual variance that 0 no longer seeds moves rows 60 and 119.
 SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "window.pred_y0@25": -4.68515442331697,
     "window.pred_y0@60": -0.2680628499022917,
@@ -1372,9 +1376,9 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "diagnostics.learned_clock@25": 40.0,
     "diagnostics.learned_clock@60": 91.0,
     "diagnostics.learned_clock@119": 174.0,
-    "formula.pred_fwd@25": 0.0,
-    "formula.pred_fwd@60": 0.1485500121277072,
-    "formula.pred_fwd@119": 0.05614932775927115,
+    "formula.pred_fwd@25": None,
+    "formula.pred_fwd@60": 0.11714645889696496,
+    "formula.pred_fwd@119": 0.04022753301013253,
     "formula.resid_fwd@25": None,
     "formula.resid_fwd@60": None,
     "formula.resid_fwd@119": None,
@@ -1384,7 +1388,7 @@ SWITCHED_GOLDEN: dict[str, float | str | None] = {
     "formula.settled_frac@25": 0.5136725262938573,
     "formula.settled_frac@60": 0.8564127056253706,
     "formula.settled_frac@119": 0.9782071302132749,
-    "formula.withheld_reason@25": None,
+    "formula.withheld_reason@25": "below_warm_rows",
     "formula.withheld_reason@60": None,
     "formula.withheld_reason@119": None,
     "hazard.p_change@25": 0.008004227824948607,

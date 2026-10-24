@@ -543,6 +543,16 @@ fn d_absorbed(u: f64) -> f64 {
 /// wald   = Δ' Var(Δ)⁻¹ Δ                       ~ χ²(k) under no break
 /// ```
 ///
+/// The variance is `σ² Σ_t d_t d_t'`, `d_t = (A_f ω_{f,t} − A_s ω_{s,t})
+/// z_t`, and `Σ_t d_t z_t' = A_f G_f − A_s G_s = I − I = 0`: the `d_t` lie
+/// in the null space of the `k × n` design, so over `n` rows the variance
+/// has rank at most `n − k`, and is singular until `n = 2k` rows, whatever
+/// their weights. The distance waits for them. Read sooner, whether it
+/// factorized was the rounding's to decide, and the distance if it did:
+/// multiplying every weight by 2, which moves no sum but by an exact
+/// factor, turned it on or off on 1 to 3 of the release probe's 400 rows
+/// (task 270 (g)).
+///
 /// `σ²` is the slow fit's residual mean square at Kish's degrees of
 /// freedom, times the residuals' long-run over short-run variance under a
 /// horizon ([`Breaks::long_run_residuals`]). Through the origin the same sums are
@@ -691,7 +701,8 @@ impl TwinFit {
 
     /// The Wald distance between the two fits' coefficients over the
     /// features `idx` (positions in `x`), with the intercept when
-    /// `intercept`: `None` until both fits are determined -- each with more
+    /// `intercept`: `None` until both fits are determined and their
+    /// difference has a variance -- `2k` learned rows, each fit with more
     /// than `k` rows of Kish's size and a Gram that factorizes -- while the
     /// memories coincide (no decay: the run-once form has no slow fit, and
     /// the difference no variance) or the slow fit leaves no residual.
@@ -702,6 +713,13 @@ impl TwinFit {
         let kx = self.fast.k() - 1;
         let k = idx.len() + usize::from(intercept);
         if k == 0 || self.origin.len() != kx {
+            return None;
+        }
+        // The difference's variance is singular below `2k` rows, whatever
+        // their weights (the struct's docs): reading it there would leave
+        // whether it factorizes, and the distance if it does, to the
+        // rounding (task 270 (g)).
+        if self.fast.rows_learned() < 2 * k as u64 {
             return None;
         }
         let (nf, ns) = (self.fast.n_kish()?, self.slow.n_kish()?);
@@ -1759,5 +1777,137 @@ mod tests {
         assert!(t.wald(&[0], true, 0.0).is_none());
         assert!(t.wald(&[0], true, -1.0).is_none());
         assert!(t.wald(&[0], true, f64::NAN).is_none());
+    }
+
+    /// Multiplying every weight by one constant moves no distance (task 270
+    /// (g)): the fits are weighted means, `G` scales with the weight and
+    /// `H` with its square, so `A H A` does not move. Before the distance
+    /// waited for `2k` rows ([`TwinFit::wald`]) it read a variance that is
+    /// singular in exact arithmetic on the rows between `k` and `2k`, so
+    /// whether it factorized was the rounding's to decide, and it did
+    /// differently at another scale: 1 to 3 rows of 400 in the release
+    /// probe's stream, at x100, x0.01 and even x2, and 343 times here. At
+    /// exactly `2k` rows the variance is a cancellation of terms far larger
+    /// than it, and another scale's rounding moved the distance by up to
+    /// 1.5e-7 of itself; from there on by less than 1e-8.
+    #[test]
+    fn the_distance_is_free_of_the_weights_scale() {
+        let mut flips = 0;
+        for seed in 0..20u64 {
+            for mixed in [false, true] {
+                for c in [100.0, 0.01, 2.0] {
+                    let (mut a, mut b) = (TwinFit::new(2), TwinFit::new(2));
+                    let mut s = 40 + seed;
+                    for i in 0..120 {
+                        let x = [lcg(&mut s), lcg(&mut s) + 1.0];
+                        let y = 0.5 + x[0] - 0.5 * x[1] + 0.3 * lcg(&mut s);
+                        let w = match (mixed, i % 11) {
+                            (true, 3) => 0.0,
+                            (true, _) => 1.0 + lcg(&mut s),
+                            (false, _) => 1.0,
+                        };
+                        let lam = if i % 7 == 0 { 0.9 } else { 0.97 };
+                        a.update(&x, y, lam, w);
+                        b.update(&x, y, lam, c * w);
+                        for intercept in [true, false] {
+                            for idx in [&[0usize][..], &[1], &[0, 1]] {
+                                match (a.wald(idx, intercept, 1.0), b.wald(idx, intercept, 1.0)) {
+                                    (Some(u), Some(v)) => assert!(
+                                        (u - v).abs() <= 1e-6 * u.abs().max(1.0),
+                                        "seed {seed} x{c} row {i}: {u} vs {v}"
+                                    ),
+                                    (None, None) => {}
+                                    (u, v) => {
+                                        flips += 1;
+                                        eprintln!(
+                                            "seed {seed} x{c} mixed {mixed} row {i} {intercept} {idx:?}: {u:?} vs {v:?}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(flips, 0);
+    }
+
+    /// The difference's variance over the noise's is `Σ_t d_t d_t'`, `d_t =
+    /// (A_f ω_f,t − A_s ω_s,t) z_t`, and `Σ_t d_t z_t' = A_f G_f − A_s G_s =
+    /// I − I = 0`: the `d_t` lie in the null space of the `k × n` design, so
+    /// over `n` rows the variance has rank at most `n − k`, and is singular
+    /// until `n = 2k`. By its definition (faer's eigensolver, `crate::oracle`)
+    /// its smallest eigenvalue is the rounding's below `2k` rows and not at
+    /// `2k`; the distance waits for them.
+    #[test]
+    fn the_difference_has_no_variance_before_twice_its_coefficients() {
+        let lam = 0.9_f64;
+        let slow = slow_factor(lam);
+        let mut early = 0;
+        for seed in 0..30u64 {
+            let mut t = TwinFit::new(2);
+            let mut s = 70 + seed;
+            // (z with the intercept, fast weight now, slow weight now)
+            let mut rows: Vec<([f64; 3], f64, f64)> = Vec::new();
+            for n in 1..=8usize {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let w = 1.0 + lcg(&mut s);
+                t.update(&x, x[0] + 0.3 * lcg(&mut s), lam, w);
+                rows.iter_mut().for_each(|r| {
+                    r.1 *= lam;
+                    r.2 *= slow;
+                });
+                rows.push(([1.0, x[0], x[1]], w, w));
+                let got = t.wald(&[0, 1], true, 1.0);
+                if n < 6 {
+                    early += usize::from(got.is_some());
+                }
+                if n < 3 {
+                    continue;
+                }
+                let gram = |pick: fn(&([f64; 3], f64, f64)) -> f64| {
+                    let mut g = vec![0.0; 9];
+                    for r in &rows {
+                        for a in 0..3 {
+                            for b in 0..3 {
+                                g[a * 3 + b] += pick(r) * r.0[a] * r.0[b];
+                            }
+                        }
+                    }
+                    crate::oracle::inverse(&g)
+                };
+                let (af, a_s) = (gram(|r| r.1), gram(|r| r.2));
+                // `var` by its definition, and the scale of its two halves,
+                // `Σ |A_f ω_f z|² + Σ |A_s ω_s z|²`, which its rounding is
+                // relative to.
+                let (mut var, mut scale) = (vec![0.0; 9], 0.0);
+                for r in &rows {
+                    let half = |a_: &[f64], om: f64, a: usize| -> f64 {
+                        (0..3).map(|b| a_[a * 3 + b] * om * r.0[b]).sum()
+                    };
+                    let d: Vec<f64> = (0..3)
+                        .map(|a| half(&af, r.1, a) - half(&a_s, r.2, a))
+                        .collect();
+                    scale += (0..3)
+                        .map(|a| half(&af, r.1, a).powi(2) + half(&a_s, r.2, a).powi(2))
+                        .sum::<f64>();
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            var[a * 3 + b] += d[a] * d[b];
+                        }
+                    }
+                }
+                let (ev, _) = crate::oracle::sym_eigen(&var);
+                let null = ev.iter().filter(|e| e.abs() < 1e-12 * scale).count();
+                // Rank at most `n − 3`, and generically exactly that.
+                assert_eq!(
+                    null,
+                    6usize.saturating_sub(n).min(3),
+                    "seed {seed}, {n} rows: {ev:?} at {scale}"
+                );
+            }
+        }
+        assert_eq!(early, 0, "distances read off a singular variance");
     }
 }

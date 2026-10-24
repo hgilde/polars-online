@@ -223,8 +223,10 @@ impl HmmCfg {
 }
 
 /// What [`Hmm::read`] hands the update: the filtered posterior after the
-/// row, and the per-state log densities the transition counts need.
-type Update = (Vec<f64>, Vec<f64>);
+/// row, the per-state log densities the transition counts need, and the `Π`
+/// the row read, which the counts' joint is formed from (task 270, D-7:
+/// built again for the update, it was the same matrix to the bit).
+type Update = (Vec<f64>, Vec<f64>, Vec<f64>);
 
 /// Per-state Cholesky factors for the `full` shape: built on demand and
 /// dropped whenever a state changes. Derived state -- a pure function of the
@@ -632,9 +634,9 @@ impl Hmm {
         // `n_eff` plateaued below `min_weight` never learned at all
         // (docs/REVIEW-E54-E64.md H1).
         if self.n_eff < self.cfg.min_weight {
-            return (nan, Some((post, logf)));
+            return (nan, Some((post, logf, pi)));
         }
-        (out, Some((post, logf)))
+        (out, Some((post, logf, pi)))
     }
 
     /// Seed the states from the buffer, `kmeans`' recipe: choose centres
@@ -754,7 +756,7 @@ impl crate::OnlineModel for Hmm {
             }
             return out;
         }
-        let Some((post, logf)) = extra else {
+        let Some((post, logf, pi)) = extra else {
             // A state's factorization failed, or a density was not finite --
             // a quadratic form overflowing against a state of tiny spread --
             // so the row cannot be scored or learned: a usable row that fails
@@ -777,7 +779,10 @@ impl crate::OnlineModel for Hmm {
             // `p` and the `Π` the row read; the counts have decayed on the
             // clock above, like every accumulator here.
             if self.cfg.tvtp.is_none() {
-                let pi = self.transition();
+                // `Π` as the row read it: without `tvtp` that is
+                // `transition()`, the counts as they stand, which nothing
+                // has moved since the read (the frozen state fixtures
+                // continue to the bit through this update).
                 // About the largest density, not `logf[0]`: a state whose
                 // density is astronomically small makes `exp(logf[l] −
                 // logf[0])` overflow the other way, and the counts go to

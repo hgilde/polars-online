@@ -725,8 +725,65 @@ fn extract(
 }
 
 /// One stream's flat output buffers for a chunk. Fallible because the clock
-/// policy can refuse a row (task 120).
-type StreamRows = PolarsResult<ChunkOut>;
+/// policy can refuse a row (task 120). Boxed: a run's buffers are moved from
+/// the task that fills them to the spec that assembles them, and a move of
+/// the struct, about seven hundred bytes of vector headers, was a tenth of a
+/// one-row task (task 270, G-1).
+type StreamRows = PolarsResult<Box<ChunkOut>>;
+
+/// The run buffers a bank keeps between chunks for its small tasks to fill
+/// again ([`ChunkOut::renew`]), at most [`SPARE_BYTES`] of them, each at most
+/// [`SPARE_ONE`]: a bank of many small groups makes a run's buffers for each
+/// group of each chunk, and allocating and freeing them was the largest
+/// share of such a task (task 270, G-1). A long run's buffers are freed as
+/// before, so a wide or long chunk leaves nothing held.
+#[derive(Default)]
+pub(crate) struct Spares {
+    /// Each kept run's buffers, with the bytes they hold.
+    outs: Vec<(Box<ChunkOut>, usize)>,
+    bytes: usize,
+}
+
+/// The most bytes of run buffers a bank keeps between chunks.
+const SPARE_BYTES: usize = 16 << 20;
+/// The most bytes one kept run's buffers may hold.
+const SPARE_ONE: usize = 64 << 10;
+
+impl Spares {
+    /// A kept run's buffers, if any are left.
+    fn take(&mut self) -> Option<Box<ChunkOut>> {
+        let (out, bytes) = self.outs.pop()?;
+        self.bytes -= bytes;
+        Some(out)
+    }
+
+    /// Keep a run's buffers for a later run, where they fit; free them
+    /// otherwise.
+    fn give(&mut self, out: Box<ChunkOut>) {
+        let bytes = out.heap_bytes();
+        if bytes <= SPARE_ONE && self.bytes + bytes <= SPARE_BYTES {
+            self.bytes += bytes;
+            self.outs.push((out, bytes));
+        }
+    }
+}
+
+/// A run's buffers for `n_rows` rows: `spare`'s, renewed, or new.
+fn run_buffers(
+    spare: Option<Box<ChunkOut>>,
+    spec: &Spec,
+    n_models: usize,
+    n_slots: usize,
+    n_rows: usize,
+) -> Box<ChunkOut> {
+    match spare {
+        Some(mut out) => {
+            out.renew(spec, n_models, n_slots, n_rows);
+            out
+        }
+        None => Box::new(ChunkOut::new(spec, n_models, n_slots, n_rows)),
+    }
+}
 
 /// The [`ClosedRow`]s of one stream at the moment it closes: one per decay
 /// instance, the state exactly as it stands (docs/ENHANCEMENTS.md E54).
@@ -965,6 +1022,16 @@ fn session_bounds(stream: &Stream, sess: &[u64], n: usize, base: usize) -> Vec<u
 /// The sinks `process` filled, each with its spec's index.
 type Filled<'s> = Vec<(usize, Sink<'s>)>;
 
+/// What `process` returns: each task's runs, with its spec's index, the
+/// rows the streams closed with, the filled sinks, and the run buffers a
+/// task was given or emptied into a sink and did not keep.
+type Processed<'s> = (
+    Vec<Vec<(usize, StreamRows)>>,
+    Vec<ClosedRow>,
+    Filled<'s>,
+    Vec<Box<ChunkOut>>,
+);
+
 /// Run one phase of a chunk through its streams, learning: every `(spec,
 /// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
 /// through its stream in order, one set of buffers per run. The runs are a
@@ -975,9 +1042,12 @@ type Filled<'s> = Vec<(usize, Sink<'s>)>;
 /// A spec with a sink in `sinks` -- one that a single stream serves in the
 /// chunk ([`sinks`]) -- hands each run to it as the run ends: the run is
 /// copied into the sink on another thread while the next is learned, and
-/// its buffers are then freed for the run after, so the task holds two
-/// runs' buffers, not the chunk's. The sinks come back filled. Every other
-/// spec's runs come back as they are, for [`assemble_phase`].
+/// its buffers are then filled again by the run after, so the task holds
+/// two runs' buffers, not the chunk's. The sinks come back filled. Every
+/// other spec's runs come back as they are, for [`assemble_phase`]. Each
+/// task's first run fills buffers kept from an earlier chunk where `spares`
+/// has some.
+#[allow(clippy::too_many_arguments)]
 fn process<'s>(
     work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)>,
     specs: &[Spec],
@@ -986,17 +1056,19 @@ fn process<'s>(
     formulas: &[Option<FormulaBundle>],
     row_base: usize,
     mut sinks: Vec<Option<Sink<'s>>>,
-) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>, Filled<'s>) {
+    spares: &mut Spares,
+) -> Processed<'s> {
     type TaskOut<'s> = (
         Vec<(usize, StreamRows)>,
         Vec<ClosedRow>,
         Option<(usize, Sink<'s>)>,
+        Option<Box<ChunkOut>>,
     );
     let work: Vec<_> = work
         .into_iter()
         .map(|w| {
             let sink = sinks.get_mut(w.0).and_then(Option::take);
-            (w, sink)
+            (w, sink, spares.take())
         })
         .collect();
     // `"auto"`'s share of the pool: the tasks here run side by side, so a
@@ -1005,7 +1077,7 @@ fn process<'s>(
     let share = crate::pool::gram_share(work.len(), rayon::current_num_threads());
     let per_task: Vec<TaskOut<'s>> = work
         .into_par_iter()
-        .map(|((si, key, idx, base, stream), mut sink)| {
+        .map(|((si, key, idx, base, stream), mut sink, mut spare)| {
             #[cfg(test)]
             threads_tests::probe(&specs[si].name);
             let spec = &specs[si];
@@ -1014,7 +1086,7 @@ fn process<'s>(
             threads_tests::probe_gram(&spec.name, gram_threads);
             let sc = &cols[si];
             let formula_targets = formulas[si].as_ref().map(|b| b.targets(key));
-            let mut outs: Vec<(usize, StreamRows)> = Vec::new();
+            let mut outs: Vec<(usize, StreamRows)> = Vec::with_capacity(1);
             let mut closed: Vec<ClosedRow> = Vec::new();
             // A session close splits the run: the rows before the boundary
             // are the span, the stream emits its row and starts over, and
@@ -1032,17 +1104,17 @@ fn process<'s>(
             // the run is learned and read from cache, one buffer reused run
             // after run (docs/PERFORMANCE.md §42).
             let mut rows = FeatureRows::default();
-            let mut starts: Vec<usize> = Vec::with_capacity(bounds.len() + 1);
-            starts.push(0);
-            starts.extend_from_slice(&bounds);
+            // Each segment's first row: 0, then each boundary.
+            let start_of = |seg: usize| if seg == 0 { 0 } else { bounds[seg - 1] };
             // A run learned and waiting for its sink.
-            let mut pending: Option<ChunkOut> = None;
+            let mut pending: Option<Box<ChunkOut>> = None;
             let session_of = |row: usize| -> Option<String> {
                 let s = sc.session_str.as_ref()?;
                 s.get(row).map(str::to_string)
             };
-            'segments: for (seg, &start) in starts.iter().enumerate() {
-                let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
+            'segments: for seg in 0..=bounds.len() {
+                let start = start_of(seg);
+                let end = bounds.get(seg).copied().unwrap_or(idx.len());
                 if seg > 0 {
                     // The span before this row is finished.
                     closed.extend(close_rows(si, spec, key, stream, idx[start]));
@@ -1055,7 +1127,7 @@ fn process<'s>(
                 let run_rows = ChunkOut::run_rows(spec, n_models, n_slots);
                 let mut off = start;
                 for run in idx[start..end].chunks(run_rows) {
-                    let mut out = ChunkOut::new(spec, n_models, n_slots, run.len());
+                    let mut out = run_buffers(spare.take(), spec, n_models, n_slots, run.len());
                     let learn =
                         |stream: &mut Stream, out: &mut ChunkOut, rows: &mut FeatureRows| {
                             sc.features.rows_into(rows, base + off, run.len());
@@ -1082,7 +1154,8 @@ fn process<'s>(
                                 || learn(stream, &mut out, &mut rows),
                                 || sink.absorb(std::slice::from_mut(prev)),
                             );
-                            pending = None;
+                            // Copied: its buffers are the run after's.
+                            spare = pending.take();
                             r
                         }
                         _ => learn(stream, &mut out, &mut rows),
@@ -1119,18 +1192,20 @@ fn process<'s>(
             if let (Some(sink), Some(prev)) = (sink.as_mut(), pending.as_mut()) {
                 sink.absorb(std::slice::from_mut(prev));
             }
-            (outs, closed, sink.map(|s| (si, s)))
+            (outs, closed, sink.map(|s| (si, s)), pending.or(spare))
         })
         .collect();
-    let mut outs = Vec::new();
+    let mut outs = Vec::with_capacity(per_task.len());
     let mut closed = Vec::new();
     let mut filled = Vec::new();
-    for (o, c, s) in per_task {
-        outs.extend(o);
+    let mut left = Vec::new();
+    for (o, c, s, l) in per_task {
+        outs.push(o);
         closed.extend(c);
         filled.extend(s);
+        left.extend(l);
     }
-    (outs, closed, filled)
+    (outs, closed, filled, left)
 }
 
 /// A sink for each spec that one stream serves in this work -- no group, or
@@ -1189,7 +1264,12 @@ fn score(
             let spec = &specs[si];
             let sc = &cols[si];
             // Scoring refuses no clock (`Stream::predict_chunk`).
-            let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+            let mut out = Box::new(ChunkOut::new(
+                spec,
+                stream.n_models(),
+                stream.n_slots(),
+                idx.len(),
+            ));
             // Every row of the task at once: scoring is one pass.
             let rows = sc.features.rows(base, idx.len());
             stream.predict_chunk(
@@ -1213,30 +1293,39 @@ fn score(
 ///
 /// A spec its sink already assembled as its stream ran (`process`) is left
 /// as it is.
+// Boxed runs (`StreamRows`): a run moves from task to spec to sink, and a
+// box is one pointer to move where the struct was seven hundred bytes.
+#[allow(clippy::too_many_arguments, clippy::vec_box)]
 fn assemble_phase(
     specs: &[Spec],
     derived: &[SpecDerived],
     n: usize,
-    rows: &mut [Vec<ChunkOut>],
+    rows: &mut [Vec<Box<ChunkOut>>],
     out: &mut [Option<StructArray>],
     clock_dtypes: &[Option<crate::stream::ClockDtype>],
     pick: impl Fn(usize) -> bool + Sync,
+    spares: &mut Spares,
 ) -> PolarsResult<()> {
     let done: Vec<bool> = out.iter().map(Option::is_some).collect();
-    let built: Vec<(usize, StructArray)> = rows
+    let built: Vec<(usize, StructArray, Vec<Box<ChunkOut>>)> = rows
         .par_iter_mut()
         .enumerate()
         .filter(|(si, _)| pick(*si) && !done[*si])
         .map(|(si, chunks)| {
             let dt = clock_dtypes.get(si).and_then(Option::as_ref);
-            // The runs are done with once assembled: their buffers go here
-            // rather than at the end of the call.
+            // The runs are done with once assembled: their buffers are kept
+            // for a later chunk's small runs, or freed, here rather than at
+            // the end of the call.
             let mut chunks = std::mem::take(chunks);
-            Ok((si, assemble(&specs[si], &derived[si], n, &mut chunks, dt)?))
+            let st = assemble(&specs[si], &derived[si], n, &mut chunks, dt)?;
+            Ok((si, st, chunks))
         })
         .collect::<PolarsResult<_>>()?;
-    for (si, c) in built {
+    for (si, c, chunks) in built {
         out[si] = Some(c);
+        for ch in chunks {
+            spares.give(ch);
+        }
     }
     Ok(())
 }
@@ -2682,6 +2771,9 @@ pub struct Bank {
     /// Readiness notices raised and not yet taken
     /// ([`Self::take_notices`]); not state.
     notices: Vec<String>,
+    /// Run buffers kept from earlier chunks for small runs to fill again
+    /// (task 270, G-1); not state.
+    spares: Spares,
     /// Per spec, its formula targets' resolver (docs/PLAN.md task 104):
     /// empty for a spec without one.
     resolvers: Vec<TargetWindows>,
@@ -2909,6 +3001,7 @@ impl Bank {
             window_prepass: true,
             threads: crate::pool::Threads::default(),
             notices,
+            spares: Spares::default(),
         })
     }
 
@@ -3095,6 +3188,13 @@ impl Bank {
     /// (PA11), a word the streams use for the rows they accept.
     pub fn rows_fed(&self) -> u64 {
         self.rows_fed
+    }
+
+    /// Run buffers kept from earlier chunks for small runs to fill again,
+    /// for a test that holds them to changing nothing. Not for use.
+    #[doc(hidden)]
+    pub fn spare_runs(&self) -> usize {
+        self.spares.outs.len()
     }
 
     /// Jittered/failed factorizations so far, per spec, as `(group, count)`
@@ -3342,18 +3442,20 @@ impl Bank {
         let keys = self.sorted_keys(spec, group)?;
         let states = &self.states[spec];
         let (s, d) = (&self.specs[spec], &self.derived[spec]);
-        let chunks: Vec<ChunkOut> = keys
+        let chunks: Vec<Box<ChunkOut>> = keys
             .iter()
             .enumerate()
             .map(|(row, key)| {
                 let stream = &states[*key];
                 match stream.last_row() {
-                    Some(last) => last.to_chunk(s, stream.n_models(), stream.n_slots(), row),
+                    Some(last) => last
+                        .to_chunk(s, stream.n_models(), stream.n_slots(), row)
+                        .map(Box::new),
                     // One unprocessed row: every field null.
                     None => {
                         let mut out = ChunkOut::new(s, stream.n_models(), stream.n_slots(), 1);
                         out.rows.push(row);
-                        Ok(out)
+                        Ok(Box::new(out))
                     }
                 }
             })
@@ -3947,9 +4049,10 @@ impl Bank {
                         .any(|t| t.formula.as_ref().is_some_and(|f| f.contains_call("cast")))
                 })
                 || (self.window_prepass
-                    && work
-                        .iter()
-                        .any(|(_, _, idx, _, stream)| stream.could_refuse_window(idx.len()))));
+                    && work.iter().any(|(si, _, idx, _, stream)| {
+                        specs[*si].model.keeps_window_ring()
+                            && stream.could_refuse_window(idx.len())
+                    })));
         let snapshot: Vec<TargetWindows> = if needs_snapshot {
             self.resolvers.clone()
         } else {
@@ -3987,9 +4090,12 @@ impl Bank {
         // the bank is left as it was, where it used to find the overrun with
         // the chunk half learned and refuse every call after. A session close
         // starts a fresh stream within the chunk, as `process` does.
-        if self.window_prepass {
+        // Only a spec that keeps a ring has one to replay: for any other the
+        // pass was a vector and a session scan a task (task 270, G-1).
+        if self.window_prepass && specs.iter().any(|s| s.model.keeps_window_ring()) {
             let over = work
                 .par_iter()
+                .filter(|(si, ..)| specs[*si].model.keeps_window_ring())
                 .find_map_first(|(si, key, idx, base, stream)| {
                     let (spec, sc) = (&specs[*si], &cols[*si]);
                     let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
@@ -4047,10 +4153,11 @@ impl Bank {
             .into_iter()
             .partition(|(si, ..)| derived[*si].compare.is_some());
         let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
-        let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
+        let mut per_spec_rows: Vec<Vec<Box<ChunkOut>>> =
+            (0..specs.len()).map(|_| Vec::new()).collect();
         let mut closed: Vec<ClosedRow> = Vec::new();
         let sinks1 = sinks(work1.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
-        let (rows1, closed1, filled1) = process(
+        let (rows1, closed1, filled1, left1) = process(
             work1,
             specs,
             cfgs,
@@ -4058,9 +4165,13 @@ impl Bank {
             &formulas,
             chunk.row_base(),
             sinks1,
+            &mut self.spares,
         );
         closed.extend(closed1);
-        for (si, r) in rows1 {
+        for out in left1 {
+            self.spares.give(out);
+        }
+        for (si, r) in rows1.into_iter().flatten() {
             match r {
                 Ok(o) => per_spec_rows[si].push(o),
                 Err(e) => {
@@ -4083,6 +4194,7 @@ impl Bank {
             &mut out,
             clock_dtypes,
             |si| derived[si].compare.is_none(),
+            &mut self.spares,
         )?;
         let mut t_assemble = t3.elapsed();
         if !work2.is_empty() {
@@ -4094,7 +4206,7 @@ impl Bank {
                 }
             }
             let sinks2 = sinks(work2.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
-            let (rows2, closed2, filled2) = process(
+            let (rows2, closed2, filled2, left2) = process(
                 work2,
                 specs,
                 cfgs,
@@ -4102,9 +4214,13 @@ impl Bank {
                 &formulas,
                 chunk.row_base(),
                 sinks2,
+                &mut self.spares,
             );
             closed.extend(closed2);
-            for (si, r) in rows2 {
+            for out in left2 {
+                self.spares.give(out);
+            }
+            for (si, r) in rows2.into_iter().flatten() {
                 match r {
                     Ok(o) => per_spec_rows[si].push(o),
                     Err(e) => {
@@ -4133,6 +4249,7 @@ impl Bank {
             &mut out,
             clock_dtypes,
             |si| derived[si].compare.is_some(),
+            &mut self.spares,
         )?;
         t_assemble += t5.elapsed();
         // ---- the monotone close batch (E54) ----
@@ -4295,7 +4412,10 @@ impl Bank {
             .into_iter()
             .partition(|(si, ..)| derived[*si].compare.is_some());
         let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
-        let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
+        let mut per_spec_rows: Vec<Vec<Box<ChunkOut>>> =
+            (0..specs.len()).map(|_| Vec::new()).collect();
+        // Scoring keeps no run buffers between calls: these go when it ends.
+        let mut spares = Spares::default();
         for (si, r) in score(work1, specs, cfgs, &cols) {
             per_spec_rows[si].push(r?);
         }
@@ -4307,6 +4427,7 @@ impl Bank {
             &mut out,
             &clock_dtypes,
             |si| derived[si].compare.is_none(),
+            &mut spares,
         )?;
         if !work2.is_empty() {
             for (si, d) in derived.iter().enumerate() {
@@ -4330,6 +4451,7 @@ impl Bank {
             &mut out,
             &clock_dtypes,
             |si| derived[si].compare.is_some(),
+            &mut spares,
         )?;
         Ok(out
             .into_iter()

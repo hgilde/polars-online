@@ -34,6 +34,10 @@ const RENORM: f64 = 5.421_010_862_427_522e-20; // 2^-64
 /// sketch is rescaled.
 const PRUNE: f64 = 1e-12;
 
+/// The widest band [`EwQuantile::bounded`] takes: more octaves than the
+/// positive normal floats span, which bounds nothing.
+pub const MAX_BAND_OCTAVES: u32 = 2048;
+
 /// An exponentially weighted quantile of non-negative values: DDSketch
 /// (Masson, Rim & Lee, 2019, "DDSketch: a fast and fully-mergeable quantile
 /// sketch with relative-error guarantees", PVLDB 12(12), 2195-2205), its
@@ -58,6 +62,29 @@ const PRUNE: f64 = 1e-12;
 /// every 64 halvings, when an end bucket at or under `1e-12` of the total is
 /// dropped; each level keeps the bucket its quantile sits in and the weight
 /// below it, so a row costs a few comparisons, not a walk.
+///
+/// **The band.** Unbounded, the buckets span every octave the values ever
+/// visited: a residual sketch's start-up residuals at a target's level and
+/// the noise's low tail took 27 octaves, 1,700 buckets, and one residual of
+/// `1e200` stretched it to 42,000. A bounded sketch
+/// ([`EwQuantile::bounded`]) keeps at most `2 · 64 · band` buckets beside
+/// its levels' -- an arm below the lowest level's bucket and one above the
+/// highest's, each `band` octaves, an arm the values do not fill lending
+/// the rest to the other -- and folds the rest into the end bucket on its
+/// side when a value arrives past them, the value counting there too: the
+/// collapsing DDSketch (Masson, Rim & Lee, §2.3), at both ends and relative
+/// to the levels. Nothing folds while the values span less than the
+/// band's width, and a fold keeps the weight, so the total and the weight
+/// below each level do not move. A level reads the bucket the unbounded
+/// sketch reads, to the bit, unless weight folded from one side of its
+/// bucket counts on the other: it must have moved past the end bucket that
+/// weight folded into, at least `band` octaves from where the levels were
+/// then. While it has, it is off by at most the folded weight's share of
+/// the level, in rank; the level's share of the weight past an end bucket
+/// reads that end bucket's value, a bound on the quantile, not within `α`
+/// of it. (A rescale sums the end buckets in another grouping than the
+/// unbounded sketch's walk does, so a level whose share of the total falls
+/// within a rounding of a bucket's edge can read the next bucket.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwQuantile {
     /// The levels reported, each in (0, 1).
@@ -76,6 +103,11 @@ pub struct EwQuantile {
     /// the stored weight below that bucket.
     at: Vec<Option<i32>>,
     below: Vec<f64>,
+    /// A bounded sketch's band: the octaves kept either side of its levels'
+    /// buckets (`None`: no bound, every sketch saved without the field).
+    /// Last, so the array encoding of a sketch without it is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    band: Option<u32>,
 }
 
 impl EwQuantile {
@@ -98,7 +130,27 @@ impl EwQuantile {
             scale: 1.0,
             at: vec![None; n],
             below: vec![0.0; n],
+            band: None,
         }
+    }
+
+    /// A sketch at `levels` whose buckets stay within `octaves` octaves of
+    /// every level's bucket ([`EwQuantile`]'s "The band").
+    pub fn bounded(levels: &[f64], octaves: u32) -> Result<Self, String> {
+        if !(1..=MAX_BAND_OCTAVES).contains(&octaves) {
+            return Err(format!(
+                "EwQuantile: a band must be 1 to {MAX_BAND_OCTAVES} octaves, not {octaves}"
+            ));
+        }
+        let mut q = Self::new(levels)?;
+        q.band = Some(octaves);
+        Ok(q)
+    }
+
+    /// The octaves a bounded sketch keeps either side of its levels'
+    /// buckets; `None` for an unbounded one.
+    pub fn band(&self) -> Option<u32> {
+        self.band
     }
 
     /// Whether a restored sketch can be read and added to: a pointer and a
@@ -131,6 +183,9 @@ impl EwQuantile {
             && self.below.iter().all(|b| b.is_finite())
             && self.scale > 0.0
             && self.scale <= 1.0
+            && self
+                .band
+                .is_none_or(|k| (1..=MAX_BAND_OCTAVES).contains(&k))
     }
 
     /// The levels this sketch reports, in the order [`EwQuantile::get`]
@@ -223,6 +278,57 @@ impl EwQuantile {
         }
     }
 
+    /// The buckets a bounded sketch keeps of the extent `lo..=hi`, which
+    /// holds every level's bucket: an arm below the lowest level's bucket
+    /// and one above the highest's, each as long as the extent reaches,
+    /// with `2 · 64 · band` buckets between them. An arm shorter than half
+    /// lends the rest to the other; past that, the longer arm is cut, both
+    /// to half if both are longer. `None` without a bound, and while no
+    /// level is in a bucket (each is at the zero bucket, below every one,
+    /// which no band is relative to).
+    fn kept(&self, lo: i32, hi: i32) -> Option<(i32, i32)> {
+        let half = i64::from(self.band?) * BINS as i64;
+        let mut at = self.at.iter().flatten();
+        let first = *at.next()?;
+        let (low, high) = at.fold((first, first), |(a, b), &k| (a.min(k), b.max(k)));
+        let (low, high) = (i64::from(low), i64::from(high));
+        let below = (low - i64::from(lo)).max(0);
+        let above = (i64::from(hi) - high).max(0);
+        let (below, above) = if below + above <= 2 * half {
+            (below, above)
+        } else if above <= half {
+            (2 * half - above, above)
+        } else if below <= half {
+            (below, 2 * half - below)
+        } else {
+            (half, half)
+        };
+        let clamp = |k: i64| k.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        Some((clamp(low - below), clamp(high + above)))
+    }
+
+    /// The last bucket's index; the buckets are not empty.
+    fn end(&self) -> i32 {
+        self.lo + self.buckets.len() as i32 - 1
+    }
+
+    /// Fold the buckets below `lo` into bucket `lo` and those above `hi`
+    /// into bucket `hi`, their weight kept; `lo..=hi` holds every level's
+    /// bucket, so no pointer, no weight below one and no total changes.
+    fn fold_to(&mut self, lo: i32, hi: i32) {
+        if self.lo < lo {
+            let cut = (lo - self.lo) as usize;
+            let moved: f64 = self.buckets.drain(..cut).sum();
+            self.buckets[0] += moved;
+            self.lo = lo;
+        }
+        if self.end() > hi {
+            let keep = (hi - self.lo + 1) as usize;
+            let moved: f64 = self.buckets.drain(keep..).sum();
+            self.buckets[keep - 1] += moved;
+        }
+    }
+
     /// Every pointer and the total from the buckets, by a walk.
     fn rebuild(&mut self) {
         self.total = self.zero + self.buckets.iter().sum::<f64>();
@@ -283,7 +389,18 @@ impl EwQuantile {
             self.zero += s;
             None
         } else {
-            let k = Self::index(v);
+            let mut k = Self::index(v);
+            // A value past a bounded sketch's buckets may take it past what
+            // it keeps: the far buckets fold, and the value counts in the
+            // end bucket on its side, below every level's bucket or above,
+            // as it is.
+            if !self.buckets.is_empty()
+                && (k < self.lo || k > self.end())
+                && let Some((lo, hi)) = self.kept(self.lo.min(k), self.end().max(k))
+            {
+                self.fold_to(lo, hi);
+                k = k.clamp(lo, hi);
+            }
             if self.buckets.is_empty() {
                 self.lo = k;
                 self.buckets.push(0.0);
@@ -299,12 +416,20 @@ impl EwQuantile {
         };
         self.total += s;
         for l in 0..self.levels.len() {
-            // `None` sorts before every bucket, as the zero bucket does.
-            if at < self.at[l] {
-                self.below[l] += s;
-            }
+            // `None` sorts before every bucket, as the zero bucket does. A
+            // select, not a branch: a value lands below a median or above it
+            // at random, and a mispredicted branch was a third of a row's
+            // cost.
+            let under = Self::rank(at) < Self::rank(self.at[l]);
+            let below = self.below[l];
+            self.below[l] = if under { below + s } else { below };
             self.settle(l);
         }
+    }
+
+    /// A pointer's place in the order, the zero bucket below every bucket.
+    fn rank(at: Option<i32>) -> i64 {
+        at.map_or(i64::MIN, i64::from)
     }
 
     /// The quantile at level `l`, or `None` before any weight.
@@ -321,7 +446,9 @@ impl EwQuantile {
     /// Back to no weight, at the same levels: valid, since `new` checked
     /// them and a restore holds a sketch to [`Self::has_shape`].
     pub fn reset(&mut self) {
+        let band = self.band;
         *self = Self::empty(std::mem::take(&mut self.levels));
+        self.band = band;
     }
 }
 
@@ -1285,6 +1412,9 @@ mod tests {
         assert!((got - 2.0).abs() <= EW_QUANTILE_ALPHA * 2.0, "{got}");
     }
 }
+
+#[cfg(test)]
+mod band_tests;
 
 #[cfg(test)]
 mod metric_tests {

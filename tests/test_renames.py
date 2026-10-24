@@ -156,8 +156,12 @@ def test_rls_ridge_is_refused_naming_delta(tmp_path, online_cli):
 def test_no_output_carries_an_old_name():
     """Every spec of the release probe's workload, every kind the bank builds."""
     for name, builder, kw, _ in probe.WORKLOAD:
-        fields = po.spec.output_fields(getattr(po.spec, builder)(name, **kw))
-        bad = [f for f in fields if any(o in f for o in OLD_OUTPUTS)]
+        fields = po.spec.output_fields(probe.build(builder, name, kw))
+        # `resid_z__p0.2` is target `z`'s residual under a grid's suffix, not
+        # the old z-score `resid_z_<target>`.
+        bad = [
+            f for f in fields if any(o in f.replace("resid_z__", "resid_t__") for o in OLD_OUTPUTS)
+        ]
         assert not bad, (name, bad)
         if builder == "micro":
             assert not any(f == "micro" or f.startswith("micro@") for f in fields), fields
@@ -166,7 +170,7 @@ def test_no_output_carries_an_old_name():
 def _workload(name: str) -> dict:
     kw = next(kw for n, b, kw, _ in probe.WORKLOAD if n == name)
     builder = next(b for n, b, kw, _ in probe.WORKLOAD if n == name)
-    return po.spec.output_fields(getattr(po.spec, builder)(name, **kw))
+    return po.spec.output_fields(probe.build(builder, name, kw))
 
 
 def test_the_new_output_names():

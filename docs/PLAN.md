@@ -15957,3 +15957,77 @@ as task 270.
       edit the CHANGELOG's `[Unreleased]` or this plan; the coordinator adds
       both at merge. Then a review of the merged diff (Fable, high effort)
       and the fix of its findings before the push.
+
+## 24. Huber regression, from first principles (2026-10-23)
+
+The user, after task 270 (a) was handed C-1 under decision D1 (Huber's
+Proposal 2 scale): "Does ridge support Huber loss", "How many passes would
+it take for full convergence", then "Do a deep analysis of Huber make a
+complete plan of what we should do from first principals". The analysis is
+`docs/HUBER.md`; its measurements are `scripts/huber/m1_breakdown.py` to
+`m5_request3.py`. In brief: the scale is the estimator's robust part, and the
+plain RMS has breakdown 0; Proposal 2 holds to about 12% one-sided
+contamination in batch and, online, does not repair the inflated start that
+is C-1's cause (started from the RMS it stays at the RMS over 0.71), so
+**D1 is withdrawn**; the EW-MAD (one `EwQuantile` at 0.5 per target) needs
+no start rule, and one online pass with it equals the converged batch fit
+at 1% and 5% contamination (2.008 / 2.040 against 2.008 / 2.040), with
+re-weighting passes closing under half of the gap that opens at 12.5%; a
+robust scale slows adaptation after a regime shift (mean error 19.5 against
+least squares' 13.2 in rows 200-400) unless the scale has a shorter memory
+than the fit (14.4 at a fifth). The plain RMS is the *stated* definition
+(docstring, MODELS.md), so the policy makes a replaced default a major: the
+plan adds `huber_scale` with the present behaviour as the default.
+
+- [ ] 271. **`huber_scale` and the Huber documents** -- the plan in
+      `docs/HUBER.md` §7, P1-P6: `huber_scale="rms"|"mad"` on `huber` and
+      `sgd(loss="huber")` (an `EwQuantile` per target, schema 63 with the
+      v62 sets kept and a loader, fixtures for both forms);
+      `huber_scale_half_life` defaulting to the model's; `sgd.rs`'s module
+      doc corrected; MODELS.md's `huber` section rewritten from first
+      principles with the measured tables; the two specs in the release
+      probe's workload; the 2.0 default recorded. C-1 moves here from task
+      270 (a) (held, not built there). Tests: statsmodels `RLM` with the MAD
+      scale as the second opinion at the measured tolerance, the level-1,000
+      no-decay stream for `sgd`, the breakdown table at 1% and 5%, the shift
+      test, fixtures, chunk invariance. P7's three items (Mallows weights, a
+      shift-aware scale, `sgd`'s intercept start) wait for their own
+      measurements. **Decided** (the user, 2026-10-23: "Build this using
+      opus high and then review with fable high and fix findings. Move away
+      from rms now. Your reco on the rest."): (a) the default is `"mad"`
+      now, `"rms"` kept as an option, the change declared under *Changed*
+      with its size and the way back (the user's call against the policy's
+      changed-default row); (b) `huber_scale_half_life` built now; (c) P7
+      out. Then a review of the change (Fable, high effort) and the fix of
+      its findings.
+
+- [ ] 272. **Huber through the bank, `po.eval`, `po.gram`, `marginal` and
+      the window operators** -- a downstream project's five requests, the
+      user, 2026-10-23: "Analyze these recos from another project and build
+      them after the other parts are done. Build with opus high and review
+      with fable high." The analysis is `docs/HUBER.md` §8. After task 270
+      and task 271 merge. Batches: (a) `huber`: `feature_sets` (the weight
+      from the largest set's residual, stated), `ridge_scale` (the
+      `rls`-equivalent Huber), an emitted robust scale read before the row,
+      and the delayed-label rule tested and stated; no `loss=` on `ewridge`
+      or `rls`, their docs pointing to `huber`; (b) `po.eval`: `huber_sse` /
+      `huber_mse` with a causal scale column or the emitted scale; `po.gram`:
+      `pseudo_response(y, pred, scale, c)` and a GRAM.md section with
+      algorithm H's passes table; request 3's per-target cross-moment
+      weights refused with the measurement (slope -59.4 against 2.0393); (c)
+      `marginal(bin_stat="huber")`, the online M-location per cell with a
+      per-target scale, default `"mean"`; (d) `po.ewm_quantile` on the
+      window machinery, the EW-MAD recipe and the label-delay rule in
+      WINDOWS.md, the trees' objectives in GBDT.md. Each with its second
+      opinion (statsmodels `RLM` / Huber location, the batch definition of
+      the loss, numpy's weighted quantile) and, where a path is new, a
+      budget case. Then a review (Fable, high effort) and the fix of its
+      findings.
+      *Revised 2026-10-23* after the requester's reply (relayed by the
+      user): request 3 withdrawn (they checked it: slope 1.92 for 2.00 with
+      outliers independent of `x`, and the pseudo-response matched a direct
+      reweighted fit to 5e-15); request 2 is their own scoring code; request
+      1 is `po.spec.huber`, already built, with the robust scale arriving in
+      task 271; requests 4 and 5 conveniences. So batch (b) shrinks to the
+      GRAM.md section on algorithm H with its passes table (no helper, no
+      `po.eval` metric), and (a), (c), (d) stand, in that order of value.

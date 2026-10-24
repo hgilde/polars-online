@@ -40,6 +40,7 @@ EXCEPTIONS = {
     "stream outweighs sooner (classic RLS regularization)",
     "kalman": "a row's weight scales its observation's precision: its variance is obs_var / w",
     "sgd": "the gradient is d * z * w: a weight is a step size",
+    "sgd_huber_mad": "sgd's: the gradient is d * z * w, a weight is a step size",
     "ftrl": "an importance weight, as Vowpal Wabbit's: the gradient carries it "
     "against l1, l2 and beta in absolute weight (task 147 kept VW's semantics)",
     "pa": "a weight below 1 scales tau, one above 1 counts as 1",
@@ -57,7 +58,7 @@ def _fit(c: float) -> pl.DataFrame:
         # An audit refuses a min_weight: it predicts nothing to withhold.
         if builder not in ("seqtest", "audit"):
             kw["min_weight"] = kw.get("min_weight", 4.0) * c
-        specs.append(getattr(po.spec, builder)(name, **kw))
+        specs.append(probe.build(builder, name, kw))
     return po.ModelBank(specs).fit_predict(probe.stream().with_columns(pl.col("w") * c))
 
 
@@ -93,5 +94,16 @@ def test_the_docs_say_what_each_unit_is():
 
 def test_only_the_documented_exceptions_move_with_the_weights_scale():
     a, b = _fit(1.0), _fit(SCALE)
-    moved = {name: f for name, *_ in probe.WORKLOAD if (f := _moved(a, b, name))}
+    reach = {name for name, *_ in probe.REACH}
+    moved = {
+        name: f for name, *_ in probe.WORKLOAD if name not in reach and (f := _moved(a, b, name))
+    }
     assert set(moved) == set(EXCEPTIONS), {k: v[:4] for k, v in moved.items()}
+    # The specs that reach the other paths move only where their builder's
+    # first spec does. `break_wald` moved in four of them until it waited
+    # for the `2k` rows its variance needs (task 270 (g)): read sooner, the
+    # rounding decided whether it factorized.
+    builders = {b for name, b, *_ in probe.WORKLOAD if name in EXCEPTIONS}
+    for name, builder, *_ in probe.REACH:
+        fields = _moved(a, b, name)
+        assert not fields or builder in builders, (name, fields[:4])

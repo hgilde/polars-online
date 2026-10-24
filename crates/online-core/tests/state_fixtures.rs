@@ -78,7 +78,13 @@ use online_core::{MIN_SCHEMA_VERSION, ModelState, SCHEMA_VERSION, State};
 /// No kept case is blocked, so each converts to the current bytes exactly;
 /// a blocked state saved mid-block at 61 goes on from its held rows within
 /// the fold's bound of the definition, not to the bits a 62 build reaches
-/// from the same rows (`gaps::fold_tests`).
+/// from the same rows (`gaps::fold_tests`). 62 kept since 63 gave `huber`
+/// and `sgd(loss="huber")` a robust scale (docs/PLAN.md task 271): a 62
+/// state has no `huber_scale` and was fitted under the RMS, so it loads as
+/// `huber_scale = "rms"` (`HuberScale::of_a_state_before_63`), with no
+/// sketch, and goes on to the bit; the `huber` and `sgd_huber` cases are
+/// the RMS's, so each converts to the current bytes exactly, and the MAD's
+/// form is the new cases `huber_mad` and `sgd_huber_mad`.
 macro_rules! previous {
     ($($schema:literal),* $(,)?) => {
         const PREVIOUS: &[u32] = &[$($schema),*];
@@ -96,7 +102,7 @@ macro_rules! previous {
     };
 }
 
-previous![61];
+previous![61, 62];
 
 /// How far a continuation may part from the one frozen, on a platform other
 /// than the writer's: the golden files' tolerance (`tests/golden.rs`).
@@ -486,13 +492,23 @@ fn held(v: &rmpv::Value) -> usize {
 /// `an_audits_counters_are_written_in_both_forms`'. Its smallest change per
 /// column and the changes at it (59, task 233). A blocked `ewridge`'s held
 /// targets (62, task 257), `acc.held`, written only while a block holds a
-/// target's values: `ewridge_blocked` is saved mid-block.
+/// target's values: `ewridge_blocked` is saved mid-block. The Huber
+/// scale's two forms (63, task 271): `huber_mad` and `sgd_huber_mad` keep
+/// a sketch of `|e|` per target, `huber_mad` its own scale memory, and each
+/// cfg names its scale, `"mad"` there and `"rms"` in `huber` and
+/// `sgd_huber`; each MAD sketch names its band (task 271 (b)).
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 29] = [
+    const FORMS: [(&str, &[&str]); 32] = [
+        ("huber_mad", &["model", "Robust", "mad"]),
+        (
+            "huber_mad",
+            &["model", "Robust", "cfg", "huber_scale_decay"],
+        ),
+        ("sgd_huber_mad", &["model", "Sgd", "mad"]),
         ("ewridge_blocked", &["model", "EwRidge", "acc", "held", "y"]),
         (
             "ewridge_blocked",
@@ -553,6 +569,32 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                 Some(!name.ends_with("_warming")),
                 "{name}: saved on the wrong side of the switch"
             );
+        }
+    }
+    // Each Huber form names its scale, and the RMS's keeps no sketch.
+    for (name, variant, scale) in [
+        ("huber", "Robust", "rms"),
+        ("huber_mad", "Robust", "mad"),
+        ("sgd_huber", "Sgd", "rms"),
+        ("sgd_huber_mad", "Sgd", "mad"),
+    ] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        let got = at(&v, &["model", variant, "cfg", "huber_scale"]).and_then(rmpv::Value::as_str);
+        assert_eq!(got, Some(scale), "{name}: cfg.huber_scale");
+        let sketches = at(&v, &["model", variant, "mad"])
+            .and_then(rmpv::Value::as_array)
+            .unwrap_or_else(|| panic!("{name}: the state has no mad"));
+        assert_eq!(sketches.is_empty(), scale == "rms", "{name}: mad");
+        // A MAD's sketch is bounded and names its band (docs/PLAN.md task
+        // 271 (b)); a sketch without one loads unbounded.
+        for q in sketches {
+            let band = at(q, &["band"]).and_then(rmpv::Value::as_u64);
+            let want = u64::from(online_core::MAD_BAND_OCTAVES);
+            assert_eq!(band, Some(want), "{name}: mad.band");
         }
     }
     // Every snapshot a window holds keeps the counts as they stood before
