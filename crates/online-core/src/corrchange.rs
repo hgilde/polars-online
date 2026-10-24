@@ -938,26 +938,73 @@ impl CorrChange {
     }
 
     /// `‖vech(R̂_pre − R̂_post)‖` over the two windows in `rows`.
+    #[cfg(test)]
     fn window_stat(&self, rows: &[Vec<f64>]) -> f64 {
-        let w = self.cfg.span_rows;
-        if rows.len() < 2 * w {
-            return f64::NAN;
-        }
-        let (pre, post) = rows.split_at(w);
+        self.window_stat_by(rows.len(), |i| &rows[i])
+    }
+
+    /// The window's correlation matrix, the strict upper triangle in the
+    /// pairs' order, of its `w` rows `row(0)..row(w)`: [`Self::corr_of`]'s
+    /// sums, in its order, with each column's mean and squared deviations
+    /// summed once rather than once for each pair it is in. The same bits.
+    /// One buffer: the means, the squared deviations, then the
+    /// correlations, which start at `2 d`.
+    fn window_corr<'a>(&self, w: usize, row: impl Fn(usize) -> &'a [f64]) -> Vec<f64> {
         let d = self.cfg.n_features;
-        let mut acc = 0.0f64;
+        let wf = w as f64;
+        let mut buf = vec![0.0; 2 * d + d * d.saturating_sub(1) / 2];
+        let (mean, rest) = buf.split_at_mut(d);
+        let (ss, corr) = rest.split_at_mut(d);
+        for i in 0..w {
+            for (m, x) in mean.iter_mut().zip(row(i)) {
+                *m += x;
+            }
+        }
+        mean.iter_mut().for_each(|m| *m /= wf);
+        for i in 0..w {
+            let r = row(i);
+            let mut p = 0;
+            for a in 0..d {
+                let da = r[a] - mean[a];
+                ss[a] += da * da;
+                for b in (a + 1)..d {
+                    corr[p] += da * (r[b] - mean[b]);
+                    p += 1;
+                }
+            }
+        }
+        let mut p = 0;
         for a in 0..d {
             for b in (a + 1)..d {
-                let x = Self::corr_of(pre, w, a, b);
-                let y = Self::corr_of(post, w, a, b);
-                if !(x.is_finite() && y.is_finite()) {
-                    return f64::NAN;
-                }
-                let diff = (x - y).abs();
-                match self.cfg.norm {
-                    ChangeNorm::L1 => acc += diff,
-                    ChangeNorm::LInf => acc = acc.max(diff),
-                }
+                let den = (ss[a] * ss[b]).sqrt();
+                corr[p] = if den > 0.0 { corr[p] / den } else { f64::NAN };
+                p += 1;
+            }
+        }
+        buf
+    }
+
+    /// `‖vech(R̂_pre − R̂_post)‖` over the two windows of the `n` rows
+    /// `row(0)..row(n)`, read where they are: the ring was copied whole on
+    /// every row, and every pooled row on every permutation draw
+    /// (docs/PLAN.md task 270, D-2).
+    fn window_stat_by<'a>(&self, n: usize, row: impl Fn(usize) -> &'a [f64]) -> f64 {
+        let w = self.cfg.span_rows;
+        if n < 2 * w || w < 2 {
+            return f64::NAN;
+        }
+        let at = 2 * self.cfg.n_features;
+        let pre = self.window_corr(w, &row);
+        let post = self.window_corr(w, |i| row(w + i));
+        let mut acc = 0.0f64;
+        for (x, y) in pre[at..].iter().zip(&post[at..]) {
+            if !(x.is_finite() && y.is_finite()) {
+                return f64::NAN;
+            }
+            let diff = (x - y).abs();
+            match self.cfg.norm {
+                ChangeNorm::L1 => acc += diff,
+                ChangeNorm::LInf => acc = acc.max(diff),
             }
         }
         acc
@@ -970,11 +1017,13 @@ impl CorrChange {
         if self.ring.len() < 2 * w {
             return None;
         }
-        let rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
+        let ring = &self.ring;
         let block = self.cfg.perm_block;
         let nblocks = (2 * w).div_ceil(block);
         let mut stats = Vec::with_capacity(self.cfg.n_perm);
         let mut order: Vec<usize> = (0..nblocks).collect();
+        // The pooled rows by their places in the ring, permuted in blocks.
+        let mut shuffled: Vec<usize> = Vec::with_capacity(2 * w);
         for _ in 0..self.cfg.n_perm {
             // Fisher-Yates over the blocks, from the state's own generator
             // so the draws are a function of the data alone.
@@ -982,14 +1031,12 @@ impl CorrChange {
                 let j = (self.rng.next_u64() % (i as u64 + 1)) as usize;
                 order.swap(i, j);
             }
-            let mut shuffled: Vec<Vec<f64>> = Vec::with_capacity(2 * w);
+            shuffled.clear();
             for &bi in &order {
                 let start = bi * block;
-                for r in rows.iter().take((start + block).min(2 * w)).skip(start) {
-                    shuffled.push(r.clone());
-                }
+                shuffled.extend(start..(start + block).min(2 * w));
             }
-            let s = self.window_stat(&shuffled);
+            let s = self.window_stat_by(2 * w, |i| &ring[shuffled[i]]);
             if s.is_finite() {
                 stats.push(s);
             }
@@ -1066,16 +1113,19 @@ impl CorrChange {
                 }
             }
             CorrChangeKind::Window => {
+                // The ring and the row, less what is past the two windows,
+                // read where they are.
                 let w = self.cfg.span_rows;
-                let mut rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
-                rows.push(row);
-                while rows.len() > 2 * w {
-                    rows.remove(0);
-                }
-                if rows.len() < 2 * w {
+                let held = self.ring.len();
+                if held + 1 < 2 * w {
                     return pred;
                 }
-                let stat = self.window_stat(&rows);
+                let skip = held + 1 - 2 * w;
+                let ring = &self.ring;
+                let stat = self.window_stat_by(2 * w, |i| {
+                    let i = skip + i;
+                    if i < held { &ring[i] } else { &row }
+                });
                 // The value **in force**: a redraw happens after the row is
                 // reported, so `predict` and `step` see the same one.
                 let crit = self.cfg.crit.or(self.perm_crit);
@@ -2019,6 +2069,128 @@ mod tests {
             }
         }
         eprintln!("the one-pass statistic's largest move: {worst:e} relative");
+    }
+
+    /// The window statistic as the code before task 270 (D-2) computed it,
+    /// each pair's correlation by [`CorrChange::corr_of`] over copies of
+    /// the two windows' rows.
+    fn window_stat_copied(m: &CorrChange, rows: &[Vec<f64>]) -> f64 {
+        let w = m.cfg.span_rows;
+        if rows.len() < 2 * w {
+            return f64::NAN;
+        }
+        let (pre, post) = rows.split_at(w);
+        let d = m.cfg.n_features;
+        let mut acc = 0.0f64;
+        for a in 0..d {
+            for b in (a + 1)..d {
+                let x = CorrChange::corr_of(pre, w, a, b);
+                let y = CorrChange::corr_of(post, w, a, b);
+                if !(x.is_finite() && y.is_finite()) {
+                    return f64::NAN;
+                }
+                let diff = (x - y).abs();
+                match m.cfg.norm {
+                    ChangeNorm::L1 => acc += diff,
+                    ChangeNorm::LInf => acc = acc.max(diff),
+                }
+            }
+        }
+        acc
+    }
+
+    /// And its permutation critical value, from a copy of the model: every
+    /// pooled row copied again on each draw.
+    fn permutation_crit_copied(m: &mut CorrChange) -> Option<f64> {
+        let w = m.cfg.span_rows;
+        if m.ring.len() < 2 * w {
+            return None;
+        }
+        let rows: Vec<Vec<f64>> = m.ring.iter().cloned().collect();
+        let block = m.cfg.perm_block;
+        let nblocks = (2 * w).div_ceil(block);
+        let mut stats = Vec::new();
+        let mut order: Vec<usize> = (0..nblocks).collect();
+        for _ in 0..m.cfg.n_perm {
+            for i in (1..nblocks).rev() {
+                let j = (m.rng.next_u64() % (i as u64 + 1)) as usize;
+                order.swap(i, j);
+            }
+            let mut shuffled: Vec<Vec<f64>> = Vec::new();
+            for &bi in &order {
+                let start = bi * block;
+                for r in rows.iter().take((start + block).min(2 * w)).skip(start) {
+                    shuffled.push(r.clone());
+                }
+            }
+            let s = window_stat_copied(m, &shuffled);
+            if s.is_finite() {
+                stats.push(s);
+            }
+        }
+        if stats.is_empty() {
+            return None;
+        }
+        stats.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let q = ((1.0 - m.cfg.alpha) * stats.len() as f64).ceil() as usize;
+        Some(stats[q.min(stats.len()) - 1])
+    }
+
+    /// The window kind read where its rows are (task 270, D-2) reports the
+    /// bits it reported over copies of them: on every row of a stream with
+    /// a break, at a level of 0 and of 1e4, under both norms and with a
+    /// block size that does not divide the pool, the statistic against
+    /// the copied windows' and each redrawn critical value against the
+    /// copied draws' from the same generator state.
+    #[test]
+    fn the_window_kind_read_in_place_is_the_copied_one_to_the_bit() {
+        for (level, norm, block) in [(0.0, ChangeNorm::L1, 7), (1e4, ChangeNorm::LInf, 1)] {
+            let mut n = Normals::new(31);
+            let w = 30;
+            let mut m = CorrChange::new(CorrChangeCfg {
+                span_rows: w,
+                crit: None,
+                n_perm: 40,
+                permute_every_rows: 9,
+                perm_block: block,
+                norm,
+                ..cfg(4, CorrChangeKind::Window)
+            })
+            .unwrap();
+            let mut rows: Vec<Vec<f64>> = Vec::new();
+            let (mut stats, mut crits) = (0, 0);
+            for i in 0..400 {
+                let mut r = n.pair(if i % 150 < 75 { 0.1 } else { 0.8 });
+                r.push(n.normal());
+                r.push(n.normal());
+                let r: Vec<f64> = r.iter().map(|v| v + level).collect();
+                rows.push(r.clone());
+                let tail = &rows[rows.len().saturating_sub(2 * w)..];
+                let want = window_stat_copied(&m, tail);
+                let got = m.predict(&r, 1.0).pred[0];
+                assert!(
+                    got.to_bits() == want.to_bits() || got.is_nan() && want.is_nan(),
+                    "row {i}: {got} vs {want}"
+                );
+                stats += usize::from(got.is_finite());
+                let mut copy = m.clone();
+                m.step(&r, &[], 1.0, 1.0);
+                if m.ring.len() >= 2 * w {
+                    copy.ring.push_back(r.clone());
+                    while copy.ring.len() > 2 * w {
+                        copy.ring.pop_front();
+                    }
+                    let (mut a, mut b) = (copy.clone(), copy);
+                    let (x, y) = (a.permutation_crit(), permutation_crit_copied(&mut b));
+                    assert_eq!(x.map(f64::to_bits), y.map(f64::to_bits), "row {i}");
+                    crits += usize::from(x.is_some());
+                }
+            }
+            assert!(
+                stats > 300 && crits > 300,
+                "{stats} statistics, {crits} draws"
+            );
+        }
     }
 
     /// The empirical size against Wied, Krämer & Dehling's Table 1. Theirs
