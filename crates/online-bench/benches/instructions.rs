@@ -44,7 +44,9 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::ewridge_k5(args = ("ewridge_k5"), setup = model_setup)]
 #[bench::ewridge_k20(args = ("ewridge_k20"), setup = model_setup)]
 #[bench::ewridge_gram_t10(args = ("ewridge_gram_t10"), setup = model_setup)]
+#[bench::huber_k20(args = ("huber_k20"), setup = model_setup)]
 #[bench::sgd(args = ("sgd"), setup = model_setup)]
+#[bench::sgd_huber(args = ("sgd_huber"), setup = model_setup)]
 #[bench::pa(args = ("pa"), setup = model_setup)]
 #[bench::seqtest(args = ("seqtest"), setup = model_setup)]
 #[bench::bocpd(args = ("bocpd"), setup = model_setup)]
@@ -53,6 +55,18 @@ fn counted_from(entry: &str) -> LibraryBenchmarkConfig {
 #[bench::kalman(args = ("kalman"), setup = model_setup)]
 #[bench::ew_cov(args = ("ew_cov"), setup = model_setup)]
 #[bench::lasso_k20(args = ("lasso_k20"), setup = model_setup)]
+#[bench::rls(args = ("rls"), setup = model_setup)]
+#[bench::quantile(args = ("quantile"), setup = model_setup)]
+#[bench::ftrl(args = ("ftrl"), setup = model_setup)]
+#[bench::holt(args = ("holt"), setup = model_setup)]
+#[bench::marginal(args = ("marginal"), setup = model_setup)]
+#[bench::ew_class(args = ("ew_class"), setup = model_setup)]
+#[bench::deco(args = ("deco"), setup = model_setup)]
+#[bench::hmm(args = ("hmm"), setup = model_setup)]
+#[bench::rcov(args = ("rcov"), setup = model_setup)]
+#[bench::audit_continuous(args = ("audit_continuous"), setup = model_setup)]
+#[bench::bocpd_full(args = ("bocpd_full"), setup = model_setup)]
+#[bench::ew_cov_lags(args = ("ew_cov_lags"), setup = model_setup)]
 fn model(mut run: ModelRun) -> ModelRun {
     black_box(polars_online_budget_model_rows(black_box(&mut run)));
     run

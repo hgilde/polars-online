@@ -987,13 +987,14 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
     review round 7 (A-2), for a quantile fit's residuals' lag products under
     a horizon, and task 244, for ``ew_cov``'s ``bias`` and the names a spec
     keeps at 1.0 (60 refused); 62 since task 257, for a blocked ``ewridge``'s
-    held targets, the first change since 1.0, so 61 still loads."""
+    held targets, the first change since 1.0, so 61 still loads; 63 since
+    task 271, for ``huber``'s and ``sgd``'s Huber scale, so 62 loads too."""
     bank = po.ModelBank([spec(fwd())])
     bank.fit_predict(stream(60, 50))
     state = bank.save_bytes()
     key = b"\xaeschema_version"
     i = state.index(key) + len(key)
-    assert state[i] == 62, state[i]
+    assert state[i] == 63, state[i]
     for before in range(25, 61):
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
@@ -1001,6 +1002,7 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
         ):
             po.ModelBank.load_bytes(old)
     po.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])
+    po.ModelBank.load_bytes(state[:i] + bytes([62]) + state[i + 1 :])
 
 
 def test_a_target_named_after_its_own_column_is_refused_at_the_builder(

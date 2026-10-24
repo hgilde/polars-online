@@ -177,7 +177,8 @@ refusals below. The README's *How a bank sees a stream* shows them at work.
     column it is the row's number, the first row being 1: ``coef_every=10``
     writes the tenth row, the twentieth and so on. A reset of the clock
     starts the count over. Under either, the ``coef`` rows are the same
-    however the stream is chunked. With neither, the default, ``coef`` is
+    however the stream is chunked. ``predict`` reads neither: it fills
+    ``coef`` on each chunk's last accepted row of each group. With neither, the default, ``coef`` is
     filled on **each group's** last row within every chunk: one row per
     group per chunk, not one per chunk. Only that schedule follows the
     chunking; every other field is chunk-invariant, so one chunk or a
@@ -246,8 +247,9 @@ the diagnostics
     forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.
     That memory is the fit's, but ``holt``'s trend (``trend_half_life``, four
     times its level's by default), the longest of ``kalman``'s
-    ``coef_half_life`` and ``half_life``, ``ewridge``'s ``long_half_life`` and
-    ``lasso``'s ``select_half_life``. The twin fits of ``break_wald`` and
+    ``coef_half_life`` and ``half_life``, ``ewridge``'s ``long_half_life``,
+    ``lasso``'s ``select_half_life`` and the Huber scale's
+    ``huber_scale_half_life`` of ``huber`` and ``sgd``. The twin fits of ``break_wald`` and
     feature health read no prediction, and fold every row. ``horizon_rows`` is
     the target's horizon in rows: the rows a target that looks ahead shares its
     shocks over, so that its residuals overlap. Without a clock column it
@@ -309,7 +311,7 @@ and each diagnostic's own ``*_half_life`` below, and in the models
 ``snapshot_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
 ``prune_every`` and the model half-lives: ``long_half_life``,
 ``select_half_life``, ``coef_half_life``,
-``revert_half_life`` and ``trend_half_life``.
+``revert_half_life``, ``trend_half_life`` and ``huber_scale_half_life``.
 
 One parameter takes either form, with a meaning for each: ``bocpd``'s
 ``hazard``. A number, finite and above 1, is the expected rows between
@@ -873,9 +875,10 @@ A parameter whose switch is off is refused rather than ignored:
   diagnostic that reads it;
 - ``snapshot_every``, ``max_rows_between_snapshots``, ``window_budget`` or
   ``closed = "both"`` without ``window_size``;
-- ``sgd``'s ``huber_delta``, ``quantile`` or ``eps`` beside a loss that does
-  not use it, its ``strict_binary`` beside a loss other than ``"logistic"``,
-  and its ``power`` beside a schedule other than ``"inv_scaling"``;
+- ``sgd``'s ``huber_delta``, ``huber_scale``, ``huber_scale_half_life``,
+  ``quantile`` or ``eps`` beside a loss that does not use it, its
+  ``strict_binary`` beside a loss other than ``"logistic"``, and its
+  ``power`` beside a schedule other than ``"inv_scaling"``;
 - ``ftrl``'s ``strict_binary`` beside ``loss = "squared"``;
 - ``holt``'s ``trend_half_life`` beside ``trend = False``;
 - ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``, and its and

@@ -126,7 +126,7 @@ feature is missing, so it never sees the row. An audit reads every row of
 its columns and counts nulls, NaNs and infinities apart. It also counts
 repeated values, runs of one value, persistence like a random walk's,
 heavy tails, duplicated columns and the clock's stamps. Its memory does not
-grow with the rows: about 10 KiB a column. Run it alone before choosing a
+grow with the rows: about 14 KiB a column. Run it alone before choosing a
 model, or beside the models in the same pass, as the [three-fault example](#data-quality) does.
 Without one in the bank, `check()` says nothing about sentinels, frozen
 feeds, few values, random walks, tails, duplicates or the clock's spacing.
@@ -1202,7 +1202,7 @@ info heavy_tails audit y 175.0
 90% interval from sigma covers 0.952; conformal covers 0.899
 sigma from 0.52 to 6.99; drift flagged 12
 ewridge  slope: 99% of rows within 0.224 of 0.5
-huber    slope: 99% of rows within 0.057 of 0.5
+huber    slope: 99% of rows within 0.045 of 0.5
 ```
 
 The audit finds `y`'s largest value 175 robust standard deviations from
@@ -1210,7 +1210,7 @@ its median. Over the last 40,000 rows, the 90% Gaussian interval built
 from `sigma` covered 95.2% of them, too wide on average, because
 `sigma` ranged from 0.52 to 6.99 as the large rows came and went. The
 conformal interval covered 89.9%. `drift` flagged 12 rows of a relation
-that never changed. `huber`'s slope stayed within 0.057 of 0.5 on 99% of
+that never changed. `huber`'s slope stayed within 0.045 of 0.5 on 99% of
 the rows, and `ewridge`'s within 0.224.
 
 **What to do.** Fit `huber` or `quantile` when the coefficients matter,

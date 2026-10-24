@@ -5,11 +5,11 @@ use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
     EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
-    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, KMeans, KMeansCfg,
-    Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg,
-    ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
-    SlotMetrics, State, StateError, WindowShadow,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, HuberScale, KMeans,
+    KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
+    MicroCfg, ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind,
+    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
+    SgdLoss, SlotMetrics, State, StateError, WindowShadow,
 };
 use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
@@ -556,6 +556,16 @@ pub(crate) fn init_rule(init: Option<&str>) -> Result<SeedRule, String> {
 /// `coef_max` and `coef_sum`: a scalar bound is broadcast to every feature,
 /// a list is taken as given (its length is checked by the model's config,
 /// which names the offence). `None` when nothing is constrained.
+/// A spec's `huber_scale` word as the model takes it: `"mad"` where none
+/// is given, the default since task 271 (the word was validated with the
+/// spec).
+fn huber_scale_of(word: Option<&str>) -> HuberScale {
+    match word {
+        Some("rms") => HuberScale::Rms,
+        _ => HuberScale::Mad,
+    }
+}
+
 fn constraint(
     k: usize,
     coef_min: &Option<FloatOrList>,
@@ -787,67 +797,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
         }
-        ModelKind::Huber {
-            huber_delta,
-            ridge,
-            standardize,
-            solve_every,
-            max_rows_between_solves,
-        } => {
-            let cfg = RobustCfg {
-                n_features: spec.k(),
-                n_targets: spec.m(),
-                fit_intercept: spec.fit_intercept,
-                decay,
-                // The 95%-efficiency constant (Huber 1981; statsmodels'
-                // `HuberT`, scikit-learn's 1.35): task 195, U3.
-                loss: RobustLoss::Huber {
-                    delta: huber_delta.map_or(1.345, |n| n.0),
-                },
-                ridge: ridge.unwrap_or(1e-6),
-                standardize: *standardize,
-                min_weight: spec.min_periods_or_default(),
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
-                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
-                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
-                quantile_eps: 1e-3,
-            };
-            let mut m = Robust::new(cfg)?;
-            // Each target's own threshold, for its own first solve (S9b).
-            m.set_target_min_weight(spec.min_periods_per_target())?;
-            Ok(AnyModel::Robust(Box::new(m)))
-        }
-        ModelKind::Quantile {
-            quantile,
-            ridge,
-            standardize,
-            solve_every,
-            max_rows_between_solves,
-            quantile_eps,
-        } => {
-            let cfg = RobustCfg {
-                n_features: spec.k(),
-                n_targets: spec.m(),
-                fit_intercept: spec.fit_intercept,
-                decay,
-                loss: RobustLoss::Quantile { tau: *quantile },
-                ridge: ridge.unwrap_or(1e-6),
-                standardize: *standardize,
-                min_weight: spec.min_periods_or_default(),
-                solve_every: solve_every
-                    .as_ref()
-                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
-                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
-                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
-                quantile_eps: quantile_eps.unwrap_or(0.2),
-            };
-            let mut m = Robust::new(cfg)?;
-            // Each target's own threshold, for its own first solve (S9b).
-            m.set_target_min_weight(spec.min_periods_per_target())?;
-            Ok(AnyModel::Robust(Box::new(m)))
-        }
+        ModelKind::Huber { .. } => huber_model(spec, decay),
+        ModelKind::Quantile { .. } => quantile_model(spec, decay),
         ModelKind::Ftrl {
             alpha,
             beta,
@@ -941,68 +892,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }
-        ModelKind::Sgd {
-            loss,
-            huber_delta,
-            quantile,
-            eps,
-            learning_rate,
-            schedule,
-            power,
-            l2,
-            clip_gradient,
-            standardize,
-            coef_min,
-            coef_max,
-            strict_binary,
-            coef_sum,
-        } => {
-            let loss = match loss.as_deref().unwrap_or("squared") {
-                "squared" => SgdLoss::Squared,
-                // In units of the target's residual std, `huber`'s constant
-                // under `huber`'s name (task 195, U1 and U3).
-                "huber" => SgdLoss::Huber {
-                    delta: huber_delta.map_or(1.345, |n| n.0),
-                },
-                "quantile" => SgdLoss::Quantile {
-                    tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
-                },
-                // 1% of the target's own spread (task 203), kept by task
-                // 207's sweep, which measured it against the residual's
-                // spread capped by the target's.
-                "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
-                    eps: eps.unwrap_or(0.01),
-                },
-                "poisson" => SgdLoss::Poisson,
-                "logistic" => SgdLoss::Logistic,
-                other => return Err(format!("unknown sgd loss {other:?}")),
-            };
-            let sched = match schedule.as_deref().unwrap_or("constant") {
-                "constant" => LearningRate::Constant,
-                "inv_scaling" => LearningRate::InvScaling {
-                    power: power.unwrap_or(0.5),
-                },
-                "adagrad" => LearningRate::AdaGrad,
-                other => return Err(format!("unknown sgd schedule {other:?}")),
-            };
-            let cfg = SgdCfg {
-                n_features: spec.k(),
-                n_targets: spec.m(),
-                fit_intercept: spec.fit_intercept,
-                decay,
-                loss,
-                learning_rate: learning_rate.unwrap_or(0.01),
-                schedule: sched,
-                l2: l2.unwrap_or(0.0),
-                min_weight: spec.min_periods_or_default(),
-                // Finite by default: see SgdCfg::clip_gradient.
-                clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
-                standardize: *standardize,
-                constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
-                strict_binary: *strict_binary,
-            };
-            Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
-        }
+        ModelKind::Sgd { .. } => sgd_model(spec, decay),
         ModelKind::Pa {
             mode,
             c,
@@ -1269,7 +1159,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
 
 mod model_cfgs;
 pub use model_cfgs::{
-    audit_cfg, bocpd_cfg, corrchange_cfg, deco_block_names, deco_cfg, hmm_cfg, rcov_cfg,
+    audit_cfg, bocpd_cfg, corrchange_cfg, deco_block_names, deco_cfg, hmm_cfg, huber_model,
+    quantile_model, rcov_cfg, sgd_model,
 };
 
 /// One grid combo: the rendered label plus the machine values it encodes, so

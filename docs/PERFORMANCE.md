@@ -132,12 +132,13 @@ Where a number is not what you expected, find what you see here:
 | an eager `fit_predict` above its output | a spec of many groups keeps every run's buffers until its streams are done, about its output again; a spec of one group or none holds its output and two runs | a smaller frame, or the streaming path, whose peak is a chunk's | §40 |
 | memory that jumps with a filter | a filter before the bank makes Polars hold several blocks of each file per thread | a filter after the bank, or weight 0 on the rows to skip | §11 |
 | one core busy | one task per spec and group per chunk; within one, the rows go one at a time | more groups or specs, `POLARS_ONLINE_MAX_THREADS`, `shards` for a wide `marginal`, and `gram_threads` for a wide `ewridge` or `ew_cov` | §12, §25, §31, §37 |
+| a query slower than the eager bank at many groups | the query reads its input as the batches a streaming source hands over, and the same bank code then takes longer to group, run and assemble them: on 1M rows of a five-feature `ewridge`, all threads, 1.2.0's build, `lf.online.fit_predict(...).collect()` ran 262 ns a row at 10,000 groups against `ModelBank.fit_predict(df)`'s 142, 90 against 65 at 1,000 groups and 208 against 200 at one stream | `ModelBank.fit_predict` on a frame that fits in memory; the query where it does not | |
 | a window's memory | its ring of snapshots, capped per ring | `snapshot_every`, `max_rows_between_snapshots`, `window_budget` | §16 |
 | a wide `marginal` | every pair of every target | `cross_lags`, `bins`, `feature_moments="shared"`, `shards` | §22–§25, §27 |
 | `bocpd` slowing as a stream runs | the run lengths it keeps | `max_run`, `prune_below` | §15 |
 | a window operator | one queue per kernel, the same work a row whatever the window's length; memory about one window of rows | operators with one direction, half-life, window and `closed` share a kernel | §33, §35 |
 | a model whose target is a window expression | the bank's own window core, at 1.5 to 1.6 times the column form's time and less memory | the column form, `with_windows(..., like=spec)` | §34 |
-| scoring against learning | `predict` skips the update: `ewridge` scores 1.8 times as fast as it learns at k=5, 2.9 at k=20 | | §9 |
+| scoring against learning | `predict` skips the update: `ewridge` scores 1.8 times as fast as it learns at k=5, 2.8 at k=20 | | §30 |
 
 ### Words this document uses
 
@@ -1988,8 +1989,15 @@ code layout alone.
 - **A spec of many groups still peaks at about twice its output**, the
   last row of the table. Copying its runs as they end would mean writing
   one output column from several threads, at rows that interleave.
-- `predict` keeps one buffer a stream for the whole chunk and copies it
-  at the end, so a wide eager `predict` also holds its output twice.
+- `predict` copies the task's features into rows for the whole chunk,
+  `n·k·8` bytes, beside one output buffer a stream. A wide eager `predict`
+  therefore peaks at about the width of its input, not of its output: an
+  `sgd` of 1,000 features over 20,000 rows (a 153 MiB frame) peaked 164 MiB
+  over the baseline under `predict`, against 14 MiB under `fit_predict` on
+  the same frame (a child interpreter each, sampled every 2 ms, 2026-10-23;
+  `rss.predict_wide` in `budgets.toml` holds it). Scoring a wide frame in
+  chunks bounds the copy by the chunk: `df.online.predict(bank,
+  chunk_size=2_000)` peaked 23 MiB on the same frame.
 
 #### Across pool sizes
 
@@ -3781,7 +3789,8 @@ best of 2 or 3. Ratios are the part to read.
 #### `bocpd`: `prune_below` is what makes it finite
 
 **The run vector grows by one entry every row, so without a bound on it the
-cost of a stream is quadratic.** The cost of a row is `O(runs · d²)`. That
+cost of a stream is quadratic.** The cost of a row is `O(runs · d)` under
+the diagonal emission and `O(runs · d³)` under the full one. That
 is not a subtlety; it is the whole performance profile:
 
 | `prune_below` | `max_run` | rows | rows/s |

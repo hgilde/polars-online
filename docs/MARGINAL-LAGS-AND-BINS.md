@@ -171,7 +171,10 @@ keeps it so at a half-life of twenty.
 
 Per target, `L` lagged target autocovariances (shared). Per pair, `L`
 feature autocovariances and `2L` cross-covariances (both orientations).
-So `3L·p·T + L·T` doubles beside today's `5·p·T` — at `p = 10,000`,
+So `3L·p·T + L·T` doubles beside the `4·p·T + 6·T` the pairs keep without
+lags (a mean and its rounding remainder, a variance and a co-moment per
+pair; two weights, a mean and its remainder, a variance and a row count per
+target; a window's runs add `2·p·T + 2·T`) — at `p = 10,000`,
 `T = 3`, `L = 6` that is 540k doubles, under 5 MB. With `C` cross lags
 (E70) the cross-covariances are `2C` per pair, so `(L + 2C)·p·T + L·T`. The ring is
 `max(lags)` rows of the `p + T` values per group: `50 × 10,003` doubles,

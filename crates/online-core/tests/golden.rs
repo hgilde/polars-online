@@ -135,6 +135,8 @@ fn robust_cfg(loss: RobustLoss, standardize: bool) -> RobustCfg {
         max_rows_between_solves: 1,
         solve_share: None,
         quantile_eps: 1e-3,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     }
 }
 
@@ -373,6 +375,8 @@ fn sgd_golden() {
         standardize: true,
         strict_binary: false,
         min_weight: 3.0,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     })
     .unwrap();
     check("sgd", &signature(&mut m, 0), GOLDEN_SGD);
@@ -395,6 +399,8 @@ fn sgd_squared_golden() {
         standardize: false,
         strict_binary: false,
         min_weight: 3.0,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     })
     .unwrap();
     check("sgd_squared", &signature(&mut m, 0), GOLDEN_SGD_SQUARED);
@@ -441,6 +447,8 @@ fn sgd_simplex_golden() {
         standardize: false,
         strict_binary: false,
         min_weight: 3.0,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     })
     .unwrap();
     check("sgd_simplex", &signature(&mut m, 0), GOLDEN_SGD_SIMPLEX);

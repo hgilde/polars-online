@@ -7,6 +7,65 @@
 use super::*;
 use crate::{OnlineModel, SplitMix64, StateError};
 
+/// Counters read from a file whose pairs are `pairs`, in their order: the
+/// path a saved state takes, which flags pairs out of order or repeated.
+fn unordered(pairs: Vec<(u64, u64)>) -> Counts {
+    let c: Counts =
+        rmp_serde::from_slice(&rmp_serde::to_vec(&(pairs, 0u64, false)).unwrap()).unwrap();
+    assert!(c.unordered);
+    c
+}
+
+/// The counters are a hash map (review 2026-10-23, F-2), written as the
+/// sorted `Vec<(u64, u64)>` they were: the same bytes in the compact and the
+/// named encodings, read back to the same counters.
+#[test]
+fn the_counters_keep_the_bytes_of_a_sorted_vec() {
+    #[derive(Serialize)]
+    struct AsVec {
+        counts: Vec<(u64, u64)>,
+        decrements: u64,
+        over: bool,
+    }
+    let mut r = SplitMix64::new(5);
+    for (cap, rows) in [(64, 40), (64, 5_000), (DISTINCT_CAP, 3_000)] {
+        let mut m = Audit::new(AuditCfg {
+            distinct_cap: cap,
+            ..cfg(1)
+        })
+        .unwrap();
+        for i in 0..rows {
+            m.step(&[(r.uniform() * 100.0).round() - 50.0], &[], i as f64, 1.0);
+        }
+        let c = &m.columns[0].counts;
+        assert!(c.counts.len() > 10, "{}", c.counts.len());
+        let v = AsVec {
+            counts: {
+                let mut v: Vec<(u64, u64)> = c.counts.iter().map(|(&k, &n)| (k, n)).collect();
+                v.sort_unstable();
+                v
+            },
+            decrements: c.decrements,
+            over: c.over,
+        };
+        assert_eq!(
+            rmp_serde::to_vec(c).unwrap(),
+            rmp_serde::to_vec(&v).unwrap()
+        );
+        assert_eq!(
+            rmp_serde::to_vec_named(c).unwrap(),
+            rmp_serde::to_vec_named(&v).unwrap()
+        );
+        for bytes in [
+            rmp_serde::to_vec(c).unwrap(),
+            rmp_serde::to_vec_named(c).unwrap(),
+        ] {
+            let back: Counts = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(&back, c);
+        }
+    }
+}
+
 fn cfg(k: usize) -> AuditCfg {
     AuditCfg {
         n_columns: k,
@@ -450,7 +509,7 @@ fn the_counts_are_exact_to_the_cap_and_bounded_past_it() {
     assert_eq!(c.top_value, -999.0);
     let real = truth[&key(-999.0)];
     assert!(c.top_count <= real && real - c.top_count <= d);
-    for &(k, est) in &m.columns[0].counts.counts {
+    for (&k, &est) in &m.columns[0].counts.counts {
         let t = truth[&k];
         assert!(est <= t && t - est <= d, "{k}: {est} of {t}, error {d}");
     }
@@ -820,7 +879,7 @@ fn a_merge_past_the_cap_keeps_the_bound() {
     all.merge(&parts[2]).unwrap();
     let d = all.column(0).count_error;
     assert!(d <= 12_000 / 9, "{d}");
-    for &(k, est) in &all.columns[0].counts.counts {
+    for (&k, &est) in &all.columns[0].counts.counts {
         let t = truth[&k];
         assert!(est <= t && t - est <= d, "{est} of {t}, error {d}");
     }
@@ -854,7 +913,7 @@ fn a_state_of_the_wrong_shape_is_refused() {
         |a| {
             a.pairs.pop();
         },
-        |a| a.columns[0].counts.counts = vec![(5, 1), (3, 1)],
+        |a| a.columns[0].counts = unordered(vec![(5, 1), (3, 1)]),
         |a| a.columns[1].digest.buffer = vec![0.0; DIGEST_BUFFER],
         |a| a.columns[2].prev = Some(f64::INFINITY),
         |a| a.n_eff = f64::NAN,
@@ -886,16 +945,18 @@ fn a_state_of_the_wrong_shape_is_refused() {
         |a| a.columns[2].min = -2e100,
         // Six rows after a usable one, three equal to it: three changes.
         |a| a.columns[0].min_change_count = 6,
-        |a| a.columns[0].counts.counts = vec![(key(1.0), 2), (key(1.0), 3)],
-        |a| a.columns[0].counts.counts.push((key(9.0), 0)),
+        |a| a.columns[0].counts = unordered(vec![(key(1.0), 2), (key(1.0), 3)]),
+        |a| {
+            a.columns[0].counts.counts.insert(key(9.0), 0);
+        },
         |a| {
             a.columns[0]
                 .counts
                 .counts
-                .push((f64::INFINITY.to_bits(), 1))
+                .insert(f64::INFINITY.to_bits(), 1);
         },
         // Every 0 is counted at the key of 0, never at -0's.
-        |a| a.columns[0].counts.counts = vec![((-0.0f64).to_bits(), 1)],
+        |a| a.columns[0].counts.counts = [((-0.0f64).to_bits(), 1)].into_iter().collect(),
         |a| a.columns[0].digest.centroids = vec![(1.0, 0.5)],
         |a| a.columns[0].digest.centroids = vec![(f64::INFINITY, 1.0)],
     ];
@@ -1097,9 +1158,10 @@ fn counters_merge_as_misra_gries_summaries_do() {
     assert_eq!(
         a.columns[0].counts,
         Counts {
-            counts: exact,
+            counts: exact.into_iter().collect(),
             decrements: 0,
-            over: false
+            over: false,
+            unordered: false,
         }
     );
     assert_eq!(a.column(0).distinct, Some(3));
@@ -1110,9 +1172,10 @@ fn counters_merge_as_misra_gries_summaries_do() {
     assert_eq!(
         a.columns[0].counts,
         Counts {
-            counts: vec![(key(1.0), 1), (key(2.0), 1)],
+            counts: [(key(1.0), 1), (key(2.0), 1)].into_iter().collect(),
             decrements: 4,
-            over: true
+            over: true,
+            unordered: false,
         }
     );
     let c = a.column(0);

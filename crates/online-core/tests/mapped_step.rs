@@ -387,6 +387,8 @@ fn sgd_past_the_switch_steps_and_projects_as_written() {
                 constraint: constraint.clone(),
                 standardize: true,
                 strict_binary: false,
+                huber_scale: online_core::HuberScale::Rms,
+                huber_scale_decay: None,
             })
             .unwrap();
             let what = format!("sgd, intercept {fit_intercept}, {name}");

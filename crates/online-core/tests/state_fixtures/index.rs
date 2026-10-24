@@ -2,7 +2,7 @@
 // The frozen state fixtures, one file a case of tests/cases/mod.rs.
 
 /// The schema every fixture here was written at.
-pub const SCHEMA: u32 = 62;
+pub const SCHEMA: u32 = 63;
 
 pub mod ew_cov_accumulator {
     include!("ew_cov_accumulator.rs");
@@ -37,6 +37,9 @@ pub mod kalman_gap {
 pub mod huber {
     include!("huber.rs");
 }
+pub mod huber_mad {
+    include!("huber_mad.rs");
+}
 pub mod quantile {
     include!("quantile.rs");
 }
@@ -57,6 +60,9 @@ pub mod sgd_warming {
 }
 pub mod sgd_huber {
     include!("sgd_huber.rs");
+}
+pub mod sgd_huber_mad {
+    include!("sgd_huber_mad.rs");
 }
 pub mod sgd_eps {
     include!("sgd_eps.rs");
@@ -144,6 +150,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &kalman::FIXTURE,
     &kalman_gap::FIXTURE,
     &huber::FIXTURE,
+    &huber_mad::FIXTURE,
     &quantile::FIXTURE,
     &ftrl::FIXTURE,
     &ew_cov::FIXTURE,
@@ -151,6 +158,7 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &sgd::FIXTURE,
     &sgd_warming::FIXTURE,
     &sgd_huber::FIXTURE,
+    &sgd_huber_mad::FIXTURE,
     &sgd_eps::FIXTURE,
     &sgd_logistic::FIXTURE,
     &pa::FIXTURE,

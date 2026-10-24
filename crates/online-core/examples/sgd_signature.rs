@@ -65,6 +65,8 @@ fn main() {
                             strict_binary: false,
                             clip_gradient: 5.0,
                             constraint: None,
+                            huber_scale: online_core::HuberScale::Rms,
+                            huber_scale_decay: None,
                         };
                         let mut model = Sgd::new(cfg).unwrap();
                         let mut acc = 0u64;

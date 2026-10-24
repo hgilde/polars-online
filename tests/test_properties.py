@@ -151,13 +151,18 @@ def streams(
     sign: float | None = None,
     offset: float = 0.0,
     columns: tuple[str, ...] = ("x0", "x1", "y0"),
+    min_groups=1,
 ):
     """An adversarial but *valid* stream: the clock is non-decreasing within
     each group (mis-ordered input is its own test, T-E4). With a ``sign``,
-    ``columns`` sit on its side of zero at ``offset`` (`SIGNS`)."""
-    n = draw(st.integers(min_value=min_rows, max_value=max_rows))
-    n_groups = draw(st.integers(min_value=1, max_value=max_groups))
+    ``columns`` sit on its side of zero at ``offset`` (`SIGNS`). Its first
+    ``min_groups`` rows are each of a group of their own, so that many
+    groups always appear: generated, not filtered after (review round 9,
+    J-6: `assume(len(keys) > 1)` dropped a third of the streams)."""
+    n = draw(st.integers(min_value=max(min_rows, min_groups), max_value=max_rows))
+    n_groups = draw(st.integers(min_value=min_groups, max_value=max(max_groups, min_groups)))
     groups = draw(st.lists(st.integers(0, n_groups - 1), min_size=n, max_size=n))
+    groups[:min_groups] = range(min_groups)
 
     # per-group non-decreasing clock, with duplicates and long gaps allowed
     clocks, last = [], dict.fromkeys(range(n_groups), 0.0)
@@ -423,7 +428,7 @@ class TestUniversalProperties:
         def prop(df):
             df = binarize(df, model)
             keys = df["g"].unique().to_list()
-            assume(len(keys) > 1)
+            assert len(keys) > 1, keys
             spec = build(model, extra)
             both = po.ModelBank([spec]).fit_predict(df)
             for key in keys:
@@ -432,7 +437,7 @@ class TestUniversalProperties:
                 b = unnested(solo)
                 assert a.equals(b, null_equal=True), f"group {key} was affected by the others"
 
-        _given(sign, prop, df=_streams(model, sign, max_groups=3))
+        _given(sign, prop, df=_streams(model, sign, min_groups=2, max_groups=3))
 
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
     def test_prediction_never_depends_on_the_current_target(self, model, extra, sign):

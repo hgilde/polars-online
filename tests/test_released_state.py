@@ -19,8 +19,9 @@ its own spec and fits the second half, beside a bank of its own that fitted
 both halves, and every float, the closed groups, the coefficients and
 ``marginal``'s table agree. Until 1.0.0 is released and listed, that test runs
 on the states this build writes itself, so the harness exists, and has run,
-before the first release that must honour it. A numeric change a CHANGELOG
-declares moves it as it moves the release comparison.
+before the first release that must honour it. Every float goes on to the
+bit, as the release comparison holds its outputs; a spec a CHANGELOG entry
+moved since the release is named in ``DECLARED``, with the entry.
 
 Until 2026-09-28 the loading test held 0.11.1's files (schema 17) bit for
 bit and 0.10.0's (schema 14) within 2.2e-13; the pre-1.0 waiver (the user,
@@ -68,6 +69,11 @@ REFUSED = [v for v in RELEASES if _major(v) < 1]
 #: the refusal (`audit`, task 223 (b), after 0.13.0).
 INTRODUCED = {"audit": "1.0.0"}
 
+#: The workload's specs no listed release can build: a parameter added
+#: since the newest (task 271's `huber_scale`). On the release day that
+#: ships it, its specs leave this set, as that release builds them.
+UNRELEASED = {"huber_mad", "huber_rms", "sgd_huber_mad"}
+
 
 def _version(v: str) -> tuple[int, ...]:
     return tuple(int(p) for p in v.split("."))
@@ -78,9 +84,33 @@ def _buildable(version: str) -> list[str]:
     return [
         name
         for name, builder, *_ in probe.WORKLOAD
-        if version == THIS_BUILD or _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
+        if version == THIS_BUILD
+        or (
+            name not in UNRELEASED
+            and _version(version) >= _version(INTRODUCED.get(builder, "0.0.0"))
+        )
     ]
 
+
+#: The specs whose numbers a CHANGELOG entry declares moved since a release,
+#: ``(spec, the newest release whose files it moves) -> the entry``. A file
+#: of that release or an older one goes on from its own numbers, not this
+#: build's, so its continuation is held to loading and running alone. Every
+#: other spec of every 1.x release goes on to the bit: measured on
+#: 2026-10-23, 68 specs of 1.0.0, 1.0.1, 1.1.0 and 1.2.0, every gap 0 but
+#: these.
+DECLARED: dict[tuple[str, str], str] = {
+    ("ridge_blocked", "1.0.1"): "1.1.0, Changed: a blocked `ewridge`'s target cross-moments "
+    "move in their last bits (5.2e-16 here)",
+    # Task 271 (the next release's Changed): `huber` and `sgd(loss="huber")`
+    # scale their cut by the residuals' MAD by default, where every release
+    # through 1.2.0 used their plain RMS; a file of one goes on from the old
+    # scale's fit (3e-2 to 4e-1 here).
+    **{
+        (name, "1.2.0"): "the next release, Changed: the Huber scale is the MAD by default"
+        for name in ("huber", "full_huber", "sgd_huber")
+    },
+}
 
 #: The releases from 1.0, whose files load and go on; and this build, whose
 #: own files stand in until 1.0.0 is listed and run beside them after.
@@ -163,18 +193,25 @@ def loaded(request, tmp_path_factory):
 def test_every_spec_was_saved_by_the_release_at_an_older_schema(refused):
     version, manifest, _ = refused
     assert manifest["version"] == version
-    assert manifest["saved"] == _buildable(version)
-    newer = {name for name, *_ in probe.WORKLOAD} - set(manifest["saved"])
-    assert set(manifest["refused"]) == newer
+    # The specs that reach the paths the first workload did not are written
+    # against the 1.0 API: a release before it may refuse one by a parameter
+    # it lacks (review round 9, J-2). The first workload's are held as before.
+    reach = {name for name, *_ in probe.REACH}
+    assert [n for n in manifest["saved"] if n not in reach] == [
+        n for n in _buildable(version) if n not in reach
+    ]
+    newer = {name for name, *_ in probe.WORKLOAD} - set(manifest["saved"]) - reach
+    assert set(manifest["refused"]) - reach == newer
     for name, why in manifest["refused"].items():
-        assert why.startswith("AttributeError") and name in why, (name, why)
+        if name not in reach | UNRELEASED:
+            assert why.startswith("AttributeError") and name in why, (name, why)
     # An older schema: the refusal below is by the version, not the layout.
     assert manifest["schema"] < po.schema_version()
 
 
 def test_a_pre_1_0_state_is_refused_by_its_version(refused):
     version, manifest, states = refused
-    built = {name: getattr(po.spec, b)(name, **kw) for name, b, kw, _ in probe.WORKLOAD}
+    built = {name: probe.build(b, name, kw) for name, b, kw, _ in probe.WORKLOAD}
     for name, _, _, reads in probe.WORKLOAD:
         if name not in manifest["saved"]:
             continue
@@ -248,13 +285,15 @@ def _tables(bank: po.ModelBank, name: str) -> list[pl.DataFrame]:
 
 def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
     version, manifest, states = loaded
-    assert manifest["refused"] == {}
-    assert manifest["saved"] == [name for name, *_ in probe.WORKLOAD]
+    assert manifest["saved"] == _buildable(version)
+    assert set(manifest["refused"]) == {n for n, *_ in probe.WORKLOAD} - set(manifest["saved"])
     df = probe.stream()
     first, second = df.head(probe.HALF), df.slice(probe.HALF)
-    built = {name: getattr(po.spec, b)(name, **kw) for name, b, kw, _ in probe.WORKLOAD}
+    built = {name: probe.build(b, name, kw) for name, b, kw, _ in probe.WORKLOAD}
     gaps = {}
     for name, _, _, reads in probe.WORKLOAD:
+        if name not in manifest["saved"]:
+            continue
         specs = [built[r] for r in reads] + [built[name]]
         file_bank = po.ModelBank.load(states / f"{name}.state", specs=specs)
         own = po.ModelBank(specs)
@@ -267,10 +306,22 @@ def test_a_released_state_loads_and_goes_on_as_this_builds_own(loaded):
             if got.height:
                 gap = max(gap, _worst_gap(got, want))
         gaps[name] = gap
-    # This build's own files go on to the bit; a release's within what the
-    # release comparison allows (a declared numeric change moves both).
-    bound = 0.0 if version == THIS_BUILD else 1e-12
-    assert max(gaps.values()) <= bound, {k: f"{v:.1e}" for k, v in gaps.items() if v > bound}
+    # Every file goes on to the bit, as the release comparison holds the
+    # outputs (review round 9, J-5: a bound of 1e-12 was described as the
+    # comparison's, which allows nothing). A spec a CHANGELOG entry moved
+    # since the release is named in `DECLARED`, and held to having loaded
+    # and run.
+    moved = set()
+    if version != THIS_BUILD:
+        moved = {n for (n, since), _ in DECLARED.items() if _version(version) <= _version(since)}
+    wrong = {k: f"{v:.1e}" for k, v in gaps.items() if v > 0.0 and k not in moved}
+    assert not wrong, wrong
+
+
+def test_every_declared_move_names_a_spec_and_a_release():
+    names = {name for name, *_ in probe.WORKLOAD}
+    for (name, since), why in DECLARED.items():
+        assert name in names and since in RELEASES and why, (name, since, why)
 
 
 def test_the_policy_page_lists_every_release_the_test_holds():

@@ -388,7 +388,11 @@ CHILD = textwrap.dedent(
 
     proc = psutil.Process()
     case, src, dst, spec = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
-    df = None if case.startswith("streaming") else pl.read_parquet(src)
+    df = None if case.startswith(("streaming", "collect")) else pl.read_parquet(src)
+    if case.startswith("predict"):
+        # Fitted before the baseline: the run is the scoring alone.
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
     gc.collect()
     if sys.platform.startswith("linux"):
         import ctypes
@@ -407,6 +411,14 @@ CHILD = textwrap.dedent(
     if case.startswith("streaming"):
         pl.scan_parquet(src).online.fit_predict([spec]).sink_parquet(dst)
         rows = pl.scan_parquet(dst).select(pl.len()).collect().item()
+    elif case.startswith("collect"):
+        # The negative control: the source read whole inside the run, and
+        # then handed to the same plan.
+        pl.read_parquet(src).lazy().online.fit_predict([spec]).sink_parquet(dst)
+        rows = pl.scan_parquet(dst).select(pl.len()).collect().item()
+    elif case.startswith("predict"):
+        out = bank.predict(df)
+        rows = out.height
     else:
         out = po.ModelBank([spec]).fit_predict(df)
         rows = out.height
@@ -438,8 +450,26 @@ def _spec(case: str) -> tuple[dict, pl.DataFrame]:
         spec = po.spec.ew_cov(
             "m", features=[f"x{j}" for j in range(20)], clock="t", half_life=1000.0, gap_cap=100.0
         )
+    elif case == "predict_wide":
+        df = _frame(20_000, 1_000, 1)
+        spec = po.spec.sgd(
+            "m", targets=["y0"], features=[f"x{j}" for j in range(1_000)], clock="t",
+            half_life=1000.0, gap_cap=100.0, learning_rate=0.001,
+        )  # fmt: skip
+    elif case == "ewridge_window":
+        df = _frame(200_000, 20, 1)
+        spec = po.spec.ewridge(
+            "m", targets=["y0"], features=[f"x{j}" for j in range(20)], clock="t",
+            half_life=1000.0, gap_cap=100.0, window_size=20_000.0,
+        )  # fmt: skip
+    elif case == "bocpd_runs":
+        df = _frame(50_000, 4, 1)
+        spec = po.spec.bocpd(
+            "m", features=[f"x{j}" for j in range(4)], clock="t", gap_cap=100.0,
+            prune_below=1e-6, max_run=200,
+        )  # fmt: skip
     else:
-        df = _frame(1_000_000, 5, 1)
+        df = _frame(STREAMED_ROWS, 5, 1)
         spec = po.spec.ewridge(
             "m", targets=["y0"], features=[f"x{j}" for j in range(5)], clock="t",
             half_life=1000.0, gap_cap=100.0,
@@ -447,17 +477,49 @@ def _spec(case: str) -> tuple[dict, pl.DataFrame]:
     return spec, df
 
 
+#: Rows of the streamed run: five times what a budget near 200 MiB could
+#: hold whole. The frame is 267 MiB in memory and 251 MiB as parquet.
+STREAMED_ROWS = 5_000_000
+
 #: The standard runs: a ten-target regression over 200,000 rows (the shape
-#: whose dense `coef` cost +3.9 GiB), 230 moments a row over 200,000, and a
-#: million rows streamed from a parquet scan to a parquet sink, with Polars
-#: reading one row group ahead on four threads. Polars' default read-ahead
-#: grows with a file this size: a scan to a sink with no model peaked at 227
-#: MiB for a million rows and 473 for three million, and at 95 and 110 with
-#: the prefetch at one (2026-10-13), so the bounded run measures this
-#: library, about 50-65 MiB of it.
-RSS_CASES = ("ewridge_10_targets", "ew_cov_wide", "streaming_bounded")
-#: Each case's environment beyond the child's own.
-RSS_ENV = {"streaming_bounded": {"POLARS_ROW_GROUP_PREFETCH_SIZE": "1", "POLARS_MAX_THREADS": "4"}}
+#: whose dense `coef` cost +3.9 GiB), 230 moments a row over 200,000, an eager
+#: `predict` of 1,000 features over 20,000 rows (it copies the task's
+#: features into rows, `n * k * 8` bytes), a windowed `ewridge` (its ring of
+#: snapshots), `bocpd` holding up to 200 runs, and five million rows streamed
+#: from a parquet scan to a parquet sink.
+#:
+#: The streamed run is what holds the plan to a bounded peak, so its input is
+#: larger than any budget it could pass whole (review round 9, J-1: at a
+#: million rows, 53 MiB, the plan fed a frame collected first peaked at 185.8
+#: MiB, under the streaming run's own 192.8 and inside the budget). It rules
+#: out a source read whole, a read-ahead without limit and chunks kept
+#: instead of yielded: `collect_then_plan`, the same plan on the frame read
+#: whole inside the run, must exceed the streamed run's budget by more than
+#: its tolerance (`test_the_peak_memory_of_the_standard_runs_within_its_budget`).
+#: Polars reads one row group ahead on four threads, and the allocator gives
+#: back freed pages at once, so the peak is the live memory: on 2026-10-23
+#: (macOS, load 21-23) 131 / 157 / 163 MiB streamed at 1M / 3M / 5M rows,
+#: against 148 / 265 / 383 collected first. With the allocator's default page
+#: retention the streamed peak grows with the file, 208 / 330 / 340 MiB, and
+#: at a million rows the two could not be told apart (208 against 207).
+RSS_CASES = (
+    "ewridge_10_targets",
+    "ew_cov_wide",
+    "predict_wide",
+    "ewridge_window",
+    "bocpd_runs",
+    "streaming_5m",
+)
+#: Each case's environment beyond the child's own: the streamed run's and its
+#: control's. `_RJEM_MALLOC_CONF` is Polars' jemalloc on Linux and macOS, and
+#: `MIMALLOC_PURGE_DELAY` its mimalloc on Windows.
+STREAMED_ENV = {
+    "POLARS_ROW_GROUP_PREFETCH_SIZE": "1",
+    "POLARS_MAX_THREADS": "4",
+    "_RJEM_MALLOC_CONF": "dirty_decay_ms:0,muzzy_decay_ms:0",
+    "MIMALLOC_PURGE_DELAY": "0",
+}
+RSS_ENV = {"streaming_5m": STREAMED_ENV, "collect_then_plan": STREAMED_ENV}
 
 
 def _floor_python() -> tuple[int, int]:
@@ -473,7 +535,22 @@ def _rss_held_here() -> bool:
     return os.environ.get("CI") == "true" and sys.version_info[:2] == _floor_python()
 
 
-@pytest.mark.extended(reason="memory: three child interpreters, up to a million rows each")
+def _peak(case: str, spec: dict, src: Path, dst: Path, rows: int) -> float:
+    """The peak over the baseline of ``case`` in a child interpreter, MiB."""
+    r = subprocess.run(
+        [sys.executable, "-c", CHILD, case, str(src), str(dst), json.dumps(spec)],
+        capture_output=True, text=True, encoding="utf-8",
+        env=child.env(**RSS_ENV.get(case, {})), timeout=600,
+    )  # fmt: skip
+    assert r.returncode == 0, r.stderr[-3000:]
+    got = json.loads(r.stdout.strip().splitlines()[-1])
+    # The run happened, over every row, and took memory to do it.
+    assert got["rows"] == rows, (case, got)
+    assert got["mib"] > 1.0, (case, got)
+    return got["mib"]
+
+
+@pytest.mark.extended(reason="memory: seven child interpreters, up to five million rows each")
 @pytest.mark.serial
 @pytest.mark.pins
 def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
@@ -482,17 +559,18 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
         spec, df = _spec(case)
         src, dst = tmp_path / f"{case}.parquet", tmp_path / f"{case}.out.parquet"
         df.write_parquet(src)
-        r = subprocess.run(
-            [sys.executable, "-c", CHILD, case, str(src), str(dst), json.dumps(spec)],
-            capture_output=True, text=True, encoding="utf-8",
-            env=child.env(**RSS_ENV.get(case, {})), timeout=600,
-        )  # fmt: skip
-        assert r.returncode == 0, r.stderr[-3000:]
-        got = json.loads(r.stdout.strip().splitlines()[-1])
-        # The run happened, over every row, and took memory to do it.
-        assert got["rows"] == df.height, (case, got)
-        assert got["mib"] > 1.0, (case, got)
-        measured[f"rss.{case}.{PLATFORM}"] = got["mib"]
+        measured[f"rss.{case}.{PLATFORM}"] = _peak(case, spec, src, dst, df.height)
+        if case == "streaming_5m":
+            # The negative control: the same rows read whole and then planned
+            # must fail the streamed run's budget, or the budget cannot see
+            # the regression it is for.
+            control = _peak("collect_then_plan", spec, src, dst, df.height)
+            doc = budgets.load()
+            tolerance = doc["meta"]["tolerance"]["rss"]
+            budget = doc["rss"].get("streaming_5m", {}).get(PLATFORM, {}).get("budget", 0.0)
+            ceiling = (1 + tolerance) * max(measured[f"rss.{case}.{PLATFORM}"], budget)
+            assert control > ceiling, (control, ceiling, measured)
+        src.unlink()
     budgeted = {k for k in budgets.entries(budgets.load()) if k.startswith("rss.")}
     stale = sorted(k for k in budgeted if k.split(".")[1] not in RSS_CASES)
     assert not stale, f"budgets for runs this test no longer makes: {stale}"
