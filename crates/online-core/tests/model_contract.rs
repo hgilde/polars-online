@@ -384,6 +384,8 @@ fn robust_cfg(loss: RobustLoss) -> RobustCfg {
         max_rows_between_solves: 1,
         solve_share: None,
         quantile_eps: 1e-3,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     }
 }
 
@@ -439,6 +441,8 @@ fn sgd_cfg() -> SgdCfg {
         standardize: false,
         strict_binary: false,
         min_weight: 3.0,
+        huber_scale: online_core::HuberScale::Rms,
+        huber_scale_decay: None,
     }
 }
 

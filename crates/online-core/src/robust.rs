@@ -124,7 +124,7 @@ use std::sync::OnceLock;
 use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::since::Since;
 use crate::solve::{QuadWork, dot_aug};
-use crate::{Decay, EwCov, SpdFactor};
+use crate::{Decay, EwCov, EwQuantile, SpdFactor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,6 +133,74 @@ pub enum RobustLoss {
     Huber { delta: f64 },
     /// Quantile regression at level `tau`.
     Quantile { tau: f64 },
+}
+
+/// `Φ⁻¹(3/4)`, the third quartile of the standard normal: the median of
+/// `|Z|` for `Z` standard normal, so `median|e| / Φ⁻¹(3/4)` is the normal's
+/// standard deviation for normal errors, the MAD's consistency constant.
+/// A literal, not a libm result (CLAUDE.md, no libm in the state); held to
+/// scipy's `norm.ppf(0.75)` by `tests/test_huber_scale.py`.
+pub const NORMAL_Q3: f64 = 0.674_489_750_196_081_7;
+
+/// The scale a Huber cut is drawn in, per target (the module docs;
+/// docs/PLAN.md task 271).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HuberScale {
+    /// The exponentially weighted median of `|e|` over [`NORMAL_Q3`]: one
+    /// [`EwQuantile`] at 0.5 per target, within its `tanh(1/128)` of the
+    /// exact EW median. Breakdown 50%: an outlier moves the median by one
+    /// row's weight whatever its size.
+    Mad,
+    /// The exponentially weighted root mean square of `e`, `√σ²`. Breakdown
+    /// 0: one wild row sets it.
+    Rms,
+}
+
+impl HuberScale {
+    /// What a configuration written before schema 63, which had no such
+    /// field, was fitted with: the root mean square, the only scale there
+    /// was. A spec's default is [`HuberScale::Mad`]; a state's missing
+    /// field is not a spec left at its default but a fit made under the
+    /// RMS, and it must go on as one, to the bit (CLAUDE.md hard rule 5).
+    pub fn of_a_state_before_63() -> Self {
+        Self::Rms
+    }
+
+    /// The word a spec spells it with.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Mad => "mad",
+            Self::Rms => "rms",
+        }
+    }
+}
+
+/// A target's MAD scale from its sketch of `|e|`: the median over
+/// [`NORMAL_Q3`], once it is finite and above 0. `None` before any
+/// residual, or while at least half the weight is on residuals of exactly
+/// 0: no scale to judge an outlier against (the module docs).
+pub(crate) fn mad_scale(q: &EwQuantile) -> Option<f64> {
+    let s = q.get(0)? / NORMAL_Q3;
+    (s > 0.0 && s.is_finite()).then_some(s)
+}
+
+/// One sketch of `|e|` per target under the MAD, none under the RMS.
+pub(crate) fn mad_sketches(scale: HuberScale, n: usize) -> Vec<EwQuantile> {
+    match scale {
+        HuberScale::Mad => vec![EwQuantile::new(&[0.5]).expect("0.5 is in (0, 1)"); n],
+        HuberScale::Rms => Vec::new(),
+    }
+}
+
+/// Whether a restored state's sketches are the ones its scale keeps: `n`
+/// sketches at the level 0.5 under the MAD, each one a sketch that can be
+/// read and added to, and none under the RMS.
+pub(crate) fn mad_sketches_fit(scale: HuberScale, n: usize, q: &[EwQuantile]) -> bool {
+    match scale {
+        HuberScale::Mad => q.len() == n && q.iter().all(|s| s.levels() == [0.5] && s.has_shape()),
+        HuberScale::Rms => q.is_empty(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,6 +236,18 @@ pub struct RobustCfg {
     /// in an IRLS weight, bounding a weight rather than naming a band (review
     /// 2026-09-12, N9).
     pub quantile_eps: f64,
+    /// The scale the Huber cut is drawn in (the module docs). A state
+    /// written before schema 63 has no such field and was fitted under the
+    /// RMS, so it loads as [`HuberScale::Rms`]
+    /// ([`HuberScale::of_a_state_before_63`]), where a spec's default is
+    /// the MAD. A quantile fit keeps [`HuberScale::Rms`]: its band reads
+    /// the EW root mean square, which this does not change.
+    #[serde(default = "HuberScale::of_a_state_before_63")]
+    pub huber_scale: HuberScale,
+    /// The scale's own memory: `None` ages it on the model's `decay`, as
+    /// before schema 63. Huber only.
+    #[serde(default)]
+    pub huber_scale_decay: Option<Decay>,
 }
 
 /// A target's band system as a solve factorizes it -- `A`, the band Gram
@@ -283,10 +363,22 @@ impl RobustCfg {
                 if delta <= 0.0 || delta.is_nan() {
                     return Err(format!("{kind}: huber_delta must be > 0, got {delta}"));
                 }
+                if let Some(d) = self.huber_scale_decay {
+                    d.check()
+                        .map_err(|e| format!("{kind}: huber_scale_half_life: {e}"))?;
+                }
             }
             RobustLoss::Quantile { tau } => {
                 if !(0.0..=1.0).contains(&tau) || tau == 0.0 || tau == 1.0 {
                     return Err(format!("{kind}: quantile must be in (0, 1), got {tau}"));
+                }
+                // The band is drawn in the residuals' EW root mean square,
+                // on the model's clock: a scale of Huber's is not this
+                // loss's (docs/PLAN.md task 271).
+                if self.huber_scale != HuberScale::Rms || self.huber_scale_decay.is_some() {
+                    return Err(format!(
+                        "{kind}: huber_scale and huber_scale_half_life are for huber"
+                    ));
                 }
             }
         }
@@ -402,6 +494,13 @@ pub struct Robust {
     /// State since schema 45 (docs/PLAN.md task 116).
     #[serde(default)]
     support: Shares,
+    /// Per target, the sketch of `|e|` whose median over [`NORMAL_Q3`] is
+    /// the Huber cut's scale under [`HuberScale::Mad`]: fed the residuals
+    /// and raw weights `sig2` is, and aged on the scale's clock as `wsig`
+    /// is. Empty under the RMS, and in a state written before schema 63
+    /// (docs/PLAN.md task 271).
+    #[serde(default)]
+    mad: Vec<EwQuantile>,
     /// The row's augmented values ([`RowBuf`]). Not state.
     #[serde(skip)]
     zbuf: RowBuf,
@@ -579,6 +678,11 @@ impl Robust {
             systems: BandSystems(vec![None; m]),
             target_min_weight: Vec::new(),
             support: Shares::default(),
+            mad: if matches!(cfg.loss, RobustLoss::Huber { .. }) {
+                mad_sketches(cfg.huber_scale, m)
+            } else {
+                Vec::new()
+            },
             nudge: NudgeScratch::default(),
             cfg,
         })
@@ -622,13 +726,25 @@ impl Robust {
         &self.sig2
     }
 
-    /// Target `j`'s residual scale, the EW std `s = √σ²` of its residuals,
-    /// once it has one: `σ²` finite and above 0. `None` before -- no
-    /// residual yet, or every one so far exactly zero -- where the Huber
-    /// cut has nothing to be drawn in (the module docs; task 177).
+    /// Target `j`'s residual scale, once it has one: under
+    /// [`HuberScale::Mad`] the EW median of `|e|` over [`NORMAL_Q3`]
+    /// ([`mad_scale`]), and otherwise -- the RMS, and every quantile fit --
+    /// the EW std `s = √σ²` of its residuals, `σ²` finite and above 0.
+    /// `None` before -- no residual yet, or every one so far exactly zero
+    /// (under the MAD, half the weight on such residuals) -- where the
+    /// Huber cut has nothing to be drawn in (the module docs; task 177).
     fn residual_scale(&self, j: usize) -> Option<f64> {
+        if let Some(q) = self.mad.get(j) {
+            return mad_scale(q);
+        }
         let s2 = self.sig2[j];
         (s2 > 0.0 && s2.is_finite()).then(|| s2.sqrt())
+    }
+
+    /// Per target, the sketch of `|e|` the MAD scale is read from: empty
+    /// under the RMS.
+    pub fn mad_sketch(&self) -> &[EwQuantile] {
+        &self.mad
     }
 
     /// EW count of observations under the raw row weights (`w_raw`).
@@ -1226,6 +1342,12 @@ impl OnlineModel for Robust {
             self.zbuf = RowBuf(vec![0.0; k]);
         }
         let lam = self.cfg.decay.factor(d_clock);
+        // The scale's own clock (`huber_scale_decay`), the model's unless
+        // given: the same factor, to the bit, where it is not.
+        let lam_scale = self
+            .cfg
+            .huber_scale_decay
+            .map_or(lam, |d| d.factor(d_clock));
         if self.cfg.fit_intercept {
             self.zbuf[0] = 1.0;
             self.zbuf[1..].copy_from_slice(x);
@@ -1285,7 +1407,10 @@ impl OnlineModel for Robust {
             // did a row with no prediction (`min_weight` unmet after a clock
             // gap), so `σ²` -- the scale of every cut -- forgot less across
             // either than across a null (review 2026-09-12, S13; N6).
-            self.wsig[j] *= lam;
+            self.wsig[j] *= lam_scale;
+            if let Some(q) = self.mad.get_mut(j) {
+                q.age(lam_scale);
+            }
             let present = lam * self.wobs[j];
             let rows = lam * self.nobs[j];
             let Some(yj) = y[j] else {
@@ -1409,6 +1534,13 @@ impl OnlineModel for Robust {
                     self.sig2[j] = s2;
                     self.wsig[j] = ws_new;
                 }
+                // The MAD's sketch takes the same residual at the same raw
+                // weight; a weight of 0 or an `|e|` that is not finite adds
+                // nothing (`EwQuantile::add`), so a zero-weight row only
+                // ages it (hard rule 9).
+                if let Some(q) = self.mad.get_mut(j) {
+                    q.add(resid.abs(), weight);
+                }
             }
         }
 
@@ -1496,6 +1628,18 @@ impl OnlineModel for Robust {
                 if !shares_fit {
                     return Err(StateError::Invalid(format!(
                         "{kind}: the data shares have the wrong shape"
+                    )));
+                }
+                // The MAD's sketches, one per target at 0.5 exactly under
+                // it and none otherwise: the next residual indexes a
+                // sketch's buckets by its pointers (docs/PLAN.md task 271).
+                let scale = match m.cfg.loss {
+                    RobustLoss::Huber { .. } => m.cfg.huber_scale,
+                    RobustLoss::Quantile { .. } => HuberScale::Rms,
+                };
+                if !mad_sketches_fit(scale, n, &m.mad) {
+                    return Err(StateError::Invalid(format!(
+                        "{kind}: the residual sketches do not match huber_scale"
                     )));
                 }
                 // No window here: a state written before the runs' flag keeps
@@ -1617,6 +1761,8 @@ mod tests {
             max_rows_between_solves: 1,
             solve_share: None,
             quantile_eps: 1e-3,
+            huber_scale: HuberScale::Rms,
+            huber_scale_decay: None,
         }
     }
 
@@ -4524,3 +4670,7 @@ mod tests {
         assert_eq!(m.cross[0], cross);
     }
 }
+
+#[cfg(test)]
+#[path = "robust/scale_tests.rs"]
+mod scale_tests;

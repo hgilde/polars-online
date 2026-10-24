@@ -5,11 +5,11 @@ use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
     CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
     EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
-    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, KMeans, KMeansCfg,
-    Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg,
-    ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
-    SlotMetrics, State, StateError, WindowShadow,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, HuberScale, KMeans,
+    KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
+    MicroCfg, ModelState, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind,
+    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg,
+    SgdLoss, SlotMetrics, State, StateError, WindowShadow,
 };
 use online_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
 use serde::{Deserialize, Serialize};
@@ -541,6 +541,16 @@ pub(crate) fn init_rule(init: Option<&str>) -> Result<SeedRule, String> {
 /// `coef_max` and `coef_sum`: a scalar bound is broadcast to every feature,
 /// a list is taken as given (its length is checked by the model's config,
 /// which names the offence). `None` when nothing is constrained.
+/// A spec's `huber_scale` word as the model takes it: `"mad"` where none
+/// is given, the default since task 271 (the word was validated with the
+/// spec).
+fn huber_scale_of(word: Option<&str>) -> HuberScale {
+    match word {
+        Some("rms") => HuberScale::Rms,
+        _ => HuberScale::Mad,
+    }
+}
+
 fn constraint(
     k: usize,
     coef_min: &Option<FloatOrList>,
@@ -774,6 +784,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         }
         ModelKind::Huber {
             huber_delta,
+            huber_scale,
+            huber_scale_half_life,
             ridge,
             standardize,
             solve_every,
@@ -798,6 +810,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 quantile_eps: 1e-3,
+                huber_scale: huber_scale_of(huber_scale.as_deref()),
+                huber_scale_decay: huber_scale_half_life
+                    .as_ref()
+                    .map(|h| Decay::Halflife(h.value())),
             };
             let mut m = Robust::new(cfg)?;
             // Each target's own threshold, for its own first solve (S9b).
@@ -827,6 +843,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
                 quantile_eps: quantile_eps.unwrap_or(0.2),
+                // The band is drawn in the EW root mean square, on the
+                // model's clock (task 271 leaves the quantile fit as it was).
+                huber_scale: HuberScale::Rms,
+                huber_scale_decay: None,
             };
             let mut m = Robust::new(cfg)?;
             // Each target's own threshold, for its own first solve (S9b).
@@ -929,6 +949,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::Sgd {
             loss,
             huber_delta,
+            huber_scale,
+            huber_scale_half_life,
             quantile,
             eps,
             learning_rate,
@@ -985,6 +1007,17 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 standardize: *standardize,
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
                 strict_binary: *strict_binary,
+                // `huber`'s scale under the Huber loss; every other loss
+                // reads none, and the spec refuses one beside it.
+                huber_scale: if matches!(loss, SgdLoss::Huber { .. }) {
+                    huber_scale_of(huber_scale.as_deref())
+                } else {
+                    HuberScale::Rms
+                },
+                huber_scale_decay: huber_scale_half_life
+                    .as_ref()
+                    .filter(|_| matches!(loss, SgdLoss::Huber { .. }))
+                    .map(|h| Decay::Halflife(h.value())),
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
         }

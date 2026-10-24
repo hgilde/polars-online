@@ -312,6 +312,29 @@ pub fn num_label(v: f64) -> String {
 /// `v > 0` as a named predicate, so that `!positive(v)` refuses NaN too (a
 /// plain `v <= 0.0` lets it through, and NaN in any of these parameters is
 /// a state that never washes out).
+/// The words a Huber scale takes, the default first (docs/PLAN.md task 271).
+pub const HUBER_SCALES: [&str; 2] = ["mad", "rms"];
+
+/// `huber_scale` one of [`HUBER_SCALES`] and `huber_scale_half_life` above
+/// 0, `"inf"` included (no forgetting), as `trend_half_life` is held.
+fn check_huber_scale(
+    name: &str,
+    scale: Option<&str>,
+    half_life: Option<&Span>,
+) -> Result<(), String> {
+    if let Some(w) = scale
+        && !HUBER_SCALES.contains(&w)
+    {
+        return Err(spec_words_refusal(name, "huber_scale", &HUBER_SCALES, w));
+    }
+    if let Some(h) = half_life.filter(|h| h.value() <= 0.0 || h.value().is_nan()) {
+        return Err(format!(
+            "spec {name:?}: huber_scale_half_life must be > 0 (\"inf\" forgets no residual), got {h}"
+        ));
+    }
+    Ok(())
+}
+
 fn positive(v: f64) -> bool {
     v > 0.0
 }
@@ -859,6 +882,18 @@ pub enum ModelKind {
         /// nothing, which is least squares.
         #[serde(default)]
         huber_delta: Option<Num>,
+        /// The scale the cut is drawn in, per target: `"mad"` (the
+        /// default), the EW median of `|e|` over `Φ⁻¹(3/4)`, or `"rms"`,
+        /// the EW root mean square, which one wild row sets
+        /// ([`online_core::HuberScale`]; docs/PLAN.md task 271). Filled
+        /// where the model is built. Skipped when absent, so a spec written
+        /// before it serializes as it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale: Option<String>,
+        /// The scale's own half-life, in clock units; default the spec's
+        /// `half_life` (or `lam`). `"inf"` forgets no residual.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale_half_life: Option<Span>,
         #[serde(default)]
         ridge: Option<f64>,
         #[serde(default)]
@@ -1007,6 +1042,15 @@ pub enum ModelKind {
         /// (docs/PLAN.md task 202).
         #[serde(default)]
         huber_delta: Option<Num>,
+        /// The scale the Huber cut is drawn in, `huber`'s: `"mad"` (the
+        /// default under `loss = "huber"`) or `"rms"`. Refused under any
+        /// other loss.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale: Option<String>,
+        /// The Huber scale's own half-life, `huber`'s; default the spec's
+        /// `half_life`. Refused under any other loss.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        huber_scale_half_life: Option<Span>,
         #[serde(default)]
         quantile: Option<f64>,
         /// Half-width of the insensitive tube, in units of the target's
@@ -2153,10 +2197,11 @@ pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
         ],
     ),
     ("kalman", &["coef_half_life", "revert_half_life"]),
-    ("huber", &["solve_every"]),
+    ("huber", &["solve_every", "huber_scale_half_life"]),
     ("quantile", &["solve_every"]),
     ("ew_cov", &["pca_every", "window_size", "snapshot_every"]),
     ("holt", &["trend_half_life"]),
+    ("sgd", &["huber_scale_half_life"]),
     ("micro", &["prune_every"]),
     ("ew_class", &["window_size", "snapshot_every"]),
     ("marginal", &["window_size", "snapshot_every"]),
@@ -2421,8 +2466,30 @@ impl Spec {
                 put_list(&mut out, "coef_half_life", coef_half_life.as_ref());
                 put_list(&mut out, "revert_half_life", revert_half_life.as_ref());
             }
-            ModelKind::Huber { solve_every, .. } | ModelKind::Quantile { solve_every, .. } => {
+            ModelKind::Huber {
+                solve_every,
+                huber_scale_half_life,
+                ..
+            } => {
                 put(&mut out, "solve_every", solve_every.as_ref());
+                put(
+                    &mut out,
+                    "huber_scale_half_life",
+                    huber_scale_half_life.as_ref(),
+                );
+            }
+            ModelKind::Quantile { solve_every, .. } => {
+                put(&mut out, "solve_every", solve_every.as_ref());
+            }
+            ModelKind::Sgd {
+                huber_scale_half_life,
+                ..
+            } => {
+                put(
+                    &mut out,
+                    "huber_scale_half_life",
+                    huber_scale_half_life.as_ref(),
+                );
             }
             ModelKind::EwCov {
                 pca_every,
@@ -4285,6 +4352,8 @@ impl Spec {
             ModelKind::Sgd {
                 loss,
                 huber_delta,
+                huber_scale,
+                huber_scale_half_life,
                 quantile,
                 eps,
                 learning_rate,
@@ -4293,6 +4362,11 @@ impl Spec {
                 strict_binary,
                 ..
             } => {
+                check_huber_scale(
+                    &self.name,
+                    huber_scale.as_deref(),
+                    huber_scale_half_life.as_ref(),
+                )?;
                 if let Some(l) = loss {
                     const OK: [&str; 6] = [
                         "squared",
@@ -4341,6 +4415,14 @@ impl Spec {
                 let schedule = schedule.as_deref().unwrap_or("constant");
                 for (key, given, what, owner, chosen) in [
                     ("huber_delta", huber_delta.is_some(), "loss", "huber", loss),
+                    ("huber_scale", huber_scale.is_some(), "loss", "huber", loss),
+                    (
+                        "huber_scale_half_life",
+                        huber_scale_half_life.is_some(),
+                        "loss",
+                        "huber",
+                        loss,
+                    ),
                     ("quantile", quantile.is_some(), "loss", "quantile", loss),
                     ("eps", eps.is_some(), "loss", "epsilon_insensitive", loss),
                     ("strict_binary", *strict_binary, "loss", "logistic", loss),
@@ -4991,6 +5073,8 @@ impl Spec {
             }
             ModelKind::Huber {
                 huber_delta,
+                huber_scale,
+                huber_scale_half_life,
                 ridge,
                 solve_every,
                 ..
@@ -5001,6 +5085,11 @@ impl Spec {
                         self.name, d.0
                     ));
                 }
+                check_huber_scale(
+                    &self.name,
+                    huber_scale.as_deref(),
+                    huber_scale_half_life.as_ref(),
+                )?;
                 check_ridge(&self.name, *ridge)?;
                 check_solve_every(&self.name, solve_every.as_ref())?;
             }
