@@ -529,10 +529,20 @@ def _floor_python() -> tuple[int, int]:
     return int(major), int(minor)
 
 
+#: Set to ``false`` by CI on a leg whose peak is reported but not held: the
+#: second Windows image, `windows-2022`, beside `windows-latest`, which
+#: holds the one ``rss.*.windows`` budget (ci.yml's pytest step says why).
+RSS_HELD_VARIABLE = "POLARS_ONLINE_RSS_HELD"
+
+
 def _rss_held_here() -> bool:
     """Whether this run holds the resident memory to its budget: CI's leg at
-    each OS's floor Python."""
-    return os.environ.get("CI") == "true" and sys.version_info[:2] == _floor_python()
+    each OS's floor Python, on the one image per OS that holds it."""
+    return (
+        os.environ.get("CI") == "true"
+        and sys.version_info[:2] == _floor_python()
+        and os.environ.get(RSS_HELD_VARIABLE, "true") != "false"
+    )
 
 
 def _peak(case: str, spec: dict, src: Path, dst: Path, rows: int) -> float:
@@ -582,25 +592,35 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
     _held("rss", measured, measure=not _rss_held_here())
 
 
-@pytest.mark.parametrize("floor", [True, False])
+@pytest.mark.parametrize(
+    ("floor", "image_held"), [(True, None), (True, "true"), (True, "false"), (False, None)]
+)
 def test_the_resident_memory_is_written_out_only_where_its_budget_is_held(
-    tmp_path, monkeypatch, floor
+    tmp_path, monkeypatch, floor, image_held
 ):
     """Every CI leg wrote ``rss-<platform>.json`` under one name, so
     ``budgets.py apply`` given a 3.14 leg's file would set the floor's
     budgets from peaks up to 7% apart (review 8, E-5). Only the leg that
-    holds the budget writes it."""
+    holds the budget writes it. Of the two Windows images at the floor,
+    `windows-2022` is told it does not (task 273 (a2)): the two read the
+    six runs up to 8% apart on one build, and each failed the budget as
+    one to tighten."""
     module = sys.modules[__name__]
     here = sys.version_info[:2]
     monkeypatch.setattr(module, "_floor_python", lambda: here if floor else (here[0], here[1] + 1))
     monkeypatch.setenv("CI", "true")
+    if image_held is None:
+        monkeypatch.delenv(RSS_HELD_VARIABLE, raising=False)
+    else:
+        monkeypatch.setenv(RSS_HELD_VARIABLE, image_held)
+    held = floor and image_held != "false"
     monkeypatch.setenv("POLARS_ONLINE_BUDGETS_OUT", str(tmp_path))
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     measured = {f"rss.{case}.{PLATFORM}": 1.0 for case in RSS_CASES}
     _held("rss", measured, measure=True)
     written = tmp_path / f"rss-{PLATFORM}.json"
-    assert written.exists() == floor
-    if floor:
+    assert written.exists() == held
+    if held:
         assert json.loads(written.read_text(encoding="utf-8")) == measured
     # The bytes per row are the same number on every leg, written by each.
     _held("memory", {"memory.ewridge.pred_y": 8.125}, measure=True)
