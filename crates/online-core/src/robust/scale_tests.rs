@@ -78,7 +78,8 @@ fn digest(cfg: RobustCfg) -> (u64, Vec<f64>) {
 /// `huber_scale = "rms"` is the scale `huber` drew its cut in before the
 /// MAD was added, to the bit, and so is the quantile band, which reads the
 /// same variance: the digests and picks were taken on the build before task
-/// 271 (`b418fc3`).
+/// 271 (`b418fc3`). To the bit where faer's product kernels fuse, within the
+/// rounding another kernel's products leave everywhere (below).
 ///
 /// The quantile fit's band at `quantile_eps = 0.65`, above the floor
 /// `(k / W)^0.4` at its largest, `(1/3)^0.4 = 0.644` once the band starts
@@ -127,11 +128,79 @@ fn the_rms_scale_and_the_quantile_band_did_not_move() {
             ),
         ),
     ] {
-        assert_eq!(h, digest, "{what}: picks {got:?}");
+        // Everywhere: each pick within what another product kernel's
+        // rounding can move it by. Each row's fit is a solve of order 3 on
+        // the decayed Gram of `(1, x₀, x₁)`, whose condition is near the
+        // stream's design's, 304; a kernel that rounds its products
+        // otherwise (faer's without fused multiply-add, on an x86-64 chip
+        // without FMA) moves the solve by its backward error, `γ₃` of the
+        // Gram, times `κ`, and the row's prediction by that of its size; 64
+        // of it for what 600 rows of reweighting and scale carry forward, the
+        // allowance the library's own rounding guards take. Measured under
+        // SDE posing as Sandy Bridge, the one pick that moved moved by 1 ulp,
+        // 1e-5 of the bound of 1.3e-11 (docs/PLAN.md task 275 (b)).
+        let bound = 64.0 * 3.0 * f64::EPSILON * design_condition();
         for (g, w) in got.iter().zip(picks) {
-            assert_eq!(g.to_bits(), f64::to_bits(w), "{what}: {got:?}");
+            assert!(
+                (g - w).abs() <= bound * w.abs(),
+                "{what}: {g} against {w}, {:e} of the bound",
+                (g - w).abs() / (bound * w.abs())
+            );
+        }
+        // And to the bit where faer's kernels fuse their products, as on
+        // every platform the suite runs on (Apple's, and x86-64 with FMA,
+        // where the CI legs agree with it): there nothing but the scale code
+        // could move a bit.
+        if products_fuse() {
+            assert_eq!(h, digest, "{what}: picks {got:?}");
+            for (g, w) in got.iter().zip(picks) {
+                assert_eq!(g.to_bits(), f64::to_bits(w), "{what}: {got:?}");
+            }
         }
     }
+}
+
+/// Whether faer's product kernels fuse multiply and add on this CPU: every
+/// aarch64, and an x86-64 with FMA. Its kernels without round otherwise,
+/// and are the only path the digests were seen to differ on: the weekly
+/// CPU-paths run's AVX2 and AVX-512 legs agree with Apple's, its Sandy
+/// Bridge leg does not.
+fn products_fuse() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("fma")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        true
+    }
+}
+
+/// The condition number of the digest stream's Gram of `(1, x₀, x₁)`, from
+/// faer's self-adjoint eigensolver (`crate::oracle`): what a solve on it
+/// multiplies its backward error by.
+fn design_condition() -> f64 {
+    let mut g = [0.0; 9];
+    let mut s = 17u64;
+    for i in 0..600 {
+        let x = [1.0, lcg(&mut s), 3.0 + lcg(&mut s)];
+        // The rest of the row's draws, as `digest` takes them.
+        let _ = (i % 17 != 3).then(|| lcg(&mut s));
+        let _ = lcg(&mut s);
+        if i % 23 != 9 {
+            let _ = lcg(&mut s);
+        }
+        for a in 0..3 {
+            for b in 0..3 {
+                g[a * 3 + b] += x[a] * x[b];
+            }
+        }
+    }
+    let (values, _) = crate::oracle::sym_eigen(&g);
+    let (lo, hi) = values.iter().fold((f64::INFINITY, 0.0f64), |(lo, hi), &v| {
+        (lo.min(v), hi.max(v))
+    });
+    hi / lo
 }
 
 // ---------------------------------------------------------------------------
