@@ -27,16 +27,25 @@ returns.
   `pred_<t>__<set>`, as `ewridge`'s are (task 272). A row's Huber weight and
   the residual scale come from the largest set's residual: the sets share
   one set of sums per target, which holds a row at one weight. The largest
-  set is the plain Huber fit to the bit, a smaller set the weighted least
-  squares fit at those weights. Sets of 5, 10 and 20 features cost about
-  60% more a row than one fit (443 against 272 ns at 20 features).
+  set is the plain Huber fit on its features to the bit when it holds every
+  feature, or under the same explicit `min_weight` (the default counts the
+  spec's whole feature list, so a narrower largest set starts predicting
+  later, and the two fits part until the decay forgets the first rows: by
+  up to 0.17 early and 1e-4 after 1,200 rows at `half_life=300` on the test
+  stream); a smaller set is the weighted least squares fit at those
+  weights. Sets of 5, 10 and 20 features cost about
+  60% more a row than one fit (443 against 272 ns at 20 features). A
+  `huber` with no sets fills its data shares only when they are read; its
+  row is about 1.5% dearer than before sets and the emitted scale (252
+  against 249 ns at 20 features, a solve every 20 rows).
 - **`po.spec.huber(ridge_scale="sum")`**: the decaying prior on the sum
   scale, as for `ewridge`; at `huber_delta=inf` it gives `rls`'s
   predictions within 1e-9, so it is the Huber form of `rls` (task 272).
 - **`po.spec.huber(emit_huber_scale=True)`** writes `huber_scale_<t>`, the
   scale each row's Huber cut is drawn in, read before the row's own
   residual enters it, so it can serve as a causal weight or scoring scale
-  (task 272).
+  (task 272). It is null on a row the model does not read, one with a null
+  or unusable feature.
 - **`marginal(bin_stat="huber")`**: each bin's location is Huber's
   M-estimate of location, learned in one pass (task 272). A row counts for
   `w·min(1, c/|e|)` against the bin's location before it, with the cut
@@ -63,12 +72,14 @@ returns.
   1.9 times `ewm_mean` a row. The `with_windows` state is version 10 and
   still reads version 9.
 - `docs/GRAM.md`, *Huber regression on a Gram*: Huber's algorithm H on one
-  shared Gram, a Polars query each pass, reaching statsmodels' Huber
-  M-estimate within 3e-5 on the slope in ten passes; why weighting only
+  shared Gram, a Polars query each pass, reaching statsmodels'
+  `RLM(scale_est="mad")` within 1.2e-6 on the slope in ten passes and
+  3e-7 from twenty on (the 0.6745 the recipe rounds Φ⁻¹(3/4) to); why weighting only
   the cross-moments is not weighted least squares (slope −59.4 where the
   fit is 2.04), and why to start from a fit that has the target's level.
-  GBDT.md names XGBoost's and LightGBM's Huber objectives with their slope
-  set from the MAD (task 272).
+  GBDT.md names LightGBM's piecewise `huber` and XGBoost's smooth
+  pseudo-Huber `reg:pseudohubererror`, with their slope set from the MAD
+  (task 272).
 - **`--output-layout flat`** on the command line (TOML
   `output_layout = "flat"`) writes each spec's output as `<spec>.<field>`
   columns, as a CSV already gets, in parquet, IPC and NDJSON; the default
@@ -219,8 +230,7 @@ returns.
   `O(runs·d²)`; `predict` reads no `coef_every`/`max_rows_between_coefs`;
   a wide eager `predict` peaks at the width of its input (164 MiB at 1,000
   features × 20,000 rows, 23 MiB in 2,000-row chunks); the README's install
-  size is 1.2.0's (24-30 MB download, 70-98 MB installed); the windows
-  state is version 9; the release policy records `huber_scale`'s default
+  size is 1.2.0's (24-30 MB download, 70-98 MB installed); the release policy records `huber_scale`'s default
   moving in a minor release, with the reason and the way back; the MAD
   scale costs 14-17 ns per target per row in `huber` and 20-32 in
   `sgd(loss="huber")`; IPC writes a struct at about the cost of flat
@@ -315,6 +325,13 @@ returns.
   labels and weights with its rows rather than holding the whole dataset's
   until the end: 16M weighted rows peaked 125 MB lower; the trees are
   bit-identical (task 270).
+- **A clock's row costs less** (task 270): the check that refuses a clock
+  value that is not a number took the clock's difference a second time on
+  every row; it now takes it once, and a temporal clock's step forward
+  within its session takes a short cut held to the general step to the
+  bit. On aarch64 a float clock's row is 96 instructions (117 before the
+  check, 130 with it) and a temporal clock's 167 (275 and 338); in wall
+  time 3.3 ns where it was 5.0, and 5.3 ns where it was 10.5.
 
 ## [1.2.0] — 2026-10-17
 

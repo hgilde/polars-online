@@ -16047,7 +16047,7 @@ plan adds `huber_scale` with the present behaviour as the default.
       target and a wild residual no longer 680 KB; a select for every
       sketch's per-row branch, 10-12 → 7-9.5 ns), reviewed with task 270.
 
-- [ ] 272. **Huber through the bank, `po.eval`, `po.gram`, `marginal` and
+- [x] 272. **Huber through the bank, `po.eval`, `po.gram`, `marginal` and
       the window operators** -- a downstream project's five requests, the
       user, 2026-10-23: "Analyze these recos from another project and build
       them after the other parts are done. Build with opus high and review
@@ -16077,3 +16077,75 @@ plan adds `huber_scale` with the present behaviour as the default.
       task 271; requests 4 and 5 conveniences. So batch (b) shrinks to the
       GRAM.md section on algorithm H with its passes table (no helper, no
       `po.eval` metric), and (a), (c), (d) stand, in that order of value.
+      *Done 2026-10-24*: (a) `c3622cd2`, (c) `6bcc3144`, (d) `dffcabcf`, the
+      algorithm H section in (a). The Fable review (R5, R6; scratchpad
+      `review9/fixreview272/`) found no defect in code: R5-1 (the largest
+      set is the plain fit to the bit only at every feature or the same
+      `min_weight`), R5-2 (GRAM.md against `RLM(scale_est="mad")`, 1.2e-6 at
+      ten passes, 3e-7 = 0.6745 against Φ⁻¹(3/4)), R5-3 (the emitted scale
+      null on an unread row), R6-1 (the step bound `c·w/(λΩ+ω)`), R6-2 (the
+      recovery law `E₀·exp(−c·n/(Ω₀E₀))`), R6-3 and R6-4 were documentation;
+      R5-4, a 3.5% dearer solve, was a shares base allocated at every solve,
+      now filled only when read (1,960 → 1,923 ns a row solving every row;
+      about 1.5% above the pre-sets row at the bench's cadence, left for
+      CI's instruction count to judge). Fixes in (e), merged with task 270
+      (l) (the clock guard's second difference, both clock cases now below
+      their pre-guard counts).
+
+## 25. Windows' math library and hardware in the tests (2026-10-24)
+
+The user, 2026-10-24: "Some windows versions produce small test errors on
+the python suite but never rust can you think of a reason". The CI logs
+since 2026-10-05 show that Rust does fail there too:
+`a_windows_cusum_null_share_is_its_absorption` was 1.7× past its `2⁻⁵²/v`
+bound on 2026-10-17 (0.9× on Apple's and glibc's `exp`; widened to 4× in
+task 269), and `trisolve … up_to_1500` was 100× over on 2026-10-15 (the
+private-gemm-x86 0.1.20 kernel, task 268). The Python legs' Windows failures
+in that window were cp1252, path separators and `file://`, none numeric.
+
+The causes. (1) On Windows, `exp`, `ln`, `exp2`, `powf` and `exp_m1` from
+Rust, CPython and numpy all come from `ucrtbase.dll`, an operating-system
+component that changes with the Windows build, while glibc and Apple's
+library are fixed per image. (2) The Rust tests were written around this:
+pinned streams avoid these functions and each tolerance was measured on the
+three platforms. The Python tests compare the wheel with numpy, scipy,
+statsmodels, scikit-learn or polars, each with its own CPU-dispatched last
+bits (OpenBLAS kernels, numpy's own vector `exp`/`log` on some CPUs, polars'
+SIMD sums), so a comparison carries both sides' rounding. (3) A Windows
+label is a pool of machines (AVX-512 or not, any L3 size), and CI does not
+record which one ran; blocking in the product kernels depends on both. CI's
+Hypothesis profile is derandomized, so luck in drawing examples is not a
+cause.
+
+Decided (the user, 2026-10-24: "Yes and do it after the current work"):
+no blanket epsilon. Tests that compare a build with itself (chunk
+invariance, a state continuing to the bit) stay exact; a test pinned to
+exact bits of a value that went through one of these functions changes its
+stream, not its tolerance; an oracle comparison gets a derived bound, a few
+ulps of each such call times the formula's amplification, measured on all
+three platforms and written in a comment (task 269's `4·2⁻⁵²/v` is the
+model), with ulp comparisons in Python (`np.testing.assert_array_max_ulp`).
+
+- [ ] 273. **Windows hardware coverage and the math-library bounds** --
+      after task 272 and its push. (a) CI: `windows-2022` beside
+      `windows-latest` in the test matrix (a second `ucrtbase.dll`), and a
+      first step on every Windows job printing the CPU model, L3 size,
+      AVX2/AVX-512 and `ucrtbase.dll`'s file version, so a failure names its
+      machine. (b) A weekly workflow that forces the CPU paths rather than
+      sampling the pool: the numeric oracle tests and the wide-product tests
+      under Intel SDE posing as an AVX2-only chip, an AVX-512 chip and an
+      older one, including a different reported cache size; Python's
+      oracles under `OPENBLAS_CORETYPE` and `NPY_DISABLE_CPU_FEATURES`. Check
+      SDE's download terms for CI use first; if they forbid it, report and
+      keep the rest. (c) The audit: every Rust and Python test whose
+      expected or actual value passes through `exp`, `ln`, `exp2`, `powf`,
+      `exp_m1`, `ln_1p` or a third-party oracle, sorted into the three kinds
+      above; each oracle comparison given its derived, measured, commented
+      bound; each bit-pinned one moved to a stream that avoids these
+      functions. (d) Measure, do not build: online-core's `exp`/`ln`/`exp2`
+      from the pure-Rust `libm` crate (a musl port) instead of the operating
+      system's, so the Rust side gives the same bits everywhere. Report its
+      speed per call and on the budget cases against the platform's, which
+      shipped outputs move and by how much, and the bounds it would let
+      shrink; adding it is a new statically linked dependency (rule 12), so
+      the measurement goes to the user for a decision.
