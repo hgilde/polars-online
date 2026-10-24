@@ -2752,7 +2752,8 @@ pub struct Spec {
     /// (4)), run once the CUSUM the path of Brown, Durbin and Evans (1975)
     /// and with a memory moving sums, and the Wald distance between
     /// two least-squares fits of the target, one at that memory and one at
-    /// four times it, null run once.
+    /// four times it, null run once, from `2k` learned rows on for `k`
+    /// coefficients, below which its variance is singular.
     #[serde(default)]
     pub emit_breaks: bool,
     /// The breaks' memory, in clock units: the fit's own memory unless set
