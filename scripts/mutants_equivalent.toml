@@ -2020,7 +2020,7 @@ as they were"""
 file = "crates/online-core/src/health.rs"
 function = "FeatureHealth::update"
 mutation = "replace > with >="
-line_has = "let x: Vec<f64> = if w > 0.0 {"
+line_has = "let x: &[f64] = if w > 0.0 {"
 why = """at `w = 0` the mutant passes the row as it came where the original \
 passes zeros; `EwDiag::update` takes no step at a weight of 0 (`b = 0`) \
 and reads no value of the row, so both leave the same moments"""

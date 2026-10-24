@@ -29,6 +29,51 @@ use serde::{Deserialize, Serialize};
 pub struct FeatureHealth {
     fast: crate::EwDiag,
     slow: crate::EwDiag,
+    /// The row a row of weight 0 is learned as, zeros, kept so a row
+    /// allocates nothing (task 270, F-3): not state.
+    #[serde(skip)]
+    zeros: crate::ewcov::Scratch,
+    /// The slow factor of the last row's decay: not state.
+    #[serde(skip)]
+    slow_of: SlowOf,
+}
+
+/// [`crate::breaks::slow_factor`] of the last `lam` it was asked for: a row's
+/// decay is most often the last row's, so its two square roots are taken
+/// once a distinct factor (task 270, F-3). The same correctly rounded roots
+/// either way, so the same bits. Not state: two healths with the same
+/// moments are the same whatever it holds.
+#[derive(Debug, Clone, Copy)]
+struct SlowOf {
+    lam: f64,
+    slow: f64,
+}
+
+impl Default for SlowOf {
+    fn default() -> Self {
+        Self {
+            lam: f64::NAN,
+            slow: f64::NAN,
+        }
+    }
+}
+
+impl PartialEq for SlowOf {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl SlowOf {
+    fn of(&mut self, lam: f64) -> f64 {
+        if lam.to_bits() != self.lam.to_bits() {
+            *self = Self {
+                lam,
+                slow: crate::breaks::slow_factor(lam),
+            };
+        }
+        self.slow
+    }
 }
 
 impl FeatureHealth {
@@ -36,6 +81,8 @@ impl FeatureHealth {
         Self {
             fast: crate::EwDiag::new(k),
             slow: crate::EwDiag::new(k),
+            zeros: Default::default(),
+            slow_of: SlowOf::default(),
         }
     }
 
@@ -47,19 +94,24 @@ impl FeatureHealth {
     /// `lam`. A row with a feature that is not finite only ages; a weight of
     /// 0 only ages (CLAUDE.md hard rule 9).
     pub fn update(&mut self, x: &[f64], lam: f64, w: f64) {
-        let slow = crate::breaks::slow_factor(lam);
+        let slow = self.slow_of.of(lam);
         let w = if x.iter().all(|v| v.is_finite()) {
             w
         } else {
             0.0
         };
-        let x: Vec<f64> = if w > 0.0 {
-            x.to_vec()
+        // A row that teaches is read as it is; one that does not is read as
+        // zeros, so `0 · NaN` never meets a feature that is not finite.
+        let x: &[f64] = if w > 0.0 {
+            x
         } else {
-            vec![0.0; x.len()]
+            let zeros = &mut self.zeros.0;
+            zeros.clear();
+            zeros.resize(x.len(), 0.0);
+            zeros
         };
-        self.fast.update(&x, lam, w);
-        self.slow.update(&x, slow, w);
+        self.fast.update(x, lam, w);
+        self.slow.update(x, slow, w);
     }
 
     /// Feature `i`'s `(spread_ratio, mean_shift)`: `None` while the slow
@@ -202,11 +254,13 @@ mod tests {
         let fast_only = FeatureHealth {
             fast: crate::EwDiag::new(2),
             slow: crate::EwDiag::new(3),
+            ..FeatureHealth::new(2)
         };
         assert!(!fast_only.has_shape(2));
         let slow_only = FeatureHealth {
             fast: crate::EwDiag::new(3),
             slow: crate::EwDiag::new(2),
+            ..FeatureHealth::new(2)
         };
         assert!(!slow_only.has_shape(2));
     }
