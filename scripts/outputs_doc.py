@@ -313,6 +313,10 @@ OPTIONAL: list[tuple[str, str]] = [
         "[Labels that arrive late](../README.md#labels-that-arrive-late), and the table below",
     ),
     (
+        "`emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in",
+        "its own [section](MODELS.md#huber--quantile--robust-regression)",
+    ),
+    (
         "`ew_cov`'s extra `stats`",
         "its own [section](MODELS.md#ew_cov--exponentially-weighted-moments)",
     ),

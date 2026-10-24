@@ -496,16 +496,20 @@ fn held(v: &rmpv::Value) -> usize {
 /// scale's two forms (63, task 271): `huber_mad` and `sgd_huber_mad` keep
 /// a sketch of `|e|` per target, `huber_mad` its own scale memory, and each
 /// cfg names its scale, `"mad"` there and `"rms"` in `huber` and
-/// `sgd_huber`; each MAD sketch names its band (task 271 (b)).
-/// `marginal`'s Huber location per bin (63, task 272 (c)):
-/// `marginal_bins_huber` keeps each cell's robust weight and each target's
-/// location and scale, and its cfg names its statistic and cut.
+/// `sgd_huber`; each MAD sketch names its band (task 271 (b)). `huber`'s
+/// feature sets (63, task 272 (a)): `huber_sets` names them in its cfg and
+/// holds a fit per target and set; `huber_sum` asks for the sum-scale
+/// prior and the emitted scale. `marginal`'s Huber location per bin (63,
+/// task 272 (c)): `marginal_bins_huber` keeps each cell's robust weight and
+/// each target's location and scale, and its cfg names its statistic and
+/// cut.
 #[test]
 fn every_layout_a_schema_moved_is_written_by_a_fixture() {
     if regenerating() {
         return;
     }
-    const FORMS: [(&str, &[&str]); 36] = [
+    const FORMS: [(&str, &[&str]); 37] = [
+        ("huber_sets", &["model", "Robust", "cfg", "feature_sets"]),
         (
             "marginal_bins_huber",
             &["model", "Marginal", "bins", "hist", "om"],
@@ -588,6 +592,19 @@ fn every_layout_a_schema_moved_is_written_by_a_fixture() {
                 Some(!name.ends_with("_warming")),
                 "{name}: saved on the wrong side of the switch"
             );
+        }
+    }
+    // `huber_sum` asks for the sum-scale prior and the emitted scale, and
+    // the rest do not (63, task 272 (a)).
+    for (name, want) in [("huber_sum", true), ("huber", false), ("huber_sets", false)] {
+        let f = frozen::ALL
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name}: no fixture; add the case and regenerate"));
+        let v = rmpv::decode::read_value(&mut f.bytes().as_slice()).unwrap();
+        for field in ["ridge_scale", "emit_scale"] {
+            let got = at(&v, &["model", "Robust", "cfg", field]).and_then(rmpv::Value::as_bool);
+            assert_eq!(got, Some(want), "{name}: cfg.{field}");
         }
     }
     // Each Huber form names its scale, and the RMS's keeps no sketch.

@@ -29,6 +29,9 @@ fn base(loss: RobustLoss) -> RobustCfg {
         quantile_eps: 0.2,
         huber_scale: HuberScale::Rms,
         huber_scale_decay: None,
+        feature_sets: Vec::new(),
+        ridge_scale: false,
+        emit_scale: false,
     }
 }
 

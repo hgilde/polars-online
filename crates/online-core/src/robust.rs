@@ -281,6 +281,38 @@ pub struct RobustCfg {
     /// before schema 63. Huber only.
     #[serde(default)]
     pub huber_scale_decay: Option<Decay>,
+    /// Named subsets of the features (0-based, the intercept excluded),
+    /// each a fit of its own from the same per-target sums, as
+    /// [`crate::EwRidgeCfg::feature_sets`] are; output slots are
+    /// target-major, then set. Empty: one fit over every feature. Huber
+    /// only. A row's Huber weight is one number per target, since the sets
+    /// share the target's Gram, so it is read from the residual of the
+    /// largest set ([`Self::weighing_set`]): weighting each set by its own
+    /// residual would need a Gram per set (docs/PLAN.md task 272 (a)).
+    /// State since schema 63, empty in a state written before it.
+    #[serde(default)]
+    pub feature_sets: Vec<(String, Vec<usize>)>,
+    /// RLS's decaying prior on the sum scale in place of the ridge on the
+    /// means, as [`crate::EwRidgeCfg::ridge_scale`]: each target solves
+    /// `(W_j S_j + p_j · ridge · I) β = W_j r_j` over its raw moments, `W_j`
+    /// the weight its sums hold (Huber's reweighted rows) and `p_j` the
+    /// product of the decay factors they have aged by, so the prior fades as
+    /// the rows arrive and the intercept is penalized with the slopes. At
+    /// `huber_delta = inf` that is `rls`'s fit, and `ewridge`'s under the
+    /// same setting. Huber only, and refused beside `standardize` and two or
+    /// more feature sets, as `ewridge`'s is (docs/PLAN.md task 272 (a)).
+    /// State since schema 63, false in a state written before it.
+    #[serde(default)]
+    pub ridge_scale: bool,
+    /// Report each target's residual scale `s` with every prediction, as
+    /// [`crate::Extra::Huber`]: the scale the row's Huber cut is drawn in,
+    /// read before the row's own residual enters it, so a caller can use it
+    /// as a weight or a scoring scale that is causal by construction. NaN
+    /// where the target has no scale yet (the module docs). Huber only
+    /// (docs/PLAN.md task 272 (a)). State since schema 63, false in a state
+    /// written before it.
+    #[serde(default)]
+    pub emit_scale: bool,
 }
 
 /// A target's band system as a solve factorizes it -- `A`, the band Gram
@@ -367,6 +399,29 @@ impl RobustCfg {
         self.n_features + usize::from(self.fit_intercept)
     }
 
+    /// The fits per target: one per feature set, or one over every feature.
+    pub fn n_sets(&self) -> usize {
+        self.feature_sets.len().max(1)
+    }
+
+    /// The set whose prediction a row's Huber weight and the residual scale
+    /// read: the one with the most features, the first of them where two
+    /// tie, and 0 without sets (the field's docs).
+    pub fn weighing_set(&self) -> usize {
+        let mut best = 0;
+        for (i, (_, idx)) in self.feature_sets.iter().enumerate() {
+            if idx.len() > self.feature_sets[best].1.len() {
+                best = i;
+            }
+        }
+        best
+    }
+
+    /// Set `c`'s features, `None` without sets: every feature.
+    fn set_of(&self, c: usize) -> Option<&[usize]> {
+        self.feature_sets.get(c).map(|(_, idx)| idx.as_slice())
+    }
+
     /// The model a spec names this loss by, which every message leads with:
     /// `huber` or `quantile`, where it said `robust`, a name no spec has
     /// (review 2026-10-06, CF5; docs/PLAN.md task 196, N1).
@@ -413,6 +468,48 @@ impl RobustCfg {
                         "{kind}: huber_scale and huber_scale_half_life are for huber"
                     ));
                 }
+            }
+        }
+        if !self.feature_sets.is_empty() && !matches!(self.loss, RobustLoss::Huber { .. }) {
+            return Err(format!(
+                "{kind}: feature_sets are for huber: a quantile fit's nudges read one band \
+                 system per target"
+            ));
+        }
+        if self.emit_scale && !matches!(self.loss, RobustLoss::Huber { .. }) {
+            return Err(format!(
+                "{kind}: emit_huber_scale is for huber: a quantile fit's band has no cut"
+            ));
+        }
+        if self.ridge_scale {
+            if !matches!(self.loss, RobustLoss::Huber { .. }) {
+                return Err(format!(
+                    "{kind}: ridge_scale is for huber: a quantile fit's nudges step the mean-form \
+                     system"
+                ));
+            }
+            if self.standardize || self.n_sets() > 1 {
+                return Err(format!(
+                    "{kind}: ridge_scale is incompatible with standardize and with two or more \
+                     feature sets"
+                ));
+            }
+        }
+        for (name, idx) in &self.feature_sets {
+            if idx.is_empty() {
+                return Err(format!("{kind}: feature set {name:?} is empty"));
+            }
+            if idx.iter().any(|&i| i >= self.n_features) {
+                return Err(format!(
+                    "{kind}: feature set {name:?} has out-of-range indices"
+                ));
+            }
+            let mut seen = idx.clone();
+            seen.sort_unstable();
+            if seen.windows(2).any(|w| w[0] == w[1]) {
+                return Err(format!(
+                    "{kind}: feature set {name:?} lists a feature more than once"
+                ));
             }
         }
         // What the spec layer refuses, refused here too, so the Rust API and
@@ -584,32 +681,44 @@ struct PendingShares {
     /// Per kept column, in the factor's order, the coefficient slot its
     /// share goes to.
     to: Vec<usize>,
-    /// The coefficients a target has, and whether the first is an
-    /// intercept.
-    k: usize,
-    intercept: bool,
+    /// The shares before any column's ([`Self::base`]), `k_total` long.
+    base: Vec<f64>,
     shares: OnceLock<Vec<f64>>,
 }
 
 impl PendingShares {
-    /// The shares before any column's: NaN in the intercept's slot, which
-    /// is not a share, and 0 elsewhere, a column the solve dropped having
-    /// none of the data's.
-    fn fill_base(out: &mut [f64], intercept: bool) {
-        out.fill(0.0);
+    /// The shares of `k` coefficients before any column's: NaN in the
+    /// intercept's slot, which is not a share, and in a slot outside the
+    /// fit's feature set (`set`, `None` for every feature), which has no
+    /// coefficient to share, as `ewridge`'s sets have it; and 0 elsewhere, a
+    /// column the solve dropped having none of the data's.
+    fn base(k: usize, intercept: bool, set: Option<&[usize]>) -> Vec<f64> {
+        let off = usize::from(intercept);
+        let mut out = vec![0.0; k];
+        if let Some(set) = set {
+            for (i, v) in out.iter_mut().enumerate().skip(off) {
+                if !set.contains(&(i - off)) {
+                    *v = f64::NAN;
+                }
+            }
+        }
         if intercept && let Some(first) = out.first_mut() {
             *first = f64::NAN;
         }
+        out
     }
 
     /// `1 − λ (A⁻¹)_jj` for each kept column, in its slot (the module doc).
     fn shares(&self) -> &[f64] {
         self.shares.get_or_init(|| {
-            let mut out = vec![0.0; self.k];
-            Self::fill_base(&mut out, self.intercept);
+            let mut out = self.base.clone();
             let inv = self.factor.inverse_diagonal(self.to.len());
             for (&slot, inv) in self.to.iter().zip(inv) {
-                out[slot] = (1.0 - self.lam * inv).clamp(0.0, 1.0);
+                // NaN in the base is no share: the intercept, which the
+                // sum-scale system solves with the slopes.
+                if !out[slot].is_nan() {
+                    out[slot] = (1.0 - self.lam * inv).clamp(0.0, 1.0);
+                }
             }
             out
         })
@@ -747,12 +856,16 @@ impl Robust {
         let t = crate::model::min_weight_of(&self.target_min_weight, self.cfg.min_weight, j);
         let reached = |w: f64| w >= t && w > 0.0;
         let before = self.wobs[j];
-        !reached(before)
-            && reached(lam * before + weight)
-            && !self
-                .beta
-                .as_ref()
-                .is_some_and(|b| b[j].iter().all(|v| !v.is_nan()))
+        !reached(before) && reached(lam * before + weight) && !self.fitted(j)
+    }
+
+    /// Whether a solve has fit target `j`: its weighing set's slot holds no
+    /// NaN ([`RobustCfg::weighing_set`]), the slot its Huber weights read.
+    fn fitted(&self, j: usize) -> bool {
+        let slot = j * self.cfg.n_sets() + self.cfg.weighing_set();
+        self.beta
+            .as_ref()
+            .is_some_and(|b| b[slot].iter().all(|v| !v.is_nan()))
     }
 
     pub fn sigma2(&self) -> &[f64] {
@@ -886,48 +999,60 @@ impl Robust {
         // from, which a gap ages and does not move (hard rule 8), and a
         // weight that underflows to 0 forgets as one just short of it does
         // (docs/PLAN.md task 115 (c)), where it took zeros too.
-        let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets];
-        // The data shares move in place, target by target, as the fit does:
-        // a target this solve skips has none, one it fits the solve's, one
-        // whose solve fails keeps its own.
-        self.support.shape(self.cfg.n_targets, k);
+        // One slot per target and feature set, target-major
+        // ([`RobustCfg::feature_sets`]), each solved from its target's sums.
+        let nc = self.cfg.n_sets();
+        let mut beta = vec![vec![f64::NAN; k]; self.cfg.n_targets * nc];
+        // The data shares move in place, slot by slot, as the fit does: a
+        // slot this solve skips has none, one it fits the solve's, one whose
+        // solve fails keeps its own.
+        self.support.shape(self.cfg.n_targets * nc, k);
         for j in 0..self.cfg.n_targets {
-            let fit_before = self
-                .beta
-                .as_ref()
-                .is_some_and(|b| !b[j].iter().any(|v| v.is_nan()));
-            if self.wj[j] <= 0.0 && !fit_before {
-                self.support.unfit(j);
-                continue;
-            }
-            // `None` is a solve that failed at every jitter: counted, and the
-            // previous fit kept. It returned through `?` before the count
-            // (review 2026-09-12, S13).
-            let solved = if self.cfg.fit_intercept {
-                self.solve_centred(k, j)
-            } else {
-                self.solve_through_origin(k, j)
-            };
-            match solved {
-                Some((sol, shares)) => {
-                    beta[j] = sol;
-                    match shares {
-                        Some(p) => self.support.pending[j] = Some(p),
-                        None => {
-                            // No column kept: nothing to invert, every
-                            // slope 0.
-                            self.support.pending[j] = None;
-                            let intercept = self.cfg.fit_intercept;
-                            PendingShares::fill_base(&mut self.support.stored[j], intercept);
+            for c in 0..nc {
+                let slot = j * nc + c;
+                let fit_before = self
+                    .beta
+                    .as_ref()
+                    .is_some_and(|b| !b[slot].iter().any(|v| v.is_nan()));
+                if self.wj[j] <= 0.0 && !fit_before {
+                    self.support.unfit(slot);
+                    continue;
+                }
+                // `None` is a solve that failed at every jitter: counted, and
+                // the previous fit kept. It returned through `?` before the
+                // count (review 2026-09-12, S13).
+                let solved = if self.cfg.ridge_scale {
+                    self.solve_sum(k, j, c)
+                } else if self.cfg.fit_intercept {
+                    self.solve_centred(k, j, c)
+                } else {
+                    self.solve_through_origin(k, j, c)
+                };
+                match solved {
+                    Some((sol, shares)) => {
+                        beta[slot] = sol;
+                        match shares {
+                            Some(p) => self.support.pending[slot] = Some(p),
+                            None => {
+                                // No column kept: nothing to invert, every
+                                // slope 0.
+                                self.support.pending[slot] = None;
+                                let base = PendingShares::base(
+                                    k,
+                                    self.cfg.fit_intercept,
+                                    self.cfg.set_of(c),
+                                );
+                                self.support.stored[slot] = base;
+                            }
                         }
                     }
-                }
-                None => {
-                    self.solve_failures += 1;
-                    if let Some(prev) = &self.beta {
-                        beta[j] = prev[j].clone();
+                    None => {
+                        self.solve_failures += 1;
+                        if let Some(prev) = &self.beta {
+                            beta[slot] = prev[slot].clone();
+                        }
+                        // The previous fit is kept, and its shares with it.
                     }
-                    // The previous fit is kept, and its shares with it.
                 }
             }
         }
@@ -946,9 +1071,14 @@ impl Robust {
     /// are scaled to correlation form and a ~zero-variance feature is
     /// dropped (coefficient 0). Nothing level-sized is subtracted from
     /// anything on the way (S2). `None` when every jitter failed.
-    fn solve_centred(&mut self, k: usize, j: usize) -> Option<(Vec<f64>, Option<PendingShares>)> {
+    fn solve_centred(
+        &mut self,
+        k: usize,
+        j: usize,
+        c: usize,
+    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
         let kf = k - 1;
-        let (asub, keep, s) = self.band_system(j);
+        let (asub, keep, s) = self.band_system(j, c);
         let kk = keep.len();
         let mut out = vec![0.0; k];
         let mut shares = None;
@@ -967,7 +1097,8 @@ impl Robust {
             for (i2, &i) in keep.iter().enumerate() {
                 out[i + 1] = sol[i2] / s[i];
             }
-            let (pending, kept) = self.pending_shares(f, keep.iter().map(|&i| i + 1).collect(), k);
+            let (pending, kept) =
+                self.pending_shares(f, keep.iter().map(|&i| i + 1).collect(), k, c);
             shares = Some(pending);
             factor = kept;
         }
@@ -994,6 +1125,7 @@ impl Robust {
         f: SpdFactor,
         to: Vec<usize>,
         k: usize,
+        c: usize,
     ) -> (PendingShares, Option<SpdFactor>) {
         let kept = matches!(self.cfg.loss, RobustLoss::Quantile { .. }).then(|| f.clone());
         let lam = self.cfg.ridge + f.jitter();
@@ -1001,8 +1133,7 @@ impl Robust {
             factor: f,
             lam,
             to,
-            k,
-            intercept: self.cfg.fit_intercept,
+            base: PendingShares::base(k, self.cfg.fit_intercept, self.cfg.set_of(c)),
             shares: OnceLock::new(),
         };
         (pending, kept)
@@ -1079,10 +1210,15 @@ impl Robust {
     /// deviations under `standardize` and keeping the columns whose variance
     /// is usable; through the origin, the raw Gram over every slot, scaled
     /// by the raw second moments under `standardize` and keeping the columns
-    /// with one. The ridge is on `A`'s diagonal either way.
-    fn band_system(&self, j: usize) -> (Vec<f64>, Vec<usize>, Vec<f64>) {
+    /// with one. The ridge is on `A`'s diagonal either way. Under feature
+    /// sets, set `c`'s columns alone (a quantile fit has none, and its
+    /// nudges pass 0).
+    fn band_system(&self, j: usize, c: usize) -> (Vec<f64>, Vec<usize>, Vec<f64>) {
         let cov = &self.cov[j];
-        let (s, keep) = self.band_scales(j);
+        let (s, mut keep) = self.band_scales(j);
+        if let Some(set) = self.cfg.set_of(c) {
+            keep.retain(|i| set.contains(i));
+        }
         // Read straight from the Gram, where the centred block was copied
         // out first, one allocation and `k²` copies a system (task 170).
         let kk = keep.len();
@@ -1162,7 +1298,7 @@ impl Robust {
     fn nudge_movement(&mut self, j: usize) -> f64 {
         let n = self.cfg.n_targets;
         if self.systems.slot(n, j).is_none() {
-            let (a, keep, s) = self.band_system(j);
+            let (a, keep, s) = self.band_system(j, 0);
             let kk = keep.len();
             let factor = if kk > 0 {
                 let Some(f) = SpdFactor::of(&a, kk) else {
@@ -1284,6 +1420,64 @@ impl Robust {
         *self.systems.slot(n, j) = moved;
     }
 
+    /// The solve under `ridge_scale` (`RobustCfg::ridge_scale`): RLS's
+    /// system on the sum scale over the raw moments of the slots set `c`
+    /// keeps, the intercept's among them, `(W·E[z zᵀ] + p·ridge·I) β =
+    /// W·E[z·y]`, with `E[z·y] = c + m·ȳ` one step from what is kept, as
+    /// [`Self::solve_through_origin`] forms it. `ewridge`'s `ridge_scale`
+    /// solve, on this target's own sums. The data shares read `λ = p·ridge`
+    /// plus the factor's jitter, as `ewridge`'s do; the intercept's is NaN.
+    /// `None` when every jitter failed.
+    fn solve_sum(
+        &mut self,
+        k: usize,
+        j: usize,
+        c: usize,
+    ) -> Option<(Vec<f64>, Option<PendingShares>)> {
+        let cov = &self.cov[j];
+        let w = cov.n_eff();
+        let prior = cov.prior_scale() * self.cfg.ridge;
+        let off = usize::from(self.cfg.fit_intercept);
+        let keep: Vec<usize> = (0..k)
+            .filter(|&i| {
+                i < off
+                    || self
+                        .cfg
+                        .set_of(c)
+                        .is_none_or(|set| set.contains(&(i - off)))
+            })
+            .collect();
+        let kk = keep.len();
+        let mut a = vec![0.0; kk * kk];
+        for (p, &i) in keep.iter().enumerate() {
+            for (q, &jj) in keep.iter().enumerate() {
+                a[p * kk + q] = w * cov.raw(i, jj);
+            }
+            a[p * kk + p] += prior;
+        }
+        let ybar = self.ybar[j];
+        let b: Vec<f64> = keep
+            .iter()
+            .map(|&i| w * (self.cross[j][i] + cov.mean(i) * ybar))
+            .collect();
+        let f = SpdFactor::of(&a, kk)?;
+        let sol = f.solve(&b, kk, 1);
+        self.solve_failures += u64::from(f.attempts());
+        let mut out = vec![0.0; k];
+        for (p, &i) in keep.iter().enumerate() {
+            out[i] = sol[p];
+        }
+        let lam = prior + f.jitter();
+        let pending = PendingShares {
+            factor: f,
+            lam,
+            to: keep,
+            base: PendingShares::base(k, self.cfg.fit_intercept, self.cfg.set_of(c)),
+            shares: OnceLock::new(),
+        };
+        Some((out, Some(pending)))
+    }
+
     /// The solve through the origin, on the raw system: every slot is a
     /// slope and every slot is penalized, and the right-hand side is the
     /// uncentred `E[z·y] = c + m·ȳ`, one step from what is kept. Nothing is
@@ -1298,13 +1492,14 @@ impl Robust {
         &mut self,
         k: usize,
         j: usize,
+        c: usize,
     ) -> Option<(Vec<f64>, Option<PendingShares>)> {
         let cov = &self.cov[j];
         let ybar = self.ybar[j];
         let b: Vec<f64> = (0..k)
             .map(|i| self.cross[j][i] + cov.mean(i) * ybar)
             .collect();
-        let (asub, keep, s) = self.band_system(j);
+        let (asub, keep, s) = self.band_system(j, c);
         let kk = keep.len();
         let mut out = vec![0.0; k];
         let mut shares = None;
@@ -1322,7 +1517,7 @@ impl Robust {
             for (i2, &i) in keep.iter().enumerate() {
                 out[i] = sol[i2] / s[i];
             }
-            let (pending, kept) = self.pending_shares(f, keep.clone(), k);
+            let (pending, kept) = self.pending_shares(f, keep.clone(), k, c);
             shares = Some(pending);
             factor = kept;
         }
@@ -1389,8 +1584,16 @@ impl OnlineModel for Robust {
         }
 
         // ---- predict (state before the update) ----
-        let out = self.predict(x, d_clock);
+        let mut out = self.predict(x, d_clock);
         let pred = &out.pred;
+        // Each target's scale as this row's cut reads it, after its decay
+        // and before its residual (`RobustCfg::emit_scale`).
+        let emit = self.cfg.emit_scale;
+        let mut seen = if emit { vec![f64::NAN; m] } else { Vec::new() };
+        // The slot whose prediction weighs the row, per target: under
+        // feature sets the largest set's, since the sets share the target's
+        // sums and a row enters them at one weight (`RobustCfg::feature_sets`).
+        let (nc, weighing) = (self.cfg.n_sets(), self.cfg.weighing_set());
 
         // ---- the solve schedule, decided before the targets learn the row:
         // it reads nothing they move, and a band row whose system the solve
@@ -1444,6 +1647,9 @@ impl OnlineModel for Robust {
             if let Some(q) = self.mad.get_mut(j) {
                 q.age(lam_scale);
             }
+            if emit {
+                seen[j] = self.residual_scale(j).unwrap_or(f64::NAN);
+            }
             let present = lam * self.wobs[j];
             let rows = lam * self.nobs[j];
             let Some(yj) = y[j] else {
@@ -1466,7 +1672,8 @@ impl OnlineModel for Robust {
             } else {
                 0.0
             };
-            match self.row_update(yj, pred[j], scale, weight, rows, aged_rows) {
+            let pj = pred[j * nc + weighing];
+            match self.row_update(yj, pj, scale, weight, rows, aged_rows) {
                 // NaN is `inf / inf` from an overflowed residual against an
                 // overflowed scale; such a row cannot be learned from either.
                 // It is a usable row that fails, and counted as present above;
@@ -1535,7 +1742,7 @@ impl OnlineModel for Robust {
                         // far below the solve's (review 2026-10-05, TC1b).
                         let movement = self.nudge_movement(j);
                         let cov = &self.cov[j];
-                        let most = (yj - pred[j]).abs() / movement;
+                        let most = (yj - pj).abs() / movement;
                         let raw = nudge / aged;
                         let step = if raw.abs() > most {
                             most.copysign(raw)
@@ -1555,8 +1762,8 @@ impl OnlineModel for Robust {
                     }
                 }
             }
-            if pred[j].is_finite() {
-                let resid = yj - pred[j];
+            if pj.is_finite() {
+                let resid = yj - pj;
                 let ws_new = self.wsig[j] + weight;
                 let s2 = (self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
                 // Skipped when it would not be finite: an `inf` scale makes
@@ -1580,6 +1787,9 @@ impl OnlineModel for Robust {
         if due {
             self.solve();
         }
+        if emit {
+            out.extra = Some(crate::Extra::Huber { scale: seen });
+        }
         out
     }
 
@@ -1588,19 +1798,23 @@ impl OnlineModel for Robust {
             return refused;
         }
         let n_eff = self.w_raw;
-        let mut pred = vec![f64::NAN; self.cfg.n_targets];
+        let nc = self.cfg.n_sets();
+        let mut pred = vec![f64::NAN; self.cfg.n_targets * nc];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
-            for (j, p) in pred.iter_mut().enumerate() {
-                if self.wj[j] > 0.0 {
-                    *p = dot_aug(&beta[j], x, self.cfg.fit_intercept);
+            for (slot, p) in pred.iter_mut().enumerate() {
+                if self.wj[slot / nc] > 0.0 {
+                    *p = dot_aug(&beta[slot], x, self.cfg.fit_intercept);
                 }
             }
         }
-        Step {
-            pred,
-            n_eff,
-            extra: None,
-        }
+        // Each target's scale as it stands: a row scored and not learned
+        // (held under an embargo) reads it so (`RobustCfg::emit_scale`).
+        let extra = self.cfg.emit_scale.then(|| crate::Extra::Huber {
+            scale: (0..self.cfg.n_targets)
+                .map(|j| self.residual_scale(j).unwrap_or(f64::NAN))
+                .collect(),
+        });
+        Step { pred, n_eff, extra }
     }
 
     fn state(&self) -> State {
@@ -1615,6 +1829,8 @@ impl OnlineModel for Robust {
                 let kind = m.cfg.kind();
                 crate::model::check_cfg(kind, m.cfg.validate())?;
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                // One fit per target and feature set (`RobustCfg::feature_sets`).
+                let slots = n * m.cfg.n_sets();
                 // One accumulator, one cross-moment row and one of each
                 // scalar per target, all at the cfg's width; a short one
                 // loaded and panicked on the first `step` (review
@@ -1633,7 +1849,7 @@ impl OnlineModel for Robust {
                     || per_target.iter().any(|v| v.len() != n)
                     || m.beta
                         .as_ref()
-                        .is_some_and(|b| b.len() != n || b.iter().any(|v| v.len() != k))
+                        .is_some_and(|b| b.len() != slots || b.iter().any(|v| v.len() != k))
                 {
                     return Err(StateError::Invalid(format!(
                         "{kind}: the accumulators have the wrong shape"
@@ -1655,7 +1871,8 @@ impl OnlineModel for Robust {
                 let shares_fit = match &m.beta {
                     None => m.support.stored.is_empty(),
                     Some(_) => {
-                        m.support.stored.len() == n && m.support.stored.iter().all(|v| v.len() == k)
+                        m.support.stored.len() == slots
+                            && m.support.stored.iter().all(|v| v.len() == k)
                     }
                 };
                 if !shares_fit {
@@ -1694,6 +1911,11 @@ impl OnlineModel for Robust {
 
     fn n_features(&self) -> usize {
         self.cfg.n_features
+    }
+
+    /// One slot per target and feature set (`RobustCfg::feature_sets`).
+    fn n_outputs(&self) -> usize {
+        self.cfg.n_targets * self.cfg.n_sets()
     }
 }
 
@@ -1796,6 +2018,9 @@ mod tests {
             quantile_eps: 1e-3,
             huber_scale: HuberScale::Rms,
             huber_scale_decay: None,
+            feature_sets: Vec::new(),
+            ridge_scale: false,
+            emit_scale: false,
         }
     }
 
@@ -3578,7 +3803,7 @@ mod tests {
                         continue;
                     }
                     moved += 1;
-                    let (_, keep, scales) = m.band_system(0);
+                    let (_, keep, scales) = m.band_system(0, 0);
                     assert_eq!(keep, sys.keep, "{case}, row {i}");
                     let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
                     assert_eq!(bits(&scales), bits(&sys.s), "{case}, row {i}");
@@ -4707,3 +4932,7 @@ mod tests {
 #[cfg(test)]
 #[path = "robust/scale_tests.rs"]
 mod scale_tests;
+
+#[cfg(test)]
+#[path = "robust/options_tests.rs"]
+mod options_tests;

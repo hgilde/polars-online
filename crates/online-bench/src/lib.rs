@@ -36,6 +36,8 @@ pub const MODEL_CASES: &[&str] = &[
     "ewridge_k20",
     "ewridge_gram_t10",
     "huber_k20",
+    "huber_k20_sets",
+    "huber_k20_sum",
     "sgd",
     "sgd_huber",
     "pa",
@@ -353,6 +355,26 @@ fn case_spec(id: &str) -> (Value, Shape) {
         // Huber's cut in the MAD scale, the default since task 271: a
         // sketch of `|e|` per target, aged and fed each row.
         "huber_k20" => (fit(json!({"type": "huber"}), 20), Shape::Linear),
+        // Three nested feature sets of 5, 10 and 20 features from the one
+        // target's sums, each solved on the cadence, the rows weighed by
+        // the largest set's residual (docs/PLAN.md task 272 (a)).
+        // RLS's sum-scale prior on the target's raw moments, the
+        // intercept penalized (docs/PLAN.md task 272 (a)).
+        "huber_k20_sum" => (
+            fit(json!({"type": "huber", "ridge_scale": "sum"}), 20),
+            Shape::Linear,
+        ),
+        "huber_k20_sets" => {
+            let sets = json!([
+                ["x5", names("x", 5)],
+                ["x10", names("x", 10)],
+                ["all", names("x", 20)],
+            ]);
+            (
+                fit(json!({"type": "huber", "feature_sets": sets}), 20),
+                Shape::Linear,
+            )
+        }
         "sgd" => (
             fit(json!({"type": "sgd", "learning_rate": 0.01}), 20),
             Shape::Linear,

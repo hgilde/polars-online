@@ -135,6 +135,7 @@ The optional outputs are left out: the `emit_*` switches, `conformal`,
 | `emit_error_inflation` and `emit_se_coef`, `ewridge`'s, `rls`'s and `kalman`'s | [Warm-up](../README.md#warm-up) |
 | `emit_robust_se`, `ewridge`'s and `rls`'s | [Can its t be trusted?](DIAGNOSTICS.md#can-its-t-be-trusted) |
 | `emit_clocks`, every model's | [Labels that arrive late](../README.md#labels-that-arrive-late), and the table below |
+| `emit_huber_scale`, `huber`'s: `huber_scale_<t>`, the scale each row's cut is drawn in | its own [section](MODELS.md#huber--quantile--robust-regression) |
 | `ew_cov`'s extra `stats` | its own [section](MODELS.md#ew_cov--exponentially-weighted-moments) |
 
 `emit_clocks` is the one switch every model takes, and it adds two fields:

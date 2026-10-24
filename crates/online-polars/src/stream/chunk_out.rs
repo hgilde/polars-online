@@ -42,7 +42,8 @@ pub struct ChunkOut {
     pub drift: Vec<bool>,
     /// `n_models * n_rows`.
     pub n_eff: Vec<f64>,
-    /// `n_models * n_targets * n_rows`, lasso only.
+    /// `n_models * n_targets * n_rows`: lasso's selected penalty, or
+    /// `huber`'s residual scale under `emit_huber_scale`; empty otherwise.
     pub lam_selected: Vec<f64>,
     /// Emitted on a cadence rather than every row, so it stays boxed:
     /// `[model][row]`.
@@ -82,7 +83,9 @@ pub(super) struct Buffers {
     pub(super) residuals: bool,
     pub(super) extras: bool,
     n_levels: usize,
-    is_lasso: bool,
+    /// One value per target and row from the model's step extras: lasso's
+    /// selected penalty, or `huber`'s scale under `emit_huber_scale`.
+    per_target: bool,
 }
 
 impl Buffers {
@@ -99,7 +102,14 @@ impl Buffers {
             // not itself an output field.
             extras: spec.emit_sigma || spec.emit_zscore || spec.emit_selected || spec.emit_averaged,
             n_levels: spec.resid_quantiles.as_ref().map_or(0, Vec::len),
-            is_lasso: matches!(spec.model, crate::ModelKind::Lasso { .. }),
+            per_target: matches!(
+                spec.model,
+                crate::ModelKind::Lasso { .. }
+                    | crate::ModelKind::Huber {
+                        emit_huber_scale: true,
+                        ..
+                    }
+            ),
         }
     }
 
@@ -123,7 +133,7 @@ impl Buffers {
             + n_models
             + n_models
             + on(spec.emit_error_inflation)
-            + if self.is_lasso {
+            + if self.per_target {
                 n_models * spec.m()
             } else {
                 0
@@ -198,7 +208,7 @@ impl ChunkOut {
             residuals,
             extras,
             n_levels,
-            is_lasso,
+            per_target,
         } = Buffers::of(spec);
         let n_checks = crate::checks::value_names(spec).len();
         self.rows.clear();
@@ -225,7 +235,7 @@ impl ChunkOut {
         fill(&mut self.resid_q, n_levels * per, f64::NAN);
         fill(&mut self.drift, on(spec.emit_drift), false);
         fill(&mut self.n_eff, n_models * n_rows, f64::NAN);
-        let lam = if is_lasso {
+        let lam = if per_target {
             n_models * spec.m() * n_rows
         } else {
             0

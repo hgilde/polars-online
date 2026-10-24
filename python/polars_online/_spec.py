@@ -245,7 +245,9 @@ def _got(v: Any) -> str:
 _SKIPPED_WHEN_ABSENT: dict[str, frozenset[str]] = {
     "holt": frozenset({"trend"}),
     "ewridge": frozenset({"gram_threads"}),
-    "huber": frozenset({"huber_scale", "huber_scale_half_life"}),
+    "huber": frozenset(
+        {"huber_scale", "huber_scale_half_life", "feature_sets", "ridge_scale", "emit_huber_scale"}
+    ),
     "sgd": frozenset({"huber_scale", "huber_scale_half_life"}),
     "ew_cov": frozenset({"gram_threads"}),
     "marginal": frozenset(
@@ -912,7 +914,9 @@ def ewridge(
     The other regressions here each cover a case it does not: coefficients
     that drift (:func:`kalman`), outliers (:func:`huber`), a quantile
     (:func:`quantile`), a sparse fit (:func:`lasso`), a row cost of O(k)
-    (:func:`sgd`, :func:`pa`).
+    (:func:`sgd`, :func:`pa`). There is no Huber loss here: :func:`huber` is
+    these sums with each row down-weighted by its residual, and takes this
+    model's ``feature_sets`` and ``ridge_scale``.
 
     .. rubric:: The fit
 
@@ -1625,7 +1629,9 @@ def rls(
     inverse ``P`` loses symmetry to rounding by ``1 / lam`` a row, and one extreme
     row can cancel it and freeze a coefficient for good; this form has neither
     failure. The result is :func:`ewridge` with ``ridge_scale = "sum"`` solved on every
-    row, to better than 1e-9.
+    row, to better than 1e-9. For a Huber loss use :func:`huber` with
+    ``ridge_scale = "sum"``, which is this fit with each row down-weighted by
+    its residual, solved on a schedule.
 
     **A feature that holds one value for long winds the fit up: use**
     :func:`ewridge` **for a long-running stream whose features can go quiet.**

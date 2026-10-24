@@ -395,6 +395,9 @@ fn a_standardized_huber_keeps_the_slope_it_learned() {
         quantile_eps: 0.05,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        feature_sets: Vec::new(),
+        ridge_scale: false,
+        emit_scale: false,
     };
     holds(
         "huber",
@@ -676,6 +679,9 @@ fn a_held_target_leaves_no_slope_on_a_moving_feature() {
         quantile_eps: 0.05,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        feature_sets: Vec::new(),
+        ridge_scale: false,
+        emit_scale: false,
     };
     slopes_decay(
         "huber",
@@ -900,6 +906,9 @@ fn a_state_saved_mid_hold_resumes_to_the_bit() {
             quantile_eps: 0.05,
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
+            feature_sets: Vec::new(),
+            ridge_scale: false,
+            emit_scale: false,
         })
         .unwrap()
     });
@@ -1113,6 +1122,9 @@ fn a_row_of_no_weight_moves_no_mean() {
             quantile_eps: 0.05,
             huber_scale: online_core::HuberScale::Rms,
             huber_scale_decay: None,
+            feature_sets: Vec::new(),
+            ridge_scale: false,
+            emit_scale: false,
         })
         .unwrap()
     });
@@ -1622,6 +1634,9 @@ fn quantile_cfg() -> RobustCfg {
         quantile_eps: 0.2,
         huber_scale: online_core::HuberScale::Rms,
         huber_scale_decay: None,
+        feature_sets: Vec::new(),
+        ridge_scale: false,
+        emit_scale: false,
     }
 }
 

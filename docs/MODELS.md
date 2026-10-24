@@ -63,7 +63,9 @@ What `half_life` decays differs by model:
 
 Start with `ewridge`, ridge regression solved from running sums, and change
 to another linear model when your data need what it adds, such as
-coefficients that drift (`kalman`).
+coefficients that drift (`kalman`). For a Huber loss use
+[`huber`](#huber--quantile--robust-regression), which is these sums with
+each row down-weighted by its residual.
 
 **A grid of half-lives and ridge values is fitted in one pass.** Each
 half-life keeps a set of running sums, and each ridge value is one more
@@ -263,7 +265,10 @@ for `lstsq` on the same rows.
 *API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](../crates/online-core/src/rls.rs) — *Outputs:* [fields](OUTPUTS.md#rls)
 
 Use `rls` when the coefficients must be current at every row: it updates
-them on every row in O(k²) time, without a solve.
+them on every row in O(k²) time, without a solve. For a Huber loss use
+[`huber`](#huber--quantile--robust-regression) with `ridge_scale="sum"`,
+which is this fit with each row down-weighted by its residual, solved on
+a schedule.
 
 **`rls` is `ewridge(ridge_scale="sum")` solved on every row, to better
 than 1e-9.** Its `delta` is that `ridge`. Here the two run side by side on
@@ -732,6 +737,49 @@ quantile:  one Newton step on the check loss, smoothed by a uniform kernel of ha
 
 The weights are per target, so `huber` and `quantile` keep one set of
 sums per target, where `ewridge` shares one set across targets.
+
+**A label that arrives late is weighed when it is learned.** Under an
+`embargo`, or with a target that is a window expression looking ahead, a
+row is scored where it arrives and learned once its label is known, the
+held rows in the order they arrived. Its weight is read then, from its
+residual against the fit at that moment: the fit of every row before it
+and of none after it, which is the fit it would be weighed by without the
+delay. So the delay moves the predictions, which come from an older fit,
+and leaves the fit, the weights and the scale as they are without it.
+`coef` under an embargo of `E` rows is the undelayed run's `coef` of `E`
+rows earlier, to the bit. The weight is out of sample either way, since
+the row's own label is in neither fit. `huber_scale_<t>` is read where the
+row is scored, as `pred_<t>` is.
+
+**`huber`'s `feature_sets=` fits subsets of the features from the same
+sums, as `ewridge`'s do, and weighs each row by the largest set's
+residual.** A set's fields are `pred_<t>__<set>` and `resid_<t>__<set>`.
+The sets share the target's sums, and a sum holds each row at one weight,
+so a row's Huber weight is one number per target. It is read from the
+residual of the largest set, the one with the most features, the first of
+them where two tie, and so is the scale `σ`. Weighting each set by its own
+residual would need a set of sums per set. So the largest set is the Huber
+fit of its features, the same to the bit as a `huber` on those features
+alone. A smaller set is the weighted least-squares fit of its features at
+the weights the largest set's residuals chose, which is not a Huber fit of
+its own. `quantile` takes no `feature_sets`: its rows outside the band step
+the fit through one system per target.
+
+**`huber`'s `ridge_scale="sum"` is the Huber form of `rls`.** It puts RLS's
+prior on the decaying sum scale in place of the ridge on the means, as
+`ewridge`'s does: `(W S + prior_scale · ridge · I) b = W r`, with `W` the
+weight the target's sums hold after the Huber weights, and the intercept
+penalized too. The prior fades as the rows arrive. At `huber_delta=inf`,
+solved on every row, it gives `rls`'s predictions with `delta=ridge`
+within 1e-9, as `ewridge(ridge_scale="sum")` does.
+
+**`emit_huber_scale=True` writes `huber_scale_<t>`, the scale each row's
+cut is drawn in.** It is read after the row's decay and before the row's
+own residual enters the scale, so a wild value cannot widen its own scale:
+the field is causal by construction. Use it as a row weight downstream, or
+as the scale of a robust loss on the residuals. It is one field per target,
+the largest set's under `feature_sets`, and null until the target has a
+`σ` above 0.
 
 **The scale `σ` is the part of Huber's estimator that makes it robust.**
 The cut is `δσ`, so a scale that the outliers inflate moves the cut out of

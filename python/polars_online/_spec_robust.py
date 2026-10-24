@@ -26,6 +26,9 @@ def huber(
     standardize: bool = False,
     solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
+    feature_sets: dict[str, list[str]] | None = None,
+    ridge_scale: Literal["mean", "sum"] = "mean",
+    emit_huber_scale: bool = False,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression: :func:`ewridge` with the rows that miss by far
@@ -115,6 +118,18 @@ def huber(
     teaches nothing, so a band that early residuals widen does: a fit from
     zero coefficients has the target's whole level for its first residuals.
 
+    A label that arrives late is weighed when it is learned. Under an
+    ``embargo``, or with a target that is a window expression looking ahead,
+    a row is scored where it arrives and learned once its label is known,
+    the held rows in the order they arrived. Its Huber weight is read then,
+    from its residual against the fit at that moment: the fit of every row
+    before it and of none after it, which is the fit it would be weighed by
+    without the delay. So the delay moves the predictions, which come from
+    an older fit, and leaves the fit, the weights and the scale as they are
+    without it: ``coef`` under an embargo of ``E`` rows is the undelayed
+    run's ``coef`` of ``E`` rows earlier, to the bit. The weight is out of
+    sample either way, since the row's own label is in neither fit.
+
     Until a target has an ``s`` above 0, no row is down-weighted. That is
     before its first residual, or while every residual so far is exactly zero
     (under ``"mad"``, while half the weight is on such residuals), and there is
@@ -157,6 +172,40 @@ def huber(
         least 0), correlation-form solving, and the solve schedule. ``ridge``
         is on the mean-form Gram, in the features' squared units, and
         dimensionless under ``standardize``, which solves in correlation form.
+    ``feature_sets``
+        Named subsets of ``features``, each a fit of its own from the same
+        sums, reported as ``pred_<t>__<set>``, as :func:`ewridge`'s are. The
+        full set is fitted only when it is one of them, and a single set is
+        no grid: its fields take no suffix. **A row's Huber weight comes from
+        the largest set's residual**, the set with the most features, the
+        first of them where two tie. The sets share the target's sums, and a
+        sum holds each row at one weight, so the weight is one number per
+        row and target. Weighting each set by its own residual would need a
+        set of sums per set. So a smaller set's fit is the weighted least
+        squares fit at the weights the largest set's residuals chose, not a
+        Huber fit of its own. The residual scale ``s`` is the largest set's
+        too.
+    ``ridge_scale``
+        What the ridge is scaled against, as for :func:`ewridge`: ``"mean"``
+        (the default), a fixed penalty on the mean-form sums whose pull is
+        permanent, or ``"sum"``, RLS's prior on the decaying sum scale,
+        ``(W * S + prior_scale * ridge * I) b = W * r``, which fades as the
+        rows arrive and penalizes the intercept too. ``W`` is the weight the
+        target's sums hold, the Huber weights applied. With
+        ``huber_delta=inf`` and ``"sum"``, the fit is :func:`rls`'s with
+        ``delta=ridge``, solved on the schedule rather than on every row, so
+        ``huber(ridge_scale="sum")`` is the Huber form of :func:`rls` as
+        ``ewridge(ridge_scale="sum")`` is its least-squares form. ``"sum"``
+        is refused beside ``standardize`` and beside two or more
+        ``feature_sets``.
+    ``emit_huber_scale``
+        Emit ``huber_scale_<t>``, each target's residual scale ``s`` as the
+        row's cut reads it: after the row's decay and before the row's own
+        residual enters it, so the field is causal by construction and can
+        serve as a weight or as the scale of a robust score of the
+        residuals. Null until the target has an ``s`` above 0. Under an
+        ``embargo`` it is read where the row is scored, as ``pred_<t>`` is.
+        Default ``False``.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``half_life``, ``gap_cap``, ``min_weight``, ``group``, the
@@ -173,19 +222,23 @@ def huber(
     <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#huber>`_):
 
     ``pred_<t>``, ``resid_<t>``
-        Per target: the prediction, and ``y - pred`` where the target is not null.
+        Per target: the prediction, and ``y - pred`` where the target is not
+        null; one pair per set under ``feature_sets``, ``pred_<t>__<set>``.
     ``weight_sum``
         The accumulated weight before the row, as everywhere.
     ``settled_frac``, ``withheld_reason``
         How far the decay window had filled before the row, and which gate
         withheld the row's predictions, null where none did, as everywhere.
+    ``huber_scale_<t>``
+        Under ``emit_huber_scale``: the scale the row's cut is drawn in.
     ``coef``
-        Per target, the intercept then one entry per feature (:func:`coef_index`).
+        Per target, the intercept then one entry per feature (:func:`coef_index`);
+        per target and set under ``feature_sets``, 0 for a feature outside the set.
     ``support_coef``
         On ``coef``'s rows, each coefficient's data share, laid out like
         ``coef``: how much of the fit after the row the data, as the loss
         weighs the rows, determined rather than the ridge
-        (:mod:`polars_online.spec`).
+        (:mod:`polars_online.spec`); null for a feature outside the set.
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them.
@@ -214,6 +267,14 @@ def huber(
         "standardize": standardize,
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
+        # `{}` is written as `[]`, which the Rust side refuses by name, as
+        # `ewridge`'s is.
+        "feature_sets": (
+            [[k, list(v)] for k, v in feature_sets.items()] if feature_sets is not None else None
+        ),
+        # Written only away from their defaults, which the Rust spec skips.
+        "ridge_scale": None if ridge_scale == "mean" else ridge_scale,
+        "emit_huber_scale": True if emit_huber_scale else None,
     }
     # Written only when given: the Rust spec skips them when absent.
     skipped = _SKIPPED_WHEN_ABSENT["huber"]

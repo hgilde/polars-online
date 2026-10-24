@@ -40,6 +40,12 @@ pub mod huber {
 pub mod huber_mad {
     include!("huber_mad.rs");
 }
+pub mod huber_sets {
+    include!("huber_sets.rs");
+}
+pub mod huber_sum {
+    include!("huber_sum.rs");
+}
 pub mod quantile {
     include!("quantile.rs");
 }
@@ -154,6 +160,8 @@ pub const ALL: &[&crate::cases::Fixture] = &[
     &kalman_gap::FIXTURE,
     &huber::FIXTURE,
     &huber_mad::FIXTURE,
+    &huber_sets::FIXTURE,
+    &huber_sum::FIXTURE,
     &quantile::FIXTURE,
     &ftrl::FIXTURE,
     &ew_cov::FIXTURE,
