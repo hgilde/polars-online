@@ -11,6 +11,7 @@ that runs before anything is built -- to its rules.
 
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import re
 import shlex
@@ -713,6 +714,37 @@ def test_the_readmes_install_size_names_a_recent_release():
     released = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", log, flags=re.M)
     assert named in released[:2], (row, released[:2])
     assert re.search(r"\d+ to \d+ MB to download and \d+ to \d+ MB installed", row), row
+
+
+def test_the_readmes_throughput_table_postdates_the_previous_release():
+    """The README's throughput table was measured on 2026-09-29, three
+    releases before anyone noticed, and a third of its rows had moved past
+    its own stated noise (review round 9, K-1). Release step 2 now pastes
+    the release's ``benchmark.py`` run into it; this holds the date the table
+    states to no older than the release before the newest in the CHANGELOG,
+    so a release can ship the table it measured during its own steps, but
+    the next cannot ship it again. The commit it names is the one the dated
+    section of ``docs/PERFORMANCE.md`` it links to was measured at."""
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    (row,) = [line for line in text.splitlines() if line.startswith("| runs |")]
+    ((when, sha),) = re.findall(
+        r"measured on (\d{4}-\d{2}-\d{2}) at commit `([0-9a-f]{7,40})`", row
+    )
+    log = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    dates = re.findall(r"^## \[\d+\.\d+\.\d+\] — (\d{4}-\d{2}-\d{2})$", log, flags=re.M)
+    assert len(dates) >= 2, dates
+    assert datetime.date.fromisoformat(when) >= datetime.date.fromisoformat(dates[1]), (
+        f"the README's throughput table was measured on {when}, before the previous "
+        f"release ({dates[1]}): rerun scripts/benchmark.py (docs/RELEASE-READINESS.md, step 2)"
+    )
+    (link,) = re.findall(r"\(docs/PERFORMANCE\.md#([^)]+)\)", row)
+    assert link.endswith(when), (link, when)
+    perf = (REPO / "docs" / "PERFORMANCE.md").read_text(encoding="utf-8")
+    heading = next(
+        line for line in perf.splitlines() if line.startswith("### ") and line.endswith(f"({when})")
+    )
+    section = perf.split(heading, 1)[1].split("\n### ", 1)[0]
+    assert f"`{sha}`" in section, (sha, heading)
 
 
 def test_publishing_with_entries_left_under_unreleased_is_refused(copy):
